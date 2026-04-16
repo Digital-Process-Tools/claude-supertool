@@ -396,12 +396,12 @@ def pre_tool_hook(payload: Dict[str, Any], enforced: bool) -> Tuple[int, str]:
     # Direct tool blocks
     if tool_name in BLOCKED_TOOLS:
         return 2, (
-            f"Use ./SuperTool instead of {tool_name}.\n\n"
-            "  ./SuperTool grep:PATTERN:PATH:LIMIT\n"
-            "  ./SuperTool glob:PATTERN   (supports **)\n"
-            "  ./SuperTool ls:PATH\n\n"
+            f"Use ./supertool instead of {tool_name}.\n\n"
+            "  ./supertool grep:PATTERN:PATH:LIMIT\n"
+            "  ./supertool glob:PATTERN   (supports **)\n"
+            "  ./supertool ls:PATH\n\n"
             "Batch multiple ops in one call: "
-            "./SuperTool read:A read:B grep:X:src/ glob:**/*.md\n\n"
+            "./supertool read:A read:B grep:X:src/ glob:**/*.md\n\n"
             "Disable enforcement: /supertool off\n"
         )
 
@@ -423,14 +423,14 @@ def pre_tool_hook(payload: Dict[str, Any], enforced: bool) -> Tuple[int, str]:
             return 2, (
                 f"Bash({first_token} ...) is blocked while SuperTool "
                 "enforcement is active.\n\n"
-                "Use ./SuperTool instead:\n"
-                "  cat FILE         → ./SuperTool read:FILE\n"
-                "  grep PAT PATH    → ./SuperTool grep:PAT:PATH:LIMIT\n"
-                "  find/glob        → ./SuperTool glob:PATTERN\n"
-                "  ls PATH          → ./SuperTool ls:PATH\n"
-                "  tail -N FILE     → ./SuperTool tail:FILE:N\n"
-                "  head -N FILE     → ./SuperTool head:FILE:N\n"
-                "  sed -n X,Yp FILE → ./SuperTool read:FILE:X:Y-X\n\n"
+                "Use ./supertool instead:\n"
+                "  cat FILE         → ./supertool read:FILE\n"
+                "  grep PAT PATH    → ./supertool grep:PAT:PATH:LIMIT\n"
+                "  find/glob        → ./supertool glob:PATTERN\n"
+                "  ls PATH          → ./supertool ls:PATH\n"
+                "  tail -N FILE     → ./supertool tail:FILE:N\n"
+                "  head -N FILE     → ./supertool head:FILE:N\n"
+                "  sed -n X,Yp FILE → ./supertool read:FILE:X:Y-X\n\n"
                 "Batch multiple ops in one call. "
                 "Disable enforcement: /supertool off\n"
             )

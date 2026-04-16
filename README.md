@@ -75,7 +75,7 @@ This writes `~/.claude/supertool-enforced`, which the PreToolUse hook reads to b
 - `Bash(cat ...)`, `Bash(find ...)`, `Bash(grep ...)`, `Bash(ls ...)`
 - `Bash(sed ...)`, `Bash(awk ...)`, `Bash(tail ...)`, `Bash(head ...)`
 
-Blocked calls receive a redirect message ("Use `./SuperTool` instead: ..."). Model learns to batch.
+Blocked calls receive a redirect message ("Use `./supertool` instead: ..."). Model learns to batch.
 
 **Read stays allowed** — Claude Code's Edit tool needs the built-in Read for state-based file checks. Don't try to disable it.
 

@@ -492,13 +492,13 @@ def test_pre_tool_hook_permissive_allows_everything() -> None:
 def test_pre_tool_hook_enforced_blocks_grep() -> None:
     code, msg = supertool.pre_tool_hook({"tool_name": "Grep"}, enforced=True)
     assert code == 2
-    assert "Use ./SuperTool instead of Grep" in msg
+    assert "Use ./supertool instead of Grep" in msg
 
 
 def test_pre_tool_hook_enforced_blocks_glob() -> None:
     code, msg = supertool.pre_tool_hook({"tool_name": "Glob"}, enforced=True)
     assert code == 2
-    assert "Use ./SuperTool instead of Glob" in msg
+    assert "Use ./supertool instead of Glob" in msg
 
 
 def test_pre_tool_hook_enforced_blocks_ls() -> None:
@@ -560,7 +560,7 @@ def test_pre_tool_hook_bash_allows_python() -> None:
 def test_pre_tool_hook_bash_allows_supertool() -> None:
     # The whole point — supertool itself must not be blocked
     payload = {"tool_name": "Bash",
-               "tool_input": {"command": "./SuperTool read:foo.py"}}
+               "tool_input": {"command": "./supertool read:foo.py"}}
     code, msg = supertool.pre_tool_hook(payload, enforced=True)
     assert code == 0
 
@@ -679,7 +679,7 @@ def test_main_pre_tool_hook_enforced_blocks(monkeypatch, tmp_path, capsys) -> No
     ret = supertool.main(["--pre-tool-hook"])
     captured = capsys.readouterr()
     assert ret == 2
-    assert "Use ./SuperTool" in captured.err
+    assert "Use ./supertool" in captured.err
 
 
 def test_main_pre_tool_hook_malformed_json_fail_open(monkeypatch, tmp_path) -> None:

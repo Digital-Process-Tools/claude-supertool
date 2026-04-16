@@ -1,19 +1,22 @@
 #!/bin/bash
-# SessionStart hook — injects the batching prompt into context.
-# Enable via .claude/settings.json:
-#   "hooks": { "SessionStart": [{ "hooks": [{ "type": "command",
-#     "command": "$CLAUDE_PLUGIN_ROOT/hooks/session-start.sh" }] }] }
+# SessionStart hook — injects the batching prompt into context and
+# creates a ./supertool symlink in the project root if missing.
+
+# Create ./supertool symlink so the model can call it from any project
+if [ ! -e "./supertool" ]; then
+    ln -sf "${CLAUDE_PLUGIN_ROOT}/supertool.py" "./supertool" 2>/dev/null
+fi
 
 cat <<'EOF'
 ## SuperTool — batched file operations
 
-`./SuperTool` collapses N file ops into one Bash round-trip. Each saved
+`./supertool` collapses N file ops into one Bash round-trip. Each saved
 round-trip reduces output tokens (not cached) and cuts wall-time latency.
 **Six or seven ops per call is routine; two is too few.**
 
 Realistic batch (7 ops, 1 round-trip):
 
-    ./SuperTool \
+    ./supertool \
         read:src/Module.py \
         read:src/Permissions.py \
         read:src/Options.py \

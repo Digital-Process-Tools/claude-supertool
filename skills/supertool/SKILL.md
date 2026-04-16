@@ -1,13 +1,13 @@
 ---
 name: supertool
-description: "Toggle SuperTool enforcement for the current user. When enforced, Grep/Glob/LS and Bash fallbacks (cat/find/grep/ls/sed/awk/tail/head) are blocked and redirected to ./SuperTool — forcing batched file ops and one-round-trip behavior. Use /supertool on for autonomous/Kevin-style runs, /supertool off for interactive sessions where ad-hoc tool use is fine."
+description: "Toggle SuperTool enforcement for the current user. When enforced, Grep/Glob/LS and Bash fallbacks (cat/find/grep/ls/sed/awk/tail/head) are blocked and redirected to ./supertool — forcing batched file ops and one-round-trip behavior. Use /supertool on for autonomous/Kevin-style runs, /supertool off for interactive sessions where ad-hoc tool use is fine."
 ---
 
 # SuperTool Toggle
 
 Controls whether SuperTool enforcement is active. Enforcement makes the
 pre-tool-block hook reject competing tools (Grep, Glob, LS, Bash fallbacks),
-forcing the model to batch via `./SuperTool`.
+forcing the model to batch via `./supertool`.
 
 State lives in `~/.claude/supertool-enforced` (empty file = enforced; absent
 = permissive).
@@ -27,7 +27,7 @@ mkdir -p "$HOME/.claude"
 touch "$HOME/.claude/supertool-enforced"
 echo "SuperTool enforcement: ON"
 echo "Blocking: Grep, Glob, LS, Bash(cat|find|grep|ls|sed|awk|tail|head)"
-echo "Use ./SuperTool for all reads and searches. Disable with /supertool off"
+echo "Use ./supertool for all reads and searches. Disable with /supertool off"
 ```
 
 ### `off`
@@ -35,7 +35,7 @@ echo "Use ./SuperTool for all reads and searches. Disable with /supertool off"
 ```bash
 rm -f "$HOME/.claude/supertool-enforced"
 echo "SuperTool enforcement: OFF"
-echo "All tools allowed. SuperTool still available (./SuperTool ...)"
+echo "All tools allowed. SuperTool still available (./supertool ...)"
 ```
 
 ### `status`
@@ -66,7 +66,7 @@ friction for ad-hoc exploration.
 
 ## Related
 
-- `./SuperTool` — the batched-ops binary (stays available in both modes)
+- `./supertool` — the batched-ops binary (stays available in both modes)
 - `/tmp/supertool-calls.log` — per-call log for adoption analysis
 - `hooks/session-start.sh` — injects batching prompt at session start
 - `hooks/pre-tool-block.sh` — the enforcement hook itself
