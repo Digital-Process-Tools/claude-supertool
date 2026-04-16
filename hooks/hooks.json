@@ -12,7 +12,6 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Grep|Glob|LS|Bash",
         "hooks": [
           {
             "type": "command",
