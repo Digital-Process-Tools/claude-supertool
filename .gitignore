@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Tests / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
