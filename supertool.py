@@ -24,15 +24,16 @@ USAGE — BATCH AS MANY OPS AS YOU CAN ANTICIPATE
 There is no limit on ops per call. Pack every read, grep, and glob you
 expect to need this turn. Two ops is NOT the cap — six is routine.
 
-Realistic batch (7 ops, 1 round-trip):
+Realistic batch (7 ops, 1 round-trip) — ALWAYS quote args to prevent
+shell glob expansion:
     supertool \\
-        read:src/SiX/SiXModule.py \\
-        read:src/SiX/SiXPermissions.py \\
-        read:src/SiX/SiXOptions.py \\
-        grep:extends:src/SiX/:20 \\
-        grep:@related:src/SiX/:10 \\
-        glob:src/SiX/Components/**/*.xml \\
-        glob:src/SiX/EventsManagers/*.py
+        'read:src/SiX/SiXModule.py' \\
+        'read:src/SiX/SiXPermissions.py' \\
+        'read:src/SiX/SiXOptions.py' \\
+        'grep:extends:src/SiX/:20' \\
+        'grep:@related:src/SiX/:10' \\
+        'glob:src/SiX/Components/**/*.xml' \\
+        'glob:src/SiX/EventsManagers/*.py'
 
 OPERATIONS
 ----------
@@ -50,7 +51,8 @@ OPERATIONS
     head:PATH:N                First N lines (default 20)
 
 Output: structured text with --- separators per operation.
-Calls logged to /tmp/supertool-calls.log for per-turn analysis.
+Calls logged to {tempdir}/supertool-calls.log for per-turn analysis
+(macOS: /var/folders/.../T/, Linux: /tmp/, Windows: %TEMP%).
 """
 from __future__ import annotations
 
@@ -397,11 +399,11 @@ def pre_tool_hook(payload: Dict[str, Any], enforced: bool) -> Tuple[int, str]:
     if tool_name in BLOCKED_TOOLS:
         return 2, (
             f"Use ./supertool instead of {tool_name}.\n\n"
-            "  ./supertool grep:PATTERN:PATH:LIMIT\n"
-            "  ./supertool glob:PATTERN   (supports **)\n"
-            "  ./supertool ls:PATH\n\n"
+            "  ./supertool 'grep:PATTERN:PATH:LIMIT'\n"
+            "  ./supertool 'glob:PATTERN'   (supports **)\n"
+            "  ./supertool 'ls:PATH'\n\n"
             "Batch multiple ops in one call: "
-            "./supertool read:A read:B grep:X:src/ glob:**/*.md\n\n"
+            "./supertool 'read:A' 'read:B' 'grep:X:src/' 'glob:**/*.md'\n\n"
             "Disable enforcement: /supertool off\n"
         )
 
@@ -421,16 +423,16 @@ def pre_tool_hook(payload: Dict[str, Any], enforced: bool) -> Tuple[int, str]:
             first_token = tokens[1]
         if first_token in BLOCKED_BASH_COMMANDS:
             return 2, (
-                f"Bash({first_token} ...) is blocked while SuperTool "
+                f"Bash({first_token} ...) is blocked while supertool "
                 "enforcement is active.\n\n"
                 "Use ./supertool instead:\n"
-                "  cat FILE         → ./supertool read:FILE\n"
-                "  grep PAT PATH    → ./supertool grep:PAT:PATH:LIMIT\n"
-                "  find/glob        → ./supertool glob:PATTERN\n"
-                "  ls PATH          → ./supertool ls:PATH\n"
-                "  tail -N FILE     → ./supertool tail:FILE:N\n"
-                "  head -N FILE     → ./supertool head:FILE:N\n"
-                "  sed -n X,Yp FILE → ./supertool read:FILE:X:Y-X\n\n"
+                "  cat FILE         → ./supertool 'read:FILE'\n"
+                "  grep PAT PATH    → ./supertool 'grep:PAT:PATH:LIMIT'\n"
+                "  find/glob        → ./supertool 'glob:PATTERN'\n"
+                "  ls PATH          → ./supertool 'ls:PATH'\n"
+                "  tail -N FILE     → ./supertool 'tail:FILE:N'\n"
+                "  head -N FILE     → ./supertool 'head:FILE:N'\n"
+                "  sed -n X,Yp FILE → ./supertool 'read:FILE:X:Y-X'\n\n"
                 "Batch multiple ops in one call. "
                 "Disable enforcement: /supertool off\n"
             )
@@ -462,7 +464,7 @@ def main(argv: List[str]) -> int:
     if not argv:
         sys.stderr.write(
             "Usage: supertool op:args [op:args ...]\n"
-            "       supertool read:file.py grep:foo:src/:20 glob:**/*.md\n"
+            "       supertool 'read:file.py' 'grep:foo:src/:20' 'glob:**/*.md'\n"
             "       supertool --pre-tool-hook  (reads hook payload from stdin)\n"
         )
         return 1

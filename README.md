@@ -48,7 +48,7 @@ chmod +x /usr/local/bin/supertool
 Verify:
 
 ```bash
-supertool read:README.md
+supertool 'read:README.md'
 ```
 
 Standalone install doesn't wire up the hooks (no plugin system). You get the binary; the enforcement mode and session-start prompt come with the marketplace install.
@@ -121,13 +121,13 @@ claude -p "..." --permission-mode bypassPermissions \
 
 ```bash
 supertool \
-    read:src/Module.py \
-    read:src/Permissions.py \
-    read:src/Options.py \
-    grep:extends:src/:20 \
-    grep:@related:src/:10 \
-    glob:src/Components/**/*.xml \
-    glob:src/EventsManagers/*.py
+    'read:src/Module.py' \
+    'read:src/Permissions.py' \
+    'read:src/Options.py' \
+    'grep:extends:src/:20' \
+    'grep:@related:src/:10' \
+    'glob:src/Components/**/*.xml' \
+    'glob:src/EventsManagers/*.py'
 ```
 
 One round-trip. Seven ops worth of output. The session-start hook reminds the model of this each session.
@@ -208,11 +208,11 @@ The hook is in `.githooks/pre-push`, committed to the repo. Bypass with `git pus
 
 **Windows:** works via Git Bash or WSL (the plugin's `hooks/session-start.sh` + `.githooks/pre-push` are bash scripts; the Python tool itself is cross-platform). Native `cmd.exe` / PowerShell without bash won't fire the hooks.
 
-**Paths with spaces:** fine. Arguments arrive via `sys.argv` pre-tokenized by the shell, so `supertool "read:/home/jo bob/file.py"` works unchanged.
+**Paths with spaces:** fine. Arguments arrive via `sys.argv` pre-tokenized by the shell, so `supertool "'read:/home/jo bob/file.py'"` works unchanged.
 
-**Windows drive letters:** the tool recognizes `C:\...` and `D:/...` automatically and reassembles them after colon-splitting. So `supertool read:C:\Users\file.py` and `supertool grep:needle:C:/src:20` both parse correctly. If you hit edge cases, forward slashes (`C:/path`) work everywhere on Windows too.
+**Windows drive letters:** the tool recognizes `C:\...` and `D:/...` automatically and reassembles them after colon-splitting. So `supertool 'read:C:\Users\file.py'` and `supertool 'grep:needle:C:/src:20'` both parse correctly. If you hit edge cases, forward slashes (`C:/path`) work everywhere on Windows too.
 
-**Temp/log location:** the call log uses `tempfile.gettempdir()` — `/tmp/supertool-calls.log` on Unix, `%TEMP%\supertool-calls.log` on Windows.
+**Temp/log location:** the call log uses `tempfile.gettempdir()` — macOS: `/var/folders/.../T/supertool-calls.log`, Linux: `/tmp/supertool-calls.log`, Windows: `%TEMP%\supertool-calls.log`.
 
 ---
 
