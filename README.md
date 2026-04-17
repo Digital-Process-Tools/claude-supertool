@@ -125,6 +125,32 @@ claude -p "..." --permission-mode bypassPermissions \
 | `check` | `check:PRESET:PATH` | Run named validation from `.supertool-checks.json`. Config maps presets to shell commands with `{file}` placeholder. Supports per-preset timeout. |
 | `around` | `around:PATTERN:PATH` or `around:PATTERN:PATH:N` | Show N lines (default 10) before and after the **first** match of PATTERN in a single file. Uses line-numbered output like `read`. |
 
+### `check` configuration
+
+Create a `.supertool-checks.json` in your project root. Each key is a preset name, mapped to a command template with `{file}` placeholder:
+
+```json
+{
+  "phpstan": {
+    "cmd": "php -d memory_limit=512M ./vendor/bin/phpstan analyse --no-progress {file}",
+    "timeout": 120
+  },
+  "lint": "php -l {file}",
+  "test": {
+    "cmd": "./vendor/bin/phpunit --no-coverage {file}",
+    "timeout": 300
+  },
+  "prettier": "npx prettier --check {file}"
+}
+```
+
+Presets can be a string (shorthand, 60s default timeout) or an object with `cmd` and `timeout`. Supertool walks up from cwd to find the config file.
+
+```bash
+# Verify after editing — one round-trip for both checks
+supertool 'check:phpstan:src/MyClass.php' 'check:lint:src/MyClass.php'
+```
+
 ### Batch multiple ops in one call
 
 **Six or seven ops per call is routine; two is too few.**
