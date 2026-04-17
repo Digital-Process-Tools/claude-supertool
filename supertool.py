@@ -411,9 +411,23 @@ def op_glob(pattern: str) -> str:
                 + render_file(pattern, 0, MAX_READ_LINES))
 
     files = _glob_files(pattern)
+    # Strip common directory prefix when 2+ files share one
+    prefix = ""
+    if len(files) >= 2:
+        prefix = os.path.commonpath(files)
+        if prefix and not prefix.endswith(os.sep):
+            prefix += os.sep
+        # Only strip if it saves something meaningful (> 10 chars)
+        if len(prefix) <= 10:
+            prefix = ""
     out = [f"({len(files)} files)\n"]
-    for f in files:
-        out.append(f + "\n")
+    if prefix:
+        out.append(f"{prefix}\n")
+        for f in files:
+            out.append(f"  {f[len(prefix):]}\n")
+    else:
+        for f in files:
+            out.append(f + "\n")
     out.append("\n")
 
     # Auto-read: glob returned exactly 1 file — save the follow-up read round-trip
