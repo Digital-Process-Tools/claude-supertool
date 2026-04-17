@@ -151,6 +151,31 @@ Presets can be a string (shorthand, 60s default timeout) or an object with `cmd`
 supertool 'check:phpstan:src/MyClass.php' 'check:lint:src/MyClass.php'
 ```
 
+### Compact mode
+
+Create a `.supertool.json` in your project root to enable compact reads:
+
+```json
+{
+  "compact": true
+}
+```
+
+When enabled, `read` ops skip blank lines and comment-only lines (`//`, `#`, `/* */`, `<!-- -->`, PHPDoc `*` lines), preserving original line numbers. This reduces token cost for exploration reads without losing structure.
+
+Compact is disabled when using `grep=` filter or `offset` (editing needs exact lines).
+
+### RTK integration
+
+When [rtk](https://github.com/reachingforthejack/rtk) is installed, supertool automatically delegates `read`, `grep`, and `wc` to RTK for compressed output. No configuration needed — detected via `which rtk` at first use.
+
+- With RTK + compact: uses `rtk read --level aggressive` (maximum compression)
+- With RTK, no compact: uses `rtk read` (RTK formatting, no stripping)
+- Without RTK + compact: native regex-based blank/comment stripping
+- Without RTK, no compact: supertool's own output (default)
+
+RTK is optional. Supertool works identically without it — RTK is just an accelerator.
+
 ### Batch multiple ops in one call
 
 **Six or seven ops per call is routine; two is too few.**
