@@ -122,6 +122,7 @@ claude -p "..." --permission-mode bypassPermissions \
 | `tail` | `tail:PATH:N` | Last N lines (default 20) |
 | `head` | `head:PATH:N` | First N lines (default 20) |
 | `wc` | `wc:PATH` | Line/word/char count (like unix `wc`). Output: `LINES WORDS CHARS PATH`. |
+| `check` | `check:PRESET:PATH` | Run named validation from `.supertool-checks.json`. Config maps presets to shell commands with `{file}` placeholder. Supports per-preset timeout. |
 | `around` | `around:PATTERN:PATH` or `around:PATTERN:PATH:N` | Show N lines (default 10) before and after the **first** match of PATTERN in a single file. Uses line-numbered output like `read`. |
 
 ### Batch multiple ops in one call

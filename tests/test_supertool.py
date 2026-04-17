@@ -1020,3 +1020,72 @@ def test_dispatch_read_grep_filter_empty_offset_limit(tmp_path: Path) -> None:
     out = supertool.dispatch(f"read:{f}:::grep=bbb")
     assert "bbb" in out
     assert "aaa" not in out
+
+
+# ---------------------------------------------------------------------------
+# op_check
+# ---------------------------------------------------------------------------
+
+def test_check_no_config_file(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    out = supertool.op_check("phpstan", "some/file.php")
+    assert "ERROR" in out
+    assert ".supertool-checks.json" in out
+
+def test_check_unknown_preset(tmp_path: Path, monkeypatch) -> None:
+    config = tmp_path / ".supertool-checks.json"
+    config.write_text('{"phpstan": "php -l {file}", "phpmd": "echo {file}"}')
+    monkeypatch.chdir(tmp_path)
+    out = supertool.op_check("unknown", "file.php")
+    assert "ERROR" in out
+    assert "unknown" in out
+    assert "phpstan" in out
+
+def test_check_pass(tmp_path: Path, monkeypatch) -> None:
+    f = tmp_path / "good.txt"
+    f.write_text("hello")
+    config = tmp_path / ".supertool-checks.json"
+    config.write_text('{"lint": "cat {file}"}')
+    monkeypatch.chdir(tmp_path)
+    out = supertool.op_check("lint", str(f))
+    assert "PASS" in out
+
+def test_check_fail(tmp_path: Path, monkeypatch) -> None:
+    config = tmp_path / ".supertool-checks.json"
+    config.write_text('{"fail": "exit 1"}')
+    monkeypatch.chdir(tmp_path)
+    out = supertool.op_check("fail", "dummy.php")
+    assert "FAIL" in out
+
+def test_check_timeout(tmp_path: Path, monkeypatch) -> None:
+    config = tmp_path / ".supertool-checks.json"
+    config.write_text('{"slow": {"cmd": "sleep 10", "timeout": 1}}')
+    monkeypatch.chdir(tmp_path)
+    out = supertool.op_check("slow", "dummy.php")
+    assert "TIMEOUT" in out
+
+def test_check_dict_config(tmp_path: Path, monkeypatch) -> None:
+    f = tmp_path / "test.txt"
+    f.write_text("ok")
+    config = tmp_path / ".supertool-checks.json"
+    config.write_text('{"mycheck": {"cmd": "cat {file}", "timeout": 5}}')
+    monkeypatch.chdir(tmp_path)
+    out = supertool.op_check("mycheck", str(f))
+    assert "PASS" in out
+
+def test_check_empty_preset(tmp_path: Path, monkeypatch) -> None:
+    config = tmp_path / ".supertool-checks.json"
+    config.write_text('{"lint": "echo ok"}')
+    monkeypatch.chdir(tmp_path)
+    out = supertool.op_check("", "file.php")
+    assert "ERROR" in out
+
+def test_dispatch_check(tmp_path: Path, monkeypatch) -> None:
+    f = tmp_path / "test.txt"
+    f.write_text("content")
+    config = tmp_path / ".supertool-checks.json"
+    config.write_text('{"lint": "cat {file}"}')
+    monkeypatch.chdir(tmp_path)
+    out = supertool.dispatch(f"check:lint:{f}")
+    assert "--- check:" in out
+    assert "PASS" in out

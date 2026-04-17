@@ -61,6 +61,8 @@ OPERATIONS
     tail:PATH:N                Last N lines (default 20)
     head:PATH:N                First N lines (default 20)
     wc:PATH                    Line/word/char count (like unix wc)
+    check:PRESET:PATH          Run a named validation from .supertool-checks.json.
+                                Config maps preset names to shell commands with {file}.
     around:PATTERN:PATH        Show 10 lines around the first match in FILE
     around:PATTERN:PATH:N      Show N lines around the first match in FILE
 
@@ -73,8 +75,11 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
+import subprocess
 import sys
 import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -369,6 +374,79 @@ def op_wc(path: str) -> str:
     return f"{lines} {words} {chars} {path}\n"
 
 
+def _find_checks_config() -> str | None:
+    """Walk up from cwd looking for .supertool-checks.json."""
+    d = os.path.abspath(os.getcwd())
+    while True:
+        candidate = os.path.join(d, ".supertool-checks.json")
+        if os.path.isfile(candidate):
+            return candidate
+        parent = os.path.dirname(d)
+        if parent == d:
+            return None
+        d = parent
+
+
+def op_check(preset: str, path: str) -> str:
+    """Run a named validation check from .supertool-checks.json."""
+    if not preset:
+        return "ERROR: empty preset name\n"
+
+    config_path = _find_checks_config()
+    if not config_path:
+        return "ERROR: no .supertool-checks.json found in any parent directory\n"
+
+    try:
+        with open(config_path) as f:
+            config = json.load(f)
+    except (json.JSONDecodeError, OSError) as e:
+        return f"ERROR: could not read {config_path}: {e}\n"
+
+    if preset not in config:
+        available = ", ".join(sorted(config.keys()))
+        return f"ERROR: unknown check {preset!r}. Available: {available}\n"
+
+    entry = config[preset]
+    if isinstance(entry, str):
+        cmd_template = entry
+        timeout = 60
+    elif isinstance(entry, dict):
+        cmd_template = entry.get("cmd", "")
+        timeout = entry.get("timeout", 60)
+    else:
+        return f"ERROR: invalid config for {preset!r}\n"
+
+    if not cmd_template:
+        return f"ERROR: empty command for {preset!r}\n"
+
+    cmd = cmd_template.replace("{file}", shlex.quote(path))
+
+    t0 = time.monotonic()
+    try:
+        result = subprocess.run(
+            cmd, shell=True, capture_output=True, text=True, timeout=timeout
+        )
+        elapsed = time.monotonic() - t0
+    except subprocess.TimeoutExpired:
+        elapsed = time.monotonic() - t0
+        return f"❌ TIMEOUT after {elapsed:.1f}s (limit {timeout}s)\n"
+
+    output = ""
+    if result.stdout:
+        output += result.stdout
+    if result.stderr:
+        output += result.stderr
+    if len(output) > MAX_READ_BYTES:
+        output = output[:MAX_READ_BYTES] + "\n... (truncated at 20KB)\n"
+
+    if result.returncode == 0:
+        header_line = f"✅ PASS (exit 0, {elapsed:.1f}s)\n"
+    else:
+        header_line = f"❌ FAIL (exit {result.returncode}, {elapsed:.1f}s)\n"
+
+    return header_line + output
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -603,6 +681,10 @@ def dispatch(arg: str) -> str:
             path = parts[1] if len(parts) > 1 else ""
             n = int(parts[2]) if len(parts) > 2 and parts[2] else 20
             body = op_head(path, n)
+        elif op == "check":
+            preset = parts[1] if len(parts) > 1 else ""
+            path = parts[2] if len(parts) > 2 and parts[2] else ""
+            body = op_check(preset, path)
         elif op == "around":
             pattern = parts[1] if len(parts) > 1 else ""
             path = parts[2] if len(parts) > 2 and parts[2] else ""
@@ -610,7 +692,7 @@ def dispatch(arg: str) -> str:
             body = op_around(pattern, path, n)
         else:
             body = (f"ERROR: unknown operation: {op}\n"
-                    f"Valid operations: read, grep, glob, ls, tail, head, around, wc\n")
+                    f"Valid operations: read, grep, glob, ls, tail, head, around, wc, check\n")
     except (ValueError, IndexError) as e:
         body = f"ERROR: argument parsing: {e}\n"
 
