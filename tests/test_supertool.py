@@ -657,6 +657,195 @@ def test_split_arg_normal_colon_in_pattern_not_confused() -> None:
 
 
 # ---------------------------------------------------------------------------
+# op_grep with context lines
+# ---------------------------------------------------------------------------
+
+def test_grep_context_zero_same_as_no_context(tmp_path: Path) -> None:
+    f = tmp_path / "src.py"
+    f.write_text("class Foo:\n    pass\n\nclass Bar:\n    pass\n")
+    out_plain = supertool.op_grep("class", str(f), limit=10, context=0)
+    out_ctx = supertool.op_grep("class", str(f), limit=10)
+    assert out_plain == out_ctx
+
+
+def test_grep_context_includes_surrounding_lines(tmp_path: Path) -> None:
+    f = tmp_path / "src.py"
+    # Match at line 5, 2 lines of context → lines 3-7 shown; lines 1-2 and 8-10 excluded
+    f.write_text("skip1\nskip2\nctx_before2\nctx_before1\nMATCH\nctx_after1\nctx_after2\nskip3\nskip4\n")
+    out = supertool.op_grep("MATCH", str(f), limit=10, context=2)
+    # Match line uses colon separator
+    assert f"{f}:5:MATCH" in out
+    # Context lines use dash separator
+    assert f"{f}-4-ctx_before1" in out
+    assert f"{f}-6-ctx_after1" in out
+    assert f"{f}-3-ctx_before2" in out
+    assert f"{f}-7-ctx_after2" in out
+    # Lines beyond context are not included
+    assert "skip1" not in out
+    assert "skip2" not in out
+    assert "skip3" not in out
+
+
+def test_grep_context_header_shows_context_value(tmp_path: Path) -> None:
+    f = tmp_path / "src.py"
+    f.write_text("MATCH\n")
+    out = supertool.op_grep("MATCH", str(f), limit=10, context=3)
+    assert "context 3" in out
+
+
+def test_grep_context_separator_between_nonadjacent_groups(tmp_path: Path) -> None:
+    lines = [f"line{i}" for i in range(1, 21)]
+    lines[3] = "MATCH_A"   # line 4
+    lines[16] = "MATCH_B"  # line 17
+    f = tmp_path / "src.py"
+    f.write_text("\n".join(lines) + "\n")
+    out = supertool.op_grep("MATCH", str(f), limit=10, context=1)
+    # Groups should be separated by --
+    assert "--\n" in out
+    assert "MATCH_A" in out
+    assert "MATCH_B" in out
+
+
+def test_grep_context_no_separator_for_adjacent_matches(tmp_path: Path) -> None:
+    lines = ["before", "MATCH_A", "MATCH_B", "after"]
+    f = tmp_path / "src.py"
+    f.write_text("\n".join(lines) + "\n")
+    out = supertool.op_grep("MATCH", str(f), limit=10, context=1)
+    # Adjacent matches → merged group → no -- separator
+    assert "--\n" not in out
+    assert "MATCH_A" in out
+    assert "MATCH_B" in out
+
+
+def test_grep_context_overlapping_windows_merge(tmp_path: Path) -> None:
+    # Two matches close enough that context windows overlap
+    lines = ["a", "MATCH_A", "b", "MATCH_B", "c"]
+    f = tmp_path / "src.py"
+    f.write_text("\n".join(lines) + "\n")
+    out = supertool.op_grep("MATCH", str(f), limit=10, context=2)
+    # With context=2: window A covers lines 1-3, window B covers lines 2-5
+    # They overlap → one group, no --
+    assert "--\n" not in out
+    assert "MATCH_A" in out
+    assert "MATCH_B" in out
+
+
+def test_grep_context_clamps_to_file_boundaries(tmp_path: Path) -> None:
+    f = tmp_path / "src.py"
+    f.write_text("MATCH\nline2\nline3\n")
+    # Match at line 1 with context=5 — should not go negative
+    out = supertool.op_grep("MATCH", str(f), limit=10, context=5)
+    assert "MATCH" in out
+    assert "ERROR" not in out
+
+
+def test_grep_context_no_auto_read(tmp_path: Path) -> None:
+    f = tmp_path / "small.py"
+    f.write_text("MATCH\n")
+    out = supertool.op_grep("MATCH", str(f), limit=10, context=1)
+    # Auto-read should be skipped when context is active
+    assert "[auto-read:" not in out
+
+
+def test_dispatch_grep_with_context(tmp_path: Path) -> None:
+    f = tmp_path / "src.py"
+    f.write_text("before\nMATCH\nafter\n")
+    out = supertool.dispatch(f"grep:MATCH:{f}:10:1")
+    assert f"{f}:2:MATCH" in out
+    assert f"{f}-1-before" in out
+    assert f"{f}-3-after" in out
+
+
+# ---------------------------------------------------------------------------
+# op_around
+# ---------------------------------------------------------------------------
+
+def test_around_finds_first_match(tmp_path: Path) -> None:
+    lines = [f"line{i}" for i in range(1, 21)]
+    lines[9] = "TARGET"  # line 10
+    f = tmp_path / "src.py"
+    f.write_text("\n".join(lines) + "\n")
+    out = supertool.op_around("TARGET", str(f), n=3)
+    assert "match at line 10" in out
+    assert "TARGET" in out
+    # Should include 3 lines before and after
+    assert "line7" in out
+    assert "line13" in out
+    # Should not include lines too far away
+    assert "line6" not in out
+    assert "line14" not in out
+
+
+def test_around_uses_arrow_marker_on_match_line(tmp_path: Path) -> None:
+    f = tmp_path / "src.py"
+    f.write_text("a\nMATCH\nb\n")
+    out = supertool.op_around("MATCH", str(f), n=1)
+    # Match line gets → marker
+    assert "     2→MATCH" in out
+    # Context lines get space marker
+    assert "     1 a" in out
+    assert "     3 b" in out
+
+
+def test_around_no_match(tmp_path: Path) -> None:
+    f = tmp_path / "src.py"
+    f.write_text("nothing here\n")
+    out = supertool.op_around("XYZZY_NOMATCH", str(f))
+    assert "no match" in out
+
+
+def test_around_directory_returns_error(tmp_path: Path) -> None:
+    out = supertool.op_around("pattern", str(tmp_path))
+    assert "ERROR" in out
+    assert "directories" in out or "directory" in out
+
+
+def test_around_missing_file_returns_error(tmp_path: Path) -> None:
+    out = supertool.op_around("pattern", str(tmp_path / "nope.py"))
+    assert "ERROR: file not found" in out
+
+
+def test_around_default_n_is_10(tmp_path: Path) -> None:
+    lines = ["pad"] * 15 + ["MATCH"] + ["pad"] * 15
+    f = tmp_path / "src.py"
+    f.write_text("\n".join(lines) + "\n")
+    out = supertool.op_around("MATCH", str(f))
+    # Default n=10: match at line 16, should show lines 6–26
+    assert "showing lines 6" in out
+
+
+def test_around_first_match_only(tmp_path: Path) -> None:
+    f = tmp_path / "src.py"
+    f.write_text("MATCH\nother\nMATCH\n")
+    out = supertool.op_around("MATCH", str(f), n=0)
+    # Only first match reported
+    assert "match at line 1" in out
+
+
+def test_around_empty_pattern_errors(tmp_path: Path) -> None:
+    f = tmp_path / "src.py"
+    f.write_text("content\n")
+    out = supertool.op_around("", str(f))
+    assert "ERROR: empty pattern" in out
+
+
+def test_dispatch_around(tmp_path: Path) -> None:
+    f = tmp_path / "src.py"
+    f.write_text("a\nMATCH\nb\n")
+    out = supertool.dispatch(f"around:MATCH:{f}:1")
+    assert "--- around:" in out
+    assert "MATCH" in out
+
+
+def test_dispatch_around_default_n(tmp_path: Path) -> None:
+    f = tmp_path / "src.py"
+    f.write_text("a\nMATCH\nb\n")
+    out = supertool.dispatch(f"around:MATCH:{f}")
+    assert "MATCH" in out
+    assert "ERROR" not in out
+
+
+# ---------------------------------------------------------------------------
 # LOG_FILE — cross-platform
 # ---------------------------------------------------------------------------
 

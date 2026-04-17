@@ -25,8 +25,9 @@ Realistic batch (7 ops, 1 round-trip):
         'glob:src/Components/**/*.xml' \
         'glob:src/EventsManagers/*.py'
 
-Operations: read:PATH[:OFFSET:LIMIT] · grep:PATTERN:PATH[:LIMIT] ·
-glob:PATTERN (supports **) · ls:PATH · tail:PATH:N · head:PATH:N
+Operations: read:PATH[:OFFSET:LIMIT] · grep:PATTERN:PATH[:LIMIT[:CONTEXT]] ·
+glob:PATTERN (supports **) · ls:PATH · tail:PATH:N · head:PATH:N ·
+around:PATTERN:PATH[:N]
 
 **Anti-patterns — each wastes a round-trip:**
 

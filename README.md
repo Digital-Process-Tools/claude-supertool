@@ -114,10 +114,12 @@ claude -p "..." --permission-mode bypassPermissions \
 |----|--------|-------|
 | `read` | `read:PATH` or `read:PATH:OFFSET:LIMIT` | 300 lines / 20KB cap |
 | `grep` | `grep:PATTERN:PATH` or `grep:PATTERN:PATH:LIMIT` | 10 results default, code + doc extensions only. **Auto-reads** full file if PATH is a concrete file < 20KB with a match. |
+| `grep` (context) | `grep:PATTERN:PATH:LIMIT:CONTEXT` | Show CONTEXT lines before/after each match (like `grep -C`). Match lines: `path:lineno:content`. Context lines: `path-lineno-content`. Non-adjacent groups separated by `--`. |
 | `glob` | `glob:PATTERN` | `**` supported. **Auto-reads** if PATTERN is a concrete file path (no wildcards). |
 | `ls` | `ls:PATH` | Trailing `/` on subdirs |
 | `tail` | `tail:PATH:N` | Last N lines (default 20) |
 | `head` | `head:PATH:N` | First N lines (default 20) |
+| `around` | `around:PATTERN:PATH` or `around:PATTERN:PATH:N` | Show N lines (default 10) before and after the **first** match of PATTERN in a single file. Uses line-numbered output like `read`. |
 
 ### Batch multiple ops in one call
 

@@ -43,12 +43,19 @@ OPERATIONS
                                 Auto-reads full file if PATH is a concrete
                                 file < 20KB with a match.
     grep:PATTERN:PATH:LIMIT    Search with custom result limit
+    grep:PATTERN:PATH:LIMIT:CONTEXT
+                               Search with context lines (like grep -C).
+                                Match lines: path:lineno:content
+                                Context lines: path-lineno-content
+                                Groups separated by -- when non-adjacent.
     glob:PATTERN               Find files matching pattern (** supported).
                                 Auto-reads if PATTERN is a concrete file
                                 path with no wildcards.
     ls:PATH                    List directory entries
     tail:PATH:N                Last N lines (default 20)
     head:PATH:N                First N lines (default 20)
+    around:PATTERN:PATH        Show 10 lines around the first match in FILE
+    around:PATTERN:PATH:N      Show N lines around the first match in FILE
 
 Output: structured text with --- separators per operation.
 Calls logged to {tempdir}/supertool-calls.log for per-turn analysis
@@ -133,10 +140,37 @@ def op_read(path: str, offset: int = 0, limit: int = MAX_READ_LINES) -> str:
     return render_file(path, offset, limit)
 
 
-def op_grep(pattern: str, path: str = ".", limit: int = MAX_GREP_RESULTS) -> str:
-    """Search pattern recursively. Auto-reads small single file on match."""
+def op_grep(pattern: str, path: str = ".", limit: int = MAX_GREP_RESULTS,
+            context: int = 0) -> str:
+    """Search pattern recursively. Auto-reads small single file on match.
+
+    When context > 0, emits N lines before/after each match in grep -C style:
+      match lines:   path:lineno:content  (colon separator)
+      context lines: path-lineno-content  (dash separator)
+    Non-adjacent groups are separated by --.
+    Auto-read is skipped when context > 0 (output already contains context).
+    """
     if not pattern:
         return "ERROR: empty pattern\n"
+
+    if context > 0:
+        groups = _grep_recursive_context(pattern, path, limit, context)
+        count = sum(
+            1 for g in groups for line in g if line[2] == "match"
+        )
+        out = [f"({count} results, limit {limit}, context {context})\n"]
+        first_group = True
+        for group in groups:
+            if not first_group:
+                out.append("--\n")
+            first_group = False
+            for file_path, lineno, kind, content in group:
+                if kind == "match":
+                    out.append(f"{file_path}:{lineno}:{content}\n")
+                else:
+                    out.append(f"{file_path}-{lineno}-{content}\n")
+        out.append("\n")
+        return "".join(out)
 
     hits = _grep_recursive(pattern, path, limit)
     count = len(hits)
@@ -154,6 +188,57 @@ def op_grep(pattern: str, path: str = ".", limit: int = MAX_GREP_RESULTS) -> str
                    "match found]\n")
         out.append(render_file(path, 0, MAX_READ_LINES))
 
+    return "".join(out)
+
+
+def op_around(pattern: str, path: str, n: int = 10) -> str:
+    """Show N lines before and after the first match of PATTERN in file at PATH."""
+    if not pattern:
+        return "ERROR: empty pattern\n"
+    if not path:
+        return "ERROR: empty path\n"
+    if os.path.isdir(path):
+        return f"ERROR: around only works on single files, not directories: {path}\n"
+    if not os.path.isfile(path):
+        return f"ERROR: file not found: {path}\n"
+
+    try:
+        regex = re.compile(pattern)
+    except re.error:
+        regex = re.compile(re.escape(pattern))
+
+    try:
+        with open(path, "rb") as f:
+            raw_lines = f.read().splitlines(keepends=True)
+    except OSError as e:
+        return f"ERROR: could not read {path}: {e}\n"
+
+    lines = []
+    for raw in raw_lines:
+        try:
+            lines.append(raw.decode("utf-8", errors="replace"))
+        except Exception:
+            lines.append("<binary line>\n")
+
+    match_lineno = None
+    for i, line in enumerate(lines):
+        if regex.search(line):
+            match_lineno = i
+            break
+
+    if match_lineno is None:
+        return f"(no match for {pattern!r} in {path})\n\n"
+
+    total = len(lines)
+    start = max(0, match_lineno - n)
+    end = min(total, match_lineno + n + 1)
+
+    out = [f"(match at line {match_lineno + 1}, showing lines {start + 1}–{end}, "
+           f"{total} lines total)\n"]
+    for i in range(start, end):
+        marker = "→" if i == match_lineno else " "
+        out.append(f"{i + 1:>6}{marker}{lines[i]}")
+    out.append("\n")
     return "".join(out)
 
 
@@ -237,6 +322,19 @@ def op_head(path: str, n: int = 20) -> str:
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _grep_candidates(path: str) -> List[str]:
+    """Return list of file paths to search for a given path argument."""
+    candidates: List[str] = []
+    if os.path.isfile(path):
+        candidates.append(path)
+    elif os.path.isdir(path):
+        for root, _dirs, files in os.walk(path):
+            for name in files:
+                if any(name.endswith(ext.lstrip("*")) for ext in GREP_FILE_INCLUDES):
+                    candidates.append(os.path.join(root, name))
+    return candidates
+
+
 def _grep_recursive(pattern: str, path: str, limit: int) -> List[str]:
     """Return up to `limit` match lines as 'path:lineno:content' strings.
 
@@ -250,17 +348,7 @@ def _grep_recursive(pattern: str, path: str, limit: int) -> List[str]:
         regex = re.compile(re.escape(pattern))
 
     results: List[str] = []
-    candidates: List[str] = []
-
-    if os.path.isfile(path):
-        candidates.append(path)
-    elif os.path.isdir(path):
-        for root, _dirs, files in os.walk(path):
-            for name in files:
-                if any(name.endswith(ext.lstrip("*")) for ext in GREP_FILE_INCLUDES):
-                    candidates.append(os.path.join(root, name))
-    else:
-        return results
+    candidates = _grep_candidates(path)
 
     for file_path in candidates:
         if len(results) >= limit:
@@ -279,6 +367,77 @@ def _grep_recursive(pattern: str, path: str, limit: int) -> List[str]:
         except OSError:
             continue
     return results
+
+
+def _grep_recursive_context(
+    pattern: str, path: str, limit: int, context: int
+) -> List[List[Tuple[str, int, str, str]]]:
+    """Return match groups with surrounding context lines.
+
+    Each group is a list of (file_path, lineno, kind, content) tuples where
+    kind is 'match' or 'context'. Groups represent adjacent/overlapping windows
+    of lines. Non-adjacent groups are separated in output by --.
+
+    Stops collecting new match groups once `limit` matches have been found.
+    """
+    try:
+        regex = re.compile(pattern)
+    except re.error:
+        regex = re.compile(re.escape(pattern))
+
+    candidates = _grep_candidates(path)
+    groups: List[List[Tuple[str, int, str, str]]] = []
+    match_count = 0
+
+    for file_path in candidates:
+        if match_count >= limit:
+            break
+        try:
+            with open(file_path, "rb") as f:
+                raw_lines = f.read().splitlines(keepends=True)
+        except OSError:
+            continue
+
+        lines = []
+        for raw in raw_lines:
+            try:
+                lines.append(raw.decode("utf-8", errors="replace").rstrip("\n").rstrip("\r"))
+            except Exception:
+                lines.append("<binary line>")
+
+        # Collect match indices
+        match_indices = [
+            i for i, line in enumerate(lines) if regex.search(line)
+        ]
+        if not match_indices:
+            continue
+
+        # Merge overlapping windows into groups
+        # A window is [match - context, match + context]
+        windows: List[Tuple[int, int]] = []  # (start_idx, end_idx) inclusive
+        for mi in match_indices:
+            w_start = max(0, mi - context)
+            w_end = min(len(lines) - 1, mi + context)
+            if windows and w_start <= windows[-1][1] + 1:
+                # Overlapping or adjacent — extend
+                windows[-1] = (windows[-1][0], max(windows[-1][1], w_end))
+            else:
+                windows.append((w_start, w_end))
+
+        # Build groups from windows
+        match_set = set(match_indices)
+        for w_start, w_end in windows:
+            if match_count >= limit:
+                break
+            group: List[Tuple[str, int, str, str]] = []
+            for i in range(w_start, w_end + 1):
+                kind = "match" if i in match_set else "context"
+                group.append((file_path, i + 1, kind, lines[i]))
+                if kind == "match":
+                    match_count += 1
+            groups.append(group)
+
+    return groups
 
 
 def _glob_files(pattern: str) -> List[str]:
@@ -342,7 +501,8 @@ def dispatch(arg: str) -> str:
             pattern = parts[1] if len(parts) > 1 else ""
             path = parts[2] if len(parts) > 2 and parts[2] else "."
             limit = int(parts[3]) if len(parts) > 3 and parts[3] else MAX_GREP_RESULTS
-            body = op_grep(pattern, path, limit)
+            context = int(parts[4]) if len(parts) > 4 and parts[4] else 0
+            body = op_grep(pattern, path, limit, context)
         elif op == "glob":
             pattern = parts[1] if len(parts) > 1 else ""
             body = op_glob(pattern)
@@ -357,9 +517,14 @@ def dispatch(arg: str) -> str:
             path = parts[1] if len(parts) > 1 else ""
             n = int(parts[2]) if len(parts) > 2 and parts[2] else 20
             body = op_head(path, n)
+        elif op == "around":
+            pattern = parts[1] if len(parts) > 1 else ""
+            path = parts[2] if len(parts) > 2 and parts[2] else ""
+            n = int(parts[3]) if len(parts) > 3 and parts[3] else 10
+            body = op_around(pattern, path, n)
         else:
             body = (f"ERROR: unknown operation: {op}\n"
-                    f"Valid operations: read, grep, glob, ls, tail, head\n")
+                    f"Valid operations: read, grep, glob, ls, tail, head, around\n")
     except (ValueError, IndexError) as e:
         body = f"ERROR: argument parsing: {e}\n"
 
