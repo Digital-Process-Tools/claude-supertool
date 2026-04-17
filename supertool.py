@@ -91,6 +91,51 @@ MAX_GLOB_RESULTS = 50
 LOG_FILE = os.path.join(tempfile.gettempdir(), "supertool-calls.log")
 GREP_FILE_INCLUDES = ("*.php", "*.xml", "*.py", "*.js", "*.ts", "*.md")
 WILDCARD_CHARS = re.compile(r"[*?\[]")
+# Patterns for lines that are "blank or comment-only" across common languages
+_COMPACT_SKIP = re.compile(
+    r"^\s*$"           # blank lines
+    r"|^\s*//"         # PHP/JS/TS single-line comments
+    r"|^\s*#"          # Python/shell comments
+    r"|^\s*\*"         # Javadoc/PHPDoc continuation lines
+    r"|^\s*/\*"        # block comment open
+    r"|^\s*\*/"        # block comment close
+    r"|^\s*<!--"       # XML/HTML comment open
+    r"|^\s*-->"        # XML/HTML comment close
+)
+
+# Config file — .supertool.json in project root (or parent dirs)
+_CONFIG: Dict[str, Any] | None = None
+_CONFIG_CHECKED = False
+
+
+def _load_config() -> Dict[str, Any]:
+    """Load .supertool.json from cwd or parents. Cached."""
+    global _CONFIG, _CONFIG_CHECKED
+    if _CONFIG_CHECKED:
+        return _CONFIG or {}
+    _CONFIG_CHECKED = True
+    d = os.path.abspath(os.getcwd())
+    while True:
+        candidate = os.path.join(d, ".supertool.json")
+        if os.path.isfile(candidate):
+            try:
+                with open(candidate) as f:
+                    _CONFIG = json.load(f)
+                    return _CONFIG
+            except (json.JSONDecodeError, OSError):
+                pass
+        parent = os.path.dirname(d)
+        if parent == d:
+            break
+        d = parent
+    _CONFIG = {}
+    return _CONFIG
+
+
+def _is_compact() -> bool:
+    """Check if compact mode is enabled in .supertool.json."""
+    return bool(_load_config().get("compact", False))
+
 
 # RTK integration — when rtk is installed, delegate read/grep/wc for compressed output
 _RTK_PATH: str | None = None
@@ -149,7 +194,10 @@ def render_file(path: str, offset: int = 0, limit: int = MAX_READ_LINES,
 
     # RTK delegation — simple reads without offset/filter/limit changes
     if not grep_filter and offset == 0 and limit == MAX_READ_LINES and _has_rtk():
-        rtk_args = ["read", "-n", "--max-lines", str(MAX_READ_LINES), path]
+        rtk_args = ["read", "-n", "--max-lines", str(MAX_READ_LINES)]
+        if _is_compact():
+            rtk_args += ["--level", "aggressive"]
+        rtk_args.append(path)
         rtk_out = _rtk_run(rtk_args)
         if rtk_out is not None:
             return rtk_out + "\n"
@@ -174,6 +222,7 @@ def render_file(path: str, offset: int = 0, limit: int = MAX_READ_LINES,
         except re.error:
             filter_regex = re.compile(re.escape(grep_filter))
 
+    compact = not filter_regex and _is_compact()
     matched_any = False
     for i in range(offset, end):
         try:
@@ -181,6 +230,8 @@ def render_file(path: str, offset: int = 0, limit: int = MAX_READ_LINES,
         except Exception:
             line = "<binary line>\n"
         if filter_regex and not filter_regex.search(line):
+            continue
+        if compact and _COMPACT_SKIP.match(line):
             continue
         matched_any = True
         numbered = f"{i + 1:>6}→{line}"

@@ -18,15 +18,21 @@ import supertool  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
-def _disable_rtk():
-    """Disable RTK delegation in tests so assertions match supertool's own format."""
-    old_checked = supertool._RTK_CHECKED
-    old_path = supertool._RTK_PATH
+def _disable_rtk_and_config():
+    """Disable RTK delegation and config cache in tests."""
+    old_rtk_checked = supertool._RTK_CHECKED
+    old_rtk_path = supertool._RTK_PATH
+    old_config_checked = supertool._CONFIG_CHECKED
+    old_config = supertool._CONFIG
     supertool._RTK_CHECKED = True
     supertool._RTK_PATH = None
+    supertool._CONFIG_CHECKED = True
+    supertool._CONFIG = {}
     yield
-    supertool._RTK_CHECKED = old_checked
-    supertool._RTK_PATH = old_path
+    supertool._RTK_CHECKED = old_rtk_checked
+    supertool._RTK_PATH = old_rtk_path
+    supertool._CONFIG_CHECKED = old_config_checked
+    supertool._CONFIG = old_config
 
 
 @pytest.fixture
@@ -1111,6 +1117,41 @@ def test_dispatch_check(tmp_path: Path, monkeypatch) -> None:
     out = supertool.dispatch(f"check:lint:{f}")
     assert "--- check:" in out
     assert "PASS" in out
+
+
+# ---------------------------------------------------------------------------
+# compact mode
+# ---------------------------------------------------------------------------
+
+def test_compact_strips_blank_and_comment_lines(tmp_path: Path) -> None:
+    f = tmp_path / "code.php"
+    f.write_text("<?php\n\n// comment\nuse Foo;\n\n/* block */\nclass X {}\n")
+    supertool._CONFIG = {"compact": True}
+    out = supertool.op_read(str(f))
+    assert "use Foo" in out
+    assert "class X" in out
+    assert "// comment" not in out
+    assert "/* block" not in out
+
+def test_compact_preserves_line_numbers(tmp_path: Path) -> None:
+    f = tmp_path / "code.php"
+    f.write_text("<?php\n\n\nuse Foo;\n")
+    supertool._CONFIG = {"compact": True}
+    out = supertool.op_read(str(f))
+    assert "4→use Foo" in out
+
+def test_compact_off_by_default(tmp_path: Path) -> None:
+    f = tmp_path / "code.php"
+    f.write_text("<?php\n\n// comment\nuse Foo;\n")
+    out = supertool.op_read(str(f))
+    assert "// comment" in out
+
+def test_compact_disabled_when_grep_filter(tmp_path: Path) -> None:
+    f = tmp_path / "code.php"
+    f.write_text("<?php\n\n// comment\nuse Foo;\n")
+    supertool._CONFIG = {"compact": True}
+    out = supertool.op_read(str(f), grep_filter="comment")
+    assert "// comment" in out
 
 
 # ---------------------------------------------------------------------------
