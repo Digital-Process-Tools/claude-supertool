@@ -65,6 +65,10 @@ OPERATIONS
                                 Config maps preset names to shell commands with {file}.
     around:PATTERN:PATH        Show 10 lines around the first match in FILE
     around:PATTERN:PATH:N      Show N lines around the first match in FILE
+    map:PATH                   Symbol map of a file or directory. Shows
+                                classes, functions, methods, constants as an
+                                indented tree with line numbers.
+                                Three-tier: tree-sitter → ctags → regex.
 
 Output: structured text with --- separators per operation.
 Calls logged to {tempdir}/supertool-calls.log for per-turn analysis
@@ -552,6 +556,461 @@ def op_check(preset: str, path: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# map — three-tier symbol extraction (tree-sitter → ctags → regex)
+# ---------------------------------------------------------------------------
+
+# Tree-sitter detection (lazy, cached)
+# Supports two packages: tree-sitter-language-pack (newer, Python 3.10+)
+# and tree-sitter-languages (older, Python 3.8-3.12)
+_TS_CHECKED = False
+_TS_AVAILABLE = False
+_TS_PACKAGE: str = ""  # "pack" or "languages"
+
+
+def _has_tree_sitter() -> bool:
+    """Check if a tree-sitter language package is importable. Cached."""
+    global _TS_CHECKED, _TS_AVAILABLE, _TS_PACKAGE
+    if not _TS_CHECKED:
+        _TS_CHECKED = True
+        try:
+            from tree_sitter_language_pack import get_parser  # noqa: F401
+            _TS_AVAILABLE = True
+            _TS_PACKAGE = "pack"
+        except ImportError:
+            try:
+                from tree_sitter_languages import get_parser  # noqa: F401
+                _TS_AVAILABLE = True
+                _TS_PACKAGE = "languages"
+            except ImportError:
+                _TS_AVAILABLE = False
+    return _TS_AVAILABLE
+
+
+# ctags detection (lazy, cached)
+_CTAGS_PATH: str | None = None
+_CTAGS_CHECKED = False
+
+
+def _has_ctags() -> str | None:
+    """Return ctags binary path if available, None otherwise. Cached."""
+    global _CTAGS_PATH, _CTAGS_CHECKED
+    if not _CTAGS_CHECKED:
+        _CTAGS_CHECKED = True
+        from shutil import which
+        _CTAGS_PATH = which("ctags")
+    return _CTAGS_PATH
+
+
+# Language extension → tree-sitter language name
+_TS_LANG_MAP: Dict[str, str] = {
+    ".php": "php", ".py": "python", ".js": "javascript", ".ts": "typescript",
+    ".tsx": "tsx", ".jsx": "javascript", ".go": "go", ".rs": "rust",
+    ".java": "java", ".rb": "ruby", ".c": "c", ".cpp": "cpp", ".h": "c",
+    ".hpp": "cpp", ".cs": "c_sharp", ".swift": "swift", ".kt": "kotlin",
+    ".scala": "scala", ".lua": "lua", ".sh": "bash", ".bash": "bash",
+}
+
+# Tree-sitter node types that represent definitions, per language family
+_TS_DEF_NODES: Dict[str, Dict[str, str]] = {
+    "php": {
+        "class_declaration": "class", "interface_declaration": "interface",
+        "trait_declaration": "trait", "enum_declaration": "enum",
+        "method_declaration": "method", "function_definition": "function",
+        "const_element": "const", "property_declaration": "property",
+    },
+    "python": {
+        "class_definition": "class", "function_definition": "def",
+    },
+    "javascript": {
+        "class_declaration": "class", "function_declaration": "function",
+        "method_definition": "method", "arrow_function": "function",
+    },
+    "typescript": {
+        "class_declaration": "class", "function_declaration": "function",
+        "method_definition": "method", "interface_declaration": "interface",
+        "type_alias_declaration": "type", "enum_declaration": "enum",
+    },
+    "go": {
+        "type_declaration": "type", "function_declaration": "func",
+        "method_declaration": "method",
+    },
+    "rust": {
+        "struct_item": "struct", "enum_item": "enum", "trait_item": "trait",
+        "function_item": "fn", "impl_item": "impl",
+    },
+    "java": {
+        "class_declaration": "class", "interface_declaration": "interface",
+        "method_declaration": "method", "enum_declaration": "enum",
+    },
+    "ruby": {
+        "class": "class", "module": "module", "method": "def",
+    },
+}
+
+# Shared fallback for languages not in the map
+_TS_DEF_NODES_DEFAULT: Dict[str, str] = {
+    "class_declaration": "class", "class_definition": "class",
+    "function_declaration": "function", "function_definition": "function",
+    "method_declaration": "method", "method_definition": "method",
+    "interface_declaration": "interface",
+}
+
+
+def _ts_extract(path: str, lang_name: str) -> List[Tuple[str, str, int, int]]:
+    """Extract symbols from a file using tree-sitter.
+
+    Returns list of (kind, name, line, depth) tuples.
+    depth: 0 = top-level, 1 = inside a class, 2 = nested deeper.
+    """
+    if _TS_PACKAGE == "pack":
+        from tree_sitter_language_pack import get_parser
+    else:
+        from tree_sitter_languages import get_parser
+    try:
+        parser = get_parser(lang_name)
+    except Exception:
+        return []
+
+    try:
+        with open(path, "rb") as f:
+            source = f.read()
+        tree = parser.parse(source)
+    except Exception:
+        return []
+
+    def_nodes = _TS_DEF_NODES.get(lang_name, _TS_DEF_NODES_DEFAULT)
+    symbols: List[Tuple[str, str, int, int]] = []
+
+    def _walk(node: Any, depth: int = 0) -> None:
+        node_type = node.type
+        if node_type in def_nodes:
+            kind = def_nodes[node_type]
+            name = _ts_node_name(node, lang_name)
+            line = node.start_point[0] + 1  # 0-indexed → 1-indexed
+            symbols.append((kind, name, line, depth))
+            # Recurse into class/struct/impl bodies for methods
+            for child in node.children:
+                _walk(child, depth + 1)
+        else:
+            for child in node.children:
+                _walk(child, depth)
+
+    _walk(tree.root_node)
+    return symbols
+
+
+def _ts_node_name(node: Any, lang_name: str) -> str:
+    """Extract the name from a tree-sitter definition node.
+
+    Tries the 'name' field first, then common field names per language.
+    Falls back to the first identifier child.
+    """
+    # Direct name field (works for most declarations)
+    name_node = node.child_by_field_name("name")
+    if name_node:
+        return name_node.text.decode("utf-8", errors="replace")
+
+    # PHP const_element: name is the first child
+    if node.type == "const_element" and node.children:
+        return node.children[0].text.decode("utf-8", errors="replace")
+
+    # Fallback: first identifier-like child
+    for child in node.children:
+        if child.type in ("identifier", "name", "type_identifier",
+                          "property_identifier"):
+            return child.text.decode("utf-8", errors="replace")
+
+    return "<anonymous>"
+
+
+def _ctags_extract(path: str) -> List[Tuple[str, str, int, str]]:
+    """Extract symbols from a file using universal-ctags.
+
+    Returns list of (kind_label, name, line, scope) tuples.
+    scope is the parent class/function name or "" for top-level.
+    """
+    ctags = _has_ctags()
+    if not ctags:
+        return []
+
+    try:
+        result = subprocess.run(
+            [ctags, "--output-format=json", "--fields=+nKS", "-f", "-", path],
+            capture_output=True, text=True, timeout=15
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return []
+
+    symbols: List[Tuple[str, str, int, str]] = []
+    for line in result.stdout.splitlines():
+        if not line.strip():
+            continue
+        try:
+            tag = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if tag.get("_type") != "tag":
+            continue
+        name = tag.get("name", "")
+        kind = tag.get("kind", tag.get("kindFull", ""))
+        lineno = tag.get("line", 0)
+        scope = tag.get("scope", "")
+        symbols.append((kind, name, lineno, scope))
+
+    return symbols
+
+
+# Regex patterns for symbol extraction (fallback when no tools available)
+_REGEX_PATTERNS: Dict[str, List[Tuple[str, re.Pattern[str]]]] = {
+    ".php": [
+        ("class", re.compile(
+            r"^\s*(?:abstract\s+|final\s+)?class\s+(\w+)", re.MULTILINE)),
+        ("interface", re.compile(
+            r"^\s*interface\s+(\w+)", re.MULTILINE)),
+        ("trait", re.compile(
+            r"^\s*trait\s+(\w+)", re.MULTILINE)),
+        ("enum", re.compile(
+            r"^\s*enum\s+(\w+)", re.MULTILINE)),
+        ("function", re.compile(
+            r"^\s*(?:abstract\s+)?(?:public|protected|private|static|\s)*\s*function\s+(\w+)",
+            re.MULTILINE)),
+        ("const", re.compile(
+            r"^\s*(?:public|protected|private)?\s*const\s+(\w+)",
+            re.MULTILINE)),
+    ],
+    ".py": [
+        ("class", re.compile(r"^class\s+(\w+)", re.MULTILINE)),
+        ("def", re.compile(r"^(\s*)def\s+(\w+)", re.MULTILINE)),
+    ],
+    ".js": [
+        ("class", re.compile(r"^\s*(?:export\s+)?class\s+(\w+)", re.MULTILINE)),
+        ("function", re.compile(
+            r"^\s*(?:export\s+)?(?:async\s+)?function\s+(\w+)", re.MULTILINE)),
+    ],
+    ".ts": [
+        ("class", re.compile(r"^\s*(?:export\s+)?class\s+(\w+)", re.MULTILINE)),
+        ("interface", re.compile(
+            r"^\s*(?:export\s+)?interface\s+(\w+)", re.MULTILINE)),
+        ("type", re.compile(
+            r"^\s*(?:export\s+)?type\s+(\w+)", re.MULTILINE)),
+        ("function", re.compile(
+            r"^\s*(?:export\s+)?(?:async\s+)?function\s+(\w+)", re.MULTILINE)),
+        ("enum", re.compile(
+            r"^\s*(?:export\s+)?enum\s+(\w+)", re.MULTILINE)),
+    ],
+    ".go": [
+        ("type", re.compile(r"^type\s+(\w+)", re.MULTILINE)),
+        ("func", re.compile(r"^func\s+(?:\([^)]+\)\s+)?(\w+)", re.MULTILINE)),
+    ],
+    ".rs": [
+        ("struct", re.compile(
+            r"^\s*(?:pub\s+)?struct\s+(\w+)", re.MULTILINE)),
+        ("enum", re.compile(r"^\s*(?:pub\s+)?enum\s+(\w+)", re.MULTILINE)),
+        ("trait", re.compile(r"^\s*(?:pub\s+)?trait\s+(\w+)", re.MULTILINE)),
+        ("fn", re.compile(
+            r"^\s*(?:pub\s+)?(?:async\s+)?fn\s+(\w+)", re.MULTILINE)),
+        ("impl", re.compile(r"^\s*impl(?:<[^>]+>)?\s+(\w+)", re.MULTILINE)),
+    ],
+    ".java": [
+        ("class", re.compile(
+            r"^\s*(?:public|protected|private)?\s*(?:abstract\s+|final\s+)?class\s+(\w+)",
+            re.MULTILINE)),
+        ("interface", re.compile(
+            r"^\s*(?:public|protected|private)?\s*interface\s+(\w+)",
+            re.MULTILINE)),
+        ("enum", re.compile(
+            r"^\s*(?:public|protected|private)?\s*enum\s+(\w+)",
+            re.MULTILINE)),
+    ],
+    ".rb": [
+        ("class", re.compile(r"^\s*class\s+(\w+)", re.MULTILINE)),
+        ("module", re.compile(r"^\s*module\s+(\w+)", re.MULTILINE)),
+        ("def", re.compile(r"^\s*def\s+(\w+)", re.MULTILINE)),
+    ],
+}
+# .tsx and .jsx share the TS/JS patterns
+_REGEX_PATTERNS[".tsx"] = _REGEX_PATTERNS[".ts"]
+_REGEX_PATTERNS[".jsx"] = _REGEX_PATTERNS[".js"]
+
+
+def _regex_extract(path: str) -> List[Tuple[str, str, int, int]]:
+    """Extract symbols from a file using regex patterns.
+
+    Returns list of (kind, name, line, depth) tuples.
+    depth is always 0 (regex can't reliably detect nesting).
+    Python is the exception: indented `def` gets depth 1.
+    """
+    ext = os.path.splitext(path)[1].lower()
+    patterns = _REGEX_PATTERNS.get(ext)
+    if not patterns:
+        return []
+
+    try:
+        with open(path, "r", errors="replace") as f:
+            content = f.read()
+    except OSError:
+        return []
+
+    symbols: List[Tuple[str, str, int, int]] = []
+    lines = content.split("\n")
+
+    for kind, regex in patterns:
+        for m in regex.finditer(content):
+            line_num = content[:m.start()].count("\n") + 1
+            if ext == ".py" and kind == "def":
+                # Python: indented def → depth 1
+                indent = m.group(1)
+                name = m.group(2)
+                depth = 1 if len(indent) > 0 else 0
+            else:
+                name = m.group(1)
+                depth = 0
+            symbols.append((kind, name, line_num, depth))
+
+    # Sort by line number
+    symbols.sort(key=lambda s: s[2])
+    return symbols
+
+
+def _format_map_symbols(
+    symbols: List[Tuple[str, str, int, int]], path: str, line_count: int
+) -> str:
+    """Format extracted symbols as an indented tree string."""
+    out = [f"{path} ({line_count} lines)\n"]
+    for kind, name, line, depth in symbols:
+        indent = "  " * (depth + 1)
+        out.append(f"{indent}{kind} {name}  [{line}]\n")
+    return "".join(out)
+
+
+def _format_ctags_symbols(
+    symbols: List[Tuple[str, str, int, str]], path: str, line_count: int
+) -> str:
+    """Format ctags symbols as an indented tree string.
+
+    Uses scope field to infer nesting (symbols with a scope → depth 1).
+    """
+    out = [f"{path} ({line_count} lines)\n"]
+    for kind, name, line, scope in symbols:
+        depth = 1 if scope else 0
+        indent = "  " * (depth + 1)
+        out.append(f"{indent}{kind} {name}  [{line}]\n")
+    return "".join(out)
+
+
+# Supported extensions for map scanning
+_MAP_EXTENSIONS = frozenset(
+    list(_TS_LANG_MAP.keys()) + list(_REGEX_PATTERNS.keys())
+)
+
+
+def _count_lines(path: str) -> int:
+    """Count lines in a file (fast, doesn't read into memory if big)."""
+    try:
+        with open(path, "rb") as f:
+            return sum(1 for _ in f)
+    except OSError:
+        return 0
+
+
+def _collect_files(path: str) -> List[str]:
+    """Collect files to map from a path (file or directory).
+
+    For directories, walks recursively. Skips hidden dirs, Generated/,
+    vendor/, node_modules/, __pycache__/.
+    """
+    skip_dirs = {".git", ".hg", ".svn", "vendor", "node_modules",
+                 "__pycache__", "Generated", ".claude", ".max"}
+
+    if os.path.isfile(path):
+        return [path]
+
+    if not os.path.isdir(path):
+        return []
+
+    files: List[str] = []
+    for root, dirs, filenames in os.walk(path):
+        # Prune skipped directories in-place
+        dirs[:] = [d for d in dirs if d not in skip_dirs and not d.startswith(".")]
+        dirs.sort()
+        for fn in sorted(filenames):
+            ext = os.path.splitext(fn)[1].lower()
+            if ext in _MAP_EXTENSIONS:
+                files.append(os.path.join(root, fn))
+    return files
+
+
+MAX_MAP_FILES = 100  # Cap to prevent overwhelming output
+
+
+def op_map(path: str) -> str:
+    """Generate a symbol map of a file or directory.
+
+    Three-tier extraction:
+      1. tree-sitter (if tree_sitter_languages is installed)
+      2. ctags (if universal-ctags is on PATH)
+      3. regex fallback (always available for supported extensions)
+
+    Output: indented tree of classes/functions/methods per file.
+    """
+    if not path:
+        return "ERROR: empty path\n"
+    if not os.path.exists(path):
+        return f"ERROR: path not found: {path}\n"
+
+    files = _collect_files(path)
+    if not files:
+        return f"(no supported files found in {path})\n"
+
+    truncated = len(files) > MAX_MAP_FILES
+    files = files[:MAX_MAP_FILES]
+
+    # Detect available tier
+    use_ts = _has_tree_sitter()
+    use_ctags = not use_ts and _has_ctags()
+    tier = "tree-sitter" if use_ts else ("ctags" if use_ctags else "regex")
+
+    out = [f"({len(files)} files, tier: {tier})\n"]
+
+    for fpath in files:
+        ext = os.path.splitext(fpath)[1].lower()
+        line_count = _count_lines(fpath)
+
+        symbols_found = False
+
+        if use_ts:
+            lang_name = _TS_LANG_MAP.get(ext)
+            if lang_name:
+                symbols = _ts_extract(fpath, lang_name)
+                if symbols:
+                    out.append(_format_map_symbols(symbols, fpath, line_count))
+                    symbols_found = True
+
+        if not symbols_found and use_ctags:
+            symbols_ct = _ctags_extract(fpath)
+            if symbols_ct:
+                out.append(_format_ctags_symbols(
+                    symbols_ct, fpath, line_count))
+                symbols_found = True
+
+        if not symbols_found:
+            symbols_rx = _regex_extract(fpath)
+            if symbols_rx:
+                out.append(_format_map_symbols(
+                    symbols_rx, fpath, line_count))
+                symbols_found = True
+
+        if not symbols_found:
+            # File exists but no symbols extracted — show it as empty
+            out.append(f"{fpath} ({line_count} lines)\n  (no symbols)\n")
+
+    if truncated:
+        out.append(f"\n... (truncated at {MAX_MAP_FILES} files)\n")
+    out.append("\n")
+    return "".join(out)
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -794,9 +1253,13 @@ def dispatch(arg: str) -> str:
             path = parts[2] if len(parts) > 2 and parts[2] else ""
             n = int(parts[3]) if len(parts) > 3 and parts[3] else 10
             body = op_around(pattern, path, n)
+        elif op == "map":
+            path = parts[1] if len(parts) > 1 else "."
+            body = op_map(path)
         else:
             body = (f"ERROR: unknown operation: {op}\n"
-                    f"Valid operations: read, grep, glob, ls, tail, head, around, wc, check\n")
+                    f"Valid operations: read, grep, glob, ls, tail, head, "
+                    f"around, wc, check, map\n")
     except (ValueError, IndexError) as e:
         body = f"ERROR: argument parsing: {e}\n"
 

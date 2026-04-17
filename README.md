@@ -6,7 +6,7 @@
 
 Batched file operations for autonomous Claude Code runs. Collapses N reads/greps/globs into **one Bash round-trip** — fewer output tokens, less cache growth, less wall time.
 
-One Python file, zero runtime deps, Python 3.9+.
+One Python file, zero required deps, Python 3.9+. Optional: `tree-sitter-language-pack` or `universal-ctags` for richer `map` output.
 
 ---
 
@@ -124,6 +124,7 @@ claude -p "..." --permission-mode bypassPermissions \
 | `wc` | `wc:PATH` | Line/word/char count (like unix `wc`). Output: `LINES WORDS CHARS PATH`. |
 | `check` | `check:PRESET:PATH` | Run named validation from `.supertool-checks.json`. Config maps presets to shell commands with `{file}` placeholder. Supports per-preset timeout. |
 | `around` | `around:PATTERN:PATH` or `around:PATTERN:PATH:N` | Show N lines (default 10) before and after the **first** match of PATTERN in a single file. Uses line-numbered output like `read`. |
+| `map` | `map:PATH` | Symbol map of a file or directory. Shows classes, functions, methods, constants as an indented tree with line numbers. Three-tier: tree-sitter → ctags → regex. Supports PHP, Python, JS, TS, Go, Rust, Java, Ruby. |
 
 ### `check` configuration
 
@@ -151,6 +152,49 @@ Presets can be a string (shorthand, 60s default timeout) or an object with `cmd`
 supertool 'check:phpstan:src/MyClass.php' 'check:lint:src/MyClass.php'
 ```
 
+### `map` — symbol extraction
+
+`map:PATH` generates a symbol tree (classes, functions, methods, constants) for a file or directory. Three-tier extraction — uses the best available tool:
+
+| Tier | Detection | What you get |
+|------|-----------|-------------|
+| 1. tree-sitter | `tree_sitter_language_pack` or `tree_sitter_languages` importable | Full AST: accurate nesting, signatures, all node types |
+| 2. ctags | `ctags` on PATH (universal-ctags) | JSON tags: class/method/function/constant with scope |
+| 3. regex | Always available | Pattern matching: `class`, `function`, `def`, `interface`, `trait`, `enum`, `const`, `struct`, `impl` |
+
+Supported languages: PHP, Python, JavaScript, TypeScript (+ JSX/TSX), Go, Rust, Java, Ruby.
+
+```bash
+# Single file
+supertool 'map:src/Module.php'
+
+# Directory (recursive, skips vendor/.git/Generated/node_modules)
+supertool 'map:src/SiProject/'
+```
+
+Output:
+
+```
+src/SiProject/SiProjectModule.class.php (55 lines)
+  class SiProjectModule  [31]
+    const TYPE_PRIMARY  [39]
+    const MENU_ITEM  [42]
+    method init  [48]
+```
+
+Install optional deps for richer output:
+
+```bash
+# tree-sitter (best — full AST, Python 3.10+)
+pip install tree-sitter-language-pack
+
+# OR ctags (good — works everywhere)
+brew install universal-ctags   # macOS
+apt install universal-ctags    # Linux
+```
+
+Without either, regex fallback works for all supported languages — just no nesting detection (except Python indentation).
+
 ### Compact mode
 
 Create a `.supertool.json` in your project root to enable compact reads:
@@ -175,6 +219,17 @@ When [rtk](https://github.com/reachingforthejack/rtk) is installed, supertool au
 - Without RTK, no compact: supertool's own output (default)
 
 RTK is optional. Supertool works identically without it — RTK is just an accelerator.
+
+### tree-sitter integration
+
+When [`tree-sitter-language-pack`](https://pypi.org/project/tree-sitter-language-pack/) (Python 3.10+) or [`tree-sitter-languages`](https://pypi.org/project/tree-sitter-languages/) (Python 3.8–3.12) is installed, `map` uses tree-sitter for AST-based symbol extraction instead of ctags or regex.
+
+- Detects installed package at first `map` call (cached for session)
+- Prefers `tree-sitter-language-pack` over `tree-sitter-languages` when both are present
+- Falls back to ctags → regex when neither is installed
+- No configuration needed — pure detection
+
+tree-sitter is optional. The `map` op works without it — tree-sitter just gives more accurate nesting and signature details.
 
 ### Batch multiple ops in one call
 
@@ -279,7 +334,7 @@ The hook is in `.githooks/pre-push`, committed to the repo. Bypass with `git pus
 
 ## Design decisions
 
-- **One file.** `supertool.py` is ~250 LoC. No package, no `setup.py`, no deps. Drop in and use.
+- **One file.** `supertool.py` is ~760 LoC (13 ops, 3 integration tiers). No package, no `setup.py`, no required deps. Drop in and use.
 - **Python 3.9+.** macOS ships 3.9 via CommandLineTools; we don't force upgrades.
 - **No MCP server.** MCP is server-process-and-JSON-RPC ceremony for what's literally "run a script, get output." A Bash-invoked binary is simpler, faster, and plugs into Claude Code's existing `--allowedTools`/`--disallowedTools` flow.
 - **Enforcement via PreToolUse hook, not config mutation.** The plugin doesn't edit your `settings.json`. Toggling is a state file (`~/.claude/supertool-enforced`) read by the hook. Your config stays yours.
