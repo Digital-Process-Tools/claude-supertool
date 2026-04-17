@@ -92,6 +92,36 @@ LOG_FILE = os.path.join(tempfile.gettempdir(), "supertool-calls.log")
 GREP_FILE_INCLUDES = ("*.php", "*.xml", "*.py", "*.js", "*.ts", "*.md")
 WILDCARD_CHARS = re.compile(r"[*?\[]")
 
+# RTK integration — when rtk is installed, delegate read/grep/wc for compressed output
+_RTK_PATH: str | None = None
+_RTK_CHECKED = False
+
+
+def _has_rtk() -> str | None:
+    """Return rtk binary path if available, None otherwise. Cached."""
+    global _RTK_PATH, _RTK_CHECKED
+    if not _RTK_CHECKED:
+        _RTK_CHECKED = True
+        from shutil import which
+        _RTK_PATH = which("rtk")
+    return _RTK_PATH
+
+
+def _rtk_run(args: List[str], timeout: int = 30) -> str | None:
+    """Run rtk command, return stdout or None on failure."""
+    rtk = _has_rtk()
+    if not rtk:
+        return None
+    try:
+        result = subprocess.run(
+            [rtk] + args, capture_output=True, text=True, timeout=timeout
+        )
+        if result.returncode == 0:
+            return result.stdout
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+    return None
+
 # Enforcement — pre-tool-block hook reads this state file (absent = permissive)
 ENFORCE_STATE_FILE = os.path.expanduser("~/.claude/supertool-enforced")
 
@@ -111,9 +141,18 @@ def render_file(path: str, offset: int = 0, limit: int = MAX_READ_LINES,
     Shared by read: and by grep/glob auto-promote branches.
     When grep_filter is set, only lines matching the regex are shown (with
     original line numbers preserved).
+    When rtk is available and no special options are used, delegates to
+    rtk read for compressed output.
     """
     if not path or not os.path.isfile(path):
         return f"ERROR: file not found: {path}\n"
+
+    # RTK delegation — simple reads without offset/filter/limit changes
+    if not grep_filter and offset == 0 and limit == MAX_READ_LINES and _has_rtk():
+        rtk_args = ["read", "-n", "--max-lines", str(MAX_READ_LINES), path]
+        rtk_out = _rtk_run(rtk_args)
+        if rtk_out is not None:
+            return rtk_out + "\n"
 
     try:
         size = os.path.getsize(path)
@@ -183,6 +222,13 @@ def op_grep(pattern: str, path: str = ".", limit: int = MAX_GREP_RESULTS,
     """
     if not pattern:
         return "ERROR: empty pattern\n"
+
+    # RTK delegation — basic grep (no context, no count)
+    if not count_only and context == 0 and _has_rtk():
+        rtk_args = ["grep", "-n", "-m", str(limit), pattern, path]
+        rtk_out = _rtk_run(rtk_args)
+        if rtk_out is not None:
+            return rtk_out + "\n"
 
     if count_only:
         counts = _grep_count(pattern, path, limit)
@@ -362,6 +408,13 @@ def op_head(path: str, n: int = 20) -> str:
 def op_wc(path: str) -> str:
     if not path or not os.path.isfile(path):
         return f"ERROR: file not found: {path}\n"
+
+    # RTK delegation
+    if _has_rtk():
+        rtk_out = _rtk_run(["wc", path])
+        if rtk_out is not None:
+            return rtk_out + "\n"
+
     try:
         with open(path, "rb") as f:
             data = f.read()

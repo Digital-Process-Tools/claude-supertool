@@ -17,6 +17,28 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import supertool  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _disable_rtk():
+    """Disable RTK delegation in tests so assertions match supertool's own format."""
+    old_checked = supertool._RTK_CHECKED
+    old_path = supertool._RTK_PATH
+    supertool._RTK_CHECKED = True
+    supertool._RTK_PATH = None
+    yield
+    supertool._RTK_CHECKED = old_checked
+    supertool._RTK_PATH = old_path
+
+
+@pytest.fixture
+def enable_rtk():
+    """Re-enable RTK detection for integration tests."""
+    supertool._RTK_CHECKED = False
+    supertool._RTK_PATH = None
+    yield
+    supertool._RTK_CHECKED = True
+    supertool._RTK_PATH = None
+
+
 # ---------------------------------------------------------------------------
 # op_read
 # ---------------------------------------------------------------------------
@@ -1089,3 +1111,42 @@ def test_dispatch_check(tmp_path: Path, monkeypatch) -> None:
     out = supertool.dispatch(f"check:lint:{f}")
     assert "--- check:" in out
     assert "PASS" in out
+
+
+# ---------------------------------------------------------------------------
+# RTK integration (skipped when rtk not installed)
+# ---------------------------------------------------------------------------
+
+def _rtk_available() -> bool:
+    from shutil import which
+    return which("rtk") is not None
+
+@pytest.mark.skipif(not _rtk_available(), reason="rtk not installed")
+def test_rtk_read_delegation(tmp_path: Path, enable_rtk) -> None:
+    f = tmp_path / "sample.py"
+    f.write_text("line1\nline2\nline3\n")
+    out = supertool.op_read(str(f))
+    assert "line1" in out
+    assert "line2" in out
+
+@pytest.mark.skipif(not _rtk_available(), reason="rtk not installed")
+def test_rtk_grep_delegation(tmp_path: Path, enable_rtk) -> None:
+    f = tmp_path / "code.py"
+    f.write_text("import os\nimport sys\ndef main():\n    pass\n")
+    out = supertool.op_grep("import", str(f))
+    assert "import" in out
+
+@pytest.mark.skipif(not _rtk_available(), reason="rtk not installed")
+def test_rtk_wc_delegation(tmp_path: Path, enable_rtk) -> None:
+    f = tmp_path / "sample.txt"
+    f.write_text("hello world\nfoo bar baz\n")
+    out = supertool.op_wc(str(f))
+    assert "2" in out
+
+@pytest.mark.skipif(not _rtk_available(), reason="rtk not installed")
+def test_rtk_fallback_on_offset(tmp_path: Path, enable_rtk) -> None:
+    """RTK not used when offset/filter specified — falls back to native."""
+    f = tmp_path / "test.py"
+    f.write_text("a\nb\nc\nd\n")
+    out = supertool.op_read(str(f), offset=2)
+    assert "3→c" in out
