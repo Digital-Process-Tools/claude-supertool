@@ -48,12 +48,19 @@ OPERATIONS
                                 Match lines: path:lineno:content
                                 Context lines: path-lineno-content
                                 Groups separated by -- when non-adjacent.
+    grep:PATTERN:PATH:LIMIT:CONTEXT:count
+                               Return match counts per file instead of content.
+                                Output: filepath:COUNT per line.
+    read:PATH:OFFSET:LIMIT:grep=PATTERN
+                               Read with inline filter — only show lines matching
+                                PATTERN (original line numbers preserved).
     glob:PATTERN               Find files matching pattern (** supported).
                                 Auto-reads if PATTERN is a concrete file
                                 path with no wildcards.
     ls:PATH                    List directory entries
     tail:PATH:N                Last N lines (default 20)
     head:PATH:N                First N lines (default 20)
+    wc:PATH                    Line/word/char count (like unix wc)
     around:PATTERN:PATH        Show 10 lines around the first match in FILE
     around:PATTERN:PATH:N      Show N lines around the first match in FILE
 
@@ -92,10 +99,13 @@ BLOCKED_BASH_COMMANDS = {"cat", "find", "grep", "ls", "sed", "awk", "tail", "hea
 # Core operations (pure functions — all return the string to emit)
 # ---------------------------------------------------------------------------
 
-def render_file(path: str, offset: int = 0, limit: int = MAX_READ_LINES) -> str:
+def render_file(path: str, offset: int = 0, limit: int = MAX_READ_LINES,
+                grep_filter: str = "") -> str:
     """Emit a file's contents with line numbers, truncated at caps.
 
     Shared by read: and by grep/glob auto-promote branches.
+    When grep_filter is set, only lines matching the regex are shown (with
+    original line numbers preserved).
     """
     if not path or not os.path.isfile(path):
         return f"ERROR: file not found: {path}\n"
@@ -113,11 +123,22 @@ def render_file(path: str, offset: int = 0, limit: int = MAX_READ_LINES) -> str:
     printed = 0
     end = min(offset + limit, line_count)
 
+    filter_regex = None
+    if grep_filter:
+        try:
+            filter_regex = re.compile(grep_filter)
+        except re.error:
+            filter_regex = re.compile(re.escape(grep_filter))
+
+    matched_any = False
     for i in range(offset, end):
         try:
             line = raw_lines[i].decode("utf-8", errors="replace")
         except Exception:
             line = "<binary line>\n"
+        if filter_regex and not filter_regex.search(line):
+            continue
+        matched_any = True
         numbered = f"{i + 1:>6}→{line}"
         out.append(numbered)
         bytes_emitted += len(numbered)
@@ -125,23 +146,26 @@ def render_file(path: str, offset: int = 0, limit: int = MAX_READ_LINES) -> str:
         if bytes_emitted >= MAX_READ_BYTES:
             break
 
-    if bytes_emitted >= MAX_READ_BYTES:
+    if filter_regex and not matched_any:
+        out.append(f"(no lines matching {grep_filter!r})\n")
+    elif bytes_emitted >= MAX_READ_BYTES:
         out.append(f"... (truncated at {MAX_READ_BYTES} bytes — use "
                    "read:PATH:OFFSET:LIMIT to get more)\n")
-    elif offset + printed < line_count:
+    elif not filter_regex and offset + printed < line_count:
         out.append(f"... ({line_count - offset - printed} more lines)\n")
-    else:
+    elif not filter_regex:
         out.append("[complete file — no more lines]\n")
     out.append("\n")
     return "".join(out)
 
 
-def op_read(path: str, offset: int = 0, limit: int = MAX_READ_LINES) -> str:
-    return render_file(path, offset, limit)
+def op_read(path: str, offset: int = 0, limit: int = MAX_READ_LINES,
+            grep_filter: str = "") -> str:
+    return render_file(path, offset, limit, grep_filter)
 
 
 def op_grep(pattern: str, path: str = ".", limit: int = MAX_GREP_RESULTS,
-            context: int = 0) -> str:
+            context: int = 0, count_only: bool = False) -> str:
     """Search pattern recursively. Auto-reads small single file on match.
 
     When context > 0, emits N lines before/after each match in grep -C style:
@@ -149,9 +173,21 @@ def op_grep(pattern: str, path: str = ".", limit: int = MAX_GREP_RESULTS,
       context lines: path-lineno-content  (dash separator)
     Non-adjacent groups are separated by --.
     Auto-read is skipped when context > 0 (output already contains context).
+
+    When count_only=True, returns match counts per file instead of content.
     """
     if not pattern:
         return "ERROR: empty pattern\n"
+
+    if count_only:
+        counts = _grep_count(pattern, path, limit)
+        total = sum(counts.values())
+        file_count = len(counts)
+        out = [f"({total} total matches across {file_count} files)\n"]
+        for fp, cnt in sorted(counts.items()):
+            out.append(f"{fp}:{cnt}\n")
+        out.append("\n")
+        return "".join(out)
 
     if context > 0:
         groups = _grep_recursive_context(pattern, path, limit, context)
@@ -318,9 +354,52 @@ def op_head(path: str, n: int = 20) -> str:
     return "".join(out)
 
 
+def op_wc(path: str) -> str:
+    if not path or not os.path.isfile(path):
+        return f"ERROR: file not found: {path}\n"
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+    except OSError as e:
+        return f"ERROR: could not read {path}: {e}\n"
+    text = data.decode("utf-8", errors="replace")
+    lines = text.count("\n")
+    words = len(text.split())
+    chars = len(text)
+    return f"{lines} {words} {chars} {path}\n"
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _grep_count(pattern: str, path: str, limit: int) -> Dict[str, int]:
+    """Return match counts per file as {filepath: count}."""
+    try:
+        regex = re.compile(pattern)
+    except re.error:
+        regex = re.compile(re.escape(pattern))
+
+    counts: Dict[str, int] = {}
+    candidates = _grep_candidates(path)
+
+    for file_path in candidates:
+        cnt = 0
+        try:
+            with open(file_path, "rb") as f:
+                for raw in f:
+                    try:
+                        line = raw.decode("utf-8", errors="replace")
+                    except Exception:
+                        continue
+                    if regex.search(line):
+                        cnt += 1
+        except OSError:
+            continue
+        if cnt > 0:
+            counts[file_path] = cnt
+    return counts
+
 
 def _grep_candidates(path: str) -> List[str]:
     """Return list of file paths to search for a given path argument."""
@@ -496,13 +575,20 @@ def dispatch(arg: str) -> str:
             path = parts[1] if len(parts) > 1 else ""
             offset = int(parts[2]) if len(parts) > 2 and parts[2] else 0
             limit = int(parts[3]) if len(parts) > 3 and parts[3] else MAX_READ_LINES
-            body = op_read(path, offset, limit)
+            grep_filter = ""
+            if len(parts) > 4 and parts[4].startswith("grep="):
+                grep_filter = parts[4][5:]
+            body = op_read(path, offset, limit, grep_filter)
         elif op == "grep":
             pattern = parts[1] if len(parts) > 1 else ""
             path = parts[2] if len(parts) > 2 and parts[2] else "."
             limit = int(parts[3]) if len(parts) > 3 and parts[3] else MAX_GREP_RESULTS
             context = int(parts[4]) if len(parts) > 4 and parts[4] else 0
-            body = op_grep(pattern, path, limit, context)
+            count_only = len(parts) > 5 and parts[5] == "count"
+            body = op_grep(pattern, path, limit, context, count_only)
+        elif op == "wc":
+            path = parts[1] if len(parts) > 1 else ""
+            body = op_wc(path)
         elif op == "glob":
             pattern = parts[1] if len(parts) > 1 else ""
             body = op_glob(pattern)
@@ -524,7 +610,7 @@ def dispatch(arg: str) -> str:
             body = op_around(pattern, path, n)
         else:
             body = (f"ERROR: unknown operation: {op}\n"
-                    f"Valid operations: read, grep, glob, ls, tail, head, around\n")
+                    f"Valid operations: read, grep, glob, ls, tail, head, around, wc\n")
     except (ValueError, IndexError) as e:
         body = f"ERROR: argument parsing: {e}\n"
 

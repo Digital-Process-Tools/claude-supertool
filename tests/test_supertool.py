@@ -905,3 +905,118 @@ def test_main_pre_tool_hook_malformed_json_fail_open(monkeypatch, tmp_path) -> N
     # Malformed input → fail-open (exit 0, don't block legit workflows)
     ret = supertool.main(["--pre-tool-hook"])
     assert ret == 0
+
+
+# ---------------------------------------------------------------------------
+# op_wc
+# ---------------------------------------------------------------------------
+
+def test_wc_counts(tmp_path: Path) -> None:
+    f = tmp_path / "sample.txt"
+    f.write_text("hello world\nfoo bar baz\n")
+    out = supertool.op_wc(str(f))
+    assert "2 " in out  # 2 newlines
+    assert " 5 " in out  # 5 words
+    assert str(f) in out
+
+def test_wc_missing_file() -> None:
+    out = supertool.op_wc("/nonexistent/file.txt")
+    assert "ERROR" in out
+
+def test_wc_empty_path() -> None:
+    out = supertool.op_wc("")
+    assert "ERROR" in out
+
+def test_wc_directory(tmp_path: Path) -> None:
+    out = supertool.op_wc(str(tmp_path))
+    assert "ERROR" in out
+
+def test_dispatch_wc(tmp_path: Path) -> None:
+    f = tmp_path / "test.txt"
+    f.write_text("one two\nthree\n")
+    out = supertool.dispatch(f"wc:{f}")
+    assert "--- wc:" in out
+    assert "2 " in out
+
+
+# ---------------------------------------------------------------------------
+# grep count mode
+# ---------------------------------------------------------------------------
+
+def test_grep_count_single_file(tmp_path: Path) -> None:
+    f = tmp_path / "code.py"
+    f.write_text("import os\nimport sys\ndef main():\n    pass\n")
+    out = supertool.op_grep("import", str(f), count_only=True)
+    assert "2 total matches across 1 files" in out
+    assert f"{f}:2" in out
+
+def test_grep_count_multiple_files(tmp_path: Path) -> None:
+    (tmp_path / "a.py").write_text("foo\nbar\n")
+    (tmp_path / "b.py").write_text("foo\nfoo\n")
+    out = supertool.op_grep("foo", str(tmp_path), count_only=True)
+    assert "3 total matches across 2 files" in out
+
+def test_grep_count_no_matches(tmp_path: Path) -> None:
+    f = tmp_path / "empty.py"
+    f.write_text("nothing here\n")
+    out = supertool.op_grep("ZZZZZZ", str(f), count_only=True)
+    assert "0 total matches across 0 files" in out
+
+def test_dispatch_grep_count(tmp_path: Path) -> None:
+    f = tmp_path / "test.py"
+    f.write_text("foo\nbar\nfoo\n")
+    out = supertool.dispatch(f"grep:foo:{f}:10:0:count")
+    assert "2 total" in out
+
+def test_grep_count_empty_pattern() -> None:
+    out = supertool.op_grep("", ".", count_only=True)
+    assert "ERROR" in out
+
+
+# ---------------------------------------------------------------------------
+# read with grep filter
+# ---------------------------------------------------------------------------
+
+def test_read_grep_filter(tmp_path: Path) -> None:
+    f = tmp_path / "code.php"
+    f.write_text("<?php\nuse Foo;\nuse Bar;\nclass X {\n}\n")
+    out = supertool.op_read(str(f), grep_filter="use")
+    assert "use Foo" in out
+    assert "use Bar" in out
+    assert "class X" not in out
+
+def test_read_grep_filter_preserves_line_numbers(tmp_path: Path) -> None:
+    f = tmp_path / "code.php"
+    f.write_text("line1\nline2\ntarget\nline4\n")
+    out = supertool.op_read(str(f), grep_filter="target")
+    assert "3→target" in out
+
+def test_read_grep_filter_no_matches(tmp_path: Path) -> None:
+    f = tmp_path / "code.php"
+    f.write_text("hello\nworld\n")
+    out = supertool.op_read(str(f), grep_filter="ZZZZ")
+    assert "no lines matching" in out
+
+def test_read_grep_filter_with_offset(tmp_path: Path) -> None:
+    f = tmp_path / "big.txt"
+    lines = [f"line{i}\n" for i in range(20)]
+    f.write_text("".join(lines))
+    out = supertool.op_read(str(f), offset=5, limit=10, grep_filter="line1")
+    # only lines 6-15 searched, line10-line14 match "line1"
+    assert "line10" in out
+    assert "line0" not in out
+
+def test_dispatch_read_grep_filter(tmp_path: Path) -> None:
+    f = tmp_path / "test.php"
+    f.write_text("alpha\nbeta\nalpha2\ngamma\n")
+    out = supertool.dispatch(f"read:{f}:::grep=alpha")
+    assert "alpha" in out
+    assert "beta" not in out
+    assert "gamma" not in out
+
+def test_dispatch_read_grep_filter_empty_offset_limit(tmp_path: Path) -> None:
+    f = tmp_path / "test.txt"
+    f.write_text("aaa\nbbb\nccc\n")
+    out = supertool.dispatch(f"read:{f}:::grep=bbb")
+    assert "bbb" in out
+    assert "aaa" not in out
