@@ -40,6 +40,21 @@ def test_read_empty_path_returns_error() -> None:
     assert "ERROR: file not found" in out
 
 
+def test_read_complete_file_marker(tmp_path: Path) -> None:
+    f = tmp_path / "small.py"
+    f.write_text("x = 1\n")
+    out = supertool.op_read(str(f))
+    assert "[complete file — no more lines]" in out
+
+
+def test_read_no_complete_marker_when_truncated(tmp_path: Path) -> None:
+    f = tmp_path / "many.txt"
+    f.write_text("\n".join(f"line{i}" for i in range(1, 11)) + "\n")
+    out = supertool.op_read(str(f), offset=0, limit=3)
+    assert "[complete file" not in out
+    assert "more lines" in out
+
+
 def test_read_with_offset_and_limit(tmp_path: Path) -> None:
     f = tmp_path / "many.txt"
     f.write_text("\n".join(f"line{i}" for i in range(1, 11)) + "\n")
@@ -196,8 +211,17 @@ def test_glob_auto_reads_concrete_file(tmp_path: Path) -> None:
     assert "     1→content = 42" in out
 
 
-def test_glob_no_auto_read_when_wildcards_present(tmp_path: Path, monkeypatch) -> None:
+def test_glob_auto_read_when_single_result(tmp_path: Path, monkeypatch) -> None:
     (tmp_path / "a.py").write_text("x = 1\n")
+    monkeypatch.chdir(tmp_path)
+    out = supertool.op_glob("*.py")
+    assert "[auto-read: glob returned 1 file]" in out
+    assert "x = 1" in out
+
+
+def test_glob_no_auto_read_when_multiple_results(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "a.py").write_text("x = 1\n")
+    (tmp_path / "b.py").write_text("y = 2\n")
     monkeypatch.chdir(tmp_path)
     out = supertool.op_glob("*.py")
     assert "[auto-read:" not in out

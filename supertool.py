@@ -123,6 +123,8 @@ def render_file(path: str, offset: int = 0, limit: int = MAX_READ_LINES) -> str:
                    "read:PATH:OFFSET:LIMIT to get more)\n")
     elif offset + printed < line_count:
         out.append(f"... ({line_count - offset - printed} more lines)\n")
+    else:
+        out.append("[complete file — no more lines]\n")
     out.append("\n")
     return "".join(out)
 
@@ -170,6 +172,12 @@ def op_glob(pattern: str) -> str:
     for f in files:
         out.append(f + "\n")
     out.append("\n")
+
+    # Auto-read: glob returned exactly 1 file — save the follow-up read round-trip
+    if len(files) == 1 and os.path.getsize(files[0]) < MAX_READ_BYTES:
+        out.append(f"[auto-read: glob returned 1 file]\n")
+        out.append(render_file(files[0], 0, MAX_READ_LINES))
+
     return "".join(out)
 
 
