@@ -34,7 +34,8 @@ def test_dispatch_grep(tmp_path: Path) -> None:
     f.write_text("foo\nbar\n")
     out = supertool.dispatch(f"grep:foo:{f}")
     assert "--- grep:" in out
-    assert f"{f}:1:foo" in out
+    assert str(f) + "\n" in out
+    assert "  1:foo" in out
 
 
 def test_dispatch_unknown_op() -> None:
@@ -83,9 +84,10 @@ def test_dispatch_grep_with_context(tmp_path: Path) -> None:
     f = tmp_path / "src.py"
     f.write_text("before\nMATCH\nafter\n")
     out = supertool.dispatch(f"grep:MATCH:{f}:10:1")
-    assert f"{f}:2:MATCH" in out
-    assert f"{f}-1-before" in out
-    assert f"{f}-3-after" in out
+    assert str(f) + "\n" in out
+    assert "  2:MATCH" in out
+    assert "  1-before" in out
+    assert "  3-after" in out
 
 
 def test_dispatch_around(tmp_path: Path) -> None:

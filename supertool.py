@@ -301,16 +301,22 @@ def op_grep(pattern: str, path: str = ".", limit: int = MAX_GREP_RESULTS,
             1 for g in groups for line in g if line[2] == "match"
         )
         out = [f"({count} results, limit {limit}, context {context})\n"]
+        current_file: str = ""
         first_group = True
         for group in groups:
+            group_file = group[0][0] if group else ""
+            if group_file != current_file:
+                current_file = group_file
+                out.append(f"{current_file}\n")
+                first_group = True  # reset separator for new file
             if not first_group:
-                out.append("--\n")
+                out.append("  --\n")
             first_group = False
-            for file_path, lineno, kind, content in group:
+            for _fp, lineno, kind, content in group:
                 if kind == "match":
-                    out.append(f"{file_path}:{lineno}:{content}\n")
+                    out.append(f"  {lineno}:{content}\n")
                 else:
-                    out.append(f"{file_path}-{lineno}-{content}\n")
+                    out.append(f"  {lineno}-{content}\n")
         out.append("\n")
         return "".join(out)
 
@@ -318,8 +324,18 @@ def op_grep(pattern: str, path: str = ".", limit: int = MAX_GREP_RESULTS,
     count = len(hits)
 
     out = [f"({count} results, limit {limit})\n"]
+    current_file = ""
     for hit in hits:
-        out.append(hit + "\n")
+        # hits are "path:lineno:content" — split on first two colons
+        parts = hit.split(":", 2)
+        if len(parts) >= 3:
+            fp, lineno, content = parts[0], parts[1], parts[2]
+            if fp != current_file:
+                current_file = fp
+                out.append(f"{fp}\n")
+            out.append(f"  {lineno}:{content}\n")
+        else:
+            out.append(hit + "\n")
     out.append("\n")
 
     # Auto-read: single small file + at least one match → emit full file

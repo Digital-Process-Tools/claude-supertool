@@ -10,8 +10,9 @@ def test_grep_finds_match_in_single_file(tmp_path: Path) -> None:
     f.write_text("class Foo:\n    pass\n\nclass Bar:\n    pass\n")
     out = supertool.op_grep("class", str(f))
     assert "(2 results" in out
-    assert "src.py:1:class Foo:" in out
-    assert "src.py:4:class Bar:" in out
+    assert "src.py\n" in out
+    assert "  1:class Foo:" in out
+    assert "  4:class Bar:" in out
 
 
 def test_grep_no_match_returns_zero(tmp_path: Path) -> None:
@@ -96,13 +97,15 @@ def test_grep_context_includes_surrounding_lines(tmp_path: Path) -> None:
     # Match at line 5, 2 lines of context → lines 3-7 shown; lines 1-2 and 8-10 excluded
     f.write_text("skip1\nskip2\nctx_before2\nctx_before1\nMATCH\nctx_after1\nctx_after2\nskip3\nskip4\n")
     out = supertool.op_grep("MATCH", str(f), limit=10, context=2)
-    # Match line uses colon separator
-    assert f"{f}:5:MATCH" in out
-    # Context lines use dash separator
-    assert f"{f}-4-ctx_before1" in out
-    assert f"{f}-6-ctx_after1" in out
-    assert f"{f}-3-ctx_before2" in out
-    assert f"{f}-7-ctx_after2" in out
+    # File path appears once as header
+    assert str(f) + "\n" in out
+    # Match line uses colon separator, indented
+    assert "  5:MATCH" in out
+    # Context lines use dash separator, indented
+    assert "  4-ctx_before1" in out
+    assert "  6-ctx_after1" in out
+    assert "  3-ctx_before2" in out
+    assert "  7-ctx_after2" in out
     # Lines beyond context are not included
     assert "skip1" not in out
     assert "skip2" not in out
