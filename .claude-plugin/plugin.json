@@ -1,7 +1,7 @@
 {
   "name": "supertool",
   "description": "Batched file operations for autonomous Claude Code runs. Collapses N reads/greps/globs into one Bash round-trip. Includes session-start prompt injection and an opt-in enforcement mode that blocks competing tools.",
-  "version": "0.1.2",
+  "version": "0.3.0",
   "author": {
     "name": "Digital Process Tools"
   },
