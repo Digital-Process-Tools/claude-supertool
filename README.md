@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="supertool-banner.jpg" alt="SuperTool — batch file operations" width="600">
+</p>
+
 # supertool
 
 Batched file operations for autonomous Claude Code runs. Collapses N reads/greps/globs into **one Bash round-trip** — fewer output tokens, less cache growth, less wall time.
