@@ -494,6 +494,108 @@ def test_dispatch_check_unknown_preset(tmp_path: Path, monkeypatch) -> None:
     supertool._CONFIG_CHECKED = False
 
 
+# ---------------------------------------------------------------------------
+# Paths with spaces — verify all major ops handle them
+# ---------------------------------------------------------------------------
+
+def test_read_file_with_spaces(tmp_path: Path) -> None:
+    d = tmp_path / "my project"
+    d.mkdir()
+    f = d / "hello world.py"
+    f.write_text("line one\nline two\n")
+    result = supertool.dispatch(f"read:{f}")
+    assert "line one" in result
+    assert "line two" in result
+
+
+def test_grep_file_with_spaces(tmp_path: Path) -> None:
+    d = tmp_path / "my project"
+    d.mkdir()
+    f = d / "hello world.py"
+    f.write_text("find me here\nnothing\n")
+    result = supertool.dispatch(f"grep:find me:{f}")
+    assert "find me here" in result
+
+
+def test_grep_dir_with_spaces(tmp_path: Path) -> None:
+    d = tmp_path / "my project"
+    d.mkdir()
+    f = d / "code.py"
+    f.write_text("TODO fix this\n")
+    result = supertool.dispatch(f"grep:TODO:{d}")
+    assert "TODO fix this" in result
+
+
+def test_glob_with_spaces(tmp_path: Path) -> None:
+    d = tmp_path / "my project"
+    d.mkdir()
+    f = d / "hello world.py"
+    f.write_text("content\n")
+    result = supertool.dispatch(f"glob:{d}/*.py")
+    assert "hello world.py" in result
+
+
+def test_ls_dir_with_spaces(tmp_path: Path) -> None:
+    d = tmp_path / "my project"
+    d.mkdir()
+    (d / "file one.txt").write_text("a\n")
+    (d / "file two.txt").write_text("b\n")
+    result = supertool.dispatch(f"ls:{d}")
+    assert "file one.txt" in result
+    assert "file two.txt" in result
+
+
+def test_wc_file_with_spaces(tmp_path: Path) -> None:
+    d = tmp_path / "my project"
+    d.mkdir()
+    f = d / "hello world.py"
+    f.write_text("line one\nline two\nline three\n")
+    result = supertool.dispatch(f"wc:{f}")
+    assert "3" in result  # 3 lines
+
+
+def test_tail_file_with_spaces(tmp_path: Path) -> None:
+    d = tmp_path / "my project"
+    d.mkdir()
+    f = d / "hello world.py"
+    f.write_text("first\nsecond\nthird\n")
+    result = supertool.dispatch(f"tail:{f}:2")
+    assert "third" in result
+
+
+def test_head_file_with_spaces(tmp_path: Path) -> None:
+    d = tmp_path / "my project"
+    d.mkdir()
+    f = d / "hello world.py"
+    f.write_text("first\nsecond\nthird\n")
+    result = supertool.dispatch(f"head:{f}:2")
+    assert "first" in result
+
+
+def test_around_file_with_spaces(tmp_path: Path) -> None:
+    d = tmp_path / "my project"
+    d.mkdir()
+    f = d / "hello world.py"
+    f.write_text("before\ntarget line\nafter\n")
+    result = supertool.dispatch(f"around:target:{f}:1")
+    assert "target line" in result
+    assert "before" in result
+    assert "after" in result
+
+
+def test_map_file_with_spaces(tmp_path: Path) -> None:
+    d = tmp_path / "my project"
+    d.mkdir()
+    f = d / "hello world.py"
+    f.write_text("def my_function():\n    pass\n")
+    result = supertool.dispatch(f"map:{f}")
+    assert "my_function" in result
+
+
+# ---------------------------------------------------------------------------
+# Error paths — invalid config, bad arguments
+# ---------------------------------------------------------------------------
+
 def test_dispatch_custom_op_invalid_config(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     config = tmp_path / ".supertool.json"
