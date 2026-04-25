@@ -141,6 +141,11 @@ def _is_compact() -> bool:
     return bool(_load_config().get("compact", False))
 
 
+def _rtk_enabled() -> bool:
+    """Check if RTK delegation is enabled in .supertool.json. Default: true."""
+    return bool(_load_config().get("rtk", True))
+
+
 # RTK integration — when rtk is installed, delegate read/grep/wc for compressed output
 _RTK_PATH: str | None = None
 _RTK_CHECKED = False
@@ -197,7 +202,7 @@ def render_file(path: str, offset: int = 0, limit: int = MAX_READ_LINES,
         return f"ERROR: file not found: {path}\n"
 
     # RTK delegation — simple reads without offset/filter/limit changes
-    if not grep_filter and offset == 0 and limit == MAX_READ_LINES and _has_rtk():
+    if not grep_filter and offset == 0 and limit == MAX_READ_LINES and _rtk_enabled() and _has_rtk():
         rtk_args = ["read", "-n", "--max-lines", str(MAX_READ_LINES)]
         if _is_compact():
             rtk_args += ["--level", "aggressive"]
@@ -279,7 +284,7 @@ def op_grep(pattern: str, path: str = ".", limit: int = MAX_GREP_RESULTS,
         return "ERROR: empty pattern\n"
 
     # RTK delegation — basic grep (no context, no count)
-    if not count_only and context == 0 and _has_rtk():
+    if not count_only and context == 0 and _rtk_enabled() and _has_rtk():
         rtk_args = ["grep", "-n", "-m", str(limit), pattern, path]
         rtk_out = _rtk_run(rtk_args)
         if rtk_out is not None:
@@ -495,7 +500,7 @@ def op_wc(path: str) -> str:
         return f"ERROR: file not found: {path}\n"
 
     # RTK delegation
-    if _has_rtk():
+    if _rtk_enabled() and _has_rtk():
         rtk_out = _rtk_run(["wc", path])
         if rtk_out is not None:
             return rtk_out + "\n"
