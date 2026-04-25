@@ -183,6 +183,102 @@ ENFORCE_STATE_FILE = os.path.expanduser("~/.claude/supertool-enforced")
 BLOCKED_TOOLS = {"Grep", "Glob", "LS"}
 BLOCKED_BASH_COMMANDS = {"cat", "find", "grep", "ls", "sed", "awk", "tail", "head"}
 
+# Built-in op names — custom ops/aliases with these names are ignored
+_BUILTIN_OPS = {"read", "grep", "glob", "ls", "tail", "head", "wc", "check", "around", "map"}
+
+
+# ---------------------------------------------------------------------------
+# Custom ops and aliases — config-driven dispatch extensions
+# ---------------------------------------------------------------------------
+
+def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
+    """Try to run op as a custom shell command from config["ops"].
+
+    Returns formatted output string on match, None if op is not a custom op.
+    """
+    config = _load_config()
+    ops = config.get("ops")
+    if not ops or op not in ops:
+        return None
+
+    entry = ops[op]
+    if isinstance(entry, str):
+        cmd_template = entry
+        timeout = config.get("timeout", 60)
+    elif isinstance(entry, dict):
+        cmd_template = entry.get("cmd", "")
+        timeout = entry.get("timeout", config.get("timeout", 60))
+    else:
+        return f"ERROR: invalid config for custom op {op!r}\n"
+
+    if not cmd_template:
+        return f"ERROR: empty command for custom op {op!r}\n"
+
+    # Build the command — replace {file} and {dir} placeholders
+    file_arg = parts[1] if len(parts) > 1 else ""
+    cmd = cmd_template.replace("{file}", shlex.quote(file_arg))
+    dir_arg = os.path.dirname(file_arg) if file_arg else "."
+    cmd = cmd.replace("{dir}", shlex.quote(dir_arg))
+
+    t0 = time.monotonic()
+    try:
+        result = subprocess.run(
+            cmd, shell=True, capture_output=True, text=True, timeout=timeout
+        )
+        elapsed = time.monotonic() - t0
+        output = result.stdout
+        if result.returncode != 0:
+            if result.stderr:
+                output += result.stderr
+            return f"FAIL ({elapsed:.2f}s)\n{output}"
+        return f"PASS ({elapsed:.2f}s)\n{output}"
+    except subprocess.TimeoutExpired:
+        elapsed = time.monotonic() - t0
+        return f"FAIL (timeout {elapsed:.1f}s > {timeout}s)\n"
+    except OSError as e:
+        return f"FAIL: {e}\n"
+
+
+_IN_ALIAS = False  # recursion guard — prevents alias-from-alias expansion
+
+
+def _resolve_alias(op: str, parts: List[str]) -> str | None:
+    """Try to expand op as an alias from config["aliases"].
+
+    Returns concatenated output of all expanded ops, None if not an alias.
+    Aliases expand to ops (built-in or custom) but NOT to other aliases.
+    """
+    global _IN_ALIAS
+    if _IN_ALIAS:
+        return None  # block recursive alias expansion
+
+    config = _load_config()
+    aliases = config.get("aliases")
+    if not aliases or op not in aliases:
+        return None
+
+    op_list = aliases[op]
+    if not isinstance(op_list, list):
+        return f"ERROR: alias {op!r} must be a list of ops\n"
+
+    if not op_list:
+        return ""
+
+    # Replace {file} and {dir} placeholders in each expanded op
+    file_arg = parts[1] if len(parts) > 1 else ""
+    dir_arg = os.path.dirname(file_arg) if file_arg else "."
+
+    _IN_ALIAS = True
+    try:
+        output_parts: List[str] = []
+        for expanded_op in op_list:
+            resolved = expanded_op.replace("{file}", file_arg)
+            resolved = resolved.replace("{dir}", dir_arg)
+            output_parts.append(dispatch(resolved))
+        return "".join(output_parts)
+    finally:
+        _IN_ALIAS = False
+
 
 # ---------------------------------------------------------------------------
 # Core operations (pure functions — all return the string to emit)
@@ -531,13 +627,30 @@ def _find_checks_config() -> str | None:
 
 
 def op_check(preset: str, path: str) -> str:
-    """Run a named validation check from .supertool-checks.json."""
+    """Run a named validation check.
+
+    Resolution order:
+    1. config["ops"] section in .supertool.json (unified config)
+    2. .supertool-checks.json (legacy file)
+    """
     if not preset:
         return "ERROR: empty preset name\n"
 
+    # 1. Try ops section in .supertool.json first
+    main_config = _load_config()
+    ops = main_config.get("ops", {})
+    if preset in ops:
+        result = _resolve_custom_op(preset, ["check", path])
+        if result is not None:
+            return result
+
+    # 2. Fall back to legacy .supertool-checks.json
     config_path = _find_checks_config()
     if not config_path:
-        return "ERROR: no .supertool-checks.json found in any parent directory\n"
+        if not ops:
+            return "ERROR: no .supertool-checks.json found in any parent directory\n"
+        available = ", ".join(sorted(ops.keys()))
+        return f"ERROR: unknown check {preset!r}. Available: {available}\n"
 
     try:
         with open(config_path) as f:
@@ -546,7 +659,9 @@ def op_check(preset: str, path: str) -> str:
         return f"ERROR: could not read {config_path}: {e}\n"
 
     if preset not in config:
-        available = ", ".join(sorted(config.keys()))
+        # Combine available from both sources
+        all_available = sorted(set(list(ops.keys()) + list(config.keys())))
+        available = ", ".join(all_available)
         return f"ERROR: unknown check {preset!r}. Available: {available}\n"
 
     entry = config[preset]
@@ -1240,6 +1355,80 @@ def _split_arg(arg: str) -> List[str]:
     return tokens
 
 
+def _parse_grep_args(parts: List[str]) -> tuple:
+    """Parse grep tokens, handling '::' in patterns (e.g. Class::CONST).
+
+    Format: grep:PATTERN:PATH:LIMIT:CONTEXT:count
+    The challenge: PATTERN may contain ':' (PHP ::, URL schemes, etc.).
+    Strategy: parse known trailing fields (count, context, limit) from the
+    right, then the path, and rejoin everything left as the pattern.
+    """
+    # parts[0] is 'grep', work with parts[1:]
+    args = parts[1:]
+    if not args:
+        return ("", ".", MAX_GREP_RESULTS, 0, False)
+
+    # Peel known trailing fields from the right
+    count_only = False
+    if args and args[-1] == "count":
+        count_only = True
+        args = args[:-1]
+
+    # Peel trailing ints: format is ...PATH:LIMIT:CONTEXT
+    # Two trailing ints = limit + context; one trailing int = limit only
+    context = 0
+    limit = MAX_GREP_RESULTS
+    trailing_ints = []
+    while len(args) >= 3 and args[-1].isdigit():
+        trailing_ints.insert(0, int(args[-1]))
+        args = args[:-1]
+    if len(trailing_ints) == 1:
+        limit = trailing_ints[0]
+    elif len(trailing_ints) >= 2:
+        limit = trailing_ints[0]
+        context = trailing_ints[1]
+
+    # Now args should be [pattern_parts..., path]
+    # The path is the last element; everything before it is the pattern
+    if len(args) >= 2:
+        path = args[-1] if args[-1] else "."
+        pattern = ":".join(args[:-1])
+    else:
+        # Single token: pattern only, no path
+        pattern = args[0] if args else ""
+        path = "."
+
+    return (pattern, path, limit, context, count_only)
+
+
+def _parse_around_args(parts: List[str]) -> tuple:
+    """Parse around tokens, handling '::' in patterns.
+
+    Format: around:PATTERN:PATH:N
+    Strategy: peel trailing int (N) from right, then path, rejoin rest as pattern.
+    """
+    args = parts[1:]
+    if not args:
+        return ("", "", 10)
+
+    # Peel N (int) from right
+    n = 10
+    if len(args) >= 3 and args[-1].isdigit():
+        n = int(args[-1])
+        args = args[:-1]
+
+    # Last token is path, everything before is pattern
+    if len(args) >= 2:
+        path = args[-1] if args[-1] else ""
+        pattern = ":".join(args[:-1])
+    else:
+        # Single token: pattern only, no path
+        pattern = args[0] if args else ""
+        path = ""
+
+    return (pattern, path, n)
+
+
 def dispatch(arg: str) -> str:
     """Parse 'op:arg1:arg2:...' and route to the matching op function."""
     header = f"--- {arg} ---\n"
@@ -1256,11 +1445,7 @@ def dispatch(arg: str) -> str:
                 grep_filter = parts[4][5:]
             body = op_read(path, offset, limit, grep_filter)
         elif op == "grep":
-            pattern = parts[1] if len(parts) > 1 else ""
-            path = parts[2] if len(parts) > 2 and parts[2] else "."
-            limit = int(parts[3]) if len(parts) > 3 and parts[3] else MAX_GREP_RESULTS
-            context = int(parts[4]) if len(parts) > 4 and parts[4] else 0
-            count_only = len(parts) > 5 and parts[5] == "count"
+            pattern, path, limit, context, count_only = _parse_grep_args(parts)
             body = op_grep(pattern, path, limit, context, count_only)
         elif op == "wc":
             path = parts[1] if len(parts) > 1 else ""
@@ -1284,17 +1469,24 @@ def dispatch(arg: str) -> str:
             path = parts[2] if len(parts) > 2 and parts[2] else ""
             body = op_check(preset, path)
         elif op == "around":
-            pattern = parts[1] if len(parts) > 1 else ""
-            path = parts[2] if len(parts) > 2 and parts[2] else ""
-            n = int(parts[3]) if len(parts) > 3 and parts[3] else 10
+            pattern, path, n = _parse_around_args(parts)
             body = op_around(pattern, path, n)
         elif op == "map":
             path = parts[1] if len(parts) > 1 else "."
             body = op_map(path)
         else:
-            body = (f"ERROR: unknown operation: {op}\n"
-                    f"Valid operations: read, grep, glob, ls, tail, head, "
-                    f"around, wc, check, map\n")
+            # Fallthrough: try custom ops, then aliases
+            custom = _resolve_custom_op(op, parts)
+            if custom is not None:
+                body = custom
+            else:
+                alias = _resolve_alias(op, parts)
+                if alias is not None:
+                    body = alias
+                else:
+                    body = (f"ERROR: unknown operation: {op}\n"
+                            f"Valid operations: read, grep, glob, ls, tail, "
+                            f"head, around, wc, check, map\n")
     except (ValueError, IndexError) as e:
         body = f"ERROR: argument parsing: {e}\n"
 

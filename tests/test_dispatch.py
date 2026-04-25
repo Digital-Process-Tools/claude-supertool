@@ -185,6 +185,133 @@ def test_split_arg_normal_colon_in_pattern_not_confused() -> None:
 
 
 # ---------------------------------------------------------------------------
+# _parse_grep_args — handles '::' in patterns (PHP static access, etc.)
+# ---------------------------------------------------------------------------
+
+def test_parse_grep_args_simple() -> None:
+    parts = ["grep", "TODO", "src/", "10"]
+    pattern, path, limit, context, count_only = supertool._parse_grep_args(parts)
+    assert pattern == "TODO"
+    assert path == "src/"
+    assert limit == 10
+    assert context == 0
+    assert count_only is False
+
+
+def test_parse_grep_args_double_colon_pattern() -> None:
+    """PHP :: in pattern — e.g. TransmissionStatus::STATUS_PENDING"""
+    parts = supertool._split_arg(
+        "grep:TransmissionStatus::STATUS_PENDING:Dvsi/**/*.php:50:1"
+    )
+    pattern, path, limit, context, count_only = supertool._parse_grep_args(parts)
+    assert pattern == "TransmissionStatus::STATUS_PENDING"
+    assert path == "Dvsi/**/*.php"
+    assert limit == 50
+    assert context == 1
+    assert count_only is False
+
+
+def test_parse_grep_args_double_colon_with_count() -> None:
+    parts = supertool._split_arg(
+        "grep:Foo::BAR:src/:20:0:count"
+    )
+    pattern, path, limit, context, count_only = supertool._parse_grep_args(parts)
+    assert pattern == "Foo::BAR"
+    assert path == "src/"
+    assert limit == 20
+    assert context == 0
+    assert count_only is True
+
+
+def test_parse_grep_args_no_limit_no_context() -> None:
+    parts = ["grep", "pattern", "path/"]
+    pattern, path, limit, context, count_only = supertool._parse_grep_args(parts)
+    assert pattern == "pattern"
+    assert path == "path/"
+    assert limit == supertool.MAX_GREP_RESULTS
+    assert context == 0
+
+
+def test_parse_grep_args_pattern_only() -> None:
+    parts = ["grep", "TODO"]
+    pattern, path, limit, context, count_only = supertool._parse_grep_args(parts)
+    assert pattern == "TODO"
+    assert path == "."
+
+
+def test_parse_grep_args_empty() -> None:
+    parts = ["grep"]
+    pattern, path, limit, context, count_only = supertool._parse_grep_args(parts)
+    assert pattern == ""
+    assert path == "."
+
+
+def test_parse_grep_args_pattern_and_path_only() -> None:
+    """Two tokens after 'grep' — pattern + path, no trailing ints."""
+    parts = ["grep", "TODO", "src/"]
+    pattern, path, limit, context, count_only = supertool._parse_grep_args(parts)
+    assert pattern == "TODO"
+    assert path == "src/"
+    assert limit == supertool.MAX_GREP_RESULTS
+    assert context == 0
+
+
+def test_parse_grep_args_triple_colon_pattern() -> None:
+    """Edge case: namespace\\Class::METHOD pattern"""
+    parts = supertool._split_arg(
+        "grep:A::B::C:src/:5"
+    )
+    pattern, path, limit, context, count_only = supertool._parse_grep_args(parts)
+    assert pattern == "A::B::C"
+    assert path == "src/"
+    assert limit == 5
+
+
+# ---------------------------------------------------------------------------
+# _parse_around_args — handles '::' in patterns
+# ---------------------------------------------------------------------------
+
+def test_parse_around_args_simple() -> None:
+    parts = ["around", "TODO", "src/file.py", "15"]
+    pattern, path, n = supertool._parse_around_args(parts)
+    assert pattern == "TODO"
+    assert path == "src/file.py"
+    assert n == 15
+
+
+def test_parse_around_args_double_colon() -> None:
+    parts = supertool._split_arg("around:Class::METHOD:src/file.php:10")
+    pattern, path, n = supertool._parse_around_args(parts)
+    assert pattern == "Class::METHOD"
+    assert path == "src/file.php"
+    assert n == 10
+
+
+def test_parse_around_args_no_n() -> None:
+    parts = ["around", "pattern", "file.py"]
+    pattern, path, n = supertool._parse_around_args(parts)
+    assert pattern == "pattern"
+    assert path == "file.py"
+    assert n == 10
+
+
+def test_parse_around_args_pattern_only() -> None:
+    parts = ["around", "TODO"]
+    pattern, path, n = supertool._parse_around_args(parts)
+    assert pattern == "TODO"
+    assert path == ""
+    assert n == 10
+
+
+def test_parse_around_args_empty() -> None:
+    parts = ["around"]
+    pattern, path, n = supertool._parse_around_args(parts)
+    assert pattern == ""
+    assert path == ""
+    assert n == 10
+
+
+# ---------------------------------------------------------------------------
 # main() integration
 # ---------------------------------------------------------------------------
 
@@ -291,3 +418,101 @@ def test_log_file_uses_temp_dir() -> None:
     log_dir = os.path.dirname(supertool.LOG_FILE)
     assert os.path.isdir(log_dir), f"LOG_FILE dir {log_dir} does not exist"
     assert supertool.LOG_FILE.endswith("supertool-calls.log")
+
+
+# ---------------------------------------------------------------------------
+# Error paths — OSError, invalid config, bad arguments
+# ---------------------------------------------------------------------------
+
+def test_dispatch_read_oserror() -> None:
+    result = supertool.dispatch("read:/nonexistent/path/that/does/not/exist.py")
+    assert "ERROR" in result
+
+
+def test_dispatch_around_empty_path() -> None:
+    result = supertool.dispatch("around:pattern")
+    assert "ERROR" in result or "around" in result
+
+
+def test_dispatch_grep_invalid_regex_fallback(tmp_path: Path) -> None:
+    """Invalid regex in read grep filter should fall back to re.escape."""
+    f = tmp_path / "test.py"
+    f.write_text("foo[bar\nbaz\n")
+    # '[bar' is invalid regex — should fall back to literal match
+    result = supertool.dispatch(f"read:{f}:::grep=[bar")
+    assert "foo[bar" in result
+
+
+def test_dispatch_wc_oserror() -> None:
+    result = supertool.dispatch("wc:/nonexistent/file.txt")
+    assert "ERROR" in result
+
+
+def test_dispatch_ls_oserror() -> None:
+    result = supertool.dispatch("ls:/nonexistent/dir/that/does/not/exist/")
+    assert "ERROR" in result
+
+
+def test_dispatch_tail_oserror() -> None:
+    result = supertool.dispatch("tail:/nonexistent/file.txt")
+    assert "ERROR" in result
+
+
+def test_dispatch_head_oserror() -> None:
+    result = supertool.dispatch("head:/nonexistent/file.txt")
+    assert "ERROR" in result
+
+
+def test_dispatch_glob_branch(tmp_path: Path) -> None:
+    """Verify glob dispatch branch is exercised."""
+    f = tmp_path / "hello.txt"
+    f.write_text("hi\n")
+    result = supertool.dispatch(f"glob:{tmp_path}/*.txt")
+    assert "hello.txt" in result
+
+
+def test_dispatch_grep_empty_pattern() -> None:
+    result = supertool.dispatch("grep:")
+    assert "ERROR" in result
+
+
+def test_dispatch_invalid_int_argument() -> None:
+    """Non-numeric where int expected triggers ValueError handler."""
+    result = supertool.dispatch("read:file.py:notanumber")
+    assert "ERROR" in result
+
+
+def test_dispatch_check_unknown_preset(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    config = tmp_path / ".supertool.json"
+    config.write_text('{"ops": {"lint": "php -l {file}"}}')
+    supertool._CONFIG = None
+    supertool._CONFIG_CHECKED = False
+    result = supertool.dispatch("check:nonexistent:file.py")
+    assert "ERROR" in result or "unknown" in result.lower()
+    supertool._CONFIG = None
+    supertool._CONFIG_CHECKED = False
+
+
+def test_dispatch_custom_op_invalid_config(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    config = tmp_path / ".supertool.json"
+    config.write_text('{"ops": {"broken": 42}}')
+    supertool._CONFIG = None
+    supertool._CONFIG_CHECKED = False
+    result = supertool.dispatch("broken:file.py")
+    assert "ERROR" in result or "invalid" in result.lower()
+    supertool._CONFIG = None
+    supertool._CONFIG_CHECKED = False
+
+
+def test_dispatch_alias_invalid_config(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    config = tmp_path / ".supertool.json"
+    config.write_text('{"aliases": {"bad": "not-a-list"}}')
+    supertool._CONFIG = None
+    supertool._CONFIG_CHECKED = False
+    result = supertool.dispatch("bad:file.py")
+    assert "ERROR" in result or "must be a list" in result.lower()
+    supertool._CONFIG = None
+    supertool._CONFIG_CHECKED = False
