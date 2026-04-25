@@ -383,6 +383,13 @@ def op_grep(pattern: str, path: str = ".", limit: int = MAX_GREP_RESULTS,
     if "\\|" in pattern:
         pattern = pattern.replace("\\|", "|")
 
+    # Early exit if path doesn't exist (don't silently return 0 results)
+    if path != "." and not os.path.isfile(path) and not os.path.isdir(path):
+        # Could be a glob pattern — check if it expands to anything
+        from glob import glob as _glob
+        if not _glob(path, recursive=True):
+            return f"ERROR: path not found: {path}\n"
+
     # RTK delegation — basic grep (no context, no count)
     if not count_only and context == 0 and _rtk_enabled() and _has_rtk():
         rtk_args = ["grep", "-n", "-m", str(limit), pattern, path]

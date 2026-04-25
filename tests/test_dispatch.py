@@ -471,6 +471,12 @@ def test_dispatch_glob_branch(tmp_path: Path) -> None:
     assert "hello.txt" in result
 
 
+def test_dispatch_grep_path_not_found() -> None:
+    """Grep on nonexistent path should say 'not found', not '0 results'."""
+    result = supertool.dispatch("grep:TODO:/nonexistent/path/file.php")
+    assert "not found" in result.lower() or "ERROR" in result
+
+
 def test_dispatch_grep_empty_pattern() -> None:
     result = supertool.dispatch("grep:")
     assert "ERROR" in result
