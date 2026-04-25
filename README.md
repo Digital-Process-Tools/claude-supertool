@@ -4,29 +4,34 @@
 
 # supertool
 
-Batched file operations for autonomous Claude Code runs. Collapses N reads/greps/globs into **one Bash round-trip** — fewer output tokens, less cache growth, less wall time.
+**Cut your Claude Code file operation costs in half.**
 
-One Python file, zero required deps, Python 3.9+. Optional: `tree-sitter-language-pack` or `universal-ctags` for richer `map` output.
+Every time Claude reads a file, it re-sends the entire conversation — system prompt, CLAUDE.md, rules, every prior message. Read 7 files? Pay that prefix 7 times. SuperTool batches all 7 into **one call**. Same files, same output, half the tokens.
+
+One Python file. Zero deps. Python 3.9+.
+
+```bash
+# 7 operations, 1 round-trip
+supertool 'read:src/Module.py' 'read:src/Auth.py' 'grep:TODO:src/:20' 'map:src/'
+```
 
 ---
 
-## Why this exists
+## The problem
 
-Every separate tool round-trip re-pays the cached prefix (system prompt + CLAUDE.md + rules + tool schemas + prior turns). Anthropic prompt caching is real and billed at **10% of input price**, so re-pay isn't free but also isn't full re-pay. Still worth batching.
+Claude Code's tool system charges you per round-trip, not per file. Each tool call re-transmits the cached conversation prefix. Anthropic caches it at 10% of input price — cheaper than full re-read, but not free. And it adds up fast.
 
-Concrete comparison — 3 separate reads vs 1 SuperTool call with 3 reads (50K stable prefix, 2K per file, 300-token tool_use):
+An autonomous agent documenting a component needs ~5 files and 2 greps. Without batching, that's 10 round-trips. With SuperTool, it's 2-3.
 
-| Cost axis        | 3 separate Reads | 1 SuperTool call | Delta    |
-|------------------|-----------------:|-----------------:|---------:|
-| Cache reads      |           156.9K |              50K |  –106.9K |
-| Cache writes     |             6.9K |             6.4K |       ~0 |
-| Output tokens    |              900 |              400 |     –500 |
-| Round-trips      |                3 |                1 |       –2 |
-| Wall time        |           ~3–9 s |           ~1–3 s | –2–6 s   |
+| Mode                       | Cache reads | Output | Turns | Cost savings |
+| -------------------------- | ----------: | -----: | ----: | -----------: |
+| No batching                |        436K |  1,400 |    10 |            — |
+| SuperTool                  |        133K |    750 |     3 |     **50%** |
+| Pre-computed + SuperTool   |       85.5K |    600 |     2 |     **56%** |
 
-Dollar delta per batch: **Sonnet ~$0.04, Opus ~$0.19**. Not dramatic per call — compounds across many batches × hundreds of autonomous runs per week.
+**50% fewer tokens on read operations.** At scale (200 tasks/run), that's real money — and **3-4x faster** wall time.
 
-**Corollary — do not propose caching reads.** The bytes still land in context whether they came from disk or cache. The lever is round-trip count, not read latency.
+The savings come from fewer prefix re-reads, not from reading files faster. The bytes still land in context either way. **Fewer turns = fewer re-reads = the only lever that works.**
 
 ---
 
@@ -122,35 +127,59 @@ claude -p "..." --permission-mode bypassPermissions \
 | `tail` | `tail:PATH:N` | Last N lines (default 20) |
 | `head` | `head:PATH:N` | First N lines (default 20) |
 | `wc` | `wc:PATH` | Line/word/char count (like unix `wc`). Output: `LINES WORDS CHARS PATH`. |
-| `check` | `check:PRESET:PATH` | Run named validation from `.supertool-checks.json`. Config maps presets to shell commands with `{file}` placeholder. Supports per-preset timeout. |
+| `check` | `check:PRESET:PATH` | Run a custom op by name (legacy syntax — prefer direct ops like `phpstan:file`). Reads from `ops` in `.supertool.json`, falls back to `.supertool-checks.json`. |
 | `around` | `around:PATTERN:PATH` or `around:PATTERN:PATH:N` | Show N lines (default 10) before and after the **first** match of PATTERN in a single file. Uses line-numbered output like `read`. |
 | `map` | `map:PATH` | Symbol map of a file or directory. Shows classes, functions, methods, constants as an indented tree with line numbers. Three-tier: tree-sitter → ctags → regex. Supports PHP, Python, JS, TS, Go, Rust, Java, Ruby. |
 
-### `check` configuration
+### `.supertool.json` — project configuration
 
-Create a `.supertool-checks.json` in your project root. Each key is a preset name, mapped to a command template with `{file}` placeholder:
+Create a `.supertool.json` in your project root. It holds settings, custom ops, and aliases:
 
 ```json
 {
-  "phpstan": {
-    "cmd": "php -d memory_limit=512M ./vendor/bin/phpstan analyse --no-progress {file}",
-    "timeout": 120
+  "compact": true,
+  "rtk": false,
+  "ops": {
+    "phpstan": {
+      "cmd": "php -d memory_limit=512M ./vendor/bin/phpstan analyse --no-progress {file}",
+      "timeout": 120
+    },
+    "phpunit": {
+      "cmd": "./vendor/bin/phpunit --no-coverage -d memory_limit=-1 {file}",
+      "timeout": 300
+    },
+    "lint": "php -l {file}",
+    "prettier": "npx prettier --check {file}"
   },
-  "lint": "php -l {file}",
-  "test": {
-    "cmd": "./vendor/bin/phpunit --no-coverage {file}",
-    "timeout": 300
-  },
-  "prettier": "npx prettier --check {file}"
+  "aliases": {
+    "verify": ["phpstan:{file}", "lint:{file}"],
+    "qa": ["phpstan:{file}", "lint:{file}", "prettier:{file}"]
+  }
 }
 ```
 
-Presets can be a string (shorthand, 60s default timeout) or an object with `cmd` and `timeout`. Supertool walks up from cwd to find the config file.
+**Ops** are custom shell commands. Use them like built-in ops — same syntax, same batching:
 
 ```bash
-# Verify after editing — one round-trip for both checks
-supertool 'check:phpstan:src/MyClass.php' 'check:lint:src/MyClass.php'
+supertool 'phpstan:src/MyClass.php' 'phpunit:tests/MyClassTest.php'
 ```
+
+**Aliases** expand one name to multiple ops in a single call:
+
+```bash
+# Runs phpstan + lint in one round-trip
+supertool 'verify:src/MyClass.php'
+```
+
+Ops accept `{file}` and `{dir}` (dirname of file) placeholders. Each op can be a string (shorthand, 60s default timeout) or an object with `cmd` and `timeout`.
+
+**Dispatch order:** built-in ops → custom ops → aliases. Built-ins always win. Aliases don't recurse.
+
+Supertool walks up from cwd to find `.supertool.json`.
+
+#### Legacy `check:` syntax
+
+The `check:PRESET:PATH` op still works — it reads from the `ops` section first, then falls back to `.supertool-checks.json` for backward compatibility. New projects should use direct ops (`phpstan:file`) instead of `check:phpstan:file`.
 
 ### `map` — symbol extraction
 
@@ -197,15 +226,7 @@ Without either, regex fallback works for all supported languages — just no nes
 
 ### Compact mode
 
-Create a `.supertool.json` in your project root to enable compact reads:
-
-```json
-{
-  "compact": true
-}
-```
-
-When enabled, `read` ops skip blank lines and comment-only lines (`//`, `#`, `/* */`, `<!-- -->`, PHPDoc `*` lines), preserving original line numbers. This reduces token cost for exploration reads without losing structure.
+Set `"compact": true` in `.supertool.json` to enable compact reads. When enabled, `read` ops skip blank lines and comment-only lines (`//`, `#`, `/* */`, `<!-- -->`, PHPDoc `*` lines), preserving original line numbers. Reduces token cost for exploration without losing structure.
 
 Compact is disabled when using `grep=` filter or `offset` (editing needs exact lines).
 
@@ -296,7 +317,7 @@ awk -F'|' '
 ' /tmp/supertool-calls.log
 ```
 
-Multiply by ~$0.02 Sonnet / $0.095 Opus per saved round-trip for a rough dollar estimate.
+Each saved round-trip avoids one prefix cache re-read. The bigger your prefix, the bigger the saving per trip.
 
 ---
 
