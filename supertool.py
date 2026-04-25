@@ -379,6 +379,10 @@ def op_grep(pattern: str, path: str = ".", limit: int = MAX_GREP_RESULTS,
     if not pattern:
         return "ERROR: empty pattern\n"
 
+    # Auto-convert bash grep BRE alternation (\|) to Python regex (|)
+    if "\\|" in pattern:
+        pattern = pattern.replace("\\|", "|")
+
     # RTK delegation — basic grep (no context, no count)
     if not count_only and context == 0 and _rtk_enabled() and _has_rtk():
         rtk_args = ["grep", "-n", "-m", str(limit), pattern, path]
@@ -454,6 +458,8 @@ def op_around(pattern: str, path: str, n: int = 10) -> str:
     """Show N lines before and after the first match of PATTERN in file at PATH."""
     if not pattern:
         return "ERROR: empty pattern\n"
+    if "\\|" in pattern:
+        pattern = pattern.replace("\\|", "|")
     if not path:
         return "ERROR: empty path\n"
     if os.path.isdir(path):
@@ -767,6 +773,7 @@ _TS_DEF_NODES: Dict[str, Dict[str, str]] = {
         "trait_declaration": "trait", "enum_declaration": "enum",
         "method_declaration": "method", "function_definition": "function",
         "const_element": "const", "property_declaration": "property",
+        "use_declaration": "use",
     },
     "python": {
         "class_definition": "class", "function_definition": "def",

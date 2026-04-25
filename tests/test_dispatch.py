@@ -583,6 +583,23 @@ def test_around_file_with_spaces(tmp_path: Path) -> None:
     assert "after" in result
 
 
+def test_grep_bash_alternation_backslash_pipe(tmp_path: Path) -> None:
+    """Bash grep uses \\| for alternation; supertool should auto-convert to |."""
+    f = tmp_path / "code.php"
+    f.write_text("function delete() {}\nfunction unlink() {}\nfunction getPath() {}\n")
+    result = supertool.dispatch(f"grep:delete\\|unlink\\|getPath:{f}")
+    assert "delete" in result
+    assert "unlink" in result
+    assert "getPath" in result
+
+
+def test_around_bash_alternation_backslash_pipe(tmp_path: Path) -> None:
+    f = tmp_path / "code.php"
+    f.write_text("line1\nfunction delete() {}\nline3\n")
+    result = supertool.dispatch(f"around:delete\\|unlink:{f}:1")
+    assert "delete" in result
+
+
 def test_map_file_with_spaces(tmp_path: Path) -> None:
     d = tmp_path / "my project"
     d.mkdir()

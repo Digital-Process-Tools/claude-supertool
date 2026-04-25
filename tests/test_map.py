@@ -372,6 +372,29 @@ def test_map_tree_sitter_tier(tmp_path: Path, enable_tree_sitter) -> None:
     assert "my_method" in out
 
 
+@pytest.mark.skipif(
+    not _has_any_tree_sitter(),
+    reason="no tree-sitter package installed"
+)
+def test_map_php_trait_usage(tmp_path: Path, enable_tree_sitter) -> None:
+    """PHP use TraitName; inside a class should appear in map output."""
+    f = tmp_path / "MyClass.php"
+    f.write_text("""<?php
+class MyClass {
+    use FirstTrait;
+    use SecondTrait;
+
+    public function doSomething(): void {}
+}
+""")
+    out = supertool.op_map(str(f))
+    assert "tier: tree-sitter" in out
+    assert "class MyClass" in out
+    assert "use FirstTrait" in out
+    assert "use SecondTrait" in out
+    assert "method doSomething" in out
+
+
 # ---------------------------------------------------------------------------
 # map — additional coverage for branches and error paths
 # ---------------------------------------------------------------------------
