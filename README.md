@@ -145,7 +145,7 @@ Create a `.supertool.json` in your project root. Supertool walks up from cwd to 
 {
   "introduction": "This project uses supertool for batched file reads and static analysis. Invoke with: ./supertool 'read:src/app/Module.py' 'grep:pattern:src/'",
 
-  "output-format": "Each operation returns a header followed by its output:\n\n```\n--- read:src/app/Module.py ---\n(45 lines, 1230 bytes)\n     1→import os\n     2→import sys\n\n--- grep:class:src/app/:5 ---\n(2 results, limit 5)\nsrc/app/Module.py\n  4:class Module:\nsrc/app/Config.py\n  8:class Config:\n```",
+  "output-format": "Each operation returns a header followed by its output:\n\n--- read:src/app/Module.py ---\n(45 lines, 1230 bytes)\n     1→import os\n     2→import sys\n\n--- grep:class:src/app/:5 ---\n(2 results, limit 5)\nsrc/app/Module.py\n  4:class Module:\nsrc/app/Config.py\n  8:class Config:",
 
   "builtin-ops": {
     "read":  { "syntax": "read:PATH[:OFFSET:LIMIT][:::grep=PATTERN]", "description": "Read a file, optionally sliced or filtered.", "example": "read:src/app/Module.py:1:50" },
