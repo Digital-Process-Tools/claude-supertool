@@ -68,7 +68,7 @@ Standalone install doesn't wire up the hooks (no plugin system). You get the bin
 
 ### Interactive (permissive mode — default)
 
-Just install. The session-start hook injects a batching prompt that tells the model about SuperTool. The model picks it up when it helps; falls back to native `Grep`/`Read` when those are better. Ad-hoc `find` and `grep` stay available.
+Just install. The session-start hook runs `./supertool 'introduction' 'output-format' 'ops'` to output the project-specific operations reference from `.supertool.json`. The model learns what's available and how to batch. Falls back to native `Grep`/`Read` when those are better.
 
 ### Autonomous / headless (enforced mode)
 
@@ -127,7 +127,6 @@ claude -p "..." --permission-mode bypassPermissions \
 | `tail` | `tail:PATH:N` | Last N lines (default 20) |
 | `head` | `head:PATH:N` | First N lines (default 20) |
 | `wc` | `wc:PATH` | Line/word/char count (like unix `wc`). Output: `LINES WORDS CHARS PATH`. |
-| `check` | `check:PRESET:PATH` | Run a custom op by name (legacy syntax — prefer direct ops like `phpstan:file`). Reads from `ops` in `.supertool.json`, falls back to `.supertool-checks.json`. |
 | `around` | `around:PATTERN:PATH` or `around:PATTERN:PATH:N` | Show N lines (default 10) before and after the **first** match of PATTERN in a single file. Uses line-numbered output like `read`. |
 | `map` | `map:PATH` | Symbol map of a file or directory. Shows classes, functions, methods, constants as an indented tree with line numbers. Three-tier: tree-sitter → ctags → regex. Supports PHP, Python, JS, TS, Go, Rust, Java, Ruby. |
 | `introduction` | `introduction` | Output the project introduction text from `.supertool.json`. No `---` dispatch header — clean markdown. |
@@ -138,13 +137,15 @@ claude -p "..." --permission-mode bypassPermissions \
 
 ### `.supertool.json` — project configuration
 
+Supertool works with no configuration. The `.supertool.json` is optional — it enables self-documenting ops for LLM onboarding via `./supertool 'introduction' 'ops'`.
+
 Create a `.supertool.json` in your project root. Supertool walks up from cwd to find it. A starter template ships with the plugin as `.supertool.example.json`.
 
 ```json
 {
   "introduction": "This project uses supertool for batched file reads and static analysis. Invoke with: ./supertool 'read:src/app/Module.py' 'grep:pattern:src/'",
 
-  "output-format": "Each op result is separated by a header line: === OP: read:src/app/Module.py ===\nLine-numbered output follows (cat -n style).",
+  "output-format": "Each operation returns a header followed by its output:\n\n```\n--- read:src/app/Module.py ---\n(45 lines, 1230 bytes)\n     1→import os\n     2→import sys\n\n--- grep:class:src/app/:5 ---\n(2 results, limit 5)\nsrc/app/Module.py\n  4:class Module:\nsrc/app/Config.py\n  8:class Config:\n```",
 
   "builtin-ops": {
     "read":  { "syntax": "read:PATH[:OFFSET:LIMIT][:::grep=PATTERN]", "description": "Read a file, optionally sliced or filtered.", "example": "read:src/app/Module.py:1:50" },
@@ -199,7 +200,7 @@ Create a `.supertool.json` in your project root. Supertool walks up from cwd to 
 
 Use this in session-start hooks or agent prompts to onboard LLMs to your project's supertool setup without reading config files manually.
 
-**`builtin-ops`** entries document built-in operations (`syntax`, `description`, `example`). Set `"status": 0` to hide an entry from `./supertool 'ops'` output. These are documentation only — they don't change behavior.
+**`builtin-ops`** entries document built-in operations (`syntax`, `description`, `example`). Set `"status": 0` to hide an entry from `./supertool 'ops'` output (works on `builtin-ops`, `ops`, and `aliases`). These are documentation only — they don't change behavior.
 
 **`ops`** are custom shell commands called directly by name:
 
@@ -371,6 +372,8 @@ Run the suite:
 python3 -m pytest tests/
 ```
 
+293 tests, 80% minimum coverage (enforced by pytest-cov). Current: 94%.
+
 Enable the pre-push hook (runs pytest + enforces 80% coverage before every push):
 
 ```bash
@@ -397,7 +400,7 @@ The hook is in `.githooks/pre-push`, committed to the repo. Bypass with `git pus
 
 ## Design decisions
 
-- **One file.** `supertool.py` is ~760 LoC (13 ops, 3 integration tiers). No package, no `setup.py`, no required deps. Drop in and use.
+- **One file.** `supertool.py` is ~980 LoC (16 ops, 3 integration tiers). No package, no `setup.py`, no required deps. Drop in and use.
 - **Python 3.9+.** macOS ships 3.9 via CommandLineTools; we don't force upgrades.
 - **No MCP server.** MCP is server-process-and-JSON-RPC ceremony for what's literally "run a script, get output." A Bash-invoked binary is simpler, faster, and plugs into Claude Code's existing `--allowedTools`/`--disallowedTools` flow.
 - **Enforcement via PreToolUse hook, not config mutation.** The plugin doesn't edit your `settings.json`. Toggling is a state file (`~/.claude/supertool-enforced`) read by the hook. Your config stays yours.

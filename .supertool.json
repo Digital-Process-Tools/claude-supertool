@@ -1,0 +1,65 @@
+{
+  "compact": false,
+  "rtk": false,
+  "introduction": "supertool batches multiple file operations into one Bash call.\n\nInvoke via Bash:\n./supertool \\\n    'read:supertool.py' \\\n    'read:tests/test_ops.py' \\\n    'grep:def op_:supertool.py:20' \\\n    'map:supertool.py'\n\nRules:\n- One call, many ops. 6-7 per call is normal. Each separate call wastes money.\n- Paths are relative to project root.\n- Single quotes around each op.\n- Use Read tool ONLY for the file you're about to Edit — supertool for everything else.",
+  "output-format": "Each operation returns a header followed by its output:\n\n```\n--- read:supertool.py ---\n(979 lines, 35000 bytes)\n     1→#!/usr/bin/env python3\n     2→\n     3→import os\n     4→import sys\n\n--- grep:def op_:supertool.py:5 ---\n(3 results, limit 5)\nsupertool.py\n  362:def op_read  [362]\n  367:def op_grep  [367]\n  464:def op_around  [464]\n\n--- map:supertool.py ---\n(1 files, tier: tree-sitter)\nsupertool.py (979 lines)\n  def op_read  [362]\n  def op_grep  [367]\n  def op_around  [464]\n```",
+  "builtin-ops": {
+    "read": {
+      "syntax": "read:PATH[:OFFSET:LIMIT]",
+      "description": "Read file (first 300 lines, 20KB cap)",
+      "example": "read:supertool.py:1:50"
+    },
+    "read-grep": {
+      "syntax": "read:PATH:::grep=PATTERN",
+      "description": "Inline filter — only matching lines, original line numbers preserved",
+      "example": "read:supertool.py:::grep=def op_"
+    },
+    "grep": {
+      "syntax": "grep:PATTERN:PATH[:LIMIT[:CONTEXT]]",
+      "description": "Search (10 results default). CONTEXT shows N surrounding lines before/after each match",
+      "example": "grep:dispatch:supertool.py:10:2"
+    },
+    "grep-count": {
+      "syntax": "grep:PATTERN:PATH:LIMIT:CONTEXT:count",
+      "description": "Count mode — match counts per file, no content",
+      "example": "grep:def:supertool.py:100:0:count"
+    },
+    "around": {
+      "syntax": "around:PATTERN:PATH[:N]",
+      "description": "First match in a single file + N lines context (default 10). One-shot grep+read",
+      "example": "around:def dispatch:supertool.py:15"
+    },
+    "glob": {
+      "syntax": "glob:PATTERN",
+      "description": "Find files (supports **). Auto-reads if concrete path (no wildcards)",
+      "example": "glob:tests/**/*.py"
+    },
+    "ls": {
+      "syntax": "ls:PATH",
+      "description": "List directory contents (dirs get trailing /)",
+      "example": "ls:tests/"
+    },
+    "tail": {
+      "syntax": "tail:PATH:N",
+      "description": "Last N lines (default 20)",
+      "example": "tail:supertool.py:30"
+    },
+    "head": {
+      "syntax": "head:PATH:N",
+      "description": "First N lines (default 20)",
+      "example": "head:supertool.py:30"
+    },
+    "wc": {
+      "syntax": "wc:PATH",
+      "description": "Line/word/char count",
+      "example": "wc:supertool.py"
+    },
+    "map": {
+      "syntax": "map:PATH",
+      "description": "Symbol tree (classes, functions, methods, constants). Three-tier: tree-sitter > ctags > regex",
+      "example": "map:supertool.py"
+    }
+  },
+  "ops": {},
+  "aliases": {}
+}
