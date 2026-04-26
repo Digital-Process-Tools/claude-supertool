@@ -130,6 +130,11 @@ claude -p "..." --permission-mode bypassPermissions \
 | `check` | `check:PRESET:PATH` | Run a custom op by name (legacy syntax — prefer direct ops like `phpstan:file`). Reads from `ops` in `.supertool.json`, falls back to `.supertool-checks.json`. |
 | `around` | `around:PATTERN:PATH` or `around:PATTERN:PATH:N` | Show N lines (default 10) before and after the **first** match of PATTERN in a single file. Uses line-numbered output like `read`. |
 | `map` | `map:PATH` | Symbol map of a file or directory. Shows classes, functions, methods, constants as an indented tree with line numbers. Three-tier: tree-sitter → ctags → regex. Supports PHP, Python, JS, TS, Go, Rust, Java, Ruby. |
+| `introduction` | `introduction` | Output the project introduction text from `.supertool.json`. No `---` dispatch header — clean markdown. |
+| `output-format` | `output-format` | Output format examples from `.supertool.json`. Shows what responses look like. |
+| `ops` | `ops` | Full operations reference from `.supertool.json` — built-in ops, custom ops, and aliases with descriptions and examples. |
+
+**LLM onboarding in one call:** `./supertool 'introduction' 'output-format' 'ops'` — outputs everything an LLM needs to use supertool.
 
 ### `.supertool.json` — project configuration
 
