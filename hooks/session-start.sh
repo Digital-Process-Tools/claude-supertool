@@ -1,45 +1,11 @@
 #!/bin/bash
-# SessionStart hook — injects the batching prompt into context and
-# creates a ./supertool symlink in the project root if missing.
+# SessionStart hook — creates ./supertool symlink and outputs
+# self-documentation from .supertool.json for LLM onboarding.
 
 # Create ./supertool symlink so the model can call it from any project
 if [ ! -e "./supertool" ]; then
     ln -sf "${CLAUDE_PLUGIN_ROOT}/supertool.py" "./supertool" 2>/dev/null
 fi
 
-cat <<'EOF'
-## SuperTool — batched file operations
-
-`./supertool` collapses N file ops into one Bash round-trip. Each saved
-round-trip reduces output tokens (not cached) and cuts wall-time latency.
-**Six or seven ops per call is routine; two is too few.**
-
-Realistic batch (7 ops, 1 round-trip):
-
-    ./supertool \
-        'read:src/Module.py' \
-        'read:src/Permissions.py' \
-        'read:src/Options.py' \
-        'grep:extends:src/:20' \
-        'grep:@related:src/:10' \
-        'glob:src/Components/**/*.xml' \
-        'glob:src/EventsManagers/*.py'
-
-Operations: read:PATH[:OFFSET:LIMIT] · read:PATH:::grep=PATTERN ·
-grep:PATTERN:PATH[:LIMIT[:CONTEXT]] · grep:...:count ·
-glob:PATTERN (supports **) · ls:PATH · tail:PATH:N · head:PATH:N ·
-wc:PATH · around:PATTERN:PATH[:N] · check:PRESET:PATH ·
-map:PATH (symbol tree: classes/functions/methods)
-
-**Anti-patterns — each wastes a round-trip:**
-
-- `glob:concrete/path.xml` then `read:concrete/path.xml` — glob without
-  wildcards is useless; just `read:`. (The tool auto-reads here, but you
-  still burned a turn thinking about it.)
-- `grep:FOO:single_file.py` then `read:single_file.py` — same file, two
-  turns. (Auto-read on grep handles it, but again: one turn wasted.)
-- Any second supertool call whose ops could have fit in the first.
-
-**Self-check:** if you see `[auto-read: ...]` in output, supertool just
-salvaged a wasted turn you asked for. Batch up front next time.
-EOF
+# Output self-documentation from .supertool.json (fallback if no config)
+./supertool 'introduction' 'output-format' 'ops'

@@ -257,9 +257,13 @@ def _resolve_alias(op: str, parts: List[str]) -> str | None:
     if not aliases or op not in aliases:
         return None
 
-    op_list = aliases[op]
+    alias_def = aliases[op]
+    if not isinstance(alias_def, dict):
+        return f"ERROR: alias {op!r} must be an object with 'ops' key\n"
+
+    op_list = alias_def.get("ops", [])
     if not isinstance(op_list, list):
-        return f"ERROR: alias {op!r} must be a list of ops\n"
+        return f"ERROR: alias {op!r} 'ops' must be a list\n"
 
     if not op_list:
         return ""
@@ -1443,6 +1447,96 @@ def _parse_around_args(parts: List[str]) -> tuple:
     return (pattern, path, n)
 
 
+def op_introduction() -> str:
+    """Output the project-specific introduction text from .supertool.json."""
+    config = _load_config()
+    intro = config.get("introduction", "")
+    if not intro:
+        return "No introduction configured in .supertool.json\n"
+    return str(intro) + "\n\n"
+
+
+def op_output_format() -> str:
+    """Output the output format examples from .supertool.json."""
+    config = _load_config()
+    fmt = config.get("output-format", "")
+    if not fmt:
+        return "No output-format configured in .supertool.json\n"
+    return str(fmt) + "\n\n"
+
+
+def op_ops() -> str:
+    """Output the ops reference from .supertool.json (builtin-ops + ops sections).
+
+    Source of truth is the JSON config. If no config exists, falls back to
+    listing built-in op names without descriptions.
+    """
+    config = _load_config()
+    builtin_ops = config.get("builtin-ops", {})
+    custom_ops = config.get("ops", {})
+    lines: List[str] = []
+
+    if not builtin_ops and not custom_ops:
+        # No config — bare fallback listing built-in names
+        lines.append("No descriptions configured in .supertool.json")
+        lines.append("")
+        lines.append("Built-in operations: " + ", ".join(sorted(_BUILTIN_OPS)))
+        lines.append("")
+        lines.append("Add a \"builtin-ops\" section to .supertool.json to describe them.")
+        return "\n".join(lines) + "\n"
+
+    # Operations section — built-in and custom merged into one flat list
+    has_ops = False
+    if builtin_ops or custom_ops:
+        lines.append("## Operations\n")
+        has_ops = True
+
+    if builtin_ops:
+        for name, info in builtin_ops.items():
+            if not isinstance(info, dict):
+                continue
+            if not info.get("status", 1):
+                continue
+            syntax = info.get("syntax", name)
+            desc = info.get("description", "")
+            example = info.get("example", "")
+            lines.append(f"- `{syntax}` — {desc}" if desc else f"- `{syntax}`")
+            if example:
+                lines.append(f"  Example: `{example}`")
+
+    active_custom = {k: v for k, v in custom_ops.items()
+                     if isinstance(v, dict) and v.get("status", 1)}
+    if active_custom:
+        for name, info in active_custom.items():
+            desc = info.get("description", "")
+            example = info.get("example", "")
+            syntax = f"{name}:PATH"
+            lines.append(f"- `{syntax}` — {desc}" if desc else f"- `{syntax}`")
+            if example:
+                lines.append(f"  Example: `{example}`")
+
+    if has_ops:
+        lines.append("")
+
+    # Aliases section
+    alias_defs = config.get("aliases", {})
+    active_aliases = {k: v for k, v in alias_defs.items()
+                      if isinstance(v, dict) and v.get("status", 1)}
+    if active_aliases:
+        lines.append("## Aliases (multi-op batches)\n")
+        for name, info in active_aliases.items():
+            desc = info.get("description", "")
+            example = info.get("example", "")
+            ops_list = info.get("ops", [])
+            syntax = f"{name}:PATH"
+            lines.append(f"- `{syntax}` — {desc}" if desc else f"- `{syntax}`")
+            if example:
+                lines.append(f"  Example: `{example}`")
+        lines.append("")
+
+    return "\n".join(lines) + "\n"
+
+
 def dispatch(arg: str) -> str:
     """Parse 'op:arg1:arg2:...' and route to the matching op function."""
     header = f"--- {arg} ---\n"
@@ -1488,6 +1582,15 @@ def dispatch(arg: str) -> str:
         elif op == "map":
             path = parts[1] if len(parts) > 1 else "."
             body = op_map(path)
+        elif op in ("introduction", "output-format", "ops"):
+            # Meta-ops use markdown headers instead of --- header ---
+            header = ""
+            if op == "introduction":
+                body = op_introduction()
+            elif op == "output-format":
+                body = op_output_format()
+            else:
+                body = op_ops()
         else:
             # Fallthrough: try custom ops, then aliases
             custom = _resolve_custom_op(op, parts)

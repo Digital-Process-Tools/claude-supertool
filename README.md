@@ -133,53 +133,90 @@ claude -p "..." --permission-mode bypassPermissions \
 
 ### `.supertool.json` — project configuration
 
-Create a `.supertool.json` in your project root. It holds settings, custom ops, and aliases:
+Create a `.supertool.json` in your project root. Supertool walks up from cwd to find it. A starter template ships with the plugin as `.supertool.example.json`.
 
 ```json
 {
-  "compact": true,
-  "rtk": false,
-  "ops": {
-    "phpstan": {
-      "cmd": "php -d memory_limit=512M ./vendor/bin/phpstan analyse --no-progress {file}",
-      "timeout": 120
-    },
-    "phpunit": {
-      "cmd": "./vendor/bin/phpunit --no-coverage -d memory_limit=-1 {file}",
-      "timeout": 300
-    },
-    "lint": "php -l {file}",
-    "prettier": "npx prettier --check {file}"
+  "introduction": "This project uses supertool for batched file reads and static analysis. Invoke with: ./supertool 'read:src/app/Module.py' 'grep:pattern:src/'",
+
+  "output-format": "Each op result is separated by a header line: === OP: read:src/app/Module.py ===\nLine-numbered output follows (cat -n style).",
+
+  "builtin-ops": {
+    "read":  { "syntax": "read:PATH[:OFFSET:LIMIT][:::grep=PATTERN]", "description": "Read a file, optionally sliced or filtered.", "example": "read:src/app/Module.py:1:50" },
+    "grep":  { "syntax": "grep:PATTERN:PATH[:LIMIT[:CONTEXT]]",        "description": "Grep with optional line limit and context lines.", "example": "grep:def handle:src/:20:2" },
+    "glob":  { "syntax": "glob:PATTERN",                                "description": "Glob files. Auto-reads if no wildcards.",          "example": "glob:src/**/*.py" },
+    "map":   { "syntax": "map:PATH",                                    "description": "Symbol tree (classes, functions, methods).",        "example": "map:src/app/" }
   },
+
+  "ops": {
+    "mypy": {
+      "cmd": "python -m mypy --no-error-summary {file}",
+      "timeout": 60,
+      "description": "Type-check a Python file with mypy.",
+      "example": "mypy:src/app/Module.py"
+    },
+    "pytest": {
+      "cmd": "python -m pytest --no-header -q {file}",
+      "timeout": 120,
+      "description": "Run pytest on a test file.",
+      "example": "pytest:tests/test_module.py"
+    },
+    "lint": {
+      "cmd": "ruff check {file}",
+      "timeout": 30,
+      "description": "Lint a file with ruff.",
+      "example": "lint:src/app/Module.py"
+    }
+  },
+
   "aliases": {
-    "verify": ["phpstan:{file}", "lint:{file}"],
-    "qa": ["phpstan:{file}", "lint:{file}", "prettier:{file}"]
+    "verify": {
+      "ops": ["mypy:{file}", "lint:{file}"],
+      "description": "Type-check + lint in one round-trip.",
+      "example": "verify:src/app/Module.py"
+    },
+    "qa": {
+      "ops": ["mypy:{file}", "lint:{file}", "pytest:tests/"],
+      "description": "Full quality check: types, lint, tests.",
+      "example": "qa:src/app/Module.py"
+    }
   }
 }
 ```
 
-**Ops** are custom shell commands. Use them like built-in ops — same syntax, same batching:
+**`introduction` and `output-format`** are user-controlled strings output by meta-ops:
 
 ```bash
-supertool 'phpstan:src/MyClass.php' 'phpunit:tests/MyClassTest.php'
+./supertool 'introduction'        # prints the introduction string
+./supertool 'output-format'       # prints the output-format string
+./supertool 'introduction' 'output-format' 'ops'   # full LLM onboarding in one call
 ```
 
-**Aliases** expand one name to multiple ops in a single call:
+Use this in session-start hooks or agent prompts to onboard LLMs to your project's supertool setup without reading config files manually.
+
+**`builtin-ops`** entries document built-in operations (`syntax`, `description`, `example`). Set `"status": 0` to hide an entry from `./supertool 'ops'` output. These are documentation only — they don't change behavior.
+
+**`ops`** are custom shell commands called directly by name:
 
 ```bash
-# Runs phpstan + lint in one round-trip
-supertool 'verify:src/MyClass.php'
+./supertool 'mypy:src/app/Module.py' 'pytest:tests/test_module.py'
 ```
 
-Ops accept `{file}` and `{dir}` (dirname of file) placeholders. Each op can be a string (shorthand, 60s default timeout) or an object with `cmd` and `timeout`.
+Each op has `cmd`, `timeout`, `description`, `example`, and optional `status`. Ops accept `{file}` and `{dir}` (dirname of file) placeholders. Shorthand string ops (`"lint": "ruff check {file}"`) still work with a 60s default timeout.
 
-**Dispatch order:** built-in ops → custom ops → aliases. Built-ins always win. Aliases don't recurse.
+**`aliases`** expand one name to multiple ops. Format changed from array to object:
 
-Supertool walks up from cwd to find `.supertool.json`.
+```bash
+./supertool 'verify:src/app/Module.py'   # runs mypy + lint in one round-trip
+```
+
+Each alias has `ops` (array), `description`, `example`, and optional `status`. Aliases don't recurse.
+
+**Dispatch order:** built-in ops → custom ops → aliases. Built-ins always win.
 
 #### Legacy `check:` syntax
 
-The `check:PRESET:PATH` op still works — it reads from the `ops` section first, then falls back to `.supertool-checks.json` for backward compatibility. New projects should use direct ops (`phpstan:file`) instead of `check:phpstan:file`.
+The `check:PRESET:PATH` op still works — it reads from the `ops` section first, then falls back to `.supertool-checks.json` for backward compatibility. New projects should use direct ops (`mypy:file`) instead of `check:mypy:file`.
 
 ### `map` — symbol extraction
 

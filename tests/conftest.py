@@ -32,7 +32,9 @@ def _disable_rtk_and_config():
     supertool._TS_PACKAGE = ""
     supertool._CTAGS_CHECKED = True
     supertool._CTAGS_PATH = None
+    supertool._IN_ALIAS = False
     yield
+    supertool._IN_ALIAS = False
     supertool._RTK_CHECKED = old_rtk_checked
     supertool._RTK_PATH = old_rtk_path
     supertool._CONFIG_CHECKED = old_config_checked
