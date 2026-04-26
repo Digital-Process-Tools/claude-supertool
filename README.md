@@ -222,7 +222,26 @@ Create a `.supertool.json` in your project root. Supertool walks up from cwd to 
 
 Use this in session-start hooks or agent prompts to onboard LLMs to your project's supertool setup without reading config files manually.
 
-**`builtin-ops`** entries document built-in operations (`syntax`, `description`, `example`). Set `"status": 0` to hide an entry from `./supertool 'ops'` output (works on `builtin-ops`, `ops`, and `aliases`). These are documentation only — they don't change behavior.
+**`builtin-ops`** entries document built-in operations (`syntax`, `description`, `example`). Set `"status": 0` to hide an entry from `./supertool 'ops'` output (works on `builtin-ops`, `ops`, and `aliases`). Besides documentation, `builtin-ops` entries can also override default behavior:
+
+| Op | Key | Default | Effect |
+|----|-----|---------|--------|
+| `read` | `max_lines` | 300 | Max lines per read |
+| `read` | `max_bytes` | 20000 | Max bytes per read (truncates at cap) |
+| `grep` | `max_results` | 10 | Default result limit when not specified in the op |
+| `grep` | `extensions` | `[]` (all files) | Restrict grep to these file patterns (e.g. `["*.py", "*.js"]`). Empty = search all files |
+| `glob` | `max_results` | 50 | Max files returned |
+
+Example — increase read cap and restrict grep to PHP/XML:
+
+```json
+{
+  "builtin-ops": {
+    "read": { "max_lines": 500, "max_bytes": 40000 },
+    "grep": { "extensions": ["*.php", "*.xml"] }
+  }
+}
+```
 
 **`ops`** are custom shell commands called directly by name:
 

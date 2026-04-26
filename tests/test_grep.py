@@ -38,13 +38,30 @@ def test_grep_respects_limit(tmp_path: Path) -> None:
     assert len(result_lines) == 3
 
 
-def test_grep_on_directory_filters_by_extension(tmp_path: Path) -> None:
+def test_grep_on_directory_searches_all_files_by_default(tmp_path: Path) -> None:
     (tmp_path / "code.py").write_text("needle = 1\n")
     (tmp_path / "doc.md").write_text("needle in docs\n")
-    (tmp_path / "log.log").write_text("needle in log\n")  # should be skipped
+    (tmp_path / "log.log").write_text("needle in log\n")
+    # Reset cached extensions so default-all kicks in
+    supertool._GREP_EXTENSIONS_EFFECTIVE = None
     out = supertool.op_grep("needle", str(tmp_path), limit=10)
     assert "code.py" in out
     assert "doc.md" in out
+    assert "log.log" in out  # default: search all files
+
+
+def test_grep_on_directory_respects_config_extensions(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "code.py").write_text("needle = 1\n")
+    (tmp_path / "doc.md").write_text("needle in docs\n")
+    (tmp_path / "log.log").write_text("needle in log\n")
+    # Configure extensions to restrict to .py only
+    monkeypatch.setattr(supertool, "_GREP_EXTENSIONS_EFFECTIVE", None)
+    monkeypatch.setattr(supertool, "_load_config", lambda: {
+        "builtin-ops": {"grep": {"extensions": ["*.py"]}}
+    })
+    out = supertool.op_grep("needle", str(tmp_path), limit=10)
+    assert "code.py" in out
+    assert "doc.md" not in out
     assert "log.log" not in out
 
 

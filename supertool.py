@@ -97,6 +97,7 @@ MAX_GREP_RESULTS = 10
 MAX_GLOB_RESULTS = 50
 LOG_FILE = os.path.join(tempfile.gettempdir(), "supertool-calls.log")
 GREP_FILE_INCLUDES = ("*.php", "*.xml", "*.py", "*.js", "*.ts", "*.md")
+_GREP_EXTENSIONS_EFFECTIVE: Tuple[str, ...] | None = None
 WILDCARD_CHARS = re.compile(r"[*?\[]")
 # Patterns for lines that are "blank or comment-only" across common languages
 _COMPACT_SKIP = re.compile(
@@ -142,6 +143,40 @@ def _load_config() -> Dict[str, Any]:
 def _is_compact() -> bool:
     """Check if compact mode is enabled in .supertool.json."""
     return bool(_load_config().get("compact", False))
+
+
+def _get_op_int(op_name: str, key: str, default: int) -> int:
+    """Read an integer setting from builtin-ops.<op_name>.<key>, with fallback."""
+    cfg = _load_config()
+    op_cfg = cfg.get("builtin-ops", {}).get(op_name, {})
+    val = op_cfg.get(key)
+    if isinstance(val, int) and val > 0:
+        return val
+    return default
+
+
+def _grep_file_includes() -> Tuple[str, ...] | None:
+    """Return effective grep file extensions. Cached.
+
+    Reads builtin-ops.grep.extensions from .supertool.json.
+    - No config / empty list → None (search all files)
+    - Config with extensions → only those patterns
+    """
+    global _GREP_EXTENSIONS_EFFECTIVE
+    if _GREP_EXTENSIONS_EFFECTIVE is not None:
+        return _GREP_EXTENSIONS_EFFECTIVE if _GREP_EXTENSIONS_EFFECTIVE != ("*",) else None
+    cfg = _load_config()
+    builtin_ops = cfg.get("builtin-ops", {})
+    op_cfg = builtin_ops.get("grep", {})
+    exts = op_cfg.get("extensions", [])
+    if exts and isinstance(exts, list):
+        valid = tuple(sorted(e for e in exts if isinstance(e, str) and e.startswith("*.")))
+        if valid:
+            _GREP_EXTENSIONS_EFFECTIVE = valid
+            return valid
+    # Default: search all files
+    _GREP_EXTENSIONS_EFFECTIVE = ("*",)  # sentinel for "no filter"
+    return None
 
 
 def _rtk_enabled() -> bool:
@@ -291,7 +326,7 @@ def _resolve_alias(op: str, parts: List[str]) -> str | None:
 # Core operations (pure functions — all return the string to emit)
 # ---------------------------------------------------------------------------
 
-def render_file(path: str, offset: int = 0, limit: int = MAX_READ_LINES,
+def render_file(path: str, offset: int = 0, limit: int = 0,
                 grep_filter: str = "") -> str:
     """Emit a file's contents with line numbers, truncated at caps.
 
@@ -301,12 +336,14 @@ def render_file(path: str, offset: int = 0, limit: int = MAX_READ_LINES,
     When rtk is available and no special options are used, delegates to
     rtk read for compressed output.
     """
+    if limit <= 0:
+        limit = _get_op_int("read", "max_lines", MAX_READ_LINES)
     if not path or not os.path.isfile(path):
         return f"ERROR: file not found: {path}\n"
 
     # RTK delegation — simple reads without offset/filter/limit changes
-    if not grep_filter and offset == 0 and limit == MAX_READ_LINES and _rtk_enabled() and _has_rtk():
-        rtk_args = ["read", "-n", "--max-lines", str(MAX_READ_LINES)]
+    if not grep_filter and offset == 0 and limit == _get_op_int("read", "max_lines", MAX_READ_LINES) and _rtk_enabled() and _has_rtk():
+        rtk_args = ["read", "-n", "--max-lines", str(_get_op_int("read", "max_lines", MAX_READ_LINES))]
         if _is_compact():
             rtk_args += ["--level", "aggressive"]
         rtk_args.append(path)
@@ -350,13 +387,13 @@ def render_file(path: str, offset: int = 0, limit: int = MAX_READ_LINES,
         out.append(numbered)
         bytes_emitted += len(numbered)
         printed += 1
-        if bytes_emitted >= MAX_READ_BYTES:
+        if bytes_emitted >= _get_op_int("read", "max_bytes", MAX_READ_BYTES):
             break
 
     if filter_regex and not matched_any:
         out.append(f"(no lines matching {grep_filter!r})\n")
-    elif bytes_emitted >= MAX_READ_BYTES:
-        out.append(f"... (truncated at {MAX_READ_BYTES} bytes — use "
+    elif bytes_emitted >= _get_op_int("read", "max_bytes", MAX_READ_BYTES):
+        out.append(f"... (truncated at {_get_op_int('read', 'max_bytes', MAX_READ_BYTES)} bytes — use "
                    "read:PATH:OFFSET:LIMIT to get more)\n")
     elif not filter_regex and offset + printed < line_count:
         out.append(f"... ({line_count - offset - printed} more lines)\n")
@@ -366,12 +403,14 @@ def render_file(path: str, offset: int = 0, limit: int = MAX_READ_LINES,
     return "".join(out)
 
 
-def op_read(path: str, offset: int = 0, limit: int = MAX_READ_LINES,
+def op_read(path: str, offset: int = 0, limit: int = 0,
             grep_filter: str = "") -> str:
+    if limit <= 0:
+        limit = _get_op_int("read", "max_lines", MAX_READ_LINES)
     return render_file(path, offset, limit, grep_filter)
 
 
-def op_grep(pattern: str, path: str = ".", limit: int = MAX_GREP_RESULTS,
+def op_grep(pattern: str, path: str = ".", limit: int = 0,
             context: int = 0, count_only: bool = False) -> str:
     """Search pattern recursively. Auto-reads small single file on match.
 
@@ -383,6 +422,8 @@ def op_grep(pattern: str, path: str = ".", limit: int = MAX_GREP_RESULTS,
 
     When count_only=True, returns match counts per file instead of content.
     """
+    if limit <= 0:
+        limit = _get_op_int("grep", "max_results", MAX_GREP_RESULTS)
     if not pattern:
         return "ERROR: empty pattern\n"
 
@@ -460,10 +501,10 @@ def op_grep(pattern: str, path: str = ".", limit: int = MAX_GREP_RESULTS,
     # Auto-read: single small file + at least one match → emit full file
     if (count > 0
             and os.path.isfile(path)
-            and os.path.getsize(path) < MAX_READ_BYTES):
-        out.append(f"[auto-read: single file < {MAX_READ_BYTES} bytes, "
+            and os.path.getsize(path) < _get_op_int("read", "max_bytes", MAX_READ_BYTES)):
+        out.append(f"[auto-read: single file < {_get_op_int('read', 'max_bytes', MAX_READ_BYTES)} bytes, "
                    "match found]\n")
-        out.append(render_file(path, 0, MAX_READ_LINES))
+        out.append(render_file(path, 0, _get_op_int("read", "max_lines", MAX_READ_LINES)))
 
     return "".join(out)
 
@@ -529,7 +570,7 @@ def op_glob(pattern: str) -> str:
     # Auto-promote: concrete path with no wildcards that points to a file
     if not WILDCARD_CHARS.search(pattern) and os.path.isfile(pattern):
         return ("[auto-read: concrete path, no wildcards]\n"
-                + render_file(pattern, 0, MAX_READ_LINES))
+                + render_file(pattern, 0, _get_op_int("read", "max_lines", MAX_READ_LINES)))
 
     files = _glob_files(pattern)
     # Strip common directory prefix when 2+ files share one
@@ -552,9 +593,9 @@ def op_glob(pattern: str) -> str:
     out.append("\n")
 
     # Auto-read: glob returned exactly 1 file — save the follow-up read round-trip
-    if len(files) == 1 and os.path.getsize(files[0]) < MAX_READ_BYTES:
+    if len(files) == 1 and os.path.getsize(files[0]) < _get_op_int("read", "max_bytes", MAX_READ_BYTES):
         out.append(f"[auto-read: glob returned 1 file]\n")
-        out.append(render_file(files[0], 0, MAX_READ_LINES))
+        out.append(render_file(files[0], 0, _get_op_int("read", "max_lines", MAX_READ_LINES)))
 
     return "".join(out)
 
@@ -1288,9 +1329,10 @@ def _grep_candidates(path: str) -> List[str]:
     if os.path.isfile(path):
         candidates.append(path)
     elif os.path.isdir(path):
+        exts = _grep_file_includes()  # None = all files
         for root, _dirs, files in os.walk(path):
             for name in files:
-                if any(name.endswith(ext.lstrip("*")) for ext in GREP_FILE_INCLUDES):
+                if exts is None or any(name.endswith(ext.lstrip("*")) for ext in exts):
                     candidates.append(os.path.join(root, name))
     return candidates
 
@@ -1405,7 +1447,7 @@ def _glob_files(pattern: str) -> List[str]:
     from glob import glob
     matches = sorted(glob(pattern, recursive=True))
     files = [m for m in matches if os.path.isfile(m)]
-    return files[:MAX_GLOB_RESULTS]
+    return files[:_get_op_int("glob", "max_results", MAX_GLOB_RESULTS)]
 
 
 # ---------------------------------------------------------------------------
@@ -1456,7 +1498,7 @@ def _parse_grep_args(parts: List[str]) -> tuple:
     # parts[0] is 'grep', work with parts[1:]
     args = parts[1:]
     if not args:
-        return ("", ".", MAX_GREP_RESULTS, 0, False)
+        return ("", ".", _get_op_int("grep", "max_results", MAX_GREP_RESULTS), 0, False)
 
     # Peel known trailing fields from the right
     count_only = False
@@ -1467,7 +1509,7 @@ def _parse_grep_args(parts: List[str]) -> tuple:
     # Peel trailing ints: format is ...PATH:LIMIT:CONTEXT
     # Two trailing ints = limit + context; one trailing int = limit only
     context = 0
-    limit = MAX_GREP_RESULTS
+    limit = _get_op_int("grep", "max_results", MAX_GREP_RESULTS)
     trailing_ints = []
     while len(args) >= 3 and args[-1].isdigit():
         trailing_ints.insert(0, int(args[-1]))
@@ -1624,7 +1666,7 @@ def dispatch(arg: str) -> str:
         if op == "read":
             path = parts[1] if len(parts) > 1 else ""
             offset = int(parts[2]) if len(parts) > 2 and parts[2] else 0
-            limit = int(parts[3]) if len(parts) > 3 and parts[3] else MAX_READ_LINES
+            limit = int(parts[3]) if len(parts) > 3 and parts[3] else _get_op_int("read", "max_lines", MAX_READ_LINES)
             grep_filter = ""
             if len(parts) > 4 and parts[4].startswith("grep="):
                 grep_filter = parts[4][5:]

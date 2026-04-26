@@ -7,7 +7,9 @@
     "read": {
       "syntax": "read:PATH[:OFFSET:LIMIT]",
       "description": "Read file (first 300 lines, 20KB cap)",
-      "example": "read:src/app/Module.py:10:50"
+      "example": "read:src/app/Module.py:10:50",
+      "max_lines": 300,
+      "max_bytes": 20000
     },
     "read-grep": {
       "syntax": "read:PATH:::grep=PATTERN",
@@ -17,7 +19,9 @@
     "grep": {
       "syntax": "grep:PATTERN:PATH[:LIMIT[:CONTEXT]]",
       "description": "Search (10 results default). CONTEXT shows N surrounding lines before/after each match",
-      "example": "grep:class:src/app/:20"
+      "example": "grep:class:src/app/:20",
+      "max_results": 10,
+      "extensions": []
     },
     "grep-count": {
       "syntax": "grep:PATTERN:PATH:LIMIT:CONTEXT:count",
@@ -32,7 +36,8 @@
     "glob": {
       "syntax": "glob:PATTERN",
       "description": "Find files (supports **). Auto-reads if concrete path (no wildcards)",
-      "example": "glob:src/app/**/*.py"
+      "example": "glob:src/app/**/*.py",
+      "max_results": 50
     },
     "ls": {
       "syntax": "ls:PATH",
