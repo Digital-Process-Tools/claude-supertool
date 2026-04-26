@@ -78,6 +78,16 @@
       "syntax": "version",
       "description": "Show supertool version",
       "example": "version"
+    },
+    "tree": {
+      "syntax": "tree:PATH[:DEPTH]",
+      "description": "Directory structure with depth limit (default 3). Hides dotfiles.",
+      "example": "tree:tests/:2"
+    },
+    "blame": {
+      "syntax": "blame:PATH:LINE[:N]",
+      "description": "Git blame for N lines (default 5) around a specific line number",
+      "example": "blame:supertool.py:92:3"
     }
   },
   "ops": {},
