@@ -61,7 +61,7 @@ OPERATIONS
     tail:PATH:N                Last N lines (default 20)
     head:PATH:N                First N lines (default 20)
     wc:PATH                    Line/word/char count (like unix wc)
-    check:PRESET:PATH          Run a named validation from .supertool-checks.json.
+    check:PRESET:PATH          Run a named validation from ops section in .supertool.json.
                                 Config maps preset names to shell commands with {file}.
     around:PATTERN:PATH        Show 10 lines around the first match in FILE
     around:PATTERN:PATH:N      Show N lines around the first match in FILE
@@ -77,6 +77,7 @@ Calls logged to {tempdir}/supertool-calls.log for per-turn analysis
 from __future__ import annotations
 
 import json
+import difflib
 import os
 import re
 import shlex
@@ -87,6 +88,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
+
+VERSION = "0.4.0"
 
 MAX_READ_LINES = 300
 MAX_READ_BYTES = 20000  # ~20KB cap — prevents Claude Code "Output too large"
@@ -184,7 +187,7 @@ BLOCKED_TOOLS = {"Grep", "Glob", "LS"}
 BLOCKED_BASH_COMMANDS = {"cat", "find", "grep", "ls", "sed", "awk", "tail", "head"}
 
 # Built-in op names — custom ops/aliases with these names are ignored
-_BUILTIN_OPS = {"read", "grep", "glob", "ls", "tail", "head", "wc", "check", "around", "map"}
+_BUILTIN_OPS = {"read", "grep", "glob", "ls", "tail", "head", "wc", "check", "around", "map", "diff", "stat", "around_line"}
 
 
 # ---------------------------------------------------------------------------
@@ -630,30 +633,11 @@ def op_wc(path: str) -> str:
     return f"{lines} {words} {chars} {path}\n"
 
 
-def _find_checks_config() -> str | None:
-    """Walk up from cwd looking for .supertool-checks.json."""
-    d = os.path.abspath(os.getcwd())
-    while True:
-        candidate = os.path.join(d, ".supertool-checks.json")
-        if os.path.isfile(candidate):
-            return candidate
-        parent = os.path.dirname(d)
-        if parent == d:
-            return None
-        d = parent
-
-
 def op_check(preset: str, path: str) -> str:
-    """Run a named validation check.
-
-    Resolution order:
-    1. config["ops"] section in .supertool.json (unified config)
-    2. .supertool-checks.json (legacy file)
-    """
+    """Run a named validation check from the ops section of .supertool.json."""
     if not preset:
         return "ERROR: empty preset name\n"
 
-    # 1. Try ops section in .supertool.json first
     main_config = _load_config()
     ops = main_config.get("ops", {})
     if preset in ops:
@@ -661,65 +645,80 @@ def op_check(preset: str, path: str) -> str:
         if result is not None:
             return result
 
-    # 2. Fall back to legacy .supertool-checks.json
-    config_path = _find_checks_config()
-    if not config_path:
-        if not ops:
-            return "ERROR: no .supertool-checks.json found in any parent directory\n"
-        available = ", ".join(sorted(ops.keys()))
-        return f"ERROR: unknown check {preset!r}. Available: {available}\n"
+    if not ops:
+        return "ERROR: no ops defined in .supertool.json\n"
+    available = ", ".join(sorted(ops.keys()))
+    return f"ERROR: unknown check {preset!r}. Available: {available}\n"
+
+
+def op_diff(path1: str, path2: str) -> str:
+    """Show unified diff between two files."""
+    for p in (path1, path2):
+        if not p:
+            return "ERROR: diff requires two file paths\n"
+        if not os.path.isfile(p):
+            return f"ERROR: file not found: {p}\n"
 
     try:
-        with open(config_path) as f:
-            config = json.load(f)
-    except (json.JSONDecodeError, OSError) as e:
-        return f"ERROR: could not read {config_path}: {e}\n"
+        with open(path1, "r", errors="replace") as f:
+            lines1 = f.readlines()
+        with open(path2, "r", errors="replace") as f:
+            lines2 = f.readlines()
+    except OSError as e:
+        return f"ERROR: could not read file: {e}\n"
 
-    if preset not in config:
-        # Combine available from both sources
-        all_available = sorted(set(list(ops.keys()) + list(config.keys())))
-        available = ", ".join(all_available)
-        return f"ERROR: unknown check {preset!r}. Available: {available}\n"
+    diff = list(difflib.unified_diff(
+        lines1, lines2, fromfile=path1, tofile=path2, lineterm=""
+    ))
+    if not diff:
+        return "files are identical\n"
+    return "\n".join(diff) + "\n"
 
-    entry = config[preset]
-    if isinstance(entry, str):
-        cmd_template = entry
-        timeout = 60
-    elif isinstance(entry, dict):
-        cmd_template = entry.get("cmd", "")
-        timeout = entry.get("timeout", 60)
-    else:
-        return f"ERROR: invalid config for {preset!r}\n"
 
-    if not cmd_template:
-        return f"ERROR: empty command for {preset!r}\n"
+def op_stat(path: str) -> str:
+    """Show file or directory metadata: size and last modified time."""
+    if not path:
+        return "ERROR: empty path\n"
+    if not os.path.exists(path):
+        return f"ERROR: not found: {path}\n"
 
-    cmd = cmd_template.replace("{file}", shlex.quote(path))
-
-    t0 = time.monotonic()
     try:
-        result = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True, timeout=timeout
-        )
-        elapsed = time.monotonic() - t0
-    except subprocess.TimeoutExpired:
-        elapsed = time.monotonic() - t0
-        return f"❌ TIMEOUT after {elapsed:.1f}s (limit {timeout}s)\n"
+        st = os.stat(path)
+    except OSError as e:
+        return f"ERROR: could not stat {path}: {e}\n"
 
-    output = ""
-    if result.stdout:
-        output += result.stdout
-    if result.stderr:
-        output += result.stderr
-    if len(output) > MAX_READ_BYTES:
-        output = output[:MAX_READ_BYTES] + "\n... (truncated at 20KB)\n"
+    size = st.st_size
+    modified = datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+    kind = "dir" if os.path.isdir(path) else "file"
+    return f"{size} {modified} {kind} {path}\n"
 
-    if result.returncode == 0:
-        header_line = f"✅ PASS (exit 0, {elapsed:.1f}s)\n"
-    else:
-        header_line = f"❌ FAIL (exit {result.returncode}, {elapsed:.1f}s)\n"
 
-    return header_line + output
+def op_around_line(path: str, line: int, n: int = 10) -> str:
+    """Show N lines of context around a specific line number."""
+    if not path or not os.path.isfile(path):
+        return f"ERROR: file not found: {path}\n"
+    if line < 1:
+        return f"ERROR: line number must be >= 1, got {line}\n"
+
+    try:
+        with open(path, "r", errors="replace") as f:
+            lines = f.readlines()
+    except OSError as e:
+        return f"ERROR: could not read {path}: {e}\n"
+
+    total = len(lines)
+    if line > total:
+        return f"ERROR: line {line} exceeds file length ({total} lines)\n"
+
+    start = max(0, line - 1 - n)
+    end = min(total, line + n)
+    out = [f"({total} lines total, showing lines {start + 1}–{end})\n"]
+    for i in range(start, end):
+        marker = "→" if i == line - 1 else " "
+        out.append(f"{i + 1:>6}{marker}{lines[i]}")
+    if not lines[end - 1].endswith("\n"):
+        out.append("\n")
+    return "".join(out)
 
 
 # ---------------------------------------------------------------------------
@@ -1465,6 +1464,11 @@ def op_output_format() -> str:
     return str(fmt) + "\n\n"
 
 
+def op_version() -> str:
+    """Output the supertool version."""
+    return f"supertool {VERSION}\n"
+
+
 def op_ops() -> str:
     """Output the ops reference from .supertool.json (builtin-ops + ops sections).
 
@@ -1474,9 +1478,10 @@ def op_ops() -> str:
     config = _load_config()
     builtin_ops = config.get("builtin-ops", {})
     custom_ops = config.get("ops", {})
+    alias_defs = config.get("aliases", {})
     lines: List[str] = []
 
-    if not builtin_ops and not custom_ops:
+    if not builtin_ops and not custom_ops and not alias_defs:
         # No config — bare fallback listing built-in names
         lines.append("No descriptions configured in .supertool.json")
         lines.append("")
@@ -1519,7 +1524,6 @@ def op_ops() -> str:
         lines.append("")
 
     # Aliases section
-    alias_defs = config.get("aliases", {})
     active_aliases = {k: v for k, v in alias_defs.items()
                       if isinstance(v, dict) and v.get("status", 1)}
     if active_aliases:
@@ -1582,13 +1586,27 @@ def dispatch(arg: str) -> str:
         elif op == "map":
             path = parts[1] if len(parts) > 1 else "."
             body = op_map(path)
-        elif op in ("introduction", "output-format", "ops"):
+        elif op == "diff":
+            path1 = parts[1] if len(parts) > 1 else ""
+            path2 = parts[2] if len(parts) > 2 else ""
+            body = op_diff(path1, path2)
+        elif op == "stat":
+            path = parts[1] if len(parts) > 1 else ""
+            body = op_stat(path)
+        elif op == "around_line":
+            path = parts[1] if len(parts) > 1 else ""
+            line = int(parts[2]) if len(parts) > 2 and parts[2] else 0
+            n = int(parts[3]) if len(parts) > 3 and parts[3] else 10
+            body = op_around_line(path, line, n)
+        elif op in ("introduction", "output-format", "ops", "version"):
             # Meta-ops use markdown headers instead of --- header ---
             header = ""
             if op == "introduction":
                 body = op_introduction()
             elif op == "output-format":
                 body = op_output_format()
+            elif op == "version":
+                body = op_version()
             else:
                 body = op_ops()
         else:
@@ -1603,7 +1621,7 @@ def dispatch(arg: str) -> str:
                 else:
                     body = (f"ERROR: unknown operation: {op}\n"
                             f"Valid operations: read, grep, glob, ls, tail, "
-                            f"head, around, wc, check, map\n")
+                            f"head, around, around_line, wc, check, map, diff, stat\n")
     except (ValueError, IndexError) as e:
         body = f"ERROR: argument parsing: {e}\n"
 

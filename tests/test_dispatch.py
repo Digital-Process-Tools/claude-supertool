@@ -106,12 +106,10 @@ def test_dispatch_around_default_n(tmp_path: Path) -> None:
     assert "ERROR" not in out
 
 
-def test_dispatch_check(tmp_path: Path, monkeypatch) -> None:
+def test_dispatch_check(tmp_path: Path) -> None:
     f = tmp_path / "test.txt"
     f.write_text("content")
-    config = tmp_path / ".supertool-checks.json"
-    config.write_text('{"lint": "cat {file}"}')
-    monkeypatch.chdir(tmp_path)
+    supertool._CONFIG = {"ops": {"lint": {"cmd": "cat {file}"}}}
     out = supertool.dispatch(f"check:lint:{f}")
     assert "--- check:" in out
     assert "PASS" in out

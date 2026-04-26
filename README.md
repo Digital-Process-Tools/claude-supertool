@@ -132,6 +132,10 @@ claude -p "..." --permission-mode bypassPermissions \
 | `introduction` | `introduction` | Output the project introduction text from `.supertool.json`. No `---` dispatch header — clean markdown. |
 | `output-format` | `output-format` | Output format examples from `.supertool.json`. Shows what responses look like. |
 | `ops` | `ops` | Full operations reference from `.supertool.json` — built-in ops, custom ops, and aliases with descriptions and examples. |
+| `diff` | `diff:PATH1:PATH2` | Unified diff between two files. |
+| `stat` | `stat:PATH` | File/directory metadata: size (bytes), last modified (ISO datetime), type (file/dir). |
+| `around_line` | `around_line:PATH:LINE` or `around_line:PATH:LINE:N` | Show N lines (default 10) of context around a specific line number. Target line marked with `→`. |
+| `version` | `version` | Show supertool version. |
 
 **LLM onboarding in one call:** `./supertool 'introduction' 'output-format' 'ops'` — outputs everything an LLM needs to use supertool.
 

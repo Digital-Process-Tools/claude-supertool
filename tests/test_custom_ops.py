@@ -323,14 +323,13 @@ class TestDispatchPriority:
 # backward compat — check: op reads from ops section
 # ---------------------------------------------------------------------------
 
-class TestCheckBackwardCompat:
-    """check: op reads from both ops section and legacy .supertool-checks.json."""
+class TestCheckFromOps:
+    """check: op resolves from ops section in .supertool.json."""
 
-    def test_check_reads_from_ops_section(self, tmp_path: Path, monkeypatch) -> None:
+    def test_check_reads_from_ops_section(self, tmp_path: Path) -> None:
         """check:preset works when preset is defined in ops section."""
         f = tmp_path / "test.txt"
         f.write_text("hello\n")
-        monkeypatch.chdir(tmp_path)
         supertool._CONFIG = {
             "ops": {"lint": {"cmd": f"cat {{file}}"}}
         }
@@ -338,31 +337,23 @@ class TestCheckBackwardCompat:
         assert "PASS" in out
         assert "hello" in out
 
-    def test_check_falls_back_to_legacy_file(self, tmp_path: Path, monkeypatch) -> None:
-        """check:preset falls back to .supertool-checks.json when not in ops."""
-        f = tmp_path / "test.txt"
-        f.write_text("world\n")
-        config = tmp_path / ".supertool-checks.json"
-        config.write_text(json.dumps({"legacy": f"cat {{file}}"}))
-        monkeypatch.chdir(tmp_path)
-        supertool._CONFIG = {}  # no ops section
-        out = supertool.dispatch(f"check:legacy:{f}")
-        assert "PASS" in out
-        assert "world" in out
-
-    def test_ops_section_takes_priority_over_legacy(self, tmp_path: Path, monkeypatch) -> None:
-        """When same preset exists in both, ops section wins."""
-        f = tmp_path / "test.txt"
-        f.write_text("data\n")
-        config = tmp_path / ".supertool-checks.json"
-        config.write_text(json.dumps({"tool": "echo LEGACY"}))
-        monkeypatch.chdir(tmp_path)
+    def test_check_unknown_errors_with_available(self) -> None:
+        """Unknown preset lists available ops from .supertool.json."""
         supertool._CONFIG = {
-            "ops": {"tool": {"cmd": "echo OPS_WINS"}}
+            "ops": {"phpstan": {"cmd": "echo x"}, "phpmd": {"cmd": "echo y"}}
         }
-        out = supertool.dispatch(f"check:tool:{f}")
-        assert "OPS_WINS" in out
-        assert "LEGACY" not in out
+        out = supertool.dispatch("check:unknown:file.php")
+        assert "ERROR" in out
+        assert "unknown" in out
+        assert "phpstan" in out
+        assert "phpmd" in out
+
+    def test_check_no_ops_errors(self) -> None:
+        """No ops section gives clear error."""
+        supertool._CONFIG = {}
+        out = supertool.dispatch("check:lint:file.php")
+        assert "ERROR" in out
+        assert "no ops defined" in out
 
     def test_direct_op_and_check_both_work(self) -> None:
         """phpstan:file and check:phpstan:file both resolve the same op."""

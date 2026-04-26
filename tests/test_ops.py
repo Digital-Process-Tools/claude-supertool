@@ -189,65 +189,230 @@ def test_around_empty_pattern_errors(tmp_path: Path) -> None:
 # op_check
 # ---------------------------------------------------------------------------
 
-def test_check_no_config_file(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.chdir(tmp_path)
+def test_check_no_ops_defined() -> None:
+    supertool._CONFIG = {}
     out = supertool.op_check("phpstan", "some/file.php")
     assert "ERROR" in out
-    assert ".supertool-checks.json" in out
+    assert "no ops defined" in out
 
 
-def test_check_unknown_preset(tmp_path: Path, monkeypatch) -> None:
-    config = tmp_path / ".supertool-checks.json"
-    config.write_text('{"phpstan": "php -l {file}", "phpmd": "echo {file}"}')
-    monkeypatch.chdir(tmp_path)
+def test_check_unknown_preset() -> None:
+    supertool._CONFIG = {
+        "ops": {"phpstan": {"cmd": "php -l {file}"}, "phpmd": {"cmd": "echo {file}"}}
+    }
     out = supertool.op_check("unknown", "file.php")
     assert "ERROR" in out
     assert "unknown" in out
     assert "phpstan" in out
 
 
-def test_check_pass(tmp_path: Path, monkeypatch) -> None:
+def test_check_pass(tmp_path: Path) -> None:
     f = tmp_path / "good.txt"
     f.write_text("hello")
-    config = tmp_path / ".supertool-checks.json"
-    config.write_text('{"lint": "cat {file}"}')
-    monkeypatch.chdir(tmp_path)
+    supertool._CONFIG = {"ops": {"lint": {"cmd": "cat {file}"}}}
     out = supertool.op_check("lint", str(f))
     assert "PASS" in out
 
 
-def test_check_fail(tmp_path: Path, monkeypatch) -> None:
-    config = tmp_path / ".supertool-checks.json"
-    config.write_text('{"fail": "exit 1"}')
-    monkeypatch.chdir(tmp_path)
+def test_check_fail() -> None:
+    supertool._CONFIG = {"ops": {"fail": {"cmd": "exit 1"}}}
     out = supertool.op_check("fail", "dummy.php")
     assert "FAIL" in out
 
 
-def test_check_timeout(tmp_path: Path, monkeypatch) -> None:
-    config = tmp_path / ".supertool-checks.json"
-    config.write_text('{"slow": {"cmd": "sleep 10", "timeout": 1}}')
-    monkeypatch.chdir(tmp_path)
+def test_check_timeout() -> None:
+    supertool._CONFIG = {"ops": {"slow": {"cmd": "sleep 10", "timeout": 1}}}
     out = supertool.op_check("slow", "dummy.php")
-    assert "TIMEOUT" in out
+    assert "FAIL" in out
+    assert "timeout" in out
 
 
-def test_check_dict_config(tmp_path: Path, monkeypatch) -> None:
+def test_check_dict_config(tmp_path: Path) -> None:
     f = tmp_path / "test.txt"
     f.write_text("ok")
-    config = tmp_path / ".supertool-checks.json"
-    config.write_text('{"mycheck": {"cmd": "cat {file}", "timeout": 5}}')
-    monkeypatch.chdir(tmp_path)
+    supertool._CONFIG = {"ops": {"mycheck": {"cmd": "cat {file}", "timeout": 5}}}
     out = supertool.op_check("mycheck", str(f))
     assert "PASS" in out
 
 
-def test_check_empty_preset(tmp_path: Path, monkeypatch) -> None:
-    config = tmp_path / ".supertool-checks.json"
-    config.write_text('{"lint": "echo ok"}')
-    monkeypatch.chdir(tmp_path)
+def test_check_empty_preset() -> None:
+    supertool._CONFIG = {"ops": {"lint": {"cmd": "echo ok"}}}
     out = supertool.op_check("", "file.php")
     assert "ERROR" in out
+
+
+# ---------------------------------------------------------------------------
+# op_diff
+# ---------------------------------------------------------------------------
+
+def test_diff_identical_files(tmp_path: Path) -> None:
+    f1 = tmp_path / "a.txt"
+    f2 = tmp_path / "b.txt"
+    f1.write_text("hello\nworld\n")
+    f2.write_text("hello\nworld\n")
+    out = supertool.op_diff(str(f1), str(f2))
+    assert "identical" in out
+
+
+def test_diff_different_files(tmp_path: Path) -> None:
+    f1 = tmp_path / "a.txt"
+    f2 = tmp_path / "b.txt"
+    f1.write_text("hello\nworld\n")
+    f2.write_text("hello\nearth\n")
+    out = supertool.op_diff(str(f1), str(f2))
+    assert "---" in out
+    assert "+++" in out
+    assert "-world" in out
+    assert "+earth" in out
+
+
+def test_diff_file_not_found(tmp_path: Path) -> None:
+    f1 = tmp_path / "exists.txt"
+    f1.write_text("hello")
+    out = supertool.op_diff(str(f1), str(tmp_path / "nope.txt"))
+    assert "ERROR" in out
+    assert "not found" in out
+
+
+def test_diff_empty_path() -> None:
+    out = supertool.op_diff("", "some/file.txt")
+    assert "ERROR" in out
+
+
+def test_diff_empty_files(tmp_path: Path) -> None:
+    f1 = tmp_path / "a.txt"
+    f2 = tmp_path / "b.txt"
+    f1.write_text("")
+    f2.write_text("")
+    out = supertool.op_diff(str(f1), str(f2))
+    assert "identical" in out
+
+
+def test_diff_dispatch(tmp_path: Path) -> None:
+    f1 = tmp_path / "a.txt"
+    f2 = tmp_path / "b.txt"
+    f1.write_text("line1\n")
+    f2.write_text("line2\n")
+    out = supertool.dispatch(f"diff:{f1}:{f2}")
+    assert "--- diff:" in out
+    assert "-line1" in out
+    assert "+line2" in out
+
+
+# ---------------------------------------------------------------------------
+# op_stat
+# ---------------------------------------------------------------------------
+
+def test_stat_file(tmp_path: Path) -> None:
+    f = tmp_path / "test.txt"
+    f.write_text("hello world")
+    out = supertool.op_stat(str(f))
+    assert "11" in out  # 11 bytes
+    assert "file" in out
+    assert str(f) in out
+
+
+def test_stat_directory(tmp_path: Path) -> None:
+    d = tmp_path / "subdir"
+    d.mkdir()
+    out = supertool.op_stat(str(d))
+    assert "dir" in out
+    assert str(d) in out
+
+
+def test_stat_not_found(tmp_path: Path) -> None:
+    out = supertool.op_stat(str(tmp_path / "nope"))
+    assert "ERROR" in out
+    assert "not found" in out
+
+
+def test_stat_empty_path() -> None:
+    out = supertool.op_stat("")
+    assert "ERROR" in out
+
+
+def test_stat_dispatch(tmp_path: Path) -> None:
+    f = tmp_path / "test.txt"
+    f.write_text("data")
+    out = supertool.dispatch(f"stat:{f}")
+    assert "--- stat:" in out
+    assert "file" in out
+
+
+# ---------------------------------------------------------------------------
+# op_around_line
+# ---------------------------------------------------------------------------
+
+def test_around_line_basic(tmp_path: Path) -> None:
+    f = tmp_path / "test.py"
+    f.write_text("".join(f"line {i}\n" for i in range(1, 21)))
+    out = supertool.op_around_line(str(f), 10, 3)
+    assert "→" in out
+    assert "line 10" in out
+    assert "line 7" in out   # 3 lines before
+    assert "line 13" in out  # 3 lines after
+
+
+def test_around_line_first_line(tmp_path: Path) -> None:
+    f = tmp_path / "test.py"
+    f.write_text("first\nsecond\nthird\n")
+    out = supertool.op_around_line(str(f), 1, 2)
+    assert "→" in out
+    assert "first" in out
+
+
+def test_around_line_last_line(tmp_path: Path) -> None:
+    f = tmp_path / "test.py"
+    f.write_text("a\nb\nc\n")
+    out = supertool.op_around_line(str(f), 3, 2)
+    assert "→" in out
+    assert "c" in out
+
+
+def test_around_line_file_not_found() -> None:
+    out = supertool.op_around_line("/nonexistent/file.py", 5)
+    assert "ERROR" in out
+    assert "not found" in out
+
+
+def test_around_line_exceeds_length(tmp_path: Path) -> None:
+    f = tmp_path / "short.py"
+    f.write_text("one\ntwo\n")
+    out = supertool.op_around_line(str(f), 99)
+    assert "ERROR" in out
+    assert "exceeds" in out
+
+
+def test_around_line_zero_line(tmp_path: Path) -> None:
+    f = tmp_path / "test.py"
+    f.write_text("hello\n")
+    out = supertool.op_around_line(str(f), 0)
+    assert "ERROR" in out
+    assert ">= 1" in out
+
+
+def test_around_line_dispatch(tmp_path: Path) -> None:
+    f = tmp_path / "test.py"
+    f.write_text("alpha\nbeta\ngamma\ndelta\n")
+    out = supertool.dispatch(f"around_line:{f}:2:1")
+    assert "--- around_line:" in out
+    assert "→" in out
+    assert "beta" in out
+
+
+# ---------------------------------------------------------------------------
+# op_version
+# ---------------------------------------------------------------------------
+
+def test_version_returns_version_string() -> None:
+    out = supertool.op_version()
+    assert out == f"supertool {supertool.VERSION}\n"
+
+
+def test_version_dispatch() -> None:
+    out = supertool.dispatch("version")
+    assert supertool.VERSION in out
+    assert "---" not in out  # meta-op, no header
 
 
 # ---------------------------------------------------------------------------
@@ -538,3 +703,46 @@ def test_ops_default_status_is_shown(tmp_path: Path, monkeypatch) -> None:
     supertool._CONFIG_CHECKED = False
     out = supertool.op_ops()
     assert "read:PATH" in out
+
+
+def test_ops_aliases_section_rendered() -> None:
+    """Aliases appear in a separate section in op_ops output."""
+    supertool._CONFIG = {
+        "aliases": {
+            "verify": {
+                "ops": ["phpstan:{file}", "phpmd:{file}"],
+                "description": "Run all quality checks",
+                "example": "verify:src/Module.php"
+            }
+        }
+    }
+    supertool._CONFIG_CHECKED = True
+    out = supertool.op_ops()
+    assert "## Aliases" in out
+    assert "verify" in out
+    assert "Run all quality checks" in out
+    assert "verify:src/Module.php" in out
+
+
+def test_ops_aliases_status_0_hidden() -> None:
+    """Aliases with status: 0 are hidden from output."""
+    supertool._CONFIG = {
+        "aliases": {
+            "visible": {"ops": ["read:{file}"], "description": "Shown"},
+            "hidden": {"ops": ["read:{file}"], "description": "Hidden", "status": 0}
+        }
+    }
+    supertool._CONFIG_CHECKED = True
+    out = supertool.op_ops()
+    assert "visible" in out
+    assert "hidden" not in out
+
+
+def test_alias_ops_not_a_list() -> None:
+    """Alias with ops as a string instead of list gives error."""
+    supertool._CONFIG = {
+        "aliases": {"bad": {"ops": "not-a-list"}}
+    }
+    out = supertool._resolve_alias("bad", ["bad", "file.php"])
+    assert "ERROR" in out
+    assert "must be a list" in out

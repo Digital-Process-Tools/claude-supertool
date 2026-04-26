@@ -58,6 +58,26 @@
       "syntax": "map:PATH",
       "description": "Symbol tree (classes, functions, methods, constants). Three-tier: tree-sitter > ctags > regex",
       "example": "map:supertool.py"
+    },
+    "diff": {
+      "syntax": "diff:PATH1:PATH2",
+      "description": "Unified diff between two files",
+      "example": "diff:supertool.py:tests/conftest.py"
+    },
+    "stat": {
+      "syntax": "stat:PATH",
+      "description": "File/directory metadata: size, last modified, type",
+      "example": "stat:supertool.py"
+    },
+    "around_line": {
+      "syntax": "around_line:PATH:LINE[:N]",
+      "description": "Show N lines of context around a specific line number (default 10). Target line marked with →",
+      "example": "around_line:supertool.py:100:5"
+    },
+    "version": {
+      "syntax": "version",
+      "description": "Show supertool version",
+      "example": "version"
     }
   },
   "ops": {},
