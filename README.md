@@ -148,10 +148,26 @@ Create a `.supertool.json` in your project root. Supertool walks up from cwd to 
   "output-format": "Each operation returns a header followed by its output:\n\n--- read:src/app/Module.py ---\n(45 lines, 1230 bytes)\n     1→import os\n     2→import sys\n\n--- grep:class:src/app/:5 ---\n(2 results, limit 5)\nsrc/app/Module.py\n  4:class Module:\nsrc/app/Config.py\n  8:class Config:",
 
   "builtin-ops": {
-    "read":  { "syntax": "read:PATH[:OFFSET:LIMIT][:::grep=PATTERN]", "description": "Read a file, optionally sliced or filtered.", "example": "read:src/app/Module.py:1:50" },
-    "grep":  { "syntax": "grep:PATTERN:PATH[:LIMIT[:CONTEXT]]",        "description": "Grep with optional line limit and context lines.", "example": "grep:def handle:src/:20:2" },
-    "glob":  { "syntax": "glob:PATTERN",                                "description": "Glob files. Auto-reads if no wildcards.",          "example": "glob:src/**/*.py" },
-    "map":   { "syntax": "map:PATH",                                    "description": "Symbol tree (classes, functions, methods).",        "example": "map:src/app/" }
+    "read": {
+      "syntax": "read:PATH[:OFFSET:LIMIT]",
+      "description": "Read file (first 300 lines, 20KB cap)",
+      "example": "read:src/app/Module.py:1:50"
+    },
+    "read-grep": {
+      "syntax": "read:PATH:::grep=PATTERN",
+      "description": "Inline filter — only matching lines, original line numbers preserved",
+      "example": "read:src/app/Module.py:::grep=class"
+    },
+    "grep": {
+      "syntax": "grep:PATTERN:PATH[:LIMIT[:CONTEXT]]",
+      "description": "Search (10 results default). CONTEXT shows N surrounding lines",
+      "example": "grep:def handle:src/:20:2"
+    },
+    "map": {
+      "syntax": "map:PATH",
+      "description": "Symbol tree (classes, functions, methods, constants)",
+      "example": "map:src/app/"
+    }
   },
 
   "ops": {
