@@ -69,6 +69,12 @@ OPERATIONS
                                 classes, functions, methods, constants as an
                                 indented tree with line numbers.
                                 Three-tier: tree-sitter → ctags → regex.
+    replace_dry:OLD:NEW:PATH   Preview replacements without modifying files.
+                                Shows diff-style output (- old / + new) per
+                                occurrence with file paths and line numbers.
+    replace:OLD:NEW:PATH       Find and replace OLD with NEW across all files
+                                in PATH. Returns receipt: files modified and
+                                replacement count per file.
 
 Output: structured text with --- separators per operation.
 Calls logged to {tempdir}/supertool-calls.log for per-turn analysis
@@ -89,7 +95,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-VERSION = "0.4.1"
+VERSION = "0.5.0"
 
 MAX_READ_LINES = 300
 MAX_READ_BYTES = 20000  # ~20KB cap — prevents Claude Code "Output too large"
@@ -222,7 +228,7 @@ BLOCKED_TOOLS = {"Grep", "Glob", "LS"}
 BLOCKED_BASH_COMMANDS = {"cat", "find", "grep", "ls", "sed", "awk", "tail", "head"}
 
 # Built-in op names — custom ops/aliases with these names are ignored
-_BUILTIN_OPS = {"read", "grep", "glob", "ls", "tail", "head", "wc", "check", "around", "map", "diff", "stat", "around_line", "tree", "blame"}
+_BUILTIN_OPS = {"read", "grep", "glob", "ls", "tail", "head", "wc", "check", "around", "map", "diff", "stat", "around_line", "tree", "blame", "replace", "replace_dry"}
 
 
 # ---------------------------------------------------------------------------
@@ -1561,6 +1567,93 @@ def _parse_around_args(parts: List[str]) -> tuple:
     return (pattern, path, n)
 
 
+def op_replace(old: str, new: str, path: str = ".", dry: bool = False) -> str:
+    """Find and replace text across files. Supports dry-run preview.
+
+    Searches recursively through `path` (respecting grep file includes),
+    finds all occurrences of `old`, and either previews (dry=True) or
+    executes (dry=False) the replacement.
+
+    Output format:
+      - Dry mode: diff-style preview (- old / + new) per occurrence
+      - Execute mode: compact receipt (files modified, counts)
+    """
+    if not old:
+        return "ERROR: empty search pattern\n"
+    if old == new:
+        return "ERROR: old and new strings are identical\n"
+    if not path:
+        return "ERROR: empty path\n"
+
+    # Validate path exists
+    if path != "." and not os.path.isfile(path) and not os.path.isdir(path):
+        return f"ERROR: path not found: {path}\n"
+
+    candidates = _grep_candidates(path)
+    if not candidates:
+        return "(0 files to search)\n"
+
+    # Collect matches
+    matches: List[Tuple[str, int, str]] = []  # (filepath, lineno, line_content)
+    for file_path in candidates:
+        try:
+            with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+                for lineno, line in enumerate(f, start=1):
+                    if old in line:
+                        matches.append((file_path, lineno, line.rstrip()))
+        except OSError:
+            continue
+
+    if not matches:
+        return f"(0 occurrences of '{old}' found)\n"
+
+    if dry:
+        # Diff preview mode
+        out: List[str] = []
+        current_file = ""
+        file_count = 0
+        for filepath, lineno, content in matches:
+            if filepath != current_file:
+                current_file = filepath
+                file_count += 1
+                out.append(f"\n{filepath}\n")
+            replaced = content.replace(old, new)
+            out.append(f"  {lineno}:  - {content}\n")
+            out.append(f"  {lineno}:  + {replaced}\n")
+
+        out.insert(0, f"({len(matches)} occurrences in {file_count} files)\n")
+        out.append(f"\nSummary: {len(matches)} replacements in {file_count} files (DRY RUN — no files modified)\n")
+        return "".join(out)
+    else:
+        # Execute mode — perform replacements file by file
+        files_modified: Dict[str, int] = {}  # filepath -> count
+        for file_path in candidates:
+            try:
+                with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+                    content = f.read()
+            except OSError:
+                continue
+
+            count = content.count(old)
+            if count == 0:
+                continue
+
+            new_content = content.replace(old, new)
+            try:
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(new_content)
+                files_modified[file_path] = count
+            except OSError as e:
+                return f"ERROR: failed to write {file_path}: {e}\n"
+
+        total = sum(files_modified.values())
+        out = [f"({total} replacements in {len(files_modified)} files)\n"]
+        for fp, cnt in sorted(files_modified.items()):
+            out.append(f"  {fp} ({cnt})\n")
+        out.append(f"\nDone: '{old}' → '{new}'\n")
+        return "".join(out)
+
+
 def op_introduction() -> str:
     """Output the project-specific introduction text from .supertool.json."""
     config = _load_config()
@@ -1722,6 +1815,12 @@ def dispatch(arg: str) -> str:
             line = int(parts[2]) if len(parts) > 2 and parts[2] else 0
             n = int(parts[3]) if len(parts) > 3 and parts[3] else 5
             body = op_blame(path, line, n)
+        elif op in ("replace", "replace_dry"):
+            old_str = parts[1] if len(parts) > 1 else ""
+            new_str = parts[2] if len(parts) > 2 else ""
+            rpath = parts[3] if len(parts) > 3 and parts[3] else "."
+            dry = op == "replace_dry"
+            body = op_replace(old_str, new_str, rpath, dry=dry)
         elif op in ("introduction", "output-format", "ops", "version"):
             # Meta-ops use markdown headers instead of --- header ---
             header = ""
@@ -1745,7 +1844,8 @@ def dispatch(arg: str) -> str:
                 else:
                     body = (f"ERROR: unknown operation: {op}\n"
                             f"Valid operations: read, grep, glob, ls, tail, "
-                            f"head, around, around_line, wc, check, map, diff, stat, tree, blame\n")
+                            f"head, around, around_line, wc, check, map, diff, stat, tree, blame, "
+                            f"replace, replace_dry\n")
     except (ValueError, IndexError) as e:
         body = f"ERROR: argument parsing: {e}\n"
 
