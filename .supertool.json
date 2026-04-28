@@ -75,6 +75,11 @@
       "description": "Show N lines of context around a specific line number (default 10). Target line marked with \u2192",
       "example": "around_line:supertool.py:100:5"
     },
+    "between": {
+      "syntax": "between:SYMBOL:PATH | between:re:START:END:PATH",
+      "description": "Return a chunk of a file. Symbol mode: full body of a named function/method/class via tree-sitter (any language tree-sitter parses). Pattern mode (re: prefix): inclusive line slice from first line matching START regex to first line after matching END regex.",
+      "example": "between:op_dispatch:supertool.py"
+    },
     "version": {
       "syntax": "version",
       "description": "Show supertool version",

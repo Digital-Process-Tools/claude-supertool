@@ -665,6 +665,128 @@ def op_around(pattern: str, path: str, n: int = 10) -> str:
     return "".join(out)
 
 
+def op_between_symbol(symbol: str, path: str) -> str:
+    """Return the body of a named function/method/class via tree-sitter.
+
+    SYMBOL is matched against definition node names. First match wins; the
+    info line reports total match count when the name is ambiguous.
+    """
+    if not symbol:
+        return "ERROR: empty symbol\n"
+    if not path:
+        return "ERROR: empty path\n"
+    if os.path.isdir(path):
+        return (f"ERROR: between only works on single files, not "
+                f"directories: {path}\n")
+    if not os.path.isfile(path):
+        return f"ERROR: file not found: {path}\n"
+
+    if not _has_tree_sitter():
+        return ("ERROR: between symbol mode requires tree-sitter "
+                "(install tree-sitter-language-pack). "
+                "Use 'between:re:START:END:PATH' for regex line slicing.\n")
+
+    ext = os.path.splitext(path)[1].lower()
+    lang_name = _TS_LANG_MAP.get(ext)
+    if not lang_name:
+        return (f"ERROR: tree-sitter does not support extension {ext!r}. "
+                "Use 'between:re:START:END:PATH' for regex line slicing.\n")
+
+    found = _ts_find_node(path, lang_name, symbol)
+    if found is None:
+        return f"ERROR: symbol {symbol!r} not found in {path}\n"
+    node, kind, total = found
+
+    start_line = node.start_point[0]
+    end_line = node.end_point[0]
+
+    try:
+        with open(path, "rb") as f:
+            raw_lines = f.read().splitlines(keepends=True)
+    except OSError as e:
+        return f"ERROR: could not read {path}: {e}\n"
+
+    total_lines = len(raw_lines)
+    end_line = min(end_line, total_lines - 1)
+
+    suffix = f", {total} matches (first shown)" if total > 1 else ""
+    out = [f"({kind} {symbol!r}, lines {start_line + 1}–{end_line + 1}, "
+           f"{end_line - start_line + 1} lines{suffix})\n"]
+    for i in range(start_line, end_line + 1):
+        try:
+            line = raw_lines[i].decode("utf-8", errors="replace")
+        except Exception:
+            line = "<binary line>\n"
+        marker = "→" if i == start_line else " "
+        out.append(f"{i + 1:>6}{marker}{line}")
+    out.append("\n")
+    return "".join(out)
+
+
+def op_between_pattern(start: str, end: str, path: str) -> str:
+    """Return inclusive line slice from first line matching START to first
+    subsequent line matching END (regex, language-agnostic).
+    """
+    if not start:
+        return "ERROR: empty start pattern\n"
+    if not end:
+        return "ERROR: empty end pattern\n"
+    if not path:
+        return "ERROR: empty path\n"
+    if os.path.isdir(path):
+        return (f"ERROR: between only works on single files, not "
+                f"directories: {path}\n")
+    if not os.path.isfile(path):
+        return f"ERROR: file not found: {path}\n"
+
+    try:
+        start_re = re.compile(start)
+    except re.error:
+        start_re = re.compile(re.escape(start))
+    try:
+        end_re = re.compile(end)
+    except re.error:
+        end_re = re.compile(re.escape(end))
+
+    try:
+        with open(path, "rb") as f:
+            raw_lines = f.read().splitlines(keepends=True)
+    except OSError as e:
+        return f"ERROR: could not read {path}: {e}\n"
+
+    lines: List[str] = []
+    for raw in raw_lines:
+        try:
+            lines.append(raw.decode("utf-8", errors="replace"))
+        except Exception:
+            lines.append("<binary line>\n")
+
+    start_idx: int | None = None
+    for i, line in enumerate(lines):
+        if start_re.search(line):
+            start_idx = i
+            break
+    if start_idx is None:
+        return f"ERROR: start pattern {start!r} not matched in {path}\n"
+
+    end_idx: int | None = None
+    for i in range(start_idx + 1, len(lines)):
+        if end_re.search(lines[i]):
+            end_idx = i
+            break
+    if end_idx is None:
+        return (f"ERROR: end pattern {end!r} not matched after line "
+                f"{start_idx + 1} in {path}\n")
+
+    out = [f"(slice lines {start_idx + 1}–{end_idx + 1}, "
+           f"{end_idx - start_idx + 1} lines)\n"]
+    for i in range(start_idx, end_idx + 1):
+        marker = "→" if i in (start_idx, end_idx) else " "
+        out.append(f"{i + 1:>6}{marker}{lines[i]}")
+    out.append("\n")
+    return "".join(out)
+
+
 def op_glob(pattern: str) -> str:
     """Find files matching pattern. Auto-reads concrete file paths."""
     if not pattern:
@@ -1069,6 +1191,46 @@ def _ts_node_name(node: Any, lang_name: str) -> str:
             return child.text.decode("utf-8", errors="replace")
 
     return "<anonymous>"
+
+
+def _ts_find_node(
+    path: str, lang_name: str, name: str
+) -> Tuple[Any, str, int] | None:
+    """Find first definition node by name. Returns (node, kind, total_matches) or None.
+
+    total_matches lets callers warn when a name resolves to multiple definitions.
+    """
+    if _TS_PACKAGE == "pack":
+        from tree_sitter_language_pack import get_parser
+    else:
+        from tree_sitter_languages import get_parser
+    try:
+        parser = get_parser(lang_name)
+    except Exception:
+        return None
+
+    try:
+        with open(path, "rb") as f:
+            source = f.read()
+        tree = parser.parse(source)
+    except Exception:
+        return None
+
+    def_nodes = _TS_DEF_NODES.get(lang_name, _TS_DEF_NODES_DEFAULT)
+    matches: List[Tuple[Any, str]] = []
+
+    def _walk(node: Any) -> None:
+        if node.type in def_nodes:
+            if _ts_node_name(node, lang_name) == name:
+                matches.append((node, def_nodes[node.type]))
+        for child in node.children:
+            _walk(child)
+
+    _walk(tree.root_node)
+    if not matches:
+        return None
+    node, kind = matches[0]
+    return node, kind, len(matches)
 
 
 def _ctags_extract(path: str) -> List[Tuple[str, str, int, str]]:
@@ -1867,6 +2029,32 @@ def dispatch(arg: str) -> str:
             line = int(parts[2]) if len(parts) > 2 and parts[2] else 0
             n = int(parts[3]) if len(parts) > 3 and parts[3] else 10
             body = op_around_line(path, line, n)
+        elif op == "between":
+            if len(parts) >= 2 and parts[1] == "re":
+                # Pattern mode opt-in: between:re:START:END:PATH
+                # 're:' is reserved as the mode marker — never falls through
+                # to symbol mode, even if arg count is wrong, since 're' as
+                # a symbol name is highly unlikely and silent fallthrough
+                # produces misleading "file not found" errors when single-
+                # letter args trip the Windows drive-letter merge in
+                # _split_arg.
+                if len(parts) >= 5:
+                    start_pat = parts[2]
+                    end_pat = parts[3]
+                    path = ":".join(parts[4:])
+                    body = op_between_pattern(start_pat, end_pat, path)
+                else:
+                    body = ("ERROR: between:re: requires START:END:PATH "
+                            f"(got {len(parts) - 2} args after 're')\n")
+            elif len(parts) >= 3:
+                # Symbol mode: between:SYMBOL:PATH
+                # Join middle parts on ':' so PHP Foo::bar style names work.
+                symbol = ":".join(parts[1:-1])
+                path = parts[-1]
+                body = op_between_symbol(symbol, path)
+            else:
+                body = ("ERROR: between requires SYMBOL:PATH or "
+                        "re:START:END:PATH\n")
         elif op == "tree":
             path = parts[1] if len(parts) > 1 and parts[1] else "."
             d = int(parts[2]) if len(parts) > 2 and parts[2] else 3
@@ -1900,7 +2088,7 @@ def dispatch(arg: str) -> str:
                 else:
                     body = (f"ERROR: unknown operation: {op}\n"
                             f"Valid operations: read, grep, glob, ls, tail, "
-                            f"head, around, around_line, wc, check, map, diff, stat, tree, "
+                            f"head, around, around_line, between, wc, check, map, diff, stat, tree, "
                             f"replace, replace_dry\n")
     except (ValueError, IndexError) as e:
         body = f"ERROR: argument parsing: {e}\n"
