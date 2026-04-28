@@ -138,6 +138,85 @@ class TestResolveCustomOp:
         assert result is not None
         assert "file.txt" in result
 
+    def test_arg_placeholder_replaced(self) -> None:
+        """The {arg} placeholder is replaced with the raw argument value."""
+        supertool._CONFIG = {
+            "ops": {"lookup": {"cmd": "echo {arg}"}}
+        }
+        result = supertool._resolve_custom_op("lookup", ["lookup", "12345"])
+        assert result is not None
+        assert "PASS" in result
+        assert "12345" in result
+
+    def test_arg_placeholder_shell_safe(self) -> None:
+        """The {arg} placeholder is shell-quoted for safety."""
+        supertool._CONFIG = {
+            "ops": {"unsafe": {"cmd": "echo {arg}"}}
+        }
+        result = supertool._resolve_custom_op("unsafe", ["unsafe", "hello world"])
+        assert result is not None
+        assert "PASS" in result
+
+    def test_args_placeholder_all_parts(self) -> None:
+        """The {args} placeholder expands all arguments."""
+        supertool._CONFIG = {
+            "ops": {"multi": {"cmd": "echo {args}"}}
+        }
+        result = supertool._resolve_custom_op("multi", ["multi", "12345", "200"])
+        assert result is not None
+        assert "PASS" in result
+        assert "12345" in result
+        assert "200" in result
+
+    def test_args_placeholder_single_arg(self) -> None:
+        """The {args} placeholder works with a single argument too."""
+        supertool._CONFIG = {
+            "ops": {"single": {"cmd": "echo {args}"}}
+        }
+        result = supertool._resolve_custom_op("single", ["single", "42"])
+        assert result is not None
+        assert "42" in result
+
+    def test_args_placeholder_empty(self) -> None:
+        """The {args} placeholder is empty when no arguments given."""
+        supertool._CONFIG = {
+            "ops": {"noarg": {"cmd": "echo start {args} end"}}
+        }
+        result = supertool._resolve_custom_op("noarg", ["noarg"])
+        assert result is not None
+        assert "start  end" in result or "start end" in result
+
+    def test_extra_config_keys_as_env_vars(self) -> None:
+        """Extra keys in op config are passed as SUPERTOOL_ env vars."""
+        supertool._CONFIG = {
+            "ops": {"tool": {
+                "cmd": "echo $SUPERTOOL_LINES $SUPERTOOL_MODE",
+                "lines": 200,
+                "mode": "verbose",
+            }}
+        }
+        result = supertool._resolve_custom_op("tool", ["tool", "x"])
+        assert result is not None
+        assert "200" in result
+        assert "verbose" in result
+
+    def test_reserved_keys_not_in_env(self) -> None:
+        """Reserved keys (cmd, timeout, description, etc.) are NOT passed as env vars."""
+        supertool._CONFIG = {
+            "ops": {"tool": {
+                "cmd": "env | grep SUPERTOOL_ | sort",
+                "timeout": 10,
+                "description": "test",
+                "custom_key": "yes",
+            }}
+        }
+        result = supertool._resolve_custom_op("tool", ["tool", "x"])
+        assert result is not None
+        assert "SUPERTOOL_CUSTOM_KEY=yes" in result
+        assert "SUPERTOOL_CMD" not in result
+        assert "SUPERTOOL_TIMEOUT" not in result
+        assert "SUPERTOOL_DESCRIPTION" not in result
+
     def test_output_format_matches_check(self, tmp_path: Path) -> None:
         """Custom op output format: timing line + stdout."""
         f = tmp_path / "t.txt"
@@ -193,6 +272,16 @@ class TestResolveAlias:
         assert result is not None
         assert "code" in result
         assert "x.py" in result
+
+    def test_arg_placeholder_in_alias(self) -> None:
+        """The {arg} placeholder is replaced in alias ops."""
+        supertool._CONFIG = {
+            "ops": {"show": {"cmd": "echo {arg}"}},
+            "aliases": {"lookup": {"ops": ["show:{arg}"]}}
+        }
+        result = supertool._resolve_alias("lookup", ["lookup", "42"])
+        assert result is not None
+        assert "42" in result
 
     def test_alias_with_custom_ops(self, tmp_path: Path) -> None:
         """An alias can reference custom ops defined in the same config."""

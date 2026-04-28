@@ -121,20 +121,102 @@ _COMPACT_SKIP = re.compile(
 _CONFIG: Dict[str, Any] | None = None
 _CONFIG_CHECKED = False
 
+# Supertool install directory (where supertool.py actually lives, following symlinks)
+_INSTALL_DIR = os.path.dirname(os.path.realpath(__file__))
+
+
+def _find_preset_file(name: str, project_dir: str) -> str | None:
+    """Find a preset JSON file by name, checking three locations in order.
+
+    Resolution order:
+    1. {project_dir}/presets/{name}.json   — project-level
+    2. ~/.config/supertool/presets/{name}.json — user-level
+    3. {supertool install dir}/presets/{name}.json — shipped
+    """
+    candidates = [
+        os.path.join(project_dir, "presets", f"{name}.json"),
+        os.path.join(os.path.expanduser("~"), ".config", "supertool", "presets", f"{name}.json"),
+        os.path.join(_INSTALL_DIR, "presets", f"{name}.json"),
+    ]
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+def _resolve_preset_cmd(cmd: str, preset_dir: str) -> str:
+    """Replace {path} placeholder with the preset's directory (trailing slash).
+
+    Example: 'python3 {path}gitlab/issue.py {arg}'
+    becomes: 'python3 /home/user/.local/supertool/presets/gitlab/issue.py {arg}'
+    """
+    path_prefix = preset_dir.rstrip("/") + "/"
+    return cmd.replace("{path}", path_prefix)
+
+
+def _merge_presets(config: Dict[str, Any], project_dir: str) -> None:
+    """Load and merge preset ops into config. Project ops win on conflict."""
+    presets = config.get("presets")
+    if not presets or not isinstance(presets, list):
+        return
+
+    project_ops = config.get("ops", {})
+    merged_ops: Dict[str, Any] = {}
+
+    for name in presets:
+        if not isinstance(name, str):
+            continue
+        preset_path = _find_preset_file(name, project_dir)
+        if preset_path is None:
+            # Store warning in a list so callers can report it
+            config.setdefault("_preset_warnings", []).append(
+                f"preset {name!r} not found"
+            )
+            continue
+        try:
+            with open(preset_path) as f:
+                preset_data = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            config.setdefault("_preset_warnings", []).append(
+                f"preset {name!r}: failed to load {preset_path}"
+            )
+            continue
+
+        preset_dir = os.path.dirname(preset_path)
+        preset_ops = preset_data.get("ops", {})
+        for op_name, op_def in preset_ops.items():
+            # Resolve script paths relative to where the preset JSON lives
+            if isinstance(op_def, dict) and "cmd" in op_def:
+                op_def = dict(op_def)  # don't mutate original
+                op_def["cmd"] = _resolve_preset_cmd(op_def["cmd"], preset_dir)
+            elif isinstance(op_def, str):
+                op_def = _resolve_preset_cmd(op_def, preset_dir)
+            merged_ops[op_name] = op_def
+
+    # Project-level ops override preset ops
+    merged_ops.update(project_ops)
+    config["ops"] = merged_ops
+
 
 def _load_config() -> Dict[str, Any]:
-    """Load .supertool.json from cwd or parents. Cached."""
+    """Load .supertool.json from cwd or parents. Cached.
+
+    After loading, merges any preset ops declared in "presets" key.
+    """
     global _CONFIG, _CONFIG_CHECKED
     if _CONFIG_CHECKED:
         return _CONFIG or {}
     _CONFIG_CHECKED = True
     d = os.path.abspath(os.getcwd())
+    project_dir = d
     while True:
         candidate = os.path.join(d, ".supertool.json")
         if os.path.isfile(candidate):
             try:
                 with open(candidate) as f:
                     _CONFIG = json.load(f)
+                    project_dir = d
+                    _merge_presets(_CONFIG, project_dir)
                     return _CONFIG
             except (json.JSONDecodeError, OSError):
                 pass
@@ -258,16 +340,28 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
     if not cmd_template:
         return f"ERROR: empty command for custom op {op!r}\n"
 
-    # Build the command — replace {file} and {dir} placeholders
+    # Build the command — replace {file}, {dir}, {arg}, and {args} placeholders
     file_arg = parts[1] if len(parts) > 1 else ""
     cmd = cmd_template.replace("{file}", shlex.quote(file_arg))
     dir_arg = os.path.dirname(file_arg) if file_arg else "."
     cmd = cmd.replace("{dir}", shlex.quote(dir_arg))
+    cmd = cmd.replace("{arg}", shlex.quote(file_arg))
+    all_args = " ".join(shlex.quote(p) for p in parts[1:]) if len(parts) > 1 else ""
+    cmd = cmd.replace("{args}", all_args)
+
+    # Pass extra config keys as SUPERTOOL_ env vars
+    _RESERVED_KEYS = {"cmd", "timeout", "description", "syntax", "example", "status"}
+    env = dict(os.environ)
+    if isinstance(entry, dict):
+        for k, v in entry.items():
+            if k not in _RESERVED_KEYS:
+                env[f"SUPERTOOL_{k.upper()}"] = str(v)
 
     t0 = time.monotonic()
     try:
         result = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True, timeout=timeout
+            cmd, shell=True, capture_output=True, text=True, timeout=timeout,
+            env=env,
         )
         elapsed = time.monotonic() - t0
         output = result.stdout
@@ -312,9 +406,10 @@ def _resolve_alias(op: str, parts: List[str]) -> str | None:
     if not op_list:
         return ""
 
-    # Replace {file} and {dir} placeholders in each expanded op
+    # Replace {file}, {dir}, {arg}, and {args} placeholders in each expanded op
     file_arg = parts[1] if len(parts) > 1 else ""
     dir_arg = os.path.dirname(file_arg) if file_arg else "."
+    all_args = " ".join(parts[1:]) if len(parts) > 1 else ""
 
     _IN_ALIAS = True
     try:
@@ -322,6 +417,8 @@ def _resolve_alias(op: str, parts: List[str]) -> str | None:
         for expanded_op in op_list:
             resolved = expanded_op.replace("{file}", file_arg)
             resolved = resolved.replace("{dir}", dir_arg)
+            resolved = resolved.replace("{arg}", file_arg)
+            resolved = resolved.replace("{args}", all_args)
             output_parts.append(dispatch(resolved))
         return "".join(output_parts)
     finally:
@@ -1723,7 +1820,7 @@ def op_ops() -> str:
         for name, info in active_custom.items():
             desc = info.get("description", "")
             example = info.get("example", "")
-            syntax = f"{name}:PATH"
+            syntax = info.get("syntax", f"{name}:PATH")
             lines.append(f"- `{syntax}` — {desc}" if desc else f"- `{syntax}`")
             if example:
                 lines.append(f"  Example: `{example}`")
@@ -1740,7 +1837,7 @@ def op_ops() -> str:
             desc = info.get("description", "")
             example = info.get("example", "")
             ops_list = info.get("ops", [])
-            syntax = f"{name}:PATH"
+            syntax = info.get("syntax", f"{name}:PATH")
             lines.append(f"- `{syntax}` — {desc}" if desc else f"- `{syntax}`")
             if example:
                 lines.append(f"  Example: `{example}`")
