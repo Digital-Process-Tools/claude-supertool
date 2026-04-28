@@ -320,7 +320,7 @@ Preset ops merge into your config. Project-level ops always override preset ops 
 | `gl-pipeline` | `gl-pipeline:NUMBER` | Pipeline job list grouped by stage with pass/fail |
 | `gl-job` | `gl-job:NUMBER` | Job log with MR context, error pattern search + configurable tail |
 
-All ops are namespaced with `gl-` to avoid collisions with other presets (e.g., a future `github` preset using `gh-`).
+All ops are namespaced with `gl-` to avoid collisions with other presets.
 
 `gl-mr` accepts either an MR number (`gl-mr:42`) or a branch name (`gl-mr:feature/my-branch`) — it resolves branches to MRs automatically.
 
@@ -339,6 +339,21 @@ All ops are namespaced with `gl-` to avoid collisions with other presets (e.g., 
   }
 }
 ```
+
+**`github`** — GitHub ops via [gh CLI](https://cli.github.com). Requires `gh` installed and authenticated (`gh auth login`).
+
+| Op | Syntax | What it does |
+|----|--------|-------------|
+| `gh-issue` | `gh-issue:NUMBER` | Issue metadata, description, comments, linked PRs, image download |
+| `gh-pr` | `gh-pr:NUMBER_OR_BRANCH` | PR dashboard: branch, checks, reviews/approval, linked issue, diff stat, comments |
+| `gh-run` | `gh-run:NUMBER` | GitHub Actions workflow run: job list with statuses and failed step names |
+| `gh-job` | `gh-job:NUMBER` | Job log with PR context, error pattern search (`##[error]`) + configurable tail |
+
+All ops are namespaced with `gh-` to avoid collisions with other presets.
+
+`gh-pr` accepts either a PR number (`gh-pr:42`) or a branch name (`gh-pr:feature/my-branch`) — it resolves branches to PRs automatically.
+
+Both presets include **actionable error messages** — when something fails (404, auth, permissions, rate limit), the error tells the LLM exactly what went wrong and what command to run to fix it.
 
 #### Writing your own preset
 
