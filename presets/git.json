@@ -13,6 +13,12 @@
       "timeout": 15,
       "description": "Trace a symbol through history: when added, modified, removed. Chronological story via pickaxe search.",
       "syntax": "git-trail:PATTERN:PATH"
+    },
+    "git-blame": {
+      "cmd": "python3 {path}git/blame.py {args}",
+      "timeout": 10,
+      "description": "Git blame: N lines around a specific line number with author, date, and commit info.",
+      "syntax": "git-blame:PATH:LINE[:N]"
     }
   }
 }

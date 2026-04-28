@@ -85,11 +85,6 @@
       "description": "Directory structure with depth limit (default 3). Hides dotfiles.",
       "example": "tree:tests/:2"
     },
-    "blame": {
-      "syntax": "blame:PATH:LINE[:N]",
-      "description": "Git blame for N lines (default 5) around a specific line number",
-      "example": "blame:supertool.py:92:3"
-    },
     "replace_dry": {
       "syntax": "replace_dry:OLD:NEW:PATH",
       "description": "Preview replacements without modifying files. Shows diff-style output (- old / + new) per occurrence.",

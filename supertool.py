@@ -310,7 +310,7 @@ BLOCKED_TOOLS = {"Grep", "Glob", "LS"}
 BLOCKED_BASH_COMMANDS = {"cat", "find", "grep", "ls", "sed", "awk", "tail", "head"}
 
 # Built-in op names — custom ops/aliases with these names are ignored
-_BUILTIN_OPS = {"read", "grep", "glob", "ls", "tail", "head", "wc", "check", "around", "map", "diff", "stat", "around_line", "tree", "blame", "replace", "replace_dry"}
+_BUILTIN_OPS = {"read", "grep", "glob", "ls", "tail", "head", "wc", "check", "around", "map", "diff", "stat", "around_line", "tree", "replace", "replace_dry"}
 
 
 # ---------------------------------------------------------------------------
@@ -900,42 +900,6 @@ def op_tree(path: str, depth: int = 3) -> str:
     _walk(base, "  ", 1)
     return "".join(out)
 
-
-def op_blame(path: str, line: int, n: int = 5) -> str:
-    """Show git blame for N lines around a specific line number."""
-    if not path or not os.path.isfile(path):
-        return f"ERROR: file not found: {path}\n"
-    if line < 1:
-        return f"ERROR: line number must be >= 1, got {line}\n"
-
-    # Check if we're in a git repo
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--git-dir"],
-            capture_output=True, text=True, timeout=5
-        )
-        if result.returncode != 0:
-            return "ERROR: not a git repository\n"
-    except (OSError, subprocess.TimeoutExpired):
-        return "ERROR: git not available\n"
-
-    start = max(1, line - n)
-    end = line + n
-    try:
-        result = subprocess.run(
-            ["git", "blame", "-L", f"{start},{end}", "--date=short", path],
-            capture_output=True, text=True, timeout=10
-        )
-    except subprocess.TimeoutExpired:
-        return f"ERROR: git blame timed out for {path}\n"
-    except OSError as e:
-        return f"ERROR: git blame failed: {e}\n"
-
-    if result.returncode != 0:
-        err = result.stderr.strip()
-        return f"ERROR: git blame: {err}\n"
-
-    return result.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -1907,11 +1871,6 @@ def dispatch(arg: str) -> str:
             path = parts[1] if len(parts) > 1 and parts[1] else "."
             d = int(parts[2]) if len(parts) > 2 and parts[2] else 3
             body = op_tree(path, d)
-        elif op == "blame":
-            path = parts[1] if len(parts) > 1 else ""
-            line = int(parts[2]) if len(parts) > 2 and parts[2] else 0
-            n = int(parts[3]) if len(parts) > 3 and parts[3] else 5
-            body = op_blame(path, line, n)
         elif op in ("replace", "replace_dry"):
             old_str = parts[1] if len(parts) > 1 else ""
             new_str = parts[2] if len(parts) > 2 else ""
@@ -1941,7 +1900,7 @@ def dispatch(arg: str) -> str:
                 else:
                     body = (f"ERROR: unknown operation: {op}\n"
                             f"Valid operations: read, grep, glob, ls, tail, "
-                            f"head, around, around_line, wc, check, map, diff, stat, tree, blame, "
+                            f"head, around, around_line, wc, check, map, diff, stat, tree, "
                             f"replace, replace_dry\n")
     except (ValueError, IndexError) as e:
         body = f"ERROR: argument parsing: {e}\n"
