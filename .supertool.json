@@ -1,6 +1,7 @@
 {
   "compact": false,
   "rtk": false,
+  "presets": ["github"],
   "introduction": "supertool batches multiple file operations into one Bash call.\n\nInvoke via Bash:\n./supertool \\\n    'read:supertool.py' \\\n    'read:tests/test_ops.py' \\\n    'grep:def op_:supertool.py:20' \\\n    'map:supertool.py'\n\nRules:\n- One call, many ops. 6-7 per call is normal. Each separate call wastes money.\n- Paths are relative to project root.\n- Single quotes around each op.\n- Use Read tool ONLY for the file you're about to Edit \u2014 supertool for everything else.",
   "output-format": "Each operation returns a header followed by its output:\n\n```\n--- read:supertool.py ---\n(979 lines, 35000 bytes)\n     1\u2192#!/usr/bin/env python3\n     2\u2192\n     3\u2192import os\n     4\u2192import sys\n\n--- grep:def op_:supertool.py:5 ---\n(3 results, limit 5)\nsupertool.py\n  362:def op_read  [362]\n  367:def op_grep  [367]\n  464:def op_around  [464]\n\n--- map:supertool.py ---\n(1 files, tier: tree-sitter)\nsupertool.py (979 lines)\n  def op_read  [362]\n  def op_grep  [367]\n  def op_around  [464]\n```",
   "builtin-ops": {

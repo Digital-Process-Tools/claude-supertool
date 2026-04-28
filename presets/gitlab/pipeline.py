@@ -5,6 +5,18 @@ import subprocess
 import sys
 
 
+def _format_error(stderr: str, resource: str, identifier: str) -> str:
+    """Classify glab errors into actionable messages for LLMs."""
+    s = stderr.lower()
+    if "404" in s or "not found" in s or "could not resolve" in s:
+        return f"ERROR: {resource} #{identifier} not found. Check the ID or verify you're in the right repo."
+    if "401" in s or "unauthorized" in s or "token" in s:
+        return "ERROR: glab not authenticated. Run: glab auth login"
+    if "403" in s or "forbidden" in s:
+        return f"ERROR: permission denied for {resource} #{identifier}. Check your GitLab access token permissions."
+    return f"ERROR: glab failed for {resource} #{identifier}: {stderr.strip()}"
+
+
 def main() -> int:
     if len(sys.argv) < 2:
         print("ERROR: usage: pipeline.py PIPELINE_ID")
@@ -28,7 +40,7 @@ def main() -> int:
         return 1
 
     if result.returncode != 0:
-        print(f"ERROR: glab failed: {result.stderr.strip()}")
+        print(_format_error(result.stderr, "Pipeline", pipeline_id))
         return 1
 
     try:
