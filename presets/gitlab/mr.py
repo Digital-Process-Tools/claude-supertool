@@ -151,6 +151,25 @@ def main() -> int:
     if pipe_id:
         pipe_str += f" (#{pipe_id})"
     print(f"Pipeline: {pipe_str}")
+
+    # Failed jobs (only when pipeline failed)
+    if pipe_status == "failed" and pipe_id:
+        try:
+            jobs_result = _glab_api(
+                f"projects/:id/pipelines/{pipe_id}/jobs?per_page=100&scope=failed"
+            )
+            if jobs_result.returncode == 0:
+                jobs = json.loads(jobs_result.stdout)
+                if isinstance(jobs, list) and jobs:
+                    print(f"Failed jobs ({len(jobs)}):")
+                    for job in jobs:
+                        jid = job.get("id", "?")
+                        jname = job.get("name", "?")
+                        jstage = job.get("stage", "?")
+                        print(f"  #{jid} | {jname} | {jstage}")
+        except (subprocess.TimeoutExpired, json.JSONDecodeError):
+            pass
+
     print(f"Changes: {changes} files, +{additions} -{deletions}")
 
     # Conflicts
