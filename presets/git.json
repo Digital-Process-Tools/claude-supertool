@@ -1,0 +1,18 @@
+{
+  "description": "Git investigation ops — answer debugging questions in one call",
+  "requires": "git",
+  "ops": {
+    "git-investigate": {
+      "cmd": "python3 {path}git/investigate.py {arg}",
+      "timeout": 15,
+      "description": "File investigation: recent commits, uncommitted changes, blame hotspots — everything about a file's recent history.",
+      "syntax": "git-investigate:PATH"
+    },
+    "git-trail": {
+      "cmd": "python3 {path}git/trail.py {args}",
+      "timeout": 15,
+      "description": "Trace a symbol through history: when added, modified, removed. Chronological story via pickaxe search.",
+      "syntax": "git-trail:PATTERN:PATH"
+    }
+  }
+}
