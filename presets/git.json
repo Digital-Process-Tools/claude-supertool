@@ -5,25 +5,25 @@
     "git-status": {
       "cmd": "python3 {path}git/status.py",
       "timeout": 5,
-      "description": "Git dashboard: branch, ahead/behind, last 5 commits, staged/unstaged/untracked, stashes.",
+      "description": "Where am I? Branch, commits, changes, stashes, open MR/PR — full context in one call.",
       "syntax": "git-status"
     },
     "git-investigate": {
       "cmd": "python3 {path}git/investigate.py {arg}",
       "timeout": 15,
-      "description": "File investigation: recent commits, uncommitted changes, blame hotspots — everything about a file's recent history.",
+      "description": "What happened to this file? Commits, uncommitted changes, blame hotspots — answer 'why is this broken?' in one call.",
       "syntax": "git-investigate:PATH"
     },
     "git-trail": {
       "cmd": "python3 {path}git/trail.py {args}",
       "timeout": 15,
-      "description": "Trace a symbol through history: when added, modified, removed. Chronological story via pickaxe search.",
+      "description": "When was this added or changed? Trace a constant, function, or pattern through history — who introduced it and why.",
       "syntax": "git-trail:PATTERN:PATH"
     },
     "git-blame": {
       "cmd": "python3 {path}git/blame.py {args}",
       "timeout": 10,
-      "description": "Git blame: N lines around a specific line number with author, date, and commit info.",
+      "description": "Who wrote this line? Blame N lines around a specific line number with author, date, and commit.",
       "syntax": "git-blame:PATH:LINE[:N]"
     }
   }

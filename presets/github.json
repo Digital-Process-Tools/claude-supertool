@@ -5,25 +5,25 @@
     "gh-issue": {
       "cmd": "python3 {path}github/issue.py {arg}",
       "timeout": 30,
-      "description": "GitHub issue: metadata, description, human comments, images downloaded.",
+      "description": "Pick up a GitHub issue: description, comments, images downloaded locally, linked PRs — everything to start working.",
       "syntax": "gh-issue:NUMBER"
     },
     "gh-pr": {
       "cmd": "python3 {path}github/pr.py {arg}",
       "timeout": 20,
-      "description": "GitHub pull request: branch, checks, review/approval, linked issue, diff stat, comments.",
+      "description": "Review a pull request: branch, checks, reviews/approval, linked issue, diff stat, comments — the full dashboard.",
       "syntax": "gh-pr:NUMBER_OR_BRANCH"
     },
     "gh-run": {
       "cmd": "python3 {path}github/run.py {arg}",
       "timeout": 15,
-      "description": "GitHub Actions workflow run: job list with statuses.",
+      "description": "What passed, what failed? Workflow run jobs with statuses and failed step names.",
       "syntax": "gh-run:NUMBER"
     },
     "gh-job": {
       "cmd": "python3 {path}github/job.py {arg}",
       "timeout": 30,
-      "description": "GitHub Actions job log: PR context, error pattern search + tail.",
+      "description": "Why did this job fail? PR context + error pattern search + log tail — the actual error, not setup noise.",
       "syntax": "gh-job:NUMBER",
       "lines": 80,
       "error_patterns": "ERROR,FAILED,Error:,Failed,fatal:,##[error]",

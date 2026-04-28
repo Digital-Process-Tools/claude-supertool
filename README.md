@@ -353,7 +353,22 @@ All ops are namespaced with `gh-` to avoid collisions with other presets.
 
 `gh-pr` accepts either a PR number (`gh-pr:42`) or a branch name (`gh-pr:feature/my-branch`) — it resolves branches to PRs automatically.
 
-Both presets include **actionable error messages** — when something fails (404, auth, permissions, rate limit), the error tells the LLM exactly what went wrong and what command to run to fix it.
+Both forge presets include **actionable error messages** — when something fails (404, auth, permissions, rate limit), the error tells the LLM exactly what went wrong and what command to run to fix it.
+
+**`git`** — Git investigation ops. No auth needed — works on any git repo.
+
+| Op | Syntax | What it does |
+|----|--------|-------------|
+| `git-status` | `git-status` | Dashboard: branch, ahead/behind, last 5 commits, staged/unstaged/untracked, stashes, open MR/PR |
+| `git-investigate` | `git-investigate:PATH` | File investigation: recent commits, uncommitted changes, blame hotspots |
+| `git-trail` | `git-trail:PATTERN:PATH` | Trace a symbol through history via pickaxe search — when added, modified, removed |
+| `git-blame` | `git-blame:PATH:LINE[:N]` | Blame N lines around a line number (moved from builtin) |
+
+`git-status` tries `glab` then `gh` to show the open MR/PR for the current branch — skips gracefully if neither is installed. All other ops are pure git.
+
+`git-investigate` combines 3-5 git commands into one report: log, diff, and blame hotspots (most recently changed lines). Configurable via `SUPERTOOL_COMMITS` and `SUPERTOOL_BLAME_RECENT`.
+
+`git-trail` answers "when was this added/changed/removed?" using `git log -S` (pickaxe), with regex fallback. Shows timeline + contextual diffs filtered to relevant hunks.
 
 #### Writing your own preset
 
