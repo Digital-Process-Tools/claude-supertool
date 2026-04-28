@@ -2,6 +2,12 @@
   "description": "Git investigation ops — answer debugging questions in one call",
   "requires": "git",
   "ops": {
+    "git-status": {
+      "cmd": "python3 {path}git/status.py",
+      "timeout": 5,
+      "description": "Git dashboard: branch, ahead/behind, last 5 commits, staged/unstaged/untracked, stashes.",
+      "syntax": "git-status"
+    },
     "git-investigate": {
       "cmd": "python3 {path}git/investigate.py {arg}",
       "timeout": 15,
