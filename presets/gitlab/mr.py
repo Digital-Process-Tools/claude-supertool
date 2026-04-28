@@ -108,10 +108,10 @@ def main() -> int:
     pipe_id = pipeline.get("id", "")
 
     # Diff stats
-    changes = d.get("changes_count", "?")
+    changes = d.get("changes_count") or 0
     diff_stats = d.get("diff_stats") or {}
-    additions = diff_stats.get("additions", "?")
-    deletions = diff_stats.get("deletions", "?")
+    additions = diff_stats.get("additions", 0)
+    deletions = diff_stats.get("deletions", 0)
 
     # Reviewers
     reviewers = d.get("reviewers") or []
