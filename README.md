@@ -259,7 +259,115 @@ Each op has `cmd`, `timeout`, `description`, `example`, and optional `status`. O
 
 Each alias has `ops` (array), `description`, `example`, and optional `status`. Aliases don't recurse.
 
-**Dispatch order:** built-in ops → custom ops → aliases. Built-ins always win.
+**Dispatch order:** built-in ops → custom ops (including preset ops) → aliases. Built-ins always win. Project ops override preset ops on name conflict.
+
+#### Placeholders in custom ops and aliases
+
+| Placeholder | Expands to | Example |
+|-------------|-----------|---------|
+| `{file}` | First argument, shell-quoted, treated as file path | `cat {file}` |
+| `{dir}` | Directory of `{file}` | `ls {dir}` |
+| `{arg}` | First argument, shell-quoted, no path validation | `glab issue view {arg}` |
+| `{args}` | All arguments, each shell-quoted | `python3 tool.py {args}` |
+| `{path}` | Preset directory with trailing `/` (presets only) | `python3 {path}gitlab/issue.py {arg}` |
+
+Use `{file}`/`{dir}` for file operations, `{arg}`/`{args}` for non-file arguments (issue numbers, job IDs, etc.).
+
+#### Extra config keys as environment variables
+
+Any key in a custom op config that isn't a reserved key (`cmd`, `timeout`, `description`, `syntax`, `example`, `status`) is passed to the subprocess as a `SUPERTOOL_` prefixed environment variable:
+
+```json
+{
+  "ops": {
+    "job": {
+      "cmd": "python3 job.py {arg}",
+      "lines": 80,
+      "error_patterns": "ERROR,FAIL,Fatal"
+    }
+  }
+}
+```
+
+The script receives `SUPERTOOL_LINES=80` and `SUPERTOOL_ERROR_PATTERNS=ERROR,FAIL,Fatal` in its environment. This lets users tune op behavior from JSON without modifying scripts.
+
+### Presets — reusable op packs
+
+Presets are JSON files that declare custom ops for a specific tool or platform. Enable them in `.supertool.json`:
+
+```json
+{
+  "presets": ["gitlab"]
+}
+```
+
+Supertool looks for each preset in three locations (first found wins):
+
+1. `./presets/{name}.json` — project-level (team-specific ops)
+2. `~/.config/supertool/presets/{name}.json` — user-level (personal ops)
+3. `{supertool install dir}/presets/{name}.json` — shipped with supertool
+
+Preset ops merge into your config. Project-level ops always override preset ops on name conflict.
+
+#### Shipped presets
+
+**`gitlab`** — GitLab ops via [glab CLI](https://gitlab.com/gitlab-org/cli). Requires `glab` installed and authenticated.
+
+| Op | Syntax | What it does |
+|----|--------|-------------|
+| `gl-issue` | `gl-issue:NUMBER` | Issue metadata, description, human comments, related MRs, image download |
+| `gl-mr` | `gl-mr:NUMBER_OR_BRANCH` | MR dashboard: branch, pipeline, reviewer/approval, linked issue, diff stat, comments |
+| `gl-pipeline` | `gl-pipeline:NUMBER` | Pipeline job list grouped by stage with pass/fail |
+| `gl-job` | `gl-job:NUMBER` | Job log with MR context, error pattern search + configurable tail |
+
+All ops are namespaced with `gl-` to avoid collisions with other presets (e.g., a future `github` preset using `gh-`).
+
+`gl-mr` accepts either an MR number (`gl-mr:42`) or a branch name (`gl-mr:feature/my-branch`) — it resolves branches to MRs automatically.
+
+`gl-job` searches logs for error patterns before falling back to tail. Configure via JSON:
+
+```json
+{
+  "presets": ["gitlab"],
+  "ops": {
+    "gl-job": {
+      "cmd": "python3 {path}gitlab/job.py {arg}",
+      "lines": 120,
+      "error_patterns": "ERROR,FAILURES!,Fatal,Failed asserting",
+      "error_context": 10
+    }
+  }
+}
+```
+
+#### Writing your own preset
+
+Create `./presets/mytools.json` in your project (or `~/.config/supertool/presets/mytools.json` for personal use):
+
+```json
+{
+  "description": "My team's deployment tools",
+  "requires": "kubectl",
+  "ops": {
+    "deploy-status": {
+      "cmd": "python3 {path}mytools/status.py {arg}",
+      "timeout": 15,
+      "description": "Check deployment status for a service.",
+      "syntax": "deploy-status:SERVICE"
+    }
+  }
+}
+```
+
+The `{path}` placeholder resolves to the preset JSON's directory, so scripts can live alongside the manifest. The `requires` field is documentation only (not enforced).
+
+Then enable it:
+
+```json
+{
+  "presets": ["mytools"]
+}
+```
 
 #### Legacy `check:` syntax
 
