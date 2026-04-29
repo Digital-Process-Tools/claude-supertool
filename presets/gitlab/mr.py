@@ -21,6 +21,119 @@ def _glab_api(endpoint: str, timeout: int = 10) -> subprocess.CompletedProcess[s
     )
 
 
+_MERGE_TREE_NOISE_PREFIXES = (
+    "Auto-merging ",
+    "CONFLICT ",
+    "warning:",
+    "hint:",
+    "error:",
+)
+
+
+def _get_conflicting_files(source: str, target: str) -> list[str]:
+    """Find files in conflict between source and target via local git.
+
+    Uses `git merge-tree --name-only --write-tree` (git 2.38+). Returns
+    deduplicated list of conflicting paths, or empty list on any failure
+    (not a git repo, refs not fetched, old git version, cwd outside the
+    repo). Caller falls back to the plain "Conflicts: YES" message in
+    that case.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "merge-tree", "--name-only", "--write-tree",
+             f"origin/{target}", f"origin/{source}"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return []
+    # Exit code 0 = clean merge; >0 = conflicts, file list + git status messages on stdout.
+    if result.returncode == 0:
+        return []
+    files: list[str] = []
+    seen: set[str] = set()
+    for raw in result.stdout.splitlines():
+        line = raw.strip()
+        if not line or line in seen:
+            continue
+        if re.fullmatch(r"[0-9a-f]{40}", line):
+            # First line of merge-tree output is the merged tree hash.
+            continue
+        if any(line.startswith(p) for p in _MERGE_TREE_NOISE_PREFIXES):
+            # Git's status messages get mixed into stdout; drop them.
+            continue
+        files.append(line)
+        seen.add(line)
+    return files
+
+
+_MERGE_TREE_HEADER_RE = re.compile(
+    r"^(changed in both|added in (?:local|remote)|removed in (?:local|remote))\b"
+)
+_MERGE_TREE_PATH_RE = re.compile(
+    r"^  (?:base|our|their)\s+\d+\s+[0-9a-f]+\s+(.+)$"
+)
+HUNK_LINES_PER_FILE = 40
+
+
+def _get_conflict_hunks(source: str, target: str) -> dict[str, str]:
+    """Return per-file conflict diff for hunk preview.
+
+    Uses the older `git merge-tree BASE TARGET SOURCE` syntax which
+    produces unified-diff-style output with `<<<<<<< / ======= / >>>>>>>`
+    conflict markers. Each per-file block is split off the section
+    headers ("changed in both", "added in local", etc.). Returns dict
+    mapping file path -> diff text. Empty dict on any failure.
+    """
+    try:
+        base_result = subprocess.run(
+            ["git", "merge-base", f"origin/{target}", f"origin/{source}"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return {}
+    if base_result.returncode != 0 or not base_result.stdout.strip():
+        return {}
+    base = base_result.stdout.strip()
+
+    try:
+        result = subprocess.run(
+            ["git", "merge-tree", base,
+             f"origin/{target}", f"origin/{source}"],
+            capture_output=True, text=True, timeout=15,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return {}
+    if not result.stdout:
+        return {}
+
+    blocks: dict[str, list[str]] = {}
+    current_path: str | None = None
+    current_lines: list[str] = []
+
+    def _flush() -> None:
+        if current_path:
+            blocks.setdefault(current_path, []).extend(current_lines)
+
+    for line in result.stdout.splitlines():
+        if _MERGE_TREE_HEADER_RE.match(line):
+            _flush()
+            current_path = None
+            current_lines = []
+            continue
+        path_match = _MERGE_TREE_PATH_RE.match(line)
+        if path_match:
+            # Header is followed by 1-3 path lines (base/our/their) — same path.
+            if current_path is None:
+                current_path = path_match.group(1)
+            continue
+        if current_path is not None:
+            current_lines.append(line)
+    _flush()
+
+    return {p: "\n".join(lines).strip() for p, lines in blocks.items() if any(lines)}
+
+
 def _format_error(stderr: str, resource: str, identifier: str) -> str:
     """Classify glab errors into actionable messages for LLMs."""
     s = stderr.lower()
@@ -173,8 +286,13 @@ def main() -> int:
     print(f"Changes: {changes} files, +{additions} -{deletions}")
 
     # Conflicts
+    conflict_files: list[str] = []
     if has_conflicts:
-        print("Conflicts: YES — cannot merge")
+        conflict_files = _get_conflicting_files(source, target)
+        if conflict_files:
+            print(f"Conflicts: YES — cannot merge ({len(conflict_files)} file{'s' if len(conflict_files) != 1 else ''})")
+        else:
+            print("Conflicts: YES — cannot merge")
     else:
         print(f"Merge status: {merge_status}")
 
@@ -184,6 +302,36 @@ def main() -> int:
 
     if web_url:
         print(f"URL: {web_url}")
+
+    # Conflict file list + hunks — only when conflicts exist and we computed them
+    if conflict_files:
+        plural = "s" if len(conflict_files) != 1 else ""
+        print(f"\n## Conflicts ({len(conflict_files)} file{plural})")
+        for path in conflict_files:
+            print(f"  {path}")
+
+        hunks = _get_conflict_hunks(source, target)
+        for path in conflict_files:
+            block = hunks.get(path, "")
+            if not block:
+                continue
+            lines = block.splitlines()
+            truncated = ""
+            if len(lines) > HUNK_LINES_PER_FILE:
+                extra = len(lines) - HUNK_LINES_PER_FILE
+                lines = lines[:HUNK_LINES_PER_FILE]
+                truncated = f"\n  ... ({extra} more lines)"
+            print(f"\n### {path}")
+            for line in lines:
+                print(f"  {line}")
+            if truncated:
+                print(truncated)
+
+        print("\nTo resolve:")
+        print(f"  git checkout {source} && git fetch origin && git merge origin/{target}")
+        files_arg = " ".join(conflict_files)
+        print(f"  # Resolve <<<<<<< markers in the files above, then:")
+        print(f"  git add {files_arg} && git commit && git push")
 
     # Linked issue — extract from description or closing_issues
     description_raw = d.get("description") or ""
