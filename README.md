@@ -371,6 +371,16 @@ Both forge presets include **actionable error messages** — when something fail
 
 `git-trail` answers "when was this added/changed/removed?" using `git log -S` (pickaxe), with regex fallback. Shows timeline + contextual diffs filtered to relevant hunks.
 
+**`claude-log`** — Inspect Claude Code session logs (`~/.claude/projects/<encoded-cwd>/*.jsonl`). No auth, no deps — pure stdlib Python.
+
+| Op | Syntax | What it does |
+|----|--------|-------------|
+| `claude-log-list` | `claude-log-list[:N]` | N most recent sessions for the current project: UUID, mtime, turn count, line count, first user-message excerpt |
+| `claude-log-tail` | `claude-log-tail:UUID[:N]` | Last N events in compact form: `[role] TOOL name(input)` / `[result] output` / `[result/ERR] msg` / `[bootstrap] preview` |
+| `claude-log-summary` | `claude-log-summary:UUID` | Full digest: model, duration, turn counts, tool calls + errors-by-tool, tokens (input/output/cache read/cache create) + cache hit %, final assistant text |
+
+Useful for measuring autonomous-run efficiency — spotting wasted round-trips, validating that a skill change reduced tool calls, comparing model performance across runs. Windows-friendly cwd encoding (handles `\` and drive colons), with closest-prefix sibling fallback when the encoded directory doesn't exist.
+
 #### Writing your own preset
 
 Create `./presets/mytools.json` in your project (or `~/.config/supertool/presets/mytools.json` for personal use):
