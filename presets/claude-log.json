@@ -1,0 +1,26 @@
+{
+  "description": "Claude Code session log inspection ops — list, tail, summarize .jsonl transcripts under ~/.claude/projects/.",
+  "ops": {
+    "claude-log-list": {
+      "cmd": "python3 {path}claude-log/list.py {arg}",
+      "timeout": 10,
+      "description": "List N most recent Claude Code sessions for the current project (default 10). Output: UUID, mtime, line count, first user-message excerpt — enough to pick the right session.",
+      "syntax": "claude-log-list[:N]",
+      "example": "claude-log-list:5"
+    },
+    "claude-log-tail": {
+      "cmd": "python3 {path}claude-log/tail.py {args}",
+      "timeout": 10,
+      "description": "Last N events of a Claude session in compact form: [role] TOOL name(input...) / [result] output / [text] message. Default N=30. Use after claude-log-list to grab the UUID.",
+      "syntax": "claude-log-tail:UUID[:N]",
+      "example": "claude-log-tail:84397aff-4925-45fd-afc5-3641e28c993c:50"
+    },
+    "claude-log-summary": {
+      "cmd": "python3 {path}claude-log/summary.py {arg}",
+      "timeout": 15,
+      "description": "Whole-session digest: tool call counts by name, error/retry count, final assistant text, total turns. Useful to know what a Kevin/sub-agent run actually did.",
+      "syntax": "claude-log-summary:UUID",
+      "example": "claude-log-summary:84397aff-4925-45fd-afc5-3641e28c993c"
+    }
+  }
+}
