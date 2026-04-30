@@ -95,7 +95,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-VERSION = "0.7.0"
+VERSION = "0.8.0"
 
 MAX_READ_LINES = 300
 MAX_READ_BYTES = 20000  # ~20KB cap — prevents Claude Code "Output too large"
