@@ -23,6 +23,11 @@
       "max_results": 10,
       "extensions": []
     },
+    "grep-no-exclude": {
+      "syntax": "grep:PATTERN:PATH:LIMIT:::no-exclude",
+      "description": "Search inside normally-excluded dirs (vendor/, .git/, etc.)",
+      "example": "grep:somePattern:vendor/:10:::no-exclude"
+    },
     "grep-count": {
       "syntax": "grep:PATTERN:PATH:LIMIT:CONTEXT:count",
       "description": "Count mode — match counts/file, no content",
@@ -100,6 +105,19 @@
       "example": "blame:src/app/Module.py:42:3"
     }
   },
-  "ops": {},
+  "ops": {
+    "glob": {
+      "exclude-paths": []
+    },
+    "grep": {
+      "exclude-paths": []
+    },
+    "tree": {
+      "exclude-paths": []
+    },
+    "map": {
+      "exclude-paths": []
+    }
+  },
   "aliases": {}
 }

@@ -104,6 +104,14 @@ MAX_GLOB_RESULTS = 50
 LOG_FILE = os.path.join(tempfile.gettempdir(), "supertool-calls.log")
 GREP_FILE_INCLUDES = ("*.php", "*.xml", "*.py", "*.js", "*.ts", "*.md")
 _GREP_EXTENSIONS_EFFECTIVE: Tuple[str, ...] | None = None
+
+# Default exclude-paths applied to all traversal ops (glob, grep, tree, map).
+# These are pruned at the directory-walk boundary — the dirs are never opened.
+# Match is prefix-relative-to-cwd; trailing slash is normalised in _get_exclude_paths.
+_DEFAULT_EXCLUDE_PATHS: Tuple[str, ...] = (
+    ".git/", "node_modules/", ".svn/", ".hg/", ".idea/", ".vscode/",
+    "__pycache__/", ".venv/", "venv/", "dist/", "build/",
+)
 WILDCARD_CHARS = re.compile(r"[*?\[]")
 # Patterns for lines that are "blank or comment-only" across common languages
 _COMPACT_SKIP = re.compile(
@@ -265,6 +273,49 @@ def _grep_file_includes() -> Tuple[str, ...] | None:
     # Default: search all files
     _GREP_EXTENSIONS_EFFECTIVE = ("*",)  # sentinel for "no filter"
     return None
+
+
+def _get_exclude_paths(op_name: str, no_exclude: bool = False) -> Tuple[str, ...]:
+    """Return the effective set of exclude-path prefixes for a traversal op.
+
+    Merges _DEFAULT_EXCLUDE_PATHS with any project-level exclude-paths defined
+    under ops.<op_name>.exclude-paths in .supertool.json (additive union).
+    Returns an empty tuple when no_exclude=True (per-call escape hatch).
+    """
+    if no_exclude:
+        return ()
+    defaults = set(_DEFAULT_EXCLUDE_PATHS)
+    cfg = _load_config()
+    project_paths = cfg.get("ops", {}).get(op_name, {})
+    if isinstance(project_paths, dict):
+        extra = project_paths.get("exclude-paths", [])
+        if isinstance(extra, list):
+            for p in extra:
+                if isinstance(p, str):
+                    # Normalise: ensure trailing slash for directory prefix matching
+                    defaults.add(p if p.endswith("/") else p + "/")
+    return tuple(sorted(defaults))
+
+
+def _is_excluded(rel_path: str, exclude_paths: Tuple[str, ...]) -> bool:
+    """Return True if rel_path starts with any of the exclude prefixes.
+
+    rel_path should be relative to cwd and use os.sep.  The comparison
+    normalises separators and strips a leading './' so callers don't need to.
+    """
+    if not exclude_paths:
+        return False
+    # Normalise to forward-slashes for consistent prefix matching
+    normalised = rel_path.replace(os.sep, "/")
+    # Strip leading "./" produced by os.path.join(".", name) or relpath at cwd
+    if normalised.startswith("./"):
+        normalised = normalised[2:]
+    if not normalised.endswith("/"):
+        normalised += "/"
+    for prefix in exclude_paths:
+        if normalised.startswith(prefix):
+            return True
+    return False
 
 
 def _rtk_enabled() -> bool:
@@ -514,7 +565,8 @@ def op_read(path: str, offset: int = 0, limit: int = 0,
 
 
 def op_grep(pattern: str, path: str = ".", limit: int = 0,
-            context: int = 0, count_only: bool = False) -> str:
+            context: int = 0, count_only: bool = False,
+            no_exclude: bool = False) -> str:
     """Search pattern recursively. Auto-reads small single file on match.
 
     When context > 0, emits N lines before/after each match in grep -C style:
@@ -548,8 +600,10 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
         if rtk_out is not None:
             return rtk_out + "\n"
 
+    excl = _get_exclude_paths("grep", no_exclude)
+
     if count_only:
-        counts = _grep_count(pattern, path, limit)
+        counts = _grep_count(pattern, path, limit, excl)
         total = sum(counts.values())
         file_count = len(counts)
         out = [f"({total} total matches across {file_count} files)\n"]
@@ -559,7 +613,7 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
         return "".join(out)
 
     if context > 0:
-        groups = _grep_recursive_context(pattern, path, limit, context)
+        groups = _grep_recursive_context(pattern, path, limit, context, excl)
         count = sum(
             1 for g in groups for line in g if line[2] == "match"
         )
@@ -583,7 +637,7 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
         out.append("\n")
         return "".join(out)
 
-    hits = _grep_recursive(pattern, path, limit)
+    hits = _grep_recursive(pattern, path, limit, excl)
     count = len(hits)
 
     out = [f"({count} results, limit {limit})\n"]
@@ -787,7 +841,7 @@ def op_between_pattern(start: str, end: str, path: str) -> str:
     return "".join(out)
 
 
-def op_glob(pattern: str) -> str:
+def op_glob(pattern: str, no_exclude: bool = False) -> str:
     """Find files matching pattern. Auto-reads concrete file paths."""
     if not pattern:
         return "ERROR: empty pattern\n"
@@ -797,7 +851,7 @@ def op_glob(pattern: str) -> str:
         return ("[auto-read: concrete path, no wildcards]\n"
                 + render_file(pattern, 0, _get_op_int("read", "max_lines", MAX_READ_LINES)))
 
-    files = _glob_files(pattern)
+    files = _glob_files(pattern, _get_exclude_paths("glob", no_exclude))
     # Strip common directory prefix when 2+ files share one
     prefix = ""
     if len(files) >= 2:
@@ -987,7 +1041,8 @@ def op_around_line(path: str, line: int, n: int = 10) -> str:
     return "".join(out)
 
 
-def op_tree(path: str, depth: int = 3) -> str:
+def op_tree(path: str, depth: int = 3,
+            exclude_paths: Tuple[str, ...] = ()) -> str:
     """Show directory structure with depth limit."""
     if not path:
         path = "."
@@ -998,6 +1053,7 @@ def op_tree(path: str, depth: int = 3) -> str:
 
     out: List[str] = []
     base = os.path.abspath(path)
+    cwd = os.getcwd()
 
     def _walk(dir_path: str, prefix: str, current_depth: int) -> None:
         if current_depth > depth:
@@ -1014,6 +1070,10 @@ def op_tree(path: str, depth: int = 3) -> str:
         for f in files:
             out.append(f"{prefix}{f}\n")
         for d in dirs:
+            if exclude_paths:
+                rel = os.path.relpath(os.path.join(dir_path, d), cwd)
+                if _is_excluded(rel, exclude_paths):
+                    continue
             out.append(f"{prefix}{d}/\n")
             if current_depth < depth:
                 _walk(os.path.join(dir_path, d), prefix + "  ", current_depth + 1)
@@ -1423,14 +1483,15 @@ def _count_lines(path: str) -> int:
         return 0
 
 
-def _collect_files(path: str) -> List[str]:
+def _collect_files(
+    path: str, exclude_paths: Tuple[str, ...] = ()
+) -> List[str]:
     """Collect files to map from a path (file or directory).
 
     For directories, walks recursively. Skips hidden dirs, Generated/,
-    vendor/, node_modules/, __pycache__/.
+    vendor/, and any dirs matching exclude_paths prefixes.
     """
-    skip_dirs = {".git", ".hg", ".svn", "vendor", "node_modules",
-                 "__pycache__", "Generated", ".claude", ".max"}
+    skip_dirs = {"vendor", "Generated", ".claude", ".max"}
 
     if os.path.isfile(path):
         return [path]
@@ -1438,11 +1499,16 @@ def _collect_files(path: str) -> List[str]:
     if not os.path.isdir(path):
         return []
 
+    cwd = os.getcwd()
     files: List[str] = []
     for root, dirs, filenames in os.walk(path):
-        # Prune skipped directories in-place
-        dirs[:] = [d for d in dirs if d not in skip_dirs and not d.startswith(".")]
-        dirs.sort()
+        rel_root = os.path.relpath(root, cwd)
+        dirs[:] = sorted(
+            d for d in dirs
+            if d not in skip_dirs
+            and not d.startswith(".")
+            and not (exclude_paths and _is_excluded(os.path.join(rel_root, d), exclude_paths))
+        )
         for fn in sorted(filenames):
             ext = os.path.splitext(fn)[1].lower()
             if ext in _MAP_EXTENSIONS:
@@ -1453,7 +1519,7 @@ def _collect_files(path: str) -> List[str]:
 MAX_MAP_FILES = 100  # Cap to prevent overwhelming output
 
 
-def op_map(path: str) -> str:
+def op_map(path: str, no_exclude: bool = False) -> str:
     """Generate a symbol map of a file or directory.
 
     Three-tier extraction:
@@ -1468,7 +1534,7 @@ def op_map(path: str) -> str:
     if not os.path.exists(path):
         return f"ERROR: path not found: {path}\n"
 
-    files = _collect_files(path)
+    files = _collect_files(path, _get_exclude_paths("map", no_exclude))
     if not files:
         return f"(no supported files found in {path})\n"
 
@@ -1524,7 +1590,10 @@ def op_map(path: str) -> str:
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _grep_count(pattern: str, path: str, limit: int) -> Dict[str, int]:
+def _grep_count(
+    pattern: str, path: str, limit: int,
+    exclude_paths: Tuple[str, ...] = ()
+) -> Dict[str, int]:
     """Return match counts per file as {filepath: count}."""
     try:
         regex = re.compile(pattern)
@@ -1532,7 +1601,7 @@ def _grep_count(pattern: str, path: str, limit: int) -> Dict[str, int]:
         regex = re.compile(re.escape(pattern))
 
     counts: Dict[str, int] = {}
-    candidates = _grep_candidates(path)
+    candidates = _grep_candidates(path, exclude_paths)
 
     for file_path in candidates:
         cnt = 0
@@ -1552,21 +1621,38 @@ def _grep_count(pattern: str, path: str, limit: int) -> Dict[str, int]:
     return counts
 
 
-def _grep_candidates(path: str) -> List[str]:
-    """Return list of file paths to search for a given path argument."""
+def _grep_candidates(
+    path: str, exclude_paths: Tuple[str, ...] = ()
+) -> List[str]:
+    """Return list of file paths to search for a given path argument.
+
+    When exclude_paths is provided, directories whose path-relative-to-cwd
+    starts with one of the prefixes are pruned at the walk boundary (dirs[:]
+    mutation) so their subtrees are never opened.
+    """
     candidates: List[str] = []
     if os.path.isfile(path):
         candidates.append(path)
     elif os.path.isdir(path):
         exts = _grep_file_includes()  # None = all files
-        for root, _dirs, files in os.walk(path):
+        cwd = os.getcwd()
+        for root, dirs, files in os.walk(path):
+            if exclude_paths:
+                rel_root = os.path.relpath(root, cwd)
+                dirs[:] = [
+                    d for d in dirs
+                    if not _is_excluded(os.path.join(rel_root, d), exclude_paths)
+                ]
             for name in files:
                 if exts is None or any(name.endswith(ext.lstrip("*")) for ext in exts):
                     candidates.append(os.path.join(root, name))
     return candidates
 
 
-def _grep_recursive(pattern: str, path: str, limit: int) -> List[str]:
+def _grep_recursive(
+    pattern: str, path: str, limit: int,
+    exclude_paths: Tuple[str, ...] = ()
+) -> List[str]:
     """Return up to `limit` match lines as 'path:lineno:content' strings.
 
     Filters by common code/doc extensions when walking directories.
@@ -1579,7 +1665,7 @@ def _grep_recursive(pattern: str, path: str, limit: int) -> List[str]:
         regex = re.compile(re.escape(pattern))
 
     results: List[str] = []
-    candidates = _grep_candidates(path)
+    candidates = _grep_candidates(path, exclude_paths)
 
     for file_path in candidates:
         if len(results) >= limit:
@@ -1601,7 +1687,8 @@ def _grep_recursive(pattern: str, path: str, limit: int) -> List[str]:
 
 
 def _grep_recursive_context(
-    pattern: str, path: str, limit: int, context: int
+    pattern: str, path: str, limit: int, context: int,
+    exclude_paths: Tuple[str, ...] = ()
 ) -> List[List[Tuple[str, int, str, str]]]:
     """Return match groups with surrounding context lines.
 
@@ -1616,7 +1703,7 @@ def _grep_recursive_context(
     except re.error:
         regex = re.compile(re.escape(pattern))
 
-    candidates = _grep_candidates(path)
+    candidates = _grep_candidates(path, exclude_paths)
     groups: List[List[Tuple[str, int, str, str]]] = []
     match_count = 0
 
@@ -1671,12 +1758,58 @@ def _grep_recursive_context(
     return groups
 
 
-def _glob_files(pattern: str) -> List[str]:
-    """Glob matching files, supports ** recursive. Returns up to MAX_GLOB_RESULTS."""
+def _glob_files(
+    pattern: str, exclude_paths: Tuple[str, ...] = ()
+) -> List[str]:
+    """Glob matching files, supports ** recursive. Returns up to MAX_GLOB_RESULTS.
+
+    When exclude_paths is provided and the pattern contains '**', uses an
+    os.walk-based implementation that prunes excluded directories at the walk
+    boundary (never opens them).  For non-recursive patterns, falls back to
+    glob.glob and filters results post-hoc (no subtree to prune anyway).
+    """
+    max_results = _get_op_int("glob", "max_results", MAX_GLOB_RESULTS)
+
+    if exclude_paths and "**" in pattern:
+        # Walk-based implementation for recursive globs with exclusions.
+        # Split on the first '**' to get the root dir and the tail pattern.
+        import fnmatch
+        star_idx = pattern.index("**")
+        root_part = pattern[:star_idx].rstrip("/").rstrip(os.sep) or "."
+        tail = pattern[star_idx + 2:].lstrip("/").lstrip(os.sep)
+        if not os.path.isdir(root_part):
+            root_part = "."
+            tail = pattern.lstrip("/").lstrip(os.sep)
+
+        cwd = os.getcwd()
+        files: List[str] = []
+        for root, dirs, filenames in os.walk(root_part):
+            rel_root = os.path.relpath(root, cwd)
+            dirs[:] = sorted(
+                d for d in dirs
+                if not _is_excluded(os.path.join(rel_root, d), exclude_paths)
+            )
+            for name in sorted(filenames):
+                full = os.path.join(root, name)
+                # Match the tail pattern against the relative path from root_part
+                rel_from_root = os.path.relpath(full, root_part)
+                if not tail or fnmatch.fnmatch(name, tail) or fnmatch.fnmatch(rel_from_root, tail):
+                    if os.path.isfile(full):
+                        files.append(full)
+                        if len(files) >= max_results:
+                            return files
+        return files
+
     from glob import glob
     matches = sorted(glob(pattern, recursive=True))
-    files = [m for m in matches if os.path.isfile(m)]
-    return files[:_get_op_int("glob", "max_results", MAX_GLOB_RESULTS)]
+    files_out = [m for m in matches if os.path.isfile(m)]
+    if exclude_paths:
+        cwd = os.getcwd()
+        files_out = [
+            m for m in files_out
+            if not _is_excluded(os.path.relpath(m, cwd), exclude_paths)
+        ]
+    return files_out[:max_results]
 
 
 # ---------------------------------------------------------------------------
@@ -2020,9 +2153,22 @@ def op_ops(compact: bool = False) -> str:
     return body
 
 
+_NO_EXCLUDE_SUFFIX = ":::no-exclude"
+
+
 def dispatch(arg: str) -> str:
-    """Parse 'op:arg1:arg2:...' and route to the matching op function."""
-    header = f"--- {arg} ---\n"
+    """Parse 'op:arg1:arg2:...' and route to the matching op function.
+
+    Traversal ops (grep, glob, tree, map) support an optional :::no-exclude
+    suffix that bypasses all exclude-paths for that one call.
+    Example: 'grep:pattern:vendor/:10:::no-exclude'
+    """
+    # Strip :::no-exclude before splitting so it doesn't interfere with arg parsing
+    no_exclude = arg.endswith(_NO_EXCLUDE_SUFFIX)
+    if no_exclude:
+        arg = arg[: -len(_NO_EXCLUDE_SUFFIX)]
+
+    header = f"--- {arg}{_NO_EXCLUDE_SUFFIX if no_exclude else ''} ---\n"
     parts = _split_arg(arg)
     op = parts[0] if parts else ""
 
@@ -2037,13 +2183,14 @@ def dispatch(arg: str) -> str:
             body = op_read(path, offset, limit, grep_filter)
         elif op == "grep":
             pattern, path, limit, context, count_only = _parse_grep_args(parts)
-            body = op_grep(pattern, path, limit, context, count_only)
+            body = op_grep(pattern, path, limit, context, count_only,
+                           no_exclude=no_exclude)
         elif op == "wc":
             path = parts[1] if len(parts) > 1 else ""
             body = op_wc(path)
         elif op == "glob":
             pattern = parts[1] if len(parts) > 1 else ""
-            body = op_glob(pattern)
+            body = op_glob(pattern, no_exclude=no_exclude)
         elif op == "ls":
             path = parts[1] if len(parts) > 1 and parts[1] else "."
             body = op_ls(path)
@@ -2064,7 +2211,7 @@ def dispatch(arg: str) -> str:
             body = op_around(pattern, path, n)
         elif op == "map":
             path = parts[1] if len(parts) > 1 else "."
-            body = op_map(path)
+            body = op_map(path, no_exclude=no_exclude)
         elif op == "diff":
             path1 = parts[1] if len(parts) > 1 else ""
             path2 = parts[2] if len(parts) > 2 else ""
@@ -2106,7 +2253,7 @@ def dispatch(arg: str) -> str:
         elif op == "tree":
             path = parts[1] if len(parts) > 1 and parts[1] else "."
             d = int(parts[2]) if len(parts) > 2 and parts[2] else 3
-            body = op_tree(path, d)
+            body = op_tree(path, d, exclude_paths=_get_exclude_paths("tree", no_exclude))
         elif op in ("replace", "replace_dry"):
             old_str = parts[1] if len(parts) > 1 else ""
             new_str = parts[2] if len(parts) > 2 else ""
