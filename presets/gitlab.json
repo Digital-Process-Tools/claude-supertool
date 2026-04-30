@@ -5,25 +5,25 @@
     "gl-issue": {
       "cmd": "python3 {path}gitlab/issue.py {arg}",
       "timeout": 30,
-      "description": "Pick up a GitLab issue: description, comments, images downloaded locally, related MRs — everything to start working.",
+      "description": "GitLab issue: desc, comments, images downloaded, related MRs",
       "syntax": "gl-issue:NUMBER"
     },
     "gl-mr": {
       "cmd": "python3 {path}gitlab/mr.py {arg}",
       "timeout": 20,
-      "description": "Review a merge request: branch, pipeline, reviewer/approval, linked issue, diff stat, comments — the full dashboard.",
+      "description": "MR review: branch, pipeline, approval, linked issue, diff stat, comments",
       "syntax": "gl-mr:NUMBER_OR_BRANCH"
     },
     "gl-pipeline": {
       "cmd": "python3 {path}gitlab/pipeline.py {arg}",
       "timeout": 15,
-      "description": "What passed, what failed? Pipeline jobs grouped by stage with statuses and failed job IDs.",
+      "description": "Pipeline jobs by stage with statuses + failed job IDs",
       "syntax": "gl-pipeline:NUMBER"
     },
     "gl-job": {
       "cmd": "python3 {path}gitlab/job.py {arg}",
       "timeout": 30,
-      "description": "Why did this job fail? MR context + error pattern search + log tail — the actual error, not 500 lines of setup.",
+      "description": "Why job failed: MR ctx + error patterns + log tail",
       "syntax": "gl-job:NUMBER",
       "lines": 80,
       "error_patterns": "ERROR,FAILURES!,Fatal,Failed asserting",

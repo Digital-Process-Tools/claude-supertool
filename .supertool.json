@@ -1,53 +1,59 @@
 {
   "compact": false,
   "rtk": false,
-  "presets": ["github", "git"],
-  "introduction": "supertool batches multiple file operations into one Bash call.\n\nInvoke via Bash:\n./supertool \\\n    'read:supertool.py' \\\n    'read:tests/test_ops.py' \\\n    'grep:def op_:supertool.py:20' \\\n    'map:supertool.py'\n\nRules:\n- One call, many ops. 6-7 per call is normal. Each separate call wastes money.\n- Paths are relative to project root.\n- Single quotes around each op.\n- Use Read tool ONLY for the file you're about to Edit \u2014 supertool for everything else.",
-  "output-format": "Each operation returns a header followed by its output:\n\n```\n--- read:supertool.py ---\n(979 lines, 35000 bytes)\n     1\u2192#!/usr/bin/env python3\n     2\u2192\n     3\u2192import os\n     4\u2192import sys\n\n--- grep:def op_:supertool.py:5 ---\n(3 results, limit 5)\nsupertool.py\n  362:def op_read  [362]\n  367:def op_grep  [367]\n  464:def op_around  [464]\n\n--- map:supertool.py ---\n(1 files, tier: tree-sitter)\nsupertool.py (979 lines)\n  def op_read  [362]\n  def op_grep  [367]\n  def op_around  [464]\n```",
+  "presets": [
+    "github",
+    "git"
+  ],
+  "introduction": "./supertool 'op:args' 'op:args'... Batch 6-7 ops/call. Single quotes per op. Paths from root. Use ops not raw cmds (mysql_read, phpstan, batched reads). Read only before Edit.",
+  "output-format": "Each op: header + body.\n```\n--- op:args ---\n(meta)\noutput\n```",
   "builtin-ops": {
     "read": {
       "syntax": "read:PATH[:OFFSET:LIMIT]",
-      "description": "Read file (first 300 lines, 20KB cap)",
+      "description": "Read file (300 lines, 20KB cap)",
       "example": "read:supertool.py:1:50"
     },
     "read-grep": {
       "syntax": "read:PATH:::grep=PATTERN",
-      "description": "Inline filter \u2014 only matching lines, original line numbers preserved",
-      "example": "read:supertool.py:::grep=def op_"
+      "description": "Inline filter — only matching lines, line nums kept",
+      "example": "read:supertool.py:::grep=def op_",
+      "hint": true
     },
     "grep": {
       "syntax": "grep:PATTERN:PATH[:LIMIT[:CONTEXT]]",
-      "description": "Search (10 results default). CONTEXT shows N surrounding lines before/after each match",
+      "description": "Search (10 results def). CONTEXT=N lines around match",
       "example": "grep:dispatch:supertool.py:10:2"
     },
     "grep-count": {
       "syntax": "grep:PATTERN:PATH:LIMIT:CONTEXT:count",
-      "description": "Count mode \u2014 match counts per file, no content",
-      "example": "grep:def:supertool.py:100:0:count"
+      "description": "Count mode — match counts/file, no content",
+      "example": "grep:def:supertool.py:100:0:count",
+      "hint": true
     },
     "around": {
       "syntax": "around:PATTERN:PATH[:N]",
-      "description": "First match in a single file + N lines context (default 10). One-shot grep+read",
-      "example": "around:def dispatch:supertool.py:15"
+      "description": "First match + N lines ctx (def 10). 1-shot grep+read",
+      "example": "around:def dispatch:supertool.py:15",
+      "hint": true
     },
     "glob": {
       "syntax": "glob:PATTERN",
-      "description": "Find files (supports **). Auto-reads if concrete path (no wildcards)",
+      "description": "Find files (**). Auto-reads concrete paths",
       "example": "glob:tests/**/*.py"
     },
     "ls": {
       "syntax": "ls:PATH",
-      "description": "List directory contents (dirs get trailing /)",
+      "description": "List dir (dirs get /)",
       "example": "ls:tests/"
     },
     "tail": {
       "syntax": "tail:PATH:N",
-      "description": "Last N lines (default 20)",
+      "description": "Last N lines (def 20)",
       "example": "tail:supertool.py:30"
     },
     "head": {
       "syntax": "head:PATH:N",
-      "description": "First N lines (default 20)",
+      "description": "First N lines (def 20)",
       "example": "head:supertool.py:30"
     },
     "wc": {
@@ -57,28 +63,30 @@
     },
     "map": {
       "syntax": "map:PATH",
-      "description": "Symbol tree (classes, functions, methods, constants). Three-tier: tree-sitter > ctags > regex",
+      "description": "Symbol tree. tree-sitter>ctags>regex",
       "example": "map:supertool.py"
     },
     "diff": {
       "syntax": "diff:PATH1:PATH2",
-      "description": "Unified diff between two files",
+      "description": "Unified diff of 2 files",
       "example": "diff:supertool.py:tests/conftest.py"
     },
     "stat": {
       "syntax": "stat:PATH",
-      "description": "File/directory metadata: size, last modified, type",
+      "description": "File meta: size, mtime, type",
       "example": "stat:supertool.py"
     },
     "around_line": {
       "syntax": "around_line:PATH:LINE[:N]",
-      "description": "Show N lines of context around a specific line number (default 10). Target line marked with \u2192",
-      "example": "around_line:supertool.py:100:5"
+      "description": "N lines around LINE (def 10). Target marked →",
+      "example": "around_line:supertool.py:100:5",
+      "hint": true
     },
     "between": {
       "syntax": "between:SYMBOL:PATH | between:re:START:END:PATH",
-      "description": "Return a chunk of a file. Symbol mode: full body of a named function/method/class via tree-sitter (any language tree-sitter parses). Pattern mode (re: prefix): inclusive line slice from first line matching START regex to first line after matching END regex.",
-      "example": "between:op_dispatch:supertool.py"
+      "description": "Chunk of file. Symbol mode (tree-sitter, multi-lang) or re:START:END pattern mode",
+      "example": "between:op_dispatch:supertool.py",
+      "hint": true
     },
     "version": {
       "syntax": "version",
@@ -87,20 +95,22 @@
     },
     "tree": {
       "syntax": "tree:PATH[:DEPTH]",
-      "description": "Directory structure with depth limit (default 3). Hides dotfiles.",
+      "description": "Dir tree, depth=N (def 3). Hides dotfiles",
       "example": "tree:tests/:2"
     },
     "replace_dry": {
       "syntax": "replace_dry:OLD:NEW:PATH",
-      "description": "Preview replacements without modifying files. Shows diff-style output (- old / + new) per occurrence.",
+      "description": "Preview replace. -old/+new per match",
       "example": "replace_dry:TYPE_CUSTOMER:TYPE_ENUM_CUSTOMER:src/",
-      "status": 1
+      "status": 1,
+      "hint": true
     },
     "replace": {
       "syntax": "replace:OLD:NEW:PATH",
-      "description": "Find and replace OLD with NEW across all files in PATH. Returns receipt with files modified and count per file.",
+      "description": "Replace OLD→NEW in PATH. Returns receipt",
       "example": "replace:TYPE_CUSTOMER:TYPE_ENUM_CUSTOMER:src/",
-      "status": 1
+      "status": 1,
+      "hint": true
     }
   },
   "ops": {},

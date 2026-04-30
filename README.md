@@ -68,7 +68,11 @@ Standalone install doesn't wire up the hooks (no plugin system). You get the bin
 
 ### Interactive (permissive mode — default)
 
-Just install. The session-start hook runs `./supertool 'introduction' 'output-format' 'ops'` to output the project-specific operations reference from `.supertool.json`. The model learns what's available and how to batch. Falls back to native `Grep`/`Read` when those are better.
+Just install. The session-start hook runs `./supertool 'introduction' 'output-format' 'ops-compact'` to output the project-specific operations reference from `.supertool.json`. The model learns what's available and how to batch. Falls back to native `Grep`/`Read` when those are better.
+
+> **Heads-up — hook output cap.** Claude Code truncates hook stdout around 7KB; over that, only a ~2KB preview reaches the model and the rest is silently saved to disk. With many ops, the tail of the listing gets hidden until rediscovered mid-task.
+>
+> The session-start hook uses `ops-compact` to stay under the cap: examples are dropped on self-explanatory ops, and only kept on ops marked `"hint": true` in `.supertool.json`. If the body still exceeds the cap, `ops-compact` prepends a warning telling the model to fetch the full listing via `./supertool 'ops'`. Plain `'ops'` always returns everything.
 
 ### Autonomous / headless (enforced mode)
 
@@ -157,22 +161,22 @@ Create a `.supertool.json` in your project root. Supertool walks up from cwd to 
   "builtin-ops": {
     "read": {
       "syntax": "read:PATH[:OFFSET:LIMIT]",
-      "description": "Read file (first 300 lines, 20KB cap)",
+      "description": "Read file (300 lines, 20KB cap)",
       "example": "read:src/app/Module.py:1:50"
     },
     "read-grep": {
       "syntax": "read:PATH:::grep=PATTERN",
-      "description": "Inline filter — only matching lines, original line numbers preserved",
+      "description": "Inline filter — matching lines, line nums kept",
       "example": "read:src/app/Module.py:::grep=class"
     },
     "grep": {
       "syntax": "grep:PATTERN:PATH[:LIMIT[:CONTEXT]]",
-      "description": "Search (10 results default). CONTEXT shows N surrounding lines",
+      "description": "Search (10 results def). CONTEXT=N lines around match",
       "example": "grep:def handle:src/:20:2"
     },
     "map": {
       "syntax": "map:PATH",
-      "description": "Symbol tree (classes, functions, methods, constants)",
+      "description": "Symbol tree. tree-sitter>ctags>regex",
       "example": "map:src/app/"
     }
   },
@@ -370,6 +374,16 @@ Both forge presets include **actionable error messages** — when something fail
 `git-investigate` combines 3-5 git commands into one report: log, diff, and blame hotspots (most recently changed lines). Configurable via `SUPERTOOL_COMMITS` and `SUPERTOOL_BLAME_RECENT`.
 
 `git-trail` answers "when was this added/changed/removed?" using `git log -S` (pickaxe), with regex fallback. Shows timeline + contextual diffs filtered to relevant hunks.
+
+**`claude-log`** — Inspect Claude Code session logs (`~/.claude/projects/<encoded-cwd>/*.jsonl`). No auth, no deps — pure stdlib Python.
+
+| Op | Syntax | What it does |
+|----|--------|-------------|
+| `claude-log-list` | `claude-log-list[:N]` | N most recent sessions for the current project: UUID, mtime, turn count, line count, first user-message excerpt |
+| `claude-log-tail` | `claude-log-tail:UUID[:N]` | Last N events in compact form: `[role] TOOL name(input)` / `[result] output` / `[result/ERR] msg` / `[bootstrap] preview` |
+| `claude-log-summary` | `claude-log-summary:UUID` | Full digest: model, duration, turn counts, tool calls + errors-by-tool, tokens (input/output/cache read/cache create) + cache hit %, final assistant text |
+
+Useful for measuring autonomous-run efficiency — spotting wasted round-trips, validating that a skill change reduced tool calls, comparing model performance across runs. Windows-friendly cwd encoding (handles `\` and drive colons), with closest-prefix sibling fallback when the encoded directory doesn't exist.
 
 #### Writing your own preset
 

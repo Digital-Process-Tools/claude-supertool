@@ -6,42 +6,42 @@
   "builtin-ops": {
     "read": {
       "syntax": "read:PATH[:OFFSET:LIMIT]",
-      "description": "Read file (first 300 lines, 20KB cap)",
+      "description": "Read file (300 lines, 20KB cap)",
       "example": "read:src/app/Module.py:10:50",
       "max_lines": 300,
       "max_bytes": 20000
     },
     "read-grep": {
       "syntax": "read:PATH:::grep=PATTERN",
-      "description": "Inline filter — only matching lines, original line numbers preserved",
+      "description": "Inline filter — matching lines, line nums kept",
       "example": "read:src/app/Module.py:::grep=class"
     },
     "grep": {
       "syntax": "grep:PATTERN:PATH[:LIMIT[:CONTEXT]]",
-      "description": "Search (10 results default). CONTEXT shows N surrounding lines before/after each match",
+      "description": "Search (10 results def). CONTEXT=N lines around match",
       "example": "grep:class:src/app/:20",
       "max_results": 10,
       "extensions": []
     },
     "grep-count": {
       "syntax": "grep:PATTERN:PATH:LIMIT:CONTEXT:count",
-      "description": "Count mode — match counts per file, no content",
+      "description": "Count mode — match counts/file, no content",
       "example": "grep:TODO:src/:100:0:count"
     },
     "around": {
       "syntax": "around:PATTERN:PATH[:N]",
-      "description": "First match in a single file + N lines context (default 10). One-shot grep+read",
+      "description": "First match + N lines ctx (def 10). 1-shot grep+read",
       "example": "around:def main:src/app/Module.py:15"
     },
     "glob": {
       "syntax": "glob:PATTERN",
-      "description": "Find files (supports **). Auto-reads if concrete path (no wildcards)",
+      "description": "Find files (**). Auto-reads concrete paths",
       "example": "glob:src/app/**/*.py",
       "max_results": 50
     },
     "ls": {
       "syntax": "ls:PATH",
-      "description": "List directory contents (dirs get trailing /)",
+      "description": "List dir (dirs get /)",
       "example": "ls:src/app/"
     },
     "tail": {
@@ -61,27 +61,27 @@
     },
     "map": {
       "syntax": "map:PATH",
-      "description": "Symbol tree (classes, functions, methods, constants). Three-tier: tree-sitter > ctags > regex",
+      "description": "Symbol tree. tree-sitter>ctags>regex",
       "example": "map:src/app/"
     },
     "diff": {
       "syntax": "diff:PATH1:PATH2",
-      "description": "Unified diff between two files",
+      "description": "Unified diff of 2 files",
       "example": "diff:src/app/Module.py:src/app/Config.py"
     },
     "stat": {
       "syntax": "stat:PATH",
-      "description": "File/directory metadata: size, last modified, type",
+      "description": "File meta: size, mtime, type",
       "example": "stat:src/app/Module.py"
     },
     "around_line": {
       "syntax": "around_line:PATH:LINE[:N]",
-      "description": "Show N lines of context around a specific line number (default 10). Target line marked with →",
+      "description": "N lines around LINE (def 10). Target marked →",
       "example": "around_line:src/app/Module.py:42:5"
     },
     "between": {
       "syntax": "between:SYMBOL:PATH | between:re:START:END:PATH",
-      "description": "Return a chunk of a file. Symbol mode: full body of a named function/method/class via tree-sitter (any language tree-sitter parses). Pattern mode (re: prefix): inclusive line slice from first line matching START regex to first line after matching END regex.",
+      "description": "Chunk of file. Symbol mode (tree-sitter, multi-lang) or re:START:END pattern mode",
       "example": "between:op_dispatch:src/app/Module.py"
     },
     "version": {
@@ -91,12 +91,12 @@
     },
     "tree": {
       "syntax": "tree:PATH[:DEPTH]",
-      "description": "Directory structure with depth limit (default 3). Hides dotfiles.",
+      "description": "Dir tree, depth=N (def 3). Hides dotfiles",
       "example": "tree:src/app/:2"
     },
     "blame": {
       "syntax": "blame:PATH:LINE[:N]",
-      "description": "Git blame for N lines (default 5) around a specific line number",
+      "description": "Git blame N lines around LINE (def 5)",
       "example": "blame:src/app/Module.py:42:3"
     }
   },

@@ -244,3 +244,139 @@ def test_alias_ops_not_a_list() -> None:
     out = supertool._resolve_alias("bad", ["bad", "file.php"])
     assert "ERROR" in out
     assert "must be a list" in out
+
+
+# ---------------------------------------------------------------------------
+# op_ops compact mode — fits the SessionStart hook's ~2KB stdout cap by
+# dropping examples on self-explanatory ops, keeping them only on ops marked
+# `"hint": true`. Adds a truncation warning if the body still exceeds the cap.
+# ---------------------------------------------------------------------------
+
+def _set_config(monkeypatch, tmp_path: Path, cfg: dict) -> None:
+    """Helper: write cfg to a tmp .supertool.json and reset module cache."""
+    (tmp_path / ".supertool.json").write_text(json.dumps(cfg))
+    monkeypatch.chdir(tmp_path)
+    supertool._CONFIG = None
+    supertool._CONFIG_CHECKED = False
+
+
+def test_ops_compact_drops_example_and_desc_without_hint(tmp_path: Path, monkeypatch) -> None:
+    """Compact mode treats `hint: true` as the single signal: keep example AND
+    description. Without hint, both are dropped and only the syntax line remains
+    — the op is assumed self-explanatory from its signature alone."""
+    _set_config(monkeypatch, tmp_path, {
+        "builtin-ops": {
+            "read": {
+                "syntax": "read:PATH",
+                "description": "Read file",
+                "example": "read:src/foo.py:1:50",
+            }
+        }
+    })
+    out = supertool.op_ops(compact=True)
+    assert "read:PATH" in out
+    # Both description and example must be dropped — no hint flag.
+    assert "Read file" not in out
+    assert "read:src/foo.py:1:50" not in out
+    assert "Example:" not in out
+
+
+def test_ops_compact_keeps_example_and_desc_with_hint(tmp_path: Path, monkeypatch) -> None:
+    """Compact mode keeps both example AND description for ops with `hint: true`
+    — these are the ops where the signature alone is misleading or insufficient."""
+    _set_config(monkeypatch, tmp_path, {
+        "builtin-ops": {
+            "between": {
+                "syntax": "between:SYMBOL:PATH | between:re:START:END:PATH",
+                "description": "Return a chunk of a file",
+                "example": "between:foo:src/bar.py",
+                "hint": True,
+            }
+        }
+    })
+    out = supertool.op_ops(compact=True)
+    assert "between:SYMBOL:PATH | between:re:START:END:PATH" in out
+    assert "Return a chunk of a file" in out
+    assert "between:foo:src/bar.py" in out
+    assert "Example:" in out
+
+
+def test_ops_full_mode_always_shows_examples(tmp_path: Path, monkeypatch) -> None:
+    """Plain op_ops() (compact=False) shows examples regardless of hint flag."""
+    _set_config(monkeypatch, tmp_path, {
+        "builtin-ops": {
+            "read": {
+                "syntax": "read:PATH",
+                "description": "Read file",
+                "example": "read:src/foo.py:1:50",
+            }
+        }
+    })
+    out = supertool.op_ops()
+    assert "read:src/foo.py:1:50" in out
+    assert "Example:" in out
+
+
+def test_ops_compact_no_warning_when_under_cap(tmp_path: Path, monkeypatch) -> None:
+    """Small configs that fit under the cap render with no truncation banner."""
+    _set_config(monkeypatch, tmp_path, {
+        "builtin-ops": {
+            "read": {"syntax": "read:PATH", "description": "Read", "example": "x"}
+        }
+    })
+    out = supertool.op_ops(compact=True)
+    assert len(out.encode("utf-8")) <= supertool._HOOK_OUTPUT_CAP_BYTES
+    assert "exceeds the" not in out
+    assert "truncated" not in out
+
+
+def test_ops_compact_warning_when_over_cap(tmp_path: Path, monkeypatch) -> None:
+    """When compact body exceeds the cap, a warning is prepended pointing at 'ops'.
+
+    Uses ``hint: true`` on every op so descriptions and examples stay in the
+    output — that's the realistic worst case where compaction can't trim more.
+    """
+    big_ops = {
+        f"op_{i}": {
+            "syntax": f"op_{i}:PATH:LIMIT[:CONTEXT][:MODE]",
+            "description": "Lorem ipsum dolor sit amet, consectetur adipiscing elit, "
+                           "sed do eiusmod tempor incididunt ut labore et dolore magna.",
+            "example": f"op_{i}:src/foo.py:50",
+            "hint": True,
+        }
+        for i in range(40)
+    }
+    _set_config(monkeypatch, tmp_path, {"builtin-ops": big_ops})
+    out = supertool.op_ops(compact=True)
+    assert "exceeds the" in out
+    assert "SessionStart hook cap" in out
+    assert "./supertool 'ops'" in out
+
+
+def test_ops_compact_dispatched_via_dispatch(tmp_path: Path, monkeypatch) -> None:
+    """`./supertool 'ops-compact'` routes through dispatch() to op_ops(compact=True)."""
+    _set_config(monkeypatch, tmp_path, {
+        "builtin-ops": {
+            "read": {
+                "syntax": "read:PATH",
+                "description": "Read",
+                "example": "read:foo",
+            },
+            "between": {
+                "syntax": "between:SYM:PATH",
+                "description": "Chunk",
+                "example": "between:foo:bar",
+                "hint": True,
+            },
+        }
+    })
+    out = supertool.dispatch("ops-compact")
+    # Hint op keeps example, non-hint op drops it.
+    assert "between:foo:bar" in out
+    assert "read:foo" not in out
+
+
+def test_hook_output_cap_constant_exists() -> None:
+    """The cap constant is a module-level int — tunable without code changes."""
+    assert isinstance(supertool._HOOK_OUTPUT_CAP_BYTES, int)
+    assert supertool._HOOK_OUTPUT_CAP_BYTES > 0
