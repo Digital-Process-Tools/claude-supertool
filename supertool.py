@@ -1900,11 +1900,24 @@ def op_version() -> str:
     return f"supertool {VERSION}\n"
 
 
-def op_ops() -> str:
+# Threshold above which compact ops output gets a "truncation likely" warning.
+# Claude Code's hook-stdout cap appears to be ~2KB; anything over that gets
+# saved to disk and only a 2KB preview is injected into the model's context,
+# silently hiding the tail of the ops list.
+_HOOK_OUTPUT_CAP_BYTES = 2048
+
+
+def op_ops(compact: bool = False) -> str:
     """Output the ops reference from .supertool.json (builtin-ops + ops sections).
 
     Source of truth is the JSON config. If no config exists, falls back to
     listing built-in op names without descriptions.
+
+    When compact=True, drops example lines for ops that don't have hint=true,
+    and — if the resulting body still exceeds _HOOK_OUTPUT_CAP_BYTES — prepends
+    a warning telling the reader that the tail is hidden and to call 'ops' for
+    the full listing. Used by the SessionStart hook to maximize information
+    density under the harness's hook-output cap.
     """
     config = _load_config()
     builtin_ops = config.get("builtin-ops", {})
@@ -1921,6 +1934,29 @@ def op_ops() -> str:
         lines.append("Add a \"builtin-ops\" section to .supertool.json to describe them.")
         return "\n".join(lines) + "\n"
 
+    def _emit_example(info: dict) -> bool:
+        """Whether to print the Example: line for this op given current mode."""
+        if not info.get("example"):
+            return False
+        if not compact:
+            return True
+        return bool(info.get("hint"))
+
+    def _emit_desc(info: dict) -> str:
+        """Return description if it should be shown, else empty string.
+
+        In compact mode, descriptions are only kept for ops marked
+        ``hint: true`` — the rest are considered self-explanatory from
+        their signature alone (read:PATH, grep:PATTERN:PATH, etc.) and
+        their description adds no information.
+        """
+        desc = info.get("description", "")
+        if not desc:
+            return ""
+        if not compact:
+            return desc
+        return desc if info.get("hint") else ""
+
     # Operations section — built-in and custom merged into one flat list
     has_ops = False
     if builtin_ops or custom_ops:
@@ -1934,22 +1970,20 @@ def op_ops() -> str:
             if not info.get("status", 1):
                 continue
             syntax = info.get("syntax", name)
-            desc = info.get("description", "")
-            example = info.get("example", "")
+            desc = _emit_desc(info)
             lines.append(f"- `{syntax}` — {desc}" if desc else f"- `{syntax}`")
-            if example:
-                lines.append(f"  Example: `{example}`")
+            if _emit_example(info):
+                lines.append(f"  Example: `{info['example']}`")
 
     active_custom = {k: v for k, v in custom_ops.items()
                      if isinstance(v, dict) and v.get("status", 1)}
     if active_custom:
         for name, info in active_custom.items():
-            desc = info.get("description", "")
-            example = info.get("example", "")
+            desc = _emit_desc(info)
             syntax = info.get("syntax", f"{name}:PATH")
             lines.append(f"- `{syntax}` — {desc}" if desc else f"- `{syntax}`")
-            if example:
-                lines.append(f"  Example: `{example}`")
+            if _emit_example(info):
+                lines.append(f"  Example: `{info['example']}`")
 
     if has_ops:
         lines.append("")
@@ -1960,16 +1994,29 @@ def op_ops() -> str:
     if active_aliases:
         lines.append("## Aliases (multi-op batches)\n")
         for name, info in active_aliases.items():
-            desc = info.get("description", "")
-            example = info.get("example", "")
+            desc = _emit_desc(info)
             ops_list = info.get("ops", [])
             syntax = info.get("syntax", f"{name}:PATH")
             lines.append(f"- `{syntax}` — {desc}" if desc else f"- `{syntax}`")
-            if example:
-                lines.append(f"  Example: `{example}`")
+            if _emit_example(info):
+                lines.append(f"  Example: `{info['example']}`")
         lines.append("")
 
-    return "\n".join(lines) + "\n"
+    body = "\n".join(lines) + "\n"
+
+    # In compact mode, only warn if the body still won't fit the harness cap.
+    # When it fits, no warning — the absence is itself a signal that the listing
+    # is complete.
+    if compact and len(body.encode("utf-8")) > _HOOK_OUTPUT_CAP_BYTES:
+        warning = (
+            f"> ⚠ Output is {len(body.encode('utf-8'))} bytes, exceeds the "
+            f"~{_HOOK_OUTPUT_CAP_BYTES}-byte SessionStart hook cap. The tail "
+            f"of this listing will be truncated — ops below the cut-off are "
+            f"hidden. Run `./supertool 'ops'` to see the full listing.\n\n"
+        )
+        body = warning + body
+
+    return body
 
 
 def dispatch(arg: str) -> str:
@@ -2065,7 +2112,7 @@ def dispatch(arg: str) -> str:
             rpath = parts[3] if len(parts) > 3 and parts[3] else "."
             dry = op == "replace_dry"
             body = op_replace(old_str, new_str, rpath, dry=dry)
-        elif op in ("introduction", "output-format", "ops", "version"):
+        elif op in ("introduction", "output-format", "ops", "ops-compact", "version"):
             # Meta-ops use markdown headers instead of --- header ---
             header = ""
             if op == "introduction":
@@ -2074,6 +2121,8 @@ def dispatch(arg: str) -> str:
                 body = op_output_format()
             elif op == "version":
                 body = op_version()
+            elif op == "ops-compact":
+                body = op_ops(compact=True)
             else:
                 body = op_ops()
         else:
