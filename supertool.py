@@ -1901,10 +1901,11 @@ def op_version() -> str:
 
 
 # Threshold above which compact ops output gets a "truncation likely" warning.
-# Claude Code's hook-stdout cap appears to be ~2KB; anything over that gets
-# saved to disk and only a 2KB preview is injected into the model's context,
-# silently hiding the tail of the ops list.
-_HOOK_OUTPUT_CAP_BYTES = 2048
+# Claude Code's hook-stdout cap appears to be ~7KB; anything over that gets
+# saved to disk and only a ~2KB preview is injected into the model's context,
+# silently hiding the tail of the ops list. (Empirical: 6.6KB landed full,
+# 11KB+ got truncated — threshold sits in between.)
+_HOOK_OUTPUT_CAP_BYTES = 7168
 
 
 def op_ops(compact: bool = False) -> str:
