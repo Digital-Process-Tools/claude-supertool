@@ -348,6 +348,84 @@ def test_reply_parse_args_missing_msg(capsys: pytest.CaptureFixture[str]) -> Non
     assert "ERROR" in capsys.readouterr().err
 
 
+def test_comment_parse_args_keeps_colons() -> None:
+    """Body with ':' must survive when arg comes from main()'s ':'-rejoin of argv."""
+    post, msg = comment_op.parse_args("abc123|Worth saying: it's learnable. Really: it is.")
+    assert post == "abc123"
+    assert msg == "Worth saying: it's learnable. Really: it is."
+
+
+def test_reply_parse_args_keeps_colons() -> None:
+    cid, msg = reply_op.parse_args("comm-7|Aside: the loop moves: it doesn't stop.")
+    assert cid == "comm-7"
+    assert msg == "Aside: the loop moves: it doesn't stop."
+
+
+# Subprocess argv-rejoin tests for hashnode comment + reply
+import subprocess
+import sys as _sys
+
+
+def _run_hn_dryrun(script: str, *argv_parts: str) -> tuple[str, str]:
+    """Drive hashnode/{script}.py main argv-rejoin and return parse_args result."""
+    repo = Path(__file__).resolve().parents[1]
+    driver = (
+        "import sys; sys.path.insert(0, %r);\n"
+        "import %s as m\n"
+        "arg = ':'.join(sys.argv[1:])\n"
+        "print(repr(m.parse_args(arg)))\n"
+    ) % (str(repo / "presets" / "hashnode"), script)
+    proc = subprocess.run(
+        [_sys.executable, "-c", driver, *argv_parts],
+        capture_output=True, text=True, timeout=10,
+    )
+    assert proc.returncode == 0, f"driver failed: {proc.stderr}"
+    return eval(proc.stdout.strip())
+
+
+def test_argv_rejoin_hn_comment_simple() -> None:
+    post, msg = _run_hn_dryrun("comment", "abc|hi")
+    assert post == "abc" and msg == "hi"
+
+
+def test_argv_rejoin_hn_comment_with_colons() -> None:
+    post, msg = _run_hn_dryrun("comment", "abc|Worth saying", "it's learnable")
+    assert post == "abc" and msg == "Worth saying:it's learnable"
+
+
+def test_argv_rejoin_hn_comment_multiple_colons() -> None:
+    post, msg = _run_hn_dryrun("comment", "abc|first", "second", "third")
+    assert post == "abc" and msg == "first:second:third"
+
+
+def test_argv_rejoin_hn_reply_simple() -> None:
+    cid, msg = _run_hn_dryrun("reply", "comm-7|hi")
+    assert cid == "comm-7" and msg == "hi"
+
+
+def test_argv_rejoin_hn_reply_with_colons() -> None:
+    cid, msg = _run_hn_dryrun("reply", "comm-7|Worth saying", "it's learnable")
+    assert cid == "comm-7" and msg == "Worth saying:it's learnable"
+
+
+def test_argv_rejoin_hn_comments_simple() -> None:
+    """devto_comments / hashnode_comments rejoin (slug:N)."""
+    repo = Path(__file__).resolve().parents[1]
+    driver = (
+        "import sys; sys.path.insert(0, %r);\n"
+        "import comments as m\n"
+        "arg = ':'.join(sys.argv[1:])\n"
+        "print(repr(m.parse_args(arg)))\n"
+    ) % str(repo / "presets" / "hashnode")
+    proc = subprocess.run(
+        [_sys.executable, "-c", driver, "my-slug", "5"],
+        capture_output=True, text=True, timeout=10,
+    )
+    assert proc.returncode == 0, proc.stderr
+    slug, n = eval(proc.stdout.strip())
+    assert slug == "my-slug" and n == 5
+
+
 # search -------------------------------------------------------------------
 
 def test_search_parse_args_default_limit() -> None:

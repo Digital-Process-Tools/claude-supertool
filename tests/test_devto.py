@@ -504,6 +504,77 @@ def test_resolve_parent_numeric_id_no_match(monkeypatch: pytest.MonkeyPatch) -> 
     assert comment_op._resolve_parent_numeric_id("abc") is None
 
 
+# ---------------------------------------------------------------------------
+# Subprocess-level tests: simulate supertool's space-separated argv
+# (cmd template '{args}' splits by ':' then space-joins) and verify main's
+# rejoin reconstructs the canonical 'aid|MSG|parent' arg intact.
+# ---------------------------------------------------------------------------
+
+import subprocess
+import sys as _sys
+
+
+def _run_comment_dryrun(*argv_parts: str) -> tuple[str, str, str | None]:
+    """Invoke comment.py main parsing path via real argv, return parse_args result.
+
+    Doesn't post — runs a tiny driver script that imports comment.py, simulates
+    the __main__ rejoin, and prints the parsed (aid, msg, parent) tuple.
+    """
+    repo = Path(__file__).resolve().parents[1]
+    driver = (
+        "import sys; sys.path.insert(0, %r);\n"
+        "import comment as c\n"
+        "arg = ':'.join(sys.argv[1:])\n"
+        "aid, msg, parent = c.parse_args(arg)\n"
+        "print(repr((aid, msg, parent)))\n"
+    ) % str(repo / "presets" / "devto")
+    proc = subprocess.run(
+        [_sys.executable, "-c", driver, *argv_parts],
+        capture_output=True, text=True, timeout=10,
+    )
+    assert proc.returncode == 0, f"driver failed: {proc.stderr}"
+    return eval(proc.stdout.strip())
+
+
+def test_argv_rejoin_simple() -> None:
+    """Body with no ':' → supertool passes ['1234|hi'] → main joins → parse OK."""
+    aid, msg, parent = _run_comment_dryrun("1234|hi")
+    assert aid == "1234" and msg == "hi" and parent is None
+
+
+def test_argv_rejoin_one_colon_in_body() -> None:
+    """Body with one ':' splits into 2 argv → main rejoins → parse_args sees full body."""
+    aid, msg, parent = _run_comment_dryrun("1234|hi", "there")
+    assert aid == "1234" and msg == "hi:there" and parent is None
+
+
+def test_argv_rejoin_multiple_colons_with_parent() -> None:
+    """Real-world case: 'aid|MSG: with: colons|parent' → 4 argv parts → rejoin → parse."""
+    aid, msg, parent = _run_comment_dryrun("1234|Worth saying", "it's learnable", "and more|99")
+    assert aid == "1234"
+    assert msg == "Worth saying:it's learnable:and more"
+    assert parent == "99"
+
+
+def test_argv_rejoin_trailing_colon_in_body() -> None:
+    """Body ending with ':' → trailing empty arg → rejoin preserves it."""
+    aid, msg, parent = _run_comment_dryrun("1234|note", "")
+    assert aid == "1234" and msg == "note:"
+
+
+def test_argv_rejoin_leading_colon_in_body() -> None:
+    """Body starting with ':' (rare but legal) — supertool would split as ['1234|', 'rest']."""
+    aid, msg, parent = _run_comment_dryrun("1234|", "rest")
+    assert aid == "1234" and msg == ":rest"
+
+
+def test_argv_rejoin_pipes_inside_colon_segment() -> None:
+    """Mixed: pipes inside a colon-split segment still parse correctly when rejoined."""
+    # supertool split: 'aid|first', 'second|99' → rejoin → 'aid|first:second|99'
+    aid, msg, parent = _run_comment_dryrun("1234|first", "second|99")
+    assert aid == "1234" and msg == "first:second" and parent == "99"
+
+
 def test_read_render_shows_you_line() -> None:
     out = read.render({
         "id": 1, "title": "T", "url": "https://x.io",
