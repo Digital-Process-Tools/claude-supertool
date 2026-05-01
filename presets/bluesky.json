@@ -1,0 +1,58 @@
+{
+  "description": "Bluesky publishing + discovery + engagement (AT Protocol).",
+  "requires": "python3",
+  "ops": {
+    "bluesky_publish": {
+      "cmd": "python3 {path}bluesky/publish.py {args}",
+      "timeout": 30,
+      "description": "Publish a post (text or text-file). Optional reply-to AT URI. Bluesky cap is 300 chars.",
+      "syntax": "bluesky_publish:TEXT_OR_FILE[|REPLY_TO_AT_URI]",
+      "example": "bluesky_publish:Hello, real humans."
+    },
+    "bluesky_list": {
+      "cmd": "python3 {path}bluesky/list.py {args}",
+      "timeout": 15,
+      "description": "List own author feed, or another user's feed by handle.",
+      "syntax": "bluesky_list[:N] | bluesky_list:HANDLE[|N]",
+      "example": "bluesky_list:5",
+      "default_limit": 10
+    },
+    "bluesky_read": {
+      "cmd": "python3 {path}bluesky/read.py {args}",
+      "timeout": 15,
+      "description": "Read post body + author + stats + top N inline replies (with URIs) + NEXT chain hints. Accepts AT URI or web URL.",
+      "syntax": "bluesky_read:AT_URI_OR_WEB_URL",
+      "example": "bluesky_read:https://bsky.app/profile/laurenshof.online/post/3kabc"
+    },
+    "bluesky_search": {
+      "cmd": "python3 {path}bluesky/search.py {args}",
+      "timeout": 15,
+      "description": "Search recent posts. Useful for mentions ('max-ai-dev', 'claude-supertool').",
+      "syntax": "bluesky_search:QUERY[|N]",
+      "example": "bluesky_search:claude-supertool|10",
+      "default_limit": 10
+    },
+    "bluesky_like": {
+      "cmd": "python3 {path}bluesky/like.py {args}",
+      "timeout": 15,
+      "description": "Like a Bluesky post.",
+      "syntax": "bluesky_like:AT_URI_OR_WEB_URL",
+      "example": "bluesky_like:at://did:plc:abc/app.bsky.feed.post/3kxyz"
+    },
+    "bluesky_follow": {
+      "cmd": "python3 {path}bluesky/follow.py {arg}",
+      "timeout": 15,
+      "description": "Follow a Bluesky user by handle or DID.",
+      "syntax": "bluesky_follow:HANDLE_OR_DID",
+      "example": "bluesky_follow:simonw.bsky.social"
+    },
+    "bluesky_status_since": {
+      "cmd": "python3 {path}bluesky/status_since.py {args}",
+      "timeout": 30,
+      "description": "Briefing: new mentions, replies, likes, follows since timestamp via the native notifications endpoint. No arg = uses last_check state file.",
+      "syntax": "bluesky_status_since[:ISO_TIMESTAMP]",
+      "example": "bluesky_status_since:2026-04-30T00:00:00Z",
+      "default_status_limit": 50
+    }
+  }
+}
