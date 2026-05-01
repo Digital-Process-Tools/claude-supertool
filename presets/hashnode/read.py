@@ -24,9 +24,17 @@ POST_FIELDS = """
   }
 """
 
-SLUG_QUERY = """
-query SlugRead($publicationId: ObjectId!, $slug: String!, $cFirst: Int!) {
+SLUG_BY_PUB_ID = """
+query SlugByPubId($publicationId: ObjectId!, $slug: String!, $cFirst: Int!) {
   publication(id: $publicationId) { post(slug: $slug) {
+    %s
+  } }
+}
+""" % POST_FIELDS
+
+SLUG_BY_HOST = """
+query SlugByHost($host: String!, $slug: String!, $cFirst: Int!) {
+  publication(host: $host) { post(slug: $slug) {
     %s
   } }
 }
@@ -41,15 +49,18 @@ query IdRead($id: ID!, $cFirst: Int!) {
 """ % POST_FIELDS
 
 
-def parse_arg(arg: str) -> tuple[str | None, str | None]:
+def parse_arg(arg: str) -> tuple[str | None, str | None, str | None]:
+    """Returns (slug, post_id, host). Exactly one of slug/post_id is set;
+    host is set only when arg was a URL pointing to a non-default publication."""
     if not arg:
         sys.stderr.write("ERROR: usage hashnode_read:SLUG_OR_URL\n")
         sys.exit(2)
     if arg.startswith("http"):
-        return urlparse(arg).path.strip("/").split("/")[-1], None
+        parsed = urlparse(arg)
+        return parsed.path.strip("/").split("/")[-1], None, parsed.netloc
     if all(c in "0123456789abcdef" for c in arg.lower()) and len(arg) >= 12:
-        return None, arg
-    return arg, None
+        return None, arg, None
+    return arg, None, None
 
 
 def own_engagement(post: dict, me: str) -> tuple[int, list[str], str]:
@@ -108,16 +119,19 @@ def render(post: dict, inline_n: int, me: str = "") -> str:
 
 def main(arg: str) -> None:
     token = get_token()
-    slug, post_id = parse_arg(arg)
+    slug, post_id, host = parse_arg(arg)
     inline_n = int(os.environ.get("SUPERTOOL_INLINE_COMMENTS", "5"))
     scan_n = max(inline_n, int(os.environ.get("SUPERTOOL_SCAN_COMMENTS", "50")))
-    if slug is not None:
-        pub_id = get_publication_id()
-        data = gql(SLUG_QUERY, {"publicationId": pub_id, "slug": slug, "cFirst": scan_n}, token)
-        post = (data.get("publication") or {}).get("post")
-    else:
+    if post_id is not None:
         data = gql(ID_QUERY, {"id": post_id, "cFirst": scan_n}, token)
         post = data.get("post")
+    elif host:
+        data = gql(SLUG_BY_HOST, {"host": host, "slug": slug, "cFirst": scan_n}, token)
+        post = (data.get("publication") or {}).get("post")
+    else:
+        pub_id = get_publication_id()
+        data = gql(SLUG_BY_PUB_ID, {"publicationId": pub_id, "slug": slug, "cFirst": scan_n}, token)
+        post = (data.get("publication") or {}).get("post")
     if not post:
         sys.stderr.write(f"ERROR: post not found: {arg}\n")
         sys.exit(1)
@@ -126,4 +140,5 @@ def main(arg: str) -> None:
 
 
 if __name__ == "__main__":
-    main(sys.argv[1] if len(sys.argv) > 1 else "")
+    arg = ":".join(sys.argv[1:]) if len(sys.argv) > 1 else ""
+    main(arg)

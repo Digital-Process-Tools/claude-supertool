@@ -155,18 +155,18 @@ def test_list_render_formats_post() -> None:
 # read ---------------------------------------------------------------------
 
 def test_read_parse_arg_url() -> None:
-    slug, post_id = read_op.parse_arg("https://example.hashnode.dev/my-slug")
-    assert slug == "my-slug" and post_id is None
+    slug, post_id, host = read_op.parse_arg("https://example.hashnode.dev/my-slug")
+    assert slug == "my-slug" and post_id is None and host == "example.hashnode.dev"
 
 
 def test_read_parse_arg_slug() -> None:
-    slug, post_id = read_op.parse_arg("my-slug")
-    assert slug == "my-slug" and post_id is None
+    slug, post_id, host = read_op.parse_arg("my-slug")
+    assert slug == "my-slug" and post_id is None and host is None
 
 
 def test_read_parse_arg_object_id() -> None:
-    slug, post_id = read_op.parse_arg("abc123def456")
-    assert slug is None and post_id == "abc123def456"
+    slug, post_id, host = read_op.parse_arg("abc123def456")
+    assert slug is None and post_id == "abc123def456" and host is None
 
 
 def test_read_parse_arg_empty_exits(capsys: pytest.CaptureFixture[str]) -> None:

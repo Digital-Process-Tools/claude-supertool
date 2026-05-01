@@ -20,7 +20,7 @@
       "default_limit": 10
     },
     "hashnode_read": {
-      "cmd": "python3 {path}hashnode/read.py {arg}",
+      "cmd": "python3 {path}hashnode/read.py {args}",
       "timeout": 15,
       "description": "Read post body + metadata by slug, post ID, or full URL.",
       "syntax": "hashnode_read:SLUG_OR_URL",
