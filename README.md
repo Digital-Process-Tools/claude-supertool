@@ -467,6 +467,41 @@ Set `"compact": true` in `.supertool.json` to enable compact reads. When enabled
 
 Compact is disabled when using `grep=` filter or `offset` (editing needs exact lines).
 
+### Excluding paths from traversal ops
+
+`glob`, `grep`, `tree`, and `map` walk the filesystem recursively. On large repos this can be slow and noisy — `.git/objects/`, `node_modules/`, `vendor/`, and similar dirs rarely contain what you're looking for.
+
+Supertool prunes these at the **directory boundary** (never opens them), not after the fact.
+
+**Built-in defaults** — always active unless overridden:
+
+```
+.git/  node_modules/  .svn/  .hg/  .idea/  .vscode/
+__pycache__/  .venv/  venv/  dist/  build/
+```
+
+**Project-level additions** — add to `.supertool.json` under `ops.<op-name>.exclude-paths`. These are **merged additively** with the defaults (not replacing):
+
+```json
+{
+  "ops": {
+    "glob": { "exclude-paths": ["vendor/", "Dvsi/dvsi-private/libs/"] },
+    "grep": { "exclude-paths": ["vendor/", "Dvsi/dvsi-private/libs/"] }
+  }
+}
+```
+
+**Per-call escape hatch** — append `:::no-exclude` to bypass all excludes for one call:
+
+```bash
+./supertool 'grep:somePattern:vendor/:10:::no-exclude'
+./supertool 'glob:**/*.php:::no-exclude'
+```
+
+Ops that take explicit paths and don't traverse (`ls`, `read`, `head`, `tail`, `wc`, `stat`, `around`, `around_line`, `between`, `diff`, `blame`) are not affected — they always work on exactly the path you give them.
+
+See [issue #4](https://github.com/Digital-Process-Tools/claude-supertool/issues/4) for the full design rationale.
+
 ### RTK integration
 
 When [rtk](https://github.com/reachingforthejack/rtk) is installed, supertool automatically delegates `read`, `grep`, and `wc` to RTK for compressed output. No configuration needed — detected via `which rtk` at first use.
