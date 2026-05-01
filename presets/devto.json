@@ -45,9 +45,16 @@
     "devto_react": {
       "cmd": "python3 {path}devto/react.py {arg}",
       "timeout": 15,
-      "description": "React (like/unicorn/readinglist) to an article. Toggles on/off.",
+      "description": "React (like/unicorn/readinglist) to an article. Toggles on/off. Requires DEVTO_SESSION_COOKIE for Dev.to write actions (API key alone returns 401).",
       "syntax": "devto_react:ARTICLE_ID[|CATEGORY]",
       "example": "devto_react:1234567|like"
+    },
+    "devto_comment": {
+      "cmd": "python3 {path}devto/comment.py {arg}",
+      "timeout": 30,
+      "description": "Post a comment (or reply with PARENT_COMMENT_ID). EXPERIMENTAL — requires DEVTO_SESSION_COOKIE; the public API has no comment-write endpoint.",
+      "syntax": "devto_comment:ARTICLE_ID|MESSAGE[|PARENT_COMMENT_ID]",
+      "example": "devto_comment:1234567|Thanks for sharing!"
     },
     "devto_status_since": {
       "cmd": "python3 {path}devto/status_since.py {arg}",
