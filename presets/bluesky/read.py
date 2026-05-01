@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 sys.path.insert(0, str(Path(__file__).parent))
 from _atproto import get_session, xrpc
 from _auth import get_app_password, get_handle
+from _sanitize import detect, wrap as wrap_untrusted
 
 
 def parse_arg(arg: str, session: dict) -> str:
@@ -65,7 +66,16 @@ def render(thread: dict, inline_n: int) -> str:
         f"  bluesky_publish:\"MSG\"|{post.get('uri','URI')}        — reply to this post\n"
         f"  bluesky_follow:{author.get('handle','HANDLE')}        — follow author"
     )
-    return f"{head}\n--- body ---\n{body}\n{replies_section}\n{nxt}"
+    # Sanitization: wrap body + scan replies for injection patterns
+    all_text = body + " " + " ".join(
+        ((r.get("post") or {}).get("record") or {}).get("text", "") for r in replies
+    )
+    inj_hits = detect(all_text)
+    warning = ""
+    if inj_hits:
+        warning = f"⚠ POSSIBLE INJECTION in this thread — {', '.join(inj_hits[:3])}\n"
+    body_wrapped = wrap_untrusted(body, source="bluesky-post")
+    return f"{warning}{head}\n--- body ---\n{body_wrapped}\n{replies_section}\n{nxt}"
 
 
 def main(arg: str) -> None:

@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _auth import get_api_key
 from _me import get_username
 from _rest import request
+from _sanitize import detect, wrap as wrap_untrusted
 
 
 def parse_arg(arg: str) -> tuple[str, dict[str, str]]:
@@ -83,7 +84,14 @@ def render(a: dict, comments: list[dict], inline_n: int, me: str = "") -> str:
         f"  devto_comments:{aid}:N         — read more comments\n"
         f"  (no comment write API on Dev.to — comments via web only)"
     )
-    return f"{head}\n{cblock}\n--- body ---\n{body}\n{nxt}"
+    # Sanitization
+    all_text = body + " " + " ".join((c.get("body_html") or "") for c in comments)
+    inj_hits = detect(all_text)
+    warning = ""
+    if inj_hits:
+        warning = f"⚠ POSSIBLE INJECTION in this article/comments — {', '.join(inj_hits[:3])}\n"
+    body_wrapped = wrap_untrusted(body, source="devto-article")
+    return f"{warning}{head}\n{cblock}\n--- body ---\n{body_wrapped}\n{nxt}"
 
 
 def main(arg: str) -> None:

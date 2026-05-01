@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _auth import get_publication_id, get_token
 from _graphql import gql
 from _me import get_username
+from _sanitize import detect, wrap as wrap_untrusted
 
 POST_FIELDS = """
   id title url publishedAt reactionCount responseCount
@@ -114,7 +115,17 @@ def render(post: dict, inline_n: int, me: str = "") -> str:
         f"  hashnode_comment:{pid}|MSG     — comment on this post\n"
         f"  hashnode_comments:{post.get('url','')}:N — read more comments"
     )
-    return f"{head}\n{comments_section}\n--- body ---\n{body}\n{nxt}"
+    # Sanitization
+    edges_for_scan = (post.get("comments") or {}).get("edges", [])
+    all_text = body + " " + " ".join(
+        (((e.get("node") or {}).get("content") or {}).get("markdown") or "") for e in edges_for_scan
+    )
+    inj_hits = detect(all_text)
+    warning = ""
+    if inj_hits:
+        warning = f"⚠ POSSIBLE INJECTION in this post/comments — {', '.join(inj_hits[:3])}\n"
+    body_wrapped = wrap_untrusted(body, source="hashnode-post")
+    return f"{warning}{head}\n{comments_section}\n--- body ---\n{body_wrapped}\n{nxt}"
 
 
 def main(arg: str) -> None:
