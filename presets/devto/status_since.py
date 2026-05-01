@@ -15,6 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _auth import get_api_key
+from _me import get_username
 from _rest import request
 
 STATE_FILE = Path(os.path.expanduser("~/.config/devto/last_check"))
@@ -47,7 +48,8 @@ def resolve_since(arg: str) -> str:
     return fallback.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def filter_recent_comments(comments: list[dict], since: str, max_per_post: int) -> list[dict]:
+def filter_recent_comments(comments: list[dict], since: str, max_per_post: int,
+                            me: str = "") -> list[dict]:
     flat: list[dict] = []
     for c in comments:
         if (c.get("created_at") or "") > since:
@@ -55,12 +57,28 @@ def filter_recent_comments(comments: list[dict], since: str, max_per_post: int) 
         for child in c.get("children") or []:
             if (child.get("created_at") or "") > since:
                 flat.append(child)
+    if me:
+        flat = [c for c in flat if (c.get("user") or {}).get("username") != me]
     return flat[:max_per_post]
 
 
+def count_my_recent(comments: list[dict], since: str, me: str) -> int:
+    if not me:
+        return 0
+    n = 0
+    for c in comments:
+        if (c.get("created_at") or "") > since and (c.get("user") or {}).get("username") == me:
+            n += 1
+        for child in c.get("children") or []:
+            if (child.get("created_at") or "") > since and (child.get("user") or {}).get("username") == me:
+                n += 1
+    return n
+
+
 def render(articles: list[dict], comments_by_article: dict[int, list[dict]],
-           since: str, now: str) -> str:
+           since: str, now: str, my_recent: int = 0) -> str:
     out = [f"=== Dev.to since {since} (now {now}) ==="]
+    out.append(f"MY ENGAGEMENT: {my_recent} comments by you in this window")
     new_total = sum(len(v) for v in comments_by_article.values())
     if new_total:
         out.append(f"NEW COMMENTS ({new_total}):")
@@ -103,7 +121,9 @@ def main(arg: str) -> None:
     articles = request("GET", "/articles/me/published", api_key, query={"per_page": post_n})
     if not isinstance(articles, list):
         articles = []
+    me = get_username(api_key)
     comments_by_article: dict[int, list[dict]] = {}
+    my_recent = 0
     cap = int(os.environ.get("SUPERTOOL_STATUS_COMMENTS", "20"))
     for a in articles:
         aid = a.get("id")
@@ -111,8 +131,9 @@ def main(arg: str) -> None:
             continue
         c = request("GET", "/comments", api_key, query={"a_id": aid})
         if isinstance(c, list):
-            comments_by_article[aid] = filter_recent_comments(c, since, cap)
-    print(render(articles, comments_by_article, since, now))
+            comments_by_article[aid] = filter_recent_comments(c, since, cap, me)
+            my_recent += count_my_recent(c, since, me)
+    print(render(articles, comments_by_article, since, now, my_recent))
     _write_state(now)
 
 

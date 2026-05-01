@@ -16,6 +16,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from _auth import get_publication_id, get_token
 from _graphql import gql
+from _me import get_username
 
 STATE_FILE = Path(os.path.expanduser("~/.config/hashnode/last_check"))
 DEFAULT_LOOKBACK_HOURS = 24
@@ -68,20 +69,37 @@ def resolve_since(arg: str) -> str:
     return fallback.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def filter_recent(post: dict, since: str, max_per_post: int) -> list[dict]:
+def filter_recent(post: dict, since: str, max_per_post: int, me: str = "") -> list[dict]:
     edges = (post.get("comments") or {}).get("edges", [])
-    return [e["node"] for e in edges if (e["node"].get("dateAdded") or "") > since][:max_per_post]
+    nodes = [e["node"] for e in edges if (e["node"].get("dateAdded") or "") > since]
+    if me:
+        nodes = [n for n in nodes if (n.get("author") or {}).get("username") != me]
+    return nodes[:max_per_post]
 
 
-def render(pub: dict, since: str, now: str) -> str:
+def count_my_recent(post: dict, since: str, me: str) -> int:
+    if not me:
+        return 0
+    edges = (post.get("comments") or {}).get("edges", [])
+    return sum(
+        1 for e in edges
+        if (e["node"].get("dateAdded") or "") > since
+        and (e["node"].get("author") or {}).get("username") == me
+    )
+
+
+def render(pub: dict, since: str, now: str, me: str = "") -> str:
     posts = [e["node"] for e in ((pub.get("posts") or {}).get("edges") or [])]
     new_comments: list[tuple[dict, dict]] = []
+    my_recent = 0
     for p in posts:
-        for c in filter_recent(p, since, 10):
+        for c in filter_recent(p, since, 10, me):
             new_comments.append((p, c))
+        my_recent += count_my_recent(p, since, me)
     out = [
         f"=== Hashnode @{pub.get('title','?')} since {since} (now {now}) ===",
         f"FOLLOWERS: {pub.get('followersCount', 0)}",
+        f"MY ENGAGEMENT: {my_recent} comments by you in this window",
     ]
     if new_comments:
         out.append(f"NEW COMMENTS ({len(new_comments)}):")
@@ -120,7 +138,8 @@ def main(arg: str) -> None:
     c_first = int(os.environ.get("SUPERTOOL_STATUS_COMMENTS", "20"))
     data = gql(QUERY, {"publicationId": pub_id, "postFirst": post_first, "cFirst": c_first}, token)
     pub = data.get("publication") or {}
-    print(render(pub, since, now))
+    me = get_username(token)
+    print(render(pub, since, now, me))
     _write_state(now)
 
 

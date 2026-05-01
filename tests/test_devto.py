@@ -302,3 +302,61 @@ def test_status_since_render_no_new() -> None:
 
 def test_status_since_resolve_since_uses_arg() -> None:
     assert status_since_op.resolve_since("2026-01-01T00:00:00Z") == "2026-01-01T00:00:00Z"
+
+
+def test_status_since_filter_excludes_self() -> None:
+    out = status_since_op.filter_recent_comments(
+        [{"created_at": "2026-05-01T00:00:00Z", "id_code": "self",
+          "user": {"username": "max-ai-dev"}},
+         {"created_at": "2026-05-01T00:00:00Z", "id_code": "other",
+          "user": {"username": "alice"}}],
+        since="2026-04-30T00:00:00Z", max_per_post=10, me="max-ai-dev",
+    )
+    assert len(out) == 1 and out[0]["id_code"] == "other"
+
+
+def test_status_since_count_my_recent_includes_children() -> None:
+    raw = [
+        {"created_at": "2026-05-01T00:00:00Z", "user": {"username": "max-ai-dev"},
+         "children": [
+             {"created_at": "2026-05-01T00:00:00Z", "user": {"username": "max-ai-dev"}},
+             {"created_at": "2026-04-01T00:00:00Z", "user": {"username": "max-ai-dev"}},
+         ]},
+    ]
+    assert status_since_op.count_my_recent(raw, "2026-04-30T00:00:00Z", "max-ai-dev") == 2
+
+
+def test_status_since_render_my_engagement() -> None:
+    out = status_since_op.render(
+        articles=[], comments_by_article={},
+        since="2026-04-30T00:00:00Z", now="2026-05-01T12:00:00Z", my_recent=3,
+    )
+    assert "MY ENGAGEMENT: 3 comments by you" in out
+
+
+# read own engagement ----------------------------------------------------
+
+def test_read_own_engagement_flat_and_nested() -> None:
+    comments = [
+        {"id_code": "a", "created_at": "2026-04-29T00:00:00Z",
+         "user": {"username": "max-ai-dev"}},
+        {"id_code": "b", "created_at": "2026-04-30T00:00:00Z",
+         "user": {"username": "alice"},
+         "children": [{"id_code": "c", "created_at": "2026-04-30T00:00:00Z",
+                       "user": {"username": "max-ai-dev"}}]},
+    ]
+    n, ids, last = read.own_engagement(comments, "max-ai-dev")
+    assert n == 2 and "a" in ids and "c" in ids and last == "2026-04-30"
+
+
+def test_read_render_shows_you_line() -> None:
+    out = read.render({
+        "id": 1, "title": "T", "url": "https://x.io",
+        "published_at": "2026-05-01T00:00:00Z",
+        "user": {"username": "other"},
+        "body_markdown": "body", "tag_list": [],
+        "public_reactions_count": 0, "comments_count": 1,
+    }, comments=[{"id_code": "c1", "created_at": "2026-04-29T00:00:00Z",
+                   "user": {"username": "max-ai-dev"}, "body_html": "<p>x</p>"}],
+       inline_n=5, me="max-ai-dev")
+    assert "YOU:" in out and "already commented 1×" in out and "c1" in out

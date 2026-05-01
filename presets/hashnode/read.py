@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 sys.path.insert(0, str(Path(__file__).parent))
 from _auth import get_publication_id, get_token
 from _graphql import gql
+from _me import get_username
 
 POST_FIELDS = """
   id title url publishedAt reactionCount responseCount
@@ -51,7 +52,21 @@ def parse_arg(arg: str) -> tuple[str | None, str | None]:
     return arg, None
 
 
-def render(post: dict, inline_n: int) -> str:
+def own_engagement(post: dict, me: str) -> tuple[int, list[str], str]:
+    """Return (count, comment_ids, last_date) for comments authored by `me`."""
+    if not me:
+        return 0, [], ""
+    edges = (post.get("comments") or {}).get("edges", [])
+    mine = [e["node"] for e in edges
+            if (e["node"].get("author") or {}).get("username") == me]
+    if not mine:
+        return 0, [], ""
+    ids = [c.get("id", "?") for c in mine]
+    last = max((c.get("dateAdded") or "") for c in mine).split("T")[0]
+    return len(mine), ids, last
+
+
+def render(post: dict, inline_n: int, me: str = "") -> str:
     author = post.get("author") or {}
     body = (post.get("content") or {}).get("markdown") or ""
     date = (post.get("publishedAt") or "").split("T")[0]
@@ -65,6 +80,9 @@ def render(post: dict, inline_n: int) -> str:
         f"TAGS:     {tags or '(none)'}\n"
         f"STATS:    {post.get('reactionCount',0)} reactions, {post.get('responseCount',0)} comments"
     )
+    n_mine, mine_ids, last = own_engagement(post, me)
+    if n_mine:
+        head += f"\nYOU:      already commented {n_mine}× (ids: {', '.join(mine_ids)}) — last {last}"
     edges = (post.get("comments") or {}).get("edges", [])[:inline_n]
     if edges:
         cblock = [f"--- top {len(edges)} comments ---"]
@@ -92,17 +110,19 @@ def main(arg: str) -> None:
     token = get_token()
     slug, post_id = parse_arg(arg)
     inline_n = int(os.environ.get("SUPERTOOL_INLINE_COMMENTS", "5"))
+    scan_n = max(inline_n, int(os.environ.get("SUPERTOOL_SCAN_COMMENTS", "50")))
     if slug is not None:
         pub_id = get_publication_id()
-        data = gql(SLUG_QUERY, {"publicationId": pub_id, "slug": slug, "cFirst": inline_n}, token)
+        data = gql(SLUG_QUERY, {"publicationId": pub_id, "slug": slug, "cFirst": scan_n}, token)
         post = (data.get("publication") or {}).get("post")
     else:
-        data = gql(ID_QUERY, {"id": post_id, "cFirst": inline_n}, token)
+        data = gql(ID_QUERY, {"id": post_id, "cFirst": scan_n}, token)
         post = data.get("post")
     if not post:
         sys.stderr.write(f"ERROR: post not found: {arg}\n")
         sys.exit(1)
-    print(render(post, inline_n))
+    me = get_username(token)
+    print(render(post, inline_n, me))
 
 
 if __name__ == "__main__":

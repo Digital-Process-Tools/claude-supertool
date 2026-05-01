@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _auth import get_api_key
+from _me import get_username
 from _rest import request
 
 
@@ -28,7 +29,22 @@ def parse_arg(arg: str) -> tuple[str, dict[str, str]]:
     return f"/articles/{arg}", {}
 
 
-def render(a: dict, comments: list[dict], inline_n: int) -> str:
+def own_engagement(comments: list[dict], me: str) -> tuple[int, list[str], str]:
+    if not me:
+        return 0, [], ""
+    flat: list[dict] = []
+    for c in comments:
+        flat.append(c)
+        flat.extend(c.get("children") or [])
+    mine = [c for c in flat if (c.get("user") or {}).get("username") == me]
+    if not mine:
+        return 0, [], ""
+    ids = [c.get("id_code") or str(c.get("id", "?")) for c in mine]
+    last = max((c.get("created_at") or "") for c in mine).split("T")[0]
+    return len(mine), ids, last
+
+
+def render(a: dict, comments: list[dict], inline_n: int, me: str = "") -> str:
     date = (a.get("published_at") or "").split("T")[0]
     user = a.get("user") or {}
     body = a.get("body_markdown") or ""
@@ -45,6 +61,9 @@ def render(a: dict, comments: list[dict], inline_n: int) -> str:
         f"TAGS:     {tags or '(none)'}\n"
         f"STATS:    {a.get('public_reactions_count',0)} reactions, {a.get('comments_count',0)} comments"
     )
+    n_mine, mine_ids, last = own_engagement(comments, me)
+    if n_mine:
+        head += f"\nYOU:      already commented {n_mine}× (ids: {', '.join(mine_ids)}) — last {last}"
     if comments:
         flat = []
         for c in comments[:inline_n]:
@@ -81,7 +100,8 @@ def main(arg: str) -> None:
         if isinstance(c, list):
             comments = c
     inline_n = int(os.environ.get("SUPERTOOL_INLINE_COMMENTS", "5"))
-    print(render(article, comments, inline_n))
+    me = get_username(api_key)
+    print(render(article, comments, inline_n, me))
 
 
 if __name__ == "__main__":

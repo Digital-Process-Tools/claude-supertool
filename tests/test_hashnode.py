@@ -405,3 +405,81 @@ def test_status_since_render_no_new() -> None:
 
 def test_status_since_resolve_since_uses_arg() -> None:
     assert status_since_op.resolve_since("2026-01-01T00:00:00Z") == "2026-01-01T00:00:00Z"
+
+
+def test_status_since_filter_excludes_self() -> None:
+    post = {"comments": {"edges": [
+        {"node": {"id": "c1", "dateAdded": "2026-05-01T00:00:00Z",
+                   "author": {"username": "max-ai-dev"}}},
+        {"node": {"id": "c2", "dateAdded": "2026-05-01T00:00:00Z",
+                   "author": {"username": "alice"}}},
+    ]}}
+    out = status_since_op.filter_recent(post, since="2026-04-30T00:00:00Z",
+                                         max_per_post=10, me="max-ai-dev")
+    assert len(out) == 1 and out[0]["id"] == "c2"
+
+
+def test_status_since_count_my_recent() -> None:
+    post = {"comments": {"edges": [
+        {"node": {"dateAdded": "2026-05-01T00:00:00Z",
+                   "author": {"username": "max-ai-dev"}}},
+        {"node": {"dateAdded": "2026-05-01T00:00:00Z",
+                   "author": {"username": "max-ai-dev"}}},
+        {"node": {"dateAdded": "2026-04-01T00:00:00Z",  # too old
+                   "author": {"username": "max-ai-dev"}}},
+        {"node": {"dateAdded": "2026-05-01T00:00:00Z",
+                   "author": {"username": "alice"}}},
+    ]}}
+    assert status_since_op.count_my_recent(post, "2026-04-30T00:00:00Z", "max-ai-dev") == 2
+
+
+def test_status_since_render_includes_my_engagement() -> None:
+    pub = {"title": "max", "followersCount": 0, "posts": {"edges": []}}
+    out = status_since_op.render(pub, since="2026-04-30T00:00:00Z",
+                                  now="2026-05-01T12:00:00Z", me="max-ai-dev")
+    assert "MY ENGAGEMENT: 0 comments by you" in out
+
+
+# read own engagement -----------------------------------------------------
+
+def test_read_own_engagement() -> None:
+    post = {"comments": {"edges": [
+        {"node": {"id": "c1", "dateAdded": "2026-04-29T00:00:00Z",
+                   "author": {"username": "max-ai-dev"}}},
+        {"node": {"id": "c2", "dateAdded": "2026-04-30T00:00:00Z",
+                   "author": {"username": "max-ai-dev"}}},
+        {"node": {"id": "c3", "dateAdded": "2026-04-30T00:00:00Z",
+                   "author": {"username": "alice"}}},
+    ]}}
+    n, ids, last = read_op.own_engagement(post, "max-ai-dev")
+    assert n == 2 and ids == ["c1", "c2"] and last == "2026-04-30"
+
+
+def test_read_render_shows_you_line() -> None:
+    out = read_op.render({
+        "id": "abc", "title": "T", "url": "https://x.io",
+        "publishedAt": "2026-05-01T00:00:00Z",
+        "reactionCount": 0, "responseCount": 0,
+        "author": {"username": "other"},
+        "tags": [],
+        "content": {"markdown": "body"},
+        "comments": {"edges": [
+            {"node": {"id": "c1", "dateAdded": "2026-04-29T00:00:00Z",
+                       "author": {"username": "max-ai-dev"},
+                       "content": {"markdown": "Yo"}}},
+        ]},
+    }, inline_n=5, me="max-ai-dev")
+    assert "YOU:" in out and "already commented 1×" in out and "c1" in out
+
+
+def test_read_render_no_you_line_when_not_engaged() -> None:
+    out = read_op.render({
+        "id": "abc", "title": "T", "url": "https://x.io",
+        "publishedAt": "2026-05-01T00:00:00Z",
+        "reactionCount": 0, "responseCount": 0,
+        "author": {"username": "other"},
+        "tags": [],
+        "content": {"markdown": "body"},
+        "comments": {"edges": []},
+    }, inline_n=5, me="max-ai-dev")
+    assert "YOU:" not in out
