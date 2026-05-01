@@ -28,6 +28,52 @@
       "lines": 80,
       "error_patterns": "ERROR,FAILED,Error:,Failed,fatal:,##[error]",
       "error_context": 5
+    },
+    "gh-follow": {
+      "cmd": "python3 {path}github/follow.py {arg}",
+      "timeout": 10,
+      "description": "Follow a GitHub user via the authenticated gh CLI session.",
+      "syntax": "gh-follow:USERNAME",
+      "example": "gh-follow:simonw"
+    },
+    "gh-following": {
+      "cmd": "python3 {path}github/following.py {arg}",
+      "timeout": 15,
+      "description": "List users you follow on GitHub.",
+      "syntax": "gh-following[:N]",
+      "example": "gh-following:50",
+      "default_limit": 30
+    },
+    "gh-batch-follow": {
+      "cmd": "python3 {path}github/batch_follow.py {arg}",
+      "timeout": 600,
+      "description": "Follow each username from a file (one per line, '#' comments). Sleeps 1s between calls.",
+      "syntax": "gh-batch-follow:FILE",
+      "example": "gh-batch-follow:.max/follow-list.txt",
+      "follow_delay": "1.0"
+    },
+    "gh-star": {
+      "cmd": "python3 {path}github/star.py {arg}",
+      "timeout": 10,
+      "description": "Star a GitHub repository via gh CLI.",
+      "syntax": "gh-star:OWNER/REPO",
+      "example": "gh-star:simonw/llm"
+    },
+    "gh-starred": {
+      "cmd": "python3 {path}github/starred.py {arg}",
+      "timeout": 15,
+      "description": "List repos you have starred.",
+      "syntax": "gh-starred[:N]",
+      "example": "gh-starred:50",
+      "default_limit": 30
+    },
+    "gh-batch-star": {
+      "cmd": "python3 {path}github/batch_star.py {arg}",
+      "timeout": 600,
+      "description": "Star each OWNER/REPO from a file (one per line, '#' comments). Sleeps 1s between calls.",
+      "syntax": "gh-batch-star:FILE",
+      "example": "gh-batch-star:.max/star-list.txt",
+      "star_delay": "1.0"
     }
   }
 }
