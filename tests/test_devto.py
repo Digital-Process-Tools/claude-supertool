@@ -30,6 +30,7 @@ read = _load("read")
 browse = _load("browse")
 comments = _load("comments")
 react = _load("react")
+status_since_op = _load("status_since")
 
 
 # publish -----------------------------------------------------------------
@@ -179,8 +180,19 @@ def test_read_render_no_comments() -> None:
 # browse ------------------------------------------------------------------
 
 def test_browse_parse_args() -> None:
-    tag, n = browse.parse_args("ai:7")
-    assert tag == "ai" and n == 7
+    tag, n, sort = browse.parse_args("ai:7")
+    assert tag == "ai" and n == 7 and sort == "recent"
+
+
+def test_browse_parse_args_top() -> None:
+    tag, n, sort = browse.parse_args("ai:5:top")
+    assert tag == "ai" and n == 5 and sort == "top"
+
+
+def test_browse_parse_args_unknown_token(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        browse.parse_args("ai:bogus")
+    assert "unknown sort/limit" in capsys.readouterr().err
 
 
 def test_browse_render_empty() -> None:
@@ -193,8 +205,8 @@ def test_browse_render_formats() -> None:
         "published_at": "2026-05-01T00:00:00Z",
         "user": {"username": "bob"},
         "public_reactions_count": 2, "comments_count": 1,
-    }])
-    assert "@bob" in out and "P" in out
+    }], sort="top")
+    assert "@bob" in out and "P" in out and "sort=top" in out
 
 
 # comments ----------------------------------------------------------------
@@ -241,3 +253,52 @@ def test_react_parse_args_invalid_category(capsys: pytest.CaptureFixture[str]) -
     with pytest.raises(SystemExit):
         react.parse_args("123|nope")
     assert "category" in capsys.readouterr().err
+
+
+# status_since -----------------------------------------------------------
+
+def test_status_since_filter_recent_flat() -> None:
+    out = status_since_op.filter_recent_comments(
+        [{"created_at": "2026-05-01T00:00:00Z", "id_code": "1"},
+         {"created_at": "2026-04-01T00:00:00Z", "id_code": "2"}],
+        since="2026-04-15T00:00:00Z", max_per_post=10,
+    )
+    assert len(out) == 1 and out[0]["id_code"] == "1"
+
+
+def test_status_since_filter_recent_includes_children() -> None:
+    parent = {"created_at": "2026-04-01T00:00:00Z", "id_code": "p",
+              "children": [{"created_at": "2026-05-01T00:00:00Z", "id_code": "c"}]}
+    out = status_since_op.filter_recent_comments(
+        [parent], since="2026-04-15T00:00:00Z", max_per_post=10,
+    )
+    assert len(out) == 1 and out[0]["id_code"] == "c"
+
+
+def test_status_since_render_with_new() -> None:
+    articles = [{
+        "id": 7, "title": "Burn", "url": "https://x.io/burn",
+        "public_reactions_count": 5, "comments_count": 1,
+    }]
+    comments_by = {7: [{"id_code": "c1", "created_at": "2026-05-01T00:00:00Z",
+                         "user": {"username": "alice"}, "body_html": "<p>Nice</p>"}]}
+    out = status_since_op.render(
+        articles, comments_by, since="2026-04-30T00:00:00Z", now="2026-05-01T12:00:00Z",
+    )
+    assert "NEW COMMENTS (1)" in out
+    assert "@alice" in out
+    assert "devto_react:7" in out
+    assert "TOP ARTICLES" in out
+    assert "--- NEXT ---" in out
+
+
+def test_status_since_render_no_new() -> None:
+    out = status_since_op.render(
+        articles=[], comments_by_article={},
+        since="2026-04-30T00:00:00Z", now="2026-05-01T12:00:00Z",
+    )
+    assert "(none)" in out
+
+
+def test_status_since_resolve_since_uses_arg() -> None:
+    assert status_since_op.resolve_since("2026-01-01T00:00:00Z") == "2026-01-01T00:00:00Z"

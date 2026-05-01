@@ -55,6 +55,30 @@
       "description": "Like a Hashnode post.",
       "syntax": "hashnode_react:POST_ID_OR_URL",
       "example": "hashnode_react:abc123"
+    },
+    "hashnode_reply": {
+      "cmd": "python3 {path}hashnode/reply.py {arg}",
+      "timeout": 30,
+      "description": "Reply to a Hashnode comment.",
+      "syntax": "hashnode_reply:COMMENT_ID|MESSAGE",
+      "example": "hashnode_reply:comm-7|Good point — agree."
+    },
+    "hashnode_search": {
+      "cmd": "python3 {path}hashnode/search.py {arg}",
+      "timeout": 15,
+      "description": "Text search on configured publication.",
+      "syntax": "hashnode_search:QUERY[:N]",
+      "example": "hashnode_search:burnout:5",
+      "default_limit": 10
+    },
+    "hashnode_status_since": {
+      "cmd": "python3 {path}hashnode/status_since.py {arg}",
+      "timeout": 30,
+      "description": "Briefing: new comments + follower count + top posts since timestamp. No arg = uses ~/.config/hashnode/last_check (auto-tracked).",
+      "syntax": "hashnode_status_since[:ISO_TIMESTAMP]",
+      "example": "hashnode_status_since:2026-04-30T00:00:00Z",
+      "default_status_posts": 10,
+      "default_status_comments": 20
     }
   }
 }

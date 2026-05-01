@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Hashnode browse: hashnode_browse:TAG[:N]
+"""Hashnode browse: hashnode_browse:TAG[:N][:SORT]
 
-Recent posts on a tag (cross-publication feed).
+SORT: recent (default) or top.
 """
 import os
 import sys
@@ -11,10 +11,10 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _auth import get_token
 from _graphql import gql
 
-QUERY = """
+QUERY_TEMPLATE = """
 query TagFeed($slug: String!, $first: Int!) {
   tag(slug: $slug) {
-    posts(first: $first, filter: {sortBy: recent}) {
+    posts(first: $first, filter: {sortBy: %s}) {
       edges { node {
         id title url publishedAt reactionCount responseCount
         author { username name }
@@ -24,22 +24,33 @@ query TagFeed($slug: String!, $first: Int!) {
 }
 """
 
+SORT_MAP = {"recent": "recent", "top": "popular", "popular": "popular"}
 
-def parse_args(arg: str) -> tuple[str, int]:
+
+def parse_args(arg: str) -> tuple[str, int, str]:
     if not arg:
-        sys.stderr.write("ERROR: usage hashnode_browse:TAG[:N]\n")
+        sys.stderr.write("ERROR: usage hashnode_browse:TAG[:N][:SORT]\n")
         sys.exit(2)
     parts = arg.split(":")
     tag = parts[0]
     default_n = int(os.environ.get("SUPERTOOL_DEFAULT_LIMIT", "10"))
-    n = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else default_n
-    return tag, n
+    n = default_n
+    sort = "recent"
+    for p in parts[1:]:
+        if p.isdigit():
+            n = int(p)
+        elif p in SORT_MAP:
+            sort = SORT_MAP[p]
+        else:
+            sys.stderr.write(f"ERROR: unknown sort/limit token {p!r}; use a number or one of {sorted(SORT_MAP)}\n")
+            sys.exit(2)
+    return tag, n, sort
 
 
-def render(tag: str, posts: list[dict]) -> str:
+def render(tag: str, posts: list[dict], sort: str = "recent") -> str:
     if not posts:
         return f"(no posts on tag {tag})"
-    out = [f"({len(posts)} posts on tag {tag})"]
+    out = [f"({len(posts)} posts on tag {tag}, sort={sort})"]
     for p in posts:
         author = p.get("author") or {}
         date = (p.get("publishedAt") or "").split("T")[0]
@@ -51,11 +62,12 @@ def render(tag: str, posts: list[dict]) -> str:
 
 
 def main(arg: str) -> None:
-    tag, n = parse_args(arg)
+    tag, n, sort = parse_args(arg)
     token = get_token()
-    data = gql(QUERY, {"slug": tag, "first": n}, token)
+    query = QUERY_TEMPLATE % sort
+    data = gql(query, {"slug": tag, "first": n}, token)
     edges = ((data.get("tag") or {}).get("posts") or {}).get("edges", [])
-    print(render(tag, [e["node"] for e in edges]))
+    print(render(tag, [e["node"] for e in edges], sort))
 
 
 if __name__ == "__main__":

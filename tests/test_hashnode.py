@@ -34,6 +34,9 @@ read_op = _load("read")
 browse_op = _load("browse")
 comments_op = _load("comments")
 comment_op = _load("comment")
+reply_op = _load("reply")
+search_op = _load("search")
+status_since_op = _load("status_since")
 
 
 # publish ------------------------------------------------------------------
@@ -213,13 +216,29 @@ def test_read_render_no_comments() -> None:
 # browse -------------------------------------------------------------------
 
 def test_browse_parse_args() -> None:
-    tag, n = browse_op.parse_args("ai")
-    assert tag == "ai" and n == 10
+    tag, n, sort = browse_op.parse_args("ai")
+    assert tag == "ai" and n == 10 and sort == "recent"
 
 
 def test_browse_parse_args_with_limit() -> None:
-    tag, n = browse_op.parse_args("ai:5")
-    assert tag == "ai" and n == 5
+    tag, n, sort = browse_op.parse_args("ai:5")
+    assert tag == "ai" and n == 5 and sort == "recent"
+
+
+def test_browse_parse_args_top() -> None:
+    tag, n, sort = browse_op.parse_args("ai:5:top")
+    assert tag == "ai" and n == 5 and sort == "popular"
+
+
+def test_browse_parse_args_sort_only() -> None:
+    tag, n, sort = browse_op.parse_args("ai:popular")
+    assert tag == "ai" and sort == "popular"
+
+
+def test_browse_parse_args_unknown_token(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        browse_op.parse_args("ai:bogus")
+    assert "unknown sort/limit" in capsys.readouterr().err
 
 
 def test_browse_parse_args_empty_exits(capsys: pytest.CaptureFixture[str]) -> None:
@@ -240,8 +259,8 @@ def test_browse_render_formats() -> None:
         "reactionCount": 1,
         "responseCount": 0,
         "author": {"username": "alice"},
-    }])
-    assert "@alice" in out and "Post" in out
+    }], sort="popular")
+    assert "@alice" in out and "Post" in out and "sort=popular" in out
 
 
 # comments -----------------------------------------------------------------
@@ -296,3 +315,93 @@ def test_comment_parse_args_empty_msg(capsys: pytest.CaptureFixture[str]) -> Non
     with pytest.raises(SystemExit):
         comment_op.parse_args("abc123|   ")
     assert "ERROR" in capsys.readouterr().err
+
+
+# reply --------------------------------------------------------------------
+
+def test_reply_parse_args_ok() -> None:
+    cid, msg = reply_op.parse_args("comm-7|Hello")
+    assert cid == "comm-7" and msg == "Hello"
+
+
+def test_reply_parse_args_missing_msg(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        reply_op.parse_args("comm-7")
+    assert "ERROR" in capsys.readouterr().err
+
+
+# search -------------------------------------------------------------------
+
+def test_search_parse_args_default_limit() -> None:
+    q, n = search_op.parse_args("burnout")
+    assert q == "burnout" and n == 10
+
+
+def test_search_parse_args_with_limit() -> None:
+    q, n = search_op.parse_args("burnout:5")
+    assert q == "burnout" and n == 5
+
+
+def test_search_parse_args_keeps_colons_in_query() -> None:
+    q, n = search_op.parse_args("a:b:c:3")
+    assert q == "a:b:c" and n == 3
+
+
+def test_search_render_empty() -> None:
+    assert "no results" in search_op.render("burnout", [])
+
+
+def test_search_render_formats() -> None:
+    out = search_op.render("burnout", [{
+        "id": "x", "title": "T", "url": "https://x.io",
+        "publishedAt": "2026-05-01T00:00:00Z",
+        "author": {"username": "max"},
+        "reactionCount": 1, "responseCount": 0,
+    }])
+    assert "T" in out and "@max" in out
+
+
+# status_since -------------------------------------------------------------
+
+def test_status_since_filter_recent() -> None:
+    post = {"comments": {"edges": [
+        {"node": {"id": "1", "dateAdded": "2026-05-01T00:00:00Z"}},
+        {"node": {"id": "2", "dateAdded": "2026-04-01T00:00:00Z"}},
+    ]}}
+    out = status_since_op.filter_recent(post, since="2026-04-15T00:00:00Z", max_per_post=10)
+    assert len(out) == 1 and out[0]["id"] == "1"
+
+
+def test_status_since_render_with_new_comments() -> None:
+    pub = {
+        "title": "max",
+        "followersCount": 42,
+        "posts": {"edges": [
+            {"node": {
+                "id": "p1", "title": "Burn", "url": "https://x.io/burn",
+                "reactionCount": 5, "responseCount": 1,
+                "comments": {"edges": [
+                    {"node": {"id": "c1", "dateAdded": "2026-05-01T00:00:00Z",
+                              "author": {"username": "alice"},
+                              "content": {"markdown": "Nice"}}},
+                ]},
+            }},
+        ]},
+    }
+    out = status_since_op.render(pub, since="2026-04-30T00:00:00Z", now="2026-05-01T12:00:00Z")
+    assert "FOLLOWERS: 42" in out
+    assert "NEW COMMENTS (1)" in out
+    assert "@alice" in out
+    assert "hashnode_reply:c1" in out
+    assert "TOP POSTS" in out
+    assert "--- NEXT ---" in out
+
+
+def test_status_since_render_no_new() -> None:
+    pub = {"title": "max", "followersCount": 0, "posts": {"edges": []}}
+    out = status_since_op.render(pub, since="2026-04-30T00:00:00Z", now="2026-05-01T12:00:00Z")
+    assert "(none)" in out
+
+
+def test_status_since_resolve_since_uses_arg() -> None:
+    assert status_since_op.resolve_since("2026-01-01T00:00:00Z") == "2026-01-01T00:00:00Z"

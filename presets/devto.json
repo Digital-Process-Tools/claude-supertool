@@ -48,6 +48,15 @@
       "description": "React (like/unicorn/readinglist) to an article. Toggles on/off.",
       "syntax": "devto_react:ARTICLE_ID[|CATEGORY]",
       "example": "devto_react:1234567|like"
+    },
+    "devto_status_since": {
+      "cmd": "python3 {path}devto/status_since.py {arg}",
+      "timeout": 60,
+      "description": "Briefing: new comments + top articles since timestamp. No arg = uses ~/.config/devto/last_check (auto-tracked). Fan-out: 1 call + 1 per recent article.",
+      "syntax": "devto_status_since[:ISO_TIMESTAMP]",
+      "example": "devto_status_since:2026-04-30T00:00:00Z",
+      "default_status_posts": 10,
+      "default_status_comments": 20
     }
   }
 }
