@@ -16,7 +16,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from _auth import get_api_key
 from _me import get_username
-from _outbound import my_comment_ids, read as read_outbound, unique_article_ids
+from _outbound import my_comment_ids, read as read_outbound, replied_parent_ids, unique_article_ids
 from _rest import request
 
 STATE_FILE = Path(os.path.expanduser("~/.config/devto/last_check"))
@@ -96,7 +96,9 @@ def find_replies_to_me(
 
 def render(articles: list[dict], comments_by_article: dict[int, list[dict]],
            since: str, now: str, my_recent: int = 0,
-           replies_to_me: list[tuple[int | str, str, dict]] | None = None) -> str:
+           replies_to_me: list[tuple[int | str, str, dict]] | None = None,
+           replied_to: set[str] | None = None) -> str:
+    replied_to = replied_to or set()
     out = [f"=== Dev.to since {since} (now {now}) ==="]
     out.append(f"MY ENGAGEMENT: {my_recent} comments by you in this window")
     if replies_to_me:
@@ -120,9 +122,11 @@ def render(articles: list[dict], comments_by_article: dict[int, list[dict]],
                 cdate = (c.get("created_at") or "").split("T")[0]
                 cid = c.get("id_code") or "?"
                 txt = (c.get("body_html") or "").replace("\n", " ")[:160]
-                out.append(f"  [comment {cid}] on {a.get('title','?')!r} ({a.get('url','')})")
+                replied_flag = " (already replied)" if str(cid) in replied_to else ""
+                out.append(f"  [comment {cid}] on {a.get('title','?')!r} ({a.get('url','')}){replied_flag}")
                 out.append(f"    {cdate} @{au}: {txt}")
-                out.append(f"    NEXT: devto_react:{aid}  (no comment-write API)")
+                if not replied_flag:
+                    out.append(f"    NEXT: devto_comment:{aid}|MSG|{cid}  — reply  /  devto_react:{aid}  — like article")
     else:
         out.append("NEW COMMENTS: (none)")
     top = sorted(articles,
@@ -169,6 +173,7 @@ def main(arg: str) -> None:
     # Scan articles where I commented (cross-article reply detection)
     outbound = read_outbound()
     my_ids = my_comment_ids(outbound)
+    replied_to = replied_parent_ids(outbound)
     replies_to_me: list[tuple[int | str, str, dict]] = []
     extra_articles = [a for a in unique_article_ids(outbound) if a not in own_aids]
     for ext_aid in extra_articles:
@@ -181,7 +186,7 @@ def main(arg: str) -> None:
         for r in find_replies_to_me(c, my_ids, since):
             replies_to_me.append((ext_aid, title, r))
 
-    print(render(articles, comments_by_article, since, now, my_recent, replies_to_me))
+    print(render(articles, comments_by_article, since, now, my_recent, replies_to_me, replied_to))
     _write_state(now)
 
 

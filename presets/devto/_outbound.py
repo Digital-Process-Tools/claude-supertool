@@ -50,3 +50,8 @@ def unique_article_ids(records: Iterable[dict]) -> list[int]:
 
 def my_comment_ids(records: Iterable[dict]) -> set[str]:
     return {str(r["comment_id"]) for r in records if r.get("comment_id")}
+
+
+def replied_parent_ids(records: Iterable[dict]) -> set[str]:
+    """Return set of parent comment IDs we've already replied to."""
+    return {str(r["parent_id"]) for r in records if r.get("parent_id")}

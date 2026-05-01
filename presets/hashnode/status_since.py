@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _auth import get_publication_id, get_token
 from _graphql import gql
 from _me import get_username
-from _outbound import my_comment_ids, read as read_outbound, unique_post_ids
+from _outbound import my_comment_ids, read as read_outbound, replied_parent_ids, unique_post_ids
 
 STATE_FILE = Path(os.path.expanduser("~/.config/hashnode/last_check"))
 DEFAULT_LOOKBACK_HOURS = 24
@@ -122,7 +122,9 @@ def find_replies_on_post(post: dict, my_ids: set[str], since: str) -> list[dict]
 
 
 def render(pub: dict, since: str, now: str, me: str = "",
-           replies_to_me: list[tuple[dict, dict]] | None = None) -> str:
+           replies_to_me: list[tuple[dict, dict]] | None = None,
+           replied_to: set[str] | None = None) -> str:
+    replied_to = replied_to or set()
     posts = [e["node"] for e in ((pub.get("posts") or {}).get("edges") or [])]
     new_comments: list[tuple[dict, dict]] = []
     my_recent = 0
@@ -151,9 +153,11 @@ def render(pub: dict, since: str, now: str, me: str = "",
             au = (c.get("author") or {}).get("username", "?")
             cdate = (c.get("dateAdded") or "").split("T")[0]
             txt = ((c.get("content") or {}).get("markdown") or "").replace("\n", " ")[:160]
-            out.append(f"  [comment {c['id']}] on {p['title']!r} ({p['url']})")
+            replied_flag = " (already replied)" if str(c["id"]) in replied_to else ""
+            out.append(f"  [comment {c['id']}] on {p['title']!r} ({p['url']}){replied_flag}")
             out.append(f"    {cdate} @{au}: {txt}")
-            out.append(f"    NEXT: hashnode_reply:{c['id']}|MSG  |  hashnode_comment:{p['id']}|MSG")
+            if not replied_flag:
+                out.append(f"    NEXT: hashnode_reply:{c['id']}|MSG  |  hashnode_comment:{p['id']}|MSG")
     else:
         out.append("NEW COMMENTS: (none)")
     top = sorted(posts, key=lambda p: (p.get("reactionCount", 0), p.get("responseCount", 0)), reverse=True)[:3]
@@ -187,6 +191,7 @@ def main(arg: str) -> None:
     # Cross-post reply scan via outbound ledger
     outbound = read_outbound()
     my_ids = my_comment_ids(outbound)
+    replied_to = replied_parent_ids(outbound)
     own_post_ids = {e["node"]["id"] for e in ((pub.get("posts") or {}).get("edges") or [])}
     extra_post_ids = [pid for pid in unique_post_ids(outbound) if pid not in own_post_ids]
     replies_to_me: list[tuple[dict, dict]] = []
@@ -198,7 +203,7 @@ def main(arg: str) -> None:
         for r in find_replies_on_post(post, my_ids, since):
             replies_to_me.append((post, r))
 
-    print(render(pub, since, now, me, replies_to_me))
+    print(render(pub, since, now, me, replies_to_me, replied_to))
     _write_state(now)
 
 

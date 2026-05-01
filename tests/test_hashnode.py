@@ -496,6 +496,43 @@ def test_outbound_my_comment_ids() -> None:
     assert outbound_op.my_comment_ids([{"comment_id": "x"}, {"foo": 1}]) == {"x"}
 
 
+def test_outbound_replied_parent_ids() -> None:
+    records = [
+        {"comment_id": "c1", "parent_id": "pa"},
+        {"comment_id": "c2", "parent_id": "pb"},
+        {"comment_id": "c3", "parent_id": None},  # top-level, not a reply
+        {"comment_id": "c4"},  # missing
+    ]
+    assert outbound_op.replied_parent_ids(records) == {"pa", "pb"}
+
+
+def test_status_since_render_marks_already_replied() -> None:
+    pub = {
+        "title": "max", "followersCount": 0,
+        "posts": {"edges": [
+            {"node": {
+                "id": "p1", "title": "T", "url": "https://x.io/t",
+                "reactionCount": 0, "responseCount": 0,
+                "comments": {"edges": [
+                    {"node": {"id": "c-old-replied", "dateAdded": "2026-05-01T00:00:00Z",
+                              "author": {"username": "alice"}, "content": {"markdown": "Q"}}},
+                    {"node": {"id": "c-new", "dateAdded": "2026-05-01T00:00:00Z",
+                              "author": {"username": "bob"}, "content": {"markdown": "Q2"}}},
+                ]},
+            }},
+        ]},
+    }
+    out = status_since_op.render(pub, since="2026-04-30T00:00:00Z",
+                                  now="2026-05-01T12:00:00Z",
+                                  replied_to={"c-old-replied"})
+    assert "c-old-replied] on 'T' (https://x.io/t) (already replied)" in out
+    assert "c-new] on 'T' (https://x.io/t)" in out
+    assert "(already replied)" in out
+    # NEXT line still printed for the unreplied comment, suppressed for the replied
+    assert "hashnode_reply:c-new" in out
+    assert "hashnode_reply:c-old-replied" not in out
+
+
 def test_status_since_find_replies_on_post() -> None:
     post = {"comments": {"edges": [
         {"node": {"id": "mine",

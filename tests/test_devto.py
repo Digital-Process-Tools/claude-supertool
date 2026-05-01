@@ -461,6 +461,36 @@ def test_outbound_my_comment_ids() -> None:
     assert ids == {"a", "b"}
 
 
+def test_outbound_replied_parent_ids() -> None:
+    records = [
+        {"comment_id": "c1", "parent_id": "pa"},
+        {"comment_id": "c2", "parent_id": "pb"},
+        {"comment_id": "c3", "parent_id": None},  # top-level, not a reply
+        {"comment_id": "c4"},  # missing
+    ]
+    assert outbound_op.replied_parent_ids(records) == {"pa", "pb"}
+
+
+def test_status_since_render_marks_already_replied() -> None:
+    articles = [{"id": 100, "title": "T", "url": "https://dev.to/x/t",
+                 "public_reactions_count": 0, "comments_count": 2}]
+    comments = {100: [
+        {"id_code": "c-old-replied", "created_at": "2026-05-01T00:00:00Z",
+         "user": {"username": "alice"}, "body_html": "Q"},
+        {"id_code": "c-new", "created_at": "2026-05-01T00:00:00Z",
+         "user": {"username": "bob"}, "body_html": "Q2"},
+    ]}
+    out = status_since_op.render(articles, comments,
+                                  since="2026-04-30T00:00:00Z",
+                                  now="2026-05-01T12:00:00Z",
+                                  replied_to={"c-old-replied"})
+    assert "c-old-replied] on 'T' (https://dev.to/x/t) (already replied)" in out
+    assert "c-new] on 'T' (https://dev.to/x/t)" in out
+    # NEXT line still printed for unreplied, suppressed for replied
+    assert "devto_comment:100|MSG|c-new" in out
+    assert "devto_comment:100|MSG|c-old-replied" not in out
+
+
 def test_outbound_read_missing_file_returns_empty(tmp_path: Path,
                                                     monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(outbound_op, "TRACK_FILE", tmp_path / "nope.jsonl")
