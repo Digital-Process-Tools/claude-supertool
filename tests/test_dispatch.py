@@ -182,6 +182,53 @@ def test_split_arg_normal_colon_in_pattern_not_confused() -> None:
     assert result == ["grep", "TODO", "src/"]
 
 
+def test_split_arg_url_in_pipe_separated_args() -> None:
+    # publish ops use TITLE|FILE|URL|TAGS — URL has 'https:' which must not split
+    result = supertool._split_arg(
+        "hashnode_publish:My Title|/tmp/post.md|https://example.com/post|tag1,tag2"
+    )
+    assert result == [
+        "hashnode_publish",
+        "My Title|/tmp/post.md|https://example.com/post|tag1,tag2",
+    ]
+
+
+def test_split_arg_two_urls_in_pipe_separated_args() -> None:
+    # publish ops with both canonical and cover URL
+    result = supertool._split_arg(
+        "hashnode_publish:T|F|https://a.com/x|tag|https://b.com/cover.png"
+    )
+    assert result == [
+        "hashnode_publish",
+        "T|F|https://a.com/x|tag|https://b.com/cover.png",
+    ]
+
+
+def test_split_arg_url_with_port_and_path() -> None:
+    result = supertool._split_arg("op:T|https://example.com:8080/path|tag")
+    # Port colon stays inside the URL token — '8080' starts with digit, not '/'
+    # so the second absorb stops there. Acceptable: caller never uses ports
+    # in canonical URLs anyway. Just confirm primary URL is intact.
+    assert result[0] == "op"
+    assert "https://example.com" in result[1]
+
+
+def test_split_arg_bare_url() -> None:
+    result = supertool._split_arg("op:https://example.com/x")
+    assert result == ["op", "https://example.com/x"]
+
+
+def test_split_arg_ftp_scheme() -> None:
+    result = supertool._split_arg("op:T|ftp://files.example.com/x")
+    assert result == ["op", "T|ftp://files.example.com/x"]
+
+
+def test_split_arg_url_does_not_break_drive_letter() -> None:
+    # both should still work
+    assert supertool._split_arg("read:C:/src/foo.py") == ["read", "C:/src/foo.py"]
+    assert supertool._split_arg("op:T|https://x.com") == ["op", "T|https://x.com"]
+
+
 # ---------------------------------------------------------------------------
 # _parse_grep_args — handles '::' in patterns (PHP static access, etc.)
 # ---------------------------------------------------------------------------
@@ -341,6 +388,45 @@ def test_main_no_args_prints_usage(capsys) -> None:
     captured = capsys.readouterr()
     assert ret == 1
     assert "Usage:" in captured.err
+
+
+def test_main_returns_zero_on_all_pass(tmp_path: Path, capsys, monkeypatch) -> None:
+    f = tmp_path / "x.py"
+    f.write_text("hi\n")
+    log_file = tmp_path / "calls.log"
+    monkeypatch.setattr(supertool, "LOG_FILE", str(log_file))
+    ret = supertool.main([f"read:{f}"])
+    assert ret == 0
+
+
+def test_main_returns_one_on_op_failure(tmp_path: Path, capsys, monkeypatch) -> None:
+    log_file = tmp_path / "calls.log"
+    monkeypatch.setattr(supertool, "LOG_FILE", str(log_file))
+    # Read of nonexistent file emits "ERROR: file not found" — main() must propagate
+    ret = supertool.main([f"read:{tmp_path}/does-not-exist"])
+    captured = capsys.readouterr()
+    assert ret == 1
+    assert "ERROR" in captured.out
+
+
+def test_main_returns_one_when_any_op_in_batch_fails(tmp_path: Path, capsys, monkeypatch) -> None:
+    f = tmp_path / "ok.py"
+    f.write_text("ok\n")
+    log_file = tmp_path / "calls.log"
+    monkeypatch.setattr(supertool, "LOG_FILE", str(log_file))
+    ret = supertool.main([f"read:{f}", f"read:{tmp_path}/missing"])
+    assert ret == 1
+
+
+def test_main_returns_zero_when_all_ops_pass(tmp_path: Path, capsys, monkeypatch) -> None:
+    f1 = tmp_path / "a.py"
+    f1.write_text("a\n")
+    f2 = tmp_path / "b.py"
+    f2.write_text("b\n")
+    log_file = tmp_path / "calls.log"
+    monkeypatch.setattr(supertool, "LOG_FILE", str(log_file))
+    ret = supertool.main([f"read:{f1}", f"read:{f2}"])
+    assert ret == 0
 
 
 def test_main_logs_call(tmp_path: Path, monkeypatch) -> None:

@@ -1853,35 +1853,50 @@ def _glob_files(
 # ---------------------------------------------------------------------------
 
 _DRIVE_LETTER = re.compile(r"^[A-Za-z]$")
+_URL_SCHEMES = ("http", "https", "ftp", "ftps", "ssh", "git", "file", "ws", "wss")
 
 
 def _split_arg(arg: str) -> List[str]:
-    """Split 'op:arg1:arg2:arg3' by ':' but reassemble Windows drive letters.
+    """Split 'op:arg1:arg2:arg3' by ':' but reassemble drive letters and URLs.
 
-    Splits on every ':' (no limit) then merges single-letter pieces that
-    are followed by a slash/backslash-starting piece — that's a drive letter.
+    Splits on every ':' (no limit) then merges:
+      - Single-letter pieces followed by slash/backslash → Windows drive letter
+      - URL-scheme pieces (http, https, ftp, ssh, git, file, ws...) followed
+        by '//...' → URL. Scheme detection looks at the LAST '|'-separated
+        segment of the piece, so URLs work when embedded as one of several
+        '|'-separated args (e.g. publish ops with TITLE|FILE|URL|TAGS|COVER).
 
     Examples:
-        'read:foo.py'              → ['read', 'foo.py']
-        'read:C:\\Users\\file.py'  → ['read', 'C:\\Users\\file.py']
-        'grep:pat:C:/src:20'       → ['grep', 'pat', 'C:/src', '20']
-        'grep:pat:C:\\src'         → ['grep', 'pat', 'C:\\src']
+        'read:foo.py'                       → ['read', 'foo.py']
+        'read:C:\\Users\\file.py'           → ['read', 'C:\\Users\\file.py']
+        'grep:pat:C:/src:20'                → ['grep', 'pat', 'C:/src', '20']
+        'op:T|F|https://x.com/a|tag'        → ['op', 'T|F|https://x.com/a|tag']
+        'op:T|F|https://a.com|t|https://b'  → ['op', 'T|F|https://a.com|t|https://b']
     """
-    raw = arg.split(":")  # Full split — drive letters will be rejoined below
+    raw = arg.split(":")  # Full split — drive letters and URLs rejoined below
     tokens: List[str] = []
     i = 0
     while i < len(raw):
         piece = raw[i]
-        # Drive-letter detection: single letter + next piece begins with / or \
-        if (i + 1 < len(raw)
-                and _DRIVE_LETTER.match(piece)
-                and raw[i + 1]
-                and raw[i + 1][0] in ("/", "\\")):
-            tokens.append(f"{piece}:{raw[i + 1]}")
-            i += 2
-        else:
-            tokens.append(piece)
+        # Greedily absorb next pieces if current looks like a drive letter or URL scheme
+        while i + 1 < len(raw):
+            next_piece = raw[i + 1]
+            last_seg = piece.rsplit("|", 1)[-1]
+            is_drive = (
+                _DRIVE_LETTER.match(last_seg) is not None
+                and next_piece
+                and next_piece[0] in ("/", "\\")
+            )
+            is_url = (
+                last_seg.lower() in _URL_SCHEMES
+                and next_piece.startswith("//")
+            )
+            if not (is_drive or is_url):
+                break
+            piece = f"{piece}:{next_piece}"
             i += 1
+        tokens.append(piece)
+        i += 1
     return tokens
 
 
@@ -2454,12 +2469,16 @@ def main(argv: List[str]) -> int:
 
     # Normal batched-ops mode
     total_out_bytes = 0
+    any_failure = False
     for arg in argv:
         body = dispatch(arg)
         sys.stdout.write(body)
         total_out_bytes += len(body.encode("utf-8"))
+        # Detect op-level failure from the FAIL marker dispatch emits
+        if re.search(r"^(FAIL|ERROR)\b", body, re.MULTILINE):
+            any_failure = True
     log_call(argv, total_out_bytes)
-    return 0
+    return 1 if any_failure else 0
 
 
 if __name__ == "__main__":
