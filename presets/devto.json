@@ -1,0 +1,69 @@
+{
+  "description": "Dev.to publishing + discovery + engagement (REST).",
+  "requires": "python3",
+  "ops": {
+    "devto_publish": {
+      "cmd": "python3 {path}devto/publish.py {arg}",
+      "timeout": 30,
+      "description": "Publish a markdown file as an article on Dev.to.",
+      "syntax": "devto_publish:TITLE|MD_FILE|CANONICAL[|TAGS|COVER|PUBLISHED]",
+      "example": "devto_publish:My Title|/tmp/post.md|https://example.com/post|ai,programming|https://example.com/og.png|true",
+      "default_tags": "",
+      "default_cover": ""
+    },
+    "devto_list": {
+      "cmd": "python3 {path}devto/list.py {arg}",
+      "timeout": 15,
+      "description": "List own published articles, or another user's articles.",
+      "syntax": "devto_list[:N] | devto_list:USER[:N]",
+      "example": "devto_list:5",
+      "default_limit": 10
+    },
+    "devto_read": {
+      "cmd": "python3 {path}devto/read.py {arg}",
+      "timeout": 15,
+      "description": "Read article body + metadata by ID, slug, or full URL.",
+      "syntax": "devto_read:ID_OR_SLUG_OR_URL",
+      "example": "devto_read:1234567"
+    },
+    "devto_browse": {
+      "cmd": "python3 {path}devto/browse.py {arg}",
+      "timeout": 15,
+      "description": "Browse recent articles on a tag.",
+      "syntax": "devto_browse:TAG[|N][|SORT]",
+      "example": "devto_browse:ai|5|top",
+      "default_limit": 10
+    },
+    "devto_comments": {
+      "cmd": "python3 {path}devto/comments.py {args}",
+      "timeout": 15,
+      "description": "List comments on an article (flat tree, max N).",
+      "syntax": "devto_comments:ARTICLE_ID[:N]",
+      "example": "devto_comments:1234567:10",
+      "default_limit": 20
+    },
+    "devto_react": {
+      "cmd": "python3 {path}devto/react.py {arg}",
+      "timeout": 15,
+      "description": "React (like/unicorn/readinglist) to an article. Toggles on/off. Requires DEVTO_SESSION_COOKIE for Dev.to write actions (API key alone returns 401).",
+      "syntax": "devto_react:ARTICLE_ID[|CATEGORY]",
+      "example": "devto_react:1234567|like"
+    },
+    "devto_comment": {
+      "cmd": "python3 {path}devto/comment.py {args}",
+      "timeout": 30,
+      "description": "Post a comment (or reply with PARENT_COMMENT_ID). EXPERIMENTAL — requires DEVTO_SESSION_COOKIE; the public API has no comment-write endpoint.",
+      "syntax": "devto_comment:ARTICLE_ID|MESSAGE[|PARENT_COMMENT_ID]",
+      "example": "devto_comment:1234567|Thanks for sharing!"
+    },
+    "devto_status_since": {
+      "cmd": "python3 {path}devto/status_since.py {args}",
+      "timeout": 60,
+      "description": "Briefing: new comments + top articles since timestamp. No arg = uses ~/.config/devto/last_check (auto-tracked). Fan-out: 1 call + 1 per recent article.",
+      "syntax": "devto_status_since[:ISO_TIMESTAMP]",
+      "example": "devto_status_since:2026-04-30T00:00:00Z",
+      "default_status_posts": 10,
+      "default_status_comments": 20
+    }
+  }
+}

@@ -1,0 +1,84 @@
+{
+  "description": "Hashnode publishing + discovery + engagement (GraphQL).",
+  "requires": "python3",
+  "ops": {
+    "hashnode_publish": {
+      "cmd": "python3 {path}hashnode/publish.py {arg}",
+      "timeout": 30,
+      "description": "Publish a markdown file as a post on the configured Hashnode publication.",
+      "syntax": "hashnode_publish:TITLE|MD_FILE|CANONICAL[|TAGS|COVER]",
+      "example": "hashnode_publish:My Title|/tmp/post.md|https://example.com/post|ai,programming|https://example.com/og.png",
+      "default_tags": "",
+      "default_cover": ""
+    },
+    "hashnode_list": {
+      "cmd": "python3 {path}hashnode/list.py {arg}",
+      "timeout": 15,
+      "description": "List recent posts on configured publication, or another user's posts.",
+      "syntax": "hashnode_list[:N] | hashnode_list:USER[:N]",
+      "example": "hashnode_list:5",
+      "default_limit": 10
+    },
+    "hashnode_read": {
+      "cmd": "python3 {path}hashnode/read.py {args}",
+      "timeout": 15,
+      "description": "Read post body + metadata by slug, post ID, or full URL.",
+      "syntax": "hashnode_read:SLUG_OR_URL",
+      "example": "hashnode_read:my-post-slug"
+    },
+    "hashnode_browse": {
+      "cmd": "python3 {path}hashnode/browse.py {arg}",
+      "timeout": 15,
+      "description": "Browse recent posts on a tag (cross-publication feed).",
+      "syntax": "hashnode_browse:TAG[|N][|SORT]",
+      "example": "hashnode_browse:ai|5|popular",
+      "default_limit": 10
+    },
+    "hashnode_comments": {
+      "cmd": "python3 {path}hashnode/comments.py {args}",
+      "timeout": 15,
+      "description": "List comments on a post (configured publication).",
+      "syntax": "hashnode_comments:SLUG_OR_URL[:N]",
+      "example": "hashnode_comments:my-post-slug:10",
+      "default_limit": 20
+    },
+    "hashnode_comment": {
+      "cmd": "python3 {path}hashnode/comment.py {args}",
+      "timeout": 30,
+      "description": "Post a comment on a Hashnode post.",
+      "syntax": "hashnode_comment:POST_ID_OR_URL|MESSAGE",
+      "example": "hashnode_comment:abc123|Thanks for sharing!"
+    },
+    "hashnode_react": {
+      "cmd": "python3 {path}hashnode/react.py {arg}",
+      "timeout": 15,
+      "description": "Like a Hashnode post.",
+      "syntax": "hashnode_react:POST_ID_OR_URL",
+      "example": "hashnode_react:abc123"
+    },
+    "hashnode_reply": {
+      "cmd": "python3 {path}hashnode/reply.py {args}",
+      "timeout": 30,
+      "description": "Reply to a Hashnode comment.",
+      "syntax": "hashnode_reply:COMMENT_ID|MESSAGE",
+      "example": "hashnode_reply:comm-7|Good point — agree."
+    },
+    "hashnode_search": {
+      "cmd": "python3 {path}hashnode/search.py {arg}",
+      "timeout": 15,
+      "description": "Text search on configured publication.",
+      "syntax": "hashnode_search:QUERY[:N]",
+      "example": "hashnode_search:burnout:5",
+      "default_limit": 10
+    },
+    "hashnode_status_since": {
+      "cmd": "python3 {path}hashnode/status_since.py {args}",
+      "timeout": 30,
+      "description": "Briefing: new comments + follower count + top posts since timestamp. No arg = uses ~/.config/hashnode/last_check (auto-tracked).",
+      "syntax": "hashnode_status_since[:ISO_TIMESTAMP]",
+      "example": "hashnode_status_since:2026-04-30T00:00:00Z",
+      "default_status_posts": 10,
+      "default_status_comments": 20
+    }
+  }
+}
