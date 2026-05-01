@@ -203,4 +203,7 @@ def main(arg: str) -> None:
 
 
 if __name__ == "__main__":
-    main(sys.argv[1] if len(sys.argv) > 1 else "")
+    # Supertool splits args on ':' so an ISO timestamp arrives as multiple argv;
+    # rejoin everything after argv[0] with ':' to reconstruct.
+    arg = ":".join(sys.argv[1:]) if len(sys.argv) > 1 else ""
+    main(arg)

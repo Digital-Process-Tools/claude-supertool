@@ -17,9 +17,10 @@ SORT_VALUES = {"recent", "top"}
 
 def parse_args(arg: str) -> tuple[str, int, str]:
     if not arg:
-        sys.stderr.write("ERROR: usage devto_browse:TAG[:N][:SORT]\n")
+        sys.stderr.write("ERROR: usage devto_browse:TAG[|N][|SORT]\n")
         sys.exit(2)
-    parts = arg.split(":")
+    import re
+    parts = re.split(r"[|:]", arg)
     tag = parts[0]
     default_n = int(os.environ.get("SUPERTOOL_DEFAULT_LIMIT", "10"))
     n = default_n
