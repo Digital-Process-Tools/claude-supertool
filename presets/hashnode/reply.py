@@ -6,10 +6,17 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from _auth import get_token
 from _graphql import gql
+from _outbound import append as track_append
 
 ADD_REPLY = """
 mutation AddReply($input: AddReplyInput!) {
   addReply(input: $input) { reply { id dateAdded } }
+}
+"""
+
+PARENT_POST_QUERY = """
+query ParentPost($cid: ID!) {
+  comment(id: $cid) { post { id } }
 }
 """
 
@@ -25,8 +32,17 @@ def parse_args(arg: str) -> tuple[str, str]:
 def main(arg: str) -> None:
     cid, message = parse_args(arg)
     token = get_token()
+    # Resolve post_id from parent comment for outbound tracking
+    parent_data = gql(PARENT_POST_QUERY, {"cid": cid}, token)
+    post_id = ((parent_data.get("comment") or {}).get("post") or {}).get("id")
     data = gql(ADD_REPLY, {"input": {"commentId": cid, "contentMarkdown": message}}, token)
     r = data["addReply"]["reply"]
+    track_append({
+        "comment_id": r["id"],
+        "post_id": post_id,
+        "parent_id": cid,
+        "posted_at": r["dateAdded"],
+    })
     print(f"(reply posted id={r['id']} at={r['dateAdded']})")
 
 

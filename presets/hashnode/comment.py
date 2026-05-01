@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 sys.path.insert(0, str(Path(__file__).parent))
 from _auth import get_publication_id, get_token
 from _graphql import gql
+from _outbound import append as track_append
 
 RESOLVE_QUERY = """
 query Resolve($publicationId: ObjectId!, $slug: String!) {
@@ -48,6 +49,12 @@ def main(arg: str) -> None:
     post_id = resolve_post_id(token, post_or_url)
     data = gql(ADD_COMMENT, {"input": {"postId": post_id, "contentMarkdown": message}}, token)
     c = data["addComment"]["comment"]
+    track_append({
+        "comment_id": c["id"],
+        "post_id": post_id,
+        "parent_id": None,
+        "posted_at": c["dateAdded"],
+    })
     print(f"(comment posted id={c['id']} at={c['dateAdded']})")
 
 

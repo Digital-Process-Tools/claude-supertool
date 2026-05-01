@@ -16,7 +16,7 @@ PRESET_DIR = Path(__file__).parent.parent / "presets" / "hashnode"
 
 def _load(name: str):
     # Clear cached helper modules from any prior preset (devto) and prepend our dir.
-    for k in ("_auth", "_graphql", "_rest"):
+    for k in ("_auth", "_graphql", "_rest", "_me", "_outbound", "_session"):
         sys.modules.pop(k, None)
     sys.path[:] = [p for p in sys.path if "presets/devto" not in p]
     if str(PRESET_DIR) not in sys.path:
@@ -37,6 +37,7 @@ comment_op = _load("comment")
 reply_op = _load("reply")
 search_op = _load("search")
 status_since_op = _load("status_since")
+outbound_op = _load("_outbound")
 
 
 # publish ------------------------------------------------------------------
@@ -470,6 +471,61 @@ def test_read_render_shows_you_line() -> None:
         ]},
     }, inline_n=5, me="max-ai-dev")
     assert "YOU:" in out and "already commented 1×" in out and "c1" in out
+
+
+# outbound + cross-post replies ------------------------------------------
+
+def test_outbound_append_and_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    track = tmp_path / "outbound.jsonl"
+    monkeypatch.setattr(outbound_op, "TRACK_FILE", track)
+    outbound_op.append({"comment_id": "c1", "post_id": "p1", "parent_id": None,
+                         "posted_at": "2026-05-01T00:00:00Z"})
+    records = outbound_op.read()
+    assert len(records) == 1 and records[0]["comment_id"] == "c1"
+
+
+def test_outbound_unique_post_ids() -> None:
+    pids = outbound_op.unique_post_ids([
+        {"post_id": "a"}, {"post_id": "b"}, {"post_id": "a"},
+        {"post_id": None}, {"comment_id": "x"},
+    ])
+    assert pids == ["a", "b"]
+
+
+def test_outbound_my_comment_ids() -> None:
+    assert outbound_op.my_comment_ids([{"comment_id": "x"}, {"foo": 1}]) == {"x"}
+
+
+def test_status_since_find_replies_on_post() -> None:
+    post = {"comments": {"edges": [
+        {"node": {"id": "mine",
+                   "replies": {"edges": [
+                       {"node": {"id": "r1", "dateAdded": "2026-05-01T00:00:00Z",
+                                  "author": {"username": "alice"},
+                                  "content": {"markdown": "Hi"}}},
+                       {"node": {"id": "r-old", "dateAdded": "2026-04-01T00:00:00Z",
+                                  "author": {"username": "bob"}}},
+                   ]}}},
+        {"node": {"id": "not-mine",
+                   "replies": {"edges": [
+                       {"node": {"id": "r-other", "dateAdded": "2026-05-01T00:00:00Z"}},
+                   ]}}},
+    ]}}
+    out = status_since_op.find_replies_on_post(post, my_ids={"mine"}, since="2026-04-30T00:00:00Z")
+    assert len(out) == 1 and out[0]["id"] == "r1"
+
+
+def test_status_since_render_replies_section_hashnode() -> None:
+    pub = {"title": "max", "followersCount": 0, "posts": {"edges": []}}
+    p = {"title": "Outside post", "url": "https://other.dev/post"}
+    r = {"id": "r1", "dateAdded": "2026-05-01T00:00:00Z",
+         "author": {"username": "alice"}, "content": {"markdown": "Hello"}}
+    out = status_since_op.render(pub, since="2026-04-30T00:00:00Z",
+                                  now="2026-05-01T12:00:00Z", me="max-ai-dev",
+                                  replies_to_me=[(p, r)])
+    assert "REPLIES TO YOUR COMMENTS (1)" in out
+    assert "@alice" in out
+    assert "hashnode_reply:r1" in out
 
 
 def test_read_render_no_you_line_when_not_engaged() -> None:

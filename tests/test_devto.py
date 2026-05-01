@@ -12,7 +12,7 @@ PRESET_DIR = Path(__file__).parent.parent / "presets" / "devto"
 
 
 def _load(name: str):
-    for k in ("_auth", "_graphql", "_rest"):
+    for k in ("_auth", "_graphql", "_rest", "_me", "_outbound", "_session"):
         sys.modules.pop(k, None)
     sys.path[:] = [p for p in sys.path if "presets/hashnode" not in p]
     if str(PRESET_DIR) not in sys.path:

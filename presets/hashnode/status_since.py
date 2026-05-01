@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _auth import get_publication_id, get_token
 from _graphql import gql
 from _me import get_username
+from _outbound import my_comment_ids, read as read_outbound, unique_post_ids
 
 STATE_FILE = Path(os.path.expanduser("~/.config/hashnode/last_check"))
 DEFAULT_LOOKBACK_HOURS = 24
@@ -88,7 +89,40 @@ def count_my_recent(post: dict, since: str, me: str) -> int:
     )
 
 
-def render(pub: dict, since: str, now: str, me: str = "") -> str:
+CROSS_POST_QUERY = """
+query CrossPostReplies($id: ID!, $cFirst: Int!, $rFirst: Int!) {
+  post(id: $id) {
+    id title url
+    comments(first: $cFirst) {
+      edges { node {
+        id
+        replies(first: $rFirst) {
+          edges { node {
+            id dateAdded content { markdown } author { username }
+          } }
+        }
+      } }
+    }
+  }
+}
+"""
+
+
+def find_replies_on_post(post: dict, my_ids: set[str], since: str) -> list[dict]:
+    out: list[dict] = []
+    for ce in (post.get("comments") or {}).get("edges", []):
+        cnode = ce["node"]
+        if cnode["id"] not in my_ids:
+            continue
+        for re_e in (cnode.get("replies") or {}).get("edges", []):
+            rnode = re_e["node"]
+            if (rnode.get("dateAdded") or "") > since:
+                out.append(rnode)
+    return out
+
+
+def render(pub: dict, since: str, now: str, me: str = "",
+           replies_to_me: list[tuple[dict, dict]] | None = None) -> str:
     posts = [e["node"] for e in ((pub.get("posts") or {}).get("edges") or [])]
     new_comments: list[tuple[dict, dict]] = []
     my_recent = 0
@@ -101,6 +135,16 @@ def render(pub: dict, since: str, now: str, me: str = "") -> str:
         f"FOLLOWERS: {pub.get('followersCount', 0)}",
         f"MY ENGAGEMENT: {my_recent} comments by you in this window",
     ]
+    if replies_to_me:
+        out.append(f"REPLIES TO YOUR COMMENTS ({len(replies_to_me)}):")
+        for p, r in replies_to_me:
+            au = (r.get("author") or {}).get("username", "?")
+            rdate = (r.get("dateAdded") or "").split("T")[0]
+            rid = r.get("id", "?")
+            txt = ((r.get("content") or {}).get("markdown") or "").replace("\n", " ")[:200]
+            out.append(f"  [reply {rid}] on {p.get('title','?')!r} ({p.get('url','')})")
+            out.append(f"    {rdate} @{au}: {txt}")
+            out.append(f"    NEXT: hashnode_reply:{rid}|MSG  — reply back")
     if new_comments:
         out.append(f"NEW COMMENTS ({len(new_comments)}):")
         for p, c in new_comments:
@@ -139,7 +183,22 @@ def main(arg: str) -> None:
     data = gql(QUERY, {"publicationId": pub_id, "postFirst": post_first, "cFirst": c_first}, token)
     pub = data.get("publication") or {}
     me = get_username(token)
-    print(render(pub, since, now, me))
+
+    # Cross-post reply scan via outbound ledger
+    outbound = read_outbound()
+    my_ids = my_comment_ids(outbound)
+    own_post_ids = {e["node"]["id"] for e in ((pub.get("posts") or {}).get("edges") or [])}
+    extra_post_ids = [pid for pid in unique_post_ids(outbound) if pid not in own_post_ids]
+    replies_to_me: list[tuple[dict, dict]] = []
+    for ext_pid in extra_post_ids:
+        cp = gql(CROSS_POST_QUERY, {"id": ext_pid, "cFirst": 50, "rFirst": 20}, token)
+        post = cp.get("post")
+        if not post:
+            continue
+        for r in find_replies_on_post(post, my_ids, since):
+            replies_to_me.append((post, r))
+
+    print(render(pub, since, now, me, replies_to_me))
     _write_state(now)
 
 
