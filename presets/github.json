@@ -74,6 +74,22 @@
       "syntax": "gh-batch-star:FILE",
       "example": "gh-batch-star:.max/star-list.txt",
       "star_delay": "1.0"
+    },
+    "gh-find-followable": {
+      "cmd": "python3 {path}github/find_followable.py {arg}",
+      "timeout": 90,
+      "description": "Discover candidate users to follow: pulls stargazers + contributors of a repo, dedupes, filters out orgs. Pipe to a file then review before gh-batch-follow.",
+      "syntax": "gh-find-followable:OWNER/REPO[|N]",
+      "example": "gh-find-followable:anthropics/claude-code|100",
+      "default_limit": 100
+    },
+    "gh-find-starable": {
+      "cmd": "python3 {path}github/find_starable.py {arg}",
+      "timeout": 30,
+      "description": "Discover repos worth starring by topic. Pulls top N repos for the topic, sorted by stars. Pipe to a file then review before gh-batch-star.",
+      "syntax": "gh-find-starable:TOPIC[|N]",
+      "example": "gh-find-starable:claude-code|30",
+      "default_limit": 30
     }
   }
 }
