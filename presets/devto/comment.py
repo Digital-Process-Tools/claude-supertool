@@ -13,6 +13,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+from _outbound import append as track_append
 from _session import fetch_csrf_token, get_session_cookie, web_post_json
 
 
@@ -57,6 +58,13 @@ def main(arg: str) -> None:
         sys.exit(1)
     cid = data.get("id_code") or data.get("id") or "?"
     url = data.get("path") or data.get("url") or ""
+    import datetime as _dt
+    track_append({
+        "comment_id": cid,
+        "article_id": int(aid) if aid.isdigit() else aid,
+        "parent_id": parent,
+        "posted_at": _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    })
     print(f"(comment posted id={cid} url={url} mode=session)")
 
 

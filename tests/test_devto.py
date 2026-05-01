@@ -32,6 +32,7 @@ comments = _load("comments")
 react = _load("react")
 status_since_op = _load("status_since")
 comment_op = _load("comment")
+outbound_op = _load("_outbound")
 
 
 # publish -----------------------------------------------------------------
@@ -327,6 +328,39 @@ def test_status_since_count_my_recent_includes_children() -> None:
     assert status_since_op.count_my_recent(raw, "2026-04-30T00:00:00Z", "max-ai-dev") == 2
 
 
+def test_status_since_find_replies_to_me() -> None:
+    raw = [
+        {"id_code": "mine", "user": {"username": "max-ai-dev"},
+         "children": [
+             {"id_code": "reply1", "created_at": "2026-05-01T00:00:00Z",
+              "user": {"username": "alice"}, "body_html": "<p>Hi back</p>"},
+             {"id_code": "old-reply", "created_at": "2026-04-01T00:00:00Z",
+              "user": {"username": "bob"}},
+         ]},
+        {"id_code": "not-mine", "user": {"username": "carol"},
+         "children": [
+             {"id_code": "irrelevant", "created_at": "2026-05-01T00:00:00Z",
+              "user": {"username": "dave"}},
+         ]},
+    ]
+    out = status_since_op.find_replies_to_me(raw, my_ids={"mine"}, since="2026-04-30T00:00:00Z")
+    assert len(out) == 1 and out[0]["id_code"] == "reply1"
+
+
+def test_status_since_render_replies_section() -> None:
+    out = status_since_op.render(
+        articles=[], comments_by_article={},
+        since="2026-04-30T00:00:00Z", now="2026-05-01T12:00:00Z", my_recent=0,
+        replies_to_me=[(7, "Some Article", {
+            "id_code": "r1", "created_at": "2026-05-01T00:00:00Z",
+            "user": {"username": "alice"}, "body_html": "<p>Hello</p>",
+        })],
+    )
+    assert "REPLIES TO YOUR COMMENTS (1)" in out
+    assert "@alice" in out
+    assert "devto_comment:7|MSG|r1" in out
+
+
 def test_status_since_render_my_engagement() -> None:
     out = status_since_op.render(
         articles=[], comments_by_article={},
@@ -394,3 +428,40 @@ def test_read_render_shows_you_line() -> None:
                    "user": {"username": "max-ai-dev"}, "body_html": "<p>x</p>"}],
        inline_n=5, me="max-ai-dev")
     assert "YOU:" in out and "already commented 1×" in out and "c1" in out
+
+
+# outbound tracking ------------------------------------------------------
+
+def test_outbound_append_and_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    track = tmp_path / "outbound.jsonl"
+    monkeypatch.setattr(outbound_op, "TRACK_FILE", track)
+    outbound_op.append({"comment_id": "c1", "article_id": 100, "parent_id": None,
+                         "posted_at": "2026-05-01T00:00:00Z"})
+    outbound_op.append({"comment_id": "c2", "article_id": 200, "parent_id": "p1",
+                         "posted_at": "2026-05-01T00:01:00Z"})
+    records = outbound_op.read()
+    assert len(records) == 2
+    assert records[0]["comment_id"] == "c1"
+    assert records[1]["parent_id"] == "p1"
+
+
+def test_outbound_unique_article_ids() -> None:
+    aids = outbound_op.unique_article_ids([
+        {"article_id": 1}, {"article_id": 2}, {"article_id": 1},  # dedupe
+        {"article_id": "skip"},  # not int → skip
+        {"comment_id": "x"},  # missing article_id → skip
+    ])
+    assert aids == [1, 2]
+
+
+def test_outbound_my_comment_ids() -> None:
+    ids = outbound_op.my_comment_ids([
+        {"comment_id": "a"}, {"comment_id": "b"}, {"foo": "bar"},
+    ])
+    assert ids == {"a", "b"}
+
+
+def test_outbound_read_missing_file_returns_empty(tmp_path: Path,
+                                                    monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(outbound_op, "TRACK_FILE", tmp_path / "nope.jsonl")
+    assert outbound_op.read() == []
