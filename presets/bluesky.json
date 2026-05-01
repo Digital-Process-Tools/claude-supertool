@@ -46,6 +46,13 @@
       "syntax": "bluesky_follow:HANDLE_OR_DID",
       "example": "bluesky_follow:simonw.bsky.social"
     },
+    "bluesky_repost": {
+      "cmd": "python3 {path}bluesky/repost.py {args}",
+      "timeout": 15,
+      "description": "Repost (boost) a Bluesky post — surfaces it to your followers.",
+      "syntax": "bluesky_repost:AT_URI_OR_WEB_URL",
+      "example": "bluesky_repost:https://bsky.app/profile/simonw.bsky.social/post/3kabc"
+    },
     "bluesky_status_since": {
       "cmd": "python3 {path}bluesky/status_since.py {args}",
       "timeout": 30,

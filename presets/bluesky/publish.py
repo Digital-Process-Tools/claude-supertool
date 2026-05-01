@@ -28,9 +28,14 @@ def parse_args(arg: str) -> tuple[str, str | None]:
         sys.stderr.write("ERROR: usage bluesky_publish:TEXT_OR_FILE[|REPLY_TO_AT_URI]\n")
         sys.exit(2)
     body = parts[0]
-    p = Path(body)
-    if p.is_file():
-        body = p.read_text()
+    try:
+        p = Path(body)
+        is_file = p.is_file()
+    except OSError:
+        # Path too long for filesystem — treat as inline text
+        is_file = False
+    if is_file:
+        body = Path(body).read_text()
     body = body.strip()
     if len(body) > MAX_LEN:
         sys.stderr.write(f"ERROR: post is {len(body)} chars (max {MAX_LEN}). Trim or split.\n")
