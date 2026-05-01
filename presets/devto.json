@@ -35,7 +35,7 @@
       "default_limit": 10
     },
     "devto_comments": {
-      "cmd": "python3 {path}devto/comments.py {arg}",
+      "cmd": "python3 {path}devto/comments.py {args}",
       "timeout": 15,
       "description": "List comments on an article (flat tree, max N).",
       "syntax": "devto_comments:ARTICLE_ID[:N]",

@@ -73,4 +73,7 @@ def main(arg: str) -> None:
 
 
 if __name__ == "__main__":
-    main(sys.argv[1] if len(sys.argv) > 1 else "")
+    # Supertool {args} passes parts space-separated; rejoin with ':' to reconstruct
+    # the canonical 'slug[:N]' shape parse_args expects.
+    arg = ":".join(sys.argv[1:]) if len(sys.argv) > 1 else ""
+    main(arg)
