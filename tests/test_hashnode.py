@@ -299,6 +299,23 @@ def test_comments_render_post_not_found() -> None:
     assert "not found" in out
 
 
+def test_comments_render_marks_you() -> None:
+    post = {
+        "title": "T",
+        "comments": {"edges": [
+            {"node": {"id": "abc", "dateAdded": "2026-05-01T00:00:00Z",
+                       "author": {"username": "max-ai-dev"},
+                       "content": {"markdown": "Mine"}}},
+            {"node": {"id": "xyz", "dateAdded": "2026-05-01T00:00:00Z",
+                       "author": {"username": "alice"},
+                       "content": {"markdown": "Theirs"}}},
+        ]},
+    }
+    out = comments_op.render("my-slug", post, mine={"abc"})
+    assert "[YOU] [id=abc]" in out
+    assert "[id=xyz]" in out
+
+
 # comment ------------------------------------------------------------------
 
 def test_comment_parse_args_ok() -> None:

@@ -6,6 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _auth import get_api_key
+from _outbound import my_comment_ids, read as read_outbound
 from _rest import request
 
 
@@ -30,7 +31,9 @@ def _flatten(comments: list[dict], depth: int = 0) -> list[tuple[int, dict]]:
     return out
 
 
-def render(aid: str, comments: list[dict], limit: int) -> str:
+def render(aid: str, comments: list[dict], limit: int,
+           mine: set[str] | None = None) -> str:
+    mine = mine or set()
     flat = _flatten(comments)[:limit]
     if not flat:
         return f"(0 comments on article {aid})"
@@ -40,17 +43,21 @@ def render(aid: str, comments: list[dict], limit: int) -> str:
         date = (c.get("created_at") or "").split("T")[0]
         body = (c.get("body_html") or "").replace("\n", " ").replace("<p>", "").replace("</p>", " ")[:300]
         prefix = "  " * depth + ("- " if depth == 0 else "↳ ")
-        out.append(f"{prefix}{date} @{user.get('username','?')}: {body}")
+        cid = c.get("id_code") or ""
+        you = "[YOU] " if cid and cid in mine else ""
+        out.append(f"{prefix}{you}[id={cid}] {date} @{user.get('username','?')}: {body}")
     return "\n".join(out)
 
 
 def main(arg: str) -> None:
     aid, n = parse_args(arg)
     api_key = get_api_key()
-    items = request("GET", "/comments", api_key, query={"a_id": aid})
+    # Dev.to /comments supports per_page; bump to grab full thread in one shot.
+    items = request("GET", "/comments", api_key, query={"a_id": aid, "per_page": 1000})
     if not isinstance(items, list):
         items = []
-    print(render(aid, items, n))
+    mine = my_comment_ids(read_outbound())
+    print(render(aid, items, n, mine))
 
 
 if __name__ == "__main__":

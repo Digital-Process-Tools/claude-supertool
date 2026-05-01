@@ -239,6 +239,19 @@ def test_comments_render_nested() -> None:
     assert "↳" in out  # nesting marker
 
 
+def test_comments_render_marks_you() -> None:
+    raw = [
+        {"id_code": "abc", "created_at": "2026-05-01T00:00:00Z",
+         "user": {"username": "max-ai-dev"}, "body_html": "<p>Mine</p>", "children": []},
+        {"id_code": "xyz", "created_at": "2026-05-01T00:00:00Z",
+         "user": {"username": "alice"}, "body_html": "<p>Theirs</p>", "children": []},
+    ]
+    out = comments.render("123", raw, 20, mine={"abc"})
+    assert "[YOU] [id=abc]" in out
+    assert "[YOU]" not in out.split("Theirs")[1] if "Theirs" in out else True
+    assert "[id=xyz]" in out
+
+
 # react -------------------------------------------------------------------
 
 def test_react_parse_args_default() -> None:

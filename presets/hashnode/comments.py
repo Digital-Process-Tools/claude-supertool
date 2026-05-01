@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 sys.path.insert(0, str(Path(__file__).parent))
 from _auth import get_publication_id, get_token
 from _graphql import gql
+from _outbound import my_comment_ids, read as read_outbound
 
 QUERY = """
 query Comments($publicationId: ObjectId!, $slug: String!, $first: Int!) {
@@ -41,7 +42,8 @@ def parse_args(arg: str) -> tuple[str, int]:
     return slug, n
 
 
-def render(slug: str, post: dict | None) -> str:
+def render(slug: str, post: dict | None, mine: set[str] | None = None) -> str:
+    mine = mine or set()
     if not post:
         return f"(post not found: {slug})"
     edges = (post.get("comments") or {}).get("edges", [])
@@ -54,7 +56,9 @@ def render(slug: str, post: dict | None) -> str:
         date = (c.get("dateAdded") or "").split("T")[0]
         body = (c.get("content") or {}).get("markdown") or ""
         body = body.replace("\n", " ")[:300]
-        out.append(f"- {date} @{author.get('username','?')}: {body}")
+        cid = c.get("id") or ""
+        you = "[YOU] " if cid and cid in mine else ""
+        out.append(f"- {you}[id={cid}] {date} @{author.get('username','?')}: {body}")
     return "\n".join(out)
 
 
@@ -64,7 +68,8 @@ def main(arg: str) -> None:
     pub_id = get_publication_id()
     data = gql(QUERY, {"publicationId": pub_id, "slug": slug, "first": n}, token)
     post = (data.get("publication") or {}).get("post")
-    print(render(slug, post))
+    mine = my_comment_ids(read_outbound())
+    print(render(slug, post, mine))
 
 
 if __name__ == "__main__":
