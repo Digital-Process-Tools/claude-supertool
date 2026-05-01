@@ -333,3 +333,57 @@ class TestExplicitPathOpsUnaffected:
         (nm / "pkg").mkdir()
         out = supertool.op_ls(str(nm))
         assert "pkg" in out
+
+
+# ---------------------------------------------------------------------------
+# _split_exclude_prefixes — RTK delegation helper
+# ---------------------------------------------------------------------------
+
+
+class TestSplitExcludePrefixes:
+    """Helper that separates single-segment names from multi-segment paths
+    so RTK delegation can pass --exclude-dir for the singles and skip RTK
+    when multis are present."""
+
+    def test_single_segment_names_returned_in_singles(self):
+        excl = (".git/", "node_modules/", "dist/")
+        singles, multis = supertool._split_exclude_prefixes(excl)
+        assert set(singles) == {".git", "node_modules", "dist"}
+        assert multis == ()
+
+    def test_multi_segment_paths_returned_in_multis(self):
+        excl = ("Dvsi/dvsi-private/libs/", "src/legacy/")
+        singles, multis = supertool._split_exclude_prefixes(excl)
+        assert singles == ()
+        assert set(multis) == {"Dvsi/dvsi-private/libs", "src/legacy"}
+
+    def test_mixed_split_correctly(self):
+        excl = (".git/", "Dvsi/libs/", "node_modules/")
+        singles, multis = supertool._split_exclude_prefixes(excl)
+        assert set(singles) == {".git", "node_modules"}
+        assert multis == ("Dvsi/libs",)
+
+    def test_empty_input(self):
+        singles, multis = supertool._split_exclude_prefixes(())
+        assert singles == ()
+        assert multis == ()
+
+
+# ---------------------------------------------------------------------------
+# _collect_files — exclude_paths is required (no default)
+# ---------------------------------------------------------------------------
+
+
+class TestCollectFilesRequiresExcludes:
+    """Reviewer flagged that defaulting exclude_paths to () was a trap:
+    callers who forgot the arg silently re-walked node_modules. The default
+    was removed; this test pins the signature."""
+
+    def test_collect_files_without_excludes_raises(self, tmp_path):
+        import inspect
+        sig = inspect.signature(supertool._collect_files)
+        excl_param = sig.parameters["exclude_paths"]
+        assert excl_param.default is inspect.Parameter.empty, (
+            "exclude_paths must be a required positional arg — defaulting it "
+            "to () silently re-walks node_modules. See PR #5 review."
+        )

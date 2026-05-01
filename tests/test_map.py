@@ -294,12 +294,12 @@ def test_map_file_with_no_symbols(tmp_path: Path) -> None:
 def test_collect_files_single_file(tmp_path: Path) -> None:
     f = tmp_path / "a.py"
     f.write_text("x = 1\n")
-    files = supertool._collect_files(str(f))
+    files = supertool._collect_files(str(f), ())
     assert files == [str(f)]
 
 
 def test_collect_files_nonexistent() -> None:
-    files = supertool._collect_files("/does/not/exist")
+    files = supertool._collect_files("/does/not/exist", ())
     assert files == []
 
 
@@ -596,7 +596,7 @@ def test_collect_files_skips_generated(tmp_path: Path) -> None:
     gen.mkdir()
     (gen / "auto.php").write_text("<?php\nclass Auto {}\n")
     (tmp_path / "real.php").write_text("<?php\nclass Real {}\n")
-    files = supertool._collect_files(str(tmp_path))
+    files = supertool._collect_files(str(tmp_path), ())
     assert any("real.php" in f for f in files)
     assert not any("auto.php" in f for f in files)
 
@@ -606,7 +606,7 @@ def test_collect_files_sorted(tmp_path: Path) -> None:
     (tmp_path / "z.py").write_text("x = 1\n")
     (tmp_path / "a.py").write_text("x = 1\n")
     (tmp_path / "m.py").write_text("x = 1\n")
-    files = supertool._collect_files(str(tmp_path))
+    files = supertool._collect_files(str(tmp_path), ())
     basenames = [os.path.basename(f) for f in files]
     assert basenames == sorted(basenames)
 

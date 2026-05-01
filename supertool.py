@@ -318,6 +318,29 @@ def _is_excluded(rel_path: str, exclude_paths: Tuple[str, ...]) -> bool:
     return False
 
 
+def _split_exclude_prefixes(
+    exclude_paths: Tuple[str, ...],
+) -> Tuple[Tuple[str, ...], Tuple[str, ...]]:
+    """Split exclude prefixes into single-segment names and multi-segment paths.
+
+    Single-segment ("node_modules/", ".git/") can be passed to grep's
+    --exclude-dir.  Multi-segment ("Dvsi/dvsi-private/libs/") cannot — callers
+    that delegate to grep should fall back to native walking when any
+    multi-segment prefixes are present.
+
+    Returns (singles, multis), each tuple of trimmed names without trailing "/".
+    """
+    singles: List[str] = []
+    multis: List[str] = []
+    for p in exclude_paths:
+        trimmed = p.rstrip("/")
+        if "/" in trimmed:
+            multis.append(trimmed)
+        else:
+            singles.append(trimmed)
+    return tuple(singles), tuple(multis)
+
+
 def _rtk_enabled() -> bool:
     """Check if RTK delegation is enabled in .supertool.json. Default: true."""
     return bool(_load_config().get("rtk", True))
@@ -593,14 +616,22 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
         if not _glob(path, recursive=True):
             return f"ERROR: path not found: {path}\n"
 
-    # RTK delegation — basic grep (no context, no count)
-    if not count_only and context == 0 and _rtk_enabled() and _has_rtk():
-        rtk_args = ["grep", "-n", "-m", str(limit), pattern, path]
-        rtk_out = _rtk_run(rtk_args)
-        if rtk_out is not None:
-            return rtk_out + "\n"
-
     excl = _get_exclude_paths("grep", no_exclude)
+
+    # RTK delegation — basic grep (no context, no count). Thread excludes through
+    # via grep's --exclude-dir for single-segment prefixes (.git/, node_modules/,
+    # etc.). Multi-segment prefixes (e.g. "Dvsi/dvsi-private/libs/") can't be
+    # expressed as --exclude-dir; fall through to the native walker in that case.
+    if not count_only and context == 0 and _rtk_enabled() and _has_rtk():
+        single, multi = _split_exclude_prefixes(excl)
+        if not multi:
+            rtk_args = ["grep", "-rn", "-m", str(limit)]
+            for d in single:
+                rtk_args.append(f"--exclude-dir={d}")
+            rtk_args.extend([pattern, path])
+            rtk_out = _rtk_run(rtk_args)
+            if rtk_out is not None:
+                return rtk_out + "\n"
 
     if count_only:
         counts = _grep_count(pattern, path, limit, excl)
@@ -1484,12 +1515,17 @@ def _count_lines(path: str) -> int:
 
 
 def _collect_files(
-    path: str, exclude_paths: Tuple[str, ...] = ()
+    path: str, exclude_paths: Tuple[str, ...]
 ) -> List[str]:
     """Collect files to map from a path (file or directory).
 
-    For directories, walks recursively. Skips hidden dirs, Generated/,
-    vendor/, and any dirs matching exclude_paths prefixes.
+    For directories, walks recursively. Skips hidden dirs, vendor/, Generated/,
+    .claude/, .max/, and any dirs matching exclude_paths prefixes.
+
+    `exclude_paths` is required (not defaulted) because the universal classics
+    (.git/, node_modules/, etc.) live in `_DEFAULT_EXCLUDE_PATHS` and must reach
+    this function via `_get_exclude_paths("map", ...)`. A defaulted empty tuple
+    here would silently re-walk node_modules.
     """
     skip_dirs = {"vendor", "Generated", ".claude", ".max"}
 
