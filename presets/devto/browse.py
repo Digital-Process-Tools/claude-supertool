@@ -10,6 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from _auth import get_api_key
 from _rest import request
+from _sanitize import safe_short
 
 
 SORT_VALUES = {"recent", "top"}
@@ -43,8 +44,10 @@ def render(tag: str, items: list[dict], sort: str = "recent") -> str:
     for a in items:
         user = a.get("user") or {}
         date = (a.get("published_at") or "").split("T")[0]
+        title = safe_short(a.get("title") or "?", 120)
+        username = safe_short(user.get("username") or "?", 60)
         out.append(
-            f"- {date} {a.get('title','?')!r} by @{user.get('username','?')} → {a.get('url','?')} "
+            f"- {date} {title!r} by @{username} → {a.get('url','?')} "
             f"({a.get('public_reactions_count', 0)} reactions, {a.get('comments_count', 0)} comments)"
         )
     return "\n".join(out)

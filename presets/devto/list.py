@@ -10,6 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from _auth import get_api_key
 from _rest import request
+from _sanitize import safe_short
 
 
 def parse_args(arg: str) -> tuple[str | None, int]:
@@ -28,8 +29,9 @@ def render(items: list[dict]) -> str:
     out = [f"({len(items)} articles)"]
     for a in items:
         date = (a.get("published_at") or "").split("T")[0]
+        title = safe_short(a.get("title") or "?", 120)
         out.append(
-            f"- {date} {a.get('title','?')!r} → {a.get('url','?')} "
+            f"- {date} {title!r} → {a.get('url','?')} "
             f"({a.get('public_reactions_count', 0)} reactions, {a.get('comments_count', 0)} comments)"
         )
     return "\n".join(out)

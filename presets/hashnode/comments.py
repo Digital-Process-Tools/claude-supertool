@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _auth import get_publication_id, get_token
 from _graphql import gql
 from _outbound import my_comment_ids, read as read_outbound
+from _sanitize import safe_short
 
 QUERY = """
 query Comments($publicationId: ObjectId!, $slug: String!, $first: Int!) {
@@ -54,11 +55,12 @@ def render(slug: str, post: dict | None, mine: set[str] | None = None) -> str:
         c = e["node"]
         author = c.get("author") or {}
         date = (c.get("dateAdded") or "").split("T")[0]
-        body = (c.get("content") or {}).get("markdown") or ""
-        body = body.replace("\n", " ")[:300]
+        raw_body = (c.get("content") or {}).get("markdown") or ""
+        body = safe_short(raw_body, 300)
         cid = c.get("id") or ""
         you = "[YOU] " if cid and cid in mine else ""
-        out.append(f"- {you}[id={cid}] {date} @{author.get('username','?')}: {body}")
+        username = safe_short(author.get("username") or "?", 60)
+        out.append(f"- {you}[id={cid}] {date} @{username}: {body}")
     return "\n".join(out)
 
 

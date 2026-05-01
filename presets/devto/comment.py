@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 """Dev.to comment: devto_comment:ARTICLE_ID|MESSAGE[|PARENT_COMMENT_ID]
 
-SESSION-COOKIE ONLY. The Dev.to public API does not expose a comment
-write endpoint, so this op requires DEVTO_SESSION_COOKIE (env or
-~/.config/devto/session_cookie). See _session.py for the ToS notice.
+⚠ SESSION-COOKIE OP — POSSIBLE ToS RISK ⚠
+=========================================
+The Dev.to public API does NOT expose a comment-write endpoint. This
+op posts via the same web endpoint a logged-in browser uses, using
+DEVTO_SESSION_COOKIE (env or ~/.config/devto/session_cookie) and a
+scraped CSRF token. That is automation against a non-public surface
+and may violate Dev.to's Terms of Service. Use at your own risk, on
+your own account only. The op refuses to run unless the cookie is
+explicitly provided. See _session.py for opt-in instructions.
 
 PARENT_COMMENT_ID is the alphanumeric id_code from devto_comments /
 devto_status_since output (e.g. "37d65"). Forem's CommentsController

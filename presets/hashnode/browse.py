@@ -11,6 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from _auth import get_token
 from _graphql import gql
+from _sanitize import safe_short
 
 QUERY_TEMPLATE = """
 query TagFeed($slug: String!, $first: Int!) {
@@ -57,8 +58,10 @@ def render(tag: str, posts: list[dict], sort: str = "recent") -> str:
     for p in posts:
         author = p.get("author") or {}
         date = (p.get("publishedAt") or "").split("T")[0]
+        title = safe_short(p.get("title") or "?", 120)
+        username = safe_short(author.get("username") or "?", 60)
         out.append(
-            f"- {date} {p['title']!r} by @{author.get('username','?')} → {p['url']} "
+            f"- {date} {title!r} by @{username} → {p['url']} "
             f"({p.get('reactionCount',0)} reactions, {p.get('responseCount',0)} comments)"
         )
     return "\n".join(out)

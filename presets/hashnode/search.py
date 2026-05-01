@@ -7,6 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from _auth import get_publication_id, get_token
 from _graphql import gql
+from _sanitize import safe_short
 
 QUERY = """
 query Search($publicationId: ObjectId!, $query: String!, $first: Int!) {
@@ -39,10 +40,11 @@ def render(query: str, posts: list[dict]) -> str:
         return f"(no results for {query!r})"
     out = [f"({len(posts)} results for {query!r})"]
     for p in posts:
-        au = (p.get("author") or {}).get("username", "?")
+        au = safe_short((p.get("author") or {}).get("username", "?"), 60)
         date = (p.get("publishedAt") or "").split("T")[0]
+        title = safe_short(p.get("title") or "?", 120)
         out.append(
-            f"- {date} {p['title']!r} by @{au} → {p['url']} "
+            f"- {date} {title!r} by @{au} → {p['url']} "
             f"({p.get('reactionCount',0)} reactions, {p.get('responseCount',0)} comments)"
         )
     return "\n".join(out)

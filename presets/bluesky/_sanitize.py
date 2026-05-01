@@ -68,8 +68,15 @@ def wrap(text: str, source: str = "external") -> str:
 
 
 def safe_short(text: str, max_len: int = 200) -> str:
-    """For inline previews — strip newlines, truncate, mark untrusted."""
+    """For inline previews — strip newlines, truncate, prefix ⚠ when injection detected.
+
+    Used in list/browse/search/comments renders for titles, bodies, usernames.
+    Adds an inline warning marker (no full <<UNTRUSTED ... >> block — too noisy
+    for one-line items). Use wrap() for full bodies in read ops.
+    """
     if not text:
         return ""
     flat = text.replace("\n", " ")[:max_len]
+    if detect(flat):
+        return f"⚠ {flat}"
     return flat

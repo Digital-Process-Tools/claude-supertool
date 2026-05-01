@@ -10,6 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from _auth import get_publication_id, get_token
 from _graphql import gql
+from _sanitize import safe_short
 
 PUB_QUERY = """
 query PubPosts($id: ObjectId!, $first: Int!) {
@@ -51,8 +52,9 @@ def render_posts(posts: list[dict]) -> str:
     out = [f"({len(posts)} posts)"]
     for p in posts:
         date = (p.get("publishedAt") or "").split("T")[0]
+        title = safe_short(p.get("title") or "?", 120)
         out.append(
-            f"- {date} {p['title']!r} → {p['url']} "
+            f"- {date} {title!r} → {p['url']} "
             f"({p.get('reactionCount', 0)} reactions, {p.get('responseCount', 0)} comments)"
         )
     return "\n".join(out)

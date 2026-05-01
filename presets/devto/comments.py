@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _auth import get_api_key
 from _outbound import my_comment_ids, read as read_outbound
 from _rest import request
+from _sanitize import safe_short
 
 
 def parse_args(arg: str) -> tuple[str, int]:
@@ -41,11 +42,13 @@ def render(aid: str, comments: list[dict], limit: int,
     for depth, c in flat:
         user = c.get("user") or {}
         date = (c.get("created_at") or "").split("T")[0]
-        body = (c.get("body_html") or "").replace("\n", " ").replace("<p>", "").replace("</p>", " ")[:300]
+        raw_body = (c.get("body_html") or "").replace("<p>", "").replace("</p>", " ")
+        body = safe_short(raw_body, 300)
         prefix = "  " * depth + ("- " if depth == 0 else "↳ ")
         cid = c.get("id_code") or ""
         you = "[YOU] " if cid and cid in mine else ""
-        out.append(f"{prefix}{you}[id={cid}] {date} @{user.get('username','?')}: {body}")
+        username = safe_short(user.get("username") or "?", 60)
+        out.append(f"{prefix}{you}[id={cid}] {date} @{username}: {body}")
     return "\n".join(out)
 
 
