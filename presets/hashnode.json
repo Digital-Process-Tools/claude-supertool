@@ -43,7 +43,7 @@
       "default_limit": 20
     },
     "hashnode_comment": {
-      "cmd": "python3 {path}hashnode/comment.py {arg}",
+      "cmd": "python3 {path}hashnode/comment.py {args}",
       "timeout": 30,
       "description": "Post a comment on a Hashnode post.",
       "syntax": "hashnode_comment:POST_ID_OR_URL|MESSAGE",
@@ -57,7 +57,7 @@
       "example": "hashnode_react:abc123"
     },
     "hashnode_reply": {
-      "cmd": "python3 {path}hashnode/reply.py {arg}",
+      "cmd": "python3 {path}hashnode/reply.py {args}",
       "timeout": 30,
       "description": "Reply to a Hashnode comment.",
       "syntax": "hashnode_reply:COMMENT_ID|MESSAGE",

@@ -430,6 +430,80 @@ def test_comment_parse_args_empty_msg(capsys: pytest.CaptureFixture[str]) -> Non
     assert "ERROR" in capsys.readouterr().err
 
 
+def test_comment_parse_args_message_keeps_colons() -> None:
+    """When supertool {args} parts are colon-rejoined in main(), parse_args
+    must preserve a colon-bearing body intact (no truncation at first ':').
+    """
+    aid, msg, parent = comment_op.parse_args(
+        "1234|Boundary prediction is the right name. Worth saying: it's learnable.|99"
+    )
+    assert aid == "1234"
+    assert msg == "Boundary prediction is the right name. Worth saying: it's learnable."
+    assert parent == "99"
+
+
+def test_resolve_parent_numeric_id_happy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Resolver returns numeric id when API+HTML chain succeeds."""
+    import io
+
+    api_resp = io.BytesIO(b'{"user": {"username": "alice"}}')
+    html_resp = io.BytesIO(b'<div data-id-code="abc" comment-id="1502909"></div>')
+
+    def fake_urlopen(req, timeout=15):
+        url = req.full_url if hasattr(req, "full_url") else req
+        if "/api/comments/" in url:
+            return _CtxRet(api_resp)
+        return _CtxRet(html_resp)
+
+    class _CtxRet:
+        def __init__(self, body: io.BytesIO) -> None:
+            self.body = body
+
+        def __enter__(self):
+            return self.body
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(comment_op.urllib.request, "urlopen", fake_urlopen)
+    assert comment_op._resolve_parent_numeric_id("abc") == 1502909
+
+
+def test_resolve_parent_numeric_id_no_username(monkeypatch: pytest.MonkeyPatch) -> None:
+    import io
+
+    class _Ctx:
+        def __init__(self, b): self.b = b
+        def __enter__(self): return self.b
+        def __exit__(self, *a): return False
+
+    monkeypatch.setattr(
+        comment_op.urllib.request,
+        "urlopen",
+        lambda req, timeout=15: _Ctx(io.BytesIO(b'{"user": null}')),
+    )
+    assert comment_op._resolve_parent_numeric_id("abc") is None
+
+
+def test_resolve_parent_numeric_id_no_match(monkeypatch: pytest.MonkeyPatch) -> None:
+    import io
+
+    api_resp = io.BytesIO(b'{"user": {"username": "alice"}}')
+    html_resp = io.BytesIO(b'<div>no match here</div>')
+
+    class _Ctx:
+        def __init__(self, b): self.b = b
+        def __enter__(self): return self.b
+        def __exit__(self, *a): return False
+
+    def fake_urlopen(req, timeout=15):
+        url = req.full_url
+        return _Ctx(api_resp if "/api/comments/" in url else html_resp)
+
+    monkeypatch.setattr(comment_op.urllib.request, "urlopen", fake_urlopen)
+    assert comment_op._resolve_parent_numeric_id("abc") is None
+
+
 def test_read_render_shows_you_line() -> None:
     out = read.render({
         "id": 1, "title": "T", "url": "https://x.io",

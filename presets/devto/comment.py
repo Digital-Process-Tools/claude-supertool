@@ -5,16 +5,26 @@ SESSION-COOKIE ONLY. The Dev.to public API does not expose a comment
 write endpoint, so this op requires DEVTO_SESSION_COOKIE (env or
 ~/.config/devto/session_cookie). See _session.py for the ToS notice.
 
-PARENT_COMMENT_ID makes it a reply (numeric id_code from
-devto_comments output, NOT the alphanumeric short slug).
+PARENT_COMMENT_ID is the alphanumeric id_code from devto_comments /
+devto_status_since output (e.g. "37d65"). Forem's CommentsController
+permits `parent_id` as the numeric DB id only; the public API does
+not expose it, so we resolve id_code → numeric id by scraping the
+comment URL HTML on demand.
 """
 import json
+import re
 import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _outbound import append as track_append
 from _session import fetch_csrf_token, get_session_cookie, web_post_json
+
+WEB_BASE = "https://dev.to"
+API_BASE = "https://dev.to/api"
+_COMMENT_ID_RE = re.compile(r'comment-id="(\d+)"')
 
 
 def parse_args(arg: str) -> tuple[str, str, str | None]:
@@ -47,7 +57,17 @@ def main(arg: str) -> None:
         }
     }
     if parent:
-        body["comment"]["parent_id"] = int(parent) if parent.isdigit() else parent  # type: ignore[index]
+        if parent.isdigit():
+            body["comment"]["parent_id"] = int(parent)  # type: ignore[index]
+        else:
+            numeric = _resolve_parent_numeric_id(parent)
+            if numeric is None:
+                sys.stderr.write(
+                    f"ERROR: could not resolve parent id_code {parent!r} to numeric id "
+                    "(needed for Forem's parent_id field). Comment NOT posted.\n"
+                )
+                sys.exit(1)
+            body["comment"]["parent_id"] = numeric  # type: ignore[index]
     text, status = web_post_json("/comments", cookie, csrf, body)
     try:
         data = json.loads(text)
@@ -66,10 +86,84 @@ def main(arg: str) -> None:
         "posted_at": _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     })
     print(f"(comment posted id={cid} url={url} mode=session)")
+    _print_post_confirmation(aid, str(cid))
+
+
+def _print_post_confirmation(aid: str, cid: str) -> None:
+    """Re-fetch posted comment from public API and echo its body — guards
+    against silent body truncation (e.g. supertool ':' tokenization eating
+    part of the message)."""
+    try:
+        from _auth import get_api_key
+        from _rest import request
+        items = request("GET", "/comments", get_api_key(), query={"a_id": aid, "per_page": 1000})
+    except Exception as exc:  # pragma: no cover — defensive
+        print(f"(post-confirm fetch failed: {exc})")
+        return
+    if not isinstance(items, list):
+        return
+    found = _find(items, cid)
+    if not found:
+        print(f"(post-confirm: comment {cid} not yet visible — API replication delay)")
+        return
+    body = (found.get("body_html") or "").strip()
+    print(f"--- posted body ({len(body)} chars) ---\n{body}")
+
+
+def _resolve_parent_numeric_id(id_code: str, timeout: int = 15) -> int | None:
+    """Resolve a comment id_code (alphanumeric) to its numeric DB id.
+
+    The Dev.to public API exposes id_code only. Forem's CommentsController
+    permits `parent_id` as the integer DB id, so a reply post fails silently
+    (lands as top-level) when given an id_code string.
+
+    Two-hop strategy:
+      1. GET /api/comments/{id_code} → user.username
+      2. GET /{username}/comment/{id_code} HTML → regex `comment-id="N"`
+
+    Returns None on any failure (caller decides whether to abort).
+    """
+    try:
+        meta_req = urllib.request.Request(
+            f"{API_BASE}/comments/{id_code}",
+            headers={"User-Agent": "claude-supertool/devto-resolver", "Accept": "application/json"},
+        )
+        with urllib.request.urlopen(meta_req, timeout=timeout) as resp:
+            meta = json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, json.JSONDecodeError):
+        return None
+    username = ((meta or {}).get("user") or {}).get("username")
+    if not username:
+        return None
+    try:
+        html_req = urllib.request.Request(
+            f"{WEB_BASE}/{username}/comment/{id_code}",
+            headers={"User-Agent": "Mozilla/5.0 (claude-supertool/devto-resolver)"},
+        )
+        with urllib.request.urlopen(html_req, timeout=timeout) as resp:
+            html = resp.read().decode("utf-8", errors="replace")
+    except urllib.error.URLError:
+        return None
+    m = _COMMENT_ID_RE.search(html)
+    return int(m.group(1)) if m else None
+
+
+def _find(items: list, target: str) -> dict | None:
+    for c in items:
+        if c.get("id_code") == target:
+            return c
+        for child in c.get("children") or []:
+            r = _find([child], target)
+            if r:
+                return r
+    return None
 
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         sys.stderr.write("ERROR: missing arg\n")
         sys.exit(2)
-    main(sys.argv[1])
+    # Supertool {args} passes parts space-separated; rejoin with ':' so a body
+    # containing ':' survives the supertool tokenizer.
+    arg = ":".join(sys.argv[1:])
+    main(arg)

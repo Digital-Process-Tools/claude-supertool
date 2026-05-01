@@ -62,4 +62,7 @@ if __name__ == "__main__":
     if len(sys.argv) < 2:
         sys.stderr.write("ERROR: missing arg\n")
         sys.exit(2)
-    main(sys.argv[1])
+    # Supertool {args} passes parts space-separated; rejoin with ':' so a body
+    # containing ':' survives the supertool tokenizer.
+    arg = ":".join(sys.argv[1:])
+    main(arg)
