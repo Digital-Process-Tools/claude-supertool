@@ -61,6 +61,14 @@ def parse_arg(arg: str) -> tuple[str | None, str | None, str | None]:
         return parsed.path.strip("/").split("/")[-1], None, parsed.netloc
     if all(c in "0123456789abcdef" for c in arg.lower()) and len(arg) >= 12:
         return None, arg, None
+    if "/" in arg:
+        sys.stderr.write(
+            f"ERROR: ambiguous identifier {arg!r} — looks like 'author/slug' "
+            "but Hashnode publication subdomain is not always the author username "
+            "(e.g. @dividebyzerogt posts on truthlocks.hashnode.dev). "
+            "Pass the full https://<host>.hashnode.dev/<slug> URL or the 24-char hex post ID.\n"
+        )
+        sys.exit(2)
     return arg, None, None
 
 
