@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
-"""Dev.to react: devto_react:ARTICLE_ID[|CATEGORY]
+"""Dev.to react: devto_react:ARTICLE_ID_OR_SLUG_OR_URL[|CATEGORY]
 
 Category: like (default), unicorn, readinglist, thumbsdown, vomit. Toggles on/off.
+
+Accepts numeric article ID, slug (`author/slug`), or full URL — non-numeric
+inputs are resolved to the numeric ID via /api/articles/{slug} before posting.
+The Reactions endpoint requires the integer ID; passing a slug raw returns
+422 "Reactable not valid".
 
 Two auth modes:
 
@@ -18,6 +23,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _auth import get_api_key
+from _resolve import resolve_article_id
 from _rest import request
 from _session import fetch_csrf_token, get_session_cookie, web_post_json
 
@@ -26,7 +32,7 @@ VALID = {"like", "unicorn", "readinglist", "thumbsdown", "vomit"}
 
 def parse_args(arg: str) -> tuple[str, str]:
     if not arg:
-        sys.stderr.write("ERROR: usage devto_react:ARTICLE_ID[|CATEGORY]\n")
+        sys.stderr.write("ERROR: usage devto_react:ARTICLE_ID_OR_SLUG_OR_URL[|CATEGORY]\n")
         sys.exit(2)
     parts = arg.split("|")
     aid = parts[0].strip()
@@ -38,12 +44,13 @@ def parse_args(arg: str) -> tuple[str, str]:
 
 
 def main(arg: str) -> None:
-    aid, category = parse_args(arg)
+    raw, category = parse_args(arg)
+    aid = resolve_article_id(raw)
     cookie = get_session_cookie()
     if cookie:
         csrf = fetch_csrf_token(cookie)
         body = {
-            "reactable_id": int(aid) if aid.isdigit() else aid,
+            "reactable_id": aid,
             "reactable_type": "Article",
             "category": category,
         }
@@ -59,7 +66,7 @@ def main(arg: str) -> None:
     # Fallback: API key (currently 401 for reactions)
     api_key = get_api_key()
     body = {
-        "reactable_id": int(aid) if aid.isdigit() else aid,
+        "reactable_id": aid,
         "reactable_type": "Article",
         "category": category,
     }
@@ -69,4 +76,7 @@ def main(arg: str) -> None:
 
 
 if __name__ == "__main__":
-    main(sys.argv[1] if len(sys.argv) > 1 else "")
+    # Supertool {args} splits on ':' — URLs like https://... arrive as multiple
+    # argv parts. Rejoin so the full identifier survives the tokenizer.
+    arg = ":".join(sys.argv[1:]) if len(sys.argv) > 1 else ""
+    main(arg)

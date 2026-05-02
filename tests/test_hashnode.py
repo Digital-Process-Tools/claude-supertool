@@ -16,7 +16,7 @@ PRESET_DIR = Path(__file__).parent.parent / "presets" / "hashnode"
 
 def _load(name: str):
     # Clear cached helper modules from any prior preset (devto) and prepend our dir.
-    for k in ("_auth", "_graphql", "_rest", "_me", "_outbound", "_session"):
+    for k in ("_auth", "_graphql", "_rest", "_me", "_outbound", "_session", "_resolve"):
         sys.modules.pop(k, None)
     sys.path[:] = [p for p in sys.path if "presets/devto" not in p]
     if str(PRESET_DIR) not in sys.path:
@@ -34,10 +34,13 @@ read_op = _load("read")
 browse_op = _load("browse")
 comments_op = _load("comments")
 comment_op = _load("comment")
+react_op = _load("react")
 reply_op = _load("reply")
 search_op = _load("search")
 status_since_op = _load("status_since")
 outbound_op = _load("_outbound")
+resolve_op = _load("_resolve")
+graphql_op = _load("_graphql")
 
 
 # publish ------------------------------------------------------------------
@@ -671,3 +674,74 @@ def test_read_render_no_you_line_when_not_engaged() -> None:
         "comments": {"edges": []},
     }, inline_n=5, me="max-ai-dev")
     assert "YOU:" not in out
+
+
+# resolve (cross-publication post id resolver) --------------------------
+
+def test_resolve_id_passthrough() -> None:
+    """Plain id (non-URL) returned untouched — no GraphQL call."""
+    assert resolve_op.resolve_post_id("token", "69db973615279c2b8198051e") == "69db973615279c2b8198051e"
+
+
+def test_resolve_url_uses_publication_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Foreign URL parsed to (host, slug) and looked up via publication(host:)."""
+    captured: list[dict] = []
+
+    def fake_gql(query, variables, token):
+        captured.append({"query": query, "variables": variables, "token": token})
+        return {"publication": {"post": {"id": "abc123"}}}
+
+    monkeypatch.setattr(resolve_op, "gql", fake_gql)
+    pid = resolve_op.resolve_post_id(
+        "tok", "https://hugovalters.hashnode.dev/mfa-fatigue"
+    )
+    assert pid == "abc123"
+    assert len(captured) == 1
+    assert captured[0]["variables"] == {
+        "host": "hugovalters.hashnode.dev",
+        "slug": "mfa-fatigue",
+    }
+    assert "publication(host:" in captured[0]["query"]
+    assert captured[0]["token"] == "tok"
+
+
+def test_resolve_url_own_publication(monkeypatch: pytest.MonkeyPatch) -> None:
+    """URL on max-ai-dev.hashnode.dev resolves the same way — no special casing."""
+    monkeypatch.setattr(resolve_op, "gql",
+                          lambda q, v, t: {"publication": {"post": {"id": "self-id"}}})
+    pid = resolve_op.resolve_post_id(
+        "tok", "https://max-ai-dev.hashnode.dev/i-trust-the-variable-name"
+    )
+    assert pid == "self-id"
+
+
+def test_resolve_url_post_not_found_exits(monkeypatch: pytest.MonkeyPatch,
+                                            capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setattr(resolve_op, "gql", lambda q, v, t: {"publication": {"post": None}})
+    with pytest.raises(SystemExit):
+        resolve_op.resolve_post_id("tok", "https://nobody.hashnode.dev/missing")
+    err = capsys.readouterr().err
+    assert "post not found" in err
+    assert "nobody.hashnode.dev" in err
+    assert "missing" in err
+
+
+def test_resolve_url_no_publication_exits(monkeypatch: pytest.MonkeyPatch,
+                                             capsys: pytest.CaptureFixture[str]) -> None:
+    """When publication is null (host doesn't exist on Hashnode), error helpfully."""
+    monkeypatch.setattr(resolve_op, "gql", lambda q, v, t: {"publication": None})
+    with pytest.raises(SystemExit):
+        resolve_op.resolve_post_id("tok", "https://nope.example.com/slug")
+    assert "post not found" in capsys.readouterr().err
+
+
+def test_resolve_empty_exits(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        resolve_op.resolve_post_id("tok", "")
+    assert "empty post identifier" in capsys.readouterr().err
+
+
+def test_resolve_malformed_url_exits(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        resolve_op.resolve_post_id("tok", "https://")
+    assert "cannot parse" in capsys.readouterr().err

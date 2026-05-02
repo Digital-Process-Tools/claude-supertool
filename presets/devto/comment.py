@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Dev.to comment: devto_comment:ARTICLE_ID|MESSAGE[|PARENT_COMMENT_ID]
+"""Dev.to comment: devto_comment:ARTICLE_ID_OR_SLUG_OR_URL|MESSAGE[|PARENT_COMMENT_ID]
+
+Accepts numeric article ID, slug (`author/slug`), or full URL — non-numeric
+inputs are resolved to the numeric ID via /api/articles/{slug} before posting.
+The Comments write endpoint requires the integer ID.
 
 ⚠ SESSION-COOKIE OP — POSSIBLE ToS RISK ⚠
 =========================================
@@ -26,6 +30,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _outbound import append as track_append
+from _resolve import resolve_article_id
 from _session import fetch_csrf_token, get_session_cookie, web_post_json
 
 WEB_BASE = "https://dev.to"
@@ -36,16 +41,17 @@ _COMMENT_ID_RE = re.compile(r'comment-id="(\d+)"')
 def parse_args(arg: str) -> tuple[str, str, str | None]:
     parts = arg.split("|")
     if len(parts) < 2 or not parts[0].strip() or not parts[1].strip():
-        sys.stderr.write("ERROR: usage devto_comment:ARTICLE_ID|MESSAGE[|PARENT_COMMENT_ID]\n")
+        sys.stderr.write("ERROR: usage devto_comment:ARTICLE_ID_OR_SLUG_OR_URL|MESSAGE[|PARENT_COMMENT_ID]\n")
         sys.exit(2)
-    aid = parts[0].strip()
+    raw = parts[0].strip()
     message = parts[1]
     parent = parts[2].strip() if len(parts) > 2 and parts[2].strip() else None
-    return aid, message, parent
+    return raw, message, parent
 
 
 def main(arg: str) -> None:
-    aid, message, parent = parse_args(arg)
+    raw, message, parent = parse_args(arg)
+    aid = resolve_article_id(raw)
     cookie = get_session_cookie()
     if not cookie:
         sys.stderr.write(
@@ -58,7 +64,7 @@ def main(arg: str) -> None:
     body: dict[str, object] = {
         "comment": {
             "body_markdown": message,
-            "commentable_id": int(aid) if aid.isdigit() else aid,
+            "commentable_id": aid,
             "commentable_type": "Article",
         }
     }
@@ -87,12 +93,12 @@ def main(arg: str) -> None:
     import datetime as _dt
     track_append({
         "comment_id": cid,
-        "article_id": int(aid) if aid.isdigit() else aid,
+        "article_id": aid,
         "parent_id": parent,
         "posted_at": _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     })
     print(f"(comment posted id={cid} url={url} mode=session)")
-    _print_post_confirmation(aid, str(cid))
+    _print_post_confirmation(str(aid), str(cid))
 
 
 def _print_post_confirmation(aid: str, cid: str) -> None:

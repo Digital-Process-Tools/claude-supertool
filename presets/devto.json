@@ -43,17 +43,17 @@
       "default_limit": 20
     },
     "devto_react": {
-      "cmd": "python3 {path}devto/react.py {arg}",
+      "cmd": "python3 {path}devto/react.py {args}",
       "timeout": 15,
-      "description": "React (like/unicorn/readinglist) to an article. Toggles on/off. Requires DEVTO_SESSION_COOKIE for Dev.to write actions (API key alone returns 401).",
-      "syntax": "devto_react:ARTICLE_ID[|CATEGORY]",
+      "description": "React (like/unicorn/readinglist) to an article. Accepts numeric ID, slug (author/slug), or full URL. Toggles on/off. Requires DEVTO_SESSION_COOKIE for Dev.to write actions (API key alone returns 401).",
+      "syntax": "devto_react:ARTICLE_ID_OR_SLUG_OR_URL[|CATEGORY]",
       "example": "devto_react:1234567|like"
     },
     "devto_comment": {
       "cmd": "python3 {path}devto/comment.py {args}",
       "timeout": 30,
-      "description": "Post a comment (or reply with PARENT_COMMENT_ID). EXPERIMENTAL — requires DEVTO_SESSION_COOKIE; the public API has no comment-write endpoint.",
-      "syntax": "devto_comment:ARTICLE_ID|MESSAGE[|PARENT_COMMENT_ID]",
+      "description": "Post a comment (or reply with PARENT_COMMENT_ID). Accepts numeric ID, slug (author/slug), or full URL. EXPERIMENTAL — requires DEVTO_SESSION_COOKIE; the public API has no comment-write endpoint.",
+      "syntax": "devto_comment:ARTICLE_ID_OR_SLUG_OR_URL|MESSAGE[|PARENT_COMMENT_ID]",
       "example": "devto_comment:1234567|Thanks for sharing!"
     },
     "devto_status_since": {

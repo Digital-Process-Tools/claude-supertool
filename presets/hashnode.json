@@ -45,14 +45,14 @@
     "hashnode_comment": {
       "cmd": "python3 {path}hashnode/comment.py {args}",
       "timeout": 30,
-      "description": "Post a comment on a Hashnode post.",
+      "description": "Post a comment on a Hashnode post. Accepts post ID or URL on any publication (cross-publication via publication(host:) GraphQL).",
       "syntax": "hashnode_comment:POST_ID_OR_URL|MESSAGE",
       "example": "hashnode_comment:abc123|Thanks for sharing!"
     },
     "hashnode_react": {
-      "cmd": "python3 {path}hashnode/react.py {arg}",
+      "cmd": "python3 {path}hashnode/react.py {args}",
       "timeout": 15,
-      "description": "Like a Hashnode post.",
+      "description": "Like a Hashnode post. Accepts post ID or URL on any publication (cross-publication via publication(host:) GraphQL).",
       "syntax": "hashnode_react:POST_ID_OR_URL",
       "example": "hashnode_react:abc123"
     },

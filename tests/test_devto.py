@@ -12,7 +12,7 @@ PRESET_DIR = Path(__file__).parent.parent / "presets" / "devto"
 
 
 def _load(name: str):
-    for k in ("_auth", "_graphql", "_rest", "_me", "_outbound", "_session"):
+    for k in ("_auth", "_graphql", "_rest", "_me", "_outbound", "_session", "_resolve"):
         sys.modules.pop(k, None)
     sys.path[:] = [p for p in sys.path if "presets/hashnode" not in p]
     if str(PRESET_DIR) not in sys.path:
@@ -33,6 +33,7 @@ react = _load("react")
 status_since_op = _load("status_since")
 comment_op = _load("comment")
 outbound_op = _load("_outbound")
+resolve_op = _load("_resolve")
 
 
 # publish -----------------------------------------------------------------
@@ -653,3 +654,92 @@ def test_outbound_read_missing_file_returns_empty(tmp_path: Path,
                                                     monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(outbound_op, "TRACK_FILE", tmp_path / "nope.jsonl")
     assert outbound_op.read() == []
+
+
+# resolve (article id resolver) -----------------------------------------
+
+def test_resolve_numeric_passthrough() -> None:
+    """Numeric input returns int directly — no API call."""
+    assert resolve_op.resolve_article_id("123456") == 123456
+
+
+def test_resolve_slug_calls_api(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Slug 'author/slug' is sent to /articles/author/slug, returns numeric id."""
+    calls: list[tuple] = []
+
+    def fake_request(method, path, api_key, body=None, query=None, timeout=30):
+        calls.append((method, path))
+        return {"id": 999, "title": "T"}
+
+    monkeypatch.setattr(resolve_op, "request", fake_request)
+    monkeypatch.setattr(resolve_op, "get_api_key", lambda: "fake-key")
+    assert resolve_op.resolve_article_id("alice/some-slug") == 999
+    assert calls == [("GET", "/articles/alice/some-slug")]
+
+
+def test_resolve_url_calls_api(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Full URL parsed to /articles/{author}/{slug}."""
+    calls: list[str] = []
+
+    def fake_request(method, path, api_key, body=None, query=None, timeout=30):
+        calls.append(path)
+        return {"id": 42}
+
+    monkeypatch.setattr(resolve_op, "request", fake_request)
+    monkeypatch.setattr(resolve_op, "get_api_key", lambda: "fake-key")
+    assert resolve_op.resolve_article_id(
+        "https://dev.to/marcosomma/the-real-token-economy-3j3e"
+    ) == 42
+    assert calls == ["/articles/marcosomma/the-real-token-economy-3j3e"]
+
+
+def test_resolve_empty_exits(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        resolve_op.resolve_article_id("")
+    assert "empty article identifier" in capsys.readouterr().err
+
+
+def test_resolve_unparseable_exits(capsys: pytest.CaptureFixture[str]) -> None:
+    """Bare slug with no slash and non-numeric → cannot parse, exits."""
+    with pytest.raises(SystemExit):
+        resolve_op.resolve_article_id("just-a-slug-no-author")
+    err = capsys.readouterr().err
+    assert "cannot parse article identifier" in err
+    assert "just-a-slug-no-author" in err
+
+
+def test_resolve_api_returns_no_id_exits(monkeypatch: pytest.MonkeyPatch,
+                                            capsys: pytest.CaptureFixture[str]) -> None:
+    """API returns dict without 'id' field → exits with descriptive error."""
+    monkeypatch.setattr(resolve_op, "request", lambda *a, **kw: {})
+    monkeypatch.setattr(resolve_op, "get_api_key", lambda: "fake-key")
+    with pytest.raises(SystemExit):
+        resolve_op.resolve_article_id("alice/slug")
+    assert "could not resolve" in capsys.readouterr().err
+
+
+# react/comment slug-acceptance integration -----------------------------
+
+def test_react_parse_args_accepts_slug() -> None:
+    """parse_args returns the raw identifier untouched — main() resolves it."""
+    raw, cat = react.parse_args("alice/some-slug")
+    assert raw == "alice/some-slug" and cat == "like"
+
+
+def test_react_parse_args_accepts_url() -> None:
+    raw, cat = react.parse_args("https://dev.to/alice/some-slug|unicorn")
+    assert raw == "https://dev.to/alice/some-slug" and cat == "unicorn"
+
+
+def test_comment_parse_args_accepts_slug() -> None:
+    """Comment parse keeps the raw identifier; resolution happens in main()."""
+    raw, msg, parent = comment_op.parse_args("alice/some-slug|hello")
+    assert raw == "alice/some-slug" and msg == "hello" and parent is None
+
+
+def test_comment_parse_args_accepts_url() -> None:
+    raw, msg, parent = comment_op.parse_args(
+        "https://dev.to/alice/some-slug|hi|99"
+    )
+    assert raw == "https://dev.to/alice/some-slug"
+    assert msg == "hi" and parent == "99"
