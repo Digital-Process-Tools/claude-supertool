@@ -205,12 +205,21 @@ def test_split_arg_two_urls_in_pipe_separated_args() -> None:
 
 
 def test_split_arg_url_with_port_and_path() -> None:
+    """URL with explicit port absorbs '8080/path' as port+path continuation."""
     result = supertool._split_arg("op:T|https://example.com:8080/path|tag")
-    # Port colon stays inside the URL token — '8080' starts with digit, not '/'
-    # so the second absorb stops there. Acceptable: caller never uses ports
-    # in canonical URLs anyway. Just confirm primary URL is intact.
-    assert result[0] == "op"
-    assert "https://example.com" in result[1]
+    assert result == ["op", "T|https://example.com:8080/path|tag"]
+
+
+def test_split_arg_url_with_port_no_path() -> None:
+    """URL with bare port (no path after) absorbs cleanly."""
+    result = supertool._split_arg("op:https://example.com:8080")
+    assert result == ["op", "https://example.com:8080"]
+
+
+def test_split_arg_url_with_port_and_query() -> None:
+    """Port followed by query string absorbs."""
+    result = supertool._split_arg("op:https://example.com:8080?q=1")
+    assert result == ["op", "https://example.com:8080?q=1"]
 
 
 def test_split_arg_bare_url() -> None:
@@ -227,6 +236,15 @@ def test_split_arg_url_does_not_break_drive_letter() -> None:
     # both should still work
     assert supertool._split_arg("read:C:/src/foo.py") == ["read", "C:/src/foo.py"]
     assert supertool._split_arg("op:T|https://x.com") == ["op", "T|https://x.com"]
+
+
+def test_split_arg_port_absorb_does_not_eat_unrelated_colon() -> None:
+    """After URL+port absorbed, a downstream non-numeric chunk must not absorb.
+    Guards against the port-absorption logic over-reaching."""
+    result = supertool._split_arg("grep:pat:https://example.com:8080:other:more")
+    # Pattern is just 'pat'; URL absorbs scheme + host + port; 'other' and 'more'
+    # are downstream args (not URL fragments) — they must stay separate.
+    assert result == ["grep", "pat", "https://example.com:8080", "other", "more"]
 
 
 # ---------------------------------------------------------------------------
@@ -427,6 +445,59 @@ def test_main_returns_zero_when_all_ops_pass(tmp_path: Path, capsys, monkeypatch
     monkeypatch.setattr(supertool, "LOG_FILE", str(log_file))
     ret = supertool.main([f"read:{f1}", f"read:{f2}"])
     assert ret == 0
+
+
+# Failure-marker false-positive guards — user content must not flip exit code
+
+def test_main_returns_zero_when_user_content_contains_error_line(
+    tmp_path: Path, capsys, monkeypatch,
+) -> None:
+    """A successful read of a file whose body starts with 'ERROR: ' must NOT
+    flip exit code to 1. Marker only matches FAIL/ERROR on the line right
+    after the '--- op:args ---' header."""
+    log_file = tmp_path / "calls.log"
+    monkeypatch.setattr(supertool, "LOG_FILE", str(log_file))
+    f = tmp_path / "log.txt"
+    # File content has 'ERROR: ...' on multiple lines but the read itself
+    # succeeds — the body's first content line is the read header, not an error.
+    f.write_text("INFO: started\nERROR: connection refused\nINFO: retrying\n")
+    ret = supertool.main([f"read:{f}"])
+    captured = capsys.readouterr()
+    assert "ERROR: connection refused" in captured.out  # content is rendered
+    assert ret == 0  # but op succeeded
+
+
+def test_main_returns_zero_when_grep_finds_fail_lines(
+    tmp_path: Path, capsys, monkeypatch,
+) -> None:
+    """Grep returning matches whose lines contain 'FAIL' must NOT flip exit."""
+    log_file = tmp_path / "calls.log"
+    monkeypatch.setattr(supertool, "LOG_FILE", str(log_file))
+    f = tmp_path / "build.log"
+    f.write_text("FAIL: build broken\nFAIL: tests broken\nok\n")
+    ret = supertool.main([f"grep:FAIL:{f}"])
+    captured = capsys.readouterr()
+    assert "FAIL: build broken" in captured.out
+    assert ret == 0
+
+
+def test_body_indicates_failure_matches_marker_only_after_header() -> None:
+    """Direct check on the helper: marker must be on line right after header."""
+    # Real failure: FAIL on the line right after '--- op ---'
+    body_real = "--- read:/x ---\nFAIL (1.23s)\nstack trace\n"
+    assert supertool._body_indicates_failure(body_real) is True
+
+    # User content: FAIL deeper in body
+    body_fake = "--- read:/x ---\nINFO: started\nFAIL: something\n"
+    assert supertool._body_indicates_failure(body_fake) is False
+
+    # Real ERROR: header + 'ERROR: ' on next line
+    body_err = "--- read:/x ---\nERROR: file not found\n"
+    assert supertool._body_indicates_failure(body_err) is True
+
+    # User content: ERROR appears mid-body
+    body_innocent = "--- grep:ERROR:/x ---\n  3:ERROR: connection refused\n"
+    assert supertool._body_indicates_failure(body_innocent) is False
 
 
 def test_main_logs_call(tmp_path: Path, monkeypatch) -> None:

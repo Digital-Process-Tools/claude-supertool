@@ -1854,6 +1854,9 @@ def _glob_files(
 
 _DRIVE_LETTER = re.compile(r"^[A-Za-z]$")
 _URL_SCHEMES = ("http", "https", "ftp", "ftps", "ssh", "git", "file", "ws", "wss")
+# Numeric port, optionally followed by '/path' or '?query' or end — used to
+# absorb 'https://host' + ':8080/path' fragments that arose from `:`-splitting.
+_URL_PORT = re.compile(r"^\d+(?:[/?#].*)?$")
 
 
 def _split_arg(arg: str) -> List[str]:
@@ -1865,13 +1868,16 @@ def _split_arg(arg: str) -> List[str]:
         by '//...' → URL. Scheme detection looks at the LAST '|'-separated
         segment of the piece, so URLs work when embedded as one of several
         '|'-separated args (e.g. publish ops with TITLE|FILE|URL|TAGS|COVER).
+      - URLs with a host already absorbed, followed by a numeric port
+        (optionally with a path) → URL with port.
 
     Examples:
-        'read:foo.py'                       → ['read', 'foo.py']
-        'read:C:\\Users\\file.py'           → ['read', 'C:\\Users\\file.py']
-        'grep:pat:C:/src:20'                → ['grep', 'pat', 'C:/src', '20']
-        'op:T|F|https://x.com/a|tag'        → ['op', 'T|F|https://x.com/a|tag']
-        'op:T|F|https://a.com|t|https://b'  → ['op', 'T|F|https://a.com|t|https://b']
+        'read:foo.py'                          → ['read', 'foo.py']
+        'read:C:\\Users\\file.py'              → ['read', 'C:\\Users\\file.py']
+        'grep:pat:C:/src:20'                   → ['grep', 'pat', 'C:/src', '20']
+        'op:T|F|https://x.com/a|tag'           → ['op', 'T|F|https://x.com/a|tag']
+        'op:T|F|https://a.com|t|https://b'     → ['op', 'T|F|https://a.com|t|https://b']
+        'op:T|https://example.com:8080/path|x' → ['op', 'T|https://example.com:8080/path|x']
     """
     raw = arg.split(":")  # Full split — drive letters and URLs rejoined below
     tokens: List[str] = []
@@ -1891,7 +1897,14 @@ def _split_arg(arg: str) -> List[str]:
                 last_seg.lower() in _URL_SCHEMES
                 and next_piece.startswith("//")
             )
-            if not (is_drive or is_url):
+            # Port absorption: piece already has '://' (URL host absorbed last
+            # iteration), and next piece is purely numeric or numeric+path.
+            # 'https://example.com' + '8080/path' → 'https://example.com:8080/path'.
+            is_url_port = (
+                "://" in last_seg
+                and bool(_URL_PORT.match(next_piece))
+            )
+            if not (is_drive or is_url or is_url_port):
                 break
             piece = f"{piece}:{next_piece}"
             i += 1
@@ -2474,11 +2487,27 @@ def main(argv: List[str]) -> int:
         body = dispatch(arg)
         sys.stdout.write(body)
         total_out_bytes += len(body.encode("utf-8"))
-        # Detect op-level failure from the FAIL marker dispatch emits
-        if re.search(r"^(FAIL|ERROR)\b", body, re.MULTILINE):
+        if _body_indicates_failure(body):
             any_failure = True
     log_call(argv, total_out_bytes)
     return 1 if any_failure else 0
+
+
+# Op failure marker — matches FAIL/ERROR emitted by supertool itself, not
+# user content that happens to contain those words. Anchored to the line
+# immediately after the '--- op:args ---' header so a grep result returning
+# a line starting with 'ERROR:' won't trigger a false-positive exit code.
+_FAIL_MARKER = re.compile(r"^---[^\n]*\n(FAIL\b|ERROR:\s)", re.MULTILINE)
+
+
+def _body_indicates_failure(body: str) -> bool:
+    """True iff the dispatch body's first content line starts with FAIL or ERROR:.
+
+    Intentionally narrow: only the line immediately after the '--- header ---'
+    counts. Deeper FAIL/ERROR strings are user content and must not flip the
+    process exit code.
+    """
+    return _FAIL_MARKER.search(body) is not None
 
 
 if __name__ == "__main__":
