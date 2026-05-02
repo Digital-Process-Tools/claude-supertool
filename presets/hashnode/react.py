@@ -1,37 +1,23 @@
 #!/usr/bin/env python3
-"""Hashnode react: hashnode_react:POST_ID_OR_URL — likes the post."""
+"""Hashnode react: hashnode_react:POST_ID_OR_URL — likes the post.
+
+Accepts a post ID or a Hashnode URL on any publication. The URL→ID lookup
+uses the cross-publication `publication(host:)` GraphQL field so foreign
+posts (e.g. https://author.hashnode.dev/slug) resolve correctly.
+"""
 import sys
 from pathlib import Path
-from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _auth import get_publication_id, get_token
+from _auth import get_token
 from _graphql import gql
-
-RESOLVE_QUERY = """
-query Resolve($publicationId: ObjectId!, $slug: String!) {
-  publication(id: $publicationId) { post(slug: $slug) { id } }
-}
-"""
+from _resolve import resolve_post_id
 
 LIKE = """
 mutation LikePost($input: LikePostInput!) {
   likePost(input: $input) { post { id reactionCount } }
 }
 """
-
-
-def resolve_post_id(token: str, arg: str) -> str:
-    if arg.startswith("http"):
-        slug = urlparse(arg).path.strip("/").split("/")[-1]
-        pub_id = get_publication_id()
-        data = gql(RESOLVE_QUERY, {"publicationId": pub_id, "slug": slug}, token)
-        post = (data.get("publication") or {}).get("post")
-        if not post:
-            sys.stderr.write(f"ERROR: post not found for {arg}\n")
-            sys.exit(1)
-        return post["id"]
-    return arg
 
 
 def main(arg: str) -> None:
@@ -46,4 +32,7 @@ def main(arg: str) -> None:
 
 
 if __name__ == "__main__":
-    main(sys.argv[1] if len(sys.argv) > 1 else "")
+    # Supertool {args} splits on ':' — URLs like https://... arrive as multiple
+    # argv parts. Rejoin so the full identifier survives the tokenizer.
+    arg = ":".join(sys.argv[1:]) if len(sys.argv) > 1 else ""
+    main(arg)

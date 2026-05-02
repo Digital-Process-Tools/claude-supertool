@@ -505,3 +505,103 @@ class TestMainIntegration:
         assert "data" in captured.out
         assert "pong" in captured.out
         assert "ops=2" in log_file.read_text()
+
+
+# ---------------------------------------------------------------------------
+# {arg} vs {args} placeholder behavior — colon-bearing inputs (URLs, ISO dates)
+#
+# Bug surfaced 2026-05-02: devto_react with `{arg}` template received only the
+# first ':'-separated chunk of a URL ("https") instead of the full URL.
+# Fix was to switch the cmd template to `{args}` so all parts survive.
+# These tests pin the dispatch behavior so the regression cannot return.
+# ---------------------------------------------------------------------------
+
+class TestArgPlaceholderColonHandling:
+
+    def test_arg_placeholder_only_passes_first_chunk(self, tmp_path: Path) -> None:
+        """`{arg}` substitutes parts[1] only — colons in the input split it."""
+        captured = tmp_path / "out.txt"
+        # The script writes ALL its argv (after script name, excluding final
+        # output-file path) to a file we can inspect.
+        script = tmp_path / "echo_argv.py"
+        script.write_text(
+            "import sys; open(sys.argv[-1], 'w').write(repr(sys.argv[1:-1]))\n"
+        )
+        supertool._CONFIG = {
+            "ops": {"echo": {"cmd": f"python3 {script} {{arg}} {captured}"}}
+        }
+        # Input: 'echo:https://example.com' tokenizes to parts =
+        # ['echo', 'https', '//example.com']. With {arg}, only 'https' goes through.
+        result = supertool.dispatch("echo:https://example.com")
+        assert "PASS" in result
+        argv = eval(captured.read_text())
+        assert argv == ["https"], f"expected ['https'], got {argv!r}"
+
+    def test_args_placeholder_passes_all_chunks(self, tmp_path: Path) -> None:
+        """`{args}` substitutes parts[1:] joined by space — all chunks survive."""
+        captured = tmp_path / "out.txt"
+        script = tmp_path / "echo_argv.py"
+        script.write_text(
+            "import sys; open(sys.argv[-1], 'w').write(repr(sys.argv[1:-1]))\n"
+        )
+        supertool._CONFIG = {
+            "ops": {"echo": {"cmd": f"python3 {script} {{args}} {captured}"}}
+        }
+        result = supertool.dispatch("echo:https://example.com")
+        assert "PASS" in result
+        argv = eval(captured.read_text())
+        # All ':'-tokenized parts arrive as separate argv entries.
+        assert argv == ["https", "//example.com"], f"got {argv!r}"
+
+    def test_args_placeholder_url_rejoinable_by_script(self, tmp_path: Path) -> None:
+        """End-to-end: with {args}, a script that does ':'.join(argv[1:]) gets
+        the full URL back — this is the pattern preset/devto/react.py uses to
+        survive supertool's ':' tokenizer."""
+        captured = tmp_path / "out.txt"
+        script = tmp_path / "rejoin.py"
+        script.write_text(
+            "import sys\n"
+            "rejoined = ':'.join(sys.argv[1:-1])\n"
+            "open(sys.argv[-1], 'w').write(rejoined)\n"
+        )
+        supertool._CONFIG = {
+            "ops": {"echo": {"cmd": f"python3 {script} {{args}} {captured}"}}
+        }
+        url = "https://dev.to/marcosomma/the-real-token-economy-3j3e"
+        result = supertool.dispatch(f"echo:{url}")
+        assert "PASS" in result
+        assert captured.read_text() == url
+
+    def test_args_placeholder_with_pipe_separator(self, tmp_path: Path) -> None:
+        """`|` is NOT a tokenizer separator (only `:` is) — pipe-separated
+        args arrive as a single chunk, preserving 'aid|MSG|parent' shape."""
+        captured = tmp_path / "out.txt"
+        script = tmp_path / "echo_argv.py"
+        script.write_text(
+            "import sys; open(sys.argv[-1], 'w').write(repr(sys.argv[1:-1]))\n"
+        )
+        supertool._CONFIG = {
+            "ops": {"echo": {"cmd": f"python3 {script} {{args}} {captured}"}}
+        }
+        result = supertool.dispatch("echo:1234|hello world|99")
+        assert "PASS" in result
+        argv = eval(captured.read_text())
+        assert argv == ["1234|hello world|99"]
+
+    def test_args_placeholder_with_iso_timestamp(self, tmp_path: Path) -> None:
+        """ISO timestamps (HH:MM:SSZ) are split by `:` — {args} must rejoin
+        them. Same pattern devto_status_since uses."""
+        captured = tmp_path / "out.txt"
+        script = tmp_path / "rejoin.py"
+        script.write_text(
+            "import sys\n"
+            "rejoined = ':'.join(sys.argv[1:-1])\n"
+            "open(sys.argv[-1], 'w').write(rejoined)\n"
+        )
+        supertool._CONFIG = {
+            "ops": {"echo": {"cmd": f"python3 {script} {{args}} {captured}"}}
+        }
+        ts = "2026-05-02T15:01:45+00:00"
+        result = supertool.dispatch(f"echo:{ts}")
+        assert "PASS" in result
+        assert captured.read_text() == ts
