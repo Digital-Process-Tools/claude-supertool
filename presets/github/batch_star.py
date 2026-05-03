@@ -27,7 +27,10 @@ def star(repo: str) -> tuple[bool, str]:
 
 
 def main(arg: str) -> int:
-    path = Path(arg.strip())
+    raw = arg.strip()
+    if raw.startswith("file://"):
+        raw = raw[len("file://"):]
+    path = Path(raw)
     if not path.is_file():
         sys.stderr.write(f"ERROR: file not found: {path}\n")
         return 2

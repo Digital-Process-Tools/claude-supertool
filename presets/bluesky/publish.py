@@ -63,20 +63,46 @@ def extract_link_facets(body: str) -> list[dict]:
     return facets
 
 
+_FILE_PREFIX = "file://"
+
+
+def _resolve_body(arg: str) -> tuple[str, bool]:
+    """Resolve a body argument to its text content.
+
+    Returns (text, from_file).
+
+    - `file://path` — MUST resolve to an existing file. Errors if missing.
+      Catches typos that the legacy bare-path auto-detect would silently
+      forward as inline text.
+    - bare path that `is_file()` — reads the file (backward compat).
+    - anything else — returned as-is (inline text).
+    """
+    if arg.startswith(_FILE_PREFIX):
+        path = arg[len(_FILE_PREFIX):]
+        p = Path(path)
+        if not p.is_file():
+            sys.stderr.write(
+                f"ERROR: file not found: {path}\n"
+                "(file:// prefix requires the file to exist — typo or wrong path?)\n"
+            )
+            sys.exit(2)
+        return p.read_text(), True
+    try:
+        p = Path(arg)
+        if p.is_file():
+            return p.read_text(), True
+    except OSError:
+        pass
+    return arg, False
+
+
 def parse_args(arg: str) -> tuple[str, str | None, bool]:
     """Return (body, reply_uri, force)."""
     parts = arg.split("|", 2)
     if not parts[0].strip():
         sys.stderr.write("ERROR: usage bluesky_publish:TEXT_OR_FILE[|REPLY_TO_AT_URI[|force]]\n")
         sys.exit(2)
-    body = parts[0]
-    try:
-        p = Path(body)
-        is_file = p.is_file()
-    except OSError:
-        is_file = False
-    if is_file:
-        body = Path(body).read_text()
+    body, _from_file = _resolve_body(parts[0])
     body = body.strip()
     if len(body) > MAX_LEN:
         sys.stderr.write(f"ERROR: post is {len(body)} chars (max {MAX_LEN}). Trim or split.\n")

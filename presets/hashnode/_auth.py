@@ -51,3 +51,14 @@ def get_publication_id() -> str:
         )
         sys.exit(2)
     return val
+
+
+def env_truthy(name: str) -> bool:
+    """Return True if env var `name` is set to a truthy value.
+
+    Truthy values: 'true', '1', 'yes', 'on' (case-insensitive). Anything else
+    returns False. Used by hashnode_react and hashnode_comment to honor the
+    `auto_force` config opt-in via SUPERTOOL_AUTO_FORCE env var.
+    """
+    val = os.environ.get(name, "").strip().lower()
+    return val in {"true", "1", "yes", "on"}

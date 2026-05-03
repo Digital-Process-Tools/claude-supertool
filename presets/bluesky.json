@@ -5,8 +5,8 @@
     "bluesky_publish": {
       "cmd": "python3 {path}bluesky/publish.py {args}",
       "timeout": 30,
-      "description": "Publish a post (text or text-file). Optional reply-to AT URI. Bluesky cap is 300 chars.",
-      "syntax": "bluesky_publish:TEXT_OR_FILE[|REPLY_TO_AT_URI]",
+      "description": "Publish a post (text, file, or file://PATH). Optional reply-to AT URI. Bluesky cap is 300 chars. URLs in body get auto-detected and clickable facets are added.",
+      "syntax": "bluesky_publish:TEXT_OR_FILE_OR_file://PATH[|REPLY_TO_AT_URI[|force]]",
       "example": "bluesky_publish:Hello, real humans."
     },
     "bluesky_list": {

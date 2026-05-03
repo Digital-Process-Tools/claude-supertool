@@ -46,21 +46,21 @@
       "cmd": "python3 {path}hashnode/comment.py {args}",
       "timeout": 30,
       "description": "Post a comment on a Hashnode post. Accepts post ID or URL on any publication (cross-publication via publication(host:) GraphQL). MESSAGE may be inline text or a path to a file containing the body (file detection is automatic, like bluesky_publish).",
-      "syntax": "hashnode_comment:POST_ID_OR_URL|MESSAGE_OR_FILE",
+      "syntax": "hashnode_comment:POST_ID_OR_URL|MESSAGE_OR_FILE_OR_file://PATH[|force]",
       "example": "hashnode_comment:abc123|Thanks for sharing!"
     },
     "hashnode_react": {
       "cmd": "python3 {path}hashnode/react.py {args}",
       "timeout": 15,
-      "description": "Like a Hashnode post. Accepts post ID or URL on any publication (cross-publication via publication(host:) GraphQL).",
-      "syntax": "hashnode_react:POST_ID_OR_URL",
-      "example": "hashnode_react:abc123"
+      "description": "Like a Hashnode post. Accepts post ID or URL on any publication (cross-publication via publication(host:) GraphQL). Hashnode's GraphQL exposes no per-user reaction state, so this aborts every call without |force. To opt into auto-force globally, add `\"hashnode_react\": {\"auto_force\": true}` to the ops section of .supertool.json.",
+      "syntax": "hashnode_react:POST_ID_OR_URL[|force]",
+      "example": "hashnode_react:abc123|force"
     },
     "hashnode_reply": {
       "cmd": "python3 {path}hashnode/reply.py {args}",
       "timeout": 30,
       "description": "Reply to a Hashnode comment. MESSAGE may be inline text or a path to a file containing the body (file detection is automatic, like bluesky_publish).",
-      "syntax": "hashnode_reply:COMMENT_ID|MESSAGE_OR_FILE",
+      "syntax": "hashnode_reply:COMMENT_ID|MESSAGE_OR_FILE_OR_file://PATH",
       "example": "hashnode_reply:comm-7|Good point — agree."
     },
     "hashnode_search": {

@@ -44,6 +44,35 @@ WEB_BASE = "https://dev.to"
 API_BASE = "https://dev.to/api"
 _COMMENT_ID_RE = re.compile(r'comment-id="(\d+)"')
 
+_FILE_PREFIX = "file://"
+
+
+def _resolve_body(arg: str) -> tuple[str, bool]:
+    """Resolve a body argument to its text content. Returns (text, from_file).
+
+    - `file://path` MUST be an existing file — errors otherwise (catches
+      typos that the legacy bare-path auto-detect would forward as text).
+    - bare path that `is_file()` reads the file (backward compat).
+    - anything else returned as-is.
+    """
+    if arg.startswith(_FILE_PREFIX):
+        path = arg[len(_FILE_PREFIX):]
+        p = Path(path)
+        if not p.is_file():
+            sys.stderr.write(
+                f"ERROR: file not found: {path}\n"
+                "(file:// prefix requires the file to exist — typo or wrong path?)\n"
+            )
+            sys.exit(2)
+        return p.read_text(), True
+    try:
+        p = Path(arg)
+        if p.is_file():
+            return p.read_text(), True
+    except OSError:
+        pass
+    return arg, False
+
 
 def parse_args(arg: str) -> tuple[str, str, str | None, bool]:
     parts = arg.split("|")
@@ -51,18 +80,8 @@ def parse_args(arg: str) -> tuple[str, str, str | None, bool]:
         sys.stderr.write("ERROR: usage devto_comment:ARTICLE_ID_OR_SLUG_OR_URL|MESSAGE_OR_FILE[|PARENT_COMMENT_ID[|force]]\n")
         sys.exit(2)
     raw = parts[0].strip()
-    message = parts[1]
-    # Body file support — symmetric with bluesky_publish: if MESSAGE is a path
-    # to an existing file, read its contents. Long multi-paragraph drafts are
-    # painful to inline through the supertool tokenizer. File bodies get
-    # stripped so an editor's trailing newline doesn't post as visible
-    # whitespace.
-    try:
-        p = Path(message)
-        if p.is_file():
-            message = p.read_text().strip()
-    except OSError:
-        pass
+    text, from_file = _resolve_body(parts[1])
+    message = text.strip() if from_file else text
     parent = parts[2].strip() if len(parts) > 2 and parts[2].strip() else None
     force = len(parts) > 3 and parts[3].strip().lower() == "force"
     return raw, message, parent, force

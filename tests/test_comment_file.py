@@ -161,3 +161,112 @@ def test_hashnode_reply_empty_args_errors() -> None:
     mod = _load("hashnode", "reply")
     with pytest.raises(SystemExit):
         mod.parse_args("comm-7|")
+
+
+# ---------- file:// prefix --------------------------------------------------
+
+
+def test_devto_comment_file_prefix(tmp_path: Path) -> None:
+    body_file = tmp_path / "body.md"
+    body_file.write_text("Body via file:// prefix")
+    mod = _load("devto", "comment")
+    raw, message, _, _ = mod.parse_args(f"123|file://{body_file}")
+    assert message == "Body via file:// prefix"
+
+
+def test_devto_comment_file_prefix_missing_errors(capsys: pytest.CaptureFixture[str]) -> None:
+    mod = _load("devto", "comment")
+    with pytest.raises(SystemExit):
+        mod.parse_args("123|file:///nonexistent/typo.md")
+    err = capsys.readouterr().err
+    assert "file not found" in err
+    assert "file:// prefix requires" in err
+
+
+def test_hashnode_comment_file_prefix(tmp_path: Path) -> None:
+    body_file = tmp_path / "body.md"
+    body_file.write_text("Hashnode body via prefix")
+    mod = _load("hashnode", "comment")
+    post, message, _ = mod.parse_args(f"post-id|file://{body_file}")
+    assert message == "Hashnode body via prefix"
+
+
+def test_hashnode_comment_file_prefix_missing_errors(capsys: pytest.CaptureFixture[str]) -> None:
+    mod = _load("hashnode", "comment")
+    with pytest.raises(SystemExit):
+        mod.parse_args("post-id|file:///nonexistent/typo.md")
+    err = capsys.readouterr().err
+    assert "file not found" in err
+
+
+def test_hashnode_reply_file_prefix(tmp_path: Path) -> None:
+    body_file = tmp_path / "reply.md"
+    body_file.write_text("Reply via prefix")
+    mod = _load("hashnode", "reply")
+    cid, message = mod.parse_args(f"comm-7|file://{body_file}")
+    assert message == "Reply via prefix"
+
+
+def test_hashnode_reply_file_prefix_missing_errors(capsys: pytest.CaptureFixture[str]) -> None:
+    mod = _load("hashnode", "reply")
+    with pytest.raises(SystemExit):
+        mod.parse_args("comm-7|file:///nonexistent/typo.md")
+    err = capsys.readouterr().err
+    assert "file not found" in err
+
+
+def test_bluesky_publish_file_prefix(tmp_path: Path) -> None:
+    body_file = tmp_path / "post.txt"
+    body_file.write_text("Bluesky body via prefix")
+    bluesky_mod = _load("bluesky", "publish")
+    body, _, _ = bluesky_mod.parse_args(f"file://{body_file}")
+    assert body == "Bluesky body via prefix"
+
+
+def test_bluesky_publish_file_prefix_missing_errors(capsys: pytest.CaptureFixture[str]) -> None:
+    bluesky_mod = _load("bluesky", "publish")
+    with pytest.raises(SystemExit):
+        bluesky_mod.parse_args("file:///nonexistent/typo.txt")
+    err = capsys.readouterr().err
+    assert "file not found" in err
+
+
+# ---------- hashnode auto_force env var -------------------------------------
+
+
+def test_hashnode_react_auto_force_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """SUPERTOOL_AUTO_FORCE truthy makes parse_args return force=True without |force."""
+    monkeypatch.setenv("SUPERTOOL_AUTO_FORCE", "true")
+    mod = _load("hashnode", "react")
+    raw, force = mod.parse_args("post-id")
+    assert force is True
+
+
+def test_hashnode_react_auto_force_off_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Without env var, no |force = force False (current behavior)."""
+    monkeypatch.delenv("SUPERTOOL_AUTO_FORCE", raising=False)
+    mod = _load("hashnode", "react")
+    raw, force = mod.parse_args("post-id")
+    assert force is False
+
+
+def test_hashnode_react_auto_force_explicit_force_still_works(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("SUPERTOOL_AUTO_FORCE", raising=False)
+    mod = _load("hashnode", "react")
+    raw, force = mod.parse_args("post-id|force")
+    assert force is True
+
+
+def test_hashnode_react_auto_force_falsy_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """SUPERTOOL_AUTO_FORCE=false should NOT trigger auto-force."""
+    monkeypatch.setenv("SUPERTOOL_AUTO_FORCE", "false")
+    mod = _load("hashnode", "react")
+    raw, force = mod.parse_args("post-id")
+    assert force is False
+
+
+def test_hashnode_comment_auto_force_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SUPERTOOL_AUTO_FORCE", "1")
+    mod = _load("hashnode", "comment")
+    post, message, force = mod.parse_args("post-id|hello")
+    assert force is True
