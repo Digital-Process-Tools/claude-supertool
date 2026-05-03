@@ -28,8 +28,12 @@ mutation PublishPost($input: PublishPostInput!) {
 """
 
 PREFLIGHT = """
-query MyPosts {
-  me { posts(first: 50) { edges { node { id slug url canonicalUrl } } } }
+query MyPublicationPosts {
+  me {
+    publications(first: 1) {
+      edges { node { posts(first: 50) { edges { node { id slug url canonicalUrl } } } } }
+    }
+  }
 }
 """
 
@@ -72,7 +76,11 @@ def preflight_publish(canonical: str, token: str) -> tuple[bool | None, str, str
     if data is None:
         return None, "", ""
     me = data.get("me") or {}
-    edges = (me.get("posts") or {}).get("edges") or []
+    pubs = (me.get("publications") or {}).get("edges") or []
+    edges = []
+    for pub in pubs:
+        pub_node = pub.get("node") or {}
+        edges.extend((pub_node.get("posts") or {}).get("edges") or [])
     for e in edges:
         node = e.get("node") or {}
         node_canonical = (node.get("canonicalUrl") or "").rstrip("/")

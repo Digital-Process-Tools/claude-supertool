@@ -25,12 +25,6 @@ mutation LikePost($input: LikePostInput!) {
 }
 """
 
-PREFLIGHT = """
-query PostReactions($id: ID!) {
-  post(id: $id) { myTotalReactions }
-}
-"""
-
 
 def parse_args(arg: str) -> tuple[str, bool]:
     """Return (raw_identifier, force)."""

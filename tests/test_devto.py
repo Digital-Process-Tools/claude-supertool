@@ -922,3 +922,161 @@ def test_comment_parse_args_accepts_url() -> None:
     assert raw == "https://dev.to/alice/some-slug"
     assert msg == "hi" and parent == "99"
     assert force is False
+
+
+# preflight tests — comment -----------------------------------------------
+# preflight_comment does `from _rest import request` and `from _auth import get_api_key`
+# inside the function body, so we patch via sys.modules (already populated when
+# comment_op was loaded at module-import time) rather than importing directly.
+
+def _ensure_devto_module(name: str):
+    """Return the named module from the devto preset, (re)loading if evicted."""
+    if name not in sys.modules:
+        if str(PRESET_DIR) not in sys.path:
+            sys.path.insert(0, str(PRESET_DIR))
+        spec = importlib.util.spec_from_file_location(name, PRESET_DIR / f"{name}.py")
+        assert spec and spec.loader
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[name] = mod
+        spec.loader.exec_module(mod)
+    return sys.modules[name]
+
+
+def _patch_rest_auth(fake_items):
+    """Stub request/get_api_key on the devto _rest/_auth modules in sys.modules."""
+    _rest_mod = _ensure_devto_module("_rest")
+    _auth_mod = _ensure_devto_module("_auth")
+    _rest_mod.request = lambda *a, **kw: fake_items() if callable(fake_items) else fake_items
+    _auth_mod.get_api_key = lambda: "fake"
+    return _rest_mod, _auth_mod
+
+
+def test_comment_preflight_already_commented(monkeypatch: pytest.MonkeyPatch) -> None:
+    items = [{"id": 1, "id_code": "abc12", "created_at": "2026-05-01T10:00:00Z",
+              "user": {"username": "max-ai-dev"}, "children": []}]
+    _patch_rest_auth(items)
+    already, ids, last = comment_op.preflight_comment(999, "max-ai-dev")
+    assert already is True and "abc12" in ids and last == "2026-05-01"
+
+
+def test_comment_preflight_already_commented_nested_children(monkeypatch: pytest.MonkeyPatch) -> None:
+    items = [{"id": 1, "id_code": "top01", "created_at": "2026-04-01T00:00:00Z",
+              "user": {"username": "other"}, "children": [
+                  {"id": 2, "id_code": "child2", "created_at": "2026-05-02T00:00:00Z",
+                   "user": {"username": "max-ai-dev"}},
+              ]}]
+    _patch_rest_auth(items)
+    already, ids, last = comment_op.preflight_comment(999, "max-ai-dev")
+    assert already is True and "child2" in ids and last == "2026-05-02"
+
+
+def test_comment_preflight_not_commented(monkeypatch: pytest.MonkeyPatch) -> None:
+    items = [{"id": 1, "id_code": "xyz99", "created_at": "2026-05-01T10:00:00Z",
+              "user": {"username": "alice"}, "children": []}]
+    _patch_rest_auth(items)
+    already, ids, last = comment_op.preflight_comment(999, "max-ai-dev")
+    assert already is False and ids == []
+
+
+def test_comment_preflight_api_error_degrades(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _raise(*a, **kw): raise Exception("timeout")
+    _patch_rest_auth(_raise)
+    already, ids, last = comment_op.preflight_comment(999, "max-ai-dev")
+    assert already is False and ids == [] and last == ""
+
+
+def test_comment_main_aborts_on_dupe(monkeypatch: pytest.MonkeyPatch,
+                                      capsys: pytest.CaptureFixture[str]) -> None:
+    items = [{"id": 1, "id_code": "abc12", "created_at": "2026-05-01T10:00:00Z",
+              "user": {"username": "max-ai-dev"}, "children": []}]
+    _patch_rest_auth(items)
+    # inject _me into sys.modules so the local import inside main() resolves
+    import types
+    _me_mod = types.ModuleType("_me")
+    _me_mod.get_username = lambda key: "max-ai-dev"  # type: ignore[attr-defined]
+    sys.modules["_me"] = _me_mod
+    monkeypatch.setattr(comment_op, "resolve_article_id", lambda raw: 999)
+    monkeypatch.setattr(comment_op, "get_session_cookie", lambda: "cookie-val")
+    with pytest.raises(SystemExit) as exc:
+        comment_op.main("999|Hello world")
+    assert exc.value.code == 1
+    assert "ABORT" in capsys.readouterr().err
+
+
+def test_comment_main_force_bypasses_preflight(monkeypatch: pytest.MonkeyPatch,
+                                                capsys: pytest.CaptureFixture[str]) -> None:
+    # With |force the preflight block is skipped entirely — _rest.request must
+    # NOT be called before the post. Stub _print_post_confirmation to suppress
+    # the post-confirmation fetch (a separate concern, not preflight).
+    called: list[str] = []
+    def _track(*a, **kw): called.append("preflight"); return []
+    _patch_rest_auth(_track)
+    monkeypatch.setattr(comment_op, "resolve_article_id", lambda raw: 999)
+    monkeypatch.setattr(comment_op, "get_session_cookie", lambda: "cookie-val")
+    monkeypatch.setattr(comment_op, "fetch_csrf_token", lambda c: "csrf-tok")
+    monkeypatch.setattr(comment_op, "web_post_json",
+                        lambda path, cookie, csrf, body: ('{"id": 42}', 200))
+    monkeypatch.setattr(comment_op, "_print_post_confirmation", lambda aid, cid: None)
+    comment_op.main("999|Hello world||force")
+    assert "preflight" not in called
+
+
+# preflight tests — publish -----------------------------------------------
+
+def test_publish_preflight_dupe_found(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(publish, "request",
+                        lambda *a, **kw: [{"canonical_url": "https://x.io",
+                                           "url": "https://dev.to/u/s", "slug": "u-s"}])
+    monkeypatch.setattr(publish, "get_api_key", lambda: "fake")
+    already, url, slug = publish.preflight_publish("https://x.io", "fake")
+    assert already is True and slug == "u-s"
+
+
+def test_publish_preflight_no_dupe(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(publish, "request",
+                        lambda *a, **kw: [{"canonical_url": "https://other.io",
+                                           "url": "https://dev.to/u/o", "slug": "u-o"}])
+    monkeypatch.setattr(publish, "get_api_key", lambda: "fake")
+    already, url, slug = publish.preflight_publish("https://x.io", "fake")
+    assert already is False
+
+
+def test_publish_preflight_api_error_degrades(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(publish, "request",
+                        lambda *a, **kw: (_ for _ in ()).throw(Exception("500")))
+    monkeypatch.setattr(publish, "get_api_key", lambda: "fake")
+    already, url, slug = publish.preflight_publish("https://x.io", "fake")
+    assert already is False and url == "" and slug == ""
+
+
+def test_publish_main_aborts_on_dupe(monkeypatch: pytest.MonkeyPatch,
+                                      capsys: pytest.CaptureFixture[str],
+                                      tmp_path: Path) -> None:
+    md = tmp_path / "p.md"
+    md.write_text("body")
+    monkeypatch.setattr(publish, "get_api_key", lambda: "fake")
+    monkeypatch.setattr(publish, "request",
+                        lambda *a, **kw: [{"canonical_url": "https://x.io",
+                                           "url": "https://dev.to/u/s", "slug": "u-s"}])
+    with pytest.raises(SystemExit) as exc:
+        publish.main(f"T|{md}|https://x.io")
+    assert exc.value.code == 1
+    assert "ABORT" in capsys.readouterr().err
+
+
+def test_publish_main_force_bypasses_preflight(monkeypatch: pytest.MonkeyPatch,
+                                                capsys: pytest.CaptureFixture[str],
+                                                tmp_path: Path) -> None:
+    md = tmp_path / "p.md"
+    md.write_text("body")
+    calls: list[str] = []
+    def fake_request(method: str, path: str, *a, **kw):
+        calls.append(method)
+        if method == "GET":
+            return [{"canonical_url": "https://x.io", "url": "https://dev.to/u/s", "slug": "u-s"}]
+        return {"id": 99, "slug": "new-slug", "url": "https://dev.to/u/new-slug", "title": "T"}
+    monkeypatch.setattr(publish, "get_api_key", lambda: "fake")
+    monkeypatch.setattr(publish, "request", fake_request)
+    publish.main(f"T|{md}|https://x.io||||force")
+    assert "GET" not in calls
+    assert "published" in capsys.readouterr().out

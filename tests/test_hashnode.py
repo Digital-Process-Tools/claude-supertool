@@ -917,10 +917,13 @@ def test_publish_parse_args_no_force(tmp_path: Path) -> None:
 
 def test_publish_preflight_dupe_found(monkeypatch: pytest.MonkeyPatch) -> None:
     # preflight_publish calls gql_safe (not gql) — monkeypatch the right name.
+    # Shape: me.publications.edges[].node.posts.edges (updated PREFLIGHT query).
     monkeypatch.setattr(publish_op, "gql_safe", lambda q, v, t: {
-        "me": {"posts": {"edges": [
-            {"node": {"id": "p1", "slug": "my-slug", "url": "https://x.io/my-slug",
-                      "canonicalUrl": "https://x.io"}},
+        "me": {"publications": {"edges": [
+            {"node": {"posts": {"edges": [
+                {"node": {"id": "p1", "slug": "my-slug", "url": "https://x.io/my-slug",
+                          "canonicalUrl": "https://x.io"}},
+            ]}}},
         ]}}
     })
     already, url, slug = publish_op.preflight_publish("https://x.io", "tok")
@@ -930,9 +933,11 @@ def test_publish_preflight_dupe_found(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_publish_preflight_no_dupe(monkeypatch: pytest.MonkeyPatch) -> None:
     # preflight_publish calls gql_safe (not gql) — monkeypatch the right name.
     monkeypatch.setattr(publish_op, "gql_safe", lambda q, v, t: {
-        "me": {"posts": {"edges": [
-            {"node": {"id": "p1", "slug": "other", "url": "https://other.io",
-                      "canonicalUrl": "https://other.io"}},
+        "me": {"publications": {"edges": [
+            {"node": {"posts": {"edges": [
+                {"node": {"id": "p1", "slug": "other", "url": "https://other.io",
+                          "canonicalUrl": "https://other.io"}},
+            ]}}},
         ]}}
     })
     already, url, slug = publish_op.preflight_publish("https://x.io", "tok")
@@ -952,10 +957,12 @@ def test_publish_main_aborts_on_dupe(monkeypatch: pytest.MonkeyPatch,
     md = tmp_path / "p.md"
     md.write_text("body")
     monkeypatch.setattr(publish_op, "get_token", lambda: "tok")
-    monkeypatch.setattr(publish_op, "gql", lambda q, v, t: {
-        "me": {"posts": {"edges": [
-            {"node": {"id": "p1", "slug": "my-slug", "url": "https://x.io",
-                      "canonicalUrl": "https://x.io"}},
+    monkeypatch.setattr(publish_op, "gql_safe", lambda q, v, t: {
+        "me": {"publications": {"edges": [
+            {"node": {"posts": {"edges": [
+                {"node": {"id": "p1", "slug": "my-slug", "url": "https://x.io",
+                          "canonicalUrl": "https://x.io"}},
+            ]}}},
         ]}}
     })
     with pytest.raises(SystemExit) as exc:

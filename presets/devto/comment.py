@@ -23,7 +23,7 @@ comment URL HTML on demand.
 
 PRE-FLIGHT DUPLICATE CHECK: Before posting, the op fetches existing
 comments on the article and aborts if the authenticated user has already
-commented (matched by username from DEVTO_API_KEY lookup). Pass `:force`
+commented (matched by username from DEVTO_API_KEY lookup). Pass `|force`
 as the 4th pipe-separated field to bypass: devto_comment:slug|MSG||force
 If the pre-flight API call fails, a warning is printed and the comment
 proceeds (graceful degrade — don't block on platform issues).
