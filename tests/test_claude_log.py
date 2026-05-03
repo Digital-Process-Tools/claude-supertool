@@ -388,3 +388,80 @@ class TestSummary:
         # Bash: 2 calls, 1 error. Edit: 1 call, 1 error.
         assert "2  Bash (1 err)" in out
         assert "1  Edit (1 err)" in out
+
+
+# ---------- session_path cross-project lookup ------------------------------
+
+
+class TestSessionPathCrossProject:
+    """session_path() should prefer the current project, but fall back to
+    scanning all projects under ~/.claude/projects/ when the UUID isn't found
+    locally. This covers worktree / multi-checkout setups where a session
+    lives under a sibling project's directory."""
+
+    def test_finds_session_in_current_project(self, tmp_path: Path,
+                                              monkeypatch: pytest.MonkeyPatch) -> None:
+        p = make_project(tmp_path)
+        uuid = "abc-current"
+        p.add_session(uuid, [_user_text("hi")])
+        monkeypatch.setenv("HOME", str(p.home))
+        monkeypatch.setenv("USERPROFILE", str(p.home))
+        monkeypatch.chdir(p.cwd)
+        path = _common.session_path(uuid)
+        assert path == p.proj_dir / f"{uuid}.jsonl"
+        assert path.is_file()
+
+    def test_falls_back_to_sibling_project(self, tmp_path: Path,
+                                           monkeypatch: pytest.MonkeyPatch) -> None:
+        # Build two projects under one fake home; session lives in the OTHER one.
+        home = tmp_path / "fake-home"
+        cwd_a = tmp_path / "work" / "proj-a"
+        cwd_b = tmp_path / "work" / "proj-b"
+        cwd_a.mkdir(parents=True)
+        cwd_b.mkdir(parents=True)
+        proj_a = home / ".claude" / "projects" / _common.encode_cwd(str(cwd_a))
+        proj_b = home / ".claude" / "projects" / _common.encode_cwd(str(cwd_b))
+        proj_a.mkdir(parents=True)
+        proj_b.mkdir(parents=True)
+        uuid = "lives-in-b"
+        _write_jsonl(proj_b / f"{uuid}.jsonl", [_user_text("hello")])
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
+        monkeypatch.chdir(cwd_a)
+        path = _common.session_path(uuid)
+        # Should resolve to project B even though we're cwd'd in project A.
+        assert path == proj_b / f"{uuid}.jsonl"
+        assert path.is_file()
+
+    def test_missing_uuid_returns_direct_path(self, tmp_path: Path,
+                                              monkeypatch: pytest.MonkeyPatch) -> None:
+        """When UUID is nowhere, return the direct (current-project) path so
+        the caller's `if not sp.exists()` error message points at the expected
+        location, not some random sibling."""
+        p = make_project(tmp_path)
+        monkeypatch.setenv("HOME", str(p.home))
+        monkeypatch.setenv("USERPROFILE", str(p.home))
+        monkeypatch.chdir(p.cwd)
+        path = _common.session_path("does-not-exist")
+        assert path == p.proj_dir / "does-not-exist.jsonl"
+        assert not path.exists()
+
+    def test_skips_non_directory_entries(self, tmp_path: Path,
+                                         monkeypatch: pytest.MonkeyPatch) -> None:
+        """Stray files under ~/.claude/projects/ shouldn't break the scan."""
+        p = make_project(tmp_path)
+        # Create a stray file alongside project directories.
+        (p.home / ".claude" / "projects" / "stray.txt").write_text("noise")
+        # Plus a real session in a sibling project.
+        sibling_cwd = tmp_path / "work" / "sibling"
+        sibling_cwd.mkdir(parents=True)
+        sibling_dir = (p.home / ".claude" / "projects"
+                       / _common.encode_cwd(str(sibling_cwd)))
+        sibling_dir.mkdir(parents=True)
+        uuid = "sib-uuid"
+        _write_jsonl(sibling_dir / f"{uuid}.jsonl", [_user_text("hi")])
+        monkeypatch.setenv("HOME", str(p.home))
+        monkeypatch.setenv("USERPROFILE", str(p.home))
+        monkeypatch.chdir(p.cwd)
+        path = _common.session_path(uuid)
+        assert path == sibling_dir / f"{uuid}.jsonl"

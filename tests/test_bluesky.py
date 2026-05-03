@@ -71,6 +71,101 @@ def test_publish_parse_args_empty(capsys: pytest.CaptureFixture[str]) -> None:
     assert "ERROR" in capsys.readouterr().err
 
 
+# extract_link_facets ----------------------------------------------------
+
+
+def test_facets_no_url() -> None:
+    assert publish.extract_link_facets("Hello world") == []
+
+
+def test_facets_single_url() -> None:
+    body = "See https://example.com for more"
+    facets = publish.extract_link_facets(body)
+    assert len(facets) == 1
+    f = facets[0]
+    assert f["features"][0]["$type"] == "app.bsky.richtext.facet#link"
+    assert f["features"][0]["uri"] == "https://example.com"
+    assert f["index"]["byteStart"] == 4
+    assert f["index"]["byteEnd"] == 23
+    # Cross-check the slice produces the URL.
+    assert body.encode("utf-8")[4:23] == b"https://example.com"
+
+
+def test_facets_strips_trailing_period() -> None:
+    body = "Read https://example.com."
+    facets = publish.extract_link_facets(body)
+    assert len(facets) == 1
+    assert facets[0]["features"][0]["uri"] == "https://example.com"
+    # Byte range should NOT include the trailing dot.
+    assert facets[0]["index"]["byteEnd"] == len(body.encode("utf-8")) - 1
+
+
+def test_facets_strips_trailing_paren() -> None:
+    body = "(see https://example.com)"
+    facets = publish.extract_link_facets(body)
+    assert len(facets) == 1
+    assert facets[0]["features"][0]["uri"] == "https://example.com"
+
+
+def test_facets_multiple_urls() -> None:
+    body = "First https://a.com then https://b.com end"
+    facets = publish.extract_link_facets(body)
+    assert len(facets) == 2
+    assert facets[0]["features"][0]["uri"] == "https://a.com"
+    assert facets[1]["features"][0]["uri"] == "https://b.com"
+    # Offsets must be increasing and non-overlapping.
+    assert facets[0]["index"]["byteEnd"] <= facets[1]["index"]["byteStart"]
+
+
+def test_facets_byte_offsets_with_unicode() -> None:
+    """Byte offsets, not character offsets — emoji & accents take >1 byte."""
+    body = "café — https://example.com"
+    facets = publish.extract_link_facets(body)
+    assert len(facets) == 1
+    start = facets[0]["index"]["byteStart"]
+    end = facets[0]["index"]["byteEnd"]
+    assert body.encode("utf-8")[start:end] == b"https://example.com"
+
+
+def test_facets_http_and_https_both_match() -> None:
+    body = "old http://example.com and new https://example.com"
+    facets = publish.extract_link_facets(body)
+    assert len(facets) == 2
+    assert facets[0]["features"][0]["uri"] == "http://example.com"
+    assert facets[1]["features"][0]["uri"] == "https://example.com"
+
+
+def test_facets_angle_bracket_url_excludes_brackets() -> None:
+    """`<https://x.com>` must not pull `>` into the facet URI — invalid URL."""
+    body = "wrap <https://example.com>"
+    facets = publish.extract_link_facets(body)
+    assert len(facets) == 1
+    assert facets[0]["features"][0]["uri"] == "https://example.com"
+
+
+def test_facets_query_string_with_punct_preserved() -> None:
+    """`!`, `)` etc. inside `?query=...` are valid URL chars; don't strip."""
+    body = "search https://x.com?q=hi!"
+    facets = publish.extract_link_facets(body)
+    assert len(facets) == 1
+    assert facets[0]["features"][0]["uri"] == "https://x.com?q=hi!"
+
+
+def test_facets_fragment_with_punct_preserved() -> None:
+    body = "anchor https://x.com/page#section!"
+    facets = publish.extract_link_facets(body)
+    assert len(facets) == 1
+    assert facets[0]["features"][0]["uri"] == "https://x.com/page#section!"
+
+
+def test_facets_markdown_link_syntax_handled() -> None:
+    """`[text](URL)` shouldn't pull the closing paren into the facet."""
+    body = "see [docs](https://example.com) for more"
+    facets = publish.extract_link_facets(body)
+    assert len(facets) == 1
+    assert facets[0]["features"][0]["uri"] == "https://example.com"
+
+
 # list ------------------------------------------------------------------
 
 def test_list_parse_args_default() -> None:

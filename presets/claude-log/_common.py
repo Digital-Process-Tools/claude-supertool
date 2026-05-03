@@ -61,8 +61,23 @@ def _common_prefix_len(a: str, b: str) -> int:
 
 
 def session_path(uuid: str) -> Path:
-    """Path to a session jsonl file in the current project."""
-    return project_dir() / f"{uuid}.jsonl"
+    """Path to a session jsonl file. Prefers the current project; falls back
+    to scanning all projects under ~/.claude/projects/ if the UUID is not found
+    locally — useful when inspecting sessions from worktrees or other projects
+    without changing cwd.
+    """
+    direct = project_dir() / f"{uuid}.jsonl"
+    if direct.is_file():
+        return direct
+    root = claude_projects_root()
+    if root.is_dir():
+        for project in root.iterdir():
+            if not project.is_dir():
+                continue
+            candidate = project / f"{uuid}.jsonl"
+            if candidate.is_file():
+                return candidate
+    return direct
 
 
 def read_jsonl(path: Path):
