@@ -48,10 +48,19 @@ _COMMENT_ID_RE = re.compile(r'comment-id="(\d+)"')
 def parse_args(arg: str) -> tuple[str, str, str | None, bool]:
     parts = arg.split("|")
     if len(parts) < 2 or not parts[0].strip() or not parts[1].strip():
-        sys.stderr.write("ERROR: usage devto_comment:ARTICLE_ID_OR_SLUG_OR_URL|MESSAGE[|PARENT_COMMENT_ID[|force]]\n")
+        sys.stderr.write("ERROR: usage devto_comment:ARTICLE_ID_OR_SLUG_OR_URL|MESSAGE_OR_FILE[|PARENT_COMMENT_ID[|force]]\n")
         sys.exit(2)
     raw = parts[0].strip()
     message = parts[1]
+    # Body file support — symmetric with bluesky_publish: if MESSAGE is a path
+    # to an existing file, read its contents. Long multi-paragraph drafts are
+    # painful to inline through the supertool tokenizer.
+    try:
+        p = Path(message)
+        if p.is_file():
+            message = p.read_text()
+    except OSError:
+        pass
     parent = parts[2].strip() if len(parts) > 2 and parts[2].strip() else None
     force = len(parts) > 3 and parts[3].strip().lower() == "force"
     return raw, message, parent, force

@@ -24,9 +24,19 @@ query ParentPost($cid: ID!) {
 def parse_args(arg: str) -> tuple[str, str]:
     parts = arg.split("|", 1)
     if len(parts) < 2 or not parts[1].strip():
-        sys.stderr.write("ERROR: usage hashnode_reply:COMMENT_ID|MESSAGE\n")
+        sys.stderr.write("ERROR: usage hashnode_reply:COMMENT_ID|MESSAGE_OR_FILE\n")
         sys.exit(2)
-    return parts[0].strip(), parts[1]
+    cid = parts[0].strip()
+    message = parts[1]
+    # Body file support — symmetric with bluesky_publish: if MESSAGE is a path
+    # to an existing file, read its contents.
+    try:
+        p = Path(message)
+        if p.is_file():
+            message = p.read_text()
+    except OSError:
+        pass
+    return cid, message
 
 
 def main(arg: str) -> None:

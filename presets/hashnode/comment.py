@@ -42,10 +42,19 @@ def parse_args(arg: str) -> tuple[str, str, bool]:
     """Return (post_or_url, message, force)."""
     parts = arg.split("|", 2)
     if len(parts) < 2 or not parts[1].strip():
-        sys.stderr.write("ERROR: usage hashnode_comment:POST_ID_OR_URL|MESSAGE[|force]\n")
+        sys.stderr.write("ERROR: usage hashnode_comment:POST_ID_OR_URL|MESSAGE_OR_FILE[|force]\n")
         sys.exit(2)
     post_or_url = parts[0].strip()
     message = parts[1]
+    # Body file support — symmetric with bluesky_publish: if MESSAGE is a path
+    # to an existing file, read its contents. Long multi-paragraph drafts are
+    # painful to inline through the supertool tokenizer.
+    try:
+        p = Path(message)
+        if p.is_file():
+            message = p.read_text()
+    except OSError:
+        pass
     force = len(parts) > 2 and parts[2].strip().lower() == "force"
     return post_or_url, message, force
 
