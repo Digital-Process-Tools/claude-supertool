@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Dev.to comment: devto_comment:ARTICLE_ID_OR_SLUG_OR_URL|MESSAGE[|PARENT_COMMENT_ID]
+"""Dev.to comment: devto_comment:ARTICLE_ID_OR_SLUG_OR_URL|MESSAGE[|PARENT_COMMENT_ID[|force]]
 
 Accepts numeric article ID, slug (`author/slug`), or full URL — non-numeric
 inputs are resolved to the numeric ID via /api/articles/{slug} before posting.
@@ -20,6 +20,13 @@ devto_status_since output (e.g. "37d65"). Forem's CommentsController
 permits `parent_id` as the numeric DB id only; the public API does
 not expose it, so we resolve id_code → numeric id by scraping the
 comment URL HTML on demand.
+
+PRE-FLIGHT DUPLICATE CHECK: Before posting, the op fetches existing
+comments on the article and aborts if the authenticated user has already
+commented (matched by username from DEVTO_API_KEY lookup). Pass `:force`
+as the 4th pipe-separated field to bypass: devto_comment:slug|MSG||force
+If the pre-flight API call fails, a warning is printed and the comment
+proceeds (graceful degrade — don't block on platform issues).
 """
 import json
 import re
@@ -38,19 +45,48 @@ API_BASE = "https://dev.to/api"
 _COMMENT_ID_RE = re.compile(r'comment-id="(\d+)"')
 
 
-def parse_args(arg: str) -> tuple[str, str, str | None]:
+def parse_args(arg: str) -> tuple[str, str, str | None, bool]:
     parts = arg.split("|")
     if len(parts) < 2 or not parts[0].strip() or not parts[1].strip():
-        sys.stderr.write("ERROR: usage devto_comment:ARTICLE_ID_OR_SLUG_OR_URL|MESSAGE[|PARENT_COMMENT_ID]\n")
+        sys.stderr.write("ERROR: usage devto_comment:ARTICLE_ID_OR_SLUG_OR_URL|MESSAGE[|PARENT_COMMENT_ID[|force]]\n")
         sys.exit(2)
     raw = parts[0].strip()
     message = parts[1]
     parent = parts[2].strip() if len(parts) > 2 and parts[2].strip() else None
-    return raw, message, parent
+    force = len(parts) > 3 and parts[3].strip().lower() == "force"
+    return raw, message, parent, force
+
+
+def preflight_comment(aid: int, me: str) -> tuple[bool, list[str], str]:
+    """Check if `me` has already commented on article `aid`.
+
+    Returns (already_commented, existing_ids, last_date).
+    On API error returns (False, [], "") so the caller can degrade gracefully.
+    """
+    if not me:
+        return False, [], ""
+    try:
+        from _auth import get_api_key
+        from _rest import request
+        items = request("GET", "/comments", get_api_key(), query={"a_id": aid, "per_page": 1000})
+    except Exception:
+        return False, [], ""
+    if not isinstance(items, list):
+        return False, [], ""
+    flat: list[dict] = []
+    for c in items:
+        flat.append(c)
+        flat.extend(c.get("children") or [])
+    mine = [c for c in flat if (c.get("user") or {}).get("username") == me]
+    if not mine:
+        return False, [], ""
+    ids = [c.get("id_code") or str(c.get("id", "?")) for c in mine]
+    last = max((c.get("created_at") or "") for c in mine).split("T")[0]
+    return True, ids, last
 
 
 def main(arg: str) -> None:
-    raw, message, parent = parse_args(arg)
+    raw, message, parent, force = parse_args(arg)
     aid = resolve_article_id(raw)
     cookie = get_session_cookie()
     if not cookie:
@@ -60,6 +96,21 @@ def main(arg: str) -> None:
             "comment-write endpoint — see _session.py for opt-in instructions.\n"
         )
         sys.exit(2)
+    if not force:
+        try:
+            from _auth import get_api_key
+            from _me import get_username
+            me = get_username(get_api_key())
+            already, ids, last = preflight_comment(aid, me)
+            if already:
+                sys.stderr.write(
+                    f"ABORT — already commented {len(ids)}× on article {aid} "
+                    f"(ids: {', '.join(ids)}, last {last}). "
+                    "Use |force as 4th field to override.\n"
+                )
+                sys.exit(1)
+        except Exception as exc:
+            sys.stderr.write(f"WARNING: pre-flight check failed ({exc}) — proceeding anyway.\n")
     csrf = fetch_csrf_token(cookie)
     body: dict[str, object] = {
         "comment": {
@@ -178,4 +229,4 @@ if __name__ == "__main__":
     # Supertool {args} passes parts space-separated; rejoin with ':' so a body
     # containing ':' survives the supertool tokenizer.
     arg = ":".join(sys.argv[1:])
-    main(arg)
+    main(arg)  # parse_args now returns 4-tuple; main() unpacks it internally

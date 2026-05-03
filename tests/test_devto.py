@@ -80,6 +80,22 @@ def test_publish_parse_args_md_missing(tmp_path: Path, capsys: pytest.CaptureFix
     assert "not found" in capsys.readouterr().err
 
 
+def test_publish_parse_args_force_flag(tmp_path: Path) -> None:
+    """7th pipe field 'force' sets force=True."""
+    md = tmp_path / "p.md"
+    md.write_text("body")
+    parsed = publish.parse_args(f"T|{md}|https://x.io||||force")
+    assert parsed["force"] is True
+
+
+def test_publish_parse_args_no_force_by_default(tmp_path: Path) -> None:
+    """Omitting 7th field → force=False."""
+    md = tmp_path / "p.md"
+    md.write_text("body")
+    parsed = publish.parse_args(f"T|{md}|https://x.io")
+    assert parsed["force"] is False
+
+
 def test_publish_build_body_minimal() -> None:
     parsed: dict[str, Any] = {
         "title": "T", "markdown": "body", "canonical": "https://x.io",
@@ -256,19 +272,105 @@ def test_comments_render_marks_you() -> None:
 # react -------------------------------------------------------------------
 
 def test_react_parse_args_default() -> None:
-    aid, cat = react.parse_args("123")
-    assert aid == "123" and cat == "like"
+    aid, cat, idempotent = react.parse_args("123")
+    assert aid == "123" and cat == "like" and idempotent is True
 
 
 def test_react_parse_args_with_category() -> None:
-    aid, cat = react.parse_args("123|unicorn")
-    assert aid == "123" and cat == "unicorn"
+    aid, cat, idempotent = react.parse_args("123|unicorn")
+    assert aid == "123" and cat == "unicorn" and idempotent is True
 
 
 def test_react_parse_args_invalid_category(capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit):
         react.parse_args("123|nope")
     assert "category" in capsys.readouterr().err
+
+
+def test_react_parse_args_idempotent_default() -> None:
+    """No third field → idempotent=True (ensure-create semantics)."""
+    aid, cat, idempotent = react.parse_args("123|like")
+    assert idempotent is True
+
+
+def test_react_parse_args_toggle_modifier() -> None:
+    """|toggle as third field → idempotent=False (raw toggle, one POST)."""
+    aid, cat, idempotent = react.parse_args("123|like|toggle")
+    assert aid == "123" and cat == "like" and idempotent is False
+
+
+def test_react_parse_args_toggle_modifier_default_category() -> None:
+    """Toggle modifier works even when category is omitted (empty second field)."""
+    aid, cat, idempotent = react.parse_args("123||toggle")
+    assert cat == "like" and idempotent is False
+
+
+def test_react_idempotent_create_no_double_post(monkeypatch: pytest.MonkeyPatch,
+                                                 capsys: pytest.CaptureFixture[str]) -> None:
+    """result=create on first POST → no second POST needed."""
+    posts: list[dict] = []
+
+    def fake_web_post(path, cookie, csrf, body, **kw):
+        posts.append(body)
+        return ('{"result": "create"}', 200)
+
+    monkeypatch.setattr(react, "get_session_cookie", lambda: "cookie-val")
+    monkeypatch.setattr(react, "fetch_csrf_token", lambda c: "csrf-tok")
+    monkeypatch.setattr(react, "web_post_json", fake_web_post)
+    monkeypatch.setattr(react, "resolve_article_id", lambda raw: 42)
+
+    react.main("42|like")
+
+    assert len(posts) == 1
+    out = capsys.readouterr()
+    assert "result=create" in out.out
+    assert "was_on=true" not in out.out
+
+
+def test_react_idempotent_destroy_corrects(monkeypatch: pytest.MonkeyPatch,
+                                            capsys: pytest.CaptureFixture[str]) -> None:
+    """result=destroy on first POST → second POST issued to restore; output shows was_on=true."""
+    responses = iter(['{"result": "destroy"}', '{"result": "create"}'])
+    posts: list[dict] = []
+
+    def fake_web_post(path, cookie, csrf, body, **kw):
+        posts.append(body)
+        return (next(responses), 200)
+
+    monkeypatch.setattr(react, "get_session_cookie", lambda: "cookie-val")
+    monkeypatch.setattr(react, "fetch_csrf_token", lambda c: "csrf-tok")
+    monkeypatch.setattr(react, "web_post_json", fake_web_post)
+    monkeypatch.setattr(react, "resolve_article_id", lambda raw: 42)
+
+    react.main("42|like")
+
+    assert len(posts) == 2
+    out = capsys.readouterr()
+    assert "result=create" in out.out
+    assert "was_on=true" in out.out
+    assert "NOTE:" in out.err
+
+
+def test_react_toggle_mode_no_correction(monkeypatch: pytest.MonkeyPatch,
+                                          capsys: pytest.CaptureFixture[str]) -> None:
+    """With |toggle, destroy result is NOT corrected — raw one-shot behaviour."""
+    posts: list[dict] = []
+
+    def fake_web_post(path, cookie, csrf, body, **kw):
+        posts.append(body)
+        return ('{"result": "destroy"}', 200)
+
+    monkeypatch.setattr(react, "get_session_cookie", lambda: "cookie-val")
+    monkeypatch.setattr(react, "fetch_csrf_token", lambda c: "csrf-tok")
+    monkeypatch.setattr(react, "web_post_json", fake_web_post)
+    monkeypatch.setattr(react, "resolve_article_id", lambda raw: 42)
+
+    react.main("42|like|toggle")
+
+    assert len(posts) == 1
+    out = capsys.readouterr()
+    assert "result=destroy" in out.out
+    assert "was_on" not in out.out
 
 
 # status_since -----------------------------------------------------------
@@ -401,22 +503,23 @@ def test_read_own_engagement_flat_and_nested() -> None:
 # comment ----------------------------------------------------------------
 
 def test_comment_parse_args_minimal() -> None:
-    aid, msg, parent = comment_op.parse_args("1234|Hello")
-    assert aid == "1234" and msg == "Hello" and parent is None
+    aid, msg, parent, force = comment_op.parse_args("1234|Hello")
+    assert aid == "1234" and msg == "Hello" and parent is None and force is False
 
 
 def test_comment_parse_args_reply() -> None:
-    aid, msg, parent = comment_op.parse_args("1234|Hello|99")
-    assert aid == "1234" and parent == "99"
+    aid, msg, parent, force = comment_op.parse_args("1234|Hello|99")
+    assert aid == "1234" and parent == "99" and force is False
 
 
 def test_comment_parse_args_message_keeps_pipes() -> None:
-    aid, msg, parent = comment_op.parse_args("1234|hi | there | mate")
+    aid, msg, parent, force = comment_op.parse_args("1234|hi | there | mate")
     assert aid == "1234"
     # implementation splits on '|' so message is just first piece — but parent may capture "mate"
     # this asserts the actual behavior so we don't accidentally regress it
     assert msg == "hi "  # arg parser splits liberally; document the limit
     assert parent == "there"
+    assert force is False
 
 
 def test_comment_parse_args_missing_msg(capsys: pytest.CaptureFixture[str]) -> None:
@@ -435,12 +538,25 @@ def test_comment_parse_args_message_keeps_colons() -> None:
     """When supertool {args} parts are colon-rejoined in main(), parse_args
     must preserve a colon-bearing body intact (no truncation at first ':').
     """
-    aid, msg, parent = comment_op.parse_args(
+    aid, msg, parent, force = comment_op.parse_args(
         "1234|Boundary prediction is the right name. Worth saying: it's learnable.|99"
     )
     assert aid == "1234"
     assert msg == "Boundary prediction is the right name. Worth saying: it's learnable."
     assert parent == "99"
+    assert force is False
+
+
+def test_comment_parse_args_force_flag() -> None:
+    """4th pipe field 'force' sets force=True."""
+    aid, msg, parent, force = comment_op.parse_args("1234|Hello|99|force")
+    assert aid == "1234" and msg == "Hello" and parent == "99" and force is True
+
+
+def test_comment_parse_args_force_no_parent() -> None:
+    """force can appear in 4th slot even with empty parent."""
+    aid, msg, parent, force = comment_op.parse_args("1234|Hello||force")
+    assert parent is None and force is True
 
 
 def test_resolve_parent_numeric_id_happy(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -526,7 +642,7 @@ def _run_comment_dryrun(*argv_parts: str) -> tuple[str, str, str | None]:
         "import sys; sys.path.insert(0, %r);\n"
         "import comment as c\n"
         "arg = ':'.join(sys.argv[1:])\n"
-        "aid, msg, parent = c.parse_args(arg)\n"
+        "aid, msg, parent, force = c.parse_args(arg)\n"
         "print(repr((aid, msg, parent)))\n"
     ) % str(repo / "presets" / "devto")
     proc = subprocess.run(
@@ -700,12 +816,73 @@ def test_resolve_empty_exits(capsys: pytest.CaptureFixture[str]) -> None:
 
 
 def test_resolve_unparseable_exits(capsys: pytest.CaptureFixture[str]) -> None:
-    """Bare slug with no slash and non-numeric → cannot parse, exits."""
+    """Input that matches no known form (too-short suffix, no slash, no scheme) → exits."""
     with pytest.raises(SystemExit):
-        resolve_op.resolve_article_id("just-a-slug-no-author")
+        resolve_op.resolve_article_id("just-a-slug-x")  # suffix only 1 char → no match
     err = capsys.readouterr().err
     assert "cannot parse article identifier" in err
-    assert "just-a-slug-no-author" in err
+    assert "just-a-slug-x" in err
+
+
+def test_resolve_bare_slug_calls_list_api(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Bare slug matching ^[a-z0-9][a-z0-9-]*-[a-z0-9]{4,6}$ → GET /articles?slug=... → returns id."""
+    calls: list[tuple] = []
+
+    def fake_request(method, path, api_key, body=None, query=None, timeout=30):
+        calls.append((method, path, query))
+        return [{"id": 777, "title": "T"}]
+
+    monkeypatch.setattr(resolve_op, "request", fake_request)
+    monkeypatch.setattr(resolve_op, "get_api_key", lambda: "fake-key")
+
+    slug = "the-real-token-economy-is-not-about-spending-less-3j3e"
+    result = resolve_op.resolve_article_id(slug)
+
+    assert result == 777
+    assert len(calls) == 1
+    method, path, query = calls[0]
+    assert method == "GET"
+    assert path == "/articles"
+    assert query == {"per_page": 1, "slug": slug}
+
+
+def test_resolve_bare_slug_not_found_exits(monkeypatch: pytest.MonkeyPatch,
+                                            capsys: pytest.CaptureFixture[str]) -> None:
+    """Bare slug → API returns empty list → exits with descriptive error."""
+    monkeypatch.setattr(resolve_op, "request", lambda *a, **kw: [])
+    monkeypatch.setattr(resolve_op, "get_api_key", lambda: "fake-key")
+
+    with pytest.raises(SystemExit):
+        resolve_op.resolve_article_id("my-article-3j3e")
+    assert "could not resolve" in capsys.readouterr().err
+
+
+def test_resolve_bare_slug_short_suffix_exits(capsys: pytest.CaptureFixture[str]) -> None:
+    """Suffix of 3 chars or fewer doesn't match the pattern → falls through to unparseable error."""
+    with pytest.raises(SystemExit):
+        resolve_op.resolve_article_id("my-article-abc")  # 3-char suffix → no match
+    assert "cannot parse article identifier" in capsys.readouterr().err
+
+
+def test_resolve_bare_slug_min_suffix(monkeypatch: pytest.MonkeyPatch) -> None:
+    """4-char suffix is the minimum accepted (boundary)."""
+    monkeypatch.setattr(resolve_op, "request", lambda *a, **kw: [{"id": 1}])
+    monkeypatch.setattr(resolve_op, "get_api_key", lambda: "fake-key")
+    assert resolve_op.resolve_article_id("post-abcd") == 1
+
+
+def test_resolve_bare_slug_max_suffix(monkeypatch: pytest.MonkeyPatch) -> None:
+    """6-char suffix is the maximum accepted (boundary)."""
+    monkeypatch.setattr(resolve_op, "request", lambda *a, **kw: [{"id": 2}])
+    monkeypatch.setattr(resolve_op, "get_api_key", lambda: "fake-key")
+    assert resolve_op.resolve_article_id("post-abcdef") == 2
+
+
+def test_resolve_bare_slug_seven_char_suffix_exits(capsys: pytest.CaptureFixture[str]) -> None:
+    """7-char suffix exceeds the pattern → falls through to unparseable error."""
+    with pytest.raises(SystemExit):
+        resolve_op.resolve_article_id("post-abcdefg")
+    assert "cannot parse article identifier" in capsys.readouterr().err
 
 
 def test_resolve_api_returns_no_id_exits(monkeypatch: pytest.MonkeyPatch,
@@ -722,24 +899,26 @@ def test_resolve_api_returns_no_id_exits(monkeypatch: pytest.MonkeyPatch,
 
 def test_react_parse_args_accepts_slug() -> None:
     """parse_args returns the raw identifier untouched — main() resolves it."""
-    raw, cat = react.parse_args("alice/some-slug")
-    assert raw == "alice/some-slug" and cat == "like"
+    raw, cat, idempotent = react.parse_args("alice/some-slug")
+    assert raw == "alice/some-slug" and cat == "like" and idempotent is True
 
 
 def test_react_parse_args_accepts_url() -> None:
-    raw, cat = react.parse_args("https://dev.to/alice/some-slug|unicorn")
-    assert raw == "https://dev.to/alice/some-slug" and cat == "unicorn"
+    raw, cat, idempotent = react.parse_args("https://dev.to/alice/some-slug|unicorn")
+    assert raw == "https://dev.to/alice/some-slug" and cat == "unicorn" and idempotent is True
 
 
 def test_comment_parse_args_accepts_slug() -> None:
     """Comment parse keeps the raw identifier; resolution happens in main()."""
-    raw, msg, parent = comment_op.parse_args("alice/some-slug|hello")
+    raw, msg, parent, force = comment_op.parse_args("alice/some-slug|hello")
     assert raw == "alice/some-slug" and msg == "hello" and parent is None
+    assert force is False
 
 
 def test_comment_parse_args_accepts_url() -> None:
-    raw, msg, parent = comment_op.parse_args(
+    raw, msg, parent, force = comment_op.parse_args(
         "https://dev.to/alice/some-slug|hi|99"
     )
     assert raw == "https://dev.to/alice/some-slug"
     assert msg == "hi" and parent == "99"
+    assert force is False

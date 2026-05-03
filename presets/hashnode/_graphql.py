@@ -44,6 +44,31 @@ def gql(query: str, variables: dict[str, Any], token: str, timeout: int = 30) ->
     return data.get("data", {})
 
 
+def gql_safe(query: str, variables: dict[str, Any], token: str, timeout: int = 30) -> dict[str, Any] | None:
+    """Like gql() but returns None on any error instead of exiting. For preflight
+    checks that must degrade gracefully — caller decides whether to abort, warn,
+    or proceed when the lookup itself fails."""
+    payload = json.dumps({"query": query, "variables": variables}).encode("utf-8")
+    req = urllib.request.Request(
+        ENDPOINT,
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": token,
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = resp.read().decode("utf-8")
+        data = json.loads(body)
+    except (urllib.error.HTTPError, urllib.error.URLError, json.JSONDecodeError, OSError):
+        return None
+    if "errors" in data:
+        return None
+    return data.get("data", {})
+
+
 def _format_http_error(e: urllib.error.HTTPError) -> str:
     body = e.read().decode("utf-8", errors="replace")
     if e.code == 401:
