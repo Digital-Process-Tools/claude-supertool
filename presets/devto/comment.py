@@ -54,11 +54,13 @@ def parse_args(arg: str) -> tuple[str, str, str | None, bool]:
     message = parts[1]
     # Body file support — symmetric with bluesky_publish: if MESSAGE is a path
     # to an existing file, read its contents. Long multi-paragraph drafts are
-    # painful to inline through the supertool tokenizer.
+    # painful to inline through the supertool tokenizer. File bodies get
+    # stripped so an editor's trailing newline doesn't post as visible
+    # whitespace.
     try:
         p = Path(message)
         if p.is_file():
-            message = p.read_text()
+            message = p.read_text().strip()
     except OSError:
         pass
     parent = parts[2].strip() if len(parts) > 2 and parts[2].strip() else None

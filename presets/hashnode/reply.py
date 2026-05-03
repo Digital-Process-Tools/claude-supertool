@@ -29,11 +29,12 @@ def parse_args(arg: str) -> tuple[str, str]:
     cid = parts[0].strip()
     message = parts[1]
     # Body file support — symmetric with bluesky_publish: if MESSAGE is a path
-    # to an existing file, read its contents.
+    # to an existing file, read its contents. File bodies get stripped so an
+    # editor's trailing newline doesn't post as visible whitespace.
     try:
         p = Path(message)
         if p.is_file():
-            message = p.read_text()
+            message = p.read_text().strip()
     except OSError:
         pass
     return cid, message

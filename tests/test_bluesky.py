@@ -135,6 +135,37 @@ def test_facets_http_and_https_both_match() -> None:
     assert facets[1]["features"][0]["uri"] == "https://example.com"
 
 
+def test_facets_angle_bracket_url_excludes_brackets() -> None:
+    """`<https://x.com>` must not pull `>` into the facet URI — invalid URL."""
+    body = "wrap <https://example.com>"
+    facets = publish.extract_link_facets(body)
+    assert len(facets) == 1
+    assert facets[0]["features"][0]["uri"] == "https://example.com"
+
+
+def test_facets_query_string_with_punct_preserved() -> None:
+    """`!`, `)` etc. inside `?query=...` are valid URL chars; don't strip."""
+    body = "search https://x.com?q=hi!"
+    facets = publish.extract_link_facets(body)
+    assert len(facets) == 1
+    assert facets[0]["features"][0]["uri"] == "https://x.com?q=hi!"
+
+
+def test_facets_fragment_with_punct_preserved() -> None:
+    body = "anchor https://x.com/page#section!"
+    facets = publish.extract_link_facets(body)
+    assert len(facets) == 1
+    assert facets[0]["features"][0]["uri"] == "https://x.com/page#section!"
+
+
+def test_facets_markdown_link_syntax_handled() -> None:
+    """`[text](URL)` shouldn't pull the closing paren into the facet."""
+    body = "see [docs](https://example.com) for more"
+    facets = publish.extract_link_facets(body)
+    assert len(facets) == 1
+    assert facets[0]["features"][0]["uri"] == "https://example.com"
+
+
 # list ------------------------------------------------------------------
 
 def test_list_parse_args_default() -> None:
