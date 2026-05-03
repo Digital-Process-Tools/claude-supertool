@@ -12,22 +12,16 @@ pipe-separated field to bypass: hashnode_comment:POST_ID|MSG|force
 If the pre-flight check fails, a warning is printed and the comment proceeds
 (graceful degrade — don't block on platform issues).
 """
-import os
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _auth import get_token
+from _auth import env_truthy, get_token
 from _graphql import gql, gql_safe
 from _outbound import append as track_append
 from _resolve import resolve_post_id
 
 _FILE_PREFIX = "file://"
-
-
-def _env_truthy(name: str) -> bool:
-    val = os.environ.get(name, "").strip().lower()
-    return val in {"true", "1", "yes", "on"}
 
 
 def _resolve_body(arg: str) -> tuple[str, bool]:
@@ -101,7 +95,7 @@ def parse_args(arg: str) -> tuple[str, str, bool]:
     text, from_file = _resolve_body(parts[1])
     message = text.strip() if from_file else text
     force = (len(parts) > 2 and parts[2].strip().lower() == "force") \
-        or _env_truthy("SUPERTOOL_AUTO_FORCE")
+        or env_truthy("SUPERTOOL_AUTO_FORCE")
     return post_or_url, message, force
 
 

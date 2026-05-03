@@ -26,9 +26,16 @@ def parse_args(arg: str) -> dict[str, object]:
         sys.exit(2)
     title = parts[0].strip()
     raw_path = parts[1].strip()
-    if raw_path.startswith("file://"):
+    used_file_prefix = raw_path.startswith("file://")
+    if used_file_prefix:
         raw_path = raw_path[len("file://"):]
     md_path = Path(raw_path)
+    if used_file_prefix and not md_path.is_file():
+        sys.stderr.write(
+            f"ERROR: file not found: {raw_path}\n"
+            "(file:// prefix requires the file to exist — typo or wrong path?)\n"
+        )
+        sys.exit(2)
     canonical = parts[2].strip()
     tags_csv = parts[3].strip() if len(parts) > 3 and parts[3].strip() else os.environ.get("SUPERTOOL_DEFAULT_TAGS", "")
     cover = parts[4].strip() if len(parts) > 4 and parts[4].strip() else os.environ.get("SUPERTOOL_DEFAULT_COVER", "")

@@ -23,12 +23,11 @@ treats every call as forced. This is opt-in — silent default would risk
 duplicate reactions if `likePost` were ever idempotent on Hashnode's side
 (it's not today, but the safety remains).
 """
-import os
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _auth import get_token
+from _auth import env_truthy, get_token
 from _graphql import gql
 from _resolve import resolve_post_id
 
@@ -37,12 +36,6 @@ mutation LikePost($input: LikePostInput!) {
   likePost(input: $input) { post { id reactionCount } }
 }
 """
-
-
-def _env_truthy(name: str) -> bool:
-    """Return True if env var name is set to a truthy value."""
-    val = os.environ.get(name, "").strip().lower()
-    return val in {"true", "1", "yes", "on"}
 
 
 def parse_args(arg: str) -> tuple[str, bool]:
@@ -59,7 +52,7 @@ def parse_args(arg: str) -> tuple[str, bool]:
     parts = arg.split("|", 1)
     raw = parts[0].strip()
     force = (len(parts) > 1 and parts[1].strip().lower() == "force") \
-        or _env_truthy("SUPERTOOL_AUTO_FORCE")
+        or env_truthy("SUPERTOOL_AUTO_FORCE")
     return raw, force
 
 
