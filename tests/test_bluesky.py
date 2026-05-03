@@ -38,21 +38,23 @@ status_since_op = _load("status_since")
 # publish ---------------------------------------------------------------
 
 def test_publish_parse_args_inline_text() -> None:
-    body, reply = publish.parse_args("Hello, real humans.")
-    assert body == "Hello, real humans." and reply is None
+    body, reply, force = publish.parse_args("Hello, real humans.")
+    assert body == "Hello, real humans." and reply is None and force is False
 
 
 def test_publish_parse_args_with_reply(tmp_path: Path) -> None:
-    body, reply = publish.parse_args("Reply text|at://did:plc:abc/app.bsky.feed.post/3kxyz")
+    body, reply, force = publish.parse_args("Reply text|at://did:plc:abc/app.bsky.feed.post/3kxyz")
     assert body == "Reply text"
     assert reply == "at://did:plc:abc/app.bsky.feed.post/3kxyz"
+    assert force is False
 
 
 def test_publish_parse_args_text_file(tmp_path: Path) -> None:
     md = tmp_path / "post.txt"
     md.write_text("From a file")
-    body, _ = publish.parse_args(str(md))
+    body, _, force = publish.parse_args(str(md))
     assert body == "From a file"
+    assert force is False
 
 
 def test_publish_parse_args_too_long(capsys: pytest.CaptureFixture[str]) -> None:
@@ -175,3 +177,281 @@ def test_status_since_render_with_kinds() -> None:
     assert "@alice.bsky.social" in out and "@bob.bsky.social" in out
     assert "bluesky_publish:" in out  # reply NEXT
     assert "bluesky_follow:" in out  # follow back NEXT
+
+
+# pre-flight: like ----------------------------------------------------------
+
+like_op = _load("like")
+follow_op = _load("follow")
+
+
+def test_like_parse_args_no_force() -> None:
+    raw, force = like_op.parse_args("at://did:plc:abc/app.bsky.feed.post/xyz")
+    assert raw == "at://did:plc:abc/app.bsky.feed.post/xyz" and force is False
+
+
+def test_like_parse_args_force() -> None:
+    raw, force = like_op.parse_args("at://did:plc:abc/app.bsky.feed.post/xyz|force")
+    assert raw == "at://did:plc:abc/app.bsky.feed.post/xyz" and force is True
+
+
+def test_like_parse_args_empty_exits(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        like_op.parse_args("")
+    assert "ERROR" in capsys.readouterr().err
+
+
+def test_like_preflight_already_liked(monkeypatch: pytest.MonkeyPatch) -> None:
+    target = "at://did:plc:abc/app.bsky.feed.post/xyz"
+    session = {"did": "did:plc:me", "accessJwt": "tok"}
+    monkeypatch.setattr(like_op, "xrpc", lambda nsid, s, **kw: {
+        "feed": [{"post": {"uri": target}}, {"post": {"uri": "other"}}]
+    })
+    assert like_op.preflight_like(target, session) is True
+
+
+def test_like_preflight_not_liked(monkeypatch: pytest.MonkeyPatch) -> None:
+    session = {"did": "did:plc:me", "accessJwt": "tok"}
+    monkeypatch.setattr(like_op, "xrpc", lambda nsid, s, **kw: {
+        "feed": [{"post": {"uri": "at://other/post/1"}}]
+    })
+    assert like_op.preflight_like("at://target/post/x", session) is False
+
+
+def test_like_preflight_api_error_degrades(monkeypatch: pytest.MonkeyPatch) -> None:
+    session = {"did": "did:plc:me", "accessJwt": "tok"}
+    monkeypatch.setattr(like_op, "xrpc", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("down")))
+    assert like_op.preflight_like("at://x/y/z", session) is False
+
+
+def test_like_main_aborts_on_dupe(monkeypatch: pytest.MonkeyPatch,
+                                   capsys: pytest.CaptureFixture[str]) -> None:
+    target_uri = "at://did:plc:abc/app.bsky.feed.post/xyz"
+    session = {"did": "did:plc:me", "accessJwt": "tok"}
+    monkeypatch.setattr(like_op, "get_handle", lambda: "me.bsky.social")
+    monkeypatch.setattr(like_op, "get_app_password", lambda: "pw")
+    monkeypatch.setattr(like_op, "get_session", lambda h, p: session)
+    monkeypatch.setattr(like_op, "to_at_uri", lambda arg, s: target_uri)
+    monkeypatch.setattr(like_op, "xrpc", lambda nsid, s, **kw: {
+        "feed": [{"post": {"uri": target_uri}}]
+    })
+    with pytest.raises(SystemExit) as exc:
+        like_op.main(target_uri)
+    assert exc.value.code == 1
+    assert "ABORT" in capsys.readouterr().err
+
+
+def test_like_main_force_bypasses_preflight(monkeypatch: pytest.MonkeyPatch,
+                                             capsys: pytest.CaptureFixture[str]) -> None:
+    target_uri = "at://did:plc:abc/app.bsky.feed.post/xyz"
+    session = {"did": "did:plc:me", "accessJwt": "tok"}
+    calls: list[str] = []
+
+    def fake_xrpc(nsid, s, method="GET", params=None, body=None, **kw):
+        calls.append(nsid)
+        if nsid == "app.bsky.feed.getPostThread":
+            return {"thread": {"post": {"uri": target_uri, "cid": "cid123"}}}
+        if nsid == "com.atproto.repo.createRecord":
+            return {"uri": "at://me/like/1", "cid": "cid-like"}
+        return {}
+
+    monkeypatch.setattr(like_op, "get_handle", lambda: "me.bsky.social")
+    monkeypatch.setattr(like_op, "get_app_password", lambda: "pw")
+    monkeypatch.setattr(like_op, "get_session", lambda h, p: session)
+    monkeypatch.setattr(like_op, "to_at_uri", lambda arg, s: target_uri)
+    monkeypatch.setattr(like_op, "xrpc", fake_xrpc)
+    like_op.main(f"{target_uri}|force")
+    assert "liked" in capsys.readouterr().out
+    assert "getActorLikes" not in calls  # preflight skipped
+
+
+# pre-flight: follow --------------------------------------------------------
+
+def test_follow_parse_args_no_force() -> None:
+    target, force = follow_op.parse_args("alice.bsky.social")
+    assert target == "alice.bsky.social" and force is False
+
+
+def test_follow_parse_args_force() -> None:
+    target, force = follow_op.parse_args("alice.bsky.social|force")
+    assert target == "alice.bsky.social" and force is True
+
+
+def test_follow_parse_args_strips_at() -> None:
+    target, force = follow_op.parse_args("@alice.bsky.social")
+    assert target == "alice.bsky.social"
+
+
+def test_follow_parse_args_empty_exits(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        follow_op.parse_args("")
+    assert "ERROR" in capsys.readouterr().err
+
+
+def test_follow_preflight_already_follows(monkeypatch: pytest.MonkeyPatch) -> None:
+    session = {"did": "did:plc:me", "accessJwt": "tok"}
+    target_did = "did:plc:alice"
+    monkeypatch.setattr(follow_op, "xrpc", lambda nsid, s, **kw: {
+        "follows": [{"did": target_did}, {"did": "did:plc:other"}]
+    })
+    assert follow_op.preflight_follow(target_did, session) is True
+
+
+def test_follow_preflight_not_following(monkeypatch: pytest.MonkeyPatch) -> None:
+    session = {"did": "did:plc:me", "accessJwt": "tok"}
+    monkeypatch.setattr(follow_op, "xrpc", lambda nsid, s, **kw: {
+        "follows": [{"did": "did:plc:other"}]
+    })
+    assert follow_op.preflight_follow("did:plc:alice", session) is False
+
+
+def test_follow_preflight_api_error_degrades(monkeypatch: pytest.MonkeyPatch) -> None:
+    session = {"did": "did:plc:me", "accessJwt": "tok"}
+    monkeypatch.setattr(follow_op, "xrpc", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("down")))
+    assert follow_op.preflight_follow("did:plc:alice", session) is False
+
+
+def test_follow_main_aborts_on_dupe(monkeypatch: pytest.MonkeyPatch,
+                                     capsys: pytest.CaptureFixture[str]) -> None:
+    target_did = "did:plc:alice"
+    session = {"did": "did:plc:me", "accessJwt": "tok"}
+
+    def fake_xrpc(nsid, s, method="GET", params=None, body=None, **kw):
+        if nsid == "app.bsky.actor.getProfile":
+            return {"did": target_did}
+        return {"follows": [{"did": target_did}]}
+
+    monkeypatch.setattr(follow_op, "get_handle", lambda: "me.bsky.social")
+    monkeypatch.setattr(follow_op, "get_app_password", lambda: "pw")
+    monkeypatch.setattr(follow_op, "get_session", lambda h, p: session)
+    monkeypatch.setattr(follow_op, "xrpc", fake_xrpc)
+    with pytest.raises(SystemExit) as exc:
+        follow_op.main("alice.bsky.social")
+    assert exc.value.code == 1
+    assert "ABORT" in capsys.readouterr().err
+
+
+def test_follow_main_force_bypasses_preflight(monkeypatch: pytest.MonkeyPatch,
+                                               capsys: pytest.CaptureFixture[str]) -> None:
+    target_did = "did:plc:alice"
+    session = {"did": "did:plc:me", "accessJwt": "tok"}
+    calls: list[str] = []
+
+    def fake_xrpc(nsid, s, method="GET", params=None, body=None, **kw):
+        calls.append(nsid)
+        if nsid == "app.bsky.actor.getProfile":
+            return {"did": target_did}
+        return {"uri": "at://me/follow/1"}
+
+    monkeypatch.setattr(follow_op, "get_handle", lambda: "me.bsky.social")
+    monkeypatch.setattr(follow_op, "get_app_password", lambda: "pw")
+    monkeypatch.setattr(follow_op, "get_session", lambda h, p: session)
+    monkeypatch.setattr(follow_op, "xrpc", fake_xrpc)
+    follow_op.main("alice.bsky.social|force")
+    assert "followed" in capsys.readouterr().out
+    assert "getFollows" not in calls
+
+
+# pre-flight: publish --------------------------------------------------------
+
+def test_publish_parse_args_with_force() -> None:
+    body, reply, force = publish.parse_args("Hello world|at://x/y/z|force")
+    assert body == "Hello world" and reply == "at://x/y/z" and force is True
+
+
+def test_publish_parse_args_no_force() -> None:
+    body, reply, force = publish.parse_args("Hello world|at://x/y/z")
+    assert force is False
+
+
+def test_publish_parse_args_no_reply_no_force() -> None:
+    body, reply, force = publish.parse_args("Hello world")
+    assert reply is None and force is False
+
+
+def test_publish_preflight_already_replied(monkeypatch: pytest.MonkeyPatch) -> None:
+    session = {"did": "did:plc:me", "accessJwt": "tok"}
+    root_uri = "at://root/post/1"
+    reply_uri = "at://parent/post/2"
+
+    def fake_xrpc(nsid, s, **kw):
+        if nsid == "app.bsky.feed.getPostThread":
+            return {"thread": {"post": {"uri": reply_uri, "cid": "c",
+                                         "record": {"reply": {"root": {"uri": root_uri}}}}}}
+        return {"feed": [
+            {"post": {"uri": "at://me/post/9",
+                       "record": {"reply": {"root": {"uri": root_uri}}}}},
+        ]}
+
+    monkeypatch.setattr(publish, "xrpc", fake_xrpc)
+    assert publish.preflight_publish(reply_uri, session) is True
+
+
+def test_publish_preflight_not_replied(monkeypatch: pytest.MonkeyPatch) -> None:
+    session = {"did": "did:plc:me", "accessJwt": "tok"}
+    root_uri = "at://root/post/1"
+    reply_uri = "at://parent/post/2"
+
+    def fake_xrpc(nsid, s, **kw):
+        if nsid == "app.bsky.feed.getPostThread":
+            return {"thread": {"post": {"uri": reply_uri, "cid": "c",
+                                         "record": {"reply": {"root": {"uri": root_uri}}}}}}
+        return {"feed": [
+            {"post": {"uri": "at://me/post/9",
+                       "record": {"reply": {"root": {"uri": "at://other/root/1"}}}}},
+        ]}
+
+    monkeypatch.setattr(publish, "xrpc", fake_xrpc)
+    assert publish.preflight_publish(reply_uri, session) is False
+
+
+def test_publish_preflight_api_error_degrades(monkeypatch: pytest.MonkeyPatch) -> None:
+    session = {"did": "did:plc:me", "accessJwt": "tok"}
+    monkeypatch.setattr(publish, "xrpc", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("down")))
+    assert publish.preflight_publish("at://x/y/z", session) is False
+
+
+def test_publish_main_aborts_on_dupe_reply(monkeypatch: pytest.MonkeyPatch,
+                                            capsys: pytest.CaptureFixture[str]) -> None:
+    session = {"did": "did:plc:me", "accessJwt": "tok"}
+    root_uri = "at://root/post/1"
+    reply_uri = "at://parent/post/2"
+
+    def fake_xrpc(nsid, s, method="GET", params=None, body=None, **kw):
+        if nsid == "app.bsky.feed.getPostThread":
+            return {"thread": {"post": {"uri": reply_uri, "cid": "c",
+                                         "record": {"reply": {"root": {"uri": root_uri}}}}}}
+        return {"feed": [
+            {"post": {"uri": "at://me/post/9",
+                       "record": {"reply": {"root": {"uri": root_uri}}}}},
+        ]}
+
+    monkeypatch.setattr(publish, "get_handle", lambda: "me.bsky.social")
+    monkeypatch.setattr(publish, "get_app_password", lambda: "pw")
+    monkeypatch.setattr(publish, "get_session", lambda h, p: session)
+    monkeypatch.setattr(publish, "xrpc", fake_xrpc)
+    with pytest.raises(SystemExit) as exc:
+        publish.main(f"Hello|{reply_uri}")
+    assert exc.value.code == 1
+    assert "ABORT" in capsys.readouterr().err
+
+
+def test_publish_main_force_bypasses_preflight(monkeypatch: pytest.MonkeyPatch,
+                                                capsys: pytest.CaptureFixture[str]) -> None:
+    session = {"did": "did:plc:me", "accessJwt": "tok"}
+    reply_uri = "at://parent/post/2"
+    calls: list[str] = []
+
+    def fake_xrpc(nsid, s, method="GET", params=None, body=None, **kw):
+        calls.append(nsid)
+        if nsid == "app.bsky.feed.getPostThread":
+            return {"thread": {"post": {"uri": reply_uri, "cid": "c", "record": {}}}}
+        return {"uri": "at://me/post/new", "cid": "cid-new"}
+
+    monkeypatch.setattr(publish, "get_handle", lambda: "me.bsky.social")
+    monkeypatch.setattr(publish, "get_app_password", lambda: "pw")
+    monkeypatch.setattr(publish, "get_session", lambda h, p: session)
+    monkeypatch.setattr(publish, "xrpc", fake_xrpc)
+    publish.main(f"Hello|{reply_uri}|force")
+    assert "published" in capsys.readouterr().out
+    assert "getAuthorFeed" not in calls

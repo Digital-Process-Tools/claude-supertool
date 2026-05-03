@@ -80,6 +80,22 @@ def test_publish_parse_args_md_missing(tmp_path: Path, capsys: pytest.CaptureFix
     assert "not found" in capsys.readouterr().err
 
 
+def test_publish_parse_args_force_flag(tmp_path: Path) -> None:
+    """7th pipe field 'force' sets force=True."""
+    md = tmp_path / "p.md"
+    md.write_text("body")
+    parsed = publish.parse_args(f"T|{md}|https://x.io||||force")
+    assert parsed["force"] is True
+
+
+def test_publish_parse_args_no_force_by_default(tmp_path: Path) -> None:
+    """Omitting 7th field → force=False."""
+    md = tmp_path / "p.md"
+    md.write_text("body")
+    parsed = publish.parse_args(f"T|{md}|https://x.io")
+    assert parsed["force"] is False
+
+
 def test_publish_build_body_minimal() -> None:
     parsed: dict[str, Any] = {
         "title": "T", "markdown": "body", "canonical": "https://x.io",
@@ -256,19 +272,105 @@ def test_comments_render_marks_you() -> None:
 # react -------------------------------------------------------------------
 
 def test_react_parse_args_default() -> None:
-    aid, cat = react.parse_args("123")
-    assert aid == "123" and cat == "like"
+    aid, cat, idempotent = react.parse_args("123")
+    assert aid == "123" and cat == "like" and idempotent is True
 
 
 def test_react_parse_args_with_category() -> None:
-    aid, cat = react.parse_args("123|unicorn")
-    assert aid == "123" and cat == "unicorn"
+    aid, cat, idempotent = react.parse_args("123|unicorn")
+    assert aid == "123" and cat == "unicorn" and idempotent is True
 
 
 def test_react_parse_args_invalid_category(capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit):
         react.parse_args("123|nope")
     assert "category" in capsys.readouterr().err
+
+
+def test_react_parse_args_idempotent_default() -> None:
+    """No third field → idempotent=True (ensure-create semantics)."""
+    aid, cat, idempotent = react.parse_args("123|like")
+    assert idempotent is True
+
+
+def test_react_parse_args_toggle_modifier() -> None:
+    """|toggle as third field → idempotent=False (raw toggle, one POST)."""
+    aid, cat, idempotent = react.parse_args("123|like|toggle")
+    assert aid == "123" and cat == "like" and idempotent is False
+
+
+def test_react_parse_args_toggle_modifier_default_category() -> None:
+    """Toggle modifier works even when category is omitted (empty second field)."""
+    aid, cat, idempotent = react.parse_args("123||toggle")
+    assert cat == "like" and idempotent is False
+
+
+def test_react_idempotent_create_no_double_post(monkeypatch: pytest.MonkeyPatch,
+                                                 capsys: pytest.CaptureFixture[str]) -> None:
+    """result=create on first POST → no second POST needed."""
+    posts: list[dict] = []
+
+    def fake_web_post(path, cookie, csrf, body, **kw):
+        posts.append(body)
+        return ('{"result": "create"}', 200)
+
+    monkeypatch.setattr(react, "get_session_cookie", lambda: "cookie-val")
+    monkeypatch.setattr(react, "fetch_csrf_token", lambda c: "csrf-tok")
+    monkeypatch.setattr(react, "web_post_json", fake_web_post)
+    monkeypatch.setattr(react, "resolve_article_id", lambda raw: 42)
+
+    react.main("42|like")
+
+    assert len(posts) == 1
+    out = capsys.readouterr()
+    assert "result=create" in out.out
+    assert "was_on=true" not in out.out
+
+
+def test_react_idempotent_destroy_corrects(monkeypatch: pytest.MonkeyPatch,
+                                            capsys: pytest.CaptureFixture[str]) -> None:
+    """result=destroy on first POST → second POST issued to restore; output shows was_on=true."""
+    responses = iter(['{"result": "destroy"}', '{"result": "create"}'])
+    posts: list[dict] = []
+
+    def fake_web_post(path, cookie, csrf, body, **kw):
+        posts.append(body)
+        return (next(responses), 200)
+
+    monkeypatch.setattr(react, "get_session_cookie", lambda: "cookie-val")
+    monkeypatch.setattr(react, "fetch_csrf_token", lambda c: "csrf-tok")
+    monkeypatch.setattr(react, "web_post_json", fake_web_post)
+    monkeypatch.setattr(react, "resolve_article_id", lambda raw: 42)
+
+    react.main("42|like")
+
+    assert len(posts) == 2
+    out = capsys.readouterr()
+    assert "result=create" in out.out
+    assert "was_on=true" in out.out
+    assert "NOTE:" in out.err
+
+
+def test_react_toggle_mode_no_correction(monkeypatch: pytest.MonkeyPatch,
+                                          capsys: pytest.CaptureFixture[str]) -> None:
+    """With |toggle, destroy result is NOT corrected — raw one-shot behaviour."""
+    posts: list[dict] = []
+
+    def fake_web_post(path, cookie, csrf, body, **kw):
+        posts.append(body)
+        return ('{"result": "destroy"}', 200)
+
+    monkeypatch.setattr(react, "get_session_cookie", lambda: "cookie-val")
+    monkeypatch.setattr(react, "fetch_csrf_token", lambda c: "csrf-tok")
+    monkeypatch.setattr(react, "web_post_json", fake_web_post)
+    monkeypatch.setattr(react, "resolve_article_id", lambda raw: 42)
+
+    react.main("42|like|toggle")
+
+    assert len(posts) == 1
+    out = capsys.readouterr()
+    assert "result=destroy" in out.out
+    assert "was_on" not in out.out
 
 
 # status_since -----------------------------------------------------------
@@ -401,22 +503,23 @@ def test_read_own_engagement_flat_and_nested() -> None:
 # comment ----------------------------------------------------------------
 
 def test_comment_parse_args_minimal() -> None:
-    aid, msg, parent = comment_op.parse_args("1234|Hello")
-    assert aid == "1234" and msg == "Hello" and parent is None
+    aid, msg, parent, force = comment_op.parse_args("1234|Hello")
+    assert aid == "1234" and msg == "Hello" and parent is None and force is False
 
 
 def test_comment_parse_args_reply() -> None:
-    aid, msg, parent = comment_op.parse_args("1234|Hello|99")
-    assert aid == "1234" and parent == "99"
+    aid, msg, parent, force = comment_op.parse_args("1234|Hello|99")
+    assert aid == "1234" and parent == "99" and force is False
 
 
 def test_comment_parse_args_message_keeps_pipes() -> None:
-    aid, msg, parent = comment_op.parse_args("1234|hi | there | mate")
+    aid, msg, parent, force = comment_op.parse_args("1234|hi | there | mate")
     assert aid == "1234"
     # implementation splits on '|' so message is just first piece — but parent may capture "mate"
     # this asserts the actual behavior so we don't accidentally regress it
     assert msg == "hi "  # arg parser splits liberally; document the limit
     assert parent == "there"
+    assert force is False
 
 
 def test_comment_parse_args_missing_msg(capsys: pytest.CaptureFixture[str]) -> None:
@@ -435,12 +538,25 @@ def test_comment_parse_args_message_keeps_colons() -> None:
     """When supertool {args} parts are colon-rejoined in main(), parse_args
     must preserve a colon-bearing body intact (no truncation at first ':').
     """
-    aid, msg, parent = comment_op.parse_args(
+    aid, msg, parent, force = comment_op.parse_args(
         "1234|Boundary prediction is the right name. Worth saying: it's learnable.|99"
     )
     assert aid == "1234"
     assert msg == "Boundary prediction is the right name. Worth saying: it's learnable."
     assert parent == "99"
+    assert force is False
+
+
+def test_comment_parse_args_force_flag() -> None:
+    """4th pipe field 'force' sets force=True."""
+    aid, msg, parent, force = comment_op.parse_args("1234|Hello|99|force")
+    assert aid == "1234" and msg == "Hello" and parent == "99" and force is True
+
+
+def test_comment_parse_args_force_no_parent() -> None:
+    """force can appear in 4th slot even with empty parent."""
+    aid, msg, parent, force = comment_op.parse_args("1234|Hello||force")
+    assert parent is None and force is True
 
 
 def test_resolve_parent_numeric_id_happy(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -526,7 +642,7 @@ def _run_comment_dryrun(*argv_parts: str) -> tuple[str, str, str | None]:
         "import sys; sys.path.insert(0, %r);\n"
         "import comment as c\n"
         "arg = ':'.join(sys.argv[1:])\n"
-        "aid, msg, parent = c.parse_args(arg)\n"
+        "aid, msg, parent, force = c.parse_args(arg)\n"
         "print(repr((aid, msg, parent)))\n"
     ) % str(repo / "presets" / "devto")
     proc = subprocess.run(
@@ -700,12 +816,73 @@ def test_resolve_empty_exits(capsys: pytest.CaptureFixture[str]) -> None:
 
 
 def test_resolve_unparseable_exits(capsys: pytest.CaptureFixture[str]) -> None:
-    """Bare slug with no slash and non-numeric → cannot parse, exits."""
+    """Input that matches no known form (too-short suffix, no slash, no scheme) → exits."""
     with pytest.raises(SystemExit):
-        resolve_op.resolve_article_id("just-a-slug-no-author")
+        resolve_op.resolve_article_id("just-a-slug-x")  # suffix only 1 char → no match
     err = capsys.readouterr().err
     assert "cannot parse article identifier" in err
-    assert "just-a-slug-no-author" in err
+    assert "just-a-slug-x" in err
+
+
+def test_resolve_bare_slug_calls_list_api(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Bare slug matching ^[a-z0-9][a-z0-9-]*-[a-z0-9]{4,6}$ → GET /articles?slug=... → returns id."""
+    calls: list[tuple] = []
+
+    def fake_request(method, path, api_key, body=None, query=None, timeout=30):
+        calls.append((method, path, query))
+        return [{"id": 777, "title": "T"}]
+
+    monkeypatch.setattr(resolve_op, "request", fake_request)
+    monkeypatch.setattr(resolve_op, "get_api_key", lambda: "fake-key")
+
+    slug = "the-real-token-economy-is-not-about-spending-less-3j3e"
+    result = resolve_op.resolve_article_id(slug)
+
+    assert result == 777
+    assert len(calls) == 1
+    method, path, query = calls[0]
+    assert method == "GET"
+    assert path == "/articles"
+    assert query == {"per_page": 1, "slug": slug}
+
+
+def test_resolve_bare_slug_not_found_exits(monkeypatch: pytest.MonkeyPatch,
+                                            capsys: pytest.CaptureFixture[str]) -> None:
+    """Bare slug → API returns empty list → exits with descriptive error."""
+    monkeypatch.setattr(resolve_op, "request", lambda *a, **kw: [])
+    monkeypatch.setattr(resolve_op, "get_api_key", lambda: "fake-key")
+
+    with pytest.raises(SystemExit):
+        resolve_op.resolve_article_id("my-article-3j3e")
+    assert "could not resolve" in capsys.readouterr().err
+
+
+def test_resolve_bare_slug_short_suffix_exits(capsys: pytest.CaptureFixture[str]) -> None:
+    """Suffix of 3 chars or fewer doesn't match the pattern → falls through to unparseable error."""
+    with pytest.raises(SystemExit):
+        resolve_op.resolve_article_id("my-article-abc")  # 3-char suffix → no match
+    assert "cannot parse article identifier" in capsys.readouterr().err
+
+
+def test_resolve_bare_slug_min_suffix(monkeypatch: pytest.MonkeyPatch) -> None:
+    """4-char suffix is the minimum accepted (boundary)."""
+    monkeypatch.setattr(resolve_op, "request", lambda *a, **kw: [{"id": 1}])
+    monkeypatch.setattr(resolve_op, "get_api_key", lambda: "fake-key")
+    assert resolve_op.resolve_article_id("post-abcd") == 1
+
+
+def test_resolve_bare_slug_max_suffix(monkeypatch: pytest.MonkeyPatch) -> None:
+    """6-char suffix is the maximum accepted (boundary)."""
+    monkeypatch.setattr(resolve_op, "request", lambda *a, **kw: [{"id": 2}])
+    monkeypatch.setattr(resolve_op, "get_api_key", lambda: "fake-key")
+    assert resolve_op.resolve_article_id("post-abcdef") == 2
+
+
+def test_resolve_bare_slug_seven_char_suffix_exits(capsys: pytest.CaptureFixture[str]) -> None:
+    """7-char suffix exceeds the pattern → falls through to unparseable error."""
+    with pytest.raises(SystemExit):
+        resolve_op.resolve_article_id("post-abcdefg")
+    assert "cannot parse article identifier" in capsys.readouterr().err
 
 
 def test_resolve_api_returns_no_id_exits(monkeypatch: pytest.MonkeyPatch,
@@ -722,24 +899,184 @@ def test_resolve_api_returns_no_id_exits(monkeypatch: pytest.MonkeyPatch,
 
 def test_react_parse_args_accepts_slug() -> None:
     """parse_args returns the raw identifier untouched — main() resolves it."""
-    raw, cat = react.parse_args("alice/some-slug")
-    assert raw == "alice/some-slug" and cat == "like"
+    raw, cat, idempotent = react.parse_args("alice/some-slug")
+    assert raw == "alice/some-slug" and cat == "like" and idempotent is True
 
 
 def test_react_parse_args_accepts_url() -> None:
-    raw, cat = react.parse_args("https://dev.to/alice/some-slug|unicorn")
-    assert raw == "https://dev.to/alice/some-slug" and cat == "unicorn"
+    raw, cat, idempotent = react.parse_args("https://dev.to/alice/some-slug|unicorn")
+    assert raw == "https://dev.to/alice/some-slug" and cat == "unicorn" and idempotent is True
 
 
 def test_comment_parse_args_accepts_slug() -> None:
     """Comment parse keeps the raw identifier; resolution happens in main()."""
-    raw, msg, parent = comment_op.parse_args("alice/some-slug|hello")
+    raw, msg, parent, force = comment_op.parse_args("alice/some-slug|hello")
     assert raw == "alice/some-slug" and msg == "hello" and parent is None
+    assert force is False
 
 
 def test_comment_parse_args_accepts_url() -> None:
-    raw, msg, parent = comment_op.parse_args(
+    raw, msg, parent, force = comment_op.parse_args(
         "https://dev.to/alice/some-slug|hi|99"
     )
     assert raw == "https://dev.to/alice/some-slug"
     assert msg == "hi" and parent == "99"
+    assert force is False
+
+
+# preflight tests — comment -----------------------------------------------
+# preflight_comment does `from _rest import request` and `from _auth import get_api_key`
+# inside the function body, so we patch via sys.modules (already populated when
+# comment_op was loaded at module-import time) rather than importing directly.
+
+def _ensure_devto_module(name: str):
+    """Return the named module from the devto preset, (re)loading if evicted."""
+    if name not in sys.modules:
+        if str(PRESET_DIR) not in sys.path:
+            sys.path.insert(0, str(PRESET_DIR))
+        spec = importlib.util.spec_from_file_location(name, PRESET_DIR / f"{name}.py")
+        assert spec and spec.loader
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[name] = mod
+        spec.loader.exec_module(mod)
+    return sys.modules[name]
+
+
+def _patch_rest_auth(fake_items):
+    """Stub request/get_api_key on the devto _rest/_auth modules in sys.modules."""
+    _rest_mod = _ensure_devto_module("_rest")
+    _auth_mod = _ensure_devto_module("_auth")
+    _rest_mod.request = lambda *a, **kw: fake_items() if callable(fake_items) else fake_items
+    _auth_mod.get_api_key = lambda: "fake"
+    return _rest_mod, _auth_mod
+
+
+def test_comment_preflight_already_commented(monkeypatch: pytest.MonkeyPatch) -> None:
+    items = [{"id": 1, "id_code": "abc12", "created_at": "2026-05-01T10:00:00Z",
+              "user": {"username": "max-ai-dev"}, "children": []}]
+    _patch_rest_auth(items)
+    already, ids, last = comment_op.preflight_comment(999, "max-ai-dev")
+    assert already is True and "abc12" in ids and last == "2026-05-01"
+
+
+def test_comment_preflight_already_commented_nested_children(monkeypatch: pytest.MonkeyPatch) -> None:
+    items = [{"id": 1, "id_code": "top01", "created_at": "2026-04-01T00:00:00Z",
+              "user": {"username": "other"}, "children": [
+                  {"id": 2, "id_code": "child2", "created_at": "2026-05-02T00:00:00Z",
+                   "user": {"username": "max-ai-dev"}},
+              ]}]
+    _patch_rest_auth(items)
+    already, ids, last = comment_op.preflight_comment(999, "max-ai-dev")
+    assert already is True and "child2" in ids and last == "2026-05-02"
+
+
+def test_comment_preflight_not_commented(monkeypatch: pytest.MonkeyPatch) -> None:
+    items = [{"id": 1, "id_code": "xyz99", "created_at": "2026-05-01T10:00:00Z",
+              "user": {"username": "alice"}, "children": []}]
+    _patch_rest_auth(items)
+    already, ids, last = comment_op.preflight_comment(999, "max-ai-dev")
+    assert already is False and ids == []
+
+
+def test_comment_preflight_api_error_degrades(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _raise(*a, **kw): raise Exception("timeout")
+    _patch_rest_auth(_raise)
+    already, ids, last = comment_op.preflight_comment(999, "max-ai-dev")
+    assert already is False and ids == [] and last == ""
+
+
+def test_comment_main_aborts_on_dupe(monkeypatch: pytest.MonkeyPatch,
+                                      capsys: pytest.CaptureFixture[str]) -> None:
+    items = [{"id": 1, "id_code": "abc12", "created_at": "2026-05-01T10:00:00Z",
+              "user": {"username": "max-ai-dev"}, "children": []}]
+    _patch_rest_auth(items)
+    # inject _me into sys.modules so the local import inside main() resolves
+    import types
+    _me_mod = types.ModuleType("_me")
+    _me_mod.get_username = lambda key: "max-ai-dev"  # type: ignore[attr-defined]
+    sys.modules["_me"] = _me_mod
+    monkeypatch.setattr(comment_op, "resolve_article_id", lambda raw: 999)
+    monkeypatch.setattr(comment_op, "get_session_cookie", lambda: "cookie-val")
+    with pytest.raises(SystemExit) as exc:
+        comment_op.main("999|Hello world")
+    assert exc.value.code == 1
+    assert "ABORT" in capsys.readouterr().err
+
+
+def test_comment_main_force_bypasses_preflight(monkeypatch: pytest.MonkeyPatch,
+                                                capsys: pytest.CaptureFixture[str]) -> None:
+    # With |force the preflight block is skipped entirely — _rest.request must
+    # NOT be called before the post. Stub _print_post_confirmation to suppress
+    # the post-confirmation fetch (a separate concern, not preflight).
+    called: list[str] = []
+    def _track(*a, **kw): called.append("preflight"); return []
+    _patch_rest_auth(_track)
+    monkeypatch.setattr(comment_op, "resolve_article_id", lambda raw: 999)
+    monkeypatch.setattr(comment_op, "get_session_cookie", lambda: "cookie-val")
+    monkeypatch.setattr(comment_op, "fetch_csrf_token", lambda c: "csrf-tok")
+    monkeypatch.setattr(comment_op, "web_post_json",
+                        lambda path, cookie, csrf, body: ('{"id": 42}', 200))
+    monkeypatch.setattr(comment_op, "_print_post_confirmation", lambda aid, cid: None)
+    comment_op.main("999|Hello world||force")
+    assert "preflight" not in called
+
+
+# preflight tests — publish -----------------------------------------------
+
+def test_publish_preflight_dupe_found(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(publish, "request",
+                        lambda *a, **kw: [{"canonical_url": "https://x.io",
+                                           "url": "https://dev.to/u/s", "slug": "u-s"}])
+    monkeypatch.setattr(publish, "get_api_key", lambda: "fake")
+    already, url, slug = publish.preflight_publish("https://x.io", "fake")
+    assert already is True and slug == "u-s"
+
+
+def test_publish_preflight_no_dupe(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(publish, "request",
+                        lambda *a, **kw: [{"canonical_url": "https://other.io",
+                                           "url": "https://dev.to/u/o", "slug": "u-o"}])
+    monkeypatch.setattr(publish, "get_api_key", lambda: "fake")
+    already, url, slug = publish.preflight_publish("https://x.io", "fake")
+    assert already is False
+
+
+def test_publish_preflight_api_error_degrades(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(publish, "request",
+                        lambda *a, **kw: (_ for _ in ()).throw(Exception("500")))
+    monkeypatch.setattr(publish, "get_api_key", lambda: "fake")
+    already, url, slug = publish.preflight_publish("https://x.io", "fake")
+    assert already is False and url == "" and slug == ""
+
+
+def test_publish_main_aborts_on_dupe(monkeypatch: pytest.MonkeyPatch,
+                                      capsys: pytest.CaptureFixture[str],
+                                      tmp_path: Path) -> None:
+    md = tmp_path / "p.md"
+    md.write_text("body")
+    monkeypatch.setattr(publish, "get_api_key", lambda: "fake")
+    monkeypatch.setattr(publish, "request",
+                        lambda *a, **kw: [{"canonical_url": "https://x.io",
+                                           "url": "https://dev.to/u/s", "slug": "u-s"}])
+    with pytest.raises(SystemExit) as exc:
+        publish.main(f"T|{md}|https://x.io")
+    assert exc.value.code == 1
+    assert "ABORT" in capsys.readouterr().err
+
+
+def test_publish_main_force_bypasses_preflight(monkeypatch: pytest.MonkeyPatch,
+                                                capsys: pytest.CaptureFixture[str],
+                                                tmp_path: Path) -> None:
+    md = tmp_path / "p.md"
+    md.write_text("body")
+    calls: list[str] = []
+    def fake_request(method: str, path: str, *a, **kw):
+        calls.append(method)
+        if method == "GET":
+            return [{"canonical_url": "https://x.io", "url": "https://dev.to/u/s", "slug": "u-s"}]
+        return {"id": 99, "slug": "new-slug", "url": "https://dev.to/u/new-slug", "title": "T"}
+    monkeypatch.setattr(publish, "get_api_key", lambda: "fake")
+    monkeypatch.setattr(publish, "request", fake_request)
+    publish.main(f"T|{md}|https://x.io||||force")
+    assert "GET" not in calls
+    assert "published" in capsys.readouterr().out

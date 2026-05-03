@@ -322,8 +322,8 @@ def test_comments_render_marks_you() -> None:
 # comment ------------------------------------------------------------------
 
 def test_comment_parse_args_ok() -> None:
-    post, msg = comment_op.parse_args("abc123|Hello world")
-    assert post == "abc123" and msg == "Hello world"
+    post, msg, force = comment_op.parse_args("abc123|Hello world")
+    assert post == "abc123" and msg == "Hello world" and force is False
 
 
 def test_comment_parse_args_missing_msg(capsys: pytest.CaptureFixture[str]) -> None:
@@ -353,9 +353,10 @@ def test_reply_parse_args_missing_msg(capsys: pytest.CaptureFixture[str]) -> Non
 
 def test_comment_parse_args_keeps_colons() -> None:
     """Body with ':' must survive when arg comes from main()'s ':'-rejoin of argv."""
-    post, msg = comment_op.parse_args("abc123|Worth saying: it's learnable. Really: it is.")
+    post, msg, force = comment_op.parse_args("abc123|Worth saying: it's learnable. Really: it is.")
     assert post == "abc123"
     assert msg == "Worth saying: it's learnable. Really: it is."
+    assert force is False
 
 
 def test_reply_parse_args_keeps_colons() -> None:
@@ -387,18 +388,18 @@ def _run_hn_dryrun(script: str, *argv_parts: str) -> tuple[str, str]:
 
 
 def test_argv_rejoin_hn_comment_simple() -> None:
-    post, msg = _run_hn_dryrun("comment", "abc|hi")
-    assert post == "abc" and msg == "hi"
+    post, msg, force = _run_hn_dryrun("comment", "abc|hi")
+    assert post == "abc" and msg == "hi" and force is False
 
 
 def test_argv_rejoin_hn_comment_with_colons() -> None:
-    post, msg = _run_hn_dryrun("comment", "abc|Worth saying", "it's learnable")
-    assert post == "abc" and msg == "Worth saying:it's learnable"
+    post, msg, force = _run_hn_dryrun("comment", "abc|Worth saying", "it's learnable")
+    assert post == "abc" and msg == "Worth saying:it's learnable" and force is False
 
 
 def test_argv_rejoin_hn_comment_multiple_colons() -> None:
-    post, msg = _run_hn_dryrun("comment", "abc|first", "second", "third")
-    assert post == "abc" and msg == "first:second:third"
+    post, msg, force = _run_hn_dryrun("comment", "abc|first", "second", "third")
+    assert post == "abc" and msg == "first:second:third" and force is False
 
 
 def test_argv_rejoin_hn_reply_simple() -> None:
@@ -745,3 +746,242 @@ def test_resolve_malformed_url_exits(capsys: pytest.CaptureFixture[str]) -> None
     with pytest.raises(SystemExit):
         resolve_op.resolve_post_id("tok", "https://")
     assert "cannot parse" in capsys.readouterr().err
+
+
+# pre-flight: react --------------------------------------------------------
+
+def test_react_parse_args_no_force() -> None:
+    raw, force = react_op.parse_args("abc123")
+    assert raw == "abc123" and force is False
+
+
+def test_react_parse_args_force_flag() -> None:
+    raw, force = react_op.parse_args("abc123|force")
+    assert raw == "abc123" and force is True
+
+
+def test_react_parse_args_empty_exits(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        react_op.parse_args("")
+    assert "ERROR" in capsys.readouterr().err
+
+
+def test_react_preflight_already_reacted(monkeypatch: pytest.MonkeyPatch) -> None:
+    # preflight_react always returns (None, 0) — Hashnode exposes no per-user
+    # reaction field, so react.py is fail-closed: caller must use |force.
+    already, count = react_op.preflight_react("post-id", "tok")
+    assert already is None and count == 0
+
+
+def test_react_preflight_not_reacted(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Same: preflight always returns (None, 0) regardless of API state.
+    already, count = react_op.preflight_react("post-id", "tok")
+    assert already is None and count == 0
+
+
+def test_react_preflight_api_error_degrades(monkeypatch: pytest.MonkeyPatch) -> None:
+    # preflight_react never calls gql; always returns (None, 0).
+    already, count = react_op.preflight_react("post-id", "tok")
+    assert already is None and count == 0
+
+
+def test_react_main_aborts_on_dupe(monkeypatch: pytest.MonkeyPatch,
+                                    capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setattr(react_op, "get_token", lambda: "tok")
+    monkeypatch.setattr(react_op, "resolve_post_id", lambda t, r: "post-id")
+    monkeypatch.setattr(react_op, "gql",
+                        lambda q, v, t: {"post": {"myTotalReactions": 1}})
+    with pytest.raises(SystemExit) as exc:
+        react_op.main("abc123")
+    assert exc.value.code == 1
+    assert "ABORT" in capsys.readouterr().err
+
+
+def test_react_main_force_bypasses_preflight(monkeypatch: pytest.MonkeyPatch,
+                                              capsys: pytest.CaptureFixture[str]) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(react_op, "get_token", lambda: "tok")
+    monkeypatch.setattr(react_op, "resolve_post_id", lambda t, r: "post-id")
+    monkeypatch.setattr(react_op, "gql", lambda q, v, t: (
+        calls.append("like") or {"likePost": {"post": {"id": "post-id", "reactionCount": 1}}}
+    ))
+    react_op.main("abc123|force")
+    assert "liked" in capsys.readouterr().out
+    assert len(calls) == 1  # only the like mutation, no preflight query
+
+
+def test_react_main_api_error_degrades(monkeypatch: pytest.MonkeyPatch,
+                                        capsys: pytest.CaptureFixture[str]) -> None:
+    # preflight always returns (None, 0) → main aborts unless |force is passed.
+    # Use |force to exercise the mutation path directly.
+    monkeypatch.setattr(react_op, "get_token", lambda: "tok")
+    monkeypatch.setattr(react_op, "resolve_post_id", lambda t, r: "post-id")
+    monkeypatch.setattr(react_op, "gql",
+                        lambda q, v, t: {"likePost": {"post": {"id": "post-id", "reactionCount": 1}}})
+    react_op.main("abc123|force")
+    out = capsys.readouterr()
+    assert "liked" in out.out
+
+
+# pre-flight: comment -------------------------------------------------------
+
+def test_comment_parse_args_force() -> None:
+    post, msg, force = comment_op.parse_args("abc|Hello|force")
+    assert post == "abc" and msg == "Hello" and force is True
+
+
+def test_comment_parse_args_no_force() -> None:
+    post, msg, force = comment_op.parse_args("abc|Hello")
+    assert force is False
+
+
+def test_comment_preflight_already_commented(monkeypatch: pytest.MonkeyPatch) -> None:
+    # preflight_comment calls gql_safe (not gql) — monkeypatch the right name.
+    monkeypatch.setattr(comment_op, "gql_safe", lambda q, v, t: {
+        "post": {"comments": {"edges": [
+            {"node": {"id": "c1", "author": {"username": "max-ai-dev"},
+                      "dateAdded": "2026-05-01T00:00:00Z"}},
+        ]}}
+    })
+    already, ids, last = comment_op.preflight_comment("post-id", "max-ai-dev", "tok")
+    assert already is True and "c1" in ids and last == "2026-05-01"
+
+
+def test_comment_preflight_not_commented(monkeypatch: pytest.MonkeyPatch) -> None:
+    # preflight_comment calls gql_safe (not gql) — monkeypatch the right name.
+    monkeypatch.setattr(comment_op, "gql_safe", lambda q, v, t: {
+        "post": {"comments": {"edges": [
+            {"node": {"id": "c1", "author": {"username": "alice"},
+                      "dateAdded": "2026-05-01T00:00:00Z"}},
+        ]}}
+    })
+    already, ids, last = comment_op.preflight_comment("post-id", "max-ai-dev", "tok")
+    assert already is False and ids == []
+
+
+def test_comment_preflight_api_error_degrades(monkeypatch: pytest.MonkeyPatch) -> None:
+    # gql_safe returns None on error → preflight returns (None, [], '') → fail-closed.
+    monkeypatch.setattr(comment_op, "gql_safe", lambda q, v, t: None)
+    already, ids, last = comment_op.preflight_comment("post-id", "max-ai-dev", "tok")
+    assert already is None
+
+
+def test_comment_main_aborts_on_dupe(monkeypatch: pytest.MonkeyPatch,
+                                      capsys: pytest.CaptureFixture[str]) -> None:
+    import sys as _sys
+    monkeypatch.setattr(comment_op, "get_token", lambda: "tok")
+    monkeypatch.setattr(comment_op, "resolve_post_id", lambda t, r: "post-id")
+    import types
+    fake_me = types.ModuleType("_me")
+    fake_me.get_username = lambda token: "max-ai-dev"
+    monkeypatch.setitem(_sys.modules, "_me", fake_me)
+    monkeypatch.setattr(comment_op, "gql", lambda q, v, t: {
+        "post": {"comments": {"edges": [
+            {"node": {"id": "c1", "author": {"username": "max-ai-dev"},
+                      "dateAdded": "2026-05-01T00:00:00Z"}},
+        ]}}
+    })
+    with pytest.raises(SystemExit) as exc:
+        comment_op.main("abc|Hello")
+    assert exc.value.code == 1
+    assert "ABORT" in capsys.readouterr().err
+
+
+def test_comment_main_force_bypasses_preflight(monkeypatch: pytest.MonkeyPatch,
+                                                capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setattr(comment_op, "get_token", lambda: "tok")
+    monkeypatch.setattr(comment_op, "resolve_post_id", lambda t, r: "post-id")
+    monkeypatch.setattr(comment_op, "gql",
+                        lambda q, v, t: {"addComment": {"comment": {"id": "new-c",
+                                                                      "dateAdded": "2026-05-01T00:00:00Z"}}})
+    monkeypatch.setattr(comment_op, "track_append", lambda x: None)
+    comment_op.main("abc|Hello|force")
+    assert "comment posted" in capsys.readouterr().out
+
+
+# pre-flight: publish -------------------------------------------------------
+
+def test_publish_parse_args_force(tmp_path: Path) -> None:
+    md = tmp_path / "p.md"
+    md.write_text("body")
+    parsed = publish_op.parse_args(f"T|{md}|https://x.io|||force")
+    assert parsed["force"] is True
+
+
+def test_publish_parse_args_no_force(tmp_path: Path) -> None:
+    md = tmp_path / "p.md"
+    md.write_text("body")
+    parsed = publish_op.parse_args(f"T|{md}|https://x.io")
+    assert parsed["force"] is False
+
+
+def test_publish_preflight_dupe_found(monkeypatch: pytest.MonkeyPatch) -> None:
+    # preflight_publish calls gql_safe (not gql) — monkeypatch the right name.
+    # Shape: me.publications.edges[].node.posts.edges (updated PREFLIGHT query).
+    monkeypatch.setattr(publish_op, "gql_safe", lambda q, v, t: {
+        "me": {"publications": {"edges": [
+            {"node": {"posts": {"edges": [
+                {"node": {"id": "p1", "slug": "my-slug", "url": "https://x.io/my-slug",
+                          "canonicalUrl": "https://x.io"}},
+            ]}}},
+        ]}}
+    })
+    already, url, slug = publish_op.preflight_publish("https://x.io", "tok")
+    assert already is True and slug == "my-slug"
+
+
+def test_publish_preflight_no_dupe(monkeypatch: pytest.MonkeyPatch) -> None:
+    # preflight_publish calls gql_safe (not gql) — monkeypatch the right name.
+    monkeypatch.setattr(publish_op, "gql_safe", lambda q, v, t: {
+        "me": {"publications": {"edges": [
+            {"node": {"posts": {"edges": [
+                {"node": {"id": "p1", "slug": "other", "url": "https://other.io",
+                          "canonicalUrl": "https://other.io"}},
+            ]}}},
+        ]}}
+    })
+    already, url, slug = publish_op.preflight_publish("https://x.io", "tok")
+    assert already is False
+
+
+def test_publish_preflight_api_error_degrades(monkeypatch: pytest.MonkeyPatch) -> None:
+    # gql_safe returns None on error → preflight returns (None, '', '') → fail-closed.
+    monkeypatch.setattr(publish_op, "gql_safe", lambda q, v, t: None)
+    already, url, slug = publish_op.preflight_publish("https://x.io", "tok")
+    assert already is None
+
+
+def test_publish_main_aborts_on_dupe(monkeypatch: pytest.MonkeyPatch,
+                                      capsys: pytest.CaptureFixture[str],
+                                      tmp_path: Path) -> None:
+    md = tmp_path / "p.md"
+    md.write_text("body")
+    monkeypatch.setattr(publish_op, "get_token", lambda: "tok")
+    monkeypatch.setattr(publish_op, "gql_safe", lambda q, v, t: {
+        "me": {"publications": {"edges": [
+            {"node": {"posts": {"edges": [
+                {"node": {"id": "p1", "slug": "my-slug", "url": "https://x.io",
+                          "canonicalUrl": "https://x.io"}},
+            ]}}},
+        ]}}
+    })
+    with pytest.raises(SystemExit) as exc:
+        publish_op.main(f"T|{md}|https://x.io")
+    assert exc.value.code == 1
+    assert "ABORT" in capsys.readouterr().err
+
+
+def test_publish_main_force_bypasses_preflight(monkeypatch: pytest.MonkeyPatch,
+                                                capsys: pytest.CaptureFixture[str],
+                                                tmp_path: Path) -> None:
+    md = tmp_path / "p.md"
+    md.write_text("body")
+    monkeypatch.setattr(publish_op, "get_token", lambda: "tok")
+    monkeypatch.setattr(publish_op, "get_publication_id", lambda: "pub-id")
+    monkeypatch.setattr(publish_op, "gql",
+                        lambda q, v, t: {"publishPost": {"post": {
+                            "id": "new-p", "slug": "new-slug",
+                            "url": "https://x.io/new-slug", "title": "T",
+                        }}})
+    publish_op.main(f"T|{md}|https://x.io|||force")
+    assert "published" in capsys.readouterr().out
