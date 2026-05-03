@@ -10,7 +10,20 @@ myTotalReactions field and aborts if >0 (already reacted). Pass |force as a
 second pipe-separated field to bypass: hashnode_react:POST_ID_OR_URL|force
 If the pre-flight check fails, a warning is printed and the like proceeds
 (graceful degrade — don't block on platform issues).
+
+AUTO-FORCE OPT-IN: Hashnode's GraphQL exposes no per-user reaction state,
+so the pre-flight always returns "unknown" and the op aborts every time
+without `|force`. Users tired of writing `|force` on every call can opt in
+via `.supertool.json`:
+
+    "hashnode_react": { "auto_force": true }
+
+Supertool dispatches this as `SUPERTOOL_AUTO_FORCE=true`, and the op then
+treats every call as forced. This is opt-in — silent default would risk
+duplicate reactions if `likePost` were ever idempotent on Hashnode's side
+(it's not today, but the safety remains).
 """
+import os
 import sys
 from pathlib import Path
 
@@ -26,14 +39,27 @@ mutation LikePost($input: LikePostInput!) {
 """
 
 
+def _env_truthy(name: str) -> bool:
+    """Return True if env var name is set to a truthy value."""
+    val = os.environ.get(name, "").strip().lower()
+    return val in {"true", "1", "yes", "on"}
+
+
 def parse_args(arg: str) -> tuple[str, bool]:
-    """Return (raw_identifier, force)."""
+    """Return (raw_identifier, force).
+
+    `force` is True if either:
+    - `|force` was passed in the args, or
+    - SUPERTOOL_AUTO_FORCE env var is truthy (project opted in via
+      .supertool.json `hashnode_react.auto_force = true`).
+    """
     if not arg:
         sys.stderr.write("ERROR: usage hashnode_react:POST_ID_OR_URL[|force]\n")
         sys.exit(2)
     parts = arg.split("|", 1)
     raw = parts[0].strip()
-    force = len(parts) > 1 and parts[1].strip().lower() == "force"
+    force = (len(parts) > 1 and parts[1].strip().lower() == "force") \
+        or _env_truthy("SUPERTOOL_AUTO_FORCE")
     return raw, force
 
 

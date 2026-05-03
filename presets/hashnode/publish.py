@@ -44,7 +44,10 @@ def parse_args(arg: str) -> dict[str, object]:
         sys.stderr.write("ERROR: usage hashnode_publish:TITLE|MD_FILE|CANONICAL[|TAGS|COVER[|force]]\n")
         sys.exit(2)
     title = parts[0].strip()
-    md_path = Path(parts[1].strip())
+    raw_path = parts[1].strip()
+    if raw_path.startswith("file://"):
+        raw_path = raw_path[len("file://"):]
+    md_path = Path(raw_path)
     canonical = parts[2].strip()
     tags_csv = parts[3].strip() if len(parts) > 3 and parts[3].strip() else os.environ.get("SUPERTOOL_DEFAULT_TAGS", "")
     cover = parts[4].strip() if len(parts) > 4 and parts[4].strip() else os.environ.get("SUPERTOOL_DEFAULT_COVER", "")

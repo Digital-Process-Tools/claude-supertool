@@ -53,7 +53,7 @@
       "cmd": "python3 {path}devto/comment.py {args}",
       "timeout": 30,
       "description": "Post a comment (or reply with PARENT_COMMENT_ID). Accepts numeric ID, slug (author/slug), or full URL. MESSAGE may be inline text or a path to a file containing the body (file detection is automatic, like bluesky_publish). EXPERIMENTAL — requires DEVTO_SESSION_COOKIE; the public API has no comment-write endpoint.",
-      "syntax": "devto_comment:ARTICLE_ID_OR_SLUG_OR_URL|MESSAGE_OR_FILE[|PARENT_COMMENT_ID]",
+      "syntax": "devto_comment:ARTICLE_ID_OR_SLUG_OR_URL|MESSAGE_OR_FILE_OR_file://PATH[|PARENT_COMMENT_ID[|force]]",
       "example": "devto_comment:1234567|Thanks for sharing!"
     },
     "devto_status_since": {

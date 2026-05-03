@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Hashnode reply: hashnode_reply:COMMENT_ID|MESSAGE"""
+"""Hashnode reply: hashnode_reply:COMMENT_ID|MESSAGE_OR_FILE"""
 import sys
 from pathlib import Path
 
@@ -20,6 +20,34 @@ query ParentPost($cid: ID!) {
 }
 """
 
+_FILE_PREFIX = "file://"
+
+
+def _resolve_body(arg: str) -> tuple[str, bool]:
+    """Resolve a body argument to its text content. Returns (text, from_file).
+
+    - `file://path` MUST be an existing file. Errors otherwise.
+    - bare path that `is_file()` reads the file (backward compat).
+    - anything else returned as-is.
+    """
+    if arg.startswith(_FILE_PREFIX):
+        path = arg[len(_FILE_PREFIX):]
+        p = Path(path)
+        if not p.is_file():
+            sys.stderr.write(
+                f"ERROR: file not found: {path}\n"
+                "(file:// prefix requires the file to exist — typo or wrong path?)\n"
+            )
+            sys.exit(2)
+        return p.read_text(), True
+    try:
+        p = Path(arg)
+        if p.is_file():
+            return p.read_text(), True
+    except OSError:
+        pass
+    return arg, False
+
 
 def parse_args(arg: str) -> tuple[str, str]:
     parts = arg.split("|", 1)
@@ -27,16 +55,8 @@ def parse_args(arg: str) -> tuple[str, str]:
         sys.stderr.write("ERROR: usage hashnode_reply:COMMENT_ID|MESSAGE_OR_FILE\n")
         sys.exit(2)
     cid = parts[0].strip()
-    message = parts[1]
-    # Body file support — symmetric with bluesky_publish: if MESSAGE is a path
-    # to an existing file, read its contents. File bodies get stripped so an
-    # editor's trailing newline doesn't post as visible whitespace.
-    try:
-        p = Path(message)
-        if p.is_file():
-            message = p.read_text().strip()
-    except OSError:
-        pass
+    text, from_file = _resolve_body(parts[1])
+    message = text.strip() if from_file else text
     return cid, message
 
 
