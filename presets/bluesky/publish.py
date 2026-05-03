@@ -17,6 +17,7 @@ If the pre-flight check fails, a warning is printed and publish proceeds
 (graceful degrade — don't block on platform issues).
 """
 import datetime as _dt
+import re
 import sys
 from pathlib import Path
 
@@ -25,6 +26,35 @@ from _atproto import get_session, xrpc
 from _auth import get_app_password, get_handle
 
 MAX_LEN = 300
+
+# AT Protocol facets — Bluesky renders plain-text URLs unclickably; rich-text
+# annotations are required. The byte offsets must be UTF-8 bytes, not chars.
+URL_RE = re.compile(r"https?://[^\s]+")
+_TRAILING_PUNCT = ".,;:!?)]}>\"'"
+
+
+def extract_link_facets(body: str) -> list[dict]:
+    """Detect URLs in body and return AT Protocol facets making them clickable.
+
+    Returns an empty list if no URLs are found. Trailing sentence punctuation
+    (commas, periods, parens, etc.) is stripped from each URL so a sentence
+    like "see https://x.com." doesn't capture the trailing dot.
+    """
+    facets: list[dict] = []
+    for m in URL_RE.finditer(body):
+        url = m.group(0)
+        # Strip trailing sentence punctuation that's almost never part of a URL.
+        while url and url[-1] in _TRAILING_PUNCT:
+            url = url[:-1]
+        if not url:
+            continue
+        start_byte = len(body[: m.start()].encode("utf-8"))
+        end_byte = start_byte + len(url.encode("utf-8"))
+        facets.append({
+            "index": {"byteStart": start_byte, "byteEnd": end_byte},
+            "features": [{"$type": "app.bsky.richtext.facet#link", "uri": url}],
+        })
+    return facets
 
 
 def parse_args(arg: str) -> tuple[str, str | None, bool]:
@@ -117,6 +147,9 @@ def main(arg: str) -> None:
         "text": body,
         "createdAt": _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
     }
+    facets = extract_link_facets(body)
+    if facets:
+        record["facets"] = facets
     if reply_uri:
         record["reply"] = resolve_reply_ref(session, reply_uri)
     data = xrpc(
