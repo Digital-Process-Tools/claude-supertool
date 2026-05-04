@@ -148,10 +148,11 @@ def _format_error(stderr: str, resource: str, identifier: str) -> str:
 
 def main() -> int:
     if len(sys.argv) < 2:
-        print("ERROR: usage: mr.py NUMBER")
+        print("ERROR: usage: mr.py NUMBER [status]")
         return 1
 
     arg = sys.argv[1]
+    slim = len(sys.argv) > 2 and sys.argv[2] == "status"
 
     # If not all digits, treat as branch name and resolve to MR number
     if not arg.isdigit():
@@ -200,6 +201,27 @@ def main() -> int:
     except json.JSONDecodeError:
         print(f"ERROR: invalid JSON from glab\n{result.stdout[:500]}")
         return 1
+
+    if slim:
+        iid = d.get("iid", arg)
+        state = d.get("state", "?")
+        merge_status = d.get("merge_status", "?")
+        has_conflicts = d.get("has_conflicts", False)
+        pipeline = d.get("pipeline") or d.get("head_pipeline") or {}
+        pipe_status = pipeline.get("status", "none")
+        pipe_id = pipeline.get("id", "")
+        merged_at = d.get("merged_at") or "-"
+        merge_commit = d.get("merge_commit_sha") or d.get("squash_commit_sha") or ""
+        web_url = d.get("web_url", "")
+        print(f"!{iid} | state: {state} | merge_status: {merge_status} | conflicts: {'yes' if has_conflicts else 'no'}")
+        pipe_str = pipe_status + (f" (#{pipe_id})" if pipe_id else "")
+        print(f"pipeline: {pipe_str}")
+        print(f"merged_at: {merged_at}")
+        if merge_commit:
+            print(f"merge_commit: {merge_commit[:12]}")
+        if web_url:
+            print(f"url: {web_url}")
+        return 0
 
     title = d.get("title", "?")
     state = d.get("state", "?")
