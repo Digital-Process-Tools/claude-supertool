@@ -9,10 +9,10 @@
       "syntax": "gh-issue:NUMBER"
     },
     "gh-pr": {
-      "cmd": "python3 {path}github/pr.py {arg}",
+      "cmd": "python3 {path}github/pr.py {args}",
       "timeout": 20,
-      "description": "Review a pull request: branch, checks, reviews/approval, linked issue, diff stat, comments — the full dashboard.",
-      "syntax": "gh-pr:NUMBER_OR_BRANCH"
+      "description": "Review a pull request: branch, checks, reviews/approval, linked issue, diff stat, comments — the full dashboard. :status = slim merge-state only (~250B, fits hook cache).",
+      "syntax": "gh-pr:NUMBER_OR_BRANCH[:status]"
     },
     "gh-run": {
       "cmd": "python3 {path}github/run.py {arg}",

@@ -205,3 +205,104 @@ def test_get_conflict_hunks_handles_subprocess_error(monkeypatch) -> None:
         raise FileNotFoundError("git: not found")
     monkeypatch.setattr(mr.subprocess, "run", boom)
     assert mr._get_conflict_hunks("source", "master") == {}
+
+
+# ---------------------------------------------------------------------------
+# main() — slim status mode
+# ---------------------------------------------------------------------------
+
+import json
+import sys
+
+
+def _mr_json_payload(**overrides: Any) -> str:
+    """Build a minimal MR JSON response. Override fields per test."""
+    base = {
+        "iid": 20881,
+        "state": "merged",
+        "merge_status": "merged",
+        "has_conflicts": False,
+        "head_pipeline": {"status": "success", "id": 136900},
+        "merged_at": "2026-05-04T13:48:21.913Z",
+        "merge_commit_sha": "b5cd36306f6712345678",
+        "web_url": "https://gitlab.example/foo/-/merge_requests/20881",
+    }
+    base.update(overrides)
+    return json.dumps(base)
+
+
+def test_main_slim_status_mode_outputs_minimal_dashboard(monkeypatch, capsys) -> None:
+    """gl-mr:NUMBER:status returns ~5 lines: state, pipeline, merged_at, url."""
+    payload = _mr_json_payload()
+    monkeypatch.setattr(
+        mr.subprocess, "run",
+        lambda *a, **kw: _fake_run(payload, returncode=0),
+    )
+    monkeypatch.setattr(sys, "argv", ["mr.py", "20881", "status"])
+    rc = mr.main()
+    out = capsys.readouterr().out
+    assert rc == 0
+    # Slim format keys present
+    assert "!20881" in out
+    assert "state: merged" in out
+    assert "merge_status: merged" in out
+    assert "conflicts: no" in out
+    assert "pipeline: success (#136900)" in out
+    assert "merged_at: 2026-05-04T13:48:21.913Z" in out
+    assert "merge_commit: b5cd36306f67" in out
+    assert "url: https://gitlab.example/foo/-/merge_requests/20881" in out
+    # Full-dashboard sections must NOT appear
+    assert "## Description" not in out
+    assert "## Comments" not in out
+    assert "Reviewers:" not in out
+    assert "Branch:" not in out
+    # Output stays under 500 bytes — fits in hook cache
+    assert len(out) < 500
+
+
+def test_main_slim_status_with_conflicts(monkeypatch, capsys) -> None:
+    payload = _mr_json_payload(state="opened", has_conflicts=True, merged_at=None,
+                                merge_commit_sha="")
+    monkeypatch.setattr(
+        mr.subprocess, "run",
+        lambda *a, **kw: _fake_run(payload, returncode=0),
+    )
+    monkeypatch.setattr(sys, "argv", ["mr.py", "20881", "status"])
+    rc = mr.main()
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "state: opened" in out
+    assert "conflicts: yes" in out
+    assert "merged_at: -" in out
+    assert "merge_commit:" not in out
+
+
+def test_main_full_mode_unaffected(monkeypatch, capsys) -> None:
+    """No 2nd arg = full dashboard. Slim short-circuit must NOT kick in."""
+    payload = _mr_json_payload()
+    # Suppress secondary glab/api calls (approvals, notes, etc.) — return empty list
+    monkeypatch.setattr(
+        mr.subprocess, "run",
+        lambda *a, **kw: _fake_run(payload, returncode=0),
+    )
+    monkeypatch.setattr(sys, "argv", ["mr.py", "20881"])
+    rc = mr.main()
+    out = capsys.readouterr().out
+    assert rc == 0
+    # Full dashboard headers
+    assert "Branch:" in out
+    assert "Pipeline:" in out
+
+
+def test_main_slim_ignores_unknown_second_arg(monkeypatch, capsys) -> None:
+    """Only literal 'status' triggers slim mode — anything else = full dashboard."""
+    payload = _mr_json_payload()
+    monkeypatch.setattr(
+        mr.subprocess, "run",
+        lambda *a, **kw: _fake_run(payload, returncode=0),
+    )
+    monkeypatch.setattr(sys, "argv", ["mr.py", "20881", "verbose"])
+    rc = mr.main()
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Branch:" in out  # full dashboard ran
