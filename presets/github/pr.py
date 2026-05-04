@@ -33,10 +33,11 @@ def _format_error(stderr: str, resource: str, identifier: str) -> str:
 
 def main() -> int:
     if len(sys.argv) < 2:
-        print("ERROR: usage: pr.py NUMBER_OR_BRANCH")
+        print("ERROR: usage: pr.py NUMBER_OR_BRANCH [status]")
         return 1
 
     arg = sys.argv[1]
+    slim = len(sys.argv) > 2 and sys.argv[2] == "status"
 
     # If not all digits, treat as branch name
     if not arg.isdigit():
@@ -91,6 +92,27 @@ def main() -> int:
     except json.JSONDecodeError:
         print(f"ERROR: invalid JSON from gh\n{result.stdout[:500]}")
         return 1
+
+    if slim:
+        iid = d.get("number", arg)
+        state = d.get("state", "?")
+        mergeable = d.get("mergeable", "?")
+        review_decision = d.get("reviewDecision") or "none"
+        checks = d.get("statusCheckRollup", [])
+        passed = sum(1 for c in checks if c.get("conclusion") == "SUCCESS")
+        failed = sum(1 for c in checks if c.get("conclusion") == "FAILURE")
+        pending = sum(1 for c in checks if c.get("status") == "IN_PROGRESS" or c.get("conclusion") is None)
+        merge_commit = (d.get("mergeCommit") or {}).get("oid", "")
+        web_url = d.get("url", "")
+        conflicts = "yes" if mergeable == "CONFLICTING" else "no"
+        print(f"#{iid} | state: {state} | mergeable: {mergeable} | conflicts: {conflicts}")
+        print(f"checks: {passed} passed, {failed} failed, {pending} pending")
+        print(f"review: {review_decision}")
+        if merge_commit:
+            print(f"merge_commit: {merge_commit[:12]}")
+        if web_url:
+            print(f"url: {web_url}")
+        return 0
 
     title = d.get("title", "?")
     state = d.get("state", "?")
