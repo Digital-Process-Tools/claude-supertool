@@ -582,6 +582,14 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
 
 def op_read(path: str, offset: int = 0, limit: int = 0,
             grep_filter: str = "") -> str:
+    # PHP abstract mode — when enabled, read:PATH on a PHP file with no
+    # offset/limit/grep returns the symbol map (~10x smaller). Use
+    # read:PATH:0:N or read:PATH:OFFSET:LIMIT to bypass.
+    if (offset == 0 and limit == 0 and not grep_filter
+            and path.endswith(".php")
+            and _get_op_int("read", "php_abstract", 0)):
+        return (op_map(path)
+                + "\n[php abstract — use read:PATH:0:N or read:PATH:OFFSET:LIMIT for content]\n")
     if limit <= 0:
         limit = _get_op_int("read", "max_lines", MAX_READ_LINES)
     return render_file(path, offset, limit, grep_filter)
@@ -1240,7 +1248,7 @@ def _ts_extract(path: str, lang_name: str) -> List[Tuple[str, str, int, int]]:
         return []
 
     def_nodes = _TS_DEF_NODES.get(lang_name, _TS_DEF_NODES_DEFAULT)
-    symbols: List[Tuple[str, str, int, int]] = []
+    symbols: List[Tuple[str, str, int, int, int]] = []
 
     def _walk(node: Any, depth: int = 0) -> None:
         node_type = node.type
@@ -1248,7 +1256,8 @@ def _ts_extract(path: str, lang_name: str) -> List[Tuple[str, str, int, int]]:
             kind = def_nodes[node_type]
             name = _ts_node_name(node, lang_name)
             line = node.start_point[0] + 1  # 0-indexed → 1-indexed
-            symbols.append((kind, name, line, depth))
+            end_line = node.end_point[0] + 1
+            symbols.append((kind, name, line, end_line, depth))
             # Recurse into class/struct/impl bodies for methods
             for child in node.children:
                 _walk(child, depth + 1)
@@ -1474,13 +1483,13 @@ def _regex_extract(path: str) -> List[Tuple[str, str, int, int]]:
 
 
 def _format_map_symbols(
-    symbols: List[Tuple[str, str, int, int]], path: str, line_count: int
+    symbols: List[Tuple[str, str, int, int, int]], path: str, line_count: int
 ) -> str:
     """Format extracted symbols as an indented tree string."""
     out = [f"{path} ({line_count} lines)\n"]
-    for kind, name, line, depth in symbols:
+    for kind, name, line, end_line, depth in symbols:
         indent = "  " * (depth + 1)
-        out.append(f"{indent}{kind} {name}  [{line}]\n")
+        out.append(f"{indent}{kind} {name}  [{line}-{end_line}]\n")
     return "".join(out)
 
 
@@ -2240,7 +2249,7 @@ def dispatch(arg: str) -> str:
         if op == "read":
             path = parts[1] if len(parts) > 1 else ""
             offset = int(parts[2]) if len(parts) > 2 and parts[2] else 0
-            limit = int(parts[3]) if len(parts) > 3 and parts[3] else _get_op_int("read", "max_lines", MAX_READ_LINES)
+            limit = int(parts[3]) if len(parts) > 3 and parts[3] else 0
             grep_filter = ""
             if len(parts) > 4 and parts[4].startswith("grep="):
                 grep_filter = parts[4][5:]
