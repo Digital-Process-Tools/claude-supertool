@@ -241,8 +241,48 @@ def _is_compact() -> bool:
     return bool(_load_config().get("compact", False))
 
 
+def _parallel_workers() -> int:
+    """Max worker count for parallel batched ops. 0 = sequential.
+
+    Env `SUPERTOOL_PARALLEL` wins over JSON. Accepts:
+      int N      → up to N workers (0 disables)
+      true/false → 4 / 0 (back-compat with bool config)
+    Default: 0 (off).
+    """
+    env = os.environ.get("SUPERTOOL_PARALLEL")
+    raw: object = env if env is not None else _load_config().get("parallel", 0)
+    if isinstance(raw, bool):
+        return 4 if raw else 0
+    if isinstance(raw, int):
+        return max(0, raw)
+    if isinstance(raw, str):
+        s = raw.strip().lower()
+        if s in ("true", "yes", "on"):
+            return 4
+        if s in ("false", "no", "off", ""):
+            return 0
+        try:
+            return max(0, int(s))
+        except ValueError:
+            return 0
+    return 0
+
+
 def _get_op_int(op_name: str, key: str, default: int) -> int:
-    """Read an integer setting from builtin-ops.<op_name>.<key>, with fallback."""
+    """Read an integer setting from builtin-ops.<op_name>.<key>, with fallback.
+
+    Env var SUPERTOOL_<OP>_<KEY> takes precedence over JSON config.
+    Example: SUPERTOOL_READ_ABSTRACT_THRESHOLD_BYTES=12000
+    """
+    env_key = f"SUPERTOOL_{op_name.upper()}_{key.upper()}"
+    env_val = os.environ.get(env_key)
+    if env_val:
+        try:
+            n = int(env_val)
+            if n > 0:
+                return n
+        except ValueError:
+            pass
     cfg = _load_config()
     op_cfg = cfg.get("builtin-ops", {}).get(op_name, {})
     val = op_cfg.get(key)
@@ -384,7 +424,28 @@ BLOCKED_TOOLS = {"Grep", "Glob", "LS"}
 BLOCKED_BASH_COMMANDS = {"cat", "find", "grep", "ls", "sed", "awk", "tail", "head"}
 
 # Built-in op names — custom ops/aliases with these names are ignored
-_BUILTIN_OPS = {"read", "grep", "glob", "ls", "tail", "head", "wc", "check", "around", "map", "diff", "stat", "around_line", "tree", "replace", "replace_dry"}
+_BUILTIN_OPS = {"read", "grep", "glob", "ls", "tail", "head", "wc", "check", "around", "map", "diff", "stat", "around_line", "tree", "replace", "replace_dry", "edit", "replace_lines"}
+
+# Read-only built-in ops — safe to run in parallel across a batch.
+# Excludes mutating ops (replace, edit, replace_lines) and custom ops
+# (could shell out to anything). `between` is included — pure file read.
+_PARALLEL_SAFE_OPS = {
+    "read", "grep", "glob", "ls", "head", "tail", "wc", "stat",
+    "map", "tree", "around", "around_line", "between", "diff", "blame",
+    "version",
+}
+
+
+def _is_parallel_safe(arg: str) -> bool:
+    """Return True if the op name is in the read-only safe set.
+
+    Detects op name from `op:...` or `op:::...` prefix. Anything else —
+    custom ops, mutating ops, malformed args — is treated as unsafe.
+    """
+    m = re.match(r"^([a-zA-Z_][a-zA-Z0-9_]*)(:::|:|$)", arg)
+    if not m:
+        return False
+    return m.group(1) in _PARALLEL_SAFE_OPS
 
 
 # ---------------------------------------------------------------------------
@@ -581,15 +642,35 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
 
 
 def op_read(path: str, offset: int = 0, limit: int = 0,
-            grep_filter: str = "") -> str:
+            grep_filter: str = "", force_full: bool = False) -> str:
     # PHP abstract mode — when enabled, read:PATH on a PHP file with no
-    # offset/limit/grep returns the symbol map (~10x smaller). Use
-    # read:PATH:0:N or read:PATH:OFFSET:LIMIT to bypass.
+    # offset/limit/grep returns the symbol map (~10x smaller). Skipped when:
+    #   - file size <= threshold (small files fit raw in the cap, abstract
+    #     buys nothing)
+    #   - caller passes :full / :raw (force_full)
+    #   - explicit offset/limit/grep
     if (offset == 0 and limit == 0 and not grep_filter
+            and not force_full
             and path.endswith(".php")
             and _get_op_int("read", "php_abstract", 0)):
-        return (op_map(path)
-                + "\n[php abstract — use read:PATH:0:N or read:PATH:OFFSET:LIMIT for content]\n")
+        threshold = _get_op_int("read", "abstract_threshold_bytes",
+                                _get_op_int("read", "max_bytes", MAX_READ_BYTES))
+        try:
+            size_bytes = os.path.getsize(path)
+        except OSError:
+            size_bytes = 0
+        if size_bytes > threshold:
+            line_count = 0
+            try:
+                with open(path, "rb") as f:
+                    for line_count, _ in enumerate(f, 1):
+                        pass
+            except OSError:
+                pass
+            return (op_map(path)
+                    + f"\n[php abstract — {line_count} lines, {size_bytes} bytes raw — "
+                      f"use read:{path}:full for content "
+                      f"or read:{path}:::grep=PATTERN to filter]\n")
     if limit <= 0:
         limit = _get_op_int("read", "max_lines", MAX_READ_LINES)
     return render_file(path, offset, limit, grep_filter)
@@ -2083,6 +2164,138 @@ def op_replace(old: str, new: str, path: str = ".", dry: bool = False) -> str:
         return "".join(out)
 
 
+def op_edit(old: str, new: str, path: str) -> str:
+    """Single-file, single-occurrence edit — mirrors native Edit semantics.
+
+    Errors on 0 or >1 matches. For replace_all, use the `replace` op.
+    Returns a receipt with ±2 lines of context around the change.
+    """
+    if not old:
+        return "ERROR: empty old string\n"
+    if old == new:
+        return "ERROR: old and new strings are identical\n"
+    if not path:
+        return "ERROR: empty path\n"
+    if not os.path.isfile(path):
+        return f"ERROR: file not found: {path}\n"
+
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read()
+    except OSError as e:
+        return f"ERROR: failed to read {path}: {e}\n"
+
+    count = content.count(old)
+    if count == 0:
+        return f"ERROR: old string not found in {path}\n"
+    if count > 1:
+        return (
+            f"ERROR: old string found {count} times in {path} — ambiguous. "
+            f"Use a larger snippet to make it unique, or use replace for "
+            f"replace_all semantics.\n"
+        )
+
+    new_content = content.replace(old, new, 1)
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(new_content)
+    except OSError as e:
+        return f"ERROR: failed to write {path}: {e}\n"
+
+    # Receipt — locate the change and show ±2 lines context
+    pre = content[: content.index(old)]
+    start_line = pre.count("\n") + 1
+    new_lines = new_content.splitlines()
+    new_block_line_count = new.count("\n") + 1
+    end_line = start_line + new_block_line_count - 1
+    ctx_start = max(1, start_line - 2)
+    ctx_end = min(len(new_lines), end_line + 2)
+
+    out = [f"edited {path} (line {start_line}"]
+    if end_line != start_line:
+        out.append(f"-{end_line}")
+    out.append(")\n")
+    for ln in range(ctx_start, ctx_end + 1):
+        marker = "→" if start_line <= ln <= end_line else " "
+        out.append(f"  {ln:>5} {marker} {new_lines[ln - 1]}\n")
+    return "".join(out)
+
+
+def op_replace_lines(path: str, start: int, end: int, content: str) -> str:
+    """Replace lines [start, end] (1-indexed, inclusive) with content.
+
+    Modes (all via the same op):
+      insert  — end < start (e.g. 42:41) inserts CONTENT before line `start`
+      replace — end >= start, swap range with CONTENT
+      delete  — empty CONTENT, removes lines in range
+
+    Returns receipt with new line numbers + ±2 context.
+    """
+    if not path:
+        return "ERROR: empty path\n"
+    if not os.path.isfile(path):
+        return f"ERROR: file not found: {path}\n"
+    if start < 1:
+        return f"ERROR: start ({start}) must be >= 1\n"
+
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            orig = f.read()
+    except OSError as e:
+        return f"ERROR: failed to read {path}: {e}\n"
+
+    orig_lines = orig.splitlines(keepends=True)
+    total = len(orig_lines)
+
+    if start > total + 1:
+        return f"ERROR: start ({start}) > file length ({total}) + 1\n"
+
+    insert_only = end < start
+    if not insert_only and end > total:
+        return f"ERROR: end ({end}) > file length ({total})\n"
+
+    new_block = content
+    if new_block and not new_block.endswith("\n"):
+        new_block += "\n"
+    new_block_lines = new_block.splitlines(keepends=True) if new_block else []
+
+    if insert_only:
+        before = orig_lines[: start - 1]
+        after = orig_lines[start - 1:]
+        removed = 0
+    else:
+        before = orig_lines[: start - 1]
+        after = orig_lines[end:]
+        removed = end - start + 1
+
+    new_lines = before + new_block_lines + after
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.writelines(new_lines)
+    except OSError as e:
+        return f"ERROR: failed to write {path}: {e}\n"
+
+    added = len(new_block_lines)
+    new_start = start
+    new_end = start + added - 1 if added > 0 else start - 1
+
+    if added == 0:
+        verb = f"deleted lines {start}-{end}"
+    elif insert_only:
+        verb = f"inserted {added} lines before line {start}"
+    else:
+        verb = f"replaced lines {start}-{end} with lines {new_start}-{new_end}"
+    out = [f"{verb} in {path} (Δ {added - removed:+d})\n"]
+
+    ctx_start = max(1, new_start - 2)
+    ctx_end = min(len(new_lines), max(new_end, new_start) + 2)
+    for ln in range(ctx_start, ctx_end + 1):
+        marker = "→" if added > 0 and new_start <= ln <= new_end else " "
+        text = new_lines[ln - 1].rstrip("\n")
+        out.append(f"  {ln:>5} {marker} {text}\n")
+    return "".join(out)
+
+
 def op_introduction() -> str:
     """Output the project-specific introduction text from .supertool.json."""
     config = _load_config()
@@ -2242,18 +2455,39 @@ def dispatch(arg: str) -> str:
         arg = arg[: -len(_NO_EXCLUDE_SUFFIX)]
 
     header = f"--- {arg}{_NO_EXCLUDE_SUFFIX if no_exclude else ''} ---\n"
-    parts = _split_arg(arg)
+
+    # `op:::FIELD:::FIELD:::...` — triple-colon mode for write ops with
+    # arbitrary `:` in content. Only triggers when the op name is followed
+    # immediately by `:::`. Existing `:::no-exclude` (suffix, stripped above)
+    # and `read:PATH:::grep=` (mid-arg) keep working under single-colon parsing.
+    import re as _re
+    triple_match = _re.match(r"^([a-zA-Z_][a-zA-Z0-9_]*):::", arg)
+    if triple_match:
+        parts = arg.split(":::")
+    else:
+        parts = _split_arg(arg)
     op = parts[0] if parts else ""
 
     try:
         if op == "read":
             path = parts[1] if len(parts) > 1 else ""
-            offset = int(parts[2]) if len(parts) > 2 and parts[2] else 0
-            limit = int(parts[3]) if len(parts) > 3 and parts[3] else 0
+            offset = 0
+            limit = 0
+            force_full = False
+            if len(parts) > 2 and parts[2]:
+                if parts[2] in ("full", "raw"):
+                    force_full = True
+                else:
+                    offset = int(parts[2])
+            if len(parts) > 3 and parts[3]:
+                if parts[3] in ("full", "raw"):
+                    force_full = True
+                else:
+                    limit = int(parts[3])
             grep_filter = ""
             if len(parts) > 4 and parts[4].startswith("grep="):
                 grep_filter = parts[4][5:]
-            body = op_read(path, offset, limit, grep_filter)
+            body = op_read(path, offset, limit, grep_filter, force_full)
         elif op == "grep":
             pattern, path, limit, context, count_only = _parse_grep_args(parts)
             body = op_grep(pattern, path, limit, context, count_only,
@@ -2333,6 +2567,22 @@ def dispatch(arg: str) -> str:
             rpath = parts[3] if len(parts) > 3 and parts[3] else "."
             dry = op == "replace_dry"
             body = op_replace(old_str, new_str, rpath, dry=dry)
+        elif op == "edit":
+            old_str = parts[1] if len(parts) > 1 else ""
+            new_str = parts[2] if len(parts) > 2 else ""
+            epath = parts[3] if len(parts) > 3 else ""
+            body = op_edit(old_str, new_str, epath)
+        elif op == "replace_lines":
+            rl_path = parts[1] if len(parts) > 1 else ""
+            try:
+                rl_start = int(parts[2]) if len(parts) > 2 and parts[2] else 0
+                rl_end = int(parts[3]) if len(parts) > 3 and parts[3] else 0
+            except ValueError:
+                body = "ERROR: replace_lines START/END must be integers\n"
+            else:
+                # CONTENT may legitimately contain ':' — rejoin remaining parts
+                rl_content = ":".join(parts[4:]) if len(parts) > 4 else ""
+                body = op_replace_lines(rl_path, rl_start, rl_end, rl_content)
         elif op in ("introduction", "output-format", "ops", "ops-compact", "version"):
             # Meta-ops use markdown headers instead of --- header ---
             header = ""
@@ -2492,8 +2742,30 @@ def main(argv: List[str]) -> int:
     # Normal batched-ops mode
     total_out_bytes = 0
     any_failure = False
-    for arg in argv:
-        body = dispatch(arg)
+
+    # Optional parallel execution — opt-in, only when every op is read-only.
+    # Custom ops are excluded (could mutate via shell). Mixed batches stay
+    # sequential to keep reasoning simple. Output order = input order.
+    bodies: List[str]
+    workers = _parallel_workers()
+    if (
+        workers >= 2
+        and len(argv) > 1
+        and all(_is_parallel_safe(a) for a in argv)
+    ):
+        # Warm caches before threads so module-global init races are avoided
+        _load_config()
+        _has_rtk()
+        _has_tree_sitter()
+        _has_ctags()
+        from concurrent.futures import ThreadPoolExecutor
+        max_workers = min(workers, len(argv))
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            bodies = list(ex.map(dispatch, argv))
+    else:
+        bodies = [dispatch(a) for a in argv]
+
+    for body in bodies:
         sys.stdout.write(body)
         total_out_bytes += len(body.encode("utf-8"))
         if _body_indicates_failure(body):

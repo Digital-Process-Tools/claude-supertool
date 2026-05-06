@@ -1,15 +1,17 @@
 {
   "compact": false,
   "rtk": false,
+  "parallel": 0,
   "introduction": "supertool batches multiple file operations into one Bash call.\n\nInvoke via Bash:\n./supertool \\\n    'read:src/app/Module.py' \\\n    'read:src/app/Config.py' \\\n    'grep:class:src/app/:20' \\\n    'glob:src/app/**/*.py'\n\nRules:\n- One call, many ops. 6-7 per call is normal. Each separate call wastes money.\n- Paths are relative to project root.\n- Single quotes around each op.\n- Use Read tool ONLY for the file you're about to Edit — supertool for everything else.",
   "output-format": "Each operation returns a header followed by its output:\n\n```\n--- read:src/app/Module.py ---\n(45 lines, 1230 bytes)\n     1→import os\n     2→import sys\n     3→\n     4→class Module:\n\n--- grep:class:src/app/:5 ---\n(2 results, limit 5)\nsrc/app/Module.py\n  4:class Module:\nsrc/app/Config.py\n  8:class Config:\n\n--- glob:src/app/**/*.py ---\n(3 files)\nsrc/app/Module.py\nsrc/app/Config.py\nsrc/app/Utils.py\n```",
   "builtin-ops": {
     "read": {
-      "syntax": "read:PATH[:OFFSET:LIMIT]",
-      "description": "Read file (300 lines, 20KB cap)",
-      "example": "read:src/app/Module.py:10:50",
+      "syntax": "read:PATH[:OFFSET:LIMIT|:full]",
+      "description": "Read file (300 lines, 20KB cap). Set php_abstract:1 to return tree-sitter symbol maps for PHP files larger than max_bytes — saves tokens on big classes. Use :full to force raw. Threshold override: SUPERTOOL_READ_ABSTRACT_THRESHOLD_BYTES=N",
+      "example": "read:src/app/Module.py:full",
       "max_lines": 300,
-      "max_bytes": 20000
+      "max_bytes": 20000,
+      "php_abstract": 0
     },
     "read-grep": {
       "syntax": "read:PATH:::grep=PATTERN",
@@ -103,6 +105,16 @@
       "syntax": "blame:PATH:LINE[:N]",
       "description": "Git blame N lines around LINE (def 5)",
       "example": "blame:src/app/Module.py:42:3"
+    },
+    "edit": {
+      "syntax": "edit:::OLD:::NEW:::PATH",
+      "description": "Single-file edit, OLD must match exactly once. Bypasses native Edit must-Read state — saves a round-trip. Use ::: separator so content with ':' works (single ':' also accepted when content has no colons).",
+      "example": "edit:::return false;:::return true;:::src/app/Foo.py"
+    },
+    "replace_lines": {
+      "syntax": "replace_lines:::PATH:::START:::END:::CONTENT",
+      "description": "Swap lines [START,END] (1-indexed inclusive) with CONTENT. END<START = insert before START. Empty CONTENT = delete.",
+      "example": "replace_lines:::src/app/Foo.py:::42:::45:::    return x"
     }
   },
   "ops": {

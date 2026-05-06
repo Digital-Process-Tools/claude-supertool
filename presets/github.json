@@ -21,10 +21,10 @@
       "syntax": "gh-run:NUMBER"
     },
     "gh-job": {
-      "cmd": "python3 {path}github/job.py {arg}",
+      "cmd": "python3 {path}github/job.py {args}",
       "timeout": 30,
-      "description": "Why did this job fail? PR context + error pattern search + log tail — the actual error, not setup noise.",
-      "syntax": "gh-job:NUMBER",
+      "description": "Why did this job fail? PR context + error pattern search + log tail. :raw dumps full trace; :raw:START[:END] slices lines (1-indexed, inclusive)",
+      "syntax": "gh-job:NUMBER[:raw[:START[:END]]]",
       "lines": 80,
       "error_patterns": "ERROR,FAILED,Error:,Failed,fatal:,##[error]",
       "error_context": 5

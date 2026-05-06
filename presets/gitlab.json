@@ -21,12 +21,12 @@
       "syntax": "gl-pipeline:NUMBER"
     },
     "gl-job": {
-      "cmd": "python3 {path}gitlab/job.py {arg}",
+      "cmd": "python3 {path}gitlab/job.py {args}",
       "timeout": 30,
-      "description": "Why job failed: MR ctx + error patterns + log tail",
-      "syntax": "gl-job:NUMBER",
+      "description": "Why job failed: MR ctx + error patterns + log tail. :raw dumps full trace; :raw:START[:END] slices lines (1-indexed, inclusive)",
+      "syntax": "gl-job:NUMBER[:raw[:START[:END]]]",
       "lines": 80,
-      "error_patterns": "ERROR,FAILURES!,Fatal,Failed asserting",
+      "error_patterns": "ERROR,FAILURES!,Fatal,Failed asserting,PHP Warning,PHP Notice,PHP Deprecated",
       "error_context": 5
     }
   }
