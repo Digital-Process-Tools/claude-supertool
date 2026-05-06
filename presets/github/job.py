@@ -72,10 +72,22 @@ def _find_error_sections(lines: list[str], patterns: list[str], context: int) ->
 
 def main() -> int:
     if len(sys.argv) < 2:
-        print("ERROR: usage: job.py JOB_ID")
+        print("ERROR: usage: job.py JOB_ID [raw [START [END]]]")
         return 1
 
     job_id = sys.argv[1]
+    raw_mode = len(sys.argv) > 2 and sys.argv[2] == "raw"
+    raw_start: int | None = None
+    raw_end: int | None = None
+    if raw_mode:
+        try:
+            if len(sys.argv) > 3 and sys.argv[3]:
+                raw_start = max(1, int(sys.argv[3]))
+            if len(sys.argv) > 4 and sys.argv[4]:
+                raw_end = int(sys.argv[4])
+        except ValueError:
+            print("ERROR: raw START/END must be integers")
+            return 1
     config = _get_config()
     tail_lines = config["lines"]
 
@@ -177,7 +189,21 @@ def main() -> int:
 
     print(f"Log: {total} lines total")
 
-    # 3. Error pattern search
+    # 3. Raw mode — dump (sliced) trace, skip filters
+    if raw_mode:
+        start = raw_start if raw_start is not None else 1
+        end = raw_end if raw_end is not None else total
+        end = min(end, total)
+        if start > total:
+            print(f"\n## Raw — start ({start}) > total ({total}); nothing to show")
+            return 0
+        shown = lines[start - 1:end]
+        print(f"\n## Raw lines {start}-{start + len(shown) - 1} of {total}")
+        for i, line in enumerate(shown):
+            print(f"  {start + i:>5} | {line}")
+        return 0
+
+    # 4. Error pattern search
     error_sections = _find_error_sections(
         lines, config["error_patterns"], config["error_context"]
     )

@@ -99,16 +99,30 @@
       "example": "tree:tests/:2"
     },
     "replace_dry": {
-      "syntax": "replace_dry:OLD:NEW:PATH",
-      "description": "Preview replace. -old/+new per match",
-      "example": "replace_dry:TYPE_CUSTOMER:TYPE_ENUM_CUSTOMER:src/",
+      "syntax": "replace_dry:::OLD:::NEW:::PATH",
+      "description": "Preview replace. -old/+new per match. Use ::: when content has ':'",
+      "example": "replace_dry:::TYPE_CUSTOMER:::TYPE_ENUM_CUSTOMER:::src/",
       "status": 1,
       "hint": true
     },
     "replace": {
-      "syntax": "replace:OLD:NEW:PATH",
-      "description": "Replace OLD→NEW in PATH. Returns receipt",
-      "example": "replace:TYPE_CUSTOMER:TYPE_ENUM_CUSTOMER:src/",
+      "syntax": "replace:::OLD:::NEW:::PATH",
+      "description": "Replace OLD→NEW in PATH. Returns receipt. Use ::: when content has ':'",
+      "example": "replace:::TYPE_CUSTOMER:::TYPE_ENUM_CUSTOMER:::src/",
+      "status": 1,
+      "hint": true
+    },
+    "edit": {
+      "syntax": "edit:::OLD:::NEW:::PATH",
+      "description": "Single-file, single-occurrence edit (mirrors native Edit). Errors if 0 or >1 matches. Bypasses Edit's must-Read-first state — saves a round-trip. Use ::: separator (single ':' also accepted when content has no colons)",
+      "example": "edit:::return False:::return True:::supertool.py",
+      "status": 1,
+      "hint": true
+    },
+    "replace_lines": {
+      "syntax": "replace_lines:::PATH:::START:::END:::CONTENT",
+      "description": "Swap lines [START,END] (1-indexed inclusive) with CONTENT. END<START = insert before START. Empty CONTENT = delete. Receipt shows new line numbers",
+      "example": "replace_lines:::supertool.py:::42:::45:::    return x",
       "status": 1,
       "hint": true
     }
