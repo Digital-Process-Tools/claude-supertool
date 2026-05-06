@@ -2150,8 +2150,7 @@ def op_replace(old: str, new: str, path: str = ".", dry: bool = False) -> str:
 
             new_content = content.replace(old, new)
             try:
-                with open(file_path, "w", encoding="utf-8") as f:
-                    f.write(new_content)
+                _atomic_write(file_path, new_content)
                 files_modified[file_path] = count
             except OSError as e:
                 return f"ERROR: failed to write {file_path}: {e}\n"
@@ -2162,6 +2161,29 @@ def op_replace(old: str, new: str, path: str = ".", dry: bool = False) -> str:
             out.append(f"  {fp} ({cnt})\n")
         out.append(f"\nDone: '{old}' → '{new}'\n")
         return "".join(out)
+
+
+def _atomic_write(path: str, content: str) -> None:
+    """Write content to path atomically — temp file + os.replace.
+
+    Crash-safe: if interrupted mid-write, the original file is preserved
+    (the temp file is incomplete but the target path still has old data).
+    """
+    import tempfile
+    target_dir = os.path.dirname(os.path.abspath(path)) or "."
+    fd, tmp_path = tempfile.mkstemp(
+        prefix=".supertool-", suffix=".tmp", dir=target_dir
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def op_edit(old: str, new: str, path: str) -> str:
@@ -2197,8 +2219,7 @@ def op_edit(old: str, new: str, path: str) -> str:
 
     new_content = content.replace(old, new, 1)
     try:
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(new_content)
+        _atomic_write(path, new_content)
     except OSError as e:
         return f"ERROR: failed to write {path}: {e}\n"
 
@@ -2237,6 +2258,8 @@ def op_replace_lines(path: str, start: int, end: int, content: str) -> str:
         return f"ERROR: file not found: {path}\n"
     if start < 1:
         return f"ERROR: start ({start}) must be >= 1\n"
+    if end < 0:
+        return f"ERROR: end ({end}) must be >= 0\n"
 
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as f:
@@ -2270,8 +2293,7 @@ def op_replace_lines(path: str, start: int, end: int, content: str) -> str:
 
     new_lines = before + new_block_lines + after
     try:
-        with open(path, "w", encoding="utf-8") as f:
-            f.writelines(new_lines)
+        _atomic_write(path, "".join(new_lines))
     except OSError as e:
         return f"ERROR: failed to write {path}: {e}\n"
 

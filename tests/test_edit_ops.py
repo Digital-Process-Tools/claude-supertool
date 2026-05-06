@@ -233,3 +233,63 @@ def test_dispatch_read_grep_filter_unaffected(tmp_path: Path) -> None:
     out = supertool.dispatch(f"read:{f}:::grep=foo")
     assert "1→foo" in out
     assert "bar" not in out
+
+
+# ---------------------------------------------------------------------------
+# Crash-safety: atomic write
+# ---------------------------------------------------------------------------
+
+def test_edit_atomic_write_no_temp_files_left(tmp_path: Path) -> None:
+    """After a successful edit, no .supertool-*.tmp files remain."""
+    f = tmp_path / "x.py"
+    f.write_text("foo\n")
+    supertool.op_edit("foo", "FOO", str(f))
+    leftovers = list(tmp_path.glob(".supertool-*"))
+    assert leftovers == []
+
+
+def test_replace_lines_atomic_write_no_temp_files_left(tmp_path: Path) -> None:
+    f = tmp_path / "x.py"
+    f.write_text("a\nb\nc\n")
+    supertool.op_replace_lines(str(f), 2, 2, "B")
+    leftovers = list(tmp_path.glob(".supertool-*"))
+    assert leftovers == []
+
+
+def test_edit_failed_write_preserves_original(tmp_path: Path, monkeypatch) -> None:
+    """If os.replace fails mid-write, original content is preserved."""
+    f = tmp_path / "x.py"
+    f.write_text("original\n")
+
+    def boom(*a, **kw):
+        raise OSError("simulated crash")
+
+    monkeypatch.setattr(supertool.os, "replace", boom)
+    out = supertool.op_edit("original", "NEW", str(f))
+    assert "ERROR" in out
+    # File still has original content — atomic write means no partial state
+    assert f.read_text() == "original\n"
+    # Temp file cleaned up
+    assert list(tmp_path.glob(".supertool-*")) == []
+
+
+# ---------------------------------------------------------------------------
+# Validation guards
+# ---------------------------------------------------------------------------
+
+def test_replace_atomic_write_no_temp_files_left(tmp_path: Path) -> None:
+    f = tmp_path / "x.py"
+    f.write_text("foo bar foo\n")
+    supertool.op_replace("foo", "FOO", str(f))
+    leftovers = list(tmp_path.glob(".supertool-*"))
+    assert leftovers == []
+    assert "FOO" in f.read_text()
+
+
+def test_replace_lines_negative_end_rejected(tmp_path: Path) -> None:
+    f = _write(tmp_path, 5)
+    out = supertool.op_replace_lines(str(f), 3, -1, "X")
+    assert "ERROR" in out
+    assert "end (-1)" in out
+    # File untouched
+    assert f.read_text() == "line1\nline2\nline3\nline4\nline5\n"
