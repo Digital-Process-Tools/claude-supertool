@@ -1443,12 +1443,12 @@ _REGEX_PATTERNS[".tsx"] = _REGEX_PATTERNS[".ts"]
 _REGEX_PATTERNS[".jsx"] = _REGEX_PATTERNS[".js"]
 
 
-def _regex_extract(path: str) -> List[Tuple[str, str, int, int]]:
+def _regex_extract(path: str) -> List[Tuple[str, str, int, int, int]]:
     """Extract symbols from a file using regex patterns.
 
-    Returns list of (kind, name, line, depth) tuples.
-    depth is always 0 (regex can't reliably detect nesting).
-    Python is the exception: indented `def` gets depth 1.
+    Returns list of (kind, name, line, end_line, depth) tuples.
+    Regex can't reliably detect span; end_line == line.
+    depth is always 0 except indented Python `def` → depth 1.
     """
     ext = os.path.splitext(path)[1].lower()
     patterns = _REGEX_PATTERNS.get(ext)
@@ -1461,7 +1461,7 @@ def _regex_extract(path: str) -> List[Tuple[str, str, int, int]]:
     except OSError:
         return []
 
-    symbols: List[Tuple[str, str, int, int]] = []
+    symbols: List[Tuple[str, str, int, int, int]] = []
     lines = content.split("\n")
 
     for kind, regex in patterns:
@@ -1475,7 +1475,7 @@ def _regex_extract(path: str) -> List[Tuple[str, str, int, int]]:
             else:
                 name = m.group(1)
                 depth = 0
-            symbols.append((kind, name, line_num, depth))
+            symbols.append((kind, name, line_num, line_num, depth))
 
     # Sort by line number
     symbols.sort(key=lambda s: s[2])
