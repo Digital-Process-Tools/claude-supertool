@@ -17,6 +17,30 @@ def _gh(args: list[str], timeout: int = 10) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _local_branch_check(source: str) -> str:
+    """Return a one-line local-branch-vs-PR-source check.
+
+    Empty string when not in a git repo, detached HEAD, or source is empty.
+    """
+    if not source:
+        return ""
+    try:
+        r = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True, timeout=3,
+        )
+        if r.returncode != 0:
+            return ""
+        local = r.stdout.strip()
+        if not local or local == "HEAD":
+            return ""
+        if local == source:
+            return f"You are on: {local} ✓"
+        return f"You are on: {local} ⚠ MISMATCH — switch with: ./supertool 'git-checkout:{source}'"
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return ""
+
+
 def _format_error(stderr: str, resource: str, identifier: str) -> str:
     """Classify gh errors into actionable messages for LLMs."""
     s = stderr.lower()
@@ -136,6 +160,9 @@ def main() -> int:
     print(f"# #{iid} {title}{draft_marker}")
     print(f"State: {state} | Author: {author}")
     print(f"Branch: {source} -> {target}")
+    local_check = _local_branch_check(source)
+    if local_check:
+        print(local_check)
     print(f"Labels: {labels}")
     print(f"Milestone: {milestone}")
 

@@ -17,6 +17,30 @@ import subprocess
 import sys
 
 
+def _local_branch_check(source: str) -> str:
+    """Return a one-line local-branch-vs-source check for output.
+
+    Empty string when not in a git repo, detached HEAD, or source is empty.
+    """
+    if not source:
+        return ""
+    try:
+        r = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True, timeout=3,
+        )
+        if r.returncode != 0:
+            return ""
+        local = r.stdout.strip()
+        if not local or local == "HEAD":
+            return ""
+        if local == source:
+            return f"You are on: {local} ✓"
+        return f"You are on: {local} ⚠ MISMATCH — switch with: ./supertool 'git-checkout:{source}'"
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return ""
+
+
 def _format_error(stderr: str, resource: str, identifier: str) -> str:
     """Classify gh errors into actionable messages for LLMs."""
     s = stderr.lower()
@@ -183,6 +207,9 @@ def main() -> int:
             print(f"Author: {pr_author}")
         if pr_branch:
             print(f"Branch: {pr_branch}")
+            local_check = _local_branch_check(pr_branch)
+            if local_check:
+                print(local_check)
 
     if run_id:
         print(f"Run: #{run_id}")
