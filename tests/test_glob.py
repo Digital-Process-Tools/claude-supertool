@@ -65,6 +65,23 @@ def test_glob_no_auto_read_when_multiple_results(tmp_path: Path, monkeypatch) ->
     assert "[auto-read:" not in out
 
 
+def test_glob_no_auto_read_flag_on_concrete_file(tmp_path: Path) -> None:
+    f = tmp_path / "specific.py"
+    f.write_text("content = 42\n")
+    out = supertool.op_glob(str(f), no_auto_read=True)
+    assert "[auto-read:" not in out
+    assert str(f) in out
+
+
+def test_glob_no_auto_read_flag_on_single_result(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "a.py").write_text("x = 1\n")
+    monkeypatch.chdir(tmp_path)
+    out = supertool.op_glob("*.py", no_auto_read=True)
+    assert "[auto-read:" not in out
+    assert "a.py" in out
+    assert "x = 1" not in out
+
+
 def test_glob_no_auto_read_on_concrete_directory(tmp_path: Path) -> None:
     # Directory path with no wildcards — glob() returns the dir name, but
     # we should NOT auto-read (it's not a file).

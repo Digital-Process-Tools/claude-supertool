@@ -3,10 +3,10 @@
   "requires": "glab",
   "ops": {
     "gl-issue": {
-      "cmd": "python3 {path}gitlab/issue.py {arg}",
+      "cmd": "python3 {path}gitlab/issue.py {args}",
       "timeout": 30,
-      "description": "GitLab issue: desc, comments, images downloaded, related MRs",
-      "syntax": "gl-issue:NUMBER"
+      "description": "GitLab issue: desc, comments, images, related MRs. :full = no truncation, all comments",
+      "syntax": "gl-issue:NUMBER[:full]"
     },
     "gl-mr": {
       "cmd": "python3 {path}gitlab/mr.py {args}",

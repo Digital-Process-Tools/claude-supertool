@@ -72,10 +72,13 @@ def _download_images(image_urls: list[str], issue_number: str) -> list[str]:
 
 def main() -> int:
     if len(sys.argv) < 2:
-        print("ERROR: usage: issue.py NUMBER")
+        print("ERROR: usage: issue.py NUMBER [full]")
         return 1
 
     number = sys.argv[1]
+    full = len(sys.argv) > 2 and sys.argv[2] == "full"
+    desc_max = None if full else DESCRIPTION_MAX
+    comment_max = None if full else COMMENT_MAX
 
     # Fetch issue with all needed fields
     try:
@@ -108,7 +111,9 @@ def main() -> int:
     author = (d.get("author") or {}).get("login", "?")
     iid = d.get("number", number)
     web_url = d.get("url", "")
-    body = (d.get("body") or "")[:DESCRIPTION_MAX]
+    body = d.get("body") or ""
+    if desc_max is not None:
+        body = body[:desc_max]
 
     # Header
     print(f"# #{iid} {title}")
@@ -149,10 +154,19 @@ def main() -> int:
     # Comments — gh gives them directly in the issue JSON
     comments = d.get("comments", [])
     if comments:
-        print(f"\n## Comments ({len(comments)})")
-        for comment in comments[-10:]:
+        if full:
+            shown = comments
+            print(f"\n## Comments ({len(comments)})")
+        else:
+            shown = comments[-10:]
+            truncated = len(comments) - len(shown)
+            suffix = f", {truncated} earlier truncated — use :full to fetch all" if truncated else ""
+            print(f"\n## Comments ({len(shown)} of {len(comments)} shown{suffix})")
+        for comment in shown:
             c_author = (comment.get("author") or {}).get("login", "?")
-            c_body = (comment.get("body") or "")[:COMMENT_MAX]
+            c_body = comment.get("body") or ""
+            if comment_max is not None and len(c_body) > comment_max:
+                c_body = c_body[:comment_max] + f"\n…[truncated at {comment_max} chars — use :full]"
             c_created = (comment.get("createdAt") or "")[:10]
             print(f"\n**{c_author}** ({c_created}):")
             print(c_body)

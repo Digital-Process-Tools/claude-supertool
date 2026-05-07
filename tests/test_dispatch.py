@@ -626,6 +626,16 @@ def test_dispatch_glob_branch(tmp_path: Path) -> None:
     assert "hello.txt" in result
 
 
+def test_dispatch_glob_no_auto_read_flag(tmp_path: Path) -> None:
+    """glob:PATTERN:no-auto-read suppresses auto-read of single matches."""
+    f = tmp_path / "only.txt"
+    f.write_text("secret content\n")
+    result = supertool.dispatch(f"glob:{tmp_path}/*.txt:no-auto-read")
+    assert "only.txt" in result
+    assert "[auto-read:" not in result
+    assert "secret content" not in result
+
+
 def test_dispatch_grep_path_not_found() -> None:
     """Grep on nonexistent path should say 'not found', not '0 results'."""
     result = supertool.dispatch("grep:TODO:/nonexistent/path/file.php")
