@@ -961,13 +961,15 @@ def op_between_pattern(start: str, end: str, path: str) -> str:
     return "".join(out)
 
 
-def op_glob(pattern: str, no_exclude: bool = False) -> str:
-    """Find files matching pattern. Auto-reads concrete file paths."""
+def op_glob(pattern: str, no_exclude: bool = False, no_auto_read: bool = False) -> str:
+    """Find files matching pattern. Auto-reads concrete file paths unless no_auto_read."""
     if not pattern:
         return "ERROR: empty pattern\n"
 
     # Auto-promote: concrete path with no wildcards that points to a file
     if not WILDCARD_CHARS.search(pattern) and os.path.isfile(pattern):
+        if no_auto_read:
+            return f"{pattern}\n"
         return ("[auto-read: concrete path, no wildcards]\n"
                 + render_file(pattern, 0, _get_op_int("read", "max_lines", MAX_READ_LINES)))
 
@@ -992,7 +994,7 @@ def op_glob(pattern: str, no_exclude: bool = False) -> str:
     out.append("\n")
 
     # Auto-read: glob returned exactly 1 file — save the follow-up read round-trip
-    if len(files) == 1 and os.path.getsize(files[0]) < _get_op_int("read", "max_bytes", MAX_READ_BYTES):
+    if not no_auto_read and len(files) == 1 and os.path.getsize(files[0]) < _get_op_int("read", "max_bytes", MAX_READ_BYTES):
         out.append(f"[auto-read: glob returned 1 file]\n")
         out.append(render_file(files[0], 0, _get_op_int("read", "max_lines", MAX_READ_LINES)))
 
@@ -2519,7 +2521,8 @@ def dispatch(arg: str) -> str:
             body = op_wc(path)
         elif op == "glob":
             pattern = parts[1] if len(parts) > 1 else ""
-            body = op_glob(pattern, no_exclude=no_exclude)
+            no_auto_read = len(parts) > 2 and parts[2] == "no-auto-read"
+            body = op_glob(pattern, no_exclude=no_exclude, no_auto_read=no_auto_read)
         elif op == "ls":
             path = parts[1] if len(parts) > 1 and parts[1] else "."
             body = op_ls(path)

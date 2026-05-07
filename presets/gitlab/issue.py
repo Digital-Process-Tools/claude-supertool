@@ -106,10 +106,13 @@ def _download_images(image_urls: list[str], issue_number: str) -> list[str]:
 
 def main() -> int:
     if len(sys.argv) < 2:
-        print("ERROR: usage: issue.py NUMBER")
+        print("ERROR: usage: issue.py NUMBER [full]")
         return 1
 
     number = sys.argv[1]
+    full = len(sys.argv) > 2 and sys.argv[2] == "full"
+    desc_max = None if full else DESCRIPTION_MAX
+    comment_max = None if full else COMMENT_MAX
 
     # 1. Fetch issue metadata
     try:
@@ -139,7 +142,9 @@ def main() -> int:
     author = (d.get("author") or {}).get("username", "?")
     iid = d.get("iid", number)
     web_url = d.get("web_url", "")
-    description = (d.get("description") or "")[:DESCRIPTION_MAX]
+    description = d.get("description") or ""
+    if desc_max is not None:
+        description = description[:desc_max]
     project_id = d.get("project_id", "")
 
     # Header
@@ -189,10 +194,19 @@ def main() -> int:
                 human_notes = [n for n in notes if not n.get("system", False)]
                 system_count = len(notes) - len(human_notes)
                 if human_notes:
-                    print(f"\n## Comments ({len(human_notes)} human, {system_count} system skipped)")
-                    for note in human_notes[-10:]:  # last 10 human comments
+                    if full:
+                        shown_notes = human_notes
+                        print(f"\n## Comments ({len(human_notes)} human, {system_count} system skipped)")
+                    else:
+                        shown_notes = human_notes[-10:]
+                        truncated = len(human_notes) - len(shown_notes)
+                        suffix = f", {truncated} earlier truncated — use :full to fetch all" if truncated else ""
+                        print(f"\n## Comments ({len(shown_notes)} of {len(human_notes)} human shown{suffix}, {system_count} system skipped)")
+                    for note in shown_notes:
                         note_author = (note.get("author") or {}).get("username", "?")
-                        body = (note.get("body") or "")[:COMMENT_MAX]
+                        body = note.get("body") or ""
+                        if comment_max is not None and len(body) > comment_max:
+                            body = body[:comment_max] + f"\n…[truncated at {comment_max} chars — use :full]"
                         created = (note.get("created_at") or "")[:10]
                         print(f"\n**{note_author}** ({created}):")
                         print(body)

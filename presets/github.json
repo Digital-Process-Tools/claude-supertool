@@ -3,10 +3,10 @@
   "requires": "gh",
   "ops": {
     "gh-issue": {
-      "cmd": "python3 {path}github/issue.py {arg}",
+      "cmd": "python3 {path}github/issue.py {args}",
       "timeout": 30,
-      "description": "Pick up a GitHub issue: description, comments, images downloaded locally, linked PRs — everything to start working.",
-      "syntax": "gh-issue:NUMBER"
+      "description": "GitHub issue: desc, comments, images, linked PRs. :full = no truncation, all comments",
+      "syntax": "gh-issue:NUMBER[:full]"
     },
     "gh-pr": {
       "cmd": "python3 {path}github/pr.py {args}",
