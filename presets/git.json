@@ -1,5 +1,5 @@
 {
-  "description": "Git investigation ops — answer debugging questions in one call",
+  "description": "Git bulk ops — investigation + workflow combos in one call",
   "requires": "git",
   "ops": {
     "git-status": {
@@ -25,6 +25,42 @@
       "timeout": 10,
       "description": "Git blame N lines around LINE",
       "syntax": "git-blame:PATH:LINE[:N]"
+    },
+    "git-checkout": {
+      "cmd": "python3 {path}git/checkout.py {arg}",
+      "timeout": 15,
+      "description": "Switch to REF — branch, tracking, dirty, last commits",
+      "syntax": "git-checkout:REF"
+    },
+    "git-diverge": {
+      "cmd": "python3 {path}git/diverge.py {args}",
+      "timeout": 15,
+      "description": "Branch vs base — ahead/behind, commits, files, +/- totals",
+      "syntax": "git-diverge:BRANCH[:BASE]"
+    },
+    "git-merge": {
+      "cmd": "python3 {path}git/merge.py {arg}",
+      "timeout": 60,
+      "description": "Merge REF — on conflict: UU files, markers, ours/theirs SHAs",
+      "syntax": "git-merge:REF"
+    },
+    "git-conflicts": {
+      "cmd": "python3 {path}git/conflicts.py",
+      "timeout": 10,
+      "description": "List UU files + every conflict block + abort hint",
+      "syntax": "git-conflicts"
+    },
+    "git-resolve": {
+      "cmd": "python3 {path}git/resolve.py {args}",
+      "timeout": 15,
+      "description": "Pick ours/theirs for PATH (or all) + stage + continue cmd",
+      "syntax": "git-resolve:::SIDE:::PATH"
+    },
+    "git-commit": {
+      "cmd": "python3 {path}git/commit.py {args}",
+      "timeout": 60,
+      "description": "Commit MSG (stages PATHS) — HEAD before/after, hook errors surfaced",
+      "syntax": "git-commit:::MSG[:::PATH...]"
     }
   }
 }
