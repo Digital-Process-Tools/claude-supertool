@@ -54,8 +54,35 @@ def main() -> int:
             else:
                 ahead_behind = "up to date"
 
+    # Divergence from base branch (master/main) — distinct from upstream tracking
+    base_divergence = ""
+    base_branch = ""
+    for candidate in ("master", "main"):
+        check = _git(["rev-parse", "--verify", "--quiet", candidate])
+        if check.returncode == 0:
+            base_branch = candidate
+            break
+    if base_branch and branch_name != base_branch:
+        base_ab = _git(["rev-list", "--left-right", "--count",
+                        f"{base_branch}...HEAD"])
+        if base_ab.returncode == 0:
+            parts = base_ab.stdout.strip().split()
+            if len(parts) == 2:
+                behind_base, ahead_base = int(parts[0]), int(parts[1])
+                if ahead_base == 0:
+                    suffix = f", {behind_base} behind" if behind_base else ""
+                    base_divergence = (f"vs {base_branch}: 0 ahead{suffix} "
+                                       f"— branch has no own commits!")
+                else:
+                    parts_str = f"{ahead_base} ahead"
+                    if behind_base:
+                        parts_str += f", {behind_base} behind"
+                    base_divergence = f"vs {base_branch}: {parts_str}"
+
     print(f"# git-status")
     print(f"Branch: {branch_name}" + (f" ({ahead_behind})" if ahead_behind else ""))
+    if base_divergence:
+        print(base_divergence)
 
     # 2. Last 5 commits
     log_result = _git(["log", "-5", "--format=%h %ad %an | %s", "--date=short"])
@@ -129,6 +156,28 @@ def main() -> int:
             print(f"\n## MR !{mr_iid} — {mr_title}")
             print(f"State: {mr_state} | Target: {mr_target} | Pipeline: {pipe_status}")
 
+            # MR diff size — file count from existing JSON (no extra network).
+            # +/- line counts via local git diff against target branch (also no
+            # network; falls back silently if target ref isn't present locally).
+            changes_count = mr.get("changes_count")
+            if changes_count is None or changes_count == "" or changes_count == "0":
+                print("Diff: EMPTY — branch has no commits ahead of target!")
+            else:
+                diff_line = f"Diff: {changes_count} files"
+                target_ref = f"origin/{mr_target}" if mr_target != "?" else ""
+                if target_ref:
+                    shortstat = _git(["diff", "--shortstat",
+                                      f"{target_ref}...HEAD"], timeout=3)
+                    if shortstat.returncode == 0 and shortstat.stdout.strip():
+                        # e.g. " 5 files changed, 126 insertions(+), 72 deletions(-)"
+                        text = shortstat.stdout.strip()
+                        adds = _re.search(r"(\d+) insertions?", text)
+                        dels = _re.search(r"(\d+) deletions?", text)
+                        a = adds.group(1) if adds else "0"
+                        d = dels.group(1) if dels else "0"
+                        diff_line += f" (+{a} -{d})"
+                print(diff_line)
+
             # Extract linked issue from description
             desc = mr.get("description") or ""
             issue_match = _re.search(r'#(\d{4,})', desc)
@@ -143,7 +192,8 @@ def main() -> int:
         try:
             gh_result = subprocess.run(
                 ["gh", "pr", "view", branch_name, "--json",
-                 "number,title,state,baseRefName,statusCheckRollup,body"],
+                 "number,title,state,baseRefName,statusCheckRollup,body,"
+                 "additions,deletions,changedFiles"],
                 capture_output=True, text=True, timeout=5,
             )
             if gh_result.returncode == 0:
@@ -161,6 +211,12 @@ def main() -> int:
 
                 print(f"\n## PR #{pr_num} — {pr_title}")
                 print(f"State: {pr_state} | Target: {pr_target} | Checks: {check_summary}")
+
+                changed_files = pr.get("changedFiles", 0)
+                if changed_files == 0:
+                    print("Diff: EMPTY — branch has no commits ahead of target!")
+                else:
+                    print(f"Diff: {changed_files} files (+{pr.get('additions', 0)} -{pr.get('deletions', 0)})")
 
                 # Extract linked issue
                 body = pr.get("body") or ""

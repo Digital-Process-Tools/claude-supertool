@@ -4,8 +4,8 @@
   "ops": {
     "git-status": {
       "cmd": "python3 {path}git/status.py",
-      "timeout": 5,
-      "description": "Branch, commits, changes, stashes, open MR/PR",
+      "timeout": 10,
+      "description": "Branch, commits + base divergence, changes, stashes, open MR/PR with diff size",
       "syntax": "git-status"
     },
     "git-investigate": {
