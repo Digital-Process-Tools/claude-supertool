@@ -156,24 +156,27 @@ def main() -> int:
             print(f"\n## MR !{mr_iid} — {mr_title}")
             print(f"State: {mr_state} | Target: {mr_target} | Pipeline: {pipe_status}")
 
-            # MR diff size — guards against an "empty" MR that has no commits
-            try:
-                changes_result = subprocess.run(
-                    ["glab", "api",
-                     f"projects/:id/merge_requests/{mr_iid}/changes"],
-                    capture_output=True, text=True, timeout=5,
-                )
-                if changes_result.returncode == 0:
-                    changes_data = _json.loads(changes_result.stdout)
-                    changes = changes_data.get("changes", [])
-                    if not changes:
-                        print("Diff: EMPTY — branch has no commits ahead of target!")
-                    else:
-                        adds = sum(c.get("diff", "").count("\n+") for c in changes)
-                        dels = sum(c.get("diff", "").count("\n-") for c in changes)
-                        print(f"Diff: {len(changes)} files (+{adds} -{dels})")
-            except (subprocess.TimeoutExpired, _json.JSONDecodeError):
-                pass
+            # MR diff size — file count from existing JSON (no extra network).
+            # +/- line counts via local git diff against target branch (also no
+            # network; falls back silently if target ref isn't present locally).
+            changes_count = mr.get("changes_count")
+            if changes_count is None or changes_count == "" or changes_count == "0":
+                print("Diff: EMPTY — branch has no commits ahead of target!")
+            else:
+                diff_line = f"Diff: {changes_count} files"
+                target_ref = f"origin/{mr_target}" if mr_target != "?" else ""
+                if target_ref:
+                    shortstat = _git(["diff", "--shortstat",
+                                      f"{target_ref}...HEAD"], timeout=3)
+                    if shortstat.returncode == 0 and shortstat.stdout.strip():
+                        # e.g. " 5 files changed, 126 insertions(+), 72 deletions(-)"
+                        text = shortstat.stdout.strip()
+                        adds = _re.search(r"(\d+) insertions?", text)
+                        dels = _re.search(r"(\d+) deletions?", text)
+                        a = adds.group(1) if adds else "0"
+                        d = dels.group(1) if dels else "0"
+                        diff_line += f" (+{a} -{d})"
+                print(diff_line)
 
             # Extract linked issue from description
             desc = mr.get("description") or ""
