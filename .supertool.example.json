@@ -2,6 +2,7 @@
   "compact": false,
   "rtk": false,
   "parallel": 0,
+  "presets": ["git", "github", "gitlab", "claude-log", "hashnode", "devto", "bluesky"],
   "introduction": "supertool batches multiple file operations into one Bash call.\n\nInvoke via Bash:\n./supertool \\\n    'read:src/app/Module.py' \\\n    'read:src/app/Config.py' \\\n    'grep:class:src/app/:20' \\\n    'glob:src/app/**/*.py'\n\nRules:\n- One call, many ops. 6-7 per call is normal. Each separate call wastes money.\n- Paths are relative to project root.\n- Single quotes around each op.\n- Use Read tool ONLY for the file you're about to Edit — supertool for everything else.",
   "output-format": "Each operation returns a header followed by its output:\n\n```\n--- read:src/app/Module.py ---\n(45 lines, 1230 bytes)\n     1→import os\n     2→import sys\n     3→\n     4→class Module:\n\n--- grep:class:src/app/:5 ---\n(2 results, limit 5)\nsrc/app/Module.py\n  4:class Module:\nsrc/app/Config.py\n  8:class Config:\n\n--- glob:src/app/**/*.py ---\n(3 files)\nsrc/app/Module.py\nsrc/app/Config.py\nsrc/app/Utils.py\n```",
   "builtin-ops": {

@@ -17,6 +17,31 @@ import subprocess
 import sys
 
 
+def _local_branch_check(source: str) -> str:
+    """Return a one-line local-branch-vs-source check for output.
+
+    Empty string when not in a git repo, detached HEAD, or source is empty.
+    Used after the 'Branch:' line to flag editing on the wrong branch.
+    """
+    if not source:
+        return ""
+    try:
+        r = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True, timeout=3,
+        )
+        if r.returncode != 0:
+            return ""
+        local = r.stdout.strip()
+        if not local or local == "HEAD":
+            return ""
+        if local == source:
+            return f"You are on: {local} ✓"
+        return f"You are on: {local} ⚠ MISMATCH — switch with: ./supertool 'git-checkout:{source}'"
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return ""
+
+
 def _format_error(stderr: str, resource: str, identifier: str) -> str:
     """Classify glab errors into actionable messages for LLMs."""
     s = stderr.lower()
@@ -188,6 +213,9 @@ def main() -> int:
             print(f"\n## MR !{mr_iid} — {mr_title}")
             print(f"State: {mr_state} | Author: {mr_author}")
             print(f"Branch: {mr_branch} -> {mr_target}")
+            local_check = _local_branch_check(mr_branch)
+            if local_check:
+                print(local_check)
             if mr_labels:
                 print(f"Labels: {mr_labels}")
             print(f"Changes: {mr_changes} files, +{mr_additions} -{mr_deletions}")
@@ -196,6 +224,9 @@ def main() -> int:
             print(f"Pipeline: #{pipeline_id}")
         else:
             print(f"Branch: {ref} | Pipeline: #{pipeline_id}")
+            local_check = _local_branch_check(ref)
+            if local_check:
+                print(local_check)
 
     if web_url:
         print(f"URL: {web_url}")

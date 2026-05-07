@@ -43,6 +43,17 @@ def test_dispatch_unknown_op() -> None:
     assert "ERROR: unknown operation: wat" in out
 
 
+def test_dispatch_triple_colon_with_hyphen_op_name() -> None:
+    """`git-commit:::MSG:::path` must split on ::: not on : (regression).
+
+    Before the fix, hyphens in op names made the triple-colon regex miss,
+    falling through to single-colon parsing and shredding messages with `:`.
+    """
+    out = supertool.dispatch("git-commit:::hello world:::path.py")
+    # Op is unknown in the test config but the parser preserves the full name
+    assert "unknown operation: git-commit" in out
+
+
 def test_dispatch_ls(tmp_path: Path) -> None:
     (tmp_path / "a.txt").write_text("")
     out = supertool.dispatch(f"ls:{tmp_path}")

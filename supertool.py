@@ -442,7 +442,7 @@ def _is_parallel_safe(arg: str) -> bool:
     Detects op name from `op:...` or `op:::...` prefix. Anything else —
     custom ops, mutating ops, malformed args — is treated as unsafe.
     """
-    m = re.match(r"^([a-zA-Z_][a-zA-Z0-9_]*)(:::|:|$)", arg)
+    m = re.match(r"^([a-zA-Z_][a-zA-Z0-9_-]*)(:::|:|$)", arg)
     if not m:
         return False
     return m.group(1) in _PARALLEL_SAFE_OPS
@@ -2485,7 +2485,7 @@ def dispatch(arg: str) -> str:
     # immediately by `:::`. Existing `:::no-exclude` (suffix, stripped above)
     # and `read:PATH:::grep=` (mid-arg) keep working under single-colon parsing.
     import re as _re
-    triple_match = _re.match(r"^([a-zA-Z_][a-zA-Z0-9_]*):::", arg)
+    triple_match = _re.match(r"^([a-zA-Z_][a-zA-Z0-9_-]*):::", arg)
     if triple_match:
         parts = arg.split(":::")
     else:
