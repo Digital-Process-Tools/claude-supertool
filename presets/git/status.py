@@ -84,6 +84,11 @@ def main() -> int:
     if base_divergence:
         print(base_divergence)
 
+    # Origin HEAD — explicit, so callers don't need raw `git log origin/...`
+    origin_head = _git(["log", "-1", "--format=%h %s", "@{upstream}"])
+    if origin_head.returncode == 0 and origin_head.stdout.strip():
+        print(f"Origin HEAD: {origin_head.stdout.strip()}")
+
     # 2. Last 5 commits
     log_result = _git(["log", "-5", "--format=%h %ad %an | %s", "--date=short"])
     if log_result.returncode == 0 and log_result.stdout.strip():
