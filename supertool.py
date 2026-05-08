@@ -2003,6 +2003,23 @@ _URL_SCHEMES = ("http", "https", "ftp", "ftps", "ssh", "git", "file", "ws", "wss
 _URL_PORT = re.compile(r"^\d+(?:[/?#].*)?$")
 
 
+def _decode_escapes(s: str) -> str:
+    r"""Decode shell-style escape sequences in mutating-op arguments.
+
+    Used by `replace`, `replace_dry`, `edit`, `replace_lines` so callers can
+    pass multi-line OLD/NEW/CONTENT via CLI without literal `\n` polluting
+    file contents. Decoded sequences: `\n` `\t` `\r` `\\`. A two-pass sentinel
+    keeps `\\n` (literal backslash + n) intact while still decoding `\n`.
+    """
+    if "\\" not in s:
+        return s
+    SENTINEL = "\x00BS\x00"
+    out = s.replace("\\\\", SENTINEL)
+    out = out.replace("\\n", "\n").replace("\\t", "\t").replace("\\r", "\r")
+    out = out.replace(SENTINEL, "\\")
+    return out
+
+
 def _split_arg(arg: str) -> List[str]:
     """Split 'op:arg1:arg2:arg3' by ':' but reassemble drive letters and URLs.
 
@@ -2650,14 +2667,14 @@ def dispatch(arg: str) -> str:
             d = int(parts[2]) if len(parts) > 2 and parts[2] else 3
             body = op_tree(path, d, exclude_paths=_get_exclude_paths("tree", no_exclude))
         elif op in ("replace", "replace_dry"):
-            old_str = parts[1] if len(parts) > 1 else ""
-            new_str = parts[2] if len(parts) > 2 else ""
+            old_str = _decode_escapes(parts[1] if len(parts) > 1 else "")
+            new_str = _decode_escapes(parts[2] if len(parts) > 2 else "")
             rpath = parts[3] if len(parts) > 3 and parts[3] else "."
             dry = op == "replace_dry"
             body = op_replace(old_str, new_str, rpath, dry=dry)
         elif op == "edit":
-            old_str = parts[1] if len(parts) > 1 else ""
-            new_str = parts[2] if len(parts) > 2 else ""
+            old_str = _decode_escapes(parts[1] if len(parts) > 1 else "")
+            new_str = _decode_escapes(parts[2] if len(parts) > 2 else "")
             epath = parts[3] if len(parts) > 3 else ""
             body = op_edit(old_str, new_str, epath)
         elif op == "replace_lines":
@@ -2669,7 +2686,7 @@ def dispatch(arg: str) -> str:
                 body = "ERROR: replace_lines START/END must be integers\n"
             else:
                 # CONTENT may legitimately contain ':' — rejoin remaining parts
-                rl_content = ":".join(parts[4:]) if len(parts) > 4 else ""
+                rl_content = _decode_escapes(":".join(parts[4:]) if len(parts) > 4 else "")
                 body = op_replace_lines(rl_path, rl_start, rl_end, rl_content)
         elif op in ("introduction", "output-format", "ops", "ops-compact", "version"):
             # Meta-ops use markdown headers instead of --- header ---

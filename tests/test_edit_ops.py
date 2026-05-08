@@ -293,3 +293,39 @@ def test_replace_lines_negative_end_rejected(tmp_path: Path) -> None:
     assert "end (-1)" in out
     # File untouched
     assert f.read_text() == "line1\nline2\nline3\nline4\nline5\n"
+
+
+# ---------------------------------------------------------------------------
+# _decode_escapes — CLI escape sequences for mutating ops
+# ---------------------------------------------------------------------------
+
+def test_decode_escapes_newline_tab_return() -> None:
+    assert supertool._decode_escapes("a\\nb") == "a\nb"
+    assert supertool._decode_escapes("a\\tb") == "a\tb"
+    assert supertool._decode_escapes("a\\rb") == "a\rb"
+
+
+def test_decode_escapes_double_backslash_protects_n() -> None:
+    """`\\\\n` (literal backslash + n) must NOT decode to newline."""
+    assert supertool._decode_escapes("a\\\\nb") == "a\\nb"
+
+
+def test_decode_escapes_no_backslash_passthrough() -> None:
+    assert supertool._decode_escapes("plain text") == "plain text"
+
+
+def test_dispatch_edit_decodes_newline_in_new(tmp_path: Path) -> None:
+    """`./supertool 'edit:::OLD:::a\\nb:::PATH'` must write a real newline."""
+    f = tmp_path / "x.txt"
+    f.write_text("MARKER\n")
+    out = supertool.dispatch(f"edit:::MARKER:::a\\nb:::{f}")
+    assert "edited" in out
+    assert f.read_text() == "a\nb\n"
+
+
+def test_dispatch_replace_decodes_newline_in_new(tmp_path: Path) -> None:
+    f = tmp_path / "x.txt"
+    f.write_text("foo\n")
+    out = supertool.dispatch(f"replace:::foo:::line1\\nline2:::{f}")
+    assert "foo" not in f.read_text()
+    assert f.read_text() == "line1\nline2\n"
