@@ -114,3 +114,35 @@ def test_main_branch_used_when_master_missing(tmp_path: Path, monkeypatch) -> No
     _stub_no_mr(monkeypatch)
     out = _run_main(repo, monkeypatch)
     assert "vs main: 0 ahead" in out
+
+
+def test_origin_head_shown_when_upstream_set(tmp_path: Path, monkeypatch) -> None:
+    """When branch tracks an upstream, git-status surfaces origin HEAD sha + subject."""
+    upstream = tmp_path / "upstream.git"
+    upstream.mkdir()
+    _git(upstream, "init", "--bare", "-b", "master")
+
+    repo = _init_repo(tmp_path)
+    _git(repo, "remote", "add", "origin", str(upstream))
+    _git(repo, "push", "-u", "origin", "master")
+
+    # Local advances by one commit; origin still at the initial commit.
+    (repo / "g").write_text("y\n")
+    _git(repo, "add", "g")
+    _git(repo, "commit", "-m", "local advance")
+
+    _stub_no_mr(monkeypatch)
+    out = _run_main(repo, monkeypatch)
+    assert "Origin HEAD:" in out
+    # The Origin HEAD line should describe the upstream commit, not the local one.
+    origin_line = next(l for l in out.splitlines() if l.startswith("Origin HEAD:"))
+    assert "initial" in origin_line
+    assert "local advance" not in origin_line
+
+
+def test_origin_head_skipped_when_no_upstream(tmp_path: Path, monkeypatch) -> None:
+    """No upstream tracking → no Origin HEAD line (silent skip, not an error)."""
+    repo = _init_repo(tmp_path)
+    _stub_no_mr(monkeypatch)
+    out = _run_main(repo, monkeypatch)
+    assert "Origin HEAD:" not in out
