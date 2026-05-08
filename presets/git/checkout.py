@@ -39,6 +39,15 @@ def main() -> int:
         s = stderr.lower()
         if "not a git repository" in s:
             print("ERROR: not inside a git repository.")
+        elif "is already used by worktree" in s or "already checked out at" in s:
+            import re
+            m = re.search(r"worktree at ['\"]?([^'\"\n]+?)['\"]?$", stderr, re.MULTILINE) \
+                or re.search(r"checked out at ['\"]?([^'\"\n]+?)['\"]?$", stderr, re.MULTILINE)
+            path = m.group(1) if m else None
+            print(f"ERROR: ref {ref!r} is checked out in another worktree.")
+            if path:
+                print(f"Switch with: cd {path}")
+                print(f"Or remove it: git worktree remove {path}")
         elif "did not match any" in s or "pathspec" in s:
             print(f"ERROR: ref {ref!r} not found. Try `git fetch` first.")
         elif "would be overwritten" in s or "local changes" in s:
