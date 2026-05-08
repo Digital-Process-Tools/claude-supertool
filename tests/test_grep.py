@@ -358,3 +358,31 @@ def test_grep_header_file_count_with_context(tmp_path: Path) -> None:
     out = supertool.op_grep("MATCH", str(tmp_path), context=1)
     assert "results in 2 files" in out
     assert "context 1" in out
+
+
+# ---------------------------------------------------------------------------
+# grep_around dispatch — alias to grep with default context
+# ---------------------------------------------------------------------------
+
+def test_dispatch_grep_around_default_context(tmp_path: Path) -> None:
+    f = tmp_path / "src.py"
+    f.write_text("a\nb\nc\nMATCH\nd\ne\nf\n")
+    out = supertool.dispatch(f"grep_around:MATCH:{f}")
+    # Default context=3 → lines 1-7 all visible around match at 4
+    assert "context 3" in out
+    assert "  4:MATCH" in out
+    assert "  1-a" in out
+    assert "  7-f" in out
+
+
+def test_dispatch_grep_around_custom_n(tmp_path: Path) -> None:
+    f = tmp_path / "src.py"
+    f.write_text("a\nb\nMATCH\nd\ne\n")
+    out = supertool.dispatch(f"grep_around:MATCH:{f}:1")
+    assert "context 1" in out
+    assert "  3:MATCH" in out
+    assert "  2-b" in out
+    assert "  4-d" in out
+    # Beyond context not shown
+    assert "  1-a" not in out
+    assert "  5-e" not in out

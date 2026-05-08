@@ -41,6 +41,11 @@
       "description": "First match + N lines ctx (def 10). 1-shot grep+read",
       "example": "around:def main:src/app/Module.py:15"
     },
+    "grep_around": {
+      "syntax": "grep_around:PATTERN:PATH[:N[:LIMIT]]",
+      "description": "Every match + N ctx lines (def 3, limit 10). Bulk usage scan",
+      "example": "grep_around:CommandDriveCreateFile:src/:5"
+    },
     "glob": {
       "syntax": "glob:PATTERN",
       "description": "Find files (**). Auto-reads concrete paths",
