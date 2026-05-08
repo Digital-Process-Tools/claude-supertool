@@ -319,13 +319,13 @@ def test_regex_extract_unsupported() -> None:
 
 def test_format_map_symbols() -> None:
     symbols = [
-        ("class", "Foo", 1, 0),
-        ("method", "bar", 5, 1),
+        ("class", "Foo", 1, 1, 0),
+        ("method", "bar", 5, 7, 1),
     ]
     out = supertool._format_map_symbols(symbols, "test.py", 10)
     assert "test.py (10 lines)" in out
     assert "class Foo  [1]" in out
-    assert "method bar  [5]" in out
+    assert "method bar  [5-7]" in out
 
 
 def test_format_ctags_symbols() -> None:
@@ -635,7 +635,7 @@ def test_ts_extract_python(tmp_path: Path) -> None:
     # bar should have depth > Foo
     foo_sym = [s for s in symbols if s[1] == "Foo"][0]
     bar_sym = [s for s in symbols if s[1] == "bar"][0]
-    assert bar_sym[3] > foo_sym[3]
+    assert bar_sym[4] > foo_sym[4]
 
 
 @pytest.mark.skipif(not _has_any_tree_sitter(), reason="no tree-sitter")
