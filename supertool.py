@@ -1572,7 +1572,8 @@ def _format_map_symbols(
     out = [f"{path} ({line_count} lines)\n"]
     for kind, name, line, end_line, depth in symbols:
         indent = "  " * (depth + 1)
-        out.append(f"{indent}{kind} {name}  [{line}-{end_line}]\n")
+        label = f"[{line}]" if line == end_line else f"[{line}-{end_line}]"
+        out.append(f"{indent}{kind} {name}  {label}\n")
     return "".join(out)
 
 
@@ -2105,64 +2106,75 @@ def op_replace(old: str, new: str, path: str = ".", dry: bool = False) -> str:
     if not candidates:
         return "(0 files to search)\n"
 
-    # Collect matches
-    matches: List[Tuple[str, int, str]] = []  # (filepath, lineno, line_content)
+    # Collect matches via whole-file scan so multi-line `old` patterns work.
+    # Line-by-line matching would silently miss any pattern containing '\n'.
+    file_matches: List[Tuple[str, List[int]]] = []  # (filepath, [match_start_offsets])
+    total_count = 0
     for file_path in candidates:
         try:
             with open(file_path, "r", encoding="utf-8", errors="replace") as f:
-                for lineno, line in enumerate(f, start=1):
-                    if old in line:
-                        matches.append((file_path, lineno, line.rstrip()))
+                content = f.read()
         except OSError:
             continue
+        positions: List[int] = []
+        start = 0
+        while True:
+            idx = content.find(old, start)
+            if idx == -1:
+                break
+            positions.append(idx)
+            start = idx + len(old)
+        if positions:
+            file_matches.append((file_path, positions))
+            total_count += len(positions)
 
-    if not matches:
+    if total_count == 0:
         return f"(0 occurrences of '{old}' found)\n"
 
     if dry:
-        # Diff preview mode
-        out: List[str] = []
-        current_file = ""
-        file_count = 0
-        for filepath, lineno, content in matches:
-            if filepath != current_file:
-                current_file = filepath
-                file_count += 1
-                out.append(f"\n{filepath}\n")
-            replaced = content.replace(old, new)
-            out.append(f"  {lineno}:  - {content}\n")
-            out.append(f"  {lineno}:  + {replaced}\n")
-
-        out.insert(0, f"({len(matches)} occurrences in {file_count} files)\n")
-        out.append(f"\nSummary: {len(matches)} replacements in {file_count} files (DRY RUN — no files modified)\n")
-        return "".join(out)
-    else:
-        # Execute mode — perform replacements file by file
-        files_modified: Dict[str, int] = {}  # filepath -> count
-        for file_path in candidates:
+        out: List[str] = [f"({total_count} occurrences in {len(file_matches)} files)\n"]
+        old_lines = old.split("\n")
+        new_lines = new.split("\n")
+        for filepath, positions in file_matches:
+            out.append(f"\n{filepath}\n")
             try:
-                with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+                with open(filepath, "r", encoding="utf-8", errors="replace") as f:
                     content = f.read()
             except OSError:
                 continue
-
-            count = content.count(old)
-            if count == 0:
-                continue
-
-            new_content = content.replace(old, new)
-            try:
-                _atomic_write(file_path, new_content)
-                files_modified[file_path] = count
-            except OSError as e:
-                return f"ERROR: failed to write {file_path}: {e}\n"
-
-        total = sum(files_modified.values())
-        out = [f"({total} replacements in {len(files_modified)} files)\n"]
-        for fp, cnt in sorted(files_modified.items()):
-            out.append(f"  {fp} ({cnt})\n")
-        out.append(f"\nDone: '{old}' → '{new}'\n")
+            for pos in positions:
+                start_line = content.count("\n", 0, pos) + 1
+                end_line = start_line + len(old_lines) - 1
+                label = f"L{start_line}" if start_line == end_line else f"L{start_line}-L{end_line}"
+                out.append(f"  {label}:\n")
+                for ol in old_lines:
+                    out.append(f"    - {ol}\n")
+                for nl in new_lines:
+                    out.append(f"    + {nl}\n")
+        out.append(f"\nSummary: {total_count} replacements in {len(file_matches)} files (DRY RUN — no files modified)\n")
         return "".join(out)
+
+    # Execute mode
+    files_modified: Dict[str, int] = {}
+    for file_path, positions in file_matches:
+        try:
+            with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+        except OSError:
+            continue
+        new_content = content.replace(old, new)
+        try:
+            _atomic_write(file_path, new_content)
+            files_modified[file_path] = len(positions)
+        except OSError as e:
+            return f"ERROR: failed to write {file_path}: {e}\n"
+
+    total = sum(files_modified.values())
+    out = [f"({total} replacements in {len(files_modified)} files)\n"]
+    for fp, cnt in sorted(files_modified.items()):
+        out.append(f"  {fp} ({cnt})\n")
+    out.append(f"\nDone: '{old}' → '{new}'\n")
+    return "".join(out)
 
 
 def _atomic_write(path: str, content: str) -> None:

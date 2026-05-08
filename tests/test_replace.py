@@ -149,3 +149,48 @@ class TestReplaceDispatch:
     def test_dispatch_replace_no_path_defaults_to_cwd(self, tmp_files):
         result = dispatch(f"replace_dry:XYZNONEXIST99:NEWVAL:{tmp_files}")
         assert "0 occurrences" in result
+
+
+@pytest.fixture
+def multiline_files(tmp_path):
+    """Files with multi-line patterns (e.g. duplicated INI sections)."""
+    f1 = tmp_path / "a.ini"
+    f1.write_text("[fr_all]\n[es_all]\n[es_all]\n")
+    f2 = tmp_path / "b.ini"
+    f2.write_text("[fr_all]\n[en_all]\n[es_all]\n[es_all]\n")
+    f3 = tmp_path / "c.ini"
+    f3.write_text("[fr_all]\n[es_all]\n")
+    return tmp_path
+
+
+class TestReplaceMultiline:
+    """Multi-line `old` patterns must match across line boundaries."""
+
+    def test_dry_finds_multiline_pattern(self, multiline_files):
+        result = op_replace("[es_all]\n[es_all]", "[es_all]", str(multiline_files), dry=True)
+        assert "(2 occurrences in 2 files)" in result
+        assert "DRY RUN" in result
+
+    def test_dry_shows_line_range_for_multiline(self, multiline_files):
+        result = op_replace("[es_all]\n[es_all]", "[es_all]", str(multiline_files), dry=True)
+        assert "L2-L3" in result or "L3-L4" in result
+
+    def test_execute_collapses_duplicate_blocks(self, multiline_files):
+        op_replace("[es_all]\n[es_all]", "[es_all]", str(multiline_files), dry=False)
+        assert (multiline_files / "a.ini").read_text() == "[fr_all]\n[es_all]\n"
+        assert (multiline_files / "b.ini").read_text() == "[fr_all]\n[en_all]\n[es_all]\n"
+        # File without duplicate stays untouched
+        assert (multiline_files / "c.ini").read_text() == "[fr_all]\n[es_all]\n"
+
+    def test_execute_receipt_counts_files(self, multiline_files):
+        result = op_replace("[es_all]\n[es_all]", "[es_all]", str(multiline_files), dry=False)
+        assert "2 replacements in 2 files" in result
+
+    def test_dry_does_not_modify_multiline(self, multiline_files):
+        original_a = (multiline_files / "a.ini").read_text()
+        op_replace("[es_all]\n[es_all]", "[es_all]", str(multiline_files), dry=True)
+        assert (multiline_files / "a.ini").read_text() == original_a
+
+    def test_replacement_can_be_multiline(self, multiline_files):
+        op_replace("[fr_all]\n[es_all]", "[fr_all]\n[de_all]\n[es_all]", str(multiline_files / "c.ini"), dry=False)
+        assert (multiline_files / "c.ini").read_text() == "[fr_all]\n[de_all]\n[es_all]\n"
