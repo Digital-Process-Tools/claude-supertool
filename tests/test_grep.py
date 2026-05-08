@@ -343,3 +343,18 @@ def test_grep_recursive_context_limit_across_files(tmp_path: Path) -> None:
     groups = supertool._grep_recursive_context("MATCH", str(tmp_path), 3, 0)
     match_count = sum(1 for g in groups for line in g if line[2] == "match")
     assert match_count == 3
+
+
+def test_grep_header_includes_file_count(tmp_path: Path) -> None:
+    (tmp_path / "a.txt").write_text("MATCH\nMATCH\n")
+    (tmp_path / "b.txt").write_text("MATCH\n")
+    out = supertool.op_grep("MATCH", str(tmp_path))
+    assert "(3 results in 2 files," in out
+
+
+def test_grep_header_file_count_with_context(tmp_path: Path) -> None:
+    (tmp_path / "a.txt").write_text("hello\nMATCH\nworld\n")
+    (tmp_path / "b.txt").write_text("MATCH\n")
+    out = supertool.op_grep("MATCH", str(tmp_path), context=1)
+    assert "results in 2 files" in out
+    assert "context 1" in out
