@@ -51,3 +51,30 @@ def test_unknown_ref_returns_actionable_error(monkeypatch, capsys) -> None:
     assert rc == 1
     assert "not found" in out
     assert "git fetch" in out
+
+
+def test_checkout_worktree_locked_suggests_path(monkeypatch, capsys) -> None:
+    """When ref is checked out in another worktree, suggest cd <path>."""
+    err = (
+        "fatal: 'feature/x' is already used by worktree at "
+        "'/private/tmp/dvsi-google-tests'"
+    )
+
+    def fake(args, timeout=10):
+        if args[:2] == ["rev-parse", "--abbrev-ref"]:
+            return _fake_run("master\n")
+        if args[:2] == ["rev-parse", "--short"]:
+            return _fake_run("abc1234\n")
+        if args[0] == "checkout":
+            return _fake_run("", err, 128)
+        return _fake_run()
+
+    monkeypatch.setattr(checkout, "_git", fake)
+    monkeypatch.setattr(checkout.sys, "argv", ["checkout.py", "feature/x"])
+    rc = checkout.main()
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "another worktree" in out
+    assert "/private/tmp/dvsi-google-tests" in out
+    assert "cd /private/tmp/dvsi-google-tests" in out
+    assert "git worktree remove" in out
