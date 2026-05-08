@@ -2003,6 +2003,12 @@ _URL_SCHEMES = ("http", "https", "ftp", "ftps", "ssh", "git", "file", "ws", "wss
 _URL_PORT = re.compile(r"^\d+(?:[/?#].*)?$")
 
 
+# NUL-bracketed marker for the two-pass `\\` protection in _decode_escapes.
+# NUL is extremely unlikely in CLI args, and pass 3 replaces it with a literal
+# backslash so it never reaches output.
+_DECODE_ESCAPES_SENTINEL = "\x00BS\x00"
+
+
 def _decode_escapes(s: str) -> str:
     r"""Decode shell-style escape sequences in mutating-op arguments.
 
@@ -2013,10 +2019,9 @@ def _decode_escapes(s: str) -> str:
     """
     if "\\" not in s:
         return s
-    SENTINEL = "\x00BS\x00"
-    out = s.replace("\\\\", SENTINEL)
+    out = s.replace("\\\\", _DECODE_ESCAPES_SENTINEL)
     out = out.replace("\\n", "\n").replace("\\t", "\t").replace("\\r", "\r")
-    out = out.replace(SENTINEL, "\\")
+    out = out.replace(_DECODE_ESCAPES_SENTINEL, "\\")
     return out
 
 
