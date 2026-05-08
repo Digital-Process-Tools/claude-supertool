@@ -8,7 +8,12 @@ Receipt always shows:
 
 Surfaces silent rollbacks: if HEAD is unchanged after the call,
 that's printed loudly. Replaces the add/commit/log-1 cycle.
+
+Special MSG values:
+  --no-edit   Use prepared commit message (MERGE_MSG / CHERRY_PICK_HEAD).
+              Only valid when a merge or cherry-pick is in progress.
 """
+import os
 import subprocess
 import sys
 
@@ -49,8 +54,9 @@ def main() -> int:
 
     msg = sys.argv[1]
     paths = sys.argv[2:]
+    no_edit = msg.strip() == "--no-edit"
 
-    if not msg.strip():
+    if not no_edit and not msg.strip():
         print("ERROR: commit message is empty.")
         return 1
 
@@ -60,6 +66,17 @@ def main() -> int:
 
     head_before = _head_sha()
     branch = _git(["rev-parse", "--abbrev-ref", "HEAD"]).stdout.strip()
+
+    if no_edit:
+        gd = _git(["rev-parse", "--git-dir"]).stdout.strip()
+        in_merge = bool(gd) and (
+            os.path.exists(os.path.join(gd, "MERGE_HEAD"))
+            or os.path.exists(os.path.join(gd, "CHERRY_PICK_HEAD"))
+        )
+        if not in_merge:
+            print("ERROR: --no-edit requires a merge or cherry-pick in progress "
+                  "(no MERGE_HEAD/CHERRY_PICK_HEAD found).")
+            return 1
 
     print(f"# git-commit on {branch}")
     print(f"HEAD before: {head_before}")
@@ -80,7 +97,10 @@ def main() -> int:
     staged_files = [l for l in staged.stdout.splitlines() if l.strip()]
 
     # Commit
-    result = _git(["commit", "-m", msg])
+    if no_edit:
+        result = _git(["commit", "--no-edit"])
+    else:
+        result = _git(["commit", "-m", msg])
     head_after = _head_sha()
 
     if result.returncode == 0 and head_after and head_after != head_before:

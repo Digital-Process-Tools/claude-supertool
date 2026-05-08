@@ -59,7 +59,7 @@
     "git-commit": {
       "cmd": "python3 {path}git/commit.py {args}",
       "timeout": 60,
-      "description": "Commit MSG (stages PATHS) — HEAD before/after, hook errors surfaced",
+      "description": "Commit MSG (stages PATHS) — HEAD before/after, hook errors surfaced. MSG=--no-edit reuses MERGE_MSG/CHERRY_PICK msg (merge or cherry-pick must be in progress)",
       "syntax": "git-commit:::MSG[:::PATH...]"
     }
   }

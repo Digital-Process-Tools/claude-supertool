@@ -45,3 +45,58 @@ def test_no_args_prints_usage(monkeypatch, capsys) -> None:
     out = capsys.readouterr().out
     assert rc == 1
     assert "usage" in out
+
+
+def test_no_edit_outside_merge_rejected(monkeypatch, capsys, tmp_path) -> None:
+    """--no-edit needs MERGE_HEAD or CHERRY_PICK_HEAD; reject otherwise."""
+    import subprocess
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(commit.sys, "argv", ["commit.py", "--no-edit"])
+    rc = commit.main()
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "--no-edit" in out
+    assert "MERGE_HEAD" in out or "merge" in out.lower()
+
+
+def test_no_edit_during_merge_uses_prepared_message(monkeypatch, capsys, tmp_path) -> None:
+    """With MERGE_HEAD present, --no-edit calls `git commit --no-edit`."""
+    import subprocess
+    subprocess.run(["git", "init", "-q", "-b", "main", str(tmp_path)], check=True)
+    monkeypatch.chdir(tmp_path)
+    subprocess.run(["git", "config", "user.email", "t@t"], check=True)
+    subprocess.run(["git", "config", "user.name", "t"], check=True)
+    (tmp_path / "a.txt").write_text("hi\n")
+    subprocess.run(["git", "add", "a.txt"], check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], check=True)
+    # Fake a merge state: MERGE_HEAD + MERGE_MSG + a staged change
+    gd = subprocess.run(["git", "rev-parse", "--git-dir"],
+                        capture_output=True, text=True, check=True).stdout.strip()
+    Path(gd, "MERGE_HEAD").write_text("0" * 40 + "\n")
+    Path(gd, "MERGE_MSG").write_text("Merge fake\n")
+    (tmp_path / "a.txt").write_text("hi\nmerged\n")
+    subprocess.run(["git", "add", "a.txt"], check=True)
+
+    calls: list[list[str]] = []
+    real_run = commit._git
+
+    def spy(args, timeout=30):
+        calls.append(list(args))
+        # Short-circuit the actual commit so we don't depend on a clean merge:
+        # we only want to verify --no-edit reaches git.
+        if list(args)[:2] == ["commit", "--no-edit"]:
+            class R:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+            return R()
+        return real_run(args, timeout=timeout)
+    monkeypatch.setattr(commit, "_git", spy)
+    monkeypatch.setattr(commit.sys, "argv", ["commit.py", "--no-edit"])
+
+    rc = commit.main()
+    capsys.readouterr()  # drain
+    assert ["commit", "--no-edit"] in calls
+    # No -m was passed for any commit invocation
+    assert all("-m" not in c for c in calls if c[:1] == ["commit"])
