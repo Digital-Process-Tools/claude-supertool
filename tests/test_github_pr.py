@@ -131,4 +131,65 @@ def test_main_slim_ignores_unknown_second_arg(monkeypatch, capsys) -> None:
     rc = pr.main()
     out = capsys.readouterr().out
     assert rc == 0
-    assert "Branch:" in out
+
+
+# ---------------------------------------------------------------------------
+# Always-print sections — empty case must show explicit marker
+# ---------------------------------------------------------------------------
+
+def test_main_full_mode_empty_sections_always_printed(monkeypatch, capsys) -> None:
+    payload = _pr_json_payload(
+        body="",
+        comments=[],
+        reviews=[],
+        assignees=[],
+        createdAt="2026-05-08T10:00:00Z",
+        reviewThreads=[],
+    )
+    monkeypatch.setattr(
+        pr.subprocess, "run",
+        lambda *a, **kw: _fake_run(payload, returncode=0),
+    )
+    monkeypatch.setattr(sys, "argv", ["pr.py", "12"])
+    rc = pr.main()
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "## Description\n_(empty)_" in out
+    assert "## Comments (0)" in out
+    assert "Reviews: none" in out
+    assert "Assignees: none" in out
+    assert "Created:" in out
+
+
+def test_main_full_mode_with_assignees_age_threads(monkeypatch, capsys) -> None:
+    payload = _pr_json_payload(
+        assignees=[{"login": "alice"}, {"login": "bob"}],
+        createdAt="2026-05-01T10:00:00Z",
+        updatedAt="2026-05-08T10:00:00Z",
+        reviewThreads=[
+            {"isResolved": True},
+            {"isResolved": False},
+            {"isResolved": False},
+        ],
+    )
+    monkeypatch.setattr(
+        pr.subprocess, "run",
+        lambda *a, **kw: _fake_run(payload, returncode=0),
+    )
+    monkeypatch.setattr(sys, "argv", ["pr.py", "12"])
+    rc = pr.main()
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Assignees: alice, bob" in out
+    assert "Created:" in out
+    assert "Updated:" in out
+    assert "Unresolved threads: 2 / 3" in out
+
+
+def test_relative_age_formats() -> None:
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone.utc)
+    assert pr._relative_age((now - timedelta(minutes=5)).isoformat().replace("+00:00", "Z")).endswith("m ago")
+    assert pr._relative_age((now - timedelta(hours=2)).isoformat().replace("+00:00", "Z")).endswith("h ago")
+    assert pr._relative_age((now - timedelta(days=3)).isoformat().replace("+00:00", "Z")).endswith("d ago")
+    assert pr._relative_age("") == "?"

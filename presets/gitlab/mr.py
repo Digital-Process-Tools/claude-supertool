@@ -13,6 +13,32 @@ DESCRIPTION_MAX = 2000
 COMMENT_MAX = 500
 
 
+def _relative_age(iso: str) -> str:
+    """Format an ISO timestamp as 'Nd ago', 'Nh ago', or 'Nm ago'.
+
+    Returns '?' on parse failure. Used for MR created/updated lines so the
+    agent gets stale-MR signal in one round-trip.
+    """
+    if not iso:
+        return "?"
+    try:
+        from datetime import datetime, timezone
+        # GitLab ISO format: 2026-05-08T10:00:00.000Z
+        s = iso.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(s)
+        delta = datetime.now(timezone.utc) - dt
+        secs = int(delta.total_seconds())
+        if secs < 60:
+            return f"{secs}s ago"
+        if secs < 3600:
+            return f"{secs // 60}m ago"
+        if secs < 86400:
+            return f"{secs // 3600}h ago"
+        return f"{secs // 86400}d ago"
+    except (ValueError, ImportError):
+        return "?"
+
+
 def _glab_api(endpoint: str, timeout: int = 10) -> subprocess.CompletedProcess[str]:
     """Run a glab api call."""
     return subprocess.run(
@@ -286,9 +312,22 @@ def main() -> int:
     print(f"Labels: {labels}")
     print(f"Milestone: {milestone}")
 
-    # Reviewers + approvals
-    if reviewer_names:
-        print(f"Reviewers: {', '.join(reviewer_names)}")
+    # Assignees (distinct from reviewers on GitLab)
+    assignees = d.get("assignees") or []
+    assignee_names = [a.get("username", "?") for a in assignees]
+    print(f"Assignees: {', '.join(assignee_names) if assignee_names else 'none'}")
+
+    # Reviewers + approvals — always print so absence is signal, not silence
+    print(f"Reviewers: {', '.join(reviewer_names) if reviewer_names else 'none'}")
+
+    # Age — created/updated, for stale-MR signal
+    created_at = d.get("created_at") or ""
+    updated_at = d.get("updated_at") or ""
+    if created_at:
+        age_str = f"Created: {_relative_age(created_at)}"
+        if updated_at and updated_at != created_at:
+            age_str += f" | Updated: {_relative_age(updated_at)}"
+        print(age_str)
 
     # Fetch approvals via API (glab mr view doesn't include this)
     try:
@@ -304,6 +343,22 @@ def main() -> int:
                 print(f"Approved by: {', '.join(approver_names)}")
             else:
                 print("Approved by: none")
+    except (subprocess.TimeoutExpired, json.JSONDecodeError):
+        pass
+
+    # Unresolved discussion threads — distinct blocker from comments
+    try:
+        disc_result = _glab_api(
+            f"projects/:id/merge_requests/{iid}/discussions?per_page=100"
+        )
+        if disc_result.returncode == 0:
+            discussions = json.loads(disc_result.stdout)
+            if isinstance(discussions, list):
+                resolvable = [dd for dd in discussions
+                              if any(n.get("resolvable") for n in (dd.get("notes") or []))]
+                unresolved = [dd for dd in resolvable
+                              if not all(n.get("resolved") for n in (dd.get("notes") or []) if n.get("resolvable"))]
+                print(f"Unresolved threads: {len(unresolved)} / {len(resolvable)}")
     except (subprocess.TimeoutExpired, json.JSONDecodeError):
         pass
 
@@ -405,8 +460,12 @@ def main() -> int:
     description = description_raw[:DESCRIPTION_MAX]
     if description:
         print(f"\n## Description\n{description}")
+    else:
+        print("\n## Description\n_(empty)_")
 
-    # Human comments (notes)
+    # Human comments (notes) — always print header so absence is signal,
+    # not silence. Mirrors gh-pr behavior.
+    human_notes: list = []
     try:
         notes_result = _glab_api(
             f"projects/:id/merge_requests/{iid}/notes?per_page=50&sort=asc"
@@ -415,16 +474,16 @@ def main() -> int:
             notes = json.loads(notes_result.stdout)
             if isinstance(notes, list):
                 human_notes = [n for n in notes if not n.get("system", False)]
-                if human_notes:
-                    print(f"\n## Comments ({len(human_notes)})")
-                    for note in human_notes[-10:]:
-                        note_author = (note.get("author") or {}).get("username", "?")
-                        body = (note.get("body") or "")[:COMMENT_MAX]
-                        created = (note.get("created_at") or "")[:10]
-                        print(f"\n**{note_author}** ({created}):")
-                        print(body)
     except (subprocess.TimeoutExpired, json.JSONDecodeError):
         pass
+
+    print(f"\n## Comments ({len(human_notes)})")
+    for note in human_notes[-10:]:
+        note_author = (note.get("author") or {}).get("username", "?")
+        body = (note.get("body") or "")[:COMMENT_MAX]
+        created = (note.get("created_at") or "")[:10]
+        print(f"\n**{note_author}** ({created}):")
+        print(body)
 
     return 0
 
