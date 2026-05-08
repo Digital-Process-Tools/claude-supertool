@@ -39,3 +39,60 @@ def test_side_case_insensitive(monkeypatch, capsys) -> None:
     out = capsys.readouterr().out
     assert "not inside a git repository" in out
     assert rc == 1
+
+
+def test_comma_separated_paths(monkeypatch, capsys) -> None:
+    """PATH accepts comma-separated list — resolves each in one call."""
+    import subprocess
+    calls: list[list[str]] = []
+
+    def fake_git(args, timeout=10):
+        calls.append(args)
+        if args[:2] == ["rev-parse", "--git-dir"]:
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout=".git\n", stderr="")
+        if args[:3] == ["diff", "--name-only", "--diff-filter=U"]:
+            # First call lists conflicts; subsequent (after resolves) returns empty
+            stdout = "a.php\nb.php\nc.php\n" if len([c for c in calls if c[:3] == ["diff", "--name-only", "--diff-filter=U"]]) == 1 else ""
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout=stdout, stderr="")
+        # checkout / add — succeed silently
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(resolve, "_git", fake_git)
+    monkeypatch.setattr(resolve.sys, "argv", ["resolve.py", "theirs", "a.php,b.php"])
+    rc = resolve.main()
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert "git-resolve: theirs (2 file(s))" in out
+    assert "✓ a.php" in out
+    assert "✓ b.php" in out
+    # Both files received `checkout --theirs --` and `add --`
+    checkouts = [c for c in calls if c[:2] == ["checkout", "--theirs"]]
+    adds = [c for c in calls if c[:2] == ["add", "--"]]
+    assert len(checkouts) == 2
+    assert len(adds) == 2
+
+
+def test_comma_separated_unknown_path_rejected(monkeypatch, capsys) -> None:
+    """Unknown path in CSV list is rejected before any checkout runs."""
+    import subprocess
+    calls: list[list[str]] = []
+
+    def fake_git(args, timeout=10):
+        calls.append(args)
+        if args[:2] == ["rev-parse", "--git-dir"]:
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout=".git\n", stderr="")
+        if args[:3] == ["diff", "--name-only", "--diff-filter=U"]:
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="a.php\nb.php\n", stderr="")
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(resolve, "_git", fake_git)
+    monkeypatch.setattr(resolve.sys, "argv", ["resolve.py", "ours", "a.php,zzz.php"])
+    rc = resolve.main()
+    out = capsys.readouterr().out
+
+    assert rc == 1
+    assert "not conflicted" in out
+    assert "'zzz.php'" in out
+    # No checkout/add happened — atomic validation
+    assert not any(c[:2] == ["checkout", "--ours"] for c in calls)

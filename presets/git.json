@@ -52,9 +52,9 @@
     },
     "git-resolve": {
       "cmd": "python3 {path}git/resolve.py {args}",
-      "timeout": 15,
-      "description": "Pick ours/theirs for PATH (or all) + stage + continue cmd",
-      "syntax": "git-resolve:::SIDE:::PATH"
+      "timeout": 30,
+      "description": "Pick ours/theirs for PATH (single, comma-separated list, or 'all') + stage + continue cmd",
+      "syntax": "git-resolve:::SIDE:::PATH[,PATH...]"
     },
     "git-commit": {
       "cmd": "python3 {path}git/commit.py {args}",

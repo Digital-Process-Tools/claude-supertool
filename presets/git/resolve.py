@@ -24,9 +24,9 @@ def _list_conflicts() -> list[str]:
 
 def main() -> int:
     if len(sys.argv) < 3:
-        print("ERROR: usage: resolve.py SIDE PATH")
+        print("ERROR: usage: resolve.py SIDE PATH[,PATH...]")
         print("  SIDE — 'ours' or 'theirs'")
-        print("  PATH — conflicted file path, or 'all' for every UU file")
+        print("  PATH — conflicted file path, comma-separated list, or 'all' for every UU file")
         return 1
 
     side = sys.argv[1].lower()
@@ -49,11 +49,14 @@ def main() -> int:
     if target == "all":
         targets = all_conflicts
     else:
-        if target not in all_conflicts:
-            print(f"ERROR: {target!r} is not a conflicted file.")
+        # Comma-separated list supported — multi-file resolves in one call
+        requested = [p.strip() for p in target.split(",") if p.strip()]
+        unknown = [p for p in requested if p not in all_conflicts]
+        if unknown:
+            print(f"ERROR: not conflicted: {', '.join(repr(p) for p in unknown)}")
             print(f"Conflicts: {', '.join(all_conflicts) or '(none)'}")
             return 1
-        targets = [target]
+        targets = requested
 
     print(f"# git-resolve: {side} ({len(targets)} file(s))")
 
