@@ -65,6 +65,10 @@ OPERATIONS
                                 Config maps preset names to shell commands with {file}.
     around:PATTERN:PATH        Show 10 lines around the first match in FILE
     around:PATTERN:PATH:N      Show N lines around the first match in FILE
+    grep_around:PATTERN:PATH   Every match + 3 ctx lines, limit 10 (alias for
+                                grep with sane defaults — bulk usage scan)
+    grep_around:PATTERN:PATH:N:LIMIT
+                               Every match + N ctx lines, custom limit
     map:PATH                   Symbol map of a file or directory. Shows
                                 classes, functions, methods, constants as an
                                 indented tree with line numbers.
@@ -424,7 +428,7 @@ BLOCKED_TOOLS = {"Grep", "Glob", "LS"}
 BLOCKED_BASH_COMMANDS = {"cat", "find", "grep", "ls", "sed", "awk", "tail", "head"}
 
 # Built-in op names — custom ops/aliases with these names are ignored
-_BUILTIN_OPS = {"read", "grep", "glob", "ls", "tail", "head", "wc", "check", "around", "map", "diff", "stat", "around_line", "tree", "replace", "replace_dry", "edit", "replace_lines"}
+_BUILTIN_OPS = {"read", "grep", "grep_around", "glob", "ls", "tail", "head", "wc", "check", "around", "map", "diff", "stat", "around_line", "tree", "replace", "replace_dry", "edit", "replace_lines"}
 
 # Read-only built-in ops — safe to run in parallel across a batch.
 # Excludes mutating ops (replace, edit, replace_lines) and custom ops
@@ -2604,6 +2608,15 @@ def dispatch(arg: str) -> str:
             pattern, path, limit, context, count_only = _parse_grep_args(parts)
             body = op_grep(pattern, path, limit, context, count_only,
                            no_exclude=no_exclude)
+        elif op == "grep_around":
+            # grep_around:PATTERN:PATH[:N[:LIMIT]] — every match with N lines
+            # context. Sane defaults for "show me how everyone uses this".
+            ga_pattern = parts[1] if len(parts) > 1 else ""
+            ga_path = parts[2] if len(parts) > 2 and parts[2] else "."
+            ga_context = int(parts[3]) if len(parts) > 3 and parts[3] else 3
+            ga_limit = int(parts[4]) if len(parts) > 4 and parts[4] else 10
+            body = op_grep(ga_pattern, ga_path, ga_limit, ga_context,
+                           count_only=False, no_exclude=no_exclude)
         elif op == "wc":
             path = parts[1] if len(parts) > 1 else ""
             body = op_wc(path)

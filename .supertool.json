@@ -36,6 +36,12 @@
       "example": "around:def dispatch:supertool.py:15",
       "hint": true
     },
+    "grep_around": {
+      "syntax": "grep_around:PATTERN:PATH[:N[:LIMIT]]",
+      "description": "Every match + N ctx lines (def 3, limit 10). Bulk usage scan",
+      "example": "grep_around:def dispatch:supertool.py:5",
+      "hint": true
+    },
     "glob": {
       "syntax": "glob:PATTERN",
       "description": "Find files (**). Auto-reads concrete paths",
