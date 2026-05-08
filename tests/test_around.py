@@ -43,10 +43,43 @@ def test_around_no_match(tmp_path: Path) -> None:
     assert "no match" in out
 
 
-def test_around_directory_returns_error(tmp_path: Path) -> None:
-    out = supertool.op_around("pattern", str(tmp_path))
-    assert "ERROR" in out
-    assert "directories" in out or "directory" in out
+def test_around_directory_fans_out_to_files_with_match(tmp_path: Path) -> None:
+    (tmp_path / "a.py").write_text("alpha\nNEEDLE\nbeta\n")
+    (tmp_path / "b.py").write_text("nothing\nhere\n")
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    (sub / "c.py").write_text("hit NEEDLE again\n")
+
+    out = supertool.op_around("NEEDLE", str(tmp_path), n=1)
+    assert "matched 2 file(s)" in out
+    assert "=== a.py ===" in out
+    assert "=== sub/c.py" in out or "=== sub\\c.py" in out
+    assert "b.py" not in out  # files without match are skipped
+    assert "NEEDLE" in out
+
+
+def test_around_directory_no_match(tmp_path: Path) -> None:
+    (tmp_path / "a.py").write_text("nothing\n")
+    (tmp_path / "b.py").write_text("zilch\n")
+    out = supertool.op_around("XYZZY_NOMATCH", str(tmp_path))
+    assert "no match" in out
+    assert "scanned 2 file(s)" in out
+
+
+def test_around_directory_skips_heavy_dirs(tmp_path: Path) -> None:
+    (tmp_path / "a.py").write_text("NEEDLE here\n")
+    skip = tmp_path / ".git"
+    skip.mkdir()
+    (skip / "config").write_text("NEEDLE in git\n")
+    nm = tmp_path / "node_modules"
+    nm.mkdir()
+    (nm / "x.js").write_text("NEEDLE in deps\n")
+
+    out = supertool.op_around("NEEDLE", str(tmp_path), n=0)
+    assert "matched 1 file(s)" in out
+    assert "=== a.py ===" in out
+    assert ".git" not in out
+    assert "node_modules" not in out
 
 
 def test_around_missing_file_returns_error(tmp_path: Path) -> None:

@@ -786,24 +786,16 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
     return "".join(out)
 
 
-def op_around(pattern: str, path: str, n: int = 10) -> str:
-    """Show N lines before and after the first match of PATTERN in file at PATH."""
-    if not pattern:
-        return "ERROR: empty pattern\n"
-    if "\\|" in pattern:
-        pattern = pattern.replace("\\|", "|")
-    if not path:
-        return "ERROR: empty path\n"
-    if os.path.isdir(path):
-        return f"ERROR: around only works on single files, not directories: {path}\n"
-    if not os.path.isfile(path):
-        return f"ERROR: file not found: {path}\n"
+_AROUND_DIR_SKIP = {".git", "node_modules", "__pycache__", ".venv", "venv", ".tox", "vendor"}
+_AROUND_DIR_MAX_FILES = 20
 
-    try:
-        regex = re.compile(pattern)
-    except re.error:
-        regex = re.compile(re.escape(pattern))
 
+def _around_one_file(regex: "re.Pattern[str]", path: str, n: int) -> str:
+    """Render the first match of regex in file at path with n lines context.
+
+    Returns an empty string when the file has no match (caller filters these
+    out so dir fan-out only shows hits).
+    """
     try:
         with open(path, "rb") as f:
             raw_lines = f.read().splitlines(keepends=True)
@@ -824,7 +816,7 @@ def op_around(pattern: str, path: str, n: int = 10) -> str:
             break
 
     if match_lineno is None:
-        return f"(no match for {pattern!r} in {path})\n\n"
+        return ""
 
     total = len(lines)
     start = max(0, match_lineno - n)
@@ -837,6 +829,65 @@ def op_around(pattern: str, path: str, n: int = 10) -> str:
         out.append(f"{i + 1:>6}{marker}{lines[i]}")
     out.append("\n")
     return "".join(out)
+
+
+def op_around(pattern: str, path: str, n: int = 10) -> str:
+    """Show N lines before and after the first match of PATTERN in PATH.
+
+    PATH can be a file (first match in that file) or a directory (first
+    match per file, skipping files with no match, capped at
+    _AROUND_DIR_MAX_FILES). Hidden and heavy dirs (.git, node_modules,
+    vendor, …) are skipped during dir walk.
+    """
+    if not pattern:
+        return "ERROR: empty pattern\n"
+    if "\\|" in pattern:
+        pattern = pattern.replace("\\|", "|")
+    if not path:
+        return "ERROR: empty path\n"
+
+    try:
+        regex = re.compile(pattern)
+    except re.error:
+        regex = re.compile(re.escape(pattern))
+
+    if os.path.isdir(path):
+        hits: List[str] = []
+        scanned = 0
+        for root, dirs, files in os.walk(path):
+            dirs[:] = [d for d in dirs
+                       if not d.startswith(".") and d not in _AROUND_DIR_SKIP]
+            for name in sorted(files):
+                if name.startswith("."):
+                    continue
+                fpath = os.path.join(root, name)
+                scanned += 1
+                rendered = _around_one_file(regex, fpath, n)
+                if rendered and rendered.startswith("ERROR:"):
+                    continue
+                if not rendered:
+                    continue
+                rel = os.path.relpath(fpath, path)
+                hits.append(f"=== {rel} ===\n{rendered}")
+                if len(hits) >= _AROUND_DIR_MAX_FILES:
+                    break
+            if len(hits) >= _AROUND_DIR_MAX_FILES:
+                break
+        if not hits:
+            return f"(no match for {pattern!r} in {path}, scanned {scanned} file(s))\n\n"
+        header = f"(matched {len(hits)} file(s) under {path}"
+        if len(hits) >= _AROUND_DIR_MAX_FILES:
+            header += f", capped at {_AROUND_DIR_MAX_FILES}"
+        header += f", scanned {scanned})\n"
+        return header + "".join(hits)
+
+    if not os.path.isfile(path):
+        return f"ERROR: file not found: {path}\n"
+
+    rendered = _around_one_file(regex, path, n)
+    if not rendered:
+        return f"(no match for {pattern!r} in {path})\n\n"
+    return rendered
 
 
 def op_between_symbol(symbol: str, path: str) -> str:
