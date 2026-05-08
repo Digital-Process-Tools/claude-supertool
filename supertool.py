@@ -737,7 +737,9 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
         count = sum(
             1 for g in groups for line in g if line[2] == "match"
         )
-        out = [f"({count} results, limit {limit}, context {context})\n"]
+        file_count = len({g[0][0] for g in groups if g})
+        out = [f"({count} results in {file_count} files, "
+               f"limit {limit}, context {context})\n"]
         current_file: str = ""
         first_group = True
         for group in groups:
@@ -759,8 +761,9 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
 
     hits = _grep_recursive(pattern, path, limit, excl)
     count = len(hits)
+    file_count = len({h.split(":", 1)[0] for h in hits if ":" in h})
 
-    out = [f"({count} results, limit {limit})\n"]
+    out = [f"({count} results in {file_count} files, limit {limit})\n"]
     current_file = ""
     for hit in hits:
         # hits are "path:lineno:content" — split on first two colons
