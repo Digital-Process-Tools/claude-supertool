@@ -9,6 +9,27 @@ DESCRIPTION_MAX = 2000
 COMMENT_MAX = 500
 
 
+def _relative_age(iso: str) -> str:
+    """Format an ISO timestamp as 'Nd ago', 'Nh ago', or 'Nm ago'."""
+    if not iso:
+        return "?"
+    try:
+        from datetime import datetime, timezone
+        s = iso.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(s)
+        delta = datetime.now(timezone.utc) - dt
+        secs = int(delta.total_seconds())
+        if secs < 60:
+            return f"{secs}s ago"
+        if secs < 3600:
+            return f"{secs // 60}m ago"
+        if secs < 86400:
+            return f"{secs // 3600}h ago"
+        return f"{secs // 86400}d ago"
+    except (ValueError, ImportError):
+        return "?"
+
+
 def _gh(args: list[str], timeout: int = 10) -> subprocess.CompletedProcess[str]:
     """Run a gh command and return the result."""
     return subprocess.run(
@@ -98,7 +119,7 @@ def main() -> int:
             "number,title,state,author,headRefName,baseRefName,labels,"
             "milestone,reviewDecision,reviews,mergeCommit,mergeable,"
             "isDraft,url,body,comments,additions,deletions,changedFiles,"
-            "statusCheckRollup"
+            "statusCheckRollup,assignees,createdAt,updatedAt,reviewThreads"
         ])
     except FileNotFoundError:
         print("ERROR: gh not found — install from https://cli.github.com")
@@ -166,7 +187,27 @@ def main() -> int:
     print(f"Labels: {labels}")
     print(f"Milestone: {milestone}")
 
-    # Reviews
+    # Assignees (distinct from reviewers)
+    assignees = d.get("assignees") or []
+    assignee_names = [a.get("login", "?") for a in assignees]
+    print(f"Assignees: {', '.join(assignee_names) if assignee_names else 'none'}")
+
+    # Age — created/updated, for stale-PR signal
+    created_at = d.get("createdAt") or ""
+    updated_at = d.get("updatedAt") or ""
+    if created_at:
+        age_str = f"Created: {_relative_age(created_at)}"
+        if updated_at and updated_at != created_at:
+            age_str += f" | Updated: {_relative_age(updated_at)}"
+        print(age_str)
+
+    # Unresolved review threads — distinct blocker from comments
+    review_threads = d.get("reviewThreads") or []
+    if review_threads:
+        unresolved = sum(1 for t in review_threads if not t.get("isResolved"))
+        print(f"Unresolved threads: {unresolved} / {len(review_threads)}")
+
+    # Reviews — always print so absence is signal, not silence
     reviews = d.get("reviews", [])
     if reviews:
         reviewers = {}
@@ -176,6 +217,8 @@ def main() -> int:
             reviewers[login] = r_state  # latest review state per reviewer
         parts = [f"{login} ({state})" for login, state in reviewers.items()]
         print(f"Reviews: {', '.join(parts)}")
+    else:
+        print("Reviews: none")
     print(f"Review decision: {review_decision}")
 
     # Checks (CI status)
@@ -236,6 +279,8 @@ def main() -> int:
     body = (d.get("body") or "")[:DESCRIPTION_MAX]
     if body:
         print(f"\n## Description\n{body}")
+    else:
+        print("\n## Description\n_(empty)_")
 
     # Comments
     comments = d.get("comments", [])

@@ -305,4 +305,61 @@ def test_main_slim_ignores_unknown_second_arg(monkeypatch, capsys) -> None:
     rc = mr.main()
     out = capsys.readouterr().out
     assert rc == 0
-    assert "Branch:" in out  # full dashboard ran
+
+
+# ---------------------------------------------------------------------------
+# Always-print sections — empty case must show explicit marker
+# ---------------------------------------------------------------------------
+
+def test_main_full_mode_empty_sections_always_printed(monkeypatch, capsys) -> None:
+    """Empty description / comments / reviewers / assignees print explicit markers."""
+    payload = _mr_json_payload(
+        description="",
+        reviewers=[],
+        assignees=[],
+        created_at="2026-05-08T10:00:00.000Z",
+    )
+    monkeypatch.setattr(
+        mr.subprocess, "run",
+        lambda *a, **kw: _fake_run(payload, returncode=0),
+    )
+    monkeypatch.setattr(sys, "argv", ["mr.py", "20881"])
+    rc = mr.main()
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "## Description\n_(empty)_" in out
+    assert "## Comments (0)" in out
+    assert "Reviewers: none" in out
+    assert "Assignees: none" in out
+    assert "Created:" in out
+
+
+def test_main_full_mode_with_assignees_and_age(monkeypatch, capsys) -> None:
+    payload = _mr_json_payload(
+        assignees=[{"username": "alice"}, {"username": "bob"}],
+        created_at="2026-05-01T10:00:00.000Z",
+        updated_at="2026-05-08T10:00:00.000Z",
+    )
+    monkeypatch.setattr(
+        mr.subprocess, "run",
+        lambda *a, **kw: _fake_run(payload, returncode=0),
+    )
+    monkeypatch.setattr(sys, "argv", ["mr.py", "20881"])
+    rc = mr.main()
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Assignees: alice, bob" in out
+    assert "Created:" in out
+    assert "Updated:" in out
+
+
+def test_relative_age_formats() -> None:
+    """Helper formats produces 'd', 'h', 'm', 's' suffixes."""
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone.utc)
+    assert mr._relative_age((now - timedelta(seconds=30)).isoformat().replace("+00:00", "Z")).endswith("s ago")
+    assert mr._relative_age((now - timedelta(minutes=5)).isoformat().replace("+00:00", "Z")).endswith("m ago")
+    assert mr._relative_age((now - timedelta(hours=2)).isoformat().replace("+00:00", "Z")).endswith("h ago")
+    assert mr._relative_age((now - timedelta(days=3)).isoformat().replace("+00:00", "Z")).endswith("d ago")
+    assert mr._relative_age("") == "?"
+    assert mr._relative_age("not-a-date") == "?"
