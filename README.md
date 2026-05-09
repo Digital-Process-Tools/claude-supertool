@@ -1,37 +1,65 @@
 <p align="center">
-  <img src="supertool-banner.jpg" alt="SuperTool — batch file operations" width="600">
+  <img src="supertool-banner.webp" alt="SuperTool — cut your Claude Code bill by 50%" width="900">
 </p>
 
 # supertool
 
-**Cut your Claude Code file operation costs in half.**
+> **Cut your Claude Code bill by 50%.**
+> `git-status`, but it tells you what to do next.
 
-Every time Claude reads a file, it re-sends the entire conversation — system prompt, CLAUDE.md, rules, every prior message. Read 7 files? Pay that prefix 7 times. SuperTool batches all 7 into **one call**. Same files, same output, half the tokens.
+Saves tokens. Saves money. Saves turns. Works the same in interactive sessions and autonomous runs — humans pair-programming with Claude Code use it every day, not just Kevin-style headless agents. One Python file, zero deps, Python 3.9+.
 
-One Python file. Zero deps. Python 3.9+.
+[Why](#why) • [Four pillars](#four-pillars) • [Receipt](#receipt--the-bill-math) • [Batching](#batch-multiple-ops-in-one-call) • [Parallel](#parallel-execution) • [Expand it](#supertooljson--project-configuration) • [Install](#install)
 
 ```bash
-# 7 operations, 1 round-trip
+# 7 ops, 1 round-trip, parallel where safe
 supertool 'read:src/Module.py' 'read:src/Auth.py' 'grep:TODO:src/:20' 'map:src/'
 ```
 
 ---
 
-## The problem
+## Why
 
-Claude Code's tool system charges you per round-trip, not per file. Each tool call re-transmits the cached conversation prefix. Anthropic caches it at 10% of input price — cheaper than full re-read, but not free. And it adds up fast.
+**Hammer in 2026.** Claude Code's default toolbelt is 1995 unix: `cat` one file, `grep` one pattern, `git status` returns 200 bytes of porcelain. Every tool call re-sends the entire conversation cache — system prompt, CLAUDE.md, rules, every prior turn — at 10% of input price. Read 7 files? Pay that prefix 7 times. Run `git status` then realize you needed `ahead/behind` too? Pay it twice for one decision. The bill compounds turn over turn.
 
-An autonomous agent documenting a component needs ~5 files and 2 greps. Without batching, that's 10 round-trips. With SuperTool, it's 2-3.
+**Drill in 2026.** supertool gives the agent variants that pack the *next question* into the *current call*:
 
-| Mode                       | Cache reads | Output | Turns | Cost savings |
-| -------------------------- | ----------: | -----: | ----: | -----------: |
-| No batching                |        436K |  1,400 |    10 |            — |
-| SuperTool                  |        133K |    750 |     3 |     **50%** |
-| Pre-computed + SuperTool   |       85.5K |    600 |     2 |     **56%** |
+- **`git-status`** — branch + tracking + ahead/behind + dirty files + open MR/PR + suggested next step. One call, decision ready.
+- **`gl-mr:NUMBER`** / **`gh-pr:NUMBER`** — full MR/PR dashboard: branch, pipeline, reviewer, approval, diff stat, comments. Replaces 4-5 `glab`/`gh` calls.
+- **`claude-log-summary:UUID`** — model, duration, tool calls, tokens, cache hit %, errors-by-tool. Audit your own runs.
 
-**50% fewer tokens on read operations.** At scale (200 tasks/run), that's real money — and **3-4x faster** wall time.
+That's a sample. supertool ships ~40 ops out of the box (built-ins + `gitlab` / `github` / `git` / `claude-log` presets) — add your own and you're past 60 fast.
 
-The savings come from fewer prefix re-reads, not from reading files faster. The bytes still land in context either way. **Fewer turns = fewer re-reads = the only lever that works.**
+The variant *is* the lever. A turn saved isn't free time — it's a cached prefix you didn't re-pay.
+
+## Four pillars
+
+| Pillar           | What it does                                                                     |
+| ---------------- | -------------------------------------------------------------------------------- |
+| **Right tool**   | Variants pack state + guards + next-step into one call. Less to remember.        |
+| **Batched**      | 7 ops, 1 round-trip. The cached prefix gets re-paid once, not seven times.       |
+| **Parallel**     | Read-only ops in a batch run concurrently — ~3-5× faster on cold I/O.            |
+| **Expandable**   | Add a custom op in 4 lines of JSON. Presets ship gitlab, github, git, claude-log. |
+
+## Receipt — the bulldozer math
+
+| Mode                     | Cache reads | Output | Turns |    Savings |
+| ------------------------ | ----------: | -----: | ----: | ---------: |
+| Hammer (no batching)     |        436K |  1,400 |    10 |          — |
+| supertool                |        133K |    750 |     3 |    **50%** |
+| Pre-computed + supertool |       85.5K |    600 |     2 |    **56%** |
+
+**50% fewer tokens, 3-4× faster wall time.** Fewer turns = fewer prefix re-reads. Multiply by task count and team size — the bill cut is real.
+
+## What this means in practice
+
+Three things happen once you ship variants instead of raw shell:
+
+**1. You build your own ops.** [Digital Process Tools](https://digital-process-tools.com) built a stack on top — none ship with supertool, all written in 5-15 lines of JSON: `git-commit` (stage + commit + receipt), `mr` (push + MR + reviewer), `mysql_read`/`mysql_write`, `verify_staged` (phpstan + phpmd + phplint on the staged diff). Every project has its own "what's the next question I always ask" — bake the answer in, save the round-trip forever.
+
+**2. The op holds the guards.** `mysql_write` refuses `UPDATE`/`DELETE` without `WHERE`. `mysql_read` auto-`LIMIT 50`s. `mr` can enforce branch policy and reviewer. Every guard is a class of mistake the agent *can't* make. Tokens saved, yes — but the session that didn't get derailed cleaning up "oops, emptied the user table" is the expensive one.
+
+**3. The agent thinks less.** A variant that returns everything in one shot is a variant the agent doesn't have to *think through*. Thinking tokens bill at output rate. Every "let me also check..." that becomes "the op already told me" is output cost saved on top of round-trip cost.
 
 ---
 
