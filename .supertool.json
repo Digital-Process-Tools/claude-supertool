@@ -131,6 +131,13 @@
       "example": "replace_lines:::supertool.py:::42:::45:::    return x",
       "status": 1,
       "hint": true
+    },
+    "edit_session": {
+      "syntax": "edit_session:::PATH:::SCRIPT",
+      "description": "Cursor-based multi-action edit. Actions (split by newline or ';'): @L:C goto, /PAT find, ^/$ BOL/EOL, ^^/$$ BOF/EOF, <N/>N left/right, kN/jN up/down, +TEXT insert, -N delete. Self-contained — no prior Read needed",
+      "example": "edit_session:::foo.py:::/def foo;$;+ # marker",
+      "status": 1,
+      "hint": true
     }
   },
   "ops": {},

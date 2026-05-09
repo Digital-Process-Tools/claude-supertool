@@ -146,6 +146,7 @@ claude -p "..." --permission-mode bypassPermissions \
 | `version` | `version` | Show supertool version. |
 | `edit` | `edit:::OLD:::NEW:::PATH` | Single-file, single-occurrence edit (mirrors native Edit). Errors if 0 or >1 matches. **Bypasses native Edit must-Read state** — saves a round-trip when you already know the unique snippet. Use `:::` separator so content with `:` works. |
 | `replace_lines` | `replace_lines:::PATH:::START:::END:::CONTENT` | Swap lines `[START, END]` (1-indexed, inclusive) with CONTENT. `END < START` = pure insert before line START. Empty CONTENT = delete. Receipt shows new line numbers + ±2 context. |
+| `edit_session` | `edit_session:::PATH:::SCRIPT` | Cursor-based multi-action edit in one op. SCRIPT actions (separated by `;` or newline): `@L:C` goto, `/PATTERN` find next match, `^`/`$` BOL/EOL, `^^`/`$$` BOF/EOF, `<N`/`>N` left/right, `kN`/`jN` up/down rows, `+TEXT` insert (escapes decoded), `-N` delete N chars. **Self-contained** — `/PATTERN` removes the need for a prior Read to know coordinates. Token-cheap for many small edits. Example: `edit_session:::foo.py:::/def foo;$;+ # marker`. |
 | `replace` / `replace_dry` | `replace:::OLD:::NEW:::PATH` | Recursive find/replace across PATH (`replace_dry` = preview). Use `:::` separator when content has `:`. |
 
 **LLM onboarding in one call:** `./supertool 'introduction' 'output-format' 'ops'` — outputs everything an LLM needs to use supertool.
@@ -657,6 +658,7 @@ The hook is in `.githooks/pre-push`, committed to the repo. Bypass with `git pus
 - **Python 3.9+.** macOS ships 3.9 via CommandLineTools; we don't force upgrades.
 - **No MCP server.** MCP is server-process-and-JSON-RPC ceremony for what's literally "run a script, get output." A Bash-invoked binary is simpler, faster, and plugs into Claude Code's existing `--allowedTools`/`--disallowedTools` flow.
 - **Enforcement via PreToolUse hook, not config mutation.** The plugin doesn't edit your `settings.json`. Toggling is a state file (`~/.claude/supertool-enforced`) read by the hook. Your config stays yours.
+- **Trade Python work for LLM tokens.** LLM compute is expensive; local CPU is cheap. Any time the model would spend tokens computing, parsing, formatting, or finding — supertool should spend milliseconds instead. Richer op output (state hints, guards, semantic anchors, auto-formatting, syntax checks) is not feature creep — it's the whole thesis. Heavy Python is fine if it shaves tokens off the model side.
 
 ---
 
