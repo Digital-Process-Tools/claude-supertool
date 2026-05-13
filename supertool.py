@@ -479,7 +479,7 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
     if not cmd_template:
         return f"ERROR: empty command for custom op {op!r}\n"
 
-    # Build the command — replace {file}, {dir}, {arg}, and {args} placeholders
+    # Build the command — replace {file}, {dir}, {arg}, {args}, {argjoin} placeholders
     file_arg = parts[1] if len(parts) > 1 else ""
     cmd = cmd_template.replace("{file}", shlex.quote(file_arg))
     dir_arg = os.path.dirname(file_arg) if file_arg else "."
@@ -487,6 +487,11 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
     cmd = cmd.replace("{arg}", shlex.quote(file_arg))
     all_args = " ".join(shlex.quote(p) for p in parts[1:]) if len(parts) > 1 else ""
     cmd = cmd.replace("{args}", all_args)
+    # {argjoin}: parts[1:] rejoined with ':::' as a single shell-quoted arg.
+    # Lets the receiving script split fields itself when they contain colons
+    # (e.g. XPath like .//ns:tag or [position()=1]).
+    arg_join = ":::".join(parts[1:]) if len(parts) > 1 else ""
+    cmd = cmd.replace("{argjoin}", shlex.quote(arg_join))
 
     # Pass extra config keys as SUPERTOOL_ env vars
     _RESERVED_KEYS = {"cmd", "timeout", "description", "syntax", "example", "status"}

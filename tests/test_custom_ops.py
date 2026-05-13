@@ -186,6 +186,36 @@ class TestResolveCustomOp:
         assert result is not None
         assert "start  end" in result or "start end" in result
 
+    def test_argjoin_placeholder_rejoins_with_triple_colon(self) -> None:
+        """The {argjoin} placeholder rejoins all parts with ':::' as one shell-quoted arg."""
+        supertool._CONFIG = {
+            "ops": {"echo3": {"cmd": "echo {argjoin}"}}
+        }
+        result = supertool._resolve_custom_op("echo3", ["echo3", "A", "B", "C"])
+        assert result is not None
+        assert "PASS" in result
+        assert "A:::B:::C" in result
+
+    def test_argjoin_placeholder_single_part(self) -> None:
+        """The {argjoin} placeholder works with a single part (no ':::' inserted)."""
+        supertool._CONFIG = {
+            "ops": {"echo1": {"cmd": "echo {argjoin}"}}
+        }
+        result = supertool._resolve_custom_op("echo1", ["echo1", "solo"])
+        assert result is not None
+        assert "solo" in result
+        assert ":::" not in result
+
+    def test_argjoin_placeholder_empty(self) -> None:
+        """The {argjoin} placeholder is empty when no arguments given."""
+        supertool._CONFIG = {
+            "ops": {"emptyargjoin": {"cmd": "echo start{argjoin}end"}}
+        }
+        result = supertool._resolve_custom_op("emptyargjoin", ["emptyargjoin"])
+        assert result is not None
+        # Empty argjoin shell-quotes to '' — between start and end we get start''end
+        assert "startend" in result or "start''end" in result
+
     def test_extra_config_keys_as_env_vars(self) -> None:
         """Extra keys in op config are passed as SUPERTOOL_ env vars."""
         supertool._CONFIG = {

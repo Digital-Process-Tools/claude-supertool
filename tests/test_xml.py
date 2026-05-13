@@ -501,3 +501,64 @@ class TestRealCloverBenchmarks:
         assert peak < 400 * 1024 * 1024, (
             f"peak memory {peak / 1024 / 1024:.1f} MB exceeded 400 MB cap"
         )
+
+
+# ---------------------------------------------------------------------------
+# Dispatch (end-to-end via supertool subprocess)
+# ---------------------------------------------------------------------------
+
+class TestDispatchEndToEnd:
+    """Exercise the supertool binary with preset ops loaded from presets/xml.json.
+
+    This catches regressions in the {argjoin} substitution that bypassing main()
+    misses — main()-only tests can't tell whether supertool passes args correctly.
+    """
+
+    def _supertool(self) -> Path:
+        return Path(__file__).parent.parent / "supertool"
+
+    def test_dispatch_xml_attr_triple_colon(self) -> None:
+        """xml_attr via dispatch with ::: form returns uncovered line numbers."""
+        import subprocess
+        result = subprocess.run(
+            [
+                str(self._supertool()),
+                f"xml_attr:::{CLOVER_SAMPLE}:::"
+                ".//file[contains(@name,'CommandX')]/line[@count='0']:::num",
+            ],
+            capture_output=True, text=True, timeout=10,
+        )
+        assert result.returncode == 0, f"stderr: {result.stderr}"
+        assert "PASS" in result.stdout
+        nums = [line for line in result.stdout.splitlines() if line.strip().isdigit()]
+        assert set(nums) == {"32", "34", "40", "50", "52"}
+
+    def test_dispatch_xml_attr_single_colon(self) -> None:
+        """xml_attr via dispatch with single-colon form also works (no colons in XPath)."""
+        import subprocess
+        result = subprocess.run(
+            [
+                str(self._supertool()),
+                f"xml_attr:{CLOVER_SAMPLE}:"
+                ".//file[contains(@name,'CommandX')]/line[@count='0']:num",
+            ],
+            capture_output=True, text=True, timeout=10,
+        )
+        assert result.returncode == 0, f"stderr: {result.stderr}"
+        nums = [line for line in result.stdout.splitlines() if line.strip().isdigit()]
+        assert set(nums) == {"32", "34", "40", "50", "52"}
+
+    def test_dispatch_xml_count(self) -> None:
+        """xml_count via dispatch returns single integer."""
+        import subprocess
+        result = subprocess.run(
+            [
+                str(self._supertool()),
+                f"xml_count:::{CLOVER_SAMPLE}:::.//file",
+            ],
+            capture_output=True, text=True, timeout=10,
+        )
+        assert result.returncode == 0, f"stderr: {result.stderr}"
+        # Output contains "PASS" header + integer count
+        ints = [line for line in result.stdout.splitlines() if line.strip().isdigit()]
+        assert len(ints) >= 1
