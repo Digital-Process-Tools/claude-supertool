@@ -115,3 +115,48 @@ def test_default_mode_runs_smart_filter(monkeypatch, capsys) -> None:
     assert "Raw lines" not in out
     # Default path prints a header with job + log line count
     assert "Log: 3 lines total" in out
+
+
+def test_errors_mode_shows_all_matched_blocks(monkeypatch, capsys) -> None:
+    """errors mode shows every error block with no tail truncation."""
+    # Simulate phpstan output: 200 lines with errors scattered
+    lines = ["build start"] + [f"line {i}" for i in range(150)] + [
+        " ------ ---- ",
+        " Line   Dvsi/foo/Bar.class.php ",
+        " 42     Type mismatch ",
+        "    🪪  generics.notSubtype ",
+        " ------ ---- ",
+    ] + [f"trail {i}" for i in range(40)]
+    rc = _run_main(monkeypatch, ["job.py", "123", "errors"], lines)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "All error blocks" in out
+    # Should include the early-in-log error block, not just tail
+    assert "generics.notSubtype" in out
+    assert "Line   Dvsi/foo/Bar" in out
+
+
+def test_errors_mode_no_matches(monkeypatch, capsys) -> None:
+    """errors mode prints clear message when nothing matched."""
+    lines = ["build started", "all good", "build done"]
+    rc = _run_main(monkeypatch, ["job.py", "123", "errors"], lines)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "No error patterns matched" in out
+
+
+def test_phpstan_identifier_marker_matches_default(monkeypatch, capsys) -> None:
+    """🪪 marker (phpstan identifier) is in default patterns."""
+    lines = [
+        "noise",
+        "noise",
+        " 12  some phpstan error ",
+        "    🪪  generics.notSubtype ",
+        "noise",
+    ]
+    rc = _run_main(monkeypatch, ["job.py", "123"], lines)
+    out = capsys.readouterr().out
+    assert rc == 0
+    # The phpstan error should appear in error context section
+    assert "generics.notSubtype" in out
+    assert "Error context" in out
