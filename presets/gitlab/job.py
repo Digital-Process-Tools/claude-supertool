@@ -59,9 +59,12 @@ def _get_config() -> dict:
     return {
         "lines": int(os.environ.get("SUPERTOOL_LINES", "80")),
         "error_patterns": os.environ.get(
-            "SUPERTOOL_ERROR_PATTERNS", "ERROR,FAILURES!,Fatal,Failed asserting"
+            "SUPERTOOL_ERROR_PATTERNS",
+            # ERROR/FAIL: generic. 🪪: phpstan identifier marker (every phpstan error).
+            # notSubtype/argument.type/return.type: phpstan identifiers as text fallback.
+            "ERROR,FAILURES!,Fatal,Failed asserting,🪪,notSubtype,argument.type,return.type"
         ).split(","),
-        "error_context": int(os.environ.get("SUPERTOOL_ERROR_CONTEXT", "5")),
+        "error_context": int(os.environ.get("SUPERTOOL_ERROR_CONTEXT", "8")),
     }
 
 
@@ -104,6 +107,7 @@ def main() -> int:
 
     job_id = sys.argv[1]
     raw_mode = len(sys.argv) > 2 and sys.argv[2] == "raw"
+    errors_mode = len(sys.argv) > 2 and sys.argv[2] == "errors"
     raw_start: int | None = None
     raw_end: int | None = None
     if raw_mode:
@@ -250,6 +254,20 @@ def main() -> int:
     error_sections = _find_error_sections(
         lines, config["error_patterns"], config["error_context"]
     )
+
+    # errors mode — dump ALL matched blocks, no tail cap
+    if errors_mode:
+        if not error_sections:
+            print("\n## No error patterns matched")
+            return 0
+        matched_count = len([e for e in error_sections if e[0] > 0])
+        print(f"\n## All error blocks ({matched_count} lines matched, no tail truncation)")
+        for line_num, text in error_sections:
+            if line_num == -1:
+                print(text)
+            else:
+                print(f"  {line_num:>5} | {text}")
+        return 0
 
     if error_sections and job_status == "failed":
         print(f"\n## Error context ({len([e for e in error_sections if e[0] > 0])} lines matched)")
