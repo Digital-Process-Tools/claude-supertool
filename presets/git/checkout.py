@@ -37,6 +37,18 @@ def main() -> int:
     if result.returncode != 0:
         stderr = result.stderr.strip() or result.stdout.strip()
         s = stderr.lower()
+        # Auto-fetch fallback: if ref not found locally, try once after fetch
+        if "did not match any" in s or "pathspec" in s:
+            fetch = _git(["fetch", "--all", "--prune", "--quiet"], timeout=30)
+            if fetch.returncode == 0:
+                result = _git(["checkout", ref])
+                if result.returncode == 0:
+                    print("# (auto-fetched before checkout)")
+                    stderr = ""
+                else:
+                    stderr = result.stderr.strip() or result.stdout.strip()
+                    s = stderr.lower()
+    if result.returncode != 0:
         if "not a git repository" in s:
             print("ERROR: not inside a git repository.")
         elif "is already used by worktree" in s or "already checked out at" in s:
@@ -49,7 +61,7 @@ def main() -> int:
                 print(f"Switch with: cd {path}")
                 print(f"Or remove it: git worktree remove {path}")
         elif "did not match any" in s or "pathspec" in s:
-            print(f"ERROR: ref {ref!r} not found. Try `git fetch` first.")
+            print(f"ERROR: ref {ref!r} not found even after fetch.")
         elif "would be overwritten" in s or "local changes" in s:
             print(f"ERROR: uncommitted changes block checkout. Stash or commit first.\n{stderr}")
         else:

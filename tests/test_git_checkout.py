@@ -30,8 +30,8 @@ def test_no_arg_prints_usage(monkeypatch, capsys) -> None:
     assert "usage" in out
 
 
-def test_unknown_ref_returns_actionable_error(monkeypatch, capsys) -> None:
-    """Pathspec error from git checkout becomes a 'try git fetch first' hint."""
+def test_unknown_ref_auto_fetches_then_errors(monkeypatch, capsys) -> None:
+    """Pathspec error triggers auto-fetch; if ref still missing, actionable error."""
     calls: list[list[str]] = []
 
     def fake(args, timeout=10):
@@ -42,6 +42,8 @@ def test_unknown_ref_returns_actionable_error(monkeypatch, capsys) -> None:
             return _fake_run("abc1234\n")
         if args[0] == "checkout":
             return _fake_run("", "error: pathspec 'nope' did not match any file(s)", 1)
+        if args[0] == "fetch":
+            return _fake_run()
         return _fake_run()
 
     monkeypatch.setattr(checkout, "_git", fake)
@@ -49,8 +51,38 @@ def test_unknown_ref_returns_actionable_error(monkeypatch, capsys) -> None:
     rc = checkout.main()
     out = capsys.readouterr().out
     assert rc == 1
+    assert any(c[0] == "fetch" for c in calls), "should auto-fetch on pathspec error"
     assert "not found" in out
-    assert "git fetch" in out
+    assert "after fetch" in out
+
+
+def test_unknown_ref_recovers_after_auto_fetch(monkeypatch, capsys) -> None:
+    """If ref appears after fetch (e.g. just-pushed remote branch), checkout succeeds."""
+    checkout_attempts = {"n": 0}
+
+    def fake(args, timeout=10):
+        if args[:2] == ["rev-parse", "--abbrev-ref"]:
+            return _fake_run("master\n" if checkout_attempts["n"] == 0 else "feature\n")
+        if args[:2] == ["rev-parse", "--short"]:
+            return _fake_run("abc1234\n")
+        if args[0] == "checkout":
+            checkout_attempts["n"] += 1
+            if checkout_attempts["n"] == 1:
+                return _fake_run("", "error: pathspec 'feature' did not match any file(s)", 1)
+            return _fake_run("Switched to branch 'feature'\n")
+        if args[0] == "fetch":
+            return _fake_run()
+        if args[:3] == ["rev-parse", "--abbrev-ref", "--symbolic-full-name"]:
+            return _fake_run("", "", 1)
+        return _fake_run()
+
+    monkeypatch.setattr(checkout, "_git", fake)
+    monkeypatch.setattr(checkout.sys, "argv", ["checkout.py", "feature"])
+    rc = checkout.main()
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "auto-fetched" in out
+    assert "→ feature" in out
 
 
 def test_checkout_worktree_locked_suggests_path(monkeypatch, capsys) -> None:
