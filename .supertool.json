@@ -3,7 +3,8 @@
   "rtk": false,
   "presets": [
     "github",
-    "git"
+    "git",
+    "xml"
   ],
   "introduction": "./supertool 'op:args' 'op:args'... Batch 6-7 ops/call. Single quotes per op. Paths from root. Use ops not raw cmds (mysql_read, phpstan, batched reads). Read only before Edit.",
   "output-format": "Each op: header + body.\n```\n--- op:args ---\n(meta)\noutput\n```",

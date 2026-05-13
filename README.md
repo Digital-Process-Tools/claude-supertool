@@ -389,6 +389,24 @@ Both forge presets include **actionable error messages** — when something fail
 
 Useful for measuring autonomous-run efficiency — spotting wasted round-trips, validating that a skill change reduced tool calls, comparing model performance across runs. Windows-friendly cwd encoding (handles `\` and drive colons), with closest-prefix sibling fallback when the encoded directory doesn't exist.
 
+**`xml`** — Read-only XML / XPath queries via stdlib `xml.etree.ElementTree`. No deps. Useful for codebases with lots of XML (i18n, schemas, PHPUnit clover coverage, build manifests).
+
+| Op | Syntax | What it does |
+|----|--------|-------------|
+| `xml` | `xml:PATH:XPATH[:full]` | List matches with line numbers and attributes. `:full` dumps the matched subtree as XML. |
+| `xml_attr` | `xml_attr:PATH:XPATH:ATTR` | Extract a single attribute value for each match. One value per line. |
+| `xml_count` | `xml_count:PATH:XPATH` | Return match count as a single integer line. |
+
+XPath uses ElementTree's subset (predicates, `contains()`, `//descendant`, `position()`). A built-in shim handles nested `contains()` predicates that ET doesn't natively support, e.g. `.//file[contains(@name,'X')]/line[@count='0']`. Line numbers come from a custom expat-based parser.
+
+Use `:::` (triple colon) as the field separator when XPath itself contains colons:
+
+```bash
+./supertool 'xml:::clover.xml:::.//file[contains(@name,"X")]/line[@count="0"]'
+```
+
+Benchmarks on a 25 MB / 353K-line PHPUnit clover report: 2.5s wall, 188 MB peak. Full-parse, scales with file size (~7-8× RAM). For larger files, run from an orchestrator and inject the pre-resolved result into the agent context.
+
 #### Writing your own preset
 
 Create `./presets/mytools.json` in your project (or `~/.config/supertool/presets/mytools.json` for personal use):
