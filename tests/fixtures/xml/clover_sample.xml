@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<coverage generated="1778399381">
+  <project timestamp="1778399381" name="Clover Coverage">
+    <package name="Dvsi\Components\BusinessEntities\User">
+      <file name="/builds/fdavid/dvsi/src2/Dvsi/Components/BusinessEntities/User/UserBusinessIncomeRenderer.class.php">
+        <class name="Dvsi\Components\BusinessEntities\User\UserBusinessIncomeRenderer" namespace="Dvsi\Components\BusinessEntities\User">
+          <metrics complexity="11" methods="7" coveredmethods="5" conditionals="0" coveredconditionals="0" statements="30" coveredstatements="20" elements="37" coveredelements="25"/>
+        </class>
+        <line num="44" type="method" name="configure" visibility="protected" complexity="1" crap="1" count="5"/>
+        <line num="46" type="stmt" count="5"/>
+        <line num="47" type="stmt" count="5"/>
+        <line num="95" type="method" name="getBusinessClientSignedCount" visibility="public" complexity="2" crap="6" count="0"/>
+        <line num="97" type="stmt" count="0"/>
+        <line num="98" type="stmt" count="0"/>
+        <metrics loc="164" ncloc="84" classes="1" methods="7" coveredmethods="5" conditionals="0" coveredconditionals="0" statements="30" coveredstatements="20" elements="37" coveredelements="25"/>
+      </file>
+      <file name="/builds/fdavid/dvsi/src2/Dvsi/Components/BusinessEntities/User/UserIncomeRenderer.class.php">
+        <class name="Dvsi\Components\BusinessEntities\User\UserIncomeRenderer" namespace="Dvsi\Components\BusinessEntities\User">
+          <metrics complexity="3" methods="3" coveredmethods="3" conditionals="0" coveredconditionals="0" statements="15" coveredstatements="15" elements="18" coveredelements="18"/>
+        </class>
+        <line num="10" type="method" name="render" visibility="public" complexity="1" crap="1" count="3"/>
+        <line num="12" type="stmt" count="3"/>
+        <line num="13" type="stmt" count="3"/>
+        <metrics loc="50" ncloc="30" classes="1" methods="3" coveredmethods="3" conditionals="0" coveredconditionals="0" statements="15" coveredstatements="15" elements="18" coveredelements="18"/>
+      </file>
+    </package>
+    <package name="Dvsi\BusinessEntityCommands\Invoice">
+      <file name="/builds/fdavid/dvsi/src2/Dvsi/BusinessEntityCommands/Invoice/CommandX.class.php">
+        <class name="Dvsi\BusinessEntityCommands\Invoice\CommandX" namespace="Dvsi\BusinessEntityCommands\Invoice">
+          <metrics complexity="5" methods="3" coveredmethods="1" conditionals="0" coveredconditionals="0" statements="12" coveredstatements="4" elements="15" coveredelements="5"/>
+        </class>
+        <line num="20" type="method" name="configure" visibility="protected" complexity="1" crap="1" count="2"/>
+        <line num="22" type="stmt" count="2"/>
+        <line num="30" type="method" name="execute" visibility="protected" complexity="3" crap="12" count="1"/>
+        <line num="32" type="stmt" count="0"/>
+        <line num="34" type="stmt" count="0"/>
+        <line num="40" type="stmt" count="0"/>
+        <line num="50" type="method" name="validate" visibility="protected" complexity="1" crap="1" count="0"/>
+        <line num="52" type="stmt" count="0"/>
+        <metrics loc="60" ncloc="30" classes="1" methods="3" coveredmethods="1" conditionals="0" coveredconditionals="0" statements="12" coveredstatements="4" elements="15" coveredelements="5"/>
+      </file>
+    </package>
+    <metrics files="3" loc="274" ncloc="144" classes="3" methods="13" coveredmethods="9" conditionals="0" coveredconditionals="0" statements="57" coveredstatements="39" elements="70" coveredelements="48"/>
+  </project>
+</coverage>
