@@ -225,12 +225,66 @@ def main() -> int:
         print(f"ERROR: invalid JSON from glab\n{result.stdout[:500]}")
         return 1
 
+    def _latest_pipeline(iid: str | int) -> dict:
+        """Fetch freshest pipeline for the MR — glab mr view can return stale head_pipeline."""
+        try:
+            r = _glab_api(f"projects/:id/merge_requests/{iid}/pipelines?per_page=1")
+            if r.returncode == 0:
+                pipes = json.loads(r.stdout)
+                if isinstance(pipes, list) and pipes:
+                    return pipes[0]
+        except (subprocess.TimeoutExpired, json.JSONDecodeError):
+            pass
+        return {}
+
+    def _pipe_meta(pipeline: dict) -> str:
+        """One-liner: SHA + when + source + user + duration/elapsed + coverage."""
+        bits = []
+        sha = (pipeline.get("sha") or "")[:8]
+        if sha:
+            bits.append(sha)
+        # Source (push, merge_request_event, schedule, web, api, trigger, ...)
+        source = pipeline.get("source")
+        if source and source not in ("push",):
+            bits.append(source)
+        # Who triggered
+        user = (pipeline.get("user") or {}).get("username")
+        if user:
+            bits.append(f"by {user}")
+        # Time: running pipelines show elapsed; others show finished/updated
+        status = pipeline.get("status", "")
+        if status == "running":
+            started = pipeline.get("started_at") or pipeline.get("created_at")
+            if started:
+                from datetime import datetime, timezone
+                try:
+                    dt = datetime.fromisoformat(started.replace("Z", "+00:00"))
+                    elapsed = (datetime.now(timezone.utc) - dt).total_seconds()
+                    if elapsed > 60:
+                        bits.append(f"running {int(elapsed // 60)}m")
+                    else:
+                        bits.append(f"running {int(elapsed)}s")
+                except (ValueError, TypeError):
+                    pass
+        else:
+            updated = (pipeline.get("updated_at") or pipeline.get("created_at") or "")[:19].replace("T", " ")
+            if updated:
+                bits.append(updated)
+        duration = pipeline.get("duration")
+        if isinstance(duration, (int, float)) and duration > 0:
+            mins, secs = divmod(int(duration), 60)
+            bits.append(f"{mins}m{secs:02d}s" if mins else f"{secs}s")
+        coverage = pipeline.get("coverage")
+        if coverage is not None:
+            bits.append(f"cov {coverage}%")
+        return " | ".join(bits)
+
     if slim:
         iid = d.get("iid", arg)
         state = d.get("state", "?")
         merge_status = d.get("merge_status", "?")
         has_conflicts = d.get("has_conflicts", False)
-        pipeline = d.get("pipeline") or d.get("head_pipeline") or {}
+        pipeline = _latest_pipeline(iid) or d.get("pipeline") or d.get("head_pipeline") or {}
         pipe_status = pipeline.get("status", "none")
         pipe_id = pipeline.get("id", "")
         merged_at = d.get("merged_at") or "-"
@@ -238,6 +292,9 @@ def main() -> int:
         web_url = d.get("web_url", "")
         print(f"!{iid} | state: {state} | merge_status: {merge_status} | conflicts: {'yes' if has_conflicts else 'no'}")
         pipe_str = pipe_status + (f" (#{pipe_id})" if pipe_id else "")
+        meta = _pipe_meta(pipeline)
+        if meta:
+            pipe_str += f" | {meta}"
         print(f"pipeline: {pipe_str}")
         print(f"merged_at: {merged_at}")
         if merge_commit:
@@ -256,14 +313,15 @@ def main() -> int:
     labels = ", ".join(d.get("labels", [])) or "none"
     milestone = (d.get("milestone") or {}).get("title", "none")
     has_conflicts = d.get("has_conflicts", False)
-    merge_status = d.get("merge_status", "?")
+    merge_status = d.get("merge_status") or d.get("detailed_merge_status") or "?"
     merge_commit = d.get("merge_commit_sha") or d.get("squash_commit_sha") or ""
     draft = d.get("draft", False) or d.get("work_in_progress", False)
 
-    # Pipeline
-    pipeline = d.get("pipeline") or d.get("head_pipeline") or {}
+    # Pipeline — fetch latest from MR pipelines endpoint (head_pipeline can be stale)
+    pipeline = _latest_pipeline(iid) or d.get("pipeline") or d.get("head_pipeline") or {}
     pipe_status = pipeline.get("status", "none")
     pipe_id = pipeline.get("id", "")
+    pipe_meta = _pipe_meta(pipeline)
 
     # Diff stats
     changes = d.get("changes_count") or 0
@@ -311,6 +369,8 @@ def main() -> int:
     pipe_str = pipe_status
     if pipe_id:
         pipe_str += f" (#{pipe_id})"
+    if pipe_meta:
+        pipe_str += f" | {pipe_meta}"
     print(f"Pipeline: {pipe_str}")
 
     # Failed jobs (only when pipeline failed)
@@ -331,7 +391,11 @@ def main() -> int:
         except (subprocess.TimeoutExpired, json.JSONDecodeError):
             pass
 
-    print(f"Changes: {changes} files, +{additions} -{deletions}")
+    if additions or deletions:
+        print(f"Changes: {changes} files, +{additions} -{deletions}")
+    elif changes:
+        # glab mr view omits diff_stats on large MRs (typically 1000+ files)
+        print(f"Changes: {changes} files (line counts unavailable on large MRs)")
 
     # Conflicts
     conflict_files: list[str] = []
