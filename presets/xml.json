@@ -1,0 +1,27 @@
+{
+  "description": "Read-only XPath queries over XML files. Stdlib-only (xml.etree.ElementTree). Memory scales with file size — 25 MB XML ~ 150 MB RAM.",
+  "requires": "python3",
+  "ops": {
+    "xml": {
+      "cmd": "python3 {path}xml/query.py {arg}",
+      "timeout": 30,
+      "description": "XPath query over an XML file. Default: one match per line as 'LINE:TAG @attr=val …'. Add :full to dump matched subtrees as XML. Memory scales with file size.",
+      "syntax": "xml:PATH:XPATH[:full]",
+      "example": "xml:clover.xml://file[contains(@name,'CommandX')]/line[@count='0']:full"
+    },
+    "xml_attr": {
+      "cmd": "python3 {path}xml/attr.py {arg}",
+      "timeout": 30,
+      "description": "Extract a single attribute value for each XPath match. One value per line. Skips elements missing the attribute. Use triple-colon (:::) as separator to escape colons inside XPath expressions.",
+      "syntax": "xml_attr:PATH:XPATH:ATTR",
+      "example": "xml_attr:clover.xml:.//file[contains(@name,'CommandX')]:::line[@count='0']:num"
+    },
+    "xml_count": {
+      "cmd": "python3 {path}xml/count.py {arg}",
+      "timeout": 30,
+      "description": "Count XPath matches. Returns one integer. Returns 0 (not error) when nothing matches. Faster than xml: for big files — avoids materializing result text.",
+      "syntax": "xml_count:PATH:XPATH",
+      "example": "xml_count:clover.xml://file"
+    }
+  }
+}
