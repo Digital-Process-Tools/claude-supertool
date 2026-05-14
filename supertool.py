@@ -574,7 +574,7 @@ def _resolve_alias(op: str, parts: List[str]) -> str | None:
 # ---------------------------------------------------------------------------
 
 def render_file(path: str, offset: int = 0, limit: int = 0,
-                grep_filter: str = "") -> str:
+                grep_filter: str = "", force_full: bool = False) -> str:
     """Emit a file's contents with line numbers, truncated at caps.
 
     Shared by read: and by grep/glob auto-promote branches.
@@ -610,6 +610,13 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
     bytes_emitted = 0
     printed = 0
     end = min(offset + limit, line_count)
+    # When invoked outside Claude Code, the 25KB hook limit doesn't apply —
+    # so `:full` from a human shell should return the whole file uncapped.
+    in_claude = os.environ.get("CLAUDE_CODE_ENTRYPOINT", "") != ""
+    byte_cap = _get_op_int("read", "max_bytes", MAX_READ_BYTES)
+    apply_byte_cap = in_claude or not force_full
+    if not apply_byte_cap:
+        end = line_count  # ignore line cap too when human asks for full file
 
     filter_regex = None
     if grep_filter:
@@ -634,14 +641,20 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
         out.append(numbered)
         bytes_emitted += len(numbered)
         printed += 1
-        if bytes_emitted >= _get_op_int("read", "max_bytes", MAX_READ_BYTES):
+        if apply_byte_cap and bytes_emitted >= byte_cap:
             break
 
     if filter_regex and not matched_any:
         out.append(f"(no lines matching {grep_filter!r})\n")
-    elif bytes_emitted >= _get_op_int("read", "max_bytes", MAX_READ_BYTES):
-        out.append(f"... (truncated at {_get_op_int('read', 'max_bytes', MAX_READ_BYTES)} bytes — use "
-                   "read:PATH:OFFSET:LIMIT to get more)\n")
+    elif apply_byte_cap and bytes_emitted >= byte_cap:
+        last_line = offset + printed
+        remaining = line_count - last_line
+        out.append(
+            f"... (truncated at {_get_op_int('read', 'max_bytes', MAX_READ_BYTES)} bytes "
+            f"— showed lines {offset + 1}-{last_line} of {line_count} "
+            f"({remaining} more line{'s' if remaining != 1 else ''}) — "
+            f"use read:PATH:OFFSET:LIMIT to get more)\n"
+        )
     elif not filter_regex and offset + printed < line_count:
         out.append(f"... ({line_count - offset - printed} more lines)\n")
     elif not filter_regex:
@@ -682,7 +695,7 @@ def op_read(path: str, offset: int = 0, limit: int = 0,
                       f"or read:{path}:::grep=PATTERN to filter]\n")
     if limit <= 0:
         limit = _get_op_int("read", "max_lines", MAX_READ_LINES)
-    return render_file(path, offset, limit, grep_filter)
+    return render_file(path, offset, limit, grep_filter, force_full)
 
 
 def op_grep(pattern: str, path: str = ".", limit: int = 0,
