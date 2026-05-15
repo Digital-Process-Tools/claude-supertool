@@ -135,8 +135,8 @@
     },
     "edit_session": {
       "syntax": "edit_session:::PATH:::SCRIPT",
-      "description": "Cursor-based multi-action edit. Actions (split by newline or ';'): @L:C goto, /PAT find, ^/$ BOL/EOL, ^^/$$ BOF/EOF, <N/>N left/right, kN/jN up/down, +TEXT insert, -N delete. Self-contained — no prior Read needed",
-      "example": "edit_session:::foo.py:::/def foo;$;+ # marker",
+      "description": "Cursor-based multi-action edit (PREFER over edit::: when inserting multi-line blocks). Actions split by newline or ';': @L:C goto, /PAT find, ^/$ BOL/EOL, ^^/$$ BOF/EOF, <N/>N left/right, kN/jN up/down, o/O open line below/above, +TEXT insert (\\n / \\t decoded — embed for multi-line), -N delete. Self-contained — no prior Read needed.",
+      "example": "edit_session:::skill.md:::/## Process;^;+## Task list\\n\\n1. Foo\\n2. Bar\\n\\n",
       "status": 1,
       "hint": true
     }
