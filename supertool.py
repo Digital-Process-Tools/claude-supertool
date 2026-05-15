@@ -428,7 +428,7 @@ BLOCKED_TOOLS = {"Grep", "Glob", "LS"}
 BLOCKED_BASH_COMMANDS = {"cat", "find", "grep", "ls", "sed", "awk", "tail", "head"}
 
 # Built-in op names — custom ops/aliases with these names are ignored
-_BUILTIN_OPS = {"read", "grep", "grep_around", "glob", "ls", "tail", "head", "wc", "check", "around", "map", "diff", "stat", "around_line", "tree", "replace", "replace_dry", "edit", "replace_lines", "edit_session"}
+_BUILTIN_OPS = {"read", "grep", "grep_around", "glob", "ls", "tail", "head", "wc", "check", "around", "map", "diff", "stat", "around_line", "tree", "replace", "replace_dry", "edit", "replace_lines", "vi"}
 
 # Read-only built-in ops — safe to run in parallel across a batch.
 # Excludes mutating ops (replace, edit, replace_lines) and custom ops
@@ -2430,43 +2430,53 @@ def op_replace_lines(path: str, start: int, end: int, content: str) -> str:
     return "".join(out)
 
 
-def op_edit_session(path: str, script: str) -> str:
-    """Cursor-based multi-action edit session in a single op.
 
-    Mimics how humans edit: place cursor, insert/delete, move cursor, repeat.
-    Coordinates stay valid across actions because the engine tracks offsets
-    internally — N small edits in 1 round-trip instead of N replace ops.
+def op_vi(path: str, script: str) -> str:
+    """vi-flavored cursor-based multi-action edit op.
 
-    Multi-line inserts use the \\n / \\t escapes inside +TEXT — actions are
-    separated by real newlines, but escapes inside +TEXT decode to literal chars.
-    For "open line below/above" semantics use the o / O actions.
+    Actions split by newline OR semicolon. Each action: optional count
+    prefix + verb + optional arg. Lifted from vi for token economy in
+    LLM-generated edits.
 
-    Script syntax (actions separated by newlines OR semicolons):
-        @LINE:COL   — set cursor (1-indexed)
-        /PATTERN    — move cursor to first char of next literal match from
-                      cursor (errors if not found)
-        $           — move cursor to end of current line (before the \\n)
-        ^           — move cursor to start of current line (col 1)
-        $$          — move cursor to end of file
-        ^^          — move cursor to start of file
-        <N          — move cursor left by N chars (clamps to 0)
-        >N          — move cursor right by N chars (clamps to EOF)
-        kN          — move cursor up N rows (preserves column, clamps)
-        jN          — move cursor down N rows (preserves column, clamps)
-        o           — open empty line BELOW cursor's line, cursor sits on it
-        O           — open empty line ABOVE cursor's line, cursor sits on it
-        +TEXT       — insert at cursor (\\n / \\t decoded), cursor advances past
-        -N          — delete N chars from cursor
+    Cursor / search:
+        gg          — top of file (BOF)
+        G           — end of file (EOF)
+        nG          — goto line n (1-indexed)
+        0           — BOL
+        $           — EOL
+        /PAT        — find PAT forward from cursor
+        ?PAT        — find PAT backward from cursor
+        nh          — n chars left (default 1)
+        nl          — n chars right (default 1)
+        nj          — n lines down
+        nk          — n lines up
+
+    Inserts (TEXT runs to end of action; \\n / \\t decoded):
+        iTEXT       — insert before cursor
+        aTEXT       — append after cursor
+        ITEXT       — insert at BOL of current line
+        ATEXT       — append at EOL of current line
+        oTEXT       — open new line below, insert
+        OTEXT       — open new line above, insert
+        With count, TEXT is inserted N times (e.g., 5i-).
+
+    Deletes:
+        x   / nx    — delete n chars at cursor (default 1)
+        dd  / ndd   — delete n lines (default 1)
+        D           — delete from cursor to EOL
+
+    Replace:
+        rc          — replace single char at cursor with c
 
     Examples:
-        # Annotate a single line
-        edit_session:::foo.py:::/def foo;<3;+# annotated\\n
+        # Annotate function signature
+        vi:::foo.py:::/def foo;A  # entry point
 
-        # Insert a multi-line block before a marker (escape \\n in +TEXT)
-        edit_session:::skill.md:::/## Process;^;+## Task list\\n\\n1. Foo\\n2. Bar\\n\\n
+        # Insert a multi-line block before a marker
+        vi:::skill.md:::/## Process;O## Task list;o1. Foo;o2. Bar
 
-        # Open new line below a header and write into it
-        edit_session:::foo.md:::/# Title;o;+First body line
+        # Delete 3 lines starting at line 10
+        vi:::log.txt:::10G;3dd
     """
     if not path:
         return "ERROR: empty path\n"
@@ -2484,170 +2494,209 @@ def op_edit_session(path: str, script: str) -> str:
     raw_actions: List[str] = []
     for line in script.split("\n"):
         for seg in line.split(";"):
-            seg = seg.strip()
+            # lstrip only — trailing whitespace inside insert TEXT is significant
+            seg = seg.lstrip()
             if seg:
                 raw_actions.append(seg)
     if not raw_actions:
         return "ERROR: no actions in script\n"
 
-    def _line_col_to_offset(text: str, line: int, col: int) -> int:
-        if line < 1 or col < 1:
-            raise ValueError(f"line/col must be >=1, got {line}:{col}")
-        lines = text.split("\n")
-        if line > len(lines):
-            raise ValueError(
-                f"line {line} beyond EOF (file has {len(lines)} lines)"
-            )
-        target = lines[line - 1]
-        if col - 1 > len(target):
-            col = len(target) + 1  # clamp to line end
-        return sum(len(l) + 1 for l in lines[: line - 1]) + (col - 1)
+    def _line_start(text: str, off: int) -> int:
+        nl = text.rfind("\n", 0, off)
+        return nl + 1
 
-    def _line_start_offset(text: str, offset: int) -> int:
-        nl = text.rfind("\n", 0, offset)
-        return nl + 1  # nl=-1 → 0, nl>=0 → after that \n
-
-    def _line_end_offset(text: str, offset: int) -> int:
-        nl = text.find("\n", offset)
+    def _line_end(text: str, off: int) -> int:
+        nl = text.find("\n", off)
         return nl if nl != -1 else len(text)
 
-    def _offset_to_line_col(text: str, offset: int) -> tuple:
-        pre = text[:offset]
+    def _goto_line(text: str, line: int) -> int:
+        lines = text.split("\n")
+        if line < 1 or line > len(lines):
+            raise ValueError(f"line {line} out of range (file has {len(lines)} lines)")
+        return sum(len(l) + 1 for l in lines[: line - 1])
+
+    def _offset_to_line_col(text: str, off: int) -> tuple:
+        pre = text[:off]
         line = pre.count("\n") + 1
         last_nl = pre.rfind("\n")
-        col = offset - last_nl  # last_nl=-1 → col=offset+1
+        col = off - last_nl
         return line, col
+
+    def _parse(action: str) -> tuple:
+        """Return (count:int, verb:str, arg:str). count defaults to 1."""
+        if not action:
+            return (1, "", "")
+        i = 0
+        # count: leading digits, but `0` alone is the BOL verb
+        if action[0].isdigit() and action[0] != "0":
+            while i < len(action) and action[i].isdigit():
+                i += 1
+        count = int(action[:i]) if i > 0 else 1
+        rest = action[i:]
+        if not rest:
+            return (count, "", "")
+        # two-char verbs first
+        if len(rest) >= 2 and rest[:2] in ("gg", "dd"):
+            return (count, rest[:2], rest[2:])
+        c = rest[0]
+        # search
+        if c in ("/", "?"):
+            return (count, c, rest[1:])
+        # inserts — TEXT runs to end
+        if c in ("i", "a", "I", "A", "o", "O"):
+            return (count, c, rest[1:])
+        # single-char arg
+        if c == "r":
+            return (count, c, rest[1:2])
+        # standalone
+        if c in ("h", "j", "k", "l", "0", "$", "G", "D", "x"):
+            return (count, c, rest[1:])  # rest after verb should be empty
+        return (count, "", rest)  # unknown
 
     cursor = 0
     log: List[str] = []
     for i, action in enumerate(raw_actions, 1):
-        if action.startswith("@"):
-            ln_col = action[1:].split(":")
-            if len(ln_col) != 2:
-                return f"ERROR: action {i} '{action}': expected @LINE:COL\n"
-            try:
-                ln, col = int(ln_col[0]), int(ln_col[1])
-                cursor = _line_col_to_offset(content, ln, col)
-            except ValueError as e:
-                return f"ERROR: action {i} '{action}': {e}\n"
-            log.append(f"  {i}. @{ln}:{col} (cursor={cursor})")
-        elif action.startswith("/"):
-            pattern = _decode_escapes(action[1:])
-            if not pattern:
-                return f"ERROR: action {i} '{action}': empty search pattern\n"
-            idx = content.find(pattern, cursor)
-            if idx == -1:
-                return (f"ERROR: action {i} '{action}': "
-                        f"pattern not found from cursor={cursor}\n")
-            cursor = idx
-            log.append(f"  {i}. /{pattern!r} → cursor={cursor}")
-        elif action == "$$":
-            cursor = len(content)
-            log.append(f"  {i}. $$ (cursor={cursor}, EOF)")
-        elif action == "^^":
+        count, verb, arg = _parse(action)
+
+        if verb == "" and count != 1:
+            return f"ERROR: action {i} '{action}': count without verb\n"
+
+        # --- cursor movement ---
+        if verb == "gg":
             cursor = 0
-            log.append(f"  {i}. ^^ (cursor=0, BOF)")
-        elif action == "$":
-            cursor = _line_end_offset(content, cursor)
-            log.append(f"  {i}. $ (cursor={cursor})")
-        elif action == "^":
-            cursor = _line_start_offset(content, cursor)
-            log.append(f"  {i}. ^ (cursor={cursor})")
-        elif action.startswith("<"):
-            try:
-                n = int(action[1:])
-            except ValueError:
-                return (f"ERROR: action {i} '{action}': "
-                        f"left-move count must be integer\n")
-            if n < 0:
-                return (f"ERROR: action {i} '{action}': "
-                        f"left-move count must be >=0\n")
-            cursor = max(0, cursor - n)
-            log.append(f"  {i}. <{n} (cursor={cursor})")
-        elif action.startswith(">"):
-            try:
-                n = int(action[1:])
-            except ValueError:
-                return (f"ERROR: action {i} '{action}': "
-                        f"right-move count must be integer\n")
-            if n < 0:
-                return (f"ERROR: action {i} '{action}': "
-                        f"right-move count must be >=0\n")
-            cursor = min(len(content), cursor + n)
-            log.append(f"  {i}. >{n} (cursor={cursor})")
-        elif action.startswith("k") or action.startswith("j"):
-            direction = action[0]
-            try:
-                n = int(action[1:])
-            except ValueError:
-                return (f"ERROR: action {i} '{action}': "
-                        f"row-move count must be integer\n")
-            if n < 0:
-                return (f"ERROR: action {i} '{action}': "
-                        f"row-move count must be >=0\n")
+            log.append(f"  {i}. gg (BOF)")
+        elif verb == "G":
+            if action.lstrip()[:1].isdigit():
+                # explicit count: goto line
+                try:
+                    cursor = _goto_line(content, count)
+                except ValueError as e:
+                    return f"ERROR: action {i} '{action}': {e}\n"
+                log.append(f"  {i}. {count}G (line {count})")
+            else:
+                cursor = len(content)
+                log.append(f"  {i}. G (EOF)")
+        elif verb == "0":
+            cursor = _line_start(content, cursor)
+            log.append(f"  {i}. 0 (BOL)")
+        elif verb == "$":
+            # vi: $ lands on LAST CHAR of line, not on \n.
+            # Empty line: $ stays at BOL.
+            eol = _line_end(content, cursor)
+            bol = _line_start(content, cursor)
+            cursor = max(bol, eol - 1) if eol > bol else bol
+            log.append(f"  {i}. $ (last char, cursor={cursor})")
+        elif verb == "/":
+            if not arg:
+                return f"ERROR: action {i} '{action}': empty / pattern\n"
+            pat = _decode_escapes(arg)
+            idx = content.find(pat, cursor)
+            if idx == -1:
+                return f"ERROR: action {i} '{action}': pattern not found forward\n"
+            cursor = idx
+            log.append(f"  {i}. /{pat!r} → {cursor}")
+        elif verb == "?":
+            if not arg:
+                return f"ERROR: action {i} '{action}': empty ? pattern\n"
+            pat = _decode_escapes(arg)
+            idx = content.rfind(pat, 0, cursor)
+            if idx == -1:
+                return f"ERROR: action {i} '{action}': pattern not found backward\n"
+            cursor = idx
+            log.append(f"  {i}. ?{pat!r} → {cursor}")
+        elif verb == "h":
+            cursor = max(0, cursor - count)
+            log.append(f"  {i}. {count}h (cursor={cursor})")
+        elif verb == "l":
+            cursor = min(len(content), cursor + count)
+            log.append(f"  {i}. {count}l (cursor={cursor})")
+        elif verb in ("j", "k"):
             cur_line, cur_col = _offset_to_line_col(content, cursor)
             total_lines = content.count("\n") + 1
-            if direction == "k":
-                target_line = max(1, cur_line - n)
-            else:  # 'j'
-                target_line = min(total_lines, cur_line + n)
+            target = cur_line - count if verb == "k" else cur_line + count
+            target = max(1, min(total_lines, target))
             try:
-                cursor = _line_col_to_offset(content, target_line, cur_col)
+                base = _goto_line(content, target)
             except ValueError as e:
                 return f"ERROR: action {i} '{action}': {e}\n"
-            log.append(f"  {i}. {direction}{n} (cursor={cursor})")
-        elif action == "o":
-            # Open empty line BELOW current line; cursor sits on the new blank line.
-            eol = _line_end_offset(content, cursor)
-            content = content[:eol] + "\n" + content[eol:]
-            cursor = eol + 1
-            log.append(f"  {i}. o (cursor={cursor}, new blank line below)")
-        elif action == "O":
-            # Open empty line ABOVE current line; cursor sits on the new blank line.
-            bol = _line_start_offset(content, cursor)
-            content = content[:bol] + "\n" + content[bol:]
-            cursor = bol
-            log.append(f"  {i}. O (cursor={cursor}, new blank line above)")
-        elif action.startswith("+"):
-            text = _decode_escapes(action[1:])
-            content = content[:cursor] + text + content[cursor:]
-            cursor += len(text)
+            line_text = content[base:_line_end(content, base)]
+            cursor = base + min(cur_col - 1, len(line_text))
+            log.append(f"  {i}. {count}{verb} (cursor={cursor})")
+
+        # --- inserts ---
+        elif verb in ("i", "a", "I", "A", "o", "O"):
+            text = _decode_escapes(arg) * count
+            if verb == "i":
+                pos = cursor
+            elif verb == "a":
+                pos = min(len(content), cursor + 1)
+            elif verb == "I":
+                pos = _line_start(content, cursor)
+            elif verb == "A":
+                pos = _line_end(content, cursor)
+            elif verb == "o":
+                eol = _line_end(content, cursor)
+                content = content[:eol] + "\n" + content[eol:]
+                pos = eol + 1
+            else:  # 'O'
+                bol = _line_start(content, cursor)
+                content = content[:bol] + "\n" + content[bol:]
+                pos = bol
+            content = content[:pos] + text + content[pos:]
+            cursor = pos + len(text)
             preview = text if len(text) <= 30 else text[:27] + "..."
-            log.append(f"  {i}. +{preview!r} (len={len(text)})")
-        elif action.startswith("-"):
-            try:
-                n = int(action[1:])
-            except ValueError:
-                return (f"ERROR: action {i} '{action}': "
-                        f"delete count must be integer\n")
-            if n < 0:
-                return (f"ERROR: action {i} '{action}': "
-                        f"delete count must be >=0\n")
-            if cursor + n > len(content):
-                return (f"ERROR: action {i} '{action}': "
-                        f"delete past EOF (cursor={cursor}, "
-                        f"file={len(content)})\n")
-            content = content[:cursor] + content[cursor + n:]
-            log.append(f"  {i}. -{n} chars")
+            log.append(f"  {i}. {verb}{preview!r} (len={len(text)})")
+
+        # --- deletes ---
+        elif verb == "x":
+            end = min(len(content), cursor + count)
+            content = content[:cursor] + content[end:]
+            log.append(f"  {i}. {count}x ({end - cursor} chars)")
+        elif verb == "dd":
+            # delete count whole lines starting at current line
+            bol = _line_start(content, cursor)
+            end = bol
+            for _ in range(count):
+                nl = content.find("\n", end)
+                end = nl + 1 if nl != -1 else len(content)
+                if end >= len(content):
+                    break
+            content = content[:bol] + content[end:]
+            cursor = bol if bol < len(content) else max(0, len(content))
+            log.append(f"  {i}. {count}dd (cursor={cursor})")
+        elif verb == "D":
+            eol = _line_end(content, cursor)
+            content = content[:cursor] + content[eol:]
+            log.append(f"  {i}. D ({eol - cursor} chars)")
+
+        # --- replace ---
+        elif verb == "r":
+            if not arg:
+                return f"ERROR: action {i} '{action}': r needs a char\n"
+            if cursor >= len(content):
+                return f"ERROR: action {i} '{action}': r at EOF\n"
+            content = content[:cursor] + arg[0] + content[cursor + 1:]
+            log.append(f"  {i}. r{arg[0]!r}")
+
         else:
-            return (f"ERROR: action {i} '{action}': "
-                    f"unknown action (expected @, +, -, /, ^, $, <, >, k, j, o, or O)\n")
+            return (
+                f"ERROR: action {i} '{action}': unknown verb '{verb}' "
+                f"(expected gg, G, nG, 0, $, /, ?, h, j, k, l, "
+                f"i, a, I, A, o, O, x, dd, D, r)\n"
+            )
 
     try:
         _atomic_write(path, content)
     except OSError as e:
         return f"ERROR: failed to write {path}: {e}\n"
 
-    pre = content[:cursor]
-    final_line = pre.count("\n") + 1
-    last_nl = pre.rfind("\n")
-    final_col = cursor - last_nl  # last_nl=-1 → cursor+1 (col 1 at offset 0)
+    final_line, final_col = _offset_to_line_col(content, cursor)
     new_lines = content.split("\n")
     ctx_start = max(1, final_line - 2)
     ctx_end = min(len(new_lines), final_line + 2)
 
     out = [
-        f"edit_session {path} ({len(raw_actions)} actions, "
+        f"vi {path} ({len(raw_actions)} actions, "
         f"cursor at {final_line}:{final_col})\n"
     ]
     out.extend(line + "\n" for line in log)
@@ -2956,10 +3005,10 @@ def dispatch(arg: str) -> str:
                 # CONTENT may legitimately contain ':' — rejoin remaining parts
                 rl_content = _decode_escapes(":".join(parts[4:]) if len(parts) > 4 else "")
                 body = op_replace_lines(rl_path, rl_start, rl_end, rl_content)
-        elif op == "edit_session":
-            es_path = parts[1] if len(parts) > 1 else ""
-            es_script = ":".join(parts[2:]) if len(parts) > 2 else ""
-            body = op_edit_session(es_path, es_script)
+        elif op == "vi":
+            vi_path = parts[1] if len(parts) > 1 else ""
+            vi_script = ":".join(parts[2:]) if len(parts) > 2 else ""
+            body = op_vi(vi_path, vi_script)
         elif op in ("introduction", "output-format", "ops", "ops-compact", "version"):
             # Meta-ops use markdown headers instead of --- header ---
             header = ""
