@@ -2686,7 +2686,12 @@ def op_vi(path: str, script: str) -> str:
             if idx == -1:
                 idx = content.find(pat, cursor)
             if idx == -1:
-                return f"ERROR: action {i} '{action}': pattern not found forward\n"
+                hint = ""
+                m = re.search(r"/([oOiIaAJ]|cc|cw|ciw|ci[\"'([{}]|cf|cF|ct|cT|dd|dw|d\$|d0|c\$|c0)\b", pat)
+                if m is not None:
+                    suggested = pat[:m.start()] + ";" + pat[m.start() + 1:]
+                    hint = f" (hint: '/' is not an action separator — did you mean '/{suggested}'? Use ';' to chain actions.)"
+                return f"ERROR: action {i} '{action}': pattern not found forward{hint}\n"
             cursor = idx
             last_search = (pat, "/")
             log.append(f"  {i}. /{pat!r} → {cursor}")
