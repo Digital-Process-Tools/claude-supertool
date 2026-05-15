@@ -2437,6 +2437,10 @@ def op_edit_session(path: str, script: str) -> str:
     Coordinates stay valid across actions because the engine tracks offsets
     internally — N small edits in 1 round-trip instead of N replace ops.
 
+    Multi-line inserts use the \\n / \\t escapes inside +TEXT — actions are
+    separated by real newlines, but escapes inside +TEXT decode to literal chars.
+    For "open line below/above" semantics use the o / O actions.
+
     Script syntax (actions separated by newlines OR semicolons):
         @LINE:COL   — set cursor (1-indexed)
         /PATTERN    — move cursor to first char of next literal match from
@@ -2449,11 +2453,20 @@ def op_edit_session(path: str, script: str) -> str:
         >N          — move cursor right by N chars (clamps to EOF)
         kN          — move cursor up N rows (preserves column, clamps)
         jN          — move cursor down N rows (preserves column, clamps)
+        o           — open empty line BELOW cursor's line, cursor sits on it
+        O           — open empty line ABOVE cursor's line, cursor sits on it
         +TEXT       — insert at cursor (\\n / \\t decoded), cursor advances past
         -N          — delete N chars from cursor
 
-    Example:
+    Examples:
+        # Annotate a single line
         edit_session:::foo.py:::/def foo;<3;+# annotated\\n
+
+        # Insert a multi-line block before a marker (escape \\n in +TEXT)
+        edit_session:::skill.md:::/## Process;^;+## Task list\\n\\n1. Foo\\n2. Bar\\n\\n
+
+        # Open new line below a header and write into it
+        edit_session:::foo.md:::/# Title;o;+First body line
     """
     if not path:
         return "ERROR: empty path\n"
@@ -2583,6 +2596,18 @@ def op_edit_session(path: str, script: str) -> str:
             except ValueError as e:
                 return f"ERROR: action {i} '{action}': {e}\n"
             log.append(f"  {i}. {direction}{n} (cursor={cursor})")
+        elif action == "o":
+            # Open empty line BELOW current line; cursor sits on the new blank line.
+            eol = _line_end_offset(content, cursor)
+            content = content[:eol] + "\n" + content[eol:]
+            cursor = eol + 1
+            log.append(f"  {i}. o (cursor={cursor}, new blank line below)")
+        elif action == "O":
+            # Open empty line ABOVE current line; cursor sits on the new blank line.
+            bol = _line_start_offset(content, cursor)
+            content = content[:bol] + "\n" + content[bol:]
+            cursor = bol
+            log.append(f"  {i}. O (cursor={cursor}, new blank line above)")
         elif action.startswith("+"):
             text = _decode_escapes(action[1:])
             content = content[:cursor] + text + content[cursor:]
@@ -2606,7 +2631,7 @@ def op_edit_session(path: str, script: str) -> str:
             log.append(f"  {i}. -{n} chars")
         else:
             return (f"ERROR: action {i} '{action}': "
-                    f"unknown action (expected @, +, -, /, ^, $, <, >, k, or j)\n")
+                    f"unknown action (expected @, +, -, /, ^, $, <, >, k, j, o, or O)\n")
 
     try:
         _atomic_write(path, content)

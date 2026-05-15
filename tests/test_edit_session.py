@@ -557,3 +557,79 @@ def test_left_unicode_chars(tmp_path: Path) -> None:
     # @1:5 lands cursor right after 'é' (4 chars in). <2 → between 'a' and 'f'.
     out = supertool.op_edit_session(str(f), "@1:5;<2;+!")
     assert f.read_text() == "ca!fé_end\n"
+
+
+# ---------------------------------------------------------------------------
+# o / O — open new line below/above current line
+# ---------------------------------------------------------------------------
+
+def test_open_below_creates_blank_line(tmp_path: Path) -> None:
+    """`o` opens an empty line below the current line and parks cursor there."""
+    f = tmp_path / "x.py"
+    f.write_text("first\nthird\n")
+    out = supertool.op_edit_session(str(f), "@1:1;o")
+    assert "new blank line below" in out
+    assert f.read_text() == "first\n\nthird\n"
+
+
+def test_open_above_creates_blank_line(tmp_path: Path) -> None:
+    """`O` opens an empty line above the current line and parks cursor there."""
+    f = tmp_path / "x.py"
+    f.write_text("first\nthird\n")
+    out = supertool.op_edit_session(str(f), "@2:1;O")
+    assert "new blank line above" in out
+    assert f.read_text() == "first\n\nthird\n"
+
+
+def test_open_below_then_insert(tmp_path: Path) -> None:
+    """`o` + `+text` writes content into the new blank line."""
+    f = tmp_path / "x.py"
+    f.write_text("title\n")
+    out = supertool.op_edit_session(str(f), "/title;o;+body line one")
+    assert f.read_text() == "title\nbody line one\n"
+
+
+def test_open_above_then_insert(tmp_path: Path) -> None:
+    """`O` + `+text` writes content into the new blank line above."""
+    f = tmp_path / "x.py"
+    f.write_text("## End\n")
+    out = supertool.op_edit_session(str(f), "/## End;O;+## Start")
+    assert f.read_text() == "## Start\n## End\n"
+
+
+def test_open_below_chain_multiple(tmp_path: Path) -> None:
+    """Chain `o` actions to insert several lines below."""
+    f = tmp_path / "x.py"
+    f.write_text("header\n")
+    out = supertool.op_edit_session(
+        str(f), "/header;o;+line a;o;+line b;o;+line c"
+    )
+    assert f.read_text() == "header\nline a\nline b\nline c\n"
+
+
+def test_open_below_on_last_line_no_trailing_newline(tmp_path: Path) -> None:
+    """`o` works at EOF even when file has no trailing newline."""
+    f = tmp_path / "x.py"
+    f.write_text("only line")
+    out = supertool.op_edit_session(str(f), "$;o;+after")
+    # $ → end of "only line", o → opens blank line after (adds \n), +after
+    assert f.read_text() == "only line\nafter"
+
+
+def test_open_above_on_first_line(tmp_path: Path) -> None:
+    """`O` on line 1 inserts a new line at the very top."""
+    f = tmp_path / "x.py"
+    f.write_text("body\n")
+    out = supertool.op_edit_session(str(f), "@1:1;O;+head")
+    assert f.read_text() == "head\nbody\n"
+
+
+def test_open_above_block_before_marker(tmp_path: Path) -> None:
+    """Open + insert chain inserts a block above an existing line — readable
+    alternative to the `+TEXT\\n+TEXT\\n` escape pattern."""
+    f = tmp_path / "x.py"
+    f.write_text("## Process\n")
+    out = supertool.op_edit_session(
+        str(f), "/## Process;O;+## Task list;o;+1. Foo;o;+2. Bar"
+    )
+    assert f.read_text() == "## Task list\n1. Foo\n2. Bar\n## Process\n"
