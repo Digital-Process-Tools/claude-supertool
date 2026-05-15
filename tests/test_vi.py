@@ -364,6 +364,14 @@ def test_backslash_escape_in_insert(tmp_path: Path) -> None:
     assert f.read_text() == "path\\to\\file\n"
 
 
+def test_bang_history_escape_is_flattened(tmp_path: Path) -> None:
+    """zsh/bash insert `\\!` even inside single quotes — strip the backslash."""
+    f = tmp_path / "x.py"
+    f.write_text("\n")
+    supertool.op_vi(str(f), "iif (\\!$x->isOk()) {}")
+    assert f.read_text() == "if (!$x->isOk()) {}\n"
+
+
 # ---------------------------------------------------------------------------
 # Regex search
 # ---------------------------------------------------------------------------

@@ -2039,13 +2039,19 @@ def _decode_escapes(s: str) -> str:
 
     Used by `replace`, `replace_dry`, `edit`, `replace_lines` so callers can
     pass multi-line OLD/NEW/CONTENT via CLI without literal `\n` polluting
-    file contents. Decoded sequences: `\n` `\t` `\r` `\\`. A two-pass sentinel
-    keeps `\\n` (literal backslash + n) intact while still decoding `\n`.
+    file contents. Decoded sequences: `\n` `\t` `\r` `\\` `\!`. A two-pass
+    sentinel keeps `\\n` (literal backslash + n) intact while still decoding
+    `\n`. `\!` decode protects against zsh/bash history-expansion artifacts
+    that prepend a backslash to `!` even inside single quotes.
     """
     if "\\" not in s:
         return s
     out = s.replace("\\\\", _DECODE_ESCAPES_SENTINEL)
     out = out.replace("\\n", "\n").replace("\\t", "\t").replace("\\r", "\r")
+    # Decode shell-mangled bang: zsh/bash history expansion inserts `\!`
+    # even inside single quotes in some configurations. `\!` has no legitimate
+    # meaning in inserted code, so flatten it back to `!`.
+    out = out.replace("\\!", "!")
     out = out.replace(_DECODE_ESCAPES_SENTINEL, "\\")
     return out
 
