@@ -364,6 +364,15 @@ def test_backslash_escape_in_insert(tmp_path: Path) -> None:
     assert f.read_text() == "path\\to\\file\n"
 
 
+def test_bang_history_escape_is_flattened(tmp_path: Path) -> None:
+    """zsh/bash insert `\\!` even inside single quotes — strip the backslash."""
+    f = tmp_path / "x.py"
+    f.write_text("\n")
+    supertool.op_vi(str(f), "iif (\\!$x->isOk()) {}")
+    assert f.read_text() == "if (!$x->isOk()) {}\n"
+
+
+
 # ---------------------------------------------------------------------------
 # Regex search
 # ---------------------------------------------------------------------------
@@ -606,6 +615,18 @@ def test_substitute_no_match_errors(tmp_path: Path) -> None:
     f.write_text("hello\n")
     out = supertool.op_vi(str(f), ":s/missing/x/g")
     assert "ERROR" in out
+
+
+def test_substitute_repl_with_php_namespace_backslashes(tmp_path: Path) -> None:
+    """REPL containing single backslashes (PHP/JS namespace separators) must
+    not crash re.sub with 'bad escape \\B' — backslashes are auto-escaped."""
+    f = tmp_path / "x.php"
+    f.write_text("use OLD;\n")
+    supertool.op_vi(
+        str(f),
+        ":s/OLD/Shared\\BusinessEntities\\ReviewSessionHasEntity/",
+    )
+    assert f.read_text() == "use Shared\\BusinessEntities\\ReviewSessionHasEntity;\n"
 
 
 # ---------------------------------------------------------------------------

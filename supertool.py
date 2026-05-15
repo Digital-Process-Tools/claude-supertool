@@ -2037,15 +2037,22 @@ _DECODE_ESCAPES_SENTINEL = "\x00BS\x00"
 def _decode_escapes(s: str) -> str:
     r"""Decode shell-style escape sequences in mutating-op arguments.
 
-    Used by `replace`, `replace_dry`, `edit`, `replace_lines` so callers can
-    pass multi-line OLD/NEW/CONTENT via CLI without literal `\n` polluting
-    file contents. Decoded sequences: `\n` `\t` `\r` `\\`. A two-pass sentinel
-    keeps `\\n` (literal backslash + n) intact while still decoding `\n`.
+    Used by `replace`, `replace_dry`, `edit`, `replace_lines`, `vi` so callers
+    can pass multi-line OLD/NEW/CONTENT via CLI without literal `\n` polluting
+    file contents.
+
+    Decoded sequences: `\n` `\t` `\r` `\\` `\!`. Any other `\X` is left intact
+    so backslashes in code (PHP / JS namespace separators, regex character
+    classes) survive. A two-pass sentinel keeps `\\` (literal backslash)
+    intact across the other substitutions. `\!` decode protects against
+    zsh/bash history-expansion artifacts that prepend a backslash to `!`
+    even inside single quotes.
     """
     if "\\" not in s:
         return s
     out = s.replace("\\\\", _DECODE_ESCAPES_SENTINEL)
     out = out.replace("\\n", "\n").replace("\\t", "\t").replace("\\r", "\r")
+    out = out.replace("\\!", "!")
     out = out.replace(_DECODE_ESCAPES_SENTINEL, "\\")
     return out
 
@@ -2996,7 +3003,14 @@ def op_vi(path: str, script: str) -> str:
                 return f"ERROR: action {i} '{action}': :s regex: {e}\n"
             n_max = 0 if "g" in sflags else 1
             srepl_dec = _decode_escapes(srepl)
-            new_content, n = rx.subn(srepl_dec, content, count=n_max)
+            # Escape literal backslashes for re.sub: \X (X non-digit) must be
+            # passed as \\X or re.sub raises "bad escape" on \B, \R, etc.
+            # Digit-prefixed backslashes (\1..\9) are preserved as backrefs.
+            srepl_safe = re.sub(r"\\(?=\D)", r"\\\\", srepl_dec)
+            try:
+                new_content, n = rx.subn(srepl_safe, content, count=n_max)
+            except re.error as e:
+                return f"ERROR: action {i} '{action}': :s replacement: {e}\n"
             if n == 0:
                 return f"ERROR: action {i} '{action}': :s no match for {spat!r}\n"
             content = new_content
