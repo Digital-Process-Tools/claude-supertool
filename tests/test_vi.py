@@ -617,6 +617,14 @@ def test_substitute_no_match_errors(tmp_path: Path) -> None:
     assert "ERROR" in out
 
 
+def test_substitute_strips_defensive_backslash_before_punct(tmp_path: Path) -> None:
+    """Kevin defensively writes `\\)\\;` in REPL — both must collapse to `);`."""
+    f = tmp_path / "x.php"
+    f.write_text("foo(1)\n")
+    supertool.op_vi(str(f), ":s/\\)$/\\)\\;/")
+    assert f.read_text() == "foo(1);\n"
+
+
 def test_substitute_repl_with_php_namespace_backslashes(tmp_path: Path) -> None:
     """REPL containing single backslashes (PHP/JS namespace separators) must
     not crash re.sub with 'bad escape \\B' — backslashes are auto-escaped."""
