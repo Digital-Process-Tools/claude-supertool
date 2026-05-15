@@ -2041,18 +2041,25 @@ def _decode_escapes(s: str) -> str:
     can pass multi-line OLD/NEW/CONTENT via CLI without literal `\n` polluting
     file contents.
 
-    Decoded sequences: `\n` `\t` `\r` `\\` `\!`. Any other `\X` is left intact
-    so backslashes in code (PHP / JS namespace separators, regex character
-    classes) survive. A two-pass sentinel keeps `\\` (literal backslash)
-    intact across the other substitutions. `\!` decode protects against
-    zsh/bash history-expansion artifacts that prepend a backslash to `!`
-    even inside single quotes.
+    Decoded sequences:
+      `\n` `\t` `\r`           → newline / tab / CR
+      `\\`                     → literal `\`
+      `\<punctuation>`         → drop `\` (shell-style defensive escape:
+                                  `\)`, `\(`, `\$`, `\"`, `\'`, `\ `, `\!`...
+                                  Kevin's defensive `\)` becomes `)`).
+      `\<letter|digit>`        → preserved as-is. PHP namespace `\Foo`,
+                                  regex char classes `\d`/`\w`/`\s`, and
+                                  `:s` backrefs `\1`..`\9` all survive.
+
+    A two-pass sentinel keeps `\\` (literal backslash) intact across the
+    other substitutions.
     """
     if "\\" not in s:
         return s
     out = s.replace("\\\\", _DECODE_ESCAPES_SENTINEL)
     out = out.replace("\\n", "\n").replace("\\t", "\t").replace("\\r", "\r")
-    out = out.replace("\\!", "!")
+    # Drop `\` before punctuation/symbols (defensive shell escapes).
+    out = re.sub(r"\\([^A-Za-z0-9])", r"\1", out)
     out = out.replace(_DECODE_ESCAPES_SENTINEL, "\\")
     return out
 
