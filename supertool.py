@@ -97,7 +97,7 @@ import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 VERSION = "0.10.0"
 
@@ -2444,8 +2444,8 @@ def op_vi(path: str, script: str) -> str:
         nG          — goto line n (1-indexed)
         0           — BOL
         $           — EOL
-        /PAT        — find PAT forward from cursor
-        ?PAT        — find PAT backward from cursor
+        /PAT        — find PAT forward (regex; literal fallback on re.error)
+        ?PAT        — find PAT backward (regex; literal fallback on re.error)
         nh          — n chars left (default 1)
         nl          — n chars right (default 1)
         nj          — n lines down
@@ -2465,8 +2465,28 @@ def op_vi(path: str, script: str) -> str:
         dd  / ndd   — delete n lines (default 1)
         D           — delete from cursor to EOL
 
+    Change (replace + insert in one verb; TEXT runs to end of action,
+    `\\n`/`\\t`/`\\;` decoded):
+        ciwTEXT     — change inner word (word at cursor → TEXT)
+        cwTEXT      — change from cursor to end of word
+        ccTEXT      — change current line content (keeps trailing \\n)
+        nccTEXT     — change next n lines (single TEXT replaces all)
+        ci"TEXT     — change inside "" (replace content between quotes)
+        ci'TEXT     — change inside ''
+        ci(TEXT     — change inside (...)  [matches nested ()]
+        ci[TEXT     — change inside [...]
+        ci{TEXT     — change inside {...}
+
+    Join:
+        J / nJ      — join next n lines with cursor's line (single space sep)
+
     Replace:
         rc          — replace single char at cursor with c
+
+    Escapes inside TEXT:
+        \\n \\t \\r  → newline / tab / CR
+        \\;          → literal `;` (otherwise `;` ends the action)
+        \\\\         → literal backslash
 
     Examples:
         # Annotate function signature
@@ -2474,6 +2494,24 @@ def op_vi(path: str, script: str) -> str:
 
         # Insert a multi-line block before a marker
         vi:::skill.md:::/## Process;O## Task list;o1. Foo;o2. Bar
+
+        # Rename a variable
+        vi:::foo.py:::/old_name;ciwnew_name
+
+        # Replace a string literal
+        vi:::foo.py:::/setLabel(;l;ci"New Label"
+
+        # Replace a function arg list
+        vi:::foo.py:::/foo(;ci(x, y, z
+
+        # Replace a whole line
+        vi:::foo.py:::/return false;ccreturn true;
+
+        # Insert code that contains a semicolon
+        vi:::foo.py:::Areturn $x\\;
+
+        # Join 2 lines
+        vi:::log.txt:::5G;J
 
         # Delete 3 lines starting at line 10
         vi:::log.txt:::10G;3dd
@@ -2493,7 +2531,27 @@ def op_vi(path: str, script: str) -> str:
 
     raw_actions: List[str] = []
     for line in script.split("\n"):
-        for seg in line.split(";"):
+        # Split on `;` but honor `\;` as a literal semicolon so inserted TEXT
+        # can contain semicolons without colliding with the action separator.
+        # Backslash-related escapes (`\\`, `\n`, `\t`, `\r`) live in
+        # _decode_escapes — applied later on TEXT arguments only.
+        parts: List[str] = []
+        buf: List[str] = []
+        idx = 0
+        while idx < len(line):
+            ch = line[idx]
+            if ch == "\\" and idx + 1 < len(line) and line[idx + 1] == ";":
+                buf.append(";")
+                idx += 2
+            elif ch == ";":
+                parts.append("".join(buf))
+                buf = []
+                idx += 1
+            else:
+                buf.append(ch)
+                idx += 1
+        parts.append("".join(buf))
+        for seg in parts:
             # lstrip only — trailing whitespace inside insert TEXT is significant
             seg = seg.lstrip()
             if seg:
@@ -2535,8 +2593,29 @@ def op_vi(path: str, script: str) -> str:
         rest = action[i:]
         if not rest:
             return (count, "", "")
-        # two-char verbs first
-        if len(rest) >= 2 and rest[:2] in ("gg", "dd"):
+        # three-char verbs first: ciw, ci<delim>
+        if len(rest) >= 3 and rest[:3] == "ciw":
+            return (count, "ciw", rest[3:])
+        if len(rest) >= 3 and rest[:2] == "ci" and rest[2] in ('"', "'", "(", "[", "{"):
+            return (count, "ci" + rest[2], rest[3:])
+        # two-char ex command :s/PAT/REPL/flags
+        if len(rest) >= 2 and rest[:2] == ":s":
+            return (count, ":s", rest[2:])
+        # two-char yank/delete word/eol: yw, y$, yy, dw, d$, d0, c$, c0, cf, cF, ct, cT, df, dF, dt, dT
+        if len(rest) >= 2 and rest[:2] in (
+            "gg", "dd", "cc", "cw",
+            "yy", "yw", "y$",
+            "dw", "d$", "d0",
+            "c$", "c0",
+        ):
+            return (count, rest[:2], rest[2:])
+        # c/d/y + char-find motion (cf<c>, cF<c>, ct<c>, cT<c>, df<c>, ..., yt<c>)
+        # arg = target char followed by optional TEXT (for c-variants only)
+        if (
+            len(rest) >= 3
+            and rest[0] in ("c", "d", "y")
+            and rest[1] in ("f", "F", "t", "T")
+        ):
             return (count, rest[:2], rest[2:])
         c = rest[0]
         # search
@@ -2548,13 +2627,19 @@ def op_vi(path: str, script: str) -> str:
         # single-char arg
         if c == "r":
             return (count, c, rest[1:2])
+        # char-find on line: f<c>, F<c>, t<c>, T<c>
+        if c in ("f", "F", "t", "T") and len(rest) >= 2:
+            return (count, c, rest[1])
         # standalone
-        if c in ("h", "j", "k", "l", "0", "$", "G", "D", "x"):
-            return (count, c, rest[1:])  # rest after verb should be empty
+        if c in ("h", "j", "k", "l", "0", "$", "G", "D", "x", "J", "n", "N", "p", "P"):
+            return (count, c, rest[1:])
         return (count, "", rest)  # unknown
 
     cursor = 0
     log: List[str] = []
+    last_search: Optional[tuple] = None  # (pattern, direction "/"|"?")
+    register: str = ""  # anonymous yank/paste register
+    register_linewise: bool = False  # True if last yank was line-wise (yy)
     for i, action in enumerate(raw_actions, 1):
         count, verb, arg = _parse(action)
 
@@ -2589,20 +2674,43 @@ def op_vi(path: str, script: str) -> str:
         elif verb == "/":
             if not arg:
                 return f"ERROR: action {i} '{action}': empty / pattern\n"
-            pat = _decode_escapes(arg)
-            idx = content.find(pat, cursor)
+            pat = arg
+            idx = -1
+            try:
+                rx = re.compile(pat, re.MULTILINE)
+                m = rx.search(content, cursor)
+                if m is not None and m.start() != m.end():
+                    idx = m.start()
+            except re.error:
+                pass
+            if idx == -1:
+                idx = content.find(pat, cursor)
             if idx == -1:
                 return f"ERROR: action {i} '{action}': pattern not found forward\n"
             cursor = idx
+            last_search = (pat, "/")
             log.append(f"  {i}. /{pat!r} → {cursor}")
         elif verb == "?":
             if not arg:
                 return f"ERROR: action {i} '{action}': empty ? pattern\n"
-            pat = _decode_escapes(arg)
-            idx = content.rfind(pat, 0, cursor)
+            pat = arg
+            idx = -1
+            try:
+                rx = re.compile(pat, re.MULTILINE)
+                last = None
+                for m in rx.finditer(content[:cursor]):
+                    if m.start() != m.end():
+                        last = m
+                if last is not None:
+                    idx = last.start()
+            except re.error:
+                pass
+            if idx == -1:
+                idx = content.rfind(pat, 0, cursor)
             if idx == -1:
                 return f"ERROR: action {i} '{action}': pattern not found backward\n"
             cursor = idx
+            last_search = (pat, "?")
             log.append(f"  {i}. ?{pat!r} → {cursor}")
         elif verb == "h":
             cursor = max(0, cursor - count)
@@ -2669,6 +2777,119 @@ def op_vi(path: str, script: str) -> str:
             content = content[:cursor] + content[eol:]
             log.append(f"  {i}. D ({eol - cursor} chars)")
 
+        # --- change inner word ---
+        elif verb == "ciw":
+            if cursor >= len(content) or not (content[cursor].isalnum() or content[cursor] == "_"):
+                return f"ERROR: action {i} '{action}': ciw needs cursor on word char\n"
+            ws = cursor
+            while ws > 0 and (content[ws - 1].isalnum() or content[ws - 1] == "_"):
+                ws -= 1
+            we = cursor
+            while we < len(content) and (content[we].isalnum() or content[we] == "_"):
+                we += 1
+            text = _decode_escapes(arg)
+            content = content[:ws] + text + content[we:]
+            cursor = ws + len(text)
+            preview = text if len(text) <= 30 else text[:27] + "..."
+            log.append(f"  {i}. ciw{preview!r} (cursor={cursor})")
+
+        # --- change inside delimiter: ci" ci' ci( ci[ ci{ ---
+        elif verb in ('ci"', "ci'", "ci(", "ci[", "ci{"):
+            opener = verb[2]
+            pairs = {'"': '"', "'": "'", "(": ")", "[": "]", "{": "}"}
+            closer = pairs[opener]
+            # Find opener at-or-before cursor, closer after cursor.
+            # For symmetric delims (" '): search the nearest pair surrounding cursor.
+            if opener == closer:
+                start = content.rfind(opener, 0, cursor + 1)
+                if start == -1:
+                    start = content.find(opener, cursor)
+                if start == -1:
+                    return f"ERROR: action {i} '{action}': no opening {opener} found\n"
+                end = content.find(closer, start + 1)
+                if end == -1:
+                    return f"ERROR: action {i} '{action}': no closing {closer} found\n"
+            else:
+                start = content.rfind(opener, 0, cursor + 1)
+                if start == -1:
+                    start = content.find(opener, cursor)
+                if start == -1:
+                    return f"ERROR: action {i} '{action}': no opening {opener} found\n"
+                # match nested pairs forward from start+1
+                depth = 1
+                end = -1
+                j = start + 1
+                while j < len(content):
+                    if content[j] == opener:
+                        depth += 1
+                    elif content[j] == closer:
+                        depth -= 1
+                        if depth == 0:
+                            end = j
+                            break
+                    j += 1
+                if end == -1:
+                    return f"ERROR: action {i} '{action}': no matching {closer} found\n"
+            text = _decode_escapes(arg)
+            content = content[:start + 1] + text + content[end:]
+            cursor = start + 1 + len(text)
+            preview = text if len(text) <= 30 else text[:27] + "..."
+            log.append(f"  {i}. {verb}{preview!r} (cursor={cursor})")
+
+        # --- change word (cursor to end of word) ---
+        elif verb == "cw":
+            if cursor >= len(content):
+                return f"ERROR: action {i} '{action}': cw at EOF\n"
+            we = cursor
+            on_word = content[we].isalnum() or content[we] == "_"
+            if on_word:
+                while we < len(content) and (content[we].isalnum() or content[we] == "_"):
+                    we += 1
+            else:
+                while we < len(content) and not (content[we].isalnum() or content[we] == "_") and content[we] != "\n":
+                    we += 1
+            text = _decode_escapes(arg)
+            content = content[:cursor] + text + content[we:]
+            cursor = cursor + len(text)
+            preview = text if len(text) <= 30 else text[:27] + "..."
+            log.append(f"  {i}. cw{preview!r} (cursor={cursor})")
+
+        # --- change line(s) ---
+        elif verb == "cc":
+            bol = _line_start(content, cursor)
+            end = bol
+            for _ in range(count):
+                nl = content.find("\n", end)
+                if nl == -1:
+                    end = len(content)
+                    break
+                end = nl + 1
+            # cc keeps the trailing newline of the last line replaced (like vi: replaces line content, not the \n)
+            keep_nl = end > bol and content[end - 1] == "\n"
+            slice_end = end - 1 if keep_nl else end
+            text = _decode_escapes(arg)
+            content = content[:bol] + text + content[slice_end:]
+            cursor = bol + len(text)
+            preview = text if len(text) <= 30 else text[:27] + "..."
+            log.append(f"  {i}. {count}cc{preview!r} (cursor={cursor})")
+
+        # --- join lines ---
+        elif verb == "J":
+            joined = 0
+            for _ in range(count):
+                nl = content.find("\n", cursor)
+                if nl == -1:
+                    break
+                # vi J replaces \n + leading whitespace of next line with a single space (unless next line empty)
+                k = nl + 1
+                while k < len(content) and content[k] in (" ", "\t"):
+                    k += 1
+                sep = " " if k < len(content) and content[k] != "\n" else ""
+                content = content[:nl] + sep + content[k:]
+                cursor = nl + (1 if sep else 0)
+                joined += 1
+            log.append(f"  {i}. {count}J (joined {joined})")
+
         # --- replace ---
         elif verb == "r":
             if not arg:
@@ -2678,11 +2899,252 @@ def op_vi(path: str, script: str) -> str:
             content = content[:cursor] + arg[0] + content[cursor + 1:]
             log.append(f"  {i}. r{arg[0]!r}")
 
+        # --- char-find on line: f<c> F<c> t<c> T<c> ---
+        elif verb in ("f", "F", "t", "T"):
+            if not arg:
+                return f"ERROR: action {i} '{action}': {verb} needs a char\n"
+            target = arg[0]
+            bol = _line_start(content, cursor)
+            eol = _line_end(content, cursor)
+            if verb == "f":
+                idx = content.find(target, cursor + 1, eol)
+            elif verb == "F":
+                idx = content.rfind(target, bol, cursor)
+            elif verb == "t":
+                hit = content.find(target, cursor + 1, eol)
+                idx = hit - 1 if hit != -1 else -1
+            else:  # T
+                hit = content.rfind(target, bol, cursor)
+                idx = hit + 1 if hit != -1 else -1
+            if idx == -1:
+                return f"ERROR: action {i} '{action}': {verb}{target!r} not found on line\n"
+            cursor = idx
+            log.append(f"  {i}. {verb}{target!r} → {cursor}")
+
+        # --- repeat search: n / N ---
+        elif verb in ("n", "N"):
+            if last_search is None:
+                return f"ERROR: action {i} '{action}': no previous search for {verb}\n"
+            spat, sdir = last_search
+            forward = (sdir == "/") if verb == "n" else (sdir != "/")
+            idx = -1
+            try:
+                rx = re.compile(spat, re.MULTILINE)
+                if forward:
+                    m = rx.search(content, cursor + 1)
+                    if m is not None and m.start() != m.end():
+                        idx = m.start()
+                else:
+                    last = None
+                    for m in rx.finditer(content[:cursor]):
+                        if m.start() != m.end():
+                            last = m
+                    if last is not None:
+                        idx = last.start()
+            except re.error:
+                if forward:
+                    idx = content.find(spat, cursor + 1)
+                else:
+                    idx = content.rfind(spat, 0, cursor)
+            if idx == -1:
+                return f"ERROR: action {i} '{action}': {verb} no further match\n"
+            cursor = idx
+            log.append(f"  {i}. {verb} → {cursor}")
+
+        # --- ex substitute: :s/PAT/REPL/flags ---
+        elif verb == ":s":
+            if not arg or arg[0] != "/":
+                return f"ERROR: action {i} '{action}': :s needs /PAT/REPL/[flags]\n"
+            # parse /PAT/REPL/flags honoring \/ as literal
+            parts: List[str] = []
+            buf: List[str] = []
+            j = 1
+            while j < len(arg):
+                ch = arg[j]
+                if ch == "\\" and j + 1 < len(arg) and arg[j + 1] == "/":
+                    buf.append("/")
+                    j += 2
+                    continue
+                if ch == "/":
+                    parts.append("".join(buf))
+                    buf = []
+                    j += 1
+                    if len(parts) == 2:
+                        parts.append(arg[j:])
+                        j = len(arg)
+                    continue
+                buf.append(ch)
+                j += 1
+            if len(parts) < 2:
+                parts.append("".join(buf))
+            while len(parts) < 3:
+                parts.append("")
+            spat, srepl, sflags = parts[0], parts[1], parts[2]
+            if not spat:
+                return f"ERROR: action {i} '{action}': :s needs non-empty PAT\n"
+            flags_re = re.MULTILINE
+            if "i" in sflags:
+                flags_re |= re.IGNORECASE
+            try:
+                rx = re.compile(spat, flags_re)
+            except re.error as e:
+                return f"ERROR: action {i} '{action}': :s regex: {e}\n"
+            n_max = 0 if "g" in sflags else 1
+            srepl_dec = _decode_escapes(srepl)
+            new_content, n = rx.subn(srepl_dec, content, count=n_max)
+            if n == 0:
+                return f"ERROR: action {i} '{action}': :s no match for {spat!r}\n"
+            content = new_content
+            cursor = min(cursor, len(content))
+            log.append(f"  {i}. :s/{spat!r}/{srepl_dec!r}/{sflags} ({n} subs)")
+
+        # --- change to end-of-line / BOL ---
+        elif verb == "c$":
+            eol = _line_end(content, cursor)
+            text = _decode_escapes(arg)
+            content = content[:cursor] + text + content[eol:]
+            cursor += len(text)
+            log.append(f"  {i}. c${text!r}")
+        elif verb == "c0":
+            bol = _line_start(content, cursor)
+            text = _decode_escapes(arg)
+            content = content[:bol] + text + content[cursor:]
+            cursor = bol + len(text)
+            log.append(f"  {i}. c0{text!r}")
+
+        # --- delete to motion ---
+        elif verb == "d$":
+            eol = _line_end(content, cursor)
+            register = content[cursor:eol]
+            register_linewise = False
+            content = content[:cursor] + content[eol:]
+            log.append(f"  {i}. d$ ({len(register)} chars)")
+        elif verb == "d0":
+            bol = _line_start(content, cursor)
+            register = content[bol:cursor]
+            register_linewise = False
+            content = content[:bol] + content[cursor:]
+            cursor = bol
+            log.append(f"  {i}. d0 ({len(register)} chars)")
+        elif verb == "dw":
+            we = cursor
+            on_word = we < len(content) and (content[we].isalnum() or content[we] == "_")
+            if on_word:
+                while we < len(content) and (content[we].isalnum() or content[we] == "_"):
+                    we += 1
+            while we < len(content) and content[we] in (" ", "\t"):
+                we += 1
+            register = content[cursor:we]
+            register_linewise = False
+            content = content[:cursor] + content[we:]
+            log.append(f"  {i}. dw ({len(register)} chars)")
+        elif verb == "cw":
+            # already exists above; keep — this branch is unreachable
+            pass
+
+        # --- yank ---
+        elif verb == "yy":
+            bol = _line_start(content, cursor)
+            end = bol
+            for _ in range(count):
+                nl = content.find("\n", end)
+                end = nl + 1 if nl != -1 else len(content)
+                if end >= len(content):
+                    break
+            register = content[bol:end]
+            register_linewise = True
+            log.append(f"  {i}. {count}yy ({len(register)} chars, linewise)")
+        elif verb == "yw":
+            we = cursor
+            on_word = we < len(content) and (content[we].isalnum() or content[we] == "_")
+            if on_word:
+                while we < len(content) and (content[we].isalnum() or content[we] == "_"):
+                    we += 1
+            register = content[cursor:we]
+            register_linewise = False
+            log.append(f"  {i}. yw ({len(register)} chars)")
+        elif verb == "y$":
+            eol = _line_end(content, cursor)
+            register = content[cursor:eol]
+            register_linewise = False
+            log.append(f"  {i}. y$ ({len(register)} chars)")
+
+        # --- paste ---
+        elif verb == "p":
+            if not register:
+                return f"ERROR: action {i} '{action}': p with empty register\n"
+            if register_linewise:
+                eol = _line_end(content, cursor)
+                # paste a full line after current line (after the \n)
+                pos = eol + 1 if eol < len(content) else len(content)
+                content = content[:pos] + register + content[pos:]
+                cursor = pos
+            else:
+                pos = min(len(content), cursor + 1)
+                content = content[:pos] + register + content[pos:]
+                cursor = pos + len(register) - 1 if register else pos
+            log.append(f"  {i}. p ({len(register)} chars)")
+        elif verb == "P":
+            if not register:
+                return f"ERROR: action {i} '{action}': P with empty register\n"
+            if register_linewise:
+                bol = _line_start(content, cursor)
+                content = content[:bol] + register + content[bol:]
+                cursor = bol
+            else:
+                content = content[:cursor] + register + content[cursor:]
+                cursor = cursor + len(register) - 1 if register else cursor
+            log.append(f"  {i}. P ({len(register)} chars)")
+
+        # --- c/d/y + char-find motion ---
+        elif len(verb) == 2 and verb[0] in ("c", "d", "y") and verb[1] in ("f", "F", "t", "T"):
+            if not arg:
+                return f"ERROR: action {i} '{action}': {verb} needs target char\n"
+            target = arg[0]
+            text = _decode_escapes(arg[1:]) if verb[0] == "c" else ""
+            bol = _line_start(content, cursor)
+            eol = _line_end(content, cursor)
+            if verb[1] == "f":
+                hit = content.find(target, cursor, eol)
+                if hit == -1:
+                    return f"ERROR: action {i} '{action}': {verb} target {target!r} not found\n"
+                start, end = cursor, hit + 1
+            elif verb[1] == "F":
+                hit = content.rfind(target, bol, cursor)
+                if hit == -1:
+                    return f"ERROR: action {i} '{action}': {verb} target {target!r} not found\n"
+                start, end = hit, cursor
+            elif verb[1] == "t":
+                hit = content.find(target, cursor, eol)
+                if hit == -1:
+                    return f"ERROR: action {i} '{action}': {verb} target {target!r} not found\n"
+                start, end = cursor, hit
+            else:  # T
+                hit = content.rfind(target, bol, cursor)
+                if hit == -1:
+                    return f"ERROR: action {i} '{action}': {verb} target {target!r} not found\n"
+                start, end = hit + 1, cursor
+            slice_ = content[start:end]
+            if verb[0] == "y":
+                register = slice_
+                register_linewise = False
+                log.append(f"  {i}. {verb}{target!r} (yanked {len(slice_)} chars)")
+            else:
+                # c or d: delete the slice, c also inserts text
+                register = slice_
+                register_linewise = False
+                content = content[:start] + text + content[end:]
+                cursor = start + len(text)
+                log.append(f"  {i}. {verb}{target!r} ({len(slice_)} chars → {len(text)})")
+
         else:
             return (
                 f"ERROR: action {i} '{action}': unknown verb '{verb}' "
-                f"(expected gg, G, nG, 0, $, /, ?, h, j, k, l, "
-                f"i, a, I, A, o, O, x, dd, D, r)\n"
+                f"(expected gg, G, nG, 0, $, /, ?, n, N, h, j, k, l, J, "
+                f"f, F, t, T, i, a, I, A, o, O, x, dd, D, dw, d$, d0, "
+                f"cw, cc, c$, c0, ciw, ci\", ci', ci(, ci[, ci{{, "
+                f"cf<c>, cF<c>, ct<c>, cT<c>, df<c>, dF<c>, dt<c>, dT<c>, "
+                f"yy, yw, y$, yf<c>, yF<c>, yt<c>, yT<c>, p, P, r, :s/PAT/REPL/[gi])\n"
             )
 
     try:

@@ -234,6 +234,381 @@ def test_replace_at_eof_errors(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Change verbs (ciw, cw, cc, ci<delim>)
+# ---------------------------------------------------------------------------
+
+def test_ciw_replaces_word(tmp_path: Path) -> None:
+    f = tmp_path / "x.py"
+    f.write_text("foo bar baz\n")
+    supertool.op_vi(str(f), "/bar;ciwQUUX")
+    assert f.read_text() == "foo QUUX baz\n"
+
+
+def test_ciw_on_non_word_errors(tmp_path: Path) -> None:
+    f = tmp_path / "x.py"
+    f.write_text("foo bar\n")
+    out = supertool.op_vi(str(f), "/ ;ciwX")
+    assert "ERROR" in out
+
+
+def test_cw_changes_word_from_cursor(tmp_path: Path) -> None:
+    f = tmp_path / "x.py"
+    f.write_text("foo bar baz\n")
+    supertool.op_vi(str(f), "/bar;l;cwAR")
+    assert f.read_text() == "foo bAR baz\n"
+
+
+def test_cc_replaces_line(tmp_path: Path) -> None:
+    f = tmp_path / "x.py"
+    f.write_text("line one\nline two\nline three\n")
+    supertool.op_vi(str(f), "/two;ccLINE TWO")
+    assert f.read_text() == "line one\nLINE TWO\nline three\n"
+
+
+def test_cc_count_replaces_n_lines(tmp_path: Path) -> None:
+    f = tmp_path / "x.py"
+    f.write_text("a\nb\nc\nd\n")
+    supertool.op_vi(str(f), "gg;2ccXY")
+    assert f.read_text() == "XY\nc\nd\n"
+
+
+def test_ci_double_quote(tmp_path: Path) -> None:
+    f = tmp_path / "x.py"
+    f.write_text('label = "old text"\n')
+    supertool.op_vi(str(f), '/";ci"new text')
+    assert f.read_text() == 'label = "new text"\n'
+
+
+def test_ci_single_quote(tmp_path: Path) -> None:
+    f = tmp_path / "x.py"
+    f.write_text("name = 'alice'\n")
+    supertool.op_vi(str(f), "/';ci'bob")
+    assert f.read_text() == "name = 'bob'\n"
+
+
+def test_ci_paren_nested(tmp_path: Path) -> None:
+    f = tmp_path / "x.py"
+    f.write_text("foo(bar(x), y)\n")
+    supertool.op_vi(str(f), "/foo(;ci(NEW")
+    assert f.read_text() == "foo(NEW)\n"
+
+
+def test_ci_bracket(tmp_path: Path) -> None:
+    f = tmp_path / "x.py"
+    f.write_text("a = [1, 2, 3]\n")
+    supertool.op_vi(str(f), "/[;ci[9, 9, 9")
+    assert f.read_text() == "a = [9, 9, 9]\n"
+
+
+def test_ci_brace(tmp_path: Path) -> None:
+    f = tmp_path / "x.py"
+    f.write_text("d = {a: 1}\n")
+    supertool.op_vi(str(f), "/{;ci{b: 2")
+    assert f.read_text() == "d = {b: 2}\n"
+
+
+def test_ci_no_opener_errors(tmp_path: Path) -> None:
+    f = tmp_path / "x.py"
+    f.write_text("no delim here\n")
+    out = supertool.op_vi(str(f), 'G;ci"X')
+    assert "ERROR" in out
+
+
+# ---------------------------------------------------------------------------
+# Join
+# ---------------------------------------------------------------------------
+
+def test_J_joins_two_lines(tmp_path: Path) -> None:
+    f = tmp_path / "x.py"
+    f.write_text("foo\nbar\nbaz\n")
+    supertool.op_vi(str(f), "gg;J")
+    assert f.read_text() == "foo bar\nbaz\n"
+
+
+def test_J_count_joins_n_lines(tmp_path: Path) -> None:
+    f = tmp_path / "x.py"
+    f.write_text("a\nb\nc\nd\n")
+    supertool.op_vi(str(f), "gg;3J")
+    assert f.read_text() == "a b c d\n"
+
+
+def test_J_strips_leading_whitespace(tmp_path: Path) -> None:
+    f = tmp_path / "x.py"
+    f.write_text("foo\n    bar\n")
+    supertool.op_vi(str(f), "gg;J")
+    assert f.read_text() == "foo bar\n"
+
+
+# ---------------------------------------------------------------------------
+# Escape sequences (\; literal semicolon, \\ literal backslash)
+# ---------------------------------------------------------------------------
+
+def test_semicolon_escape_in_insert(tmp_path: Path) -> None:
+    f = tmp_path / "x.py"
+    f.write_text("x = 1\n")
+    supertool.op_vi(str(f), "$;a\\; y = 2")
+    assert f.read_text() == "x = 1; y = 2\n"
+
+
+def test_semicolon_escape_in_ciw(tmp_path: Path) -> None:
+    f = tmp_path / "x.py"
+    f.write_text("FOO bar\n")
+    supertool.op_vi(str(f), "/FOO;ciwa\\;b\\;c")
+    assert f.read_text() == "a;b;c bar\n"
+
+
+def test_backslash_escape_in_insert(tmp_path: Path) -> None:
+    f = tmp_path / "x.py"
+    f.write_text("\n")
+    supertool.op_vi(str(f), "ipath\\\\to\\\\file")
+    assert f.read_text() == "path\\to\\file\n"
+
+
+# ---------------------------------------------------------------------------
+# Regex search
+# ---------------------------------------------------------------------------
+
+def test_regex_search_char_class(tmp_path: Path) -> None:
+    f = tmp_path / "x.py"
+    f.write_text("count = 42\n")
+    supertool.op_vi(str(f), "/[0-9]+;ciw99")
+    assert f.read_text() == "count = 99\n"
+
+
+def test_regex_search_anchor(tmp_path: Path) -> None:
+    f = tmp_path / "x.py"
+    f.write_text("first line\nsecond line\nthird line\n")
+    supertool.op_vi(str(f), "/^second;cw2ND")
+    assert f.read_text() == "first line\n2ND line\nthird line\n"
+
+
+def test_regex_search_alternation(tmp_path: Path) -> None:
+    f = tmp_path / "x.py"
+    f.write_text("apple banana cherry\n")
+    supertool.op_vi(str(f), "/banana|cherry;ciwPEAR")
+    assert f.read_text() == "apple PEAR cherry\n"
+
+
+def test_regex_multiline_match(tmp_path: Path) -> None:
+    f = tmp_path / "x.py"
+    f.write_text("start\nmiddle\nend\n")
+    supertool.op_vi(str(f), "/middle\\nend;D")
+    # cursor lands on 'm' of middle, D deletes to EOL of cursor line only
+    assert f.read_text() == "start\n\nend\n"
+
+
+def test_regex_backward(tmp_path: Path) -> None:
+    f = tmp_path / "x.py"
+    f.write_text("foo1 foo2 foo3\n")
+    supertool.op_vi(str(f), "G;?foo[0-9];ciwLAST")
+    assert f.read_text() == "foo1 foo2 LAST\n"
+
+
+def test_regex_special_char_literal_fallback(tmp_path: Path) -> None:
+    f = tmp_path / "x.py"
+    f.write_text("a = foo(bar)\n")
+    # `foo(` is invalid regex (unbalanced paren) → falls back to literal find
+    supertool.op_vi(str(f), "/foo(;ci(NEW")
+    assert f.read_text() == "a = foo(NEW)\n"
+
+
+# ---------------------------------------------------------------------------
+# Char-find on line: f F t T
+# ---------------------------------------------------------------------------
+
+def test_f_finds_char_forward(tmp_path: Path) -> None:
+    f = tmp_path / "x.py"
+    f.write_text("abc=def\n")
+    supertool.op_vi(str(f), "fd;i!")
+    assert f.read_text() == "abc=!def\n"
+
+
+def test_F_finds_char_backward(tmp_path: Path) -> None:
+    f = tmp_path / "x.py"
+    f.write_text("abc=def\n")
+    supertool.op_vi(str(f), "$;Fa;i!")
+    assert f.read_text() == "!abc=def\n"
+
+
+def test_t_stops_before_char(tmp_path: Path) -> None:
+    f = tmp_path / "x.py"
+    f.write_text("abcd\n")
+    # `tc` lands cursor on `b` (1 char before target `c`); `i!` inserts before
+    supertool.op_vi(str(f), "tc;i!")
+    assert f.read_text() == "a!bcd\n"
+
+
+def test_T_stops_after_char_backward(tmp_path: Path) -> None:
+    f = tmp_path / "x.py"
+    f.write_text("abcd\n")
+    # `$` lands on `d`; `Ta` lands on `b` (1 char after target `a`); `i!` inserts before
+    supertool.op_vi(str(f), "$;Ta;i!")
+    assert f.read_text() == "a!bcd\n"
+
+
+# ---------------------------------------------------------------------------
+# Repeat search: n N
+# ---------------------------------------------------------------------------
+
+def test_n_repeats_forward_search(tmp_path: Path) -> None:
+    f = tmp_path / "x.py"
+    f.write_text("foo foo foo\n")
+    supertool.op_vi(str(f), "/foo;n;ciwBAR")
+    assert f.read_text() == "foo BAR foo\n"
+
+
+def test_N_reverses_last_search(tmp_path: Path) -> None:
+    f = tmp_path / "x.py"
+    f.write_text("foo bar foo bar\n")
+    supertool.op_vi(str(f), "G;?foo;N;ciwLAST")
+    # ?foo lands on 2nd foo (backward from EOF); N reverses → forward → next foo... none.
+    # actually only 2 foos; backward to 2nd, N forward → no further match → error
+    out = supertool.op_vi(str(f), "/foo;n;N;ciwFIRST")
+    # /foo → 1st, n → 2nd, N → 1st again. ciwFIRST replaces 1st foo
+    assert f.read_text() == "FIRST bar foo bar\n"
+
+
+# ---------------------------------------------------------------------------
+# Change to motion: c$ c0
+# ---------------------------------------------------------------------------
+
+def test_c_dollar_changes_to_eol(tmp_path: Path) -> None:
+    f = tmp_path / "x.py"
+    f.write_text("keep|drop this\nnext\n")
+    supertool.op_vi(str(f), "/|;c$STOP")
+    assert f.read_text() == "keepSTOP\nnext\n"
+
+
+def test_c_zero_changes_to_bol(tmp_path: Path) -> None:
+    f = tmp_path / "x.py"
+    f.write_text("drop this|keep\n")
+    supertool.op_vi(str(f), "/|;c0KEEP")
+    assert f.read_text() == "KEEP|keep\n"
+
+
+# ---------------------------------------------------------------------------
+# Delete to motion: d$ d0 dw
+# ---------------------------------------------------------------------------
+
+def test_d_dollar_deletes_to_eol(tmp_path: Path) -> None:
+    f = tmp_path / "x.py"
+    f.write_text("keep|drop this\nnext\n")
+    supertool.op_vi(str(f), "/|;d$")
+    assert f.read_text() == "keep\nnext\n"
+
+
+def test_d_zero_deletes_to_bol(tmp_path: Path) -> None:
+    f = tmp_path / "x.py"
+    f.write_text("drop|keep\n")
+    supertool.op_vi(str(f), "/|;d0")
+    assert f.read_text() == "|keep\n"
+
+
+def test_dw_deletes_word_and_trailing_space(tmp_path: Path) -> None:
+    f = tmp_path / "x.py"
+    f.write_text("foo bar baz\n")
+    supertool.op_vi(str(f), "dw")
+    assert f.read_text() == "bar baz\n"
+
+
+# ---------------------------------------------------------------------------
+# Char-find motion: cf cF ct cT df dF dt dT yf yF yt yT
+# ---------------------------------------------------------------------------
+
+def test_cf_changes_through_target(tmp_path: Path) -> None:
+    f = tmp_path / "x.py"
+    f.write_text('label = "old text"\n')
+    supertool.op_vi(str(f), '/";l;cf"new text"')
+    # Cursor at first ", `l` moves to `o`, cf" deletes up-to-and-incl next " → inserts "new text"
+    assert f.read_text() == 'label = "new text"\n'
+
+
+def test_ct_changes_up_to_target(tmp_path: Path) -> None:
+    f = tmp_path / "x.py"
+    f.write_text("foo, bar, baz\n")
+    supertool.op_vi(str(f), "ct,XXX")
+    assert f.read_text() == "XXX, bar, baz\n"
+
+
+def test_df_deletes_through_target(tmp_path: Path) -> None:
+    f = tmp_path / "x.py"
+    f.write_text("aaXbbXcc\n")
+    supertool.op_vi(str(f), "dfX")
+    assert f.read_text() == "bbXcc\n"
+
+
+def test_dt_deletes_up_to_target(tmp_path: Path) -> None:
+    f = tmp_path / "x.py"
+    f.write_text("aaXbb\n")
+    supertool.op_vi(str(f), "dtX")
+    assert f.read_text() == "Xbb\n"
+
+
+# ---------------------------------------------------------------------------
+# Yank & paste: yy yw y$ p P
+# ---------------------------------------------------------------------------
+
+def test_yy_then_p_duplicates_line(tmp_path: Path) -> None:
+    f = tmp_path / "x.py"
+    f.write_text("hello\nworld\n")
+    supertool.op_vi(str(f), "yy;p")
+    assert f.read_text() == "hello\nhello\nworld\n"
+
+
+def test_yw_then_p_pastes_word(tmp_path: Path) -> None:
+    f = tmp_path / "x.py"
+    f.write_text("foo bar\n")
+    supertool.op_vi(str(f), "yw;$;p")
+    assert f.read_text() == "foo barfoo\n"
+
+
+def test_y_dollar_then_P_pastes_before(tmp_path: Path) -> None:
+    f = tmp_path / "x.py"
+    f.write_text("abcdef\n")
+    supertool.op_vi(str(f), "3l;y$;0;P")
+    assert f.read_text() == "defabcdef\n"
+
+
+# ---------------------------------------------------------------------------
+# Ex substitute: :s/PAT/REPL/[gi]
+# ---------------------------------------------------------------------------
+
+def test_substitute_first_match(tmp_path: Path) -> None:
+    f = tmp_path / "x.py"
+    f.write_text("foo foo foo\n")
+    supertool.op_vi(str(f), ":s/foo/BAR/")
+    assert f.read_text() == "BAR foo foo\n"
+
+
+def test_substitute_global(tmp_path: Path) -> None:
+    f = tmp_path / "x.py"
+    f.write_text("foo foo foo\n")
+    supertool.op_vi(str(f), ":s/foo/BAR/g")
+    assert f.read_text() == "BAR BAR BAR\n"
+
+
+def test_substitute_case_insensitive(tmp_path: Path) -> None:
+    f = tmp_path / "x.py"
+    f.write_text("Foo FOO foo\n")
+    supertool.op_vi(str(f), ":s/foo/x/gi")
+    assert f.read_text() == "x x x\n"
+
+
+def test_substitute_backref(tmp_path: Path) -> None:
+    f = tmp_path / "x.py"
+    f.write_text("a=1\nb=2\n")
+    supertool.op_vi(str(f), ":s/(\\w+)=(\\d+)/\\2:\\1/g")
+    assert f.read_text() == "1:a\n2:b\n"
+
+
+def test_substitute_no_match_errors(tmp_path: Path) -> None:
+    f = tmp_path / "x.py"
+    f.write_text("hello\n")
+    out = supertool.op_vi(str(f), ":s/missing/x/g")
+    assert "ERROR" in out
+
+
+# ---------------------------------------------------------------------------
 # Errors
 # ---------------------------------------------------------------------------
 
