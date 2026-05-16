@@ -61,12 +61,14 @@ def test_O_followed_by_search_does_not_merge(tmp_path: Path, monkeypatch) -> Non
     assert "/bar" not in f.read_text(), f.read_text()
 
 
-def test_O_followed_by_code_keyword_still_merges(tmp_path: Path, monkeypatch) -> None:
-    """Regression — `O␞use Foo;` still merges (the original Kevin pattern)."""
+def test_O_consumes_text_natively_under_stateful_parser(tmp_path: Path, monkeypatch) -> None:
+    """Under C-full stateful parser, `GOuse Bar;` works without any
+    separator between O and the text — O is greedy, consumes "use Bar;"
+    until ESC/EOS."""
     monkeypatch.setenv("SUPERTOOL_VI_NO_PERSIST", "1")
     f = tmp_path / "x.php"
     f.write_text("<?php\nclass Foo {\n}\n")
-    out = supertool.op_vi(str(f), "G␞O␞use Bar;")
+    out = supertool.op_vi(str(f), "GOuse Bar;")
     assert "ERROR" not in out, out
     assert "use Bar;" in f.read_text()
 

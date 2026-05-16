@@ -42,23 +42,21 @@ def test_mixed_x1e_and_glyph_separators(tmp_path: Path) -> None:
 # 2. Bare text-verb + next unknown action = merge as TEXT
 # ---------------------------------------------------------------------------
 
-def test_bare_o_followed_by_code_merges_as_text(tmp_path: Path) -> None:
-    """`G␞O␞use Foo;` — Kevin's mental model: ␞ joins O with the text.
-    Autocorrect: O alone (no payload) + next action that's 'unknown verb'
-    starting with non-verb char → merge as O's TEXT."""
+def test_O_consumes_text_natively_no_separator_needed(tmp_path: Path) -> None:
+    """C-full: `GOuse Bar;` — O is greedy, consumes "use Bar;" as TEXT
+    until ESC/EOS. No separator between O and the text."""
     f = tmp_path / "x.php"
     f.write_text("<?php\nclass Foo {\n}\n")
-    out = supertool.op_vi(str(f), "G␞O␞use Bar;")
+    out = supertool.op_vi(str(f), "GOuse Bar;")
     assert "ERROR" not in out, out
-    # `O` opens above last line (`}`), inserts "use Bar;"
     assert "use Bar;" in f.read_text()
 
 
-def test_bare_i_followed_by_code_merges(tmp_path: Path) -> None:
-    """Same for `i` (insert before cursor)."""
+def test_i_consumes_text_natively_no_separator_needed(tmp_path: Path) -> None:
+    """C-full: `ifoo bar` — i is greedy, consumes "foo bar" as TEXT."""
     f = tmp_path / "x.txt"
     f.write_text("end\n")
-    out = supertool.op_vi(str(f), "i␞foo bar")
+    out = supertool.op_vi(str(f), "ifoo bar")
     assert "ERROR" not in out, out
     assert f.read_text() == "foo barend\n"
 

@@ -2587,59 +2587,131 @@ def op_vi(path: str, script: str) -> str:
     except OSError as e:
         return f"ERROR: failed to read {path}: {e}\n"
 
-    # Action separator: `␞` (U+241E SYMBOL FOR RECORD SEPARATOR, visible
-    # glyph) — chosen because it never appears in source code or natural
-    # text. Also accept `\x1e` (U+001E, ASCII RECORD SEPARATOR control
-    # char) since bash users naturally reach for `$'\x1e'`. Both are
-    # normalized to `␞` before splitting.
-    SEP = "␞"
+    # Stateful real-vim tokenizer. Matches LLM/vim-macro mental model:
+    # - Normal mode: chars are verbs (with optional count prefix). After a
+    #   verb consumes its fixed arg, the next char starts the next verb.
+    # - "Greedy" verbs (i/a/A/I/o/O insert; /? search; : ex) consume their
+    #   arg until `\e` (ESC, U+001B) or end-of-script. `\e` returns to
+    #   normal mode without producing a new action.
+    # - No separator chars. `;`, `{`, `}`, `␞`, newlines, etc. are just
+    #   literal data — never special.
+    # - `\x1b` (real ESC) and the literal two-char `\e` escape are both
+    #   recognized as mode-exit, matching how vim macros are written.
+    ESC = "\x1b"
+    # Tokenize → list of action strings (each already in count+verb+arg
+    # shape, ready for _parse).
     raw_actions: List[str] = []
-    normalized = script.replace("\x1e", SEP)
-    for seg in normalized.split(SEP):
-        seg = seg.lstrip()
-        if seg:
-            raw_actions.append(seg)
-    # Autocorrect: bare text-verb (i/a/A/I/o/O alone, no payload) followed
-    # by another action means the user wrote `O␞TEXT` thinking `␞` joined
-    # them. Merge: treat the next segment as O's TEXT. Catches the most
-    # frequent post-`␞` mistake (same mental model as the old `o;TEXT`).
-    _TEXT_VERBS_BARE = {"i", "a", "A", "I", "o", "O"}
-    # Next actions starting with these chars are clearly verbs/commands,
-    # NOT TEXT for the preceding bare text-verb. Skip the merge.
-    _NEXT_IS_CLEARLY_VERB = (":", "/", "?")
-    merged: List[str] = []
-    k = 0
-    while k < len(raw_actions):
-        cur = raw_actions[k]
-        if (
-            cur in _TEXT_VERBS_BARE
-            and k + 1 < len(raw_actions)
-            and not raw_actions[k + 1].startswith(_NEXT_IS_CLEARLY_VERB)
-        ):
-            merged.append(cur + raw_actions[k + 1])
-            k += 2
-            continue
-        merged.append(cur)
-        k += 1
-    raw_actions = merged
-    # Autocorrect: `<digits>gg` is wrong — `gg` ignores count in vim, the
-    # correct line-jump form is `<digits>G`. Rewrite to spare Kevin the
-    # silent failure (current behavior: `224gg` jumps to BOF, ignoring 224).
-    raw_actions = [
-        re.sub(r"^([1-9]\d*)gg$", r"\1G", act) for act in raw_actions
-    ]
-    # Autocorrect: vi count goes BEFORE the verb, not in the middle.
-    # `d5d` → `5dd`, `c5w` → `5cw`, `y5y` → `5yy`. Only rewrite when the
-    # first+last char form a known count-able verb pair, to avoid breaking
-    # legit forms like `df5` (delete forward to char `5`).
+    # Pre-normalize: turn literal `\e` (two chars: backslash + e) and the
+    # ASCII RS `\x1e` (legacy from the `␞` era — Kevin still types
+    # `$'\x1e'`) and `␞` itself into actual ESC. Real `\x1b` passes
+    # through.
+    normalized = script.replace("\\e", ESC).replace("\x1e", ESC).replace("␞", ESC)
+    # Script-level autocorrects (applied before tokenizing):
+    # - `<digits>gg` → `<digits>G`: vim's `gg` ignores count.
+    # - `d5d` → `5dd`, `c5w` → `5cw`, etc.: count-in-middle typo.
+    normalized = re.sub(r"(?<![a-zA-Z0-9])([1-9]\d*)gg(?![a-zA-Z])", r"\1G", normalized)
     _COUNTABLE_PAIRS = {"dd", "dw", "d$", "d0", "cc", "cw", "c$", "c0", "yy", "yw", "y$"}
-    _count_middle_re = re.compile(r"^([dcy])([1-9]\d*)([dwycs0$])(.*)$")
-    for _j, _act in enumerate(raw_actions):
-        _m = _count_middle_re.match(_act)
-        if _m:
-            _first, _digits, _third, _rest = _m.groups()
-            if _first + _third in _COUNTABLE_PAIRS:
-                raw_actions[_j] = _digits + _first + _third + _rest
+
+    def _count_middle_sub(m):
+        first, digits, third = m.group(1), m.group(2), m.group(3)
+        if first + third in _COUNTABLE_PAIRS:
+            return f"{digits}{first}{third}"
+        return m.group(0)
+
+    normalized = re.sub(
+        r"(?<![a-zA-Z0-9])([dcy])([1-9]\d*)([dwycs0$])",
+        _count_middle_sub,
+        normalized,
+    )
+    i = 0
+    n = len(normalized)
+
+    def _verb_token(start: int) -> tuple:
+        """Identify the verb starting at `start`. Returns
+        (verb_end, enters_text_mode) where verb_end is the index just
+        past the verb's fixed structure. enters_text_mode=True means
+        the verb consumes greedy TEXT until ESC/EOS (insert verbs, ex,
+        search, change-family).
+        """
+        if start >= n:
+            return (start, False)
+        c = normalized[start]
+        # Insert verbs — greedy text
+        if c in "iaAIoO":
+            return (start + 1, True)
+        # Search / ex — greedy
+        if c in "/?:":
+            return (start + 1, True)
+        # vim alias `%s/PAT/REPL/flags` — bare percent (no colon) for
+        # whole-buffer substitute. Treat `%s` as a 2-char greedy verb.
+        if c == "%" and start + 1 < n and normalized[start + 1] == "s":
+            return (start + 2, True)
+        # Change-family — greedy (deletes then enters insert).
+        # Two-char forms: cc, cw, c$, c0 (greedy after the verb).
+        if c == "c" and start + 1 < n and normalized[start + 1] in ("c", "w", "$", "0"):
+            return (start + 2, True)
+        # ciw / ci<delim> — three-char form, greedy after.
+        if c == "c" and start + 1 < n and normalized[start + 1] == "i":
+            if start + 2 < n and normalized[start + 2] in ('w', '"', "'", "(", "[", "{"):
+                return (start + 3, True)
+        # cf<c> / cF<c> / ct<c> / cT<c> — three-char form, greedy after.
+        if c == "c" and start + 1 < n and normalized[start + 1] in "fFtT":
+            return (min(start + 3, n), True)
+        # Replace: r<c> — single-char arg, no text mode.
+        if c == "r":
+            return (min(start + 2, n), False)
+        # Char-find: f<c>, F<c>, t<c>, T<c>.
+        if c in "fFtT":
+            return (min(start + 2, n), False)
+        # Delete with char arg: df<c>/dF<c>/dt<c>/dT<c>, yf<c>...
+        if c in "dy" and start + 1 < n and normalized[start + 1] in "fFtT":
+            return (min(start + 3, n), False)
+        # Two-char no-arg verbs in d/y family: dd dw d$ d0, yy yw y$
+        if c in "dy" and start + 1 < n and normalized[start + 1] in ("d", "c", "w", "y", "$", "0"):
+            return (start + 2, False)
+        # gg (go to BOF)
+        if c == "g" and start + 1 < n and normalized[start + 1] == "g":
+            return (start + 2, False)
+        # Single-char no-arg verbs (G, h, j, k, l, x, D, J, n, N, p, P,
+        # $, 0, ^, w, b, e, W, B, E, %, etc.)
+        return (start + 1, False)
+
+    while i < n:
+        # Skip whitespace AND stray ESC between actions. (ESC is a mode
+        # exit; in normal mode it's a no-op. Vim macros use it for
+        # readability and to "reset" defensively.)
+        while i < n and normalized[i] in (" \t\n\r" + ESC):
+            i += 1
+        if i >= n:
+            break
+        action_start = i
+        # Parse count: leading digits, but not if `0` alone (BOL verb).
+        verb_pos = i
+        if normalized[i].isdigit() and normalized[i] != "0":
+            while verb_pos < n and normalized[verb_pos].isdigit():
+                verb_pos += 1
+        if verb_pos >= n:
+            # trailing digits with no verb — emit as-is, _parse will error
+            raw_actions.append(normalized[action_start:])
+            break
+        # Identify verb shape and consumption mode.
+        verb_end, enters_text = _verb_token(verb_pos)
+        if enters_text:
+            # greedy: consume verb (+ fixed prefix) + TEXT until ESC or EOS
+            esc_at = normalized.find(ESC, verb_end)
+            if esc_at == -1:
+                raw_actions.append(normalized[action_start:])
+                i = n
+            else:
+                raw_actions.append(normalized[action_start:esc_at])
+                i = esc_at + 1
+        else:
+            raw_actions.append(normalized[action_start:verb_end])
+            i = verb_end
+    # Drop empty actions (from stray whitespace/ESC runs). Don't strip
+    # the actions themselves — trailing whitespace inside an insert TEXT
+    # (e.g. `ihello ` ending with a space) is significant.
+    raw_actions = [a for a in raw_actions if a]
     if not raw_actions:
         return "ERROR: no actions in script\n"
 
