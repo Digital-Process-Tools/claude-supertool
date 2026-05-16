@@ -641,6 +641,54 @@ def test_substitute_backref(tmp_path: Path) -> None:
     assert f.read_text() == "1:a\n2:b\n"
 
 
+def test_substitute_dry_run_does_not_modify(tmp_path: Path) -> None:
+    """`:s/PAT/REPL/d` previews changes without writing the buffer."""
+    f = tmp_path / "x.py"
+    original = "foo bar foo\n"
+    f.write_text(original)
+    out = supertool.op_vi(str(f), ":s/foo/X/gd")
+    assert f.read_text() == original  # untouched
+    assert "DRY" in out
+    assert "would replace 2" in out
+
+
+def test_substitute_dry_run_no_match_errors(tmp_path: Path) -> None:
+    f = tmp_path / "x.py"
+    f.write_text("hello\n")
+    out = supertool.op_vi(str(f), ":s/missing/x/d")
+    assert "ERROR" in out
+    assert f.read_text() == "hello\n"
+
+
+# ---------------------------------------------------------------------------
+# Cursor persistence across calls
+# ---------------------------------------------------------------------------
+
+def test_cursor_persists_between_calls(tmp_path: Path, monkeypatch) -> None:
+    """Cursor position is restored on the next vi call against the same path."""
+    monkeypatch.delenv("SUPERTOOL_VI_NO_PERSIST", raising=False)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    f = tmp_path / "x.py"
+    f.write_text("alpha\nbeta\ngamma\n")
+    # First call: position cursor on 'beta' line BOL via 2G
+    supertool.op_vi(str(f), "2G")
+    # Second call: insert before cursor — should land on 'beta' line, not pos 0
+    supertool.op_vi(str(f), "iZ")
+    assert f.read_text() == "alpha\nZbeta\ngamma\n"
+
+
+def test_cursor_no_persist_with_env_flag(tmp_path: Path, monkeypatch) -> None:
+    """SUPERTOOL_VI_NO_PERSIST=1 disables cursor restoration."""
+    monkeypatch.setenv("SUPERTOOL_VI_NO_PERSIST", "1")
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    f = tmp_path / "x.py"
+    f.write_text("alpha\nbeta\ngamma\n")
+    supertool.op_vi(str(f), "2G")
+    supertool.op_vi(str(f), "iZ")
+    # Cursor reset to 0, insert at BOF
+    assert f.read_text() == "Zalpha\nbeta\ngamma\n"
+
+
 def test_substitute_no_match_errors(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("hello\n")

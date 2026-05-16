@@ -88,6 +88,7 @@ from __future__ import annotations
 
 import json
 import difflib
+import hashlib
 import os
 import re
 import shlex
@@ -2445,12 +2446,55 @@ def op_replace_lines(path: str, start: int, end: int, content: str) -> str:
 
 
 
+def _vi_cursor_state_path(file_path: str) -> str:
+    """Return the sidecar path that persists vi cursor for `file_path`."""
+    abs_path = os.path.abspath(file_path)
+    digest = hashlib.sha1(abs_path.encode("utf-8")).hexdigest()
+    cache_dir = os.path.join(
+        os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"),
+        "supertool",
+        "vi-cursor",
+    )
+    return os.path.join(cache_dir, digest)
+
+
+def _vi_load_cursor(file_path: str, content_len: int) -> int:
+    """Load persisted cursor for `file_path`, clamped to [0, content_len]."""
+    if os.environ.get("SUPERTOOL_VI_NO_PERSIST"):
+        return 0
+    try:
+        with open(_vi_cursor_state_path(file_path), "r", encoding="utf-8") as fh:
+            raw = fh.read().strip()
+        return max(0, min(content_len, int(raw)))
+    except (OSError, ValueError):
+        return 0
+
+
+def _vi_save_cursor(file_path: str, cursor: int) -> None:
+    """Persist cursor for `file_path` so the next vi call resumes here."""
+    if os.environ.get("SUPERTOOL_VI_NO_PERSIST"):
+        return
+    state_path = _vi_cursor_state_path(file_path)
+    try:
+        os.makedirs(os.path.dirname(state_path), exist_ok=True)
+        with open(state_path, "w", encoding="utf-8") as fh:
+            fh.write(str(cursor))
+    except OSError:
+        pass
+
+
 def op_vi(path: str, script: str) -> str:
     """vi-flavored cursor-based multi-action edit op.
 
     Actions split by newline OR semicolon. Each action: optional count
     prefix + verb + optional arg. Lifted from vi for token economy in
     LLM-generated edits.
+
+    Cursor persistence: the cursor offset is saved to
+    ~/.cache/supertool/vi-cursor/<sha1(abspath)> after each successful op
+    and restored on the next call against the same path. Set
+    SUPERTOOL_VI_NO_PERSIST=1 to disable. Start a script with `gg` to
+    force-reset to BOF.
 
     Cursor / search:
         gg          — top of file (BOF)
@@ -2651,7 +2695,7 @@ def op_vi(path: str, script: str) -> str:
             return (count, c, rest[1:])
         return (count, "", rest)  # unknown
 
-    cursor = 0
+    cursor = _vi_load_cursor(path, len(content))
     log: List[str] = []
     last_search: Optional[tuple] = None  # (pattern, direction "/"|"?")
     register: str = ""  # anonymous yank/paste register
@@ -3054,6 +3098,7 @@ def op_vi(path: str, script: str) -> str:
                 rx = re.compile(spat, flags_re)
             except re.error as e:
                 return f"ERROR: action {i} '{action}': :s regex: {e}\n"
+            is_dry = "d" in sflags
             n_max = 0 if "g" in sflags else 1
             srepl_dec = _decode_escapes(srepl)
             # Escape literal backslashes for re.sub: \X (X non-digit) must be
@@ -3066,9 +3111,33 @@ def op_vi(path: str, script: str) -> str:
                 return f"ERROR: action {i} '{action}': :s replacement: {e}\n"
             if n == 0:
                 return f"ERROR: action {i} '{action}': :s no match for {spat!r}\n"
-            content = new_content
-            cursor = min(cursor, len(content))
-            log.append(f"  {i}. :s/{spat!r}/{srepl_dec!r}/{sflags} ({n} subs)")
+            if is_dry:
+                # Preview only. Show up to 5 match line numbers + the rendered
+                # replacement, don't touch the buffer or persist anything.
+                preview: List[str] = []
+                shown = 0
+                for m in rx.finditer(content):
+                    if shown >= 5:
+                        break
+                    line_no = content[:m.start()].count("\n") + 1
+                    try:
+                        repl_rendered = m.expand(srepl_safe)
+                    except re.error:
+                        repl_rendered = srepl_dec
+                    preview.append(
+                        f"      line {line_no}: {m.group(0)!r} → {repl_rendered!r}"
+                    )
+                    shown += 1
+                more = f"\n      ... and {n - shown} more" if n > shown else ""
+                log.append(
+                    f"  {i}. :s/{spat!r}/{srepl_dec!r}/{sflags} DRY — would replace {n}:\n"
+                    + "\n".join(preview)
+                    + more
+                )
+            else:
+                content = new_content
+                cursor = min(cursor, len(content))
+                log.append(f"  {i}. :s/{spat!r}/{srepl_dec!r}/{sflags} ({n} subs)")
 
         # --- ex read file: :r FILE ---
         elif verb == ":r":
@@ -3249,6 +3318,8 @@ def op_vi(path: str, script: str) -> str:
         _atomic_write(path, content)
     except OSError as e:
         return f"ERROR: failed to write {path}: {e}\n"
+
+    _vi_save_cursor(path, min(cursor, len(content)))
 
     final_line, final_col = _offset_to_line_col(content, cursor)
     new_lines = content.split("\n")
