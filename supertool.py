@@ -2951,8 +2951,11 @@ def op_vim(path: str, script: str) -> str:
                 idx = content.find(pat, cursor)
             if idx == -1 and pat.endswith("/") and len(pat) > 1:
                 # Autocorrect: trailing `/` is a sed/ex muscle-memory leftover
-                # (e.g. `/NullLogger/`). Strip it and re-search.
+                # (e.g. `/NullLogger/`). Strip it and re-search. Always switch
+                # `pat` to the trimmed form so the downstream BOF retry uses
+                # the right needle.
                 trimmed = pat[:-1]
+                pat = trimmed
                 try:
                     rx2 = re.compile(trimmed, re.MULTILINE)
                     m2 = rx2.search(content, cursor)
@@ -2962,8 +2965,6 @@ def op_vim(path: str, script: str) -> str:
                     pass
                 if idx == -1:
                     idx = content.find(trimmed, cursor)
-                if idx != -1:
-                    pat = trimmed
             bof_retry = False
             if idx == -1 and cursor > 0:
                 # Autocorrect: cursor persists across vim::: calls. If forward
@@ -3045,7 +3046,10 @@ def op_vim(path: str, script: str) -> str:
                 idx = content.rfind(pat, 0, cursor + 1)
             if idx == -1 and pat.endswith("/") and len(pat) > 1:
                 # Autocorrect: trailing `/` is a sed/ex muscle-memory leftover.
+                # Always reassign `pat` so the EOF retry below uses the
+                # trimmed needle.
                 trimmed = pat[:-1]
+                pat = trimmed
                 try:
                     rx2 = re.compile(trimmed, re.MULTILINE)
                     last2 = None
@@ -3060,13 +3064,33 @@ def op_vim(path: str, script: str) -> str:
                     pass
                 if idx == -1:
                     idx = content.rfind(trimmed, 0, cursor + 1)
-                if idx != -1:
-                    pat = trimmed
+            eof_retry = False
+            if idx == -1 and cursor < len(content):
+                # Autocorrect: cursor persists across vim::: calls. If backward
+                # search misses from a near-BOF cursor, retry across the whole
+                # file — the match might be later. Symmetric to the BOF retry
+                # on `/PAT`.
+                try:
+                    rx_e = re.compile(pat, re.MULTILINE)
+                    last_e = None
+                    for m in rx_e.finditer(content):
+                        if m.start() != m.end():
+                            last_e = m
+                    if last_e is not None:
+                        idx = last_e.start()
+                        eof_retry = True
+                except re.error:
+                    pass
+                if idx == -1:
+                    idx = content.rfind(pat)
+                    if idx != -1:
+                        eof_retry = True
             if idx == -1:
                 return f"ERROR: action {i} '{action}': pattern not found backward\n"
             cursor = idx
             last_search = (pat, "?")
-            log.append(f"  {i}. ?{pat!r} → {cursor}")
+            note = " (retried from EOF — cursor persisted from previous call)" if eof_retry else ""
+            log.append(f"  {i}. ?{pat!r} → {cursor}{note}")
         elif verb == "h":
             cursor = max(0, cursor - count)
             log.append(f"  {i}. {count}h (cursor={cursor})")
