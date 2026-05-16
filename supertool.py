@@ -2626,6 +2626,9 @@ def op_vim(path: str, script: str) -> str:
     # `$'\x1e'`) and `␞` itself into actual ESC. Real `\x1b` passes
     # through.
     normalized = script.replace("\\e", ESC).replace("\x1e", ESC).replace("␞", ESC)
+    # Decode Ctrl-A / Ctrl-X escapes (`\C-a` / `\C-x`) to their real bytes so
+    # the tokenizer sees single-char verbs. Real \x01 / \x18 pass through.
+    normalized = normalized.replace("\\C-a", "\x01").replace("\\C-x", "\x18")
     # Script-level autocorrects (applied before tokenizing):
     # - `<digits>gg` → `<digits>G`: vim's `gg` ignores count.
     # - `d5d` → `5dd`, `c5w` → `5cw`, etc.: count-in-middle typo.
@@ -2717,6 +2720,23 @@ def op_vim(path: str, script: str) -> str:
         # gg (go to BOF), ge, gE, g_
         if c == "g" and start + 1 < n and normalized[start + 1] in ("g", "e", "E", "_"):
             return (start + 2, False)
+        # Linewise case verbs: g~~, guu, gUU (3-char no-arg)
+        if c == "g" and start + 2 < n and (
+            (normalized[start + 1] == "~" and normalized[start + 2] == "~")
+            or (normalized[start + 1] == "u" and normalized[start + 2] == "u")
+            or (normalized[start + 1] == "U" and normalized[start + 2] == "U")
+        ):
+            return (start + 3, False)
+        # Operator-motion case verbs: g~<motion>, gu<motion>, gU<motion>.
+        # Treat the trailing motion char like the d/y operator-motion family.
+        if c == "g" and start + 2 < n and normalized[start + 1] in ("~", "u", "U"):
+            return (start + 3, False)
+        # Tilde toggle-case: single-char no-arg verb
+        if c == "~":
+            return (start + 1, False)
+        # Ctrl-A increment / Ctrl-X decrement: single-char no-arg verbs
+        if c in ("\x01", "\x18"):
+            return (start + 1, False)
         # Single-char no-arg verbs (G, h, j, k, l, x, D, J, n, N, p, P,
         # $, 0, ^, w, b, e, W, B, E, %, etc.)
         return (start + 1, False)
@@ -2873,6 +2893,13 @@ def op_vim(path: str, script: str) -> str:
             "dgE", "dg_", "cge", "cgE", "cg_",
         ):
             return (count, rest[:3], rest[3:])
+        # Linewise case verbs: g~~, guu, gUU
+        if len(rest) >= 3 and rest[:3] in ("g~~", "guu", "gUU"):
+            return (count, rest[:3], rest[3:])
+        # Operator-motion case verbs: g~<motion>, gu<motion>, gU<motion>.
+        # Returns verb = "g~"|"gu"|"gU", arg = motion char (+ any tail).
+        if len(rest) >= 3 and rest[0] == "g" and rest[1] in ("~", "u", "U"):
+            return (count, rest[:2], rest[2:])
         # standalone ge / gE / g_
         if len(rest) >= 2 and rest[:2] in ("ge", "gE", "g_"):
             return (count, rest[:2], rest[2:])
@@ -2928,6 +2955,8 @@ def op_vim(path: str, script: str) -> str:
             "w", "b", "e", "^",
             # New motions:
             "W", "B", "E", "{", "}", "(", ")", "%", "+", "-", "_", ";", ",",
+            # Case toggle + number ops:
+            "~", "\x01", "\x18",
         ):
             return (count, c, rest[1:])
         return (count, "", rest)  # unknown
@@ -4177,14 +4206,30 @@ def op_vim(path: str, script: str) -> str:
             log.append(f"  {i}. y$ ({len(register)} chars)")
 
         # --- operator-motion family: d/y/c + various motions ---
-        elif len(verb) >= 2 and verb[0] in ("d", "y", "c") and verb[1:] in (
-            "G", "gg", "^", "h", "j", "k", "l", "/", "?",
-            "{", "}", "(", ")", "%", "+", "-", "_",
-            "W", "B", "E", ";", ",",
-            "ge", "gE", "g_",
+        # Also supports case operators g~/gu/gU which reuse the same motion
+        # ranges but transform the slice in place (swapcase/lower/upper).
+        elif (
+            (len(verb) >= 2 and verb[0] in ("d", "y", "c") and verb[1:] in (
+                "G", "gg", "^", "h", "j", "k", "l", "/", "?", "$", "0",
+                "{", "}", "(", ")", "%", "+", "-", "_",
+                "W", "B", "E", ";", ",",
+                "ge", "gE", "g_",
+            ))
+            or (verb in ("g~", "gu", "gU") and arg[:1] in (
+                "G", "^", "h", "j", "k", "l", "$", "0",
+                "{", "}", "(", ")", "%", "+", "-", "_",
+                "w", "b", "e",
+                "W", "B", "E", ";", ",",
+            ))
         ):
-            op = verb[0]
-            motion = verb[1:]
+            if verb in ("g~", "gu", "gU"):
+                op = verb
+                motion = arg[:1]
+                # consume the motion char from arg so any tail (unlikely) stays
+                arg = arg[1:]
+            else:
+                op = verb[0]
+                motion = verb[1:]
             linewise = False
             if motion == "G":
                 # cursor's line BOL .. EOF (inclusive of trailing newline if any)
@@ -4215,6 +4260,42 @@ def op_vim(path: str, script: str) -> str:
             elif motion == "l":
                 start = cursor
                 end = min(len(content), cursor + 1)
+            elif motion == "$":
+                # to last char of line (exclusive of trailing \n)
+                start = cursor
+                end = _line_end(content, cursor)
+            elif motion == "0":
+                # to BOL
+                start = _line_start(content, cursor)
+                end = cursor
+            elif motion in ("w", "b", "e"):
+                pos = cursor
+                if motion == "w":
+                    on_word = pos < len(content) and (content[pos].isalnum() or content[pos] == "_")
+                    if on_word:
+                        while pos < len(content) and (content[pos].isalnum() or content[pos] == "_"):
+                            pos += 1
+                    while pos < len(content) and content[pos] in (" ", "\t"):
+                        pos += 1
+                    start, end = cursor, pos
+                elif motion == "b":
+                    if pos > 0:
+                        pos -= 1
+                        while pos > 0 and content[pos] in (" ", "\t"):
+                            pos -= 1
+                        while pos > 0 and (content[pos - 1].isalnum() or content[pos - 1] == "_"):
+                            pos -= 1
+                    start, end = pos, cursor
+                else:  # e — inclusive end of word
+                    if pos < len(content) and (content[pos].isalnum() or content[pos] == "_") and (
+                        pos + 1 >= len(content) or not (content[pos + 1].isalnum() or content[pos + 1] == "_")
+                    ):
+                        pos += 1
+                    while pos < len(content) and not (content[pos].isalnum() or content[pos] == "_"):
+                        pos += 1
+                    while pos + 1 < len(content) and (content[pos + 1].isalnum() or content[pos + 1] == "_"):
+                        pos += 1
+                    start, end = cursor, pos + 1
             elif motion == "j":
                 # current line BOL .. end of next line (inclusive of next \n)
                 start = _line_start(content, cursor)
@@ -4511,22 +4592,100 @@ def op_vim(path: str, script: str) -> str:
                 start, end = idx, cursor
 
             slice_ = content[start:end]
-            register = slice_
-            register_linewise = linewise
-            if op == "d":
-                content = content[:start] + content[end:]
-                cursor = min(start, len(content))
-            elif op == "c":
-                # change: delete + insert TEXT from arg. For pattern-based motions
-                # the arg already held the pattern (consumed above), so don't
-                # re-insert in that case.
-                if motion in ("/", "?"):
-                    text = ""
+            if op in ("g~", "gu", "gU"):
+                if op == "g~":
+                    new = slice_.swapcase()
+                elif op == "gu":
+                    new = slice_.lower()
                 else:
-                    text = _decode_escapes(arg) if arg else ""
-                content = content[:start] + text + content[end:]
-                cursor = start + len(text)
+                    new = slice_.upper()
+                content = content[:start] + new + content[end:]
+                # cursor stays at start (vim parity)
+                cursor = start
+            else:
+                register = slice_
+                register_linewise = linewise
+                if op == "d":
+                    content = content[:start] + content[end:]
+                    cursor = min(start, len(content))
+                elif op == "c":
+                    # change: delete + insert TEXT from arg. For pattern-based motions
+                    # the arg already held the pattern (consumed above), so don't
+                    # re-insert in that case.
+                    if motion in ("/", "?"):
+                        text = ""
+                    else:
+                        text = _decode_escapes(arg) if arg else ""
+                    content = content[:start] + text + content[end:]
+                    cursor = start + len(text)
             log.append(f"  {i}. {verb} ({len(slice_)} chars{', linewise' if linewise else ''})")
+
+        # --- tilde toggle-case (N~) ---
+        elif verb == "~":
+            end_pos = min(len(content), cursor + count)
+            seg = content[cursor:end_pos]
+            content = content[:cursor] + seg.swapcase() + content[end_pos:]
+            cursor = end_pos
+            log.append(f"  {i}. {count}~ ({len(seg)} chars toggled)")
+
+        # --- linewise case verbs: g~~ guu gUU (N lines) ---
+        elif verb in ("g~~", "guu", "gUU"):
+            bol = _line_start(content, cursor)
+            end_pos = bol
+            for _ in range(count):
+                nl = content.find("\n", end_pos)
+                if nl == -1:
+                    end_pos = len(content)
+                    break
+                end_pos = nl + 1
+            # operate on the lines but preserve the trailing \n boundary
+            seg = content[bol:end_pos]
+            if seg.endswith("\n"):
+                body, tail = seg[:-1], "\n"
+            else:
+                body, tail = seg, ""
+            if verb == "g~~":
+                new = body.swapcase()
+            elif verb == "guu":
+                new = body.lower()
+            else:
+                new = body.upper()
+            content = content[:bol] + new + tail + content[end_pos:]
+            cursor = bol
+            log.append(f"  {i}. {verb} ({len(body)} chars)")
+
+        # --- Ctrl-A / Ctrl-X: increment / decrement number ---
+        elif verb in ("\x01", "\x18"):
+            # find digit run: current pos if on digit, else scan forward on
+            # current line for first digit. Handles leading minus.
+            eol = _line_end(content, cursor)
+            p = cursor
+            if p >= eol or not content[p].isdigit():
+                while p < eol and not content[p].isdigit():
+                    p += 1
+            if p >= eol or not content[p].isdigit():
+                return f"ERROR: action {i} '{action}': no number on line\n"
+            # walk back to leading minus if adjacent (vim treats -42 as -42)
+            start_d = p
+            while start_d > 0 and content[start_d - 1].isdigit():
+                start_d -= 1
+            end_d = p
+            while end_d < eol and content[end_d].isdigit():
+                end_d += 1
+            # optional leading minus
+            if start_d > 0 and content[start_d - 1] == "-":
+                start_d -= 1
+            num_str = content[start_d:end_d]
+            try:
+                value = int(num_str)
+            except ValueError:
+                return f"ERROR: action {i} '{action}': bad number {num_str!r}\n"
+            delta = count if verb == "\x01" else -count
+            new_val = value + delta
+            new_str = str(new_val)
+            content = content[:start_d] + new_str + content[end_d:]
+            cursor = start_d + len(new_str) - 1
+            log.append(f"  {i}. {'C-a' if verb == '\x01' else 'C-x'} {num_str} → {new_str}")
 
         # --- paste ---
         elif verb == "p":
