@@ -2059,6 +2059,13 @@ def _decode_escapes(s: str) -> str:
         return s
     out = s.replace("\\\\", _DECODE_ESCAPES_SENTINEL)
     out = out.replace("\\n", "\n").replace("\\t", "\t").replace("\\r", "\r")
+    # `\xHH` (two hex digits) → single char. Useful inside TEXT to embed
+    # bytes like `\x27` (single quote) without bash single-quote nesting.
+    out = re.sub(
+        r"\\x([0-9A-Fa-f]{2})",
+        lambda m: chr(int(m.group(1), 16)),
+        out,
+    )
     # Drop `\` before punctuation/symbols (defensive shell escapes).
     out = re.sub(r"\\([^A-Za-z0-9])", r"\1", out)
     out = out.replace(_DECODE_ESCAPES_SENTINEL, "\\")
