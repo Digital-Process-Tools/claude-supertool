@@ -769,6 +769,36 @@ def test_substitute_then_chained_action_after_flags(tmp_path: Path) -> None:
     assert f.read_text() == "X bar!\n"
 
 
+def test_substitute_with_g_flag_then_chained_action(tmp_path: Path) -> None:
+    """`;` after `:s/.../.../g` (with flag) still chains next action."""
+    f = tmp_path / "x.txt"
+    f.write_text("a a a\n")
+    supertool.op_vi(str(f), ":s/a/X/g;A!")
+    assert f.read_text() == "X X X!\n"
+
+
+def test_substitute_mid_chain_after_prior_action(tmp_path: Path) -> None:
+    """`:s` triggered after a prior action + `;` — state detection works mid-script."""
+    f = tmp_path / "x.txt"
+    f.write_text("foo\n")
+    supertool.op_vi(str(f), "A!;:s/foo!/bar/")
+    assert f.read_text() == "bar\n"
+
+
+def test_substitute_unterminated_does_not_swallow_chained_action(tmp_path: Path) -> None:
+    """Unterminated `:s/foo` (no closing `/`) should not silently eat a following `;action`.
+
+    Current behavior: `;` becomes literal inside SUBST_PAT, swallowing chained actions.
+    This test documents what we *want* — chained action still runs, or the malformed
+    `:s` errors loudly. Silent no-op is the bug.
+    """
+    f = tmp_path / "x.txt"
+    f.write_text("foo\n")
+    result = supertool.op_vi(str(f), ":s/foo;A!")
+    assert "ERROR" in result
+    assert f.read_text() == "foo\n"  # file untouched on malformed script
+
+
 def test_substitute_repl_with_php_namespace_backslashes(tmp_path: Path) -> None:
     """REPL containing single backslashes (PHP/JS namespace separators) must
     not crash re.sub with 'bad escape \\B' — backslashes are auto-escaped."""

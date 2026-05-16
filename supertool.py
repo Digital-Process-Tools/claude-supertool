@@ -2647,6 +2647,12 @@ def op_vi(path: str, script: str) -> str:
                 continue
             buf.append(ch)
             idx += 1
+        if state in ("SUBST_PAT", "SUBST_REPL"):
+            return (
+                "ERROR: unterminated :s — missing closing '/' "
+                f"(state={state}). Use `\\;` to escape literal `;` in TEXT, "
+                "or `:r FILE` for multi-line bodies.\n"
+            )
         parts.append("".join(buf))
         for seg in parts:
             # lstrip only — trailing whitespace inside insert TEXT is significant
