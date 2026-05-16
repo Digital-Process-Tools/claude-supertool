@@ -2700,10 +2700,39 @@ def op_vi(path: str, script: str) -> str:
             if idx == -1:
                 idx = content.find(pat, cursor)
             if idx == -1:
+                # sed-style auto-split: try truncating pattern at first `/<verb>`
+                # boundary. Kevin's training has `/PAT/cmd` muscle memory; if
+                # the short pattern matches, treat the trailing portion as a
+                # follow-up action.
+                split_m = re.search(
+                    r"/([oOiIaAJ]|cc|cw|ciw|ci[\"'([{}]|cf|cF|ct|cT|dd|dw|d\$|d0|c\$|c0)\b",
+                    pat,
+                )
+                if split_m is not None:
+                    short_pat = pat[:split_m.start()]
+                    trail = pat[split_m.start() + 1:]
+                    s_idx = -1
+                    try:
+                        rx2 = re.compile(short_pat, re.MULTILINE)
+                        sm = rx2.search(content, cursor)
+                        if sm is not None and sm.start() != sm.end():
+                            s_idx = sm.start()
+                    except re.error:
+                        pass
+                    if s_idx == -1:
+                        s_idx = content.find(short_pat, cursor)
+                    if s_idx != -1:
+                        cursor = s_idx
+                        last_search = (short_pat, "/")
+                        log.append(
+                            f"  {i}. /{short_pat!r} → {cursor} (auto-split sed-style)"
+                        )
+                        # queue the trailing action for the next iteration
+                        raw_actions.insert(i, trail)
+                        continue
                 hint = ""
-                m = re.search(r"/([oOiIaAJ]|cc|cw|ciw|ci[\"'([{}]|cf|cF|ct|cT|dd|dw|d\$|d0|c\$|c0)\b", pat)
-                if m is not None:
-                    suggested = pat[:m.start()] + ";" + pat[m.start() + 1:]
+                if split_m is not None:
+                    suggested = pat[:split_m.start()] + ";" + pat[split_m.start() + 1:]
                     hint = f" (hint: '/' is not an action separator — did you mean '/{suggested}'? Use ';' to chain actions.)"
                 return f"ERROR: action {i} '{action}': pattern not found forward{hint}\n"
             cursor = idx
