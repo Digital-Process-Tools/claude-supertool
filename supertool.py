@@ -3472,34 +3472,56 @@ def op_vim(path: str, script: str) -> str:
             # passed as \\X or re.sub raises "bad escape" on \B, \R, etc.
             # Digit-prefixed backslashes (\1..\9) are preserved as backrefs.
             srepl_safe = re.sub(r"\\(?=\D)", r"\\\\", srepl_dec)
-            try:
+            def _run_sub(_rx):
                 if sub_start == 0 and sub_end == len(content):
-                    # whole-file path (no range) — preserve existing semantics
-                    new_content, n = rx.subn(srepl_safe, content, count=n_max)
-                else:
-                    # ranged path — iterate per line in the range so non-/g
-                    # replaces the first match on EACH line (vim behavior),
-                    # not just the first match in the whole range.
-                    head = content[:sub_start]
-                    tail = content[sub_end:]
-                    body = content[sub_start:sub_end]
-                    has_trailing_nl = body.endswith("\n")
-                    body_lines = body.split("\n")
-                    if has_trailing_nl:
-                        body_lines = body_lines[:-1]
-                    is_global = "g" in sflags
-                    n = 0
-                    new_lines: List[str] = []
-                    for ln in body_lines:
-                        subbed_ln, k = rx.subn(
-                            srepl_safe, ln, count=0 if is_global else 1
-                        )
-                        new_lines.append(subbed_ln)
-                        n += k
-                    new_body = "\n".join(new_lines) + ("\n" if has_trailing_nl else "")
-                    new_content = head + new_body + tail
+                    return _rx.subn(srepl_safe, content, count=n_max)
+                # ranged path — iterate per line in the range so non-/g
+                # replaces the first match on EACH line (vim behavior),
+                # not just the first match in the whole range.
+                head = content[:sub_start]
+                tail = content[sub_end:]
+                body = content[sub_start:sub_end]
+                has_trailing_nl = body.endswith("\n")
+                body_lines = body.split("\n")
+                if has_trailing_nl:
+                    body_lines = body_lines[:-1]
+                is_global = "g" in sflags
+                _n = 0
+                new_lines: List[str] = []
+                for ln in body_lines:
+                    subbed_ln, k = _rx.subn(
+                        srepl_safe, ln, count=0 if is_global else 1
+                    )
+                    new_lines.append(subbed_ln)
+                    _n += k
+                new_body = "\n".join(new_lines) + ("\n" if has_trailing_nl else "")
+                return head + new_body + tail, _n
+            try:
+                new_content, n = _run_sub(rx)
             except re.error as e:
                 return f"ERROR: action {i} '{action}': :s replacement: {e}\n"
+            # Backslash over-escape autocorrect: Kevin (and bash users) often
+            # write `\\\\` (4 chars after bash-quoting) when 2 are correct.
+            # `\\\\` in a regex matches 2 literal backslashes; to match ONE,
+            # write `\\`. If the original pattern matched nothing AND contains
+            # 4 consecutive backslashes, retry with each `\\\\` halved to `\\`.
+            autocorrect_hint = ""
+            if n == 0 and "\\\\\\\\" in spat:
+                spat_fixed = spat.replace("\\\\\\\\", "\\\\")
+                try:
+                    rx_fixed = re.compile(spat_fixed, flags_re)
+                    new_content2, n2 = _run_sub(rx_fixed)
+                except re.error:
+                    n2 = 0
+                    new_content2 = content
+                if n2 > 0:
+                    new_content = new_content2
+                    n = n2
+                    rx = rx_fixed
+                    spat = spat_fixed
+                    autocorrect_hint = (
+                        f" [autocorrect: halved \\\\\\\\ → \\\\ in pattern → {spat_fixed!r}]"
+                    )
             if n == 0:
                 return f"ERROR: action {i} '{action}': :s no match for {spat!r}\n"
             if is_dry:
@@ -3528,7 +3550,10 @@ def op_vim(path: str, script: str) -> str:
             else:
                 content = new_content
                 cursor = min(cursor, len(content))
-                log.append(f"  {i}. :s/{spat!r}/{srepl_dec!r}/{sflags} ({n} subs)")
+                log.append(
+                    f"  {i}. :s/{spat!r}/{srepl_dec!r}/{sflags} ({n} subs)"
+                    + autocorrect_hint
+                )
 
         # --- ex read file: :r FILE  (or `:r -` to read stdin) ---
         elif verb == ":r":
