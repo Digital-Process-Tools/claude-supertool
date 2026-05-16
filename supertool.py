@@ -2607,6 +2607,21 @@ def op_vi(path: str, script: str) -> str:
                     buf.append(";")
                     idx += 2
                     continue
+                # Autocorrect: `\n` (escape) outside TEXT/pattern verbs is an
+                # action separator. TEXT-consuming verbs (i/a/A/I/o/O), search
+                # (/?), and ex commands (:) keep `\n` literal so _decode_escapes
+                # can turn it into a real newline inside TEXT or a regex.
+                if ch == "\\" and idx + 1 < len(line) and line[idx + 1] == "n":
+                    acc = "".join(buf).lstrip()
+                    if acc and acc[0] in "iaAIoO/?:":
+                        buf.append("\\")
+                        buf.append("n")
+                        idx += 2
+                        continue
+                    parts.append("".join(buf))
+                    buf = []
+                    idx += 2
+                    continue
                 if ch == ";":
                     parts.append("".join(buf))
                     buf = []
@@ -2659,6 +2674,18 @@ def op_vi(path: str, script: str) -> str:
             seg = seg.lstrip()
             if seg:
                 raw_actions.append(seg)
+    # Autocorrect: vi count goes BEFORE the verb, not in the middle.
+    # `d5d` → `5dd`, `c5w` → `5cw`, `y5y` → `5yy`. Only rewrite when the
+    # first+last char form a known count-able verb pair, to avoid breaking
+    # legit forms like `df5` (delete forward to char `5`).
+    _COUNTABLE_PAIRS = {"dd", "dw", "d$", "d0", "cc", "cw", "c$", "c0", "yy", "yw", "y$"}
+    _count_middle_re = re.compile(r"^([dcy])([1-9]\d*)([dwycs0$])(.*)$")
+    for _j, _act in enumerate(raw_actions):
+        _m = _count_middle_re.match(_act)
+        if _m:
+            _first, _digits, _third, _rest = _m.groups()
+            if _first + _third in _COUNTABLE_PAIRS:
+                raw_actions[_j] = _digits + _first + _third + _rest
     if not raw_actions:
         return "ERROR: no actions in script\n"
 
@@ -2807,6 +2834,21 @@ def op_vi(path: str, script: str) -> str:
                 pass
             if idx == -1:
                 idx = content.find(pat, cursor)
+            if idx == -1 and pat.endswith("/") and len(pat) > 1:
+                # Autocorrect: trailing `/` is a sed/ex muscle-memory leftover
+                # (e.g. `/NullLogger/`). Strip it and re-search.
+                trimmed = pat[:-1]
+                try:
+                    rx2 = re.compile(trimmed, re.MULTILINE)
+                    m2 = rx2.search(content, cursor)
+                    if m2 is not None and m2.start() != m2.end():
+                        idx = m2.start()
+                except re.error:
+                    pass
+                if idx == -1:
+                    idx = content.find(trimmed, cursor)
+                if idx != -1:
+                    pat = trimmed
             if idx == -1:
                 # sed-style auto-split: try truncating pattern at first `/<verb>`
                 # boundary. Kevin's training has `/PAT/cmd` muscle memory; if
@@ -2867,6 +2909,25 @@ def op_vi(path: str, script: str) -> str:
                 pass
             if idx == -1:
                 idx = content.rfind(pat, 0, cursor + 1)
+            if idx == -1 and pat.endswith("/") and len(pat) > 1:
+                # Autocorrect: trailing `/` is a sed/ex muscle-memory leftover.
+                trimmed = pat[:-1]
+                try:
+                    rx2 = re.compile(trimmed, re.MULTILINE)
+                    last2 = None
+                    for m in rx2.finditer(content):
+                        if m.end() > cursor + 1:
+                            break
+                        if m.start() != m.end():
+                            last2 = m
+                    if last2 is not None:
+                        idx = last2.start()
+                except re.error:
+                    pass
+                if idx == -1:
+                    idx = content.rfind(trimmed, 0, cursor + 1)
+                if idx != -1:
+                    pat = trimmed
             if idx == -1:
                 return f"ERROR: action {i} '{action}': pattern not found backward\n"
             cursor = idx
@@ -3263,16 +3324,20 @@ def op_vi(path: str, script: str) -> str:
                 cursor = min(cursor, len(content))
                 log.append(f"  {i}. :s/{spat!r}/{srepl_dec!r}/{sflags} ({n} subs)")
 
-        # --- ex read file: :r FILE ---
+        # --- ex read file: :r FILE  (or `:r -` to read stdin) ---
         elif verb == ":r":
             path_arg = arg.strip()
             if not path_arg:
                 return f"ERROR: action {i} '{action}': :r needs a file path\n"
-            try:
-                with open(path_arg, "r", encoding="utf-8", errors="replace") as _fh:
-                    file_text = _fh.read()
-            except OSError as e:
-                return f"ERROR: action {i} '{action}': :r failed to read {path_arg!r}: {e}\n"
+            if path_arg == "-":
+                import sys as _sys
+                file_text = _sys.stdin.read()
+            else:
+                try:
+                    with open(path_arg, "r", encoding="utf-8", errors="replace") as _fh:
+                        file_text = _fh.read()
+                except OSError as e:
+                    return f"ERROR: action {i} '{action}': :r failed to read {path_arg!r}: {e}\n"
             # vim :r inserts AFTER the current line. Ensure a newline boundary.
             eol = _line_end(content, cursor)
             if eol < len(content):
