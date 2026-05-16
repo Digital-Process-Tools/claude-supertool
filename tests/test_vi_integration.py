@@ -257,6 +257,115 @@ def test_online_reorder_lastname_firstname(tmp_path: Path, monkeypatch) -> None:
     )
 
 
+ZEN_BEFORE = """The Zen of Python, by Tim Peters
+
+Beautiful is better than ugly.
+Explicit is better than implicit.
+Simple is better than complex.
+Complex is better than complicated.
+Flat is better than nested.
+Sparse is better than dense.
+Readability counts.
+Special cases aren't special enough to break the rules.
+Although practicality beats purity.
+Errors should never pass silently.
+Unless explicitly silenced.
+In the face of ambiguity, refuse the temptation to guess.
+There should be one-- and preferably only one --obvious way to do it.
+Although that way may not be obvious at first unless you're Dutch.
+Now is better than never.
+Although never is often better than *right* now.
+If the implementation is hard to explain, it's a bad idea.
+If the implementation is easy to explain, it may be a good idea.
+Namespaces are one honking great idea -- let's do more of those!
+"""
+
+
+def test_online_zen_of_python_refactor(tmp_path: Path, monkeypatch) -> None:
+    """Source: raw.githubusercontent.com/python/cpython Lib/this.py.
+    Real 21-line public text. 6 actions: global word swap, delete line by
+    keyword, prepend MD heading, append signature."""
+    monkeypatch.setenv("SUPERTOOL_VI_NO_PERSIST", "1")
+    f = tmp_path / "zen.md"
+    f.write_text(ZEN_BEFORE)
+    supertool.op_vi(
+        str(f),
+        "%s/better/preferable/g"
+        ";%s/^.*Dutch.*\\n//g"
+        ";gg;O# Zen of Python\\n"
+        ";G;oEOF — annotated by Max",
+    )
+    out = f.read_text()
+    assert "# Zen of Python" in out.splitlines()[0]
+    assert "Dutch" not in out
+    assert out.count("preferable") == 8  # all 8 'better' → 'preferable'
+    assert out.rstrip().endswith("EOF — annotated by Max")
+
+
+LINUX_RST = """.. _codingstyle:
+
+Linux kernel coding style
+=========================
+
+This is a short document describing the preferred coding style for the
+linux kernel.  Coding style is very personal, and I won't **force** my
+views on anybody, but this is what goes for anything that I have to be
+able to maintain, and I'd prefer it for most other things too.  Please
+at least consider the points made here.
+
+First off, I'd suggest printing out a copy of the GNU coding standards,
+and NOT read it.  Burn them, it's a great symbolic gesture.
+
+Anyway, here goes:
+
+
+1) Indentation
+--------------
+
+Tabs are 8 characters, and thus indentations are also 8 characters.
+There are heretic movements that try to make indentations 4 (or even 2!)
+characters deep, and that is akin to trying to define the value of PI to
+be 3.
+
+Rationale: The whole idea behind indentation is to clearly define where
+a block of control starts and ends.  Especially when you've been looking
+at your screen for 20 straight hours, you'll find it a lot easier to see
+how the indentation works if you have large indentations.
+
+The preferred way to ease multiple indentation levels in a switch statement is
+to align the ``switch`` and its subordinate ``case`` labels in the same column
+instead of ``double-indenting`` the ``case`` labels.  E.g.:
+"""
+
+
+def test_online_linux_kernel_rst_to_md(tmp_path: Path, monkeypatch) -> None:
+    """Source: raw.githubusercontent.com/torvalds/linux Documentation/process/
+    coding-style.rst — real 33-line public text. 13 actions to convert RST →
+    Markdown: drop section underlines, drop directive, RST inline-code →
+    MD inline-code, add MD heading markers, delete a paragraph, append footer."""
+    monkeypatch.setenv("SUPERTOOL_VI_NO_PERSIST", "1")
+    f = tmp_path / "linux.md"
+    f.write_text(LINUX_RST)
+    supertool.op_vi(
+        str(f),
+        "gg;dd;dd"                                              # drop `.. _codingstyle:` + blank
+        ";%s/^=+$\\n//g"                                         # drop RST h1 underline
+        ";%s/^-+$\\n//g"                                         # drop RST h2 underline
+        ";%s/``([^`]+)``/`\\1`/g"                                # RST inline code → MD
+        ";%s/^Linux kernel coding style$/# Linux kernel coding style\\n/"  # h1
+        ";%s/^1\\) Indentation$/## 1) Indentation/"             # h2
+        ";gg;/Burn them;dd"                                     # drop paragraph w/ Burn them
+        ";G;oConverted from RST by vi",
+    )
+    out = f.read_text()
+    assert out.startswith("# Linux kernel coding style")
+    assert "## 1) Indentation" in out
+    assert "Burn them" not in out
+    assert "``switch``" not in out  # RST inline-code rewritten
+    assert "`switch`" in out
+    assert out.rstrip().endswith("Converted from RST by vi")
+
+
 def test_online_prepend_https_to_bare_domains(tmp_path: Path, monkeypatch) -> None:
     """Source: devhints.io/vim — prepend https:// to domain-only lines, skip
     lines that already have http:// or https:// prefix."""
