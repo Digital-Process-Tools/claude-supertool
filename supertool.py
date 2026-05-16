@@ -2646,6 +2646,12 @@ def op_vim(path: str, script: str) -> str:
         # Insert verbs — greedy text
         if c in "iaAIoO":
             return (start + 1, True)
+        # Insert-mode-entry shortcuts — greedy text (delete + insert in one
+        # verb). s = subst char(s); S = subst line(s); C = change to EOL.
+        # gi (insert at last edit pos) intentionally NOT implemented —
+        # requires cross-call last-insert-position tracking.
+        if c in "sSC":
+            return (start + 1, True)
         # Search / ex — greedy
         if c in "/?:":
             return (start + 1, True)
@@ -2866,6 +2872,10 @@ def op_vim(path: str, script: str) -> str:
             return (count, c, rest[1:])
         # inserts — TEXT runs to end
         if c in ("i", "a", "I", "A", "o", "O"):
+            return (count, c, rest[1:])
+        # insert-mode-entry shortcuts: s (subst chars), S (subst lines),
+        # C (change to EOL). TEXT runs to end.
+        if c in ("s", "S", "C"):
             return (count, c, rest[1:])
         # single-char arg
         if c == "r":
@@ -3121,6 +3131,44 @@ def op_vim(path: str, script: str) -> str:
             eol = _line_end(content, cursor)
             content = content[:cursor] + content[eol:]
             log.append(f"  {i}. D ({eol - cursor} chars)")
+
+        # --- insert-mode-entry shortcuts: s / S / C ---
+        # s  = Ns: delete N chars from cursor, insert TEXT.
+        # S  = NS: delete N whole lines starting at cursor's line
+        #         (drop trailing \n of last so we re-insert into a blank line
+        #         at BOL — like vim's cc), insert TEXT at BOL.
+        # C  = c$: delete cursor → EOL (not past \n), insert TEXT.
+        elif verb == "s":
+            end = min(len(content), cursor + count)
+            text = _decode_escapes(arg)
+            content = content[:cursor] + text + content[end:]
+            cursor = cursor + len(text)
+            preview = text if len(text) <= 30 else text[:27] + "..."
+            log.append(f"  {i}. {count}s{preview!r} (cursor={cursor})")
+        elif verb == "S":
+            bol = _line_start(content, cursor)
+            end = bol
+            for _ in range(count):
+                nl = content.find("\n", end)
+                if nl == -1:
+                    end = len(content)
+                    break
+                end = nl + 1
+            # Like cc: preserve the trailing \n of the last replaced line.
+            keep_nl = end > bol and content[end - 1] == "\n"
+            slice_end = end - 1 if keep_nl else end
+            text = _decode_escapes(arg)
+            content = content[:bol] + text + content[slice_end:]
+            cursor = bol + len(text)
+            preview = text if len(text) <= 30 else text[:27] + "..."
+            log.append(f"  {i}. {count}S{preview!r} (cursor={cursor})")
+        elif verb == "C":
+            eol = _line_end(content, cursor)
+            text = _decode_escapes(arg)
+            content = content[:cursor] + text + content[eol:]
+            cursor = cursor + len(text)
+            preview = text if len(text) <= 30 else text[:27] + "..."
+            log.append(f"  {i}. C{preview!r} (cursor={cursor})")
 
         # --- change inner word ---
         elif verb == "ciw":
