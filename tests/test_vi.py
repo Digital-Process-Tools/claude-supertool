@@ -627,6 +627,22 @@ def test_substitute_global(tmp_path: Path) -> None:
     assert f.read_text() == "BAR BAR BAR\n"
 
 
+def test_substitute_pct_s_alias_with_colon(tmp_path: Path) -> None:
+    """`:%s/PAT/REPL/g` is the vim canonical form — aliases to :s (whole buffer)."""
+    f = tmp_path / "x.py"
+    f.write_text("foo bar foo\n")
+    supertool.op_vi(str(f), ":%s/foo/X/g")
+    assert f.read_text() == "X bar X\n"
+
+
+def test_substitute_pct_s_alias_without_colon(tmp_path: Path) -> None:
+    """`%s/PAT/REPL/g` (no leading colon) is accepted — Kevin sed-style slip."""
+    f = tmp_path / "x.py"
+    f.write_text("foo bar foo\n")
+    supertool.op_vi(str(f), "%s/foo/X/g")
+    assert f.read_text() == "X bar X\n"
+
+
 def test_substitute_case_insensitive(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("Foo FOO foo\n")
