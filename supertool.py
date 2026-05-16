@@ -2587,18 +2587,34 @@ def op_vi(path: str, script: str) -> str:
     except OSError as e:
         return f"ERROR: failed to read {path}: {e}\n"
 
-    # Action separator: U+241E (␞, SYMBOL FOR RECORD SEPARATOR) — chosen
-    # because it never appears in source code or natural text, so TEXT
-    # inserts can contain any characters (`;`, `{`, `}`, real newlines,
-    # etc.) without escaping. Only `␞` separates actions; real newlines
-    # inside a script are NOT separators (they go through to TEXT/regex
-    # arguments verbatim, where they have their natural meaning).
+    # Action separator: `␞` (U+241E SYMBOL FOR RECORD SEPARATOR, visible
+    # glyph) — chosen because it never appears in source code or natural
+    # text. Also accept `\x1e` (U+001E, ASCII RECORD SEPARATOR control
+    # char) since bash users naturally reach for `$'\x1e'`. Both are
+    # normalized to `␞` before splitting.
     SEP = "␞"
     raw_actions: List[str] = []
-    for seg in script.split(SEP):
+    normalized = script.replace("\x1e", SEP)
+    for seg in normalized.split(SEP):
         seg = seg.lstrip()
         if seg:
             raw_actions.append(seg)
+    # Autocorrect: bare text-verb (i/a/A/I/o/O alone, no payload) followed
+    # by another action means the user wrote `O␞TEXT` thinking `␞` joined
+    # them. Merge: treat the next segment as O's TEXT. Catches the most
+    # frequent post-`␞` mistake (same mental model as the old `o;TEXT`).
+    _TEXT_VERBS_BARE = {"i", "a", "A", "I", "o", "O"}
+    merged: List[str] = []
+    k = 0
+    while k < len(raw_actions):
+        cur = raw_actions[k]
+        if cur in _TEXT_VERBS_BARE and k + 1 < len(raw_actions):
+            merged.append(cur + raw_actions[k + 1])
+            k += 2
+            continue
+        merged.append(cur)
+        k += 1
+    raw_actions = merged
     # Autocorrect: vi count goes BEFORE the verb, not in the middle.
     # `d5d` → `5dd`, `c5w` → `5cw`, `y5y` → `5yy`. Only rewrite when the
     # first+last char form a known count-able verb pair, to avoid breaking
@@ -3366,7 +3382,18 @@ def op_vi(path: str, script: str) -> str:
                     return f"ERROR: action {i} '{action}': :r failed to read {path_arg!r}: {e}\n"
             # vim :r inserts AFTER the current line. Ensure a newline boundary.
             eol = _line_end(content, cursor)
-            if eol < len(content):
+            bol = _line_start(content, cursor)
+            current_line = content[bol:eol]
+            # Autocorrect: if cursor is on the LAST non-empty line of the
+            # buffer AND that line is `}` alone (optional indent), insert
+            # the snippet BEFORE the `}` instead of after — catches the
+            # `G␞:r FILE` mistake that drops snippets outside the class.
+            tail_after_eol = content[eol:].strip("\n \t")
+            is_last_real_line = tail_after_eol == ""
+            is_brace_line = current_line.strip() == "}"
+            if is_last_real_line and is_brace_line:
+                insert_pos = bol
+            elif eol < len(content):
                 # cursor is on a line followed by `\n`; insert after that `\n`
                 insert_pos = eol + 1
             else:
