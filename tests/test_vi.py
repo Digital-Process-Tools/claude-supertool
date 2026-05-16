@@ -629,6 +629,39 @@ def test_substitute_no_match_errors(tmp_path: Path) -> None:
     assert "ERROR" in out
 
 
+# ---------------------------------------------------------------------------
+# Ex read file: :r FILE
+# ---------------------------------------------------------------------------
+
+def test_read_inserts_file_after_current_line(tmp_path: Path) -> None:
+    """vi :r FILE inserts file content after the current line."""
+    target = tmp_path / "main.php"
+    target.write_text("<?php\nclass Foo {\n}\n")
+    snippet = tmp_path / "method.txt"
+    snippet.write_text("    public function bar(): void {}\n")
+    supertool.op_vi(str(target), f"G;k;:r {snippet}")
+    assert (
+        target.read_text()
+        == "<?php\nclass Foo {\n    public function bar(): void {}\n}\n"
+    )
+
+
+def test_read_missing_file_errors(tmp_path: Path) -> None:
+    target = tmp_path / "x.py"
+    target.write_text("a\n")
+    out = supertool.op_vi(str(target), f":r {tmp_path}/does-not-exist")
+    assert "ERROR" in out and ":r failed to read" in out
+
+
+def test_read_adds_trailing_newline(tmp_path: Path) -> None:
+    target = tmp_path / "x.py"
+    target.write_text("line1\n")
+    snippet = tmp_path / "snip.txt"
+    snippet.write_text("no trailing newline")
+    supertool.op_vi(str(target), f":r {snippet}")
+    assert target.read_text() == "line1\nno trailing newline\n"
+
+
 def test_substitute_strips_defensive_backslash_before_punct(tmp_path: Path) -> None:
     """Kevin defensively writes `\\)\\;` in REPL — both must collapse to `);`."""
     f = tmp_path / "x.php"
