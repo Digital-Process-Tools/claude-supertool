@@ -58,6 +58,88 @@ METHOD_BODY = """
 """
 
 
+NGINX_BEFORE = """# nginx site config
+
+server {
+    listen 80;
+    server_name old.example.com;
+
+    location /static/ {
+        root /home/user/old-app/static;
+        expires 1d;
+    }
+
+    location /media/ {
+        root /home/user/old-app/media;
+        expires 7d;
+    }
+
+    # deprecated: legacy upload endpoint
+    location /upload-old/ {
+        proxy_pass http://localhost:9999;
+        deny all;
+    }
+}
+"""
+
+NGINX_AFTER = """# generated 2026-05-16 — DO NOT EDIT
+# nginx site config
+
+server {
+    listen 80;
+    server_name new.example.com;
+
+    location /static/ {
+        root /srv/new-app/static;
+        expires 1d;
+    }
+
+    location /media/ {
+        root /srv/new-app/media;
+        expires 7d;
+    }
+
+
+    location /api/ {
+        proxy_pass http://localhost:8080;
+        proxy_set_header Host $host;
+    }
+}
+"""
+
+NGINX_EXTRA = """
+    location /api/ {
+        proxy_pass http://localhost:8080;
+        proxy_set_header Host $host;
+    }
+"""
+
+
+def test_nginx_refactor_one_call(tmp_path: Path, monkeypatch) -> None:
+    """Real-world nginx config refactor: rename host, migrate path, drop
+    deprecated block, inject /api/ location, prepend generated header.
+    11 actions, one vi call."""
+    monkeypatch.setenv("SUPERTOOL_VI_NO_PERSIST", "1")
+    target = tmp_path / "site.conf"
+    target.write_text(NGINX_BEFORE)
+    extra = tmp_path / "extra.txt"
+    extra.write_text(NGINX_EXTRA)
+
+    script = (
+        "%s/old.example.com/new.example.com/g"
+        ";%s/\\/home\\/user\\/old-app\\//\\/srv\\/new-app\\//g"
+        ";gg;/# deprecated:;5dd"
+        ";G;?^};k"
+        f";:r {extra}"
+        ";gg;O# generated 2026-05-16 — DO NOT EDIT"
+    )
+    out = supertool.op_vi(str(target), script)
+    assert "ERROR" not in out, f"unexpected error:\n{out}"
+    assert target.read_text() == NGINX_AFTER, (
+        f"refactor diverged\n--- got ---\n{target.read_text()}\n--- want ---\n{NGINX_AFTER}"
+    )
+
+
 def test_weirdest_combo_one_call(tmp_path: Path, monkeypatch) -> None:
     """12 actions in one vi call: rename, kill debug, bump version, add final,
     swap greeting, inject method inside class, prepend class docblock."""
