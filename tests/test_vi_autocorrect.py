@@ -23,7 +23,7 @@ def test_r_dash_reads_stdin(tmp_path: Path, monkeypatch) -> None:
     f = tmp_path / "x.md"
     f.write_text("# heading\n")
     monkeypatch.setattr("sys.stdin", io.StringIO("body line 1\nbody line 2\n"))
-    out = supertool.op_vi(str(f), "G;:r -")
+    out = supertool.op_vi(str(f), "G␞:r -")
     assert "ERROR" not in out, out
     assert f.read_text() == "# heading\nbody line 1\nbody line 2\n"
 
@@ -33,7 +33,7 @@ def test_r_dash_empty_stdin_inserts_nothing(tmp_path: Path, monkeypatch) -> None
     f = tmp_path / "x.md"
     f.write_text("only line\n")
     monkeypatch.setattr("sys.stdin", io.StringIO(""))
-    out = supertool.op_vi(str(f), "G;:r -")
+    out = supertool.op_vi(str(f), "G␞:r -")
     assert "ERROR" not in out, out
     assert f.read_text() == "only line\n"
 
@@ -65,7 +65,7 @@ def test_y5y_autocorrects_to_5yy(tmp_path: Path) -> None:
     """`y5y` → `5yy`. Yank 5 lines."""
     f = tmp_path / "x.py"
     f.write_text("a\nb\nc\nd\ne\n")
-    out = supertool.op_vi(str(f), "y5y;G;p")
+    out = supertool.op_vi(str(f), "y5y␞G␞p")
     assert "ERROR" not in out, out
     # yanked 5 lines, paste after last (cursor on 'e' after G)
     assert f.read_text().count("a\n") == 2  # one original, one pasted
@@ -75,16 +75,6 @@ def test_y5y_autocorrects_to_5yy(tmp_path: Path) -> None:
 # 3. \n escape outside TEXT → action separator
 # ---------------------------------------------------------------------------
 
-def test_backslash_n_between_verbs_acts_as_separator(tmp_path: Path) -> None:
-    """`\\n` outside TEXT (e.g. between two verbs) splits actions like `;`."""
-    f = tmp_path / "x.py"
-    f.write_text("a\nb\nc\n")
-    # Two `dd` actions separated by literal `\n` escape (not real newline).
-    out = supertool.op_vi(str(f), "dd\\ndd")
-    assert "ERROR" not in out, out
-    assert f.read_text() == "c\n"
-
-
 def test_backslash_n_after_search_stays_literal_for_regex(tmp_path: Path) -> None:
     """`\\n` inside a search pattern stays literal — regex can legitimately
     use `\\n` for multiline matching. Don't autocorrect that away. The
@@ -92,7 +82,7 @@ def test_backslash_n_after_search_stays_literal_for_regex(tmp_path: Path) -> Non
     f = tmp_path / "x.py"
     f.write_text("alpha\nbeta\ngamma\n")
     # Regex `alpha\nbeta` matches across the real newline (MULTILINE re).
-    out = supertool.op_vi(str(f), "/alpha\\nbeta;dd")
+    out = supertool.op_vi(str(f), "/alpha\\nbeta␞dd")
     assert "ERROR" not in out, out
     # `dd` deletes one line at the cursor's landing (start of match → "alpha").
     assert f.read_text() == "beta\ngamma\n"
@@ -102,7 +92,7 @@ def test_forward_search_strips_trailing_slash_on_miss(tmp_path: Path) -> None:
     """`/PAT/` (trailing `/`, sed muscle memory) — strip and retry."""
     f = tmp_path / "x.py"
     f.write_text("alpha\nNullLogger\nbeta\n")
-    out = supertool.op_vi(str(f), "/NullLogger/;dd")
+    out = supertool.op_vi(str(f), "/NullLogger/␞dd")
     assert "ERROR" not in out, out
     assert f.read_text() == "alpha\nbeta\n"
 
@@ -113,7 +103,7 @@ def test_forward_search_keeps_literal_trailing_slash_when_found(tmp_path: Path) 
     instead of inside `PAT/`)."""
     f = tmp_path / "x.txt"
     f.write_text("alpha PAT/ beta\n")
-    out = supertool.op_vi(str(f), "/PAT/;ipoke ")
+    out = supertool.op_vi(str(f), "/PAT/␞ipoke ")
     assert "ERROR" not in out, out
     # cursor at start of "PAT/" (position 6), `i` inserts "poke " before it
     assert f.read_text() == "alpha poke PAT/ beta\n"
@@ -123,7 +113,7 @@ def test_backward_search_strips_trailing_slash_on_miss(tmp_path: Path) -> None:
     """`?PAT/` (trailing `/`) — strip and retry, mirror of forward."""
     f = tmp_path / "x.py"
     f.write_text("alpha\nNullLogger\nbeta\n")
-    out = supertool.op_vi(str(f), "G;?NullLogger/;dd")
+    out = supertool.op_vi(str(f), "G␞?NullLogger/␞dd")
     assert "ERROR" not in out, out
     assert f.read_text() == "alpha\nbeta\n"
 

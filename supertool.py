@@ -2587,93 +2587,18 @@ def op_vi(path: str, script: str) -> str:
     except OSError as e:
         return f"ERROR: failed to read {path}: {e}\n"
 
+    # Action separator: U+241E (␞, SYMBOL FOR RECORD SEPARATOR) — chosen
+    # because it never appears in source code or natural text, so TEXT
+    # inserts can contain any characters (`;`, `{`, `}`, real newlines,
+    # etc.) without escaping. Only `␞` separates actions; real newlines
+    # inside a script are NOT separators (they go through to TEXT/regex
+    # arguments verbatim, where they have their natural meaning).
+    SEP = "␞"
     raw_actions: List[str] = []
-    for line in script.split("\n"):
-        # Split on `;` but honor `\;` as a literal semicolon so inserted TEXT
-        # can contain semicolons without colliding with the action separator.
-        # Inside an ex-substitute action (`:s/PAT/REPL/flags`, `:%s/...`, or
-        # bare `%s/...`), `;` is treated as literal until the trailing flags
-        # region — so users can write `:s/echo $who;//` without escaping.
-        # Backslash-related escapes (`\\`, `\n`, `\t`, `\r`) live in
-        # _decode_escapes — applied later on TEXT arguments only.
-        parts: List[str] = []
-        buf: List[str] = []
-        state = "NORMAL"  # NORMAL | SUBST_PAT | SUBST_REPL | SUBST_FLAGS
-        idx = 0
-        while idx < len(line):
-            ch = line[idx]
-            if state == "NORMAL":
-                if ch == "\\" and idx + 1 < len(line) and line[idx + 1] == ";":
-                    buf.append(";")
-                    idx += 2
-                    continue
-                # Autocorrect: `\n` (escape) outside TEXT/pattern verbs is an
-                # action separator. TEXT-consuming verbs (i/a/A/I/o/O), search
-                # (/?), and ex commands (:) keep `\n` literal so _decode_escapes
-                # can turn it into a real newline inside TEXT or a regex.
-                if ch == "\\" and idx + 1 < len(line) and line[idx + 1] == "n":
-                    acc = "".join(buf).lstrip()
-                    if acc and acc[0] in "iaAIoO/?:":
-                        buf.append("\\")
-                        buf.append("n")
-                        idx += 2
-                        continue
-                    parts.append("".join(buf))
-                    buf = []
-                    idx += 2
-                    continue
-                if ch == ";":
-                    parts.append("".join(buf))
-                    buf = []
-                    idx += 1
-                    continue
-                if ch == "/":
-                    acc = "".join(buf).lstrip()
-                    if acc in (":s", ":%s", "%s"):
-                        buf.append(ch)
-                        state = "SUBST_PAT"
-                        idx += 1
-                        continue
-                buf.append(ch)
-                idx += 1
-                continue
-            if state in ("SUBST_PAT", "SUBST_REPL"):
-                # Inside PAT/REPL: `\/` literal slash; unescaped `/` advances state.
-                if ch == "\\" and idx + 1 < len(line) and line[idx + 1] == "/":
-                    buf.append("\\")
-                    buf.append("/")
-                    idx += 2
-                    continue
-                if ch == "/":
-                    buf.append(ch)
-                    state = "SUBST_REPL" if state == "SUBST_PAT" else "SUBST_FLAGS"
-                    idx += 1
-                    continue
-                # Everything else (including `;`) is literal in PAT/REPL.
-                buf.append(ch)
-                idx += 1
-                continue
-            # state == SUBST_FLAGS
-            if ch == ";":
-                parts.append("".join(buf))
-                buf = []
-                state = "NORMAL"
-                idx += 1
-                continue
-            buf.append(ch)
-            idx += 1
-        if state in ("SUBST_PAT", "SUBST_REPL"):
-            return (
-                "ERROR: unterminated :s — missing closing '/' "
-                f"(state={state}). Use `\\;` to escape literal `;` in TEXT, "
-                "or `:r FILE` for multi-line bodies.\n"
-            )
-        parts.append("".join(buf))
-        for seg in parts:
-            # lstrip only — trailing whitespace inside insert TEXT is significant
-            seg = seg.lstrip()
-            if seg:
-                raw_actions.append(seg)
+    for seg in script.split(SEP):
+        seg = seg.lstrip()
+        if seg:
+            raw_actions.append(seg)
     # Autocorrect: vi count goes BEFORE the verb, not in the middle.
     # `d5d` → `5dd`, `c5w` → `5cw`, `y5y` → `5yy`. Only rewrite when the
     # first+last char form a known count-able verb pair, to avoid breaking
