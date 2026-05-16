@@ -753,6 +753,22 @@ def test_substitute_strips_defensive_backslash_before_punct(tmp_path: Path) -> N
     assert f.read_text() == "foo(1);\n"
 
 
+def test_substitute_with_literal_semicolon_in_pattern(tmp_path: Path) -> None:
+    """`:s` arg-region treats `;` as literal — no \\; escape needed for in-pattern ;."""
+    f = tmp_path / "x.php"
+    f.write_text("$x = 1; // debug\nkeep\n")
+    supertool.op_vi(str(f), ":s/.*= 1; .*\\n//")
+    assert f.read_text() == "keep\n"
+
+
+def test_substitute_then_chained_action_after_flags(tmp_path: Path) -> None:
+    """`;` after `:s/.../.../[flags]` still acts as action separator."""
+    f = tmp_path / "x.php"
+    f.write_text("foo bar\n")
+    supertool.op_vi(str(f), ":s/foo/X/;A!")
+    assert f.read_text() == "X bar!\n"
+
+
 def test_substitute_repl_with_php_namespace_backslashes(tmp_path: Path) -> None:
     """REPL containing single backslashes (PHP/JS namespace separators) must
     not crash re.sub with 'bad escape \\B' — backslashes are auto-escaped."""

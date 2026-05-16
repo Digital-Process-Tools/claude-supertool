@@ -2591,23 +2591,62 @@ def op_vi(path: str, script: str) -> str:
     for line in script.split("\n"):
         # Split on `;` but honor `\;` as a literal semicolon so inserted TEXT
         # can contain semicolons without colliding with the action separator.
+        # Inside an ex-substitute action (`:s/PAT/REPL/flags`, `:%s/...`, or
+        # bare `%s/...`), `;` is treated as literal until the trailing flags
+        # region — so users can write `:s/echo $who;//` without escaping.
         # Backslash-related escapes (`\\`, `\n`, `\t`, `\r`) live in
         # _decode_escapes — applied later on TEXT arguments only.
         parts: List[str] = []
         buf: List[str] = []
+        state = "NORMAL"  # NORMAL | SUBST_PAT | SUBST_REPL | SUBST_FLAGS
         idx = 0
         while idx < len(line):
             ch = line[idx]
-            if ch == "\\" and idx + 1 < len(line) and line[idx + 1] == ";":
-                buf.append(";")
-                idx += 2
-            elif ch == ";":
-                parts.append("".join(buf))
-                buf = []
-                idx += 1
-            else:
+            if state == "NORMAL":
+                if ch == "\\" and idx + 1 < len(line) and line[idx + 1] == ";":
+                    buf.append(";")
+                    idx += 2
+                    continue
+                if ch == ";":
+                    parts.append("".join(buf))
+                    buf = []
+                    idx += 1
+                    continue
+                if ch == "/":
+                    acc = "".join(buf).lstrip()
+                    if acc in (":s", ":%s", "%s"):
+                        buf.append(ch)
+                        state = "SUBST_PAT"
+                        idx += 1
+                        continue
                 buf.append(ch)
                 idx += 1
+                continue
+            if state in ("SUBST_PAT", "SUBST_REPL"):
+                # Inside PAT/REPL: `\/` literal slash; unescaped `/` advances state.
+                if ch == "\\" and idx + 1 < len(line) and line[idx + 1] == "/":
+                    buf.append("\\")
+                    buf.append("/")
+                    idx += 2
+                    continue
+                if ch == "/":
+                    buf.append(ch)
+                    state = "SUBST_REPL" if state == "SUBST_PAT" else "SUBST_FLAGS"
+                    idx += 1
+                    continue
+                # Everything else (including `;`) is literal in PAT/REPL.
+                buf.append(ch)
+                idx += 1
+                continue
+            # state == SUBST_FLAGS
+            if ch == ";":
+                parts.append("".join(buf))
+                buf = []
+                state = "NORMAL"
+                idx += 1
+                continue
+            buf.append(ch)
+            idx += 1
         parts.append("".join(buf))
         for seg in parts:
             # lstrip only — trailing whitespace inside insert TEXT is significant
