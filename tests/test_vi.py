@@ -17,11 +17,23 @@ def test_gg_jumps_to_bof(tmp_path: Path) -> None:
     assert f.read_text() == "first a\nb\nc\n"
 
 
-def test_G_jumps_to_eof(tmp_path: Path) -> None:
+def test_G_lands_on_bol_of_last_line(tmp_path: Path) -> None:
+    """vi G: BOL of last real line (skips trailing newline). i inserts before."""
     f = tmp_path / "x.py"
     f.write_text("a\nb\nc\n")
     out = supertool.op_vi(str(f), "G;iEND")
-    assert f.read_text() == "a\nb\nc\nEND"
+    assert f.read_text() == "a\nb\nENDc\n"
+
+
+def test_G_then_O_opens_above_last_line(tmp_path: Path) -> None:
+    """Kevin use case: G;O inserts above class's closing `}`, inside the class."""
+    f = tmp_path / "x.php"
+    f.write_text("<?php\nclass Foo {\n}\n")
+    supertool.op_vi(str(f), "G;O    public function bar(): void {}")
+    assert (
+        f.read_text()
+        == "<?php\nclass Foo {\n    public function bar(): void {}\n}\n"
+    )
 
 
 def test_nG_goto_line(tmp_path: Path) -> None:
@@ -65,7 +77,7 @@ def test_search_forward(tmp_path: Path) -> None:
 def test_search_backward(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("foo bar foo bar\n")
-    out = supertool.op_vi(str(f), "G;?foo;i!")
+    out = supertool.op_vi(str(f), "G;$;?foo;i!")
     assert f.read_text() == "foo bar !foo bar\n"
 
 
@@ -229,7 +241,7 @@ def test_replace_after_search(tmp_path: Path) -> None:
 def test_replace_at_eof_errors(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("a")
-    out = supertool.op_vi(str(f), "G;rX")
+    out = supertool.op_vi(str(f), "G;l;rX")
     assert "ERROR" in out
 
 
@@ -409,7 +421,7 @@ def test_regex_multiline_match(tmp_path: Path) -> None:
 def test_regex_backward(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("foo1 foo2 foo3\n")
-    supertool.op_vi(str(f), "G;?foo[0-9];ciwLAST")
+    supertool.op_vi(str(f), "G;$;?foo[0-9];ciwLAST")
     assert f.read_text() == "foo1 foo2 LAST\n"
 
 
