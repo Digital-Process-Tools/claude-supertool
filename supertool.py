@@ -2656,6 +2656,12 @@ def op_vi(path: str, script: str) -> str:
             return (count, "ciw", rest[3:])
         if len(rest) >= 3 and rest[:2] == "ci" and rest[2] in ('"', "'", "(", "[", "{"):
             return (count, "ci" + rest[2], rest[3:])
+        # vim alias: :%s/PAT/REPL/flags maps to :s (whole buffer)
+        if len(rest) >= 3 and rest[:3] == ":%s":
+            return (count, ":s", rest[3:])
+        # vim alias without leading colon: %s/PAT/REPL/flags maps to :s
+        if len(rest) >= 2 and rest[:2] == "%s":
+            return (count, ":s", rest[2:])
         # two-char ex commands: :s/PAT/REPL/flags  and  :r FILE
         if len(rest) >= 2 and rest[:2] == ":s":
             return (count, ":s", rest[2:])
