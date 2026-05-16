@@ -2769,7 +2769,8 @@ def op_vim(path: str, script: str) -> str:
         # vim alias without leading colon: %s/PAT/REPL/flags maps to :s
         if len(rest) >= 2 and rest[:2] == "%s":
             return (count, ":s", rest[2:])
-        # vim line-range substitute: :Ns/..., :N,Ms/..., :.s/..., :$s/...
+        # vim line-range substitute/delete: :Ns/..., :N,Ms/..., :.s/..., :$s/...
+        # and :Nd, :N,Md, :.d, :$d, :.,$d, :2,$d, :.,4d, etc.
         # Range = optional addr (N | . | $) + optional `,addr`. Encoded into
         # arg with a `\x1d` (group separator) sentinel: arg becomes
         # f"\x1d{range_spec}\x1d/PAT/REPL/flags" which the :s handler decodes.
@@ -2783,11 +2784,47 @@ def op_vim(path: str, script: str) -> str:
                 j += 1
                 while j < len(rest) and (rest[j].isdigit() or rest[j] in ".$"):
                     j += 1
-            # must be followed by `s`
+            # must be followed by `s` or `d`
             if j < len(rest) and rest[j] == "s":
                 range_spec = rest[1:j]
                 body = rest[j + 1:]
                 return (count, ":s", f"\x1d{range_spec}\x1d{body}")
+            if j < len(rest) and rest[j] == "d":
+                range_spec = rest[1:j]
+                trailing = rest[j + 1:]
+                return (count, ":d", f"\x1d{range_spec}\x1d{trailing}")
+        # vim :%d — delete whole buffer (alias for :1,$d)
+        if len(rest) >= 3 and rest[:3] == ":%d":
+            return (count, ":d", "\x1d%\x1d" + rest[3:])
+        # vim :g/PAT/d and :v/PAT/d and :g!/PAT/d — global delete
+        # Encoded as :d with sentinel \x1d{mode}:{PAT}\x1d  where mode is g|v.
+        if len(rest) >= 4 and (rest[:2] == ":g" or rest[:2] == ":v"):
+            mode = "v" if rest[:2] == ":v" else "g"
+            k = 2
+            # :g! is equivalent to :v
+            if rest[:2] == ":g" and k < len(rest) and rest[k] == "!":
+                mode = "v"
+                k += 1
+            if k < len(rest) and rest[k] == "/":
+                k += 1
+                pat_buf: List[str] = []
+                while k < len(rest):
+                    ch = rest[k]
+                    if ch == "\\" and k + 1 < len(rest) and rest[k + 1] == "/":
+                        pat_buf.append("/")
+                        k += 2
+                        continue
+                    if ch == "/":
+                        break
+                    pat_buf.append(ch)
+                    k += 1
+                if (
+                    k < len(rest) and rest[k] == "/"
+                    and k + 1 < len(rest) and rest[k + 1] == "d"
+                ):
+                    pat = "".join(pat_buf)
+                    trailing = rest[k + 2:]
+                    return (count, ":d", f"\x1d{mode}:{pat}\x1d{trailing}")
         # two-char ex commands: :s/PAT/REPL/flags  and  :r FILE
         if len(rest) >= 2 and rest[:2] == ":s":
             return (count, ":s", rest[2:])
@@ -3526,6 +3563,101 @@ def op_vim(path: str, script: str) -> str:
             content = content[:insert_pos] + file_text + content[insert_pos:]
             cursor = insert_pos
             log.append(f"  {i}. :r {path_arg!r} ({len(file_text)} chars inserted)")
+
+        # --- ex delete: :%d, :Nd, :N,Md, :.d, :$d, :.,$d, :g/PAT/d, :v/PAT/d ---
+        elif verb == ":d":
+            # arg is always sentinel-encoded by the parser:
+            #   \x1d{range_spec}\x1d{trailing}   (range_spec is %, N, ., $, N,M, etc.)
+            #   \x1d{g|v}:{PAT}\x1d{trailing}    (global/inverse-global delete)
+            if not arg.startswith("\x1d"):
+                return f"ERROR: action {i} '{action}': :d malformed encoding\n"
+            close = arg.find("\x1d", 1)
+            if close == -1:
+                return f"ERROR: action {i} '{action}': :d malformed encoding\n"
+            spec = arg[1:close]
+            # trailing chars after the encoded :d are not used today but kept for forward-compat.
+            lines = content.split("\n")
+            has_trailing_nl = lines and lines[-1] == ""
+            total_lines = len(lines) - (1 if has_trailing_nl else 0)
+            if total_lines == 0:
+                return f"ERROR: action {i} '{action}': :d on empty buffer\n"
+
+            # --- pattern mode: :g/PAT/d  or  :v/PAT/d ---
+            if spec.startswith("g:") or spec.startswith("v:"):
+                mode = spec[0]
+                pat = spec[2:]
+                if not pat:
+                    return f"ERROR: action {i} '{action}': :{mode}/PAT/d needs non-empty PAT\n"
+                try:
+                    rx = re.compile(pat)
+                except re.error as e:
+                    return f"ERROR: action {i} '{action}': :{mode}/PAT/d regex: {e}\n"
+                body_lines = lines[:-1] if has_trailing_nl else lines
+                if mode == "g":
+                    kept = [ln for ln in body_lines if rx.search(ln) is None]
+                    n_deleted = len(body_lines) - len(kept)
+                else:  # 'v'
+                    kept = [ln for ln in body_lines if rx.search(ln) is not None]
+                    n_deleted = len(body_lines) - len(kept)
+                if n_deleted == 0:
+                    return f"ERROR: action {i} '{action}': :{mode}/{pat}/d no lines matched\n"
+                new_content = "\n".join(kept)
+                if kept and has_trailing_nl:
+                    new_content += "\n"
+                elif not kept:
+                    new_content = ""
+                content = new_content
+                cursor = min(cursor, len(content))
+                log.append(f"  {i}. :{mode}/{pat!r}/d ({n_deleted} lines deleted)")
+                continue
+
+            # --- line-range mode ---
+            cursor_line, _ = _offset_to_line_col(content, cursor)
+
+            def _resolve_d(addr: str) -> int:
+                if addr == ".":
+                    return cursor_line
+                if addr == "$":
+                    return total_lines
+                if addr.isdigit():
+                    return int(addr)
+                raise ValueError(f"bad address {addr!r}")
+
+            if spec == "%":
+                line_a, line_b = 1, total_lines
+            else:
+                if "," in spec:
+                    a, b = spec.split(",", 1)
+                else:
+                    a, b = spec, spec
+                try:
+                    line_a = _resolve_d(a)
+                    line_b = _resolve_d(b)
+                except ValueError as e:
+                    return f"ERROR: action {i} '{action}': :d range: {e}\n"
+            if line_a < 1 or line_b < 1 or line_a > total_lines or line_b > total_lines:
+                return (
+                    f"ERROR: action {i} '{action}': :d range {line_a}..{line_b} "
+                    f"out of bounds (1..{total_lines})\n"
+                )
+            if line_a > line_b:
+                return (
+                    f"ERROR: action {i} '{action}': :d range start ({line_a}) "
+                    f"is after end ({line_b})\n"
+                )
+            # Compute byte slice for lines [line_a..line_b] (inclusive of trailing \n).
+            line_starts: List[int] = [0]
+            for k, ch in enumerate(content):
+                if ch == "\n":
+                    line_starts.append(k + 1)
+            del_start = line_starts[line_a - 1]
+            if line_b < len(line_starts):
+                del_end = line_starts[line_b]  # exclusive: start of next line
+            else:
+                del_end = len(content)
+            content = content[:del_start] + content[del_end:]
+            cursor = min(del_start, len(content))
+            log.append(f"  {i}. :{spec}d ({line_b - line_a + 1} lines deleted)")
 
         # --- change to end-of-line / BOL ---
         elif verb == "c$":
