@@ -413,6 +413,25 @@ def test_regex_backward(tmp_path: Path) -> None:
     assert f.read_text() == "foo1 foo2 LAST\n"
 
 
+def test_sed_style_pat_cmd_auto_splits_on_miss(tmp_path: Path) -> None:
+    """Kevin reflex `/PAT/CMD` (sed-style) auto-splits when strict search misses
+    and the shortened pattern matches. Trailing `<CMD>` becomes the next action."""
+    f = tmp_path / "x.php"
+    f.write_text("<?php\n/**\n * @coverage 85%\n */\nclass Foo {}\n")
+    supertool.op_vi(str(f), '/ \\* @coverage/O * @coverageAuditWarn "x"')
+    assert "@coverageAuditWarn" in f.read_text().splitlines()[2]
+
+
+def test_sed_style_auto_split_does_not_hijack_legit_slash(tmp_path: Path) -> None:
+    """If the full pattern with embedded `/<verb>` matches, no auto-split."""
+    f = tmp_path / "x.txt"
+    f.write_text("/usr/Open at top\n")
+    # Auto-split shouldn't fire because strict search finds 'usr/Op' literally
+    # in the file. Cursor lands at the 'u' (start of match), `i!` inserts there.
+    supertool.op_vi(str(f), "/usr/Op;i!")
+    assert f.read_text() == "/!usr/Open at top\n"
+
+
 def test_regex_special_char_literal_fallback(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("a = foo(bar)\n")
