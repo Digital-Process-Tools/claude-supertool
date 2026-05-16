@@ -2612,9 +2612,11 @@ def op_vi(path: str, script: str) -> str:
             return (count, "ciw", rest[3:])
         if len(rest) >= 3 and rest[:2] == "ci" and rest[2] in ('"', "'", "(", "[", "{"):
             return (count, "ci" + rest[2], rest[3:])
-        # two-char ex command :s/PAT/REPL/flags
+        # two-char ex commands: :s/PAT/REPL/flags  and  :r FILE
         if len(rest) >= 2 and rest[:2] == ":s":
             return (count, ":s", rest[2:])
+        if len(rest) >= 2 and rest[:2] == ":r":
+            return (count, ":r", rest[2:])
         # two-char yank/delete word/eol: yw, y$, yy, dw, d$, d0, c$, c0, cf, cF, ct, cT, df, dF, dt, dT
         if len(rest) >= 2 and rest[:2] in (
             "gg", "dd", "cc", "cw",
@@ -3067,6 +3069,32 @@ def op_vi(path: str, script: str) -> str:
             content = new_content
             cursor = min(cursor, len(content))
             log.append(f"  {i}. :s/{spat!r}/{srepl_dec!r}/{sflags} ({n} subs)")
+
+        # --- ex read file: :r FILE ---
+        elif verb == ":r":
+            path_arg = arg.strip()
+            if not path_arg:
+                return f"ERROR: action {i} '{action}': :r needs a file path\n"
+            try:
+                with open(path_arg, "r", encoding="utf-8", errors="replace") as _fh:
+                    file_text = _fh.read()
+            except OSError as e:
+                return f"ERROR: action {i} '{action}': :r failed to read {path_arg!r}: {e}\n"
+            # vim :r inserts AFTER the current line. Ensure a newline boundary.
+            eol = _line_end(content, cursor)
+            if eol < len(content):
+                # cursor is on a line followed by `\n`; insert after that `\n`
+                insert_pos = eol + 1
+            else:
+                # cursor on last line with no trailing `\n` — add one
+                if content and not content.endswith("\n"):
+                    content += "\n"
+                insert_pos = len(content)
+            if file_text and not file_text.endswith("\n"):
+                file_text += "\n"
+            content = content[:insert_pos] + file_text + content[insert_pos:]
+            cursor = insert_pos
+            log.append(f"  {i}. :r {path_arg!r} ({len(file_text)} chars inserted)")
 
         # --- change to end-of-line / BOL ---
         elif verb == "c$":
