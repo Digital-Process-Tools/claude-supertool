@@ -2604,17 +2604,30 @@ def op_vi(path: str, script: str) -> str:
     # them. Merge: treat the next segment as O's TEXT. Catches the most
     # frequent post-`␞` mistake (same mental model as the old `o;TEXT`).
     _TEXT_VERBS_BARE = {"i", "a", "A", "I", "o", "O"}
+    # Next actions starting with these chars are clearly verbs/commands,
+    # NOT TEXT for the preceding bare text-verb. Skip the merge.
+    _NEXT_IS_CLEARLY_VERB = (":", "/", "?")
     merged: List[str] = []
     k = 0
     while k < len(raw_actions):
         cur = raw_actions[k]
-        if cur in _TEXT_VERBS_BARE and k + 1 < len(raw_actions):
+        if (
+            cur in _TEXT_VERBS_BARE
+            and k + 1 < len(raw_actions)
+            and not raw_actions[k + 1].startswith(_NEXT_IS_CLEARLY_VERB)
+        ):
             merged.append(cur + raw_actions[k + 1])
             k += 2
             continue
         merged.append(cur)
         k += 1
     raw_actions = merged
+    # Autocorrect: `<digits>gg` is wrong — `gg` ignores count in vim, the
+    # correct line-jump form is `<digits>G`. Rewrite to spare Kevin the
+    # silent failure (current behavior: `224gg` jumps to BOF, ignoring 224).
+    raw_actions = [
+        re.sub(r"^([1-9]\d*)gg$", r"\1G", act) for act in raw_actions
+    ]
     # Autocorrect: vi count goes BEFORE the verb, not in the middle.
     # `d5d` → `5dd`, `c5w` → `5cw`, `y5y` → `5yy`. Only rewrite when the
     # first+last char form a known count-able verb pair, to avoid breaking
@@ -2809,6 +2822,24 @@ def op_vi(path: str, script: str) -> str:
                     idx = content.find(trimmed, cursor)
                 if idx != -1:
                     pat = trimmed
+            bof_retry = False
+            if idx == -1 and cursor > 0:
+                # Autocorrect: cursor persists across vi::: calls. If forward
+                # search misses from a mid-file cursor, retry from BOF — the
+                # match might be earlier in the file. Kevin's mental model
+                # assumes each call starts at BOF.
+                try:
+                    rx_b = re.compile(pat, re.MULTILINE)
+                    m_b = rx_b.search(content, 0)
+                    if m_b is not None and m_b.start() != m_b.end():
+                        idx = m_b.start()
+                        bof_retry = True
+                except re.error:
+                    pass
+                if idx == -1:
+                    idx = content.find(pat, 0)
+                    if idx != -1:
+                        bof_retry = True
             if idx == -1:
                 # sed-style auto-split: try truncating pattern at first `/<verb>`
                 # boundary. Kevin's training has `/PAT/cmd` muscle memory; if
@@ -2847,7 +2878,8 @@ def op_vi(path: str, script: str) -> str:
                 return f"ERROR: action {i} '{action}': pattern not found forward{hint}\n"
             cursor = idx
             last_search = (pat, "/")
-            log.append(f"  {i}. /{pat!r} → {cursor}")
+            note = " (retried from BOF — cursor persisted from previous call)" if bof_retry else ""
+            log.append(f"  {i}. /{pat!r} → {cursor}{note}")
         elif verb == "?":
             if not arg:
                 return f"ERROR: action {i} '{action}': empty ? pattern\n"
