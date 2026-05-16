@@ -135,8 +135,8 @@
     },
     "vi": {
       "syntax": "vi:::PATH:::SCRIPT",
-      "description": "vi-flavored cursor-based multi-action edit. Actions split by newline or ';'. Each action: [count][verb][arg]. Cursor: gg/G (BOF/EOF), nG (goto line), 0/$ (BOL/EOL), /PAT or ?PAT (search), nh/nl/nj/nk (move). Inserts (TEXT to end of action, \\n/\\t decoded): iTEXT (before), aTEXT (after), ITEXT (BOL), ATEXT (EOL), oTEXT (open below), OTEXT (open above). Deletes: x/nx (chars), dd/ndd (lines), D (to EOL). Replace: rc. PREFER over edit::: for any insert with structure.",
-      "example": "vi:::skill.md:::/## Process;O## Task list;o1. Foo;o2. Bar",
+      "description": "vi-flavored cursor-based multi-action edit. Actions split by '␞' (U+241E) ONLY — newlines and ';' are literal text. Each action: [count][verb][arg]. Cursor: gg/G (BOF/EOF), nG (goto line), 0/$ (BOL/EOL), /PAT or ?PAT (search), nh/nl/nj/nk (move). Inserts (TEXT to end of action, \\n/\\t decoded): iTEXT (before), aTEXT (after), ITEXT (BOL), ATEXT (EOL), oTEXT (open below), OTEXT (open above). Deletes: x/nx (chars), dd/ndd (lines), D (to EOL). Replace: rc. PREFER over edit::: for any insert with structure.",
+      "example": "vi:::skill.md:::/## Process␞O## Task list␞o1. Foo␞o2. Bar",
       "status": 1,
       "hint": true
     }
