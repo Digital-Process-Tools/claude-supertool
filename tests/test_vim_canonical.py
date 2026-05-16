@@ -4,7 +4,7 @@ Compiled from vim's own tutorial and quick-reference (`:help motion.txt`,
 `:help change.txt`, `vimtutor`). Each case mirrors what a real vim user
 would type and expect. Run with:
 
-    pytest tests/test_vi_canonical.py --no-cov -v
+    pytest tests/test_vim_canonical.py --no-cov -v
 
 Cases the impl doesn't support yet show up as xfail or fail — those are
 the gap list for the next iteration.
@@ -98,9 +98,9 @@ def test_canonical_vim_behavior(
 ) -> None:
     """Each canonical vim case: write `initial`, run `script`, check output."""
     # Isolate cursor cache so cases don't pollute each other
-    monkeypatch.setenv("SUPERTOOL_VI_NO_PERSIST", "1")
+    monkeypatch.setenv("SUPERTOOL_VIM_NO_PERSIST", "1")
     f = tmp_path / "x.txt"
     f.write_text(initial)
-    out = supertool.op_vi(str(f), script)
+    out = supertool.op_vim(str(f), script)
     actual = f.read_text()
     assert actual == expected, f"{name}\n  script: {script!r}\n  out: {out}\n  got: {actual!r}\n  want: {expected!r}"

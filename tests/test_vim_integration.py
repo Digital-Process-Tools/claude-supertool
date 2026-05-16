@@ -117,14 +117,14 @@ NGINX_EXTRA = """
 
 def test_vimgolf_strip_comments_swap_args(tmp_path: Path, monkeypatch) -> None:
     """VimGolf-style: strip Python inline comments + swap function args."""
-    monkeypatch.setenv("SUPERTOOL_VI_NO_PERSIST", "1")
+    monkeypatch.setenv("SUPERTOOL_VIM_NO_PERSIST", "1")
     f = tmp_path / "x.py"
     f.write_text(
         "def foo(a, b, c):  # main function\n"
         "    x = a + b  # add values\n"
         "    return x\n"
     )
-    supertool.op_vi(
+    supertool.op_vim(
         str(f),
         "%s/  +#.*//g␞%s/\\(a, b, c\\)/(c, b, a)/",
     )
@@ -137,14 +137,14 @@ def test_vimgolf_strip_comments_swap_args(tmp_path: Path, monkeypatch) -> None:
 
 def test_vimgolf_whitespace_to_csv(tmp_path: Path, monkeypatch) -> None:
     """VimGolf-style: collapse runs of spaces into single commas."""
-    monkeypatch.setenv("SUPERTOOL_VI_NO_PERSIST", "1")
+    monkeypatch.setenv("SUPERTOOL_VIM_NO_PERSIST", "1")
     f = tmp_path / "x.csv"
     f.write_text(
         "name    age    city\n"
         "Alice   30     NYC\n"
         "Bob     25     LA\n"
     )
-    supertool.op_vi(str(f), "%s/ +/,/g")
+    supertool.op_vim(str(f), "%s/ +/,/g")
     assert f.read_text() == (
         "name,age,city\n"
         "Alice,30,NYC\n"
@@ -154,37 +154,37 @@ def test_vimgolf_whitespace_to_csv(tmp_path: Path, monkeypatch) -> None:
 
 def test_vimgolf_collapse_adjacent_duplicates(tmp_path: Path, monkeypatch) -> None:
     """VimGolf-style: regex backref to collapse adjacent duplicate chars."""
-    monkeypatch.setenv("SUPERTOOL_VI_NO_PERSIST", "1")
+    monkeypatch.setenv("SUPERTOOL_VIM_NO_PERSIST", "1")
     f = tmp_path / "x.txt"
     f.write_text("aabbcc\nddeeff\ngghhii\n")
-    supertool.op_vi(str(f), "%s/(.)\\1+/\\1/g")
+    supertool.op_vim(str(f), "%s/(.)\\1+/\\1/g")
     assert f.read_text() == "abc\ndef\nghi\n"
 
 
 def test_strip_blank_lines(tmp_path: Path, monkeypatch) -> None:
     """Remove all blank lines from a file via regex."""
-    monkeypatch.setenv("SUPERTOOL_VI_NO_PERSIST", "1")
+    monkeypatch.setenv("SUPERTOOL_VIM_NO_PERSIST", "1")
     f = tmp_path / "x.txt"
     f.write_text("line1\n\nline2\n\n\nline3\n")
-    supertool.op_vi(str(f), "%s/^\\n//g")
+    supertool.op_vim(str(f), "%s/^\\n//g")
     assert f.read_text() == "line1\nline2\nline3\n"
 
 
 def test_markdown_deepen_headings(tmp_path: Path, monkeypatch) -> None:
     """Demote every `# heading` to `## heading` (add a leading `#`)."""
-    monkeypatch.setenv("SUPERTOOL_VI_NO_PERSIST", "1")
+    monkeypatch.setenv("SUPERTOOL_VIM_NO_PERSIST", "1")
     f = tmp_path / "x.md"
     f.write_text("# Top\n\n## Sub\n\n# Another top\n")
-    supertool.op_vi(str(f), "%s/^#/##/g")
+    supertool.op_vim(str(f), "%s/^#/##/g")
     assert f.read_text() == "## Top\n\n### Sub\n\n## Another top\n"
 
 
 def test_python_decorator_wrap_all_defs(tmp_path: Path, monkeypatch) -> None:
     """Prefix every top-level `def NAME(` with `@profile\\n` decorator line."""
-    monkeypatch.setenv("SUPERTOOL_VI_NO_PERSIST", "1")
+    monkeypatch.setenv("SUPERTOOL_VIM_NO_PERSIST", "1")
     f = tmp_path / "x.py"
     f.write_text("def foo():\n    pass\n\ndef bar(x):\n    return x\n")
-    supertool.op_vi(str(f), "%s/^def /@profile\\ndef /g")
+    supertool.op_vim(str(f), "%s/^def /@profile\\ndef /g")
     assert f.read_text() == (
         "@profile\ndef foo():\n    pass\n\n"
         "@profile\ndef bar(x):\n    return x\n"
@@ -193,7 +193,7 @@ def test_python_decorator_wrap_all_defs(tmp_path: Path, monkeypatch) -> None:
 
 def test_json_config_bump_and_insert(tmp_path: Path, monkeypatch) -> None:
     """Bump version literal + insert a new field before the closing brace."""
-    monkeypatch.setenv("SUPERTOOL_VI_NO_PERSIST", "1")
+    monkeypatch.setenv("SUPERTOOL_VIM_NO_PERSIST", "1")
     f = tmp_path / "config.json"
     f.write_text(
         "{\n"
@@ -201,7 +201,7 @@ def test_json_config_bump_and_insert(tmp_path: Path, monkeypatch) -> None:
         '    "name": "demo"\n'
         "}\n"
     )
-    supertool.op_vi(
+    supertool.op_vim(
         str(f),
         '%s/"1.0.0"/"2.0.0"/␞%s/"name": "demo"$/"name": "demo",/␞G␞?^}␞O    "debug": true',
     )
@@ -217,7 +217,7 @@ def test_json_config_bump_and_insert(tmp_path: Path, monkeypatch) -> None:
 def test_online_delete_lines_matching_pattern(tmp_path: Path, monkeypatch) -> None:
     """Source: learnvim.irian.to/basics/the_global_command (`:g/console/d`).
     Adapted: remove all lines containing `console` using :%s with whole-line regex."""
-    monkeypatch.setenv("SUPERTOOL_VI_NO_PERSIST", "1")
+    monkeypatch.setenv("SUPERTOOL_VIM_NO_PERSIST", "1")
     f = tmp_path / "x.js"
     f.write_text(
         "const one = 1;\n"
@@ -227,7 +227,7 @@ def test_online_delete_lines_matching_pattern(tmp_path: Path, monkeypatch) -> No
         "const three = 3;\n"
         'console.log("three: ", three);\n'
     )
-    supertool.op_vi(str(f), "%s/^.*console.*\\n//g")
+    supertool.op_vim(str(f), "%s/^.*console.*\\n//g")
     assert f.read_text() == (
         "const one = 1;\n"
         "const two = 2;\n"
@@ -237,21 +237,21 @@ def test_online_delete_lines_matching_pattern(tmp_path: Path, monkeypatch) -> No
 
 def test_online_append_semicolon_non_empty_lines(tmp_path: Path, monkeypatch) -> None:
     """Source: learnvim.irian.to (`:g/./normal A;`). Adapted with :%s backref."""
-    monkeypatch.setenv("SUPERTOOL_VI_NO_PERSIST", "1")
+    monkeypatch.setenv("SUPERTOOL_VIM_NO_PERSIST", "1")
     f = tmp_path / "x.js"
     f.write_text("const x = 5\nconst y = 10\nconst z = 15\n")
-    supertool.op_vi(str(f), "%s/(.+)$/\\1;/g")
+    supertool.op_vim(str(f), "%s/(.+)$/\\1;/g")
     assert f.read_text() == "const x = 5;\nconst y = 10;\nconst z = 15;\n"
 
 
 def test_online_reorder_lastname_firstname(tmp_path: Path, monkeypatch) -> None:
     """Source: devhints.io/vim — `LastName, FirstName` → `FirstName LastName`."""
-    monkeypatch.setenv("SUPERTOOL_VI_NO_PERSIST", "1")
+    monkeypatch.setenv("SUPERTOOL_VIM_NO_PERSIST", "1")
     f = tmp_path / "names.txt"
     f.write_text(
         "Smith, John\nJohnson, Sarah\nWilliams, Mike\nBrown, Emma\nDavis, Robert\n"
     )
-    supertool.op_vi(str(f), "%s/(.*), (.*)/\\2 \\1/g")
+    supertool.op_vim(str(f), "%s/(.*), (.*)/\\2 \\1/g")
     assert f.read_text() == (
         "John Smith\nSarah Johnson\nMike Williams\nEmma Brown\nRobert Davis\n"
     )
@@ -285,10 +285,10 @@ def test_online_zen_of_python_refactor(tmp_path: Path, monkeypatch) -> None:
     """Source: raw.githubusercontent.com/python/cpython Lib/this.py.
     Real 21-line public text. 6 actions: global word swap, delete line by
     keyword, prepend MD heading, append signature."""
-    monkeypatch.setenv("SUPERTOOL_VI_NO_PERSIST", "1")
+    monkeypatch.setenv("SUPERTOOL_VIM_NO_PERSIST", "1")
     f = tmp_path / "zen.md"
     f.write_text(ZEN_BEFORE)
-    supertool.op_vi(
+    supertool.op_vim(
         str(f),
         "%s/better/preferable/g"
         "␞%s/^.*Dutch.*\\n//g"
@@ -343,10 +343,10 @@ def test_online_linux_kernel_rst_to_md(tmp_path: Path, monkeypatch) -> None:
     coding-style.rst — real 33-line public text. 13 actions to convert RST →
     Markdown: drop section underlines, drop directive, RST inline-code →
     MD inline-code, add MD heading markers, delete a paragraph, append footer."""
-    monkeypatch.setenv("SUPERTOOL_VI_NO_PERSIST", "1")
+    monkeypatch.setenv("SUPERTOOL_VIM_NO_PERSIST", "1")
     f = tmp_path / "linux.md"
     f.write_text(LINUX_RST)
-    supertool.op_vi(
+    supertool.op_vim(
         str(f),
         "gg␞dd␞dd"                                              # drop `.. _codingstyle:` + blank
         "␞%s/^=+$\\n//g"                                         # drop RST h1 underline
@@ -370,7 +370,7 @@ def test_online_linux_kernel_rst_to_md(tmp_path: Path, monkeypatch) -> None:
 def test_online_prepend_https_to_bare_domains(tmp_path: Path, monkeypatch) -> None:
     """Source: devhints.io/vim — prepend https:// to domain-only lines, skip
     lines that already have http:// or https:// prefix."""
-    monkeypatch.setenv("SUPERTOOL_VI_NO_PERSIST", "1")
+    monkeypatch.setenv("SUPERTOOL_VIM_NO_PERSIST", "1")
     f = tmp_path / "urls.txt"
     f.write_text(
         "example.com\n"
@@ -379,7 +379,7 @@ def test_online_prepend_https_to_bare_domains(tmp_path: Path, monkeypatch) -> No
         "http://legacy.example.com\n"
         "devhints.io\n"
     )
-    supertool.op_vi(str(f), "%s/^([a-z]+\\.[a-z]+)$/https:\\/\\/\\1/g")
+    supertool.op_vim(str(f), "%s/^([a-z]+\\.[a-z]+)$/https:\\/\\/\\1/g")
     assert f.read_text() == (
         "https://example.com\n"
         "https://secure.example.com\n"
@@ -391,14 +391,14 @@ def test_online_prepend_https_to_bare_domains(tmp_path: Path, monkeypatch) -> No
 
 def test_sql_migration_rename_table(tmp_path: Path, monkeypatch) -> None:
     """Rename a table everywhere it appears in a SQL migration script."""
-    monkeypatch.setenv("SUPERTOOL_VI_NO_PERSIST", "1")
+    monkeypatch.setenv("SUPERTOOL_VIM_NO_PERSIST", "1")
     f = tmp_path / "migration.sql"
     f.write_text(
         "ALTER TABLE old_users ADD COLUMN email VARCHAR(255);\n"
         "CREATE INDEX idx_old_users_email ON old_users (email);\n"
         "DROP INDEX idx_old_users_legacy;\n"
     )
-    supertool.op_vi(str(f), "%s/old_users/account/g")
+    supertool.op_vim(str(f), "%s/old_users/account/g")
     assert f.read_text() == (
         "ALTER TABLE account ADD COLUMN email VARCHAR(255);\n"
         "CREATE INDEX idx_account_email ON account (email);\n"
@@ -410,7 +410,7 @@ def test_nginx_refactor_one_call(tmp_path: Path, monkeypatch) -> None:
     """Real-world nginx config refactor: rename host, migrate path, drop
     deprecated block, inject /api/ location, prepend generated header.
     11 actions, one vi call."""
-    monkeypatch.setenv("SUPERTOOL_VI_NO_PERSIST", "1")
+    monkeypatch.setenv("SUPERTOOL_VIM_NO_PERSIST", "1")
     target = tmp_path / "site.conf"
     target.write_text(NGINX_BEFORE)
     extra = tmp_path / "extra.txt"
@@ -424,7 +424,7 @@ def test_nginx_refactor_one_call(tmp_path: Path, monkeypatch) -> None:
         f"␞:r {extra}"
         "␞gg␞O# generated 2026-05-16 — DO NOT EDIT"
     )
-    out = supertool.op_vi(str(target), script)
+    out = supertool.op_vim(str(target), script)
     assert "ERROR" not in out, f"unexpected error:\n{out}"
     assert target.read_text() == NGINX_AFTER, (
         f"refactor diverged\n--- got ---\n{target.read_text()}\n--- want ---\n{NGINX_AFTER}"
@@ -434,7 +434,7 @@ def test_nginx_refactor_one_call(tmp_path: Path, monkeypatch) -> None:
 def test_weirdest_combo_one_call(tmp_path: Path, monkeypatch) -> None:
     """12 actions in one vi call: rename, kill debug, bump version, add final,
     swap greeting, inject method inside class, prepend class docblock."""
-    monkeypatch.setenv("SUPERTOOL_VI_NO_PERSIST", "1")
+    monkeypatch.setenv("SUPERTOOL_VIM_NO_PERSIST", "1")
     target = tmp_path / "demo.php"
     target.write_text(DEMO_BEFORE)
     body = tmp_path / "method-body.txt"
@@ -451,7 +451,7 @@ def test_weirdest_combo_one_call(tmp_path: Path, monkeypatch) -> None:
         "␞gg␞/class Greeter"
         "␞O/**\\n * @see \\\\Tests\\\\GreeterTest\\n */"
     )
-    out = supertool.op_vi(str(target), script)
+    out = supertool.op_vim(str(target), script)
     assert "ERROR" not in out, f"unexpected error in script:\n{out}"
     assert target.read_text() == DEMO_AFTER, (
         f"refactor diverged from expected output\n"
@@ -465,7 +465,7 @@ def test_literal_semicolon_chained_in_real_script(tmp_path: Path, monkeypatch) -
     multi-action script. Strips a PHP debug line whose pattern contains `;`,
     then appends a trailing marker via A — proves the chain still splits at
     the `;` AFTER the trailing `/` while keeping in-pattern `;` literal."""
-    monkeypatch.setenv("SUPERTOOL_VI_NO_PERSIST", "1")
+    monkeypatch.setenv("SUPERTOOL_VIM_NO_PERSIST", "1")
     f = tmp_path / "x.php"
     f.write_text(
         "<?php\n"
@@ -474,7 +474,7 @@ def test_literal_semicolon_chained_in_real_script(tmp_path: Path, monkeypatch) -
         "    return;\n"
         "}\n"
     )
-    supertool.op_vi(
+    supertool.op_vim(
         str(f),
         ":s/^.*echo \\$debug; \\/\\/ remove me\\n//"
         "␞gg␞A // touched",
