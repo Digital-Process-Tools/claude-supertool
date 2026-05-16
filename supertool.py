@@ -2666,8 +2666,17 @@ def op_vim(path: str, script: str) -> str:
         # Delete with char arg: df<c>/dF<c>/dt<c>/dT<c>, yf<c>...
         if c in "dy" and start + 1 < n and normalized[start + 1] in "fFtT":
             return (min(start + 3, n), False)
-        # Two-char no-arg verbs in d/y family: dd dw d$ d0, yy yw y$
-        if c in "dy" and start + 1 < n and normalized[start + 1] in ("d", "c", "w", "y", "$", "0"):
+        # Operator-motion: d/PAT\e, d?PAT\e, y/PAT\e, y?PAT\e — greedy
+        if c in "dy" and start + 1 < n and normalized[start + 1] in ("/", "?"):
+            return (start + 2, True)
+        # Operator-motion: dgg, ygg — three-char no-arg
+        if c in "dy" and start + 2 < n and normalized[start + 1] == "g" and normalized[start + 2] == "g":
+            return (start + 3, False)
+        # Two-char no-arg verbs in d/y family: dd dw d$ d0 dG d^ dh dj dk dl,
+        # yy yw y$ yG y^ yh yj yk yl
+        if c in "dy" and start + 1 < n and normalized[start + 1] in (
+            "d", "c", "w", "y", "$", "0", "G", "^", "h", "j", "k", "l"
+        ):
             return (start + 2, False)
         # gg (go to BOF)
         if c == "g" and start + 1 < n and normalized[start + 1] == "g":
@@ -2784,12 +2793,19 @@ def op_vim(path: str, script: str) -> str:
             return (count, ":s", rest[2:])
         if len(rest) >= 2 and rest[:2] == ":r":
             return (count, ":r", rest[2:])
+        # three-char operator-motion: dgg, ygg
+        if len(rest) >= 3 and rest[:3] in ("dgg", "ygg"):
+            return (count, rest[:3], rest[3:])
         # two-char yank/delete word/eol: yw, y$, yy, dw, d$, d0, c$, c0, cf, cF, ct, cT, df, dF, dt, dT
+        # plus operator-motion: dG d^ dh dj dk dl, yG y^ yh yj yk yl, d/ d? y/ y?
         if len(rest) >= 2 and rest[:2] in (
             "gg", "dd", "cc", "cw",
             "yy", "yw", "y$",
             "dw", "d$", "d0",
             "c$", "c0",
+            "dG", "d^", "dh", "dj", "dk", "dl",
+            "yG", "y^", "yh", "yj", "yk", "yl",
+            "d/", "d?", "y/", "y?",
         ):
             return (count, rest[:2], rest[2:])
         # c/d/y + char-find motion (cf<c>, cF<c>, ct<c>, cT<c>, df<c>, ..., yt<c>)
@@ -3581,6 +3597,112 @@ def op_vim(path: str, script: str) -> str:
             register = content[cursor:eol]
             register_linewise = False
             log.append(f"  {i}. y$ ({len(register)} chars)")
+
+        # --- operator-motion family: d/y + G/gg/^/h/j/k/l/search ---
+        elif len(verb) >= 2 and verb[0] in ("d", "y") and verb[1:] in (
+            "G", "gg", "^", "h", "j", "k", "l", "/", "?"
+        ):
+            op = verb[0]
+            motion = verb[1:]
+            linewise = False
+            if motion == "G":
+                # cursor's line BOL .. EOF (inclusive of trailing newline if any)
+                start = _line_start(content, cursor)
+                end = len(content)
+                linewise = True
+            elif motion == "gg":
+                # BOF .. cursor's line end (inclusive of trailing newline)
+                start = 0
+                line_eol = _line_end(content, cursor)
+                end = line_eol + 1 if line_eol < len(content) else len(content)
+                linewise = True
+            elif motion == "^":
+                # cursor back to first non-blank of line
+                bol = _line_start(content, cursor)
+                eol = _line_end(content, cursor)
+                first_nb = bol
+                while first_nb < eol and content[first_nb] in (" ", "\t"):
+                    first_nb += 1
+                if first_nb <= cursor:
+                    start, end = first_nb, cursor
+                else:
+                    # cursor already at/before first non-blank — empty motion
+                    start, end = cursor, cursor
+            elif motion == "h":
+                start = max(0, cursor - 1)
+                end = cursor
+            elif motion == "l":
+                start = cursor
+                end = min(len(content), cursor + 1)
+            elif motion == "j":
+                # current line BOL .. end of next line (inclusive of next \n)
+                start = _line_start(content, cursor)
+                first_nl = content.find("\n", cursor)
+                if first_nl == -1:
+                    end = len(content)
+                else:
+                    second_nl = content.find("\n", first_nl + 1)
+                    end = second_nl + 1 if second_nl != -1 else len(content)
+                linewise = True
+            elif motion == "k":
+                # previous line BOL .. end of current line (inclusive of \n)
+                bol = _line_start(content, cursor)
+                if bol == 0:
+                    # no previous line — operate only on current line
+                    prev_bol = 0
+                else:
+                    prev_bol = _line_start(content, bol - 1)
+                cur_eol = _line_end(content, cursor)
+                start = prev_bol
+                end = cur_eol + 1 if cur_eol < len(content) else len(content)
+                linewise = True
+            elif motion == "/":
+                if not arg:
+                    return f"ERROR: action {i} '{action}': {verb} empty pattern\n"
+                pat = arg
+                idx = -1
+                try:
+                    rx = re.compile(pat, re.MULTILINE)
+                    m = rx.search(content, cursor)
+                    if m is not None and m.start() != m.end():
+                        idx = m.start()
+                except re.error:
+                    pass
+                if idx == -1:
+                    idx = content.find(pat, cursor)
+                if idx == -1:
+                    return f"ERROR: action {i} '{action}': pattern not found forward\n"
+                last_search = (pat, "/")
+                start, end = cursor, idx
+            else:  # "?"
+                if not arg:
+                    return f"ERROR: action {i} '{action}': {verb} empty pattern\n"
+                pat = arg
+                idx = -1
+                try:
+                    rx = re.compile(pat, re.MULTILINE)
+                    last = None
+                    for m in rx.finditer(content[:cursor]):
+                        if m.start() != m.end():
+                            last = m
+                    if last is not None:
+                        idx = last.start()
+                except re.error:
+                    pass
+                if idx == -1:
+                    idx = content.rfind(pat, 0, cursor)
+                if idx == -1:
+                    return f"ERROR: action {i} '{action}': pattern not found backward\n"
+                last_search = (pat, "?")
+                start, end = idx, cursor
+
+            slice_ = content[start:end]
+            register = slice_
+            register_linewise = linewise
+            if op == "d":
+                content = content[:start] + content[end:]
+                cursor = min(start, len(content))
+            log.append(f"  {i}. {verb} ({len(slice_)} chars{', linewise' if linewise else ''})")
 
         # --- paste ---
         elif verb == "p":
