@@ -2659,6 +2659,25 @@ def op_vi(path: str, script: str) -> str:
         # vim alias without leading colon: %s/PAT/REPL/flags maps to :s
         if len(rest) >= 2 and rest[:2] == "%s":
             return (count, ":s", rest[2:])
+        # vim line-range substitute: :Ns/..., :N,Ms/..., :.s/..., :$s/...
+        # Range = optional addr (N | . | $) + optional `,addr`. Encoded into
+        # arg with a `\x1d` (group separator) sentinel: arg becomes
+        # f"\x1d{range_spec}\x1d/PAT/REPL/flags" which the :s handler decodes.
+        if len(rest) >= 2 and rest[0] == ":" and rest[1] in "0123456789.$":
+            j = 1
+            # first address
+            while j < len(rest) and (rest[j].isdigit() or rest[j] in ".$"):
+                j += 1
+            # optional `,addr2`
+            if j < len(rest) and rest[j] == ",":
+                j += 1
+                while j < len(rest) and (rest[j].isdigit() or rest[j] in ".$"):
+                    j += 1
+            # must be followed by `s`
+            if j < len(rest) and rest[j] == "s":
+                range_spec = rest[1:j]
+                body = rest[j + 1:]
+                return (count, ":s", f"\x1d{range_spec}\x1d{body}")
         # two-char ex commands: :s/PAT/REPL/flags  and  :r FILE
         if len(rest) >= 2 and rest[:2] == ":s":
             return (count, ":s", rest[2:])
@@ -3172,6 +3191,64 @@ def op_vi(path: str, script: str) -> str:
 
         # --- ex substitute: :s/PAT/REPL/flags ---
         elif verb == ":s":
+            # Decode optional line-range prefix: \x1d{range}\x1d{body}.
+            # The parser encodes ranges from `:Ns/...`, `:N,Ms/...`, `:.s/...`,
+            # `:$s/...`, etc. Resolve `.` against cursor and `$` against
+            # content here (parse-time didn't have either).
+            sub_start = 0
+            sub_end = len(content)
+            if arg.startswith("\x1d"):
+                close = arg.find("\x1d", 1)
+                if close == -1:
+                    return f"ERROR: action {i} '{action}': :s malformed range encoding\n"
+                range_spec = arg[1:close]
+                arg = arg[close + 1:]
+                lines = content.split("\n")
+                # vim line count excludes trailing-empty from a final `\n`
+                total_lines = len(lines) - (1 if lines and lines[-1] == "" else 0)
+                cursor_line, _ = _offset_to_line_col(content, cursor)
+
+                def _resolve(addr: str) -> int:
+                    if addr == ".":
+                        return cursor_line
+                    if addr == "$":
+                        return total_lines
+                    if addr.isdigit():
+                        return int(addr)
+                    raise ValueError(f"bad address {addr!r}")
+
+                if "," in range_spec:
+                    a, b = range_spec.split(",", 1)
+                else:
+                    a, b = range_spec, range_spec
+                try:
+                    line_a = _resolve(a)
+                    line_b = _resolve(b)
+                except ValueError as e:
+                    return f"ERROR: action {i} '{action}': :s range: {e}\n"
+                if line_a < 1 or line_b < 1 or line_a > total_lines or line_b > total_lines:
+                    return (
+                        f"ERROR: action {i} '{action}': :s range {line_a}..{line_b} "
+                        f"out of bounds (1..{total_lines})\n"
+                    )
+                if line_a > line_b:
+                    return (
+                        f"ERROR: action {i} '{action}': :s range start ({line_a}) "
+                        f"is after end ({line_b})\n"
+                    )
+                # Compute byte slice for lines [line_a..line_b] (inclusive).
+                # line N starts at byte offset of line N's first char.
+                line_starts: List[int] = [0]
+                for k, ch in enumerate(content):
+                    if ch == "\n":
+                        line_starts.append(k + 1)
+                sub_start = line_starts[line_a - 1]
+                # End offset: start of line_b+1 (exclusive), or len(content)
+                # if line_b is the last line.
+                if line_b < len(line_starts):
+                    sub_end = line_starts[line_b]  # exclusive
+                else:
+                    sub_end = len(content)
             if not arg or arg[0] != "/":
                 return f"ERROR: action {i} '{action}': :s needs /PAT/REPL/[flags]\n"
             # parse /PAT/REPL/flags honoring \/ as literal
@@ -3216,7 +3293,31 @@ def op_vi(path: str, script: str) -> str:
             # Digit-prefixed backslashes (\1..\9) are preserved as backrefs.
             srepl_safe = re.sub(r"\\(?=\D)", r"\\\\", srepl_dec)
             try:
-                new_content, n = rx.subn(srepl_safe, content, count=n_max)
+                if sub_start == 0 and sub_end == len(content):
+                    # whole-file path (no range) — preserve existing semantics
+                    new_content, n = rx.subn(srepl_safe, content, count=n_max)
+                else:
+                    # ranged path — iterate per line in the range so non-/g
+                    # replaces the first match on EACH line (vim behavior),
+                    # not just the first match in the whole range.
+                    head = content[:sub_start]
+                    tail = content[sub_end:]
+                    body = content[sub_start:sub_end]
+                    has_trailing_nl = body.endswith("\n")
+                    body_lines = body.split("\n")
+                    if has_trailing_nl:
+                        body_lines = body_lines[:-1]
+                    is_global = "g" in sflags
+                    n = 0
+                    new_lines: List[str] = []
+                    for ln in body_lines:
+                        subbed_ln, k = rx.subn(
+                            srepl_safe, ln, count=0 if is_global else 1
+                        )
+                        new_lines.append(subbed_ln)
+                        n += k
+                    new_body = "\n".join(new_lines) + ("\n" if has_trailing_nl else "")
+                    new_content = head + new_body + tail
             except re.error as e:
                 return f"ERROR: action {i} '{action}': :s replacement: {e}\n"
             if n == 0:
