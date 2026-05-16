@@ -2446,35 +2446,35 @@ def op_replace_lines(path: str, start: int, end: int, content: str) -> str:
 
 
 
-def _vi_cursor_state_path(file_path: str) -> str:
-    """Return the sidecar path that persists vi cursor for `file_path`."""
+def _vim_cursor_state_path(file_path: str) -> str:
+    """Return the sidecar path that persists vim cursor for `file_path`."""
     abs_path = os.path.abspath(file_path)
     digest = hashlib.sha1(abs_path.encode("utf-8")).hexdigest()
     cache_dir = os.path.join(
         os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"),
         "supertool",
-        "vi-cursor",
+        "vim-cursor",
     )
     return os.path.join(cache_dir, digest)
 
 
-def _vi_load_cursor(file_path: str, content_len: int) -> int:
+def _vim_load_cursor(file_path: str, content_len: int) -> int:
     """Load persisted cursor for `file_path`, clamped to [0, content_len]."""
-    if os.environ.get("SUPERTOOL_VI_NO_PERSIST"):
+    if os.environ.get("SUPERTOOL_VIM_NO_PERSIST"):
         return 0
     try:
-        with open(_vi_cursor_state_path(file_path), "r", encoding="utf-8") as fh:
+        with open(_vim_cursor_state_path(file_path), "r", encoding="utf-8") as fh:
             raw = fh.read().strip()
         return max(0, min(content_len, int(raw)))
     except (OSError, ValueError):
         return 0
 
 
-def _vi_save_cursor(file_path: str, cursor: int) -> None:
-    """Persist cursor for `file_path` so the next vi call resumes here."""
-    if os.environ.get("SUPERTOOL_VI_NO_PERSIST"):
+def _vim_save_cursor(file_path: str, cursor: int) -> None:
+    """Persist cursor for `file_path` so the next vim call resumes here."""
+    if os.environ.get("SUPERTOOL_VIM_NO_PERSIST"):
         return
-    state_path = _vi_cursor_state_path(file_path)
+    state_path = _vim_cursor_state_path(file_path)
     try:
         os.makedirs(os.path.dirname(state_path), exist_ok=True)
         with open(state_path, "w", encoding="utf-8") as fh:
@@ -2483,17 +2483,17 @@ def _vi_save_cursor(file_path: str, cursor: int) -> None:
         pass
 
 
-def op_vi(path: str, script: str) -> str:
-    """vi-flavored cursor-based multi-action edit op.
+def op_vim(path: str, script: str) -> str:
+    """vim-flavored cursor-based multi-action edit op.
 
     Actions split by newline OR semicolon. Each action: optional count
-    prefix + verb + optional arg. Lifted from vi for token economy in
+    prefix + verb + optional arg. Lifted from vim for token economy in
     LLM-generated edits.
 
     Cursor persistence: the cursor offset is saved to
-    ~/.cache/supertool/vi-cursor/<sha1(abspath)> after each successful op
+    ~/.cache/supertool/vim-cursor/<sha1(abspath)> after each successful op
     and restored on the next call against the same path. Set
-    SUPERTOOL_VI_NO_PERSIST=1 to disable. Start a script with `gg` to
+    SUPERTOOL_VIM_NO_PERSIST=1 to disable. Start a script with `gg` to
     force-reset to BOF.
 
     Cursor / search:
@@ -2548,31 +2548,31 @@ def op_vi(path: str, script: str) -> str:
 
     Examples:
         # Annotate function signature
-        vi:::foo.py:::/def foo;A  # entry point
+        vim:::foo.py:::/def foo;A  # entry point
 
         # Insert a multi-line block before a marker
-        vi:::skill.md:::/## Process;O## Task list;o1. Foo;o2. Bar
+        vim:::skill.md:::/## Process;O## Task list;o1. Foo;o2. Bar
 
         # Rename a variable
-        vi:::foo.py:::/old_name;ciwnew_name
+        vim:::foo.py:::/old_name;ciwnew_name
 
         # Replace a string literal
-        vi:::foo.py:::/setLabel(;l;ci"New Label"
+        vim:::foo.py:::/setLabel(;l;ci"New Label"
 
         # Replace a function arg list
-        vi:::foo.py:::/foo(;ci(x, y, z
+        vim:::foo.py:::/foo(;ci(x, y, z
 
         # Replace a whole line
-        vi:::foo.py:::/return false;ccreturn true;
+        vim:::foo.py:::/return false;ccreturn true;
 
         # Insert code that contains a semicolon
-        vi:::foo.py:::Areturn $x\\;
+        vim:::foo.py:::Areturn $x\\;
 
         # Join 2 lines
-        vi:::log.txt:::5G;J
+        vim:::log.txt:::5G;J
 
         # Delete 3 lines starting at line 10
-        vi:::log.txt:::10G;3dd
+        vim:::log.txt:::10G;3dd
     """
     if not path:
         return "ERROR: empty path\n"
@@ -2818,7 +2818,7 @@ def op_vi(path: str, script: str) -> str:
             return (count, c, rest[1:])
         return (count, "", rest)  # unknown
 
-    cursor = _vi_load_cursor(path, len(content))
+    cursor = _vim_load_cursor(path, len(content))
     log: List[str] = []
     last_search: Optional[tuple] = None  # (pattern, direction "/"|"?")
     register: str = ""  # anonymous yank/paste register
@@ -2896,7 +2896,7 @@ def op_vi(path: str, script: str) -> str:
                     pat = trimmed
             bof_retry = False
             if idx == -1 and cursor > 0:
-                # Autocorrect: cursor persists across vi::: calls. If forward
+                # Autocorrect: cursor persists across vim::: calls. If forward
                 # search misses from a mid-file cursor, retry from BOF — the
                 # match might be earlier in the file. Kevin's mental model
                 # assumes each call starts at BOF.
@@ -3665,7 +3665,7 @@ def op_vi(path: str, script: str) -> str:
     except OSError as e:
         return f"ERROR: failed to write {path}: {e}\n"
 
-    _vi_save_cursor(path, min(cursor, len(content)))
+    _vim_save_cursor(path, min(cursor, len(content)))
 
     final_line, final_col = _offset_to_line_col(content, cursor)
     new_lines = content.split("\n")
@@ -3673,7 +3673,7 @@ def op_vi(path: str, script: str) -> str:
     ctx_end = min(len(new_lines), final_line + 2)
 
     out = [
-        f"vi {path} ({len(raw_actions)} actions, "
+        f"vim {path} ({len(raw_actions)} actions, "
         f"cursor at {final_line}:{final_col})\n"
     ]
     out.extend(line + "\n" for line in log)
@@ -3982,10 +3982,10 @@ def dispatch(arg: str) -> str:
                 # CONTENT may legitimately contain ':' — rejoin remaining parts
                 rl_content = _decode_escapes(":".join(parts[4:]) if len(parts) > 4 else "")
                 body = op_replace_lines(rl_path, rl_start, rl_end, rl_content)
-        elif op == "vi":
-            vi_path = parts[1] if len(parts) > 1 else ""
-            vi_script = ":".join(parts[2:]) if len(parts) > 2 else ""
-            body = op_vi(vi_path, vi_script)
+        elif op == "vim":
+            vim_path = parts[1] if len(parts) > 1 else ""
+            vim_script = ":".join(parts[2:]) if len(parts) > 2 else ""
+            body = op_vim(vim_path, vim_script)
         elif op in ("introduction", "output-format", "ops", "ops-compact", "version"):
             # Meta-ops use markdown headers instead of --- header ---
             header = ""
