@@ -2673,8 +2673,19 @@ def op_vi(path: str, script: str) -> str:
                     return f"ERROR: action {i} '{action}': {e}\n"
                 log.append(f"  {i}. {count}G (line {count})")
             else:
-                cursor = len(content)
-                log.append(f"  {i}. G (EOF)")
+                # vi G: go to BOL of LAST LINE (not past it). If file ends
+                # with a trailing newline, skip it so cursor lands on the
+                # real last line, not on a phantom empty line. This makes
+                # `G;O...` correctly open above the last line (e.g. above
+                # a class's closing `}`) and `G;dd` delete the last line.
+                if not content:
+                    cursor = 0
+                else:
+                    end = len(content)
+                    if content[end - 1] == "\n":
+                        end -= 1
+                    cursor = _line_start(content, end)
+                log.append(f"  {i}. G (BOL of last line, cursor={cursor})")
         elif verb == "0":
             cursor = _line_start(content, cursor)
             log.append(f"  {i}. 0 (BOL)")
@@ -2746,7 +2757,11 @@ def op_vi(path: str, script: str) -> str:
             try:
                 rx = re.compile(pat, re.MULTILINE)
                 last = None
-                for m in rx.finditer(content[:cursor]):
+                # vi `?` includes the line/char cursor is on, so scan up to
+                # cursor+1 and accept matches that END at or before cursor+1.
+                for m in rx.finditer(content):
+                    if m.end() > cursor + 1:
+                        break
                     if m.start() != m.end():
                         last = m
                 if last is not None:
@@ -2754,7 +2769,7 @@ def op_vi(path: str, script: str) -> str:
             except re.error:
                 pass
             if idx == -1:
-                idx = content.rfind(pat, 0, cursor)
+                idx = content.rfind(pat, 0, cursor + 1)
             if idx == -1:
                 return f"ERROR: action {i} '{action}': pattern not found backward\n"
             cursor = idx
