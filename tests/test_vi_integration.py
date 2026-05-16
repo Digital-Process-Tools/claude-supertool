@@ -161,6 +161,76 @@ def test_vimgolf_collapse_adjacent_duplicates(tmp_path: Path, monkeypatch) -> No
     assert f.read_text() == "abc\ndef\nghi\n"
 
 
+def test_strip_blank_lines(tmp_path: Path, monkeypatch) -> None:
+    """Remove all blank lines from a file via regex."""
+    monkeypatch.setenv("SUPERTOOL_VI_NO_PERSIST", "1")
+    f = tmp_path / "x.txt"
+    f.write_text("line1\n\nline2\n\n\nline3\n")
+    supertool.op_vi(str(f), "%s/^\\n//g")
+    assert f.read_text() == "line1\nline2\nline3\n"
+
+
+def test_markdown_deepen_headings(tmp_path: Path, monkeypatch) -> None:
+    """Demote every `# heading` to `## heading` (add a leading `#`)."""
+    monkeypatch.setenv("SUPERTOOL_VI_NO_PERSIST", "1")
+    f = tmp_path / "x.md"
+    f.write_text("# Top\n\n## Sub\n\n# Another top\n")
+    supertool.op_vi(str(f), "%s/^#/##/g")
+    assert f.read_text() == "## Top\n\n### Sub\n\n## Another top\n"
+
+
+def test_python_decorator_wrap_all_defs(tmp_path: Path, monkeypatch) -> None:
+    """Prefix every top-level `def NAME(` with `@profile\\n` decorator line."""
+    monkeypatch.setenv("SUPERTOOL_VI_NO_PERSIST", "1")
+    f = tmp_path / "x.py"
+    f.write_text("def foo():\n    pass\n\ndef bar(x):\n    return x\n")
+    supertool.op_vi(str(f), "%s/^def /@profile\\ndef /g")
+    assert f.read_text() == (
+        "@profile\ndef foo():\n    pass\n\n"
+        "@profile\ndef bar(x):\n    return x\n"
+    )
+
+
+def test_json_config_bump_and_insert(tmp_path: Path, monkeypatch) -> None:
+    """Bump version literal + insert a new field before the closing brace."""
+    monkeypatch.setenv("SUPERTOOL_VI_NO_PERSIST", "1")
+    f = tmp_path / "config.json"
+    f.write_text(
+        "{\n"
+        '    "version": "1.0.0",\n'
+        '    "name": "demo"\n'
+        "}\n"
+    )
+    supertool.op_vi(
+        str(f),
+        '%s/"1.0.0"/"2.0.0"/;%s/"name": "demo"$/"name": "demo",/;G;?^};O    "debug": true',
+    )
+    assert f.read_text() == (
+        "{\n"
+        '    "version": "2.0.0",\n'
+        '    "name": "demo",\n'
+        '    "debug": true\n'
+        "}\n"
+    )
+
+
+def test_sql_migration_rename_table(tmp_path: Path, monkeypatch) -> None:
+    """Rename a table everywhere it appears in a SQL migration script."""
+    monkeypatch.setenv("SUPERTOOL_VI_NO_PERSIST", "1")
+    f = tmp_path / "migration.sql"
+    f.write_text(
+        "ALTER TABLE old_users ADD COLUMN email VARCHAR(255);\n"
+        "CREATE INDEX idx_old_users_email ON old_users (email);\n"
+        "DROP INDEX idx_old_users_legacy;\n"
+    )
+    supertool.op_vi(str(f), "%s/old_users/account/g")
+    assert f.read_text() == (
+        "ALTER TABLE account ADD COLUMN email VARCHAR(255);\n"
+        "CREATE INDEX idx_account_email ON account (email);\n"
+        "DROP INDEX idx_account_legacy;\n"
+    )
+
+
 def test_nginx_refactor_one_call(tmp_path: Path, monkeypatch) -> None:
     """Real-world nginx config refactor: rename host, migrate path, drop
     deprecated block, inject /api/ location, prepend generated header.
