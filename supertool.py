@@ -2589,16 +2589,16 @@ def op_vi(path: str, script: str) -> str:
 
     # Action separator: U+241E (␞, SYMBOL FOR RECORD SEPARATOR) — chosen
     # because it never appears in source code or natural text, so TEXT
-    # inserts can contain any characters (`;`, `{`, `}`, etc.) without
-    # escaping. Real newlines also separate actions (script.split("\n")
-    # above). The legacy `;` separator and `\;` escape have been removed.
+    # inserts can contain any characters (`;`, `{`, `}`, real newlines,
+    # etc.) without escaping. Only `␞` separates actions; real newlines
+    # inside a script are NOT separators (they go through to TEXT/regex
+    # arguments verbatim, where they have their natural meaning).
     SEP = "␞"
     raw_actions: List[str] = []
-    for line in script.split("\n"):
-        for seg in line.split(SEP):
-            seg = seg.lstrip()
-            if seg:
-                raw_actions.append(seg)
+    for seg in script.split(SEP):
+        seg = seg.lstrip()
+        if seg:
+            raw_actions.append(seg)
     # Autocorrect: vi count goes BEFORE the verb, not in the middle.
     # `d5d` → `5dd`, `c5w` → `5cw`, `y5y` → `5yy`. Only rewrite when the
     # first+last char form a known count-able verb pair, to avoid breaking
