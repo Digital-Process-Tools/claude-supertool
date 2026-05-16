@@ -2697,7 +2697,7 @@ def op_vi(path: str, script: str) -> str:
         if c in ("f", "F", "t", "T") and len(rest) >= 2:
             return (count, c, rest[1])
         # standalone
-        if c in ("h", "j", "k", "l", "0", "$", "G", "D", "x", "J", "n", "N", "p", "P"):
+        if c in ("h", "j", "k", "l", "0", "$", "G", "D", "x", "J", "n", "N", "p", "P", "w", "b", "e", "^"):
             return (count, c, rest[1:])
         return (count, "", rest)  # unknown
 
@@ -3035,6 +3035,79 @@ def op_vi(path: str, script: str) -> str:
                 return f"ERROR: action {i} '{action}': {verb}{target!r} not found on line\n"
             cursor = idx
             log.append(f"  {i}. {verb}{target!r} → {cursor}")
+
+        # --- word motion: w b e ^ ---
+        elif verb == "w":
+            def _is_w(ch: str) -> bool:
+                return ch.isalnum() or ch == "_"
+            for _ in range(count):
+                if cursor >= len(content):
+                    break
+                if _is_w(content[cursor]):
+                    while cursor < len(content) and _is_w(content[cursor]):
+                        cursor += 1
+                elif not content[cursor].isspace():
+                    while (
+                        cursor < len(content)
+                        and not _is_w(content[cursor])
+                        and not content[cursor].isspace()
+                    ):
+                        cursor += 1
+                while (
+                    cursor < len(content)
+                    and content[cursor].isspace()
+                    and content[cursor] != "\n"
+                ):
+                    cursor += 1
+            log.append(f"  {i}. {count}w (cursor={cursor})")
+        elif verb == "b":
+            def _is_w(ch: str) -> bool:
+                return ch.isalnum() or ch == "_"
+            for _ in range(count):
+                if cursor == 0:
+                    break
+                cursor -= 1
+                while cursor > 0 and content[cursor].isspace():
+                    cursor -= 1
+                if _is_w(content[cursor]):
+                    while cursor > 0 and _is_w(content[cursor - 1]):
+                        cursor -= 1
+                else:
+                    while (
+                        cursor > 0
+                        and not _is_w(content[cursor - 1])
+                        and not content[cursor - 1].isspace()
+                    ):
+                        cursor -= 1
+            log.append(f"  {i}. {count}b (cursor={cursor})")
+        elif verb == "e":
+            def _is_w(ch: str) -> bool:
+                return ch.isalnum() or ch == "_"
+            for _ in range(count):
+                if cursor >= len(content):
+                    break
+                if (
+                    cursor + 1 < len(content)
+                    and _is_w(content[cursor])
+                    and not _is_w(content[cursor + 1])
+                ):
+                    cursor += 1
+                while cursor < len(content) and content[cursor].isspace():
+                    cursor += 1
+                while (
+                    cursor + 1 < len(content)
+                    and _is_w(content[cursor + 1])
+                ):
+                    cursor += 1
+            log.append(f"  {i}. {count}e (cursor={cursor})")
+        elif verb == "^":
+            bol = _line_start(content, cursor)
+            eol = _line_end(content, cursor)
+            pos = bol
+            while pos < eol and content[pos] in (" ", "\t"):
+                pos += 1
+            cursor = pos
+            log.append(f"  {i}. ^ (cursor={cursor})")
 
         # --- repeat search: n / N ---
         elif verb in ("n", "N"):
