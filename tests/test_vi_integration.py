@@ -214,6 +214,71 @@ def test_json_config_bump_and_insert(tmp_path: Path, monkeypatch) -> None:
     )
 
 
+def test_online_delete_lines_matching_pattern(tmp_path: Path, monkeypatch) -> None:
+    """Source: learnvim.irian.to/basics/the_global_command (`:g/console/d`).
+    Adapted: remove all lines containing `console` using :%s with whole-line regex."""
+    monkeypatch.setenv("SUPERTOOL_VI_NO_PERSIST", "1")
+    f = tmp_path / "x.js"
+    f.write_text(
+        "const one = 1;\n"
+        'console.log("one: ", one);\n'
+        "const two = 2;\n"
+        'console.log("two: ", two);\n'
+        "const three = 3;\n"
+        'console.log("three: ", three);\n'
+    )
+    supertool.op_vi(str(f), "%s/^.*console.*\\n//g")
+    assert f.read_text() == (
+        "const one = 1;\n"
+        "const two = 2;\n"
+        "const three = 3;\n"
+    )
+
+
+def test_online_append_semicolon_non_empty_lines(tmp_path: Path, monkeypatch) -> None:
+    """Source: learnvim.irian.to (`:g/./normal A;`). Adapted with :%s backref."""
+    monkeypatch.setenv("SUPERTOOL_VI_NO_PERSIST", "1")
+    f = tmp_path / "x.js"
+    f.write_text("const x = 5\nconst y = 10\nconst z = 15\n")
+    supertool.op_vi(str(f), "%s/(.+)$/\\1;/g")
+    assert f.read_text() == "const x = 5;\nconst y = 10;\nconst z = 15;\n"
+
+
+def test_online_reorder_lastname_firstname(tmp_path: Path, monkeypatch) -> None:
+    """Source: devhints.io/vim — `LastName, FirstName` → `FirstName LastName`."""
+    monkeypatch.setenv("SUPERTOOL_VI_NO_PERSIST", "1")
+    f = tmp_path / "names.txt"
+    f.write_text(
+        "Smith, John\nJohnson, Sarah\nWilliams, Mike\nBrown, Emma\nDavis, Robert\n"
+    )
+    supertool.op_vi(str(f), "%s/(.*), (.*)/\\2 \\1/g")
+    assert f.read_text() == (
+        "John Smith\nSarah Johnson\nMike Williams\nEmma Brown\nRobert Davis\n"
+    )
+
+
+def test_online_prepend_https_to_bare_domains(tmp_path: Path, monkeypatch) -> None:
+    """Source: devhints.io/vim — prepend https:// to domain-only lines, skip
+    lines that already have http:// or https:// prefix."""
+    monkeypatch.setenv("SUPERTOOL_VI_NO_PERSIST", "1")
+    f = tmp_path / "urls.txt"
+    f.write_text(
+        "example.com\n"
+        "https://secure.example.com\n"
+        "github.com\n"
+        "http://legacy.example.com\n"
+        "devhints.io\n"
+    )
+    supertool.op_vi(str(f), "%s/^([a-z]+\\.[a-z]+)$/https:\\/\\/\\1/g")
+    assert f.read_text() == (
+        "https://example.com\n"
+        "https://secure.example.com\n"
+        "https://github.com\n"
+        "http://legacy.example.com\n"
+        "https://devhints.io\n"
+    )
+
+
 def test_sql_migration_rename_table(tmp_path: Path, monkeypatch) -> None:
     """Rename a table everywhere it appears in a SQL migration script."""
     monkeypatch.setenv("SUPERTOOL_VI_NO_PERSIST", "1")
