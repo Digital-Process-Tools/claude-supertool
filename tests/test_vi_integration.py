@@ -354,13 +354,14 @@ def test_online_linux_kernel_rst_to_md(tmp_path: Path, monkeypatch) -> None:
         ";%s/``([^`]+)``/`\\1`/g"                                # RST inline code → MD
         ";%s/^Linux kernel coding style$/# Linux kernel coding style\\n/"  # h1
         ";%s/^1\\) Indentation$/## 1) Indentation/"             # h2
-        ";gg;/Burn them;dd"                                     # drop paragraph w/ Burn them
+        ";gg;/First off;2dd"                                    # drop paragraph (First off + Burn them)
         ";G;oConverted from RST by vi",
     )
     out = f.read_text()
     assert out.startswith("# Linux kernel coding style")
     assert "## 1) Indentation" in out
     assert "Burn them" not in out
+    assert "First off" not in out  # entire paragraph dropped
     assert "``switch``" not in out  # RST inline-code rewritten
     assert "`switch`" in out
     assert out.rstrip().endswith("Converted from RST by vi")
@@ -456,4 +457,31 @@ def test_weirdest_combo_one_call(tmp_path: Path, monkeypatch) -> None:
         f"refactor diverged from expected output\n"
         f"--- got ---\n{target.read_text()}\n"
         f"--- want ---\n{DEMO_AFTER}"
+    )
+
+
+def test_literal_semicolon_chained_in_real_script(tmp_path: Path, monkeypatch) -> None:
+    """End-to-end PR #52 fix: `;` literal inside :s PAT/REPL within a chained
+    multi-action script. Strips a PHP debug line whose pattern contains `;`,
+    then appends a trailing marker via A — proves the chain still splits at
+    the `;` AFTER the trailing `/` while keeping in-pattern `;` literal."""
+    monkeypatch.setenv("SUPERTOOL_VI_NO_PERSIST", "1")
+    f = tmp_path / "x.php"
+    f.write_text(
+        "<?php\n"
+        "function go(): void {\n"
+        "    echo $debug; // remove me\n"
+        "    return;\n"
+        "}\n"
+    )
+    supertool.op_vi(
+        str(f),
+        ":s/^.*echo \\$debug; \\/\\/ remove me\\n//"
+        ";gg;A // touched",
+    )
+    assert f.read_text() == (
+        "<?php // touched\n"
+        "function go(): void {\n"
+        "    return;\n"
+        "}\n"
     )
