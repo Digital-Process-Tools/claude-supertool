@@ -2490,6 +2490,271 @@ def _vim_save_cursor(file_path: str, cursor: int) -> None:
         pass
 
 
+class _TextObjectError(Exception):
+    """Raised when a text-object cannot be resolved (no match, EOF, etc.)."""
+
+
+def _resolve_text_object(content: str, cursor: int, kind: str, around: bool) -> tuple:
+    """Return (start, end) byte offsets for vim text-object at cursor.
+
+    kind: w W s p " ' ` ( ) [ ] { } < > b B t
+    around: False = inner (i<X>), True = around (a<X>)
+    """
+    n = len(content)
+    # Normalize aliases
+    if kind == "b":
+        kind = "("
+    elif kind == "B":
+        kind = "{"
+    # Pair canonical: close-bracket variant maps to its opener
+    pair_close_to_open = {")": "(", "]": "[", "}": "{", ">": "<"}
+    if kind in pair_close_to_open:
+        kind = pair_close_to_open[kind]
+
+    # word (iw/aw): \w run [+ trailing/leading whitespace for aw]
+    if kind == "w":
+        if cursor >= n:
+            raise _TextObjectError("iw/aw at EOF")
+        def is_word(ch: str) -> bool:
+            return ch.isalnum() or ch == "_"
+        c = content[cursor]
+        if is_word(c):
+            s = cursor
+            while s > 0 and is_word(content[s - 1]):
+                s -= 1
+            e = cursor
+            while e < n and is_word(content[e]):
+                e += 1
+        else:
+            # cursor on non-word: text-object is the non-word run (vim parity)
+            s = cursor
+            while s > 0 and not is_word(content[s - 1]) and content[s - 1] not in " \t\n":
+                s -= 1
+            e = cursor
+            while e < n and not is_word(content[e]) and content[e] not in " \t\n":
+                e += 1
+        if around:
+            # extend over trailing whitespace (or leading if at EOL)
+            ext = e
+            while ext < n and content[ext] in (" ", "\t"):
+                ext += 1
+            if ext > e:
+                e = ext
+            else:
+                while s > 0 and content[s - 1] in (" ", "\t"):
+                    s -= 1
+        return (s, e)
+
+    # WORD (iW/aW): whitespace-separated
+    if kind == "W":
+        if cursor >= n:
+            raise _TextObjectError("iW/aW at EOF")
+        def is_ws(ch: str) -> bool:
+            return ch in " \t\n"
+        if is_ws(content[cursor]):
+            # on whitespace — span the whitespace run for iW
+            s = cursor
+            while s > 0 and is_ws(content[s - 1]) and content[s - 1] != "\n":
+                s -= 1
+            e = cursor
+            while e < n and is_ws(content[e]) and content[e] != "\n":
+                e += 1
+        else:
+            s = cursor
+            while s > 0 and not is_ws(content[s - 1]):
+                s -= 1
+            e = cursor
+            while e < n and not is_ws(content[e]):
+                e += 1
+        if around:
+            ext = e
+            while ext < n and content[ext] in (" ", "\t"):
+                ext += 1
+            if ext > e:
+                e = ext
+            else:
+                while s > 0 and content[s - 1] in (" ", "\t"):
+                    s -= 1
+        return (s, e)
+
+    # sentence (is/as): ends at . ! ? followed by space/EOL
+    if kind == "s":
+        # find sentence start: scan back for . ! ? + whitespace, or BOF
+        s = cursor
+        while s > 0:
+            prev = content[s - 1]
+            if prev in ".!?" and s < n and content[s] in (" ", "\t", "\n"):
+                # skip leading whitespace after terminator
+                while s < n and content[s] in (" ", "\t"):
+                    s += 1
+                break
+            s -= 1
+        # find sentence end: forward to first . ! ? (inclusive)
+        e = cursor
+        while e < n and content[e] not in ".!?":
+            e += 1
+        if e < n:
+            e += 1  # include terminator
+        if around:
+            while e < n and content[e] in (" ", "\t"):
+                e += 1
+        return (s, e)
+
+    # paragraph (ip/ap): blank-line delimited
+    if kind == "p":
+        lines = content.split("\n")
+        # find cursor's line index
+        cum = 0
+        line_idx = 0
+        for idx, ln in enumerate(lines):
+            if cum + len(ln) >= cursor:
+                line_idx = idx
+                break
+            cum += len(ln) + 1
+        else:
+            line_idx = len(lines) - 1
+        # paragraph = contiguous non-empty lines around cursor
+        # if cursor is on blank line, span the blank-line block (vim parity)
+        on_blank = lines[line_idx] == ""
+        start_idx = line_idx
+        while start_idx > 0 and (lines[start_idx - 1] == "") == on_blank:
+            start_idx -= 1
+        end_idx = line_idx
+        while end_idx + 1 < len(lines) and (lines[end_idx + 1] == "") == on_blank:
+            end_idx += 1
+        # compute offsets
+        s = sum(len(l) + 1 for l in lines[:start_idx])
+        e = sum(len(l) + 1 for l in lines[:end_idx + 1])  # include trailing \n
+        if not around:
+            # inner: don't include the trailing \n on the last line if it's the only sep
+            pass
+        else:
+            # around: include trailing blank lines
+            j = end_idx + 1
+            while j < len(lines) and lines[j] == "":
+                j += 1
+            e = sum(len(l) + 1 for l in lines[:j])
+        return (s, min(e, n))
+
+    # quoted strings: " ' `
+    if kind in ('"', "'", "`"):
+        q = kind
+        # search on the cursor's line first
+        bol = content.rfind("\n", 0, cursor) + 1
+        eol_pos = content.find("\n", cursor)
+        if eol_pos == -1:
+            eol_pos = n
+        line = content[bol:eol_pos]
+        # find pair surrounding cursor within line
+        rel_cur = cursor - bol
+        # gather quote positions on the line
+        positions = [i for i, ch in enumerate(line) if ch == q]
+        if len(positions) < 2:
+            raise _TextObjectError(f"no matching {q} pair on line")
+        # pair them sequentially (1st-2nd, 3rd-4th, ...)
+        pair = None
+        for k in range(0, len(positions) - 1, 2):
+            p1, p2 = positions[k], positions[k + 1]
+            if p1 <= rel_cur <= p2:
+                pair = (p1, p2)
+                break
+        if pair is None:
+            # cursor outside any pair — use first pair after cursor, else first pair
+            for k in range(0, len(positions) - 1, 2):
+                if positions[k] >= rel_cur:
+                    pair = (positions[k], positions[k + 1])
+                    break
+            if pair is None:
+                pair = (positions[0], positions[1])
+        p1, p2 = pair
+        if around:
+            return (bol + p1, bol + p2 + 1)
+        return (bol + p1 + 1, bol + p2)
+
+    # bracket pairs: ( [ { <
+    if kind in ("(", "[", "{", "<"):
+        opener = kind
+        closer = {"(": ")", "[": "]", "{": "}", "<": ">"}[opener]
+        # Find enclosing pair: scan backward for unmatched opener
+        depth = 0
+        s = -1
+        k = cursor
+        # If cursor sits on opener, count from there; else scan
+        while k >= 0:
+            ch = content[k]
+            if ch == closer:
+                depth += 1
+            elif ch == opener:
+                if depth == 0:
+                    s = k
+                    break
+                depth -= 1
+            k -= 1
+        if s == -1:
+            # Fallback: cursor not inside a pair; search forward for next opener
+            fwd = content.find(opener, cursor)
+            if fwd == -1:
+                raise _TextObjectError(f"no opening {opener} found")
+            s = fwd
+        # forward match closer with nesting
+        depth = 1
+        e = -1
+        j = s + 1
+        while j < n:
+            if content[j] == opener:
+                depth += 1
+            elif content[j] == closer:
+                depth -= 1
+                if depth == 0:
+                    e = j
+                    break
+            j += 1
+        if e == -1:
+            raise _TextObjectError(f"no matching {closer}")
+        if around:
+            return (s, e + 1)
+        return (s + 1, e)
+
+    # tag (it/at): HTML/XML tags. <tag ...>content</tag>
+    if kind == "t":
+        import re as _re
+        tag_re = _re.compile(r"<(/?)([A-Za-z][A-Za-z0-9_:-]*)[^<>]*>")
+        # Scan whole file, build stack of opens; find enclosing pair for cursor.
+        # An opener at pos_o with end open_end "encloses" cursor if its matching
+        # closer's end >= cursor and pos_o <= cursor (or cursor < open_end → also include).
+        stack = []  # list of (open_start, open_end, name)
+        pairs = []  # resolved (open_start, open_end, close_start, close_end, name)
+        for m in tag_re.finditer(content):
+            is_close = m.group(1) == "/"
+            name = m.group(2)
+            if is_close:
+                for k in range(len(stack) - 1, -1, -1):
+                    if stack[k][2] == name:
+                        os_, oe_, nm_ = stack.pop(k)
+                        pairs.append((os_, oe_, m.start(), m.end(), nm_))
+                        break
+            else:
+                # self-closing tags don't open
+                if m.group(0).rstrip(">").endswith("/"):
+                    continue
+                stack.append((m.start(), m.end(), name))
+        # find innermost pair enclosing cursor
+        enclosing = None
+        for p in pairs:
+            os_, oe_, cs_, ce_, nm_ = p
+            if os_ <= cursor < ce_:
+                if enclosing is None or os_ > enclosing[0]:
+                    enclosing = p
+        if enclosing is None:
+            raise _TextObjectError("not inside a tag")
+        os_, oe_, cs_, ce_, nm_ = enclosing
+        if around:
+            return (os_, ce_)
+        return (oe_, cs_)
+
+    raise _TextObjectError(f"unknown text-object kind {kind!r}")
+
+
 def op_vim(path: str, script: str) -> str:
     """vim-flavored cursor-based multi-action edit op.
 
@@ -2683,6 +2948,18 @@ def op_vim(path: str, script: str) -> str:
         if c == "c" and start + 1 < n and normalized[start + 1] == "i":
             if start + 2 < n and normalized[start + 2] in ('w', '"', "'", "(", "[", "{"):
                 return (start + 3, True)
+        # Full text-object family: <op>i<X> / <op>a<X>
+        # ops: c d y (single char) and g~ gu gU (two char)
+        # X (text-object kind): w W s p " ' ` ( ) [ ] { } < > b B t
+        # c-family enters text mode (greedy); d/y/g~/gu/gU do not.
+        _TO_KINDS = set('wWsp"\'`()[]{}<>bBt')
+        # Single-char op + i/a + kind
+        if c in "cdy" and start + 2 < n and normalized[start + 1] in "ia" and normalized[start + 2] in _TO_KINDS:
+            return (start + 3, c == "c")
+        # Two-char op (g~, gu, gU) + i/a + kind
+        if c == "g" and start + 3 < n and normalized[start + 1] in ("~", "u", "U") \
+                and normalized[start + 2] in "ia" and normalized[start + 3] in _TO_KINDS:
+            return (start + 4, False)
         # cf<c> / cF<c> / ct<c> / cT<c> — three-char form, greedy after.
         if c == "c" and start + 1 < n and normalized[start + 1] in "fFtT":
             return (min(start + 3, n), True)
@@ -2819,6 +3096,25 @@ def op_vim(path: str, script: str) -> str:
             return (count, "ciw", rest[3:])
         if len(rest) >= 3 and rest[:2] == "ci" and rest[2] in ('"', "'", "(", "[", "{"):
             return (count, "ci" + rest[2], rest[3:])
+        # Full text-object family: <op>i<X> / <op>a<X>
+        # ops single-char: c d y. ops two-char: g~ gu gU.
+        # X kinds: w W s p " ' ` ( ) [ ] { } < > b B t
+        _to_kinds = set('wWsp"\'`()[]{}<>bBt')
+        if (
+            len(rest) >= 3
+            and rest[0] in ("c", "d", "y")
+            and rest[1] in ("i", "a")
+            and rest[2] in _to_kinds
+        ):
+            return (count, rest[:3], rest[3:])
+        if (
+            len(rest) >= 4
+            and rest[0] == "g"
+            and rest[1] in ("~", "u", "U")
+            and rest[2] in ("i", "a")
+            and rest[3] in _to_kinds
+        ):
+            return (count, rest[:4], rest[4:])
         # vim alias: :%s/PAT/REPL/flags maps to :s (whole buffer)
         if len(rest) >= 3 and rest[:3] == ":%s":
             return (count, ":s", rest[3:])
@@ -3326,6 +3622,54 @@ def op_vim(path: str, script: str) -> str:
             cursor = start + 1 + len(text)
             preview = text if len(text) <= 30 else text[:27] + "..."
             log.append(f"  {i}. {verb}{preview!r} (cursor={cursor})")
+
+        # --- generic text-object family: <op>i<X> / <op>a<X> ---
+        # ops: d c y g~ gu gU. kinds: w W s p " ' ` ( ) [ ] { } < > b B t
+        elif (
+            (len(verb) == 3 and verb[0] in ("c", "d", "y") and verb[1] in ("i", "a") and verb[2] in 'wWsp"\'`()[]{}<>bBt')
+            or (len(verb) == 4 and verb[0] == "g" and verb[1] in ("~", "u", "U") and verb[2] in ("i", "a") and verb[3] in 'wWsp"\'`()[]{}<>bBt')
+        ):
+            if len(verb) == 3:
+                op = verb[0]
+                around = verb[1] == "a"
+                kind = verb[2]
+            else:
+                op = verb[:2]
+                around = verb[2] == "a"
+                kind = verb[3]
+            try:
+                ts, te = _resolve_text_object(content, cursor, kind, around)
+            except _TextObjectError as e:
+                return f"ERROR: action {i} '{action}': {e}\n"
+            slice_ = content[ts:te]
+            if op == "y":
+                register = slice_
+                register_linewise = False
+                log.append(f"  {i}. {verb} (yanked {len(slice_)} chars)")
+            elif op == "d":
+                register = slice_
+                register_linewise = False
+                content = content[:ts] + content[te:]
+                cursor = min(ts, len(content))
+                log.append(f"  {i}. {verb} (deleted {len(slice_)} chars)")
+            elif op == "c":
+                register = slice_
+                register_linewise = False
+                text = _decode_escapes(arg) if arg else ""
+                content = content[:ts] + text + content[te:]
+                cursor = ts + len(text)
+                preview = text if len(text) <= 30 else text[:27] + "..."
+                log.append(f"  {i}. {verb}{preview!r} (cursor={cursor})")
+            elif op in ("g~", "gu", "gU"):
+                if op == "g~":
+                    new = slice_.swapcase()
+                elif op == "gu":
+                    new = slice_.lower()
+                else:
+                    new = slice_.upper()
+                content = content[:ts] + new + content[te:]
+                cursor = ts
+                log.append(f"  {i}. {verb} ({len(slice_)} chars)")
 
         # --- change word (cursor to end of word) ---
         elif verb == "cw":
@@ -4762,6 +5106,8 @@ def op_vim(path: str, script: str) -> str:
                 f"h, j, k, l, J, w, b, e, W, B, E, ge, gE, {{, }}, (, ), %, "
                 f"f, F, t, T, ;, ,, i, a, I, A, o, O, s, S, C, x, dd, D, "
                 f"dw, d$, d0, cw, cc, c$, c0, ciw, ci\", ci', ci(, ci[, ci{{, "
+                f"<op>i<X> / <op>a<X> text-objects (op=d|c|y|g~|gu|gU; "
+                f"X=w|W|s|p|\"|'|`|(|)|[|]|{{|}}|<|>|b|B|t), "
                 f"cf<c>, cF<c>, ct<c>, cT<c>, df<c>, dF<c>, dt<c>, dT<c>, "
                 f"yy, yw, y$, yf<c>, yF<c>, yt<c>, yT<c>, p, P, r, :s/PAT/REPL/[gi])\n"
             )
