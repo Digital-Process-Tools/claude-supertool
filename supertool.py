@@ -2508,13 +2508,26 @@ def op_vim(path: str, script: str) -> str:
         G           — end of file (EOF)
         nG          — goto line n (1-indexed)
         0           — BOL
+        ^           — first non-blank of line
         $           — EOL
+        g_          — last non-blank of line
+        +           — first non-blank of next line
+        -           — first non-blank of prev line
+        _           — first non-blank of current line (N_ goes down N-1)
         /PAT        — find PAT forward (regex; literal fallback on re.error)
         ?PAT        — find PAT backward (regex; literal fallback on re.error)
         nh          — n chars left (default 1)
         nl          — n chars right (default 1)
         nj          — n lines down
         nk          — n lines up
+        w b e       — word motions (alnum+_)
+        W B E       — WORD motions (whitespace-delimited)
+        ge gE       — back to word/WORD end
+        { }         — paragraph (blank-line) back/forward
+        ( )         — sentence back/forward
+        %           — match bracket (cursor on (){}[])
+        f F t T     — find/till char on line (forward/back)
+        ; ,         — repeat last f/F/t/T (, reverses)
 
     Inserts (TEXT runs to end of action; \\n / \\t decoded):
         iTEXT       — insert before cursor
@@ -2682,17 +2695,27 @@ def op_vim(path: str, script: str) -> str:
         # Operator-motion: d/PAT\e, d?PAT\e, y/PAT\e, y?PAT\e — greedy
         if c in "dy" and start + 1 < n and normalized[start + 1] in ("/", "?"):
             return (start + 2, True)
-        # Operator-motion: dgg, ygg — three-char no-arg
-        if c in "dy" and start + 2 < n and normalized[start + 1] == "g" and normalized[start + 2] == "g":
-            return (start + 3, False)
+        # Operator-motion: dgg, ygg, cgg — three-char no-arg
+        if c in "dyc" and start + 2 < n and normalized[start + 1] == "g" and normalized[start + 2] == "g":
+            return (start + 3, c == "c")  # cgg enters text mode
+        # Operator + ge/gE/g_ — three-char no-arg (operator-motion)
+        if c in "dyc" and start + 2 < n and normalized[start + 1] == "g" and normalized[start + 2] in ("e", "E", "_"):
+            return (start + 3, c == "c")
         # Two-char no-arg verbs in d/y family: dd dw d$ d0 dG d^ dh dj dk dl,
-        # yy yw y$ yG y^ yh yj yk yl
+        # yy yw y$ yG y^ yh yj yk yl, plus new motions:
+        # d{ d} d( d) d% d+ d- d_ dW dB dE d; d, (and y/c equivalents).
         if c in "dy" and start + 1 < n and normalized[start + 1] in (
-            "d", "c", "w", "y", "$", "0", "G", "^", "h", "j", "k", "l"
+            "d", "c", "w", "y", "$", "0", "G", "^", "h", "j", "k", "l",
+            "{", "}", "(", ")", "%", "+", "-", "_", "W", "B", "E", ";", ",",
         ):
             return (start + 2, False)
-        # gg (go to BOF)
-        if c == "g" and start + 1 < n and normalized[start + 1] == "g":
+        # c + new motions (text mode for c). cc cw c$ c0 already handled above.
+        if c == "c" and start + 1 < n and normalized[start + 1] in (
+            "{", "}", "(", ")", "%", "+", "-", "_", "W", "B", "E", ";", ",", "^",
+        ):
+            return (start + 2, True)
+        # gg (go to BOF), ge, gE, g_
+        if c == "g" and start + 1 < n and normalized[start + 1] in ("g", "e", "E", "_"):
             return (start + 2, False)
         # Single-char no-arg verbs (G, h, j, k, l, x, D, J, n, N, p, P,
         # $, 0, ^, w, b, e, W, B, E, %, etc.)
@@ -2843,9 +2866,16 @@ def op_vim(path: str, script: str) -> str:
             return (count, ":s", rest[2:])
         if len(rest) >= 2 and rest[:2] == ":r":
             return (count, ":r", rest[2:])
-        # three-char operator-motion: dgg, ygg
-        if len(rest) >= 3 and rest[:3] in ("dgg", "ygg"):
+        # three-char operator-motion: dgg, ygg, cgg, dge, dgE, dg_, yge, ygE, yg_, cge, cgE, cg_
+        if len(rest) >= 3 and rest[:3] in (
+            "dgg", "ygg", "cgg",
+            "dge", "ygE", "yg_", "ygE", "yge",
+            "dgE", "dg_", "cge", "cgE", "cg_",
+        ):
             return (count, rest[:3], rest[3:])
+        # standalone ge / gE / g_
+        if len(rest) >= 2 and rest[:2] in ("ge", "gE", "g_"):
+            return (count, rest[:2], rest[2:])
         # two-char yank/delete word/eol: yw, y$, yy, dw, d$, d0, c$, c0, cf, cF, ct, cT, df, dF, dt, dT
         # plus operator-motion: dG d^ dh dj dk dl, yG y^ yh yj yk yl, d/ d? y/ y?
         if len(rest) >= 2 and rest[:2] in (
@@ -2856,6 +2886,15 @@ def op_vim(path: str, script: str) -> str:
             "dG", "d^", "dh", "dj", "dk", "dl",
             "yG", "y^", "yh", "yj", "yk", "yl",
             "d/", "d?", "y/", "y?",
+            # New: paragraph/sentence/bracket/line/word operator-motion targets.
+            "d{", "d}", "d(", "d)", "d%", "d+", "d-", "d_",
+            "dW", "dB", "dE", "d;", "d,",
+            "y{", "y}", "y(", "y)", "y%", "y+", "y-", "y_",
+            "yW", "yB", "yE", "y;", "y,",
+            "cG", "c^", "ch", "cj", "ck", "cl",
+            "c{", "c}", "c(", "c)", "c%", "c+", "c-", "c_",
+            "cW", "cB", "cE", "c;", "c,",
+            "c/", "c?",
         ):
             return (count, rest[:2], rest[2:])
         # c/d/y + char-find motion (cf<c>, cF<c>, ct<c>, cT<c>, df<c>, ..., yt<c>)
@@ -2884,13 +2923,19 @@ def op_vim(path: str, script: str) -> str:
         if c in ("f", "F", "t", "T") and len(rest) >= 2:
             return (count, c, rest[1])
         # standalone
-        if c in ("h", "j", "k", "l", "0", "$", "G", "D", "x", "J", "n", "N", "p", "P", "w", "b", "e", "^"):
+        if c in (
+            "h", "j", "k", "l", "0", "$", "G", "D", "x", "J", "n", "N", "p", "P",
+            "w", "b", "e", "^",
+            # New motions:
+            "W", "B", "E", "{", "}", "(", ")", "%", "+", "-", "_", ";", ",",
+        ):
             return (count, c, rest[1:])
         return (count, "", rest)  # unknown
 
     cursor = _vim_load_cursor(path, len(content))
     log: List[str] = []
     last_search: Optional[tuple] = None  # (pattern, direction "/"|"?")
+    last_find: Optional[tuple] = None  # (verb in fFtT, target char) for ; ,
     register: str = ""  # anonymous yank/paste register
     register_linewise: bool = False  # True if last yank was line-wise (yy)
     for i, action in enumerate(raw_actions, 1):
@@ -3336,6 +3381,7 @@ def op_vim(path: str, script: str) -> str:
             if idx == -1:
                 return f"ERROR: action {i} '{action}': {verb}{target!r} not found on line\n"
             cursor = idx
+            last_find = (verb, target)
             log.append(f"  {i}. {verb}{target!r} → {cursor}")
 
         # --- word motion: w b e ^ ---
@@ -3410,6 +3456,302 @@ def op_vim(path: str, script: str) -> str:
                 pos += 1
             cursor = pos
             log.append(f"  {i}. ^ (cursor={cursor})")
+
+        # --- WORD motions: W B E (whitespace-delimited) ---
+        elif verb == "W":
+            for _ in range(count):
+                if cursor >= len(content):
+                    break
+                # skip current non-whitespace WORD
+                while cursor < len(content) and not content[cursor].isspace():
+                    cursor += 1
+                # skip whitespace (but not past \n in vim - actually W crosses lines)
+                while cursor < len(content) and content[cursor].isspace():
+                    cursor += 1
+            log.append(f"  {i}. {count}W (cursor={cursor})")
+        elif verb == "B":
+            for _ in range(count):
+                if cursor == 0:
+                    break
+                cursor -= 1
+                # skip whitespace backward
+                while cursor > 0 and content[cursor].isspace():
+                    cursor -= 1
+                # back to start of WORD
+                while cursor > 0 and not content[cursor - 1].isspace():
+                    cursor -= 1
+            log.append(f"  {i}. {count}B (cursor={cursor})")
+        elif verb == "E":
+            for _ in range(count):
+                if cursor >= len(content):
+                    break
+                # if already on last char of WORD, step forward into whitespace
+                if (
+                    cursor + 1 < len(content)
+                    and not content[cursor].isspace()
+                    and content[cursor + 1].isspace()
+                ):
+                    cursor += 1
+                # skip whitespace
+                while cursor < len(content) and content[cursor].isspace():
+                    cursor += 1
+                # advance to last non-whitespace of WORD
+                while (
+                    cursor + 1 < len(content)
+                    and not content[cursor + 1].isspace()
+                ):
+                    cursor += 1
+            log.append(f"  {i}. {count}E (cursor={cursor})")
+
+        # --- back-to-word-end: ge / gE ---
+        elif verb == "ge":
+            def _is_w(ch: str) -> bool:
+                return ch.isalnum() or ch == "_"
+            for _ in range(count):
+                if cursor == 0:
+                    break
+                cursor -= 1
+                # skip whitespace backward
+                while cursor > 0 and content[cursor].isspace():
+                    cursor -= 1
+                # if on a word char, step left while previous is same class (no-op: we want END of prev word)
+                # cursor is now at end of some word/non-word run — that's the answer.
+            log.append(f"  {i}. {count}ge (cursor={cursor})")
+        elif verb == "gE":
+            for _ in range(count):
+                if cursor == 0:
+                    break
+                cursor -= 1
+                while cursor > 0 and content[cursor].isspace():
+                    cursor -= 1
+            log.append(f"  {i}. {count}gE (cursor={cursor})")
+
+        # --- line motions: g_, +, -, _ ---
+        elif verb == "g_":
+            # last non-blank of line (with count: down count-1 lines first)
+            for _ in range(max(0, count - 1)):
+                nl = content.find("\n", cursor)
+                if nl == -1:
+                    break
+                cursor = nl + 1
+            bol = _line_start(content, cursor)
+            eol = _line_end(content, cursor)
+            pos = eol - 1
+            while pos >= bol and content[pos] in (" ", "\t"):
+                pos -= 1
+            cursor = max(bol, pos)
+            log.append(f"  {i}. g_ (cursor={cursor})")
+        elif verb == "+":
+            for _ in range(count):
+                nl = content.find("\n", cursor)
+                if nl == -1:
+                    break
+                cursor = nl + 1
+            # first non-blank of resulting line
+            bol = _line_start(content, cursor)
+            eol = _line_end(content, cursor)
+            pos = bol
+            while pos < eol and content[pos] in (" ", "\t"):
+                pos += 1
+            cursor = pos
+            log.append(f"  {i}. {count}+ (cursor={cursor})")
+        elif verb == "-":
+            for _ in range(count):
+                bol = _line_start(content, cursor)
+                if bol == 0:
+                    break
+                cursor = _line_start(content, bol - 1)
+            bol = _line_start(content, cursor)
+            eol = _line_end(content, cursor)
+            pos = bol
+            while pos < eol and content[pos] in (" ", "\t"):
+                pos += 1
+            cursor = pos
+            log.append(f"  {i}. {count}- (cursor={cursor})")
+        elif verb == "_":
+            # current line first non-blank; count goes down count-1 lines
+            for _ in range(max(0, count - 1)):
+                nl = content.find("\n", cursor)
+                if nl == -1:
+                    break
+                cursor = nl + 1
+            bol = _line_start(content, cursor)
+            eol = _line_end(content, cursor)
+            pos = bol
+            while pos < eol and content[pos] in (" ", "\t"):
+                pos += 1
+            cursor = pos
+            log.append(f"  {i}. {count}_ (cursor={cursor})")
+
+        # --- paragraph motions: { } (blank-line boundaries) ---
+        elif verb == "}":
+            for _ in range(count):
+                # find next blank line at or after cursor
+                # blank line = "\n\n" or content starting with \n then \n.
+                # Algorithm: walk forward from cursor; find offset of a \n
+                # such that the next char is also \n or EOF.
+                pos = cursor
+                # if already on a blank line, step past it first
+                bol = _line_start(content, pos)
+                eol = _line_end(content, pos)
+                if bol == eol:
+                    pos = eol + 1 if eol < len(content) else len(content)
+                while pos < len(content):
+                    nl = content.find("\n", pos)
+                    if nl == -1:
+                        pos = len(content)
+                        break
+                    # line after this \n starts at nl+1
+                    next_bol = nl + 1
+                    next_eol = content.find("\n", next_bol)
+                    if next_eol == -1:
+                        next_eol = len(content)
+                    if next_bol == next_eol:
+                        # blank line found
+                        pos = next_bol
+                        break
+                    pos = next_bol
+                cursor = pos
+            log.append(f"  {i}. {count}}} (cursor={cursor})")
+        elif verb == "{":
+            for _ in range(count):
+                pos = cursor
+                bol = _line_start(content, pos)
+                eol = _line_end(content, pos)
+                # if on a blank line, step back past it
+                if bol == eol and bol > 0:
+                    pos = bol - 1
+                else:
+                    pos = bol
+                while pos > 0:
+                    prev_eol = pos - 1  # this is a \n or before
+                    prev_bol = _line_start(content, prev_eol)
+                    prev_line_eol = _line_end(content, prev_bol)
+                    if prev_bol == prev_line_eol:
+                        pos = prev_bol
+                        break
+                    pos = prev_bol
+                else:
+                    pos = 0
+                cursor = pos
+            log.append(f"  {i}. {count}{{ (cursor={cursor})")
+
+        # --- sentence motions: ( ) ---
+        elif verb == ")":
+            # forward to start of next sentence. Sentence boundary = .!? followed by space/newline/EOF.
+            for _ in range(count):
+                pos = cursor
+                while pos < len(content):
+                    ch = content[pos]
+                    if ch in ".!?":
+                        # check what follows
+                        k = pos + 1
+                        if k >= len(content):
+                            pos = len(content)
+                            break
+                        if content[k] in (" ", "\t", "\n"):
+                            # skip the punctuation and the whitespace
+                            k += 1
+                            while k < len(content) and content[k] in (" ", "\t", "\n"):
+                                k += 1
+                            pos = k
+                            break
+                    pos += 1
+                cursor = pos
+            log.append(f"  {i}. {count}) (cursor={cursor})")
+        elif verb == "(":
+            # backward to start of current sentence (or prev if already at start).
+            for _ in range(count):
+                pos = cursor
+                # step back at least one to allow finding the previous boundary
+                if pos > 0:
+                    pos -= 1
+                # walk back to find a .!? followed by whitespace, then advance past
+                found = 0
+                while pos > 0:
+                    ch = content[pos]
+                    if ch in ".!?" and pos + 1 < len(content) and content[pos + 1] in (" ", "\t", "\n"):
+                        # found end of previous sentence; advance to start of current
+                        k = pos + 1
+                        while k < len(content) and content[k] in (" ", "\t", "\n"):
+                            k += 1
+                        found = k
+                        break
+                    pos -= 1
+                cursor = found
+            log.append(f"  {i}. {count}( (cursor={cursor})")
+
+        # --- bracket match: % ---
+        elif verb == "%":
+            if cursor >= len(content):
+                return f"ERROR: action {i} '{action}': % at EOF\n"
+            pairs_fwd = {"(": ")", "[": "]", "{": "}"}
+            pairs_bwd = {")": "(", "]": "[", "}": "{"}
+            ch = content[cursor]
+            if ch in pairs_fwd:
+                opener, closer = ch, pairs_fwd[ch]
+                depth = 1
+                k = cursor + 1
+                while k < len(content):
+                    if content[k] == opener:
+                        depth += 1
+                    elif content[k] == closer:
+                        depth -= 1
+                        if depth == 0:
+                            cursor = k
+                            break
+                    k += 1
+                else:
+                    return f"ERROR: action {i} '{action}': % no matching {closer!r}\n"
+            elif ch in pairs_bwd:
+                opener, closer = pairs_bwd[ch], ch
+                depth = 1
+                k = cursor - 1
+                while k >= 0:
+                    if content[k] == closer:
+                        depth += 1
+                    elif content[k] == opener:
+                        depth -= 1
+                        if depth == 0:
+                            cursor = k
+                            break
+                    k -= 1
+                else:
+                    return f"ERROR: action {i} '{action}': % no matching {opener!r}\n"
+            else:
+                return f"ERROR: action {i} '{action}': % not on a bracket char (found {ch!r})\n"
+            log.append(f"  {i}. % (cursor={cursor})")
+
+        # --- repeat last find: ; , ---
+        elif verb in (";", ","):
+            if last_find is None:
+                return f"ERROR: action {i} '{action}': no previous f/F/t/T to repeat\n"
+            fverb, ftarget = last_find
+            # , reverses direction
+            if verb == ",":
+                reverse_map = {"f": "F", "F": "f", "t": "T", "T": "t"}
+                fverb = reverse_map[fverb]
+            bol = _line_start(content, cursor)
+            eol = _line_end(content, cursor)
+            if fverb == "f":
+                idx = content.find(ftarget, cursor + 1, eol)
+            elif fverb == "F":
+                idx = content.rfind(ftarget, bol, cursor)
+            elif fverb == "t":
+                hit = content.find(ftarget, cursor + 1, eol)
+                # if cursor is right before the previously-found target, skip past
+                if hit != -1 and hit == cursor + 1:
+                    hit = content.find(ftarget, cursor + 2, eol)
+                idx = hit - 1 if hit != -1 else -1
+            else:  # T
+                hit = content.rfind(ftarget, bol, cursor)
+                if hit != -1 and hit == cursor - 1:
+                    hit = content.rfind(ftarget, bol, cursor - 1)
+                idx = hit + 1 if hit != -1 else -1
+            if idx == -1:
+                return f"ERROR: action {i} '{action}': {verb} no match\n"
+            cursor = idx
+            log.append(f"  {i}. {verb} → {cursor}")
 
         # --- repeat search: n / N ---
         elif verb in ("n", "N"):
@@ -3834,9 +4176,12 @@ def op_vim(path: str, script: str) -> str:
             register_linewise = False
             log.append(f"  {i}. y$ ({len(register)} chars)")
 
-        # --- operator-motion family: d/y + G/gg/^/h/j/k/l/search ---
-        elif len(verb) >= 2 and verb[0] in ("d", "y") and verb[1:] in (
-            "G", "gg", "^", "h", "j", "k", "l", "/", "?"
+        # --- operator-motion family: d/y/c + various motions ---
+        elif len(verb) >= 2 and verb[0] in ("d", "y", "c") and verb[1:] in (
+            "G", "gg", "^", "h", "j", "k", "l", "/", "?",
+            "{", "}", "(", ")", "%", "+", "-", "_",
+            "W", "B", "E", ";", ",",
+            "ge", "gE", "g_",
         ):
             op = verb[0]
             motion = verb[1:]
@@ -3910,7 +4255,240 @@ def op_vim(path: str, script: str) -> str:
                     return f"ERROR: action {i} '{action}': pattern not found forward\n"
                 last_search = (pat, "/")
                 start, end = cursor, idx
-            else:  # "?"
+            elif motion in ("W", "B", "E"):
+                # Compute end-of-motion position by simulating the standalone
+                # motion. WORD = non-whitespace run.
+                pos = cursor
+                if motion == "W":
+                    if pos < len(content):
+                        while pos < len(content) and not content[pos].isspace():
+                            pos += 1
+                        while pos < len(content) and content[pos].isspace():
+                            pos += 1
+                    start, end = cursor, pos
+                elif motion == "B":
+                    if pos > 0:
+                        pos -= 1
+                        while pos > 0 and content[pos].isspace():
+                            pos -= 1
+                        while pos > 0 and not content[pos - 1].isspace():
+                            pos -= 1
+                    start, end = pos, cursor
+                else:  # E — inclusive of WORD-end char
+                    if (
+                        pos + 1 < len(content)
+                        and not content[pos].isspace()
+                        and content[pos + 1].isspace()
+                    ):
+                        pos += 1
+                    while pos < len(content) and content[pos].isspace():
+                        pos += 1
+                    while (
+                        pos + 1 < len(content)
+                        and not content[pos + 1].isspace()
+                    ):
+                        pos += 1
+                    start, end = cursor, pos + 1  # inclusive
+            elif motion in ("ge", "gE"):
+                # back-to-word-end: deletes from char AFTER prev word-end up to
+                # cursor exclusive (so trailing whitespace between WORDs is
+                # removed but the cursor's char stays).
+                pos = cursor
+                if pos > 0:
+                    pos -= 1
+                    while pos > 0 and content[pos].isspace():
+                        pos -= 1
+                start, end = pos + 1, cursor
+                if end < start:
+                    start, end = end, start
+            elif motion == "g_":
+                # to last non-blank, inclusive
+                bol = _line_start(content, cursor)
+                eol = _line_end(content, cursor)
+                pos = eol - 1
+                while pos >= bol and content[pos] in (" ", "\t"):
+                    pos -= 1
+                last_nb = max(bol, pos)
+                start, end = cursor, last_nb + 1
+                if end < start:
+                    start, end = end, start
+            elif motion == "+":
+                # linewise: current line through end of next line
+                start = _line_start(content, cursor)
+                first_nl = content.find("\n", cursor)
+                if first_nl == -1:
+                    end = len(content)
+                else:
+                    second_nl = content.find("\n", first_nl + 1)
+                    end = second_nl + 1 if second_nl != -1 else len(content)
+                linewise = True
+            elif motion == "-":
+                # linewise: prev line through end of current line
+                bol = _line_start(content, cursor)
+                if bol == 0:
+                    prev_bol = 0
+                else:
+                    prev_bol = _line_start(content, bol - 1)
+                cur_eol = _line_end(content, cursor)
+                start = prev_bol
+                end = cur_eol + 1 if cur_eol < len(content) else len(content)
+                linewise = True
+            elif motion == "_":
+                # linewise: current line only (with count: count lines)
+                bol = _line_start(content, cursor)
+                e2 = bol
+                for _ in range(count):
+                    nl = content.find("\n", e2)
+                    if nl == -1:
+                        e2 = len(content)
+                        break
+                    e2 = nl + 1
+                start, end = bol, e2
+                linewise = True
+            elif motion == "{":
+                # back to prev blank line — exclusive of cursor
+                pos = cursor
+                cbol = _line_start(content, pos)
+                ceol = _line_end(content, pos)
+                if cbol == ceol and cbol > 0:
+                    pos = cbol - 1
+                else:
+                    pos = cbol
+                while pos > 0:
+                    prev_bol = _line_start(content, pos - 1)
+                    prev_eol = _line_end(content, prev_bol)
+                    if prev_bol == prev_eol:
+                        pos = prev_bol
+                        break
+                    pos = prev_bol
+                else:
+                    pos = 0
+                start, end = pos, cursor
+            elif motion == "}":
+                # forward to next blank line — exclusive
+                pos = cursor
+                cbol = _line_start(content, pos)
+                ceol = _line_end(content, pos)
+                if cbol == ceol:
+                    pos = ceol + 1 if ceol < len(content) else len(content)
+                while pos < len(content):
+                    nl = content.find("\n", pos)
+                    if nl == -1:
+                        pos = len(content)
+                        break
+                    next_bol = nl + 1
+                    next_eol = content.find("\n", next_bol)
+                    if next_eol == -1:
+                        next_eol = len(content)
+                    if next_bol == next_eol:
+                        pos = next_bol
+                        break
+                    pos = next_bol
+                start, end = cursor, pos
+            elif motion == "(":
+                pos = cursor
+                if pos > 0:
+                    pos -= 1
+                found = 0
+                while pos > 0:
+                    ch = content[pos]
+                    if ch in ".!?" and pos + 1 < len(content) and content[pos + 1] in (" ", "\t", "\n"):
+                        k = pos + 1
+                        while k < len(content) and content[k] in (" ", "\t", "\n"):
+                            k += 1
+                        found = k
+                        break
+                    pos -= 1
+                start, end = found, cursor
+            elif motion == ")":
+                pos = cursor
+                while pos < len(content):
+                    ch = content[pos]
+                    if ch in ".!?":
+                        k = pos + 1
+                        if k >= len(content):
+                            pos = len(content)
+                            break
+                        if content[k] in (" ", "\t", "\n"):
+                            k += 1
+                            while k < len(content) and content[k] in (" ", "\t", "\n"):
+                                k += 1
+                            pos = k
+                            break
+                    pos += 1
+                start, end = cursor, pos
+            elif motion == "%":
+                if cursor >= len(content):
+                    return f"ERROR: action {i} '{action}': % at EOF\n"
+                pairs_fwd = {"(": ")", "[": "]", "{": "}"}
+                pairs_bwd = {")": "(", "]": "[", "}": "{"}
+                ch = content[cursor]
+                if ch in pairs_fwd:
+                    opener, closer = ch, pairs_fwd[ch]
+                    depth = 1
+                    k = cursor + 1
+                    target = -1
+                    while k < len(content):
+                        if content[k] == opener:
+                            depth += 1
+                        elif content[k] == closer:
+                            depth -= 1
+                            if depth == 0:
+                                target = k
+                                break
+                        k += 1
+                    if target == -1:
+                        return f"ERROR: action {i} '{action}': % no matching {closer!r}\n"
+                    start, end = cursor, target + 1  # inclusive of closer
+                elif ch in pairs_bwd:
+                    opener, closer = pairs_bwd[ch], ch
+                    depth = 1
+                    k = cursor - 1
+                    target = -1
+                    while k >= 0:
+                        if content[k] == closer:
+                            depth += 1
+                        elif content[k] == opener:
+                            depth -= 1
+                            if depth == 0:
+                                target = k
+                                break
+                        k -= 1
+                    if target == -1:
+                        return f"ERROR: action {i} '{action}': % no matching {opener!r}\n"
+                    start, end = target, cursor + 1  # inclusive of cursor's bracket
+                else:
+                    return f"ERROR: action {i} '{action}': % not on bracket\n"
+            elif motion in (";", ","):
+                if last_find is None:
+                    return f"ERROR: action {i} '{action}': no previous f/F/t/T to repeat\n"
+                fverb, ftarget = last_find
+                if motion == ",":
+                    reverse_map = {"f": "F", "F": "f", "t": "T", "T": "t"}
+                    fverb = reverse_map[fverb]
+                bol = _line_start(content, cursor)
+                eol = _line_end(content, cursor)
+                if fverb == "f":
+                    hit = content.find(ftarget, cursor + 1, eol)
+                    if hit == -1:
+                        return f"ERROR: action {i} '{action}': {motion} no match\n"
+                    start, end = cursor, hit + 1  # inclusive
+                elif fverb == "F":
+                    hit = content.rfind(ftarget, bol, cursor)
+                    if hit == -1:
+                        return f"ERROR: action {i} '{action}': {motion} no match\n"
+                    start, end = hit, cursor
+                elif fverb == "t":
+                    hit = content.find(ftarget, cursor + 1, eol)
+                    if hit == -1:
+                        return f"ERROR: action {i} '{action}': {motion} no match\n"
+                    start, end = cursor, hit  # up to but not including target
+                else:  # T
+                    hit = content.rfind(ftarget, bol, cursor)
+                    if hit == -1:
+                        return f"ERROR: action {i} '{action}': {motion} no match\n"
+                    start, end = hit + 1, cursor
+            elif motion == "?":
                 if not arg:
                     return f"ERROR: action {i} '{action}': {verb} empty pattern\n"
                 pat = arg
@@ -3938,6 +4516,16 @@ def op_vim(path: str, script: str) -> str:
             if op == "d":
                 content = content[:start] + content[end:]
                 cursor = min(start, len(content))
+            elif op == "c":
+                # change: delete + insert TEXT from arg. For pattern-based motions
+                # the arg already held the pattern (consumed above), so don't
+                # re-insert in that case.
+                if motion in ("/", "?"):
+                    text = ""
+                else:
+                    text = _decode_escapes(arg) if arg else ""
+                content = content[:start] + text + content[end:]
+                cursor = start + len(text)
             log.append(f"  {i}. {verb} ({len(slice_)} chars{', linewise' if linewise else ''})")
 
         # --- paste ---
@@ -4011,9 +4599,10 @@ def op_vim(path: str, script: str) -> str:
         else:
             return (
                 f"ERROR: action {i} '{action}': unknown verb '{verb}' "
-                f"(expected gg, G, nG, 0, $, /, ?, n, N, h, j, k, l, J, "
-                f"f, F, t, T, i, a, I, A, o, O, x, dd, D, dw, d$, d0, "
-                f"cw, cc, c$, c0, ciw, ci\", ci', ci(, ci[, ci{{, "
+                f"(expected gg, G, nG, 0, $, ^, g_, +, -, _, /, ?, n, N, "
+                f"h, j, k, l, J, w, b, e, W, B, E, ge, gE, {{, }}, (, ), %, "
+                f"f, F, t, T, ;, ,, i, a, I, A, o, O, s, S, C, x, dd, D, "
+                f"dw, d$, d0, cw, cc, c$, c0, ciw, ci\", ci', ci(, ci[, ci{{, "
                 f"cf<c>, cF<c>, ct<c>, cT<c>, df<c>, dF<c>, dt<c>, dT<c>, "
                 f"yy, yw, y$, yf<c>, yF<c>, yt<c>, yT<c>, p, P, r, :s/PAT/REPL/[gi])\n"
             )
