@@ -126,7 +126,7 @@ def test_vimgolf_strip_comments_swap_args(tmp_path: Path, monkeypatch) -> None:
     )
     supertool.op_vi(
         str(f),
-        "%s/  +#.*//g;%s/\\(a, b, c\\)/(c, b, a)/",
+        "%s/  +#.*//g␞%s/\\(a, b, c\\)/(c, b, a)/",
     )
     assert f.read_text() == (
         "def foo(c, b, a):\n"
@@ -203,7 +203,7 @@ def test_json_config_bump_and_insert(tmp_path: Path, monkeypatch) -> None:
     )
     supertool.op_vi(
         str(f),
-        '%s/"1.0.0"/"2.0.0"/;%s/"name": "demo"$/"name": "demo",/;G;?^};O    "debug": true',
+        '%s/"1.0.0"/"2.0.0"/␞%s/"name": "demo"$/"name": "demo",/␞G␞?^}␞O    "debug": true',
     )
     assert f.read_text() == (
         "{\n"
@@ -291,9 +291,9 @@ def test_online_zen_of_python_refactor(tmp_path: Path, monkeypatch) -> None:
     supertool.op_vi(
         str(f),
         "%s/better/preferable/g"
-        ";%s/^.*Dutch.*\\n//g"
-        ";gg;O# Zen of Python\\n"
-        ";G;oEOF — annotated by Max",
+        "␞%s/^.*Dutch.*\\n//g"
+        "␞gg␞O# Zen of Python\\n"
+        "␞G␞oEOF — annotated by Max",
     )
     out = f.read_text()
     assert "# Zen of Python" in out.splitlines()[0]
@@ -348,14 +348,14 @@ def test_online_linux_kernel_rst_to_md(tmp_path: Path, monkeypatch) -> None:
     f.write_text(LINUX_RST)
     supertool.op_vi(
         str(f),
-        "gg;dd;dd"                                              # drop `.. _codingstyle:` + blank
-        ";%s/^=+$\\n//g"                                         # drop RST h1 underline
-        ";%s/^-+$\\n//g"                                         # drop RST h2 underline
-        ";%s/``([^`]+)``/`\\1`/g"                                # RST inline code → MD
-        ";%s/^Linux kernel coding style$/# Linux kernel coding style\\n/"  # h1
-        ";%s/^1\\) Indentation$/## 1) Indentation/"             # h2
-        ";gg;/First off;2dd"                                    # drop paragraph (First off + Burn them)
-        ";G;oConverted from RST by vi",
+        "gg␞dd␞dd"                                              # drop `.. _codingstyle:` + blank
+        "␞%s/^=+$\\n//g"                                         # drop RST h1 underline
+        "␞%s/^-+$\\n//g"                                         # drop RST h2 underline
+        "␞%s/``([^`]+)``/`\\1`/g"                                # RST inline code → MD
+        "␞%s/^Linux kernel coding style$/# Linux kernel coding style\\n/"  # h1
+        "␞%s/^1\\) Indentation$/## 1) Indentation/"             # h2
+        "␞gg␞/First off␞2dd"                                    # drop paragraph (First off + Burn them)
+        "␞G␞oConverted from RST by vi",
     )
     out = f.read_text()
     assert out.startswith("# Linux kernel coding style")
@@ -418,11 +418,11 @@ def test_nginx_refactor_one_call(tmp_path: Path, monkeypatch) -> None:
 
     script = (
         "%s/old.example.com/new.example.com/g"
-        ";%s/\\/home\\/user\\/old-app\\//\\/srv\\/new-app\\//g"
-        ";gg;/# deprecated:;5dd"
-        ";G;?^};k"
-        f";:r {extra}"
-        ";gg;O# generated 2026-05-16 — DO NOT EDIT"
+        "␞%s/\\/home\\/user\\/old-app\\//\\/srv\\/new-app\\//g"
+        "␞gg␞/# deprecated:␞5dd"
+        "␞G␞?^}␞k"
+        f"␞:r {extra}"
+        "␞gg␞O# generated 2026-05-16 — DO NOT EDIT"
     )
     out = supertool.op_vi(str(target), script)
     assert "ERROR" not in out, f"unexpected error:\n{out}"
@@ -442,14 +442,14 @@ def test_weirdest_combo_one_call(tmp_path: Path, monkeypatch) -> None:
 
     script = (
         "%s/OldName/Greeter/g"
-        ";%s/^        echo \\$who;.*\\n//"
-        ";%s/\"v1\"/\"v2\"/"
-        ";%s/^class Greeter/final class Greeter/"
-        ';%s/"Hello, "/"Howdy, "/'
-        ";G;?^};k"
-        f";:r {body}"
-        ";gg;/class Greeter"
-        ";O/**\\n * @see \\\\Tests\\\\GreeterTest\\n */"
+        "␞%s/^        echo \\$who;.*\\n//"
+        "␞%s/\"v1\"/\"v2\"/"
+        "␞%s/^class Greeter/final class Greeter/"
+        '␞%s/"Hello, "/"Howdy, "/'
+        "␞G␞?^}␞k"
+        f"␞:r {body}"
+        "␞gg␞/class Greeter"
+        "␞O/**\\n * @see \\\\Tests\\\\GreeterTest\\n */"
     )
     out = supertool.op_vi(str(target), script)
     assert "ERROR" not in out, f"unexpected error in script:\n{out}"
@@ -477,7 +477,7 @@ def test_literal_semicolon_chained_in_real_script(tmp_path: Path, monkeypatch) -
     supertool.op_vi(
         str(f),
         ":s/^.*echo \\$debug; \\/\\/ remove me\\n//"
-        ";gg;A // touched",
+        "␞gg␞A // touched",
     )
     assert f.read_text() == (
         "<?php // touched\n"

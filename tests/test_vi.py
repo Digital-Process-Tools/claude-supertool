@@ -13,7 +13,7 @@ import supertool
 def test_gg_jumps_to_bof(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("a\nb\nc\n")
-    out = supertool.op_vi(str(f), "G;gg;ifirst ")
+    out = supertool.op_vi(str(f), "G␞gg␞ifirst ")
     assert f.read_text() == "first a\nb\nc\n"
 
 
@@ -21,7 +21,7 @@ def test_G_lands_on_bol_of_last_line(tmp_path: Path) -> None:
     """vi G: BOL of last real line (skips trailing newline). i inserts before."""
     f = tmp_path / "x.py"
     f.write_text("a\nb\nc\n")
-    out = supertool.op_vi(str(f), "G;iEND")
+    out = supertool.op_vi(str(f), "G␞iEND")
     assert f.read_text() == "a\nb\nENDc\n"
 
 
@@ -29,7 +29,7 @@ def test_G_then_O_opens_above_last_line(tmp_path: Path) -> None:
     """Kevin use case: G;O inserts above class's closing `}`, inside the class."""
     f = tmp_path / "x.php"
     f.write_text("<?php\nclass Foo {\n}\n")
-    supertool.op_vi(str(f), "G;O    public function bar(): void {}")
+    supertool.op_vi(str(f), "G␞O    public function bar(): void {}")
     assert (
         f.read_text()
         == "<?php\nclass Foo {\n    public function bar(): void {}\n}\n"
@@ -39,7 +39,7 @@ def test_G_then_O_opens_above_last_line(tmp_path: Path) -> None:
 def test_nG_goto_line(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("a\nb\nc\nd\n")
-    out = supertool.op_vi(str(f), "3G;i*")
+    out = supertool.op_vi(str(f), "3G␞i*")
     assert f.read_text() == "a\nb\n*c\nd\n"
 
 
@@ -47,7 +47,7 @@ def test_dollar_lands_on_last_char(tmp_path: Path) -> None:
     """vi: `$` lands on last char of line. `i` then inserts BEFORE it."""
     f = tmp_path / "x.py"
     f.write_text("hello\n")
-    out = supertool.op_vi(str(f), "$;i!")
+    out = supertool.op_vi(str(f), "$␞i!")
     # cursor on 'o', insert '!' before → "hell!o\n"
     assert f.read_text() == "hell!o\n"
 
@@ -63,28 +63,28 @@ def test_A_appends_at_eol(tmp_path: Path) -> None:
 def test_zero_to_bol(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("hello\n")
-    out = supertool.op_vi(str(f), "$;0;i>")
+    out = supertool.op_vi(str(f), "$␞0␞i>")
     assert f.read_text() == ">hello\n"
 
 
 def test_search_forward(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("foo bar baz\n")
-    out = supertool.op_vi(str(f), "/bar;i!")
+    out = supertool.op_vi(str(f), "/bar␞i!")
     assert f.read_text() == "foo !bar baz\n"
 
 
 def test_search_backward(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("foo bar foo bar\n")
-    out = supertool.op_vi(str(f), "G;$;?foo;i!")
+    out = supertool.op_vi(str(f), "G␞$␞?foo␞i!")
     assert f.read_text() == "foo bar !foo bar\n"
 
 
 def test_search_forward_not_found(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("foo\n")
-    out = supertool.op_vi(str(f), "/missing;i!")
+    out = supertool.op_vi(str(f), "/missing␞i!")
     assert "ERROR" in out and "not found" in out
     assert f.read_text() == "foo\n"
 
@@ -92,21 +92,21 @@ def test_search_forward_not_found(tmp_path: Path) -> None:
 def test_l_count_move_right(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("abcdef\n")
-    out = supertool.op_vi(str(f), "3l;i!")
+    out = supertool.op_vi(str(f), "3l␞i!")
     assert f.read_text() == "abc!def\n"
 
 
 def test_h_clamps_to_zero(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("abc\n")
-    out = supertool.op_vi(str(f), "$;99h;i!")
+    out = supertool.op_vi(str(f), "$␞99h␞i!")
     assert f.read_text() == "!abc\n"
 
 
 def test_j_moves_down(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("aa\nbb\ncc\n")
-    out = supertool.op_vi(str(f), "2j;i!")
+    out = supertool.op_vi(str(f), "2j␞i!")
     assert f.read_text() == "aa\nbb\n!cc\n"
 
 
@@ -131,28 +131,28 @@ def test_append_after_cursor(tmp_path: Path) -> None:
 def test_insert_at_bol(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("middle\n")
-    out = supertool.op_vi(str(f), "$;I> ")
+    out = supertool.op_vi(str(f), "$␞I> ")
     assert f.read_text() == "> middle\n"
 
 
 def test_append_at_eol(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("middle\n")
-    out = supertool.op_vi(str(f), "0;A <")
+    out = supertool.op_vi(str(f), "0␞A <")
     assert f.read_text() == "middle <\n"
 
 
 def test_open_below(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("title\n")
-    out = supertool.op_vi(str(f), "/title;obody")
+    out = supertool.op_vi(str(f), "/title␞obody")
     assert f.read_text() == "title\nbody\n"
 
 
 def test_open_above(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("body\n")
-    out = supertool.op_vi(str(f), "/body;Ohead")
+    out = supertool.op_vi(str(f), "/body␞Ohead")
     assert f.read_text() == "head\nbody\n"
 
 
@@ -161,7 +161,7 @@ def test_open_chain_block_before_marker(tmp_path: Path) -> None:
     f = tmp_path / "x.md"
     f.write_text("## Process\n")
     out = supertool.op_vi(
-        str(f), "/## Process;O## Task list;o1. Foo;o2. Bar"
+        str(f), "/## Process␞O## Task list␞o1. Foo␞o2. Bar"
     )
     assert f.read_text() == "## Task list\n1. Foo\n2. Bar\n## Process\n"
 
@@ -202,21 +202,21 @@ def test_nx_delete_n_chars(tmp_path: Path) -> None:
 def test_dd_delete_one_line(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("a\nb\nc\n")
-    out = supertool.op_vi(str(f), "2G;dd")
+    out = supertool.op_vi(str(f), "2G␞dd")
     assert f.read_text() == "a\nc\n"
 
 
 def test_ndd_delete_n_lines(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("a\nb\nc\nd\ne\n")
-    out = supertool.op_vi(str(f), "2G;3dd")
+    out = supertool.op_vi(str(f), "2G␞3dd")
     assert f.read_text() == "a\ne\n"
 
 
 def test_D_delete_to_eol(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("keep|drop\nnext\n")
-    out = supertool.op_vi(str(f), "/|;D")
+    out = supertool.op_vi(str(f), "/|␞D")
     assert f.read_text() == "keep\nnext\n"
 
 
@@ -234,14 +234,14 @@ def test_replace_first_char(tmp_path: Path) -> None:
 def test_replace_after_search(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("x = 1\n")
-    out = supertool.op_vi(str(f), "/1;r9")
+    out = supertool.op_vi(str(f), "/1␞r9")
     assert f.read_text() == "x = 9\n"
 
 
 def test_replace_at_eof_errors(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("a")
-    out = supertool.op_vi(str(f), "G;l;rX")
+    out = supertool.op_vi(str(f), "G␞l␞rX")
     assert "ERROR" in out
 
 
@@ -252,77 +252,77 @@ def test_replace_at_eof_errors(tmp_path: Path) -> None:
 def test_ciw_replaces_word(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("foo bar baz\n")
-    supertool.op_vi(str(f), "/bar;ciwQUUX")
+    supertool.op_vi(str(f), "/bar␞ciwQUUX")
     assert f.read_text() == "foo QUUX baz\n"
 
 
 def test_ciw_on_non_word_errors(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("foo bar\n")
-    out = supertool.op_vi(str(f), "/ ;ciwX")
+    out = supertool.op_vi(str(f), "/ ␞ciwX")
     assert "ERROR" in out
 
 
 def test_cw_changes_word_from_cursor(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("foo bar baz\n")
-    supertool.op_vi(str(f), "/bar;l;cwAR")
+    supertool.op_vi(str(f), "/bar␞l␞cwAR")
     assert f.read_text() == "foo bAR baz\n"
 
 
 def test_cc_replaces_line(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("line one\nline two\nline three\n")
-    supertool.op_vi(str(f), "/two;ccLINE TWO")
+    supertool.op_vi(str(f), "/two␞ccLINE TWO")
     assert f.read_text() == "line one\nLINE TWO\nline three\n"
 
 
 def test_cc_count_replaces_n_lines(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("a\nb\nc\nd\n")
-    supertool.op_vi(str(f), "gg;2ccXY")
+    supertool.op_vi(str(f), "gg␞2ccXY")
     assert f.read_text() == "XY\nc\nd\n"
 
 
 def test_ci_double_quote(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text('label = "old text"\n')
-    supertool.op_vi(str(f), '/";ci"new text')
+    supertool.op_vi(str(f), '/"␞ci"new text')
     assert f.read_text() == 'label = "new text"\n'
 
 
 def test_ci_single_quote(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("name = 'alice'\n")
-    supertool.op_vi(str(f), "/';ci'bob")
+    supertool.op_vi(str(f), "/'␞ci'bob")
     assert f.read_text() == "name = 'bob'\n"
 
 
 def test_ci_paren_nested(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("foo(bar(x), y)\n")
-    supertool.op_vi(str(f), "/foo(;ci(NEW")
+    supertool.op_vi(str(f), "/foo(␞ci(NEW")
     assert f.read_text() == "foo(NEW)\n"
 
 
 def test_ci_bracket(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("a = [1, 2, 3]\n")
-    supertool.op_vi(str(f), "/[;ci[9, 9, 9")
+    supertool.op_vi(str(f), "/[␞ci[9, 9, 9")
     assert f.read_text() == "a = [9, 9, 9]\n"
 
 
 def test_ci_brace(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("d = {a: 1}\n")
-    supertool.op_vi(str(f), "/{;ci{b: 2")
+    supertool.op_vi(str(f), "/{␞ci{b: 2")
     assert f.read_text() == "d = {b: 2}\n"
 
 
 def test_ci_no_opener_errors(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("no delim here\n")
-    out = supertool.op_vi(str(f), 'G;ci"X')
+    out = supertool.op_vi(str(f), 'G␞ci"X')
     assert "ERROR" in out
 
 
@@ -333,21 +333,21 @@ def test_ci_no_opener_errors(tmp_path: Path) -> None:
 def test_J_joins_two_lines(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("foo\nbar\nbaz\n")
-    supertool.op_vi(str(f), "gg;J")
+    supertool.op_vi(str(f), "gg␞J")
     assert f.read_text() == "foo bar\nbaz\n"
 
 
 def test_J_count_joins_n_lines(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("a\nb\nc\nd\n")
-    supertool.op_vi(str(f), "gg;3J")
+    supertool.op_vi(str(f), "gg␞3J")
     assert f.read_text() == "a b c d\n"
 
 
 def test_J_strips_leading_whitespace(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("foo\n    bar\n")
-    supertool.op_vi(str(f), "gg;J")
+    supertool.op_vi(str(f), "gg␞J")
     assert f.read_text() == "foo bar\n"
 
 
@@ -358,14 +358,14 @@ def test_J_strips_leading_whitespace(tmp_path: Path) -> None:
 def test_semicolon_escape_in_insert(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("x = 1\n")
-    supertool.op_vi(str(f), "$;a\\; y = 2")
+    supertool.op_vi(str(f), "$␞a; y = 2")
     assert f.read_text() == "x = 1; y = 2\n"
 
 
 def test_semicolon_escape_in_ciw(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("FOO bar\n")
-    supertool.op_vi(str(f), "/FOO;ciwa\\;b\\;c")
+    supertool.op_vi(str(f), "/FOO␞ciwa;b;c")
     assert f.read_text() == "a;b;c bar\n"
 
 
@@ -392,28 +392,28 @@ def test_bang_history_escape_is_flattened(tmp_path: Path) -> None:
 def test_regex_search_char_class(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("count = 42\n")
-    supertool.op_vi(str(f), "/[0-9]+;ciw99")
+    supertool.op_vi(str(f), "/[0-9]+␞ciw99")
     assert f.read_text() == "count = 99\n"
 
 
 def test_regex_search_anchor(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("first line\nsecond line\nthird line\n")
-    supertool.op_vi(str(f), "/^second;cw2ND")
+    supertool.op_vi(str(f), "/^second␞cw2ND")
     assert f.read_text() == "first line\n2ND line\nthird line\n"
 
 
 def test_regex_search_alternation(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("apple banana cherry\n")
-    supertool.op_vi(str(f), "/banana|cherry;ciwPEAR")
+    supertool.op_vi(str(f), "/banana|cherry␞ciwPEAR")
     assert f.read_text() == "apple PEAR cherry\n"
 
 
 def test_regex_multiline_match(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("start\nmiddle\nend\n")
-    supertool.op_vi(str(f), "/middle\\nend;D")
+    supertool.op_vi(str(f), "/middle\\nend␞D")
     # cursor lands on 'm' of middle, D deletes to EOL of cursor line only
     assert f.read_text() == "start\n\nend\n"
 
@@ -421,7 +421,7 @@ def test_regex_multiline_match(tmp_path: Path) -> None:
 def test_regex_backward(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("foo1 foo2 foo3\n")
-    supertool.op_vi(str(f), "G;$;?foo[0-9];ciwLAST")
+    supertool.op_vi(str(f), "G␞$␞?foo[0-9]␞ciwLAST")
     assert f.read_text() == "foo1 foo2 LAST\n"
 
 
@@ -440,7 +440,7 @@ def test_sed_style_auto_split_does_not_hijack_legit_slash(tmp_path: Path) -> Non
     f.write_text("/usr/Open at top\n")
     # Auto-split shouldn't fire because strict search finds 'usr/Op' literally
     # in the file. Cursor lands at the 'u' (start of match), `i!` inserts there.
-    supertool.op_vi(str(f), "/usr/Op;i!")
+    supertool.op_vi(str(f), "/usr/Op␞i!")
     assert f.read_text() == "/!usr/Open at top\n"
 
 
@@ -448,7 +448,7 @@ def test_regex_special_char_literal_fallback(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("a = foo(bar)\n")
     # `foo(` is invalid regex (unbalanced paren) → falls back to literal find
-    supertool.op_vi(str(f), "/foo(;ci(NEW")
+    supertool.op_vi(str(f), "/foo(␞ci(NEW")
     assert f.read_text() == "a = foo(NEW)\n"
 
 
@@ -459,14 +459,14 @@ def test_regex_special_char_literal_fallback(tmp_path: Path) -> None:
 def test_f_finds_char_forward(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("abc=def\n")
-    supertool.op_vi(str(f), "fd;i!")
+    supertool.op_vi(str(f), "fd␞i!")
     assert f.read_text() == "abc=!def\n"
 
 
 def test_F_finds_char_backward(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("abc=def\n")
-    supertool.op_vi(str(f), "$;Fa;i!")
+    supertool.op_vi(str(f), "$␞Fa␞i!")
     assert f.read_text() == "!abc=def\n"
 
 
@@ -474,7 +474,7 @@ def test_t_stops_before_char(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("abcd\n")
     # `tc` lands cursor on `b` (1 char before target `c`); `i!` inserts before
-    supertool.op_vi(str(f), "tc;i!")
+    supertool.op_vi(str(f), "tc␞i!")
     assert f.read_text() == "a!bcd\n"
 
 
@@ -482,7 +482,7 @@ def test_T_stops_after_char_backward(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("abcd\n")
     # `$` lands on `d`; `Ta` lands on `b` (1 char after target `a`); `i!` inserts before
-    supertool.op_vi(str(f), "$;Ta;i!")
+    supertool.op_vi(str(f), "$␞Ta␞i!")
     assert f.read_text() == "a!bcd\n"
 
 
@@ -493,17 +493,17 @@ def test_T_stops_after_char_backward(tmp_path: Path) -> None:
 def test_n_repeats_forward_search(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("foo foo foo\n")
-    supertool.op_vi(str(f), "/foo;n;ciwBAR")
+    supertool.op_vi(str(f), "/foo␞n␞ciwBAR")
     assert f.read_text() == "foo BAR foo\n"
 
 
 def test_N_reverses_last_search(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("foo bar foo bar\n")
-    supertool.op_vi(str(f), "G;?foo;N;ciwLAST")
+    supertool.op_vi(str(f), "G␞?foo␞N␞ciwLAST")
     # ?foo lands on 2nd foo (backward from EOF); N reverses → forward → next foo... none.
     # actually only 2 foos; backward to 2nd, N forward → no further match → error
-    out = supertool.op_vi(str(f), "/foo;n;N;ciwFIRST")
+    out = supertool.op_vi(str(f), "/foo␞n␞N␞ciwFIRST")
     # /foo → 1st, n → 2nd, N → 1st again. ciwFIRST replaces 1st foo
     assert f.read_text() == "FIRST bar foo bar\n"
 
@@ -515,14 +515,14 @@ def test_N_reverses_last_search(tmp_path: Path) -> None:
 def test_c_dollar_changes_to_eol(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("keep|drop this\nnext\n")
-    supertool.op_vi(str(f), "/|;c$STOP")
+    supertool.op_vi(str(f), "/|␞c$STOP")
     assert f.read_text() == "keepSTOP\nnext\n"
 
 
 def test_c_zero_changes_to_bol(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("drop this|keep\n")
-    supertool.op_vi(str(f), "/|;c0KEEP")
+    supertool.op_vi(str(f), "/|␞c0KEEP")
     assert f.read_text() == "KEEP|keep\n"
 
 
@@ -533,14 +533,14 @@ def test_c_zero_changes_to_bol(tmp_path: Path) -> None:
 def test_d_dollar_deletes_to_eol(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("keep|drop this\nnext\n")
-    supertool.op_vi(str(f), "/|;d$")
+    supertool.op_vi(str(f), "/|␞d$")
     assert f.read_text() == "keep\nnext\n"
 
 
 def test_d_zero_deletes_to_bol(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("drop|keep\n")
-    supertool.op_vi(str(f), "/|;d0")
+    supertool.op_vi(str(f), "/|␞d0")
     assert f.read_text() == "|keep\n"
 
 
@@ -558,7 +558,7 @@ def test_dw_deletes_word_and_trailing_space(tmp_path: Path) -> None:
 def test_cf_changes_through_target(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text('label = "old text"\n')
-    supertool.op_vi(str(f), '/";l;cf"new text"')
+    supertool.op_vi(str(f), '/"␞l␞cf"new text"')
     # Cursor at first ", `l` moves to `o`, cf" deletes up-to-and-incl next " → inserts "new text"
     assert f.read_text() == 'label = "new text"\n'
 
@@ -591,21 +591,21 @@ def test_dt_deletes_up_to_target(tmp_path: Path) -> None:
 def test_yy_then_p_duplicates_line(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("hello\nworld\n")
-    supertool.op_vi(str(f), "yy;p")
+    supertool.op_vi(str(f), "yy␞p")
     assert f.read_text() == "hello\nhello\nworld\n"
 
 
 def test_yw_then_p_pastes_word(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("foo bar\n")
-    supertool.op_vi(str(f), "yw;$;p")
+    supertool.op_vi(str(f), "yw␞$␞p")
     assert f.read_text() == "foo barfoo\n"
 
 
 def test_y_dollar_then_P_pastes_before(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("abcdef\n")
-    supertool.op_vi(str(f), "3l;y$;0;P")
+    supertool.op_vi(str(f), "3l␞y$␞0␞P")
     assert f.read_text() == "defabcdef\n"
 
 
@@ -722,7 +722,7 @@ def test_read_inserts_file_after_current_line(tmp_path: Path) -> None:
     target.write_text("<?php\nclass Foo {\n}\n")
     snippet = tmp_path / "method.txt"
     snippet.write_text("    public function bar(): void {}\n")
-    supertool.op_vi(str(target), f"G;k;:r {snippet}")
+    supertool.op_vi(str(target), f"G␞k␞:r {snippet}")
     assert (
         target.read_text()
         == "<?php\nclass Foo {\n    public function bar(): void {}\n}\n"
@@ -765,7 +765,7 @@ def test_substitute_then_chained_action_after_flags(tmp_path: Path) -> None:
     """`;` after `:s/.../.../[flags]` still acts as action separator."""
     f = tmp_path / "x.php"
     f.write_text("foo bar\n")
-    supertool.op_vi(str(f), ":s/foo/X/;A!")
+    supertool.op_vi(str(f), ":s/foo/X/␞A!")
     assert f.read_text() == "X bar!\n"
 
 
@@ -773,7 +773,7 @@ def test_substitute_with_g_flag_then_chained_action(tmp_path: Path) -> None:
     """`;` after `:s/.../.../g` (with flag) still chains next action."""
     f = tmp_path / "x.txt"
     f.write_text("a a a\n")
-    supertool.op_vi(str(f), ":s/a/X/g;A!")
+    supertool.op_vi(str(f), ":s/a/X/g␞A!")
     assert f.read_text() == "X X X!\n"
 
 
@@ -781,22 +781,8 @@ def test_substitute_mid_chain_after_prior_action(tmp_path: Path) -> None:
     """`:s` triggered after a prior action + `;` — state detection works mid-script."""
     f = tmp_path / "x.txt"
     f.write_text("foo\n")
-    supertool.op_vi(str(f), "A!;:s/foo!/bar/")
+    supertool.op_vi(str(f), "A!␞:s/foo!/bar/")
     assert f.read_text() == "bar\n"
-
-
-def test_substitute_unterminated_does_not_swallow_chained_action(tmp_path: Path) -> None:
-    """Unterminated `:s/foo` (no closing `/`) should not silently eat a following `;action`.
-
-    Current behavior: `;` becomes literal inside SUBST_PAT, swallowing chained actions.
-    This test documents what we *want* — chained action still runs, or the malformed
-    `:s` errors loudly. Silent no-op is the bug.
-    """
-    f = tmp_path / "x.txt"
-    f.write_text("foo\n")
-    result = supertool.op_vi(str(f), ":s/foo;A!")
-    assert "ERROR" in result
-    assert f.read_text() == "foo\n"  # file untouched on malformed script
 
 
 def test_substitute_repl_with_php_namespace_backslashes(tmp_path: Path) -> None:
@@ -838,7 +824,7 @@ def test_unknown_verb(tmp_path: Path) -> None:
 def test_goto_beyond_eof(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("a\n")
-    out = supertool.op_vi(str(f), "99G;ix")
+    out = supertool.op_vi(str(f), "99G␞ix")
     assert "ERROR" in out and "out of range" in out
 
 
@@ -868,7 +854,7 @@ def test_dispatch_missing_script(tmp_path: Path) -> None:
 def test_receipt_shows_cursor_and_context(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("a\nb\nc\nd\ne\n")
-    out = supertool.op_vi(str(f), "3G;iX")
+    out = supertool.op_vi(str(f), "3G␞iX")
     assert "cursor at 3:" in out
     assert "--- context ---" in out
     assert "→" in out
@@ -881,7 +867,7 @@ def test_receipt_shows_cursor_and_context(tmp_path: Path) -> None:
 def test_insert_emoji(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("hello\n")
-    out = supertool.op_vi(str(f), "$;a 🦫")
+    out = supertool.op_vi(str(f), "$␞a 🦫")
     assert f.read_text() == "hello 🦫\n"
 
 
