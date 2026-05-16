@@ -3139,16 +3139,22 @@ def op_vi(path: str, script: str) -> str:
                 cursor = min(cursor, len(content))
                 log.append(f"  {i}. :s/{spat!r}/{srepl_dec!r}/{sflags} ({n} subs)")
 
-        # --- ex read file: :r FILE ---
+        # --- ex read file: :r FILE  (or :r - for stdin) ---
         elif verb == ":r":
             path_arg = arg.strip()
             if not path_arg:
-                return f"ERROR: action {i} '{action}': :r needs a file path\n"
-            try:
-                with open(path_arg, "r", encoding="utf-8", errors="replace") as _fh:
-                    file_text = _fh.read()
-            except OSError as e:
-                return f"ERROR: action {i} '{action}': :r failed to read {path_arg!r}: {e}\n"
+                return f"ERROR: action {i} '{action}': :r needs a file path (or '-' for stdin)\n"
+            if path_arg == "-":
+                try:
+                    file_text = sys.stdin.read()
+                except OSError as e:
+                    return f"ERROR: action {i} '{action}': :r failed to read stdin: {e}\n"
+            else:
+                try:
+                    with open(path_arg, "r", encoding="utf-8", errors="replace") as _fh:
+                        file_text = _fh.read()
+                except OSError as e:
+                    return f"ERROR: action {i} '{action}': :r failed to read {path_arg!r}: {e}\n"
             # vim :r inserts AFTER the current line. Ensure a newline boundary.
             eol = _line_end(content, cursor)
             if eol < len(content):

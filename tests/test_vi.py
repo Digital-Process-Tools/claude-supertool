@@ -720,6 +720,22 @@ def test_read_missing_file_errors(tmp_path: Path) -> None:
     assert "ERROR" in out and ":r failed to read" in out
 
 
+def test_read_from_stdin(tmp_path: Path, monkeypatch) -> None:
+    """`:r -` reads from stdin instead of a file path."""
+    import io
+    target = tmp_path / "main.php"
+    target.write_text("<?php\nclass Foo {\n}\n")
+    monkeypatch.setattr(
+        "sys.stdin",
+        io.StringIO("    public function bar(): void {}\n"),
+    )
+    supertool.op_vi(str(target), "G;k;:r -")
+    assert (
+        target.read_text()
+        == "<?php\nclass Foo {\n    public function bar(): void {}\n}\n"
+    )
+
+
 def test_read_adds_trailing_newline(tmp_path: Path) -> None:
     target = tmp_path / "x.py"
     target.write_text("line1\n")
