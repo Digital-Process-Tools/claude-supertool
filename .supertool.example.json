@@ -121,6 +121,11 @@
       "syntax": "replace_lines:::PATH:::START:::END:::CONTENT",
       "description": "Swap lines [START,END] (1-indexed inclusive) with CONTENT. END<START = insert before START. Empty CONTENT = delete.",
       "example": "replace_lines:::src/app/Foo.py:::42:::45:::    return x"
+    },
+    "paste": {
+      "syntax": "paste:::PATH:::CONTENT",
+      "description": "Replace entire file with CONTENT. Atomic, creates file (+ parent dirs) if missing. Use for full-file rewrites.",
+      "example": "paste:::src/app/new_file.py:::print('hello')\\n"
     }
   },
   "ops": {

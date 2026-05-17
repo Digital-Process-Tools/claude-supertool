@@ -419,6 +419,43 @@ def test_issue16_chained_abandoned_range_does_not_break_followups():
         os.unlink(p)
 
 
+def test_paste_op_full_file_rewrite():
+    """Kevin pain (Issue #11): full-file rewrite via vim macro cuts `<?php`.
+    paste op = atomic full-file replace, no positioning math."""
+    p = _tmp("<?php\n\n// OLD\nclass Old {}\n")
+    try:
+        new_content = "<?php\n\ndeclare(strict_types=1);\n\nclass Foo\n{\n    public function bar(): void {}\n}\n"
+        r = st.op_paste(p, new_content)
+        assert open(p).read() == new_content, f"got: {open(p).read()!r}; receipt: {r}"
+        assert "<?php" in open(p).read(), "<?php eaten!"
+        assert "rewrote" in r
+    finally:
+        os.unlink(p)
+
+
+def test_paste_op_creates_missing_file_and_parent():
+    """paste creates file + parent dirs if missing — no `mkdir -p` round-trip."""
+    d = tempfile.mkdtemp()
+    p = os.path.join(d, "new", "nested", "file.txt")
+    try:
+        r = st.op_paste(p, "hello\nworld\n")
+        assert open(p).read() == "hello\nworld\n", f"got: {open(p).read()!r}; receipt: {r}"
+        assert "created" in r
+    finally:
+        import shutil
+        shutil.rmtree(d)
+
+
+def test_paste_op_appends_trailing_newline():
+    """POSIX text files end in \\n. paste should append if missing."""
+    p = _tmp("old\n")
+    try:
+        r = st.op_paste(p, "no trailing nl")
+        assert open(p).read() == "no trailing nl\n", f"got: {open(p).read()!r}"
+    finally:
+        os.unlink(p)
+
+
 def test_issue1_oi_no_whitespace_does_not_autocorrect():
     """`oiword` — `i` followed by word char, NOT a Kevin reflex (no indent).
     Should remain literal (real vim semantics: inserts `iword`).

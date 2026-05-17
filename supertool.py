@@ -430,7 +430,7 @@ BLOCKED_TOOLS = {"Grep", "Glob", "LS"}
 BLOCKED_BASH_COMMANDS = {"cat", "find", "grep", "ls", "sed", "awk", "tail", "head"}
 
 # Built-in op names — custom ops/aliases with these names are ignored
-_BUILTIN_OPS = {"read", "grep", "grep_around", "glob", "ls", "tail", "head", "wc", "check", "around", "map", "diff", "stat", "around_line", "tree", "replace", "replace_dry", "edit", "replace_lines", "vi"}
+_BUILTIN_OPS = {"read", "grep", "grep_around", "glob", "ls", "tail", "head", "wc", "check", "around", "map", "diff", "stat", "around_line", "tree", "replace", "replace_dry", "edit", "replace_lines", "paste", "vi"}
 
 # Read-only built-in ops — safe to run in parallel across a batch.
 # Excludes mutating ops (replace, edit, replace_lines) and custom ops
@@ -2378,6 +2378,40 @@ def op_edit(old: str, new: str, path: str) -> str:
         marker = "→" if start_line <= ln <= end_line else " "
         out.append(f"  {ln:>5} {marker} {new_lines[ln - 1]}\n")
     return "".join(out)
+
+
+def op_paste(path: str, content: str) -> str:
+    """Replace entire file with content. Atomic. Creates file (and parent dirs)
+    if missing.
+
+    Use for full-file rewrites — no vim macro gymnastics, no `:r` insert-after
+    off-by-one cuts (e.g. `<?php` eaten), no `:::` separator abuse. CONTENT
+    arrives via triple-colon separator so it can hold any chars (`:`, quotes,
+    braces, newlines).
+    """
+    if not path:
+        return "ERROR: empty path\n"
+    parent = os.path.dirname(path)
+    if parent and not os.path.isdir(parent):
+        try:
+            os.makedirs(parent, exist_ok=True)
+        except OSError as e:
+            return f"ERROR: failed to create parent dir {parent}: {e}\n"
+    # Ensure trailing newline (POSIX text files)
+    if content and not content.endswith("\n"):
+        content += "\n"
+    existed = os.path.isfile(path)
+    old_size = os.path.getsize(path) if existed else 0
+    try:
+        _atomic_write(path, content)
+    except OSError as e:
+        return f"ERROR: failed to write {path}: {e}\n"
+    new_size = len(content.encode("utf-8"))
+    new_lines = content.count("\n")
+    verb = "rewrote" if existed else "created"
+    return (
+        f"{verb} {path} ({new_lines} lines, {old_size} → {new_size} bytes)\n"
+    )
 
 
 def op_replace_lines(path: str, start: int, end: int, content: str) -> str:
@@ -7682,6 +7716,11 @@ def dispatch(arg: str) -> str:
                 # CONTENT may legitimately contain ':' — rejoin remaining parts
                 rl_content = _decode_escapes(":".join(parts[4:]) if len(parts) > 4 else "")
                 body = op_replace_lines(rl_path, rl_start, rl_end, rl_content)
+        elif op == "paste":
+            p_path = parts[1] if len(parts) > 1 else ""
+            # CONTENT may contain ':' — rejoin everything after the path
+            p_content = _decode_escapes(":".join(parts[2:]) if len(parts) > 2 else "")
+            body = op_paste(p_path, p_content)
         elif op == "vim":
             vim_path = parts[1] if len(parts) > 1 else ""
             vim_script = ":".join(parts[2:]) if len(parts) > 2 else ""

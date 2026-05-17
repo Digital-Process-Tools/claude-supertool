@@ -133,9 +133,16 @@
       "status": 1,
       "hint": true
     },
+    "paste": {
+      "syntax": "paste:::PATH:::CONTENT",
+      "description": "Replace entire file with CONTENT. Atomic, creates file (+ parent dirs) if missing. Use for full-file rewrites — avoids vim macro gymnastics, `:r` insert-after off-by-one (e.g. `<?php` eaten), and `:::` separator abuse. CONTENT via triple-colon → can hold any chars (`:`, quotes, braces, newlines).",
+      "example": "paste:::tests/new_test.php:::<?php\\ndeclare(strict_types=1);\\n...",
+      "status": 1,
+      "hint": true
+    },
     "vim": {
       "syntax": "vim:::PATH:::SCRIPT",
-      "description": "vim-flavored cursor-based multi-action edit. SCRIPT is parsed like a real vim macro: NORMAL mode reads verbs char-by-char; insert verbs (i/a/A/I/o/O), search (/?), and ex (:) enter GREEDY modes where chars are TEXT/PAT until \\e (ESC, U+001B) returns to NORMAL. No separator chars — ';', '{', '}', newlines etc. are literal. Each action: [count][verb][arg]. Cursor: gg/G (BOF/EOF), nG (goto line), 0/$ (BOL/EOL), /PAT or ?PAT (search), nh/nl/nj/nk (move). Inserts (TEXT until \\e, \\n/\\t decoded): iTEXT (before), aTEXT (after), ITEXT (BOL), ATEXT (EOL), oTEXT (open below), OTEXT (open above). Deletes: x/nx (chars), dd/ndd (lines), D (to EOL). Replace: rc. PREFER over edit::: for any insert with structure.",
+      "description": "vim-flavored cursor-based multi-action edit. SCRIPT is parsed like a real vim macro: NORMAL mode reads verbs char-by-char; insert verbs (i/a/A/I/o/O), search (/?), and ex (:) enter GREEDY modes where chars are TEXT/PAT until \\e (ESC, U+001B) returns to NORMAL. No separator chars — ';', '{', '}', newlines etc. are literal. Each action: [count][verb][arg]. Cursor: gg/G (BOF/EOF), nG (goto line), 0/$ (BOL/EOL), /PAT or ?PAT (search), nh/nl/nj/nk (move), bare `:N`/`:$`/`:.` (line goto). Inserts (TEXT until \\e, \\n/\\t decoded): iTEXT (before), aTEXT (after), ITEXT (BOL), ATEXT (EOL), oTEXT/OTEXT (open below/above, AUTO-INDENT to current line). Deletes: x/nx (chars), dd/ndd (lines), D (to EOL). Replace: rc. Ex: :s/PAT/REPL/[gid] (literal-fallback on unescaped parens/over-escapes), :%s, :Nd/:N,Md/:.,/PAT/d, :g/PAT/d (also bare `g/PAT/d` and `%g/PAT/d` autoprefixed with `:`), :v/PAT/d, :r FILE, :Nr FILE (read after line N), :Na\\nBODY\\n. (ex append after line N), :w/:wq (no-op, supertool writes atomically). Autocorrects: `oi<ws>TEXT` strips redundant verb-bleed, `:%%d` → `:%d`, `V<N>Gd` → `:.,Nd`, `64,` abandoned range stripped. PREFER `paste` for full-file rewrites; use `vim` for surgical edits.",
       "example": "vim:::skill.md:::/## Process\\eO## Task list\\eo1. Foo\\eo2. Bar",
       "status": 1,
       "hint": true
