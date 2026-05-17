@@ -3449,6 +3449,52 @@ def _op_vim_impl(path: str, script: str) -> str:
         _count_middle_sub,
         normalized,
     )
+    # Kevin autocorrect: bare `g/PAT/...`, `v/PAT/...`, `%g/PAT/...`, `%v/PAT/...`
+    # at the start of an action chain (or after ESC) → prepend `:` so they
+    # parse as ex commands. Real vim requires `:` prefix; Kevin's muscle memory
+    # drops it. Bare `g`/`v` followed by `/` is never useful as a normal-mode
+    # sequence (`g` waits for second char, `v` enters visual then `/` searches).
+    # Match at start of string or after ESC/newline.
+    normalized = re.sub(
+        r"(^|[" + ESC + r"\n])([%]?[gv]/)",
+        lambda m: m.group(1) + ":" + m.group(2),
+        normalized,
+    )
+    # Strip redundant `%` from `:%g/.../` and `:%v/.../` — `:g`/`:v` already
+    # operate on whole buffer by default (no range needed). Real vim accepts
+    # `:%g` but our parser doesn't; collapse to `:g`.
+    normalized = re.sub(r":\%([gv]/)", r":\1", normalized)
+    # Ex append: `:Na\nBODY\n.` (real vim multi-line ex-append after line N).
+    # Convert to `<N>GoBODY<ESC>` — goto line N, open below, insert body.
+    # The `o` executor handles auto-indent + body line splits.
+    normalized = re.sub(
+        r":(\d+|\$|\.)a\n(.*?)\n\.\n?",
+        lambda m: (
+            ("G" if m.group(1) in ("$", ".") else m.group(1) + "G")
+            + "o" + m.group(2) + ESC
+        ),
+        normalized,
+        flags=re.DOTALL,
+    )
+    # Ex insert: `:Ni\nBODY\n.` — insert before line N. Use `O` (open above).
+    normalized = re.sub(
+        r":(\d+|\$|\.)i\n(.*?)\n\.\n?",
+        lambda m: (
+            ("G" if m.group(1) in ("$", ".") else m.group(1) + "G")
+            + "O" + m.group(2) + ESC
+        ),
+        normalized,
+        flags=re.DOTALL,
+    )
+    # Kevin abandoned-range autocorrect: `64,` (digits + comma + EOS/ESC/EOL)
+    # — `,` is the find-repeat verb, but with no previous f/F/t/T it errors
+    # confusingly. Kevin meant to type a range and forgot the command.
+    # Strip the abandoned digits+comma so the rest of the script keeps running.
+    normalized = re.sub(
+        r"(?<![a-zA-Z0-9])(\d+),(?=[" + ESC + r"\n]|$)",
+        "",
+        normalized,
+    )
     i = 0
     n = len(normalized)
 
@@ -3721,6 +3767,16 @@ def _op_vim_impl(path: str, script: str) -> str:
             while k < len(action) and action[k] == "%":
                 k += 1
             action = ":%" + action[k:]
+        # Kevin autocorrect: bare `g/PAT/d`, `g/PAT/...`, `%g/PAT/d`, `v/PAT/d`,
+        # `%v/PAT/d` → prepend `:` so they parse as ex commands. Real vim
+        # requires `:` prefix; Kevin's muscle memory drops it. Bare `g`/`v`
+        # standalone are useless (g+motion = no-op), so no false-positive risk.
+        if len(action) >= 3 and action[0] == "g" and action[1] == "/":
+            action = ":" + action
+        elif len(action) >= 3 and action[0] == "v" and action[1] == "/":
+            action = ":" + action
+        elif len(action) >= 4 and action[0] == "%" and action[1] in ("g", "v") and action[2] == "/":
+            action = ":" + action
         i = 0
         # count: leading digits, but `0` alone is the BOL verb
         if action[0].isdigit() and action[0] != "0":

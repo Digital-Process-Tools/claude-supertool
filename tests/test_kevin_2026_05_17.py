@@ -349,6 +349,76 @@ def test_log_pattern_Nr_read_file_after_line():
         os.unlink(src_path)
 
 
+def test_issue12_bare_g_pattern_d_autocorrects_to_ex():
+    """Kevin (T14 19:42): `g/assertIsArray/d` → 'unknown verb g'.
+    Real vim needs `:g/PAT/d` (ex command). Muscle memory drops `:`.
+    Autocorrect: bare `g/PAT/d` → `:g/PAT/d`."""
+    p = _tmp("keep1\nremove this assertIsArray here\nkeep2\nassertIsArray again\nkeep3\n")
+    try:
+        r = st.op_vim(p, "g/assertIsArray/d")
+        new = open(p).read()
+        assert "assertIsArray" not in new, f"lines should be gone: {new!r}; receipt: {r}"
+        assert "keep1\nkeep2\nkeep3\n" == new, f"got: {new!r}"
+        assert "ERROR" not in r
+    finally:
+        os.unlink(p)
+
+
+def test_issue12_bare_percent_g_pattern_d_autocorrects_to_ex():
+    """Kevin (T18 19:42): `%g/assertIsArray/d` → '% not on bracket char'.
+    `%g/PAT/d` should map to `:%g/PAT/d`."""
+    p = _tmp("a\nfoo\nb\nfoo\nc\n")
+    try:
+        r = st.op_vim(p, "%g/foo/d")
+        new = open(p).read()
+        assert "foo" not in new, f"got: {new!r}; receipt: {r}"
+        assert "ERROR" not in r
+    finally:
+        os.unlink(p)
+
+
+def test_issue14_ex_append_Na_with_dot_terminator():
+    """Kevin (T42 20:42): `:113a\\nTEXT\\nTEXT2\\n.\\e` — ex append after line N,
+    body terminated by lone `.`. Real vim ex-mode feature."""
+    p = _tmp("line1\nline2\nline3\nline4\n")
+    try:
+        # Append after line 2
+        r = st.op_vim(p, ":2a\nAPPENDED1\nAPPENDED2\n.")
+        new = open(p).read()
+        assert "line1\nline2\nAPPENDED1\nAPPENDED2\nline3\nline4\n" == new, (
+            f"got: {new!r}; receipt: {r}"
+        )
+        assert "ERROR" not in r
+    finally:
+        os.unlink(p)
+
+
+def test_issue16_trailing_comma_after_digits_is_noop():
+    """Kevin (jimmy log 18:39): `64,` action — `,` is find-repeat, errors with
+    'no previous f/F/t/T'. Misleading. Autocorrect: strip abandoned range so
+    Kevin gets a clean 'no actions' result rather than a wrong-context error."""
+    p = _tmp("a\nb\nc\n")
+    try:
+        r = st.op_vim(p, "64,")
+        assert open(p).read() == "a\nb\nc\n", f"buffer modified: {r}"
+        # Find-repeat error must NOT show — was the misleading bit.
+        assert "f/F/t/T" not in r, f"misleading find-repeat error: {r}"
+    finally:
+        os.unlink(p)
+
+
+def test_issue16_chained_abandoned_range_does_not_break_followups():
+    """`64,\\edd` — Kevin abandoned the range, then a real action.
+    Strip `64,` only, keep `dd` working."""
+    p = _tmp("a\nb\nc\n")
+    try:
+        r = st.op_vim(p, "64,\x1bdd")
+        assert open(p).read() == "b\nc\n", f"dd should run: {open(p).read()!r}; receipt: {r}"
+        assert "ERROR" not in r
+    finally:
+        os.unlink(p)
+
+
 def test_issue1_oi_no_whitespace_does_not_autocorrect():
     """`oiword` — `i` followed by word char, NOT a Kevin reflex (no indent).
     Should remain literal (real vim semantics: inserts `iword`).
