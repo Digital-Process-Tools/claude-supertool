@@ -449,6 +449,75 @@ def test_kevin_real_V_in_insert_text_not_rewritten():
         os.unlink(p)
 
 
+def test_kevin_real_cciw_autocorrect_to_ciw():
+    """Kevin run 2026-05-17 11:21 paste — `cciwTEXT\\e`. Real-vim, `cc`
+    is line-change (greedy text) and `ciw` is inner-word change. Kevin
+    typed `cciw` thinking it modifies the change — but vim parses it
+    as `cc` with text "iwTEXT". Autocorrect: `cc<text-object-char>`
+    → `c<text-object>`.
+    """
+    p = _tmp("    $this->assertEquals(1, 2);\n")
+    try:
+        r = st.op_vim(p, r"/assertEquals\ecciwassertSame\e")
+        new = open(p).read()
+        # Word `assertEquals` replaced by `assertSame`, rest preserved
+        assert "$this->assertSame(1, 2);" in new, f"got: {new!r}; receipt: {r}"
+        assert "assertEquals" not in new
+        assert "ERROR" not in r
+    finally:
+        os.unlink(p)
+
+
+def test_kevin_real_ccaw_autocorrect_to_caw():
+    p = _tmp("foo bar baz\n")
+    try:
+        r = st.op_vim(p, r"/bar\eccawZZZ\e")
+        new = open(p).read()
+        # `aw` includes trailing whitespace; result varies but `bar ` gone
+        assert "bar" not in new
+        assert "ZZZ" in new
+    finally:
+        os.unlink(p)
+
+
+def test_kevin_real_near_hint_labels_in_memory_state():
+    """Kevin run 2026-05-17 11:20 paste — chain of 9 actions, action 9
+    fails. The `near` hint shows line numbers from the IN-MEMORY mutated
+    buffer (what the file would look like if action 9 had succeeded),
+    not the on-disk state. The receipt must label it so Kevin doesn't
+    think the disk file looks like that.
+
+    Construct: action 1 inserts a UNIQUE_MARKER, action 2 searches for
+    a pattern that doesn't quite match but where UNIQUE_MARKER appears
+    in the near-hint output.
+    """
+    original = "alpha\nbeta\ngamma\n"
+    p = _tmp(original)
+    try:
+        # Action 1: change "beta" to "UNIQUE_MARKER beta_extra" (mutation in buffer)
+        # Action 2: search for pattern containing "UNIQUE_MARKER" but with regex
+        # group that won't match — hint surfaces line 2 with the mutated content
+        r = st.op_vim(
+            p,
+            r":%s/beta/UNIQUE_MARKER beta_extra/\e"
+            r"/UNIQUE_MARKER(NOPE)",
+        )
+        # File on disk unchanged
+        assert open(p).read() == original, f"file mutated: {open(p).read()!r}"
+        # Receipt mentions atomicity / unchanged
+        low = r.lower()
+        assert "unchanged" in low or "atomic" in low, f"missing atomicity hint: {r!r}"
+        # Near-hint should surface UNIQUE_MARKER from in-memory state...
+        assert "UNIQUE_MARKER" in r, f"near-hint missing buffer content: {r!r}"
+        # ...AND label it as buffer/in-progress so Kevin doesn't think
+        # the disk file contains UNIQUE_MARKER
+        assert any(
+            m in low for m in ("buffer", "in-progress", "mutated", "pending", "in-memory")
+        ), f"near-hint shows mutated content without labeling it: {r!r}"
+    finally:
+        os.unlink(p)
+
+
 def test_kevin_real_chain_error_reports_atomicity():
     """Kevin run 2026-05-17 11:05 — long chain errored mid-way, Kevin
     panicked and rewrote the whole file via `printf > FILE`. But vim is

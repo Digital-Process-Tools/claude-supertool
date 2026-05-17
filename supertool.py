@@ -2932,7 +2932,12 @@ def _vim_literal_decode(pat: str) -> str:
         out = nxt
 
 
-def _vim_nearest_literal_hint(content: str, pat: str, max_lines: int = 3) -> str:
+def _vim_nearest_literal_hint(
+    content: str,
+    pat: str,
+    max_lines: int = 3,
+    original: Optional[str] = None,
+) -> str:
     """When /PAT or :s misses, return a short hint with file lines that
     contain the longest literal chunk of the pattern. Helps the caller see
     what's actually in the file instead of guessing again.
@@ -2966,7 +2971,8 @@ def _vim_nearest_literal_hint(content: str, pat: str, max_lines: int = 3) -> str
         hits = _scan(probe)
         if hits:
             parts = [f"line {lno}: {snip!r}" for lno, snip in hits]
-            return f" (near {probe!r}: " + "; ".join(parts) + ")"
+            label = "buffer near" if original is not None and content != original else "near"
+            return f" ({label} {probe!r}: " + "; ".join(parts) + ")"
     # Prefix fallback: longest chunk has no hits. Try its leading prefix
     # at decreasing lengths to surface the closest line.
     longest = chunks[0]
@@ -2977,7 +2983,8 @@ def _vim_nearest_literal_hint(content: str, pat: str, max_lines: int = 3) -> str
         hits = _scan(probe)
         if hits:
             parts = [f"line {lno}: {snip!r}" for lno, snip in hits]
-            return f" (near {probe!r}: " + "; ".join(parts) + ")"
+            label = "buffer near" if original is not None and content != original else "near"
+            return f" ({label} {probe!r}: " + "; ".join(parts) + ")"
     return ""
 
 
@@ -3720,7 +3727,18 @@ def _op_vim_impl(path: str, script: str) -> str:
             return f"{n + 1}{m.group(3)}{m.group(4)}"
         return act
 
-    raw_actions = [_rewrite_v_alias(a) for a in raw_actions]
+    # cc-typo: Kevin types `cciw<TEXT>` thinking it means `ciw<TEXT>` (change
+    # inner word). Real vim parses as cc + greedy text "iwTEXT" (line replace
+    # with literal "iwTEXT"). Detect `cc<ia><kind>` prefix and drop one c.
+    _CC_TYPO = re.compile(r"^cc([ia])([wWsp\"'`()\[\]{}<>bBt])(.*)$", re.DOTALL)
+
+    def _rewrite_cc_typo(act: str) -> str:
+        m = _CC_TYPO.match(act)
+        if m is None:
+            return act
+        return f"c{m.group(1)}{m.group(2)}{m.group(3)}"
+
+    raw_actions = [_rewrite_cc_typo(_rewrite_v_alias(a)) for a in raw_actions]
     for i, action in enumerate(raw_actions, 1):
         count, verb, arg = _parse(action)
 
@@ -3865,7 +3883,7 @@ def _op_vim_impl(path: str, script: str) -> str:
                 if split_m is not None:
                     suggested = pat[:split_m.start()] + ";" + pat[split_m.start() + 1:]
                     hint = f" (hint: '/' is not an action separator — did you mean '/{suggested}'? Use ';' to chain actions.)"
-                near = _vim_nearest_literal_hint(content, pat)
+                near = _vim_nearest_literal_hint(content, pat, original=_before_content)
                 return f"ERROR: action {i} '{action}': pattern not found forward{hint}{near}\n"
             cursor = idx
             last_search = (pat, "/")
@@ -4815,7 +4833,7 @@ def _op_vim_impl(path: str, script: str) -> str:
                             f" [autocorrect: literal mode → {literal_pat!r}]"
                         )
             if n == 0:
-                near = _vim_nearest_literal_hint(content, spat)
+                near = _vim_nearest_literal_hint(content, spat, original=_before_content)
                 return f"ERROR: action {i} '{action}': :s no match for {spat!r}{near}\n"
             if is_dry:
                 # Preview only. Show up to 5 match line numbers + the rendered
