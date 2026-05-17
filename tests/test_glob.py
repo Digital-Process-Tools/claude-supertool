@@ -120,6 +120,20 @@ def test_glob_prefix_strip_threshold() -> None:
     assert len("src/") <= 10  # confirms threshold would skip it
 
 
+def test_glob_double_star_in_middle_segment(tmp_path: Path, monkeypatch) -> None:
+    """Multi-`**` patterns must work — Kevin run 2026-05-17 11:55 hit
+    `**/TestHelper/**/ConversationHelper*` returning 0 files when the
+    target was at `src2/SiPHPUnit/TestHelper/BusinessEntities/ConversationHelper.class.php`.
+    """
+    deep = tmp_path / "Dvsi" / "dvsi-private" / "src2" / "SiPHPUnit" / "TestHelper" / "BusinessEntities"
+    deep.mkdir(parents=True)
+    (deep / "ConversationHelper.class.php").write_text("")
+    monkeypatch.chdir(tmp_path)
+    out = supertool.op_glob("**/TestHelper/**/ConversationHelper*")
+    assert "ConversationHelper.class.php" in out, f"got: {out!r}"
+    assert "(0 files)" not in out
+
+
 def test_glob_question_mark_is_wildcard(tmp_path: Path, monkeypatch) -> None:
     (tmp_path / "a.py").write_text("")
     (tmp_path / "b.py").write_text("")

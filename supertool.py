@@ -1977,8 +1977,11 @@ def _glob_files(
     """
     max_results = _get_op_int("glob", "max_results", MAX_GLOB_RESULTS)
 
-    if exclude_paths and "**" in pattern:
+    if exclude_paths and "**" in pattern and pattern.count("**") == 1:
         # Walk-based implementation for recursive globs with exclusions.
+        # Only safe when pattern has a single `**` — multi-`**` patterns
+        # (`**/X/**/Y`) need full glob semantics on every segment, which
+        # fnmatch can't express. Fall through to glob.glob + post-filter.
         # Split on the first '**' to get the root dir and the tail pattern.
         import fnmatch
         star_idx = pattern.index("**")
