@@ -98,15 +98,20 @@ def test_subst_miss_shows_literal_context():
 # --- Real-world Kevin pastes from session 2026-05-17 (jimmy-issue-142) ---
 
 
-def test_kevin_real_ggV_unknown_verb():
-    """Kevin's actual paste: `ggV:53s/...` — V is not supported."""
+def test_kevin_real_ggV_malformed_ex_range_errors_cleanly():
+    """Kevin's actual paste: `ggV:53s/...` — V is now handled, `V:` is
+    rewritten to `:.` which combined with `53` produces malformed ex
+    range `.53`. Should fail with a clean range error + atomicity note,
+    not a verb-catalog wall.
+    """
     p = _tmp("\n".join(f"line {i}" for i in range(60)) + "\n")
     try:
         r = st.op_vim(p, "ggV:53s/foo/bar/\\e")
-        assert "unknown verb" in r
-        assert "did you mean" in r.lower()
-        # Should NOT dump the catalog
+        assert "ERROR" in r
+        assert "unchanged" in r.lower() or "atomic" in r.lower()
+        # Clean error message (range / address / bad), not a catalog dump
         assert r.count(",") < 15
+        assert "ci{" not in r
     finally:
         os.unlink(p)
 
@@ -273,17 +278,16 @@ def test_kevin_real_subst_miss_shows_near_for_close_typo():
 
 
 def test_kevin_real_v_inside_chain_does_not_dump_catalog():
-    """Paste 2: `ggV:53s/.../.../` — V mid-chain.
-
-    Should fail fast with did-you-mean, not 80-item wall.
+    """Paste 2: `ggV:53s/.../.../` — V mid-chain. V is now handled and
+    rewritten; any resulting error must be concise (no 80-item catalog).
     """
     p = _tmp("\n".join(f"line {i}" for i in range(60)) + "\n")
     try:
         r = st.op_vim(p, r"ggV:53s/foo/bar/\e")
-        assert "unknown verb" in r
+        assert "ERROR" in r
         # Verify the catalog dump is gone
         assert "ci{" not in r
-        assert "did you mean" in r.lower()
+        assert "unchanged" in r.lower() or "atomic" in r.lower()
     finally:
         os.unlink(p)
 
@@ -445,6 +449,149 @@ def test_kevin_real_V_in_insert_text_not_rewritten():
         r = st.op_vim(p, r"iVcc\e")
         new = open(p).read()
         assert new == "VccX\n", f"got: {new!r}; receipt: {r}"
+    finally:
+        os.unlink(p)
+
+
+def test_kevin_log_HasTagChecker_overescape_dollar():
+    """Mined from log 9abd0ba5 — Kevin actual paste:
+    `:s/HasTagChecker::class, \\$checkerClass/$checkerClass, HasTagChecker::class/`.
+
+    Over-escaped `\\$checkerClass` in PAT. Literal-fallback must strip
+    `\\` → `\` → `` to get `$checkerClass`, then content.replace.
+    """
+    p = _tmp("    $checkerClass = $this->api->get(HasTagChecker::class, $checkerClass);\n")
+    try:
+        r = st.op_vim(
+            p,
+            r":s/HasTagChecker::class, \$checkerClass/$checkerClass, HasTagChecker::class/",
+        )
+        new = open(p).read()
+        # Should succeed (either by regex direct match or literal fallback).
+        assert "$checkerClass = $this->api->get($checkerClass, HasTagChecker::class)" in new, f"got: {new!r}; receipt: {r}"
+        assert "ERROR" not in r
+    finally:
+        os.unlink(p)
+
+
+def test_kevin_log_createRandom_overescape_brackets():
+    """Mined from log — `:s/MessageHelper::createRandom(\\[\\], true);/.../`.
+
+    Kevin over-escapes `[` and `]` thinking they need shell escaping.
+    Literal-fallback strips `\\[` → `[`, `\\]` → `]`.
+    """
+    p = _tmp("MessageHelper::createRandom([], true);\n")
+    try:
+        r = st.op_vim(
+            p,
+            r":s/MessageHelper::createRandom(\[\], true);/REPLACED/",
+        )
+        new = open(p).read()
+        assert "REPLACED" in new, f"got: {new!r}; receipt: {r}"
+        assert "autocorrect" in r.lower()
+    finally:
+        os.unlink(p)
+
+
+def test_kevin_log_quad_backslash_iterative_strip():
+    """Mined from log — `:s/\\\\$this->assertTrue(true);/.../`.
+
+    Quadruple backslash (Kevin over-escapes twice). Iterative strip:
+    `\\\\$this` → `\\$this` → `$this` (2 passes).
+    """
+    p = _tmp("        $this->assertTrue(true);\n")
+    try:
+        r = st.op_vim(
+            p,
+            r":%s/\\\\$this->assertTrue(true);/REPLACED/",
+        )
+        new = open(p).read()
+        assert "REPLACED" in new, f"got: {new!r}; receipt: {r}"
+    finally:
+        os.unlink(p)
+
+
+def test_kevin_real_ggVG_with_ex_substitute():
+    """Mined from kevin log cb0d92ec — `ggVG:s/PAT/REPL/g`.
+    Visual-line from start to end + ex substitute = whole-file substitute.
+    Should rewrite to `gg:%s/PAT/REPL/g` (or equivalent full-buffer sub).
+    """
+    p = _tmp("foo bar\nfoo baz\nfoo qux\n")
+    try:
+        r = st.op_vim(p, r"ggVG:s/foo/REPL/g")
+        new = open(p).read()
+        assert new.count("REPL") == 3, f"got: {new!r}; receipt: {r}"
+        assert "foo" not in new
+        assert "ERROR" not in r
+    finally:
+        os.unlink(p)
+
+
+def test_kevin_real_cciw_autocorrect_to_ciw():
+    """Kevin run 2026-05-17 11:21 paste — `cciwTEXT\\e`. Real-vim, `cc`
+    is line-change (greedy text) and `ciw` is inner-word change. Kevin
+    typed `cciw` thinking it modifies the change — but vim parses it
+    as `cc` with text "iwTEXT". Autocorrect: `cc<text-object-char>`
+    → `c<text-object>`.
+    """
+    p = _tmp("    $this->assertEquals(1, 2);\n")
+    try:
+        r = st.op_vim(p, r"/assertEquals\ecciwassertSame\e")
+        new = open(p).read()
+        # Word `assertEquals` replaced by `assertSame`, rest preserved
+        assert "$this->assertSame(1, 2);" in new, f"got: {new!r}; receipt: {r}"
+        assert "assertEquals" not in new
+        assert "ERROR" not in r
+    finally:
+        os.unlink(p)
+
+
+def test_kevin_real_ccaw_autocorrect_to_caw():
+    p = _tmp("foo bar baz\n")
+    try:
+        r = st.op_vim(p, r"/bar\eccawZZZ\e")
+        new = open(p).read()
+        # `aw` includes trailing whitespace; result varies but `bar ` gone
+        assert "bar" not in new
+        assert "ZZZ" in new
+    finally:
+        os.unlink(p)
+
+
+def test_kevin_real_near_hint_labels_in_memory_state():
+    """Kevin run 2026-05-17 11:20 paste — chain of 9 actions, action 9
+    fails. The `near` hint shows line numbers from the IN-MEMORY mutated
+    buffer (what the file would look like if action 9 had succeeded),
+    not the on-disk state. The receipt must label it so Kevin doesn't
+    think the disk file looks like that.
+
+    Construct: action 1 inserts a UNIQUE_MARKER, action 2 searches for
+    a pattern that doesn't quite match but where UNIQUE_MARKER appears
+    in the near-hint output.
+    """
+    original = "alpha\nbeta\ngamma\n"
+    p = _tmp(original)
+    try:
+        # Action 1: change "beta" to "UNIQUE_MARKER beta_extra" (mutation in buffer)
+        # Action 2: search for pattern containing "UNIQUE_MARKER" but with regex
+        # group that won't match — hint surfaces line 2 with the mutated content
+        r = st.op_vim(
+            p,
+            r":%s/beta/UNIQUE_MARKER beta_extra/\e"
+            r"/UNIQUE_MARKER(NOPE)",
+        )
+        # File on disk unchanged
+        assert open(p).read() == original, f"file mutated: {open(p).read()!r}"
+        # Receipt mentions atomicity / unchanged
+        low = r.lower()
+        assert "unchanged" in low or "atomic" in low, f"missing atomicity hint: {r!r}"
+        # Near-hint should surface UNIQUE_MARKER from in-memory state...
+        assert "UNIQUE_MARKER" in r, f"near-hint missing buffer content: {r!r}"
+        # ...AND label it as buffer/in-progress so Kevin doesn't think
+        # the disk file contains UNIQUE_MARKER
+        assert any(
+            m in low for m in ("buffer", "in-progress", "mutated", "pending", "in-memory")
+        ), f"near-hint shows mutated content without labeling it: {r!r}"
     finally:
         os.unlink(p)
 
