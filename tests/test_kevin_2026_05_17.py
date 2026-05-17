@@ -260,6 +260,51 @@ def test_line_pattern_range_no_match_errors_cleanly():
         os.unlink(p)
 
 
+def test_o_insert_auto_indent_matches_current_line():
+    """Kevin (T4 2026-05-17 19:17): `o<TEXT>\\n        <TEXT2>\\e` — first line
+    has no indent. Real vim's `autoindent` (default-ish) prepends current line's
+    indent to first inserted char. Add it."""
+    p = _tmp("class Foo\n{\n    function bar()\n    {\n        $x = 1;\n    }\n}\n")
+    try:
+        # Cursor at line 5 ("        $x = 1;"), `o` opens below at same indent
+        r = st.op_vim(p, f"5Goself::doThing();{ESC}")
+        new = open(p).read()
+        # Should be: line 5 stays, new line "        self::doThing();" follows
+        assert "        $x = 1;\n        self::doThing();\n" in new, (
+            f"auto-indent missing: {new!r}; receipt: {r}"
+        )
+    finally:
+        os.unlink(p)
+
+
+def test_O_insert_auto_indent_matches_current_line():
+    """`O` opens above — same auto-indent rule."""
+    p = _tmp("a\nb\n        $x = 1;\nc\n")
+    try:
+        r = st.op_vim(p, f"3GOself::doThing();{ESC}")
+        new = open(p).read()
+        assert "b\n        self::doThing();\n        $x = 1;\n" in new, (
+            f"auto-indent missing: {new!r}; receipt: {r}"
+        )
+    finally:
+        os.unlink(p)
+
+
+def test_o_insert_does_not_double_indent_when_text_starts_with_ws():
+    """If TEXT explicitly starts with whitespace, don't add MORE indent."""
+    p = _tmp("    indented_line\n")
+    try:
+        r = st.op_vim(p, f"1Go        explicit_indent{ESC}")
+        new = open(p).read()
+        # First inserted char is space — Kevin already provided indent
+        # Auto-indent should NOT prepend 4 more spaces on top of his 8
+        assert new == "    indented_line\n        explicit_indent\n", (
+            f"double indent: {new!r}; receipt: {r}"
+        )
+    finally:
+        os.unlink(p)
+
+
 def test_log_pattern_w_is_noop():
     """Kevin (dvsi4 logs): `:w` (write file). Supertool writes atomically already.
     Real vim's `:w` saves; here it's a no-op (or accept with comment)."""

@@ -4481,6 +4481,17 @@ def _op_vim_impl(path: str, script: str) -> str:
                 )
                 arg = arg[1:]
             text = _decode_escapes(arg) * count
+            # Auto-indent for `o`/`O` (vim's default `autoindent` behavior).
+            # Prepend the current line's leading whitespace to TEXT first line
+            # so Kevin doesn't manually re-indent every inserted block.
+            # Skip when TEXT already starts with whitespace (Kevin provided it).
+            if verb in ("o", "O") and text and text[0] not in (" ", "\t"):
+                _bol = _line_start(content, cursor)
+                _eol_cur = _line_end(content, cursor)
+                _cur_line_text = content[_bol:_eol_cur]
+                _indent = _cur_line_text[:len(_cur_line_text) - len(_cur_line_text.lstrip(" \t"))]
+                if _indent:
+                    text = _indent + text
             if verb == "i":
                 pos = cursor
             elif verb == "a":
