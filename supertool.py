@@ -3014,8 +3014,11 @@ def op_vim(path: str, script: str) -> str:
         # Ctrl-A increment / Ctrl-X decrement: single-char no-arg verbs
         if c in ("\x01", "\x18"):
             return (start + 1, False)
+        # gJ — join without space (two-char no-arg)
+        if c == "g" and start + 1 < n and normalized[start + 1] == "J":
+            return (start + 2, False)
         # Single-char no-arg verbs (G, h, j, k, l, x, D, J, n, N, p, P,
-        # $, 0, ^, w, b, e, W, B, E, %, etc.)
+        # $, 0, ^, w, b, e, W, B, E, %, Y, *, #, etc.)
         return (start + 1, False)
 
     while i < n:
@@ -3136,7 +3139,42 @@ def op_vim(path: str, script: str) -> str:
                 j += 1
                 while j < len(rest) and (rest[j].isdigit() or rest[j] in ".$"):
                     j += 1
-            # must be followed by `s` or `d`
+            # Multi-char ex verbs MUST be checked before single-char s/d/m/t
+            # so that e.g. `:2,4sort` doesn't get parsed as `:2,4s` with body
+            # `ort`. Order matters: longest prefix first.
+            # :N,Msort[!|u|n], :Nsort, etc.
+            if rest[j:j + 4] == "sort":
+                range_spec = rest[1:j]
+                body = rest[j + 4:]
+                return (count, ":sort", f"\x1d{range_spec}\x1d{body}")
+            if rest[j:j + 7] == "reverse":
+                range_spec = rest[1:j]
+                body = rest[j + 7:]
+                return (count, ":reverse", f"\x1d{range_spec}\x1d{body}")
+            # :N,Mm K  or  :N,Mmove K
+            if rest[j:j + 4] == "move":
+                range_spec = rest[1:j]
+                body = rest[j + 4:]
+                return (count, ":move", f"\x1d{range_spec}\x1d{body}")
+            if rest[j:j + 1] == "m" and (j + 1 >= len(rest) or not rest[j + 1].isalpha()):
+                range_spec = rest[1:j]
+                body = rest[j + 1:]
+                return (count, ":move", f"\x1d{range_spec}\x1d{body}")
+            # :N,Mcopy K  or  :Nt K
+            if rest[j:j + 4] == "copy":
+                range_spec = rest[1:j]
+                body = rest[j + 4:]
+                return (count, ":copy", f"\x1d{range_spec}\x1d{body}")
+            if rest[j:j + 1] == "t" and (j + 1 >= len(rest) or not rest[j + 1].isalpha()):
+                range_spec = rest[1:j]
+                body = rest[j + 1:]
+                return (count, ":copy", f"\x1d{range_spec}\x1d{body}")
+            # :N,Mnorm CMDS  (greedy body)
+            if rest[j:j + 4] == "norm":
+                range_spec = rest[1:j]
+                body = rest[j + 4:]
+                return (count, ":norm", f"\x1d{range_spec}\x1d{body}")
+            # Single-char ex verbs LAST (so longer prefixes win first).
             if j < len(rest) and rest[j] == "s":
                 range_spec = rest[1:j]
                 body = rest[j + 1:]
@@ -3148,6 +3186,34 @@ def op_vim(path: str, script: str) -> str:
         # vim :%d — delete whole buffer (alias for :1,$d)
         if len(rest) >= 3 and rest[:3] == ":%d":
             return (count, ":d", "\x1d%\x1d" + rest[3:])
+        # vim :%sort, :%reverse, :%norm (whole buffer)
+        if len(rest) >= 6 and rest[:6] == ":%sort":
+            return (count, ":sort", "\x1d%\x1d" + rest[6:])
+        if len(rest) >= 9 and rest[:9] == ":%reverse":
+            return (count, ":reverse", "\x1d%\x1d" + rest[9:])
+        if len(rest) >= 6 and rest[:6] == ":%norm":
+            return (count, ":norm", "\x1d%\x1d" + rest[6:])
+        # Bare ex commands (no range) — default to whole-buffer where applicable.
+        # :sort[!|u|n] — default range = %
+        if len(rest) >= 5 and rest[:5] == ":sort":
+            return (count, ":sort", "\x1d%\x1d" + rest[5:])
+        if len(rest) >= 8 and rest[:8] == ":reverse":
+            return (count, ":reverse", "\x1d%\x1d" + rest[8:])
+        # :retab [N] — whole-buffer; arg is the tab width (optional)
+        if len(rest) >= 6 and rest[:6] == ":retab":
+            return (count, ":retab", rest[6:])
+        # :norm CMDS — default range = current line (.)
+        if len(rest) >= 5 and rest[:5] == ":norm":
+            return (count, ":norm", "\x1d.\x1d" + rest[5:])
+        # :move K / :copy K / :t K  — no range (defaults to current line)
+        if len(rest) >= 5 and rest[:5] == ":move":
+            return (count, ":move", "\x1d.\x1d" + rest[5:])
+        if len(rest) >= 5 and rest[:5] == ":copy":
+            return (count, ":copy", "\x1d.\x1d" + rest[5:])
+        if len(rest) >= 2 and rest[:2] == ":m" and (len(rest) < 3 or not rest[2].isalpha()):
+            return (count, ":move", "\x1d.\x1d" + rest[2:])
+        if len(rest) >= 2 and rest[:2] == ":t" and (len(rest) < 3 or not rest[2].isalpha()):
+            return (count, ":copy", "\x1d.\x1d" + rest[2:])
         # vim :g/PAT/d and :v/PAT/d and :g!/PAT/d — global delete
         # Encoded as :d with sentinel \x1d{mode}:{PAT}\x1d  where mode is g|v.
         if len(rest) >= 4 and (rest[:2] == ":g" or rest[:2] == ":v"):
@@ -3196,8 +3262,8 @@ def op_vim(path: str, script: str) -> str:
         # Returns verb = "g~"|"gu"|"gU", arg = motion char (+ any tail).
         if len(rest) >= 3 and rest[0] == "g" and rest[1] in ("~", "u", "U"):
             return (count, rest[:2], rest[2:])
-        # standalone ge / gE / g_
-        if len(rest) >= 2 and rest[:2] in ("ge", "gE", "g_"):
+        # standalone ge / gE / g_ / gJ
+        if len(rest) >= 2 and rest[:2] in ("ge", "gE", "g_", "gJ"):
             return (count, rest[:2], rest[2:])
         # two-char yank/delete word/eol: yw, y$, yy, dw, d$, d0, c$, c0, cf, cF, ct, cT, df, dF, dt, dT
         # plus operator-motion: dG d^ dh dj dk dl, yG y^ yh yj yk yl, d/ d? y/ y?
@@ -3253,6 +3319,8 @@ def op_vim(path: str, script: str) -> str:
             "W", "B", "E", "{", "}", "(", ")", "%", "+", "-", "_", ";", ",",
             # Case toggle + number ops:
             "~", "\x01", "\x18",
+            # Tier-1 grab-bag single-char verbs:
+            "Y", "*", "#",
         ):
             return (count, c, rest[1:])
         return (count, "", rest)  # unknown
@@ -4342,12 +4410,29 @@ def op_vim(path: str, script: str) -> str:
                     + autocorrect_hint
                 )
 
-        # --- ex read file: :r FILE  (or `:r -` to read stdin) ---
+        # --- ex read file: :r FILE  (or `:r -` to read stdin, `:r !CMD` to shell) ---
         elif verb == ":r":
             path_arg = arg.strip()
             if not path_arg:
                 return f"ERROR: action {i} '{action}': :r needs a file path\n"
-            if path_arg == "-":
+            if path_arg.startswith("!"):
+                cmd = path_arg[1:].strip()
+                if not cmd:
+                    return f"ERROR: action {i} '{action}': :r ! needs a command\n"
+                import subprocess as _sp
+                try:
+                    proc = _sp.run(
+                        cmd, shell=True, capture_output=True, text=True, timeout=30
+                    )
+                except (OSError, _sp.TimeoutExpired) as e:
+                    return f"ERROR: action {i} '{action}': :r !{cmd}: {e}\n"
+                if proc.returncode != 0:
+                    return (
+                        f"ERROR: action {i} '{action}': :r !{cmd}: exit "
+                        f"{proc.returncode}: {proc.stderr.strip()}\n"
+                    )
+                file_text = proc.stdout
+            elif path_arg == "-":
                 import sys as _sys
                 file_text = _sys.stdin.read()
             else:
@@ -4477,6 +4562,261 @@ def op_vim(path: str, script: str) -> str:
             content = content[:del_start] + content[del_end:]
             cursor = min(del_start, len(content))
             log.append(f"  {i}. :{spec}d ({line_b - line_a + 1} lines deleted)")
+
+        # --- Y: yank to EOL (alias for y$, real-vim default) ---
+        elif verb == "Y":
+            eol = _line_end(content, cursor)
+            register = content[cursor:eol]
+            register_linewise = False
+            log.append(f"  {i}. Y ({len(register)} chars)")
+
+        # --- gJ: join lines without inserting space ---
+        elif verb == "gJ":
+            joined = 0
+            for _ in range(count):
+                nl = content.find("\n", cursor)
+                if nl == -1:
+                    break
+                # remove only the \n; preserve next line's leading whitespace
+                content = content[:nl] + content[nl + 1:]
+                cursor = nl
+                joined += 1
+            log.append(f"  {i}. {count}gJ (joined {joined})")
+
+        # --- * / # : search for word under cursor with word boundaries ---
+        elif verb in ("*", "#"):
+            # find word at cursor
+            if cursor >= len(content) or not (
+                content[cursor].isalnum() or content[cursor] == "_"
+            ):
+                # try to find next word on line for *
+                p = cursor
+                eol = _line_end(content, p)
+                while p < eol and not (content[p].isalnum() or content[p] == "_"):
+                    p += 1
+                if p >= eol:
+                    return f"ERROR: action {i} '{action}': {verb} no word under cursor\n"
+                cursor = p
+            ws = cursor
+            while ws > 0 and (content[ws - 1].isalnum() or content[ws - 1] == "_"):
+                ws -= 1
+            we = cursor
+            while we < len(content) and (content[we].isalnum() or content[we] == "_"):
+                we += 1
+            word = content[ws:we]
+            pat = r"\b" + re.escape(word) + r"\b"
+            try:
+                rx = re.compile(pat, re.MULTILINE)
+            except re.error as e:
+                return f"ERROR: action {i} '{action}': {verb} regex: {e}\n"
+            if verb == "*":
+                m = rx.search(content, we)
+                if m is None:
+                    return f"ERROR: action {i} '{action}': * no further match for {word!r}\n"
+                cursor = m.start()
+                last_search = (pat, "/")
+            else:  # #
+                last = None
+                for m in rx.finditer(content[:ws]):
+                    last = m
+                if last is None:
+                    return f"ERROR: action {i} '{action}': # no earlier match for {word!r}\n"
+                cursor = last.start()
+                last_search = (pat, "?")
+            log.append(f"  {i}. {verb} ({word!r} → {cursor})")
+
+        # --- ex range helpers shared by :sort/:reverse/:move/:copy/:norm ---
+        elif verb in (":sort", ":reverse", ":move", ":copy", ":norm"):
+            if not arg.startswith("\x1d"):
+                return f"ERROR: action {i} '{action}': {verb} malformed range encoding\n"
+            close = arg.find("\x1d", 1)
+            if close == -1:
+                return f"ERROR: action {i} '{action}': {verb} malformed range encoding\n"
+            range_spec = arg[1:close]
+            body = arg[close + 1:]
+
+            lines = content.split("\n")
+            has_trailing_nl = lines and lines[-1] == ""
+            total_lines = len(lines) - (1 if has_trailing_nl else 0)
+            if total_lines == 0:
+                return f"ERROR: action {i} '{action}': {verb} on empty buffer\n"
+            cursor_line, _ = _offset_to_line_col(content, cursor)
+
+            def _resolve_addr(addr: str) -> int:
+                if addr == ".":
+                    return cursor_line
+                if addr == "$":
+                    return total_lines
+                if addr.isdigit():
+                    return int(addr)
+                raise ValueError(f"bad address {addr!r}")
+
+            if range_spec == "%" or range_spec == "":
+                line_a, line_b = 1, total_lines
+            elif "," in range_spec:
+                a, b = range_spec.split(",", 1)
+                try:
+                    line_a = _resolve_addr(a)
+                    line_b = _resolve_addr(b)
+                except ValueError as e:
+                    return f"ERROR: action {i} '{action}': {verb} range: {e}\n"
+            else:
+                try:
+                    line_a = _resolve_addr(range_spec)
+                    line_b = line_a
+                except ValueError as e:
+                    return f"ERROR: action {i} '{action}': {verb} range: {e}\n"
+            if line_a < 1 or line_b < 1 or line_a > total_lines or line_b > total_lines:
+                return (
+                    f"ERROR: action {i} '{action}': {verb} range {line_a}..{line_b} "
+                    f"out of bounds (1..{total_lines})\n"
+                )
+            if line_a > line_b:
+                return (
+                    f"ERROR: action {i} '{action}': {verb} range start ({line_a}) "
+                    f"is after end ({line_b})\n"
+                )
+
+            body_lines = lines[:-1] if has_trailing_nl else lines[:]
+
+            if verb == ":sort":
+                # parse flags from body: !, u, n (whitespace-tolerant)
+                flags = body.strip()
+                reverse = "!" in flags
+                unique = "u" in flags
+                numeric = "n" in flags
+                segment = body_lines[line_a - 1:line_b]
+
+                def _numkey(s: str) -> tuple:
+                    m = re.search(r"-?\d+", s)
+                    if m:
+                        return (0, int(m.group(0)), s)
+                    return (1, 0, s)
+
+                if numeric:
+                    segment.sort(key=_numkey, reverse=reverse)
+                else:
+                    segment.sort(reverse=reverse)
+                if unique:
+                    seen: set = set()
+                    deduped: List[str] = []
+                    for ln in segment:
+                        if ln not in seen:
+                            seen.add(ln)
+                            deduped.append(ln)
+                    segment = deduped
+                new_body = body_lines[:line_a - 1] + segment + body_lines[line_b:]
+                content = "\n".join(new_body) + ("\n" if has_trailing_nl else "")
+                cursor = min(cursor, len(content))
+                log.append(f"  {i}. :{range_spec}sort{flags} ({len(segment)} lines)")
+
+            elif verb == ":reverse":
+                segment = body_lines[line_a - 1:line_b]
+                segment.reverse()
+                new_body = body_lines[:line_a - 1] + segment + body_lines[line_b:]
+                content = "\n".join(new_body) + ("\n" if has_trailing_nl else "")
+                cursor = min(cursor, len(content))
+                log.append(f"  {i}. :{range_spec}reverse ({len(segment)} lines)")
+
+            elif verb in (":move", ":copy"):
+                target_str = body.strip()
+                if not target_str:
+                    return f"ERROR: action {i} '{action}': {verb} needs target line\n"
+                try:
+                    target = _resolve_addr(target_str)
+                except ValueError as e:
+                    return f"ERROR: action {i} '{action}': {verb}: {e}\n"
+                # target 0 = before line 1; target N = after line N
+                if target < 0 or target > total_lines:
+                    return (
+                        f"ERROR: action {i} '{action}': {verb} target {target} out of "
+                        f"bounds (0..{total_lines})\n"
+                    )
+                segment = body_lines[line_a - 1:line_b]
+                if verb == ":move":
+                    # disallow moving into own range
+                    if line_a - 1 <= target <= line_b:
+                        return (
+                            f"ERROR: action {i} '{action}': :move target {target} "
+                            f"inside source range {line_a}..{line_b}\n"
+                        )
+                    remaining = body_lines[:line_a - 1] + body_lines[line_b:]
+                    # adjust target if it was after the source
+                    adj_target = target - len(segment) if target > line_b else target
+                    new_body = remaining[:adj_target] + segment + remaining[adj_target:]
+                else:  # :copy
+                    new_body = body_lines[:target] + segment + body_lines[target:]
+                content = "\n".join(new_body) + ("\n" if has_trailing_nl else "")
+                cursor = min(cursor, len(content))
+                log.append(
+                    f"  {i}. :{range_spec}{verb[1:]} {target} ({len(segment)} lines)"
+                )
+
+            elif verb == ":norm":
+                # run body as a vim script per line in range
+                cmds = body
+                if not cmds:
+                    return f"ERROR: action {i} '{action}': :norm needs commands\n"
+                # operate on a snapshot of body lines; re-split after each op
+                # to keep line indexing sane if the user mutates lines.
+                # For simplicity: apply per-line in order, rebuild content
+                # after each. Use 1G<count of line>;cmds via direct execution
+                # by spinning a small recursion on op_vim — but file-based.
+                # Simpler: for each target line, write segment to a temp,
+                # apply, read back. That changes write count. Cleaner: do
+                # an in-process recursion via op_vim on the same path with
+                # a goto-line + cmds.
+                import tempfile as _tf
+                # Persist current state first so the recursive op sees it.
+                try:
+                    _atomic_write(path, content)
+                except OSError as e:
+                    return f"ERROR: failed to write {path}: {e}\n"
+                total_run = 0
+                cur_line_iter = line_a
+                # End line shrinks/grows? For canonical :norm, vim re-evaluates
+                # the line index each iteration. We track end by line count delta.
+                line_b_eff = line_b
+                while cur_line_iter <= line_b_eff:
+                    # Build a sub-script that goes to the target line, then runs cmds.
+                    sub_script = f"{cur_line_iter}G\x1b{cmds}"
+                    sub_out = op_vim(path, sub_script)
+                    if sub_out.startswith("ERROR"):
+                        return f"ERROR: action {i} '{action}': :norm at line {cur_line_iter}: {sub_out}"
+                    total_run += 1
+                    cur_line_iter += 1
+                    # Refresh line count in case cmds added/removed lines.
+                    with open(path, "r", encoding="utf-8", errors="replace") as _fh:
+                        new_content = _fh.read()
+                    new_lines_full = new_content.split("\n")
+                    new_total = len(new_lines_full) - (1 if new_lines_full and new_lines_full[-1] == "" else 0)
+                    line_b_eff = line_b + (new_total - total_lines)
+                # Re-read final content for the main loop.
+                with open(path, "r", encoding="utf-8", errors="replace") as _fh:
+                    content = _fh.read()
+                cursor = min(cursor, len(content))
+                log.append(f"  {i}. :{range_spec}norm {cmds!r} ({total_run} lines)")
+
+        # --- :retab N — convert leading tabs to N spaces ---
+        elif verb == ":retab":
+            width_str = arg.strip()
+            try:
+                width = int(width_str) if width_str else 4
+            except ValueError:
+                return f"ERROR: action {i} '{action}': :retab needs integer width\n"
+            if width < 1:
+                return f"ERROR: action {i} '{action}': :retab width must be >= 1\n"
+            spaces = " " * width
+            new_lines: List[str] = []
+            for ln in content.split("\n"):
+                # convert leading tabs (only) to spaces
+                k = 0
+                while k < len(ln) and ln[k] == "\t":
+                    k += 1
+                new_lines.append(spaces * k + ln[k:])
+            content = "\n".join(new_lines)
+            cursor = min(cursor, len(content))
+            log.append(f"  {i}. :retab {width}")
 
         # --- change to end-of-line / BOL ---
         elif verb == "c$":
