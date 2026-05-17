@@ -92,6 +92,7 @@ import hashlib
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -2806,6 +2807,112 @@ def _resolve_text_object(content: str, cursor: int, kind: str, around: bool) -> 
     raise _TextObjectError(f"unknown text-object kind {kind!r}")
 
 
+_VIM_DIFF_HUNK_CAP = 5
+
+
+def _vim_render_diff(before: str, after: str) -> str:
+    """Render up to 5 unified-diff hunks (-old +new ±2 ctx) of the edit.
+
+    Capped at _VIM_DIFF_HUNK_CAP hunks; surplus collapsed into a footer.
+    No-op edits produce an explicit '--- diff: no changes ---' marker so
+    Kevin can trust an in-band confirmation that the buffer is unchanged.
+    """
+    if before == after:
+        return "--- diff: no changes ---\n"
+    b_lines = before.splitlines(keepends=True)
+    a_lines = after.splitlines(keepends=True)
+    raw = list(difflib.unified_diff(b_lines, a_lines, n=2, lineterm=""))
+    if not raw:
+        return "--- diff: no changes ---\n"
+    # Strip file headers (--- /+++) emitted by unified_diff
+    body = [ln for ln in raw if not ln.startswith("---") and not ln.startswith("+++")]
+    # Group by @@ hunk headers
+    hunks: list[list[str]] = []
+    current: list[str] = []
+    for ln in body:
+        if ln.startswith("@@"):
+            if current:
+                hunks.append(current)
+            # Rewrite header to '@@ line N @@' for clarity
+            m = re.match(r"@@ -(\d+)", ln)
+            new_line = m.group(1) if m else "?"
+            current = [f"@@ line {new_line} @@"]
+        else:
+            current.append(ln.rstrip("\n"))
+    if current:
+        hunks.append(current)
+
+    total = len(hunks)
+    shown = hunks[:_VIM_DIFF_HUNK_CAP]
+    extra = total - len(shown)
+    out = [f"--- diff ({total} hunk{'s' if total != 1 else ''}) ---\n"]
+    for h in shown:
+        for ln in h:
+            out.append(ln + "\n")
+    if extra > 0:
+        out.append(f"... and {extra} more hunk{'s' if extra != 1 else ''}\n")
+    return "".join(out)
+
+
+def _vim_render_lint(path: str) -> str:
+    """Post-edit syntax lint based on file extension.
+
+    Returns "" when no lint applies (unknown ext or missing binary).
+    On success: '--- lint: <tool> ---\\n<output>\\n'.
+    On failure: '--- POST-EDIT LINT FAILED — <tool> ---\\n<output>\\n'.
+    Never raises; never rolls back the edit.
+    """
+    ext = os.path.splitext(path)[1].lower()
+    tool = ""
+    cmd: list[str] = []
+    parse_inline = False
+
+    if ext == ".php":
+        if not shutil.which("php"):
+            return ""
+        tool = "php -l"
+        cmd = ["php", "-l", path]
+    elif ext == ".json":
+        tool = "json"
+        parse_inline = True
+    elif ext == ".xml":
+        if not shutil.which("xmllint"):
+            return ""
+        tool = "xmllint"
+        cmd = ["xmllint", "--noout", path]
+    elif ext == ".py":
+        if not shutil.which("python3"):
+            return ""
+        tool = "py_compile"
+        cmd = ["python3", "-m", "py_compile", path]
+    else:
+        return ""
+
+    if parse_inline:
+        # JSON: try to parse, no subprocess
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                json.load(f)
+            return f"--- lint: {tool} ---\nValid JSON\n"
+        except (OSError, json.JSONDecodeError) as e:
+            return f"--- POST-EDIT LINT FAILED — {tool} ---\n{e}\n"
+
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return ""
+
+    output = (proc.stdout + proc.stderr).strip()
+    if proc.returncode == 0:
+        return f"--- lint: {tool} ---\n{output or 'OK'}\n"
+    return f"--- POST-EDIT LINT FAILED — {tool} ---\n{output or '(no output)'}\n"
+
+
 def op_vim(path: str, script: str) -> str:
     """vim-flavored cursor-based multi-action edit op.
 
@@ -2922,6 +3029,8 @@ def op_vim(path: str, script: str) -> str:
             content = f.read()
     except OSError as e:
         return f"ERROR: failed to read {path}: {e}\n"
+
+    _before_content = content
 
     # Stateful real-vim tokenizer. Matches LLM/vim-macro mental model:
     # - Normal mode: chars are verbs (with optional count prefix). After a
@@ -5855,6 +5964,9 @@ def op_vim(path: str, script: str) -> str:
         marker = "→" if ln == final_line else " "
         text = new_lines[ln - 1] if ln - 1 < len(new_lines) else ""
         out.append(f"  {ln:>5} {marker} {text}\n")
+
+    out.append(_vim_render_diff(_before_content, content))
+    out.append(_vim_render_lint(path))
     return "".join(out)
 
 
