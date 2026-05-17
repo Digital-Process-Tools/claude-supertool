@@ -98,15 +98,20 @@ def test_subst_miss_shows_literal_context():
 # --- Real-world Kevin pastes from session 2026-05-17 (jimmy-issue-142) ---
 
 
-def test_kevin_real_ggV_unknown_verb():
-    """Kevin's actual paste: `ggV:53s/...` — V is not supported."""
+def test_kevin_real_ggV_malformed_ex_range_errors_cleanly():
+    """Kevin's actual paste: `ggV:53s/...` — V is now handled, `V:` is
+    rewritten to `:.` which combined with `53` produces malformed ex
+    range `.53`. Should fail with a clean range error + atomicity note,
+    not a verb-catalog wall.
+    """
     p = _tmp("\n".join(f"line {i}" for i in range(60)) + "\n")
     try:
         r = st.op_vim(p, "ggV:53s/foo/bar/\\e")
-        assert "unknown verb" in r
-        assert "did you mean" in r.lower()
-        # Should NOT dump the catalog
+        assert "ERROR" in r
+        assert "unchanged" in r.lower() or "atomic" in r.lower()
+        # Clean error message (range / address / bad), not a catalog dump
         assert r.count(",") < 15
+        assert "ci{" not in r
     finally:
         os.unlink(p)
 
@@ -273,17 +278,16 @@ def test_kevin_real_subst_miss_shows_near_for_close_typo():
 
 
 def test_kevin_real_v_inside_chain_does_not_dump_catalog():
-    """Paste 2: `ggV:53s/.../.../` — V mid-chain.
-
-    Should fail fast with did-you-mean, not 80-item wall.
+    """Paste 2: `ggV:53s/.../.../` — V mid-chain. V is now handled and
+    rewritten; any resulting error must be concise (no 80-item catalog).
     """
     p = _tmp("\n".join(f"line {i}" for i in range(60)) + "\n")
     try:
         r = st.op_vim(p, r"ggV:53s/foo/bar/\e")
-        assert "unknown verb" in r
+        assert "ERROR" in r
         # Verify the catalog dump is gone
         assert "ci{" not in r
-        assert "did you mean" in r.lower()
+        assert "unchanged" in r.lower() or "atomic" in r.lower()
     finally:
         os.unlink(p)
 
@@ -445,6 +449,22 @@ def test_kevin_real_V_in_insert_text_not_rewritten():
         r = st.op_vim(p, r"iVcc\e")
         new = open(p).read()
         assert new == "VccX\n", f"got: {new!r}; receipt: {r}"
+    finally:
+        os.unlink(p)
+
+
+def test_kevin_real_ggVG_with_ex_substitute():
+    """Mined from kevin log cb0d92ec — `ggVG:s/PAT/REPL/g`.
+    Visual-line from start to end + ex substitute = whole-file substitute.
+    Should rewrite to `gg:%s/PAT/REPL/g` (or equivalent full-buffer sub).
+    """
+    p = _tmp("foo bar\nfoo baz\nfoo qux\n")
+    try:
+        r = st.op_vim(p, r"ggVG:s/foo/REPL/g")
+        new = open(p).read()
+        assert new.count("REPL") == 3, f"got: {new!r}; receipt: {r}"
+        assert "foo" not in new
+        assert "ERROR" not in r
     finally:
         os.unlink(p)
 

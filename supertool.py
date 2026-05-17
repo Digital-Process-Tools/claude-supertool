@@ -3316,9 +3316,10 @@ def _op_vim_impl(path: str, script: str) -> str:
                        "%", "+", "-", "_", "w", "b", "e", "W", "B", "E",
                        "$", "0", "^"):
                 return (start + 2, False)
-        # V (visual-line) — consume V[count][motion]<op> as a single
+        # V (visual-line) — consume V[count][motion]<op|ex> as a single
         # verb so the post-tokenize V-alias rewriter can collapse it
-        # into a line-op or ex range. Greedy when op is `c` (change).
+        # into a line-op or ex range. Greedy when op is `c` (change) or
+        # when followed by an ex command (`:`).
         if c == "V":
             j = start + 1
             while j < n and normalized[j].isdigit():
@@ -3328,6 +3329,9 @@ def _op_vim_impl(path: str, script: str) -> str:
                 j += 1
             elif j + 1 < n and normalized[j] == "g" and normalized[j + 1] == "g":
                 j += 2
+            # Ex command after motion: V<motion>:<rest> — greedy until ESC
+            if j < n and normalized[j] == ":":
+                return (j + 1, True)
             # Operator: d/y/c (single or doubled cc/dd/yy)
             if j < n and normalized[j] in "dyc":
                 op_char = normalized[j]
@@ -3713,11 +3717,23 @@ def _op_vim_impl(path: str, script: str) -> str:
         "Vggy": ":1,.y",
     }
     _V_MOTION_LINE = re.compile(r"^V(\d*)([jk])(cc|dd|yy)(.*)$", re.DOTALL)
+    # V<motion>:<ex> — visual-line + ex command applied to the line range.
+    # VG:<ex>   → :%<ex>    (current to EOF; with prior `gg` this is whole file)
+    # Vgg:<ex>  → :1,.<ex>  (start to current)
+    # V:<ex>    → :.<ex>    (current line only)
+    _V_EX_REWRITES = (
+        ("VG:", ":%"),
+        ("Vgg:", ":1,."),
+        ("V:", ":."),
+    )
 
     def _rewrite_v_alias(act: str) -> str:
         if not act or act[0] != "V":
             return act
         for prefix, repl in _V_LITERAL_REWRITES.items():
+            if act.startswith(prefix):
+                return repl + act[len(prefix):]
+        for prefix, repl in _V_EX_REWRITES:
             if act.startswith(prefix):
                 return repl + act[len(prefix):]
         # V<n>?j/k<op>... → <n+1><op><op>... (V + n-line motion = n+1 lines)
