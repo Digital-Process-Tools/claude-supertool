@@ -1381,3 +1381,293 @@ def test_dot_repeat_ciw_replaces_word():
         assert "ERROR" not in r
     finally:
         _cleanup_persist(p, cache_dir)
+
+
+# ---------------------------------------------------------------------------
+# M2 / M3 — :!cmd integration: . repeat and u undo
+# ---------------------------------------------------------------------------
+
+def test_shell_filter_sort_and_dot_repeat():
+    """`:%!sort` sorts the buffer; `.` replays it (idempotent — no error)."""
+    p, cache_dir = _tmp_persist("b\na\n")
+    try:
+        r = st.op_vim(p, ":%!sort")
+        result = open(p).read()
+        assert result == "a\nb\n", f"sort failed: {result!r}\nreceipt: {r}"
+        assert "ERROR" not in r
+
+        r2 = st.op_vim(p, ".")
+        result2 = open(p).read()
+        assert result2 == "a\nb\n", f"dot repeat changed sorted result: {result2!r}\nreceipt: {r2}"
+        assert "ERROR" not in r2
+    finally:
+        _cleanup_persist(p, cache_dir)
+
+
+def test_shell_filter_sort_undo():
+    """`:%!sort` then `u` restores original content."""
+    p, cache_dir = _tmp_persist("b\na\n")
+    try:
+        r = st.op_vim(p, ":%!sort␞u")
+        result = open(p).read()
+        assert result == "b\na\n", f"undo after sort failed: {result!r}\nreceipt: {r}"
+        assert "ERROR" not in r
+    finally:
+        _cleanup_persist(p, cache_dir)
+
+
+def test_shell_insert_echo_undo():
+    """`u` after `:!echo hi` removes the inserted line."""
+    p, cache_dir = _tmp_persist("")
+    try:
+        r = st.op_vim(p, ":!echo hi␞u")
+        result = open(p).read()
+        assert result == "", f"undo after :!echo failed: {result!r}\nreceipt: {r}"
+        assert "ERROR" not in r
+    finally:
+        _cleanup_persist(p, cache_dir)
+
+
+# ---------------------------------------------------------------------------
+# M5 — =motion auto-indent: mixed tabs/spaces handling
+# ---------------------------------------------------------------------------
+
+def test_m5_eq_eq_tab_file_aligns_with_tabs():
+    """Tab-style file: ref has 2 tabs (depth 2), target has 1 tab (depth 1) → corrected to 2 tabs."""
+    # ref line 1 = "\t\tdef foo():" depth=2; target line 2 = "\tpass" depth=1 (wrong)
+    content = "\t\tdef foo():\n\tpass\n"
+    p = _tmp(content)
+    try:
+        r = st.op_vim(p, "2G==")
+        result = open(p).read()
+        lines = result.splitlines()
+        assert lines[1] == "\t\tpass", (
+            f"Expected '\\t\\tpass' (2 tabs), got: {lines[1]!r}\nreceipt: {r}"
+        )
+        assert "ERROR" not in r
+    finally:
+        os.unlink(p)
+
+
+def test_m5_eq_eq_space_file_aligns_with_spaces():
+    """Space-style file: ref has 8 spaces (depth 2), target has 4 spaces (depth 1) → corrected to 8 spaces."""
+    # ref line 1 = "        def foo():" depth=2; target line 2 = "    pass" depth=1 (wrong)
+    content = "        def foo():\n    pass\n"
+    p = _tmp(content)
+    try:
+        r = st.op_vim(p, "2G==")
+        result = open(p).read()
+        lines = result.splitlines()
+        assert lines[1] == "        pass", (
+            f"Expected 8-space indent, got: {lines[1]!r}\nreceipt: {r}"
+        )
+        assert "ERROR" not in r
+    finally:
+        os.unlink(p)
+
+
+def test_m5_eq_eq_already_correct_noop():
+    """Target line already has correct indent depth — no spurious change."""
+    # ref="\t\tdef foo():" depth=2; target="\t\tpass" depth=2 → already correct
+    content = "\t\tdef foo():\n\t\tpass\n"
+    p = _tmp(content)
+    try:
+        r = st.op_vim(p, "2G==")
+        result = open(p).read()
+        assert result == content, (
+            f"Content changed when it shouldn't have:\nbefore: {content!r}\nafter:  {result!r}\nreceipt: {r}"
+        )
+        assert "ERROR" not in r
+    finally:
+        os.unlink(p)
+
+
+def test_m5_eq_eq_no_preceding_nonblank_uses_depth_zero():
+    """File starts with blank lines; `==` on first non-blank produces zero indent."""
+    # Lines 1-2 are blank; line 3 has 4-space indent → no preceding non-blank → depth 0
+    content = "\n\n    indented_start\n"
+    p = _tmp(content)
+    try:
+        r = st.op_vim(p, "3G==")
+        result = open(p).read()
+        lines = result.splitlines()
+        target = [ln for ln in lines if ln.strip() == "indented_start"][0]
+        assert target == "indented_start", (
+            f"Expected no indent (depth 0), got: {target!r}\nreceipt: {r}"
+        )
+        assert "ERROR" not in r
+    finally:
+        os.unlink(p)
+
+
+
+# --- M1/M4 macro correctness fixes ---
+
+
+def test_m1_macro_close_q_not_inside_insert_text():
+    # M1: qaiquery\eq @a — closing q must be bare q after \e, not q in "query"
+    # Body should be iquery\e; @a replays it inserting "query" a second time.
+    p = _tmp("")
+    try:
+        r = st.op_vim(p, r"qaiquery\eq @a")
+        assert "ERROR" not in r, f"Unexpected error: {r}"
+        result = open(p).read()
+        assert result.count("query") == 2, (
+            f"Expected 'query' x2, got {result.count('query')} in {result!r}; receipt: {r}"
+        )
+    finally:
+        os.unlink(p)
+
+
+def test_m1_macro_body_full_word_not_truncated():
+    # M1: body must be iquery\e not iquer — replay inserts full "query"
+    p = _tmp("x\n")
+    try:
+        r = st.op_vim(p, r"qaiquery\eq @a")
+        assert "ERROR" not in r, f"Unexpected error: {r}"
+        result = open(p).read()
+        assert "query" in result, f"'query' not in {result!r}; receipt: {r}"
+    finally:
+        os.unlink(p)
+
+
+def test_m1_q_inside_search_arg_is_data_not_close():
+    # M1: qa/query\eq — q in search arg is data; bare q after \e closes.
+    p = _tmp("query line\nanother line\n")
+    try:
+        r = st.op_vim(p, r"qa/query\eq")
+        assert "ERROR" not in r, f"Unexpected error: {r}"
+    finally:
+        os.unlink(p)
+
+
+def test_m1_bare_q_after_escape_closes_recording():
+    # M1: qaiX\eq @a — q inside insert text is data; bare q after \e closes.
+    # @a replay should insert "X" into the file.
+    p = _tmp("abc\n")
+    try:
+        r = st.op_vim(p, r"qaiX\eq @a")
+        assert "ERROR" not in r, f"Unexpected error: {r}"
+        result = open(p).read()
+        assert "X" in result, f"'X' not found in {result!r}; receipt: {r}"
+    finally:
+        os.unlink(p)
+
+
+def test_m4_self_replaying_macro_errors_with_depth_limit():
+    # M4: qa@aq then @a — self-recursive macro must error, not loop.
+    # File must be unchanged on error.
+    initial = "hello world\n"
+    p = _tmp(initial)
+    try:
+        r_replay = st.op_vim(p, "qa@aq @a")
+        assert "ERROR" in r_replay, f"Expected ERROR, got: {r_replay!r}"
+        assert "recursion depth limit" in r_replay, (
+            f"Expected 'recursion depth limit' in error, got: {r_replay!r}"
+        )
+        assert "100" in r_replay, f"Expected '100' in error, got: {r_replay!r}"
+        result = open(p).read()
+        assert result == initial, f"File modified despite recursion error: {result!r}"
+    finally:
+        os.unlink(p)
+
+
+def test_m4_normal_macro_replay_not_blocked():
+    # M4: 5 replays of a simple macro stay well under the 100 guard.
+    p = _tmp("a\n" * 10)
+    try:
+        r = st.op_vim(p, r"qaoX\eq 5@a")
+        assert "ERROR" not in r, f"Unexpected error: {r}"
+        result = open(p).read()
+        assert result.count("X") >= 5, (
+            f"Expected at least 5 'X' insertions, got {result.count('X')} in {result!r}"
+        )
+    finally:
+        os.unlink(p)
+
+
+# ---------------------------------------------------------------------------
+# :! ex shell-filter verb (moved from test_vim_ex_bang.py)
+# ---------------------------------------------------------------------------
+
+
+def test_bang_bare_inserts_stdout_after_cursor(tmp_path):
+    """:!echo hi inserts the command's stdout after the cursor's line."""
+    f = tmp_path / "x.txt"
+    f.write_text("a\nb\nc\n")
+    out = st.op_vim(str(f), ":!echo hi")
+    assert "ERROR" not in out, out
+    assert f.read_text() == "a\nhi\nb\nc\n"
+
+
+def test_bang_percent_pipes_whole_buffer(tmp_path):
+    """:%!tr a-z A-Z upcases the whole buffer."""
+    f = tmp_path / "x.txt"
+    f.write_text("abc\ndef\n")
+    out = st.op_vim(str(f), ":%!tr a-z A-Z")
+    assert "ERROR" not in out, out
+    assert f.read_text() == "ABC\nDEF\n"
+
+
+def test_bang_range_pipes_selected_lines(tmp_path):
+    """:2,3!tr a-z A-Z only upcases lines 2..3."""
+    f = tmp_path / "x.txt"
+    f.write_text("aaa\nbbb\nccc\nddd\n")
+    out = st.op_vim(str(f), ":2,3!tr a-z A-Z")
+    assert "ERROR" not in out, out
+    assert f.read_text() == "aaa\nBBB\nCCC\nddd\n"
+
+
+# ---------------------------------------------------------------------------
+# L4 — operator-motion count semantics: outer count repeats op, inner is distance
+# ---------------------------------------------------------------------------
+
+
+def test_indent_outer_count_repeats_levels():
+    """3>j: outer count=3 repeats indent, motion j covers 2 lines (current+next)."""
+    p = _tmp("a\nb\nc\n")
+    try:
+        r = st.op_vim(p, "3>j")
+        result = open(p).read()
+        lines = result.splitlines()
+        # 3 repetitions of indent = 3 * 4 spaces = 12 spaces
+        assert lines[0] == "            a", f"line 0: {lines[0]!r}\nreceipt: {r}"
+        assert lines[1] == "            b", f"line 1: {lines[1]!r}\nreceipt: {r}"
+        assert lines[2] == "c", f"line 2 should be unchanged: {lines[2]!r}\nreceipt: {r}"
+        assert "ERROR" not in r
+    finally:
+        os.unlink(p)
+
+
+def test_indent_motion_count_sets_range():
+    """>2j: motion count=2 covers current line + 2 below (3 lines total), 1 indent level."""
+    p = _tmp("a\nb\nc\nd\n")
+    try:
+        r = st.op_vim(p, ">2j")
+        result = open(p).read()
+        lines = result.splitlines()
+        assert lines[0] == "    a", f"line 0: {lines[0]!r}"
+        assert lines[1] == "    b", f"line 1: {lines[1]!r}"
+        assert lines[2] == "    c", f"line 2: {lines[2]!r}"
+        assert lines[3] == "d",     f"line 3 unchanged: {lines[3]!r}"
+        assert "ERROR" not in r
+    finally:
+        os.unlink(p)
+
+
+def test_indent_outer_and_motion_count_combined():
+    """3>2j: motion covers 3 lines, outer count applies indent 3 times = 12 spaces."""
+    p = _tmp("a\nb\nc\nd\n")
+    try:
+        r = st.op_vim(p, "3>2j")
+        result = open(p).read()
+        lines = result.splitlines()
+        # 3 levels of indent = 12 spaces each
+        assert lines[0] == "            a", f"line 0: {lines[0]!r}"
+        assert lines[1] == "            b", f"line 1: {lines[1]!r}"
+        assert lines[2] == "            c", f"line 2: {lines[2]!r}"
+        assert lines[3] == "d",             f"line 3 unchanged: {lines[3]!r}"
+        assert "ERROR" not in r
+    finally:
+        os.unlink(p)
+
