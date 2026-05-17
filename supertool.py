@@ -2913,6 +2913,25 @@ def _vim_render_lint(path: str) -> str:
     return f"--- POST-EDIT LINT FAILED — {tool} ---\n{output or '(no output)'}\n"
 
 
+def _vim_literal_decode(pat: str) -> str:
+    """Convert a regex-style pattern to the literal string the caller
+    probably meant. Used by the no-match autocorrect on `/PAT` and `:s`.
+
+    - Decode `\\xHH`, `\\uHHHH`, `\\n`, `\\t`, `\\r` to real chars (preserve
+      their intended meaning before stripping).
+    - Iteratively strip `\\X` → `X` for non-digit X so over-escaped
+      `\\$this` → `\\$this` → `$this` flattens to literal.
+    """
+    out = re.sub(r"\\x([0-9A-Fa-f]{2})", lambda m: chr(int(m.group(1), 16)), pat)
+    out = re.sub(r"\\u([0-9A-Fa-f]{4})", lambda m: chr(int(m.group(1), 16)), out)
+    out = out.replace("\\n", "\n").replace("\\t", "\t").replace("\\r", "\r")
+    while True:
+        nxt = re.sub(r"\\(\D)", r"\1", out)
+        if nxt == out:
+            return out
+        out = nxt
+
+
 def _vim_nearest_literal_hint(content: str, pat: str, max_lines: int = 3) -> str:
     """When /PAT or :s misses, return a short hint with file lines that
     contain the longest literal chunk of the pattern. Helps the caller see
@@ -3752,15 +3771,10 @@ def op_vim(path: str, script: str) -> str:
                         # queue the trailing action for the next iteration
                         raw_actions.insert(i, trail)
                         continue
-                # Literal-fallback: strip backslash escapes iteratively, try
-                # plain content.find. Same logic as :s — handles unescaped
-                # `(`, `)`, `$` Kevin meant as literals.
-                literal_pat = pat
-                while True:
-                    nxt = re.sub(r"\\(\D)", r"\1", literal_pat)
-                    if nxt == literal_pat:
-                        break
-                    literal_pat = nxt
+                # Literal-fallback: decode then strip backslash escapes,
+                # try plain content.find. Same logic as :s — handles
+                # unescaped `(`, `)`, `$` and hex/unicode escapes.
+                literal_pat = _vim_literal_decode(pat)
                 if literal_pat and literal_pat != pat:
                     for start in (cursor, 0):
                         lit_idx = content.find(literal_pat, start)
@@ -4716,14 +4730,7 @@ def op_vim(path: str, script: str) -> str:
             # Strip `\<X>` → `<X>` to get his intended literal string and try
             # plain content.replace. If it hits, use that result.
             if n == 0:
-                # Strip backslash escapes iteratively until stable, so
-                # `\\$this` → `\$this` → `$this` (two passes).
-                literal_pat = spat
-                while True:
-                    next_pat = re.sub(r"\\(\D)", r"\1", literal_pat)
-                    if next_pat == literal_pat:
-                        break
-                    literal_pat = next_pat
+                literal_pat = _vim_literal_decode(spat)
                 if literal_pat and literal_pat != spat:
                     body = content[sub_start:sub_end]
                     occurrences = body.count(literal_pat)
