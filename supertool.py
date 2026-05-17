@@ -2446,6 +2446,12 @@ def op_replace_lines(path: str, start: int, end: int, content: str) -> str:
         return f"ERROR: start ({start}) > file length ({total}) + 1\n"
 
     insert_only = end < start
+    # Off-by-one autocorrect: END == total + 1 — Kevin guessed line count, clearly
+    # meant "through EOF". Clamp + flag in receipt. END > total+1 = real mistake.
+    clamped_hint = ""
+    if not insert_only and end == total + 1:
+        clamped_hint = f" [autocorrect: end ({end}) clamped to file length ({total})]"
+        end = total
     if not insert_only and end > total:
         return f"ERROR: end ({end}) > file length ({total})\n"
 
@@ -2479,7 +2485,7 @@ def op_replace_lines(path: str, start: int, end: int, content: str) -> str:
         verb = f"inserted {added} lines before line {start}"
     else:
         verb = f"replaced lines {start}-{end} with lines {new_start}-{new_end}"
-    out = [f"{verb} in {path} (Δ {added - removed:+d})\n"]
+    out = [f"{verb} in {path} (Δ {added - removed:+d}){clamped_hint}\n"]
 
     ctx_start = max(1, new_start - 2)
     ctx_end = min(len(new_lines), max(new_end, new_start) + 2)

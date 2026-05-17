@@ -456,6 +456,34 @@ def test_paste_op_appends_trailing_newline():
         os.unlink(p)
 
 
+def test_issue18_replace_lines_end_off_by_one_clamps_to_eof():
+    """Kevin (CoverageAudit T8): `replace_lines:::PATH:::49:::57:::BODY` on 56-line file.
+    Off-by-one — Kevin meant 'through EOF'. Clamp END to total + hint."""
+    p = _tmp("\n".join(f"line{n}" for n in range(1, 57)) + "\n")  # 56 lines
+    try:
+        r = st.op_replace_lines(p, 49, 57, "REPLACED\n")
+        new = open(p).read()
+        assert new.endswith("REPLACED\n"), f"got tail: {new[-50:]!r}; receipt: {r}"
+        # Lines 49 onwards gone, replaced by REPLACED
+        assert "line48\nREPLACED\n" == new[-len("line48\nREPLACED\n"):], (
+            f"clamped result wrong: {new[-30:]!r}"
+        )
+        assert "ERROR" not in r
+    finally:
+        os.unlink(p)
+
+
+def test_issue18_replace_lines_end_two_over_still_errors():
+    """END > total+1 = real mistake. Keep error."""
+    p = _tmp("a\nb\nc\n")  # 3 lines
+    try:
+        r = st.op_replace_lines(p, 2, 5, "X\n")  # 5 > 3+1
+        assert "ERROR" in r, f"should error: {r}"
+        assert open(p).read() == "a\nb\nc\n", "buffer should be unchanged"
+    finally:
+        os.unlink(p)
+
+
 def test_issue1_oi_no_whitespace_does_not_autocorrect():
     """`oiword` — `i` followed by word char, NOT a Kevin reflex (no indent).
     Should remain literal (real vim semantics: inserts `iword`).
