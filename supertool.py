@@ -2465,29 +2465,80 @@ def _vim_cursor_state_path(file_path: str) -> str:
     return os.path.join(cache_dir, digest)
 
 
-def _vim_load_cursor(file_path: str, content_len: int) -> int:
-    """Load persisted cursor for `file_path`, clamped to [0, content_len]."""
+def _vim_load_state(file_path: str, content_len: int) -> dict:
+    """Load persisted vim state for `file_path`. Returns dict with keys
+    cursor (int), marks (dict[str,int]), last_edit (int|None).
+    Backward-compat: if the file is a bare int, treat as legacy cursor-only.
+    """
+    default = {"cursor": 0, "marks": {}, "last_edit": None}
     if os.environ.get("SUPERTOOL_VIM_NO_PERSIST"):
-        return 0
+        return default
     try:
         with open(_vim_cursor_state_path(file_path), "r", encoding="utf-8") as fh:
             raw = fh.read().strip()
-        return max(0, min(content_len, int(raw)))
-    except (OSError, ValueError):
-        return 0
+    except OSError:
+        return default
+    if not raw:
+        return default
+    # Try JSON dict first
+    try:
+        import json as _json
+        data = _json.loads(raw)
+        if isinstance(data, dict):
+            cur = int(data.get("cursor", 0))
+            marks_raw = data.get("marks", {}) or {}
+            marks = {k: int(v) for k, v in marks_raw.items() if isinstance(k, str)}
+            le = data.get("last_edit", None)
+            le_val = int(le) if le is not None else None
+            # Clamp
+            cur = max(0, min(content_len, cur))
+            marks = {k: max(0, min(content_len, v)) for k, v in marks.items()}
+            if le_val is not None:
+                le_val = max(0, min(content_len, le_val))
+            return {"cursor": cur, "marks": marks, "last_edit": le_val}
+    except (ValueError, TypeError):
+        pass
+    # Legacy: bare int
+    try:
+        return {"cursor": max(0, min(content_len, int(raw))), "marks": {}, "last_edit": None}
+    except ValueError:
+        return default
 
 
-def _vim_save_cursor(file_path: str, cursor: int) -> None:
-    """Persist cursor for `file_path` so the next vim call resumes here."""
+def _vim_save_state(file_path: str, cursor: int, marks: dict, last_edit) -> None:
+    """Persist vim state for `file_path` so the next vim call resumes here."""
     if os.environ.get("SUPERTOOL_VIM_NO_PERSIST"):
         return
     state_path = _vim_cursor_state_path(file_path)
     try:
         os.makedirs(os.path.dirname(state_path), exist_ok=True)
+        import json as _json
+        payload = _json.dumps({
+            "cursor": int(cursor),
+            "marks": {k: int(v) for k, v in (marks or {}).items()},
+            "last_edit": int(last_edit) if last_edit is not None else None,
+        })
         with open(state_path, "w", encoding="utf-8") as fh:
-            fh.write(str(cursor))
+            fh.write(payload)
     except OSError:
         pass
+
+
+def _vim_load_cursor(file_path: str, content_len: int) -> int:
+    """Backcompat shim: load just the cursor."""
+    return _vim_load_state(file_path, content_len)["cursor"]
+
+
+def _vim_save_cursor(file_path: str, cursor: int) -> None:
+    """Backcompat shim: save cursor only, preserving existing marks/last_edit."""
+    if os.environ.get("SUPERTOOL_VIM_NO_PERSIST"):
+        return
+    # Preserve existing marks/last_edit
+    try:
+        existing = _vim_load_state(file_path, 10**9)
+    except Exception:
+        existing = {"marks": {}, "last_edit": None}
+    _vim_save_state(file_path, cursor, existing.get("marks", {}), existing.get("last_edit"))
 
 
 class _TextObjectError(Exception):
@@ -3017,6 +3068,50 @@ def op_vim(path: str, script: str) -> str:
         # gJ — join without space (two-char no-arg)
         if c == "g" and start + 1 < n and normalized[start + 1] == "J":
             return (start + 2, False)
+        # gi — insert at last edit position (greedy text after)
+        if c == "g" and start + 1 < n and normalized[start + 1] == "i":
+            return (start + 2, True)
+        # R — overwrite mode (greedy text until ESC)
+        if c == "R":
+            return (start + 1, True)
+        # m{a-zA-Z} — set mark (two-char no-arg)
+        if c == "m" and start + 1 < n and (
+            ("a" <= normalized[start + 1] <= "z")
+            or ("A" <= normalized[start + 1] <= "Z")
+        ):
+            return (start + 2, False)
+        # `{a-zA-Z} or `` — jump to mark exact / back to last jump
+        if c == "`" and start + 1 < n and (
+            ("a" <= normalized[start + 1] <= "z")
+            or ("A" <= normalized[start + 1] <= "Z")
+            or normalized[start + 1] == "`"
+        ):
+            return (start + 2, False)
+        # '{a-zA-Z} or '' — jump to mark line / back to last jump
+        if c == "'" and start + 1 < n and (
+            ("a" <= normalized[start + 1] <= "z")
+            or ("A" <= normalized[start + 1] <= "Z")
+            or normalized[start + 1] == "'"
+        ):
+            return (start + 2, False)
+        # >> << — indent/dedent current line (two-char no-arg)
+        if c in "><" and start + 1 < n and normalized[start + 1] == c:
+            return (start + 2, False)
+        # > / < + motion: text-object (iw/aw/i{/a{ etc) or simple motion char
+        if c in "><" and start + 1 < n:
+            nxt = normalized[start + 1]
+            # text-object: >iw, >aw, >ip, <ap, etc.
+            _TO_KINDS2 = set('wWsp"\'`()[]{}<>bBt')
+            if nxt in "ia" and start + 2 < n and normalized[start + 2] in _TO_KINDS2:
+                return (start + 3, False)
+            # gg / ge / gE / g_ (3-char)
+            if nxt == "g" and start + 2 < n and normalized[start + 2] == "g":
+                return (start + 3, False)
+            # simple motion targets
+            if nxt in ("j", "k", "h", "l", "G", "{", "}", "(", ")",
+                       "%", "+", "-", "_", "w", "b", "e", "W", "B", "E",
+                       "$", "0", "^"):
+                return (start + 2, False)
         # Single-char no-arg verbs (G, h, j, k, l, x, D, J, n, N, p, P,
         # $, 0, ^, w, b, e, W, B, E, %, Y, *, #, etc.)
         return (start + 1, False)
@@ -3265,6 +3360,45 @@ def op_vim(path: str, script: str) -> str:
         # standalone ge / gE / g_ / gJ
         if len(rest) >= 2 and rest[:2] in ("ge", "gE", "g_", "gJ"):
             return (count, rest[:2], rest[2:])
+        # gi — insert at last edit position (greedy text after)
+        if len(rest) >= 2 and rest[:2] == "gi":
+            return (count, "gi", rest[2:])
+        # R — overwrite mode (greedy text)
+        if rest[0] == "R":
+            return (count, "R", rest[1:])
+        # m{X} — set mark (X = a-zA-Z)
+        if len(rest) >= 2 and rest[0] == "m" and (
+            ("a" <= rest[1] <= "z") or ("A" <= rest[1] <= "Z")
+        ):
+            return (count, "m", rest[1:2] + rest[2:][:0]) if False else (count, "m" + rest[1], rest[2:])
+        # `{X} — jump to mark exact, or `` for last jump
+        if len(rest) >= 2 and rest[0] == "`" and (
+            ("a" <= rest[1] <= "z") or ("A" <= rest[1] <= "Z") or rest[1] == "`"
+        ):
+            return (count, "`" + rest[1], rest[2:])
+        # '{X} — jump to mark line, or '' for last jump
+        if len(rest) >= 2 and rest[0] == "'" and (
+            ("a" <= rest[1] <= "z") or ("A" <= rest[1] <= "Z") or rest[1] == "'"
+        ):
+            return (count, "'" + rest[1], rest[2:])
+        # >> and << — indent/dedent current line
+        if len(rest) >= 2 and rest[:2] in (">>", "<<"):
+            return (count, rest[:2], rest[2:])
+        # > / < + motion
+        if len(rest) >= 2 and rest[0] in "><":
+            op = rest[0]
+            # text-object form: >iw, <ap, etc.
+            _to = set('wWsp"\'`()[]{}<>bBt')
+            if len(rest) >= 3 and rest[1] in "ia" and rest[2] in _to:
+                return (count, op + rest[1] + rest[2], rest[3:])
+            # gg / ge / gE / g_
+            if len(rest) >= 3 and rest[1] == "g" and rest[2] in ("g", "e", "E", "_"):
+                return (count, op + rest[1:3], rest[3:])
+            # simple motion target
+            if rest[1] in ("j", "k", "h", "l", "G", "{", "}", "(", ")",
+                           "%", "+", "-", "_", "w", "b", "e", "W", "B", "E",
+                           "$", "0", "^"):
+                return (count, op + rest[1], rest[2:])
         # two-char yank/delete word/eol: yw, y$, yy, dw, d$, d0, c$, c0, cf, cF, ct, cT, df, dF, dt, dT
         # plus operator-motion: dG d^ dh dj dk dl, yG y^ yh yj yk yl, d/ d? y/ y?
         if len(rest) >= 2 and rest[:2] in (
@@ -3325,7 +3459,11 @@ def op_vim(path: str, script: str) -> str:
             return (count, c, rest[1:])
         return (count, "", rest)  # unknown
 
-    cursor = _vim_load_cursor(path, len(content))
+    _state = _vim_load_state(path, len(content))
+    cursor = _state["cursor"]
+    marks: dict = dict(_state["marks"])  # {char: offset}
+    last_edit = _state["last_edit"]      # int|None
+    prev_cursor = cursor                 # for `` and '' jump-back
     log: List[str] = []
     last_search: Optional[tuple] = None  # (pattern, direction "/"|"?")
     last_find: Optional[tuple] = None  # (verb in fFtT, target char) for ; ,
@@ -3568,7 +3706,16 @@ def op_vim(path: str, script: str) -> str:
                 content = content[:bol] + "\n" + content[bol:]
                 pos = bol
             content = content[:pos] + text + content[pos:]
+            # Shift marks/last_edit at or after insert point by len(text)
+            delta = len(text)
+            if delta:
+                for _mk in list(marks.keys()):
+                    if marks[_mk] >= pos:
+                        marks[_mk] += delta
+                if last_edit is not None and last_edit >= pos:
+                    last_edit += delta
             cursor = pos + len(text)
+            last_edit = cursor
             preview = text if len(text) <= 30 else text[:27] + "..."
             log.append(f"  {i}. {verb}{preview!r} (len={len(text)})")
 
@@ -5439,6 +5586,235 @@ def op_vim(path: str, script: str) -> str:
                 cursor = start + len(text)
                 log.append(f"  {i}. {verb}{target!r} ({len(slice_)} chars → {len(text)})")
 
+        # --- indent operators: >> << and >{motion} <{motion} ---
+        elif verb in (">>", "<<") or (
+            len(verb) >= 2 and verb[0] in "><" and verb != ">>" and verb != "<<"
+        ):
+            op = verb[0]
+            # Determine the [line_a, line_b] line range (1-indexed inclusive)
+            cur_line, _ = _offset_to_line_col(content, cursor)
+            total_lines = content.count("\n") + 1
+            if verb in (">>", "<<"):
+                line_a = cur_line
+                line_b = min(total_lines, cur_line + count - 1)
+            else:
+                motion = verb[1:]
+                target = cursor
+                if len(motion) == 2 and motion[0] in "ia" and motion[1] in 'wWsp"\'`()[]{}<>bBt':
+                    try:
+                        ts, te = _resolve_text_object(content, cursor, motion[1], motion[0] == "a")
+                        # Convert to line range covering [ts, te-1]
+                        la, _ = _offset_to_line_col(content, ts)
+                        lb, _ = _offset_to_line_col(content, max(ts, te - 1))
+                        line_a, line_b = la, lb
+                    except _TextObjectError as e:
+                        return f"ERROR: action {i} '{action}': {e}\n"
+                else:
+                    # Compute motion endpoint
+                    if motion == "G":
+                        target = len(content) - (1 if content.endswith("\n") else 0)
+                    elif motion == "gg":
+                        target = 0
+                    elif motion == "j":
+                        nl = content.find("\n", cursor)
+                        target = (nl + 1) if nl != -1 else cursor
+                    elif motion == "k":
+                        bol = _line_start(content, cursor)
+                        target = _line_start(content, bol - 1) if bol > 0 else cursor
+                    elif motion == "}":
+                        pos = cursor
+                        bol = _line_start(content, pos)
+                        eol = _line_end(content, pos)
+                        if bol == eol:
+                            pos = eol + 1 if eol < len(content) else len(content)
+                        while pos < len(content):
+                            nl = content.find("\n", pos)
+                            if nl == -1:
+                                pos = len(content)
+                                break
+                            nb = nl + 1
+                            ne = content.find("\n", nb)
+                            if ne == -1:
+                                ne = len(content)
+                            if nb == ne:
+                                pos = nb
+                                break
+                            pos = nb
+                        target = pos
+                    elif motion == "{":
+                        pos = cursor
+                        bol = _line_start(content, pos)
+                        eol = _line_end(content, pos)
+                        if bol == eol and bol > 0:
+                            pos = bol - 1
+                        else:
+                            pos = bol
+                        while pos > 0:
+                            prev_bol = _line_start(content, pos - 1)
+                            prev_eol = _line_end(content, prev_bol)
+                            if prev_bol == prev_eol:
+                                pos = prev_bol
+                                break
+                            pos = prev_bol
+                        target = pos
+                    elif motion == "%":
+                        # match bracket
+                        if cursor < len(content):
+                            pairs_fwd = {"(": ")", "[": "]", "{": "}"}
+                            pairs_bwd = {")": "(", "]": "[", "}": "{"}
+                            ch = content[cursor]
+                            if ch in pairs_fwd:
+                                depth = 1
+                                k = cursor + 1
+                                while k < len(content):
+                                    if content[k] == ch:
+                                        depth += 1
+                                    elif content[k] == pairs_fwd[ch]:
+                                        depth -= 1
+                                        if depth == 0:
+                                            target = k
+                                            break
+                                    k += 1
+                            elif ch in pairs_bwd:
+                                depth = 1
+                                k = cursor - 1
+                                while k >= 0:
+                                    if content[k] == ch:
+                                        depth += 1
+                                    elif content[k] == pairs_bwd[ch]:
+                                        depth -= 1
+                                        if depth == 0:
+                                            target = k
+                                            break
+                                    k -= 1
+                    elif motion in ("+", "-"):
+                        if motion == "+":
+                            nl = content.find("\n", cursor)
+                            target = (nl + 1) if nl != -1 else cursor
+                        else:
+                            bol = _line_start(content, cursor)
+                            target = _line_start(content, bol - 1) if bol > 0 else cursor
+                    else:
+                        # default: use cursor (no-op range = current line)
+                        target = cursor
+                    la, _ = _offset_to_line_col(content, min(cursor, target))
+                    lb, _ = _offset_to_line_col(content, max(cursor, target))
+                    line_a, line_b = la, lb
+            # Apply indent/dedent to lines [line_a, line_b]
+            line_a = max(1, line_a)
+            line_b = min(total_lines, line_b)
+            if line_a > line_b:
+                line_a, line_b = line_b, line_a
+            # Build new content by line
+            lines = content.split("\n")
+            # Trailing empty string from final \n — preserve it
+            trailing_empty = lines and lines[-1] == ""
+            real_lines = lines[:-1] if trailing_empty else lines
+            shift = "    "
+            for ln_idx in range(line_a - 1, min(line_b, len(real_lines))):
+                if op == ">":
+                    # Vim: skip empty lines for indent
+                    if real_lines[ln_idx] == "":
+                        continue
+                    real_lines[ln_idx] = shift + real_lines[ln_idx]
+                else:
+                    s = real_lines[ln_idx]
+                    if s.startswith("\t"):
+                        real_lines[ln_idx] = s[1:]
+                    else:
+                        # strip up to 4 leading spaces
+                        k = 0
+                        while k < 4 and k < len(s) and s[k] == " ":
+                            k += 1
+                        real_lines[ln_idx] = s[k:]
+            new_lines2 = real_lines + ([""] if trailing_empty else [])
+            content = "\n".join(new_lines2)
+            # Cursor → first non-blank of line_a
+            try:
+                bol = _goto_line(content, line_a)
+                eol = _line_end(content, bol)
+                pos = bol
+                while pos < eol and content[pos] in (" ", "\t"):
+                    pos += 1
+                cursor = pos
+            except ValueError:
+                cursor = min(cursor, len(content))
+            last_edit = cursor
+            log.append(f"  {i}. {verb} (lines {line_a}..{line_b})")
+
+        # --- R — overwrite mode ---
+        elif verb == "R":
+            text = _decode_escapes(arg)
+            # Overwrite char-by-char within the current line; append past EOL.
+            eol = _line_end(content, cursor)
+            line_chars_avail = eol - cursor
+            n_overwrite = min(len(text), line_chars_avail)
+            n_append = len(text) - n_overwrite
+            new_content = (
+                content[:cursor]
+                + text[:n_overwrite]
+                + text[n_overwrite:n_overwrite + n_append]
+                + content[cursor + n_overwrite:]
+            )
+            content = new_content
+            cursor = cursor + len(text)
+            last_edit = cursor
+            preview = text if len(text) <= 30 else text[:27] + "..."
+            log.append(f"  {i}. R{preview!r} (len={len(text)})")
+
+        # --- m{X} — set mark ---
+        elif len(verb) == 2 and verb[0] == "m" and (
+            ("a" <= verb[1] <= "z") or ("A" <= verb[1] <= "Z")
+        ):
+            mark_char = verb[1].lower()  # uppercase same as lowercase for our scope
+            marks[mark_char] = cursor
+            log.append(f"  {i}. m{verb[1]} (mark={cursor})")
+
+        # --- `{X} — jump to mark exact offset, `` — jump to prev cursor ---
+        elif len(verb) == 2 and verb[0] == "`":
+            target_ch = verb[1]
+            if target_ch == "`":
+                cursor, prev_cursor = prev_cursor, cursor
+                log.append(f"  {i}. `` (cursor={cursor})")
+            else:
+                key = target_ch.lower()
+                if key not in marks:
+                    return f"ERROR: action {i} '{action}': mark {target_ch!r} not set\n"
+                prev_cursor = cursor
+                cursor = min(marks[key], len(content))
+                log.append(f"  {i}. `{target_ch} (cursor={cursor})")
+
+        # --- '{X} — jump to mark line (first non-blank), '' — prev cursor ---
+        elif len(verb) == 2 and verb[0] == "'":
+            target_ch = verb[1]
+            if target_ch == "'":
+                cursor, prev_cursor = prev_cursor, cursor
+                log.append(f"  {i}. '' (cursor={cursor})")
+            else:
+                key = target_ch.lower()
+                if key not in marks:
+                    return f"ERROR: action {i} '{action}': mark {target_ch!r} not set\n"
+                prev_cursor = cursor
+                off = min(marks[key], len(content))
+                bol = _line_start(content, off)
+                eol = _line_end(content, bol)
+                pos = bol
+                while pos < eol and content[pos] in (" ", "\t"):
+                    pos += 1
+                cursor = pos
+                log.append(f"  {i}. '{target_ch} (cursor={cursor})")
+
+        # --- gi — insert at last edit position ---
+        elif verb == "gi":
+            text = _decode_escapes(arg) * count
+            pos = last_edit if last_edit is not None else cursor
+            pos = min(pos, len(content))
+            content = content[:pos] + text + content[pos:]
+            cursor = pos + len(text)
+            last_edit = cursor
+            preview = text if len(text) <= 30 else text[:27] + "..."
+            log.append(f"  {i}. gi{preview!r} (cursor={cursor})")
+
         else:
             return (
                 f"ERROR: action {i} '{action}': unknown verb '{verb}' "
@@ -5457,7 +5833,12 @@ def op_vim(path: str, script: str) -> str:
     except OSError as e:
         return f"ERROR: failed to write {path}: {e}\n"
 
-    _vim_save_cursor(path, min(cursor, len(content)))
+    _vim_save_state(
+        path,
+        min(cursor, len(content)),
+        {k: min(v, len(content)) for k, v in marks.items()},
+        min(last_edit, len(content)) if last_edit is not None else None,
+    )
 
     final_line, final_col = _offset_to_line_col(content, cursor)
     new_lines = content.split("\n")
