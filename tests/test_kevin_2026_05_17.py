@@ -484,6 +484,49 @@ def test_issue18_replace_lines_end_two_over_still_errors():
         os.unlink(p)
 
 
+def test_issue17_o_question_pattern_autocorrects_to_search_then_open():
+    """Kevin reflex (T6+T10 CoverageAudit): `o?PAT\\e<more>` — thinks `o?` searches
+    backward then opens. Real vim inserts `?PAT` as literal. Autocorrect:
+    detect `o<TEXT>\\e` where TEXT = `?<pattern>` short single-line → split
+    into `?PAT\\eo<rest>\\e` (search-then-open)."""
+    p = _tmp("class Foo\n{\n    function bar(): void\n    {\n        $x = 1;\n    }\n}\n")
+    try:
+        # Kevin's reflex: G + o?^}\eO<TEXT>\e — wanted: G, search ?^}, O TEXT
+        r = st.op_vim(p, "Go?^}\x1bO    function baz(): void {}\x1b")
+        new = open(p).read()
+        # After autocorrect: cursor goes to closing }, O inserts before it
+        assert "    function baz(): void {}\n}" in new, f"insert misplaced: {new!r}; receipt: {r}"
+        # `?^}` must NOT be a literal line in the file
+        assert "?^}" not in new, "?^} leaked as text: " + repr(new)
+    finally:
+        os.unlink(p)
+
+
+def test_issue17_o_slash_pattern_autocorrects():
+    """Same pattern with `/PAT` forward search."""
+    p = _tmp("alpha\nbeta\nGAMMA\ndelta\n")
+    try:
+        r = st.op_vim(p, "ggo/GAMMA\x1boFOUND\x1b")
+        new = open(p).read()
+        # `?GAMMA` → cursor on GAMMA line, o opens below
+        assert "GAMMA\nFOUND\n" in new, f"got: {new!r}; receipt: {r}"
+        assert "/GAMMA" not in new, f"/GAMMA leaked: {new!r}"
+    finally:
+        os.unlink(p)
+
+
+def test_issue17_o_question_with_spaces_does_not_autocorrect():
+    """If TEXT has whitespace, Kevin likely meant content. Don't autocorrect."""
+    p = _tmp("line1\nline2\n")
+    try:
+        r = st.op_vim(p, "1Go? what is this content\x1b")
+        new = open(p).read()
+        # Should insert as literal — has space, not a search pattern
+        assert "? what is this content" in new, f"autocorrect over-fired: {new!r}"
+    finally:
+        os.unlink(p)
+
+
 def test_issue1_oi_no_whitespace_does_not_autocorrect():
     """`oiword` — `i` followed by word char, NOT a Kevin reflex (no indent).
     Should remain literal (real vim semantics: inserts `iword`).

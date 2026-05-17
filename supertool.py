@@ -4576,6 +4576,49 @@ def _op_vim_impl(path: str, script: str) -> str:
                     f" [autocorrect: stripped redundant '{arg[0]}' verb bleed]"
                 )
                 arg = arg[1:]
+            # Search-then-open autocorrect: Kevin (T6+T10 CoverageAudit) types
+            # `o?PAT\e<more>` thinking `o?` searches backward then opens. Real
+            # vim inserts `?PAT` as literal. When TEXT after `o`/`O` is a single
+            # line starting with `?` or `/` followed by 2+ non-whitespace chars
+            # and NOTHING ELSE — that's the search reflex, not content. Defer
+            # the open: cursor jumps via search, the FOLLOWING action handles
+            # the actual insert. Here we just drop this no-op open and replay
+            # the search inline by mutating cursor.
+            if (
+                verb in ("o", "O")
+                and len(arg) >= 3
+                and arg[0] in ("?", "/")
+                and "\n" not in arg
+                and " " not in arg
+                and "\t" not in arg
+            ):
+                # Run the search now; skip the open (Kevin never wanted content here).
+                _pat = arg[1:]
+                _direction = arg[0]
+                try:
+                    _rx = re.compile(_pat, re.MULTILINE)
+                except re.error:
+                    _rx = None
+                if _rx is not None:
+                    if _direction == "/":
+                        _m = _rx.search(content, cursor)
+                        if _m is None:
+                            _m = _rx.search(content)
+                    else:
+                        # backward — find last match before cursor
+                        _hits = list(_rx.finditer(content[:cursor]))
+                        _m = _hits[-1] if _hits else None
+                        if _m is None:
+                            _hits = list(_rx.finditer(content))
+                            _m = _hits[-1] if _hits else None
+                    if _m is not None:
+                        cursor = _m.start()
+                        last_search = (_pat, _direction)
+                        log.append(
+                            f"  {i}. {verb}{arg!r} → autocorrect: search-then-open reflex; "
+                            f"jumped to match at {cursor}, awaiting next action for content"
+                        )
+                        continue
             text = _decode_escapes(arg) * count
             # Auto-indent for `o`/`O` (vim's default `autoindent` behavior).
             # Prepend the current line's leading whitespace to TEXT first line
