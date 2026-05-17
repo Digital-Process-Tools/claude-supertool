@@ -3923,12 +3923,19 @@ def _op_vim_impl(path: str, script: str) -> str:
             return (count, ":s", rest[2:])
         if len(rest) >= 2 and rest[:2] == ":r":
             return (count, ":r", rest[2:])
-        # :w / :write / :wq / :x — supertool writes atomically; treat as no-op.
-        # Kevin types :w reflexively. Map to silent no-op (verb ":noop").
-        if len(rest) >= 2 and rest[:2] == ":w" and (len(rest) == 2 or not rest[2].isalpha() or rest[2] in "qa"):
-            return (count, ":noop", rest[2:])
-        if len(rest) >= 2 and rest[:2] == ":x" and (len(rest) == 2 or not rest[2].isalpha()):
-            return (count, ":noop", rest[2:])
+        # :w / :write / :wq / :wq! / :wa / :x / :x! — supertool writes
+        # atomically; treat all write-quit variants as no-op. Kevin types :w/:wq
+        # reflexively. Match exact known prefixes — don't fall through to
+        # heuristics that miss alpha suffixes like `q`/`a`.
+        _WRITE_NOOP_PREFIXES = (
+            ":wq!", ":wq", ":wa!", ":wa", ":write", ":w!", ":w",
+            ":x!", ":x", ":xa!", ":xa",
+        )
+        for _wp in _WRITE_NOOP_PREFIXES:
+            if rest == _wp or rest.startswith(_wp) and (
+                len(rest) == len(_wp) or rest[len(_wp)] in " \t"
+            ):
+                return (count, ":noop", rest[len(_wp):])
         # three-char operator-motion: dgg, ygg, cgg, dge, dgE, dg_, yge, ygE, yg_, cge, cgE, cg_
         if len(rest) >= 3 and rest[:3] in (
             "dgg", "ygg", "cgg",

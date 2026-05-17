@@ -216,6 +216,50 @@ def test_log_pattern_V_motion_single_op():
         os.unlink(p)
 
 
+def test_w_variants_all_noop():
+    """:w / :wq / :wq! / :wa / :write / :x / :x! — all no-op (review fix #3)."""
+    for cmd in (":w", ":wq", ":wq!", ":wa", ":write", ":x", ":x!"):
+        p = _tmp("a\nb\n")
+        try:
+            r = st.op_vim(p, cmd)
+            assert open(p).read() == "a\nb\n", f"{cmd}: buffer modified: {r}"
+            assert "ERROR" not in r, f"{cmd}: error: {r}"
+        finally:
+            os.unlink(p)
+
+
+def test_goto_out_of_range_errors_cleanly():
+    """`:999` on 3-line file — should give clear range error, not crash."""
+    p = _tmp("a\nb\nc\n")
+    try:
+        r = st.op_vim(p, ":999")
+        assert "ERROR" in r and ("out of range" in r or "line" in r.lower())
+    finally:
+        os.unlink(p)
+
+
+def test_Nr_missing_file_errors_cleanly():
+    """`:5r /nonexistent/file.txt` — clear error, no crash."""
+    p = _tmp("a\nb\nc\n")
+    try:
+        r = st.op_vim(p, ":2r /nonexistent/xyz_kevin_test.txt")
+        assert "ERROR" in r and ("failed to read" in r or "No such" in r)
+        assert open(p).read() == "a\nb\nc\n", "buffer should be unchanged"
+    finally:
+        os.unlink(p)
+
+
+def test_line_pattern_range_no_match_errors_cleanly():
+    """`:.,/NOMATCH/d` — pattern not found, clear error."""
+    p = _tmp("a\nb\nc\n")
+    try:
+        r = st.op_vim(p, ":.,/zzz_nope/d")
+        assert "ERROR" in r and "pattern not found" in r
+        assert open(p).read() == "a\nb\nc\n"
+    finally:
+        os.unlink(p)
+
+
 def test_log_pattern_w_is_noop():
     """Kevin (dvsi4 logs): `:w` (write file). Supertool writes atomically already.
     Real vim's `:w` saves; here it's a no-op (or accept with comment)."""
