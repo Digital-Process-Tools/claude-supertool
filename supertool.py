@@ -3713,6 +3713,14 @@ def _op_vim_impl(path: str, script: str) -> str:
         """Return (count:int, verb:str, arg:str). count defaults to 1."""
         if not action:
             return (1, "", "")
+        # Kevin typo autocorrect: `:%%d` / `:%%s/...` (double %) → `:%d` / `:%s/...`.
+        # Real vim treats `:%%` as range error. Kevin reflex: stutters `%`.
+        if action.startswith(":%%"):
+            # Collapse run of % after `:` to a single %.
+            k = 1
+            while k < len(action) and action[k] == "%":
+                k += 1
+            action = ":%" + action[k:]
         i = 0
         # count: leading digits, but `0` alone is the BOL verb
         if action[0].isdigit() and action[0] != "0":
@@ -3769,8 +3777,21 @@ def _op_vim_impl(path: str, script: str) -> str:
             # optional `,addr2`
             if j < len(rest) and rest[j] == ",":
                 j += 1
-                while j < len(rest) and (rest[j].isdigit() or rest[j] in ".$+-"):
+                # `,/PAT/` — pattern address (real vim: `:.,/end/d`).
+                # Consume `/`, then chars up to next unescaped `/`.
+                if j < len(rest) and rest[j] == "/":
                     j += 1
+                    while j < len(rest):
+                        if rest[j] == "\\" and j + 1 < len(rest) and rest[j + 1] == "/":
+                            j += 2
+                            continue
+                        if rest[j] == "/":
+                            j += 1
+                            break
+                        j += 1
+                else:
+                    while j < len(rest) and (rest[j].isdigit() or rest[j] in ".$+-"):
+                        j += 1
             # Multi-char ex verbs MUST be checked before single-char s/d/m/t
             # so that e.g. `:2,4sort` doesn't get parsed as `:2,4s` with body
             # `ort`. Order matters: longest prefix first.
@@ -3820,6 +3841,20 @@ def _op_vim_impl(path: str, script: str) -> str:
                 range_spec = rest[1:j]
                 trailing = rest[j + 1:]
                 return (count, ":d", f"\x1d{range_spec}\x1d{trailing}")
+            # :Nr FILE — read FILE after line N. Encode line via sentinel so
+            # the :r handler can position the insertion.
+            if j < len(rest) and rest[j] == "r":
+                range_spec = rest[1:j]
+                body = rest[j + 1:]
+                return (count, ":r", f"\x1d{range_spec}\x1d{body}")
+            # Bare `:N` / `:$` / `:.` (no command after range) — line goto.
+            # Real vim: `:N\n` jumps to line N. Kevin types `:110\e` reflexively
+            # instead of `110G`. Treat as goto so chained ops keep flowing.
+            # Single address only (`:N,M` with no command is invalid in vim too).
+            if j == len(rest) and "," not in rest[1:j]:
+                spec = rest[1:j]
+                if spec.isdigit() or spec in ("$", "."):
+                    return (count, ":goto", spec)
         # vim :%d — delete whole buffer (alias for :1,$d)
         if len(rest) >= 3 and rest[:3] == ":%d":
             return (count, ":d", "\x1d%\x1d" + rest[3:])
@@ -3888,6 +3923,12 @@ def _op_vim_impl(path: str, script: str) -> str:
             return (count, ":s", rest[2:])
         if len(rest) >= 2 and rest[:2] == ":r":
             return (count, ":r", rest[2:])
+        # :w / :write / :wq / :x — supertool writes atomically; treat as no-op.
+        # Kevin types :w reflexively. Map to silent no-op (verb ":noop").
+        if len(rest) >= 2 and rest[:2] == ":w" and (len(rest) == 2 or not rest[2].isalpha() or rest[2] in "qa"):
+            return (count, ":noop", rest[2:])
+        if len(rest) >= 2 and rest[:2] == ":x" and (len(rest) == 2 or not rest[2].isalpha()):
+            return (count, ":noop", rest[2:])
         # three-char operator-motion: dgg, ygg, cgg, dge, dgE, dg_, yge, ygE, yg_, cge, cgE, cg_
         if len(rest) >= 3 and rest[:3] in (
             "dgg", "ygg", "cgg",
@@ -4063,7 +4104,10 @@ def _op_vim_impl(path: str, script: str) -> str:
         "Vggd": ":1,.d",
         "Vggy": ":1,.y",
     }
-    _V_MOTION_LINE = re.compile(r"^V(\d*)([jk])(cc|dd|yy)(.*)$", re.DOTALL)
+    _V_MOTION_LINE = re.compile(r"^V(\d*)([jk])(cc|dd|yy|[dyc])(.*)$", re.DOTALL)
+    # V<N>G<op> — visual-line + goto line N + op = `:.,<N><op>`.
+    # E.g. `V145Gd` (line cursor through 145, delete) → `:.,145d`.
+    _V_GOTO_LINE_OP = re.compile(r"^V(\d+)G([dyc])(.*)$", re.DOTALL)
     # V<motion>:<ex> — visual-line + ex command applied to the line range.
     # VG:<ex>   → :%<ex>    (current to EOF; with prior `gg` this is whole file)
     # Vgg:<ex>  → :1,.<ex>  (start to current)
@@ -4093,7 +4137,15 @@ def _op_vim_impl(path: str, script: str) -> str:
         m = _V_MOTION_LINE.match(act)
         if m is not None:
             n = int(m.group(1) or "1")
-            return f"{n + 1}{m.group(3)}{m.group(4)}"
+            op = m.group(3)
+            # Single op (d/y/c) → double it for line-op semantics
+            if len(op) == 1:
+                op = op + op
+            return f"{n + 1}{op}{m.group(4)}"
+        # V<N>G<op>... → :.,<N><op>...  (line-cursor through line N + op)
+        m = _V_GOTO_LINE_OP.match(act)
+        if m is not None:
+            return f":.,{m.group(1)}{m.group(2)}{m.group(3)}"
         return act
 
     # v-char-alias rewrites: `v<motion><op>` → `<op><motion>`.
@@ -4405,6 +4457,22 @@ def _op_vim_impl(path: str, script: str) -> str:
         # --- inserts ---
         elif verb in ("i", "a", "I", "A", "o", "O"):
             _push_undo()
+            # Verb-bleed autocorrect: Kevin's muscle memory types `oi<indent>TEXT`
+            # because real vim users habitually type an insert verb after `o`/`O`
+            # (which already enter insert mode). In real vim this inserts the
+            # literal verb char. Strip a redundant insert verb followed by
+            # whitespace (indent) — Kevin never wants `i        text` literal,
+            # and the whitespace makes false positives near-zero.
+            verb_bleed_hint = ""
+            if (
+                len(arg) >= 2
+                and arg[0] in ("i", "I", "a", "A", "o", "O")
+                and arg[1] in (" ", "\t")
+            ):
+                verb_bleed_hint = (
+                    f" [autocorrect: stripped redundant '{arg[0]}' verb bleed]"
+                )
+                arg = arg[1:]
             text = _decode_escapes(arg) * count
             if verb == "i":
                 pos = cursor
@@ -4435,7 +4503,7 @@ def _op_vim_impl(path: str, script: str) -> str:
             last_edit = cursor
             last_change = {"verb": verb, "count": count, "arg": arg}
             preview = text if len(text) <= 30 else text[:27] + "..."
-            log.append(f"  {i}. {verb}{preview!r} (len={len(text)})")
+            log.append(f"  {i}. {verb}{preview!r} (len={len(text)}){verb_bleed_hint}")
 
         # --- deletes ---
         elif verb == "x":
@@ -5194,6 +5262,35 @@ def _op_vim_impl(path: str, script: str) -> str:
             try:
                 rx = re.compile(spat, flags_re)
             except re.error as e:
+                # Regex parse failed — most common Kevin case is unescaped
+                # parens (`assertEquals(`). Try literal-fallback before
+                # erroring: decode the intended literal string and use
+                # content.replace. Same gotcha covered for missed-matches
+                # below, but parse-error path skipped it entirely.
+                literal_pat = _vim_literal_decode(spat)
+                if literal_pat and literal_pat in content:
+                    is_global = "g" in sflags
+                    is_dry = "d" in sflags
+                    # In literal mode, also literal-decode the REPL — if Kevin
+                    # over-escaped the PAT he likely over-escaped the REPL too
+                    # (`assertSame\(` should become `assertSame(`).
+                    srepl_dec_early = _vim_literal_decode(srepl) or _decode_escapes(srepl)
+                    body = content[sub_start:sub_end]
+                    occurrences = body.count(literal_pat)
+                    if occurrences > 0 and not is_dry:
+                        new_body = body.replace(
+                            literal_pat,
+                            srepl_dec_early,
+                            -1 if is_global else 1,
+                        )
+                        content = content[:sub_start] + new_body + content[sub_end:]
+                        cursor = min(cursor, len(content))
+                        n_done = occurrences if is_global else 1
+                        log.append(
+                            f"  {i}. :s/{spat!r}/{srepl_dec_early!r}/{sflags} ({n_done} subs)"
+                            f" [autocorrect: regex parse failed ({e}); literal mode → {literal_pat!r}]"
+                        )
+                        continue
                 return f"ERROR: action {i} '{action}': :s regex: {e}\n"
             is_dry = "d" in sflags
             n_max = 0 if "g" in sflags else 1
@@ -5307,9 +5404,57 @@ def _op_vim_impl(path: str, script: str) -> str:
                     + autocorrect_hint
                 )
 
+        # --- ex line goto: bare `:N`, `:$`, `:.` (no command after range) ---
+        # Real vim: `:N\n` jumps to line N. Kevin types this instead of `NG`.
+        # arg is the address spec (digits | `$` | `.`).
+        elif verb == ":goto":
+            spec = arg
+            if spec.isdigit():
+                try:
+                    cursor = _goto_line(content, int(spec))
+                except ValueError as e:
+                    return f"ERROR: action {i} '{action}': {e}\n"
+                log.append(f"  {i}. :{spec} (goto line {spec})")
+            elif spec == "$":
+                if not content:
+                    cursor = 0
+                else:
+                    end = len(content)
+                    if content[end - 1] == "\n":
+                        end -= 1
+                    cursor = end
+                    # Move to BOL of last line
+                    bol = content.rfind("\n", 0, cursor) + 1
+                    cursor = bol
+                log.append(f"  {i}. :$ (goto last line)")
+            else:  # spec == "."
+                log.append(f"  {i}. :. (current line, no-op)")
+
+        # --- ex no-op: :w, :write, :wq, :wa, :x — supertool writes atomically ---
+        elif verb == ":noop":
+            log.append(f"  {i}. :w (no-op — supertool writes atomically)")
+
         # --- ex read file: :r FILE  (or `:r -` to read stdin, `:r !CMD` to shell) ---
         elif verb == ":r":
             _push_undo()
+            # Range-prefix support: `:Nr FILE` → encoded as `\x1d{N}\x1d FILE`.
+            # Resolve N to a cursor position so the standard insert-after-line
+            # logic below targets line N.
+            if arg.startswith("\x1d"):
+                _close = arg.find("\x1d", 1)
+                if _close != -1:
+                    _spec = arg[1:_close].strip()
+                    arg = arg[_close + 1:]
+                    if _spec:
+                        try:
+                            _cur_line, _ = _offset_to_line_col(content, cursor)
+                            _total = content.count("\n") + (
+                                0 if content.endswith("\n") else 1
+                            )
+                            _ln = _vim_resolve_ex_address(_spec, _cur_line, _total)
+                            cursor = _goto_line(content, _ln)
+                        except ValueError as _e:
+                            return f"ERROR: action {i} '{action}': :r range: {_e}\n"
             path_arg = arg.strip()
             if not path_arg:
                 return f"ERROR: action {i} '{action}': :r needs a file path\n"
@@ -5525,7 +5670,26 @@ def _op_vim_impl(path: str, script: str) -> str:
             # --- line-range mode ---
             cursor_line, _ = _offset_to_line_col(content, cursor)
 
+            body_lines_for_pat = lines[:-1] if has_trailing_nl else lines
+
             def _resolve_d(addr: str) -> int:
+                # Pattern address `/PAT/` — line number of first match.
+                # Search forward from cursor line (matches real vim).
+                if addr.startswith("/") and addr.endswith("/") and len(addr) >= 2:
+                    pat = addr[1:-1]
+                    try:
+                        rxp = re.compile(pat)
+                    except re.error as e:
+                        raise ValueError(f"bad pattern {addr!r}: {e}")
+                    # Search from cursor_line (1-indexed) onward.
+                    for ln_idx in range(cursor_line - 1, len(body_lines_for_pat)):
+                        if rxp.search(body_lines_for_pat[ln_idx]):
+                            return ln_idx + 1
+                    # Wrap to start
+                    for ln_idx in range(0, cursor_line - 1):
+                        if rxp.search(body_lines_for_pat[ln_idx]):
+                            return ln_idx + 1
+                    raise ValueError(f"pattern not found: {addr!r}")
                 return _vim_resolve_ex_address(addr, cursor_line, total_lines)
 
             if spec == "%":
