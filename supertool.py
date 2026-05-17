@@ -3971,7 +3971,25 @@ def _op_vim_impl(path: str, script: str) -> str:
                     if idx != -1:
                         eof_retry = True
             if idx == -1:
-                return f"ERROR: action {i} '{action}': pattern not found backward\n"
+                # Literal-fallback for unescaped regex meta (`(`, `)`, `.`).
+                literal_pat = _vim_literal_decode(pat)
+                if literal_pat:
+                    for upper in (cursor + 1, len(content)):
+                        lit_idx = content.rfind(literal_pat, 0, upper)
+                        if lit_idx != -1:
+                            cursor = lit_idx
+                            last_search = (literal_pat, "?")
+                            note = " (literal-mode autocorrect)"
+                            if upper == len(content) and upper > cursor + 1:
+                                note += " (retried to EOF)"
+                            log.append(f"  {i}. ?{literal_pat!r} → {cursor}{note}")
+                            break
+                    else:
+                        lit_idx = -1
+                    if lit_idx != -1:
+                        continue
+                near = _vim_nearest_literal_hint(content, pat, original=_before_content)
+                return f"ERROR: action {i} '{action}': pattern not found backward{near}\n"
             cursor = idx
             last_search = (pat, "?")
             note = " (retried from EOF — cursor persisted from previous call)" if eof_retry else ""
