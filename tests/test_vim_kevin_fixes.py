@@ -453,6 +453,64 @@ def test_kevin_real_V_in_insert_text_not_rewritten():
         os.unlink(p)
 
 
+def test_kevin_log_HasTagChecker_overescape_dollar():
+    """Mined from log 9abd0ba5 — Kevin actual paste:
+    `:s/HasTagChecker::class, \\$checkerClass/$checkerClass, HasTagChecker::class/`.
+
+    Over-escaped `\\$checkerClass` in PAT. Literal-fallback must strip
+    `\\` → `\` → `` to get `$checkerClass`, then content.replace.
+    """
+    p = _tmp("    $checkerClass = $this->api->get(HasTagChecker::class, $checkerClass);\n")
+    try:
+        r = st.op_vim(
+            p,
+            r":s/HasTagChecker::class, \$checkerClass/$checkerClass, HasTagChecker::class/",
+        )
+        new = open(p).read()
+        # Should succeed (either by regex direct match or literal fallback).
+        assert "$checkerClass = $this->api->get($checkerClass, HasTagChecker::class)" in new, f"got: {new!r}; receipt: {r}"
+        assert "ERROR" not in r
+    finally:
+        os.unlink(p)
+
+
+def test_kevin_log_createRandom_overescape_brackets():
+    """Mined from log — `:s/MessageHelper::createRandom(\\[\\], true);/.../`.
+
+    Kevin over-escapes `[` and `]` thinking they need shell escaping.
+    Literal-fallback strips `\\[` → `[`, `\\]` → `]`.
+    """
+    p = _tmp("MessageHelper::createRandom([], true);\n")
+    try:
+        r = st.op_vim(
+            p,
+            r":s/MessageHelper::createRandom(\[\], true);/REPLACED/",
+        )
+        new = open(p).read()
+        assert "REPLACED" in new, f"got: {new!r}; receipt: {r}"
+        assert "autocorrect" in r.lower()
+    finally:
+        os.unlink(p)
+
+
+def test_kevin_log_quad_backslash_iterative_strip():
+    """Mined from log — `:s/\\\\$this->assertTrue(true);/.../`.
+
+    Quadruple backslash (Kevin over-escapes twice). Iterative strip:
+    `\\\\$this` → `\\$this` → `$this` (2 passes).
+    """
+    p = _tmp("        $this->assertTrue(true);\n")
+    try:
+        r = st.op_vim(
+            p,
+            r":%s/\\\\$this->assertTrue(true);/REPLACED/",
+        )
+        new = open(p).read()
+        assert "REPLACED" in new, f"got: {new!r}; receipt: {r}"
+    finally:
+        os.unlink(p)
+
+
 def test_kevin_real_ggVG_with_ex_substitute():
     """Mined from kevin log cb0d92ec — `ggVG:s/PAT/REPL/g`.
     Visual-line from start to end + ex substitute = whole-file substitute.
