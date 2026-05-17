@@ -2913,6 +2913,55 @@ def _vim_render_lint(path: str) -> str:
     return f"--- POST-EDIT LINT FAILED — {tool} ---\n{output or '(no output)'}\n"
 
 
+def _vim_nearest_literal_hint(content: str, pat: str, max_lines: int = 3) -> str:
+    """When /PAT or :s misses, return a short hint with file lines that
+    contain the longest literal chunk of the pattern. Helps the caller see
+    what's actually in the file instead of guessing again.
+
+    Returns "" when no useful hint can be produced (empty pattern, no
+    literal substring, or no occurrence in file).
+    """
+    if not pat or not content:
+        return ""
+    # Split on regex metacharacters AND newlines to get literal chunks.
+    chunks = [c for c in re.split(r"[\\.\^\$\*\+\?\(\)\[\]\{\}\|\n]+", pat) if len(c) >= 3]
+    if not chunks:
+        return ""
+    # Try longest chunks first — most specific. Fall back to shorter if no
+    # hits (the long chunk may not be in file at all).
+    chunks.sort(key=len, reverse=True)
+    lines = content.split("\n")
+    def _scan(probe: str) -> List[tuple]:
+        hits: List[tuple] = []
+        for lno, line in enumerate(lines, 1):
+            if probe in line:
+                snippet = line.strip()
+                if len(snippet) > 80:
+                    snippet = snippet[:77] + "..."
+                hits.append((lno, snippet))
+                if len(hits) >= max_lines:
+                    break
+        return hits
+
+    for probe in chunks:
+        hits = _scan(probe)
+        if hits:
+            parts = [f"line {lno}: {snip!r}" for lno, snip in hits]
+            return f" (near {probe!r}: " + "; ".join(parts) + ")"
+    # Prefix fallback: longest chunk has no hits. Try its leading prefix
+    # at decreasing lengths to surface the closest line.
+    longest = chunks[0]
+    for cut in (len(longest) - 4, len(longest) // 2, 8, 5):
+        if cut < 4 or cut >= len(longest):
+            continue
+        probe = longest[:cut]
+        hits = _scan(probe)
+        if hits:
+            parts = [f"line {lno}: {snip!r}" for lno, snip in hits]
+            return f" (near {probe!r}: " + "; ".join(parts) + ")"
+    return ""
+
+
 def op_vim(path: str, script: str) -> str:
     """vim-flavored cursor-based multi-action edit op.
 
@@ -2977,6 +3026,10 @@ def op_vim(path: str, script: str) -> str:
         ci(TEXT     — change inside (...)  [matches nested ()]
         ci[TEXT     — change inside [...]
         ci{TEXT     — change inside {...}
+
+    No visual mode (V / v):
+        Use line-range ex instead — `Ndd`, `:N,Md`, `Ncc`, `:%s/PAT/REPL/`.
+        For block inserts use `o`/`O` (single-line) or `:r FILE` (multi-line).
 
     Join:
         J / nJ      — join next n lines with cursor's line (single space sep)
@@ -3699,11 +3752,36 @@ def op_vim(path: str, script: str) -> str:
                         # queue the trailing action for the next iteration
                         raw_actions.insert(i, trail)
                         continue
+                # Literal-fallback: strip backslash escapes iteratively, try
+                # plain content.find. Same logic as :s — handles unescaped
+                # `(`, `)`, `$` Kevin meant as literals.
+                literal_pat = pat
+                while True:
+                    nxt = re.sub(r"\\(\D)", r"\1", literal_pat)
+                    if nxt == literal_pat:
+                        break
+                    literal_pat = nxt
+                if literal_pat and literal_pat != pat:
+                    for start in (cursor, 0):
+                        lit_idx = content.find(literal_pat, start)
+                        if lit_idx != -1:
+                            cursor = lit_idx
+                            last_search = (literal_pat, "/")
+                            note = " (literal-mode autocorrect)"
+                            if start == 0 and start < cursor:
+                                note += " (retried from BOF)"
+                            log.append(f"  {i}. /{literal_pat!r} → {cursor}{note}")
+                            break
+                    else:
+                        lit_idx = -1
+                    if lit_idx != -1:
+                        continue
                 hint = ""
                 if split_m is not None:
                     suggested = pat[:split_m.start()] + ";" + pat[split_m.start() + 1:]
                     hint = f" (hint: '/' is not an action separator — did you mean '/{suggested}'? Use ';' to chain actions.)"
-                return f"ERROR: action {i} '{action}': pattern not found forward{hint}\n"
+                near = _vim_nearest_literal_hint(content, pat)
+                return f"ERROR: action {i} '{action}': pattern not found forward{hint}{near}\n"
             cursor = idx
             last_search = (pat, "/")
             note = " (retried from BOF — cursor persisted from previous call)" if bof_retry else ""
@@ -4633,8 +4711,34 @@ def op_vim(path: str, script: str) -> str:
                     autocorrect_hint = (
                         f" [autocorrect: halved \\\\\\\\ → \\\\ in pattern → {spat_fixed!r}]"
                     )
+            # Literal-fallback autocorrect: Kevin often writes regex metachars
+            # he means as literals — `(`, `)`, `$`, plus over-escaped `\\X`.
+            # Strip `\<X>` → `<X>` to get his intended literal string and try
+            # plain content.replace. If it hits, use that result.
             if n == 0:
-                return f"ERROR: action {i} '{action}': :s no match for {spat!r}\n"
+                # Strip backslash escapes iteratively until stable, so
+                # `\\$this` → `\$this` → `$this` (two passes).
+                literal_pat = spat
+                while True:
+                    next_pat = re.sub(r"\\(\D)", r"\1", literal_pat)
+                    if next_pat == literal_pat:
+                        break
+                    literal_pat = next_pat
+                if literal_pat and literal_pat != spat:
+                    body = content[sub_start:sub_end]
+                    occurrences = body.count(literal_pat)
+                    if occurrences > 0:
+                        is_global = "g" in sflags
+                        replace_count = -1 if is_global else 1
+                        new_body = body.replace(literal_pat, srepl_dec, replace_count)
+                        new_content = content[:sub_start] + new_body + content[sub_end:]
+                        n = occurrences if is_global else 1
+                        autocorrect_hint = (
+                            f" [autocorrect: literal mode → {literal_pat!r}]"
+                        )
+            if n == 0:
+                near = _vim_nearest_literal_hint(content, spat)
+                return f"ERROR: action {i} '{action}': :s no match for {spat!r}{near}\n"
             if is_dry:
                 # Preview only. Show up to 5 match line numbers + the rendered
                 # replacement, don't touch the buffer or persist anything.
@@ -5925,16 +6029,43 @@ def op_vim(path: str, script: str) -> str:
             log.append(f"  {i}. gi{preview!r} (cursor={cursor})")
 
         else:
+            # Concise "did you mean" — Kevin loops harder when buried in
+            # an 80-item catalog. Pick close matches from a short, curated
+            # list of common verbs.
+            _COMMON_VERBS = [
+                "gg", "G", "0", "^", "$", "h", "j", "k", "l", "w", "b", "e",
+                "W", "B", "E", "{", "}", "(", ")", "%", "/", "?", "n", "N",
+                "i", "a", "I", "A", "o", "O", "s", "S", "C", "r", "x", "X",
+                "J", "p", "P", "~",
+                "dd", "D", "dw", "yy", "Y", "yw", "cc", "cw", "ciw",
+                "ci\"", "ci'", "ci(", "ci[", "ci{",
+                ":s", ":%s", ":d", ":r", ":g",
+            ]
+            # Try the typed verb plus the lead char of the offending action.
+            probes = [verb] if verb else []
+            head = action[:2] if action else ""
+            if head and head not in probes:
+                probes.append(head)
+            suggestions: List[str] = []
+            for probe in probes:
+                if not probe:
+                    continue
+                for m in difflib.get_close_matches(probe, _COMMON_VERBS, n=3, cutoff=0.4):
+                    if m not in suggestions:
+                        suggestions.append(m)
+            # Visual-line `V` / char-visual `v` → suggest line ops users
+            # actually want (no visual mode in this op).
+            if action and action[:1] in ("V", "v"):
+                for m in ("dd", "yy", "cc", ":%s"):
+                    if m not in suggestions:
+                        suggestions.append(m)
+            hint = (
+                f"did you mean: {', '.join(suggestions[:5])}"
+                if suggestions
+                else "see ./supertool 'ops' for the full verb list"
+            )
             return (
-                f"ERROR: action {i} '{action}': unknown verb '{verb}' "
-                f"(expected gg, G, nG, 0, $, ^, g_, +, -, _, /, ?, n, N, "
-                f"h, j, k, l, J, w, b, e, W, B, E, ge, gE, {{, }}, (, ), %, "
-                f"f, F, t, T, ;, ,, i, a, I, A, o, O, s, S, C, x, dd, D, "
-                f"dw, d$, d0, cw, cc, c$, c0, ciw, ci\", ci', ci(, ci[, ci{{, "
-                f"<op>i<X> / <op>a<X> text-objects (op=d|c|y|g~|gu|gU; "
-                f"X=w|W|s|p|\"|'|`|(|)|[|]|{{|}}|<|>|b|B|t), "
-                f"cf<c>, cF<c>, ct<c>, cT<c>, df<c>, dF<c>, dt<c>, dT<c>, "
-                f"yy, yw, y$, yf<c>, yF<c>, yt<c>, yT<c>, p, P, r, :s/PAT/REPL/[gi])\n"
+                f"ERROR: action {i} '{action}': unknown verb '{verb}' — {hint}\n"
             )
 
     try:
