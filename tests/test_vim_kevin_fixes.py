@@ -315,6 +315,159 @@ def test_kevin_real_multiline_search_with_newline_chunks():
         os.unlink(p)
 
 
+def test_kevin_real_Vcc_alias_to_cc():
+    """Kevin run 2026-05-17 11:05 — paste used `Vcc<TEXT>` (vim visual-
+    line + change). V is unsupported but `cc` already does line-change.
+    Treat `Vcc<TEXT>` as `cc<TEXT>` — drop redundant V.
+    """
+    p = _tmp("old line\nkeep me\n")
+    try:
+        r = st.op_vim(p, r"Vccnew line\e")
+        new = open(p).read()
+        assert new == "new line\nkeep me\n", f"got: {new!r}; receipt: {r}"
+        assert "ERROR" not in r
+    finally:
+        os.unlink(p)
+
+
+def test_kevin_real_Vjcc_alias_two_line_change():
+    """Paste used `Vjcc<TEXT>` — visual-line, extend one line down,
+    change. Equivalent to `2cc<TEXT>`.
+    """
+    p = _tmp("a\nb\nc\n")
+    try:
+        r = st.op_vim(p, r"Vjccnew\e")
+        new = open(p).read()
+        # Both 'a' and 'b' lines replaced by single "new" line
+        assert new == "new\nc\n", f"got: {new!r}; receipt: {r}"
+        assert "ERROR" not in r
+    finally:
+        os.unlink(p)
+
+
+def test_kevin_real_Vdd_alias_to_dd():
+    p = _tmp("delete me\nkeep\n")
+    try:
+        r = st.op_vim(p, "Vdd")
+        new = open(p).read()
+        assert new == "keep\n", f"got: {new!r}; receipt: {r}"
+    finally:
+        os.unlink(p)
+
+
+def test_kevin_real_Vyy_alias_to_yy():
+    """V before yy is also redundant — yy yanks line."""
+    p = _tmp("source\ntarget\n")
+    try:
+        r = st.op_vim(p, "Vyyjp")
+        new = open(p).read()
+        # Yank 'source' line, move down to 'target', paste below
+        assert new.count("source") == 2, f"got: {new!r}; receipt: {r}"
+    finally:
+        os.unlink(p)
+
+
+def test_kevin_real_VGd_deletes_to_end():
+    """Kevin paste 2026-05-17 11:08: `ggVGd:r -` = select all + delete +
+    read stdin. `VGd` = visual-line from current to end + delete.
+    Equivalent to `:.,$d`.
+    """
+    p = _tmp("a\nb\nc\nd\n")
+    try:
+        r = st.op_vim(p, "ggVGd")
+        new = open(p).read()
+        # All lines deleted
+        assert new == "" or new == "\n", f"got: {new!r}; receipt: {r}"
+        assert "ERROR" not in r
+    finally:
+        os.unlink(p)
+
+
+def test_kevin_real_paste_11_05_three_chain_Vcc_Vjcc_Vcc():
+    """Paste 2026-05-17 11:05 exact chain:
+       /MARKER1\\e Vcc <TEXT>\\e
+       /MARKER2\\e Vjcc <TEXT>\\e
+       /MARKER3\\e Vcc <TEXT>\\e
+    """
+    p = _tmp(
+        "    $this->assertInstanceOf(ITalkEntity::class, $relatedEntity);\n"
+        "    $this->assertIsString($permission);\n"
+        "    $oldA = 1;\n"
+        "    $this->assertTrue(true);\n"
+        "    final class ConcreteEntityTalkModule extends X\n"
+    )
+    try:
+        r = st.op_vim(
+            p,
+            r"/assertInstanceOf(ITalkEntity\e"
+            r"Vcc        $this->assertSame(Project::getSharedInstance(), $relatedEntity);\e"
+            r"/assertIsString\e"
+            r"Vjcc        $this->assertSame('ConcreteEntityTalkPermissions::READ_TAB', $permission);\e"
+            r"/assertTrue(true)\e"
+            r"Vcc            $this->assertSame(0, ConcreteEntityTalkModule::$relatedEntityCallCount);\e",
+        )
+        new = open(p).read()
+        assert "assertSame(Project::getSharedInstance()" in new, f"step1 failed: {r}"
+        assert "READ_TAB" in new, f"step2 failed: {r}"
+        assert "relatedEntityCallCount" in new, f"step3 failed: {r}"
+        assert "ERROR" not in r
+    finally:
+        os.unlink(p)
+
+
+def test_kevin_real_paste_11_08_ggVGd_then_r_stdin():
+    """Paste 2026-05-17 11:08: `ggVGd:r -` — select all, delete, replace
+    from stdin (heredoc). The full file-rewrite pattern Kevin keeps
+    reaching for. Must work end-to-end.
+    """
+    import io
+    import sys as _sys
+    p = _tmp("old\ncontent\nto\nnuke\n")
+    block = "<?php\nnew content here\n"
+    saved_stdin = _sys.stdin
+    _sys.stdin = io.StringIO(block)
+    try:
+        r = st.op_vim(p, "ggVGd:r -")
+        new = open(p).read()
+        assert "new content here" in new, f"got: {new!r}; receipt: {r}"
+        assert "old" not in new and "nuke" not in new
+    finally:
+        _sys.stdin = saved_stdin
+        os.unlink(p)
+
+
+def test_kevin_real_V_in_insert_text_not_rewritten():
+    """`iVcc` — user inserts literal text `Vcc`. V inside insert mode
+    must NOT trigger the alias rewrite.
+    """
+    p = _tmp("X\n")
+    try:
+        r = st.op_vim(p, r"iVcc\e")
+        new = open(p).read()
+        assert new == "VccX\n", f"got: {new!r}; receipt: {r}"
+    finally:
+        os.unlink(p)
+
+
+def test_kevin_real_chain_error_reports_atomicity():
+    """Kevin run 2026-05-17 11:05 — long chain errored mid-way, Kevin
+    panicked and rewrote the whole file via `printf > FILE`. But vim is
+    already atomic: when any action errors, no write happens. The error
+    receipt should say so loudly so Kevin trusts it.
+    """
+    original = "line 1\nline 2\nline 3\n"
+    p = _tmp(original)
+    try:
+        # Action 1 succeeds (search), action 2 fails (V is unknown).
+        r = st.op_vim(p, r"/line 2\eV")
+        # File on disk unchanged
+        assert open(p).read() == original
+        # Error receipt explicitly says so
+        assert "unchanged" in r.lower() or "atomic" in r.lower() or "preserved" in r.lower()
+    finally:
+        os.unlink(p)
+
+
 def test_kevin_real_hex_escape_x27_in_subst_pat():
     """Real Kevin paste 2026-05-17 10:17 — `:%s/assertArrayHasKey(\\x27name\\x27, \\$options);/.../`.
 

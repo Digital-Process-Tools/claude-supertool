@@ -2982,6 +2982,22 @@ def _vim_nearest_literal_hint(content: str, pat: str, max_lines: int = 3) -> str
 
 
 def op_vim(path: str, script: str) -> str:
+    """Public wrapper for op_vim. Vim ops are atomic — file only gets
+    written if every action succeeds. On ERROR we tell the caller the
+    file is untouched, so they don't panic-rewrite from scratch.
+    """
+    out = _op_vim_impl(path, script)
+    if out.startswith("ERROR"):
+        suffix = " (file unchanged — vim ops are atomic, no actions applied)\n"
+        # Ensure the suffix sits on its own line right before EOF.
+        if out.endswith("\n"):
+            out = out[:-1] + suffix
+        else:
+            out = out + suffix
+    return out
+
+
+def _op_vim_impl(path: str, script: str) -> str:
     """vim-flavored cursor-based multi-action edit op.
 
     Actions split by newline OR semicolon. Each action: optional count
@@ -3293,6 +3309,27 @@ def op_vim(path: str, script: str) -> str:
                        "%", "+", "-", "_", "w", "b", "e", "W", "B", "E",
                        "$", "0", "^"):
                 return (start + 2, False)
+        # V (visual-line) — consume V[count][motion]<op> as a single
+        # verb so the post-tokenize V-alias rewriter can collapse it
+        # into a line-op or ex range. Greedy when op is `c` (change).
+        if c == "V":
+            j = start + 1
+            while j < n and normalized[j].isdigit():
+                j += 1
+            # Optional motion: j/k/G/gg
+            if j < n and normalized[j] in "jkG":
+                j += 1
+            elif j + 1 < n and normalized[j] == "g" and normalized[j + 1] == "g":
+                j += 2
+            # Operator: d/y/c (single or doubled cc/dd/yy)
+            if j < n and normalized[j] in "dyc":
+                op_char = normalized[j]
+                j += 1
+                if j < n and normalized[j] == op_char:
+                    j += 1
+                return (j, op_char == "c")
+            # V alone — fall through to single-char (unknown-verb hint)
+            return (start + 1, False)
         # Single-char no-arg verbs (G, h, j, k, l, x, D, J, n, N, p, P,
         # $, 0, ^, w, b, e, W, B, E, %, Y, *, #, etc.)
         return (start + 1, False)
@@ -3650,6 +3687,40 @@ def op_vim(path: str, script: str) -> str:
     last_find: Optional[tuple] = None  # (verb in fFtT, target char) for ; ,
     register: str = ""  # anonymous yank/paste register
     register_linewise: bool = False  # True if last yank was line-wise (yy)
+    # V-alias rewrites: V is visual-line in real vim, but supertool has no
+    # visual mode. Kevin's muscle memory reaches for `Vcc`/`Vdd`/`Vyy`/
+    # `Vjcc`/`VGd` anyway. These are all expressible as line-ops or ex
+    # ranges. Rewrite at action-list level (NORMAL-mode only — insert
+    # text is greedy until ESC so `iVcc` already arrives as one action
+    # starting with `i`, not `V`).
+    _V_LITERAL_REWRITES = {
+        "Vcc": "cc",
+        "Vdd": "dd",
+        "Vyy": "yy",
+        "Vd": "dd",
+        "Vy": "yy",
+        "Vc": "cc",
+        "VGd": ":.,$d",
+        "VGy": ":.,$y",
+        "Vggd": ":1,.d",
+        "Vggy": ":1,.y",
+    }
+    _V_MOTION_LINE = re.compile(r"^V(\d*)([jk])(cc|dd|yy)(.*)$", re.DOTALL)
+
+    def _rewrite_v_alias(act: str) -> str:
+        if not act or act[0] != "V":
+            return act
+        for prefix, repl in _V_LITERAL_REWRITES.items():
+            if act.startswith(prefix):
+                return repl + act[len(prefix):]
+        # V<n>?j/k<op>... → <n+1><op><op>... (V + n-line motion = n+1 lines)
+        m = _V_MOTION_LINE.match(act)
+        if m is not None:
+            n = int(m.group(1) or "1")
+            return f"{n + 1}{m.group(3)}{m.group(4)}"
+        return act
+
+    raw_actions = [_rewrite_v_alias(a) for a in raw_actions]
     for i, action in enumerate(raw_actions, 1):
         count, verb, arg = _parse(action)
 
