@@ -2471,10 +2471,11 @@ def _vim_cursor_state_path(file_path: str) -> str:
 
 def _vim_load_state(file_path: str, content_len: int) -> dict:
     """Load persisted vim state for `file_path`. Returns dict with keys
-    cursor (int), marks (dict[str,int]), last_edit (int|None).
+    cursor (int), marks (dict[str,int]), last_edit (int|None),
+    macros (dict[str,str]).
     Backward-compat: if the file is a bare int, treat as legacy cursor-only.
     """
-    default = {"cursor": 0, "marks": {}, "last_edit": None}
+    default = {"cursor": 0, "marks": {}, "last_edit": None, "macros": {}, "last_change": None}
     if os.environ.get("SUPERTOOL_VIM_NO_PERSIST"):
         return default
     try:
@@ -2499,17 +2500,35 @@ def _vim_load_state(file_path: str, content_len: int) -> dict:
             marks = {k: max(0, min(content_len, v)) for k, v in marks.items()}
             if le_val is not None:
                 le_val = max(0, min(content_len, le_val))
-            return {"cursor": cur, "marks": marks, "last_edit": le_val}
+            macros_raw = data.get("macros", {}) or {}
+            macros = {k: str(v) for k, v in macros_raw.items()
+                      if isinstance(k, str) and len(k) == 1 and "a" <= k <= "z"}
+            # last_change: dict with verb/count/arg for `.` repeat, or None
+            lc_raw = data.get("last_change", None)
+            lc_val = None
+            if isinstance(lc_raw, dict):
+                lc_verb = str(lc_raw.get("verb", ""))
+                lc_count = int(lc_raw.get("count", 1))
+                lc_arg = str(lc_raw.get("arg", ""))
+                if lc_verb:
+                    lc_val = {"verb": lc_verb, "count": lc_count, "arg": lc_arg}
+            return {"cursor": cur, "marks": marks, "last_edit": le_val, "macros": macros, "last_change": lc_val}
     except (ValueError, TypeError):
         pass
     # Legacy: bare int
     try:
-        return {"cursor": max(0, min(content_len, int(raw))), "marks": {}, "last_edit": None}
+        return {
+            "cursor": max(0, min(content_len, int(raw))),
+            "marks": {},
+            "last_edit": None,
+            "macros": {},
+            "last_change": None,
+        }
     except ValueError:
         return default
 
 
-def _vim_save_state(file_path: str, cursor: int, marks: dict, last_edit) -> None:
+def _vim_save_state(file_path: str, cursor: int, marks: dict, last_edit, macros: dict = None, last_change=None) -> None:
     """Persist vim state for `file_path` so the next vim call resumes here."""
     if os.environ.get("SUPERTOOL_VIM_NO_PERSIST"):
         return
@@ -2517,10 +2536,19 @@ def _vim_save_state(file_path: str, cursor: int, marks: dict, last_edit) -> None
     try:
         os.makedirs(os.path.dirname(state_path), exist_ok=True)
         import json as _json
+        lc_payload = None
+        if isinstance(last_change, dict) and last_change.get("verb"):
+            lc_payload = {
+                "verb": str(last_change["verb"]),
+                "count": int(last_change.get("count", 1)),
+                "arg": str(last_change.get("arg", "")),
+            }
         payload = _json.dumps({
             "cursor": int(cursor),
             "marks": {k: int(v) for k, v in (marks or {}).items()},
             "last_edit": int(last_edit) if last_edit is not None else None,
+            "macros": {k: str(v) for k, v in (macros or {}).items()},
+            "last_change": lc_payload,
         })
         with open(state_path, "w", encoding="utf-8") as fh:
             fh.write(payload)
@@ -2534,16 +2562,76 @@ def _vim_load_cursor(file_path: str, content_len: int) -> int:
 
 
 def _vim_save_cursor(file_path: str, cursor: int) -> None:
-    """Backcompat shim: save cursor only, preserving existing marks/last_edit."""
+    """Backcompat shim: save cursor only, preserving existing marks/last_edit/macros."""
     if os.environ.get("SUPERTOOL_VIM_NO_PERSIST"):
         return
-    # Preserve existing marks/last_edit
+    # Preserve existing marks/last_edit/macros
     try:
         existing = _vim_load_state(file_path, 10**9)
     except Exception:
-        existing = {"marks": {}, "last_edit": None}
-    _vim_save_state(file_path, cursor, existing.get("marks", {}), existing.get("last_edit"))
+        existing = {"marks": {}, "last_edit": None, "macros": {}}
+    _vim_save_state(file_path, cursor, existing.get("marks", {}), existing.get("last_edit"),
+                    existing.get("macros", {}), existing.get("last_change"))
 
+
+
+def _vim_undo_state_path(file_path: str) -> str:
+    """Return the sidecar path for cross-call undo snapshot for `file_path`."""
+    abs_path = os.path.abspath(file_path)
+    digest = hashlib.sha1(abs_path.encode("utf-8")).hexdigest()
+    cache_dir = os.path.join(
+        os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"),
+        "supertool",
+        "vim-undo",
+    )
+    return os.path.join(cache_dir, digest + ".last")
+
+
+def _vim_load_undo_snapshot(file_path: str) -> "Optional[dict]":
+    """Load the cross-call undo snapshot (pre-edit state from last script).
+    Returns dict with content (str), cursor (int), marks (dict) or None if absent.
+    """
+    if os.environ.get("SUPERTOOL_VIM_NO_PERSIST"):
+        return None
+    try:
+        with open(_vim_undo_state_path(file_path), "r", encoding="utf-8") as fh:
+            raw = fh.read().strip()
+    except OSError:
+        return None
+    if not raw:
+        return None
+    try:
+        import json as _json
+        data = _json.loads(raw)
+        if isinstance(data, dict) and "content" in data:
+            marks_raw = data.get("marks", {}) or {}
+            return {
+                "content": str(data["content"]),
+                "cursor": int(data.get("cursor", 0)),
+                "marks": {k: int(v) for k, v in marks_raw.items() if isinstance(k, str)},
+            }
+    except (ValueError, TypeError, KeyError):
+        pass
+    return None
+
+
+def _vim_save_undo_snapshot(file_path: str, content: str, cursor: int, marks: dict) -> None:
+    """Persist the cross-call undo snapshot (state before this script ran)."""
+    if os.environ.get("SUPERTOOL_VIM_NO_PERSIST"):
+        return
+    undo_path = _vim_undo_state_path(file_path)
+    try:
+        os.makedirs(os.path.dirname(undo_path), exist_ok=True)
+        import json as _json
+        payload = _json.dumps({
+            "content": content,
+            "cursor": int(cursor),
+            "marks": {k: int(v) for k, v in (marks or {}).items()},
+        })
+        with open(undo_path, "w", encoding="utf-8") as fh:
+            fh.write(payload)
+    except OSError:
+        pass
 
 class _TextObjectError(Exception):
     """Raised when a text-object cannot be resolved (no match, EOF, etc.)."""
@@ -3358,24 +3446,32 @@ def _op_vim_impl(path: str, script: str) -> str:
             or normalized[start + 1] == "'"
         ):
             return (start + 2, False)
-        # >> << — indent/dedent current line (two-char no-arg)
-        if c in "><" and start + 1 < n and normalized[start + 1] == c:
+        # >> << == — indent/dedent/re-indent current line (two-char no-arg)
+        if c in "><=" and start + 1 < n and normalized[start + 1] == c:
             return (start + 2, False)
-        # > / < + motion: text-object (iw/aw/i{/a{ etc) or simple motion char
-        if c in "><" and start + 1 < n:
-            nxt = normalized[start + 1]
-            # text-object: >iw, >aw, >ip, <ap, etc.
-            _TO_KINDS2 = set('wWsp"\'`()[]{}<>bBt')
-            if nxt in "ia" and start + 2 < n and normalized[start + 2] in _TO_KINDS2:
-                return (start + 3, False)
-            # gg / ge / gE / g_ (3-char)
-            if nxt == "g" and start + 2 < n and normalized[start + 2] == "g":
-                return (start + 3, False)
-            # simple motion targets
-            if nxt in ("j", "k", "h", "l", "G", "{", "}", "(", ")",
-                       "%", "+", "-", "_", "w", "b", "e", "W", "B", "E",
-                       "$", "0", "^"):
-                return (start + 2, False)
+        # > / < / = + [count] + motion: text-object or simple motion char
+        # Handles both >j and >2j (motion count between operator and motion).
+        if c in "><=" and start + 1 < n:
+            # skip optional embedded motion count (digits after operator)
+            mc = start + 1
+            while mc < n and normalized[mc].isdigit():
+                mc += 1
+            if mc >= n:
+                pass  # fall through to single-char
+            else:
+                nxt = normalized[mc]
+                # text-object: >iw, >aw, >ip, <ap, =ap, etc.
+                _TO_KINDS2 = set('wWsp"\'`()[]{}<>bBt')
+                if nxt in "ia" and mc + 1 < n and normalized[mc + 1] in _TO_KINDS2:
+                    return (mc + 2, False)
+                # gg (3-char from operator)
+                if nxt == "g" and mc + 1 < n and normalized[mc + 1] == "g":
+                    return (mc + 2, False)
+                # simple motion targets
+                if nxt in ("j", "k", "h", "l", "G", "{", "}", "(", ")",
+                           "%", "+", "-", "_", "w", "b", "e", "W", "B", "E",
+                           "$", "0", "^"):
+                    return (mc + 1, False)
         # V (visual-line) — consume V[count][motion]<op|ex> as a single
         # verb so the post-tokenize V-alias rewriter can collapse it
         # into a line-op or ex range. Greedy when op is `c` (change) or
@@ -3401,9 +3497,153 @@ def _op_vim_impl(path: str, script: str) -> str:
                 return (j, op_char == "c")
             # V alone — fall through to single-char (unknown-verb hint)
             return (start + 1, False)
+        # v (char-visual) — consume v[count][motion]<op> as a single verb
+        # so the post-tokenize v-alias rewriter can collapse it into the
+        # standard operator-motion form <op><motion>.  Greedy when op is
+        # `c` (change).  Motions supported: simple one-char motions,
+        # gg, text-objects i<X>/a<X>, char-finds f/F/t/T<c>, and search
+        # motions /<pat>//<pat>.
+        if c == "v":
+            j = start + 1
+            while j < n and normalized[j].isdigit():
+                j += 1
+            if j >= n:
+                return (start + 1, False)
+            # Text-object: v[count]i<X><op> or v[count]a<X><op>
+            _TO_KINDS_V = set('wWsp"\'`()[]{}<>bBt')
+            if normalized[j] in "ia" and j + 1 < n and normalized[j + 1] in _TO_KINDS_V:
+                motion_end = j + 2
+                if motion_end < n and normalized[motion_end] in "dyc":
+                    op_char = normalized[motion_end]
+                    return (motion_end + 1, op_char == "c")
+                return (start + 1, False)
+            # gg motion
+            if j + 1 < n and normalized[j] == "g" and normalized[j + 1] == "g":
+                motion_end = j + 2
+                if motion_end < n and normalized[motion_end] in "dyc":
+                    op_char = normalized[motion_end]
+                    return (motion_end + 1, op_char == "c")
+                return (start + 1, False)
+            # Char-find: f/F/t/T<c> motion (consumes 2 chars)
+            if normalized[j] in "fFtT" and j + 1 < n:
+                motion_end = j + 2
+                if motion_end < n and normalized[motion_end] in "dyc":
+                    op_char = normalized[motion_end]
+                    return (motion_end + 1, op_char == "c")
+                return (start + 1, False)
+            # Search motion: /<pat> — greedy until ESC gives the pattern;
+            # the whole v/<pat>\e<op> form cannot be unwrapped here
+            # because we don't know op until after ESC.  Treat as unknown.
+            # Simple one-char motions
+            _V_SIMPLE_MOTIONS = set(
+                "wbeWBEjkhl$0^G{}()%;,"
+            )
+            if normalized[j] in _V_SIMPLE_MOTIONS:
+                motion_end = j + 1
+                if motion_end < n and normalized[motion_end] in "dyc":
+                    op_char = normalized[motion_end]
+                    return (motion_end + 1, op_char == "c")
+                return (start + 1, False)
+            # v alone (or unrecognized motion) — fall through
+            return (start + 1, False)
+        # undo / redo — single-char no-arg
+        if c == "u" or c == "\x12":  # u=undo, Ctrl-R=redo
+            return (start + 1, False)
         # Single-char no-arg verbs (G, h, j, k, l, x, D, J, n, N, p, P,
         # $, 0, ^, w, b, e, W, B, E, %, Y, *, #, etc.)
         return (start + 1, False)
+
+    # macros_pending: register → raw body string (captured during tokenizing,
+    # before the action loop runs). Populated by q<reg>...q recording blocks.
+    macros_pending: dict = {}
+
+    def _greedy_verb(s: str, pos: int) -> tuple:
+        """Like _verb_token but operates on arbitrary string `s` (not `normalized`).
+        Used by macro recording/replay inline tokenizers. Returns (verb_end, enters_text).
+        Covers only the greedy/non-greedy decision — identical logic to _verb_token
+        but reads from `s` instead of the outer `normalized` closure variable.
+        """
+        sn = len(s)
+        if pos >= sn:
+            return (pos, False)
+        c = s[pos]
+        # Greedy: insert verbs, shortcuts, search/ex
+        if c in "iaAIoOsSC/?:R":
+            return (pos + 1, True)
+        # %s — 2-char greedy
+        if c == "%" and pos + 1 < sn and s[pos + 1] == "s":
+            return (pos + 2, True)
+        # Change-family greedy: cc cw c$ c0
+        if c == "c" and pos + 1 < sn and s[pos + 1] in ("c", "w", "$", "0"):
+            return (pos + 2, True)
+        # ciw / ci<delim>
+        if c == "c" and pos + 1 < sn and s[pos + 1] == "i" and pos + 2 < sn and s[pos + 2] in ('w', '"', "'", "(", "[", "{"):
+            return (pos + 3, True)
+        # c + text-object kind: cia, ciw, etc. (single op + i/a + kind)
+        _TO = set('wWsp"\'`()[]{}<>bBt')
+        if c == "c" and pos + 2 < sn and s[pos + 1] in "ia" and s[pos + 2] in _TO:
+            return (pos + 3, True)
+        # c + new motions
+        if c == "c" and pos + 1 < sn and s[pos + 1] in "{})(%+-_WBES;,^":
+            return (pos + 2, True)
+        # cf/cF/ct/cT — greedy
+        if c == "c" and pos + 1 < sn and s[pos + 1] in "fFtT":
+            return (min(pos + 3, sn), True)
+        # gi — greedy
+        if c == "g" and pos + 1 < sn and s[pos + 1] == "i":
+            return (pos + 2, True)
+        # d/y + greedy search operator
+        if c in "dy" and pos + 1 < sn and s[pos + 1] in "/?":
+            return (pos + 2, True)
+        # Two-char no-arg verbs: dd, dw, d$, etc. / yy, yw, etc. / gg, ge, etc.
+        if pos + 1 < sn:
+            two = s[pos: pos + 2]
+            _TWO_NOARG = {
+                "dd", "dw", "d$", "d0", "dG", "d^", "dh", "dj", "dk", "dl",
+                "d{", "d}", "d(", "d)", "d%", "d+", "d-", "d_", "dW", "dB", "dE", "d;", "d,",
+                "yy", "yw", "y$", "y0", "yG", "y^", "yh", "yj", "yk", "yl",
+                "y{", "y}", "y(", "y)", "y%", "y+", "y-", "y_", "yW", "yB", "yE", "y;", "y,",
+                "gg", "ge", "gE", "g_", "gJ",
+                "g~~", "guu", "gUU",
+                ">>", "<<", "==",
+            }
+            if two in _TWO_NOARG:
+                return (pos + 2, False)
+        # r<c>, f<c>, F<c>, t<c>, T<c> — single-char arg, non-greedy
+        if c in "rfFtT":
+            return (min(pos + 2, sn), False)
+        # d/y + char-find: df<c>, dt<c>, etc.
+        if c in "dy" and pos + 1 < sn and s[pos + 1] in "fFtT":
+            return (min(pos + 3, sn), False)
+        # d/y/c + gg/ge/gE/g_ (3-char)
+        if c in "dyc" and pos + 2 < sn and s[pos + 1] == "g" and s[pos + 2] in "geE_g":
+            return (pos + 3, c == "c")
+        # d/y + text-object
+        if c in "dy" and pos + 2 < sn and s[pos + 1] in "ia":
+            _TO2 = set('wWsp"\'`()[]{}<>bBt')
+            if s[pos + 2] in _TO2:
+                return (pos + 3, False)
+        # g~~/guu/gUU (3-char)
+        if c == "g" and pos + 2 < sn and s[pos + 1] in "~uU" and s[pos + 2] == s[pos + 1]:
+            return (pos + 3, False)
+        # g~ / gu / gU + motion (3-char)
+        if c == "g" and pos + 2 < sn and s[pos + 1] in "~uU":
+            return (pos + 3, False)
+        # m{X} — set mark
+        if c == "m" and pos + 1 < sn and ("a" <= s[pos + 1] <= "z" or "A" <= s[pos + 1] <= "Z"):
+            return (pos + 2, False)
+        # `{X} / `` — jump to mark
+        if c == "`" and pos + 1 < sn and (
+            "a" <= s[pos + 1] <= "z" or "A" <= s[pos + 1] <= "Z" or s[pos + 1] == "`"
+        ):
+            return (pos + 2, False)
+        # '{X} / '' — jump to mark line
+        if c == "'" and pos + 1 < sn and (
+            "a" <= s[pos + 1] <= "z" or "A" <= s[pos + 1] <= "Z" or s[pos + 1] == "'"
+        ):
+            return (pos + 2, False)
+        # Everything else: single-char non-greedy
+        return (pos + 1, False)
 
     while i < n:
         # Skip whitespace AND stray ESC between actions. (ESC is a mode
@@ -3414,6 +3654,64 @@ def _op_vim_impl(path: str, script: str) -> str:
         if i >= n:
             break
         action_start = i
+        # --- macro recording: q<reg>...q ---
+        # `q<a-z>` starts recording into register <reg>. Everything up to
+        # the next bare `q` is the macro body. Real vim executes the body
+        # as you type it — we honour that: tokenize and emit the body's
+        # actions so they run now, then emit the sentinel so the macro is
+        # stored for future @<reg> replay.
+        if normalized[i] == "q" and i + 1 < n and "a" <= normalized[i + 1] <= "z":
+            reg = normalized[i + 1]
+            body_start = i + 2
+            close_q = normalized.find("q", body_start)
+            if close_q == -1:
+                body = normalized[body_start:]
+                i = n
+            else:
+                body = normalized[body_start:close_q]
+                i = close_q + 1
+            macros_pending[reg] = body
+            # Inline-tokenize body so the actions execute during recording.
+            _rec_norm = body.replace("\\e", ESC).replace("\x1e", ESC).replace("␞", ESC)
+            _rec_norm = _rec_norm.replace("\\C-a", "\x01").replace("\\C-x", "\x18")
+            _rec_actions: List[str] = []
+            _ri = 0
+            _rn = len(_rec_norm)
+            while _ri < _rn:
+                while _ri < _rn and _rec_norm[_ri] in (" \t\n\r" + ESC):
+                    _ri += 1
+                if _ri >= _rn:
+                    break
+                _rstart = _ri
+                _rverb_pos = _ri
+                if _rec_norm[_ri].isdigit() and _rec_norm[_ri] != "0":
+                    while _rverb_pos < _rn and _rec_norm[_rverb_pos].isdigit():
+                        _rverb_pos += 1
+                if _rverb_pos >= _rn:
+                    _rec_actions.append(_rec_norm[_rstart:])
+                    break
+                if _rec_norm[_rverb_pos] == "@" and _rverb_pos + 1 < _rn and (
+                    ("a" <= _rec_norm[_rverb_pos + 1] <= "z") or _rec_norm[_rverb_pos + 1] == "@"
+                ):
+                    _rec_actions.append(_rec_norm[_rstart: _rverb_pos + 2])
+                    _ri = _rverb_pos + 2
+                    continue
+                _rverb_end, _renters_text = _greedy_verb(_rec_norm, _rverb_pos)
+                if _renters_text:
+                    _resc = _rec_norm.find(ESC, _rverb_end)
+                    if _resc == -1:
+                        _rec_actions.append(_rec_norm[_rstart:])
+                        _ri = _rn
+                    else:
+                        _rec_actions.append(_rec_norm[_rstart:_resc])
+                        _ri = _resc + 1
+                else:
+                    _rec_actions.append(_rec_norm[_rstart:_rverb_end])
+                    _ri = _rverb_end
+            _rec_actions = [a for a in _rec_actions if a]
+            raw_actions.extend(_rec_actions)
+            raw_actions.append(f"__macro_def_{reg}")
+            continue
         # Parse count: leading digits, but not if `0` alone (BOL verb).
         verb_pos = i
         if normalized[i].isdigit() and normalized[i] != "0":
@@ -3423,6 +3721,14 @@ def _op_vim_impl(path: str, script: str) -> str:
             # trailing digits with no verb — emit as-is, _parse will error
             raw_actions.append(normalized[action_start:])
             break
+        # --- @<reg> / @@ replay: tokenize as count + 2-char verb ---
+        # Checked after digit-parse so `5@a` emits `5@a` as one token.
+        if normalized[verb_pos] == "@" and verb_pos + 1 < n and (
+            ("a" <= normalized[verb_pos + 1] <= "z") or normalized[verb_pos + 1] == "@"
+        ):
+            raw_actions.append(normalized[action_start: verb_pos + 2])
+            i = verb_pos + 2
+            continue
         # Identify verb shape and consumption mode.
         verb_end, enters_text = _verb_token(verb_pos)
         if enters_text:
@@ -3502,6 +3808,9 @@ def _op_vim_impl(path: str, script: str) -> str:
             and rest[3] in _to_kinds
         ):
             return (count, rest[:4], rest[4:])
+        # vim :%!cmd — pipe whole buffer through shell command
+        if len(rest) >= 3 and rest[:3] == ":%!":
+            return (count, ":!", "\x1d%\x1d" + rest[3:])
         # vim alias: :%s/PAT/REPL/flags maps to :s (whole buffer)
         if len(rest) >= 3 and rest[:3] == ":%s":
             return (count, ":s", rest[3:])
@@ -3559,6 +3868,11 @@ def _op_vim_impl(path: str, script: str) -> str:
                 range_spec = rest[1:j]
                 body = rest[j + 4:]
                 return (count, ":norm", f"\x1d{range_spec}\x1d{body}")
+            # :N!cmd / :N,M!cmd — filter range through shell command
+            if j < len(rest) and rest[j] == "!":
+                range_spec = rest[1:j]
+                cmd = rest[j + 1:]
+                return (count, ":!", f"\x1d{range_spec}\x1d{cmd}")
             # Single-char ex verbs LAST (so longer prefixes win first).
             if j < len(rest) and rest[j] == "s":
                 range_spec = rest[1:j]
@@ -3587,6 +3901,9 @@ def _op_vim_impl(path: str, script: str) -> str:
         # :retab [N] — whole-buffer; arg is the tab width (optional)
         if len(rest) >= 6 and rest[:6] == ":retab":
             return (count, ":retab", rest[6:])
+        # :!cmd — run shell command, insert stdout at cursor (no range = insert mode)
+        if len(rest) >= 2 and rest[:2] == ":!" and len(rest) > 2:
+            return (count, ":!", "\x1d\x1d" + rest[2:])
         # :norm CMDS — default range = current line (.)
         if len(rest) >= 5 and rest[:5] == ":norm":
             return (count, ":norm", "\x1d.\x1d" + rest[5:])
@@ -3671,24 +3988,31 @@ def _op_vim_impl(path: str, script: str) -> str:
             ("a" <= rest[1] <= "z") or ("A" <= rest[1] <= "Z") or rest[1] == "'"
         ):
             return (count, "'" + rest[1], rest[2:])
-        # >> and << — indent/dedent current line
-        if len(rest) >= 2 and rest[:2] in (">>", "<<"):
+        # >> << == — indent/dedent/re-indent current line
+        if len(rest) >= 2 and rest[:2] in (">>", "<<", "=="):
             return (count, rest[:2], rest[2:])
-        # > / < + motion
-        if len(rest) >= 2 and rest[0] in "><":
+        # > / < / = + [motion-count] + motion  (e.g. >j, >2j, <G, =ap)
+        if len(rest) >= 2 and rest[0] in "><=" and rest[1] != rest[0]:
             op = rest[0]
-            # text-object form: >iw, <ap, etc.
+            # skip optional embedded motion count digits
+            mi = 1
+            while mi < len(rest) and rest[mi].isdigit():
+                mi += 1
+            motion_count = int(rest[1:mi]) if mi > 1 else 1
+            combined_count = count * motion_count
+            tail = rest[mi:]  # everything after the digits
             _to = set('wWsp"\'`()[]{}<>bBt')
-            if len(rest) >= 3 and rest[1] in "ia" and rest[2] in _to:
-                return (count, op + rest[1] + rest[2], rest[3:])
-            # gg / ge / gE / g_
-            if len(rest) >= 3 and rest[1] == "g" and rest[2] in ("g", "e", "E", "_"):
-                return (count, op + rest[1:3], rest[3:])
-            # simple motion target
-            if rest[1] in ("j", "k", "h", "l", "G", "{", "}", "(", ")",
-                           "%", "+", "-", "_", "w", "b", "e", "W", "B", "E",
-                           "$", "0", "^"):
-                return (count, op + rest[1], rest[2:])
+            # text-object form: >iw, <ap, =ap, etc. (no digit before i/a)
+            if mi == 1 and len(tail) >= 2 and tail[0] in "ia" and tail[1] in _to:
+                return (count, op + tail[0] + tail[1], tail[2:])
+            # gg (3-char: op + gg)
+            if mi == 1 and len(tail) >= 2 and tail[0] == "g" and tail[1] == "g":
+                return (count, op + "gg", tail[2:])
+            # simple motion target — fold motion count into combined_count
+            if tail and tail[0] in ("j", "k", "h", "l", "G", "{", "}", "(", ")",
+                                    "%", "+", "-", "_", "w", "b", "e", "W", "B", "E",
+                                    "$", "0", "^"):
+                return (combined_count, op + tail[0], tail[1:])
         # two-char yank/delete word/eol: yw, y$, yy, dw, d$, d0, c$, c0, cf, cF, ct, cT, df, dF, dt, dT
         # plus operator-motion: dG d^ dh dj dk dl, yG y^ yh yj yk yl, d/ d? y/ y?
         if len(rest) >= 2 and rest[:2] in (
@@ -3745,20 +4069,43 @@ def _op_vim_impl(path: str, script: str) -> str:
             "~", "\x01", "\x18",
             # Tier-1 grab-bag single-char verbs:
             "Y", "*", "#",
+            # undo / redo:
+            "u", "\x12",
+            # repeat last change:
+            ".",
         ):
             return (count, c, rest[1:])
+        # @<reg> / @@ — macro replay (2-char verb, no arg)
+        if c == "@" and len(rest) >= 2 and (
+            ("a" <= rest[1] <= "z") or rest[1] == "@"
+        ):
+            return (count, rest[:2], rest[2:])
         return (count, "", rest)  # unknown
 
     _state = _vim_load_state(path, len(content))
     cursor = _state["cursor"]
     marks: dict = dict(_state["marks"])  # {char: offset}
     last_edit = _state["last_edit"]      # int|None
+    last_change = _state.get("last_change")  # dict|None: last buffer-mutating action for `.`
+    macros: dict = dict(_state.get("macros", {}))  # {reg: raw_body_str}
+    macros.update(macros_pending)        # definitions from this script win
+    last_replayed_macro: Optional[str] = None  # register name; @@ uses this
     prev_cursor = cursor                 # for `` and '' jump-back
     log: List[str] = []
     last_search: Optional[tuple] = None  # (pattern, direction "/"|"?")
     last_find: Optional[tuple] = None  # (verb in fFtT, target char) for ; ,
     register: str = ""  # anonymous yank/paste register
     register_linewise: bool = False  # True if last yank was line-wise (yy)
+    # Undo / redo stacks (Tier 1: within-script).  Each entry = (content, cursor, marks).
+    undo_stack: List[tuple] = []
+    redo_stack: List[tuple] = []
+    # Tier 2: cross-call snapshot — pre-edit state from the *previous* script call.
+    # Loaded lazily on the first `u` that finds an empty undo_stack.
+    _xundo_snapshot = _vim_load_undo_snapshot(path)  # None or {content, cursor, marks}
+    # Snapshot the state at script entry for cross-call undo (saved at end).
+    _entry_content = content
+    _entry_cursor = cursor
+    _entry_marks = dict(marks)
     # V-alias rewrites: V is visual-line in real vim, but supertool has no
     # visual mode. Kevin's muscle memory reaches for `Vcc`/`Vdd`/`Vyy`/
     # `Vjcc`/`VGd` anyway. These are all expressible as line-ops or ex
@@ -3810,6 +4157,34 @@ def _op_vim_impl(path: str, script: str) -> str:
             return f"{n + 1}{m.group(3)}{m.group(4)}"
         return act
 
+    # v-char-alias rewrites: `v<motion><op>` → `<op><motion>`.
+    # char-visual selects then applies op; without visual mode the
+    # standard operator-motion form is equivalent.
+    # Pattern: v + optional count + motion + op (d/y/c) + optional tail.
+    # Text-object motions: i/a + kind char.
+    # gg motion (two chars).
+    # Char-find motions: f/F/t/T + one char.
+    # Simple motions: single char from the set below.
+    _V_CHAR_TO = set('wWsp"\'`()[]{}<>bBt')
+    _V_CHAR_SIMPLE = set("wbeWBEjkhl$0^G{}()%;,")
+    _V_CHAR_RE = re.compile(
+        r"^v(\d*)"
+        r"(gg|[ia][wWsp\"'`()\[\]{}<>bBt]|[fFtT].|[wbeWBEjkhl$0^G{}();,%])"
+        r"([dyc])"
+        r"(.*)$",
+        re.DOTALL,
+    )
+
+    def _rewrite_v_char_alias(act: str) -> str:
+        if not act or act[0] != "v":
+            return act
+        m = _V_CHAR_RE.match(act)
+        if m is None:
+            return act
+        count, motion, op, tail = m.group(1), m.group(2), m.group(3), m.group(4)
+        # Reconstruct as <count><op><motion><tail>
+        return f"{count}{op}{motion}{tail}"
+
     # cc-typo: Kevin types `cciw<TEXT>` thinking it means `ciw<TEXT>` (change
     # inner word). Real vim parses as cc + greedy text "iwTEXT" (line replace
     # with literal "iwTEXT"). Detect `cc<ia><kind>` prefix and drop one c.
@@ -3821,8 +4196,20 @@ def _op_vim_impl(path: str, script: str) -> str:
             return act
         return f"c{m.group(1)}{m.group(2)}{m.group(3)}"
 
-    raw_actions = [_rewrite_cc_typo(_rewrite_v_alias(a)) for a in raw_actions]
+    raw_actions = [_rewrite_cc_typo(_rewrite_v_alias(_rewrite_v_char_alias(a))) for a in raw_actions]
+
+    def _push_undo() -> None:
+        """Snapshot current state onto undo stack; clear redo stack."""
+        undo_stack.append((content, cursor, dict(marks)))
+        redo_stack.clear()
+
     for i, action in enumerate(raw_actions, 1):
+        # Macro definition sentinel — body already in `macros`, nothing to execute.
+        if action.startswith("__macro_def_"):
+            reg = action[len("__macro_def_"):]
+            log.append(f"  {i}. q{reg}...q (macro recorded, {len(macros.get(reg, ''))} chars)")
+            continue
+
         count, verb, arg = _parse(action)
 
         if verb == "" and count != 1:
@@ -4079,6 +4466,7 @@ def _op_vim_impl(path: str, script: str) -> str:
 
         # --- inserts ---
         elif verb in ("i", "a", "I", "A", "o", "O"):
+            _push_undo()
             text = _decode_escapes(arg) * count
             if verb == "i":
                 pos = cursor
@@ -4107,15 +4495,19 @@ def _op_vim_impl(path: str, script: str) -> str:
                     last_edit += delta
             cursor = pos + len(text)
             last_edit = cursor
+            last_change = {"verb": verb, "count": count, "arg": arg}
             preview = text if len(text) <= 30 else text[:27] + "..."
             log.append(f"  {i}. {verb}{preview!r} (len={len(text)})")
 
         # --- deletes ---
         elif verb == "x":
+            _push_undo()
             end = min(len(content), cursor + count)
             content = content[:cursor] + content[end:]
+            last_change = {"verb": "x", "count": count, "arg": ""}
             log.append(f"  {i}. {count}x ({end - cursor} chars)")
         elif verb == "dd":
+            _push_undo()
             # delete count whole lines starting at current line
             bol = _line_start(content, cursor)
             end = bol
@@ -4126,8 +4518,10 @@ def _op_vim_impl(path: str, script: str) -> str:
                     break
             content = content[:bol] + content[end:]
             cursor = bol if bol < len(content) else max(0, len(content))
+            last_change = {"verb": "dd", "count": count, "arg": ""}
             log.append(f"  {i}. {count}dd (cursor={cursor})")
         elif verb == "D":
+            _push_undo()
             eol = _line_end(content, cursor)
             content = content[:cursor] + content[eol:]
             log.append(f"  {i}. D ({eol - cursor} chars)")
@@ -4139,6 +4533,7 @@ def _op_vim_impl(path: str, script: str) -> str:
         #         at BOL — like vim's cc), insert TEXT at BOL.
         # C  = c$: delete cursor → EOL (not past \n), insert TEXT.
         elif verb == "s":
+            _push_undo()
             end = min(len(content), cursor + count)
             text = _decode_escapes(arg)
             content = content[:cursor] + text + content[end:]
@@ -4146,6 +4541,7 @@ def _op_vim_impl(path: str, script: str) -> str:
             preview = text if len(text) <= 30 else text[:27] + "..."
             log.append(f"  {i}. {count}s{preview!r} (cursor={cursor})")
         elif verb == "S":
+            _push_undo()
             bol = _line_start(content, cursor)
             end = bol
             for _ in range(count):
@@ -4163,6 +4559,7 @@ def _op_vim_impl(path: str, script: str) -> str:
             preview = text if len(text) <= 30 else text[:27] + "..."
             log.append(f"  {i}. {count}S{preview!r} (cursor={cursor})")
         elif verb == "C":
+            _push_undo()
             eol = _line_end(content, cursor)
             text = _decode_escapes(arg)
             content = content[:cursor] + text + content[eol:]
@@ -4172,6 +4569,7 @@ def _op_vim_impl(path: str, script: str) -> str:
 
         # --- change inner word ---
         elif verb == "ciw":
+            _push_undo()
             if cursor >= len(content) or not (content[cursor].isalnum() or content[cursor] == "_"):
                 return f"ERROR: action {i} '{action}': ciw needs cursor on word char\n"
             ws = cursor
@@ -4183,11 +4581,13 @@ def _op_vim_impl(path: str, script: str) -> str:
             text = _decode_escapes(arg)
             content = content[:ws] + text + content[we:]
             cursor = ws + len(text)
+            last_change = {"verb": "ciw", "count": 1, "arg": arg}
             preview = text if len(text) <= 30 else text[:27] + "..."
             log.append(f"  {i}. ciw{preview!r} (cursor={cursor})")
 
         # --- change inside delimiter: ci" ci' ci( ci[ ci{ ---
         elif verb in ('ci"', "ci'", "ci(", "ci[", "ci{"):
+            _push_undo()
             opener = verb[2]
             pairs = {'"': '"', "'": "'", "(": ")", "[": "]", "{": "}"}
             closer = pairs[opener]
@@ -4292,6 +4692,7 @@ def _op_vim_impl(path: str, script: str) -> str:
             text = _decode_escapes(arg)
             content = content[:cursor] + text + content[we:]
             cursor = cursor + len(text)
+            last_change = {"verb": "cw", "count": 1, "arg": arg}
             preview = text if len(text) <= 30 else text[:27] + "..."
             log.append(f"  {i}. cw{preview!r} (cursor={cursor})")
 
@@ -4311,11 +4712,13 @@ def _op_vim_impl(path: str, script: str) -> str:
             text = _decode_escapes(arg)
             content = content[:bol] + text + content[slice_end:]
             cursor = bol + len(text)
+            last_change = {"verb": "cc", "count": count, "arg": arg}
             preview = text if len(text) <= 30 else text[:27] + "..."
             log.append(f"  {i}. {count}cc{preview!r} (cursor={cursor})")
 
         # --- join lines ---
         elif verb == "J":
+            _push_undo()
             joined = 0
             for _ in range(count):
                 nl = content.find("\n", cursor)
@@ -4333,6 +4736,7 @@ def _op_vim_impl(path: str, script: str) -> str:
 
         # --- replace ---
         elif verb == "r":
+            _push_undo()
             if not arg:
                 return f"ERROR: action {i} '{action}': r needs a char\n"
             if cursor >= len(content):
@@ -4764,6 +5168,7 @@ def _op_vim_impl(path: str, script: str) -> str:
 
         # --- ex substitute: :s/PAT/REPL/flags ---
         elif verb == ":s":
+            _push_undo()
             # Decode optional line-range prefix: \x1d{range}\x1d{body}.
             # The parser encodes ranges from `:Ns/...`, `:N,Ms/...`, `:.s/...`,
             # `:$s/...`, etc. Resolve `.` against cursor and `$` against
@@ -4966,6 +5371,7 @@ def _op_vim_impl(path: str, script: str) -> str:
 
         # --- ex read file: :r FILE  (or `:r -` to read stdin, `:r !CMD` to shell) ---
         elif verb == ":r":
+            _push_undo()
             path_arg = arg.strip()
             if not path_arg:
                 return f"ERROR: action {i} '{action}': :r needs a file path\n"
@@ -5022,8 +5428,112 @@ def _op_vim_impl(path: str, script: str) -> str:
             cursor = insert_pos
             log.append(f"  {i}. :r {path_arg!r} ({len(file_text)} chars inserted)")
 
+        # --- ex shell filter: :!cmd, :%!cmd, :N!cmd, :N,M!cmd ---
+        # WARNING: cmd runs with the same OS privileges as supertool.
+        # arg encoding: \x1d{range_spec}\x1d{cmd}
+        #   range_spec = ""   -> bare :!cmd (insert stdout after cursor line)
+        #   range_spec = "%"  -> :%!cmd (pipe whole buffer through cmd, replace buffer)
+        #   range_spec = "N" or "N,M" -> pipe those lines, replace with stdout
+        elif verb == ":!":
+            if not arg.startswith("\x1d"):
+                return f"ERROR: action {i} '{action}': :! malformed encoding\n"
+            close = arg.find("\x1d", 1)
+            if close == -1:
+                return f"ERROR: action {i} '{action}': :! malformed encoding\n"
+            range_spec = arg[1:close]
+            cmd = arg[close + 1:]
+            if not cmd.strip():
+                return f"ERROR: action {i} '{action}': :! needs a command\n"
+            _lines = content.split("\n")
+            _has_trailing_nl = _lines and _lines[-1] == ""
+            _total_lines = len(_lines) - (1 if _has_trailing_nl else 0)
+            _cursor_line, _ = _offset_to_line_col(content, cursor)
+            if range_spec == "":
+                # bare :!cmd — run command, insert stdout after cursor line
+                try:
+                    proc = subprocess.run(
+                        cmd, shell=True, capture_output=True, text=True, timeout=30
+                    )
+                except (OSError, subprocess.TimeoutExpired) as e:
+                    return f"ERROR: action {i} '{action}': :!{cmd}: {e}\n"
+                if proc.returncode != 0:
+                    return (
+                        f"ERROR: action {i} '{action}': :!{cmd}: exit "
+                        f"{proc.returncode}: {proc.stderr.strip()}\n"
+                    )
+                out = proc.stdout
+                if out and not out.endswith("\n"):
+                    out += "\n"
+                eol = _line_end(content, cursor)
+                if eol < len(content):
+                    insert_pos = eol + 1
+                else:
+                    if content and not content.endswith("\n"):
+                        content += "\n"
+                    insert_pos = len(content)
+                content = content[:insert_pos] + out + content[insert_pos:]
+                cursor = insert_pos
+                log.append(f"  {i}. :!{cmd} ({len(out)} chars inserted)")
+            else:
+                # ranged :N!cmd / :%!cmd — pipe selected lines, replace with stdout
+                def _vim_resolve_ex(addr: str) -> int:
+                    return _vim_resolve_ex_address(addr, _cursor_line, _total_lines)
+                if range_spec == "%":
+                    line_a, line_b = 1, _total_lines
+                elif "," in range_spec:
+                    a_part, b_part = range_spec.split(",", 1)
+                    try:
+                        line_a = _vim_resolve_ex(a_part)
+                        line_b = _vim_resolve_ex(b_part)
+                    except ValueError as e:
+                        return f"ERROR: action {i} '{action}': :! range: {e}\n"
+                else:
+                    try:
+                        line_a = line_b = _vim_resolve_ex(range_spec)
+                    except ValueError as e:
+                        return f"ERROR: action {i} '{action}': :! range: {e}\n"
+                if line_a < 1 or line_b < 1 or line_a > _total_lines or line_b > _total_lines:
+                    return (
+                        f"ERROR: action {i} '{action}': :! range {line_a}..{line_b} "
+                        f"out of bounds (1..{_total_lines})\n"
+                    )
+                if line_a > line_b:
+                    return (
+                        f"ERROR: action {i} '{action}': :! range start ({line_a}) "
+                        f"is after end ({line_b})\n"
+                    )
+                _line_starts: List[int] = [0]
+                for _k, _ch in enumerate(content):
+                    if _ch == "\n":
+                        _line_starts.append(_k + 1)
+                slice_start = _line_starts[line_a - 1]
+                slice_end = _line_starts[line_b] if line_b < len(_line_starts) else len(content)
+                region = content[slice_start:slice_end]
+                try:
+                    proc = subprocess.run(
+                        cmd, shell=True, input=region,
+                        capture_output=True, text=True, timeout=30
+                    )
+                except (OSError, subprocess.TimeoutExpired) as e:
+                    return f"ERROR: action {i} '{action}': :!{cmd}: {e}\n"
+                if proc.returncode != 0:
+                    return (
+                        f"ERROR: action {i} '{action}': :!{cmd}: exit "
+                        f"{proc.returncode}: {proc.stderr.strip()}\n"
+                    )
+                out = proc.stdout
+                if out and not out.endswith("\n"):
+                    out += "\n"
+                content = content[:slice_start] + out + content[slice_end:]
+                cursor = slice_start
+                log.append(
+                    f"  {i}. :{range_spec}!{cmd} "
+                    f"(replaced {line_b - line_a + 1} lines -> {out.count(chr(10))} lines)"
+                )
+
         # --- ex delete: :%d, :Nd, :N,Md, :.d, :$d, :.,$d, :g/PAT/d, :v/PAT/d ---
         elif verb == ":d":
+            _push_undo()
             # arg is always sentinel-encoded by the parser:
             #   \x1d{range_spec}\x1d{trailing}   (range_spec is %, N, ., $, N,M, etc.)
             #   \x1d{g|v}:{PAT}\x1d{trailing}    (global/inverse-global delete)
@@ -5222,6 +5732,7 @@ def _op_vim_impl(path: str, script: str) -> str:
             body_lines = lines[:-1] if has_trailing_nl else lines[:]
 
             if verb == ":sort":
+                _push_undo()
                 # parse flags from body: !, u, n (whitespace-tolerant)
                 flags = body.strip()
                 reverse = "!" in flags
@@ -5253,6 +5764,7 @@ def _op_vim_impl(path: str, script: str) -> str:
                 log.append(f"  {i}. :{range_spec}sort{flags} ({len(segment)} lines)")
 
             elif verb == ":reverse":
+                _push_undo()
                 segment = body_lines[line_a - 1:line_b]
                 segment.reverse()
                 new_body = body_lines[:line_a - 1] + segment + body_lines[line_b:]
@@ -5261,6 +5773,7 @@ def _op_vim_impl(path: str, script: str) -> str:
                 log.append(f"  {i}. :{range_spec}reverse ({len(segment)} lines)")
 
             elif verb in (":move", ":copy"):
+                _push_undo()
                 target_str = body.strip()
                 if not target_str:
                     return f"ERROR: action {i} '{action}': {verb} needs target line\n"
@@ -5295,6 +5808,7 @@ def _op_vim_impl(path: str, script: str) -> str:
                 )
 
             elif verb == ":norm":
+                _push_undo()
                 # run body as a vim script per line in range
                 cmds = body
                 if not cmds:
@@ -5341,6 +5855,7 @@ def _op_vim_impl(path: str, script: str) -> str:
 
         # --- :retab N — convert leading tabs to N spaces ---
         elif verb == ":retab":
+            _push_undo()
             width_str = arg.strip()
             try:
                 width = int(width_str) if width_str else 4
@@ -5362,12 +5877,14 @@ def _op_vim_impl(path: str, script: str) -> str:
 
         # --- change to end-of-line / BOL ---
         elif verb == "c$":
+            _push_undo()
             eol = _line_end(content, cursor)
             text = _decode_escapes(arg)
             content = content[:cursor] + text + content[eol:]
             cursor += len(text)
             log.append(f"  {i}. c${text!r}")
         elif verb == "c0":
+            _push_undo()
             bol = _line_start(content, cursor)
             text = _decode_escapes(arg)
             content = content[:bol] + text + content[cursor:]
@@ -5448,6 +5965,7 @@ def _op_vim_impl(path: str, script: str) -> str:
                 "W", "B", "E", ";", ",",
             ))
         ):
+            _push_undo()
             if verb in ("g~", "gu", "gU"):
                 op = verb
                 motion = arg[:1]
@@ -5848,6 +6366,7 @@ def _op_vim_impl(path: str, script: str) -> str:
 
         # --- tilde toggle-case (N~) ---
         elif verb == "~":
+            _push_undo()
             end_pos = min(len(content), cursor + count)
             seg = content[cursor:end_pos]
             content = content[:cursor] + seg.swapcase() + content[end_pos:]
@@ -5856,6 +6375,7 @@ def _op_vim_impl(path: str, script: str) -> str:
 
         # --- linewise case verbs: g~~ guu gUU (N lines) ---
         elif verb in ("g~~", "guu", "gUU"):
+            _push_undo()
             bol = _line_start(content, cursor)
             end_pos = bol
             for _ in range(count):
@@ -5882,6 +6402,7 @@ def _op_vim_impl(path: str, script: str) -> str:
 
         # --- Ctrl-A / Ctrl-X: increment / decrement number ---
         elif verb in ("\x01", "\x18"):
+            _push_undo()
             # find digit run: current pos if on digit, else scan forward on
             # current line for first digit. Handles leading minus.
             eol = _line_end(content, cursor)
@@ -5915,6 +6436,7 @@ def _op_vim_impl(path: str, script: str) -> str:
 
         # --- paste ---
         elif verb == "p":
+            _push_undo()
             if not register:
                 return f"ERROR: action {i} '{action}': p with empty register\n"
             if register_linewise:
@@ -5928,7 +6450,9 @@ def _op_vim_impl(path: str, script: str) -> str:
                 content = content[:pos] + register + content[pos:]
                 cursor = pos + len(register) - 1 if register else pos
             log.append(f"  {i}. p ({len(register)} chars)")
+            last_change = {"verb": "p", "count": 1, "arg": ""}
         elif verb == "P":
+            _push_undo()
             if not register:
                 return f"ERROR: action {i} '{action}': P with empty register\n"
             if register_linewise:
@@ -5942,6 +6466,7 @@ def _op_vim_impl(path: str, script: str) -> str:
 
         # --- c/d/y + char-find motion ---
         elif len(verb) == 2 and verb[0] in ("c", "d", "y") and verb[1] in ("f", "F", "t", "T"):
+            _push_undo()
             if not arg:
                 return f"ERROR: action {i} '{action}': {verb} needs target char\n"
             target = arg[0]
@@ -5981,15 +6506,16 @@ def _op_vim_impl(path: str, script: str) -> str:
                 cursor = start + len(text)
                 log.append(f"  {i}. {verb}{target!r} ({len(slice_)} chars → {len(text)})")
 
-        # --- indent operators: >> << and >{motion} <{motion} ---
-        elif verb in (">>", "<<") or (
-            len(verb) >= 2 and verb[0] in "><" and verb != ">>" and verb != "<<"
+        # --- indent operators: >> << == and >{motion} <{motion} ={motion} ---
+        elif verb in (">>", "<<", "==") or (
+            len(verb) >= 2 and verb[0] in "><=" and verb not in (">>", "<<", "==")
         ):
+            _push_undo()
             op = verb[0]
             # Determine the [line_a, line_b] line range (1-indexed inclusive)
             cur_line, _ = _offset_to_line_col(content, cursor)
             total_lines = content.count("\n") + 1
-            if verb in (">>", "<<"):
+            if verb in (">>", "<<", "=="):
                 line_a = cur_line
                 line_b = min(total_lines, cur_line + count - 1)
             else:
@@ -6011,11 +6537,22 @@ def _op_vim_impl(path: str, script: str) -> str:
                     elif motion == "gg":
                         target = 0
                     elif motion == "j":
-                        nl = content.find("\n", cursor)
-                        target = (nl + 1) if nl != -1 else cursor
+                        # count multiplies motion: >2j covers count extra lines
+                        pos = cursor
+                        for _ in range(count):
+                            nl = content.find("\n", pos)
+                            if nl == -1:
+                                break
+                            pos = nl + 1
+                        target = pos
                     elif motion == "k":
                         bol = _line_start(content, cursor)
-                        target = _line_start(content, bol - 1) if bol > 0 else cursor
+                        pos = bol
+                        for _ in range(count):
+                            if pos == 0:
+                                break
+                            pos = _line_start(content, pos - 1)
+                        target = pos
                     elif motion == "}":
                         pos = cursor
                         bol = _line_start(content, pos)
@@ -6112,6 +6649,16 @@ def _op_vim_impl(path: str, script: str) -> str:
                     if real_lines[ln_idx] == "":
                         continue
                     real_lines[ln_idx] = shift + real_lines[ln_idx]
+                elif op == "=":
+                    # Re-indent: match indent of nearest preceding non-blank line
+                    ref_indent = ""
+                    for ref_idx in range(ln_idx - 1, -1, -1):
+                        ref = real_lines[ref_idx]
+                        if ref.strip():
+                            m = len(ref) - len(ref.lstrip(" \t"))
+                            ref_indent = ref[:m]
+                            break
+                    real_lines[ln_idx] = ref_indent + real_lines[ln_idx].lstrip(" \t")
                 else:
                     s = real_lines[ln_idx]
                     if s.startswith("\t"):
@@ -6139,6 +6686,7 @@ def _op_vim_impl(path: str, script: str) -> str:
 
         # --- R — overwrite mode ---
         elif verb == "R":
+            _push_undo()
             text = _decode_escapes(arg)
             # Overwrite char-by-char within the current line; append past EOL.
             eol = _line_end(content, cursor)
@@ -6199,8 +6747,154 @@ def _op_vim_impl(path: str, script: str) -> str:
                 cursor = pos
                 log.append(f"  {i}. '{target_ch} (cursor={cursor})")
 
+
+        # --- . — repeat last change ---
+        # Replays the last buffer-mutating action at the current cursor
+        # position. Scoped to: i a I A o O, cc cw ciw, dd dw, x, p.
+        # Verbs outside this set are silently noted in the log.
+        elif verb == ".":
+            if last_change is None:
+                log.append(f"  {i}. . (nothing to repeat)")
+            else:
+                lc_verb = last_change["verb"]
+                lc_count = last_change["count"]
+                lc_arg = last_change["arg"]
+                _DOT_SUPPORTED = frozenset([
+                    "i", "a", "I", "A", "o", "O",
+                    "cc", "cw", "ciw",
+                    "dd", "dw",
+                    "x",
+                    "p",
+                ])
+                if lc_verb not in _DOT_SUPPORTED:
+                    log.append(f"  {i}. . (repeat {lc_verb!r} not supported — skipped)")
+                else:
+                    if lc_verb in ("i", "a", "I", "A", "o", "O"):
+                        _text = _decode_escapes(lc_arg) * lc_count
+                        if lc_verb == "i":
+                            _pos = cursor
+                        elif lc_verb == "a":
+                            _pos = min(len(content), cursor + 1)
+                        elif lc_verb == "I":
+                            _pos = _line_start(content, cursor)
+                        elif lc_verb == "A":
+                            _pos = _line_end(content, cursor)
+                        elif lc_verb == "o":
+                            _eol = _line_end(content, cursor)
+                            content = content[:_eol] + "\n" + content[_eol:]
+                            _pos = _eol + 1
+                        else:  # O
+                            _bol = _line_start(content, cursor)
+                            content = content[:_bol] + "\n" + content[_bol:]
+                            _pos = _bol
+                        content = content[:_pos] + _text + content[_pos:]
+                        _delta = len(_text)
+                        if _delta:
+                            for _mk in list(marks.keys()):
+                                if marks[_mk] >= _pos:
+                                    marks[_mk] += _delta
+                            if last_edit is not None and last_edit >= _pos:
+                                last_edit += _delta
+                        cursor = _pos + _delta
+                        last_edit = cursor
+                        _preview = _text if len(_text) <= 30 else _text[:27] + "..."
+                        log.append(f"  {i}. .({lc_verb}{_preview!r}) (len={len(_text)})")
+                    elif lc_verb == "x":
+                        _end = min(len(content), cursor + lc_count)
+                        content = content[:cursor] + content[_end:]
+                        log.append(f"  {i}. .({lc_count}x) ({_end - cursor} chars)")
+                    elif lc_verb == "dd":
+                        _bol = _line_start(content, cursor)
+                        _end = _bol
+                        for _ in range(lc_count):
+                            _nl = content.find("\n", _end)
+                            _end = _nl + 1 if _nl != -1 else len(content)
+                            if _end >= len(content):
+                                break
+                        content = content[:_bol] + content[_end:]
+                        cursor = _bol if _bol < len(content) else max(0, len(content))
+                        log.append(f"  {i}. .({lc_count}dd) (cursor={cursor})")
+                    elif lc_verb == "dw":
+                        if cursor < len(content):
+                            def _is_wdot(ch: str) -> bool:
+                                return ch.isalnum() or ch == "_"
+                            _we = cursor
+                            if _is_wdot(content[_we]):
+                                while _we < len(content) and _is_wdot(content[_we]):
+                                    _we += 1
+                            else:
+                                while _we < len(content) and not _is_wdot(content[_we]) and content[_we] != "\n":
+                                    _we += 1
+                            content = content[:cursor] + content[_we:]
+                            log.append(f"  {i}. .(dw) deleted {_we - cursor} chars")
+                    elif lc_verb == "cw":
+                        if cursor < len(content):
+                            def _is_wcw(ch: str) -> bool:
+                                return ch.isalnum() or ch == "_"
+                            _we = cursor
+                            if _is_wcw(content[_we]):
+                                while _we < len(content) and _is_wcw(content[_we]):
+                                    _we += 1
+                            else:
+                                while _we < len(content) and not _is_wcw(content[_we]) and content[_we] != "\n":
+                                    _we += 1
+                            _text = _decode_escapes(lc_arg)
+                            content = content[:cursor] + _text + content[_we:]
+                            cursor = cursor + len(_text)
+                            last_edit = cursor
+                            _preview = _text if len(_text) <= 30 else _text[:27] + "..."
+                            log.append(f"  {i}. .(cw{_preview!r}) (cursor={cursor})")
+                    elif lc_verb == "ciw":
+                        if cursor < len(content) and (content[cursor].isalnum() or content[cursor] == "_"):
+                            _ws = cursor
+                            while _ws > 0 and (content[_ws - 1].isalnum() or content[_ws - 1] == "_"):
+                                _ws -= 1
+                            _we = cursor
+                            while _we < len(content) and (content[_we].isalnum() or content[_we] == "_"):
+                                _we += 1
+                            _text = _decode_escapes(lc_arg)
+                            content = content[:_ws] + _text + content[_we:]
+                            cursor = _ws + len(_text)
+                            last_edit = cursor
+                            _preview = _text if len(_text) <= 30 else _text[:27] + "..."
+                            log.append(f"  {i}. .(ciw{_preview!r}) (cursor={cursor})")
+                        else:
+                            log.append(f"  {i}. .(ciw) skipped — not on word char")
+                    elif lc_verb == "cc":
+                        _bol = _line_start(content, cursor)
+                        _end = _bol
+                        for _ in range(lc_count):
+                            _nl = content.find("\n", _end)
+                            if _nl == -1:
+                                _end = len(content)
+                                break
+                            _end = _nl + 1
+                        _keep_nl = _end > _bol and content[_end - 1] == "\n"
+                        _slice_end = _end - 1 if _keep_nl else _end
+                        _text = _decode_escapes(lc_arg)
+                        content = content[:_bol] + _text + content[_slice_end:]
+                        cursor = _bol + len(_text)
+                        last_edit = cursor
+                        _preview = _text if len(_text) <= 30 else _text[:27] + "..."
+                        log.append(f"  {i}. .({lc_count}cc{_preview!r}) (cursor={cursor})")
+                    elif lc_verb == "p":
+                        if register:
+                            if register_linewise:
+                                _eol = _line_end(content, cursor)
+                                _ins = _eol + 1 if _eol < len(content) else len(content)
+                                _paste = register if register.endswith("\n") else register + "\n"
+                                content = content[:_ins] + _paste + content[_ins:]
+                                cursor = _ins
+                            else:
+                                _ins = min(len(content), cursor + 1)
+                                content = content[:_ins] + register + content[_ins:]
+                                cursor = _ins + len(register) - 1
+                            log.append(f"  {i}. .(p) pasted {len(register)} chars")
+                        else:
+                            log.append(f"  {i}. .(p) register empty — skipped")
         # --- gi — insert at last edit position ---
         elif verb == "gi":
+            _push_undo()
             text = _decode_escapes(arg) * count
             pos = last_edit if last_edit is not None else cursor
             pos = min(pos, len(content))
@@ -6209,6 +6903,105 @@ def _op_vim_impl(path: str, script: str) -> str:
             last_edit = cursor
             preview = text if len(text) <= 30 else text[:27] + "..."
             log.append(f"  {i}. gi{preview!r} (cursor={cursor})")
+
+        # --- macro definition sentinel (from q<reg>...q recording) ---
+        elif action.startswith("__macro_def_"):
+            reg = action[len("__macro_def_"):]
+            # Body already merged into `macros` at state-init time via macros_pending.
+            # This action is a no-op at execution; it exists only for log consistency.
+            log.append(f"  {i}. q{reg}...q (macro recorded, {len(macros.get(reg, ''))} chars)")
+
+        # --- @<reg> / @@ — macro replay ---
+        elif len(verb) == 2 and verb[0] == "@" and (
+            ("a" <= verb[1] <= "z") or verb[1] == "@"
+        ):
+            reg_ch = verb[1]
+            if reg_ch == "@":
+                if last_replayed_macro is None:
+                    return f"ERROR: action {i} '{action}': @@ — no previously replayed macro\n"
+                reg_ch = last_replayed_macro
+            if reg_ch not in macros:
+                return f"ERROR: action {i} '{action}': macro register '{reg_ch}' not defined\n"
+            body = macros[reg_ch]
+            if not body:
+                log.append(f"  {i}. @{reg_ch} (empty macro, no-op)")
+            else:
+                # Re-tokenize the body through the same normalization so ESC,
+                # insert verbs, etc. all work correctly on replay.
+                _body_norm = body.replace("\\e", ESC).replace("\x1e", ESC).replace("␞", ESC)
+                _body_norm = _body_norm.replace("\\C-a", "\x01").replace("\\C-x", "\x18")
+                _body_actions: List[str] = []
+                _bi = 0
+                _bn = len(_body_norm)
+                while _bi < _bn:
+                    while _bi < _bn and _body_norm[_bi] in (" \t\n\r" + ESC):
+                        _bi += 1
+                    if _bi >= _bn:
+                        break
+                    _bstart = _bi
+                    if _body_norm[_bi] == "@" and _bi + 1 < _bn and (
+                        ("a" <= _body_norm[_bi + 1] <= "z") or _body_norm[_bi + 1] == "@"
+                    ):
+                        _body_actions.append(_body_norm[_bstart: _bi + 2])
+                        _bi += 2
+                        continue
+                    _bverb_pos = _bi
+                    if _body_norm[_bi].isdigit() and _body_norm[_bi] != "0":
+                        while _bverb_pos < _bn and _body_norm[_bverb_pos].isdigit():
+                            _bverb_pos += 1
+                    if _bverb_pos >= _bn:
+                        _body_actions.append(_body_norm[_bstart:])
+                        break
+                    _bverb_end, _benters_text = _greedy_verb(_body_norm, _bverb_pos)
+                    if _benters_text:
+                        _besc = _body_norm.find(ESC, _bverb_end)
+                        if _besc == -1:
+                            _body_actions.append(_body_norm[_bstart:])
+                            _bi = _bn
+                        else:
+                            _body_actions.append(_body_norm[_bstart:_besc])
+                            _bi = _besc + 1
+                    else:
+                        _body_actions.append(_body_norm[_bstart:_bverb_end])
+                        _bi = _bverb_end
+                _body_actions = [a for a in _body_actions if a]
+                # Splice count copies immediately after current position.
+                # enumerate starts at 1, so list index of current = i-1;
+                # insert-after in list = i.
+                splice = _body_actions * count
+                for _s in reversed(splice):
+                    raw_actions.insert(i, _s)
+                last_replayed_macro = reg_ch
+                log.append(f"  {i}. @{reg_ch} x{count} ({len(splice)} actions spliced)")
+
+        elif verb == "u":
+            # undo: pop from undo_stack; if empty try cross-call snapshot
+            if undo_stack:
+                prev_content, prev_cursor, prev_marks = undo_stack.pop()
+                redo_stack.append((content, cursor, dict(marks)))
+                content = prev_content
+                cursor = prev_cursor
+                marks = dict(prev_marks)
+                log.append(f"  {i}. u (undo — {len(undo_stack)} left in stack)")
+            elif _xundo_snapshot is not None:
+                redo_stack.append((content, cursor, dict(marks)))
+                content = _xundo_snapshot["content"]
+                cursor = _xundo_snapshot["cursor"]
+                marks = dict(_xundo_snapshot["marks"])
+                log.append(f"  {i}. u (cross-call undo)")
+            else:
+                log.append(f"  {i}. u (nothing to undo — no-op)")
+
+        elif verb == "\x12":  # Ctrl-R = redo
+            if redo_stack:
+                redo_content, redo_cursor, redo_marks = redo_stack.pop()
+                undo_stack.append((content, cursor, dict(marks)))
+                content = redo_content
+                cursor = redo_cursor
+                marks = dict(redo_marks)
+                log.append(f"  {i}. C-r (redo — {len(redo_stack)} left in redo stack)")
+            else:
+                log.append(f"  {i}. C-r (nothing to redo — no-op)")
 
         else:
             # Concise "did you mean" — Kevin loops harder when buried in
@@ -6250,6 +7043,8 @@ def _op_vim_impl(path: str, script: str) -> str:
                 f"ERROR: action {i} '{action}': unknown verb '{verb}' — {hint}\n"
             )
 
+    # Save cross-call undo snapshot (pre-edit state captured at script entry).
+    _vim_save_undo_snapshot(path, _entry_content, _entry_cursor, _entry_marks)
     try:
         _atomic_write(path, content)
     except OSError as e:
@@ -6260,6 +7055,8 @@ def _op_vim_impl(path: str, script: str) -> str:
         min(cursor, len(content)),
         {k: min(v, len(content)) for k, v in marks.items()},
         min(last_edit, len(content)) if last_edit is not None else None,
+        macros,
+        last_change=last_change,
     )
 
     final_line, final_col = _offset_to_line_col(content, cursor)
