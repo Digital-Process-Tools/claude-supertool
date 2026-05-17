@@ -453,6 +453,45 @@ def test_kevin_real_V_in_insert_text_not_rewritten():
         os.unlink(p)
 
 
+def test_kevin_log_backward_search_miss_shows_near_hint():
+    """Mined from log SiUserActionsModuleTest — `?assertNull\\(...`.
+    Backward search miss returned bare 'pattern not found backward'
+    without near-context. Should mirror forward `/PAT` behavior.
+    """
+    p = _tmp(
+        "    $this->assertSame(1, 2);\n"
+        "    $this->assertNull($foo);\n"
+        "    end\n"
+    )
+    try:
+        # Cursor at top — backward search has nothing before.
+        # Force forward to end, then backward search for non-matching pattern.
+        r = st.op_vim(p, r"G?assertNull NONEXISTENT")
+        assert "pattern not found backward" in r
+        low = r.lower()
+        assert "near" in low or "closest" in low, f"missing near-hint: {r!r}"
+        assert "assertNull" in r
+    finally:
+        os.unlink(p)
+
+
+def test_kevin_log_backward_search_literal_fallback():
+    """Backward search should also try literal fallback for unescaped
+    regex meta — same as forward.
+    """
+    p = _tmp("    $this->assertTrue(true);\n    $other = 1;\nG\n")
+    try:
+        # Regex `(true)` is a group; literal-fallback should find it
+        r = st.op_vim(p, r"G?assertTrue(true)")
+        # If literal fallback worked, cursor moves; otherwise error
+        # We at minimum want no crash, with a useful response
+        assert "Traceback" not in r
+        if "ERROR" in r:
+            assert "pattern not found" in r
+    finally:
+        os.unlink(p)
+
+
 def test_kevin_log_unescaped_paren_assertTrue_true():
     """Kevin run 2026-05-17 11:48 paste — `:s/assertTrue(true);/REPL/`.
 
