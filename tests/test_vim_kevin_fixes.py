@@ -315,6 +315,44 @@ def test_kevin_real_multiline_search_with_newline_chunks():
         os.unlink(p)
 
 
+def test_kevin_real_hex_escape_x27_in_subst_pat():
+    """Real Kevin paste 2026-05-17 10:17 — `:%s/assertArrayHasKey(\\x27name\\x27, \\$options);/.../`.
+
+    `\\x27` is hex escape for `'`. The `(` is unescaped (regex group),
+    which Kevin meant as literal. Literal-fallback should strip the
+    `\\` from `\\$` and `\\X` non-hex, BUT preserve `\\x27` as the char
+    it represents (so the literal probe finds `assertArrayHasKey('name',`
+    in the file).
+    """
+    p = _tmp(
+        "    $this->assertArrayHasKey('name', $options);\n"
+        "    $this->assertArrayHasKey('monitor_name', $options);\n"
+    )
+    try:
+        r = st.op_vim(
+            p,
+            r":%s/assertArrayHasKey(\x27name\x27, \$options);/REPLACED/",
+        )
+        new = open(p).read()
+        assert "REPLACED" in new, f"failed: {r!r}"
+        # Other line untouched
+        assert "assertArrayHasKey('monitor_name'" in new
+        assert "autocorrect" in r.lower()
+    finally:
+        os.unlink(p)
+
+
+def test_kevin_real_hex_escape_x27_in_subst_repl():
+    """`\\x27` in REPL should decode to `'` via _decode_escapes."""
+    p = _tmp("placeholder\n")
+    try:
+        r = st.op_vim(p, r":%s/placeholder/\x27quoted\x27/")
+        new = open(p).read()
+        assert new == "'quoted'\n", f"got: {new!r}"
+    finally:
+        os.unlink(p)
+
+
 def test_kevin_real_paste1_cciw_chain():
     """Paste 1 (faithful): /assertIsBool\\e cciw assertTrue \\e — find then
     change-inner-word. Kevin's actual paste had `cciw` which is `cc` then
