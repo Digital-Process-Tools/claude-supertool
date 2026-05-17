@@ -453,6 +453,28 @@ def test_kevin_real_V_in_insert_text_not_rewritten():
         os.unlink(p)
 
 
+def test_kevin_log_unescaped_paren_assertTrue_true():
+    """Kevin run 2026-05-17 11:48 paste — `:s/assertTrue(true);/REPL/`.
+
+    Pattern has unescaped `(`/`)` — regex groups, not literal parens.
+    Kevin meant them literal. Literal-fallback was previously skipped
+    because the decoded pattern equalled the original (no backslashes
+    to strip). Should still try literal `content.replace` as the
+    ultimate fallback when regex misses.
+    """
+    p = _tmp("        $this->assertTrue(true);\n        $other = 1;\n")
+    try:
+        r = st.op_vim(
+            p,
+            r":s/assertTrue(true);/assertFalse(SiTalkModule::hasUsedDependency());/",
+        )
+        new = open(p).read()
+        assert "assertFalse(SiTalkModule::hasUsedDependency());" in new, f"got: {new!r}; receipt: {r}"
+        assert "ERROR" not in r
+    finally:
+        os.unlink(p)
+
+
 def test_kevin_log_HasTagChecker_overescape_dollar():
     """Mined from log 9abd0ba5 — Kevin actual paste:
     `:s/HasTagChecker::class, \\$checkerClass/$checkerClass, HasTagChecker::class/`.

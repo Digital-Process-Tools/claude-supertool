@@ -3880,7 +3880,7 @@ def _op_vim_impl(path: str, script: str) -> str:
                 # try plain content.find. Same logic as :s — handles
                 # unescaped `(`, `)`, `$` and hex/unicode escapes.
                 literal_pat = _vim_literal_decode(pat)
-                if literal_pat and literal_pat != pat:
+                if literal_pat:
                     for start in (cursor, 0):
                         lit_idx = content.find(literal_pat, start)
                         if lit_idx != -1:
@@ -4835,8 +4835,11 @@ def _op_vim_impl(path: str, script: str) -> str:
             # Strip `\<X>` → `<X>` to get his intended literal string and try
             # plain content.replace. If it hits, use that result.
             if n == 0:
+                # Always try literal fallback when regex misses — handles
+                # both over-escaped patterns (`\\$`, `\\[`) AND unescaped
+                # regex metas Kevin meant as literals (`(`, `)`, `.`).
                 literal_pat = _vim_literal_decode(spat)
-                if literal_pat and literal_pat != spat:
+                if literal_pat:
                     body = content[sub_start:sub_end]
                     occurrences = body.count(literal_pat)
                     if occurrences > 0:
