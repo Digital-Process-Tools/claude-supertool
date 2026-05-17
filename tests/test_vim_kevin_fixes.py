@@ -948,3 +948,436 @@ def test_kevin_real_o_insert_after_chained_search():
         assert "ERROR" not in r
     finally:
         os.unlink(p)
+
+
+# ---------------------------------------------------------------------------
+# Indent motion operators: >{motion}, <{motion}, ={motion}
+# ---------------------------------------------------------------------------
+
+
+def test_indent_motion_gt2j():
+    """`>2j` on line 1 indents lines 1-3 by 4 spaces."""
+    p = _tmp("a\nb\nc\nd\n")
+    try:
+        r = st.op_vim(p, ">2j")
+        new = open(p).read()
+        assert new == "    a\n    b\n    c\nd\n", repr(new)
+        assert "ERROR" not in r
+    finally:
+        os.unlink(p)
+
+
+def test_indent_motion_gtG():
+    """`>G` from line 2 indents lines 2 to EOF."""
+    p = _tmp("a\nb\nc\n")
+    try:
+        # move to line 2 first with j, then >G
+        r = st.op_vim(p, "j>G")
+        new = open(p).read()
+        assert new == "a\n    b\n    c\n", repr(new)
+        assert "ERROR" not in r
+    finally:
+        os.unlink(p)
+
+
+def test_dedent_motion_ltG():
+    """`<G` after indenting dedents from current line to EOF."""
+    p = _tmp("    a\n    b\n    c\n")
+    try:
+        r = st.op_vim(p, "<G")
+        new = open(p).read()
+        assert new == "a\nb\nc\n", repr(new)
+        assert "ERROR" not in r
+    finally:
+        os.unlink(p)
+
+
+def test_indent_motion_paragraph():
+    """`>}` indents the current paragraph (up to next blank line)."""
+    p = _tmp("a\nb\n\nc\nd\n")
+    try:
+        r = st.op_vim(p, ">}")
+        new = open(p).read()
+        # lines 1-2 indented, blank line skipped, lines 4-5 untouched
+        assert new == "    a\n    b\n\nc\nd\n", repr(new)
+        assert "ERROR" not in r
+    finally:
+        os.unlink(p)
+
+
+def test_reindent_motion_eq2j():
+    """`=2j` re-indents lines 1-3 to match the preceding non-blank line's indent.
+
+    Line 1 has no predecessor so stays at column 0. Lines 2 and 3 pick up
+    the indent of the line just above them.
+    """
+    p = _tmp("    hello\n        world\n            deep\nd\n")
+    try:
+        r = st.op_vim(p, "=2j")
+        new = open(p).read()
+        lines = new.split("\n")
+        # line 1: no preceding non-blank → stripped to no indent
+        assert lines[0] == "hello", repr(lines[0])
+        # line 2: preceding line is now "hello" (0 indent) → also no indent
+        assert lines[1] == "world", repr(lines[1])
+        # line 3: preceding line is "world" (0 indent) → also no indent
+        assert lines[2] == "deep", repr(lines[2])
+        # line 4: untouched
+        assert lines[3] == "d", repr(lines[3])
+        assert "ERROR" not in r
+    finally:
+        os.unlink(p)
+
+
+def test_reindent_motion_eqeq_current_line():
+    """`==` re-indents current line to match preceding non-blank line's indent."""
+    p = _tmp("    base\n        over\nnext\n")
+    try:
+        # cursor starts on line 1; move to line 2 with j, then ==
+        r = st.op_vim(p, "j==")
+        new = open(p).read()
+        lines = new.split("\n")
+        assert lines[0] == "    base", repr(lines[0])
+        assert lines[1] == "    over", repr(lines[1])  # matched line 1's 4-space indent
+        assert "ERROR" not in r
+    finally:
+        os.unlink(p)
+
+
+def test_regression_gtgt_still_works():
+    """`>>` still indents current line (regression guard)."""
+    p = _tmp("hello\nworld\n")
+    try:
+        r = st.op_vim(p, ">>")
+        new = open(p).read()
+        assert new == "    hello\nworld\n", repr(new)
+        assert "ERROR" not in r
+    finally:
+        os.unlink(p)
+
+
+def test_regression_ltlt_still_works():
+    """`<<` still dedents current line (regression guard)."""
+    p = _tmp("    hello\nworld\n")
+    try:
+        r = st.op_vim(p, "<<")
+        new = open(p).read()
+        assert new == "hello\nworld\n", repr(new)
+        assert "ERROR" not in r
+    finally:
+        os.unlink(p)
+
+
+# ---------------------------------------------------------------------------
+# v (char-visual) alias tests
+# ---------------------------------------------------------------------------
+
+def test_v_char_vwd_deletes_word():
+    """`vwd` — visual-select word + delete → equivalent to `dw`."""
+    p = _tmp("hello world\n")
+    try:
+        r = st.op_vim(p, "vwd")
+        new = open(p).read()
+        assert new == "world\n", f"got: {new!r}; receipt: {r}"
+        assert "ERROR" not in r
+    finally:
+        os.unlink(p)
+
+
+def test_v_char_v_dollar_y_yanks_to_eol():
+    """`v$y` — visual to EOL + yank → equivalent to `y$`. Paste below."""
+    p = _tmp("abc\ndef\n")
+    try:
+        r = st.op_vim(p, "v$yjp")
+        new = open(p).read()
+        # 'abc' yanked (to EOL), pasted below line 1 → abc appears twice
+        assert new.count("abc") == 2, f"got: {new!r}; receipt: {r}"
+        assert "ERROR" not in r
+    finally:
+        os.unlink(p)
+
+
+def test_v_char_vi_quote_change_greedy():
+    """`vi"c<TEXT>\\e` — visual inside quotes + change → `ci"<TEXT>\\e`."""
+    p = _tmp('say "hello" now\n')
+    try:
+        r = st.op_vim(p, r'vi"cgoodbye\e')
+        new = open(p).read()
+        assert new == 'say "goodbye" now\n', f"got: {new!r}; receipt: {r}"
+        assert "ERROR" not in r
+    finally:
+        os.unlink(p)
+
+
+def test_v_char_vGd_deletes_to_eof():
+    """`vGd` — visual to EOF + delete → equivalent to `dG`."""
+    p = _tmp("a\nb\nc\n")
+    try:
+        r = st.op_vim(p, "vGd")
+        new = open(p).read()
+        assert new == "" or new == "\n", f"got: {new!r}; receipt: {r}"
+        assert "ERROR" not in r
+    finally:
+        os.unlink(p)
+
+
+def test_v_char_vggd_deletes_to_bof():
+    """`vggd` — visual to BOF + delete → equivalent to `dgg`. Cursor on
+    last line; deletes from BOF to cursor (inclusive).
+    """
+    p = _tmp("a\nb\nc\n")
+    try:
+        # Move to last line then vggd — should delete everything up to and
+        # including the cursor line.
+        r = st.op_vim(p, "Gvggd")
+        new = open(p).read()
+        assert new == "" or new == "\n", f"got: {new!r}; receipt: {r}"
+        assert "ERROR" not in r
+    finally:
+        os.unlink(p)
+
+
+def test_v_char_in_insert_text_not_rewritten():
+    """`iv<TEXT>\\e` — `v` inside insert mode must NOT trigger the alias.
+    The action starts with `i`, arrives as one greedy token; the rewriter
+    only fires on actions whose first char is `v`.
+    """
+    p = _tmp("X\n")
+    try:
+        r = st.op_vim(p, r"ivwd\e")
+        new = open(p).read()
+        assert new == "vwdX\n", f"got: {new!r}; receipt: {r}"
+        assert "ERROR" not in r
+    finally:
+        os.unlink(p)
+
+
+# ---------------------------------------------------------------------------
+# Undo / redo tests
+# ---------------------------------------------------------------------------
+
+def test_undo_after_insert():
+    r"""iFOO\eu — insert then undo → file empty again."""
+    p = _tmp("")
+    try:
+        os.environ["SUPERTOOL_VIM_NO_PERSIST"] = "1"
+        r = st.op_vim(p, "iFOO\\eu")
+        content = open(p).read()
+        assert content == "", f"expected empty after undo, got: {content!r}"
+        assert "ERROR" not in r
+    finally:
+        os.environ.pop("SUPERTOOL_VIM_NO_PERSIST", None)
+        os.unlink(p)
+
+
+def test_undo_after_delete_line():
+    """dd then uuu — line restored, extra u's are no-ops."""
+    p = _tmp("hello\n")
+    try:
+        os.environ["SUPERTOOL_VIM_NO_PERSIST"] = "1"
+        r = st.op_vim(p, "dduuu")
+        content = open(p).read()
+        assert content == "hello\n", f"expected restored, got: {content!r}"
+        assert "ERROR" not in r
+    finally:
+        os.environ.pop("SUPERTOOL_VIM_NO_PERSIST", None)
+        os.unlink(p)
+
+
+def test_undo_then_redo():
+    r"""iFOO\eu\C-r — insert, undo, redo → FOO back."""
+    p = _tmp("")
+    try:
+        os.environ["SUPERTOOL_VIM_NO_PERSIST"] = "1"
+        r = st.op_vim(p, "iFOO\\eu\x12")
+        content = open(p).read()
+        assert content == "FOO", f"expected FOO after redo, got: {content!r}"
+        assert "ERROR" not in r
+    finally:
+        os.environ.pop("SUPERTOOL_VIM_NO_PERSIST", None)
+        os.unlink(p)
+
+
+def test_undo_cross_call():
+    """Cross-call undo: insert FOO in call 1, then u in call 2 restores empty."""
+    p = _tmp("")
+    # Use a test-specific cache dir so we don't pollute the real cache
+    import tempfile
+    cache_dir = tempfile.mkdtemp()
+    os.environ["XDG_CACHE_HOME"] = cache_dir
+    os.environ.pop("SUPERTOOL_VIM_NO_PERSIST", None)
+    try:
+        # Call 1: insert FOO
+        r1 = st.op_vim(p, "iFOO")
+        assert open(p).read() == "FOO", f"call1 failed: {r1}"
+        # Call 2: undo (no within-script edits → falls through to cross-call snapshot)
+        r2 = st.op_vim(p, "u")
+        content = open(p).read()
+        assert content == "", f"expected empty after cross-call undo, got: {content!r}"
+        assert "cross-call undo" in r2, f"expected cross-call undo note in receipt, got: {r2}"
+    finally:
+        os.environ.pop("XDG_CACHE_HOME", None)
+        os.unlink(p)
+        import shutil
+        shutil.rmtree(cache_dir, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Macro recording and replay
+# ---------------------------------------------------------------------------
+
+def test_macro_record_and_replay_once():
+    """qaiFOO\\eq@a — record `iFOO\\e` into register a, replay once.
+    FOO is inserted during recording (the `i` verb executes), then @a
+    replays the body and inserts FOO again — two insertions total.
+    """
+    p = _tmp("x\n")
+    try:
+        os.environ["SUPERTOOL_VIM_NO_PERSIST"] = "1"
+        r = st.op_vim(p, "qaiFOO\\eq@a")
+        result = open(p).read()
+        assert result.count("FOO") == 2, f"expected 2x FOO, got: {result!r}"
+        assert "macro recorded" in r
+        assert "@a" in r
+    finally:
+        os.environ.pop("SUPERTOOL_VIM_NO_PERSIST", None)
+        os.unlink(p)
+
+
+def test_macro_record_and_replay_3x():
+    """qajdd q3@a — record `jdd` into a (move down + delete line),
+    replay 3 times. File: 7 lines (a-g). Recording executes jdd once
+    (j to b, dd deletes b -> 6 lines a,c,d,e,f,g, cursor at c).
+    3@a replays jdd 3x: deletes d, f; third j hits EOF so g survives
+    -> 4 lines remain (a,c,e,g). Key check: lines shrank and @a ran.
+    """
+    p = _tmp("a\nb\nc\nd\ne\nf\ng\n")
+    try:
+        os.environ["SUPERTOOL_VIM_NO_PERSIST"] = "1"
+        r = st.op_vim(p, "ggqajdd q3@a")
+        result = open(p).read()
+        lines = [l for l in result.split("\n") if l]
+        # record deletes 1, replay 3x deletes 2 more (3rd j clamps at EOF) -> 4 left
+        assert len(lines) == 4, f"expected 4 lines, got {len(lines)}: {result!r}"
+        assert "@a" in r
+    finally:
+        os.environ.pop("SUPERTOOL_VIM_NO_PERSIST", None)
+        os.unlink(p)
+
+
+def test_macro_replay_last_with_atat():
+    """qaiFOO\\eq@a@@ — record into a, replay once with @a, replay again
+    with @@. FOO inserted during record + once for @a + once for @@ = 3 total.
+    """
+    p = _tmp("x\n")
+    try:
+        os.environ["SUPERTOOL_VIM_NO_PERSIST"] = "1"
+        r = st.op_vim(p, "qaiFOO\\eq@a@@")
+        result = open(p).read()
+        assert result.count("FOO") == 3, f"expected 3x FOO, got: {result!r}"
+        assert "@a" in r
+    finally:
+        os.environ.pop("SUPERTOOL_VIM_NO_PERSIST", None)
+        os.unlink(p)
+
+
+# ---------------------------------------------------------------------------
+# `.` — repeat last change
+# ---------------------------------------------------------------------------
+
+def _tmp_persist(content: str):
+    """Return (path, cache_dir) with persistence enabled via XDG_CACHE_HOME."""
+    import tempfile, shutil
+    cache_dir = tempfile.mkdtemp()
+    os.environ["XDG_CACHE_HOME"] = cache_dir
+    os.environ.pop("SUPERTOOL_VIM_NO_PERSIST", None)
+    f = tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False)
+    f.write(content)
+    f.close()
+    return f.name, cache_dir
+
+
+def _cleanup_persist(p: str, cache_dir: str) -> None:
+    import shutil
+    os.environ.pop("XDG_CACHE_HOME", None)
+    try:
+        os.unlink(p)
+    except OSError:
+        pass
+    shutil.rmtree(cache_dir, ignore_errors=True)
+
+
+def test_dot_repeat_insert_same_call():
+    """iFOO\\e. — insert FOO, then repeat in same call at new cursor."""
+    p, cache_dir = _tmp_persist("")
+    try:
+        r = st.op_vim(p, "iFOO\\e.")
+        result = open(p).read()
+        assert result.count("FOO") == 2, f"expected two FOO, got: {result!r}\nreceipt: {r}"
+        assert "ERROR" not in r
+    finally:
+        _cleanup_persist(p, cache_dir)
+
+
+def test_dot_repeat_insert_cross_call():
+    """First call `iFOO\\e`, second call `G.` — repeat at end of file."""
+    p, cache_dir = _tmp_persist("line1\n")
+    try:
+        r1 = st.op_vim(p, "iFOO\\e")
+        assert "ERROR" not in r1, f"call1 failed: {r1}"
+        r2 = st.op_vim(p, "G.")
+        result = open(p).read()
+        assert result.count("FOO") == 2, f"expected two FOO after cross-call repeat, got: {result!r}\nreceipt2: {r2}"
+        assert "ERROR" not in r2
+    finally:
+        _cleanup_persist(p, cache_dir)
+
+
+def test_dot_repeat_dd_same_call():
+    """dd then move then . — delete two lines."""
+    p, cache_dir = _tmp_persist("alpha\nbeta\ngamma\n")
+    try:
+        r = st.op_vim(p, "gg\u241e""dd\u241e""j.")
+        result = open(p).read()
+        lines = [l for l in result.split("\n") if l]
+        assert len(lines) <= 1, f"expected at most 1 line left, got: {result!r}\nreceipt: {r}"
+        assert "ERROR" not in r
+    finally:
+        _cleanup_persist(p, cache_dir)
+
+
+def test_dot_repeat_nothing_to_repeat():
+    """. with no prior change — should produce a log note, not an error."""
+    p, cache_dir = _tmp_persist("hello\n")
+    try:
+        os.environ["SUPERTOOL_VIM_NO_PERSIST"] = "1"
+        r = st.op_vim(p, ".")
+        os.environ.pop("SUPERTOOL_VIM_NO_PERSIST", None)
+        assert "ERROR" not in r
+        assert "nothing to repeat" in r
+    finally:
+        _cleanup_persist(p, cache_dir)
+
+
+def test_dot_repeat_x_deletes_char():
+    """x then . — delete two chars at same position."""
+    p, cache_dir = _tmp_persist("abcde\n")
+    try:
+        r = st.op_vim(p, "gg\u241e""x.")
+        result = open(p).read()
+        assert result == "cde\n", f"got: {result!r}\nreceipt: {r}"
+        assert "ERROR" not in r
+    finally:
+        _cleanup_persist(p, cache_dir)
+
+
+def test_dot_repeat_ciw_replaces_word():
+    """ciw<NEW>\\e then w. — change word, move, repeat on next word."""
+    p, cache_dir = _tmp_persist("foo bar\n")
+    try:
+        r = st.op_vim(p, "gg\u241e""ciwNEW\\e\u241e""w.")
+        result = open(p).read()
+        assert result.count("NEW") == 2, f"expected two NEW, got: {result!r}\nreceipt: {r}"
+        assert "ERROR" not in r
+    finally:
+        _cleanup_persist(p, cache_dir)
