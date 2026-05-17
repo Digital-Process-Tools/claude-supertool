@@ -453,6 +453,64 @@ def test_kevin_real_V_in_insert_text_not_rewritten():
         os.unlink(p)
 
 
+def test_kevin_real_ex_relative_offset_range():
+    """Kevin uses `:.,+1d` (current line + next line, delete). Real-vim
+    syntax for relative offset ranges. Our ex parser must support `+N`
+    and `-N` after `.` or a line number.
+    """
+    p = _tmp("a\nb\nc\nd\ne\n")
+    try:
+        # Cursor on line 2 (`b`), delete current + next line = lines 2-3
+        r = st.op_vim(p, "2G:.,+1d")
+        new = open(p).read()
+        assert new == "a\nd\ne\n", f"got: {new!r}; receipt: {r}"
+    finally:
+        os.unlink(p)
+
+
+def test_kevin_real_ggVG_with_explicit_percent_ex():
+    """Kevin paste 2026-05-17 14:05 — `ggVG:%d`. Kevin uses both V+G
+    (visual all) AND `:%` (ex whole-buffer) — redundant. V-alias must
+    not produce `:%%d` (invalid). Collapse to `:%d`.
+    """
+    p = _tmp("line a\nline b\nline c\n")
+    try:
+        r = st.op_vim(p, "ggVG:%d")
+        new = open(p).read()
+        assert new == "" or new == "\n", f"got: {new!r}; receipt: {r}"
+        assert "ERROR" not in r
+    finally:
+        os.unlink(p)
+
+
+def test_kevin_log_anchored_pattern_literal_fallback():
+    """Kevin paste 2026-05-17 13:55 — `:%s/^\\$this->assertGreaterThan(0, \\$entity->getId());$/.../g`.
+
+    Pattern has regex anchors `^` and `$` plus escaped `\\$` for literal
+    dollars. Literal-fallback should strip the leading `^` and trailing
+    `$` (regex anchors) AND decode `\\$` → `$` (literal), so the probe
+    becomes the actual line content for content.replace.
+    """
+    p = _tmp(
+        "    public function testX(): void\n"
+        "    {\n"
+        "$this->assertGreaterThan(0, $entity->getId());\n"
+        "    }\n"
+    )
+    try:
+        r = st.op_vim(
+            p,
+            r":%s/^\$this->assertGreaterThan(0, \$entity->getId());$/        $this->assertGreaterThan(0, $entity->getId());/g",
+        )
+        new = open(p).read()
+        # Indentation now fixed: leading spaces added
+        assert "        $this->assertGreaterThan(0, $entity->getId());" in new, f"got: {new!r}; receipt: {r}"
+        # And the unindented version no longer present at start of line
+        assert "\n$this->assertGreaterThan" not in new
+    finally:
+        os.unlink(p)
+
+
 def test_kevin_log_backward_search_miss_shows_near_hint():
     """Mined from log SiUserActionsModuleTest — `?assertNull\\(...`.
     Backward search miss returned bare 'pattern not found backward'

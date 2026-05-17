@@ -2916,6 +2916,55 @@ def _vim_render_lint(path: str) -> str:
     return f"--- POST-EDIT LINT FAILED — {tool} ---\n{output or '(no output)'}\n"
 
 
+def _vim_resolve_ex_address(addr: str, cursor_line: int, total_lines: int) -> int:
+    """Resolve a vim ex address to a line number.
+
+    Supports:
+      - `.` (cursor), `$` (last line), `N` (literal line number)
+      - relative offsets: `+N`, `-N` (shortcut for `.+N`/`.-N`)
+      - base + offset: `.+1`, `.-2`, `$-5`, `5+3`
+    """
+    addr = addr.strip()
+    if not addr:
+        raise ValueError("empty address")
+    base = addr
+    offset = 0
+    # Detect a `+` or `-` that splits base from offset. Leading +/- is the
+    # shorthand `.+N`/`.-N`; mid-string +/- splits an explicit base.
+    if addr[0] in "+-":
+        base = "."
+        sign = addr[0]
+        rest = addr[1:]
+        if rest == "":
+            offset = 1 if sign == "+" else -1
+        else:
+            try:
+                offset = int(sign + rest)
+            except ValueError:
+                raise ValueError(f"bad offset {addr!r}")
+    else:
+        # Find the last +/- after position 0
+        split_idx = -1
+        for i in range(1, len(addr)):
+            if addr[i] in "+-":
+                split_idx = i
+        if split_idx > 0:
+            base = addr[:split_idx]
+            try:
+                offset = int(addr[split_idx:])
+            except ValueError:
+                raise ValueError(f"bad offset {addr[split_idx:]!r}")
+    if base == ".":
+        line = cursor_line
+    elif base == "$":
+        line = total_lines
+    elif base.isdigit():
+        line = int(base)
+    else:
+        raise ValueError(f"bad address {addr!r}")
+    return line + offset
+
+
 def _vim_literal_decode(pat: str) -> str:
     """Convert a regex-style pattern to the literal string the caller
     probably meant. Used by the no-match autocorrect on `/PAT` and `:s`.
@@ -2925,7 +2974,15 @@ def _vim_literal_decode(pat: str) -> str:
     - Iteratively strip `\\X` → `X` for non-digit X so over-escaped
       `\\$this` → `\\$this` → `$this` flattens to literal.
     """
-    out = re.sub(r"\\x([0-9A-Fa-f]{2})", lambda m: chr(int(m.group(1), 16)), pat)
+    out = pat
+    # Strip leading `^` anchor (Kevin's literal `^` would be `\^`).
+    if out.startswith("^"):
+        out = out[1:]
+    # Strip trailing `$` anchor when not preceded by `\` (escaped `\$` is
+    # a literal dollar Kevin intends to match).
+    if out.endswith("$") and not out.endswith("\\$"):
+        out = out[:-1]
+    out = re.sub(r"\\x([0-9A-Fa-f]{2})", lambda m: chr(int(m.group(1), 16)), out)
     out = re.sub(r"\\u([0-9A-Fa-f]{4})", lambda m: chr(int(m.group(1), 16)), out)
     out = out.replace("\\n", "\n").replace("\\t", "\t").replace("\\r", "\r")
     while True:
@@ -3456,15 +3513,16 @@ def _op_vim_impl(path: str, script: str) -> str:
         # Range = optional addr (N | . | $) + optional `,addr`. Encoded into
         # arg with a `\x1d` (group separator) sentinel: arg becomes
         # f"\x1d{range_spec}\x1d/PAT/REPL/flags" which the :s handler decodes.
-        if len(rest) >= 2 and rest[0] == ":" and rest[1] in "0123456789.$":
+        if len(rest) >= 2 and rest[0] == ":" and rest[1] in "0123456789.$+-":
             j = 1
-            # first address
-            while j < len(rest) and (rest[j].isdigit() or rest[j] in ".$"):
+            # first address — allow digits, `.`, `$`, and `+`/`-` for offsets
+            # like `.+1`, `$-2`, `+1` (shortcut for `.+1`).
+            while j < len(rest) and (rest[j].isdigit() or rest[j] in ".$+-"):
                 j += 1
             # optional `,addr2`
             if j < len(rest) and rest[j] == ",":
                 j += 1
-                while j < len(rest) and (rest[j].isdigit() or rest[j] in ".$"):
+                while j < len(rest) and (rest[j].isdigit() or rest[j] in ".$+-"):
                     j += 1
             # Multi-char ex verbs MUST be checked before single-char s/d/m/t
             # so that e.g. `:2,4sort` doesn't get parsed as `:2,4s` with body
@@ -3738,7 +3796,13 @@ def _op_vim_impl(path: str, script: str) -> str:
                 return repl + act[len(prefix):]
         for prefix, repl in _V_EX_REWRITES:
             if act.startswith(prefix):
-                return repl + act[len(prefix):]
+                rest = act[len(prefix):]
+                # Kevin sometimes uses both V<motion> AND an explicit ex
+                # range (`VG:%d`, `Vgg:1,5d`). The user-provided ex range
+                # wins — strip our prefix's range to avoid `:%%d`/`:1,.1,5d`.
+                if rest.startswith("%") or (rest and rest[0].isdigit()) or rest.startswith("."):
+                    return ":" + rest
+                return repl + rest
         # V<n>?j/k<op>... → <n+1><op><op>... (V + n-line motion = n+1 lines)
         m = _V_MOTION_LINE.match(act)
         if m is not None:
@@ -4718,13 +4782,7 @@ def _op_vim_impl(path: str, script: str) -> str:
                 cursor_line, _ = _offset_to_line_col(content, cursor)
 
                 def _resolve(addr: str) -> int:
-                    if addr == ".":
-                        return cursor_line
-                    if addr == "$":
-                        return total_lines
-                    if addr.isdigit():
-                        return int(addr)
-                    raise ValueError(f"bad address {addr!r}")
+                    return _vim_resolve_ex_address(addr, cursor_line, total_lines)
 
                 if "," in range_spec:
                     a, b = range_spec.split(",", 1)
@@ -5015,13 +5073,7 @@ def _op_vim_impl(path: str, script: str) -> str:
             cursor_line, _ = _offset_to_line_col(content, cursor)
 
             def _resolve_d(addr: str) -> int:
-                if addr == ".":
-                    return cursor_line
-                if addr == "$":
-                    return total_lines
-                if addr.isdigit():
-                    return int(addr)
-                raise ValueError(f"bad address {addr!r}")
+                return _vim_resolve_ex_address(addr, cursor_line, total_lines)
 
             if spec == "%":
                 line_a, line_b = 1, total_lines
@@ -5139,13 +5191,7 @@ def _op_vim_impl(path: str, script: str) -> str:
             cursor_line, _ = _offset_to_line_col(content, cursor)
 
             def _resolve_addr(addr: str) -> int:
-                if addr == ".":
-                    return cursor_line
-                if addr == "$":
-                    return total_lines
-                if addr.isdigit():
-                    return int(addr)
-                raise ValueError(f"bad address {addr!r}")
+                return _vim_resolve_ex_address(addr, cursor_line, total_lines)
 
             if range_spec == "%" or range_spec == "":
                 line_a, line_b = 1, total_lines
