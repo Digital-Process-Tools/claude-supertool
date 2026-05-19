@@ -404,54 +404,9 @@ The script receives `SUPERTOOL_LINES=80` and `SUPERTOOL_ERROR_PATTERNS=ERROR,FAI
 
 ### Presets — reusable op packs
 
-Presets are JSON files that declare custom ops for a specific tool or platform. Enable them in `.supertool.json`:
+8 presets ship out of the box (`git`, `github`, `gitlab`, `claude-log`, `hashnode`, `devto`, `bluesky`, `xml`). Each has a dedicated reference page in [`docs/presets/`](docs/presets/index.md) covering ops, common workflows, env vars, and authoring notes.
 
-```json
-{
-  "presets": ["gitlab"]
-}
-```
-
-Supertool looks for each preset in three locations (first found wins):
-
-1. `./presets/{name}.json` — project-level (team-specific ops)
-2. `~/.config/supertool/presets/{name}.json` — user-level (personal ops)
-3. `{supertool install dir}/presets/{name}.json` — shipped with supertool
-
-Preset ops merge into your config. Project-level ops always override preset ops on name conflict.
-
-#### Shipped presets
-
-Supertool ships with presets for `gitlab`, `github`, `git`, `claude-log`, `xml`, `hashnode`, `devto`, and `bluesky`. Each preset has a dedicated reference page in [`docs/presets/`](docs/presets/index.md) covering ops, syntax, common workflows, required env vars, and authoring notes.
-
-#### Writing your own preset
-
-Create `./presets/mytools.json` in your project (or `~/.config/supertool/presets/mytools.json` for personal use):
-
-```json
-{
-  "description": "My team's deployment tools",
-  "requires": "kubectl",
-  "ops": {
-    "deploy-status": {
-      "cmd": "python3 {path}mytools/status.py {arg}",
-      "timeout": 15,
-      "description": "Check deployment status for a service.",
-      "syntax": "deploy-status:SERVICE"
-    }
-  }
-}
-```
-
-The `{path}` placeholder resolves to the preset JSON's directory, so scripts can live alongside the manifest. The `requires` field is documentation only (not enforced).
-
-Then enable it:
-
-```json
-{
-  "presets": ["mytools"]
-}
-```
+Writing your own: see [docs/contributing.md](docs/contributing.md).
 
 #### Legacy `check:` syntax
 
