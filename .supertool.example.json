@@ -197,6 +197,27 @@
       "match": "*.scss",
       "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
       "timeout": 60
+    },
+    "yaml-check": {
+      "cmd": "python3 {supertool_dir}/validators/yaml-check/yaml-check.py {file}",
+      "match": "*.yml",
+      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "rollback_on_fail": true,
+      "timeout": 10
+    },
+    "yaml-check-yaml": {
+      "cmd": "python3 {supertool_dir}/validators/yaml-check/yaml-check.py {file}",
+      "match": "*.yaml",
+      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "rollback_on_fail": true,
+      "timeout": 10
+    },
+    "inilint": {
+      "cmd": "python3 {supertool_dir}/validators/inilint/inilint.py {file}",
+      "match": "*.ini",
+      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "rollback_on_fail": true,
+      "timeout": 10
     }
   }
 }
