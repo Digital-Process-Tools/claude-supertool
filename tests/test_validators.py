@@ -1,0 +1,409 @@
+"""Tests for the validator hook framework (PR1)."""
+from __future__ import annotations
+
+import json
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+
+import supertool
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _set_validators(cfg: dict) -> None:
+    """Inject a validators block into the cached config."""
+    supertool._CONFIG = {"validators": cfg}
+    supertool._CONFIG_CHECKED = True
+
+
+def _fake_cmd(payload: dict) -> str:
+    """Build a shell cmd that prints the given JSON payload."""
+    js = json.dumps(payload).replace("'", "'\\''")
+    return f"printf '%s' '{js}'"
+
+
+# ---------------------------------------------------------------------------
+# _applicable_validators
+# ---------------------------------------------------------------------------
+
+def test_applicable_no_validators_returns_empty() -> None:
+    _set_validators({})
+    assert supertool._applicable_validators("edit", "x.php") == {}
+
+
+def test_applicable_filters_by_hooks_into() -> None:
+    _set_validators({
+        "a": {"cmd": "x", "hooks_into": ["edit"]},
+        "b": {"cmd": "x", "hooks_into": ["paste"]},
+    })
+    out = supertool._applicable_validators("edit", "x.php")
+    assert set(out.keys()) == {"a"}
+
+
+def test_applicable_filters_by_match_glob() -> None:
+    _set_validators({
+        "php": {"cmd": "x", "hooks_into": ["edit"], "match": "*.php"},
+        "py":  {"cmd": "x", "hooks_into": ["edit"], "match": "*.py"},
+    })
+    assert set(supertool._applicable_validators("edit", "a.php")) == {"php"}
+    assert set(supertool._applicable_validators("edit", "a.py")) == {"py"}
+
+
+def test_applicable_skips_opt_in() -> None:
+    _set_validators({
+        "auto":   {"cmd": "x", "hooks_into": ["edit"]},
+        "manual": {"cmd": "x", "hooks_into": ["edit"], "opt_in": True},
+    })
+    assert set(supertool._applicable_validators("edit", "a.php")) == {"auto"}
+
+
+def test_applicable_ignores_malformed_specs() -> None:
+    _set_validators({"bad": "not-a-dict", "good": {"cmd": "x", "hooks_into": ["edit"]}})
+    assert set(supertool._applicable_validators("edit", "a.php")) == {"good"}
+
+
+# ---------------------------------------------------------------------------
+# _validator_resolve
+# ---------------------------------------------------------------------------
+
+def test_resolve_returns_file_when_no_resolve_cmd() -> None:
+    assert supertool._validator_resolve({}, "a.php") == "a.php"
+
+
+def test_resolve_invokes_cmd_and_returns_first_line() -> None:
+    spec = {"resolve": "printf 'tests/aTest.php\\nextra'"}
+    assert supertool._validator_resolve(spec, "a.php") == "tests/aTest.php"
+
+
+def test_resolve_returns_none_on_empty_output() -> None:
+    spec = {"resolve": "true"}  # exit 0, no stdout
+    assert supertool._validator_resolve(spec, "a.php") is None
+
+
+# ---------------------------------------------------------------------------
+# _validator_run_one
+# ---------------------------------------------------------------------------
+
+def test_run_one_parses_adapter_json() -> None:
+    payload = {"tool": "fake", "file": "x.php", "ok": True, "count": 0,
+               "errors": [], "duration_ms": 5}
+    spec = {"cmd": _fake_cmd(payload), "timeout": 5}
+    out = supertool._validator_run_one("fake", spec, "x.php")
+    assert out["ok"] is True
+    assert out["count"] == 0
+
+
+def test_run_one_handles_no_output() -> None:
+    spec = {"cmd": "true", "timeout": 5}
+    out = supertool._validator_run_one("fake", spec, "x.php")
+    assert out["ok"] is False
+    assert "no output" in out["errors"][0]["msg"]
+
+
+def test_run_one_handles_bad_json() -> None:
+    spec = {"cmd": "printf 'not json'", "timeout": 5}
+    out = supertool._validator_run_one("fake", spec, "x.php")
+    assert out["ok"] is False
+    assert "bad json" in out["errors"][0]["msg"]
+
+
+def test_run_one_substitutes_file_token() -> None:
+    payload = {"tool": "fake", "file": "x.php", "ok": True, "count": 0,
+               "errors": [], "duration_ms": 1}
+    spec = {"cmd": f"test {{file}} = a.php && {_fake_cmd(payload)}", "timeout": 5}
+    out = supertool._validator_run_one("fake", spec, "a.php")
+    assert out["ok"] is True
+
+
+def _counter_cmd(state_path: Path, ok_payload: str, fail_marker: str = "BROKEN") -> str:
+    """Returns ok_payload on first call, fail_marker on subsequent calls."""
+    return (
+        f"n=$(cat {state_path}); echo $((n+1)) > {state_path}; "
+        f"if [ \"$n\" = \"0\" ]; then printf '%s' '{ok_payload}'; "
+        f"else echo {fail_marker}; fi"
+    )
+
+
+def test_cache_hit_skips_adapter(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(supertool, "_validator_cache_path",
+                        lambda k: tmp_path / "cache" / f"{k}.json")
+    f = tmp_path / "x.php"
+    f.write_text("<?php\n")
+    state = tmp_path / "n"
+    state.write_text("0")
+    ok = json.dumps({"tool": "t", "file": "x", "ok": True, "count": 0,
+                     "errors": [], "duration_ms": 1}).replace("'", "'\\''")
+    spec = {"cmd": _counter_cmd(state, ok), "timeout": 5}
+    out1 = supertool._validator_run_one("t", spec, str(f))
+    assert out1["ok"] is True
+    # Second call: file unchanged → cache hit → adapter NOT re-run
+    out2 = supertool._validator_run_one("t", spec, str(f))
+    assert out2["ok"] is True
+    # Counter only incremented once (first call); cache hit prevented second run
+    assert state.read_text().strip() == "1"
+
+
+def test_cache_invalidates_on_file_change(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(supertool, "_validator_cache_path",
+                        lambda k: tmp_path / "cache" / f"{k}.json")
+    f = tmp_path / "x.php"
+    f.write_text("<?php\n")
+    payload = {"tool": "t", "file": "x", "ok": True, "count": 0,
+               "errors": [], "duration_ms": 1}
+    spec = {"cmd": _fake_cmd(payload), "timeout": 5}
+    supertool._validator_run_one("t", spec, str(f))
+    # Change file content → cache key changes → adapter must re-run
+    f.write_text("<?php\n$x = 1;\n")
+    # Use stateful counter to detect re-run
+    state = tmp_path / "n"
+    state.write_text("0")
+    ok = json.dumps(payload).replace("'", "'\\''")
+    spec2 = {"cmd": _counter_cmd(state, ok), "timeout": 5}
+    supertool._validator_run_one("t", spec2, str(f))
+    assert state.read_text().strip() == "1"  # adapter ran
+
+
+def test_env_var_disables_cache(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(supertool, "_validator_cache_path",
+                        lambda k: tmp_path / "cache" / f"{k}.json")
+    monkeypatch.setenv("SUPERTOOL_NO_VALIDATOR_CACHE", "1")
+    f = tmp_path / "x.php"
+    f.write_text("<?php\n")
+    state = tmp_path / "n"
+    state.write_text("0")
+    ok = json.dumps({"tool": "t", "file": "x", "ok": True, "count": 0,
+                     "errors": [], "duration_ms": 1}).replace("'", "'\\''")
+    spec = {"cmd": _counter_cmd(state, ok), "timeout": 5}
+    supertool._validator_run_one("t", spec, str(f))
+    # Cache disabled → second call re-runs adapter → counter increments
+    out2 = supertool._validator_run_one("t", spec, str(f))
+    assert state.read_text().strip() == "2"
+    # Second call hits the BROKEN branch → no output → schema error
+    assert out2["ok"] is False
+
+
+def test_run_one_substitutes_supertool_dir_token() -> None:
+    # cmd embeds the token; subprocess emits it inside the JSON `d` field
+    cmd = (
+        "printf '{\"tool\":\"t\",\"file\":\"x\",\"ok\":true,\"count\":0,"
+        "\"errors\":[],\"duration_ms\":1,\"d\":\"{supertool_dir}\"}'"
+    )
+    spec = {"cmd": cmd, "timeout": 5}
+    out = supertool._validator_run_one("t", spec, "x")
+    assert out["d"] == supertool._INSTALL_DIR
+
+
+def test_run_one_adds_resolved_to_when_resolve_returns_other_path(tmp_path: Path) -> None:
+    target = tmp_path / "tests" / "aTest.php"
+    target.parent.mkdir()
+    target.write_text("<?php\n")
+    payload = {"tool": "fake", "file": str(target), "ok": True, "count": 0,
+               "errors": [], "duration_ms": 1}
+    spec = {
+        "resolve": f"printf '{target}'",
+        "cmd": _fake_cmd(payload),
+        "timeout": 5,
+    }
+    out = supertool._validator_run_one("fake", spec, "a.php")
+    assert out["resolved_to"] == str(target)
+
+
+# ---------------------------------------------------------------------------
+# Rendering
+# ---------------------------------------------------------------------------
+
+def test_render_row_ok() -> None:
+    data = {"tool": "phplint", "ok": True, "count": 0, "errors": [], "duration_ms": 12}
+    lines = supertool._validator_render_row(data)
+    assert lines[0].startswith("phplint ")
+    assert "ok" in lines[0]
+    assert "(12ms)" in lines[0]
+
+
+def test_render_row_shows_errors_capped_at_5() -> None:
+    errors = [{"line": i, "code": "x", "msg": f"e{i}"} for i in range(1, 8)]
+    data = {"tool": "t", "ok": False, "count": 7, "errors": errors, "duration_ms": 1}
+    lines = supertool._validator_render_row(data)
+    assert any("+2 more" in l for l in lines)
+    assert sum(1 for l in lines if l.startswith("  L")) == 5
+
+
+def test_render_diff_unchanged() -> None:
+    before = {"tool": "t", "ok": True, "count": 0, "errors": []}
+    after = {"tool": "t", "ok": True, "count": 0, "errors": []}
+    lines = supertool._validator_render_diff(before, after)
+    assert "(unchanged)" in lines[0]
+    assert "·" in lines[0]
+
+
+def test_render_diff_regression_shows_new_errors_only() -> None:
+    before = {"tool": "t", "ok": False, "count": 1, "errors": [{"msg": "old"}]}
+    after = {"tool": "t", "ok": False, "count": 2, "errors": [{"msg": "old"}, {"msg": "new"}]}
+    lines = supertool._validator_render_diff(before, after)
+    assert "1 → 2" in lines[0]
+    assert "✗" in lines[0]
+    assert any("new" in l for l in lines[1:])
+    assert not any("old" in l for l in lines[1:])
+
+
+def test_render_diff_improvement_marker() -> None:
+    before = {"tool": "t", "ok": False, "count": 3, "errors": []}
+    after = {"tool": "t", "ok": False, "count": 1, "errors": []}
+    lines = supertool._validator_render_diff(before, after)
+    assert "⚠" in lines[0]
+
+
+# ---------------------------------------------------------------------------
+# _run_with_validators integration
+# ---------------------------------------------------------------------------
+
+def test_run_with_validators_passthrough_when_no_config(tmp_path: Path) -> None:
+    _set_validators({})
+    called = []
+    out = supertool._run_with_validators("edit", ["edit", "", "", str(tmp_path / "x.php")],
+                                         lambda: called.append(1) or "edited\n")
+    assert out == "edited\n"
+    assert called == [1]
+
+
+def test_run_with_validators_appends_diff_block(tmp_path: Path) -> None:
+    f = tmp_path / "x.php"
+    f.write_text("<?php\n")
+    payload_ok = {"tool": "fake", "file": str(f), "ok": True, "count": 0,
+                  "errors": [], "duration_ms": 1}
+    _set_validators({
+        "fake": {"cmd": _fake_cmd(payload_ok), "hooks_into": ["edit"], "match": "*.php"},
+    })
+    out = supertool._run_with_validators("edit", ["edit", "", "", str(f)], lambda: "edited\n")
+    assert "[validators]" in out
+    assert "fake" in out
+
+
+def test_run_with_validators_rollback_on_regression(tmp_path: Path) -> None:
+    f = tmp_path / "x.php"
+    original = "<?php\n// original\n"
+    f.write_text(original)
+
+    # Adapter that always reports 1 error → simulates post-edit regression
+    payload_fail = {"tool": "fake", "file": str(f), "ok": False, "count": 1,
+                    "errors": [{"line": 1, "msg": "boom", "code": "x", "severity": "error"}],
+                    "duration_ms": 1}
+    payload_ok = {"tool": "fake", "file": str(f), "ok": True, "count": 0,
+                  "errors": [], "duration_ms": 1}
+
+    # Switch behavior: first call (pre) returns ok, second (post) returns fail.
+    # Achieved by writing a counter file.
+    state = tmp_path / "n"
+    state.write_text("0")
+    cmd = (
+        f"n=$(cat {state}); echo $((n+1)) > {state}; "
+        f"if [ \"$n\" = \"0\" ]; then printf '%s' '{json.dumps(payload_ok)}'; "
+        f"else printf '%s' '{json.dumps(payload_fail)}'; fi"
+    )
+    _set_validators({
+        "fake": {"cmd": cmd, "hooks_into": ["edit"], "match": "*.php",
+                 "rollback_on_fail": True},
+    })
+
+    def do_edit() -> str:
+        f.write_text("<?php\n// broken\n")
+        return "edited\n"
+
+    out = supertool._run_with_validators("edit", ["edit", "", "", str(f)], do_edit)
+    assert "rolled back" in out
+    assert f.read_text() == original
+
+
+def test_run_with_validators_skips_when_op_returns_error(tmp_path: Path) -> None:
+    f = tmp_path / "x.php"
+    f.write_text("<?php\n")
+    _set_validators({
+        "fake": {"cmd": "echo BOOM", "hooks_into": ["edit"], "match": "*.php"},
+    })
+    out = supertool._run_with_validators(
+        "edit", ["edit", "", "", str(f)], lambda: "ERROR: nope\n"
+    )
+    assert out == "ERROR: nope\n"
+    assert "[validators]" not in out
+
+
+def test_run_with_validators_unregistered_op_passthrough(tmp_path: Path) -> None:
+    _set_validators({"fake": {"cmd": "x", "hooks_into": ["grep"]}})
+    out = supertool._run_with_validators("grep", ["grep", "p", "."], lambda: "result\n")
+    assert out == "result\n"
+
+
+# ---------------------------------------------------------------------------
+# op_validate (manual one-shot)
+# ---------------------------------------------------------------------------
+
+def test_op_validate_no_validators_configured() -> None:
+    _set_validators({})
+    out = supertool.op_validate("x.php")
+    assert "no validators" in out
+
+
+def test_op_validate_runs_matching_validators() -> None:
+    payload = {"tool": "fake", "file": "x.php", "ok": True, "count": 0,
+               "errors": [], "duration_ms": 1}
+    _set_validators({"fake": {"cmd": _fake_cmd(payload), "match": "*.php"}})
+    out = supertool.op_validate("x.php")
+    assert "fake" in out
+    assert "ok" in out
+
+
+def test_op_validate_with_tool_filter() -> None:
+    payload = {"tool": "a", "file": "x.php", "ok": True, "count": 0,
+               "errors": [], "duration_ms": 1}
+    _set_validators({
+        "a": {"cmd": _fake_cmd(payload), "match": "*.php"},
+        "b": {"cmd": "echo SHOULD_NOT_RUN", "match": "*.php"},
+    })
+    out = supertool.op_validate("x.php", ["a"])
+    assert "a " in out or "a:" in out
+    assert "SHOULD_NOT_RUN" not in out
+
+
+# ---------------------------------------------------------------------------
+# phplint.py reference adapter
+# ---------------------------------------------------------------------------
+
+PHPLINT = Path(__file__).parent.parent / "validators" / "phplint" / "phplint.py"
+
+
+@pytest.mark.skipif(not shutil.which("php"), reason="php not installed")
+def test_phplint_adapter_valid_php(tmp_path: Path) -> None:
+    f = tmp_path / "ok.php"
+    f.write_text("<?php\n$x = 1;\n")
+    r = subprocess.run(["python3", str(PHPLINT), str(f)],
+                       capture_output=True, text=True, timeout=10)
+    data = json.loads(r.stdout.strip())
+    assert data["tool"] == "phplint"
+    assert data["ok"] is True
+    assert data["count"] == 0
+
+
+@pytest.mark.skipif(not shutil.which("php"), reason="php not installed")
+def test_phplint_adapter_broken_php_reports_line(tmp_path: Path) -> None:
+    f = tmp_path / "bad.php"
+    f.write_text("<?php\nfunction broken( {\n")
+    r = subprocess.run(["python3", str(PHPLINT), str(f)],
+                       capture_output=True, text=True, timeout=10)
+    data = json.loads(r.stdout.strip())
+    assert data["ok"] is False
+    assert data["count"] == 1
+    assert data["errors"][0]["line"] == 2
+
+
+def test_phplint_adapter_no_arg_returns_schema_error() -> None:
+    r = subprocess.run(["python3", str(PHPLINT)],
+                       capture_output=True, text=True, timeout=5)
+    data = json.loads(r.stdout.strip())
+    assert data["tool"] == "phplint"
+    assert data["ok"] is False
+    assert "no file arg" in data["errors"][0]["msg"]

@@ -7614,6 +7614,312 @@ def op_ops(compact: bool = False) -> str:
 _NO_EXCLUDE_SUFFIX = ":::no-exclude"
 
 
+# Validator hooks (PR1). Each entry maps an op name to a callable that
+# extracts the target file path from already-parsed `parts`. Only ops listed
+# here can be wrapped with a validator. PR2 will add more entries as needed.
+_OP_TARGETS: Dict[str, Any] = {
+    "edit":          lambda parts: parts[3] if len(parts) > 3 else "",
+    "replace":       lambda parts: parts[3] if len(parts) > 3 else "",
+    "replace_lines": lambda parts: parts[1] if len(parts) > 1 else "",
+    "paste":         lambda parts: parts[1] if len(parts) > 1 else "",
+    "vim":           lambda parts: parts[1] if len(parts) > 1 else "",
+}
+
+
+def _applicable_validators(op: str, path: str) -> Dict[str, Dict[str, Any]]:
+    """Return validators that should wrap this op call. Skips opt_in."""
+    cfg = _load_config()
+    validators = cfg.get("validators") or {}
+    if not validators:
+        return {}
+    import fnmatch
+    out: Dict[str, Dict[str, Any]] = {}
+    for name, spec in validators.items():
+        if not isinstance(spec, dict):
+            continue
+        if op not in (spec.get("hooks_into") or []):
+            continue
+        if spec.get("opt_in"):
+            continue
+        glob = spec.get("match", "*")
+        if path and glob and not fnmatch.fnmatch(path, glob):
+            continue
+        out[name] = spec
+    return out
+
+
+def _validator_resolve(spec: Dict[str, Any], file: str) -> Optional[str]:
+    """Run optional `resolve` cmd to map source→target (e.g. source→test).
+
+    Returns the resolved path, original file if no resolve cmd, or None if
+    the resolve cmd succeeded but returned empty (signal: skip this validator).
+    """
+    if "resolve" not in spec:
+        return file
+    import subprocess
+    cmd = spec["resolve"].replace("{supertool_dir}", _INSTALL_DIR).replace("{file}", file)
+    try:
+        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
+        resolved = r.stdout.strip().splitlines()[0] if r.stdout.strip() else ""
+        return resolved if resolved else None
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+
+
+def _validator_cache_enabled() -> bool:
+    if os.environ.get("SUPERTOOL_NO_VALIDATOR_CACHE"):
+        return False
+    return bool(_load_config().get("validator_cache", True))
+
+
+def _validator_cache_key(file_path: str, name: str, cmd: str) -> Optional[str]:
+    import hashlib
+    try:
+        with open(file_path, "rb") as f:
+            content = f.read()
+    except OSError:
+        return None
+    h = hashlib.sha256()
+    h.update(content)
+    h.update(b"\x00" + name.encode("utf-8"))
+    h.update(b"\x00" + cmd.encode("utf-8"))
+    return h.hexdigest()
+
+
+def _validator_cache_path(key: str) -> Path:
+    return Path.home() / ".cache" / "supertool" / "validators" / f"{key}.json"
+
+
+def _validator_cache_read(key: str) -> Optional[Dict[str, Any]]:
+    import json
+    p = _validator_cache_path(key)
+    if not p.exists():
+        return None
+    try:
+        return json.loads(p.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _validator_cache_write(key: str, data: Dict[str, Any]) -> None:
+    import json
+    p = _validator_cache_path(key)
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(data))
+    except OSError:
+        pass
+
+
+def _validator_run_one(name: str, spec: Dict[str, Any], file: str) -> Optional[Dict[str, Any]]:
+    """Run one validator adapter on `file`. Returns SCHEMA.md-compliant dict.
+
+    Adapter contract: prints one JSON object on last stdout line. Exit 0 unless
+    infra fail. Failures here produce a synthetic error dict so the row still
+    renders. Cached by (file content hash, name, cmd) at
+    ~/.cache/supertool/validators/<sha256>.json.
+    """
+    import subprocess
+    import json
+    target = _validator_resolve(spec, file)
+    if target is None:
+        return {"tool": name, "skipped": "no target resolved"}
+    cmd = spec["cmd"].replace("{supertool_dir}", _INSTALL_DIR).replace("{file}", target)
+    timeout = int(spec.get("timeout", 60))
+
+    cache_key: Optional[str] = None
+    if _validator_cache_enabled():
+        cache_key = _validator_cache_key(target, name, cmd)
+        if cache_key:
+            cached = _validator_cache_read(cache_key)
+            if cached is not None:
+                return cached
+
+    try:
+        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+        out = r.stdout.strip()
+        if not out:
+            return {"tool": name, "file": target, "ok": False, "count": 1,
+                    "errors": [{"line": None, "col": None, "severity": "error",
+                                "code": "orchestrator", "msg": "adapter produced no output"}],
+                    "duration_ms": 0}
+        data = json.loads(out.splitlines()[-1])
+        if target != file:
+            data["resolved_to"] = target
+        if cache_key:
+            _validator_cache_write(cache_key, data)
+        return data
+    except subprocess.TimeoutExpired:
+        return {"tool": name, "file": target, "ok": False, "count": 1,
+                "errors": [{"line": None, "col": None, "severity": "error",
+                            "code": "orchestrator", "msg": f"timeout after {timeout}s"}],
+                "duration_ms": timeout * 1000}
+    except (json.JSONDecodeError, IndexError) as e:
+        return {"tool": name, "file": target, "ok": False, "count": 1,
+                "errors": [{"line": None, "col": None, "severity": "error",
+                            "code": "orchestrator", "msg": f"adapter bad json: {e}"}],
+                "duration_ms": 0}
+
+
+def _validator_render_row(data: Dict[str, Any]) -> list:
+    if "skipped" in data:
+        return [f"{data['tool']:8s}: skipped — {data['skipped']}"]
+    tool = data.get("tool", "?")
+    ok = data.get("ok", False)
+    count = data.get("count", 0)
+    dur = data.get("duration_ms", 0)
+    status = "ok" if ok else f"{count} err"
+    line = f"{tool:8s}: {status:12s} ({dur}ms)"
+    if data.get("resolved_to"):
+        line += f"  → {data['resolved_to']}"
+    out = [line]
+    errors = data.get("errors") or []
+    for e in errors[:5]:
+        line_n = f"L{e['line']}" if e.get("line") else "  "
+        code = e.get("code") or ""
+        msg = (e.get("msg") or "").strip().replace("\n", " ")[:120]
+        out.append(f"  {line_n} {code}  {msg}")
+    if len(errors) > 5:
+        out.append(f"  ... +{len(errors) - 5} more")
+    return out
+
+
+def _validator_render_diff(before: Optional[Dict[str, Any]], after: Dict[str, Any]) -> list:
+    if "skipped" in after:
+        return [f"{after['tool']:8s}: skipped"]
+    tool = after["tool"]
+    b_count = before.get("count", 0) if before else 0
+    a_count = after.get("count", 0)
+    delta = a_count - b_count
+    b_ok = before.get("ok", True) if before else True
+    a_ok = after.get("ok", False)
+    if b_count == a_count and b_ok == a_ok:
+        status = "ok" if a_ok else f"{a_count} err"
+        return [f"{tool:8s}: {status:12s} (unchanged) ·"]
+    marker = "✓" if a_ok else ("⚠" if delta < 0 else "✗")
+    arrow = f"{b_count} → {a_count}"
+    sign = f"({'+' if delta >= 0 else ''}{delta})"
+    out = [f"{tool:8s}: {arrow:12s} {sign:6s} {marker}"]
+    if not a_ok:
+        before_msgs = {e.get("msg") for e in (before.get("errors") or [])} if before else set()
+        new = [e for e in (after.get("errors") or []) if e.get("msg") not in before_msgs]
+        for e in new[:5]:
+            line_n = f"L{e['line']}" if e.get("line") else "  "
+            code = e.get("code") or ""
+            msg = (e.get("msg") or "").strip().replace("\n", " ")[:120]
+            out.append(f"  + {line_n} {code}  {msg}")
+        if len(new) > 5:
+            out.append(f"  + ... +{len(new) - 5} more new")
+    return out
+
+
+def _validators_run_batch(
+    applicable: Dict[str, Dict[str, Any]], path: str
+) -> Dict[str, Dict[str, Any]]:
+    """Run all validators on path. Parallel if `parallel >= 2` in config."""
+    workers = _parallel_workers()
+    if workers >= 2 and len(applicable) > 1:
+        from concurrent.futures import ThreadPoolExecutor
+        max_workers = min(workers, len(applicable))
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            futures = {name: ex.submit(_validator_run_one, name, spec, path)
+                       for name, spec in applicable.items()}
+            return {name: f.result() for name, f in futures.items()
+                    if f.result() is not None}
+    out: Dict[str, Dict[str, Any]] = {}
+    for name, spec in applicable.items():
+        data = _validator_run_one(name, spec, path)
+        if data is not None:
+            out[name] = data
+    return out
+
+
+def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
+    """Wrap edit op with snapshot+run+diff using configured validators.
+
+    No-op when op not in _OP_TARGETS, no target path, or no applicable
+    validators. Guarantees `do_op()` runs in all paths.
+    """
+    extract = _OP_TARGETS.get(op)
+    if not extract:
+        return do_op()
+    try:
+        path = extract(parts)
+    except (IndexError, TypeError):
+        return do_op()
+    if not path:
+        return do_op()
+    applicable = _applicable_validators(op, path)
+    if not applicable:
+        return do_op()
+
+    needs_rollback = any(v.get("rollback_on_fail") for v in applicable.values())
+
+    pre_content: Optional[bytes] = None
+    if needs_rollback and os.path.isfile(path):
+        try:
+            with open(path, "rb") as f:
+                pre_content = f.read()
+        except OSError:
+            pre_content = None
+
+    before = _validators_run_batch(applicable, path)
+
+    body = do_op()
+
+    if isinstance(body, str) and body.startswith("ERROR"):
+        return body
+
+    after_results = _validators_run_batch(applicable, path)
+    diff_lines: list = []
+    for name in applicable:  # stable order from config
+        if name in after_results:
+            diff_lines.extend(_validator_render_diff(before.get(name), after_results[name]))
+
+    diff_out = "\n".join(diff_lines) + ("\n" if diff_lines else "")
+
+    if needs_rollback and pre_content is not None:
+        for name, spec in applicable.items():
+            if not spec.get("rollback_on_fail"):
+                continue
+            for line in diff_lines:
+                if line.lstrip().startswith(name) and "✗" in line:
+                    try:
+                        with open(path, "wb") as f:
+                            f.write(pre_content)
+                        diff_out += f"\n[rolled back] {name} regressed; file restored\n"
+                    except OSError as e:
+                        diff_out += f"\n[ROLLBACK FAILED] {name}: {e}\n"
+                    break
+
+    return body + "\n[validators]\n" + diff_out
+
+
+def op_validate(path: str, tool_filter: Optional[list] = None) -> str:
+    """Manual one-shot: run validators on `path`, render current state (no diff)."""
+    if not path:
+        return "ERROR: validate requires file path\n"
+    cfg = _load_config()
+    validators = cfg.get("validators") or {}
+    if not validators:
+        return "no validators configured\n"
+    if tool_filter:
+        validators = {k: v for k, v in validators.items() if k in tool_filter}
+        if not validators:
+            return "no validators matched filter\n"
+    import fnmatch
+    out = [f"validate: {path}"]
+    for name, spec in validators.items():
+        glob = spec.get("match", "*")
+        if path and glob and not fnmatch.fnmatch(path, glob):
+            continue
+        data = _validator_run_one(name, spec, path)
+        if data is None:
+            continue
+        out.extend(_validator_render_row(data))
+    return "\n".join(out) + "\n"
+
+
 def dispatch(arg: str) -> str:
     """Parse 'op:arg1:arg2:...' and route to the matching op function.
 
@@ -7748,12 +8054,12 @@ def dispatch(arg: str) -> str:
             new_str = _decode_escapes(parts[2] if len(parts) > 2 else "")
             rpath = parts[3] if len(parts) > 3 and parts[3] else "."
             dry = op == "replace_dry"
-            body = op_replace(old_str, new_str, rpath, dry=dry)
+            body = _run_with_validators(op, parts, lambda: op_replace(old_str, new_str, rpath, dry=dry))
         elif op == "edit":
             old_str = _decode_escapes(parts[1] if len(parts) > 1 else "")
             new_str = _decode_escapes(parts[2] if len(parts) > 2 else "")
             epath = parts[3] if len(parts) > 3 else ""
-            body = op_edit(old_str, new_str, epath)
+            body = _run_with_validators(op, parts, lambda: op_edit(old_str, new_str, epath))
         elif op == "replace_lines":
             rl_path = parts[1] if len(parts) > 1 else ""
             try:
@@ -7764,16 +8070,20 @@ def dispatch(arg: str) -> str:
             else:
                 # CONTENT may legitimately contain ':' — rejoin remaining parts
                 rl_content = _decode_escapes(":".join(parts[4:]) if len(parts) > 4 else "")
-                body = op_replace_lines(rl_path, rl_start, rl_end, rl_content)
+                body = _run_with_validators(op, parts, lambda: op_replace_lines(rl_path, rl_start, rl_end, rl_content))
         elif op == "paste":
             p_path = parts[1] if len(parts) > 1 else ""
             # CONTENT may contain ':' — rejoin everything after the path
             p_content = _decode_escapes(":".join(parts[2:]) if len(parts) > 2 else "")
-            body = op_paste(p_path, p_content)
+            body = _run_with_validators(op, parts, lambda: op_paste(p_path, p_content))
         elif op == "vim":
             vim_path = parts[1] if len(parts) > 1 else ""
             vim_script = ":".join(parts[2:]) if len(parts) > 2 else ""
-            body = op_vim(vim_path, vim_script)
+            body = _run_with_validators(op, parts, lambda: op_vim(vim_path, vim_script))
+        elif op == "validate":
+            v_path = parts[1] if len(parts) > 1 else ""
+            v_tools = [t for t in (parts[2].split(",") if len(parts) > 2 and parts[2] else []) if t]
+            body = op_validate(v_path, v_tools or None)
         elif op in ("introduction", "output-format", "ops", "ops-compact", "version"):
             # Meta-ops use markdown headers instead of --- header ---
             header = ""

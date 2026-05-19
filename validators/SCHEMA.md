@@ -1,0 +1,50 @@
+# Validator Output Schema
+
+Universal JSON. Every adapter emits this shape. Validator core never parses tool-specific output.
+
+## Schema
+
+```json
+{
+  "tool": "phplint",
+  "file": "src/Foo.php",
+  "ok": true,
+  "count": 0,
+  "errors": [],
+  "duration_ms": 42
+}
+```
+
+## Fields
+
+| Field         | Type             | Required | Notes                                                                 |
+|---------------|------------------|----------|-----------------------------------------------------------------------|
+| `tool`        | string           | yes      | Adapter id (`phplint`, `phpstan`, `phpunit`, `prettier`, ...)         |
+| `file`        | string           | yes      | Path validated. Repo-relative.                                        |
+| `ok`          | bool             | yes      | Pass/fail. Validator rolls back on `false` if op marked rollback.     |
+| `count`       | int              | yes      | Issue count. Used for before/after diff arithmetic.                   |
+| `errors`      | array of objects | yes      | `[]` when ok. Each: `{line, col, severity, code, msg}`.               |
+| `duration_ms` | int              | yes      | Wall time. For perf tuning.                                           |
+
+### Error object
+
+| Field      | Type             | Required | Notes                                              |
+|------------|------------------|----------|----------------------------------------------------|
+| `line`     | int \| null      | yes      | 1-indexed. `null` if tool gives no location.       |
+| `col`      | int \| null      | yes      | 1-indexed. `null` if not provided.                 |
+| `severity` | string           | yes      | `error` \| `warning` \| `info`                     |
+| `code`     | string \| null   | yes      | Rule id (`missingType`, `PSR12.Files...`). Nullable. |
+| `msg`      | string           | yes      | Human message. Single line preferred.              |
+
+## Contract
+
+- Adapter **always exits 0** if it produced JSON (even on tool failure). Core reads `.ok`.
+- Adapter exits non-zero only on infrastructure failure (tool missing, file unreadable). Core treats as `{ok: false, errors: [{msg: "adapter failed"}]}`.
+- Adapter writes **one JSON object on stdout**. Nothing else. Logs go to stderr.
+- Input: one arg = file path.
+
+## Adding a validator
+
+1. Write `.claude/scripts/validators/<tool>.sh`
+2. Register in `.supertool.json` under `validators` block
+3. Done. Core picks it up automatically.

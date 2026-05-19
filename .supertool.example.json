@@ -142,5 +142,49 @@
       "exclude-paths": []
     }
   },
-  "aliases": {}
+  "aliases": {},
+  "validator_cache": true,
+  "validators": {
+    "phplint": {
+      "cmd": "python3 {supertool_dir}/validators/phplint/phplint.py {file}",
+      "match": "*.php",
+      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "rollback_on_fail": true,
+      "timeout": 30
+    },
+    "xmllint": {
+      "cmd": "python3 {supertool_dir}/validators/xmllint/xmllint.py {file}",
+      "match": "*.xml",
+      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "rollback_on_fail": true,
+      "timeout": 30
+    },
+    "node-check": {
+      "cmd": "python3 {supertool_dir}/validators/node-check/node-check.py {file}",
+      "match": "*.js",
+      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "rollback_on_fail": true,
+      "timeout": 30
+    },
+    "py-compile": {
+      "cmd": "python3 {supertool_dir}/validators/py-compile/py-compile.py {file}",
+      "match": "*.py",
+      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "rollback_on_fail": true,
+      "timeout": 10
+    },
+    "bash-check": {
+      "cmd": "python3 {supertool_dir}/validators/bash-check/bash-check.py {file}",
+      "match": "*.sh",
+      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "rollback_on_fail": true,
+      "timeout": 10
+    },
+    "stylelint": {
+      "cmd": "python3 {supertool_dir}/validators/stylelint/stylelint.py {file}",
+      "match": "*.scss",
+      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "timeout": 60
+    }
+  }
 }
