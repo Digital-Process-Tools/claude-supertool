@@ -225,6 +225,14 @@ Example: edit a `.json` file with a missing comma → `jsonlint` catches it → 
 
 Full reference: [docs/validators.md](docs/validators.md) — bundled list, how they hook in, adding your own.
 
+## Formatters — normalize before validate
+
+Formatters run after every edit, before validators — `edit → format → validate → rollback if validate fails`. They mutate the file in place (`prettier --write`, `gofmt -w`) so validators always see canonical output.
+
+`prettier` ships as the first bundled formatter. `rollback_on_fail` defaults to `false` — formatters are cosmetic; the validator is the safety net.
+
+Full reference: [docs/formatters.md](docs/formatters.md) — config shape, bundled formatters, adding your own (gofmt, black, rustfmt, phpcbf).
+
 ---
 
 ### `.supertool.json` — project configuration

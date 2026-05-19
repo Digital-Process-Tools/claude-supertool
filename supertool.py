@@ -7835,11 +7835,72 @@ def _validators_run_batch(
     return out
 
 
-def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
-    """Wrap edit op with snapshot+run+diff using configured validators.
+# ---------------------------------------------------------------------------
+# Formatter hooks — mirror of the validator system.
+# Run order: edit → formatter(s) → validator(s) → rollback if validate fails.
+# Formatters mutate the file in place (e.g. prettier --write).
+# rollback_on_fail defaults to False — formatters are cosmetic; validators
+# are the safety net.
+# ---------------------------------------------------------------------------
 
+def _applicable_formatters(op: str, path: str) -> Dict[str, Dict[str, Any]]:
+    """Return formatters that should run after this op. Same logic as validators."""
+    cfg = _load_config()
+    formatters = cfg.get("formatters") or {}
+    if not formatters:
+        return {}
+    import fnmatch
+    out: Dict[str, Dict[str, Any]] = {}
+    for name, spec in formatters.items():
+        if not isinstance(spec, dict):
+            continue
+        if op not in (spec.get("hooks_into") or []):
+            continue
+        glob = spec.get("match", "*")
+        if path and glob and not fnmatch.fnmatch(path, glob):
+            continue
+        out[name] = spec
+    return out
+
+
+def _formatter_run_one(name: str, spec: Dict[str, Any], file: str) -> Dict[str, Any]:
+    """Run one formatter against `file`. Returns a result dict with ok + msg."""
+    import subprocess
+    cmd = spec["cmd"].replace("{supertool_dir}", _INSTALL_DIR).replace("{file}", file)
+    timeout = int(spec.get("timeout", 30))
+    try:
+        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+        if r.returncode == 0:
+            return {"name": name, "ok": True}
+        msg = (r.stderr.strip() or r.stdout.strip())[:200]
+        return {"name": name, "ok": False, "msg": msg}
+    except subprocess.TimeoutExpired:
+        return {"name": name, "ok": False, "msg": f"timeout after {timeout}s"}
+    except OSError as e:
+        return {"name": name, "ok": False, "msg": str(e)}
+
+
+def _formatters_run_batch(
+    applicable: Dict[str, Dict[str, Any]], path: str
+) -> list:
+    """Run all formatters on path. Parallel if `parallel >= 2` in config."""
+    workers = _parallel_workers()
+    if workers >= 2 and len(applicable) > 1:
+        from concurrent.futures import ThreadPoolExecutor
+        max_workers = min(workers, len(applicable))
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            futures = {name: ex.submit(_formatter_run_one, name, spec, path)
+                       for name, spec in applicable.items()}
+            return [futures[name].result() for name in applicable]
+    return [_formatter_run_one(name, spec, path) for name, spec in applicable.items()]
+
+
+def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
+    """Wrap edit op with format+snapshot+run+diff using configured formatters/validators.
+
+    Run order: edit → formatter(s) → validator(s) → rollback if validate fails.
     No-op when op not in _OP_TARGETS, no target path, or no applicable
-    validators. Guarantees `do_op()` runs in all paths.
+    formatters/validators. Guarantees `do_op()` runs in all paths.
     """
     extract = _OP_TARGETS.get(op)
     if not extract:
@@ -7850,28 +7911,48 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
         return do_op()
     if not path:
         return do_op()
+    applicable_fmt = _applicable_formatters(op, path)
     applicable = _applicable_validators(op, path)
-    if not applicable:
+    if not applicable_fmt and not applicable:
         return do_op()
 
     needs_rollback = any(v.get("rollback_on_fail") for v in applicable.values())
+    needs_fmt_rollback = any(v.get("rollback_on_fail") for v in applicable_fmt.values())
 
     pre_content: Optional[bytes] = None
-    if needs_rollback and os.path.isfile(path):
+    if (needs_rollback or needs_fmt_rollback) and os.path.isfile(path):
         try:
             with open(path, "rb") as f:
                 pre_content = f.read()
         except OSError:
             pre_content = None
 
-    before = _validators_run_batch(applicable, path)
+    before = _validators_run_batch(applicable, path) if applicable else {}
 
     body = do_op()
 
     if isinstance(body, str) and body.startswith("ERROR"):
         return body
 
-    after_results = _validators_run_batch(applicable, path)
+    # Run formatters after the edit, before validators.
+    fmt_warnings: list = []
+    if applicable_fmt:
+        fmt_results = _formatters_run_batch(applicable_fmt, path)
+        for result in fmt_results:
+            if not result["ok"]:
+                msg = result.get("msg", "unknown error")
+                if result.get("name") in applicable_fmt and applicable_fmt[result["name"]].get("rollback_on_fail"):
+                    if pre_content is not None:
+                        try:
+                            with open(path, "wb") as fw:
+                                fw.write(pre_content)
+                            fmt_warnings.append(f"[rolled back] {result['name']} failed; file restored")
+                        except OSError as e:
+                            fmt_warnings.append(f"[ROLLBACK FAILED] {result['name']}: {e}")
+                else:
+                    fmt_warnings.append(f"[formatter] {result['name']}: {msg}")
+
+    after_results = _validators_run_batch(applicable, path) if applicable else {}
     diff_lines: list = []
     for name in applicable:  # stable order from config
         if name in after_results:
@@ -7893,7 +7974,13 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
                         diff_out += f"\n[ROLLBACK FAILED] {name}: {e}\n"
                     break
 
-    return body + "\n[validators]\n" + diff_out
+    suffix = ""
+    if fmt_warnings:
+        suffix += "\n[formatters]\n" + "\n".join(fmt_warnings) + "\n"
+    if applicable:
+        suffix += "\n[validators]\n" + diff_out
+
+    return body + suffix
 
 
 def op_validate(path: str, tool_filter: Optional[list] = None) -> str:
