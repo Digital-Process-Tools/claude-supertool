@@ -7970,11 +7970,11 @@ def _fields_from_syntax(syntax: str) -> List[str]:
       'paste:::PATH:::CONTENT'     → ['path', 'content']
       'read:PATH'                  → []
     """
-    first_alt = syntax.split(" | ")[0].split(" |  ")[0]
+    first_alt = re.split(r"\s*\|\s*", syntax)[0]
     if ":::" not in first_alt:
         return []
     tokens = first_alt.split(":::")
-    return [t.lower() for t in tokens[1:]]
+    return [t.strip().lower() for t in tokens[1:]]
 
 
 _AT_FILE_BUILTIN_DEFAULTS: Dict[str, List[str]] = {

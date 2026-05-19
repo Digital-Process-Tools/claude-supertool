@@ -129,7 +129,7 @@
     },
     "batch": {
       "syntax": "batch:@file.json",
-      "description": "Run multiple ops from a JSON file in one call. Payload: bare array of op objects [{\"op\":\"read\",\"path\":\"...\"},{\"op\":\"edit\",\"old\":\"...\",\"new\":\"...\",\"path\":\"...\"},...] OR wrapper object {\"continue_on_error\":true,\"ops\":[...]}. Default continue_on_error=true. Use @- to read from stdin. Validators fire per mutating op.",
+      "description": "Run an array of ops in one call. Mix anything — read+edit+grep+phpstan in one round-trip. Payload: bare array of {op, ...fields} OR wrapper {continue_on_error, ops}. Default continue. Validators fire per mutating op. Use @- for stdin.",
       "example": "batch:@.max/ops.json"
     }
   },
