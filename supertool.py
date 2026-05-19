@@ -101,7 +101,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-VERSION = "0.10.0"
+VERSION = "0.10.1"
 
 MAX_READ_LINES = 300
 MAX_READ_BYTES = 20000  # ~20KB cap — prevents Claude Code "Output too large"
@@ -6696,7 +6696,8 @@ def _op_vim_impl(path: str, script: str) -> str:
             new_str = str(new_val)
             content = content[:start_d] + new_str + content[end_d:]
             cursor = start_d + len(new_str) - 1
-            log.append(f"  {i}. {'C-a' if verb == '\x01' else 'C-x'} {num_str} → {new_str}")
+            op_label = 'C-a' if verb == '\x01' else 'C-x'
+            log.append(f"  {i}. {op_label} {num_str} → {new_str}")
 
         # --- paste ---
         elif verb == "p":
