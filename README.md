@@ -9,7 +9,7 @@
 
 Saves tokens. Saves money. Saves turns. Works the same in interactive sessions and autonomous runs — humans pair-programming with Claude Code use it every day, not just Kevin-style headless agents. One Python file, zero deps, Python 3.9+.
 
-[Why](#why) • [Four pillars](#four-pillars) • [Receipt](#receipt--the-bill-math) • [Batching](#batch-multiple-ops-in-one-call) • [Parallel](#parallel-execution) • [Input forms](#input-forms) • [Expand it](#supertooljson--project-configuration) • [Install](#install)
+[Why](#why) • [Four pillars](#four-pillars) • [Receipt](#receipt--the-bill-math) • [Batching](#batch-multiple-ops-in-one-call) • [Parallel](#parallel-execution) • [Input forms](#input-forms) • [Validators](#validators--squiggle-on-save-for-the-llm) • [Expand it](#supertooljson--project-configuration) • [Install](#install)
 
 ```bash
 # 7 ops, 1 round-trip, parallel where safe
@@ -237,6 +237,18 @@ Or with explicit options:
 ```
 
 `continue_on_error` defaults to `true` — a failed op is reported but the rest of the batch continues. Set to `false` to abort on first error. Validators (phplint, xmllint, etc.) fire per mutating op, same as inline edits. Use `@-` to pipe the payload from stdin.
+
+---
+
+## Validators — squiggle-on-save for the LLM
+
+Every mutating op (`edit`, `replace`, `replace_lines`, `paste`, `vim`) runs matching validators on the result. Syntax fail → atomic rollback. The model gets an immediate error receipt and retries cleanly.
+
+Example: edit a `.json` file with a missing comma → `jsonlint` catches it → file reverts → receipt shows the parse error with line/col.
+
+17 validators bundled out of the box (PHP, XML, JSON, YAML, INI, Python, Bash, JS, TS, SCSS, Markdown, Ruby, Dockerfile, Go, Terraform, Rust, TOML). Graceful skip when toolchain missing.
+
+Full reference: [docs/validators.md](docs/validators.md) — bundled list, how they hook in, adding your own.
 
 ---
 
