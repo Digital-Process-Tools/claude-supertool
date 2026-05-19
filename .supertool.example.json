@@ -185,6 +185,13 @@
       "rollback_on_fail": true,
       "timeout": 10
     },
+    "jsonlint": {
+      "cmd": "python3 {supertool_dir}/validators/jsonlint/jsonlint.py {file}",
+      "match": "*.json",
+      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "rollback_on_fail": true,
+      "timeout": 10
+    },
     "stylelint": {
       "cmd": "python3 {supertool_dir}/validators/stylelint/stylelint.py {file}",
       "match": "*.scss",
