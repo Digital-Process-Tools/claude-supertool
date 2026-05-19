@@ -218,6 +218,69 @@
       "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
       "rollback_on_fail": true,
       "timeout": 10
+    },
+    "gofmt-check": {
+      "cmd": "python3 {supertool_dir}/validators/gofmt-check/gofmt-check.py {file}",
+      "match": "*.go",
+      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "rollback_on_fail": true,
+      "timeout": 30
+    },
+    "terraform-check": {
+      "cmd": "python3 {supertool_dir}/validators/terraform-check/terraform-check.py {file}",
+      "match": "*.tf",
+      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "rollback_on_fail": true,
+      "timeout": 30
+    },
+    "cargo-check": {
+      "cmd": "python3 {supertool_dir}/validators/cargo-check/cargo-check.py {file}",
+      "match": "*.rs",
+      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "rollback_on_fail": true,
+      "timeout": 60
+    },
+    "tsc-check": {
+      "cmd": "python3 {supertool_dir}/validators/tsc-check/tsc-check.py {file}",
+      "match": "*.ts",
+      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "rollback_on_fail": true,
+      "timeout": 30
+    },
+    "tsc-check-tsx": {
+      "cmd": "python3 {supertool_dir}/validators/tsc-check/tsc-check.py {file}",
+      "match": "*.tsx",
+      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "rollback_on_fail": true,
+      "timeout": 30
+    },
+    "tomllint": {
+      "cmd": "python3 {supertool_dir}/validators/tomllint/tomllint.py {file}",
+      "match": "*.toml",
+      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "rollback_on_fail": true,
+      "timeout": 10
+    },
+    "markdownlint": {
+      "cmd": "python3 {supertool_dir}/validators/markdownlint/markdownlint.py {file}",
+      "match": "*.md",
+      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "rollback_on_fail": true,
+      "timeout": 30
+    },
+    "ruby-check": {
+      "cmd": "python3 {supertool_dir}/validators/ruby-check/ruby-check.py {file}",
+      "match": "*.rb",
+      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "rollback_on_fail": true,
+      "timeout": 30
+    },
+    "hadolint": {
+      "cmd": "python3 {supertool_dir}/validators/hadolint/hadolint.py {file}",
+      "match": "Dockerfile*",
+      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "rollback_on_fail": true,
+      "timeout": 30
     }
   }
 }
