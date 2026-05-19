@@ -282,5 +282,14 @@
       "rollback_on_fail": false,
       "timeout": 30
     }
+  },
+  "formatters": {
+    "prettier": {
+      "cmd": "prettier --write {file}",
+      "match": "*.{xml,scss,css,js,json,yml,yaml,md}",
+      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "rollback_on_fail": false,
+      "timeout": 30
+    }
   }
 }

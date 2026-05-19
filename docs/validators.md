@@ -151,12 +151,6 @@ The model gets a clean retry surface with the exact line and error — no broken
 
 Custom validators must conform to the adapter contract in `validators/SCHEMA.md`. Each adapter takes one file arg and prints a JSON object on stdout with a standardised shape (ok, count, errors). The bundled adapters (`validators/phplint/`, `validators/xmllint/`, etc.) are the reference implementations.
 
-## Format-on-save (planned)
+## Format-on-save
 
-A `formatters` section will mirror this exact shape — same `match`, `hooks_into`, and graceful skip behavior. The execution order will be:
-
-```
-edit → format → validate → rollback if validate fails
-```
-
-Prettier ships first, followed by `gofmt`, `black`, `rustfmt`, and `phpcbf`. Not available yet — listed here so the design intent is clear and the JSON shape is locked before implementation.
+See [formatters.md](formatters.md) — formatters run after every edit, before validators, normalizing whitespace and style before the safety check runs.
