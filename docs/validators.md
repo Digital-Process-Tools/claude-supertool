@@ -102,6 +102,55 @@ The `{file}` placeholder is replaced with the absolute path to the file being va
 
 **Parallel execution** — validators use the project's `parallel` setting. When multiple validators match a single file (e.g. a `.ts` file matching both `tsc-check` and `stylelint`), they run concurrently. The first failure triggers rollback if `rollback_on_fail` is set; remaining validators still complete.
 
+## Field reference
+
+Full list of `.supertool.json` validator config fields:
+
+| Field              | Notes                                                                                  |
+|--------------------|----------------------------------------------------------------------------------------|
+| `cmd`              | Shell command. `{file}` → target path. `{supertool_dir}` → supertool install dir.      |
+| `match`            | Glob filter on the target path (default `*`).                                          |
+| `hooks_into`       | Op names to wrap (subset of `edit`, `replace`, `replace_lines`, `paste`, `vim`).       |
+| `rollback_on_fail` | Restore pre-edit file content if the validator's count went up or ok flipped to false. |
+| `resolve`          | Shell cmd returning an alternate target path (e.g. source-file → test-file).           |
+| `timeout`          | Seconds. Default 60.                                                                    |
+| `opt_in`           | If true, validator only runs on explicit request via the `validate` op.                |
+
+## Caching
+
+Results are auto-cached at `~/.cache/supertool/validators/`, keyed on `sha256(file_content) + name + cmd`. Validators skip re-running when the file hasn't changed since the last pass.
+
+Disable caching per-call with the `SUPERTOOL_NO_VALIDATOR_CACHE=1` env var, or per-project with `"validator_cache": false` in `.supertool.json`.
+
+## Manual run
+
+Run validators explicitly against any file without an edit op:
+
+```bash
+./supertool 'validate:src/Foo.php'                    # all matching validators
+./supertool 'validate:src/Foo.php:phplint,phpstan'    # filtered to named validators
+```
+
+Useful for a pre-commit sweep or spot-checking a file you didn't edit this session.
+
+## Output example
+
+After an edit that breaks PHP syntax with `rollback_on_fail: true`:
+
+```
+[validators]
+phplint : 0 → 1        (+1)   ✗
+  + L42 parse  Parse error: syntax error, unexpected token "{" in ... on line 42
+
+[rolled back] phplint regressed; file restored
+```
+
+The model gets a clean retry surface with the exact line and error — no broken file left behind.
+
+## Adapter contract
+
+Custom validators must conform to the adapter contract in `validators/SCHEMA.md`. Each adapter takes one file arg and prints a JSON object on stdout with a standardised shape (ok, count, errors). The bundled adapters (`validators/phplint/`, `validators/xmllint/`, etc.) are the reference implementations.
+
 ## Format-on-save (planned)
 
 A `formatters` section will mirror this exact shape — same `match`, `hooks_into`, and graceful skip behavior. The execution order will be:

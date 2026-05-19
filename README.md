@@ -611,69 +611,6 @@ Override via env: `SUPERTOOL_PARALLEL=4 ./supertool 'read:a' 'grep:x:b/' 'glob:c
 
 Speedup: I/O-bound ops on different files. ~3-5× faster on cold filesystem; modest gain on warm cache.
 
-### Validator hooks
-
-Wrap edit ops (`edit`, `replace`, `replace_lines`, `paste`, `vim`) with pre/post validation. Pre-snapshots the file via configured validators, runs the op, re-runs validators, renders a diff. Optional auto-rollback on regression.
-
-**Use case:** stop edits that break syntax (or worse) the moment they happen, in the same call — no "edit succeeded, found broken on next turn."
-
-**Adapter contract** — `validators/SCHEMA.md`. Each adapter takes one file arg, prints a JSON object on stdout. Ships reference adapters in `validators/`:
-
-- `phplint` — PHP syntax (`php -l`)
-- `xmllint` — XML well-formedness (libxml2)
-- `node-check` — JS syntax (`node --check`)
-- `stylelint` — CSS/SCSS lint (auto-falls back to `npx`)
-- `py-compile` — Python syntax (`py_compile`)
-- `bash-check` — Bash syntax (`bash -n`)
-
-**Config** in `.supertool.json`:
-
-```json
-{
-  "validators": {
-    "phplint": {
-      "cmd": "python3 {supertool_dir}/validators/phplint/phplint.py {file}",
-      "match": "*.php",
-      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
-      "rollback_on_fail": true,
-      "timeout": 30
-    },
-    "phpstan": {
-      "cmd": "bash .my-project/run-phpstan.sh {file}",
-      "match": "*.php",
-      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
-      "timeout": 120
-    }
-  }
-}
-```
-
-| Field              | Notes                                                                                  |
-|--------------------|----------------------------------------------------------------------------------------|
-| `cmd`              | Shell command. `{file}` → target path. `{supertool_dir}` → supertool install dir.      |
-| `match`            | Glob filter on the target path (default `*`).                                          |
-| `hooks_into`       | Op names to wrap. PR1: subset of edit ops above.                                       |
-| `rollback_on_fail` | Restore pre-edit file content if the validator's count went up or ok flipped to false. |
-| `resolve`          | Shell cmd returning an alternate target path (e.g. source-file → test-file).           |
-| `timeout`          | Seconds. Default 60.                                                                    |
-| `opt_in`           | If true, validator only runs on explicit request via the `validate` op.                |
-
-**Auto-cache** at `~/.cache/supertool/validators/`, keyed on `sha256(file_content) + name + cmd`. Disable per-call with `SUPERTOOL_NO_VALIDATOR_CACHE=1` or per-project with `"validator_cache": false`.
-
-**Parallel** — uses the existing `parallel` setting. Validators run concurrently when `parallel >= 2`.
-
-**Manual run** — `./supertool 'validate:src/Foo.php'` (all matching validators) or `./supertool 'validate:src/Foo.php:phplint,phpstan'` (filtered).
-
-**Output example** — after an edit that breaks PHP syntax:
-
-```
-[validators]
-phplint : 0 → 1        (+1)   ✗
-  + L42 parse  Parse error: syntax error, unexpected token "{" in ... on line 42
-
-[rolled back] phplint regressed; file restored
-```
-
 ### Excluding paths from traversal ops
 
 `glob`, `grep`, `tree`, and `map` walk the filesystem recursively. On large repos this can be slow and noisy — `.git/objects/`, `node_modules/`, `vendor/`, and similar dirs rarely contain what you're looking for.
