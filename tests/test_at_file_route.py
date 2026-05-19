@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 import supertool
 
 
@@ -169,3 +171,126 @@ class TestAtFileNotAppliedToReadOps:
         out = supertool.dispatch(f"read:@{tmp_path}/nonexistent.json")
         # Should be a normal "file not found" error from op_read, not @file machinery
         assert "ERROR" in out or "not found" in out.lower()
+
+
+# ---------------------------------------------------------------------------
+# Refactor 1 — _fields_from_syntax: derive field list from syntax string
+# ---------------------------------------------------------------------------
+
+class TestFieldsFromSyntax:
+    @pytest.mark.parametrize("syntax,expected", [
+        ("edit:::OLD:::NEW:::PATH",           ["old", "new", "path"]),
+        ("replace:::OLD:::NEW:::PATH",        ["old", "new", "path"]),
+        ("replace_lines:::PATH:::START:::END:::CONTENT", ["path", "start", "end", "content"]),
+        ("paste:::PATH:::CONTENT",            ["path", "content"]),
+        ("vim:::PATH:::SCRIPT",               ["path", "script"]),
+        # First alternative is used when ' | ' separates alternatives
+        ("op:::A:::B | op:::X:::Y",           ["a", "b"]),
+        # Read-only op (no :::) → empty list
+        ("read:PATH",                         []),
+        ("grep:PATTERN:PATH",                 []),
+    ])
+    def test_fields_from_syntax(self, syntax: str, expected: list) -> None:
+        assert supertool._fields_from_syntax(syntax) == expected
+
+    def test_builtin_defaults_cover_all_write_ops(self) -> None:
+        """_AT_FILE_BUILTIN_DEFAULTS must derive the same field lists as the hardcoded table."""
+        expected = {
+            "edit":          ["old", "new", "path"],
+            "replace":       ["old", "new", "path"],
+            "replace_dry":   ["old", "new", "path"],
+            "replace_lines": ["path", "start", "end", "content"],
+            "paste":         ["path", "content"],
+            "vim":           ["path", "script"],
+        }
+        assert supertool._AT_FILE_BUILTIN_DEFAULTS == expected
+
+    def test_registry_populated_after_first_dispatch(self, tmp_path: Path) -> None:
+        """After any dispatch call the registry must contain the builtin write ops."""
+        # Force a dispatch so the registry is built
+        supertool.dispatch(f"read:{tmp_path}/nope")
+        for op in ("edit", "replace", "replace_dry", "replace_lines", "paste", "vim"):
+            assert supertool._at_file_fields(op), f"missing @file fields for op '{op}'"
+
+
+# ---------------------------------------------------------------------------
+# Refactor 1 — case-insensitive payload key matching
+# ---------------------------------------------------------------------------
+
+class TestAtFileCaseInsensitiveKeys:
+    def test_uppercase_keys_accepted(self, tmp_path: Path) -> None:
+        target = tmp_path / "x.py"
+        target.write_text("hello world\n")
+        spec = _write_json(tmp_path, "e.json", {"OLD": "hello", "NEW": "hi", "PATH": str(target)})
+        out = supertool.dispatch(f"edit:@{spec}")
+        assert "edited" in out
+        assert "hi world" in target.read_text()
+
+    def test_mixed_case_keys_accepted(self, tmp_path: Path) -> None:
+        target = tmp_path / "x.py"
+        target.write_text("foo\n")
+        spec = _write_json(tmp_path, "e.json", {"Old": "foo", "New": "bar", "Path": str(target)})
+        out = supertool.dispatch(f"edit:@{spec}")
+        assert "edited" in out
+        assert "bar" in target.read_text()
+
+
+# ---------------------------------------------------------------------------
+# Refactor 2 — replace_all via @file route
+# ---------------------------------------------------------------------------
+
+class TestAtFileReplaceAll:
+    def test_replace_all_true_replaces_all_occurrences(self, tmp_path: Path) -> None:
+        """edit:@file with replace_all:true should replace every occurrence."""
+        target = tmp_path / "x.py"
+        target.write_text("foo bar foo baz foo\n")
+        spec = _write_json(tmp_path, "e.json", {
+            "old": "foo", "new": "qux", "path": str(target), "replace_all": True
+        })
+        out = supertool.dispatch(f"edit:@{spec}")
+        assert "ERROR" not in out
+        text = target.read_text()
+        assert "foo" not in text
+        assert text.count("qux") == 3
+
+    def test_replace_all_false_errors_on_multiple_occurrences(self, tmp_path: Path) -> None:
+        """edit:@file with replace_all:false should use edit semantics (error on >1 match)."""
+        target = tmp_path / "x.py"
+        target.write_text("foo bar foo\n")
+        spec = _write_json(tmp_path, "e.json", {
+            "old": "foo", "new": "qux", "path": str(target), "replace_all": False
+        })
+        out = supertool.dispatch(f"edit:@{spec}")
+        assert "ERROR" in out
+        assert "2" in out  # reports the count
+
+    def test_replace_all_absent_uses_edit_semantics(self, tmp_path: Path) -> None:
+        """edit:@file without replace_all key uses single-occurrence edit semantics."""
+        target = tmp_path / "x.py"
+        target.write_text("foo bar foo\n")
+        spec = _write_json(tmp_path, "e.json", {"old": "foo", "new": "qux", "path": str(target)})
+        out = supertool.dispatch(f"edit:@{spec}")
+        assert "ERROR" in out  # two occurrences → error
+
+    def test_replace_all_true_single_occurrence_succeeds(self, tmp_path: Path) -> None:
+        """replace_all:true with a single match still succeeds."""
+        target = tmp_path / "x.py"
+        target.write_text("unique token here\n")
+        spec = _write_json(tmp_path, "e.json", {
+            "old": "unique token", "new": "replaced", "path": str(target), "replace_all": True
+        })
+        out = supertool.dispatch(f"edit:@{spec}")
+        assert "ERROR" not in out
+        assert "replaced" in target.read_text()
+
+    def test_replace_all_via_batch_op(self, tmp_path: Path) -> None:
+        """replace_all:true inside a batch payload should also replace all occurrences."""
+        target = tmp_path / "x.py"
+        target.write_text("a a a\n")
+        ops_file = tmp_path / "ops.json"
+        ops_file.write_text(json.dumps([
+            {"op": "edit", "old": "a", "new": "b", "path": str(target), "replace_all": True}
+        ]))
+        out = supertool.dispatch(f"batch:@{ops_file}")
+        assert "ERROR" not in out
+        assert target.read_text().strip() == "b b b"
