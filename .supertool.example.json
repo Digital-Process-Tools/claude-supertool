@@ -113,19 +113,24 @@
       "example": "blame:src/app/Module.py:42:3"
     },
     "edit": {
-      "syntax": "edit:::OLD:::NEW:::PATH",
-      "description": "Single-file edit, OLD must match exactly once. Bypasses native Edit must-Read state — saves a round-trip. Use ::: separator so content with ':' works (single ':' also accepted when content has no colons).",
+      "syntax": "edit:::OLD:::NEW:::PATH  |  edit:@file.json",
+      "description": "Single-file edit, OLD must match exactly once. Bypasses native Edit must-Read state — saves a round-trip. Use ::: separator so content with ':' works (single ':' also accepted when content has no colons). @file route: edit:@path.json where file contains {\"old\":\"...\",\"new\":\"...\",\"path\":\"...\"}. Use @- to read from stdin.",
       "example": "edit:::return false;:::return true;:::src/app/Foo.py"
     },
     "replace_lines": {
-      "syntax": "replace_lines:::PATH:::START:::END:::CONTENT",
-      "description": "Swap lines [START,END] (1-indexed inclusive) with CONTENT. END<START = insert before START. Empty CONTENT = delete.",
+      "syntax": "replace_lines:::PATH:::START:::END:::CONTENT  |  replace_lines:@file.json",
+      "description": "Swap lines [START,END] (1-indexed inclusive) with CONTENT. END<START = insert before START. Empty CONTENT = delete. @file route: replace_lines:@path.json where file contains {\"path\":\"...\",\"start\":N,\"end\":N,\"content\":\"...\"}.",
       "example": "replace_lines:::src/app/Foo.py:::42:::45:::    return x"
     },
     "paste": {
-      "syntax": "paste:::PATH:::CONTENT",
-      "description": "Replace entire file with CONTENT. Atomic, creates file (+ parent dirs) if missing. Use for full-file rewrites.",
+      "syntax": "paste:::PATH:::CONTENT  |  paste:@file.json",
+      "description": "Replace entire file with CONTENT. Atomic, creates file (+ parent dirs) if missing. Use for full-file rewrites. @file route: paste:@path.json where file contains {\"path\":\"...\",\"content\":\"...\"}.",
       "example": "paste:::src/app/new_file.py:::print('hello')\\n"
+    },
+    "batch": {
+      "syntax": "batch:@file.json",
+      "description": "Run an array of ops in one call. Mix anything — read+edit+grep+phpstan in one round-trip. Payload: bare array of {op, ...fields} OR wrapper {continue_on_error, ops}. Default continue. Validators fire per mutating op. Use @- for stdin.",
+      "example": "batch:@.max/ops.json"
     }
   },
   "ops": {
@@ -176,6 +181,13 @@
     "bash-check": {
       "cmd": "python3 {supertool_dir}/validators/bash-check/bash-check.py {file}",
       "match": "*.sh",
+      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "rollback_on_fail": true,
+      "timeout": 10
+    },
+    "jsonlint": {
+      "cmd": "python3 {supertool_dir}/validators/jsonlint/jsonlint.py {file}",
+      "match": "*.json",
       "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
       "rollback_on_fail": true,
       "timeout": 10

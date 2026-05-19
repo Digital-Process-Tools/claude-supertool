@@ -7921,12 +7921,155 @@ def op_validate(path: str, tool_filter: Optional[list] = None) -> str:
     return "\n".join(out) + "\n"
 
 
+def _load_at_file(ref: str) -> Any:
+    """Load JSON from an @file reference.
+
+    Accepts:
+      @path/to/file.json   — read from filesystem
+      @-                   — read from stdin
+
+    Returns the parsed JSON value (dict, list, etc.).
+    Raises ValueError with a human-readable message on any error.
+    """
+    if ref == "@-":
+        raw = sys.stdin.read()
+        source = "<stdin>"
+    else:
+        fpath = ref[1:]  # strip leading @
+        if not os.path.isfile(fpath):
+            raise ValueError(f"@file not found: {fpath}")
+        try:
+            with open(fpath, "r", encoding="utf-8") as _f:
+                raw = _f.read()
+        except OSError as _e:
+            raise ValueError(f"@file read error: {fpath}: {_e}") from _e
+        source = fpath
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as _e:
+        raise ValueError(f"@file JSON parse error ({source}): {_e}") from _e
+
+
+# Dynamic @file field registry — built lazily from op syntax strings.
+# Maps op name → ordered list of JSON field names (positional parts[1..N]).
+# Populated on first dispatch call via _build_at_file_registry().
+_AT_FILE_REGISTRY: Dict[str, List[str]] = {}
+_AT_FILE_REGISTRY_BUILT: bool = False
+
+
+def _fields_from_syntax(syntax: str) -> List[str]:
+    """Derive positional field names from a syntax string using ':::' separator.
+
+    Takes the first alternative (before ' | '), splits on ':::', drops the
+    first token (op name), and lowercases the rest.
+
+    Returns [] if the syntax has no ':::' (read-only op — no @file route).
+
+    Examples:
+      'edit:::OLD:::NEW:::PATH'    → ['old', 'new', 'path']
+      'paste:::PATH:::CONTENT'     → ['path', 'content']
+      'read:PATH'                  → []
+    """
+    first_alt = re.split(r"\s*\|\s*", syntax)[0]
+    if ":::" not in first_alt:
+        return []
+    tokens = first_alt.split(":::")
+    return [t.strip().lower() for t in tokens[1:]]
+
+
+_AT_FILE_BUILTIN_DEFAULTS: Dict[str, List[str]] = {
+    "edit":          ["old", "new", "path"],
+    "replace":       ["old", "new", "path"],
+    "replace_dry":   ["old", "new", "path"],
+    "replace_lines": ["path", "start", "end", "content"],
+    "paste":         ["path", "content"],
+    "vim":           ["path", "script"],
+}
+
+
+def _build_at_file_registry() -> None:
+    """Populate _AT_FILE_REGISTRY from builtin-ops and custom/preset op syntax.
+
+    Starts from _AT_FILE_BUILTIN_DEFAULTS so the builtins always work even
+    when no config file is present (e.g. in tests). Config-derived entries
+    overlay the defaults, allowing syntax-driven overrides and automatically
+    giving preset ops with ':::' syntax their own @file routes.
+
+    Called once on the first dispatch invocation.
+    """
+    global _AT_FILE_REGISTRY, _AT_FILE_REGISTRY_BUILT
+    if _AT_FILE_REGISTRY_BUILT:
+        return
+    registry: Dict[str, List[str]] = dict(_AT_FILE_BUILTIN_DEFAULTS)
+    config = _load_config()
+    for section in ("builtin-ops", "ops"):
+        for op_name, info in config.get(section, {}).items():
+            if not isinstance(info, dict):
+                continue
+            syntax = info.get("syntax", "")
+            if not syntax:
+                continue
+            fields = _fields_from_syntax(syntax)
+            if fields:
+                registry[op_name] = fields
+    _AT_FILE_REGISTRY = registry
+    _AT_FILE_REGISTRY_BUILT = True
+
+
+def _at_file_fields(op: str) -> List[str]:
+    """Return the field list for *op*, or [] if the op has no @file route."""
+    _build_at_file_registry()
+    return _AT_FILE_REGISTRY.get(op, [])
+
+
+def _at_file_to_parts(op: str, payload: Any) -> Tuple[List[str], bool]:
+    """Convert a JSON payload dict to (parts, replace_all) for the given op.
+
+    The returned parts list is [op, field1_value, field2_value, ...] matching
+    the positional form that the existing dispatch handlers expect.
+
+    All values are coerced to str so the downstream handlers work unchanged.
+
+    replace_all is extracted from the payload and returned separately so the
+    dispatch handler can act on it without polluting the parts list.
+    """
+    if not isinstance(payload, dict):
+        raise ValueError(
+            f"@file payload for op '{op}' must be a JSON object, "
+            f"got {type(payload).__name__}"
+        )
+    fields = _at_file_fields(op)
+    if not fields:
+        raise ValueError(f"@file route not supported for op '{op}'")
+    # Case-insensitive key lookup — normalise payload keys once.
+    lower_payload = {k.lower(): v for k, v in payload.items()}
+    parts = [op]
+    for field in fields:
+        if field not in lower_payload:
+            raise ValueError(
+                f"@file payload for op '{op}' missing required field '{field}'"
+            )
+        parts.append(str(lower_payload[field]))
+    replace_all = bool(lower_payload.get("replace_all", False))
+    return parts, replace_all
+
+
 def dispatch(arg: str) -> str:
     """Parse 'op:arg1:arg2:...' and route to the matching op function.
 
     Traversal ops (grep, glob, tree, map) support an optional :::no-exclude
     suffix that bypasses all exclude-paths for that one call.
     Example: 'grep:pattern:vendor/:10:::no-exclude'
+
+    Mutating ops (edit, replace, replace_lines, paste, vim) additionally
+    accept an @file route:
+    Example: 'edit:@.max/e1.json'  — reads {"path","old","new"} from file.
+    Use '@-' to read JSON payload from stdin.
+
+    The 'batch' op runs multiple ops from a JSON file:
+    Example: 'batch:@.max/ops.json'
+    Payload: array of {"op":"X",...fields} OR
+             {"continue_on_error":true,"ops":[...]}
     """
     # Strip :::no-exclude before splitting so it doesn't interfere with arg parsing
     no_exclude = arg.endswith(_NO_EXCLUDE_SUFFIX)
@@ -7946,6 +8089,21 @@ def dispatch(arg: str) -> str:
     else:
         parts = _split_arg(arg)
     op = parts[0] if parts else ""
+
+    # @file route — 'op:@path' or 'op:@-' (stdin).
+    # Load JSON, rebuild parts list, then fall through to the normal handlers.
+    # Applies to mutating ops that have ':::' fields in their syntax string.
+    _at_file_replace_all: bool = False
+    if (
+        len(parts) == 2
+        and parts[1].startswith("@")
+        and _at_file_fields(op)
+    ):
+        try:
+            payload = _load_at_file(parts[1])
+            parts, _at_file_replace_all = _at_file_to_parts(op, payload)
+        except ValueError as _e:
+            return header + f"ERROR: {_e}\n"
 
     try:
         if op == "read":
@@ -8060,7 +8218,10 @@ def dispatch(arg: str) -> str:
             old_str = _decode_escapes(parts[1] if len(parts) > 1 else "")
             new_str = _decode_escapes(parts[2] if len(parts) > 2 else "")
             epath = parts[3] if len(parts) > 3 else ""
-            body = _run_with_validators(op, parts, lambda: op_edit(old_str, new_str, epath))
+            if _at_file_replace_all:
+                body = _run_with_validators(op, parts, lambda: op_replace(old_str, new_str, epath or "."))
+            else:
+                body = _run_with_validators(op, parts, lambda: op_edit(old_str, new_str, epath))
         elif op == "replace_lines":
             rl_path = parts[1] if len(parts) > 1 else ""
             try:
@@ -8081,6 +8242,85 @@ def dispatch(arg: str) -> str:
             vim_path = parts[1] if len(parts) > 1 else ""
             vim_script = ":".join(parts[2:]) if len(parts) > 2 else ""
             body = _run_with_validators(op, parts, lambda: op_vim(vim_path, vim_script))
+        elif op == "batch":
+            # batch:@file — run multiple ops from a JSON file.
+            # Payload: bare array of {"op":"X",...} objects, OR wrapper object
+            # {"continue_on_error": bool, "ops": [...]}.
+            # Default: continue_on_error=True (keep running after a failed op).
+            ref = parts[1] if len(parts) > 1 else ""
+            if not ref.startswith("@"):
+                body = "ERROR: batch requires an @file argument, e.g. batch:@ops.json\n"
+            else:
+                try:
+                    raw_payload = _load_at_file(ref)
+                except ValueError as _be:
+                    body = f"ERROR: {_be}\n"
+                else:
+                    # Normalise to (continue_on_error, ops_list)
+                    if isinstance(raw_payload, list):
+                        batch_ops = raw_payload
+                        continue_on_error = True
+                    elif isinstance(raw_payload, dict):
+                        batch_ops = raw_payload.get("ops", [])
+                        continue_on_error = bool(raw_payload.get("continue_on_error", True))
+                    else:
+                        batch_ops = []
+                        continue_on_error = True
+                        body = (
+                            "ERROR: batch @file must be a JSON array or object "
+                            f"with 'ops' key, got {type(raw_payload).__name__}\n"
+                        )
+                        batch_ops = None  # signal: already set body
+
+                    if batch_ops is not None:
+                        if not isinstance(batch_ops, list):
+                            body = "ERROR: batch 'ops' must be a JSON array\n"
+                        else:
+                            results: List[str] = []
+                            for _item in batch_ops:
+                                if not isinstance(_item, dict):
+                                    err = f"ERROR: each batch op must be a JSON object, got {type(_item).__name__}\n"
+                                    results.append(err)
+                                    if not continue_on_error:
+                                        break
+                                    continue
+                                _sub_op = _item.get("op", "")
+                                if not _sub_op:
+                                    err = "ERROR: batch op missing 'op' field\n"
+                                    results.append(err)
+                                    if not continue_on_error:
+                                        break
+                                    continue
+                                # Build the arg string from the op + its fields,
+                                # using the @file→parts machinery for mutating ops
+                                # (preserves validators) and plain dispatch for others.
+                                if _at_file_fields(_sub_op):
+                                    try:
+                                        _sub_parts, _sub_replace_all = _at_file_to_parts(_sub_op, _item)
+                                    except ValueError as _ve:
+                                        err = f"ERROR: {_ve}\n"
+                                        results.append(err)
+                                        if not continue_on_error:
+                                            break
+                                        continue
+                                    # replace_all: true on an edit op → promote to replace
+                                    if _sub_replace_all and _sub_op == "edit":
+                                        _sub_parts[0] = "replace"
+                                    # Reconstruct a triple-colon arg string so dispatch
+                                    # parses it correctly (handles colons in content).
+                                    _sub_arg = ":::".join(_sub_parts)
+                                else:
+                                    # Read-only op: build plain colon arg from known fields.
+                                    # For unknown ops, pass what we have and let dispatch error.
+                                    _fields = [str(_item[k]) for k in sorted(_item) if k != "op"]
+                                    _sub_arg = ":".join([_sub_op] + _fields) if _fields else _sub_op
+                                _sub_result = dispatch(_sub_arg)
+                                results.append(_sub_result)
+                                if not continue_on_error and _sub_result.split("\n")[1:2] and (
+                                    _sub_result.split("\n")[1].startswith("ERROR")
+                                ):
+                                    break
+                            body = "".join(results)
         elif op == "validate":
             v_path = parts[1] if len(parts) > 1 else ""
             v_tools = [t for t in (parts[2].split(",") if len(parts) > 2 and parts[2] else []) if t]
