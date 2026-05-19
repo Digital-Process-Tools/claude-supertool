@@ -242,55 +242,13 @@ Or with explicit options:
 
 ## Validators — squiggle-on-save for the LLM
 
-Every mutating op (`edit`, `replace`, `replace_lines`, `paste`, `vim`) runs matching validators on the result before returning. If validation fails and `rollback_on_fail: true` is set, the edit reverts atomically — the model gets an immediate error receipt and can retry without leaving the file in a broken state. No "edit succeeded, discovered broken three turns later."
+Every mutating op (`edit`, `replace`, `replace_lines`, `paste`, `vim`) runs matching validators on the result. Syntax fail → atomic rollback. The model gets an immediate error receipt and retries cleanly.
 
-Validators are declared per-file-type in `.supertool.json` under `validators`. Each entry specifies a `match` glob, the ops it `hooks_into`, and whether to roll back on failure. When the underlying toolchain is missing, the validator warns and exits 0 — supertool stays usable in any repo without pre-installed dependencies. One validator per `match` pattern; multiple entries for the same language are fine (`*.yml` and `*.yaml` are separate entries, for example).
+Example: edit a `.json` file with a missing comma → `jsonlint` catches it → file reverts → receipt shows the parse error with line/col.
 
-### Bundled validators
+17 validators bundled out of the box (PHP, XML, JSON, YAML, INI, Python, Bash, JS, TS, SCSS, Markdown, Ruby, Dockerfile, Go, Terraform, Rust, TOML). Graceful skip when toolchain missing.
 
-Enable any of these by copying the relevant entry from `.supertool.example.json` into your project's `.supertool.json`. Each ships as a thin Python wrapper that delegates to the real tool — graceful skip when the tool is absent.
-
-| Language / format | Validator name | Requires |
-|-------------------|---------------|----------|
-| PHP | `phplint` | `php` on PATH |
-| XML | `xmllint` | `libxml2` (`xmllint` CLI) |
-| JSON | `jsonlint` | stdlib only |
-| YAML (`.yml`) | `yaml-check` | PyYAML (`pip install pyyaml`) |
-| YAML (`.yaml`) | `yaml-check-yaml` | PyYAML (`pip install pyyaml`) |
-| INI | `inilint` | stdlib only |
-| Python | `py-compile` | stdlib only |
-| Bash | `bash-check` | `bash` on PATH |
-| JavaScript | `node-check` | `node` on PATH |
-| CSS / SCSS | `stylelint` | `stylelint` npm package |
-| TOML | `tomllint` | stdlib (3.11+) or `tomli` |
-| Markdown | `markdownlint` | `markdownlint` CLI |
-| Ruby | `ruby-check` | `ruby` on PATH |
-| Dockerfile | `hadolint` | `hadolint` on PATH |
-| TypeScript (`.ts`) | `tsc-check` | `tsc` (`npm install -g typescript`) |
-| TypeScript (`.tsx`) | `tsc-check-tsx` | `tsc` (`npm install -g typescript`) |
-| Go | `gofmt-check` | `gofmt` (ships with Go) |
-| Terraform | `terraform-check` | `terraform` CLI |
-| Rust | `cargo-check` | `cargo` (ships with Rust) |
-
-### Adding your own
-
-Three lines of JSON — new language supported. Example for Elixir:
-
-```json
-"elixir-check": {
-  "cmd": "elixir -c {file}",
-  "match": "*.ex",
-  "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
-  "rollback_on_fail": true,
-  "timeout": 10
-}
-```
-
-Any tool that can exit non-zero on bad input works. See `validators/SCHEMA.md` for the full adapter contract if you want structured error output (line numbers, error categories). PRs for languages you edit regularly are welcome.
-
-### Format-on-save (planned)
-
-A `formatters` section will mirror the validators pattern — same `match`, `hooks_into`, and graceful skip when the formatter is absent. Order of execution: edit → format → validate → rollback if validate fails. Prettier will ship first, followed by `gofmt`, `black`, `rustfmt`, and `phpcbf`. Not available yet — listed here so the design intent is clear.
+Full reference: [docs/validators.md](docs/validators.md) — bundled list, how they hook in, adding your own.
 
 ---
 
