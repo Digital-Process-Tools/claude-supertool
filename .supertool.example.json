@@ -223,7 +223,7 @@
       "cmd": "python3 {supertool_dir}/validators/gofmt-check/gofmt-check.py {file}",
       "match": "*.go",
       "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
-      "rollback_on_fail": true,
+      "rollback_on_fail": false,
       "timeout": 30
     },
     "terraform-check": {
@@ -237,21 +237,21 @@
       "cmd": "python3 {supertool_dir}/validators/cargo-check/cargo-check.py {file}",
       "match": "*.rs",
       "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
-      "rollback_on_fail": true,
+      "rollback_on_fail": false,
       "timeout": 60
     },
     "tsc-check": {
       "cmd": "python3 {supertool_dir}/validators/tsc-check/tsc-check.py {file}",
       "match": "*.ts",
       "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
-      "rollback_on_fail": true,
+      "rollback_on_fail": false,
       "timeout": 30
     },
     "tsc-check-tsx": {
       "cmd": "python3 {supertool_dir}/validators/tsc-check/tsc-check.py {file}",
       "match": "*.tsx",
       "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
-      "rollback_on_fail": true,
+      "rollback_on_fail": false,
       "timeout": 30
     },
     "tomllint": {
@@ -265,7 +265,7 @@
       "cmd": "python3 {supertool_dir}/validators/markdownlint/markdownlint.py {file}",
       "match": "*.md",
       "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
-      "rollback_on_fail": true,
+      "rollback_on_fail": false,
       "timeout": 30
     },
     "ruby-check": {
@@ -279,7 +279,7 @@
       "cmd": "python3 {supertool_dir}/validators/hadolint/hadolint.py {file}",
       "match": "Dockerfile*",
       "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
-      "rollback_on_fail": true,
+      "rollback_on_fail": false,
       "timeout": 30
     }
   }

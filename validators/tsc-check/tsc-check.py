@@ -36,7 +36,7 @@ def main() -> None:
 
     try:
         result = subprocess.run(
-            ["tsc", "--noEmit", "--allowJs", "--checkJs", "--skipLibCheck", file],
+            ["tsc", "--noEmit", "--skipLibCheck", file],
             capture_output=True,
             text=True,
             timeout=30,
