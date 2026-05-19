@@ -290,6 +290,55 @@
       "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
       "rollback_on_fail": false,
       "timeout": 30
+    },
+    "black": {
+      "cmd": "black --quiet {file}",
+      "match": "*.py",
+      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "rollback_on_fail": false,
+      "timeout": 30
+    },
+    "gofmt": {
+      "cmd": "gofmt -w {file}",
+      "match": "*.go",
+      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "rollback_on_fail": false,
+      "timeout": 30
+    },
+    "rustfmt": {
+      "cmd": "rustfmt {file}",
+      "match": "*.rs",
+      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "rollback_on_fail": false,
+      "timeout": 30
+    },
+    "phpcbf": {
+      "cmd": "phpcbf --standard=PSR12 {file}",
+      "match": "*.php",
+      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "rollback_on_fail": false,
+      "timeout": 30
+    },
+    "shfmt": {
+      "cmd": "shfmt -w {file}",
+      "match": "*.sh",
+      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "rollback_on_fail": false,
+      "timeout": 30
+    },
+    "terraform-fmt": {
+      "cmd": "terraform fmt -write=true {file}",
+      "match": "*.tf",
+      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "rollback_on_fail": false,
+      "timeout": 30
+    },
+    "rubocop": {
+      "cmd": "rubocop -a --no-color --format quiet {file}",
+      "match": "*.rb",
+      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "rollback_on_fail": false,
+      "timeout": 30
     }
   }
 }

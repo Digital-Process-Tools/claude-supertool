@@ -40,11 +40,16 @@ Formatters are declared per-file-type in `.supertool.json` under `formatters`, k
 
 Enable any of these by copying the relevant entry from `.supertool.example.json` into your project's `.supertool.json`.
 
-| Language / format                        | Formatter name | Requires                        | Notes                          |
-|------------------------------------------|----------------|---------------------------------|--------------------------------|
-| XML, SCSS, CSS, JS, JSON, YAML, Markdown | `prettier`     | `prettier` npm package          | `npm install -g prettier`      |
-
-More formatters (`gofmt`, `black`, `rustfmt`, `phpcbf`) are config additions — no code changes needed. See "Adding your own" below.
+| Language / format                        | Formatter name  | Requires                                         | Notes                                         |
+|------------------------------------------|-----------------|--------------------------------------------------|-----------------------------------------------|
+| XML, SCSS, CSS, JS, JSON, YAML, Markdown | `prettier`      | `prettier` npm package                           | `npm install -g prettier`                     |
+| Python                                   | `black`         | `black` pip package                              | `pip install black`                           |
+| Go                                       | `gofmt`         | Go toolchain                                     | Ships with Go — no extra install              |
+| Rust                                     | `rustfmt`       | Rust toolchain                                   | Ships with `rustup` — `rustup component add rustfmt` |
+| PHP (PSR-12)                             | `phpcbf`        | PHP_CodeSniffer via Composer                     | `composer global require squizlabs/php_codesniffer` |
+| Bash / shell                             | `shfmt`         | `shfmt` binary                                   | `brew install shfmt` / `go install mvdan.cc/sh/v3/cmd/shfmt@latest` |
+| Terraform / HCL                          | `terraform-fmt` | Terraform CLI                                    | Ships with Terraform — `brew install terraform` |
+| Ruby                                     | `rubocop`       | RuboCop gem                                      | `gem install rubocop`; `-a` = auto-fix only   |
 
 ## Adding your own
 
