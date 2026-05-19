@@ -7950,9 +7950,34 @@ def _load_at_file(ref: str) -> Any:
         raise ValueError(f"@file JSON parse error ({source}): {_e}") from _e
 
 
-# Mapping from op name to the ordered list of JSON field names that map to
-# positional parts[1], parts[2], ... for each mutating op.
-_AT_FILE_OP_FIELDS: Dict[str, List[str]] = {
+# Dynamic @file field registry — built lazily from op syntax strings.
+# Maps op name → ordered list of JSON field names (positional parts[1..N]).
+# Populated on first dispatch call via _build_at_file_registry().
+_AT_FILE_REGISTRY: Dict[str, List[str]] = {}
+_AT_FILE_REGISTRY_BUILT: bool = False
+
+
+def _fields_from_syntax(syntax: str) -> List[str]:
+    """Derive positional field names from a syntax string using ':::' separator.
+
+    Takes the first alternative (before ' | '), splits on ':::', drops the
+    first token (op name), and lowercases the rest.
+
+    Returns [] if the syntax has no ':::' (read-only op — no @file route).
+
+    Examples:
+      'edit:::OLD:::NEW:::PATH'    → ['old', 'new', 'path']
+      'paste:::PATH:::CONTENT'     → ['path', 'content']
+      'read:PATH'                  → []
+    """
+    first_alt = syntax.split(" | ")[0].split(" |  ")[0]
+    if ":::" not in first_alt:
+        return []
+    tokens = first_alt.split(":::")
+    return [t.lower() for t in tokens[1:]]
+
+
+_AT_FILE_BUILTIN_DEFAULTS: Dict[str, List[str]] = {
     "edit":          ["old", "new", "path"],
     "replace":       ["old", "new", "path"],
     "replace_dry":   ["old", "new", "path"],
@@ -7962,34 +7987,71 @@ _AT_FILE_OP_FIELDS: Dict[str, List[str]] = {
 }
 
 
-def _at_file_to_parts(op: str, payload: Any) -> List[str]:
-    """Convert a JSON payload dict to a parts list for the given op.
+def _build_at_file_registry() -> None:
+    """Populate _AT_FILE_REGISTRY from builtin-ops and custom/preset op syntax.
 
-    The returned list is [op, field1_value, field2_value, ...] matching
+    Starts from _AT_FILE_BUILTIN_DEFAULTS so the builtins always work even
+    when no config file is present (e.g. in tests). Config-derived entries
+    overlay the defaults, allowing syntax-driven overrides and automatically
+    giving preset ops with ':::' syntax their own @file routes.
+
+    Called once on the first dispatch invocation.
+    """
+    global _AT_FILE_REGISTRY, _AT_FILE_REGISTRY_BUILT
+    if _AT_FILE_REGISTRY_BUILT:
+        return
+    registry: Dict[str, List[str]] = dict(_AT_FILE_BUILTIN_DEFAULTS)
+    config = _load_config()
+    for section in ("builtin-ops", "ops"):
+        for op_name, info in config.get(section, {}).items():
+            if not isinstance(info, dict):
+                continue
+            syntax = info.get("syntax", "")
+            if not syntax:
+                continue
+            fields = _fields_from_syntax(syntax)
+            if fields:
+                registry[op_name] = fields
+    _AT_FILE_REGISTRY = registry
+    _AT_FILE_REGISTRY_BUILT = True
+
+
+def _at_file_fields(op: str) -> List[str]:
+    """Return the field list for *op*, or [] if the op has no @file route."""
+    _build_at_file_registry()
+    return _AT_FILE_REGISTRY.get(op, [])
+
+
+def _at_file_to_parts(op: str, payload: Any) -> Tuple[List[str], bool]:
+    """Convert a JSON payload dict to (parts, replace_all) for the given op.
+
+    The returned parts list is [op, field1_value, field2_value, ...] matching
     the positional form that the existing dispatch handlers expect.
 
     All values are coerced to str so the downstream handlers work unchanged.
+
+    replace_all is extracted from the payload and returned separately so the
+    dispatch handler can act on it without polluting the parts list.
     """
     if not isinstance(payload, dict):
         raise ValueError(
             f"@file payload for op '{op}' must be a JSON object, "
             f"got {type(payload).__name__}"
         )
-    fields = _AT_FILE_OP_FIELDS.get(op)
-    if fields is None:
+    fields = _at_file_fields(op)
+    if not fields:
         raise ValueError(f"@file route not supported for op '{op}'")
+    # Case-insensitive key lookup — normalise payload keys once.
+    lower_payload = {k.lower(): v for k, v in payload.items()}
     parts = [op]
     for field in fields:
-        if field not in payload:
+        if field not in lower_payload:
             raise ValueError(
                 f"@file payload for op '{op}' missing required field '{field}'"
             )
-        parts.append(str(payload[field]))
-    # replace_all is optional for edit/replace — handled as extra flag later;
-    # stash it in a synthetic extra part so downstream can pick it up via
-    # the existing triple-colon path reconstruction (no handler reads it
-    # positionally, so it's safe to omit here — validators use parts[0..N]).
-    return parts
+        parts.append(str(lower_payload[field]))
+    replace_all = bool(lower_payload.get("replace_all", False))
+    return parts, replace_all
 
 
 def dispatch(arg: str) -> str:
@@ -8030,15 +8092,16 @@ def dispatch(arg: str) -> str:
 
     # @file route — 'op:@path' or 'op:@-' (stdin).
     # Load JSON, rebuild parts list, then fall through to the normal handlers.
-    # Applies to mutating ops listed in _AT_FILE_OP_FIELDS.
+    # Applies to mutating ops that have ':::' fields in their syntax string.
+    _at_file_replace_all: bool = False
     if (
         len(parts) == 2
         and parts[1].startswith("@")
-        and op in _AT_FILE_OP_FIELDS
+        and _at_file_fields(op)
     ):
         try:
             payload = _load_at_file(parts[1])
-            parts = _at_file_to_parts(op, payload)
+            parts, _at_file_replace_all = _at_file_to_parts(op, payload)
         except ValueError as _e:
             return header + f"ERROR: {_e}\n"
 
@@ -8155,7 +8218,10 @@ def dispatch(arg: str) -> str:
             old_str = _decode_escapes(parts[1] if len(parts) > 1 else "")
             new_str = _decode_escapes(parts[2] if len(parts) > 2 else "")
             epath = parts[3] if len(parts) > 3 else ""
-            body = _run_with_validators(op, parts, lambda: op_edit(old_str, new_str, epath))
+            if _at_file_replace_all:
+                body = _run_with_validators(op, parts, lambda: op_replace(old_str, new_str, epath or "."))
+            else:
+                body = _run_with_validators(op, parts, lambda: op_edit(old_str, new_str, epath))
         elif op == "replace_lines":
             rl_path = parts[1] if len(parts) > 1 else ""
             try:
@@ -8228,15 +8294,18 @@ def dispatch(arg: str) -> str:
                                 # Build the arg string from the op + its fields,
                                 # using the @file→parts machinery for mutating ops
                                 # (preserves validators) and plain dispatch for others.
-                                if _sub_op in _AT_FILE_OP_FIELDS:
+                                if _at_file_fields(_sub_op):
                                     try:
-                                        _sub_parts = _at_file_to_parts(_sub_op, _item)
+                                        _sub_parts, _sub_replace_all = _at_file_to_parts(_sub_op, _item)
                                     except ValueError as _ve:
                                         err = f"ERROR: {_ve}\n"
                                         results.append(err)
                                         if not continue_on_error:
                                             break
                                         continue
+                                    # replace_all: true on an edit op → promote to replace
+                                    if _sub_replace_all and _sub_op == "edit":
+                                        _sub_parts[0] = "replace"
                                     # Reconstruct a triple-colon arg string so dispatch
                                     # parses it correctly (handles colons in content).
                                     _sub_arg = ":::".join(_sub_parts)
