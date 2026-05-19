@@ -9,7 +9,7 @@
 
 Saves tokens. Saves money. Saves turns. Works the same in interactive sessions and autonomous runs — humans pair-programming with Claude Code use it every day, not just Kevin-style headless agents. One Python file, zero deps, Python 3.9+.
 
-[Why](#why) • [Four pillars](#four-pillars) • [Receipt](#receipt--the-bill-math) • [Batching](#batch-multiple-ops-in-one-call) • [Parallel](#parallel-execution) • [Input forms](#input-forms) • [Expand it](#supertooljson--project-configuration) • [Install](#install)
+[Why](#why) • [Four pillars](#four-pillars) • [Receipt](#receipt--the-bill-math) • [Batching](#batch-multiple-ops-in-one-call) • [Parallel](#parallel-execution) • [Input forms](#input-forms) • [Validators](#validators--squiggle-on-save-for-the-llm) • [Expand it](#supertooljson--project-configuration) • [Install](#install)
 
 ```bash
 # 7 ops, 1 round-trip, parallel where safe
@@ -237,6 +237,60 @@ Or with explicit options:
 ```
 
 `continue_on_error` defaults to `true` — a failed op is reported but the rest of the batch continues. Set to `false` to abort on first error. Validators (phplint, xmllint, etc.) fire per mutating op, same as inline edits. Use `@-` to pipe the payload from stdin.
+
+---
+
+## Validators — squiggle-on-save for the LLM
+
+Every mutating op (`edit`, `replace`, `replace_lines`, `paste`, `vim`) runs matching validators on the result before returning. If validation fails and `rollback_on_fail: true` is set, the edit reverts atomically — the model gets an immediate error receipt and can retry without leaving the file in a broken state. No "edit succeeded, discovered broken three turns later."
+
+Validators are declared per-file-type in `.supertool.json` under `validators`. Each entry specifies a `match` glob, the ops it `hooks_into`, and whether to roll back on failure. When the underlying toolchain is missing, the validator warns and exits 0 — supertool stays usable in any repo without pre-installed dependencies. One validator per `match` pattern; multiple entries for the same language are fine (`*.yml` and `*.yaml` are separate entries, for example).
+
+### Bundled validators
+
+Enable any of these by copying the relevant entry from `.supertool.example.json` into your project's `.supertool.json`. Each ships as a thin Python wrapper that delegates to the real tool — graceful skip when the tool is absent.
+
+| Language / format | Validator name | Requires |
+|-------------------|---------------|----------|
+| PHP | `phplint` | `php` on PATH |
+| XML | `xmllint` | `libxml2` (`xmllint` CLI) |
+| JSON | `jsonlint` | stdlib only |
+| YAML (`.yml`) | `yaml-check` | PyYAML (`pip install pyyaml`) |
+| YAML (`.yaml`) | `yaml-check-yaml` | PyYAML (`pip install pyyaml`) |
+| INI | `inilint` | stdlib only |
+| Python | `py-compile` | stdlib only |
+| Bash | `bash-check` | `bash` on PATH |
+| JavaScript | `node-check` | `node` on PATH |
+| CSS / SCSS | `stylelint` | `stylelint` npm package |
+| TOML | `tomllint` | stdlib (3.11+) or `tomli` |
+| Markdown | `markdownlint` | `markdownlint` CLI |
+| Ruby | `ruby-check` | `ruby` on PATH |
+| Dockerfile | `hadolint` | `hadolint` on PATH |
+| TypeScript (`.ts`) | `tsc-check` | `tsc` (`npm install -g typescript`) |
+| TypeScript (`.tsx`) | `tsc-check-tsx` | `tsc` (`npm install -g typescript`) |
+| Go | `gofmt-check` | `gofmt` (ships with Go) |
+| Terraform | `terraform-check` | `terraform` CLI |
+| Rust | `cargo-check` | `cargo` (ships with Rust) |
+
+### Adding your own
+
+Three lines of JSON — new language supported. Example for Elixir:
+
+```json
+"elixir-check": {
+  "cmd": "elixir -c {file}",
+  "match": "*.ex",
+  "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+  "rollback_on_fail": true,
+  "timeout": 10
+}
+```
+
+Any tool that can exit non-zero on bad input works. See `validators/SCHEMA.md` for the full adapter contract if you want structured error output (line numbers, error categories). PRs for languages you edit regularly are welcome.
+
+### Format-on-save (planned)
+
+A `formatters` section will mirror the validators pattern — same `match`, `hooks_into`, and graceful skip when the formatter is absent. Order of execution: edit → format → validate → rollback if validate fails. Prettier will ship first, followed by `gofmt`, `black`, `rustfmt`, and `phpcbf`. Not available yet — listed here so the design intent is clear.
 
 ---
 
