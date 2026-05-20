@@ -72,7 +72,7 @@ From the DPT marketplace:
 /plugin install supertool@dpt-plugins
 ```
 
-This auto-registers both hooks (`SessionStart` + `PreToolUse`) via the plugin's `hooks/hooks.json` — no manual `settings.json` editing.
+This auto-registers the session-start hook via the plugin's `hooks/hooks.json` — no manual `settings.json` editing.
 
 Or directly — clone the repo and symlink `supertool.py` onto your `$PATH` as `supertool`:
 
@@ -88,13 +88,11 @@ Verify:
 supertool 'read:README.md'
 ```
 
-Standalone install doesn't wire up the hooks (no plugin system). You get the binary; the enforcement mode and session-start prompt come with the marketplace install.
+Standalone install doesn't wire up the session-start hook (no plugin system). You get the binary; the marketplace install adds the session-start prompt that primes the model on your project's ops.
 
 ---
 
 ## How to use
-
-### Interactive (permissive mode — default)
 
 Just install. The session-start hook runs `./supertool 'introduction' 'output-format' 'ops-compact'` to output the project-specific operations reference from `.supertool.json`. The model learns what's available and how to batch. Falls back to native `Grep`/`Read` when those are better.
 
@@ -102,39 +100,21 @@ Just install. The session-start hook runs `./supertool 'introduction' 'output-fo
 >
 > The session-start hook uses `ops-compact` to stay under the cap: examples are dropped on self-explanatory ops, and only kept on ops marked `"hint": true` in `.supertool.json`. If the body still exceeds the cap, `ops-compact` prepends a warning telling the model to fetch the full listing via `./supertool 'ops'`. Plain `'ops'` always returns everything.
 
-### Autonomous / headless (enforced mode)
+### Hard-block native tools (optional)
 
-For Kevin-style runs where you want the model to **always** batch via SuperTool:
+If you want to force the model to batch via supertool — typical for autonomous / Kevin-style runs — block the competing tools at the Claude Code layer. Two paths:
 
-```
-/supertool on
-```
+**Settings (interactive sessions):** add a `permissions.deny` block to `.claude/settings.json`:
 
-This writes `~/.claude/supertool-enforced`, which the PreToolUse hook reads to block:
-
-- `Grep`, `Glob`, `LS` (native builtins)
-- `Bash(cat ...)`, `Bash(find ...)`, `Bash(grep ...)`, `Bash(ls ...)`
-- `Bash(sed ...)`, `Bash(awk ...)`, `Bash(tail ...)`, `Bash(head ...)`
-
-Blocked calls receive a redirect message ("Use `./supertool` instead: ..."). Model learns to batch.
-
-**Read stays allowed** — Claude Code's Edit tool needs the built-in Read for state-based file checks. Don't try to disable it.
-
-Turn off when you're done:
-
-```
-/supertool off
+```json
+{
+  "permissions": {
+    "deny": ["Grep", "Glob", "LS", "Bash(find:*)", "Bash(cat:*)", "Bash(grep:*)", "Bash(ls:*)", "Bash(sed:*)", "Bash(awk:*)", "Bash(tail:*)", "Bash(head:*)"]
+  }
+}
 ```
 
-Check state:
-
-```
-/supertool status
-```
-
-### `--disallowedTools` alternative (CLI)
-
-If you're running `claude -p` in bypass mode, you can use the CLI flag directly (plugin not required):
+**CLI flag (`claude -p` bypass mode):**
 
 ```bash
 claude -p "..." --permission-mode bypassPermissions \
@@ -316,7 +296,6 @@ See [docs/contributing.md](docs/contributing.md) — custom ops, presets, valida
 - **One file.** `supertool.py` is ~980 LoC (16 ops, 3 integration tiers). No package, no `setup.py`, no required deps. Drop in and use.
 - **Python 3.9+.** macOS ships 3.9 via CommandLineTools; we don't force upgrades.
 - **No MCP server.** MCP is server-process-and-JSON-RPC ceremony for what's literally "run a script, get output." A Bash-invoked binary is simpler, faster, and plugs into Claude Code's existing `--allowedTools`/`--disallowedTools` flow.
-- **Enforcement via PreToolUse hook, not config mutation.** The plugin doesn't edit your `settings.json`. Toggling is a state file (`~/.claude/supertool-enforced`) read by the hook. Your config stays yours.
 - **Trade Python work for LLM tokens.** LLM compute is expensive; local CPU is cheap. Any time the model would spend tokens computing, parsing, formatting, or finding — supertool should spend milliseconds instead. Richer op output (state hints, guards, semantic anchors, auto-formatting, syntax checks) is not feature creep — it's the whole thesis. Heavy Python is fine if it shaves tokens off the model side.
 
 ---

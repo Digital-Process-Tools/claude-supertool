@@ -17,3 +17,5 @@ htmlcov/
 .DS_Store
 supertool
 .claude/worktrees/
+
+.max/
