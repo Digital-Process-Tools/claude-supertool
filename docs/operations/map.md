@@ -159,3 +159,14 @@ Costs ~20 tokens instead of reading every file. Use it before deciding which fil
 - [search.md](search.md) — `between` extracts a full symbol body once you know its name from `map`
 - [reads.md](reads.md) — `read` for full file content after `map` narrows the target
 - [index.md](index.md) — full op table
+
+## tree-sitter integration
+
+When [`tree-sitter-language-pack`](https://pypi.org/project/tree-sitter-language-pack/) (Python 3.10+) or [`tree-sitter-languages`](https://pypi.org/project/tree-sitter-languages/) (Python 3.8–3.12) is installed, `map` uses tree-sitter for AST-based symbol extraction instead of ctags or regex.
+
+- Detects installed package at first `map` call (cached for session)
+- Prefers `tree-sitter-language-pack` over `tree-sitter-languages` when both are present
+- Falls back to ctags → regex when neither is installed
+- No configuration needed — pure detection
+
+tree-sitter is optional. The `map` op works without it — tree-sitter just gives more accurate nesting and signature details.

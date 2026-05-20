@@ -9,7 +9,7 @@
 
 Saves tokens. Saves money. Saves turns. Works the same in interactive sessions and autonomous runs — humans pair-programming with Claude Code use it every day, not just Kevin-style headless agents. One Python file, zero deps, Python 3.9+.
 
-[Why](#why) • [Four pillars](#four-pillars) • [Receipt](#receipt--the-bill-math) • [Batching](#batch-multiple-ops-in-one-call) • [Parallel](#parallel-execution) • [Input forms](#input-forms) • [Validators](#validators--squiggle-on-save-for-the-llm) • [Expand it](#supertooljson--project-configuration) • [Install](#install)
+[Why](#why) • [Four pillars](#four-pillars) • [Receipt](#receipt--the-bill-math) • [Batching](#batch-multiple-ops-in-one-call) • [Parallel](docs/configuration.md#parallel-execution) • [Input forms](#input-forms) • [Validators](#validators--squiggle-on-save-for-the-llm) • [Expand it](#supertooljson--project-configuration) • [Install](#install)
 
 ```bash
 # 7 ops, 1 round-trip, parallel where safe
@@ -203,67 +203,6 @@ Writing your own: see [docs/contributing.md](docs/contributing.md).
 
 The `check:PRESET:PATH` op still works — it reads from the `ops` section first, then falls back to `.supertool-checks.json` for backward compatibility. New projects should use direct ops (`mypy:file`) instead of `check:mypy:file`.
 
-### Compact mode
-
-Set `"compact": true` in `.supertool.json` to enable compact reads. When enabled, `read` ops skip blank lines and comment-only lines (`//`, `#`, `/* */`, `<!-- -->`, PHPDoc `*` lines), preserving original line numbers. Reduces token cost for exploration without losing structure.
-
-Compact is disabled when using `grep=` filter or `offset` (editing needs exact lines).
-
-### Parallel execution
-
-Read-only ops in a batch can run concurrently. Output order is preserved (matches input order, not completion order).
-
-Enable in `.supertool.json`:
-
-```json
-{ "parallel": 4 }
-```
-
-`parallel: N` runs up to N ops concurrently via a thread pool. `0` (default) = sequential. Boolean `true` is accepted as `4` for back-compat.
-
-Override via env: `SUPERTOOL_PARALLEL=4 ./supertool 'read:a' 'grep:x:b/' 'glob:c/**'`. Env wins over JSON. Set `0` to force off for one call.
-
-**Safe ops** (parallelized): `read`, `grep`, `glob`, `ls`, `head`, `tail`, `wc`, `stat`, `map`, `tree`, `around`, `around_line`, `between`, `diff`, `blame`, `version`.
-
-**Unsafe** — batch falls back to sequential whenever any op is mutating (`edit`, `replace`, `replace_dry`, `replace_lines`) or custom (anything in `ops:` — could shell out to anything). All-or-nothing per call: no partial parallelism.
-
-Speedup: I/O-bound ops on different files. ~3-5× faster on cold filesystem; modest gain on warm cache.
-
-### Excluding paths from traversal ops
-
-`glob`, `grep`, `tree`, and `map` walk the filesystem recursively. On large repos this can be slow and noisy — `.git/objects/`, `node_modules/`, `vendor/`, and similar dirs rarely contain what you're looking for.
-
-Supertool prunes these at the **directory boundary** (never opens them), not after the fact.
-
-**Built-in defaults** — always active unless overridden:
-
-```
-.git/  node_modules/  .svn/  .hg/  .idea/  .vscode/
-__pycache__/  .venv/  venv/  dist/  build/
-```
-
-**Project-level additions** — add to `.supertool.json` under `ops.<op-name>.exclude-paths`. These are **merged additively** with the defaults (not replacing):
-
-```json
-{
-  "ops": {
-    "glob": { "exclude-paths": ["vendor/", "Dvsi/dvsi-private/libs/"] },
-    "grep": { "exclude-paths": ["vendor/", "Dvsi/dvsi-private/libs/"] }
-  }
-}
-```
-
-**Per-call escape hatch** — append `:::no-exclude` to bypass all excludes for one call:
-
-```bash
-./supertool 'grep:somePattern:vendor/:10:::no-exclude'
-./supertool 'glob:**/*.php:::no-exclude'
-```
-
-Ops that take explicit paths and don't traverse (`ls`, `read`, `head`, `tail`, `wc`, `stat`, `around`, `around_line`, `between`, `diff`, `blame`) are not affected — they always work on exactly the path you give them.
-
-See [issue #4](https://github.com/Digital-Process-Tools/claude-supertool/issues/4) for the full design rationale.
-
 ### RTK integration
 
 When [rtk](https://github.com/reachingforthejack/rtk) is installed, supertool automatically delegates `read`, `grep`, and `wc` to RTK for compressed output. No configuration needed — detected via `which rtk` at first use.
@@ -274,17 +213,6 @@ When [rtk](https://github.com/reachingforthejack/rtk) is installed, supertool au
 - Without RTK, no compact: supertool's own output (default)
 
 RTK is optional. Supertool works identically without it — RTK is just an accelerator.
-
-### tree-sitter integration
-
-When [`tree-sitter-language-pack`](https://pypi.org/project/tree-sitter-language-pack/) (Python 3.10+) or [`tree-sitter-languages`](https://pypi.org/project/tree-sitter-languages/) (Python 3.8–3.12) is installed, `map` uses tree-sitter for AST-based symbol extraction instead of ctags or regex.
-
-- Detects installed package at first `map` call (cached for session)
-- Prefers `tree-sitter-language-pack` over `tree-sitter-languages` when both are present
-- Falls back to ctags → regex when neither is installed
-- No configuration needed — pure detection
-
-tree-sitter is optional. The `map` op works without it — tree-sitter just gives more accurate nesting and signature details.
 
 ### Batch multiple ops in one call
 
@@ -357,21 +285,7 @@ Each saved round-trip avoids one prefix cache re-read. The bigger your prefix, t
 
 ## Contributing
 
-Run the suite:
-
-```bash
-python3 -m pytest tests/
-```
-
-293 tests, 80% minimum coverage (enforced by pytest-cov). Current: 94%.
-
-Enable the pre-push hook (runs pytest + enforces 80% coverage before every push):
-
-```bash
-git config core.hooksPath .githooks
-```
-
-The hook is in `.githooks/pre-push`, committed to the repo. Bypass with `git push --no-verify` (discouraged).
+See [docs/contributing.md](docs/contributing.md) — custom ops, presets, validators, running tests, submitting upstream.
 
 ---
 
