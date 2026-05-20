@@ -47,7 +47,8 @@ class TestAtFileEdit:
 
     def test_invalid_json_returns_error(self, tmp_path: Path) -> None:
         spec = tmp_path / "bad.json"
-        spec.write_text("not valid json {{{")
+        # Payload format auto-detected: starts with `{` → JSON route.
+        spec.write_text("{not valid json {{{")
         out = supertool.dispatch(f"edit:@{spec}")
         assert "ERROR" in out
         assert "JSON parse error" in out
@@ -294,3 +295,121 @@ class TestAtFileReplaceAll:
         out = supertool.dispatch(f"batch:@{ops_file}")
         assert "ERROR" not in out
         assert target.read_text().strip() == "b b b"
+
+
+# ---------------------------------------------------------------------------
+# TOML payload route — auto-detected when first non-whitespace char is not { or [
+# ---------------------------------------------------------------------------
+
+class TestTomlPayload:
+    def test_paste_with_triple_literal_preserves_backslash(self, tmp_path: Path) -> None:
+        target = tmp_path / "out.sh"
+        spec = tmp_path / "p.toml"
+        spec.write_text(
+            f'path = "{target}"\n'
+            "content = '''\n"
+            "claude -p \"...\" --permission-mode bypass \\\n"
+            "  --disallowedTools \"Grep,Glob\"\n"
+            "'''\n"
+        )
+        out = supertool.dispatch(f"paste:@{spec}")
+        assert "ERROR" not in out
+        # The trailing backslash + newline survives the round-trip — that's
+        # the whole point of the TOML route over JSON.
+        body = target.read_text()
+        assert "bypass \\\n" in body
+        assert "--disallowedTools" in body
+
+    def test_edit_with_double_quoted_string(self, tmp_path: Path) -> None:
+        target = tmp_path / "x.py"
+        target.write_text("DEBUG = False\n")
+        spec = tmp_path / "e.toml"
+        spec.write_text(
+            'old = "DEBUG = False"\n'
+            'new = "DEBUG = True"\n'
+            f'path = "{target}"\n'
+        )
+        out = supertool.dispatch(f"edit:@{spec}")
+        assert "ERROR" not in out
+        assert target.read_text() == "DEBUG = True\n"
+
+    def test_replace_lines_with_integers_and_triple_literal(self, tmp_path: Path) -> None:
+        target = tmp_path / "x.py"
+        target.write_text("a\nb\nc\nd\n")
+        spec = tmp_path / "rl.toml"
+        spec.write_text(
+            f'path = "{target}"\n'
+            "start = 2\n"
+            "end = 3\n"
+            "content = '''X\nY'''\n"
+        )
+        out = supertool.dispatch(f"replace_lines:@{spec}")
+        assert "ERROR" not in out
+        assert target.read_text() == "a\nX\nY\nd\n"
+
+    def test_stdin_toml(self, tmp_path: Path, monkeypatch) -> None:
+        target = tmp_path / "out.txt"
+        import io
+        payload = (
+            f'path = "{target}"\n'
+            "content = '''line1\nline2 with \\ backslash\nline3'''\n"
+        )
+        monkeypatch.setattr("sys.stdin", io.StringIO(payload))
+        out = supertool.dispatch("paste:@-")
+        assert "ERROR" not in out
+        assert target.read_text() == "line1\nline2 with \\ backslash\nline3\n"
+
+    def test_format_auto_detect_brace_routes_to_json(self, tmp_path: Path) -> None:
+        target = tmp_path / "x.py"
+        target.write_text("a = 1\n")
+        spec = tmp_path / "e.payload"
+        # Starts with `{` → JSON route even though extension isn't .json.
+        spec.write_text(json.dumps({"old": "a = 1", "new": "a = 2", "path": str(target)}))
+        out = supertool.dispatch(f"edit:@{spec}")
+        assert "ERROR" not in out
+        assert target.read_text() == "a = 2\n"
+
+    def test_invalid_toml_returns_error(self, tmp_path: Path) -> None:
+        spec = tmp_path / "bad.toml"
+        spec.write_text("not = 'unclosed\n")
+        out = supertool.dispatch(f"edit:@{spec}")
+        assert "ERROR" in out
+        assert "TOML parse error" in out
+
+
+# ---------------------------------------------------------------------------
+# Mini TOML parser fallback (used when stdlib tomllib unavailable, Python <3.11)
+# ---------------------------------------------------------------------------
+
+class TestMiniTomlLoads:
+    def test_double_quoted_with_escapes(self) -> None:
+        d = supertool._mini_toml_loads('a = "x\\ny"\n')
+        assert d == {"a": "x\ny"}
+
+    def test_single_quoted_literal(self) -> None:
+        d = supertool._mini_toml_loads("a = 'x\\ny'\n")
+        assert d == {"a": "x\\ny"}
+
+    def test_triple_basic_with_leading_newline_stripped(self) -> None:
+        d = supertool._mini_toml_loads('a = """\nhello"""\n')
+        assert d == {"a": "hello"}
+
+    def test_triple_literal_preserves_backslash(self) -> None:
+        d = supertool._mini_toml_loads("a = '''\nlinex \\\nliney'''\n")
+        assert d == {"a": "linex \\\nliney"}
+
+    def test_int_and_bool(self) -> None:
+        d = supertool._mini_toml_loads("n = 42\nm = -5\nt = true\nf = false\n")
+        assert d == {"n": 42, "m": -5, "t": True, "f": False}
+
+    def test_comments_skipped(self) -> None:
+        d = supertool._mini_toml_loads("# header\na = 1  # trailing\nb = 2\n")
+        assert d == {"a": 1, "b": 2}
+
+    def test_bad_key_raises(self) -> None:
+        with pytest.raises(ValueError):
+            supertool._mini_toml_loads("= 1\n")
+
+    def test_unterminated_string_raises(self) -> None:
+        with pytest.raises(ValueError):
+            supertool._mini_toml_loads('a = "unterminated\n')

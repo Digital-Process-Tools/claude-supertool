@@ -8001,14 +8001,151 @@ def op_validate(path: str, tool_filter: Optional[list] = None) -> str:
     return "\n".join(out) + "\n"
 
 
+def _detect_payload_format(raw: str) -> str:
+    """Return 'json' if first non-whitespace char is { or [, else 'toml'."""
+    for c in raw:
+        if c in " \t\r\n":
+            continue
+        return "json" if c in "{[" else "toml"
+    return "json"
+
+
+_TOML_ESCAPES = {"n": "\n", "t": "\t", "r": "\r", "\\": "\\", '"': '"', "b": "\b", "f": "\f"}
+
+
+def _toml_basic_unescape(s: str) -> str:
+    out = []
+    i = 0
+    while i < len(s):
+        if s[i] == "\\" and i + 1 < len(s):
+            out.append(_TOML_ESCAPES.get(s[i + 1], s[i + 1]))
+            i += 2
+        else:
+            out.append(s[i])
+            i += 1
+    return "".join(out)
+
+
+def _mini_toml_loads(raw: str) -> Dict[str, Any]:
+    """Minimal TOML parser for @file payloads.
+
+    Supports: bare keys, integers, true/false, single-line strings
+    ("..." with escapes, '...' literal), multi-line strings (\"\"\"...\"\"\"
+    with escapes, '''...''' literal), # comments. No arrays, no tables,
+    no dotted keys, no dates — only what payloads need.
+
+    Used as fallback when stdlib `tomllib` is unavailable (Python <3.11).
+    """
+    result: Dict[str, Any] = {}
+    i, n = 0, len(raw)
+    while i < n:
+        while i < n and raw[i] in " \t\r\n":
+            i += 1
+        if i >= n:
+            break
+        if raw[i] == "#":
+            while i < n and raw[i] != "\n":
+                i += 1
+            continue
+        ks = i
+        while i < n and (raw[i].isalnum() or raw[i] in "_-"):
+            i += 1
+        if i == ks:
+            raise ValueError(f"bad key at offset {i}")
+        key = raw[ks:i]
+        while i < n and raw[i] in " \t":
+            i += 1
+        if i >= n or raw[i] != "=":
+            raise ValueError(f"expected '=' after key '{key}'")
+        i += 1
+        while i < n and raw[i] in " \t":
+            i += 1
+        if i >= n:
+            raise ValueError(f"missing value for '{key}'")
+        if raw[i:i + 3] == '"""':
+            i += 3
+            end = raw.find('"""', i)
+            if end < 0:
+                raise ValueError(f"unterminated \"\"\" for '{key}'")
+            val = _toml_basic_unescape(raw[i:end])
+            if val.startswith("\r\n"):
+                val = val[2:]
+            elif val.startswith("\n"):
+                val = val[1:]
+            i = end + 3
+        elif raw[i:i + 3] == "'''":
+            i += 3
+            end = raw.find("'''", i)
+            if end < 0:
+                raise ValueError(f"unterminated ''' for '{key}'")
+            val = raw[i:end]
+            if val.startswith("\r\n"):
+                val = val[2:]
+            elif val.startswith("\n"):
+                val = val[1:]
+            i = end + 3
+        elif raw[i] == '"':
+            i += 1
+            buf = []
+            while i < n and raw[i] != '"':
+                if raw[i] == "\\" and i + 1 < n:
+                    buf.append(_TOML_ESCAPES.get(raw[i + 1], raw[i + 1]))
+                    i += 2
+                elif raw[i] == "\n":
+                    raise ValueError(f"newline in single-line string for '{key}'")
+                else:
+                    buf.append(raw[i])
+                    i += 1
+            if i >= n:
+                raise ValueError(f"unterminated string for '{key}'")
+            val = "".join(buf)
+            i += 1
+        elif raw[i] == "'":
+            i += 1
+            end = raw.find("'", i)
+            if end < 0 or raw.find("\n", i, end) >= 0:
+                raise ValueError(f"unterminated literal for '{key}'")
+            val = raw[i:end]
+            i = end + 1
+        elif raw[i:i + 4] == "true" and (i + 4 == n or not raw[i + 4].isalnum()):
+            val = True
+            i += 4
+        elif raw[i:i + 5] == "false" and (i + 5 == n or not raw[i + 5].isalnum()):
+            val = False
+            i += 5
+        elif raw[i] == "-" or raw[i].isdigit():
+            ns = i
+            if raw[i] == "-":
+                i += 1
+            while i < n and raw[i].isdigit():
+                i += 1
+            try:
+                val = int(raw[ns:i])
+            except ValueError as _e:
+                raise ValueError(f"bad number for '{key}': {_e}") from _e
+        else:
+            raise ValueError(f"unknown value type for '{key}' at offset {i}")
+        result[key] = val
+        while i < n and raw[i] in " \t":
+            i += 1
+        if i < n and raw[i] == "#":
+            while i < n and raw[i] != "\n":
+                i += 1
+    return result
+
+
 def _load_at_file(ref: str) -> Any:
-    """Load JSON from an @file reference.
+    """Load JSON or TOML from an @file reference.
 
     Accepts:
       @path/to/file.json   — read from filesystem
       @-                   — read from stdin
 
-    Returns the parsed JSON value (dict, list, etc.).
+    Format detected from first non-whitespace char: { or [ → JSON, else TOML.
+    TOML lets you embed code blocks with backslashes/quotes/newlines without
+    JSON's double-escaping. Use '''triple-single-quote''' for literal content.
+
+    Returns the parsed value (dict, list, etc.).
     Raises ValueError with a human-readable message on any error.
     """
     if ref == "@-":
@@ -8024,10 +8161,21 @@ def _load_at_file(ref: str) -> Any:
         except OSError as _e:
             raise ValueError(f"@file read error: {fpath}: {_e}") from _e
         source = fpath
+    fmt = _detect_payload_format(raw)
+    if fmt == "json":
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as _e:
+            raise ValueError(f"@file JSON parse error ({source}): {_e}") from _e
     try:
-        return json.loads(raw)
-    except json.JSONDecodeError as _e:
-        raise ValueError(f"@file JSON parse error ({source}): {_e}") from _e
+        import tomllib  # stdlib, Python 3.11+
+        parser = tomllib.loads
+    except ImportError:
+        parser = _mini_toml_loads
+    try:
+        return parser(raw)
+    except Exception as _e:
+        raise ValueError(f"@file TOML parse error ({source}): {_e}") from _e
 
 
 # Dynamic @file field registry — built lazily from op syntax strings.
@@ -8174,6 +8322,7 @@ def dispatch(arg: str) -> str:
     # Load JSON, rebuild parts list, then fall through to the normal handlers.
     # Applies to mutating ops that have ':::' fields in their syntax string.
     _at_file_replace_all: bool = False
+    _at_file_used: bool = False
     if (
         len(parts) == 2
         and parts[1].startswith("@")
@@ -8182,8 +8331,14 @@ def dispatch(arg: str) -> str:
         try:
             payload = _load_at_file(parts[1])
             parts, _at_file_replace_all = _at_file_to_parts(op, payload)
+            _at_file_used = True
         except ValueError as _e:
             return header + f"ERROR: {_e}\n"
+
+    # When parts come from @file (JSON/TOML payload), they hold literal
+    # bytes — backslashes and newlines must NOT be reinterpreted as shell-
+    # style escapes. Only colon-CLI input needs `_decode_escapes`.
+    _dec = (lambda s: s) if _at_file_used else _decode_escapes
 
     try:
         if op == "read":
@@ -8289,14 +8444,14 @@ def dispatch(arg: str) -> str:
             d = int(parts[2]) if len(parts) > 2 and parts[2] else 3
             body = op_tree(path, d, exclude_paths=_get_exclude_paths("tree", no_exclude))
         elif op in ("replace", "replace_dry"):
-            old_str = _decode_escapes(parts[1] if len(parts) > 1 else "")
-            new_str = _decode_escapes(parts[2] if len(parts) > 2 else "")
+            old_str = _dec(parts[1] if len(parts) > 1 else "")
+            new_str = _dec(parts[2] if len(parts) > 2 else "")
             rpath = parts[3] if len(parts) > 3 and parts[3] else "."
             dry = op == "replace_dry"
             body = _run_with_validators(op, parts, lambda: op_replace(old_str, new_str, rpath, dry=dry))
         elif op == "edit":
-            old_str = _decode_escapes(parts[1] if len(parts) > 1 else "")
-            new_str = _decode_escapes(parts[2] if len(parts) > 2 else "")
+            old_str = _dec(parts[1] if len(parts) > 1 else "")
+            new_str = _dec(parts[2] if len(parts) > 2 else "")
             epath = parts[3] if len(parts) > 3 else ""
             if _at_file_replace_all:
                 body = _run_with_validators(op, parts, lambda: op_replace(old_str, new_str, epath or "."))
@@ -8311,12 +8466,12 @@ def dispatch(arg: str) -> str:
                 body = "ERROR: replace_lines START/END must be integers\n"
             else:
                 # CONTENT may legitimately contain ':' — rejoin remaining parts
-                rl_content = _decode_escapes(":".join(parts[4:]) if len(parts) > 4 else "")
+                rl_content = _dec(":".join(parts[4:]) if len(parts) > 4 else "")
                 body = _run_with_validators(op, parts, lambda: op_replace_lines(rl_path, rl_start, rl_end, rl_content))
         elif op == "paste":
             p_path = parts[1] if len(parts) > 1 else ""
             # CONTENT may contain ':' — rejoin everything after the path
-            p_content = _decode_escapes(":".join(parts[2:]) if len(parts) > 2 else "")
+            p_content = _dec(":".join(parts[2:]) if len(parts) > 2 else "")
             body = _run_with_validators(op, parts, lambda: op_paste(p_path, p_content))
         elif op == "vim":
             vim_path = parts[1] if len(parts) > 1 else ""
