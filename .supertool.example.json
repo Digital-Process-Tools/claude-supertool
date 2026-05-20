@@ -113,23 +113,23 @@
       "example": "blame:src/app/Module.py:42:3"
     },
     "edit": {
-      "syntax": "edit:::OLD:::NEW:::PATH  |  edit:@file.json",
-      "description": "Single-file edit, OLD must match exactly once. Bypasses native Edit must-Read state — saves a round-trip. Use ::: separator so content with ':' works (single ':' also accepted when content has no colons). @file route: edit:@path.json where file contains {\"old\":\"...\",\"new\":\"...\",\"path\":\"...\"}. Use @- to read from stdin.",
+      "syntax": "edit:::OLD:::NEW:::PATH  |  edit:@payload",
+      "description": "Single-file edit, OLD must match exactly once. Bypasses native Edit must-Read state — saves a round-trip. Use ::: separator so content with ':' works. @file route: edit:@path.{json,toml} — JSON {\"old\":\"...\",\"new\":\"...\",\"path\":\"...\"} or TOML (use ''' literal blocks for code with backslashes/quotes/newlines). Format auto-detected from first non-whitespace char. Use @- for stdin.",
       "example": "edit:::return false;:::return true;:::src/app/Foo.py"
     },
     "replace_lines": {
-      "syntax": "replace_lines:::PATH:::START:::END:::CONTENT  |  replace_lines:@file.json",
-      "description": "Swap lines [START,END] (1-indexed inclusive) with CONTENT. END<START = insert before START. Empty CONTENT = delete. @file route: replace_lines:@path.json where file contains {\"path\":\"...\",\"start\":N,\"end\":N,\"content\":\"...\"}.",
+      "syntax": "replace_lines:::PATH:::START:::END:::CONTENT  |  replace_lines:@payload",
+      "description": "Swap lines [START,END] (1-indexed inclusive) with CONTENT. END<START = insert before START. Empty CONTENT = delete. @file route: JSON {\"path\":\"...\",\"start\":N,\"end\":N,\"content\":\"...\"} or TOML (content = '''...''' preserves backslashes/newlines literally).",
       "example": "replace_lines:::src/app/Foo.py:::42:::45:::    return x"
     },
     "paste": {
-      "syntax": "paste:::PATH:::CONTENT  |  paste:@file.json",
-      "description": "Replace entire file with CONTENT. Atomic, creates file (+ parent dirs) if missing. Use for full-file rewrites. @file route: paste:@path.json where file contains {\"path\":\"...\",\"content\":\"...\"}.",
+      "syntax": "paste:::PATH:::CONTENT  |  paste:@payload",
+      "description": "Replace entire file with CONTENT. Atomic, creates file (+ parent dirs) if missing. Use for full-file rewrites. @file route: JSON {\"path\":\"...\",\"content\":\"...\"} or TOML (content = '''multi-line literal''' — best for code blocks).",
       "example": "paste:::src/app/new_file.py:::print('hello')\\n"
     },
     "batch": {
       "syntax": "batch:@file.json",
-      "description": "Run an array of ops in one call. Mix anything — read+edit+grep+phpstan in one round-trip. Payload: bare array of {op, ...fields} OR wrapper {continue_on_error, ops}. Default continue. Validators fire per mutating op. Use @- for stdin.",
+      "description": "Run an array of ops in one call. Mix anything — read+edit+grep+phpstan in one round-trip. Payload: bare array of {op, ...fields} OR wrapper {continue_on_error, ops}. Default continue. Validators fire per mutating op. Use @- for stdin. (JSON only — TOML top-level can't express bare arrays.)",
       "example": "batch:@.max/ops.json"
     }
   },
