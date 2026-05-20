@@ -8,21 +8,50 @@ Most ops take arguments via `:` — `read:PATH:OFFSET:LIMIT`, `grep:PATTERN:PATH
 
 ## `@file` route — long or structured payloads
 
-Edit ops (`edit`, `replace_lines`, `paste`, `vim`) accept a JSON file instead of inline args. Pass the path with an `@` prefix:
+Mutating ops (`edit`, `replace`, `replace_lines`, `paste`, `vim`) accept a payload file instead of inline args. Pass the path with an `@` prefix; use `@-` for stdin.
 
 ```bash
 ./supertool 'edit:@.max/my-edit.json'
+./supertool 'paste:@-' < my-paste.toml
 ```
 
-The file holds the fields that would otherwise go after `:::`:
+The payload holds the fields that would otherwise go after `:::`. Format auto-detected from the first non-whitespace character — `{` or `[` → **JSON**, anything else → **TOML**.
+
+### JSON — concise, machine-friendly
 
 ```json
 { "old": "return false;", "new": "return true;", "path": "src/app/Foo.py" }
 ```
 
-Use `@-` to read the payload from stdin instead of a file.
+Best for CI scripts and sub-agent output (every JSON encoder produces it). Drawback: every backslash and newline in content needs double-escaping (`\\n`, `\\\\`), which compounds fast for code blocks.
 
-This route shines when `old` or `new` spans multiple lines or contains characters that clash with shell quoting. Write the JSON, invoke once — no escaping gymnastics.
+### TOML — human-friendly for code-block content
+
+```bash
+./supertool 'paste:@-' <<'PAYLOAD'
+path = "scripts/deploy.sh"
+content = '''
+#!/usr/bin/env bash
+claude -p "..." --permission-mode bypassPermissions \
+  --disallowedTools "Grep,Glob,LS"
+'''
+PAYLOAD
+```
+
+Use TOML's **triple-single-quote literal strings** (`'''...'''`) when content has backslashes, quotes, or `\e` (vim's ESC) — they're preserved byte-for-byte, no escaping. Triple-double-quote (`"""..."""`) supports basic escapes (`\n`, `\t`, `\\`) if you want them.
+
+| TOML form         | When to use                                    |
+| ----------------- | ---------------------------------------------- |
+| `"basic"`         | Single-line strings with standard escapes      |
+| `'literal'`       | Single-line strings, no escape processing (vim scripts: `'/foo\eciw...\e'`) |
+| `"""multi\nline"""` | Multi-line with escapes processed             |
+| `'''multi\nline'''` | Multi-line, literal — **the default for code blocks** |
+
+Other TOML primitives supported in payloads: integers (`start = 42`), booleans (`replace_all = true`), `# comments`. Arrays, tables, dotted keys, and dates aren't needed — payloads are flat key/value maps.
+
+### Implementation note
+
+TOML parsing uses stdlib `tomllib` on Python 3.11+; a minimal built-in parser handles 3.9 / 3.10 fallback (bare keys, strings, ints, bools, comments — nothing else).
 
 ## `batch:@file` — mixed ops in one round-trip
 
