@@ -159,59 +159,11 @@ Quick examples:
 
 ## Input forms
 
-### Colon-CLI (default)
+Three ways to pass arguments. Full reference: [docs/input-forms.md](docs/input-forms.md).
 
-Most ops take arguments via `:` — `read:PATH:OFFSET:LIMIT`, `grep:PATTERN:PATH:LIMIT`. When content itself contains colons (code, SQL, timestamps), switch to `:::` triple-colon separators: `edit:::OLD:::NEW:::PATH`.
-
-### `@file` route — long or structured payloads
-
-Edit ops (`edit`, `replace_lines`, `paste`, `vim`) accept a JSON file instead of inline args. Pass the path with an `@` prefix:
-
-```bash
-./supertool 'edit:@.max/my-edit.json'
-```
-
-The file holds the fields that would otherwise go after `:::`:
-
-```json
-{ "old": "return false;", "new": "return true;", "path": "src/app/Foo.py" }
-```
-
-Use `@-` to read the payload from stdin instead of a file.
-
-This route shines when `old` or `new` spans multiple lines or contains characters that clash with shell quoting. Write the JSON, invoke once — no escaping gymnastics.
-
-### `batch:@file` — mixed ops in one round-trip
-
-`batch` runs any combination of read and write ops from a single JSON file:
-
-```bash
-./supertool 'batch:@.max/ops.json'
-```
-
-Payload — a bare array of op objects, or a wrapper with options:
-
-```json
-[
-  { "op": "read", "path": "src/app/Config.py" },
-  { "op": "edit", "old": "DEBUG = False", "new": "DEBUG = True", "path": "src/app/Config.py" },
-  { "op": "read", "path": "src/app/Config.py" }
-]
-```
-
-Or with explicit options:
-
-```json
-{
-  "continue_on_error": true,
-  "ops": [
-    { "op": "read", "path": "src/app/Config.py" },
-    { "op": "edit", "old": "DEBUG = False", "new": "DEBUG = True", "path": "src/app/Config.py" }
-  ]
-}
-```
-
-`continue_on_error` defaults to `true` — a failed op is reported but the rest of the batch continues. Set to `false` to abort on first error. Validators (phplint, xmllint, etc.) fire per mutating op, same as inline edits. Use `@-` to pipe the payload from stdin.
+- **Colon-CLI** (default) — `read:PATH:OFFSET:LIMIT`. Use `:::` when content contains colons: `edit:::OLD:::NEW:::PATH`.
+- **`@file` route** — JSON payload for `edit`/`replace_lines`/`paste`/`vim` when content is multi-line or shell-hostile: `edit:@.max/my-edit.json`.
+- **`batch:@file`** — mixed reads + writes in one round-trip: `batch:@.max/ops.json` (bare array or `{continue_on_error, ops}` wrapper).
 
 ---
 
@@ -237,153 +189,9 @@ Full reference: [docs/formatters.md](docs/formatters.md) — config shape, bundl
 
 ### `.supertool.json` — project configuration
 
-Supertool works with no configuration. The `.supertool.json` is optional — it enables self-documenting ops for LLM onboarding via `./supertool 'introduction' 'ops'`.
+Supertool works with no configuration. The `.supertool.json` is optional — it enables self-documenting ops for LLM onboarding via `./supertool 'introduction' 'ops'`. Create one in your project root; supertool walks up from cwd to find it. A starter template ships as `.supertool.example.json`.
 
-Create a `.supertool.json` in your project root. Supertool walks up from cwd to find it. A starter template ships with the plugin as `.supertool.example.json`.
-
-```json
-{
-  "introduction": "This project uses supertool for batched file reads and static analysis. Invoke with: ./supertool 'read:src/app/Module.py' 'grep:pattern:src/'",
-
-  "output-format": "Each operation returns a header followed by its output:\n\n--- read:src/app/Module.py ---\n(45 lines, 1230 bytes)\n     1→import os\n     2→import sys\n\n--- grep:class:src/app/:5 ---\n(2 results, limit 5)\nsrc/app/Module.py\n  4:class Module:\nsrc/app/Config.py\n  8:class Config:",
-
-  "builtin-ops": {
-    "read": {
-      "syntax": "read:PATH[:OFFSET:LIMIT]",
-      "description": "Read file (300 lines, 20KB cap)",
-      "example": "read:src/app/Module.py:1:50"
-    },
-    "read-grep": {
-      "syntax": "read:PATH:::grep=PATTERN",
-      "description": "Inline filter — matching lines, line nums kept",
-      "example": "read:src/app/Module.py:::grep=class"
-    },
-    "grep": {
-      "syntax": "grep:PATTERN:PATH[:LIMIT[:CONTEXT]]",
-      "description": "Search (10 results def). CONTEXT=N lines around match",
-      "example": "grep:def handle:src/:20:2"
-    },
-    "map": {
-      "syntax": "map:PATH",
-      "description": "Symbol tree. tree-sitter>ctags>regex",
-      "example": "map:src/app/"
-    }
-  },
-
-  "ops": {
-    "mypy": {
-      "cmd": "python -m mypy --no-error-summary {file}",
-      "timeout": 60,
-      "description": "Type-check a Python file with mypy.",
-      "example": "mypy:src/app/Module.py"
-    },
-    "pytest": {
-      "cmd": "python -m pytest --no-header -q {file}",
-      "timeout": 120,
-      "description": "Run pytest on a test file.",
-      "example": "pytest:tests/test_module.py"
-    },
-    "lint": {
-      "cmd": "ruff check {file}",
-      "timeout": 30,
-      "description": "Lint a file with ruff.",
-      "example": "lint:src/app/Module.py"
-    }
-  },
-
-  "aliases": {
-    "verify": {
-      "ops": ["mypy:{file}", "lint:{file}"],
-      "description": "Type-check + lint in one round-trip.",
-      "example": "verify:src/app/Module.py"
-    },
-    "qa": {
-      "ops": ["mypy:{file}", "lint:{file}", "pytest:tests/"],
-      "description": "Full quality check: types, lint, tests.",
-      "example": "qa:src/app/Module.py"
-    }
-  }
-}
-```
-
-**`introduction` and `output-format`** are user-controlled strings output by meta-ops:
-
-```bash
-./supertool 'introduction'        # prints the introduction string
-./supertool 'output-format'       # prints the output-format string
-./supertool 'introduction' 'output-format' 'ops'   # full LLM onboarding in one call
-```
-
-Use this in session-start hooks or agent prompts to onboard LLMs to your project's supertool setup without reading config files manually.
-
-**`builtin-ops`** entries document built-in operations (`syntax`, `description`, `example`). Set `"status": 0` to hide an entry from `./supertool 'ops'` output (works on `builtin-ops`, `ops`, and `aliases`). Besides documentation, `builtin-ops` entries can also override default behavior:
-
-| Op | Key | Default | Effect |
-|----|-----|---------|--------|
-| `read` | `max_lines` | 300 | Max lines per read |
-| `read` | `max_bytes` | 20000 | Max bytes per read (truncates at cap) |
-| `grep` | `max_results` | 10 | Default result limit when not specified in the op |
-| `grep` | `extensions` | `[]` (all files) | Restrict grep to these file patterns (e.g. `["*.py", "*.js"]`). Empty = search all files |
-| `glob` | `max_results` | 50 | Max files returned |
-
-Example — increase read cap and restrict grep to PHP/XML:
-
-```json
-{
-  "builtin-ops": {
-    "read": { "max_lines": 500, "max_bytes": 40000 },
-    "grep": { "extensions": ["*.php", "*.xml"] }
-  }
-}
-```
-
-**`ops`** are custom shell commands called directly by name:
-
-```bash
-./supertool 'mypy:src/app/Module.py' 'pytest:tests/test_module.py'
-```
-
-Each op has `cmd`, `timeout`, `description`, `example`, and optional `status`. Ops accept `{file}` and `{dir}` (dirname of file) placeholders. Shorthand string ops (`"lint": "ruff check {file}"`) still work with a 60s default timeout.
-
-**`aliases`** expand one name to multiple ops. Format changed from array to object:
-
-```bash
-./supertool 'verify:src/app/Module.py'   # runs mypy + lint in one round-trip
-```
-
-Each alias has `ops` (array), `description`, `example`, and optional `status`. Aliases don't recurse.
-
-**Dispatch order:** built-in ops → custom ops (including preset ops) → aliases. Built-ins always win. Project ops override preset ops on name conflict.
-
-#### Placeholders in custom ops and aliases
-
-| Placeholder | Expands to | Example |
-|-------------|-----------|---------|
-| `{file}` | First argument, shell-quoted, treated as file path | `cat {file}` |
-| `{dir}` | Directory of `{file}` | `ls {dir}` |
-| `{arg}` | First argument, shell-quoted, no path validation | `glab issue view {arg}` |
-| `{args}` | All arguments, each shell-quoted | `python3 tool.py {args}` |
-| `{path}` | Preset directory with trailing `/` (presets only) | `python3 {path}gitlab/issue.py {arg}` |
-
-Use `{file}`/`{dir}` for file operations, `{arg}`/`{args}` for non-file arguments (issue numbers, job IDs, etc.).
-
-#### Extra config keys as environment variables
-
-Any key in a custom op config that isn't a reserved key (`cmd`, `timeout`, `description`, `syntax`, `example`, `status`) is passed to the subprocess as a `SUPERTOOL_` prefixed environment variable:
-
-```json
-{
-  "ops": {
-    "job": {
-      "cmd": "python3 job.py {arg}",
-      "lines": 80,
-      "error_patterns": "ERROR,FAIL,Fatal"
-    }
-  }
-}
-```
-
-The script receives `SUPERTOOL_LINES=80` and `SUPERTOOL_ERROR_PATTERNS=ERROR,FAIL,Fatal` in its environment. This lets users tune op behavior from JSON without modifying scripts.
+Full reference (sections, `builtin-ops` overrides, custom ops, aliases, dispatch order, placeholders, env vars): [docs/configuration.md](docs/configuration.md).
 
 ### Presets — reusable op packs
 
@@ -394,49 +202,6 @@ Writing your own: see [docs/contributing.md](docs/contributing.md).
 #### Legacy `check:` syntax
 
 The `check:PRESET:PATH` op still works — it reads from the `ops` section first, then falls back to `.supertool-checks.json` for backward compatibility. New projects should use direct ops (`mypy:file`) instead of `check:mypy:file`.
-
-### `map` — symbol extraction
-
-`map:PATH` generates a symbol tree (classes, functions, methods, constants) for a file or directory. Three-tier extraction — uses the best available tool:
-
-| Tier | Detection | What you get |
-|------|-----------|-------------|
-| 1. tree-sitter | `tree_sitter_language_pack` or `tree_sitter_languages` importable | Full AST: accurate nesting, signatures, all node types |
-| 2. ctags | `ctags` on PATH (universal-ctags) | JSON tags: class/method/function/constant with scope |
-| 3. regex | Always available | Pattern matching: `class`, `function`, `def`, `interface`, `trait`, `enum`, `const`, `struct`, `impl` |
-
-Supported languages: PHP, Python, JavaScript, TypeScript (+ JSX/TSX), Go, Rust, Java, Ruby.
-
-```bash
-# Single file
-supertool 'map:src/Module.php'
-
-# Directory (recursive, skips vendor/.git/Generated/node_modules)
-supertool 'map:src/SiProject/'
-```
-
-Output:
-
-```
-src/SiProject/SiProjectModule.class.php (55 lines)
-  class SiProjectModule  [31]
-    const TYPE_PRIMARY  [39]
-    const MENU_ITEM  [42]
-    method init  [48]
-```
-
-Install optional deps for richer output:
-
-```bash
-# tree-sitter (best — full AST, Python 3.10+)
-pip install tree-sitter-language-pack
-
-# OR ctags (good — works everywhere)
-brew install universal-ctags   # macOS
-apt install universal-ctags    # Linux
-```
-
-Without either, regex fallback works for all supported languages — just no nesting detection (except Python indentation).
 
 ### Compact mode
 
