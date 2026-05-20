@@ -6,7 +6,7 @@
     "git",
     "xml"
   ],
-  "introduction": "./supertool 'op:args' 'op:args'... Batch 6-7 ops/call. Single quotes per op. Paths from root. Use ops not raw cmds (mysql_read, phpstan, batched reads). Read only before Edit.",
+  "introduction": "./supertool 'op:args' 'op:args'... Batch 6-7 ops/call. Single quotes per op. Paths from root. Use ops not raw cmds (mysql_read, phpstan, batched reads). Read only before Edit.\n\n@file route (mutating ops: edit/replace/replace_lines/paste/vim): op:@payload or op:@- (stdin). Auto-detect: starts with { → JSON, else TOML. TOML '''triple-single-quote''' preserves backslashes/quotes/newlines — best for code blocks. Fields match syntax tokens lowercased (edit:::OLD:::NEW:::PATH → old, new, path).",
   "output-format": "Each op: header + body.\n```\n--- op:args ---\n(meta)\noutput\n```",
   "builtin-ops": {
     "read": {
