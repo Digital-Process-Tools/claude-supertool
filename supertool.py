@@ -422,13 +422,6 @@ def _rtk_run(args: List[str], timeout: int = 30) -> str | None:
         pass
     return None
 
-# Enforcement — pre-tool-block hook reads this state file (absent = permissive)
-ENFORCE_STATE_FILE = os.path.expanduser("~/.claude/supertool-enforced")
-
-# Tools blocked when enforcement is active
-BLOCKED_TOOLS = {"Grep", "Glob", "LS"}
-BLOCKED_BASH_COMMANDS = {"cat", "find", "grep", "ls", "sed", "awk", "tail", "head"}
-
 # Built-in op names — custom ops/aliases with these names are ignored
 _BUILTIN_OPS = {"read", "grep", "grep_around", "glob", "ls", "tail", "head", "wc", "check", "around", "map", "diff", "stat", "around_line", "tree", "replace", "replace_dry", "edit", "replace_lines", "paste", "vi"}
 
@@ -8459,79 +8452,6 @@ def caller_tag() -> str:
     return f"user={user} ppid={ppid} entry={entry}"
 
 
-# ---------------------------------------------------------------------------
-# PreToolUse hook — pure logic, testable without stdin/env
-# ---------------------------------------------------------------------------
-
-def pre_tool_hook(payload: Dict[str, Any], enforced: bool) -> Tuple[int, str]:
-    """Decide whether a tool call should be blocked.
-
-    Args:
-        payload: Claude Code hook payload (parsed JSON). Interesting keys:
-            - tool_name: str (e.g. "Grep", "Bash")
-            - tool_input.command: str (for Bash, the shell command)
-        enforced: Whether enforcement is active (state file present).
-
-    Returns:
-        (exit_code, stderr_message). exit_code 0 = allow, 2 = block.
-        stderr_message is shown to the model when blocked.
-    """
-    # Permissive mode: never block.
-    if not enforced:
-        return 0, ""
-
-    tool_name = payload.get("tool_name", "")
-
-    # Direct tool blocks
-    if tool_name in BLOCKED_TOOLS:
-        return 2, (
-            f"Use ./supertool instead of {tool_name}.\n\n"
-            "  ./supertool 'grep:PATTERN:PATH:LIMIT'\n"
-            "  ./supertool 'glob:PATTERN'   (supports **)\n"
-            "  ./supertool 'ls:PATH'\n\n"
-            "Batch multiple ops in one call: "
-            "./supertool 'read:A' 'read:B' 'grep:X:src/' 'glob:**/*.md'\n\n"
-            "Disable enforcement: /supertool off\n"
-        )
-
-    # Bash command inspection
-    if tool_name == "Bash":
-        command = payload.get("tool_input", {}).get("command", "")
-        # First token is the binary being invoked; handle leading whitespace.
-        first_token = command.strip().split()[0] if command.strip() else ""
-        # Strip leading env-var assignments (e.g. "FOO=1 grep ...") — check
-        # the first real command token.
-        while "=" in first_token and not first_token.startswith("="):
-            # Looks like VAR=value; advance to next token
-            tokens = command.strip().split()
-            if len(tokens) < 2:
-                break
-            command = " ".join(tokens[1:])
-            first_token = tokens[1]
-        if first_token in BLOCKED_BASH_COMMANDS:
-            return 2, (
-                f"Bash({first_token} ...) is blocked while supertool "
-                "enforcement is active.\n\n"
-                "Use ./supertool instead:\n"
-                "  cat FILE         → ./supertool 'read:FILE'\n"
-                "  grep PAT PATH    → ./supertool 'grep:PAT:PATH:LIMIT'\n"
-                "  find/glob        → ./supertool 'glob:PATTERN'\n"
-                "  ls PATH          → ./supertool 'ls:PATH'\n"
-                "  tail -N FILE     → ./supertool 'tail:FILE:N'\n"
-                "  head -N FILE     → ./supertool 'head:FILE:N'\n"
-                "  sed -n X,Yp FILE → ./supertool 'read:FILE:X:Y-X'\n\n"
-                "Batch multiple ops in one call. "
-                "Disable enforcement: /supertool off\n"
-            )
-
-    return 0, ""
-
-
-def is_enforced() -> bool:
-    """Check whether the enforcement state file is present."""
-    return os.path.isfile(ENFORCE_STATE_FILE)
-
-
 def log_call(args: List[str], out_bytes: int) -> None:
     """Append timestamped call log with caller id + output size.
 
@@ -8552,21 +8472,8 @@ def main(argv: List[str]) -> int:
         sys.stderr.write(
             "Usage: supertool op:args [op:args ...]\n"
             "       supertool 'read:file.py' 'grep:foo:src/:20' 'glob:**/*.md'\n"
-            "       supertool --pre-tool-hook  (reads hook payload from stdin)\n"
         )
         return 1
-
-    # Plugin hook mode — invoked by Claude Code's PreToolUse hook
-    if argv[0] == "--pre-tool-hook":
-        try:
-            payload = json.loads(sys.stdin.read() or "{}")
-        except json.JSONDecodeError:
-            # Malformed input — allow the tool call to proceed (fail-open)
-            return 0
-        code, message = pre_tool_hook(payload, is_enforced())
-        if message:
-            sys.stderr.write(message)
-        return code
 
     # Normal batched-ops mode
     total_out_bytes = 0

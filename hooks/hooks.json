@@ -5,17 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.sh\""
-          }
-        ]
-      }
-    ],
-    "PreToolUse": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/supertool.py\" --pre-tool-hook"
+            "command": "bash "${CLAUDE_PLUGIN_ROOT}/hooks/session-start.sh""
           }
         ]
       }
