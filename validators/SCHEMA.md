@@ -25,6 +25,7 @@ Universal JSON. Every adapter emits this shape. Validator core never parses tool
 | `count`       | int              | yes      | Issue count. Used for before/after diff arithmetic.                   |
 | `errors`      | array of objects | yes      | `[]` when ok. Each: `{line, col, severity, code, msg}`.               |
 | `duration_ms` | int              | yes      | Wall time. For perf tuning.                                           |
+| `metrics`     | object           | no       | Tool-specific counters (`tests_total`, `tests_passed`, etc.). Numeric values. Used by renderer for before/after diff on metric keys even when `count` is unchanged. |
 
 ### Error object
 
