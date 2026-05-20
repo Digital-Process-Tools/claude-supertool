@@ -177,6 +177,8 @@ Example: edit a `.json` file with a missing comma → `jsonlint` catches it → 
 
 Full reference: [docs/validators.md](docs/validators.md) — bundled list, how they hook in, adding your own.
 
+---
+
 ## Formatters — normalize before validate
 
 Formatters run after every edit, before validators — `edit → format → validate → rollback if validate fails`. They mutate the file in place (`prettier --write`, `gofmt -w`) so validators always see canonical output.
@@ -187,23 +189,27 @@ Full reference: [docs/formatters.md](docs/formatters.md) — config shape, bundl
 
 ---
 
-### `.supertool.json` — project configuration
+## `.supertool.json` — project configuration
 
 Supertool works with no configuration. The `.supertool.json` is optional — it enables self-documenting ops for LLM onboarding via `./supertool 'introduction' 'ops'`. Create one in your project root; supertool walks up from cwd to find it. A starter template ships as `.supertool.example.json`.
 
 Full reference (sections, `builtin-ops` overrides, custom ops, aliases, dispatch order, placeholders, env vars): [docs/configuration.md](docs/configuration.md).
 
-### Presets — reusable op packs
+---
+
+## Presets — reusable op packs
 
 8 presets ship out of the box (`git`, `github`, `gitlab`, `claude-log`, `hashnode`, `devto`, `bluesky`, `xml`). Each has a dedicated reference page in [`docs/presets/`](docs/presets/index.md) covering ops, common workflows, env vars, and authoring notes.
 
 Writing your own: see [docs/contributing.md](docs/contributing.md).
 
-#### Legacy `check:` syntax
+### Legacy `check:` syntax
 
 The `check:PRESET:PATH` op still works — it reads from the `ops` section first, then falls back to `.supertool-checks.json` for backward compatibility. New projects should use direct ops (`mypy:file`) instead of `check:mypy:file`.
 
-### RTK integration
+---
+
+## RTK integration
 
 When [rtk](https://github.com/reachingforthejack/rtk) is installed, supertool automatically delegates `read`, `grep`, and `wc` to RTK for compressed output. No configuration needed — detected via `which rtk` at first use.
 
@@ -214,7 +220,9 @@ When [rtk](https://github.com/reachingforthejack/rtk) is installed, supertool au
 
 RTK is optional. Supertool works identically without it — RTK is just an accelerator.
 
-### Batch multiple ops in one call
+---
+
+## Batch multiple ops in one call
 
 **Six or seven ops per call is routine; two is too few.**
 
