@@ -7458,7 +7458,14 @@ def _op_vim_impl(path: str, script: str) -> str:
         out.append(f"  {ln:>5} {marker} {text}\n")
 
     out.append(_vim_render_diff(_before_content, content))
-    out.append(_vim_render_lint(path))
+    lint_out = _vim_render_lint(path)
+    if lint_out.startswith("--- POST-EDIT LINT FAILED"):
+        # Vim's internal lint is informational only — it does NOT auto-roll
+        # back. Configure a validator with rollback_on_fail in .supertool.json
+        # for true atomicity. Make this explicit in the receipt so the caller
+        # doesn't assume the broken edit was reverted.
+        lint_out += "[note] file modified despite syntax fail — review or restore manually. Configure a validator with rollback_on_fail for auto-rollback.\n"
+    out.append(lint_out)
     return "".join(out)
 
 
