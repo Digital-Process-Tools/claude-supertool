@@ -120,3 +120,48 @@ def test_C_preserves_trailing_newline(tmp_path: Path) -> None:
     # C should NOT eat the \n — only deletes to EOL, not past it
     supertool.op_vim(str(f), "gg␞CZZ␞")
     assert f.read_text() == "ZZ\ndef\n"
+
+# ---------------------------------------------------------------------------
+# o / O auto-indent — per vim default behavior
+# ---------------------------------------------------------------------------
+
+def test_o_auto_indents_to_current_line(tmp_path: Path) -> None:
+    """`o` should open a new line below cursor AND auto-indent to match the
+    current line's leading whitespace. Per real vim default behavior.
+    """
+    f = tmp_path / "x.py"
+    f.write_text("def foo():\n    if True:\n        pass\n")
+    # Search for `if True:` (8 spaces? no, 4 spaces), then `o` to open below
+    # and insert content. Expected: new line at 4-space indent (matching `if`).
+    supertool.op_vim(str(f), "/if True:\x1bonew_line = 1\x1b")
+    assert f.read_text() == "def foo():\n    if True:\n    new_line = 1\n        pass\n"
+
+
+def test_O_auto_indents_to_current_line(tmp_path: Path) -> None:
+    """`O` should open a new line above cursor AND auto-indent to match the
+    current line's leading whitespace.
+    """
+    f = tmp_path / "x.py"
+    f.write_text("def foo():\n    if True:\n        pass\n")
+    supertool.op_vim(str(f), "/if True:\x1bOnew_line = 1\x1b")
+    assert f.read_text() == "def foo():\n    new_line = 1\n    if True:\n        pass\n"
+
+
+def test_o_explicit_indent_in_text_appends_to_auto_indent(tmp_path: Path) -> None:
+    """When the user provides explicit leading whitespace in the o-insert text,
+    it appends to the auto-indent (does not replace it). This mirrors vim's
+    default — autoindent stays, your typing adds on top.
+    """
+    f = tmp_path / "x.py"
+    f.write_text("    foo\n")
+    # Insert "extra" with NO explicit leading whitespace → auto-indent only (4 sp)
+    supertool.op_vim(str(f), "ggoextra\x1b")
+    assert f.read_text() == "    foo\n    extra\n"
+
+
+def test_o_zero_indent_line(tmp_path: Path) -> None:
+    """`o` on a line with no leading whitespace should produce no auto-indent."""
+    f = tmp_path / "x.py"
+    f.write_text("nothing\n")
+    supertool.op_vim(str(f), "ggoadded\x1b")
+    assert f.read_text() == "nothing\nadded\n"
