@@ -101,7 +101,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-VERSION = "0.10.1"
+VERSION = "0.11.0"
 
 MAX_READ_LINES = 300
 MAX_READ_BYTES = 20000  # ~20KB cap — prevents Claude Code "Output too large"
@@ -7795,8 +7795,34 @@ def _validator_render_diff(before: Optional[Dict[str, Any]], after: Dict[str, An
     b_ok = before.get("ok", True) if before else True
     a_ok = after.get("ok", False)
     if b_count == a_count and b_ok == a_ok:
+        # Count/ok unchanged — surface metric deltas (e.g. tests_total) so the LLM
+        # knows whether scope actually changed (7 tests → 10 tests, both pass).
+        b_metrics = (before or {}).get("metrics") or {}
+        a_metrics = after.get("metrics") or {}
+        metric_parts = []
+        for k, av in a_metrics.items():
+            if not isinstance(av, (int, float)):
+                continue
+            bv = b_metrics.get(k, 0)
+            if not isinstance(bv, (int, float)):
+                bv = 0
+            if av == bv:
+                continue
+            d = av - bv
+            metric_parts.append(f"{k} {bv}\u2192{av} ({'+' if d > 0 else ''}{d})")
+        if metric_parts:
+            marker = "\u2713" if a_ok else "\u2717"
+            return [f"{tool:8s}: {', '.join(metric_parts)} {marker}"]
+        # Truly unchanged — fold the most relevant absolute metric into the row.
+        if a_ok and a_metrics:
+            primary = None
+            for k in ("tests_total", "tests_passed", "changes_count"):
+                if k in a_metrics:
+                    primary = (k, a_metrics[k]); break
+            if primary is not None:
+                return [f"{tool:8s}: ok {primary[0]}={primary[1]} (unchanged) \u00b7"]
         status = "ok" if a_ok else f"{a_count} err"
-        return [f"{tool:8s}: {status:12s} (unchanged) ·"]
+        return [f"{tool:8s}: {status:12s} (unchanged) \u00b7"]
     marker = "✓" if a_ok else ("⚠" if delta < 0 else "✗")
     arrow = f"{b_count} → {a_count}"
     sign = f"({'+' if delta >= 0 else ''}{delta})"
