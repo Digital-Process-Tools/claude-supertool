@@ -3,7 +3,7 @@
   "rtk": false,
   "parallel": 0,
   "presets": ["git", "github", "gitlab", "claude-log", "hashnode", "devto", "bluesky", "xml"],
-  "introduction": "supertool batches multiple file operations into one Bash call.\n\nInvoke via Bash:\n./supertool \\\n    'read:src/app/Module.py' \\\n    'read:src/app/Config.py' \\\n    'grep:class:src/app/:20' \\\n    'glob:src/app/**/*.py'\n\nRules:\n- One call, many ops. 6-7 per call is normal. Each separate call wastes money.\n- Paths are relative to project root.\n- Single quotes around each op.\n- Use Read tool ONLY for the file you're about to Edit — supertool for everything else.",
+  "introduction": "supertool batches multiple file operations into one Bash call.\n\nInvoke via Bash:\n./supertool \\\n    'read:src/app/Module.py' \\\n    'read:src/app/Config.py' \\\n    'grep:class:src/app/:20' \\\n    'glob:src/app/**/*.py'\n\nRules:\n- One call, many ops. 6-7 per call is normal. Each separate call wastes money.\n- Paths are relative to project root.\n- Single quotes around each op.\n- Use Read tool ONLY for the file you're about to Edit — supertool for everything else.\n\n@file payload route (mutating ops only — edit, replace, replace_lines, paste, vim):\n- Inline:  ./supertool 'edit:::OLD:::NEW:::PATH'\n- Payload: ./supertool 'edit:@-' <<'EOF' ... EOF   (or 'edit:@path.toml')\n- Format auto-detected: starts with { or [ → JSON; else TOML.\n- TOML '''triple-single-quote''' preserves backslashes/quotes/newlines byte-for-byte — use for code blocks. Single-quoted 'literal' for one-liners with \\e etc.\n- Field names match the syntax tokens lowercased (edit:::OLD:::NEW:::PATH → old, new, path).",
   "output-format": "Each operation returns a header followed by its output:\n\n```\n--- read:src/app/Module.py ---\n(45 lines, 1230 bytes)\n     1→import os\n     2→import sys\n     3→\n     4→class Module:\n\n--- grep:class:src/app/:5 ---\n(2 results, limit 5)\nsrc/app/Module.py\n  4:class Module:\nsrc/app/Config.py\n  8:class Config:\n\n--- glob:src/app/**/*.py ---\n(3 files)\nsrc/app/Module.py\nsrc/app/Config.py\nsrc/app/Utils.py\n```",
   "builtin-ops": {
     "read": {
@@ -114,22 +114,22 @@
     },
     "edit": {
       "syntax": "edit:::OLD:::NEW:::PATH  |  edit:@payload",
-      "description": "Single-file edit, OLD must match exactly once. Bypasses native Edit must-Read state — saves a round-trip. Use ::: separator so content with ':' works. @file route: edit:@path.{json,toml} — JSON {\"old\":\"...\",\"new\":\"...\",\"path\":\"...\"} or TOML (use ''' literal blocks for code with backslashes/quotes/newlines). Format auto-detected from first non-whitespace char. Use @- for stdin.",
+      "description": "Single-file edit, OLD must match exactly once. Bypasses native Edit must-Read state — saves a round-trip. Use ::: separator so content with ':' works.",
       "example": "edit:::return false;:::return true;:::src/app/Foo.py"
     },
     "replace_lines": {
       "syntax": "replace_lines:::PATH:::START:::END:::CONTENT  |  replace_lines:@payload",
-      "description": "Swap lines [START,END] (1-indexed inclusive) with CONTENT. END<START = insert before START. Empty CONTENT = delete. @file route: JSON {\"path\":\"...\",\"start\":N,\"end\":N,\"content\":\"...\"} or TOML (content = '''...''' preserves backslashes/newlines literally).",
+      "description": "Swap lines [START,END] (1-indexed inclusive) with CONTENT. END<START = insert before START. Empty CONTENT = delete.",
       "example": "replace_lines:::src/app/Foo.py:::42:::45:::    return x"
     },
     "paste": {
       "syntax": "paste:::PATH:::CONTENT  |  paste:@payload",
-      "description": "Replace entire file with CONTENT. Atomic, creates file (+ parent dirs) if missing. Use for full-file rewrites. @file route: JSON {\"path\":\"...\",\"content\":\"...\"} or TOML (content = '''multi-line literal''' — best for code blocks).",
+      "description": "Replace entire file with CONTENT. Atomic, creates file (+ parent dirs) if missing. Use for full-file rewrites.",
       "example": "paste:::src/app/new_file.py:::print('hello')\\n"
     },
     "batch": {
       "syntax": "batch:@file.json",
-      "description": "Run an array of ops in one call. Mix anything — read+edit+grep+phpstan in one round-trip. Payload: bare array of {op, ...fields} OR wrapper {continue_on_error, ops}. Default continue. Validators fire per mutating op. Use @- for stdin. (JSON only — TOML top-level can't express bare arrays.)",
+      "description": "Run an array of ops in one call. Mix anything — read+edit+grep+phpstan in one round-trip. Payload: bare array of {op, ...fields} OR wrapper {continue_on_error, ops}. Default continue. Validators fire per mutating op. JSON only (TOML can't express bare arrays). Use @- for stdin.",
       "example": "batch:@.max/ops.json"
     }
   },
