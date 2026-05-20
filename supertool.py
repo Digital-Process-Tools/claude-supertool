@@ -8250,6 +8250,73 @@ def _at_file_fields(op: str) -> List[str]:
     return _AT_FILE_REGISTRY.get(op, [])
 
 
+def _reorder_batch_for_snapshot(batch_ops: List[Any]) -> Tuple[List[Any], str]:
+    """Reorder replace_lines ops within a batch so line numbers refer to the
+    original file state (snapshot semantics), not the file as mutated by
+    earlier ops in the same batch.
+
+    Strategy: group replace_lines ops by path. For each file appearing in 2+
+    replace_lines ops, sort them by start descending and write them back into
+    their original slots. Non-replace_lines ops keep their order.
+
+    Bottom-up application means earlier (in batch order, now last-applied)
+    line numbers stay valid because mutations happen at lines AFTER the
+    next op's range.
+
+    Other op types (edit, replace, paste, vim) are content-matched or
+    full-file rewrites, so they're inherently snapshot-safe and need no
+    reordering.
+
+    Returns (new_ops, error_message). On overlap detection, returns
+    (original_ops, error_message) — caller should surface the error before
+    applying anything.
+    """
+    by_file: Dict[str, List[int]] = {}
+    for i, item in enumerate(batch_ops):
+        if (
+            isinstance(item, dict)
+            and item.get("op") == "replace_lines"
+            and isinstance(item.get("path"), str)
+        ):
+            by_file.setdefault(item["path"], []).append(i)
+
+    # Overlap detection — flag conflicts before doing any reorder.
+    for path, indices in by_file.items():
+        if len(indices) < 2:
+            continue
+        ranges = []
+        for idx in indices:
+            item = batch_ops[idx]
+            s, e = item.get("start"), item.get("end")
+            if not isinstance(s, int) or not isinstance(e, int):
+                continue  # let normal dispatch surface type errors
+            ranges.append((min(s, e), max(s, e)))
+        ranges.sort()
+        for i in range(len(ranges) - 1):
+            # Treat pure-insert (end < start) as a zero-width range; only
+            # error if a true range collides.
+            if ranges[i][1] >= ranges[i + 1][0]:
+                return batch_ops, (
+                    f"batch snapshot: overlapping replace_lines ranges on "
+                    f"{path}: [{ranges[i][0]},{ranges[i][1]}] and "
+                    f"[{ranges[i + 1][0]},{ranges[i + 1][1]}]"
+                )
+
+    # Reorder — for each file with 2+ replace_lines ops, sort descending by
+    # start and place back into the same slots.
+    if not any(len(v) > 1 for v in by_file.values()):
+        return batch_ops, ""
+    new_ops = list(batch_ops)
+    for path, indices in by_file.items():
+        if len(indices) < 2:
+            continue
+        items_at = [batch_ops[i] for i in indices]
+        items_sorted = sorted(items_at, key=lambda x: -int(x.get("start", 0)))
+        for slot, item in zip(indices, items_sorted):
+            new_ops[slot] = item
+    return new_ops, ""
+
+
 def _at_file_to_parts(op: str, payload: Any) -> Tuple[List[str], bool]:
     """Convert a JSON payload dict to (parts, replace_all) for the given op.
 
@@ -8511,6 +8578,14 @@ def dispatch(arg: str) -> str:
                         if not isinstance(batch_ops, list):
                             body = "ERROR: batch 'ops' must be a JSON array\n"
                         else:
+                            # Snapshot mode: reorder replace_lines ops on the
+                            # same file bottom-up so caller's line numbers
+                            # refer to the original file state, not the file
+                            # as mutated by earlier ops in the same batch.
+                            batch_ops, _snap_err = _reorder_batch_for_snapshot(batch_ops)
+                            if _snap_err:
+                                body = f"ERROR: {_snap_err}\n"
+                                batch_ops = []
                             results: List[str] = []
                             for _item in batch_ops:
                                 if not isinstance(_item, dict):
@@ -8555,7 +8630,8 @@ def dispatch(arg: str) -> str:
                                     _sub_result.split("\n")[1].startswith("ERROR")
                                 ):
                                     break
-                            body = "".join(results)
+                            if not _snap_err:
+                                body = "".join(results)
         elif op == "validate":
             v_path = parts[1] if len(parts) > 1 else ""
             v_tools = [t for t in (parts[2].split(",") if len(parts) > 2 and parts[2] else []) if t]

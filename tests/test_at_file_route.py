@@ -413,3 +413,118 @@ class TestMiniTomlLoads:
     def test_unterminated_string_raises(self) -> None:
         with pytest.raises(ValueError):
             supertool._mini_toml_loads('a = "unterminated\n')
+
+# ---------------------------------------------------------------------------
+# Batch snapshot mode — replace_lines line numbers refer to original file
+# ---------------------------------------------------------------------------
+
+class TestBatchSnapshot:
+    def test_out_of_order_replace_lines_all_land(self, tmp_path: Path) -> None:
+        """Three replace_lines on one file in out-of-order line numbers should all
+        land correctly — line numbers refer to original file, not mutated state."""
+        target = tmp_path / "x.txt"
+        target.write_text("L1\nL2\nL3\nL4\nL5\nL6\nL7\nL8\nL9\nL10\n")
+        ops_file = tmp_path / "ops.json"
+        ops_file.write_text(json.dumps({
+            "ops": [
+                {"op": "replace_lines", "path": str(target), "start": 8, "end": 8, "content": "EIGHT"},
+                {"op": "replace_lines", "path": str(target), "start": 2, "end": 2, "content": "TWO"},
+                {"op": "replace_lines", "path": str(target), "start": 5, "end": 5, "content": "FIVE"},
+            ]
+        }))
+        out = supertool.dispatch(f"batch:@{ops_file}")
+        assert "ERROR" not in out
+        assert target.read_text() == "L1\nTWO\nL3\nL4\nFIVE\nL6\nL7\nEIGHT\nL9\nL10\n"
+
+    def test_overlapping_ranges_error_no_writes(self, tmp_path: Path) -> None:
+        """Two replace_lines with overlapping ranges should error before any write."""
+        target = tmp_path / "x.txt"
+        original = "L1\nL2\nL3\nL4\nL5\n"
+        target.write_text(original)
+        ops_file = tmp_path / "ops.json"
+        ops_file.write_text(json.dumps({
+            "ops": [
+                {"op": "replace_lines", "path": str(target), "start": 2, "end": 3, "content": "A"},
+                {"op": "replace_lines", "path": str(target), "start": 3, "end": 4, "content": "B"},
+            ]
+        }))
+        out = supertool.dispatch(f"batch:@{ops_file}")
+        assert "ERROR" in out
+        assert "overlapping" in out
+        assert target.read_text() == original  # no write happened
+
+    def test_single_replace_lines_no_reorder_needed(self, tmp_path: Path) -> None:
+        """A single replace_lines op should pass through unchanged."""
+        target = tmp_path / "x.txt"
+        target.write_text("a\nb\nc\n")
+        ops_file = tmp_path / "ops.json"
+        ops_file.write_text(json.dumps([
+            {"op": "replace_lines", "path": str(target), "start": 2, "end": 2, "content": "B"}
+        ]))
+        out = supertool.dispatch(f"batch:@{ops_file}")
+        assert "ERROR" not in out
+        assert target.read_text() == "a\nB\nc\n"
+
+    def test_replace_lines_on_different_files_independent(self, tmp_path: Path) -> None:
+        """replace_lines on different files should each work without reorder."""
+        a = tmp_path / "a.txt"
+        b = tmp_path / "b.txt"
+        a.write_text("x\ny\nz\n")
+        b.write_text("p\nq\nr\n")
+        ops_file = tmp_path / "ops.json"
+        ops_file.write_text(json.dumps([
+            {"op": "replace_lines", "path": str(a), "start": 2, "end": 2, "content": "Y"},
+            {"op": "replace_lines", "path": str(b), "start": 2, "end": 2, "content": "Q"},
+        ]))
+        out = supertool.dispatch(f"batch:@{ops_file}")
+        assert "ERROR" not in out
+        assert a.read_text() == "x\nY\nz\n"
+        assert b.read_text() == "p\nQ\nr\n"
+
+
+class TestReorderHelper:
+    """Direct tests of the _reorder_batch_for_snapshot helper."""
+
+    def test_empty_batch(self) -> None:
+        new, err = supertool._reorder_batch_for_snapshot([])
+        assert err == ""
+        assert new == []
+
+    def test_no_replace_lines(self) -> None:
+        ops = [{"op": "edit", "old": "a", "new": "b", "path": "x"}]
+        new, err = supertool._reorder_batch_for_snapshot(ops)
+        assert err == ""
+        assert new == ops
+
+    def test_single_replace_lines_unchanged(self) -> None:
+        ops = [{"op": "replace_lines", "path": "x", "start": 10, "end": 10, "content": "y"}]
+        new, err = supertool._reorder_batch_for_snapshot(ops)
+        assert err == ""
+        assert new == ops
+
+    def test_two_replace_lines_sorted_descending(self) -> None:
+        ops = [
+            {"op": "replace_lines", "path": "x", "start": 5, "end": 5, "content": "A"},
+            {"op": "replace_lines", "path": "x", "start": 20, "end": 20, "content": "B"},
+        ]
+        new, err = supertool._reorder_batch_for_snapshot(ops)
+        assert err == ""
+        assert new[0]["start"] == 20
+        assert new[1]["start"] == 5
+
+    def test_overlap_detection(self) -> None:
+        ops = [
+            {"op": "replace_lines", "path": "x", "start": 5, "end": 10, "content": "A"},
+            {"op": "replace_lines", "path": "x", "start": 8, "end": 12, "content": "B"},
+        ]
+        new, err = supertool._reorder_batch_for_snapshot(ops)
+        assert "overlapping" in err
+        assert new == ops  # unchanged on error
+
+    def test_different_files_no_cross_overlap_check(self) -> None:
+        ops = [
+            {"op": "replace_lines", "path": "a", "start": 5, "end": 10, "content": "X"},
+            {"op": "replace_lines", "path": "b", "start": 5, "end": 10, "content": "Y"},
+        ]
+        new, err = supertool._reorder_batch_for_snapshot(ops)
+        assert err == ""
