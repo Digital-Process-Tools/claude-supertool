@@ -157,3 +157,64 @@ Any key in a custom op config that isn't a reserved key (`cmd`, `timeout`, `desc
 ```
 
 The script receives `SUPERTOOL_LINES=80` and `SUPERTOOL_ERROR_PATTERNS=ERROR,FAIL,Fatal` in its environment. This lets users tune op behavior from JSON without modifying scripts.
+
+## Compact mode
+
+Set `"compact": true` in `.supertool.json` to enable compact reads. When enabled, `read` ops skip blank lines and comment-only lines (`//`, `#`, `/* */`, `<!-- -->`, PHPDoc `*` lines), preserving original line numbers. Reduces token cost for exploration without losing structure.
+
+Compact is disabled when using `grep=` filter or `offset` (editing needs exact lines).
+
+## Parallel execution
+
+Read-only ops in a batch can run concurrently. Output order is preserved (matches input order, not completion order).
+
+Enable in `.supertool.json`:
+
+```json
+{ "parallel": 4 }
+```
+
+`parallel: N` runs up to N ops concurrently via a thread pool. `0` (default) = sequential. Boolean `true` is accepted as `4` for back-compat.
+
+Override via env: `SUPERTOOL_PARALLEL=4 ./supertool 'read:a' 'grep:x:b/' 'glob:c/**'`. Env wins over JSON. Set `0` to force off for one call.
+
+**Safe ops** (parallelized): `read`, `grep`, `glob`, `ls`, `head`, `tail`, `wc`, `stat`, `map`, `tree`, `around`, `around_line`, `between`, `diff`, `blame`, `version`.
+
+**Unsafe** — batch falls back to sequential whenever any op is mutating (`edit`, `replace`, `replace_dry`, `replace_lines`) or custom (anything in `ops:` — could shell out to anything). All-or-nothing per call: no partial parallelism.
+
+Speedup: I/O-bound ops on different files. ~3-5× faster on cold filesystem; modest gain on warm cache.
+
+## Excluding paths from traversal ops
+
+`glob`, `grep`, `tree`, and `map` walk the filesystem recursively. On large repos this can be slow and noisy — `.git/objects/`, `node_modules/`, `vendor/`, and similar dirs rarely contain what you're looking for.
+
+Supertool prunes these at the **directory boundary** (never opens them), not after the fact.
+
+**Built-in defaults** — always active unless overridden:
+
+```
+.git/  node_modules/  .svn/  .hg/  .idea/  .vscode/
+__pycache__/  .venv/  venv/  dist/  build/
+```
+
+**Project-level additions** — add to `.supertool.json` under `ops.<op-name>.exclude-paths`. These are **merged additively** with the defaults (not replacing):
+
+```json
+{
+  "ops": {
+    "glob": { "exclude-paths": ["vendor/", "Dvsi/dvsi-private/libs/"] },
+    "grep": { "exclude-paths": ["vendor/", "Dvsi/dvsi-private/libs/"] }
+  }
+}
+```
+
+**Per-call escape hatch** — append `:::no-exclude` to bypass all excludes for one call:
+
+```bash
+./supertool 'grep:somePattern:vendor/:10:::no-exclude'
+./supertool 'glob:**/*.php:::no-exclude'
+```
+
+Ops that take explicit paths and don't traverse (`ls`, `read`, `head`, `tail`, `wc`, `stat`, `around`, `around_line`, `between`, `diff`, `blame`) are not affected — they always work on exactly the path you give them.
+
+See [issue #4](https://github.com/Digital-Process-Tools/claude-supertool/issues/4) for the full design rationale.

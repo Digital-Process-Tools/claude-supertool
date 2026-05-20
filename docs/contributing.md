@@ -154,6 +154,22 @@ Validators are post-write hooks — they run after a file is written and report 
 
 ---
 
+## Running tests
+
+```bash
+python3 -m pytest tests/
+```
+
+293 tests, 80% minimum coverage (enforced by pytest-cov). Current: 94%.
+
+Enable the pre-push hook (runs pytest + enforces 80% coverage before every push):
+
+```bash
+git config core.hooksPath .githooks
+```
+
+The hook is in `.githooks/pre-push`, committed to the repo. Bypass with `git push --no-verify` (discouraged).
+
 ## Submitting upstream
 
 Want to add a preset, op, or validator to the shipped supertool?
