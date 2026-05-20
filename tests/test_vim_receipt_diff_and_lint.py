@@ -160,3 +160,30 @@ def test_missing_binary_silently_omitted(tmp_path: Path, monkeypatch) -> None:
     assert "cursor at" in out
     assert "--- lint: php -l ---" not in out
     assert "POST-EDIT LINT FAILED" not in out
+
+def test_vim_lint_fail_receipt_warns_no_rollback(tmp_path):
+    """vim's post-edit lint is informational only — no auto-rollback. The
+    receipt MUST say so unambiguously so the caller knows to restore manually
+    or configure a validator with rollback_on_fail.
+    """
+    f = tmp_path / "x.py"
+    original = "def foo():\n    if True:\n        pass\n"
+    f.write_text(original)
+    out = supertool.op_vim(str(f), "/if True:\x1bo    broken_indent = 1\x1b")
+    assert "POST-EDIT LINT FAILED" in out
+    assert "file modified despite syntax fail" in out, (
+        f"receipt should warn the file was modified despite lint fail, got:\n{out}"
+    )
+    # Documents current no-rollback behavior — file IS modified.
+    assert f.read_text() != original
+
+
+def test_vim_lint_fail_on_json_warns_no_rollback(tmp_path):
+    """Same warning for .json — broken JSON persists, receipt warns."""
+    f = tmp_path / "x.json"
+    original = '{"a": 1}\n'
+    f.write_text(original)
+    out = supertool.op_vim(str(f), "G$xx")
+    assert "POST-EDIT LINT FAILED" in out
+    assert "file modified despite syntax fail" in out
+    assert f.read_text() != original
