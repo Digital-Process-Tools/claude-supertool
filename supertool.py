@@ -423,7 +423,7 @@ def _rtk_run(args: List[str], timeout: int = 30) -> str | None:
     return None
 
 # Built-in op names — custom ops/aliases with these names are ignored
-_BUILTIN_OPS = {"read", "grep", "grep_around", "glob", "ls", "tail", "head", "wc", "check", "around", "map", "diff", "stat", "around_line", "tree", "replace", "replace_dry", "edit", "replace_lines", "paste", "vi", "validate", "format", "validate_staged", "format_staged"}
+_BUILTIN_OPS = {"read", "grep", "grep_around", "glob", "ls", "tail", "head", "wc", "check", "around", "map", "diff", "stat", "around_line", "tree", "replace", "replace_dry", "edit", "replace_lines", "paste", "vi", "validate", "format", "validate_staged", "format_staged", "workspace", "resolve"}
 
 # Read-only built-in ops — safe to run in parallel across a batch.
 # Excludes mutating ops (replace, edit, replace_lines) and custom ops
@@ -431,7 +431,8 @@ _BUILTIN_OPS = {"read", "grep", "grep_around", "glob", "ls", "tail", "head", "wc
 _PARALLEL_SAFE_OPS = {
     "read", "grep", "glob", "ls", "head", "tail", "wc", "stat",
     "map", "tree", "around", "around_line", "between", "diff", "blame",
-    "version", "validate", "validate_staged", "format_staged",
+    "version", "validate", "validate_staged", "format_staged", "workspace",
+    "resolve",
 }
 
 
@@ -8084,6 +8085,514 @@ def op_validate(path: str, tool_filter: Optional[list] = None, verbose: bool = F
     return "\n".join(out) + "\n"
 
 
+# ---------------------------------------------------------------------------
+# workspace — one-shot IDE-style view of a single file
+# ---------------------------------------------------------------------------
+
+# Symbols that are too common to run an unrestricted reference search on.
+_WORKSPACE_COMMON_SYMBOLS = frozenset({
+    "index", "main", "init", "__init__", "app", "base", "utils", "helpers",
+    "helper", "config", "settings", "common", "core", "util", "test",
+    "tests", "setup", "models", "model", "views", "view", "routes",
+})
+
+# Extension family map for workspace References scan.
+# A file with ext X searches for references in files matching any ext in the family.
+# Default: same-ext only (handled by the fallback in op_workspace).
+_EXT_FAMILIES: Dict[str, tuple] = {
+    ".ts":   (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"),
+    ".tsx":  (".ts", ".tsx", ".js", ".jsx"),
+    ".js":   (".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"),
+    ".jsx":  (".js", ".jsx", ".ts", ".tsx"),
+    ".mjs":  (".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"),
+    ".cjs":  (".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"),
+    ".php":  (".php",),  # DVSI's .class.php matched via endswith(".php")
+    ".py":   (".py", ".pyi"),
+    ".pyi":  (".py", ".pyi"),
+}
+
+
+# ---------------------------------------------------------------------------
+# op_resolve — smart-glob "go to definition" resolver
+# ---------------------------------------------------------------------------
+
+def op_resolve(symbol: str, from_file: Optional[str] = None, _cache: Optional[dict] = None) -> str:
+    """Resolve a symbol/import string to a project file path.
+
+    Detection rules (in priority order):
+      - Contains backslash → PHP FQN  → **/<path>.class.php, fallback **/<path>.php
+      - Starts with one or more dots (Python relative import, e.g. ".", ".utils") →
+        resolve relative to from_file's directory when provided; otherwise → external
+      - Contains dot only (no / or ./) → Python dotted import → **/<path>.py
+      - Starts with ./ or ../ → relative path → try common extensions
+      - Bare word (no separators) → ambiguous → try multi-ext glob
+      - Otherwise → external (npm/pip/etc.)
+
+    Args:
+        symbol: The import/symbol string to resolve.
+        from_file: Optional path to the file that contains the import (used for
+            Python relative imports like "." or ".utils"). Without this, relative
+            Python imports return "external".
+        _cache: Optional dict used as a per-call resolve cache (avoids repeated
+            full-repo globs for the same symbol within a single workspace call).
+
+    Returns: "SYMBOL → PATH" on success, "SYMBOL → external", or "SYMBOL → not found".
+    """
+    if not symbol:
+        return "resolve: empty symbol\n"
+
+    # Per-call cache: key is (symbol, from_file)
+    if _cache is not None:
+        cache_key = (symbol, from_file)
+        if cache_key in _cache:
+            return _cache[cache_key]
+
+    result = _op_resolve_inner(symbol, from_file)
+
+    if _cache is not None:
+        _cache[cache_key] = result
+
+    return result
+
+
+def _op_resolve_inner(symbol: str, from_file: Optional[str] = None) -> str:
+    """Core resolve logic — called by op_resolve (which handles caching)."""
+    excl = _get_exclude_paths("resolve")
+
+    # ── PHP FQN (contains backslash) ─────────────────────────────────────────
+    if "\\" in symbol:
+        fqn_path = symbol.replace("\\", "/")
+        for pat in (f"**/{fqn_path}.class.php", f"**/{fqn_path}.php"):
+            hits = _glob_files(pat, excl)
+            if hits:
+                rel = os.path.relpath(hits[0])
+                return f"{symbol} → {rel}\n"
+        return f"{symbol} → not found\n"
+
+    # ── Python relative import (starts with one or more dots, no /) ──────────
+    # Matches: ".", ".utils", "..models", ".sub.module" etc.
+    # Does NOT match "./" or "../" (those are handled below as relative paths).
+    if re.match(r"^\.+\w*(?:\.\w+)*$", symbol) or symbol in (".", ".."):
+        if not from_file:
+            return f"{symbol} → external\n"
+        base_dir = os.path.dirname(os.path.abspath(from_file))
+        # Strip leading dots to find the module name; count dots for package depth
+        # Single dot: same package. ".utils" → utils in same dir.
+        # ".." / "..models" → parent package (we resolve one level up per leading dot beyond 1)
+        m = re.match(r"^(\.+)(.*)", symbol)
+        if not m:
+            return f"{symbol} → external\n"
+        dots, rest = m.group(1), m.group(2)
+        # Each extra dot beyond the first means go up one directory
+        target_dir = base_dir
+        for _ in range(len(dots) - 1):
+            target_dir = os.path.dirname(target_dir)
+        if rest:
+            module_path = rest.replace(".", "/")
+            for ext in (".py", ".pyi"):
+                candidate = os.path.join(target_dir, module_path + ext)
+                if os.path.isfile(candidate):
+                    rel = os.path.relpath(candidate)
+                    return f"{symbol} → {rel}\n"
+            # Also try as a package (directory with __init__.py)
+            pkg_init = os.path.join(target_dir, module_path, "__init__.py")
+            if os.path.isfile(pkg_init):
+                rel = os.path.relpath(pkg_init)
+                return f"{symbol} → {rel}\n"
+            return f"{symbol} → not found\n"
+        else:
+            # Bare "." or ".." — refers to the package itself
+            pkg_init = os.path.join(target_dir, "__init__.py")
+            if os.path.isfile(pkg_init):
+                rel = os.path.relpath(pkg_init)
+                return f"{symbol} → {rel}\n"
+            return f"{symbol} → not found\n"
+
+    # ── Python dotted import (dots but no / and not starting with ./ or ../) ─
+    if "." in symbol and "/" not in symbol and not symbol.startswith("."):
+        py_path = symbol.replace(".", "/")
+        pat = f"**/{py_path}.py"
+        hits = _glob_files(pat, excl)
+        if hits:
+            rel = os.path.relpath(hits[0])
+            return f"{symbol} → {rel}\n"
+        return f"{symbol} → not found\n"
+
+    # ── Relative path (starts with ./ or ../) ────────────────────────────────
+    if symbol.startswith("./") or symbol.startswith("../"):
+        base = symbol
+        # Try adding common extensions if no extension present
+        if not os.path.splitext(base)[1]:
+            for ext in (".ts", ".tsx", ".js", ".jsx", ".py", ".php"):
+                candidate = base + ext
+                if os.path.isfile(candidate):
+                    rel = os.path.relpath(candidate)
+                    return f"{symbol} → {rel}\n"
+            # Also try .class.php
+            candidate = base + ".class.php"
+            if os.path.isfile(candidate):
+                rel = os.path.relpath(candidate)
+                return f"{symbol} → {rel}\n"
+        else:
+            if os.path.isfile(base):
+                rel = os.path.relpath(base)
+                return f"{symbol} → {rel}\n"
+        return f"{symbol} → not found\n"
+
+    # ── Bare word (no separators at all) ─────────────────────────────────────
+    if re.match(r"^[A-Za-z0-9_-]+$", symbol):
+        for pat in (
+            f"**/{symbol}.ts", f"**/{symbol}.tsx",
+            f"**/{symbol}.js", f"**/{symbol}.jsx",
+            f"**/{symbol}.py", f"**/{symbol}.php",
+            f"**/{symbol}.class.php",
+        ):
+            hits = _glob_files(pat, excl)
+            if hits:
+                rel = os.path.relpath(hits[0])
+                return f"{symbol} → {rel}\n"
+        return f"{symbol} → not found\n"
+
+    # ── Everything else — treat as external ───────────────────────────────────
+    return f"{symbol} → external\n"
+
+
+# ---------------------------------------------------------------------------
+# Import parser helpers for op_workspace
+# ---------------------------------------------------------------------------
+
+_PHP_USE_RE = re.compile(
+    r"^\s*use\s+(?:function\s+|const\s+)?([\w\\]+)(?:\s+as\s+(\w+))?\s*;", re.MULTILINE
+)
+_PY_FROM_RE = re.compile(
+    r"^\s*from\s+(\.+\w*(?:\.\w+)*|\w+(?:\.\w+)*)\s+import", re.MULTILINE
+)
+_PY_IMPORT_RE = re.compile(
+    r"^\s*import\s+([\w.]+)", re.MULTILINE
+)
+_JS_FROM_RE = re.compile(
+    r"""^\s*import\s+.*?from\s+['"]([^'"]+)['"]""", re.MULTILINE
+)
+_JS_BARE_RE = re.compile(
+    r"""^\s*import\s+['"]([^'"]+)['"]""", re.MULTILINE
+)
+
+
+def _parse_imports(path: str, content: str) -> List[tuple]:  # noqa: same signature, from_file is path
+    """Return list of (symbol, alias_or_None) pairs for the file's import statements."""
+    ext = os.path.splitext(path)[1].lower()
+    results: List[tuple] = []
+    seen: set = set()
+
+    if ext == ".php":
+        for m in _PHP_USE_RE.finditer(content):
+            sym = m.group(1)
+            alias = m.group(2)
+            key = (sym, alias)
+            if key not in seen:
+                seen.add(key)
+                results.append(key)
+    elif ext == ".py":
+        for m in _PY_FROM_RE.finditer(content):
+            sym = m.group(1)
+            key = (sym, None)
+            if key not in seen:
+                seen.add(key)
+                results.append(key)
+        for m in _PY_IMPORT_RE.finditer(content):
+            sym = m.group(1)
+            key = (sym, None)
+            if key not in seen:
+                seen.add(key)
+                results.append(key)
+    elif ext in (".js", ".jsx", ".ts", ".tsx"):
+        for m in _JS_FROM_RE.finditer(content):
+            sym = m.group(1)
+            key = (sym, None)
+            if key not in seen:
+                seen.add(key)
+                results.append(key)
+        for m in _JS_BARE_RE.finditer(content):
+            sym = m.group(1)
+            key = (sym, None)
+            if key not in seen:
+                seen.add(key)
+                results.append(key)
+
+    return results
+
+
+def op_workspace(path: str) -> str:
+    """One-shot IDE-style view: file + symbols + validators + siblings + git + references + tests.
+
+    Sections (in order):
+      ## File: PATH       full read (1000-line cap)
+      ## Symbols          map: output
+      ## Validators       op_validate output (skipped when no validators)
+      ## Siblings         ls of dirname (skipped when dirname == cwd root)
+      ## Git              branch, file status, recent commits, blame contributors
+      ## References       grep for main symbol across project
+      ## Tests            matching test file info (PHP / Python)
+    """
+    if not os.path.isfile(path):
+        return f"workspace: {path} not found\n"
+
+    out: List[str] = []
+
+    # ── Section 1: File ──────────────────────────────────────────────────────
+    out.append(f"## File: {path}\n\n")
+    # Use render_file directly with 1000-line cap (bypass rtk for consistency)
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as f:
+            raw_lines = f.read().splitlines(keepends=True)
+    except OSError as e:
+        out.append(f"ERROR: could not read {path}: {e}\n\n")
+        raw_lines = []
+        size = 0
+
+    line_count = len(raw_lines)
+    _WS_LINE_CAP = 1000
+    out.append(f"({line_count} lines, {size} bytes)\n")
+    shown = min(line_count, _WS_LINE_CAP)
+    for i in range(shown):
+        try:
+            line = raw_lines[i].decode("utf-8", errors="replace")
+        except Exception:
+            line = "<binary line>\n"
+        out.append(f"{i + 1:>6}→{line}")
+    if line_count > _WS_LINE_CAP:
+        out.append(f"... ({line_count - _WS_LINE_CAP} more lines — use read:{path}:OFFSET:LIMIT)\n")
+    else:
+        out.append("[complete file — no more lines]\n")
+    out.append("\n")
+
+    # ── Section 2: Symbols ───────────────────────────────────────────────────
+    out.append("## Symbols\n\n")
+    out.append(op_map(path))
+    out.append("\n")
+
+    # ── Section 3: Imports ───────────────────────────────────────────────────
+    # Read file content for import parsing (already read above into raw_lines)
+    try:
+        file_content = "".join(
+            ln.decode("utf-8", errors="replace") for ln in raw_lines
+        )
+    except Exception:
+        file_content = ""
+
+    _imports = _parse_imports(path, file_content)
+    if _imports:
+        _imports = _imports[:40]  # cap at 40 entries
+        _resolve_cache: dict = {}
+        out.append(f"## Imports ({len(_imports)})\n\n")
+        for sym, alias in _imports:
+            resolved_line = op_resolve(sym, from_file=path, _cache=_resolve_cache).strip()
+            # resolved_line is "SYMBOL → PATH" — extract just the path part
+            arrow_idx = resolved_line.find(" → ")
+            resolved_path = resolved_line[arrow_idx + 3:] if arrow_idx != -1 else resolved_line
+            label = f"{sym} (as {alias})" if alias else sym
+            out.append(f"  {label:<50} → {resolved_path}\n")
+        out.append("\n")
+
+    # ── Section 4: Validators ────────────────────────────────────────────────
+    cfg = _load_config()
+    validators = cfg.get("validators") or {}
+    if validators:
+        out.append("## Validators\n\n")
+        out.append(op_validate(path, verbose=True))
+        out.append("\n")
+
+    # ── Section 5: Siblings ──────────────────────────────────────────────────
+    dirname = os.path.dirname(os.path.abspath(path))
+    cwd = os.path.abspath(os.getcwd())
+    if dirname != cwd:
+        out.append("## Siblings\n\n")
+        out.append(op_ls(dirname))
+        out.append("\n")
+
+    # ── Section 6: Git ───────────────────────────────────────────────────────
+    # Check if inside a git repo
+    try:
+        git_check = subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            capture_output=True, text=True, timeout=5,
+        )
+        in_git = git_check.returncode == 0
+    except (subprocess.TimeoutExpired, OSError):
+        in_git = False
+
+    if in_git:
+        out.append("## Git\n\n")
+
+        # Branch + ahead/behind
+        try:
+            branch_r = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True, text=True, timeout=5,
+            )
+            branch = branch_r.stdout.strip() if branch_r.returncode == 0 else "?"
+            # ahead/behind
+            ab_r = subprocess.run(
+                ["git", "rev-list", "--left-right", "--count", f"{branch}...@{{u}}"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if ab_r.returncode == 0 and ab_r.stdout.strip():
+                parts_ab = ab_r.stdout.strip().split()
+                ahead, behind = (parts_ab + ["0", "0"])[:2]
+                out.append(f"branch: {branch}  ahead {ahead}  behind {behind}\n")
+            else:
+                out.append(f"branch: {branch}\n")
+        except (subprocess.TimeoutExpired, OSError):
+            out.append("branch: (git error)\n")
+
+        # File git status
+        try:
+            status_r = subprocess.run(
+                ["git", "status", "--porcelain", path],
+                capture_output=True, text=True, timeout=5,
+            )
+            if status_r.returncode == 0:
+                status_line = status_r.stdout.strip()
+                if status_line:
+                    xy = status_line[:2]
+                    if xy[0] in "MADRC":
+                        file_status = "staged"
+                    elif xy[1] in "MD":
+                        file_status = "modified"
+                    else:
+                        file_status = status_line.strip()
+                else:
+                    file_status = "clean"
+                out.append(f"file status: {file_status}\n")
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+
+        # Recent commits touching PATH
+        try:
+            log_r = subprocess.run(
+                ["git", "log", "--oneline", "-5", "--", path],
+                capture_output=True, text=True, timeout=5,
+            )
+            if log_r.returncode == 0 and log_r.stdout.strip():
+                out.append("recent commits:\n")
+                for line in log_r.stdout.strip().splitlines():
+                    out.append(f"  {line}\n")
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+
+        # Top blame contributors
+        try:
+            blame_r = subprocess.run(
+                ["git", "blame", "--line-porcelain", path],
+                capture_output=True, text=True, timeout=15,
+            )
+            if blame_r.returncode == 0 and blame_r.stdout:
+                author_counts: Dict[str, int] = {}
+                total_blame_lines = 0
+                for bline in blame_r.stdout.splitlines():
+                    if bline.startswith("author "):
+                        author = bline[7:].strip()
+                        author_counts[author] = author_counts.get(author, 0) + 1
+                        total_blame_lines += 1
+                if author_counts and total_blame_lines > 0:
+                    top3 = sorted(author_counts.items(), key=lambda x: -x[1])[:3]
+                    out.append("top contributors:\n")
+                    for author, count in top3:
+                        pct = round(100 * count / total_blame_lines)
+                        out.append(f"  {author} ({pct}%)\n")
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+
+        out.append("\n")
+
+    # ── Section 7: References ────────────────────────────────────────────────
+    out.append("## References\n\n")
+    basename = os.path.basename(path)
+    ext = os.path.splitext(basename)[1]  # e.g. ".php"
+    # Strip extension. For "Foo.class.php" → "Foo.class" → strip again by splitext
+    symbol = os.path.splitext(basename)[0]  # strips last extension
+    # For "Foo.class.php" → symbol = "Foo.class"; strip another extension if still has one
+    if "." in symbol:
+        symbol = os.path.splitext(symbol)[0]
+
+    ref_limit = 20
+    noisy_note = ""
+    if symbol.lower() in _WORKSPACE_COMMON_SYMBOLS:
+        ref_limit = 10
+        noisy_note = f"  (common symbol — results may be noisy)\n"
+
+    excl = _get_exclude_paths("grep")
+    hits = _grep_recursive(symbol, ".", ref_limit, excl)
+    # Filter to family extensions (or same-ext fallback), exclude self
+    abs_path = os.path.abspath(path)
+    ext_family = _EXT_FAMILIES.get(ext, (ext,)) if ext else ()
+    filtered_hits: List[str] = []
+    for hit in hits:
+        # hit format: "filepath:lineno:content"
+        colon1 = hit.index(":")
+        hit_file = hit[:colon1]
+        if os.path.abspath(hit_file) == abs_path:
+            continue
+        if ext_family and not any(hit_file.endswith(e) for e in ext_family):
+            continue
+        filtered_hits.append(hit)
+
+    if noisy_note:
+        out.append(noisy_note)
+
+    if filtered_hits:
+        current_file = ""
+        for hit in filtered_hits:
+            colon1 = hit.index(":")
+            rest = hit[colon1 + 1:]
+            colon2 = rest.index(":")
+            hit_file = hit[:colon1]
+            lineno = rest[:colon2]
+            content = rest[colon2 + 1:]
+            if hit_file != current_file:
+                current_file = hit_file
+                out.append(f"{hit_file}\n")
+            out.append(f"  {lineno}:{content}\n")
+    else:
+        out.append(f"(no references to {symbol!r} found in *{ext} files)\n")
+    out.append("\n")
+
+    # ── Section 8: Tests ─────────────────────────────────────────────────────
+    _ws_test_path: Optional[str] = None
+
+    if ext == ".php":
+        # PHP: look for *Test.php matching the base symbol
+        test_pattern = f"**/{symbol}Test.php"
+        from glob import glob as _glob
+        candidates = _glob(test_pattern, recursive=True)
+        if candidates:
+            _ws_test_path = candidates[0]
+    elif ext == ".py":
+        # Python: test_*.py or *_test.py matching the symbol
+        sym_lower = symbol.lower()
+        for tpat in (f"**/test_{sym_lower}.py", f"**/{sym_lower}_test.py",
+                     f"**/test_{symbol}.py", f"**/{symbol}_test.py"):
+            from glob import glob as _glob
+            candidates = _glob(tpat, recursive=True)
+            if candidates:
+                _ws_test_path = candidates[0]
+                break
+
+    if _ws_test_path and os.path.isfile(_ws_test_path):
+        out.append("## Tests\n\n")
+        try:
+            test_lines = _count_lines(_ws_test_path)
+            test_mtime = os.path.getmtime(_ws_test_path)
+            test_mtime_str = datetime.fromtimestamp(test_mtime).strftime("%Y-%m-%d %H:%M")
+            out.append(f"{_ws_test_path}  ({test_lines} lines, last modified {test_mtime_str})\n")
+        except OSError:
+            out.append(f"{_ws_test_path}\n")
+        out.append("\n")
+
+    return "".join(out)
+
+
 def op_format(path: str, tool_filter: Optional[list] = None, verbose: bool = False) -> str:
     """Manual one-shot: run formatters on ``path``, render ok/fail + duration.
 
@@ -8857,6 +9366,12 @@ def dispatch(arg: str) -> str:
             fs_parts = [p for p in parts[1:] if p != "verbose"]
             fs_tools = [t for t in (fs_parts[0].split(",") if len(fs_parts) > 0 and fs_parts[0] else []) if t]
             body = op_format_staged(fs_tools or None, verbose=fs_verbose)
+        elif op == "resolve":
+            rs_symbol = parts[1] if len(parts) > 1 else ""
+            body = op_resolve(rs_symbol)
+        elif op == "workspace":
+            ws_path = parts[1] if len(parts) > 1 else ""
+            body = op_workspace(ws_path)
         elif op in ("introduction", "output-format", "ops", "ops-compact", "version"):
             # Meta-ops use markdown headers instead of --- header ---
             header = ""

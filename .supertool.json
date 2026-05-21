@@ -166,6 +166,16 @@
       "syntax": "format_staged[::tool1,tool2][:verbose]",
       "description": "Run formatters on all staged files. Pair with validate_staged for a normalize-then-check pass. Append `verbose` for full per-file details.",
       "example": "format_staged"
+    },
+    "workspace": {
+      "syntax": "workspace:PATH",
+      "description": "One-shot IDE-style view: file + symbols + validators + siblings + git + references + tests. Opt-in (heavy). Use for first-touch on unfamiliar files.",
+      "example": "workspace:src/app/Module.py"
+    },
+    "resolve": {
+      "syntax": "resolve:SYMBOL",
+      "description": "Smart-glob resolver: PHP FQN, Python dotted, JS/TS relative path → file on disk. Returns 'external' for npm/pip packages, 'not found' if no match. Used internally by workspace.",
+      "example": "resolve:foo.bar.baz"
     }
   },
   "ops": {},
