@@ -10,6 +10,7 @@
 | **Search** | `grep`, `grep-count`, `grep_around`, `around`, `around_line`, `between` | [search.md](search.md) |
 | **Symbol map** | `map` | [map.md](map.md) |
 | **Edits** | `edit`, `replace`, `replace_dry`, `replace_lines`, `paste`, `vim` | [edits.md](edits.md) |
+| **Validate / Format** | `validate`, `format`, `validate_staged`, `format_staged` | — |
 | **Meta** | `introduction`, `output-format`, `ops`, `version` | [meta.md](meta.md) |
 
 ## Full op table
@@ -44,5 +45,9 @@
 | `paste` | `paste:::PATH:::CONTENT` | **NARROW USE:** replace ENTIRE file. Only for creating a new file or fully rewriting one. NOT for partial edits — `vim` is the default for those. Atomic, creates file + parent dirs if missing. CONTENT via triple-colon → holds any chars (`:`, quotes, braces, newlines). |
 | `vim` | `vim:::PATH:::SCRIPT` | vim-flavored cursor-based multi-action edit. SCRIPT is parsed like a real vim macro. **DEFAULT EDIT OP** for any pattern-based edit. See [edits.md](edits.md) for full syntax reference. |
 | `replace` / `replace_dry` | `replace:::OLD:::NEW:::PATH` | Recursive find/replace across PATH (`replace_dry` = preview). Use `:::` separator when content has `:`. |
+| `validate` | `validate:PATH` or `validate:PATH:tool1,tool2` | Run registered validators matching PATH (by file extension). Optional `tool_filter` limits to named validators. Same validators that fire after every mutating op. |
+| `format` | `format:PATH` or `format:PATH:tool1,tool2` | Run registered formatters matching PATH (writes file in place). Optional `tool_filter` limits to named formatters. Same formatters that fire after every mutating op. |
+| `validate_staged` | `validate_staged` or `validate_staged::tool1,tool2` | Run validators on all files in `git diff --cached --name-only`. Optional `tool_filter`. Useful as a pre-commit check. |
+| `format_staged` | `format_staged` or `format_staged::tool1,tool2` | Run formatters on all staged files. Optional `tool_filter`. Pair with `validate_staged` for a full normalize-then-check pass. |
 
 **LLM onboarding in one call:** `./supertool 'introduction' 'output-format' 'ops'`

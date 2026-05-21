@@ -423,7 +423,7 @@ def _rtk_run(args: List[str], timeout: int = 30) -> str | None:
     return None
 
 # Built-in op names — custom ops/aliases with these names are ignored
-_BUILTIN_OPS = {"read", "grep", "grep_around", "glob", "ls", "tail", "head", "wc", "check", "around", "map", "diff", "stat", "around_line", "tree", "replace", "replace_dry", "edit", "replace_lines", "paste", "vi"}
+_BUILTIN_OPS = {"read", "grep", "grep_around", "glob", "ls", "tail", "head", "wc", "check", "around", "map", "diff", "stat", "around_line", "tree", "replace", "replace_dry", "edit", "replace_lines", "paste", "vi", "validate", "format", "validate_staged", "format_staged"}
 
 # Read-only built-in ops — safe to run in parallel across a batch.
 # Excludes mutating ops (replace, edit, replace_lines) and custom ops
@@ -431,7 +431,7 @@ _BUILTIN_OPS = {"read", "grep", "grep_around", "glob", "ls", "tail", "head", "wc
 _PARALLEL_SAFE_OPS = {
     "read", "grep", "glob", "ls", "head", "tail", "wc", "stat",
     "map", "tree", "around", "around_line", "between", "diff", "blame",
-    "version",
+    "version", "validate", "validate_staged", "format_staged",
 }
 
 
@@ -6168,11 +6168,15 @@ def _op_vim_impl(path: str, script: str) -> str:
             if on_word:
                 while we < len(content) and (content[we].isalnum() or content[we] == "_"):
                     we += 1
+            else:
+                while we < len(content) and not (content[we].isalnum() or content[we] == "_") and content[we] != "\n":
+                    we += 1
             while we < len(content) and content[we] in (" ", "\t"):
                 we += 1
             register = content[cursor:we]
             register_linewise = False
             content = content[:cursor] + content[we:]
+            last_change = {"verb": "dw", "count": count, "arg": ""}
             log.append(f"  {i}. dw ({len(register)} chars)")
         elif verb == "cw":
             # already exists above; keep — this branch is unreachable
@@ -7110,6 +7114,9 @@ def _op_vim_impl(path: str, script: str) -> str:
                             else:
                                 while _we < len(content) and not _is_wdot(content[_we]) and content[_we] != "\n":
                                     _we += 1
+                            # Match regular dw: also consume trailing horizontal whitespace.
+                            while _we < len(content) and content[_we] in (" ", "\t"):
+                                _we += 1
                             content = content[:cursor] + content[_we:]
                             log.append(f"  {i}. .(dw) deleted {_we - cursor} chars")
                     elif lc_verb == "cw":
@@ -8034,6 +8041,96 @@ def op_validate(path: str, tool_filter: Optional[list] = None) -> str:
     return "\n".join(out) + "\n"
 
 
+def op_format(path: str, tool_filter: Optional[list] = None) -> str:
+    """Manual one-shot: run formatters on `path`, render ok/fail + duration."""
+    if not path:
+        return "ERROR: format requires file path\n"
+    cfg = _load_config()
+    formatters = cfg.get("formatters") or {}
+    if not formatters:
+        return "no formatters configured\n"
+    if tool_filter:
+        formatters = {k: v for k, v in formatters.items() if k in tool_filter}
+        if not formatters:
+            return "no formatters matched filter\n"
+    import fnmatch
+    out = [f"format: {path}"]
+    matched = False
+    for name, spec in formatters.items():
+        if not isinstance(spec, dict):
+            continue
+        glob = spec.get("match", "*")
+        if path and glob and not fnmatch.fnmatch(path, glob):
+            continue
+        matched = True
+        result = _formatter_run_one(name, spec, path)
+        dur = 0
+        status = "ok" if result["ok"] else "fail"
+        msg = result.get("msg", "")
+        row = f"{name:8s}: {status:6s}"
+        if msg:
+            row += f"  {msg}"
+        out.append(row)
+    if not matched:
+        out.append("(no formatters matched this file)")
+    return "\n".join(out) + "\n"
+
+
+def op_validate_staged(tool_filter: Optional[list] = None) -> str:
+    """Run validators on every currently staged file."""
+    import subprocess
+    try:
+        r = subprocess.run(
+            ["git", "diff", "--cached", "--name-only"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if r.returncode != 0:
+            msg = (r.stderr.strip() or "git diff failed")
+            return f"ERROR: {msg}\n"
+    except (subprocess.TimeoutExpired, OSError) as e:
+        return f"ERROR: git unavailable: {e}\n"
+
+    staged = [p for p in r.stdout.splitlines() if p and os.path.isfile(p)]
+    if not staged:
+        return "no staged files\n"
+
+    parts = []
+    for fpath in staged:
+        parts.append(f"validate_staged: {fpath}")
+        block = op_validate(fpath, tool_filter)
+        # indent the block for readability
+        for line in block.splitlines():
+            parts.append(f"  {line}")
+    return "\n".join(parts) + "\n"
+
+
+def op_format_staged(tool_filter: Optional[list] = None) -> str:
+    """Run formatters on every currently staged file."""
+    import subprocess
+    try:
+        r = subprocess.run(
+            ["git", "diff", "--cached", "--name-only"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if r.returncode != 0:
+            msg = (r.stderr.strip() or "git diff failed")
+            return f"ERROR: {msg}\n"
+    except (subprocess.TimeoutExpired, OSError) as e:
+        return f"ERROR: git unavailable: {e}\n"
+
+    staged = [p for p in r.stdout.splitlines() if p and os.path.isfile(p)]
+    if not staged:
+        return "no staged files\n"
+
+    parts = []
+    for fpath in staged:
+        parts.append(f"format_staged: {fpath}")
+        block = op_format(fpath, tool_filter)
+        for line in block.splitlines():
+            parts.append(f"  {line}")
+    return "\n".join(parts) + "\n"
+
+
 def _detect_payload_format(raw: str) -> str:
     """Return 'json' if first non-whitespace char is { or [, else 'toml'."""
     for c in raw:
@@ -8424,10 +8521,16 @@ def dispatch(arg: str) -> str:
     _at_file_replace_all: bool = False
     _at_file_used: bool = False
     if (
-        len(parts) == 2
+        len(parts) >= 2
         and parts[1].startswith("@")
         and _at_file_fields(op)
     ):
+        if len(parts) > 2:
+            return header + (
+                f"ERROR: {op}:@... takes the @reference as the only argument "
+                f"(e.g. {op}:@payload.json or {op}:@-). Put fields in the "
+                f"JSON/TOML payload, not on the colon CLI.\n"
+            )
         try:
             payload = _load_at_file(parts[1])
             parts, _at_file_replace_all = _at_file_to_parts(op, payload)
@@ -8669,6 +8772,16 @@ def dispatch(arg: str) -> str:
             v_path = parts[1] if len(parts) > 1 else ""
             v_tools = [t for t in (parts[2].split(",") if len(parts) > 2 and parts[2] else []) if t]
             body = op_validate(v_path, v_tools or None)
+        elif op == "format":
+            f_path = parts[1] if len(parts) > 1 else ""
+            f_tools = [t for t in (parts[2].split(",") if len(parts) > 2 and parts[2] else []) if t]
+            body = op_format(f_path, f_tools or None)
+        elif op == "validate_staged":
+            vs_tools = [t for t in (parts[1].split(",") if len(parts) > 1 and parts[1] else []) if t]
+            body = op_validate_staged(vs_tools or None)
+        elif op == "format_staged":
+            fs_tools = [t for t in (parts[1].split(",") if len(parts) > 1 and parts[1] else []) if t]
+            body = op_format_staged(fs_tools or None)
         elif op in ("introduction", "output-format", "ops", "ops-compact", "version"):
             # Meta-ops use markdown headers instead of --- header ---
             header = ""

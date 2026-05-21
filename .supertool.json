@@ -146,6 +146,26 @@
       "example": "vim:::skill.md:::/## Process\\eO## Task list\\eo1. Foo\\eo2. Bar",
       "status": 1,
       "hint": true
+    },
+    "validate": {
+      "syntax": "validate:PATH[:tool1,tool2]",
+      "description": "Run registered validators matching PATH (by extension). Optional tool_filter limits to named validators. Same validators that fire after every mutating op.",
+      "example": "validate:supertool.py"
+    },
+    "format": {
+      "syntax": "format:PATH[:tool1,tool2]",
+      "description": "Run registered formatters matching PATH (writes file in place). Optional tool_filter limits to named formatters. Same formatters that fire after every mutating op.",
+      "example": "format:supertool.py"
+    },
+    "validate_staged": {
+      "syntax": "validate_staged[::tool1,tool2]",
+      "description": "Run validators on all files in git diff --cached --name-only. Optional tool_filter. Pre-commit check across the full staged diff.",
+      "example": "validate_staged"
+    },
+    "format_staged": {
+      "syntax": "format_staged[::tool1,tool2]",
+      "description": "Run formatters on all staged files. Pair with validate_staged for a normalize-then-check pass.",
+      "example": "format_staged"
     }
   },
   "ops": {},
