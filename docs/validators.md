@@ -68,6 +68,9 @@ Enable any of these by copying the relevant entry from `.supertool.example.json`
 | Go                  | `gofmt-check`    | `gofmt` (ships with Go)            | Fails on formatting diff, not just syntax  |
 | Terraform           | `terraform-check`| `terraform` CLI                    | Uses `terraform validate`                  |
 | Rust                | `cargo-check`    | `cargo` (ships with Rust)          | Uses `cargo check` — full type resolution  |
+| PHP — static  | `phpstan`        | `phpstan` binary (PATH or via `PHPSTAN_BIN` env)  | Env-configured. See [README](../validators/phpstan/README.md) |
+| PHP — mess    | `phpmd`          | `phpmd` binary (PATH or via `PHPMD_BIN` env)      | Env-configured. See [README](../validators/phpmd/README.md) |
+
 
 ## Adding your own
 
@@ -115,6 +118,28 @@ Full list of `.supertool.json` validator config fields:
 | `resolve`          | Shell cmd returning an alternate target path (e.g. source-file → test-file).           |
 | `timeout`          | Seconds. Default 60.                                                                    |
 | `opt_in`           | If true, validator only runs on explicit request via the `validate` op.                |
+| `env`              | Optional `{KEY: VAL}` block merged into the subprocess environment. Values are coerced to strings. Useful for pointing wrappers at a project-local binary or config without touching the system environment. |
+
+### env — usage
+
+Pass tool-specific config without shell exports:
+
+```json
+"phpstan": {
+  "cmd": "python3 {supertool_dir}/validators/phpstan/phpstan.py {file}",
+  "match": "*.php",
+  "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+  "rollback_on_fail": false,
+  "timeout": 60,
+  "env": {
+    "PHPSTAN_BIN": "./vendor/bin/phpstan",
+    "PHPSTAN_CONFIG": "phpstan.neon",
+    "PHPSTAN_LEVEL": "8"
+  }
+}
+```
+
+The `env` block is merged on top of the inherited process environment (`os.environ | spec.env`), so unset keys fall through to whatever the shell already has.
 
 ## Caching
 
@@ -150,6 +175,8 @@ The model gets a clean retry surface with the exact line and error — no broken
 ## Adapter contract
 
 Custom validators must conform to the adapter contract in `validators/SCHEMA.md`. Each adapter takes one file arg and prints a JSON object on stdout with a standardised shape (ok, count, errors). The bundled adapters (`validators/phplint/`, `validators/xmllint/`, etc.) are the reference implementations.
+
+Two optional output fields worth knowing: `source_context` (array of source lines centered on the error, rendered indented under each error in verbose mode) and `diff` (unified diff string, rendered as a fenced block — useful for tools like Rector that produce a suggested patch). Full spec in [SCHEMA.md](../validators/SCHEMA.md).
 
 ## Format-on-save
 

@@ -2,13 +2,22 @@
   "compact": false,
   "rtk": false,
   "parallel": 0,
-  "presets": ["git", "github", "gitlab", "claude-log", "hashnode", "devto", "bluesky", "xml"],
-  "introduction": "supertool batches multiple file operations into one Bash call.\n\nInvoke via Bash:\n./supertool \\\n    'read:src/app/Module.py' \\\n    'read:src/app/Config.py' \\\n    'grep:class:src/app/:20' \\\n    'glob:src/app/**/*.py'\n\nRules:\n- One call, many ops. 6-7 per call is normal. Each separate call wastes money.\n- Paths are relative to project root.\n- Single quotes around each op.\n- Use Read tool ONLY for the file you're about to Edit — supertool for everything else.\n\n@file payload route (mutating ops only — edit, replace, replace_lines, paste, vim):\n- Inline:  ./supertool 'edit:::OLD:::NEW:::PATH'\n- Payload: ./supertool 'edit:@-' <<'EOF' ... EOF   (or 'edit:@path.toml')\n- Format auto-detected: starts with { or [ → JSON; else TOML.\n- TOML '''triple-single-quote''' preserves backslashes/quotes/newlines byte-for-byte — use for code blocks. Single-quoted 'literal' for one-liners with \\e etc.\n- Field names match the syntax tokens lowercased (edit:::OLD:::NEW:::PATH → old, new, path).\n\nTo avoid escape problems, use chr(10)/chr(27) instead of \\n/\\x1b in payload content.",
-  "output-format": "Each operation returns a header followed by its output:\n\n```\n--- read:src/app/Module.py ---\n(45 lines, 1230 bytes)\n     1→import os\n     2→import sys\n     3→\n     4→class Module:\n\n--- grep:class:src/app/:5 ---\n(2 results, limit 5)\nsrc/app/Module.py\n  4:class Module:\nsrc/app/Config.py\n  8:class Config:\n\n--- glob:src/app/**/*.py ---\n(3 files)\nsrc/app/Module.py\nsrc/app/Config.py\nsrc/app/Utils.py\n```",
+  "presets": [
+    "git",
+    "github",
+    "gitlab",
+    "claude-log",
+    "hashnode",
+    "devto",
+    "bluesky",
+    "xml"
+  ],
+  "introduction": "supertool batches multiple file operations into one Bash call.\n\nInvoke via Bash:\n./supertool \\\n    'read:src/app/Module.py' \\\n    'read:src/app/Config.py' \\\n    'grep:class:src/app/:20' \\\n    'glob:src/app/**/*.py'\n\nRules:\n- One call, many ops. 6-7 per call is normal. Each separate call wastes money.\n- Paths are relative to project root.\n- Single quotes around each op.\n- Use Read tool ONLY for the file you're about to Edit \u2014 supertool for everything else.\n\n@file payload route (mutating ops only \u2014 edit, replace, replace_lines, paste, vim):\n- Inline:  ./supertool 'edit:::OLD:::NEW:::PATH'\n- Payload: ./supertool 'edit:@-' <<'EOF' ... EOF   (or 'edit:@path.toml')\n- Format auto-detected: starts with { or [ \u2192 JSON; else TOML.\n- TOML '''triple-single-quote''' preserves backslashes/quotes/newlines byte-for-byte \u2014 use for code blocks. Single-quoted 'literal' for one-liners with \\e etc.\n- Field names match the syntax tokens lowercased (edit:::OLD:::NEW:::PATH \u2192 old, new, path).\n\nTo avoid escape problems, use chr(10)/chr(27) instead of \\n/\\x1b in payload content.",
+  "output-format": "Each operation returns a header followed by its output:\n\n```\n--- read:src/app/Module.py ---\n(45 lines, 1230 bytes)\n     1\u2192import os\n     2\u2192import sys\n     3\u2192\n     4\u2192class Module:\n\n--- grep:class:src/app/:5 ---\n(2 results, limit 5)\nsrc/app/Module.py\n  4:class Module:\nsrc/app/Config.py\n  8:class Config:\n\n--- glob:src/app/**/*.py ---\n(3 files)\nsrc/app/Module.py\nsrc/app/Config.py\nsrc/app/Utils.py\n```",
   "builtin-ops": {
     "read": {
       "syntax": "read:PATH[:OFFSET:LIMIT|:full]",
-      "description": "Read file (300 lines, 20KB cap). Set php_abstract:1 to return tree-sitter symbol maps for PHP files larger than max_bytes — saves tokens on big classes. Use :full to force raw. Threshold override: SUPERTOOL_READ_ABSTRACT_THRESHOLD_BYTES=N",
+      "description": "Read file (300 lines, 20KB cap). Set php_abstract:1 to return tree-sitter symbol maps for PHP files larger than max_bytes \u2014 saves tokens on big classes. Use :full to force raw. Threshold override: SUPERTOOL_READ_ABSTRACT_THRESHOLD_BYTES=N",
       "example": "read:src/app/Module.py:full",
       "max_lines": 300,
       "max_bytes": 20000,
@@ -16,7 +25,7 @@
     },
     "read-grep": {
       "syntax": "read:PATH:::grep=PATTERN",
-      "description": "Inline filter — matching lines, line nums kept",
+      "description": "Inline filter \u2014 matching lines, line nums kept",
       "example": "read:src/app/Module.py:::grep=class"
     },
     "grep": {
@@ -33,7 +42,7 @@
     },
     "grep-count": {
       "syntax": "grep:PATTERN:PATH:LIMIT:CONTEXT:count",
-      "description": "Count mode — match counts/file, no content",
+      "description": "Count mode \u2014 match counts/file, no content",
       "example": "grep:TODO:src/:100:0:count"
     },
     "around": {
@@ -89,7 +98,7 @@
     },
     "around_line": {
       "syntax": "around_line:PATH:LINE[:N]",
-      "description": "N lines around LINE (def 10). Target marked →",
+      "description": "N lines around LINE (def 10). Target marked \u2192",
       "example": "around_line:src/app/Module.py:42:5"
     },
     "between": {
@@ -114,7 +123,7 @@
     },
     "edit": {
       "syntax": "edit:::OLD:::NEW:::PATH  |  edit:@payload",
-      "description": "Single-file edit, OLD must match exactly once. Bypasses native Edit must-Read state — saves a round-trip. Use ::: separator so content with ':' works.",
+      "description": "Single-file edit, OLD must match exactly once. Bypasses native Edit must-Read state \u2014 saves a round-trip. Use ::: separator so content with ':' works.",
       "example": "edit:::return false;:::return true;:::src/app/Foo.py"
     },
     "replace_lines": {
@@ -128,28 +137,28 @@
       "example": "paste:::src/app/new_file.py:::print('hello')\\n"
     },
     "validate": {
-      "syntax": "validate:PATH[:tool1,tool2]",
-      "description": "Run registered validators matching PATH (by extension). Optional tool_filter limits to named validators. Same validators that fire after every mutating op.",
+      "syntax": "validate:PATH[:tool1,tool2][:verbose]",
+      "description": "Run registered validators matching PATH (by extension). Optional tool_filter limits to named validators. Same validators that fire after every mutating op. Append `verbose` for uncapped errors + source context + raw stdout/stderr.",
       "example": "validate:src/app/Module.py"
     },
     "format": {
-      "syntax": "format:PATH[:tool1,tool2]",
-      "description": "Run registered formatters matching PATH (writes file in place). Optional tool_filter limits to named formatters. Same formatters that fire after every mutating op.",
+      "syntax": "format:PATH[:tool1,tool2][:verbose]",
+      "description": "Run registered formatters matching PATH (writes file in place). Optional tool_filter limits to named formatters. Same formatters that fire after every mutating op. Append `verbose` for uncapped errors + source context + raw stdout/stderr.",
       "example": "format:src/app/Module.py"
     },
     "validate_staged": {
-      "syntax": "validate_staged[::tool1,tool2]",
-      "description": "Run validators on all files in git diff --cached --name-only. Optional tool_filter. Pre-commit check across the full staged diff.",
+      "syntax": "validate_staged[::tool1,tool2][:verbose]",
+      "description": "Run validators on all files in git diff --cached --name-only. Optional tool_filter. Pre-commit check across the full staged diff. Append `verbose` for full per-file details.",
       "example": "validate_staged"
     },
     "format_staged": {
-      "syntax": "format_staged[::tool1,tool2]",
-      "description": "Run formatters on all staged files. Pair with validate_staged for a normalize-then-check pass.",
+      "syntax": "format_staged[::tool1,tool2][:verbose]",
+      "description": "Run formatters on all staged files. Pair with validate_staged for a normalize-then-check pass. Append `verbose` for full per-file details.",
       "example": "format_staged"
     },
     "batch": {
       "syntax": "batch:@file.json",
-      "description": "Run an array of ops in one call. Mix anything — read+edit+grep+phpstan in one round-trip. Payload: bare array of {op, ...fields} OR wrapper {continue_on_error, ops}. Default continue. Validators fire per mutating op. JSON only (TOML can't express bare arrays). Use @- for stdin.",
+      "description": "Run an array of ops in one call. Mix anything \u2014 read+edit+grep+phpstan in one round-trip. Payload: bare array of {op, ...fields} OR wrapper {continue_on_error, ops}. Default continue. Validators fire per mutating op. JSON only (TOML can't express bare arrays). Use @- for stdin.",
       "example": "batch:@.max/ops.json"
     }
   },
@@ -173,132 +182,246 @@
     "phplint": {
       "cmd": "python3 {supertool_dir}/validators/phplint/phplint.py {file}",
       "match": "*.php",
-      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste",
+        "vim"
+      ],
       "rollback_on_fail": true,
       "timeout": 30
     },
     "xmllint": {
       "cmd": "python3 {supertool_dir}/validators/xmllint/xmllint.py {file}",
       "match": "*.xml",
-      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste",
+        "vim"
+      ],
       "rollback_on_fail": true,
       "timeout": 30
     },
     "node-check": {
       "cmd": "python3 {supertool_dir}/validators/node-check/node-check.py {file}",
       "match": "*.js",
-      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste",
+        "vim"
+      ],
       "rollback_on_fail": true,
       "timeout": 30
     },
     "py-compile": {
       "cmd": "python3 {supertool_dir}/validators/py-compile/py-compile.py {file}",
       "match": "*.py",
-      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste",
+        "vim"
+      ],
       "rollback_on_fail": true,
       "timeout": 10
     },
     "bash-check": {
       "cmd": "python3 {supertool_dir}/validators/bash-check/bash-check.py {file}",
       "match": "*.sh",
-      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste",
+        "vim"
+      ],
       "rollback_on_fail": true,
       "timeout": 10
     },
     "jsonlint": {
       "cmd": "python3 {supertool_dir}/validators/jsonlint/jsonlint.py {file}",
       "match": "*.json",
-      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste",
+        "vim"
+      ],
       "rollback_on_fail": true,
       "timeout": 10
     },
     "stylelint": {
       "cmd": "python3 {supertool_dir}/validators/stylelint/stylelint.py {file}",
       "match": "*.scss",
-      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste",
+        "vim"
+      ],
       "timeout": 60
     },
     "yaml-check": {
       "cmd": "python3 {supertool_dir}/validators/yaml-check/yaml-check.py {file}",
       "match": "*.yml",
-      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste",
+        "vim"
+      ],
       "rollback_on_fail": true,
       "timeout": 10
     },
     "yaml-check-yaml": {
       "cmd": "python3 {supertool_dir}/validators/yaml-check/yaml-check.py {file}",
       "match": "*.yaml",
-      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste",
+        "vim"
+      ],
       "rollback_on_fail": true,
       "timeout": 10
     },
     "inilint": {
       "cmd": "python3 {supertool_dir}/validators/inilint/inilint.py {file}",
       "match": "*.ini",
-      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste",
+        "vim"
+      ],
       "rollback_on_fail": true,
       "timeout": 10
     },
     "gofmt-check": {
       "cmd": "python3 {supertool_dir}/validators/gofmt-check/gofmt-check.py {file}",
       "match": "*.go",
-      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste",
+        "vim"
+      ],
       "rollback_on_fail": false,
       "timeout": 30
     },
     "terraform-check": {
       "cmd": "python3 {supertool_dir}/validators/terraform-check/terraform-check.py {file}",
       "match": "*.tf",
-      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste",
+        "vim"
+      ],
       "rollback_on_fail": true,
       "timeout": 30
     },
     "cargo-check": {
       "cmd": "python3 {supertool_dir}/validators/cargo-check/cargo-check.py {file}",
       "match": "*.rs",
-      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste",
+        "vim"
+      ],
       "rollback_on_fail": false,
       "timeout": 60
     },
     "tsc-check": {
       "cmd": "python3 {supertool_dir}/validators/tsc-check/tsc-check.py {file}",
       "match": "*.ts",
-      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste",
+        "vim"
+      ],
       "rollback_on_fail": false,
       "timeout": 30
     },
     "tsc-check-tsx": {
       "cmd": "python3 {supertool_dir}/validators/tsc-check/tsc-check.py {file}",
       "match": "*.tsx",
-      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste",
+        "vim"
+      ],
       "rollback_on_fail": false,
       "timeout": 30
     },
     "tomllint": {
       "cmd": "python3 {supertool_dir}/validators/tomllint/tomllint.py {file}",
       "match": "*.toml",
-      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste",
+        "vim"
+      ],
       "rollback_on_fail": true,
       "timeout": 10
     },
     "markdownlint": {
       "cmd": "python3 {supertool_dir}/validators/markdownlint/markdownlint.py {file}",
       "match": "*.md",
-      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste",
+        "vim"
+      ],
       "rollback_on_fail": false,
       "timeout": 30
     },
     "ruby-check": {
       "cmd": "python3 {supertool_dir}/validators/ruby-check/ruby-check.py {file}",
       "match": "*.rb",
-      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste",
+        "vim"
+      ],
       "rollback_on_fail": true,
       "timeout": 30
     },
     "hadolint": {
       "cmd": "python3 {supertool_dir}/validators/hadolint/hadolint.py {file}",
       "match": "Dockerfile*",
-      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste",
+        "vim"
+      ],
       "rollback_on_fail": false,
       "timeout": 30
     }
@@ -307,56 +430,104 @@
     "prettier": {
       "cmd": "prettier --write {file}",
       "match": "*.{xml,scss,css,js,json,yml,yaml,md}",
-      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste",
+        "vim"
+      ],
       "rollback_on_fail": false,
       "timeout": 30
     },
     "black": {
       "cmd": "black --quiet {file}",
       "match": "*.py",
-      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste",
+        "vim"
+      ],
       "rollback_on_fail": false,
       "timeout": 30
     },
     "gofmt": {
       "cmd": "gofmt -w {file}",
       "match": "*.go",
-      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste",
+        "vim"
+      ],
       "rollback_on_fail": false,
       "timeout": 30
     },
     "rustfmt": {
       "cmd": "rustfmt {file}",
       "match": "*.rs",
-      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste",
+        "vim"
+      ],
       "rollback_on_fail": false,
       "timeout": 30
     },
     "phpcbf": {
       "cmd": "phpcbf --standard=PSR12 {file}",
       "match": "*.php",
-      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste",
+        "vim"
+      ],
       "rollback_on_fail": false,
       "timeout": 30
     },
     "shfmt": {
       "cmd": "shfmt -w {file}",
       "match": "*.sh",
-      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste",
+        "vim"
+      ],
       "rollback_on_fail": false,
       "timeout": 30
     },
     "terraform-fmt": {
       "cmd": "terraform fmt -write=true {file}",
       "match": "*.tf",
-      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste",
+        "vim"
+      ],
       "rollback_on_fail": false,
       "timeout": 30
     },
     "rubocop": {
       "cmd": "rubocop -a --no-color --format quiet {file}",
       "match": "*.rb",
-      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste",
+        "vim"
+      ],
       "rollback_on_fail": false,
       "timeout": 30
     }

@@ -6,7 +6,7 @@
     "git",
     "xml"
   ],
-  "introduction": "./supertool 'op:args' 'op:args'... Batch 6-7 ops/call. Single quotes per op. Paths from root. Use ops not raw cmds (mysql_read, phpstan, batched reads). Read only before Edit.\n\n@file route (mutating ops: edit/replace/replace_lines/paste/vim): op:@payload or op:@- (stdin). Auto-detect: starts with { → JSON, else TOML. TOML '''triple-single-quote''' preserves backslashes/quotes/newlines — best for code blocks. Fields match syntax tokens lowercased (edit:::OLD:::NEW:::PATH → old, new, path).\n\nTo avoid escape problems, use chr(10)/chr(27) instead of \\n/\\x1b in payload content.",
+  "introduction": "./supertool 'op:args' 'op:args'... Batch 6-7 ops/call. Single quotes per op. Paths from root. Use ops not raw cmds (mysql_read, phpstan, batched reads). Read only before Edit.\n\n@file route (mutating ops: edit/replace/replace_lines/paste/vim): op:@payload or op:@- (stdin). Auto-detect: starts with { \u2192 JSON, else TOML. TOML '''triple-single-quote''' preserves backslashes/quotes/newlines \u2014 best for code blocks. Fields match syntax tokens lowercased (edit:::OLD:::NEW:::PATH \u2192 old, new, path).\n\nTo avoid escape problems, use chr(10)/chr(27) instead of \\n/\\x1b in payload content.",
   "output-format": "Each op: header + body.\n```\n--- op:args ---\n(meta)\noutput\n```",
   "builtin-ops": {
     "read": {
@@ -16,7 +16,7 @@
     },
     "read-grep": {
       "syntax": "read:PATH:::grep=PATTERN",
-      "description": "Inline filter — only matching lines, line nums kept",
+      "description": "Inline filter \u2014 only matching lines, line nums kept",
       "example": "read:supertool.py:::grep=def op_",
       "hint": true
     },
@@ -27,7 +27,7 @@
     },
     "grep-count": {
       "syntax": "grep:PATTERN:PATH:LIMIT:CONTEXT:count",
-      "description": "Count mode — match counts/file, no content",
+      "description": "Count mode \u2014 match counts/file, no content",
       "example": "grep:def:supertool.py:100:0:count",
       "hint": true
     },
@@ -85,7 +85,7 @@
     },
     "around_line": {
       "syntax": "around_line:PATH:LINE[:N]",
-      "description": "N lines around LINE (def 10). Target marked →",
+      "description": "N lines around LINE (def 10). Target marked \u2192",
       "example": "around_line:supertool.py:100:5",
       "hint": true
     },
@@ -114,14 +114,14 @@
     },
     "replace": {
       "syntax": "replace:::OLD:::NEW:::PATH",
-      "description": "Replace OLD→NEW in PATH. Returns receipt. Use ::: when content has ':'",
+      "description": "Replace OLD\u2192NEW in PATH. Returns receipt. Use ::: when content has ':'",
       "example": "replace:::TYPE_CUSTOMER:::TYPE_ENUM_CUSTOMER:::src/",
       "status": 1,
       "hint": true
     },
     "edit": {
       "syntax": "edit:::OLD:::NEW:::PATH",
-      "description": "Single-file, single-occurrence edit (mirrors native Edit). Errors if 0 or >1 matches. Bypasses Edit's must-Read-first state — saves a round-trip. Use ::: separator (single ':' also accepted when content has no colons)",
+      "description": "Single-file, single-occurrence edit (mirrors native Edit). Errors if 0 or >1 matches. Bypasses Edit's must-Read-first state \u2014 saves a round-trip. Use ::: separator (single ':' also accepted when content has no colons)",
       "example": "edit:::return False:::return True:::supertool.py",
       "status": 1,
       "hint": true
@@ -135,36 +135,36 @@
     },
     "paste": {
       "syntax": "paste:::PATH:::CONTENT",
-      "description": "NARROW USE: replace ENTIRE file. Only for creating a new file or fully rewriting one. NOT for partial edits — vim is default for those. Atomic, creates file + parent dirs if missing. CONTENT via triple-colon → holds any chars.",
+      "description": "NARROW USE: replace ENTIRE file. Only for creating a new file or fully rewriting one. NOT for partial edits \u2014 vim is default for those. Atomic, creates file + parent dirs if missing. CONTENT via triple-colon \u2192 holds any chars.",
       "example": "paste:::tests/new_test.php:::<?php\\ndeclare(strict_types=1);\\n...",
       "status": 1,
       "hint": true
     },
     "vim": {
       "syntax": "vim:::PATH:::SCRIPT",
-      "description": "vim-flavored cursor-based multi-action edit. SCRIPT is parsed like a real vim macro: NORMAL mode reads verbs char-by-char; insert verbs (i/a/A/I/o/O), search (/?), and ex (:) enter GREEDY modes where chars are TEXT/PAT until \\e (ESC, U+001B) returns to NORMAL. No separator chars — ';', '{', '}', newlines etc. are literal. Each action: [count][verb][arg]. Cursor: gg/G (BOF/EOF), nG (goto line), 0/$ (BOL/EOL), /PAT or ?PAT (search), nh/nl/nj/nk (move), bare `:N`/`:$`/`:.` (line goto). Inserts (TEXT until \\e, \\n/\\t decoded): iTEXT (before), aTEXT (after), ITEXT (BOL), ATEXT (EOL), oTEXT/OTEXT (open below/above, AUTO-INDENT to current line). Deletes: x/nx (chars), dd/ndd (lines), D (to EOL). Replace: rc. Ex: :s/PAT/REPL/[gid] (literal-fallback on unescaped parens/over-escapes), :%s, :Nd/:N,Md/:.,/PAT/d, :g/PAT/d (also bare `g/PAT/d` and `%g/PAT/d` autoprefixed with `:`), :v/PAT/d, :r FILE, :Nr FILE (read after line N), :Na\\nBODY\\n. (ex append after line N), :w/:wq (no-op, supertool writes atomically). Autocorrects: `oi<ws>TEXT` strips redundant verb-bleed, `:%%d` → `:%d`, `V<N>Gd` → `:.,Nd`, `64,` abandoned range stripped. **DEFAULT EDIT OP** for any pattern-based edit (find+change, insert relative to pattern, multi-step chains). Only fall back to `paste` (full file) / `edit` (unique literal swap) / `replace_lines` (known line range) when vim doesn't fit.",
+      "description": "vim-flavored cursor-based multi-action edit. SCRIPT is parsed like a real vim macro: NORMAL mode reads verbs char-by-char; insert verbs (i/a/A/I/o/O), search (/?), and ex (:) enter GREEDY modes where chars are TEXT/PAT until \\e (ESC, U+001B) returns to NORMAL. No separator chars \u2014 ';', '{', '}', newlines etc. are literal. Each action: [count][verb][arg]. Cursor: gg/G (BOF/EOF), nG (goto line), 0/$ (BOL/EOL), /PAT or ?PAT (search), nh/nl/nj/nk (move), bare `:N`/`:$`/`:.` (line goto). Inserts (TEXT until \\e, \\n/\\t decoded): iTEXT (before), aTEXT (after), ITEXT (BOL), ATEXT (EOL), oTEXT/OTEXT (open below/above, AUTO-INDENT to current line). Deletes: x/nx (chars), dd/ndd (lines), D (to EOL). Replace: rc. Ex: :s/PAT/REPL/[gid] (literal-fallback on unescaped parens/over-escapes), :%s, :Nd/:N,Md/:.,/PAT/d, :g/PAT/d (also bare `g/PAT/d` and `%g/PAT/d` autoprefixed with `:`), :v/PAT/d, :r FILE, :Nr FILE (read after line N), :Na\\nBODY\\n. (ex append after line N), :w/:wq (no-op, supertool writes atomically). Autocorrects: `oi<ws>TEXT` strips redundant verb-bleed, `:%%d` \u2192 `:%d`, `V<N>Gd` \u2192 `:.,Nd`, `64,` abandoned range stripped. **DEFAULT EDIT OP** for any pattern-based edit (find+change, insert relative to pattern, multi-step chains). Only fall back to `paste` (full file) / `edit` (unique literal swap) / `replace_lines` (known line range) when vim doesn't fit.",
       "example": "vim:::skill.md:::/## Process\\eO## Task list\\eo1. Foo\\eo2. Bar",
       "status": 1,
       "hint": true
     },
     "validate": {
-      "syntax": "validate:PATH[:tool1,tool2]",
-      "description": "Run registered validators matching PATH (by extension). Optional tool_filter limits to named validators. Same validators that fire after every mutating op.",
+      "syntax": "validate:PATH[:tool1,tool2][:verbose]",
+      "description": "Run registered validators matching PATH (by extension). Optional tool_filter limits to named validators. Same validators that fire after every mutating op. Append `verbose` for uncapped errors + source context + raw stdout/stderr.",
       "example": "validate:supertool.py"
     },
     "format": {
-      "syntax": "format:PATH[:tool1,tool2]",
-      "description": "Run registered formatters matching PATH (writes file in place). Optional tool_filter limits to named formatters. Same formatters that fire after every mutating op.",
+      "syntax": "format:PATH[:tool1,tool2][:verbose]",
+      "description": "Run registered formatters matching PATH (writes file in place). Optional tool_filter limits to named formatters. Same formatters that fire after every mutating op. Append `verbose` for uncapped errors + source context + raw stdout/stderr.",
       "example": "format:supertool.py"
     },
     "validate_staged": {
-      "syntax": "validate_staged[::tool1,tool2]",
-      "description": "Run validators on all files in git diff --cached --name-only. Optional tool_filter. Pre-commit check across the full staged diff.",
+      "syntax": "validate_staged[::tool1,tool2][:verbose]",
+      "description": "Run validators on all files in git diff --cached --name-only. Optional tool_filter. Pre-commit check across the full staged diff. Append `verbose` for full per-file details.",
       "example": "validate_staged"
     },
     "format_staged": {
-      "syntax": "format_staged[::tool1,tool2]",
-      "description": "Run formatters on all staged files. Pair with validate_staged for a normalize-then-check pass.",
+      "syntax": "format_staged[::tool1,tool2][:verbose]",
+      "description": "Run formatters on all staged files. Pair with validate_staged for a normalize-then-check pass. Append `verbose` for full per-file details.",
       "example": "format_staged"
     }
   },
@@ -174,7 +174,13 @@
     "jsonlint": {
       "cmd": "python3 -m json.tool {file}",
       "match": "*.json",
-      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste",
+        "vim"
+      ],
       "rollback_on_fail": true,
       "timeout": 10
     }
