@@ -13,6 +13,10 @@ import shutil
 import subprocess
 import sys
 import time
+import pathlib
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
+from source_context import source_context
 
 
 def emit(d: dict) -> None:
@@ -65,13 +69,16 @@ def main() -> None:
         m = pattern.match(line)
         if m:
             lineno, col, code, msg = m.groups()
-            errors.append({
-                "line": int(lineno),
+            ln = int(lineno)
+            err = {
+                "line": ln,
                 "col": int(col) if col else None,
                 "severity": "error",
                 "code": code,
                 "msg": msg.strip()[:300],
-            })
+            }
+            err["source_context"] = source_context(file, ln)
+            errors.append(err)
 
     if not errors and output:
         errors = [{"line": None, "col": None, "severity": "error",

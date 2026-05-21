@@ -117,3 +117,18 @@ def test_duration_ms_is_int(tmp_path: Path) -> None:
     f.write_text('[x]\n')
     out = _run(str(f))
     assert isinstance(out["duration_ms"], int)
+
+
+@pytest.mark.skipif(sys.version_info < (3, 11), reason="tomllib stdlib requires Python 3.11+")
+def test_source_context_present_on_error(tmp_path: Path) -> None:
+    f = tmp_path / "bad.toml"
+    # Line 2 has the error — line 1 content provides context
+    f.write_text('[package]\nname = \n')
+    out = _run(str(f))
+    assert out["ok"] is False
+    err = out["errors"][0]
+    # source_context only populated if line was extractable from the error message
+    # tomllib may or may not embed line info — check shape only if line is not None
+    assert "source_context" in err
+    if err["line"] is not None:
+        assert isinstance(err["source_context"], list)

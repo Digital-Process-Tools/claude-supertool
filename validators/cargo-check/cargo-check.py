@@ -20,6 +20,10 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+import pathlib
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
+from source_context import source_context
 
 
 def emit(d: dict) -> None:
@@ -49,13 +53,17 @@ def _parse_errors(output: str) -> list[dict]:
             severity = m.group(4)
             if severity != "error":
                 continue
-            errors.append({
-                "line": int(m.group(2)),
+            src_file = m.group(1)
+            ln = int(m.group(2))
+            err = {
+                "line": ln,
                 "col": int(m.group(3)),
                 "severity": "error",
                 "code": m.group(5) or "compile",
                 "msg": m.group(6).strip()[:300],
-            })
+                "source_context": source_context(src_file, ln),
+            }
+            errors.append(err)
     return errors
 
 

@@ -97,3 +97,18 @@ def test_missing_file_behavior(tmp_path: Path) -> None:
     """Missing file: markdownlint errors (if present) or graceful skip (if absent)."""
     out = _run(str(tmp_path / "nonexistent.md"))
     assert "ok" in out
+
+
+@pytest.mark.skipif(not shutil.which("markdownlint"), reason="markdownlint not on PATH")
+def test_source_context_present_on_error(tmp_path: Path) -> None:
+    # MD022 = headings should be surrounded by blank lines; triggers a line-anchored error
+    f = tmp_path / "bad.md"
+    f.write_text("# Title\nno blank line before next heading\n## Second\n")
+    out = _run(str(f))
+    if out["ok"] or not out["errors"]:
+        pytest.skip("markdownlint found no issues with this file")
+    err = out["errors"][0]
+    assert err["line"] is not None
+    assert "source_context" in err
+    assert isinstance(err["source_context"], list)
+    assert len(err["source_context"]) > 0

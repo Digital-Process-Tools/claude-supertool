@@ -145,3 +145,15 @@ def test_duration_ms_is_int(tmp_path: Path) -> None:
     f.write_text("[s]\nk = v\n")
     out = _run(str(f))
     assert isinstance(out["duration_ms"], int)
+
+
+def test_source_context_present_on_error(tmp_path: Path) -> None:
+    f = tmp_path / "bad.ini"
+    f.write_text("key = value_without_section\n")
+    out = _run(str(f))
+    assert out["ok"] is False
+    err = out["errors"][0]
+    assert err["line"] is not None
+    assert "source_context" in err
+    assert isinstance(err["source_context"], list)
+    assert len(err["source_context"]) > 0

@@ -10,6 +10,10 @@ from __future__ import annotations
 import json
 import sys
 import time
+import pathlib
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
+from source_context import source_context
 
 
 def emit(d: dict) -> None:
@@ -45,9 +49,11 @@ def main() -> None:
             line = e.problem_mark.line + 1
             col = e.problem_mark.column + 1
         msg = str(e).strip()[:300]
+        err = {"line": line, "col": col, "severity": "error", "code": "syntax", "msg": msg}
+        if line is not None:
+            err["source_context"] = source_context(file, line)
         emit({"tool": "yaml-check", "file": file, "ok": False, "count": 1,
-              "errors": [{"line": line, "col": col, "severity": "error",
-                          "code": "syntax", "msg": msg}],
+              "errors": [err],
               "duration_ms": int((time.time() - start) * 1000)})
         return
     except FileNotFoundError:

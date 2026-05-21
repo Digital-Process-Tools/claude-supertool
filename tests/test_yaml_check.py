@@ -178,3 +178,16 @@ def test_duration_ms_is_int(tmp_path: Path) -> None:
     f.write_text("a: 1\n")
     out, _ = _run(str(f))
     assert isinstance(out["duration_ms"], int)
+
+
+@pytest.mark.skipif(not _HAS_PYYAML, reason="PyYAML not available on this interpreter")
+def test_source_context_present_on_error(tmp_path: Path) -> None:
+    f = tmp_path / "bad.yml"
+    f.write_text("good: ok\nbad: [\nstill bad\n")
+    out, _ = _run(str(f))
+    assert out["ok"] is False
+    err = out["errors"][0]
+    assert err["line"] is not None
+    assert "source_context" in err
+    assert isinstance(err["source_context"], list)
+    assert len(err["source_context"]) > 0
