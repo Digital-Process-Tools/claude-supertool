@@ -8754,7 +8754,8 @@ def op_format(path: str, tool_filter: Optional[list] = None, verbose: bool = Fal
             name_key = result.get("name") or result.get("tool") or name
             dur = result.get("duration_ms", 0)
             row = f"{name_key:8s}: ok (no-op)  ({dur}ms)"
-        if verbose and not result.get("ok", True):
+        if verbose:
+            row = row + "  [verbose]"
             errors = result.get("errors") or []
             out.append(row)
             for e in errors:
