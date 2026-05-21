@@ -141,6 +141,10 @@ def serve(name: str, spec: dict) -> int:
         pass
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(sock_path)
+    # Tighten perms: owner-only. Sockets in /tmp are otherwise world-accessible,
+    # and the socket-path hash (sha1 of cwd+name) is guessable for known projects.
+    try: os.chmod(sock_path, 0o700)
+    except OSError: pass
     server.listen(8)
     server.settimeout(ACCEPT_POLL_SEC)
 

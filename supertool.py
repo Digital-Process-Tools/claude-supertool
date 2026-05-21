@@ -8328,15 +8328,16 @@ def op_hover(symbol: str, file_path: str) -> str:
 
     # The line:col from find_workspace_symbols often points at the declaration start
     # (e.g. `public` keyword) — LSP hover at that column returns nothing. Re-anchor
-    # to the actual identifier offset within the source line.
+    # to the actual identifier offset within the source line. Use word-boundary regex
+    # so `handle` doesn't match the param `$handle` instead of the method name.
     try:
         with open(target_file, "rb") as f:
             src_lines = f.readlines()
         if 0 < line <= len(src_lines):
             src = src_lines[line - 1].decode("utf-8", errors="replace")
-            idx = src.find(symbol)
-            if idx >= 0:
-                character = idx + 1  # 1-indexed
+            m = re.search(r"\b" + re.escape(symbol) + r"\b", src)
+            if m:
+                character = m.start() + 1  # 1-indexed
     except OSError:
         pass
 

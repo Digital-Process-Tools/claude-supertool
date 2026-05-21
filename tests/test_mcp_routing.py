@@ -176,6 +176,81 @@ def test_op_resolve_falls_back_to_heuristic_on_mcp_failure(
         supertool._mcp_specs.clear()
 
 
+def test_op_hover_anchors_to_word_boundary(tmp_path: Path) -> None:
+    """`op_hover` two-step: find_workspace_symbols returns line:1, then op_hover must
+    re-anchor to the actual identifier offset using a word-boundary search.
+
+    Source: `public function handle(self $handle): void`
+    `handle` method-name at col 17. Plain str.find would also return 17 here (only
+    one substring match), so this test mainly verifies the two-step flow works.
+    """
+    php_file = tmp_path / "Widget.php"
+    src_line = "public function handle(self $handle): void\n"
+    php_file.write_text(src_line)
+
+    sock_path = f"/tmp/st-mock-{uuid.uuid4().hex[:8]}.sock"
+    env = os.environ.copy(); env["MOCK_HOVER_FILE"] = str(php_file)
+    proc = subprocess.Popen([sys.executable, MOCK_SERVER, sock_path], env=env)
+    deadline = time.time() + 5
+    while time.time() < deadline and not os.path.exists(sock_path):
+        time.sleep(0.05)
+    try:
+        _set_mcp_specs({
+            "php-lsp": {"match": "*.php", "socket_path": sock_path,
+                        "tools": {"resolve": "find_workspace_symbols", "hover": "get_hover"}}
+        })
+        from supertool import op_hover
+        result = op_hover("handle", str(php_file))
+        # Word-boundary 'handle' position: index 16 → col 17 (1-indexed)
+        assert "character=17" in result, f"expected character=17, got: {result}"
+    finally:
+        with _MCP_LOCK:
+            srv = _MCP_SERVERS.pop("php-lsp", None)
+        if srv: srv.shutdown()
+        supertool._mcp_specs.clear()
+        proc.terminate()
+        try: proc.wait(timeout=3)
+        except subprocess.TimeoutExpired: proc.kill()
+
+
+def test_op_hover_word_boundary_skips_substring_match(tmp_path: Path) -> None:
+    """Regression: `str.find(symbol)` matches `symbol` as a substring of a larger word.
+
+    Source: `// readd this comment | public function add(): void {}`
+                ^^^^                                  ^^^
+              col 4 (substring of 'readd')         col 41 (the real `add` method)
+
+    str.find('add') returns index 3 → column 4 (inside 'readd').
+    Word-boundary regex skips 'readd' and matches at index 40 → column 41.
+    """
+    php_file = tmp_path / "Widget.php"
+    src_line = "// readd this comment | public function add(): void {}\n"
+    php_file.write_text(src_line)
+
+    sock_path = f"/tmp/st-mock-{uuid.uuid4().hex[:8]}.sock"
+    env = os.environ.copy(); env["MOCK_HOVER_FILE"] = str(php_file)
+    proc = subprocess.Popen([sys.executable, MOCK_SERVER, sock_path], env=env)
+    deadline = time.time() + 5
+    while time.time() < deadline and not os.path.exists(sock_path):
+        time.sleep(0.05)
+    try:
+        _set_mcp_specs({
+            "php-lsp": {"match": "*.php", "socket_path": sock_path,
+                        "tools": {"resolve": "find_workspace_symbols", "hover": "get_hover"}}
+        })
+        from supertool import op_hover
+        result = op_hover("add", str(php_file))
+        assert "character=41" in result, f"expected character=41, got: {result}"
+    finally:
+        with _MCP_LOCK:
+            srv = _MCP_SERVERS.pop("php-lsp", None)
+        if srv: srv.shutdown()
+        supertool._mcp_specs.clear()
+        proc.terminate()
+        try: proc.wait(timeout=3)
+        except subprocess.TimeoutExpired: proc.kill()
+
+
 def test_cli_resolve_forwards_from_file_to_mcp(
     tmp_path: Path, mock_uds: str, capsys: pytest.CaptureFixture[str]
 ) -> None:

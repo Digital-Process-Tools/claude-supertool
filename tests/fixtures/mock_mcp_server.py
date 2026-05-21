@@ -44,6 +44,20 @@ TOOLS = [
         "inputSchema": {"type": "object",
                         "properties": {"file_path": {"type": "string"}}},
     },
+    {
+        "name": "find_workspace_symbols",
+        "description": "Mock LSP-style workspace symbol search",
+        "inputSchema": {"type": "object",
+                        "properties": {"query": {"type": "string"}}},
+    },
+    {
+        "name": "get_hover",
+        "description": "Mock LSP-style hover at position",
+        "inputSchema": {"type": "object",
+                        "properties": {"file_path": {"type": "string"},
+                                       "line": {"type": "number"},
+                                       "character": {"type": "number"}}},
+    },
 ]
 
 
@@ -80,6 +94,19 @@ def handle_request(msg: dict) -> dict | None:
         if tool_name == "documentSymbol":
             return {"jsonrpc": "2.0", "id": msg_id, "result": {"content": [
                 {"type": "text", "text": "class Foo  [10-50]\n  method bar  [12-20]"}]}}
+        if tool_name == "find_workspace_symbols":
+            # Echo a bullet listing pointing at line 1, col 1 of the configured MOCK_HOVER_FILE.
+            # The position is intentionally wrong (col 1) so op_hover must re-anchor via regex.
+            f = os.environ.get("MOCK_HOVER_FILE", "/mock/file.php")
+            q = args.get("query", "X")
+            return {"jsonrpc": "2.0", "id": msg_id, "result": {"content": [
+                {"type": "text",
+                 "text": f"Found 1 symbol(s) matching \"{q}\":\n\n• {q} (class) at {f}:1:1"}]}}
+        if tool_name == "get_hover":
+            # Echo back the args so tests can verify what line/character was actually sent.
+            return {"jsonrpc": "2.0", "id": msg_id, "result": {"content": [
+                {"type": "text",
+                 "text": f"HOVER@line={args.get('line')},character={args.get('character')}"}]}}
         return {"jsonrpc": "2.0", "id": msg_id, "result": {"content": [
             {"type": "text", "text": json.dumps(args)}]}}
     return {"jsonrpc": "2.0", "id": msg_id,
