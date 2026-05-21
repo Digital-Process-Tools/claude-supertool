@@ -458,6 +458,19 @@
       ],
       "rollback_on_fail": false,
       "timeout": 5
+    },
+    "prettier-check": {
+      "cmd": "python3 {supertool_dir}/validators/prettier-check/prettier-check.py {file}",
+      "match": "*.{xml,scss,css,js,json,yml,yaml,md}",
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste",
+        "vim"
+      ],
+      "rollback_on_fail": false,
+      "timeout": 15
     }
   },
   "formatters": {
