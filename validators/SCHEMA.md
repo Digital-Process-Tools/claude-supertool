@@ -27,15 +27,18 @@ Universal JSON. Every adapter emits this shape. Validator core never parses tool
 | `duration_ms` | int              | yes      | Wall time. For perf tuning.                                           |
 | `metrics`     | object           | no       | Tool-specific counters (`tests_total`, `tests_passed`, etc.). Numeric values. Used by renderer for before/after diff on metric keys even when `count` is unchanged. |
 
+| `diff`        | string           | no       | Unified diff produced by the tool (e.g. rector). Rendered as a fenced block below all errors in verbose mode. Ignored in default mode. |
+
 ### Error object
 
-| Field      | Type             | Required | Notes                                              |
-|------------|------------------|----------|----------------------------------------------------|
-| `line`     | int \| null      | yes      | 1-indexed. `null` if tool gives no location.       |
-| `col`      | int \| null      | yes      | 1-indexed. `null` if not provided.                 |
-| `severity` | string           | yes      | `error` \| `warning` \| `info`                     |
-| `code`     | string \| null   | yes      | Rule id (`missingType`, `PSR12.Files...`). Nullable. |
-| `msg`      | string           | yes      | Human message. Single line preferred.              |
+| Field            | Type             | Required | Notes                                              |
+|------------------|------------------|----------|----------------------------------------------------|
+| `line`           | int \| null      | yes      | 1-indexed. `null` if tool gives no location.       |
+| `col`            | int \| null      | yes      | 1-indexed. `null` if not provided.                 |
+| `severity`       | string           | yes      | `error` \| `warning` \| `info`                     |
+| `code`           | string \| null   | yes      | Rule id (`missingType`, `PSR12.Files...`). Nullable. |
+| `msg`            | string           | yes      | Human message. Single line preferred.              |
+| `source_context` | array of strings | no       | Source lines near the error. The line containing the error uses `→` as separator; surrounding lines use `:`. Example: `["40:     return foo;", "41: ", "42→     bar();", "43: }", "44: "]`. Rendered indented under the error in verbose mode. Ignored in default mode. |
 
 ## Contract
 

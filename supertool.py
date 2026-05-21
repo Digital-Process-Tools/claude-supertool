@@ -7800,12 +7800,20 @@ def _validator_render_row(data: Dict[str, Any], verbose: bool = False) -> list:
             code = e.get("code") or ""
             msg = (e.get("msg") or "").strip().replace("\n", " ")
             out.append(f"  {line_n} {code}  {msg}")
+            for ctx_line in (e.get("source_context") or []):
+                out.append(f"    {ctx_line}")
         for key, label in (("raw_stdout", "stdout"), ("raw_stderr", "stderr")):
             raw = (data.get(key) or "").strip()
             if raw:
                 out.append(f"  [{label}]")
                 for raw_line in raw.splitlines():
                     out.append(f"    {raw_line}")
+        diff = (data.get("diff") or "").strip()
+        if diff:
+            out.append("  [diff]")
+            for diff_line in diff.splitlines():
+                out.append(f"  {diff_line}")
+            out.append("  [/diff]")
     else:
         for e in errors[:5]:
             line_n = f"L{e['line']}" if e.get("line") else "  "

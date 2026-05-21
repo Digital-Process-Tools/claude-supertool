@@ -421,6 +421,58 @@ def test_render_row_default_still_caps_at_5() -> None:
     assert sum(1 for l in lines if l.startswith("  L")) == 5
 
 
+def test_render_row_verbose_source_context_renders_under_error() -> None:
+    ctx = ["40:     return foo;", "41: ", "42→     bar();", "43: }", "44: "]
+    errors = [{"line": 42, "code": "E1", "msg": "bad call", "source_context": ctx}]
+    data = {"tool": "t", "ok": False, "count": 1, "errors": errors, "duration_ms": 1}
+    lines = supertool._validator_render_row(data, verbose=True)
+    error_idx = next(i for i, l in enumerate(lines) if "bad call" in l)
+    ctx_lines = lines[error_idx + 1: error_idx + 1 + len(ctx)]
+    assert len(ctx_lines) == len(ctx)
+    assert all(l.startswith("    ") for l in ctx_lines)
+    assert "42→     bar();" in ctx_lines[2]
+
+
+def test_render_row_verbose_source_context_absent_no_extra_lines() -> None:
+    errors = [{"line": 1, "code": "E1", "msg": "oops"}]
+    data = {"tool": "t", "ok": False, "count": 1, "errors": errors, "duration_ms": 1}
+    lines = supertool._validator_render_row(data, verbose=True)
+    # header + one error line only (no raw keys, no source_context)
+    assert len(lines) == 2
+
+
+def test_render_row_verbose_diff_renders_at_bottom() -> None:
+    errors = [{"line": 1, "code": "E1", "msg": "msg"}]
+    diff = "-old line\n+new line"
+    data = {"tool": "t", "ok": False, "count": 1, "errors": errors, "duration_ms": 1, "diff": diff}
+    lines = supertool._validator_render_row(data, verbose=True)
+    assert any("[diff]" in l for l in lines)
+    assert any("-old line" in l for l in lines)
+    assert any("+new line" in l for l in lines)
+    assert any("[/diff]" in l for l in lines)
+    diff_idx = next(i for i, l in enumerate(lines) if "[diff]" in l)
+    error_idx = next(i for i, l in enumerate(lines) if "msg" in l)
+    assert diff_idx > error_idx
+
+
+def test_render_row_verbose_diff_absent_no_diff_block() -> None:
+    errors = [{"line": 1, "code": "E1", "msg": "msg"}]
+    data = {"tool": "t", "ok": False, "count": 1, "errors": errors, "duration_ms": 1}
+    lines = supertool._validator_render_row(data, verbose=True)
+    assert not any("[diff]" in l for l in lines)
+
+
+def test_render_row_non_verbose_ignores_source_context_and_diff() -> None:
+    ctx = ["40:     return foo;", "42→     bar();"]
+    errors = [{"line": 1, "code": "E1", "msg": "msg", "source_context": ctx}]
+    diff = "-old\n+new"
+    data = {"tool": "t", "ok": False, "count": 1, "errors": errors, "duration_ms": 1, "diff": diff}
+    lines = supertool._validator_render_row(data, verbose=False)
+    assert not any("42→" in l for l in lines)
+    assert not any("[diff]" in l for l in lines)
+    assert not any("-old" in l for l in lines)
+
+
 # ---------------------------------------------------------------------------
 # op_validate verbose mode
 # ---------------------------------------------------------------------------
