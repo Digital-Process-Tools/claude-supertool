@@ -7769,7 +7769,19 @@ def _validator_run_one(name: str, spec: Dict[str, Any], file: str) -> Optional[D
                 "duration_ms": 0}
 
 
-def _validator_render_row(data: Dict[str, Any]) -> list:
+def _validator_render_row(data: Dict[str, Any], verbose: bool = False) -> list:
+    """Render a single validator result as a list of display lines.
+
+    verbose=False (default): compact mode — summary header + up to 5 errors,
+    then ``... +N more`` if there are additional errors.
+
+    verbose=True: full mode — summary header + ALL errors (no cap), plus the
+    adapter's raw stdout/stderr appended verbatim when present in the result
+    dict under the ``"raw_stdout"`` / ``"raw_stderr"`` keys.
+
+    The ``"raw_stdout"`` / ``"raw_stderr"`` keys are optional; adapters that
+    want verbose output to include their full output should populate them.
+    """
     if "skipped" in data:
         return [f"{data['tool']:8s}: skipped — {data['skipped']}"]
     tool = data.get("tool", "?")
@@ -7782,13 +7794,26 @@ def _validator_render_row(data: Dict[str, Any]) -> list:
         line += f"  → {data['resolved_to']}"
     out = [line]
     errors = data.get("errors") or []
-    for e in errors[:5]:
-        line_n = f"L{e['line']}" if e.get("line") else "  "
-        code = e.get("code") or ""
-        msg = (e.get("msg") or "").strip().replace("\n", " ")[:120]
-        out.append(f"  {line_n} {code}  {msg}")
-    if len(errors) > 5:
-        out.append(f"  ... +{len(errors) - 5} more")
+    if verbose:
+        for e in errors:
+            line_n = f"L{e['line']}" if e.get("line") else "  "
+            code = e.get("code") or ""
+            msg = (e.get("msg") or "").strip().replace("\n", " ")
+            out.append(f"  {line_n} {code}  {msg}")
+        for key, label in (("raw_stdout", "stdout"), ("raw_stderr", "stderr")):
+            raw = (data.get(key) or "").strip()
+            if raw:
+                out.append(f"  [{label}]")
+                for raw_line in raw.splitlines():
+                    out.append(f"    {raw_line}")
+    else:
+        for e in errors[:5]:
+            line_n = f"L{e['line']}" if e.get("line") else "  "
+            code = e.get("code") or ""
+            msg = (e.get("msg") or "").strip().replace("\n", " ")[:120]
+            out.append(f"  {line_n} {code}  {msg}")
+        if len(errors) > 5:
+            out.append(f"  ... +{len(errors) - 5} more")
     return out
 
 
@@ -8016,8 +8041,11 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
     return body + suffix
 
 
-def op_validate(path: str, tool_filter: Optional[list] = None) -> str:
-    """Manual one-shot: run validators on `path`, render current state (no diff)."""
+def op_validate(path: str, tool_filter: Optional[list] = None, verbose: bool = False) -> str:
+    """Manual one-shot: run validators on ``path``, render current state (no diff).
+
+    verbose=True: show all errors (no cap) and raw adapter output when available.
+    """
     if not path:
         return "ERROR: validate requires file path\n"
     cfg = _load_config()
@@ -8037,12 +8065,16 @@ def op_validate(path: str, tool_filter: Optional[list] = None) -> str:
         data = _validator_run_one(name, spec, path)
         if data is None:
             continue
-        out.extend(_validator_render_row(data))
+        out.extend(_validator_render_row(data, verbose=verbose))
     return "\n".join(out) + "\n"
 
 
-def op_format(path: str, tool_filter: Optional[list] = None) -> str:
-    """Manual one-shot: run formatters on `path`, render ok/fail + duration."""
+def op_format(path: str, tool_filter: Optional[list] = None, verbose: bool = False) -> str:
+    """Manual one-shot: run formatters on ``path``, render ok/fail + duration.
+
+    verbose=True: show the formatter's full error message (untruncated) and
+    a ``[verbose]`` marker on the row so callers can distinguish the mode.
+    """
     if not path:
         return "ERROR: format requires file path\n"
     cfg = _load_config()
@@ -8064,20 +8096,28 @@ def op_format(path: str, tool_filter: Optional[list] = None) -> str:
             continue
         matched = True
         result = _formatter_run_one(name, spec, path)
-        dur = 0
         status = "ok" if result["ok"] else "fail"
         msg = result.get("msg", "")
-        row = f"{name:8s}: {status:6s}"
-        if msg:
-            row += f"  {msg}"
+        if verbose:
+            row = f"{name:8s}: {status:6s}  [verbose]"
+            if msg:
+                row += f"  {msg}"
+        else:
+            row = f"{name:8s}: {status:6s}"
+            if msg:
+                row += f"  {msg[:200]}"
         out.append(row)
     if not matched:
         out.append("(no formatters matched this file)")
     return "\n".join(out) + "\n"
 
 
-def op_validate_staged(tool_filter: Optional[list] = None) -> str:
-    """Run validators on every currently staged file."""
+def op_validate_staged(tool_filter: Optional[list] = None, verbose: bool = False) -> str:
+    """Run validators on every currently staged file.
+
+    verbose=True: passed through to op_validate for each file — shows all errors
+    and raw adapter output instead of the compact capped form.
+    """
     import subprocess
     try:
         r = subprocess.run(
@@ -8097,15 +8137,19 @@ def op_validate_staged(tool_filter: Optional[list] = None) -> str:
     parts = []
     for fpath in staged:
         parts.append(f"validate_staged: {fpath}")
-        block = op_validate(fpath, tool_filter)
+        block = op_validate(fpath, tool_filter, verbose=verbose)
         # indent the block for readability
         for line in block.splitlines():
             parts.append(f"  {line}")
     return "\n".join(parts) + "\n"
 
 
-def op_format_staged(tool_filter: Optional[list] = None) -> str:
-    """Run formatters on every currently staged file."""
+def op_format_staged(tool_filter: Optional[list] = None, verbose: bool = False) -> str:
+    """Run formatters on every currently staged file.
+
+    verbose=True: passed through to op_format for each file — shows full error
+    messages and a [verbose] marker instead of the compact truncated form.
+    """
     import subprocess
     try:
         r = subprocess.run(
@@ -8125,7 +8169,7 @@ def op_format_staged(tool_filter: Optional[list] = None) -> str:
     parts = []
     for fpath in staged:
         parts.append(f"format_staged: {fpath}")
-        block = op_format(fpath, tool_filter)
+        block = op_format(fpath, tool_filter, verbose=verbose)
         for line in block.splitlines():
             parts.append(f"  {line}")
     return "\n".join(parts) + "\n"
@@ -8769,19 +8813,35 @@ def dispatch(arg: str) -> str:
                             if not _snap_err:
                                 body = "".join(results)
         elif op == "validate":
-            v_path = parts[1] if len(parts) > 1 else ""
-            v_tools = [t for t in (parts[2].split(",") if len(parts) > 2 and parts[2] else []) if t]
-            body = op_validate(v_path, v_tools or None)
+            # verbose flag: literal "verbose" token anywhere after op name.
+            # Forms: validate:PATH:verbose  or  validate:PATH:tool1,tool2:verbose
+            v_verbose = "verbose" in parts[1:]
+            v_parts = [p for p in parts[1:] if p != "verbose"]
+            v_path = v_parts[0] if len(v_parts) > 0 else ""
+            v_tools = [t for t in (v_parts[1].split(",") if len(v_parts) > 1 and v_parts[1] else []) if t]
+            body = op_validate(v_path, v_tools or None, verbose=v_verbose)
         elif op == "format":
-            f_path = parts[1] if len(parts) > 1 else ""
-            f_tools = [t for t in (parts[2].split(",") if len(parts) > 2 and parts[2] else []) if t]
-            body = op_format(f_path, f_tools or None)
+            # verbose flag: literal "verbose" token anywhere after op name.
+            # Forms: format:PATH:verbose  or  format:PATH:tool1,tool2:verbose
+            f_verbose = "verbose" in parts[1:]
+            f_parts = [p for p in parts[1:] if p != "verbose"]
+            f_path = f_parts[0] if len(f_parts) > 0 else ""
+            f_tools = [t for t in (f_parts[1].split(",") if len(f_parts) > 1 and f_parts[1] else []) if t]
+            body = op_format(f_path, f_tools or None, verbose=f_verbose)
         elif op == "validate_staged":
-            vs_tools = [t for t in (parts[1].split(",") if len(parts) > 1 and parts[1] else []) if t]
-            body = op_validate_staged(vs_tools or None)
+            # verbose flag: literal "verbose" token anywhere after op name.
+            # Forms: validate_staged:verbose  or  validate_staged::tool1,tool2:verbose
+            vs_verbose = "verbose" in parts[1:]
+            vs_parts = [p for p in parts[1:] if p != "verbose"]
+            vs_tools = [t for t in (vs_parts[0].split(",") if len(vs_parts) > 0 and vs_parts[0] else []) if t]
+            body = op_validate_staged(vs_tools or None, verbose=vs_verbose)
         elif op == "format_staged":
-            fs_tools = [t for t in (parts[1].split(",") if len(parts) > 1 and parts[1] else []) if t]
-            body = op_format_staged(fs_tools or None)
+            # verbose flag: literal "verbose" token anywhere after op name.
+            # Forms: format_staged:verbose  or  format_staged::tool1,tool2:verbose
+            fs_verbose = "verbose" in parts[1:]
+            fs_parts = [p for p in parts[1:] if p != "verbose"]
+            fs_tools = [t for t in (fs_parts[0].split(",") if len(fs_parts) > 0 and fs_parts[0] else []) if t]
+            body = op_format_staged(fs_tools or None, verbose=fs_verbose)
         elif op in ("introduction", "output-format", "ops", "ops-compact", "version"):
             # Meta-ops use markdown headers instead of --- header ---
             header = ""

@@ -113,3 +113,91 @@ def test_format_staged_not_a_git_repo(tmp_path: Path, monkeypatch: pytest.Monkey
     _set_formatters({})
     result = supertool.op_format_staged()
     assert result.startswith("ERROR")
+
+
+# ---------------------------------------------------------------------------
+# verbose mode — staged ops
+# ---------------------------------------------------------------------------
+
+def test_validate_staged_verbose_passes_through(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import json
+    repo = _make_repo(tmp_path)
+    monkeypatch.chdir(repo)
+
+    f = repo / "hello.php"
+    f.write_text("<?php\n")
+    _git(["add", "hello.php"], repo)
+
+    errors = [{"line": i, "col": None, "severity": "error", "code": "x", "msg": f"e{i}"}
+              for i in range(1, 8)]
+    payload = {"tool": "fake", "file": "hello.php", "ok": False, "count": 7,
+               "errors": errors, "duration_ms": 1}
+    js = json.dumps(payload).replace("'", "'\\''")
+    _set_validators({
+        "fake": {
+            "cmd": f"printf '%s' '{js}'",
+            "match": "*.php",
+            "hooks_into": ["edit"],
+        }
+    })
+    result = supertool.op_validate_staged(verbose=True)
+    assert "+2 more" not in result
+    for i in range(1, 8):
+        assert f"e{i}" in result
+
+
+def test_format_staged_verbose_passes_through(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = _make_repo(tmp_path)
+    monkeypatch.chdir(repo)
+
+    f = repo / "style.json"
+    f.write_text("{}\n")
+    _git(["add", "style.json"], repo)
+
+    _set_formatters({
+        "prettier": {"cmd": "true", "match": "*.json"},
+    })
+    result = supertool.op_format_staged(verbose=True)
+    assert "[verbose]" in result
+
+
+# ---------------------------------------------------------------------------
+# dispatch: staged verbose parsing
+# ---------------------------------------------------------------------------
+
+def test_dispatch_validate_staged_verbose(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import json
+    repo = _make_repo(tmp_path)
+    monkeypatch.chdir(repo)
+
+    f = repo / "hello.php"
+    f.write_text("<?php\n")
+    _git(["add", "hello.php"], repo)
+
+    errors = [{"line": i, "col": None, "severity": "error", "code": "x", "msg": f"e{i}"}
+              for i in range(1, 8)]
+    payload = {"tool": "fake", "file": "hello.php", "ok": False, "count": 7,
+               "errors": errors, "duration_ms": 1}
+    js = json.dumps(payload).replace("'", "'\\''")
+    _set_validators({
+        "fake": {
+            "cmd": f"printf '%s' '{js}'",
+            "match": "*.php",
+            "hooks_into": ["edit"],
+        }
+    })
+    result = supertool.dispatch("validate_staged:verbose")
+    assert "+2 more" not in result
+
+
+def test_dispatch_format_staged_verbose(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = _make_repo(tmp_path)
+    monkeypatch.chdir(repo)
+
+    f = repo / "style.json"
+    f.write_text("{}\n")
+    _git(["add", "style.json"], repo)
+
+    _set_formatters({"prettier": {"cmd": "true", "match": "*.json"}})
+    result = supertool.dispatch("format_staged:verbose")
+    assert "[verbose]" in result
