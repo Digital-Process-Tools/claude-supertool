@@ -7961,7 +7961,13 @@ def _applicable_formatters(op: str, path: str) -> Dict[str, Dict[str, Any]]:
 
 
 def _formatter_run_one(name: str, spec: Dict[str, Any], file: str) -> Dict[str, Any]:
-    """Run one formatter against `file`. Returns a result dict with ok + msg."""
+    """Run one formatter against `file`. Returns a SCHEMA-shaped result dict.
+
+    If the adapter emits valid SCHEMA.md JSON on stdout, that is parsed directly
+    and used as the result (preferred — gives metrics + structured errors).
+    Legacy adapters that emit nothing / non-JSON still work: exit 0 → ok, else fail.
+    The result always carries ``"name"`` so callers can identify it.
+    """
     import subprocess
     cmd = spec["cmd"].replace("{supertool_dir}", _INSTALL_DIR).replace("{file}", file)
     timeout = int(spec.get("timeout", 30))
@@ -7970,14 +7976,57 @@ def _formatter_run_one(name: str, spec: Dict[str, Any], file: str) -> Dict[str, 
     try:
         r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout,
                            env=run_env)
+        stdout = r.stdout.strip()
+        # Try to parse SCHEMA.md JSON from stdout.
+        if stdout:
+            try:
+                data = json.loads(stdout)
+                if isinstance(data, dict) and "ok" in data:
+                    data["name"] = name
+                    return data
+            except (json.JSONDecodeError, ValueError):
+                pass
+        # Legacy fallback: exit 0 = ok, else fail.
         if r.returncode == 0:
-            return {"name": name, "ok": True}
-        msg = (r.stderr.strip() or r.stdout.strip())[:200]
-        return {"name": name, "ok": False, "msg": msg}
+            return {"name": name, "ok": True, "duration_ms": 0,
+                    "metrics": {"lines_added": 0, "lines_removed": 0}}
+        msg = (r.stderr.strip() or stdout)[:200]
+        return {"name": name, "ok": False, "msg": msg, "duration_ms": 0,
+                "metrics": {"lines_added": 0, "lines_removed": 0}}
     except subprocess.TimeoutExpired:
-        return {"name": name, "ok": False, "msg": f"timeout after {timeout}s"}
+        return {"name": name, "ok": False, "msg": f"timeout after {timeout}s",
+                "duration_ms": timeout * 1000,
+                "metrics": {"lines_added": 0, "lines_removed": 0}}
     except OSError as e:
-        return {"name": name, "ok": False, "msg": str(e)}
+        return {"name": name, "ok": False, "msg": str(e), "duration_ms": 0,
+                "metrics": {"lines_added": 0, "lines_removed": 0}}
+
+
+def _formatter_render_row(result: Dict[str, Any]) -> Optional[str]:
+    """Render one formatter result as a display line.
+
+    Returns None (silent) when the formatter was a no-op:
+    ok=True and metrics.lines_added == 0 and metrics.lines_removed == 0.
+    Failures always produce a row.
+    """
+    name = result.get("name") or result.get("tool") or "?"
+    ok = result.get("ok", False)
+    dur = result.get("duration_ms", 0)
+    metrics = result.get("metrics") or {}
+    added = metrics.get("lines_added", 0)
+    removed = metrics.get("lines_removed", 0)
+
+    if ok and added == 0 and removed == 0:
+        return None  # silent no-op
+
+    if ok:
+        line = f"{name:8s}: ok         ({dur}ms) +{added} -{removed}"
+    else:
+        errors = result.get("errors") or []
+        msg = result.get("msg") or (errors[0].get("msg") if errors else "") or "failed"
+        msg = str(msg)[:120]
+        line = f"{name:8s}: fail       ({dur}ms)  {msg}"
+    return line
 
 
 def _formatters_run_batch(
@@ -8035,22 +8084,32 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
         return body
 
     # Run formatters after the edit, before validators.
-    fmt_warnings: list = []
+    fmt_rows: list = []
     if applicable_fmt:
         fmt_results = _formatters_run_batch(applicable_fmt, path)
         for result in fmt_results:
             if not result["ok"]:
-                msg = result.get("msg", "unknown error")
-                if result.get("name") in applicable_fmt and applicable_fmt[result["name"]].get("rollback_on_fail"):
+                result_name = result.get("name", "")
+                if result_name in applicable_fmt and applicable_fmt[result_name].get("rollback_on_fail"):
                     if pre_content is not None:
                         try:
                             with open(path, "wb") as fw:
                                 fw.write(pre_content)
-                            fmt_warnings.append(f"[rolled back] {result['name']} failed; file restored")
+                            fmt_rows.append(f"[rolled back] {result_name} failed; file restored")
                         except OSError as e:
-                            fmt_warnings.append(f"[ROLLBACK FAILED] {result['name']}: {e}")
+                            fmt_rows.append(f"[ROLLBACK FAILED] {result_name}: {e}")
+                    else:
+                        row = _formatter_render_row(result)
+                        if row:
+                            fmt_rows.append(row)
                 else:
-                    fmt_warnings.append(f"[formatter] {result['name']}: {msg}")
+                    row = _formatter_render_row(result)
+                    if row:
+                        fmt_rows.append(row)
+            else:
+                row = _formatter_render_row(result)
+                if row:
+                    fmt_rows.append(row)
 
     after_results = _validators_run_batch(applicable, path) if applicable else {}
     diff_lines: list = []
@@ -8075,8 +8134,8 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
                     break
 
     suffix = ""
-    if fmt_warnings:
-        suffix += "\n[formatters]\n" + "\n".join(fmt_warnings) + "\n"
+    if fmt_rows:  # silent when all formatters are no-op
+        suffix += "\n[formatters]\n" + "\n".join(fmt_rows) + "\n"
     if applicable:
         suffix += "\n[validators]\n" + diff_out
 
@@ -8689,17 +8748,22 @@ def op_format(path: str, tool_filter: Optional[list] = None, verbose: bool = Fal
             continue
         matched = True
         result = _formatter_run_one(name, spec, path)
-        status = "ok" if result["ok"] else "fail"
-        msg = result.get("msg", "")
-        if verbose:
-            row = f"{name:8s}: {status:6s}  [verbose]"
-            if msg:
-                row += f"  {msg}"
+        row = _formatter_render_row(result)
+        if row is None:
+            # no-op: show a muted marker in manual mode so the user knows it ran
+            name_key = result.get("name") or result.get("tool") or name
+            dur = result.get("duration_ms", 0)
+            row = f"{name_key:8s}: ok (no-op)  ({dur}ms)"
+        if verbose and not result.get("ok", True):
+            errors = result.get("errors") or []
+            out.append(row)
+            for e in errors:
+                line_n = f"L{e['line']}" if e.get("line") else "  "
+                code = e.get("code") or ""
+                msg = (e.get("msg") or "").strip().replace("\n", " ")
+                out.append(f"  {line_n} {code}  {msg}")
         else:
-            row = f"{name:8s}: {status:6s}"
-            if msg:
-                row += f"  {msg[:200]}"
-        out.append(row)
+            out.append(row)
     if not matched:
         out.append("(no formatters matched this file)")
     return "\n".join(out) + "\n"

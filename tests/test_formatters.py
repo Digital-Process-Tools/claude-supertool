@@ -149,7 +149,8 @@ def test_formatter_fail_rollback_false_keeps_file(tmp_path: Path) -> None:
     # Edit succeeded despite formatter failure
     assert f.read_text() == '{"a":2}\n'
     assert "edited" in out
-    assert "[formatter]" in out  # warning present
+    assert "[formatters]" in out  # warning block present
+    assert "fail" in out  # row shows failure
 
 
 def test_formatter_fail_rollback_true_reverts_file(tmp_path: Path) -> None:
@@ -226,3 +227,134 @@ def test_formatter_graceful_skip_missing_binary(tmp_path: Path) -> None:
     # Edit succeeded despite missing tool
     assert f.read_text() == '{"a":2}\n'
     assert "edited" in out
+
+
+# ---------------------------------------------------------------------------
+# _formatter_render_row — unified row format
+# ---------------------------------------------------------------------------
+
+def test_formatter_render_row_noop_returns_none() -> None:
+    """ok=True + 0/0 metrics → None (silent)."""
+    result = {
+        "name": "prettier", "tool": "prettier-write", "ok": True,
+        "duration_ms": 42, "metrics": {"lines_added": 0, "lines_removed": 0},
+    }
+    assert supertool._formatter_render_row(result) is None
+
+
+def test_formatter_render_row_changes_returns_row() -> None:
+    """ok=True with changes → row with +N -N."""
+    result = {
+        "name": "prettier", "ok": True,
+        "duration_ms": 55, "metrics": {"lines_added": 3, "lines_removed": 1},
+    }
+    row = supertool._formatter_render_row(result)
+    assert row is not None
+    assert "+3" in row
+    assert "-1" in row
+    assert "ok" in row
+
+
+def test_formatter_render_row_failure_always_shows() -> None:
+    """ok=False → row always rendered, even with 0/0 metrics."""
+    result = {
+        "name": "phpcbf", "ok": False,
+        "duration_ms": 10,
+        "errors": [{"line": None, "col": None, "severity": "error",
+                    "code": "adapter", "msg": "PHPCBF_BIN not found: phpcbf"}],
+        "metrics": {"lines_added": 0, "lines_removed": 0},
+    }
+    row = supertool._formatter_render_row(result)
+    assert row is not None
+    assert "fail" in row
+    assert "phpcbf" in row
+
+
+# ---------------------------------------------------------------------------
+# Silent-on-noop / block omission integration via _run_with_validators
+# ---------------------------------------------------------------------------
+
+def _make_schema_json_cmd(ok: bool, added: int, removed: int, tool: str) -> str:
+    """Return a shell cmd that emits SCHEMA JSON and exits 0."""
+    import json as _json
+    payload = _json.dumps({
+        "tool": tool, "file": "", "ok": ok, "count": 0,
+        "errors": [], "duration_ms": 5,
+        "metrics": {"lines_added": added, "lines_removed": removed},
+    })
+    # Use printf so no shell quoting issues with the JSON
+    escaped = payload.replace("'", "'\\''")
+    return f"printf '%s\\n' '{escaped}'"
+
+
+def test_all_formatters_noop_no_block(tmp_path: Path) -> None:
+    """3 formatters all ok+0/0 → no [formatters] block in output."""
+    f = tmp_path / "x.json"
+    f.write_text('{"a":1}\n')
+
+    _set_config({
+        "formatters": {
+            "fmt-a": {"cmd": _make_schema_json_cmd(True, 0, 0, "fmt-a"),
+                      "hooks_into": ["edit"], "match": "*.json"},
+            "fmt-b": {"cmd": _make_schema_json_cmd(True, 0, 0, "fmt-b"),
+                      "hooks_into": ["edit"], "match": "*.json"},
+            "fmt-c": {"cmd": _make_schema_json_cmd(True, 0, 0, "fmt-c"),
+                      "hooks_into": ["edit"], "match": "*.json"},
+        },
+        "validators": {},
+    })
+
+    out = supertool._run_with_validators("edit", ["edit", "", "", str(f)], lambda: "edited\n")
+    assert "[formatters]" not in out
+
+
+def test_one_formatter_changes_file_shows_only_that_one(tmp_path: Path) -> None:
+    """1 of 2 formatters has changes → [formatters] block with only that row."""
+    f = tmp_path / "x.json"
+    f.write_text('{"a":1}\n')
+
+    _set_config({
+        "formatters": {
+            "noop-fmt": {"cmd": _make_schema_json_cmd(True, 0, 0, "noop-fmt"),
+                         "hooks_into": ["edit"], "match": "*.json"},
+            "active-fmt": {"cmd": _make_schema_json_cmd(True, 2, 1, "active-fmt"),
+                           "hooks_into": ["edit"], "match": "*.json"},
+        },
+        "validators": {},
+    })
+
+    out = supertool._run_with_validators("edit", ["edit", "", "", str(f)], lambda: "edited\n")
+    assert "[formatters]" in out
+    assert "active-fmt" in out
+    assert "noop-fmt" not in out
+    assert "+2" in out
+    assert "-1" in out
+
+
+def test_failed_formatter_row_shown(tmp_path: Path) -> None:
+    """ok=False formatter → row in [formatters] block with error info."""
+    f = tmp_path / "x.json"
+    f.write_text('{"a":1}\n')
+
+    import json as _json
+    err_payload = _json.dumps({
+        "tool": "bad-fmt", "file": str(f), "ok": False, "count": 1,
+        "errors": [{"line": None, "col": None, "severity": "error",
+                    "code": "adapter", "msg": "binary not found"}],
+        "duration_ms": 3,
+        "metrics": {"lines_added": 0, "lines_removed": 0},
+    })
+    escaped = err_payload.replace("'", "'\\''")
+    cmd = f"printf '%s\\n' '{escaped}'"
+
+    _set_config({
+        "formatters": {
+            "bad-fmt": {"cmd": cmd, "hooks_into": ["edit"], "match": "*.json",
+                        "rollback_on_fail": False},
+        },
+        "validators": {},
+    })
+
+    out = supertool._run_with_validators("edit", ["edit", "", "", str(f)], lambda: "edited\n")
+    assert "[formatters]" in out
+    assert "fail" in out
