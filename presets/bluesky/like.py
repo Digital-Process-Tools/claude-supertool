@@ -7,6 +7,8 @@ Pass |force as 2nd pipe-separated field to bypass: bluesky_like:URI|force
 If the pre-flight check fails, a warning is printed and the like proceeds
 (graceful degrade — don't block on platform issues).
 """
+from __future__ import annotations
+
 import datetime as _dt
 import sys
 from pathlib import Path

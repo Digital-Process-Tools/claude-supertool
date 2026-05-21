@@ -12,6 +12,8 @@ pipe-separated field to bypass: hashnode_comment:POST_ID|MSG|force
 If the pre-flight check fails, a warning is printed and the comment proceeds
 (graceful degrade — don't block on platform issues).
 """
+from __future__ import annotations
+
 import sys
 from pathlib import Path
 

@@ -4,6 +4,8 @@
 Fetches MR metadata, pipeline status, reviewer/approval info,
 diff stats, and human comments. Dashboard-style output.
 """
+from __future__ import annotations
+
 import json
 import re
 import subprocess

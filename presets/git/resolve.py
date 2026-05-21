@@ -4,6 +4,8 @@
 Atomic: checkout --SIDE PATH + git add PATH. Receipt shows which
 files were resolved and how many conflicts remain.
 """
+from __future__ import annotations
+
 import subprocess
 import sys
 

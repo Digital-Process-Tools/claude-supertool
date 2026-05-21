@@ -3,6 +3,8 @@
 
 Uses the authenticated user's session (`gh auth status`).
 """
+from __future__ import annotations
+
 import subprocess
 import sys
 

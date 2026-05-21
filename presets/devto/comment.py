@@ -28,6 +28,8 @@ as the 4th pipe-separated field to bypass: devto_comment:slug|MSG||force
 If the pre-flight API call fails, a warning is printed and the comment
 proceeds (graceful degrade — don't block on platform issues).
 """
+from __future__ import annotations
+
 import json
 import re
 import sys

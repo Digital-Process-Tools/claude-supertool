@@ -13,6 +13,8 @@ Accepted inputs:
   - "https://author.hashnode.dev/slug"                   → cross-publication lookup
   - "https://blog.example.com/slug" (custom domain)      → cross-publication lookup
 """
+from __future__ import annotations
+
 import sys
 from pathlib import Path
 from urllib.parse import urlparse

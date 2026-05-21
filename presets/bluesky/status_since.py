@@ -5,6 +5,8 @@ Native notifications endpoint (unlike Forem) — no outbound ledger needed.
 Surfaces likes, replies, mentions, follows since the timestamp.
 No arg = uses ~/.config/bluesky/last_check (auto-tracked).
 """
+from __future__ import annotations
+
 import datetime as _dt
 import os
 import sys

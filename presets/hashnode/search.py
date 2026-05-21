@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Hashnode search: hashnode_search:QUERY[:N] — text search on configured publication."""
+from __future__ import annotations
+
 import os
 import sys
 from pathlib import Path

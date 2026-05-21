@@ -6,6 +6,8 @@ extract first conflict block per file + show merge-base/ours/theirs
 SHAs + suggest abort command. Replaces the merge/status/read-each-file
 hunt with one round-trip.
 """
+from __future__ import annotations
+
 import os
 import subprocess
 import sys

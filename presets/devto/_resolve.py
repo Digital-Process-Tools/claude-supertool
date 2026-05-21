@@ -13,6 +13,8 @@ Accepted inputs:
   - "article-slug-with-suffix-3j3e"               → bare slug (no author, no scheme)
                                                       → resolved via /articles?slug=...
 """
+from __future__ import annotations
+
 import re
 import sys
 from pathlib import Path

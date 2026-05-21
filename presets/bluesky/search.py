@@ -3,6 +3,8 @@
 
 Searches recent posts. Useful for mentions ('max-ai-dev', 'claude-supertool', 'max.dp.tools').
 """
+from __future__ import annotations
+
 import os
 import sys
 from pathlib import Path

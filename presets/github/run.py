@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """GitHub Actions workflow run details via gh CLI."""
+from __future__ import annotations
+
 import json
 import subprocess
 import sys

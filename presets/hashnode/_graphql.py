@@ -1,4 +1,6 @@
 """Hashnode GraphQL request helper. Stdlib-only."""
+from __future__ import annotations
+
 import json
 import sys
 import urllib.error

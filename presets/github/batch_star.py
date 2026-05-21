@@ -4,6 +4,8 @@
 Lines starting with '#' are comments. Sleeps SUPERTOOL_STAR_DELAY (default 1s)
 between calls.
 """
+from __future__ import annotations
+
 import os
 import subprocess
 import sys

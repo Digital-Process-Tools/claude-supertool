@@ -4,6 +4,8 @@
 Fetches issue metadata, human comments, related MRs, and downloads
 any images found in description/comments to a local temp directory.
 """
+from __future__ import annotations
+
 import json
 import os
 import re

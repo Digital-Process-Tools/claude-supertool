@@ -5,6 +5,8 @@ Combines: ahead/behind count + commits-only-in-branch (oneline) +
 files changed (name-status) + +/- line totals. Replaces the
 log-A..B / log-B..A / diff--stat trio.
 """
+from __future__ import annotations
+
 import os
 import subprocess
 import sys

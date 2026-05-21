@@ -17,6 +17,8 @@ app password:
 
 Tokens never returned to stdout — only used in HTTP requests.
 """
+from __future__ import annotations
+
 import os
 import sys
 from pathlib import Path

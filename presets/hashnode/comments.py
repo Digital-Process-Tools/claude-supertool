@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Hashnode comments: hashnode_comments:SLUG_OR_URL[:N]"""
+from __future__ import annotations
+
 import os
 import sys
 from pathlib import Path

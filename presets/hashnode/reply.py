@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Hashnode reply: hashnode_reply:COMMENT_ID|MESSAGE_OR_FILE"""
+from __future__ import annotations
+
 import sys
 from pathlib import Path
 

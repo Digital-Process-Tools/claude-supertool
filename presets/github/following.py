@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """gh-following: gh-following[:N] — list users I follow on GitHub."""
+from __future__ import annotations
+
 import json
 import os
 import subprocess

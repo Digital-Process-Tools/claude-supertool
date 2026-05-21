@@ -6,6 +6,8 @@ Combines:
 2. Uncommitted changes (staged + unstaged diff)
 3. Blame hotspots (most recently changed lines)
 """
+from __future__ import annotations
+
 import os
 import re
 import subprocess

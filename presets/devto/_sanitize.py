@@ -20,6 +20,8 @@ Defense layers:
 This file is duplicated per preset dir (bluesky/devto/hashnode) so
 each preset stays self-contained. Keep them in sync.
 """
+from __future__ import annotations
+
 import re
 
 # Known injection trigger phrases — case-insensitive.

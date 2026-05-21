@@ -11,6 +11,8 @@ already exists. Pass |force as the 6th pipe-separated field to bypass:
 TITLE|MD|CANONICAL||||force
 If the pre-flight check fails, a warning is printed and publish proceeds.
 """
+from __future__ import annotations
+
 import os
 import sys
 from pathlib import Path

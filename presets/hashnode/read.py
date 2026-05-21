@@ -4,6 +4,8 @@
 Aggregates: title, author, date, body, stats, top N inline comments, tags.
 N comments via SUPERTOOL_INLINE_COMMENTS (default 5).
 """
+from __future__ import annotations
+
 import os
 import sys
 from pathlib import Path

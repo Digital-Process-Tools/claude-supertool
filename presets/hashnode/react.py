@@ -23,6 +23,8 @@ treats every call as forced. This is opt-in — silent default would risk
 duplicate reactions if `likePost` were ever idempotent on Hashnode's side
 (it's not today, but the safety remains).
 """
+from __future__ import annotations
+
 import sys
 from pathlib import Path
 

@@ -8,6 +8,8 @@ uses ~/.config/devto/last_check (auto-tracking).
 Fan-out: GET /articles/me/published, then GET /comments?a_id=X for
 each recent article (limited by SUPERTOOL_STATUS_POSTS, default 10).
 """
+from __future__ import annotations
+
 import datetime as _dt
 import os
 import sys

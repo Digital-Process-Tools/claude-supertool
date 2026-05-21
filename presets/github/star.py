@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """gh-star: gh-star:OWNER/REPO — star a GitHub repository via gh CLI."""
+from __future__ import annotations
+
 import subprocess
 import sys
 

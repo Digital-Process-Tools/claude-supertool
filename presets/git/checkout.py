@@ -5,6 +5,8 @@ Combines: switch + branch info + ahead/behind + tracking + recent
 commits + dirty file count. Replaces the checkout/status/log/branch
 flurry with a single round-trip.
 """
+from __future__ import annotations
+
 import subprocess
 import sys
 

@@ -5,6 +5,8 @@ Aggregates: title, author, date, body, stats, tags, top N inline comments.
 N via SUPERTOOL_INLINE_COMMENTS (default 5). Comments require numeric ID
 (separate REST call); slug/URL flow only fetches article body.
 """
+from __future__ import annotations
+
 import os
 import sys
 from pathlib import Path
