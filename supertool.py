@@ -8162,11 +8162,16 @@ def _op_resolve_inner(symbol: str, from_file: Optional[str] = None) -> str:
     # ── PHP FQN (contains backslash) ─────────────────────────────────────────
     if "\\" in symbol:
         fqn_path = symbol.replace("\\", "/")
-        for pat in (f"**/{fqn_path}.class.php", f"**/{fqn_path}.php"):
-            hits = _glob_files(pat, excl)
-            if hits:
-                rel = os.path.relpath(hits[0])
-                return f"{symbol} → {rel}\n"
+        basename = fqn_path.rsplit("/", 1)[-1]
+        # _glob_files doesn't deep-match `**/dir1/dir2/file`, so glob by basename
+        # then filter to candidates whose path ends with the FQN suffix.
+        for ext in (".class.php", ".php"):
+            suffix = f"/{fqn_path}{ext}"
+            hits = _glob_files(f"**/{basename}{ext}", excl)
+            for h in hits:
+                norm = os.path.normpath(h).replace(os.sep, "/")
+                if norm.endswith(suffix) or norm == f"{fqn_path}{ext}":
+                    return f"{symbol} → {os.path.relpath(h)}\n"
         return f"{symbol} → not found\n"
 
     # ── Python relative import (starts with one or more dots, no /) ──────────
@@ -8211,11 +8216,13 @@ def _op_resolve_inner(symbol: str, from_file: Optional[str] = None) -> str:
     # ── Python dotted import (dots but no / and not starting with ./ or ../) ─
     if "." in symbol and "/" not in symbol and not symbol.startswith("."):
         py_path = symbol.replace(".", "/")
-        pat = f"**/{py_path}.py"
-        hits = _glob_files(pat, excl)
-        if hits:
-            rel = os.path.relpath(hits[0])
-            return f"{symbol} → {rel}\n"
+        basename = py_path.rsplit("/", 1)[-1]
+        suffix = f"/{py_path}.py"
+        hits = _glob_files(f"**/{basename}.py", excl)
+        for h in hits:
+            norm = os.path.normpath(h).replace(os.sep, "/")
+            if norm.endswith(suffix) or norm == f"{py_path}.py":
+                return f"{symbol} → {os.path.relpath(h)}\n"
         return f"{symbol} → not found\n"
 
     # ── Relative path (starts with ./ or ../) ────────────────────────────────
