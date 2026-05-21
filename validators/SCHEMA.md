@@ -47,8 +47,21 @@ Universal JSON. Every adapter emits this shape. Validator core never parses tool
 - Adapter writes **one JSON object on stdout**. Nothing else. Logs go to stderr.
 - Input: one arg = file path.
 
+## Spec fields (`.supertool.json` validators/formatters entries)
+
+| Field             | Type             | Required | Notes                                                                                     |
+|-------------------|------------------|----------|-------------------------------------------------------------------------------------------|
+| `cmd`             | string           | yes      | Shell command. `{file}` and `{supertool_dir}` are substituted before execution.           |
+| `hooks_into`      | array of strings | yes      | Ops that trigger this validator automatically (`edit`, `paste`, `vim`, ...).              |
+| `match`           | string           | no       | Glob pattern to filter by filename (e.g. `*.php`). Matches all files when absent.        |
+| `timeout`         | int              | no       | Seconds before the subprocess is killed. Default 60 (validators), 30 (formatters).       |
+| `rollback_on_fail`| bool             | no       | Revert the file if the validator reports a regression. Default false.                     |
+| `opt_in`          | bool             | no       | When true, validator only runs when explicitly requested (not on every hook).             |
+| `resolve`         | string           | no       | Shell command that maps the edited file to the file the adapter should receive.           |
+| `env`             | object           | no       | Extra environment variables merged into the subprocess env (`os.environ \| spec.env`). Values are coerced to strings. Example: `{"PHPSTAN_LEVEL": "8", "PHPSTAN_CONFIG": "phpstan.neon"}`. |
+
 ## Adding a validator
 
-1. Write `.claude/scripts/validators/<tool>.sh`
+1. Write `validators/<tool>/<tool>.sh` (or `.py`)
 2. Register in `.supertool.json` under `validators` block
 3. Done. Core picks it up automatically.

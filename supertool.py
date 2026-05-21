@@ -7743,8 +7743,12 @@ def _validator_run_one(name: str, spec: Dict[str, Any], file: str) -> Optional[D
             if cached is not None:
                 return cached
 
+    spec_env = spec.get("env") or {}
+    run_env = {**os.environ, **{str(k): str(v) for k, v in spec_env.items()}} if spec_env else None
+
     try:
-        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout,
+                           env=run_env)
         out = r.stdout.strip()
         if not out:
             return {"tool": name, "file": target, "ok": False, "count": 1,
@@ -7934,8 +7938,11 @@ def _formatter_run_one(name: str, spec: Dict[str, Any], file: str) -> Dict[str, 
     import subprocess
     cmd = spec["cmd"].replace("{supertool_dir}", _INSTALL_DIR).replace("{file}", file)
     timeout = int(spec.get("timeout", 30))
+    spec_env = spec.get("env") or {}
+    run_env = {**os.environ, **{str(k): str(v) for k, v in spec_env.items()}} if spec_env else None
     try:
-        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout,
+                           env=run_env)
         if r.returncode == 0:
             return {"name": name, "ok": True}
         msg = (r.stderr.strip() or r.stdout.strip())[:200]

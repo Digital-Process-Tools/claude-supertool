@@ -69,6 +69,24 @@ Enable any of these by copying the relevant entry from `.supertool.example.json`
 | Terraform           | `terraform-check`| `terraform` CLI                    | Uses `terraform validate`                  |
 | Rust                | `cargo-check`    | `cargo` (ships with Rust)          | Uses `cargo check` — full type resolution  |
 
+## Bundled wrappers
+
+The following wrappers ship in `validators/` and are configured via the `env` field rather than command-line flags. Each has its own README with env var reference and a copy-paste `.supertool.json` snippet.
+
+| Wrapper     | Path                                    | README                                              | Description                                                        |
+|-------------|-----------------------------------------|-----------------------------------------------------|--------------------------------------------------------------------|
+| `phplint`   | `validators/phplint/`                   | —                                                   | `php -l` syntax check; no external dep beyond PHP itself           |
+| `py-compile`| `validators/py-compile/`                | —                                                   | `py_compile` syntax check; stdlib only                             |
+| `bash-check`| `validators/bash-check/`                | —                                                   | `bash -n` syntax check                                             |
+| `node-check`| `validators/node-check/`                | —                                                   | `node --check` syntax check                                        |
+| `stylelint` | `validators/stylelint/`                 | —                                                   | CSS/SCSS lint via `stylelint`; reads project `.stylelintrc`        |
+| `jsonlint`  | `validators/jsonlint/`                  | —                                                   | JSON parse check; stdlib only                                      |
+| `xmllint`   | `validators/xmllint/`                   | —                                                   | XML parse check via `libxml2`; reports line + column               |
+| `phpstan`   | `validators/phpstan/phpstan.sh`         | [README](../validators/phpstan/README.md)           | PHPStan static analysis; configured via `PHPSTAN_BIN`, `PHPSTAN_CONFIG`, `PHPSTAN_MEMORY`, `PHPSTAN_LEVEL` |
+| `phpmd`     | `validators/phpmd/phpmd.sh`             | [README](../validators/phpmd/README.md)             | PHPMD mess detection; configured via `PHPMD_BIN`, `PHPMD_RULESETS`, `PHPMD_FORMAT`, `PHPMD_EXCLUDE` |
+
+The phpstan and phpmd wrappers are shell scripts (`.sh`) rather than Python — they invoke the tool directly and emit SCHEMA.md-compliant JSON via an embedded Python snippet. All env vars have safe defaults so they work out of the box when the tool is on PATH.
+
 ## Adding your own
 
 Any tool that exits non-zero on bad input works. Three lines of JSON and a new language is supported.
@@ -115,6 +133,28 @@ Full list of `.supertool.json` validator config fields:
 | `resolve`          | Shell cmd returning an alternate target path (e.g. source-file → test-file).           |
 | `timeout`          | Seconds. Default 60.                                                                    |
 | `opt_in`           | If true, validator only runs on explicit request via the `validate` op.                |
+| `env`              | Optional `{KEY: VAL}` block merged into the subprocess environment. Values are coerced to strings. Useful for pointing wrappers at a project-local binary or config without touching the system environment. |
+
+### env — usage
+
+Pass tool-specific config without shell exports:
+
+```json
+"phpstan": {
+  "cmd": "bash {supertool_dir}/validators/phpstan/phpstan.sh {file}",
+  "match": "*.php",
+  "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+  "rollback_on_fail": false,
+  "timeout": 60,
+  "env": {
+    "PHPSTAN_BIN": "./vendor/bin/phpstan",
+    "PHPSTAN_CONFIG": "phpstan.neon",
+    "PHPSTAN_LEVEL": "8"
+  }
+}
+```
+
+The `env` block is merged on top of the inherited process environment (`os.environ | spec.env`), so unset keys fall through to whatever the shell already has.
 
 ## Caching
 
@@ -150,6 +190,8 @@ The model gets a clean retry surface with the exact line and error — no broken
 ## Adapter contract
 
 Custom validators must conform to the adapter contract in `validators/SCHEMA.md`. Each adapter takes one file arg and prints a JSON object on stdout with a standardised shape (ok, count, errors). The bundled adapters (`validators/phplint/`, `validators/xmllint/`, etc.) are the reference implementations.
+
+Two optional output fields worth knowing: `source_context` (array of source lines centered on the error, rendered indented under each error in verbose mode) and `diff` (unified diff string, rendered as a fenced block — useful for tools like Rector that produce a suggested patch). Full spec in [SCHEMA.md](../validators/SCHEMA.md).
 
 ## Format-on-save
 
