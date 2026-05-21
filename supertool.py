@@ -8535,7 +8535,23 @@ def op_workspace(path: str) -> str:
 
     # ── Section 2: Symbols ───────────────────────────────────────────────────
     out.append("## Symbols\n\n")
-    out.append(op_map(path))
+    _sym_mcp_used = False
+    _sym_route = _mcp_route(path, "symbols")
+    if _sym_route:
+        _sym_server_name, _sym_mcp_tool = _sym_route
+        _sym_server = _mcp_ensure_server(_sym_server_name)
+        if _sym_server:
+            try:
+                _sym_mcp_result = _mcp_call(_sym_server_name, _sym_mcp_tool, {"file": path})
+                if _sym_mcp_result is not None:
+                    _sym_text = _extract_symbols_from_mcp_result(_sym_mcp_result)
+                    if _sym_text is not None:
+                        out.append(_sym_text)
+                        _sym_mcp_used = True
+            except (MCPServerError, MCPTimeout):
+                pass
+    if not _sym_mcp_used:
+        out.append(op_map(path))
     out.append("\n")
 
     # ── Section 3: Imports ───────────────────────────────────────────────────
@@ -8715,23 +8731,39 @@ def op_workspace(path: str) -> str:
     # Grep with a high internal cap so we can show "X of Y" in the header.
     # Tests live in the dedicated ## Tests section — exclude them here so
     # the quota goes to production usages.
-    excl = _get_exclude_paths("grep")
-    hits = _grep_recursive(symbol, ".", 200, excl)
-    abs_path = os.path.abspath(path)
-    ext_family = _EXT_FAMILIES.get(ext, (ext,)) if ext else ()
-    _test_marker = re.compile(r"(?:^|/)(?:test_[^/]+|[^/]+_test|[^/]+Test)\.[^/]+$")
-    filtered_hits: List[str] = []
-    for hit in hits:
-        # hit format: "filepath:lineno:content"
-        colon1 = hit.index(":")
-        hit_file = hit[:colon1]
-        if os.path.abspath(hit_file) == abs_path:
-            continue
-        if ext_family and not any(hit_file.endswith(e) for e in ext_family):
-            continue
-        if _test_marker.search(hit_file):
-            continue
-        filtered_hits.append(hit)
+    _refs_mcp_used = False
+    _refs_route = _mcp_route(path, "refs")
+    if _refs_route:
+        _refs_server_name, _refs_mcp_tool = _refs_route
+        _refs_server = _mcp_ensure_server(_refs_server_name)
+        if _refs_server:
+            try:
+                _refs_mcp_result = _mcp_call(_refs_server_name, _refs_mcp_tool, {"symbol": symbol, "file": path})
+                if _refs_mcp_result is not None:
+                    _mcp_refs = _extract_refs_from_mcp_result(_refs_mcp_result)
+                    if _mcp_refs is not None:
+                        filtered_hits = _mcp_refs
+                        _refs_mcp_used = True
+            except (MCPServerError, MCPTimeout):
+                pass
+    if not _refs_mcp_used:
+        excl = _get_exclude_paths("grep")
+        hits = _grep_recursive(symbol, ".", 200, excl)
+        abs_path = os.path.abspath(path)
+        ext_family = _EXT_FAMILIES.get(ext, (ext,)) if ext else ()
+        _test_marker = re.compile(r"(?:^|/)(?:test_[^/]+|[^/]+_test|[^/]+Test)\.[^/]+$")
+        filtered_hits = []
+        for hit in hits:
+            # hit format: "filepath:lineno:content"
+            colon1 = hit.index(":")
+            hit_file = hit[:colon1]
+            if os.path.abspath(hit_file) == abs_path:
+                continue
+            if ext_family and not any(hit_file.endswith(e) for e in ext_family):
+                continue
+            if _test_marker.search(hit_file):
+                continue
+            filtered_hits.append(hit)
 
     total = len(filtered_hits)
     shown = filtered_hits[:display_cap]
@@ -9958,6 +9990,34 @@ def _mcp_ensure_server(name: str) -> Optional[MCPServer]:
         return None
     _mcp_register(name, server)
     return server
+
+
+def _extract_refs_from_mcp_result(result: Any) -> Optional[List[str]]:
+    """Normalize MCP response for a refs/references tool into a list of 'file:line:content' strings."""
+    if not isinstance(result, dict):
+        return None
+    content = result.get("content")
+    if isinstance(content, list):
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                text = item.get("text", "").strip()
+                if text:
+                    return [line for line in text.splitlines() if line.strip()]
+    return None
+
+
+def _extract_symbols_from_mcp_result(result: Any) -> Optional[str]:
+    """Normalize MCP response for a symbols/documentSymbol tool into a formatted string."""
+    if not isinstance(result, dict):
+        return None
+    content = result.get("content")
+    if isinstance(content, list):
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                text = item.get("text", "").strip()
+                if text:
+                    return text + "\n"
+    return None
 
 
 def _extract_path_from_mcp_result(result: Any) -> Optional[str]:

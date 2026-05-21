@@ -29,6 +29,19 @@ TOOLS = [
                         "properties": {"symbol": {"type": "string"},
                                        "file": {"type": "string"}}},
     },
+    {
+        "name": "references",
+        "description": "Mock LSP-style references lookup",
+        "inputSchema": {"type": "object",
+                        "properties": {"symbol": {"type": "string"},
+                                       "file": {"type": "string"}}},
+    },
+    {
+        "name": "documentSymbol",
+        "description": "Mock LSP-style document symbol listing",
+        "inputSchema": {"type": "object",
+                        "properties": {"file": {"type": "string"}}},
+    },
 ]
 
 
@@ -98,6 +111,22 @@ def handle(msg: dict) -> None:
                 "id": msg_id,
                 "result": {"content": [{"type": "text",
                                         "text": args.get("file", "/mock/resolved.php")}]},
+            })
+            return
+        if tool_name == "references":
+            send({
+                "jsonrpc": "2.0",
+                "id": msg_id,
+                "result": {"content": [{"type": "text",
+                                        "text": "file1.php:10:line content\nfile2.php:20:other content"}]},
+            })
+            return
+        if tool_name == "documentSymbol":
+            send({
+                "jsonrpc": "2.0",
+                "id": msg_id,
+                "result": {"content": [{"type": "text",
+                                        "text": "class Foo  [10-50]\n  method bar  [12-20]"}]},
             })
             return
         send({
