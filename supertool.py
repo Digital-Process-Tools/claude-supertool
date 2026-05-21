@@ -8089,26 +8089,67 @@ _WORKSPACE_COMMON_SYMBOLS = frozenset({
     "tests", "setup", "models", "model", "views", "view", "routes",
 })
 
+# Extension family map for workspace References scan.
+# A file with ext X searches for references in files matching any ext in the family.
+# Default: same-ext only (handled by the fallback in op_workspace).
+_EXT_FAMILIES: Dict[str, tuple] = {
+    ".ts":   (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"),
+    ".tsx":  (".ts", ".tsx", ".js", ".jsx"),
+    ".js":   (".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"),
+    ".jsx":  (".js", ".jsx", ".ts", ".tsx"),
+    ".mjs":  (".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"),
+    ".cjs":  (".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"),
+    ".php":  (".php",),  # DVSI's .class.php matched via endswith(".php")
+    ".py":   (".py", ".pyi"),
+    ".pyi":  (".py", ".pyi"),
+}
+
 
 # ---------------------------------------------------------------------------
 # op_resolve — smart-glob "go to definition" resolver
 # ---------------------------------------------------------------------------
 
-def op_resolve(symbol: str) -> str:
+def op_resolve(symbol: str, from_file: Optional[str] = None, _cache: Optional[dict] = None) -> str:
     """Resolve a symbol/import string to a project file path.
 
     Detection rules (in priority order):
       - Contains backslash → PHP FQN  → **/<path>.class.php, fallback **/<path>.php
+      - Starts with one or more dots (Python relative import, e.g. ".", ".utils") →
+        resolve relative to from_file's directory when provided; otherwise → external
       - Contains dot only (no / or ./) → Python dotted import → **/<path>.py
       - Starts with ./ or ../ → relative path → try common extensions
       - Bare word (no separators) → ambiguous → try multi-ext glob
       - Otherwise → external (npm/pip/etc.)
+
+    Args:
+        symbol: The import/symbol string to resolve.
+        from_file: Optional path to the file that contains the import (used for
+            Python relative imports like "." or ".utils"). Without this, relative
+            Python imports return "external".
+        _cache: Optional dict used as a per-call resolve cache (avoids repeated
+            full-repo globs for the same symbol within a single workspace call).
 
     Returns: "SYMBOL → PATH" on success, "SYMBOL → external", or "SYMBOL → not found".
     """
     if not symbol:
         return "resolve: empty symbol\n"
 
+    # Per-call cache: key is (symbol, from_file)
+    if _cache is not None:
+        cache_key = (symbol, from_file)
+        if cache_key in _cache:
+            return _cache[cache_key]
+
+    result = _op_resolve_inner(symbol, from_file)
+
+    if _cache is not None:
+        _cache[cache_key] = result
+
+    return result
+
+
+def _op_resolve_inner(symbol: str, from_file: Optional[str] = None) -> str:
+    """Core resolve logic — called by op_resolve (which handles caching)."""
     excl = _get_exclude_paths("resolve")
 
     # ── PHP FQN (contains backslash) ─────────────────────────────────────────
@@ -8120,6 +8161,45 @@ def op_resolve(symbol: str) -> str:
                 rel = os.path.relpath(hits[0])
                 return f"{symbol} → {rel}\n"
         return f"{symbol} → not found\n"
+
+    # ── Python relative import (starts with one or more dots, no /) ──────────
+    # Matches: ".", ".utils", "..models", ".sub.module" etc.
+    # Does NOT match "./" or "../" (those are handled below as relative paths).
+    if re.match(r"^\.+\w*(?:\.\w+)*$", symbol) or symbol in (".", ".."):
+        if not from_file:
+            return f"{symbol} → external\n"
+        base_dir = os.path.dirname(os.path.abspath(from_file))
+        # Strip leading dots to find the module name; count dots for package depth
+        # Single dot: same package. ".utils" → utils in same dir.
+        # ".." / "..models" → parent package (we resolve one level up per leading dot beyond 1)
+        m = re.match(r"^(\.+)(.*)", symbol)
+        if not m:
+            return f"{symbol} → external\n"
+        dots, rest = m.group(1), m.group(2)
+        # Each extra dot beyond the first means go up one directory
+        target_dir = base_dir
+        for _ in range(len(dots) - 1):
+            target_dir = os.path.dirname(target_dir)
+        if rest:
+            module_path = rest.replace(".", "/")
+            for ext in (".py", ".pyi"):
+                candidate = os.path.join(target_dir, module_path + ext)
+                if os.path.isfile(candidate):
+                    rel = os.path.relpath(candidate)
+                    return f"{symbol} → {rel}\n"
+            # Also try as a package (directory with __init__.py)
+            pkg_init = os.path.join(target_dir, module_path, "__init__.py")
+            if os.path.isfile(pkg_init):
+                rel = os.path.relpath(pkg_init)
+                return f"{symbol} → {rel}\n"
+            return f"{symbol} → not found\n"
+        else:
+            # Bare "." or ".." — refers to the package itself
+            pkg_init = os.path.join(target_dir, "__init__.py")
+            if os.path.isfile(pkg_init):
+                rel = os.path.relpath(pkg_init)
+                return f"{symbol} → {rel}\n"
+            return f"{symbol} → not found\n"
 
     # ── Python dotted import (dots but no / and not starting with ./ or ../) ─
     if "." in symbol and "/" not in symbol and not symbol.startswith("."):
@@ -8175,10 +8255,10 @@ def op_resolve(symbol: str) -> str:
 # ---------------------------------------------------------------------------
 
 _PHP_USE_RE = re.compile(
-    r"^\s*use\s+([\w\\]+)(?:\s+as\s+(\w+))?\s*;", re.MULTILINE
+    r"^\s*use\s+(?:function\s+|const\s+)?([\w\\]+)(?:\s+as\s+(\w+))?\s*;", re.MULTILINE
 )
 _PY_FROM_RE = re.compile(
-    r"^\s*from\s+([\w.]+)\s+import\s+\S+", re.MULTILINE
+    r"^\s*from\s+(\.+\w*(?:\.\w+)*|\w+(?:\.\w+)*)\s+import", re.MULTILINE
 )
 _PY_IMPORT_RE = re.compile(
     r"^\s*import\s+([\w.]+)", re.MULTILINE
@@ -8191,7 +8271,7 @@ _JS_BARE_RE = re.compile(
 )
 
 
-def _parse_imports(path: str, content: str) -> List[tuple]:
+def _parse_imports(path: str, content: str) -> List[tuple]:  # noqa: same signature, from_file is path
     """Return list of (symbol, alias_or_None) pairs for the file's import statements."""
     ext = os.path.splitext(path)[1].lower()
     results: List[tuple] = []
@@ -8297,9 +8377,10 @@ def op_workspace(path: str) -> str:
     _imports = _parse_imports(path, file_content)
     if _imports:
         _imports = _imports[:40]  # cap at 40 entries
+        _resolve_cache: dict = {}
         out.append(f"## Imports ({len(_imports)})\n\n")
         for sym, alias in _imports:
-            resolved_line = op_resolve(sym).strip()
+            resolved_line = op_resolve(sym, from_file=path, _cache=_resolve_cache).strip()
             # resolved_line is "SYMBOL → PATH" — extract just the path part
             arrow_idx = resolved_line.find(" → ")
             resolved_path = resolved_line[arrow_idx + 3:] if arrow_idx != -1 else resolved_line
@@ -8315,17 +8396,15 @@ def op_workspace(path: str) -> str:
         out.append(op_validate(path, verbose=True))
         out.append("\n")
 
-    # ── Section 4: Siblings ──────────────────────────────────────────────────
+    # ── Section 5: Siblings ──────────────────────────────────────────────────
     dirname = os.path.dirname(os.path.abspath(path))
     cwd = os.path.abspath(os.getcwd())
     if dirname != cwd:
         out.append("## Siblings\n\n")
-        # Use the relative dirname for a readable path
-        rel_dir = os.path.relpath(dirname, cwd)
         out.append(op_ls(dirname))
         out.append("\n")
 
-    # ── Section 5: Git ───────────────────────────────────────────────────────
+    # ── Section 6: Git ───────────────────────────────────────────────────────
     # Check if inside a git repo
     try:
         git_check = subprocess.run(
@@ -8420,7 +8499,7 @@ def op_workspace(path: str) -> str:
 
         out.append("\n")
 
-    # ── Section 6: References ────────────────────────────────────────────────
+    # ── Section 7: References ────────────────────────────────────────────────
     out.append("## References\n\n")
     basename = os.path.basename(path)
     ext = os.path.splitext(basename)[1]  # e.g. ".php"
@@ -8438,8 +8517,9 @@ def op_workspace(path: str) -> str:
 
     excl = _get_exclude_paths("grep")
     hits = _grep_recursive(symbol, ".", ref_limit, excl)
-    # Filter to same extension, exclude self
+    # Filter to family extensions (or same-ext fallback), exclude self
     abs_path = os.path.abspath(path)
+    ext_family = _EXT_FAMILIES.get(ext, (ext,)) if ext else ()
     filtered_hits: List[str] = []
     for hit in hits:
         # hit format: "filepath:lineno:content"
@@ -8447,7 +8527,7 @@ def op_workspace(path: str) -> str:
         hit_file = hit[:colon1]
         if os.path.abspath(hit_file) == abs_path:
             continue
-        if ext and not hit_file.endswith(ext):
+        if ext_family and not any(hit_file.endswith(e) for e in ext_family):
             continue
         filtered_hits.append(hit)
 
@@ -8471,7 +8551,7 @@ def op_workspace(path: str) -> str:
         out.append(f"(no references to {symbol!r} found in *{ext} files)\n")
     out.append("\n")
 
-    # ── Section 7: Tests ─────────────────────────────────────────────────────
+    # ── Section 8: Tests ─────────────────────────────────────────────────────
     _ws_test_path: Optional[str] = None
 
     if ext == ".php":
