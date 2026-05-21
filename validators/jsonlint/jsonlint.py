@@ -8,8 +8,12 @@ Usage:  jsonlint.py <file>
 from __future__ import annotations
 
 import json
+import pathlib
 import sys
 import time
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
+from source_context import source_context
 
 
 def emit(d: dict) -> None:
@@ -30,9 +34,11 @@ def main() -> None:
             json.load(fh)
     except json.JSONDecodeError as e:
         msg = str(e).strip()[:300]
+        err = {"line": e.lineno, "col": e.colno, "severity": "error",
+               "code": "syntax", "msg": msg}
+        err["source_context"] = source_context(file, e.lineno)
         emit({"tool": "jsonlint", "file": file, "ok": False, "count": 1,
-              "errors": [{"line": e.lineno, "col": e.colno, "severity": "error",
-                          "code": "syntax", "msg": msg}],
+              "errors": [err],
               "duration_ms": int((time.time() - start) * 1000)})
         return
     except FileNotFoundError:

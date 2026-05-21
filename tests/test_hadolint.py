@@ -121,3 +121,17 @@ def test_missing_file_behavior(tmp_path: Path) -> None:
     """Missing file: hadolint errors (if present) or graceful skip (if absent)."""
     out = _run(str(tmp_path / "Dockerfile"))
     assert "ok" in out
+
+
+@pytest.mark.skipif(not shutil.which("hadolint"), reason="hadolint not on PATH")
+def test_source_context_present_on_error(tmp_path: Path) -> None:
+    f = tmp_path / "Dockerfile"
+    f.write_text("FROM ubuntu:22.04\nRUN apt-get update\nRUN apt-get install curl\n")
+    out = _run(str(f))
+    if out["ok"] or not out["errors"]:
+        pytest.skip("hadolint found no issues with this Dockerfile")
+    err = out["errors"][0]
+    assert err["line"] is not None
+    assert "source_context" in err
+    assert isinstance(err["source_context"], list)
+    assert len(err["source_context"]) > 0

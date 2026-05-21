@@ -12,6 +12,10 @@ import re
 import subprocess
 import sys
 import time
+import pathlib
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
+from source_context import source_context
 
 
 def emit(d: dict) -> None:
@@ -54,9 +58,11 @@ def main() -> None:
     col = int(m.group(2)) if m and m.group(2) else None
     msg_m = re.search(r"((?:Syntax)?Error: .+)", out)
     msg = msg_m.group(1) if msg_m else " ".join(out.split())[:200]
+    err = {"line": line, "col": col, "severity": "error", "code": "syntax", "msg": msg[:300]}
+    if line is not None:
+        err["source_context"] = source_context(file, line)
     emit({"tool": "node-check", "file": file, "ok": False, "count": 1,
-          "errors": [{"line": line, "col": col, "severity": "error",
-                      "code": "syntax", "msg": msg[:300]}],
+          "errors": [err],
           "duration_ms": dur})
 
 

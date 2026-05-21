@@ -13,6 +13,10 @@ import shutil
 import subprocess
 import sys
 import time
+import pathlib
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
+from source_context import source_context
 
 
 def emit(d: dict) -> None:
@@ -76,13 +80,17 @@ def main() -> None:
     errors = []
     for item in data:
         for w in item.get("warnings", []):
-            errors.append({
-                "line": w.get("line"),
+            ln = w.get("line")
+            err = {
+                "line": ln,
                 "col": w.get("column"),
                 "severity": w.get("severity", "warning"),
                 "code": w.get("rule"),
                 "msg": (w.get("text") or "")[:300],
-            })
+            }
+            if ln is not None:
+                err["source_context"] = source_context(file, ln)
+            errors.append(err)
     emit({"tool": "stylelint", "file": file, "ok": len(errors) == 0,
           "count": len(errors), "errors": errors, "duration_ms": dur})
 

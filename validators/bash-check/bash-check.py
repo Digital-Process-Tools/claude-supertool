@@ -12,6 +12,10 @@ import re
 import subprocess
 import sys
 import time
+import pathlib
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
+from source_context import source_context
 
 
 def emit(d: dict) -> None:
@@ -53,9 +57,11 @@ def main() -> None:
     for line in out.splitlines():
         m = re.search(r":\s*line\s+(\d+):\s*(.+)", line)
         if m:
-            errors.append({"line": int(m.group(1)), "col": None,
-                           "severity": "error", "code": "syntax",
-                           "msg": m.group(2).strip()[:200]})
+            ln = int(m.group(1))
+            err = {"line": ln, "col": None, "severity": "error", "code": "syntax",
+                   "msg": m.group(2).strip()[:200]}
+            err["source_context"] = source_context(file, ln)
+            errors.append(err)
     if not errors:
         errors = [{"line": None, "col": None, "severity": "error",
                    "code": "syntax", "msg": (out or "unknown error")[:300]}]

@@ -98,3 +98,17 @@ def test_missing_file_returns_error(tmp_path: Path) -> None:
     out = _run(str(tmp_path / "nonexistent.ts"))
     # tsc will error if tsc is present; if tsc absent, ok=True (graceful skip)
     assert "ok" in out
+
+
+@pytest.mark.skipif(not shutil.which("tsc"), reason="tsc not on PATH")
+def test_source_context_present_on_error(tmp_path: Path) -> None:
+    f = tmp_path / "bad.ts"
+    f.write_text("const x: number = 'not a number';\nexport {};\n")
+    out = _run(str(f))
+    if out["ok"] or not out["errors"]:
+        pytest.skip("tsc found no issues (may need tsconfig)")
+    err = out["errors"][0]
+    assert err["line"] is not None
+    assert "source_context" in err
+    assert isinstance(err["source_context"], list)
+    assert len(err["source_context"]) > 0

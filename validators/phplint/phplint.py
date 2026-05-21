@@ -16,6 +16,10 @@ import re
 import subprocess
 import sys
 import time
+import pathlib
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
+from source_context import source_context
 
 
 def emit(obj: dict) -> None:
@@ -68,10 +72,12 @@ def main() -> None:
     line = int(m.group(1)) if m else None
     msg = " ".join(out.split())[:300]
 
+    err = {"line": line, "col": None, "severity": "error", "code": "parse", "msg": msg}
+    if line is not None:
+        err["source_context"] = source_context(file, line)
     emit({
         "tool": "phplint", "file": file, "ok": False, "count": 1,
-        "errors": [{"line": line, "col": None, "severity": "error",
-                    "code": "parse", "msg": msg}],
+        "errors": [err],
         "duration_ms": dur,
     })
 

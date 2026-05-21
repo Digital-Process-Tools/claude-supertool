@@ -132,3 +132,16 @@ def test_duration_ms_is_int(tmp_path: Path) -> None:
 def test_missing_file_returns_error(tmp_path: Path) -> None:
     out = _run(str(tmp_path / "nonexistent.rb"))
     assert out["ok"] is False
+
+
+@pytest.mark.skipif(not shutil.which("ruby"), reason="ruby not on PATH")
+def test_source_context_present_on_error(tmp_path: Path) -> None:
+    f = tmp_path / "bad.rb"
+    f.write_text("class Foo\n  def bar\n    end\n")
+    out = _run(str(f))
+    assert out["ok"] is False
+    err = out["errors"][0]
+    assert err["line"] is not None
+    assert "source_context" in err
+    assert isinstance(err["source_context"], list)
+    assert len(err["source_context"]) > 0

@@ -11,6 +11,10 @@ import configparser
 import json
 import sys
 import time
+import pathlib
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
+from source_context import source_context
 
 
 def emit(d: dict) -> None:
@@ -33,16 +37,22 @@ def main() -> None:
         with open(file, "r", encoding="utf-8") as fh:
             parser.read_file(fh)
     except configparser.MissingSectionHeaderError as e:
+        err = {"line": e.lineno, "col": None, "severity": "error",
+               "code": "syntax", "msg": str(e).strip()[:300]}
+        if e.lineno is not None:
+            err["source_context"] = source_context(file, e.lineno)
         emit({"tool": "inilint", "file": file, "ok": False, "count": 1,
-              "errors": [{"line": e.lineno, "col": None, "severity": "error",
-                          "code": "syntax", "msg": str(e).strip()[:300]}],
+              "errors": [err],
               "duration_ms": int((time.time() - start) * 1000)})
         return
     except configparser.ParsingError as e:
         errors = []
         for lineno, msg in e.errors:
-            errors.append({"line": lineno, "col": None, "severity": "error",
-                           "code": "syntax", "msg": msg.strip()[:300]})
+            err = {"line": lineno, "col": None, "severity": "error",
+                   "code": "syntax", "msg": msg.strip()[:300]}
+            if lineno is not None:
+                err["source_context"] = source_context(file, lineno)
+            errors.append(err)
         if not errors:
             errors = [{"line": None, "col": None, "severity": "error",
                        "code": "syntax", "msg": str(e).strip()[:300]}]
