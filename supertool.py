@@ -8565,7 +8565,6 @@ def op_workspace(path: str) -> str:
         out.append("\n")
 
     # ── Section 7: References ────────────────────────────────────────────────
-    out.append("## References\n\n")
     basename = os.path.basename(path)
     ext = os.path.splitext(basename)[1]  # e.g. ".php"
     # Strip extension. For "Foo.class.php" → "Foo.class" → strip again by splitext
@@ -8574,17 +8573,20 @@ def op_workspace(path: str) -> str:
     if "." in symbol:
         symbol = os.path.splitext(symbol)[0]
 
-    ref_limit = 20
+    display_cap = 20
     noisy_note = ""
     if symbol.lower() in _WORKSPACE_COMMON_SYMBOLS:
-        ref_limit = 10
+        display_cap = 10
         noisy_note = f"  (common symbol — results may be noisy)\n"
 
+    # Grep with a high internal cap so we can show "X of Y" in the header.
+    # Tests live in the dedicated ## Tests section — exclude them here so
+    # the quota goes to production usages.
     excl = _get_exclude_paths("grep")
-    hits = _grep_recursive(symbol, ".", ref_limit, excl)
-    # Filter to family extensions (or same-ext fallback), exclude self
+    hits = _grep_recursive(symbol, ".", 200, excl)
     abs_path = os.path.abspath(path)
     ext_family = _EXT_FAMILIES.get(ext, (ext,)) if ext else ()
+    _test_marker = re.compile(r"(?:^|/)(?:test_[^/]+|[^/]+_test|[^/]+Test)\.[^/]+$")
     filtered_hits: List[str] = []
     for hit in hits:
         # hit format: "filepath:lineno:content"
@@ -8594,14 +8596,23 @@ def op_workspace(path: str) -> str:
             continue
         if ext_family and not any(hit_file.endswith(e) for e in ext_family):
             continue
+        if _test_marker.search(hit_file):
+            continue
         filtered_hits.append(hit)
+
+    total = len(filtered_hits)
+    shown = filtered_hits[:display_cap]
+    if total > display_cap:
+        out.append(f"## References (showing {len(shown)} of {total})\n\n")
+    else:
+        out.append(f"## References ({total})\n\n")
 
     if noisy_note:
         out.append(noisy_note)
 
-    if filtered_hits:
+    if shown:
         current_file = ""
-        for hit in filtered_hits:
+        for hit in shown:
             colon1 = hit.index(":")
             rest = hit[colon1 + 1:]
             colon2 = rest.index(":")
