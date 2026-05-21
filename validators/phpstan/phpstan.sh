@@ -18,6 +18,11 @@ fi
 PHPSTAN_BIN="${PHPSTAN_BIN:-phpstan}"
 PHPSTAN_MEMORY="${PHPSTAN_MEMORY:-1G}"
 
+if ! command -v "$PHPSTAN_BIN" >/dev/null 2>&1 && [[ ! -x "$PHPSTAN_BIN" ]]; then
+  printf '{"tool":"phpstan","file":"%s","ok":false,"count":1,"errors":[{"line":null,"col":null,"severity":"error","code":"adapter","msg":"PHPSTAN_BIN not found: %s"}],"duration_ms":0}' "$file" "$PHPSTAN_BIN"
+  exit 0
+fi
+
 config_flag=()
 if [[ -n "${PHPSTAN_CONFIG:-}" ]]; then
   config_flag=(-c "$PHPSTAN_CONFIG")

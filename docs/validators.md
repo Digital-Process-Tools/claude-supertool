@@ -68,24 +68,9 @@ Enable any of these by copying the relevant entry from `.supertool.example.json`
 | Go                  | `gofmt-check`    | `gofmt` (ships with Go)            | Fails on formatting diff, not just syntax  |
 | Terraform           | `terraform-check`| `terraform` CLI                    | Uses `terraform validate`                  |
 | Rust                | `cargo-check`    | `cargo` (ships with Rust)          | Uses `cargo check` — full type resolution  |
+| PHP — static  | `phpstan`        | `phpstan` binary (PATH or via `PHPSTAN_BIN` env)  | Shell wrapper, env-configured. See [README](../validators/phpstan/README.md) |
+| PHP — mess    | `phpmd`          | `phpmd` binary (PATH or via `PHPMD_BIN` env)      | Shell wrapper, env-configured. See [README](../validators/phpmd/README.md) |
 
-## Bundled wrappers
-
-The following wrappers ship in `validators/` and are configured via the `env` field rather than command-line flags. Each has its own README with env var reference and a copy-paste `.supertool.json` snippet.
-
-| Wrapper     | Path                                    | README                                              | Description                                                        |
-|-------------|-----------------------------------------|-----------------------------------------------------|--------------------------------------------------------------------|
-| `phplint`   | `validators/phplint/`                   | —                                                   | `php -l` syntax check; no external dep beyond PHP itself           |
-| `py-compile`| `validators/py-compile/`                | —                                                   | `py_compile` syntax check; stdlib only                             |
-| `bash-check`| `validators/bash-check/`                | —                                                   | `bash -n` syntax check                                             |
-| `node-check`| `validators/node-check/`                | —                                                   | `node --check` syntax check                                        |
-| `stylelint` | `validators/stylelint/`                 | —                                                   | CSS/SCSS lint via `stylelint`; reads project `.stylelintrc`        |
-| `jsonlint`  | `validators/jsonlint/`                  | —                                                   | JSON parse check; stdlib only                                      |
-| `xmllint`   | `validators/xmllint/`                   | —                                                   | XML parse check via `libxml2`; reports line + column               |
-| `phpstan`   | `validators/phpstan/phpstan.sh`         | [README](../validators/phpstan/README.md)           | PHPStan static analysis; configured via `PHPSTAN_BIN`, `PHPSTAN_CONFIG`, `PHPSTAN_MEMORY`, `PHPSTAN_LEVEL` |
-| `phpmd`     | `validators/phpmd/phpmd.sh`             | [README](../validators/phpmd/README.md)             | PHPMD mess detection; configured via `PHPMD_BIN`, `PHPMD_RULESETS`, `PHPMD_FORMAT`, `PHPMD_EXCLUDE` |
-
-The phpstan and phpmd wrappers are shell scripts (`.sh`) rather than Python — they invoke the tool directly and emit SCHEMA.md-compliant JSON via an embedded Python snippet. All env vars have safe defaults so they work out of the box when the tool is on PATH.
 
 ## Adding your own
 
