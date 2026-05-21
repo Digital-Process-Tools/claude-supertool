@@ -28,4 +28,4 @@ Changelog = "https://github.com/Digital-Process-Tools/claude-supertool/blob/main
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--cov=supertool --cov-report=term-missing --cov-fail-under=80"
+addopts = "--cov=supertool --cov-report=term-missing --cov-fail-under=89"
