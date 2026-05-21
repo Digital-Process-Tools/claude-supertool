@@ -434,6 +434,17 @@
       ],
       "rollback_on_fail": false,
       "timeout": 30
+    },
+    "psr": {
+      "cmd": "python3 {supertool_dir}/validators/psr/psr.py {file}",
+      "match": "*.php",
+      "hooks_into": [],
+      "rollback_on_fail": false,
+      "timeout": 30,
+      "env": {
+        "PSR_STANDARD": "PSR12",
+        "PSR_SEVERITY": "9"
+      }
     }
   },
   "formatters": {

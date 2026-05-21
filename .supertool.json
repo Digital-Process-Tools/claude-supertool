@@ -174,7 +174,7 @@
     },
     "resolve": {
       "syntax": "resolve:SYMBOL",
-      "description": "Smart-glob resolver: PHP FQN, Python dotted, JS/TS relative path → file on disk. Returns 'external' for npm/pip packages, 'not found' if no match. Used internally by workspace.",
+      "description": "Smart-glob resolver: PHP FQN, Python dotted, JS/TS relative path \u2192 file on disk. Returns 'external' for npm/pip packages, 'not found' if no match. Used internally by workspace.",
       "example": "resolve:foo.bar.baz"
     }
   },
