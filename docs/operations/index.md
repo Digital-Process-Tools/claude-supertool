@@ -45,10 +45,10 @@
 | `paste` | `paste:::PATH:::CONTENT` | **NARROW USE:** replace ENTIRE file. Only for creating a new file or fully rewriting one. NOT for partial edits — `vim` is the default for those. Atomic, creates file + parent dirs if missing. CONTENT via triple-colon → holds any chars (`:`, quotes, braces, newlines). |
 | `vim` | `vim:::PATH:::SCRIPT` | vim-flavored cursor-based multi-action edit. SCRIPT is parsed like a real vim macro. **DEFAULT EDIT OP** for any pattern-based edit. See [edits.md](edits.md) for full syntax reference. |
 | `replace` / `replace_dry` | `replace:::OLD:::NEW:::PATH` | Recursive find/replace across PATH (`replace_dry` = preview). Use `:::` separator when content has `:`. |
-| `validate` | `validate:PATH` or `validate:PATH:tool1,tool2` | Run registered validators matching PATH (by file extension). Optional `tool_filter` limits to named validators. Same validators that fire after every mutating op. |
-| `format` | `format:PATH` or `format:PATH:tool1,tool2` | Run registered formatters matching PATH (writes file in place). Optional `tool_filter` limits to named formatters. Same formatters that fire after every mutating op. |
-| `validate_staged` | `validate_staged` or `validate_staged::tool1,tool2` | Run validators on all files in `git diff --cached --name-only`. Optional `tool_filter`. Useful as a pre-commit check. |
-| `format_staged` | `format_staged` or `format_staged::tool1,tool2` | Run formatters on all staged files. Optional `tool_filter`. Pair with `validate_staged` for a full normalize-then-check pass. |
+| `validate` | `validate:PATH[:tool1,tool2][:verbose]` | Run registered validators matching PATH (by file extension). Optional `tool_filter` limits to named validators. Append `verbose` for uncapped errors + source context + raw stdout/stderr. Same validators that fire after every mutating op. |
+| `format` | `format:PATH[:tool1,tool2][:verbose]` | Run registered formatters matching PATH (writes file in place). Optional `tool_filter`. Append `verbose` for full per-file details. |
+| `validate_staged` | `validate_staged[::tool1,tool2][:verbose]` | Run validators on all files in `git diff --cached --name-only`. Optional `tool_filter`. Append `verbose` for full per-file details. Useful as a pre-commit check. |
+| `format_staged` | `format_staged[::tool1,tool2][:verbose]` | Run formatters on all staged files. Optional `tool_filter`. Append `verbose` for full per-file details. Pair with `validate_staged` for a full normalize-then-check pass. |
 | `workspace` | `workspace:PATH` | One-shot IDE-style view: file + symbols + validators + siblings + git + references + tests. Opt-in (heavy). Use for first-touch on unfamiliar files. |
 | `resolve` | `resolve:SYMBOL` | Smart-glob resolver: PHP FQN (`\`-separated), Python dotted import, JS/TS relative path (`./`) → file on disk. Returns `external` for npm/pip packages, `not found` if no match. Used internally by workspace's Imports section. |
 
