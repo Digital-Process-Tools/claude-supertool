@@ -68,8 +68,8 @@ Enable any of these by copying the relevant entry from `.supertool.example.json`
 | Go                  | `gofmt-check`    | `gofmt` (ships with Go)            | Fails on formatting diff, not just syntax  |
 | Terraform           | `terraform-check`| `terraform` CLI                    | Uses `terraform validate`                  |
 | Rust                | `cargo-check`    | `cargo` (ships with Rust)          | Uses `cargo check` — full type resolution  |
-| PHP — static  | `phpstan`        | `phpstan` binary (PATH or via `PHPSTAN_BIN` env)  | Shell wrapper, env-configured. See [README](../validators/phpstan/README.md) |
-| PHP — mess    | `phpmd`          | `phpmd` binary (PATH or via `PHPMD_BIN` env)      | Shell wrapper, env-configured. See [README](../validators/phpmd/README.md) |
+| PHP — static  | `phpstan`        | `phpstan` binary (PATH or via `PHPSTAN_BIN` env)  | Env-configured. See [README](../validators/phpstan/README.md) |
+| PHP — mess    | `phpmd`          | `phpmd` binary (PATH or via `PHPMD_BIN` env)      | Env-configured. See [README](../validators/phpmd/README.md) |
 
 
 ## Adding your own
@@ -126,7 +126,7 @@ Pass tool-specific config without shell exports:
 
 ```json
 "phpstan": {
-  "cmd": "bash {supertool_dir}/validators/phpstan/phpstan.sh {file}",
+  "cmd": "python3 {supertool_dir}/validators/phpstan/phpstan.py {file}",
   "match": "*.php",
   "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
   "rollback_on_fail": false,

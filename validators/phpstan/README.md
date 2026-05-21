@@ -17,7 +17,7 @@ Runs [PHPStan](https://phpstan.org/) on a single file and emits SCHEMA.md-compli
 {
   "validators": {
     "phpstan": {
-      "cmd": "bash {supertool_dir}/validators/phpstan/phpstan.sh {file}",
+      "cmd": "python3 {supertool_dir}/validators/phpstan/phpstan.py {file}",
       "match": "*.php",
       "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
       "rollback_on_fail": false,

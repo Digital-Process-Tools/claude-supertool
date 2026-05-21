@@ -17,7 +17,7 @@ Runs [PHPMD](https://phpmd.org/) on a single file and emits SCHEMA.md-compliant 
 {
   "validators": {
     "phpmd": {
-      "cmd": "bash {supertool_dir}/validators/phpmd/phpmd.sh {file}",
+      "cmd": "python3 {supertool_dir}/validators/phpmd/phpmd.py {file}",
       "match": "*.php",
       "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
       "rollback_on_fail": false,

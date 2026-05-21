@@ -1,4 +1,4 @@
-"""Smoke tests for validators/phpmd/phpmd.sh."""
+"""Smoke tests for validators/phpmd/phpmd.py."""
 from __future__ import annotations
 
 import json
@@ -9,12 +9,12 @@ from pathlib import Path
 
 import pytest
 
-PHPMD_SH = Path(__file__).parent.parent / "validators" / "phpmd" / "phpmd.sh"
+PHPMD_PY = Path(__file__).parent.parent / "validators" / "phpmd" / "phpmd.py"
 
 
-def test_phpmd_sh_no_arg_returns_schema_error() -> None:
+def test_phpmd_no_arg_returns_schema_error() -> None:
     """Calling with no arg must emit a valid SCHEMA.md error dict and exit 0."""
-    r = subprocess.run(["bash", str(PHPMD_SH)], capture_output=True, text=True, timeout=10)
+    r = subprocess.run(["python3", str(PHPMD_PY)], capture_output=True, text=True, timeout=10)
     assert r.returncode == 0
     data = json.loads(r.stdout.strip())
     assert data["tool"] == "phpmd"
@@ -22,7 +22,7 @@ def test_phpmd_sh_no_arg_returns_schema_error() -> None:
     assert "no file arg" in data["errors"][0]["msg"]
 
 
-def test_phpmd_sh_clean_output_parses_to_ok(tmp_path: Path) -> None:
+def test_phpmd_clean_output_parses_to_ok(tmp_path: Path) -> None:
     """When phpmd produces no output (no violations), adapter emits ok=True."""
     f = tmp_path / "clean.php"
     f.write_text("<?php\n$x = 1;\n")
@@ -32,7 +32,7 @@ def test_phpmd_sh_clean_output_parses_to_ok(tmp_path: Path) -> None:
     stub.chmod(0o755)
     env = {**os.environ, "PHPMD_BIN": str(stub)}
     r = subprocess.run(
-        ["bash", str(PHPMD_SH), str(f)],
+        ["python3", str(PHPMD_PY), str(f)],
         capture_output=True, text=True, timeout=10, env=env,
     )
     assert r.returncode == 0
@@ -43,7 +43,7 @@ def test_phpmd_sh_clean_output_parses_to_ok(tmp_path: Path) -> None:
     assert data["errors"] == []
 
 
-def test_phpmd_sh_parses_text_output(tmp_path: Path) -> None:
+def test_phpmd_parses_text_output(tmp_path: Path) -> None:
     """Adapter must parse phpmd text format into SCHEMA.md errors."""
     f = tmp_path / "dirty.php"
     f.write_text("<?php\n$x = 1;\n")
@@ -54,7 +54,7 @@ def test_phpmd_sh_parses_text_output(tmp_path: Path) -> None:
     stub.chmod(0o755)
     env = {**os.environ, "PHPMD_BIN": str(stub)}
     r = subprocess.run(
-        ["bash", str(PHPMD_SH), str(f)],
+        ["python3", str(PHPMD_PY), str(f)],
         capture_output=True, text=True, timeout=10, env=env,
     )
     assert r.returncode == 0
@@ -70,12 +70,12 @@ def test_phpmd_sh_parses_text_output(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(not shutil.which("phpmd"), reason="phpmd not installed")
-def test_phpmd_sh_live_clean_php(tmp_path: Path) -> None:
+def test_phpmd_live_clean_php(tmp_path: Path) -> None:
     """Live phpmd on a clean PHP file → ok=True, count=0."""
     f = tmp_path / "ok.php"
     f.write_text("<?php\nfunction add(int $a, int $b): int { return $a + $b; }\n")
     r = subprocess.run(
-        ["bash", str(PHPMD_SH), str(f)],
+        ["python3", str(PHPMD_PY), str(f)],
         capture_output=True, text=True, timeout=30,
     )
     assert r.returncode == 0
