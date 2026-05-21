@@ -4,6 +4,8 @@
 Answers: "When was this added? When was it changed? When was it removed?"
 Combines git log -S (pickaxe) with contextual diffs for each hit.
 """
+from __future__ import annotations
+
 import os
 import re
 import subprocess

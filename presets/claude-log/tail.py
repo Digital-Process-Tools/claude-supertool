@@ -6,6 +6,8 @@ Output one line per content part:
   [assistant] TOOL Bash: {"command": "..."}
   [result] PASS/FAIL/output: ...
 """
+from __future__ import annotations
+
 import json
 import sys
 from pathlib import Path

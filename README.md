@@ -7,6 +7,11 @@
 > **Cut your Claude Code bill by 50%.**
 > `git-status`, but it tells you what to do next.
 
+[![Tests](https://github.com/Digital-Process-Tools/claude-supertool/actions/workflows/tests.yml/badge.svg)](https://github.com/Digital-Process-Tools/claude-supertool/actions/workflows/tests.yml)
+[![Python](https://img.shields.io/badge/python-3.9%2B-blue)](https://www.python.org/)
+[![License](https://img.shields.io/badge/license-Community-brightgreen)](LICENSE)
+[![Version](https://img.shields.io/badge/version-0.11.0-orange)](.claude-plugin/plugin.json)
+
 Saves tokens. Saves money. Saves turns. Works the same in interactive sessions and autonomous runs — humans pair-programming with Claude Code use it every day, not just Kevin-style headless agents. One Python file, zero deps, Python 3.9+.
 
 [Why](#why) • [Four pillars](#four-pillars) • [Receipt](#receipt--the-bill-math) • [Batching](#batch-multiple-ops-in-one-call) • [Parallel](docs/configuration.md#parallel-execution) • [Input forms](#input-forms) • [Validators](#validators--squiggle-on-save-for-the-llm) • [Expand it](#supertooljson--project-configuration) • [Install](#install)

@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """GitLab pipeline job list via glab CLI."""
+from __future__ import annotations
+
 import json
 import subprocess
 import sys

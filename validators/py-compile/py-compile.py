@@ -5,6 +5,8 @@ Stdlib only. Reference implementation per validators/SCHEMA.md.
 Usage:  py-compile.py <file>
 """
 
+from __future__ import annotations
+
 import json
 import py_compile
 import sys

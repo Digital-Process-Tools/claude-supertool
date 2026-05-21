@@ -4,6 +4,8 @@
 Combines branch info, recent commits, working tree state, and stash
 list into one structured report.
 """
+from __future__ import annotations
+
 import subprocess
 import sys
 

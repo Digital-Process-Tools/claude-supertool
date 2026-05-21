@@ -16,6 +16,8 @@ same root already exists. Pass |force as 3rd pipe-separated field to bypass.
 If the pre-flight check fails, a warning is printed and publish proceeds
 (graceful degrade — don't block on platform issues).
 """
+from __future__ import annotations
+
 import datetime as _dt
 import re
 import sys

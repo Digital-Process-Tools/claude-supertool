@@ -5,6 +5,8 @@ Requires markdownlint on PATH. If missing, exits 0 with a stderr warning (gracef
 Usage:  markdownlint.py <file>
 """
 
+from __future__ import annotations
+
 import json
 import re
 import shutil

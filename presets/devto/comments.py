@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Dev.to comments: devto_comments:ARTICLE_ID[:N]"""
+from __future__ import annotations
+
 import os
 import sys
 from pathlib import Path

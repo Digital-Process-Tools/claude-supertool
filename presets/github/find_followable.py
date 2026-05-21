@@ -11,6 +11,8 @@ the anchor source as a comment header. Pipe to a file then run
 
 Filters out type=Organization (we follow people, not orgs).
 """
+from __future__ import annotations
+
 import json
 import os
 import subprocess

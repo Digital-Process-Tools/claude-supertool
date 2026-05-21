@@ -9,6 +9,8 @@ Output: one JSON object on stdout.
 Exit:   0 (always, except on missing python — handled by interpreter).
 """
 
+from __future__ import annotations
+
 import json
 import re
 import subprocess

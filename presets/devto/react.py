@@ -27,6 +27,8 @@ Two auth modes:
      401 because Dev.to API keys do not authorize reactions; kept as
      placeholder until the platform exposes a proper write scope.
 """
+from __future__ import annotations
+
 import json as _json
 import sys
 from pathlib import Path

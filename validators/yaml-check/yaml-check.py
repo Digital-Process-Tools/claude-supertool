@@ -5,6 +5,8 @@ Requires PyYAML (pip install pyyaml). If missing, exits 0 with a stderr warning.
 Usage:  yaml-check.py <file>
 """
 
+from __future__ import annotations
+
 import json
 import sys
 import time

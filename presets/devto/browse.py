@@ -3,6 +3,8 @@
 
 SORT: recent (default) or top (last 7 days top via ?top=7).
 """
+from __future__ import annotations
+
 import os
 import sys
 from pathlib import Path

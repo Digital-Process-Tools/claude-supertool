@@ -13,6 +13,8 @@ Special MSG values:
   --no-edit   Use prepared commit message (MERGE_MSG / CHERRY_PICK_HEAD).
               Only valid when a merge or cherry-pick is in progress.
 """
+from __future__ import annotations
+
 import os
 import subprocess
 import sys

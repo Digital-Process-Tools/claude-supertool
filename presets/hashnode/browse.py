@@ -4,6 +4,8 @@
 SORT: recent (default) or top/popular. Sub-args separated by '|'
 because supertool tokenizes ':'.
 """
+from __future__ import annotations
+
 import os
 import sys
 from pathlib import Path

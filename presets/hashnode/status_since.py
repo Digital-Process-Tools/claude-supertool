@@ -8,6 +8,8 @@ No arg = uses ~/.config/hashnode/last_check (auto-tracking).
 State file is updated with current time on success — so successive
 calls naturally show "what's new since last run".
 """
+from __future__ import annotations
+
 import datetime as _dt
 import os
 import sys

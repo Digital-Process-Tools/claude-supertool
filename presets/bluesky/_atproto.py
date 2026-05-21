@@ -6,6 +6,8 @@ Auth flow:
   3. Subsequent calls use the cached accessJwt
   4. On 401, refresh via refreshJwt; on refresh failure, recreate from app password
 """
+from __future__ import annotations
+
 import json
 import os
 import sys

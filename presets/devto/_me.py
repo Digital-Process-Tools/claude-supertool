@@ -3,6 +3,8 @@
 Cache: ~/.config/devto/me_username (one line). Override with
 DEVTO_USERNAME env var if you want to skip the lookup.
 """
+from __future__ import annotations
+
 import os
 import sys
 from pathlib import Path

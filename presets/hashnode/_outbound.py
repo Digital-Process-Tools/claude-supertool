@@ -6,6 +6,8 @@ detect replies on posts we've engaged with.
 
 Format: JSON-lines at ~/.config/hashnode/my_outbound_comments.
 """
+from __future__ import annotations
+
 import json
 import os
 from pathlib import Path

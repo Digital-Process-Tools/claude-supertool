@@ -6,6 +6,8 @@ Uses project-local stylelint config (auto-discovered by stylelint).
 Usage:  stylelint.py <file>
 """
 
+from __future__ import annotations
+
 import json
 import shutil
 import subprocess

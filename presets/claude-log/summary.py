@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Whole-session digest: model, duration, tokens, tool calls, errors, final text."""
+from __future__ import annotations
+
 import sys
 from collections import Counter
 from datetime import datetime

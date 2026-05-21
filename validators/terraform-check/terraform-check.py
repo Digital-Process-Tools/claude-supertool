@@ -5,6 +5,8 @@ Requires terraform CLI. If missing, exits 0 with a stderr warning.
 Usage:  terraform-check.py <file>
 """
 
+from __future__ import annotations
+
 import json
 import shutil
 import subprocess

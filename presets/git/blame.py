@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Git blame — show N lines around a specific line number with author/date/commit info."""
+from __future__ import annotations
+
 import os
 import subprocess
 import sys

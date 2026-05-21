@@ -4,6 +4,8 @@
 For each session, output: UUID, mtime, line count, first user-message excerpt.
 Useful to pick the right UUID before running claude-log-tail / claude-log-summary.
 """
+from __future__ import annotations
+
 import sys
 from datetime import datetime
 from pathlib import Path

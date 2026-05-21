@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """gh-starred: gh-starred[:N] — list repos I have starred."""
+from __future__ import annotations
+
 import json
 import os
 import subprocess

@@ -3,6 +3,8 @@
 
 Aggregates: post body + author + stats + top N replies (with URIs) + NEXT chain hints.
 """
+from __future__ import annotations
+
 import os
 import sys
 from pathlib import Path

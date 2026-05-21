@@ -4,6 +4,8 @@
 For when you're already mid-merge (or mid-rebase / mid-cherry-pick)
 and want to see all conflicts in one call without re-running merge.
 """
+from __future__ import annotations
+
 import os
 import subprocess
 import sys

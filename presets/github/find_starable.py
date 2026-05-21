@@ -11,6 +11,8 @@ Tip: chain multiple topics for a richer pass:
   ./supertool 'gh-find-starable:claude-code' 'gh-find-starable:mcp' \\
               'gh-find-starable:ai-agents'
 """
+from __future__ import annotations
+
 import json
 import os
 import subprocess

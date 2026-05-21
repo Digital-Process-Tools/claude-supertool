@@ -10,6 +10,8 @@ Config via SUPERTOOL_ env vars (set from .supertool.json):
   SUPERTOOL_ERROR_PATTERNS  — comma-separated patterns to search
   SUPERTOOL_ERROR_CONTEXT   — lines of context around each error match (default 5)
 """
+from __future__ import annotations
+
 import json
 import os
 import re

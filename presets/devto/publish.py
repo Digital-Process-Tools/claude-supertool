@@ -10,6 +10,8 @@ aborts if an article with the same canonical_url already exists. Pass `force` as
 the 7th pipe-separated field to bypass: TITLE|MD|CANONICAL|||||force
 If the pre-flight API call fails, a warning is printed and the publish proceeds.
 """
+from __future__ import annotations
+
 import os
 import sys
 from pathlib import Path

@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """GitHub pull request details via gh CLI."""
+from __future__ import annotations
+
 import json
 import re
 import subprocess

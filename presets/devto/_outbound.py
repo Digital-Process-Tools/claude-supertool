@@ -8,6 +8,8 @@ Format: JSON-lines at ~/.config/devto/my_outbound_comments. One record
 per comment posted via this tool. Records never expire automatically;
 prune by hand if needed.
 """
+from __future__ import annotations
+
 import json
 import os
 from pathlib import Path

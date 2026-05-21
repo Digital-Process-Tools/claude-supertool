@@ -6,6 +6,8 @@ If missing, exits 0 with a stderr warning (graceful degrade).
 Usage:  ruby-check.py <file>
 """
 
+from __future__ import annotations
+
 import json
 import re
 import shutil

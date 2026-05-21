@@ -16,6 +16,8 @@ Resolution order for the cookie (first hit wins):
 CSRF token is scraped from any /dashboard fetch (which we already do).
 Cached for the script run.
 """
+from __future__ import annotations
+
 import os
 import re
 import sys

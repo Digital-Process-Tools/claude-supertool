@@ -5,6 +5,8 @@ Requires gofmt (ships with Go). If missing, exits 0 with a stderr warning.
 Usage:  gofmt-check.py <file>
 """
 
+from __future__ import annotations
+
 import json
 import shutil
 import subprocess

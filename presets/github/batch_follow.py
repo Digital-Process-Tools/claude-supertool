@@ -5,6 +5,8 @@ Lines starting with '#' are skipped (comments). Empty lines skipped.
 Reports per-user status and a final summary. Sleeps 1s between calls
 to be polite to GitHub's abuse-detection.
 """
+from __future__ import annotations
+
 import os
 import subprocess
 import sys

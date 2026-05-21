@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Bluesky repost: bluesky_repost:AT_URI_OR_WEB_URL — boost (retweet) a post."""
+from __future__ import annotations
+
 import datetime as _dt
 import sys
 from pathlib import Path
