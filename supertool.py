@@ -1380,6 +1380,14 @@ _TS_DEF_NODES_DEFAULT: Dict[str, str] = {
 }
 
 
+def _ts_parse(parser: Any, source_bytes: bytes) -> Any:
+    """Parse source through tree-sitter, handling 0.25's str-only API."""
+    try:
+        return parser.parse(source_bytes)
+    except TypeError:
+        return parser.parse(source_bytes.decode("utf-8", errors="replace"))
+
+
 def _ts_extract(path: str, lang_name: str) -> List[Tuple[str, str, int, int]]:
     """Extract symbols from a file using tree-sitter.
 
@@ -1392,14 +1400,17 @@ def _ts_extract(path: str, lang_name: str) -> List[Tuple[str, str, int, int]]:
         from tree_sitter_languages import get_parser
     try:
         parser = get_parser(lang_name)
-    except Exception:
+    except (ImportError, Exception):
         return []
 
     try:
         with open(path, "rb") as f:
             source = f.read()
-        tree = parser.parse(source)
-    except Exception:
+        tree = _ts_parse(parser, source)
+    except (OSError, UnicodeDecodeError) as e:
+        if os.environ.get("SUPERTOOL_DEBUG"):
+            print(f"[supertool debug] _ts_extract failed for {path}: {e}",
+                  file=__import__("sys").stderr)
         return []
 
     def_nodes = _TS_DEF_NODES.get(lang_name, _TS_DEF_NODES_DEFAULT)
@@ -1461,14 +1472,17 @@ def _ts_find_node(
         from tree_sitter_languages import get_parser
     try:
         parser = get_parser(lang_name)
-    except Exception:
+    except (ImportError, Exception):
         return None
 
     try:
         with open(path, "rb") as f:
             source = f.read()
-        tree = parser.parse(source)
-    except Exception:
+        tree = _ts_parse(parser, source)
+    except (OSError, UnicodeDecodeError) as e:
+        if os.environ.get("SUPERTOOL_DEBUG"):
+            print(f"[supertool debug] _ts_find_node failed for {path}: {e}",
+                  file=__import__("sys").stderr)
         return None
 
     def_nodes = _TS_DEF_NODES.get(lang_name, _TS_DEF_NODES_DEFAULT)
@@ -1745,9 +1759,11 @@ def op_map(path: str, no_exclude: bool = False) -> str:
     # Detect available tier
     use_ts = _has_tree_sitter()
     use_ctags = not use_ts and _has_ctags()
-    tier = "tree-sitter" if use_ts else ("ctags" if use_ctags else "regex")
 
-    out = [f"({len(files)} files, tier: {tier})\n"]
+    # tier label is computed after extraction to reflect what actually produced symbols
+    actual_tier: str = "regex"
+
+    out_files: List[str] = []
 
     for fpath in files:
         ext = os.path.splitext(fpath)[1].lower()
@@ -1760,27 +1776,30 @@ def op_map(path: str, no_exclude: bool = False) -> str:
             if lang_name:
                 symbols = _ts_extract(fpath, lang_name)
                 if symbols:
-                    out.append(_format_map_symbols(symbols, fpath, line_count))
+                    out_files.append(_format_map_symbols(symbols, fpath, line_count))
                     symbols_found = True
+                    actual_tier = "tree-sitter"
 
         if not symbols_found and use_ctags:
             symbols_ct = _ctags_extract(fpath)
             if symbols_ct:
-                out.append(_format_ctags_symbols(
+                out_files.append(_format_ctags_symbols(
                     symbols_ct, fpath, line_count))
                 symbols_found = True
+                actual_tier = "ctags"
 
         if not symbols_found:
             symbols_rx = _regex_extract(fpath)
             if symbols_rx:
-                out.append(_format_map_symbols(
+                out_files.append(_format_map_symbols(
                     symbols_rx, fpath, line_count))
                 symbols_found = True
 
         if not symbols_found:
             # File exists but no symbols extracted — show it as empty
-            out.append(f"{fpath} ({line_count} lines)\n  (no symbols)\n")
+            out_files.append(f"{fpath} ({line_count} lines)\n  (no symbols)\n")
 
+    out = [f"({len(files)} files, tier: {actual_tier})\n"] + out_files
     if truncated:
         out.append(f"\n... (truncated at {MAX_MAP_FILES} files)\n")
     out.append("\n")
