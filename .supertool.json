@@ -149,5 +149,14 @@
     }
   },
   "ops": {},
-  "aliases": {}
+  "aliases": {},
+  "validators": {
+    "jsonlint": {
+      "cmd": "python3 -m json.tool {file}",
+      "match": "*.json",
+      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "rollback_on_fail": true,
+      "timeout": 10
+    }
+  }
 }
