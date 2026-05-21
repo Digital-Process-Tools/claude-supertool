@@ -7986,13 +7986,18 @@ def _formatter_run_one(name: str, spec: Dict[str, Any], file: str) -> Dict[str, 
                     return data
             except (json.JSONDecodeError, ValueError):
                 pass
-        # Legacy fallback: exit 0 = ok, else fail.
-        if r.returncode == 0:
-            return {"name": name, "ok": True, "duration_ms": 0,
-                    "metrics": {"lines_added": 0, "lines_removed": 0}}
-        msg = (r.stderr.strip() or stdout)[:200]
-        return {"name": name, "ok": False, "msg": msg, "duration_ms": 0,
-                "metrics": {"lines_added": 0, "lines_removed": 0}}
+        # Legacy fallback: non-JSON adapter. Preserve the raw output so the
+        # renderer can show it verbatim — we can't compute metrics without an
+        # adapter-emitted before/after diff, and silent-on-noop would hide
+        # legacy formatters' output entirely.
+        raw_combined = (stdout + ("\n" + r.stderr.strip() if r.stderr.strip() else "")).strip()
+        return {
+            "name": name,
+            "ok": r.returncode == 0,
+            "raw": raw_combined,
+            "duration_ms": 0,
+            "metrics": {"lines_added": 0, "lines_removed": 0},
+        }
     except subprocess.TimeoutExpired:
         return {"name": name, "ok": False, "msg": f"timeout after {timeout}s",
                 "duration_ms": timeout * 1000,
@@ -8015,6 +8020,17 @@ def _formatter_render_row(result: Dict[str, Any]) -> Optional[str]:
     metrics = result.get("metrics") or {}
     added = metrics.get("lines_added", 0)
     removed = metrics.get("lines_removed", 0)
+
+    # Legacy non-JSON adapter: show raw output verbatim (can't compute metrics).
+    # Silent only when the formatter ran cleanly AND printed nothing.
+    if "raw" in result:
+        raw = (result.get("raw") or "").strip()
+        if ok and not raw:
+            return None  # quiet clean run
+        status = "ok" if ok else "fail"
+        if raw:
+            return f"{name:8s}: {status}       {raw}"
+        return f"{name:8s}: {status}"
 
     if ok and added == 0 and removed == 0:
         return None  # silent no-op
