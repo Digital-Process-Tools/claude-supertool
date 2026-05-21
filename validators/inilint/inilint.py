@@ -5,6 +5,8 @@ Stdlib only. Reference implementation per validators/SCHEMA.md.
 Usage:  inilint.py <file>
 """
 
+from __future__ import annotations
+
 import configparser
 import json
 import sys

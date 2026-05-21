@@ -5,6 +5,8 @@ Stdlib only. Reference implementation per validators/SCHEMA.md.
 Usage:  jsonlint.py <file>
 """
 
+from __future__ import annotations
+
 import json
 import sys
 import time

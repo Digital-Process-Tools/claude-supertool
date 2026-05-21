@@ -10,6 +10,8 @@ Finds Cargo.toml by walking up from the .rs file. Skips if none found.
 Usage:  cargo-check.py <file>
 """
 
+from __future__ import annotations
+
 import json
 import os
 import re

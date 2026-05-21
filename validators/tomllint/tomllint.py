@@ -6,6 +6,8 @@ if neither is available. Reference implementation per validators/SCHEMA.md.
 Usage:  tomllint.py <file>
 """
 
+from __future__ import annotations
+
 import json
 import sys
 import time

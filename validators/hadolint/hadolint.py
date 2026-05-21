@@ -5,6 +5,8 @@ Requires hadolint on PATH. If missing, exits 0 with a stderr warning (graceful d
 Usage:  hadolint.py <file>
 """
 
+from __future__ import annotations
+
 import json
 import re
 import shutil
