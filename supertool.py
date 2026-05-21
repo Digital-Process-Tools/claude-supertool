@@ -8542,7 +8542,7 @@ def op_workspace(path: str) -> str:
         _sym_server = _mcp_ensure_server(_sym_server_name)
         if _sym_server:
             try:
-                _sym_mcp_result = _mcp_call(_sym_server_name, _sym_mcp_tool, {"file": path})
+                _sym_mcp_result = _mcp_call(_sym_server_name, _sym_mcp_tool, {"file": os.path.abspath(path)})
                 if _sym_mcp_result is not None:
                     _sym_text = _extract_symbols_from_mcp_result(_sym_mcp_result)
                     if _sym_text is not None:
@@ -8738,7 +8738,7 @@ def op_workspace(path: str) -> str:
         _refs_server = _mcp_ensure_server(_refs_server_name)
         if _refs_server:
             try:
-                _refs_mcp_result = _mcp_call(_refs_server_name, _refs_mcp_tool, {"symbol": symbol, "file": path})
+                _refs_mcp_result = _mcp_call(_refs_server_name, _refs_mcp_tool, {"symbol": symbol, "file": os.path.abspath(path)})
                 if _refs_mcp_result is not None:
                     _mcp_refs = _extract_refs_from_mcp_result(_refs_mcp_result)
                     if _mcp_refs is not None:
@@ -10002,7 +10002,7 @@ def _extract_refs_from_mcp_result(result: Any) -> Optional[List[str]]:
             if isinstance(item, dict) and item.get("type") == "text":
                 text = item.get("text", "").strip()
                 if text:
-                    return [line for line in text.splitlines() if line.strip()]
+                    return [line.rstrip() for line in text.splitlines() if line.strip()]
     return None
 
 
