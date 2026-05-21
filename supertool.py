@@ -167,6 +167,9 @@ _COMPACT_SKIP = re.compile(
 _CONFIG: Dict[str, Any] | None = None
 _CONFIG_CHECKED = False
 
+# MCP server specs parsed from _CONFIG["mcp"] — populated by _load_config()
+_mcp_specs: Dict[str, dict] = {}
+
 # Supertool install directory (where supertool.py actually lives, following symlinks)
 _INSTALL_DIR = os.path.dirname(os.path.realpath(__file__))
 
@@ -247,9 +250,10 @@ def _merge_presets(config: Dict[str, Any], project_dir: str) -> None:
 def _load_config() -> Dict[str, Any]:
     """Load .supertool.json from cwd or parents. Cached.
 
-    After loading, merges any preset ops declared in "presets" key.
+    After loading, merges any preset ops declared in "presets" key and
+    parses the optional "mcp" block into the module-level _mcp_specs dict.
     """
-    global _CONFIG, _CONFIG_CHECKED
+    global _CONFIG, _CONFIG_CHECKED, _mcp_specs
     if _CONFIG_CHECKED:
         return _CONFIG or {}
     _CONFIG_CHECKED = True
@@ -263,6 +267,12 @@ def _load_config() -> Dict[str, Any]:
                     _CONFIG = json.load(f)
                     project_dir = d
                     _merge_presets(_CONFIG, project_dir)
+                    # Parse MCP server specs from the optional "mcp" block.
+                    mcp_block = _CONFIG.get("mcp")
+                    if isinstance(mcp_block, dict):
+                        for srv_name, spec in mcp_block.items():
+                            if isinstance(spec, dict) and "cmd" in spec:
+                                _mcp_specs[srv_name] = spec
                     return _CONFIG
             except (json.JSONDecodeError, OSError):
                 pass
@@ -8291,6 +8301,23 @@ def _op_resolve_inner(symbol: str, from_file: Optional[str] = None) -> str:
     """Core resolve logic — called by op_resolve (which handles caching)."""
     excl = _get_exclude_paths("resolve")
 
+    # MCP route (sub-PR 2): if a configured LSP MCP matches this file's extension,
+    # try it first. Falls through to heuristic glob on miss/error.
+    if from_file:
+        route = _mcp_route(from_file, "resolve")
+        if route:
+            server_name, mcp_tool = route
+            server = _mcp_ensure_server(server_name)
+            if server is not None:
+                try:
+                    result = _mcp_call(server_name, mcp_tool, {"symbol": symbol, "file": from_file})
+                    if result is not None:
+                        path = _extract_path_from_mcp_result(result)
+                        if path:
+                            return f"{symbol} → {path}\n"
+                except (MCPServerError, MCPTimeout):
+                    pass
+
     # ── PHP FQN (contains backslash) ─────────────────────────────────────────
     if "\\" in symbol:
         fqn_path = symbol.replace("\\", "/")
@@ -9894,6 +9921,77 @@ for _sig in (signal.SIGTERM, signal.SIGINT):
 
 
 # ---------------------------------------------------------------------------
+# MCP config routing helpers (sub-PR 2)
+# ---------------------------------------------------------------------------
+
+def _mcp_route(path: str, op: str) -> Optional[Tuple[str, str]]:
+    """Find (server_name, mcp_tool) for an op on this file's extension, or None."""
+    if not path:
+        return None
+    # Iteration order matches config insertion order (Python 3.7+ dict);
+    # first server whose `match` glob matches wins. Document at spec §6.
+    for name, spec in _mcp_specs.items():
+        glob = spec.get("match")
+        if glob and _match_glob(path, glob):
+            tool = (spec.get("tools") or {}).get(op)
+            if tool:
+                return (name, tool)
+    return None
+
+
+def _mcp_ensure_server(name: str) -> Optional[MCPServer]:
+    """Get-or-spawn MCPServer for a configured name. None on any failure."""
+    server = _mcp_get_server(name)
+    if server is not None:
+        return server
+    spec = _mcp_specs.get(name)
+    if spec is None:
+        return None
+    try:
+        server = MCPServer(
+            name=name, cmd=spec["cmd"],
+            env=spec.get("env"), timeout=int(spec.get("timeout", 30)),
+        )
+        server.spawn()
+        server.initialize()
+    except (OSError, MCPServerError, MCPTimeout, KeyError):
+        return None
+    _mcp_register(name, server)
+    return server
+
+
+def _extract_path_from_mcp_result(result: Any) -> Optional[str]:
+    """Normalize MCP response into a single file path string."""
+    from urllib.parse import urlparse, unquote
+
+    if not isinstance(result, dict):
+        return None
+
+    def _normalize_file_url_or_path(s: str) -> str:
+        if s.startswith("file://"):
+            parsed = urlparse(s)
+            return unquote(parsed.path)
+        return s
+
+    # Shape 1: {"content": [{"type": "text", "text": "..."}]}
+    content = result.get("content")
+    if isinstance(content, list):
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                text = item.get("text", "")
+                if text:
+                    return _normalize_file_url_or_path(text)
+    # Shape 2: {"uri": "file:///path"}
+    uri = result.get("uri")
+    if isinstance(uri, str):
+        return _normalize_file_url_or_path(uri)
+    # Shape 3: {"path": "/path"}
+    if isinstance(result.get("path"), str):
+        return result["path"]
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Helper API for supertool ops (sub-PR 2 entry points)
 # ---------------------------------------------------------------------------
 
@@ -9934,11 +10032,8 @@ def _mcp_call(server_name: str, tool: str, args: dict) -> Optional[dict]:
     -------------------
     This function does NOT spawn servers itself. To enable lazy-spawn, the
     caller must pre-register a server via _mcp_register() before the first
-    call. Sub-PR 2 will hook config-block parsing to do this automatically
-    (i.e. read the [mcp.*] config, build an MCPServer, call _mcp_register).
-
-    # TODO(sub-PR-2): accept an optional spawn_factory callable so the config
-    # loader can pass a factory here and avoid requiring pre-registration.
+    call. _mcp_ensure_server() handles config-block parsing, lazy-spawn,
+    and registration automatically (sub-PR 2).
     """
     server = _mcp_get_server(server_name)
     if server is None:

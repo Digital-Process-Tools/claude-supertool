@@ -21,7 +21,14 @@ TOOLS = [
             "type": "object",
             "properties": {"message": {"type": "string"}},
         },
-    }
+    },
+    {
+        "name": "definition",
+        "description": "Mock LSP-style definition lookup",
+        "inputSchema": {"type": "object",
+                        "properties": {"symbol": {"type": "string"},
+                                       "file": {"type": "string"}}},
+    },
 ]
 
 
@@ -83,7 +90,16 @@ def handle(msg: dict) -> None:
             })
             return
         params = msg.get("params", {})
+        tool_name = params.get("name", "")
         args = params.get("arguments", {})
+        if tool_name == "definition":
+            send({
+                "jsonrpc": "2.0",
+                "id": msg_id,
+                "result": {"content": [{"type": "text",
+                                        "text": args.get("file", "/mock/resolved.php")}]},
+            })
+            return
         send({
             "jsonrpc": "2.0",
             "id": msg_id,
