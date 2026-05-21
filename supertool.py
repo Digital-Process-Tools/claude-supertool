@@ -86,6 +86,7 @@ Calls logged to {tempdir}/supertool-calls.log for per-turn analysis
 """
 from __future__ import annotations
 
+import atexit
 import json
 import difflib
 import hashlib
@@ -93,9 +94,11 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -9610,6 +9613,340 @@ def log_call(args: List[str], out_bytes: int) -> None:
             f.write(f"{timestamp} | {caller_tag()} | {meta} | {' '.join(args)}\n")
     except OSError:
         pass  # Logging is best-effort
+
+
+# ---------------------------------------------------------------------------
+# MCP client primitives
+# ---------------------------------------------------------------------------
+
+class MCPTimeout(Exception):
+    """Raised when an MCP JSON-RPC call exceeds the configured timeout."""
+
+
+class MCPServerError(Exception):
+    """Raised when the MCP server returns a JSON-RPC error object."""
+
+    def __init__(self, message: str, code: int = 0, data: Any = None) -> None:
+        super().__init__(message)
+        self.code = code
+        self.data = data
+
+
+class MCPServer:
+    """Manages a single MCP server subprocess with JSON-RPC 2.0 over stdio."""
+
+    def __init__(
+        self,
+        name: str,
+        cmd: str,
+        env: Optional[Dict[str, str]] = None,
+        timeout: int = 30,
+    ) -> None:
+        self.name = name
+        self.cmd = cmd
+        self.env = env
+        self.timeout = timeout
+        self._proc: Optional[subprocess.Popen] = None  # type: ignore[type-arg]
+        self._lock = threading.Lock()
+        self._id_counter = 0
+        self._id_lock = threading.Lock()
+        self._dead = False  # Set on timeout; cleared only by constructing a new instance
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    def spawn(self) -> None:
+        """Start the server process. Idempotent — does nothing if already alive."""
+        with self._lock:
+            if self._proc is not None and self._proc.poll() is None:
+                return
+            merged_env = os.environ.copy()
+            if self.env:
+                merged_env.update(self.env)
+            self._proc = subprocess.Popen(
+                shlex.split(self.cmd),
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=merged_env,
+            )
+
+    def is_alive(self) -> bool:
+        """Return True if the subprocess is running."""
+        return self._proc is not None and self._proc.poll() is None
+
+    def shutdown(self) -> None:
+        """Gracefully shut down the server; SIGTERM if it hangs."""
+        with self._lock:
+            if self._proc is None:
+                return
+            proc = self._proc
+            self._proc = None
+            dead = self._dead
+        if proc.poll() is not None:
+            return
+        # Dead server (marked dead after timeout) — skip graceful path. The
+        # child is most likely stuck in a sleep/blocking call that won't
+        # respond to stdin close. Go straight to SIGTERM.
+        if dead:
+            proc.terminate()
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            return
+        # Healthy server — try graceful shutdown.
+        # Send JSON-RPC shutdown notification before closing stdin so the
+        # server can clean up state. Wrapped in try because the pipe may
+        # already be dead.
+        try:
+            if proc.stdin:
+                body = json.dumps({"jsonrpc": "2.0", "method": "shutdown"}).encode("utf-8")
+                header = f"Content-Length: {len(body)}\r\n\r\n".encode("utf-8")
+                proc.stdin.write(header + body)
+                proc.stdin.flush()
+        except (OSError, BrokenPipeError):
+            pass
+        try:
+            if proc.stdin:
+                proc.stdin.close()
+        except OSError:
+            pass
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            proc.terminate()
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+
+    # ------------------------------------------------------------------
+    # JSON-RPC 2.0 transport
+    # ------------------------------------------------------------------
+
+    def _next_id(self) -> int:
+        with self._id_lock:
+            self._id_counter += 1
+            return self._id_counter
+
+    def _send(self, payload: dict) -> None:
+        """Encode and write one JSON-RPC message with Content-Length framing."""
+        if self._proc is None or self._proc.stdin is None:
+            raise RuntimeError(f"MCP server '{self.name}' is not running")
+        body = json.dumps(payload).encode("utf-8")
+        header = f"Content-Length: {len(body)}\r\n\r\n".encode("utf-8")
+        self._proc.stdin.write(header + body)
+        self._proc.stdin.flush()
+
+    def _recv(self) -> dict:
+        """Read one Content-Length-framed JSON-RPC message from stdout."""
+        if self._proc is None or self._proc.stdout is None:
+            raise RuntimeError(f"MCP server '{self.name}' is not running")
+        stdout = self._proc.stdout
+        # Read headers until blank line
+        content_length = 0
+        while True:
+            line = stdout.readline()
+            if not line:
+                # TODO(sub-PR-2): crash recovery + backoff per spec §5
+                raise EOFError(f"MCP server '{self.name}' closed stdout")
+            line = line.decode("utf-8").rstrip("\r\n")
+            if line == "":
+                break
+            if line.lower().startswith("content-length:"):
+                content_length = int(line.split(":", 1)[1].strip())
+        if content_length == 0:
+            raise ValueError(f"MCP server '{self.name}': missing Content-Length")
+        raw = b""
+        remaining = content_length
+        while remaining > 0:
+            chunk = stdout.read(remaining)
+            if not chunk:
+                raise EOFError(f"MCP server '{self.name}' closed stdout mid-body")
+            raw += chunk
+            remaining -= len(chunk)
+        return json.loads(raw.decode("utf-8"))
+
+    def _call(self, method: str, params: Optional[dict] = None) -> Any:
+        """Send a JSON-RPC request and return the result, with timeout.
+
+        Raises MCPTimeout on deadline, MCPServerError on RPC error object.
+        """
+        req_id = self._next_id()
+        payload: dict = {"jsonrpc": "2.0", "id": req_id, "method": method}
+        if params is not None:
+            payload["params"] = params
+
+        result_holder: List[Any] = []
+        error_holder: List[BaseException] = []
+
+        def _worker() -> None:
+            try:
+                self._send(payload)
+                msg = self._recv()
+                result_holder.append(msg)
+            except BaseException as exc:
+                error_holder.append(exc)
+
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
+        t.join(timeout=self.timeout)
+        if t.is_alive():
+            # Mark dead and close stdout so the blocked worker thread unblocks.
+            # Subsequent calls will fail fast via the _dead guard below.
+            self._dead = True
+            try:
+                if self._proc and self._proc.stdout:
+                    self._proc.stdout.close()
+            except OSError:
+                pass
+            raise MCPTimeout(
+                f"MCP server '{self.name}' timed out after {self.timeout}s "
+                f"(method={method})"
+            )
+        if self._dead:
+            raise MCPServerError(f"MCP server '{self.name}' marked dead after timeout")
+        if error_holder:
+            raise error_holder[0]
+        msg = result_holder[0]
+        if "error" in msg:
+            err = msg["error"]
+            raise MCPServerError(
+                err.get("message", "unknown error"),
+                code=err.get("code", 0),
+                data=err.get("data"),
+            )
+        return msg.get("result")
+
+    # ------------------------------------------------------------------
+    # MCP protocol methods
+    # ------------------------------------------------------------------
+
+    def initialize(self) -> dict:
+        """Send the MCP initialize handshake and return the server's capabilities."""
+        result = self._call(
+            "initialize",
+            {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "supertool", "version": VERSION},
+            },
+        )
+        # Send initialized notification (no response expected)
+        notif = {"jsonrpc": "2.0", "method": "notifications/initialized"}
+        try:
+            self._send(notif)
+        except OSError:
+            pass
+        return result or {}
+
+    def list_tools(self) -> List[dict]:
+        """Return the list of tools exposed by this MCP server."""
+        result = self._call("tools/list")
+        if isinstance(result, dict):
+            return result.get("tools", [])
+        return []
+
+    def call_tool(self, name: str, args: dict) -> dict:
+        """Invoke a tool by name and return the result dict."""
+        result = self._call("tools/call", {"name": name, "arguments": args})
+        if result is None:
+            return {}
+        return result
+
+
+# ---------------------------------------------------------------------------
+# Module-level server registry + lifecycle
+# ---------------------------------------------------------------------------
+
+_MCP_SERVERS: Dict[str, MCPServer] = {}
+_MCP_LOCK = threading.Lock()
+
+
+def _mcp_shutdown_all() -> None:
+    """Shut down all spawned MCP servers. Called by atexit + signal handlers."""
+    with _MCP_LOCK:
+        servers = list(_MCP_SERVERS.values())
+    for server in servers:
+        try:
+            server.shutdown()
+        except Exception:
+            pass
+
+
+atexit.register(_mcp_shutdown_all)
+
+
+def _mcp_signal_handler(signum: int, frame: Any) -> None:
+    _mcp_shutdown_all()
+    # Re-raise default disposition
+    signal.signal(signum, signal.SIG_DFL)
+    os.kill(os.getpid(), signum)
+
+
+for _sig in (signal.SIGTERM, signal.SIGINT):
+    try:
+        signal.signal(_sig, _mcp_signal_handler)
+    except (OSError, ValueError):
+        pass  # Can't set signal handlers in non-main threads
+
+
+# ---------------------------------------------------------------------------
+# Helper API for supertool ops (sub-PR 2 entry points)
+# ---------------------------------------------------------------------------
+
+def _mcp_get_server(name: str) -> Optional[MCPServer]:
+    """Return a live MCPServer for *name* from the registry, or None.
+
+    Removes dead servers so the registry stays clean. Does NOT spawn — callers
+    that want lazy-spawn should use _mcp_register first or call _mcp_call with
+    a spawn_factory.
+    """
+    with _MCP_LOCK:
+        if name in _MCP_SERVERS:
+            srv = _MCP_SERVERS[name]
+            if srv.is_alive():
+                return srv
+            # Dead server — remove and let caller retry or return None
+            del _MCP_SERVERS[name]
+    return None
+
+
+def _mcp_register(name: str, server: MCPServer) -> None:
+    """Pre-register a server instance under *name*.
+
+    Used by tests and by the sub-PR 2 config loader to inject servers before
+    the first _mcp_call. Does not spawn or initialize — caller is responsible.
+    """
+    with _MCP_LOCK:
+        _MCP_SERVERS[name] = server
+
+
+def _mcp_call(server_name: str, tool: str, args: dict) -> Optional[dict]:
+    """High-level: call a tool on a registered MCP server.
+
+    Returns the result dict, or None if the server is not registered or any
+    error occurs. Caller decides whether to retry or fall back.
+
+    Lazy spawn contract
+    -------------------
+    This function does NOT spawn servers itself. To enable lazy-spawn, the
+    caller must pre-register a server via _mcp_register() before the first
+    call. Sub-PR 2 will hook config-block parsing to do this automatically
+    (i.e. read the [mcp.*] config, build an MCPServer, call _mcp_register).
+
+    # TODO(sub-PR-2): accept an optional spawn_factory callable so the config
+    # loader can pass a factory here and avoid requiring pre-registration.
+    """
+    server = _mcp_get_server(server_name)
+    if server is None:
+        return None
+    try:
+        return server.call_tool(tool, args)
+    except (MCPTimeout, MCPServerError, OSError, EOFError, ValueError):
+        return None
 
 
 def main(argv: List[str]) -> int:
