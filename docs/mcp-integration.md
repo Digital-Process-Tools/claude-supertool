@@ -1,404 +1,370 @@
-# MCP Integration Spec — Hidden Tooling Backends
+# MCP Integration
 
-**Status:** ✅ v1 shipped · 2026-05-21
-**Sub-PRs:** [#126](https://github.com/Digital-Process-Tools/claude-supertool/pull/126) client primitives · [#127](https://github.com/Digital-Process-Tools/claude-supertool/pull/127) config + routing + `op_resolve` · [#128](https://github.com/Digital-Process-Tools/claude-supertool/pull/128) workspace References + Symbols
+**Status:** ✅ shipped · daemon transport, preset-packaged
 
-## v2 Roadmap (deferred from v1)
+Supertool talks to MCP servers (cclsp, custom LSP wrappers, anything that speaks the
+[Model Context Protocol](https://modelcontextprotocol.io/)) so ops like `resolve`,
+`refs`, `diag`, `hover`, `rename`, and `workspace` can return real LSP answers
+instead of grep heuristics.
 
-| Item | Spec ref | Why deferred |
+## Why it exists
+
+LLMs navigating a codebase with `grep` and glob patterns are slow and inaccurate. A
+language server (intelephense, pyright, typescript-language-server, gopls, etc.) knows
+where every symbol is defined, what references it, and what types it has — instantly,
+once warm. The problem: an LSP cold-starts in 5–60s on a large repo, and supertool is
+a CLI that exits between calls.
+
+The integration:
+
+- A small **MCP daemon** stays alive between supertool invocations
+- The daemon owns one MCP server subprocess (e.g. `cclsp` wrapping `intelephense`)
+- The LSP indexes once, stays warm, answers later calls in milliseconds
+- Supertool connects to the daemon over a Unix socket, sends NDJSON JSON-RPC
+
+Result: an LLM agent gets editor-quality navigation with no per-call indexing penalty.
+
+## Architecture
+
+```
+┌─────────────────────┐    UDS     ┌──────────────────┐  stdio   ┌──────────────┐
+│ supertool (per-call)│ ◀─NDJSON──▶│ MCP daemon       │ ◀──────▶│ MCP server   │
+│ MCPClient           │            │ (long-lived)     │          │ (cclsp, etc.)│
+└─────────────────────┘            │ owns subprocess  │          │              │
+                                   │ idle-timeout 10m │          │ wraps LSP    │
+                                   └──────────────────┘          └──────────────┘
+                                                                       │ stdio
+                                                                       ▼
+                                                                ┌──────────────┐
+                                                                │ language     │
+                                                                │ server       │
+                                                                │ (intelephense│
+                                                                │  /pyright/…) │
+                                                                └──────────────┘
+```
+
+Components:
+
+| Piece | Lives in | Role |
 |---|---|---|
-| Cache layer (`(server, tool, file_sha, args)` key) | §7 | Validator-cache framework needs a small extension; ship after v1 lands so we can benchmark first |
-| Verbose-mode fallback logging | §8 | UX nicety — note in verbose output when MCP miss → heuristic |
-| Crash recovery + backoff | §5 | Single re-spawn with 500ms backoff; TODO marker placed in `_recv` |
-| Env var expansion (`$INTELEPHENSE_LICENSE`) | §3 | Config-time interpolation for secrets |
-| LLM-visible MCP wrapper op (`mcp:<server>:<tool>:<args>`) | §10 | Out of v1 scope — call any MCP tool directly via supertool |
-| `hover` / `rename` / `implementers` / `callers` ops | §10 | First-class workspace ops backed by MCP when present |
-| Config validation (malformed `tools` / `env`) | — | Silent today; should error at load time |
+| `MCPClient` | `supertool.py` | UDS client; connects to daemon, auto-spawns one on first call |
+| `presets/mcp/daemon.py` | preset | Daemon: owns MCP subprocess + bridges UDS↔stdio |
+| `presets/mcp/status.py` | preset | List running daemons |
+| `presets/mcp/stop.py` | preset | Graceful stop (SIGTERM, SIGKILL fallback) |
+| `presets/mcp.json` | preset | Declares `mcp_daemon` / `mcp_status` / `mcp_stop` / `mcp_stop_all` ops |
 
----
+Socket path: `/tmp/supertool-mcp-<sha1(cwd+name)[:12]>.sock` — per-repo + per-server isolation.
 
-## 1. Motivation
+Wire format: newline-delimited JSON-RPC 2.0 — same encoding the official
+[MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk) speaks over stdio.
 
-LLMs working with supertool today face two surfaces: supertool ops (`resolve`, `refs`, `read`, `grep`…) and MCP tools registered directly in Claude Code (`mcp__php_lsp__definition`, `mcp__playwright__click`…). Mental context switches, inconsistent naming, and no shared caching or fallback.
+## LSP-backed ops
 
-The token cost is the sharper problem. Each MCP server registered in Claude Code injects its full tool schema into every conversation. With 5 tooling servers at ~10 tools each and ~400 tokens per tool definition, that's **~20K tokens permanently consumed** before the first user message — and those tools may never be called.
+Five supertool ops route through MCP when configured. Each maps to a specific MCP tool
+via the `mcp.<server>.tools` block.
 
-Existing workspace ops (`resolve`, `refs`, `symbols`) are heuristic: regex over source files. They're fast and offline, but imprecise — they miss overloaded names, cross-file type resolution, and dynamic dispatch. LSP-backed equivalents would be exact.
+| Supertool op | Syntax | What it does | Heuristic fallback |
+|---|---|---|---|
+| `resolve` | `resolve:SYMBOL:FILE` | Symbol → file path. With LSP: workspace-wide. Without: glob heuristic on PHP FQN / Python dotted / JS relative | ✓ |
+| `refs` (via `workspace`) | `workspace:FILE` (References section) | Find all references to the file's main symbol | ✓ grep |
+| `diag` | `diag:FILE` | LSP diagnostics (errors, warnings, hints) for the file | ✗ no LSP → error message |
+| `hover` | `hover:SYMBOL:FILE` | Type signature + doc for the symbol. Internally: locate via `resolve` tool, then `hover` tool at identifier position | ✗ no LSP → error message |
+| `rename` | `rename:OLD:NEW:FILE` | Workspace-atomic rename across all files. cclsp's `rename_symbol` writes `.bak` backups | ✗ no LSP → error message |
+| `workspace` | `workspace:FILE` | Composite view: file content + Diagnostics + Symbols + Imports + References. Each section uses LSP when its tool is mapped, else heuristic | ✓ per-section |
 
-**Goal:** Route tooling MCP servers through supertool as hidden backends. The LLM calls `resolve:Foo:File.php` exactly as today. Supertool routes to the LSP, returns the result. Zero tokens added to the LLM's tool catalog.
+**Two-step ops**: `hover` calls two MCP tools per invocation — first `tools.resolve` to find the symbol's line:col, then `tools.hover` at the identifier offset. Both mappings are required for `hover`.
 
----
+**Hard-fail ops**: `diag`, `hover`, `rename` only make sense with a real LSP. Without a matching `mcp.<server>.tools.<op>` mapping, they return a clear error rather than falling back to grep.
 
-## 2. Visibility Model — Hidden vs Visible MCPs
+## Quickstart — PHP via Intelephense
 
-Not all MCP servers should be hidden. The distinction:
+Three minutes from clean repo to working LSP-backed `resolve`.
 
-| Type | Recommended model | Examples |
-|------|------------------|---------|
-| **Tooling backends** — read-only, deterministic, workspace-scoped | **Hidden** — supertool owns lifecycle, exposes as ops | `php-lsp`, `pyright`, `tsserver`, `rust-analyzer` |
-| **Action backends** — side-effects, persistent state, user-facing auth | **Visible** — registered in Claude Code, LLM calls directly | `playwright`, `gmail`, `slack`, `google-drive` |
+### 1. Install LSP + bridge
 
-Decision rule: if the server reads workspace state and returns structured data → hidden. If it mutates external state or requires user authentication → visible.
+```bash
+npm install -g intelephense cclsp
+```
 
-Hidden servers never appear in the LLM's tool schema. They are supertool plumbing.
+[`cclsp`](https://github.com/ktnyt/cclsp) is a generic MCP↔LSP bridge. Free intelephense
+covers go-to-def, references, hover, workspace symbols — that's enough.
 
----
+### 2. Configure the bridge
 
-## 3. Config Schema
-
-Add an `mcp` block to `.supertool.json`:
+Create `.claude/cclsp.json` (cclsp's own config — points it at the LSP):
 
 ```json
 {
+  "servers": [
+    { "extensions": ["php"], "command": ["intelephense", "--stdio"], "rootDir": "." }
+  ]
+}
+```
+
+### 3. Wire supertool
+
+Edit `.supertool.json`:
+
+```json
+{
+  "presets": ["mcp"],
   "mcp": {
     "php-lsp": {
-      "cmd": "claude-mcp-php-lsp",
-      "match": "*.php",
-      "env": {
-        "INTELEPHENSE_LICENSE": "your-key-here"
-      },
+      "cmd": "cclsp",
+      "match": "*.{php,class.php}",
+      "env": { "CCLSP_CONFIG_PATH": ".claude/cclsp.json" },
       "tools": {
-        "resolve": "definition",
-        "refs": "references",
-        "hover": "hover",
-        "rename": "rename",
-        "implementers": "implementers",
-        "callers": "callers"
+        "resolve": "find_workspace_symbols",
+        "refs":    "find_references",
+        "diag":    "get_diagnostics",
+        "hover":   "get_hover",
+        "rename":  "rename_symbol"
       },
-      "timeout": 30
-    },
-    "pyright": {
-      "cmd": "pyright-mcp",
-      "match": "*.py",
-      "tools": {
-        "resolve": "definition",
-        "refs": "references",
-        "hover": "hover"
-      },
-      "timeout": 20
-    },
-    "tsserver": {
-      "cmd": "typescript-mcp",
-      "match": "*.{ts,tsx}",
-      "tools": {
-        "resolve": "definition",
-        "refs": "findReferences",
-        "hover": "quickInfo",
-        "rename": "rename"
-      },
-      "timeout": 25
+      "timeout": 60
     }
   }
 }
 ```
 
-**Field reference:**
+- `cmd` — what the daemon spawns (an MCP server)
+- `match` — glob; supertool routes ops on matching files through this server
+- `env` — environment for the spawned MCP server
+- `tools` — maps supertool op names to MCP tool names exposed by the server. Omit any op you don't want to use; that op falls back to the heuristic path (where one exists)
+- `timeout` — request timeout in seconds (LSP cold-start can be slow; 60s is comfortable)
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `cmd` | string | yes | Command to spawn the MCP server |
-| `match` | glob | recommended | File extension glob — same `_match_glob` used by validators/formatters |
-| `env` | object | no | Per-server env vars injected at spawn time |
-| `tools` | object | yes | Maps supertool canonical op names → MCP server tool names |
-| `timeout` | int (seconds) | no | Per-call timeout; defaults to 30 |
+### 4. Use it
 
-`match` is recommended but not required — see [Open Questions](#12-open-questions).
+```bash
+$ ./supertool 'resolve:My\Namespace\TargetClass:src/Caller.php'
+My\Namespace\TargetClass → /abs/path/src/My/Namespace/TargetClass.php
+```
 
-**Canonical op names** (supertool side): `resolve`, `refs`, `hover`, `rename`, `implementers`, `callers`, `definition` (alias for `resolve`).
+First call spawns the daemon detached, waits for the socket, then the LSP indexes (cold,
+5–60s on big repos). Subsequent calls hit a warm daemon: <1s.
 
----
+## Daemon lifecycle
 
-## 4. MCP Wire Protocol
+| Op | Effect |
+|---|---|
+| `mcp_daemon:NAME` | Start daemon for `NAME` (blocking; append `--detach` to background) |
+| `mcp_status` | List running daemons: name, hash, pid, status, uptime, idle, socket |
+| `mcp_stop:NAME` | Graceful stop (SIGTERM, SIGKILL after 3s) |
+| `mcp_stop_all` | Stop every supertool MCP daemon |
 
-Supertool communicates with hidden MCP servers over **JSON-RPC 2.0 via stdio** — the standard MCP transport. Spec: https://modelcontextprotocol.io/
+The daemon shuts down automatically after `idle_timeout` (default 600s = 10 minutes).
+Configure per-server via `"idle_timeout": N` in the `mcp` block.
 
-Messages supertool needs to implement (minimal client):
+When `MCPClient` can't connect, it spawns the daemon detached via:
 
-| Message | Direction | Purpose |
-|---------|-----------|---------|
-| `initialize` | supertool → server | Handshake on spawn; declares client capabilities |
-| `initialized` | server → supertool | Confirms server is ready |
-| `tools/list` | supertool → server | Validates config tool names exist; called once after init |
-| `tools/call` | supertool → server | Invokes a tool with args; main request/response |
-| `shutdown` | supertool → server | Graceful termination on exit |
+```python
+subprocess.Popen([sys.executable, daemon.py, NAME, "--detach"], start_new_session=True)
+```
 
-**Not implemented in v1:** notifications, prompts, resources, sampling, progress. Tooling backends are unary request/response — nothing else is needed.
+and retries the connect for ~7.5s before giving up. For ops with a heuristic fallback
+(`resolve`, `refs`, `workspace`), giveup is silent — supertool runs the heuristic and
+the call succeeds (slower, less accurate). For LSP-only ops (`diag`, `hover`, `rename`),
+giveup surfaces a clear error message so the caller knows the LSP is the bottleneck.
 
-Each `tools/call` request shape:
+## Adding a new MCP server
+
+Whether the server is an LSP via cclsp, a custom MCP wrapper, or any third-party MCP
+binary, the wiring is the same.
+
+### Recipe
+
+1. **Get the MCP server runnable** — install it, verify `<binary> --help` (or whatever
+   the server's spawn invocation is) works on its own. For cclsp+LSP, this means
+   installing both cclsp and the language server (intelephense, pylsp, etc.) and
+   declaring the LSP in `.claude/cclsp.json`.
+
+2. **Add an `mcp` entry to `.supertool.json`** — pick a name, point `cmd` at the MCP
+   server binary, set `match` to the file glob, declare `env` if the server needs it,
+   map supertool ops to MCP tool names in `tools`:
+
+   ```json
+   "mcp": {
+     "<name>": {
+       "cmd": "<mcp-server-binary> [args]",
+       "match": "*.<ext>",
+       "env": { ... },
+       "tools": {
+         "resolve": "<MCP tool for symbol→file>",
+         "refs":    "<MCP tool for find references>",
+         "diag":    "<MCP tool for file diagnostics>",
+         "hover":   "<MCP tool for symbol hover (position-based)>",
+         "rename":  "<MCP tool for workspace rename>"
+       },
+       "timeout": 60
+     }
+   }
+   ```
+
+   Keys explained:
+   - `cmd` — what `subprocess.Popen` calls (shlex-split if string). The daemon owns
+     this process.
+   - `match` — fnmatch glob; supertool routes ops on matching `from_file` paths through
+     this server. Brace expansion (`*.{php,class.php}`) supported.
+   - `env` — extra env vars passed to the spawned MCP server. Merged onto `os.environ`.
+   - `tools` — maps supertool op (`resolve`/`refs`/etc.) to the MCP `tool` name the
+     server exposes via `tools/list`. Without this, the op falls through to the
+     heuristic path.
+   - `timeout` — request timeout in seconds.
+   - `idle_timeout` (optional) — daemon shuts itself down after this many seconds idle
+     (default 600).
+
+3. **Discover the tool names** — first time wiring a new MCP server, you don't know
+   what tool names it exposes. Two quick options:
+
+   ```bash
+   # Run the server directly + ask via the Python SDK (one-off probe)
+   pip install mcp
+   python3 -c "
+   import asyncio, os
+   from mcp import ClientSession, StdioServerParameters
+   from mcp.client.stdio import stdio_client
+   async def m():
+       p = StdioServerParameters(command='<binary>', args=[], env={**os.environ})
+       async with stdio_client(p) as (r, w):
+           async with ClientSession(r, w) as s:
+               await s.initialize()
+               t = await s.list_tools()
+               for tool in t.tools: print(tool.name, '—', tool.description[:80])
+   asyncio.run(m())"
+   ```
+
+   Or — once the server is wired into `.supertool.json` and the daemon is running —
+   read the live `tools/list` via the daemon's socket using the same SDK against
+   `socket_path`.
+
+4. **Run** — `./supertool 'resolve:<SYMBOL>:<FILE>'`. First call spawns the daemon
+   detached; LSP indexes (cold start ~30s on big repos), then warm. `mcp_status`
+   confirms the daemon's running.
+
+### Examples
+
+#### Python (pylsp)
+
+```bash
+pip install "python-lsp-server[all]"
+```
 
 ```json
-{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "method": "tools/call",
-  "params": {
-    "name": "definition",
-    "arguments": {
-      "file": "/abs/path/to/File.php",
-      "symbol": "Foo"
-    }
-  }
-}
+// .claude/cclsp.json — add to the servers array
+{ "extensions": ["py", "pyi"], "command": ["pylsp"], "rootDir": "." }
 ```
-
-Response is server-specific; supertool extracts the `content` array and formats for LLM consumption.
-
----
-
-## 5. Lifecycle
-
-**Spawn:** Lazy. Server starts on the first op that routes to it. No pre-warming at supertool startup.
-
-**Lifetime:** One server process per match group, kept alive for the supertool session. The process stays in supertool's process tree. No IPC socket — stdio only.
-
-**Shutdown:** Supertool sends `shutdown` then closes stdin on exit. An `atexit` handler covers normal exits. SIGTERM/SIGINT propagates to child processes via process group.
-
-**Crash recovery:** If a server process dies mid-session, supertool:
-1. Detects the closed pipe
-2. Re-spawns once after a 500ms backoff
-3. Retries the failed op
-4. If the retry fails, falls back to heuristic (see [Fallback](#8-fallback-strategy)) and logs a one-line warning in verbose mode
-
-No crash loop — one re-spawn attempt maximum per server per session.
-
----
-
-## 6. Tool Routing
-
-Dispatch flow for `resolve:Foo:File.php`:
-
-```
-1. Detect target file extension → ".php"
-2. Scan mcp config: find first server where _match_glob(match, "*.php") is true → "php-lsp"
-3. Look up mcp["php-lsp"].tools["resolve"] → "definition"
-4. Spawn php-lsp if not running (lazy init, handshake)
-5. Call tools/call {name: "definition", arguments: {file: "/abs/File.php", symbol: "Foo"}}
-6. Format response → return to caller
-7. On any failure → fall back to heuristic resolve
-```
-
-Same dispatch for `refs`, `hover`, `rename`, `implementers`, `callers`.
-
-If no MCP server matches the file extension, supertool proceeds directly to heuristic — no error, no warning. The MCP layer is purely additive.
-
-Multiple servers with overlapping `match` patterns: first match wins (config order). Document this explicitly in the config reference — order matters.
-
----
-
-## 7. Caching
-
-LSP responses are cached using the existing validator cache framework:
-
-**Cache key:** `(file_sha256, abs_file_path, tool_name, serialized_args)`
-
-**Invalidation:** File SHA changes on edit → cache miss → fresh LSP call. This is automatic if supertool tracks file SHA after `edit`/`replace_lines` ops (which it already does for validator post-edit runs).
-
-**TTL:** File-change-based, same as validators. No wall-clock expiry.
-
-**Workspace-level cache warming** (future): on `tools/list` response, supertool could pre-resolve the current file. Deferred to v2.
-
----
-
-## 8. Fallback Strategy
-
-Three tiers per op, evaluated in order:
-
-| Tier | Condition | Behavior |
-|------|-----------|---------|
-| **1. MCP server** | Configured, healthy, match found | Full LSP response |
-| **2. Heuristic** | MCP not configured, or server failed | Current supertool implementation (`_grep_recursive`, regex-based `resolve`, etc.) |
-| **3. Error** | Both fail with hard error | Op returns error message |
-
-Failures at tier 1 are silent in normal mode. In verbose mode (`-v`), a one-line note appears: `[mcp] php-lsp unavailable, falling back to heuristic`. The LLM sees the heuristic result and nothing else.
-
-This preserves backward compatibility: supertool without any MCP config behaves identically to today.
-
----
-
-## 9. Token Impact
-
-| Scenario | Tokens consumed per conversation |
-|----------|----------------------------------|
-| 5 MCP servers registered visibly in Claude Code | ~20,000 tokens (5 × 10 tools × ~400 tokens) |
-| Same 5 servers as hidden supertool backends | **0 tokens** — not in tool catalog |
-| Per-call overhead (hidden vs direct) | ~5ms extra JSON-RPC hop; negligible |
-
-The token saving is permanent and per-conversation. A 20K token reduction in every session is equivalent to recovering ~15% of a 128K context window before the first message.
-
-Visible action MCPs (playwright, gmail) remain registered in Claude Code as today — their schema cost is intentional because the LLM needs to call them directly.
-
----
-
-## 10. v1 Scope
-
-**In scope for v1 — ✅ all shipped (PRs #126, #127, #128):**
-- ✅ Config schema (`mcp` block in `.supertool.json`) — parsed; explicit validation deferred to v2
-- ✅ Single MCP server per extension match (first match wins, dict insertion order)
-- ✅ Synchronous `tools/call` only (no streaming)
-- ✅ Lazy spawn + session-lifetime server process
-- ✅ Graceful shutdown via `atexit` + explicit `shutdown` message
-- ✅ Heuristic fallback on any failure
-- ✅ Manual config only (no auto-discovery via `tools/list`)
-- ✅ Integration into `op_resolve` + workspace References + Symbols sections
-- ✅ Unit tests for MCP client primitives + routing + workspace integration (35+ tests)
-
-**Out of scope for v1:**
-- Persistent server lifetime across supertool sessions
-- Streaming MCP responses (multi-chunk tooling results)
-- Multi-server load balancing or round-robin
-- LLM-visible MCP wrapping (`mcp:<server>:<tool>:<args>` op form) — defer to v2
-- Auto-discovery: scanning `tools/list` to build the op→tool mapping automatically
-- Server health checks at startup (lazy spawn handles this implicitly)
-
----
-
-## 11. Getting Started — PHP via Intelephense
-
-This section walks through wiring PHP LSP support into supertool. Steps use DVSI as the example repo but the pattern is language-agnostic — repeat for Python (`pyright --stdio`), TypeScript (`typescript-language-server --stdio`), etc.
-
-### Step 1. Install intelephense globally
-
-```bash
-npm install -g intelephense
-```
-
-Verify: `intelephense --stdio` (should hang waiting for LSP input — kill with Ctrl-C).
-
-Optional: paid license unlocks code actions and workspace-wide rename. Free tier covers go-to-def, refs, and hover. License: https://intelephense.com/
-
-### Step 2. Get an MCP bridge for LSP
-
-intelephense speaks LSP; supertool speaks MCP. A bridge is needed. Two options:
-
-- **`cclsp`** ([github.com/ktnyt/cclsp](https://github.com/ktnyt/cclsp)) — generic MCP↔LSP bridge that auto-routes. One install, many languages.
-  ```bash
-  npm install -g cclsp
-  ```
-- **Custom thin wrapper** — a small Python script that spawns intelephense and translates MCP `tools/call` ↔ LSP `textDocument/definition` etc. Reasonable if cclsp's tool naming doesn't match supertool's canonical ops.
-
-For DVSI, start with `cclsp`. It exposes tools like `definition`, `references`, `hover` which align with supertool's canonical op names.
-
-### Step 3. Wire into `.supertool.json`
 
 ```json
-{
-  "mcp": {
-    "php-lsp": {
-      "cmd": "cclsp --lsp 'intelephense --stdio'",
-      "match": "*.php",
-      "env": {
-        "INTELEPHENSE_LICENSE": "$INTELEPHENSE_LICENSE"
-      },
-      "tools": {
-        "resolve": "definition",
-        "refs": "references",
-        "hover": "hover"
-      },
-      "timeout": 30
-    }
-  }
+// .supertool.json mcp block
+"python-lsp": {
+  "cmd": "cclsp",
+  "match": "*.{py,pyi}",
+  "env": { "CCLSP_CONFIG_PATH": ".claude/cclsp.json" },
+  "tools": {
+    "resolve": "find_workspace_symbols",
+    "refs":    "find_references",
+    "diag":    "get_diagnostics",
+    "hover":   "get_hover",
+    "rename":  "rename_symbol"
+  },
+  "timeout": 60
 }
 ```
 
-For DVSI, add a `.class.php` glob if intelephense doesn't pick up that suffix automatically — match the validator's pattern: `"match": "*.{php,class.php}"`.
-
-> ⚠️ The `$INTELEPHENSE_LICENSE` env var reference assumes the var is exported in your shell. Env var expansion in `.supertool.json` is on the v2 roadmap (see [Open Questions §12](#12-open-questions)). For now, paste the literal license value or export the env var before running supertool.
-
-### Step 4. Smoke test
-
-From the DVSI repo root:
+#### TypeScript
 
 ```bash
-./supertool 'resolve:SiCore\\Annotations\\SiModuleDescription:Dvsi/dvsi-private/src2/SiOAuthPennylane/SiOAuthPennylaneModule.class.php'
+npm install -g typescript typescript-language-server
 ```
 
-Expected: returns the absolute path to `SiModuleDescription.class.php` via intelephense (precise — includes autoload resolution).
-
-Compare to without MCP (rename the `mcp` block temporarily): the heuristic glob should find the same file, but slower and less reliable on overloaded names.
-
-### Step 5. Wire workspace
-
-```bash
-./supertool 'workspace:Dvsi/dvsi-private/src2/SiOAuthPennylane/SiOAuthPennylaneModule.class.php'
+```json
+// .claude/cclsp.json
+{ "extensions": ["ts", "tsx", "js", "jsx"],
+  "command": ["typescript-language-server", "--stdio"], "rootDir": "." }
 ```
 
-The `## Imports`, `## References`, and `## Symbols` sections now consult intelephense. Compare output to the heuristic version: imports resolve faster, references include cross-namespace usage, symbols include inherited methods.
+```json
+// .supertool.json mcp block
+"ts-lsp": {
+  "cmd": "cclsp",
+  "match": "*.{ts,tsx,js,jsx}",
+  "env": { "CCLSP_CONFIG_PATH": ".claude/cclsp.json" },
+  "tools": {
+    "resolve": "find_workspace_symbols",
+    "refs":    "find_references",
+    "diag":    "get_diagnostics",
+    "hover":   "get_hover",
+    "rename":  "rename_symbol"
+  },
+  "timeout": 60
+}
+```
 
-### Step 6. Troubleshooting
+#### Custom MCP server (no LSP)
+
+If you have your own MCP server binary that exposes domain-specific tools (e.g. a
+GraphQL schema walker, a custom code analyzer), point `cmd` straight at it:
+
+```json
+"my-tool": {
+  "cmd": "/usr/local/bin/my-mcp-tool --stdio",
+  "match": "*.graphql",
+  "tools": { "resolve": "schema_lookup", "refs": "schema_references" },
+  "timeout": 30
+}
+```
+
+Same daemon owns it, same UDS protocol, same auto-spawn behavior.
+
+### Pitfalls
+
+- **Tool name mismatch** — if `tools.resolve` points at a name the server doesn't
+  expose, MCP returns an error → supertool catches it → falls through to heuristic.
+  Silently slower, not wrong. Confirm names via the probe in step 3.
+- **Tool semantic mismatch** — names can match but behavior differs. cclsp's
+  `find_definition` scans the *given file* for the symbol; `find_workspace_symbols`
+  searches the whole index. Use whichever fits the op's intent. For supertool's
+  `resolve` (FQN→file), `find_workspace_symbols` is the right pick.
+- **Slow first call** — LSPs cold-index on first spawn. Free intelephense has no
+  persistent disk index, so the daemon's warm-time-after-first-call is your savings.
+  Don't kill the daemon between calls unless you want to pay the cold start again.
+
+## Tool name reference (cclsp)
+
+cclsp exposes these tools (full list via `cclsp` + `tools/list`):
+
+| Tool | Args | Notes |
+|---|---|---|
+| `find_definition` | `symbol_name`, `file_path` | Scans the file's symbols for the name — not a workspace-wide FQN search |
+| `find_workspace_symbols` | `query` | Workspace-wide name search via LSP `workspace/symbol`. Best fit for FQN→file resolution |
+| `find_references` | `symbol_name`, `file_path`, `include_declaration?` | LSP `textDocument/references` |
+| `rename_symbol` | `symbol_name`, `file_path`, `new_name`, `dry_run?` | Workspace rename |
+| `get_diagnostics` | `file_path` | Per-file LSP diagnostics |
+| `get_hover` | `symbol_name`, `file_path` | LSP hover info |
+| `restart_server` | — | Restart the LSP backend |
+
+Supertool's MCP call sends `{symbol_name, file_path, query}` together so the same call
+works whether the configured tool needs `symbol_name`/`file_path` (cclsp `find_definition`,
+`find_references`) or `query` (cclsp `find_workspace_symbols`). Tools ignore unknown args.
+
+## Troubleshooting
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `MCPServer 'php-lsp' marked dead` after first call | intelephense crashed during indexing | Check intelephense logs (`~/.intelephense/`). Re-install. |
-| `resolve` always returns `not found` | cclsp tool name mismatch | Run `cclsp --list-tools` and align the `tools` mapping in `.supertool.json` |
-| First call is very slow (>10s) | intelephense indexing on cold start | Expected. Subsequent calls are fast. Increase `timeout` to 60 if you hit the limit. |
-| "INTELEPHENSE_LICENSE invalid" | License typo or expired | Check license at intelephense.com. Free tier works for go-to-def + refs. |
-| Heuristic still firing | `match` glob doesn't cover `.class.php` | Add explicit glob: `"match": "*.{php,class.php}"` |
+| `not found` instead of an LSP answer | Daemon didn't start or LSP cold-start exceeded timeout | Increase `timeout` to 120; check `mcp_status`; check `/tmp/supertool-mcp-<hash>.sock.stderr` for cclsp errors |
+| Daemon dies repeatedly | LSP server crashed | Check `/tmp/supertool-mcp-<hash>.sock.stderr` (cclsp + LSP stderr is captured here) |
+| `resolve` returns cclsp's "No symbols found in <file>" text | Using `find_definition` (file-scoped) instead of `find_workspace_symbols` | Switch the tool mapping for `resolve` |
+| First call slow (~30s+) | Intelephense cold-indexing the repo | Expected; subsequent calls hit a warm daemon |
+| `AF_UNIX path too long` in tests | macOS UDS path limit (~104 chars) | Use `/tmp/` paths, not pytest `tmp_path` |
 
-### Step 7. What's next
+## Implementation notes
 
-After PHP works, repeat for Python (`pyright --stdio`), TypeScript (`typescript-language-server --stdio`), Rust (`rust-analyzer`), etc. Same shape: install LSP server → wrap via cclsp → drop into `.supertool.json`.
-
----
-
-## 12. Open Questions
-
-Design choices that need team input before implementation starts:
-
-1. **`match` required or optional?**
-   If `match` is omitted, the server has no automatic routing — it could only be called via explicit naming (`mcp:php-lsp:hover:...`). Is on-demand (no match) a valid use case, or should `match` be required for hidden servers?
-
-2. **Config-declared tool mapping vs auto-discovery?**
-   The current spec requires explicit `tools` mapping in config. Alternative: call `tools/list` on first spawn and auto-map by canonical name. Auto-discovery is more ergonomic but adds startup latency and requires canonical name alignment across LSP implementations. Tradeoff?
-
-3. **License key / secrets handling?**
-   `env` in `.supertool.json` is convenient but the file is typically committed. Options: (a) env var references (`"INTELEPHENSE_LICENSE": "$INTELEPHENSE_LICENSE"` expanded at spawn time), (b) separate `.supertool.secrets.json` (gitignored), (c) system keychain integration. What's the right security boundary?
-
-4. **Max concurrent server processes per session?**
-   With 3 language servers active, that's 3 long-lived processes. Is there a cap? Should supertool enforce a `maxServers` budget, or leave resource management to the user?
-
-5. **Error surfacing granularity?**
-   Current spec: failures are silent in normal mode, one-line note in verbose. Should the LLM ever be informed that it's getting heuristic results instead of LSP results? Could affect trust in `resolve` output.
-
----
-
-## 13. PR Plan
-
-Three sub-PRs for v1, each reviewable independently:
-
-### PR 1 — MCP Client Primitives
-
-**Scope:** Everything below the routing layer.
-- `supertool/mcp_client.py` (or equivalent): spawn, stdio transport, JSON-RPC 2.0 encode/decode
-- `initialize` / `initialized` handshake
-- `tools/list` call with response parsing
-- `tools/call` with timeout and error handling
-- `shutdown` with `atexit` registration
-- Crash detection + single re-spawn with backoff
-- Unit tests: mock server subprocess, test all message types, test crash recovery
-
-No config integration, no routing. The client is a standalone, testable module.
-
-### PR 2 — Config Schema + Extension Routing + `op_resolve` Integration
-
-**Scope:** Wiring the client into supertool's op dispatch.
-- Parse and validate `mcp` block in `.supertool.json`
-- `_match_glob` routing: file extension → server
-- Op→tool name resolution via config `tools` mapping
-- Integration into `op_resolve`: MCP call first, heuristic fallback
-- Cache layer: file SHA keying on LSP responses
-- Verbose-mode logging for fallback events
-- Integration tests: `resolve:Foo:File.php` end-to-end with a test MCP server
-
-### PR 3 — Roll Out to Remaining Workspace Ops
-
-**Scope:** Extend MCP routing to all workspace ops.
-- `op_refs` → `refs` tool
-- `op_symbols` → `symbols` tool (if server supports it)
-- `op_hover` → `hover` tool
-- `op_rename` → `rename` tool (write-path; needs extra validation before PR 3)
-- Update op reference docs with MCP-backed behavior notes
-- Update `.supertool.json` config reference with full `mcp` block documentation
-
----
-
-*Written by Max, 2026-05-21. Design review before PR 1 begins.*
+- **Wire format**: NDJSON (`{json}\n` per message). Same as MCP SDK over stdio. Don't
+  use LSP-style `Content-Length` framing — MCP doesn't use it.
+- **Concurrency**: daemon serves one client at a time. New client = new bridge. Cclsp
+  itself is single-threaded behind one stdio pair, so multi-client multiplexing would
+  need request-ID routing in the daemon (not done; not needed for current usage).
+- **Process lifecycle**: daemon uses `start_new_session=True` (not a manual double-fork)
+  so it survives the spawning shell exiting.
+- **Tests**: `tests/fixtures/mock_mcp_server.py` is a UDS NDJSON mock used by
+  `tests/test_mcp_{client,routing,workspace}.py`. Each test gets its own socket in
+  `/tmp/st-mock-<uuid>.sock`.

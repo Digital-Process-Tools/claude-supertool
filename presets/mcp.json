@@ -1,0 +1,34 @@
+{
+  "description": "Long-lived MCP daemon for warm LSP access (cclsp+intelephense/pyright/etc). Without the daemon, every supertool call cold-starts the LSP — pays indexing cost (~30s+ on large repos) per invocation.",
+  "requires": "python3",
+  "ops": {
+    "mcp_daemon": {
+      "cmd": "python3 {path}mcp/daemon.py {args}",
+      "timeout": 86400,
+      "description": "Start an MCP daemon for SERVER_NAME (from .supertool.json mcp block). Blocking; append --detach to background.",
+      "syntax": "mcp_daemon:SERVER_NAME[ --detach]",
+      "example": "mcp_daemon:php-lsp --detach"
+    },
+    "mcp_status": {
+      "cmd": "python3 {path}mcp/status.py",
+      "timeout": 10,
+      "description": "List running MCP daemons (name, pid, uptime, idle, socket path).",
+      "syntax": "mcp_status",
+      "example": "mcp_status"
+    },
+    "mcp_stop": {
+      "cmd": "python3 {path}mcp/stop.py {args}",
+      "timeout": 30,
+      "description": "Stop one MCP daemon by SERVER_NAME (graceful SIGTERM, falls back to SIGKILL after 3s).",
+      "syntax": "mcp_stop:SERVER_NAME",
+      "example": "mcp_stop:php-lsp"
+    },
+    "mcp_stop_all": {
+      "cmd": "python3 {path}mcp/stop.py --all",
+      "timeout": 60,
+      "description": "Stop every supertool MCP daemon found in /tmp/supertool-mcp-*.pid.",
+      "syntax": "mcp_stop_all",
+      "example": "mcp_stop_all"
+    }
+  }
+}

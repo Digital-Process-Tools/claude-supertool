@@ -10,8 +10,24 @@
     "hashnode",
     "devto",
     "bluesky",
-    "xml"
+    "xml",
+    "mcp"
   ],
+  "mcp": {
+    "_example-php-lsp": {
+      "cmd": "cclsp",
+      "match": "*.{php,class.php}",
+      "env": { "CCLSP_CONFIG_PATH": ".claude/cclsp.json" },
+      "tools": {
+        "resolve": "find_workspace_symbols",
+        "refs":    "find_references",
+        "diag":    "get_diagnostics",
+        "hover":   "get_hover",
+        "rename":  "rename_symbol"
+      },
+      "timeout": 60
+    }
+  },
   "introduction": "supertool batches multiple file operations into one Bash call.\n\nInvoke via Bash:\n./supertool \\\n    'read:src/app/Module.py' \\\n    'read:src/app/Config.py' \\\n    'grep:class:src/app/:20' \\\n    'glob:src/app/**/*.py'\n\nRules:\n- One call, many ops. 6-7 per call is normal. Each separate call wastes money.\n- Paths are relative to project root.\n- Single quotes around each op.\n- Use Read tool ONLY for the file you're about to Edit \u2014 supertool for everything else.\n\n@file payload route (mutating ops only \u2014 edit, replace, replace_lines, paste, vim):\n- Inline:  ./supertool 'edit:::OLD:::NEW:::PATH'\n- Payload: ./supertool 'edit:@-' <<'EOF' ... EOF   (or 'edit:@path.toml')\n- Format auto-detected: starts with { or [ \u2192 JSON; else TOML.\n- TOML '''triple-single-quote''' preserves backslashes/quotes/newlines byte-for-byte \u2014 use for code blocks. Single-quoted 'literal' for one-liners with \\e etc.\n- Field names match the syntax tokens lowercased (edit:::OLD:::NEW:::PATH \u2192 old, new, path).\n\nTo avoid escape problems, use chr(10)/chr(27) instead of \\n/\\x1b in payload content.",
   "output-format": "Each operation returns a header followed by its output:\n\n```\n--- read:src/app/Module.py ---\n(45 lines, 1230 bytes)\n     1\u2192import os\n     2\u2192import sys\n     3\u2192\n     4\u2192class Module:\n\n--- grep:class:src/app/:5 ---\n(2 results, limit 5)\nsrc/app/Module.py\n  4:class Module:\nsrc/app/Config.py\n  8:class Config:\n\n--- glob:src/app/**/*.py ---\n(3 files)\nsrc/app/Module.py\nsrc/app/Config.py\nsrc/app/Utils.py\n```",
   "builtin-ops": {

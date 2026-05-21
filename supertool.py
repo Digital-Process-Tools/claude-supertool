@@ -95,6 +95,7 @@ import re
 import shlex
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -8228,6 +8229,139 @@ def op_validate(path: str, tool_filter: Optional[list] = None, verbose: bool = F
 
 
 # ---------------------------------------------------------------------------
+# LSP-backed single-file ops: diag, hover, rename
+#
+# All three delegate to the MCP server configured for the file's extension via
+# the `mcp` block in .supertool.json. Without an MCP route the op returns a
+# clear "no LSP configured" message — no heuristic fallback (these ops only
+# make sense with a real language server).
+# ---------------------------------------------------------------------------
+
+def _mcp_call_or_message(op_name: str, file_path: str, args: dict) -> str:
+    """Shared dispatch for diag/hover/rename. Returns the MCP text result or a
+    diagnostic message if no route / no server / call failed.
+    """
+    if not file_path:
+        return f"{op_name}: missing file path\n"
+    route = _mcp_route(file_path, op_name)
+    if route is None:
+        return f"{op_name}: no LSP configured for {file_path} (add mcp.{op_name} mapping in .supertool.json)\n"
+    server_name, mcp_tool = route
+    server = _mcp_ensure_server(server_name)
+    if server is None:
+        return f"{op_name}: MCP server '{server_name}' unavailable\n"
+    try:
+        result = _mcp_call(server_name, mcp_tool, args)
+    except (MCPServerError, MCPTimeout) as e:
+        return f"{op_name}: MCP error: {e}\n"
+    if result is None:
+        return f"{op_name}: no result from {mcp_tool}\n"
+    # Pull text content (most common MCP response shape)
+    content = result.get("content") if isinstance(result, dict) else None
+    if isinstance(content, list):
+        texts = [item.get("text", "") for item in content
+                 if isinstance(item, dict) and item.get("type") == "text"]
+        text = "\n".join(t for t in texts if t)
+        if text:
+            return text.rstrip("\n") + "\n"
+    return json.dumps(result, indent=2) + "\n"
+
+
+def op_diag(file_path: str) -> str:
+    """LSP diagnostics (errors/warnings) for FILE. Requires `mcp.<server>.tools.diag` mapping."""
+    return _mcp_call_or_message("diag", file_path, {"file_path": os.path.abspath(file_path) if file_path else ""})
+
+
+def op_hover(symbol: str, file_path: str) -> str:
+    """LSP hover info (type, signature, doc) for SYMBOL in FILE.
+
+    Two-step internally:
+      1. find_workspace_symbols(query=symbol) → first match's (file, line, character)
+      2. get_hover(file_path, line, character) → text result
+
+    Some MCP/LSP servers (cclsp) require position-based hover. This op hides that.
+    Requires both `tools.resolve` (or `tools.hover_resolve`) and `tools.hover` mappings.
+    """
+    if not symbol or not file_path:
+        return "hover: usage hover:SYMBOL:FILE\n"
+    abs_file = os.path.abspath(file_path)
+
+    # Step 1: locate the symbol via workspace symbols. Use the configured `resolve`
+    # tool — it's expected to be find_workspace_symbols (returns 'at /path:line:col').
+    resolve_route = _mcp_route(file_path, "resolve")
+    if resolve_route is None:
+        return "hover: no resolve mapping (needed to locate symbol position) — add mcp.<server>.tools.resolve\n"
+    rs_server, rs_tool = resolve_route
+    server = _mcp_ensure_server(rs_server)
+    if server is None:
+        return f"hover: MCP server '{rs_server}' unavailable\n"
+    try:
+        rs_result = _mcp_call(rs_server, rs_tool, {
+            "query": symbol, "symbol_name": symbol, "file_path": abs_file,
+        })
+    except (MCPServerError, MCPTimeout) as e:
+        return f"hover: locate failed: {e}\n"
+    if rs_result is None:
+        return f"hover: '{symbol}' not found in workspace\n"
+
+    # Parse "at /path:line:character" from text content; prefer same-file matches
+    pos: Optional[Tuple[str, int, int]] = None
+    fallback_pos: Optional[Tuple[str, int, int]] = None
+    content = rs_result.get("content") if isinstance(rs_result, dict) else None
+    if isinstance(content, list):
+        for item in content:
+            text = item.get("text", "") if isinstance(item, dict) else ""
+            for m in re.finditer(r"\sat\s+(\S+?):(\d+):(\d+)", text):
+                p_file, p_line, p_char = m.group(1), int(m.group(2)), int(m.group(3))
+                cand = (p_file, p_line, p_char)
+                if os.path.abspath(p_file) == abs_file:
+                    pos = cand; break
+                if fallback_pos is None:
+                    fallback_pos = cand
+            if pos: break
+    if pos is None:
+        pos = fallback_pos
+    if pos is None:
+        return f"hover: '{symbol}' not found (no position in resolve result)\n"
+
+    target_file, line, character = pos
+
+    # The line:col from find_workspace_symbols often points at the declaration start
+    # (e.g. `public` keyword) — LSP hover at that column returns nothing. Re-anchor
+    # to the actual identifier offset within the source line.
+    try:
+        with open(target_file, "rb") as f:
+            src_lines = f.readlines()
+        if 0 < line <= len(src_lines):
+            src = src_lines[line - 1].decode("utf-8", errors="replace")
+            idx = src.find(symbol)
+            if idx >= 0:
+                character = idx + 1  # 1-indexed
+    except OSError:
+        pass
+
+    # Step 2: hover at position
+    return _mcp_call_or_message("hover", file_path, {
+        "file_path": os.path.abspath(target_file),
+        "line": line, "character": character,
+    })
+
+
+def op_rename(old_symbol: str, new_symbol: str, file_path: str) -> str:
+    """LSP workspace rename: OLD_SYMBOL → NEW_SYMBOL across the workspace. Requires `mcp.<server>.tools.rename` mapping.
+
+    The MCP server applies changes across all affected files (cclsp's rename_symbol
+    writes .bak backups). Returns the server's report of modified files.
+    """
+    if not old_symbol or not new_symbol:
+        return "rename: usage rename:OLD_SYMBOL:NEW_SYMBOL:FILE\n"
+    return _mcp_call_or_message("rename", file_path, {
+        "symbol_name": old_symbol, "query": old_symbol, "new_name": new_symbol,
+        "file_path": os.path.abspath(file_path) if file_path else "",
+    })
+
+
+# ---------------------------------------------------------------------------
 # workspace — one-shot IDE-style view of a single file
 # ---------------------------------------------------------------------------
 
@@ -8310,7 +8444,11 @@ def _op_resolve_inner(symbol: str, from_file: Optional[str] = None) -> str:
             server = _mcp_ensure_server(server_name)
             if server is not None:
                 try:
-                    result = _mcp_call(server_name, mcp_tool, {"symbol": symbol, "file": from_file})
+                    # Send under multiple naming conventions so the tool picks what it needs:
+                    # cclsp find_definition uses symbol_name/file_path, find_workspace_symbols uses query.
+                    result = _mcp_call(server_name, mcp_tool, {
+                        "symbol_name": symbol, "file_path": from_file, "query": symbol,
+                    })
                     if result is not None:
                         path = _extract_path_from_mcp_result(result)
                         if path:
@@ -8533,6 +8671,26 @@ def op_workspace(path: str) -> str:
         out.append("[complete file — no more lines]\n")
     out.append("\n")
 
+    # ── Section 1.5: Diagnostics (LSP, only when configured) ────────────────
+    _diag_route = _mcp_route(path, "diag")
+    if _diag_route:
+        _diag_server_name, _diag_mcp_tool = _diag_route
+        _diag_server = _mcp_ensure_server(_diag_server_name)
+        if _diag_server:
+            try:
+                _diag_result = _mcp_call(_diag_server_name, _diag_mcp_tool,
+                                         {"file_path": os.path.abspath(path)})
+                if isinstance(_diag_result, dict):
+                    _diag_text = _extract_symbols_from_mcp_result(_diag_result)
+                    if _diag_text and _diag_text.strip():
+                        out.append("## Diagnostics\n\n")
+                        out.append(_diag_text)
+                        if not _diag_text.endswith("\n"):
+                            out.append("\n")
+                        out.append("\n")
+            except (MCPServerError, MCPTimeout):
+                pass
+
     # ── Section 2: Symbols ───────────────────────────────────────────────────
     out.append("## Symbols\n\n")
     _sym_mcp_used = False
@@ -8542,7 +8700,7 @@ def op_workspace(path: str) -> str:
         _sym_server = _mcp_ensure_server(_sym_server_name)
         if _sym_server:
             try:
-                _sym_mcp_result = _mcp_call(_sym_server_name, _sym_mcp_tool, {"file": os.path.abspath(path)})
+                _sym_mcp_result = _mcp_call(_sym_server_name, _sym_mcp_tool, {"file_path": os.path.abspath(path)})
                 if _sym_mcp_result is not None:
                     _sym_text = _extract_symbols_from_mcp_result(_sym_mcp_result)
                     if _sym_text is not None:
@@ -8738,7 +8896,7 @@ def op_workspace(path: str) -> str:
         _refs_server = _mcp_ensure_server(_refs_server_name)
         if _refs_server:
             try:
-                _refs_mcp_result = _mcp_call(_refs_server_name, _refs_mcp_tool, {"symbol": symbol, "file": os.path.abspath(path)})
+                _refs_mcp_result = _mcp_call(_refs_server_name, _refs_mcp_tool, {"symbol_name": symbol, "file_path": os.path.abspath(path)})
                 if _refs_mcp_result is not None:
                     _mcp_refs = _extract_refs_from_mcp_result(_refs_mcp_result)
                     if _mcp_refs is not None:
@@ -9608,7 +9766,17 @@ def dispatch(arg: str) -> str:
             body = op_format_staged(fs_tools or None, verbose=fs_verbose)
         elif op == "resolve":
             rs_symbol = parts[1] if len(parts) > 1 else ""
-            body = op_resolve(rs_symbol)
+            rs_from_file = parts[2] if len(parts) > 2 else None
+            body = op_resolve(rs_symbol, rs_from_file)
+        elif op == "diag":
+            body = op_diag(parts[1] if len(parts) > 1 else "")
+        elif op == "hover":
+            body = op_hover(parts[1] if len(parts) > 1 else "",
+                            parts[2] if len(parts) > 2 else "")
+        elif op == "rename":
+            body = op_rename(parts[1] if len(parts) > 1 else "",
+                             parts[2] if len(parts) > 2 else "",
+                             parts[3] if len(parts) > 3 else "")
         elif op == "workspace":
             ws_path = parts[1] if len(parts) > 1 else ""
             body = op_workspace(ws_path)
@@ -9691,236 +9859,11 @@ class MCPServerError(Exception):
         self.data = data
 
 
-class MCPServer:
-    """Manages a single MCP server subprocess with JSON-RPC 2.0 over stdio."""
-
-    def __init__(
-        self,
-        name: str,
-        cmd: str,
-        env: Optional[Dict[str, str]] = None,
-        timeout: int = 30,
-    ) -> None:
-        self.name = name
-        self.cmd = cmd
-        self.env = env
-        self.timeout = timeout
-        self._proc: Optional[subprocess.Popen] = None  # type: ignore[type-arg]
-        self._lock = threading.Lock()
-        self._id_counter = 0
-        self._id_lock = threading.Lock()
-        self._dead = False  # Set on timeout; cleared only by constructing a new instance
-
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
-
-    def spawn(self) -> None:
-        """Start the server process. Idempotent — does nothing if already alive."""
-        with self._lock:
-            if self._proc is not None and self._proc.poll() is None:
-                return
-            merged_env = os.environ.copy()
-            if self.env:
-                merged_env.update(self.env)
-            self._proc = subprocess.Popen(
-                shlex.split(self.cmd),
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                env=merged_env,
-            )
-
-    def is_alive(self) -> bool:
-        """Return True if the subprocess is running."""
-        return self._proc is not None and self._proc.poll() is None
-
-    def shutdown(self) -> None:
-        """Gracefully shut down the server; SIGTERM if it hangs."""
-        with self._lock:
-            if self._proc is None:
-                return
-            proc = self._proc
-            self._proc = None
-            dead = self._dead
-        if proc.poll() is not None:
-            return
-        # Dead server (marked dead after timeout) — skip graceful path. The
-        # child is most likely stuck in a sleep/blocking call that won't
-        # respond to stdin close. Go straight to SIGTERM.
-        if dead:
-            proc.terminate()
-            try:
-                proc.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-            return
-        # Healthy server — try graceful shutdown.
-        # Send JSON-RPC shutdown notification before closing stdin so the
-        # server can clean up state. Wrapped in try because the pipe may
-        # already be dead.
-        try:
-            if proc.stdin:
-                body = json.dumps({"jsonrpc": "2.0", "method": "shutdown"}).encode("utf-8")
-                header = f"Content-Length: {len(body)}\r\n\r\n".encode("utf-8")
-                proc.stdin.write(header + body)
-                proc.stdin.flush()
-        except (OSError, BrokenPipeError):
-            pass
-        try:
-            if proc.stdin:
-                proc.stdin.close()
-        except OSError:
-            pass
-        try:
-            proc.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            proc.terminate()
-            try:
-                proc.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-
-    # ------------------------------------------------------------------
-    # JSON-RPC 2.0 transport
-    # ------------------------------------------------------------------
-
-    def _next_id(self) -> int:
-        with self._id_lock:
-            self._id_counter += 1
-            return self._id_counter
-
-    def _send(self, payload: dict) -> None:
-        """Encode and write one JSON-RPC message with Content-Length framing."""
-        if self._proc is None or self._proc.stdin is None:
-            raise RuntimeError(f"MCP server '{self.name}' is not running")
-        body = json.dumps(payload).encode("utf-8")
-        header = f"Content-Length: {len(body)}\r\n\r\n".encode("utf-8")
-        self._proc.stdin.write(header + body)
-        self._proc.stdin.flush()
-
-    def _recv(self) -> dict:
-        """Read one Content-Length-framed JSON-RPC message from stdout."""
-        if self._proc is None or self._proc.stdout is None:
-            raise RuntimeError(f"MCP server '{self.name}' is not running")
-        stdout = self._proc.stdout
-        # Read headers until blank line
-        content_length = 0
-        while True:
-            line = stdout.readline()
-            if not line:
-                # TODO(sub-PR-2): crash recovery + backoff per spec §5
-                raise EOFError(f"MCP server '{self.name}' closed stdout")
-            line = line.decode("utf-8").rstrip("\r\n")
-            if line == "":
-                break
-            if line.lower().startswith("content-length:"):
-                content_length = int(line.split(":", 1)[1].strip())
-        if content_length == 0:
-            raise ValueError(f"MCP server '{self.name}': missing Content-Length")
-        raw = b""
-        remaining = content_length
-        while remaining > 0:
-            chunk = stdout.read(remaining)
-            if not chunk:
-                raise EOFError(f"MCP server '{self.name}' closed stdout mid-body")
-            raw += chunk
-            remaining -= len(chunk)
-        return json.loads(raw.decode("utf-8"))
-
-    def _call(self, method: str, params: Optional[dict] = None) -> Any:
-        """Send a JSON-RPC request and return the result, with timeout.
-
-        Raises MCPTimeout on deadline, MCPServerError on RPC error object.
-        """
-        req_id = self._next_id()
-        payload: dict = {"jsonrpc": "2.0", "id": req_id, "method": method}
-        if params is not None:
-            payload["params"] = params
-
-        result_holder: List[Any] = []
-        error_holder: List[BaseException] = []
-
-        def _worker() -> None:
-            try:
-                self._send(payload)
-                msg = self._recv()
-                result_holder.append(msg)
-            except BaseException as exc:
-                error_holder.append(exc)
-
-        t = threading.Thread(target=_worker, daemon=True)
-        t.start()
-        t.join(timeout=self.timeout)
-        if t.is_alive():
-            # Mark dead and close stdout so the blocked worker thread unblocks.
-            # Subsequent calls will fail fast via the _dead guard below.
-            self._dead = True
-            try:
-                if self._proc and self._proc.stdout:
-                    self._proc.stdout.close()
-            except OSError:
-                pass
-            raise MCPTimeout(
-                f"MCP server '{self.name}' timed out after {self.timeout}s "
-                f"(method={method})"
-            )
-        if self._dead:
-            raise MCPServerError(f"MCP server '{self.name}' marked dead after timeout")
-        if error_holder:
-            raise error_holder[0]
-        msg = result_holder[0]
-        if "error" in msg:
-            err = msg["error"]
-            raise MCPServerError(
-                err.get("message", "unknown error"),
-                code=err.get("code", 0),
-                data=err.get("data"),
-            )
-        return msg.get("result")
-
-    # ------------------------------------------------------------------
-    # MCP protocol methods
-    # ------------------------------------------------------------------
-
-    def initialize(self) -> dict:
-        """Send the MCP initialize handshake and return the server's capabilities."""
-        result = self._call(
-            "initialize",
-            {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "clientInfo": {"name": "supertool", "version": VERSION},
-            },
-        )
-        # Send initialized notification (no response expected)
-        notif = {"jsonrpc": "2.0", "method": "notifications/initialized"}
-        try:
-            self._send(notif)
-        except OSError:
-            pass
-        return result or {}
-
-    def list_tools(self) -> List[dict]:
-        """Return the list of tools exposed by this MCP server."""
-        result = self._call("tools/list")
-        if isinstance(result, dict):
-            return result.get("tools", [])
-        return []
-
-    def call_tool(self, name: str, args: dict) -> dict:
-        """Invoke a tool by name and return the result dict."""
-        result = self._call("tools/call", {"name": name, "arguments": args})
-        if result is None:
-            return {}
-        return result
-
-
 # ---------------------------------------------------------------------------
 # Module-level server registry + lifecycle
 # ---------------------------------------------------------------------------
 
-_MCP_SERVERS: Dict[str, MCPServer] = {}
+_MCP_SERVERS: Dict[str, MCPClient] = {}
 _MCP_LOCK = threading.Lock()
 
 
@@ -9971,8 +9914,166 @@ def _mcp_route(path: str, op: str) -> Optional[Tuple[str, str]]:
     return None
 
 
-def _mcp_ensure_server(name: str) -> Optional[MCPServer]:
-    """Get-or-spawn MCPServer for a configured name. None on any failure."""
+_MCP_DAEMON_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "presets", "mcp", "daemon.py")
+
+
+class MCPClient:
+    """MCP client that talks to a long-lived daemon over a Unix socket using NDJSON.
+
+    Why: subprocess-per-call spawns the LSP server (intelephense etc.) cold every time,
+    paying 30s+ indexing on each invocation. A persistent daemon keeps the LSP warm.
+
+    Wire format: each JSON-RPC message is a single line terminated by `\n` (NDJSON).
+    Matches what the official MCP Python SDK speaks over stdio.
+
+    socket_path: optional override. Default = /tmp/supertool-mcp-<sha1(cwd+name)[:12]>.sock.
+    Tests pass an explicit path to talk to a pre-spawned mock server.
+    """
+
+    def __init__(self, name: str, timeout: int = 30, socket_path: Optional[str] = None) -> None:
+        self.name = name
+        self.timeout = timeout
+        self._sock: Optional[socket.socket] = None
+        self._lock = threading.Lock()
+        self._id_counter = 0
+        self._id_lock = threading.Lock()
+        self._buf = b""
+        self._dead = False
+        if socket_path:
+            self._sock_path = socket_path
+            self._auto_spawn = False
+        else:
+            cwd = os.path.abspath(os.getcwd())
+            h = hashlib.sha1(f"{cwd}::{name}".encode()).hexdigest()[:12]
+            self._sock_path = f"/tmp/supertool-mcp-{h}.sock"
+            self._auto_spawn = True
+
+    def spawn(self) -> None:
+        """Connect to daemon socket. Auto-spawn detached daemon if not running."""
+        with self._lock:
+            if self._sock is not None:
+                return
+            for attempt in range(15):  # ~7.5s total
+                try:
+                    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                    s.settimeout(self.timeout)
+                    s.connect(self._sock_path)
+                    self._sock = s
+                    return
+                except (FileNotFoundError, ConnectionRefusedError):
+                    if attempt == 0 and self._auto_spawn:
+                        # First miss → spawn daemon detached (production path only)
+                        try:
+                            subprocess.Popen(
+                                [sys.executable, _MCP_DAEMON_SCRIPT, self.name, "--detach"],
+                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, close_fds=True,
+                            )
+                        except OSError:
+                            pass
+                    time.sleep(0.5)
+            raise MCPServerError(f"MCP daemon for '{self.name}' did not come up at {self._sock_path}")
+
+    def is_alive(self) -> bool:
+        return self._sock is not None and not self._dead
+
+    def shutdown(self) -> None:
+        """Close socket. Does NOT kill daemon (it stays alive for other clients)."""
+        with self._lock:
+            if self._sock is not None:
+                try: self._sock.close()
+                except OSError: pass
+                self._sock = None
+
+    def _next_id(self) -> int:
+        with self._id_lock:
+            self._id_counter += 1
+            return self._id_counter
+
+    def _send(self, payload: dict) -> None:
+        if self._sock is None:
+            raise RuntimeError(f"MCP daemon '{self.name}' not connected")
+        line = (json.dumps(payload) + "\n").encode("utf-8")
+        self._sock.sendall(line)
+
+    def _recv_line(self) -> bytes:
+        """Read one NDJSON-framed message (until newline). Honors self.timeout."""
+        if self._sock is None:
+            raise RuntimeError(f"MCP daemon '{self.name}' not connected")
+        deadline = time.time() + self.timeout
+        while b"\n" not in self._buf:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                self._dead = True
+                raise MCPTimeout(f"MCP daemon '{self.name}' read timed out after {self.timeout}s")
+            self._sock.settimeout(remaining)
+            try:
+                chunk = self._sock.recv(65536)
+            except socket.timeout:
+                self._dead = True
+                raise MCPTimeout(f"MCP daemon '{self.name}' read timed out after {self.timeout}s")
+            if not chunk:
+                self._dead = True
+                raise MCPServerError(f"MCP daemon '{self.name}' closed connection")
+            self._buf += chunk
+        line, _, rest = self._buf.partition(b"\n")
+        self._buf = rest
+        return line
+
+    def _call(self, method: str, params: Optional[dict] = None) -> Any:
+        """Send a JSON-RPC request and wait for the matching response."""
+        msg_id = self._next_id()
+        payload = {"jsonrpc": "2.0", "method": method, "id": msg_id}
+        if params is not None:
+            payload["params"] = params
+        with self._lock:
+            self._send(payload)
+            # Loop until we find OUR id (skip notifications/other responses)
+            for _ in range(100):
+                line = self._recv_line()
+                msg = json.loads(line.decode("utf-8"))
+                if msg.get("id") != msg_id:
+                    continue  # not for us
+                if "error" in msg:
+                    err = msg["error"]
+                    raise MCPServerError(
+                        err.get("message", "unknown error"),
+                        code=err.get("code", 0),
+                        data=err.get("data"),
+                    )
+                return msg.get("result")
+            raise MCPServerError(f"MCP daemon '{self.name}': no matching response for id={msg_id}")
+
+    def initialize(self) -> dict:
+        result = self._call("initialize", {
+            "protocolVersion": "2024-11-05", "capabilities": {},
+            "clientInfo": {"name": "supertool", "version": VERSION},
+        })
+        notif = {"jsonrpc": "2.0", "method": "notifications/initialized"}
+        with self._lock:
+            try: self._send(notif)
+            except OSError: pass
+        return result or {}
+
+    def list_tools(self) -> List[dict]:
+        result = self._call("tools/list")
+        if isinstance(result, dict):
+            return result.get("tools", [])
+        return []
+
+    def call_tool(self, name: str, args: dict) -> dict:
+        result = self._call("tools/call", {"name": name, "arguments": args})
+        if result is None:
+            return {}
+        return result
+
+
+def _mcp_ensure_server(name: str):
+    """Get-or-spawn an MCP client (daemon or subprocess transport). None on failure.
+
+    Client connects to a long-lived daemon over Unix socket; daemon owns the real MCP
+    server subprocess (cclsp, etc.) and keeps it warm across supertool invocations.
+    """
     server = _mcp_get_server(name)
     if server is not None:
         return server
@@ -9980,10 +10081,8 @@ def _mcp_ensure_server(name: str) -> Optional[MCPServer]:
     if spec is None:
         return None
     try:
-        server = MCPServer(
-            name=name, cmd=spec["cmd"],
-            env=spec.get("env"), timeout=int(spec.get("timeout", 30)),
-        )
+        server = MCPClient(name=name, timeout=int(spec.get("timeout", 30)),
+                           socket_path=spec.get("socket_path"))
         server.spawn()
         server.initialize()
     except (OSError, MCPServerError, MCPTimeout, KeyError):
@@ -10021,7 +10120,13 @@ def _extract_symbols_from_mcp_result(result: Any) -> Optional[str]:
 
 
 def _extract_path_from_mcp_result(result: Any) -> Optional[str]:
-    """Normalize MCP response into a single file path string."""
+    """Normalize MCP response into a single file path string.
+
+    Handles a few common shapes produced by different MCP servers:
+      - text content = single path or file:// URI
+      - bullet list  = `• Name (kind) at /path:line:col` (cclsp find_workspace_symbols)
+      - {uri: file://...} or {path: "/..."}
+    """
     from urllib.parse import urlparse, unquote
 
     if not isinstance(result, dict):
@@ -10033,14 +10138,28 @@ def _extract_path_from_mcp_result(result: Any) -> Optional[str]:
             return unquote(parsed.path)
         return s
 
+    def _extract_first_path_from_bullets(text: str) -> Optional[str]:
+        # cclsp find_workspace_symbols shape:
+        #   "Found N symbol(s) matching "Foo":\n\n• Foo (class) at /path/Foo.php:19:1\n..."
+        # Grab the FIRST `at /path:line:col` we can find.
+        m = re.search(r"\sat\s+(/[^\s:]+(?:\:[^\s:]+)*?)(?:\:\d+(?:\:\d+)?)?\s*$",
+                      text, flags=re.MULTILINE)
+        return m.group(1) if m else None
+
     # Shape 1: {"content": [{"type": "text", "text": "..."}]}
     content = result.get("content")
     if isinstance(content, list):
         for item in content:
             if isinstance(item, dict) and item.get("type") == "text":
-                text = item.get("text", "")
-                if text:
-                    return _normalize_file_url_or_path(text)
+                text = item.get("text", "").strip()
+                if not text:
+                    continue
+                # If it looks like a bullet listing, parse out the first path
+                if "• " in text or "\n• " in text or text.startswith("Found "):
+                    p = _extract_first_path_from_bullets(text)
+                    if p:
+                        return p
+                return _normalize_file_url_or_path(text)
     # Shape 2: {"uri": "file:///path"}
     uri = result.get("uri")
     if isinstance(uri, str):
@@ -10055,8 +10174,8 @@ def _extract_path_from_mcp_result(result: Any) -> Optional[str]:
 # Helper API for supertool ops (sub-PR 2 entry points)
 # ---------------------------------------------------------------------------
 
-def _mcp_get_server(name: str) -> Optional[MCPServer]:
-    """Return a live MCPServer for *name* from the registry, or None.
+def _mcp_get_server(name: str) -> Optional[MCPClient]:
+    """Return a live MCPClient for *name* from the registry, or None.
 
     Removes dead servers so the registry stays clean. Does NOT spawn — callers
     that want lazy-spawn should use _mcp_register first or call _mcp_call with
@@ -10072,7 +10191,7 @@ def _mcp_get_server(name: str) -> Optional[MCPServer]:
     return None
 
 
-def _mcp_register(name: str, server: MCPServer) -> None:
+def _mcp_register(name: str, server: MCPClient) -> None:
     """Pre-register a server instance under *name*.
 
     Used by tests and by the sub-PR 2 config loader to inject servers before

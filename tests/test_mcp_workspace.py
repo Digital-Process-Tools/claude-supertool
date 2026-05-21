@@ -1,7 +1,11 @@
 """Tests for MCP routing in op_workspace — References, Symbols, and Imports (sub-PR 3)."""
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
+import time
+import uuid
 from pathlib import Path
 from unittest.mock import patch
 
@@ -16,7 +20,25 @@ from supertool import (
 )
 
 MOCK_SERVER = str(Path(__file__).parent / "fixtures" / "mock_mcp_server.py")
-MOCK_CMD = f"{sys.executable} {MOCK_SERVER}"
+
+
+@pytest.fixture
+def mock_uds():
+    """Spawn the UDS mock MCP server (sockets in /tmp/ — AF_UNIX path limit on macOS)."""
+    sock_path = f"/tmp/st-mock-{uuid.uuid4().hex[:8]}.sock"
+    proc = subprocess.Popen([sys.executable, MOCK_SERVER, sock_path])
+    deadline = time.time() + 5
+    while time.time() < deadline and not os.path.exists(sock_path):
+        time.sleep(0.05)
+    if not os.path.exists(sock_path):
+        proc.terminate()
+        raise RuntimeError(f"mock did not bind {sock_path}")
+    try:
+        yield sock_path
+    finally:
+        proc.terminate()
+        try: proc.wait(timeout=3)
+        except subprocess.TimeoutExpired: proc.kill()
 
 
 def _set_mcp_specs(specs: dict) -> None:
@@ -85,7 +107,7 @@ def test_extract_symbols_from_mcp_result_empty_text() -> None:
 
 def test_route_refs_matches_when_configured() -> None:
     _set_mcp_specs({
-        "php-lsp": {"cmd": MOCK_CMD, "match": "*.php",
+        "php-lsp": {"socket_path": "/tmp/unused.sock", "match": "*.php",
                     "tools": {"refs": "references"}}
     })
     assert _mcp_route("foo.php", "refs") == ("php-lsp", "references")
@@ -94,7 +116,7 @@ def test_route_refs_matches_when_configured() -> None:
 
 def test_route_symbols_matches_when_configured() -> None:
     _set_mcp_specs({
-        "php-lsp": {"cmd": MOCK_CMD, "match": "*.php",
+        "php-lsp": {"socket_path": "/tmp/unused.sock", "match": "*.php",
                     "tools": {"symbols": "documentSymbol"}}
     })
     assert _mcp_route("foo.php", "symbols") == ("php-lsp", "documentSymbol")
@@ -103,7 +125,7 @@ def test_route_symbols_matches_when_configured() -> None:
 
 def test_route_refs_returns_none_when_not_in_tools() -> None:
     _set_mcp_specs({
-        "php-lsp": {"cmd": MOCK_CMD, "match": "*.php",
+        "php-lsp": {"socket_path": "/tmp/unused.sock", "match": "*.php",
                     "tools": {"resolve": "definition"}}
     })
     assert _mcp_route("foo.php", "refs") is None
@@ -114,13 +136,13 @@ def test_route_refs_returns_none_when_not_in_tools() -> None:
 # op_workspace: References section uses MCP when configured
 # ---------------------------------------------------------------------------
 
-def test_workspace_references_uses_mcp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_workspace_references_uses_mcp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mock_uds: str) -> None:
     monkeypatch.chdir(tmp_path)
     f = tmp_path / "Widget.class.php"
     f.write_text("<?php\nclass Widget {}\n")
 
     _set_mcp_specs({
-        "php-lsp": {"cmd": MOCK_CMD, "match": "*.php",
+        "php-lsp": {"match": "*.php", "socket_path": mock_uds,
                     "tools": {"refs": "references"}}
     })
     try:
@@ -141,7 +163,7 @@ def test_workspace_references_falls_back_on_mcp_miss(tmp_path: Path, monkeypatch
     f.write_text("<?php\nclass Widget {}\n")
 
     _set_mcp_specs({
-        "broken-lsp": {"cmd": "/nonexistent/binary", "match": "*.php",
+        "broken-lsp": {"socket_path": "/tmp/nope.sock", "match": "*.php",
                        "tools": {"refs": "references"}}
     })
     try:
@@ -168,13 +190,13 @@ def test_workspace_references_falls_back_when_no_mcp(tmp_path: Path, monkeypatch
 # op_workspace: Symbols section uses MCP when configured
 # ---------------------------------------------------------------------------
 
-def test_workspace_symbols_uses_mcp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_workspace_symbols_uses_mcp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mock_uds: str) -> None:
     monkeypatch.chdir(tmp_path)
     f = tmp_path / "Widget.class.php"
     f.write_text("<?php\nclass Widget {}\n")
 
     _set_mcp_specs({
-        "php-lsp": {"cmd": MOCK_CMD, "match": "*.php",
+        "php-lsp": {"match": "*.php", "socket_path": mock_uds,
                     "tools": {"symbols": "documentSymbol"}}
     })
     try:
@@ -205,7 +227,7 @@ def test_workspace_symbols_falls_back_on_bad_server(tmp_path: Path, monkeypatch:
     f.write_text("class MyModule:\n    def run(self) -> None:\n        pass\n")
 
     _set_mcp_specs({
-        "broken-lsp": {"cmd": "/nonexistent/binary", "match": "*.py",
+        "broken-lsp": {"socket_path": "/tmp/nope.sock", "match": "*.py",
                        "tools": {"symbols": "documentSymbol"}}
     })
     try:
@@ -222,8 +244,8 @@ def test_workspace_symbols_falls_back_on_bad_server(tmp_path: Path, monkeypatch:
 # op_workspace: Imports section already uses MCP via op_resolve (sub-PR 2)
 # ---------------------------------------------------------------------------
 
-def test_workspace_imports_uses_mcp_via_op_resolve(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Imports section delegates to op_resolve which already uses MCP (sub-PR 2).
+def test_workspace_imports_uses_mcp_via_op_resolve(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mock_uds: str) -> None:
+    """Imports section delegates to op_resolve which uses MCP.
 
     Verifies end-to-end: a PHP file with a use-statement renders an Imports
     section whose resolved path comes from the MCP server.
@@ -234,7 +256,7 @@ def test_workspace_imports_uses_mcp_via_op_resolve(tmp_path: Path, monkeypatch: 
 
     php_file = str(f)
     _set_mcp_specs({
-        "php-lsp": {"cmd": MOCK_CMD, "match": "*.php",
+        "php-lsp": {"match": "*.php", "socket_path": mock_uds,
                     "tools": {"resolve": "definition"}}
     })
     try:
