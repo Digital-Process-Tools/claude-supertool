@@ -7,6 +7,7 @@
 > **Cut your Claude Code bill by 50%.**
 > `git-status`, but it tells you what to do next.
 
+[![Tests](https://github.com/Digital-Process-Tools/claude-supertool/actions/workflows/tests.yml/badge.svg)](https://github.com/Digital-Process-Tools/claude-supertool/actions/workflows/tests.yml)
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-Community-brightgreen)](LICENSE)
 [![Version](https://img.shields.io/badge/version-0.11.0-orange)](.claude-plugin/plugin.json)
