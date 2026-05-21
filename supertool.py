@@ -111,6 +111,34 @@ LOG_FILE = os.path.join(tempfile.gettempdir(), "supertool-calls.log")
 GREP_FILE_INCLUDES = ("*.php", "*.xml", "*.py", "*.js", "*.ts", "*.md")
 _GREP_EXTENSIONS_EFFECTIVE: Tuple[str, ...] | None = None
 
+def _match_glob(path: str, pattern: str) -> bool:
+    """fnmatch with brace expansion: `*.{a,b,c}` → match if any of `*.a / *.b / *.c`.
+
+    fnmatch.fnmatch doesn't understand `{a,b,c}` alternatives. This helper
+    expands them once (one level, no nesting) and tries each alternative.
+    Patterns without braces fall through to plain fnmatch unchanged.
+    """
+    import fnmatch
+    if not pattern:
+        return True
+    if "{" not in pattern or "}" not in pattern:
+        return fnmatch.fnmatch(path, pattern)
+    # Expand a single brace group `{a,b,c}` into ["a", "b", "c"]. Multiple
+    # brace groups in the same pattern aren't supported (not needed by current
+    # consumers) — fall through to plain fnmatch in that case.
+    open_i = pattern.index("{")
+    close_i = pattern.index("}", open_i)
+    if pattern.count("{") > 1 or pattern.count("}") > 1:
+        return fnmatch.fnmatch(path, pattern)
+    prefix = pattern[:open_i]
+    suffix = pattern[close_i + 1:]
+    alternatives = pattern[open_i + 1:close_i].split(",")
+    for alt in alternatives:
+        if fnmatch.fnmatch(path, f"{prefix}{alt.strip()}{suffix}"):
+            return True
+    return False
+
+
 # Default exclude-paths applied to all traversal ops (glob, grep, tree, map).
 # These are pruned at the directory-walk boundary — the dirs are never opened.
 # Match is prefix-relative-to-cwd; trailing slash is normalised in _get_exclude_paths.
@@ -7671,7 +7699,7 @@ def _applicable_validators(op: str, path: str) -> Dict[str, Dict[str, Any]]:
         if spec.get("opt_in"):
             continue
         glob = spec.get("match", "*")
-        if path and glob and not fnmatch.fnmatch(path, glob):
+        if path and glob and not _match_glob(path, glob):
             continue
         out[name] = spec
     return out
@@ -7954,7 +7982,7 @@ def _applicable_formatters(op: str, path: str) -> Dict[str, Dict[str, Any]]:
         if op not in (spec.get("hooks_into") or []):
             continue
         glob = spec.get("match", "*")
-        if path and glob and not fnmatch.fnmatch(path, glob):
+        if path and glob and not _match_glob(path, glob):
             continue
         out[name] = spec
     return out
@@ -8177,7 +8205,7 @@ def op_validate(path: str, tool_filter: Optional[list] = None, verbose: bool = F
     out = [f"validate: {path}"]
     for name, spec in validators.items():
         glob = spec.get("match", "*")
-        if path and glob and not fnmatch.fnmatch(path, glob):
+        if path and glob and not _match_glob(path, glob):
             continue
         data = _validator_run_one(name, spec, path)
         if data is None:
@@ -8760,7 +8788,7 @@ def op_format(path: str, tool_filter: Optional[list] = None, verbose: bool = Fal
         if not isinstance(spec, dict):
             continue
         glob = spec.get("match", "*")
-        if path and glob and not fnmatch.fnmatch(path, glob):
+        if path and glob and not _match_glob(path, glob):
             continue
         matched = True
         result = _formatter_run_one(name, spec, path)
