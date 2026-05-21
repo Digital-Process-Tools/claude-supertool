@@ -358,3 +358,55 @@ def test_failed_formatter_row_shown(tmp_path: Path) -> None:
     out = supertool._run_with_validators("edit", ["edit", "", "", str(f)], lambda: "edited\n")
     assert "[formatters]" in out
     assert "fail" in out
+
+
+# ---------------------------------------------------------------------------
+# Legacy non-JSON adapter (raw output preserved)
+# ---------------------------------------------------------------------------
+
+def test_formatter_legacy_non_json_captures_raw_stdout(tmp_path: Path) -> None:
+    """Adapter prints non-JSON stdout → result has 'raw' field, no 'metrics' parsing."""
+    f = tmp_path / "x.json"
+    f.write_text("{}\n")
+    spec = {"cmd": "echo 'reformatted x.json'", "timeout": 5}
+    result = supertool._formatter_run_one("legacy-fmt", spec, str(f))
+    assert result["name"] == "legacy-fmt"
+    assert result["ok"] is True
+    assert "raw" in result
+    assert "reformatted x.json" in result["raw"]
+
+
+def test_formatter_legacy_non_json_clean_empty_output_is_silent() -> None:
+    """ok=true + empty raw → render returns None (quiet)."""
+    result = {"name": "x", "ok": True, "raw": "", "duration_ms": 0,
+              "metrics": {"lines_added": 0, "lines_removed": 0}}
+    assert supertool._formatter_render_row(result) is None
+
+
+def test_formatter_legacy_non_json_with_output_renders_verbatim() -> None:
+    """ok=true + non-empty raw → render shows the raw output."""
+    result = {"name": "fmt", "ok": True, "raw": "rewrote file", "duration_ms": 0,
+              "metrics": {"lines_added": 0, "lines_removed": 0}}
+    row = supertool._formatter_render_row(result)
+    assert row is not None
+    assert "rewrote file" in row
+    assert "ok" in row
+
+
+def test_formatter_legacy_non_json_failure_renders_with_raw() -> None:
+    """ok=false + raw → row shows fail + raw output."""
+    result = {"name": "fmt", "ok": False, "raw": "boom", "duration_ms": 0,
+              "metrics": {"lines_added": 0, "lines_removed": 0}}
+    row = supertool._formatter_render_row(result)
+    assert row is not None
+    assert "fail" in row
+    assert "boom" in row
+
+
+def test_formatter_legacy_non_json_failure_without_raw_still_renders() -> None:
+    """ok=false + empty raw → row still shows fail (never silent on failure)."""
+    result = {"name": "fmt", "ok": False, "raw": "", "duration_ms": 0,
+              "metrics": {"lines_added": 0, "lines_removed": 0}}
+    row = supertool._formatter_render_row(result)
+    assert row is not None
+    assert "fail" in row
