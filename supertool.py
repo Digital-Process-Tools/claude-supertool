@@ -117,6 +117,7 @@ _GREP_EXTENSIONS_EFFECTIVE: Tuple[str, ...] | None = None
 _DEFAULT_EXCLUDE_PATHS: Tuple[str, ...] = (
     ".git/", "node_modules/", ".svn/", ".hg/", ".idea/", ".vscode/",
     "__pycache__/", ".venv/", "venv/", "dist/", "build/",
+    "phpstan-result-cache/", ".phpunit.cache/", ".rector/",
 )
 WILDCARD_CHARS = re.compile(r"[*?\[]")
 # Patterns for lines that are "blank or comment-only" across common languages
