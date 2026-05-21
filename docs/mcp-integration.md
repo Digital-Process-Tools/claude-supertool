@@ -1,7 +1,19 @@
 # MCP Integration Spec — Hidden Tooling Backends
 
-**Status:** Draft · Design phase · No code yet
-**Branch:** `docs/mcp-integration-spec`
+**Status:** ✅ v1 shipped · 2026-05-21
+**Sub-PRs:** [#126](https://github.com/Digital-Process-Tools/claude-supertool/pull/126) client primitives · [#127](https://github.com/Digital-Process-Tools/claude-supertool/pull/127) config + routing + `op_resolve` · [#128](https://github.com/Digital-Process-Tools/claude-supertool/pull/128) workspace References + Symbols
+
+## v2 Roadmap (deferred from v1)
+
+| Item | Spec ref | Why deferred |
+|---|---|---|
+| Cache layer (`(server, tool, file_sha, args)` key) | §7 | Validator-cache framework needs a small extension; ship after v1 lands so we can benchmark first |
+| Verbose-mode fallback logging | §8 | UX nicety — note in verbose output when MCP miss → heuristic |
+| Crash recovery + backoff | §5 | Single re-spawn with 500ms backoff; TODO marker placed in `_recv` |
+| Env var expansion (`$INTELEPHENSE_LICENSE`) | §3 | Config-time interpolation for secrets |
+| LLM-visible MCP wrapper op (`mcp:<server>:<tool>:<args>`) | §10 | Out of v1 scope — call any MCP tool directly via supertool |
+| `hover` / `rename` / `implementers` / `callers` ops | §10 | First-class workspace ops backed by MCP when present |
+| Config validation (malformed `tools` / `env`) | — | Silent today; should error at load time |
 
 ---
 
@@ -219,16 +231,16 @@ Visible action MCPs (playwright, gmail) remain registered in Claude Code as toda
 
 ## 10. v1 Scope
 
-**In scope for v1:**
-- Config schema (`mcp` block in `.supertool.json`) with validation
-- Single MCP server per extension match (first match wins)
-- Synchronous `tools/call` only (no streaming)
-- Lazy spawn + session-lifetime server process
-- Graceful shutdown via `atexit` + explicit `shutdown` message
-- Heuristic fallback on any failure
-- Manual config only (no auto-discovery via `tools/list`)
-- Integration into `op_resolve` as the first workspace op upgrade
-- Unit tests for MCP client primitives (spawn, JSON-RPC encode/decode, lifecycle)
+**In scope for v1 — ✅ all shipped (PRs #126, #127, #128):**
+- ✅ Config schema (`mcp` block in `.supertool.json`) — parsed; explicit validation deferred to v2
+- ✅ Single MCP server per extension match (first match wins, dict insertion order)
+- ✅ Synchronous `tools/call` only (no streaming)
+- ✅ Lazy spawn + session-lifetime server process
+- ✅ Graceful shutdown via `atexit` + explicit `shutdown` message
+- ✅ Heuristic fallback on any failure
+- ✅ Manual config only (no auto-discovery via `tools/list`)
+- ✅ Integration into `op_resolve` + workspace References + Symbols sections
+- ✅ Unit tests for MCP client primitives + routing + workspace integration (35+ tests)
 
 **Out of scope for v1:**
 - Persistent server lifetime across supertool sessions
