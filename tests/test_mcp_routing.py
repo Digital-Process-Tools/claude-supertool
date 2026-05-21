@@ -11,6 +11,7 @@ import supertool
 from supertool import (
     MCPServer, _mcp_route, _mcp_ensure_server,
     _extract_path_from_mcp_result, _MCP_SERVERS, _MCP_LOCK,
+    op_resolve,
 )
 
 MOCK_SERVER = str(Path(__file__).parent / "fixtures" / "mock_mcp_server.py")
@@ -87,3 +88,54 @@ def test_extract_path_from_file_uri() -> None:
 def test_extract_path_returns_none_for_empty() -> None:
     assert _extract_path_from_mcp_result({}) is None
     assert _extract_path_from_mcp_result(None) is None
+
+
+def test_extract_path_from_file_uri_text_content() -> None:
+    """file:// in text-content shape must not corrupt the path (was returning //path)."""
+    result = {"content": [{"type": "text", "text": "file:///path/to/Foo.php"}]}
+    assert _extract_path_from_mcp_result(result) == "/path/to/Foo.php"
+
+
+def test_extract_path_from_file_uri_url_decode() -> None:
+    """Percent-encoded characters in file:// URIs are decoded."""
+    result = {"content": [{"type": "text", "text": "file:///path%20with%20space.php"}]}
+    assert _extract_path_from_mcp_result(result) == "/path with space.php"
+
+
+def test_op_resolve_uses_mcp_when_configured(tmp_path: Path) -> None:
+    """op_resolve delegates to MCP server when a matching spec is configured."""
+    php_file = str(tmp_path / "bar.php")
+    _set_mcp_specs({
+        "php-lsp": {"cmd": MOCK_CMD, "match": "*.php",
+                    "tools": {"resolve": "definition"}}
+    })
+    srv_name = "php-lsp"
+    try:
+        result = op_resolve("Foo", from_file=php_file)
+        # Mock server returns the from_file value as the resolved path
+        assert php_file in result
+        assert "→" in result
+    finally:
+        with _MCP_LOCK:
+            srv = _MCP_SERVERS.pop(srv_name, None)
+        if srv:
+            srv.shutdown()
+        supertool._mcp_specs.clear()
+
+
+def test_op_resolve_falls_back_to_heuristic_on_mcp_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """MCP failure (bad cmd) silently falls through to heuristic glob."""
+    monkeypatch.chdir(tmp_path)
+    _set_mcp_specs({
+        "broken-lsp": {"cmd": "/nonexistent/binary", "match": "*.php",
+                       "tools": {"resolve": "definition"}}
+    })
+    php_file = str(tmp_path / "bar.php")
+    try:
+        result = op_resolve("DoesNotExist", from_file=php_file)
+        # Must not raise; heuristic returns "not found"
+        assert "not found" in result or "→" in result
+    finally:
+        supertool._mcp_specs.clear()

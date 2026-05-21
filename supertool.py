@@ -9928,6 +9928,8 @@ def _mcp_route(path: str, op: str) -> Optional[Tuple[str, str]]:
     """Find (server_name, mcp_tool) for an op on this file's extension, or None."""
     if not path:
         return None
+    # Iteration order matches config insertion order (Python 3.7+ dict);
+    # first server whose `match` glob matches wins. Document at spec §6.
     for name, spec in _mcp_specs.items():
         glob = spec.get("match")
         if glob and _match_glob(path, glob):
@@ -9960,8 +9962,17 @@ def _mcp_ensure_server(name: str) -> Optional[MCPServer]:
 
 def _extract_path_from_mcp_result(result: Any) -> Optional[str]:
     """Normalize MCP response into a single file path string."""
+    from urllib.parse import urlparse, unquote
+
     if not isinstance(result, dict):
         return None
+
+    def _normalize_file_url_or_path(s: str) -> str:
+        if s.startswith("file://"):
+            parsed = urlparse(s)
+            return unquote(parsed.path)
+        return s
+
     # Shape 1: {"content": [{"type": "text", "text": "..."}]}
     content = result.get("content")
     if isinstance(content, list):
@@ -9969,16 +9980,11 @@ def _extract_path_from_mcp_result(result: Any) -> Optional[str]:
             if isinstance(item, dict) and item.get("type") == "text":
                 text = item.get("text", "")
                 if text:
-                    # Strip file:// prefix if present
-                    if text.startswith("file://"):
-                        return text[7:]
-                    return text
+                    return _normalize_file_url_or_path(text)
     # Shape 2: {"uri": "file:///path"}
     uri = result.get("uri")
     if isinstance(uri, str):
-        if uri.startswith("file://"):
-            return uri[7:]
-        return uri
+        return _normalize_file_url_or_path(uri)
     # Shape 3: {"path": "/path"}
     if isinstance(result.get("path"), str):
         return result["path"]
