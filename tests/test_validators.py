@@ -370,6 +370,122 @@ def test_op_validate_with_tool_filter() -> None:
 
 
 # ---------------------------------------------------------------------------
+# _validator_render_row verbose mode
+# ---------------------------------------------------------------------------
+
+def test_render_row_verbose_shows_all_errors() -> None:
+    errors = [{"line": i, "code": "x", "msg": f"e{i}"} for i in range(1, 8)]
+    data = {"tool": "t", "ok": False, "count": 7, "errors": errors, "duration_ms": 1}
+    lines = supertool._validator_render_row(data, verbose=True)
+    assert not any("+2 more" in l for l in lines), "verbose must not cap errors"
+    assert sum(1 for l in lines if l.startswith("  L")) == 7
+
+
+def test_render_row_verbose_no_cap_marker() -> None:
+    errors = [{"line": i, "code": "x", "msg": f"e{i}"} for i in range(1, 10)]
+    data = {"tool": "t", "ok": False, "count": 9, "errors": errors, "duration_ms": 1}
+    lines = supertool._validator_render_row(data, verbose=True)
+    assert not any("more" in l for l in lines)
+
+
+def test_render_row_verbose_shows_raw_stdout() -> None:
+    data = {
+        "tool": "t", "ok": False, "count": 1,
+        "errors": [{"line": 1, "code": "x", "msg": "bad"}],
+        "duration_ms": 1,
+        "raw_stdout": "full adapter output line1\nline2",
+    }
+    lines = supertool._validator_render_row(data, verbose=True)
+    assert any("[stdout]" in l for l in lines)
+    assert any("full adapter output line1" in l for l in lines)
+    assert any("line2" in l for l in lines)
+
+
+def test_render_row_verbose_shows_raw_stderr() -> None:
+    data = {
+        "tool": "t", "ok": False, "count": 1,
+        "errors": [{"line": 1, "code": "x", "msg": "bad"}],
+        "duration_ms": 1,
+        "raw_stderr": "stderr output here",
+    }
+    lines = supertool._validator_render_row(data, verbose=True)
+    assert any("[stderr]" in l for l in lines)
+    assert any("stderr output here" in l for l in lines)
+
+
+def test_render_row_default_still_caps_at_5() -> None:
+    errors = [{"line": i, "code": "x", "msg": f"e{i}"} for i in range(1, 8)]
+    data = {"tool": "t", "ok": False, "count": 7, "errors": errors, "duration_ms": 1}
+    lines = supertool._validator_render_row(data)
+    assert any("+2 more" in l for l in lines)
+    assert sum(1 for l in lines if l.startswith("  L")) == 5
+
+
+# ---------------------------------------------------------------------------
+# op_validate verbose mode
+# ---------------------------------------------------------------------------
+
+def test_op_validate_verbose_shows_all_errors() -> None:
+    errors = [{"line": i, "col": None, "severity": "error", "code": "x", "msg": f"e{i}"}
+              for i in range(1, 8)]
+    payload = {"tool": "fake", "file": "x.php", "ok": False, "count": 7,
+               "errors": errors, "duration_ms": 1}
+    _set_validators({"fake": {"cmd": _fake_cmd(payload), "match": "*.php"}})
+    out = supertool.op_validate("x.php", verbose=True)
+    assert "+2 more" not in out
+    for i in range(1, 8):
+        assert f"e{i}" in out
+
+
+def test_op_validate_non_verbose_caps_at_5() -> None:
+    errors = [{"line": i, "col": None, "severity": "error", "code": "x", "msg": f"e{i}"}
+              for i in range(1, 8)]
+    payload = {"tool": "fake", "file": "x.php", "ok": False, "count": 7,
+               "errors": errors, "duration_ms": 1}
+    _set_validators({"fake": {"cmd": _fake_cmd(payload), "match": "*.php"}})
+    out = supertool.op_validate("x.php", verbose=False)
+    assert "+2 more" in out
+
+
+# ---------------------------------------------------------------------------
+# dispatch: validate verbose parsing
+# ---------------------------------------------------------------------------
+
+def test_dispatch_validate_verbose_flag() -> None:
+    errors = [{"line": i, "col": None, "severity": "error", "code": "x", "msg": f"e{i}"}
+              for i in range(1, 8)]
+    payload = {"tool": "fake", "file": "x.php", "ok": False, "count": 7,
+               "errors": errors, "duration_ms": 1}
+    _set_validators({"fake": {"cmd": _fake_cmd(payload), "match": "*.php"}})
+    out = supertool.dispatch("validate:x.php:verbose")
+    assert "+2 more" not in out
+    for i in range(1, 8):
+        assert f"e{i}" in out
+
+
+def test_dispatch_validate_tools_and_verbose() -> None:
+    payload = {"tool": "fake", "file": "x.php", "ok": True, "count": 0,
+               "errors": [], "duration_ms": 1}
+    _set_validators({
+        "fake": {"cmd": _fake_cmd(payload), "match": "*.php"},
+        "other": {"cmd": "echo SHOULD_NOT_RUN", "match": "*.php"},
+    })
+    out = supertool.dispatch("validate:x.php:fake:verbose")
+    assert "fake" in out
+    assert "SHOULD_NOT_RUN" not in out
+
+
+def test_dispatch_validate_no_verbose_flag_still_caps() -> None:
+    errors = [{"line": i, "col": None, "severity": "error", "code": "x", "msg": f"e{i}"}
+              for i in range(1, 8)]
+    payload = {"tool": "fake", "file": "x.php", "ok": False, "count": 7,
+               "errors": errors, "duration_ms": 1}
+    _set_validators({"fake": {"cmd": _fake_cmd(payload), "match": "*.php"}})
+    out = supertool.dispatch("validate:x.php")
+    assert "+2 more" in out
+
+
+# ---------------------------------------------------------------------------
 # phplint.py reference adapter
 # ---------------------------------------------------------------------------
 
