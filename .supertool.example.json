@@ -183,9 +183,24 @@
       "example": "workspace:src/app/Module.py"
     },
     "resolve": {
-      "syntax": "resolve:SYMBOL",
-      "description": "Smart-glob resolver: PHP FQN, Python dotted, JS/TS relative path \u2192 file on disk. Returns 'external' for npm/pip packages, 'not found' if no match. Used internally by workspace.",
-      "example": "resolve:foo.bar.baz"
+      "syntax": "resolve:SYMBOL[:FROM_FILE]",
+      "description": "Symbol \u2192 file. LSP via mcp.tools.resolve when configured, else heuristic glob.",
+      "example": "resolve:foo.bar.Baz:src/caller.py"
+    },
+    "diag": {
+      "syntax": "diag:FILE",
+      "description": "LSP errors/warnings for FILE.",
+      "example": "diag:src/app/Module.py"
+    },
+    "hover": {
+      "syntax": "hover:SYMBOL:FILE",
+      "description": "LSP hover: type + docs for SYMBOL.",
+      "example": "hover:MyClass:src/app/Caller.py"
+    },
+    "rename": {
+      "syntax": "rename:OLD:NEW:FILE",
+      "description": "LSP workspace rename. Safer than sed.",
+      "example": "rename:oldName:newName:src/app/Module.py"
     }
   },
   "ops": {

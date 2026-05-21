@@ -466,7 +466,7 @@ def _rtk_run(args: List[str], timeout: int = 30) -> str | None:
     return None
 
 # Built-in op names — custom ops/aliases with these names are ignored
-_BUILTIN_OPS = {"read", "grep", "grep_around", "glob", "ls", "tail", "head", "wc", "check", "around", "map", "diff", "stat", "around_line", "tree", "replace", "replace_dry", "edit", "replace_lines", "paste", "vi", "validate", "format", "validate_staged", "format_staged", "workspace", "resolve"}
+_BUILTIN_OPS = {"read", "grep", "grep_around", "glob", "ls", "tail", "head", "wc", "check", "around", "map", "diff", "stat", "around_line", "tree", "replace", "replace_dry", "edit", "replace_lines", "paste", "vi", "validate", "format", "validate_staged", "format_staged", "workspace", "resolve", "diag", "hover", "rename"}
 
 # Read-only built-in ops — safe to run in parallel across a batch.
 # Excludes mutating ops (replace, edit, replace_lines) and custom ops
@@ -475,7 +475,7 @@ _PARALLEL_SAFE_OPS = {
     "read", "grep", "glob", "ls", "head", "tail", "wc", "stat",
     "map", "tree", "around", "around_line", "between", "diff", "blame",
     "version", "validate", "validate_staged", "format_staged", "workspace",
-    "resolve",
+    "resolve", "diag", "hover",
 }
 
 
