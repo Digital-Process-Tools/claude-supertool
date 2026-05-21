@@ -7814,6 +7814,12 @@ def _validator_render_row(data: Dict[str, Any], verbose: bool = False) -> list:
     dur = data.get("duration_ms", 0)
     status = "ok" if ok else f"{count} err"
     line = f"{tool:8s}: {status:12s} ({dur}ms)"
+    metrics = data.get("metrics")
+    if metrics and tool == "git-status":
+        added = metrics.get("lines_added", 0)
+        removed = metrics.get("lines_removed", 0)
+        state = metrics.get("state", "")
+        line += f"  +{added} -{removed} {state}"
     if data.get("resolved_to"):
         line += f"  → {data['resolved_to']}"
     out = [line]
