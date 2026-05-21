@@ -8530,6 +8530,10 @@ def op_workspace(path: str) -> str:
             if log_r.returncode == 0 and log_r.stdout.strip():
                 out.append("recent commits:\n")
                 for line in log_r.stdout.strip().splitlines():
+                    # Truncate runaway subjects (Kevin commits sometimes list
+                    # hundreds of files in the subject). Keep ~120 chars.
+                    if len(line) > 120:
+                        line = line[:117] + "..."
                     out.append(f"  {line}\n")
         except (subprocess.TimeoutExpired, OSError):
             pass
