@@ -8433,9 +8433,30 @@ def op_workspace(path: str) -> str:
     dirname = os.path.dirname(os.path.abspath(path))
     cwd = os.path.abspath(os.getcwd())
     if dirname != cwd:
-        out.append("## Siblings\n\n")
-        out.append(op_ls(dirname))
-        out.append("\n")
+        my_name = os.path.basename(path)
+        try:
+            entries = [e for e in os.listdir(dirname) if not e.startswith(".")]
+        except OSError:
+            entries = []
+        # Skip the section entirely when there are no real siblings — only
+        # the input file itself, or an empty/unreadable dir.
+        real_siblings = [e for e in entries if e != my_name]
+        if real_siblings:
+            out.append("## Siblings\n\n")
+            ls_out = op_ls(dirname)
+            # Mark the input file with "← me" for orientation. Match either
+            # bare basename or basename+"/" (op_ls suffixes directories).
+            marked_lines = []
+            for line in ls_out.splitlines():
+                stripped = line.rstrip()
+                if stripped == my_name or stripped == my_name + "/":
+                    marked_lines.append(f"{line}  ← me")
+                else:
+                    marked_lines.append(line)
+            out.append("\n".join(marked_lines))
+            if not ls_out.endswith("\n"):
+                out.append("\n")
+            out.append("\n")
 
     # ── Section 6: Git ───────────────────────────────────────────────────────
     # Check if inside a git repo
