@@ -15,7 +15,7 @@ Runs [PHP CS Fixer](https://github.com/PHP-CS-Fixer/PHP-CS-Fixer) on a single fi
 {
   "formatters": {
     "php-cs-fixer": {
-      "cmd": "python3 {supertool_dir}/validators/php-cs-fixer/php-cs-fixer.py {file}",
+      "cmd": "python3 {supertool_dir}/formatters/php-cs-fixer/php-cs-fixer.py {file}",
       "match": "*.php",
       "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
       "rollback_on_fail": false,

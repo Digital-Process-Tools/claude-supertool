@@ -1,4 +1,4 @@
-"""Smoke tests for validators/phpcbf/phpcbf.py."""
+"""Smoke tests for formatters/phpcbf/phpcbf.py."""
 from __future__ import annotations
 
 import json
@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-ADAPTER = Path(__file__).parent.parent / "validators" / "phpcbf" / "phpcbf.py"
+ADAPTER = Path(__file__).parent.parent / "formatters" / "phpcbf" / "phpcbf.py"
 
 
 def test_no_arg_returns_schema_error() -> None:

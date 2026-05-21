@@ -1,4 +1,4 @@
-"""Smoke tests for validators/prettier-write/prettier-write.py."""
+"""Smoke tests for formatters/prettier-write/prettier-write.py."""
 from __future__ import annotations
 
 import json
@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-ADAPTER = Path(__file__).parent.parent / "validators" / "prettier-write" / "prettier-write.py"
+ADAPTER = Path(__file__).parent.parent / "formatters" / "prettier-write" / "prettier-write.py"
 
 
 def test_no_arg_returns_schema_error() -> None:

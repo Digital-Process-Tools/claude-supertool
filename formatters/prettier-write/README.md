@@ -16,7 +16,7 @@ Runs [Prettier](https://prettier.io/) with `--write` on a single file and emits 
 {
   "formatters": {
     "prettier": {
-      "cmd": "python3 {supertool_dir}/validators/prettier-write/prettier-write.py {file}",
+      "cmd": "python3 {supertool_dir}/formatters/prettier-write/prettier-write.py {file}",
       "match": "*.{xml,scss,css,js,json,yml,yaml,md}",
       "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
       "rollback_on_fail": false,

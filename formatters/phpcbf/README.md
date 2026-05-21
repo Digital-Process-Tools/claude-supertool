@@ -15,7 +15,7 @@ Runs [PHP Code Beautifier and Fixer](https://github.com/squizlabs/PHP_CodeSniffe
 {
   "formatters": {
     "phpcbf": {
-      "cmd": "python3 {supertool_dir}/validators/phpcbf/phpcbf.py {file}",
+      "cmd": "python3 {supertool_dir}/formatters/phpcbf/phpcbf.py {file}",
       "match": "*.php",
       "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
       "rollback_on_fail": false,
