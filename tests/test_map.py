@@ -350,7 +350,11 @@ def test_format_ctags_symbols() -> None:
 def test_map_ctags_tier(tmp_path: Path, enable_ctags) -> None:
     f = tmp_path / "mod.py"
     f.write_text("class MyClass:\n    def my_method(self):\n        pass\n")
-    out = supertool.op_map(str(f))
+    # Mock _ctags_extract to return symbols regardless of ctags Python support
+    from unittest.mock import patch
+    fake_ctags = [("class", "MyClass", 1, None), ("method", "my_method", 2, "MyClass")]
+    with patch.object(supertool, "_ctags_extract", return_value=fake_ctags):
+        out = supertool.op_map(str(f))
     assert "tier: ctags" in out
     assert "MyClass" in out
 
