@@ -151,6 +151,16 @@
       "syntax": "batch:@file.json",
       "description": "Run an array of ops in one call. Mix anything — read+edit+grep+phpstan in one round-trip. Payload: bare array of {op, ...fields} OR wrapper {continue_on_error, ops}. Default continue. Validators fire per mutating op. JSON only (TOML can't express bare arrays). Use @- for stdin.",
       "example": "batch:@.max/ops.json"
+    },
+    "workspace": {
+      "syntax": "workspace:PATH",
+      "description": "One-shot IDE-style view: file + symbols + validators + siblings + git + references + tests. Opt-in (heavy). Use for first-touch on unfamiliar files.",
+      "example": "workspace:src/app/Module.py"
+    },
+    "resolve": {
+      "syntax": "resolve:SYMBOL",
+      "description": "Smart-glob resolver: PHP FQN, Python dotted, JS/TS relative path → file on disk. Returns 'external' for npm/pip packages, 'not found' if no match. Used internally by workspace.",
+      "example": "resolve:foo.bar.baz"
     }
   },
   "ops": {
