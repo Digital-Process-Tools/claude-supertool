@@ -168,7 +168,7 @@
     },
     "resolve": {
       "syntax": "resolve:SYMBOL",
-      "description": "Smart-glob resolver: PHP FQN, Python dotted, JS/TS relative path → file on disk. Returns 'external' for npm/pip packages, 'not found' if no match. Used internally by workspace.",
+      "description": "Smart-glob resolver: PHP FQN, Python dotted, JS/TS relative path \u2192 file on disk. Returns 'external' for npm/pip packages, 'not found' if no match. Used internally by workspace.",
       "example": "resolve:foo.bar.baz"
     }
   },
@@ -445,6 +445,19 @@
         "PSR_STANDARD": "PSR12",
         "PSR_SEVERITY": "9"
       }
+    },
+    "git-status": {
+      "cmd": "python3 {supertool_dir}/validators/git-status/git-status.py {file}",
+      "match": "*",
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste",
+        "vim"
+      ],
+      "rollback_on_fail": false,
+      "timeout": 5
     }
   },
   "formatters": {

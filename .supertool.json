@@ -193,6 +193,19 @@
       ],
       "rollback_on_fail": true,
       "timeout": 10
+    },
+    "git-status": {
+      "cmd": "python3 {supertool_dir}/validators/git-status/git-status.py {file}",
+      "match": "*",
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste",
+        "vim"
+      ],
+      "rollback_on_fail": false,
+      "timeout": 5
     }
   }
 }
