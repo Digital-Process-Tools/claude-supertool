@@ -9683,17 +9683,30 @@ class MCPServer:
                 return
             proc = self._proc
             self._proc = None
+            dead = self._dead
         if proc.poll() is not None:
             return
-        # Send JSON-RPC shutdown notification before closing stdin — many MCP
-        # servers expect it to exit cleanly.
+        # Dead server (marked dead after timeout) — skip graceful path. The
+        # child is most likely stuck in a sleep/blocking call that won't
+        # respond to stdin close. Go straight to SIGTERM.
+        if dead:
+            proc.terminate()
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            return
+        # Healthy server — try graceful shutdown.
+        # Send JSON-RPC shutdown notification before closing stdin so the
+        # server can clean up state. Wrapped in try because the pipe may
+        # already be dead.
         try:
             if proc.stdin:
                 body = json.dumps({"jsonrpc": "2.0", "method": "shutdown"}).encode("utf-8")
                 header = f"Content-Length: {len(body)}\r\n\r\n".encode("utf-8")
                 proc.stdin.write(header + body)
                 proc.stdin.flush()
-        except OSError:
+        except (OSError, BrokenPipeError):
             pass
         try:
             if proc.stdin:
@@ -9701,11 +9714,11 @@ class MCPServer:
         except OSError:
             pass
         try:
-            proc.wait(timeout=5)
+            proc.wait(timeout=2)
         except subprocess.TimeoutExpired:
             proc.terminate()
             try:
-                proc.wait(timeout=3)
+                proc.wait(timeout=2)
             except subprocess.TimeoutExpired:
                 proc.kill()
 
