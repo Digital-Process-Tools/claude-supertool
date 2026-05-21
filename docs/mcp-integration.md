@@ -102,7 +102,7 @@ Add an `mcp` block to `.supertool.json`:
 | `tools` | object | yes | Maps supertool canonical op names → MCP server tool names |
 | `timeout` | int (seconds) | no | Per-call timeout; defaults to 30 |
 
-`match` is recommended but not required — see [Open Questions](#11-open-questions).
+`match` is recommended but not required — see [Open Questions](#12-open-questions).
 
 **Canonical op names** (supertool side): `resolve`, `refs`, `hover`, `rename`, `implementers`, `callers`, `definition` (alias for `resolve`).
 
@@ -252,7 +252,95 @@ Visible action MCPs (playwright, gmail) remain registered in Claude Code as toda
 
 ---
 
-## 11. Open Questions
+## 11. Getting Started — PHP via Intelephense
+
+This section walks through wiring PHP LSP support into supertool. Steps use DVSI as the example repo but the pattern is language-agnostic — repeat for Python (`pyright --stdio`), TypeScript (`typescript-language-server --stdio`), etc.
+
+### Step 1. Install intelephense globally
+
+```bash
+npm install -g intelephense
+```
+
+Verify: `intelephense --stdio` (should hang waiting for LSP input — kill with Ctrl-C).
+
+Optional: paid license unlocks code actions and workspace-wide rename. Free tier covers go-to-def, refs, and hover. License: https://intelephense.com/
+
+### Step 2. Get an MCP bridge for LSP
+
+intelephense speaks LSP; supertool speaks MCP. A bridge is needed. Two options:
+
+- **`cclsp`** ([github.com/ktnyt/cclsp](https://github.com/ktnyt/cclsp)) — generic MCP↔LSP bridge that auto-routes. One install, many languages.
+  ```bash
+  npm install -g cclsp
+  ```
+- **Custom thin wrapper** — a small Python script that spawns intelephense and translates MCP `tools/call` ↔ LSP `textDocument/definition` etc. Reasonable if cclsp's tool naming doesn't match supertool's canonical ops.
+
+For DVSI, start with `cclsp`. It exposes tools like `definition`, `references`, `hover` which align with supertool's canonical op names.
+
+### Step 3. Wire into `.supertool.json`
+
+```json
+{
+  "mcp": {
+    "php-lsp": {
+      "cmd": "cclsp --lsp 'intelephense --stdio'",
+      "match": "*.php",
+      "env": {
+        "INTELEPHENSE_LICENSE": "$INTELEPHENSE_LICENSE"
+      },
+      "tools": {
+        "resolve": "definition",
+        "refs": "references",
+        "hover": "hover"
+      },
+      "timeout": 30
+    }
+  }
+}
+```
+
+For DVSI, add a `.class.php` glob if intelephense doesn't pick up that suffix automatically — match the validator's pattern: `"match": "*.{php,class.php}"`.
+
+> ⚠️ The `$INTELEPHENSE_LICENSE` env var reference assumes the var is exported in your shell. Env var expansion in `.supertool.json` is on the v2 roadmap (see [Open Questions §12](#12-open-questions)). For now, paste the literal license value or export the env var before running supertool.
+
+### Step 4. Smoke test
+
+From the DVSI repo root:
+
+```bash
+./supertool 'resolve:SiCore\\Annotations\\SiModuleDescription:Dvsi/dvsi-private/src2/SiOAuthPennylane/SiOAuthPennylaneModule.class.php'
+```
+
+Expected: returns the absolute path to `SiModuleDescription.class.php` via intelephense (precise — includes autoload resolution).
+
+Compare to without MCP (rename the `mcp` block temporarily): the heuristic glob should find the same file, but slower and less reliable on overloaded names.
+
+### Step 5. Wire workspace
+
+```bash
+./supertool 'workspace:Dvsi/dvsi-private/src2/SiOAuthPennylane/SiOAuthPennylaneModule.class.php'
+```
+
+The `## Imports`, `## References`, and `## Symbols` sections now consult intelephense. Compare output to the heuristic version: imports resolve faster, references include cross-namespace usage, symbols include inherited methods.
+
+### Step 6. Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `MCPServer 'php-lsp' marked dead` after first call | intelephense crashed during indexing | Check intelephense logs (`~/.intelephense/`). Re-install. |
+| `resolve` always returns `not found` | cclsp tool name mismatch | Run `cclsp --list-tools` and align the `tools` mapping in `.supertool.json` |
+| First call is very slow (>10s) | intelephense indexing on cold start | Expected. Subsequent calls are fast. Increase `timeout` to 60 if you hit the limit. |
+| "INTELEPHENSE_LICENSE invalid" | License typo or expired | Check license at intelephense.com. Free tier works for go-to-def + refs. |
+| Heuristic still firing | `match` glob doesn't cover `.class.php` | Add explicit glob: `"match": "*.{php,class.php}"` |
+
+### Step 7. What's next
+
+After PHP works, repeat for Python (`pyright --stdio`), TypeScript (`typescript-language-server --stdio`), Rust (`rust-analyzer`), etc. Same shape: install LSP server → wrap via cclsp → drop into `.supertool.json`.
+
+---
+
+## 12. Open Questions
 
 Design choices that need team input before implementation starts:
 
@@ -273,7 +361,7 @@ Design choices that need team input before implementation starts:
 
 ---
 
-## 12. PR Plan
+## 13. PR Plan
 
 Three sub-PRs for v1, each reviewable independently:
 
