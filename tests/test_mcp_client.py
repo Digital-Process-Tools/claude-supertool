@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 import supertool
-from supertool import MCPServer, MCPServerError, MCPTimeout, _mcp_call, _mcp_get_server, _MCP_SERVERS, _MCP_LOCK
+from supertool import MCPServer, MCPServerError, MCPTimeout, _mcp_call, _mcp_get_server, _mcp_register, _MCP_SERVERS, _MCP_LOCK
 
 MOCK_SERVER = str(Path(__file__).parent / "fixtures" / "mock_mcp_server.py")
 MOCK_CMD = f"{sys.executable} {MOCK_SERVER}"
@@ -184,3 +184,71 @@ def test_mcp_get_server_removes_dead_server() -> None:
     finally:
         with _MCP_LOCK:
             _MCP_SERVERS.pop("_test_dead", None)
+
+
+# ---------------------------------------------------------------------------
+# M1: _mcp_register + _mcp_call
+# ---------------------------------------------------------------------------
+
+def test_mcp_register_allows_mcp_call() -> None:
+    """_mcp_register pre-registers a server; _mcp_call uses it without manual
+    registry manipulation."""
+    srv = _make_server()
+    srv.spawn()
+    srv.initialize()
+    _mcp_register("_test_register", srv)
+    try:
+        result = _mcp_call("_test_register", "echo", {"message": "registered"})
+        assert result is not None
+        content = result.get("content", [])
+        assert any("registered" in str(c) for c in content)
+    finally:
+        with _MCP_LOCK:
+            _MCP_SERVERS.pop("_test_register", None)
+        srv.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# M2: timeout marks server dead; subsequent call fails fast
+# ---------------------------------------------------------------------------
+
+def test_timeout_marks_server_dead_and_second_call_fails_fast() -> None:
+    """After MCPTimeout the server is marked dead. The next call raises
+    MCPServerError immediately instead of hanging."""
+    srv = _make_server(timeout=1, env={"MOCK_MCP_HANG": "1"})
+    srv.spawn()
+    srv.initialize()
+    with pytest.raises(MCPTimeout):
+        srv.call_tool("echo", {})
+    # Server must now be marked dead
+    assert srv._dead is True
+    # Second call must fail fast — not hang
+    with pytest.raises(MCPServerError, match="marked dead"):
+        srv.call_tool("echo", {})
+    srv.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# M3: thread-safe _next_id
+# ---------------------------------------------------------------------------
+
+def test_next_id_unique_across_threads() -> None:
+    """Two threads calling _next_id() 1000 times each must produce 2000
+    unique IDs with no duplicates."""
+    srv = _make_server()
+    ids: list[int] = []
+    ids_lock = threading.Lock()
+
+    def collect() -> None:
+        for _ in range(1000):
+            with ids_lock:
+                ids.append(srv._next_id())
+
+    t1 = threading.Thread(target=collect)
+    t2 = threading.Thread(target=collect)
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+    assert len(ids) == 2000
+    assert len(set(ids)) == 2000

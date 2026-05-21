@@ -9649,6 +9649,8 @@ class MCPServer:
         self._proc: Optional[subprocess.Popen] = None  # type: ignore[type-arg]
         self._lock = threading.Lock()
         self._id_counter = 0
+        self._id_lock = threading.Lock()
+        self._dead = False  # Set on timeout; cleared only by constructing a new instance
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -9683,6 +9685,16 @@ class MCPServer:
             self._proc = None
         if proc.poll() is not None:
             return
+        # Send JSON-RPC shutdown notification before closing stdin — many MCP
+        # servers expect it to exit cleanly.
+        try:
+            if proc.stdin:
+                body = json.dumps({"jsonrpc": "2.0", "method": "shutdown"}).encode("utf-8")
+                header = f"Content-Length: {len(body)}\r\n\r\n".encode("utf-8")
+                proc.stdin.write(header + body)
+                proc.stdin.flush()
+        except OSError:
+            pass
         try:
             if proc.stdin:
                 proc.stdin.close()
@@ -9702,8 +9714,9 @@ class MCPServer:
     # ------------------------------------------------------------------
 
     def _next_id(self) -> int:
-        self._id_counter += 1
-        return self._id_counter
+        with self._id_lock:
+            self._id_counter += 1
+            return self._id_counter
 
     def _send(self, payload: dict) -> None:
         """Encode and write one JSON-RPC message with Content-Length framing."""
@@ -9724,6 +9737,7 @@ class MCPServer:
         while True:
             line = stdout.readline()
             if not line:
+                # TODO(sub-PR-2): crash recovery + backoff per spec §5
                 raise EOFError(f"MCP server '{self.name}' closed stdout")
             line = line.decode("utf-8").rstrip("\r\n")
             if line == "":
@@ -9767,10 +9781,20 @@ class MCPServer:
         t.start()
         t.join(timeout=self.timeout)
         if t.is_alive():
+            # Mark dead and close stdout so the blocked worker thread unblocks.
+            # Subsequent calls will fail fast via the _dead guard below.
+            self._dead = True
+            try:
+                if self._proc and self._proc.stdout:
+                    self._proc.stdout.close()
+            except OSError:
+                pass
             raise MCPTimeout(
                 f"MCP server '{self.name}' timed out after {self.timeout}s "
                 f"(method={method})"
             )
+        if self._dead:
+            raise MCPServerError(f"MCP server '{self.name}' marked dead after timeout")
         if error_holder:
             raise error_holder[0]
         msg = result_holder[0]
@@ -9861,10 +9885,11 @@ for _sig in (signal.SIGTERM, signal.SIGINT):
 # ---------------------------------------------------------------------------
 
 def _mcp_get_server(name: str) -> Optional[MCPServer]:
-    """Return a spawned-and-initialized MCPServer for *name*, or None on failure.
+    """Return a live MCPServer for *name* from the registry, or None.
 
-    Lazy: spawns + initializes on first call, returns cached instance thereafter.
-    Config lookup is intentionally deferred to sub-PR 2 (no mcp block parsing here).
+    Removes dead servers so the registry stays clean. Does NOT spawn — callers
+    that want lazy-spawn should use _mcp_register first or call _mcp_call with
+    a spawn_factory.
     """
     with _MCP_LOCK:
         if name in _MCP_SERVERS:
@@ -9876,11 +9901,31 @@ def _mcp_get_server(name: str) -> Optional[MCPServer]:
     return None
 
 
-def _mcp_call(server_name: str, tool: str, args: dict) -> Optional[dict]:
-    """High-level: lazy spawn + initialize + tools/call.
+def _mcp_register(name: str, server: MCPServer) -> None:
+    """Pre-register a server instance under *name*.
 
-    Returns the result dict, or None on any failure. Caller decides whether to
-    retry or fall back to the heuristic implementation.
+    Used by tests and by the sub-PR 2 config loader to inject servers before
+    the first _mcp_call. Does not spawn or initialize — caller is responsible.
+    """
+    with _MCP_LOCK:
+        _MCP_SERVERS[name] = server
+
+
+def _mcp_call(server_name: str, tool: str, args: dict) -> Optional[dict]:
+    """High-level: call a tool on a registered MCP server.
+
+    Returns the result dict, or None if the server is not registered or any
+    error occurs. Caller decides whether to retry or fall back.
+
+    Lazy spawn contract
+    -------------------
+    This function does NOT spawn servers itself. To enable lazy-spawn, the
+    caller must pre-register a server via _mcp_register() before the first
+    call. Sub-PR 2 will hook config-block parsing to do this automatically
+    (i.e. read the [mcp.*] config, build an MCPServer, call _mcp_register).
+
+    # TODO(sub-PR-2): accept an optional spawn_factory callable so the config
+    # loader can pass a factory here and avoid requiring pre-registration.
     """
     server = _mcp_get_server(server_name)
     if server is None:
