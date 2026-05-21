@@ -1,3 +1,30 @@
+[project]
+name = "claude-supertool"
+version = "0.11.0"
+description = "Batched file operations for autonomous Claude Code runs. Collapses N reads/greps/globs into one Bash round-trip."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "Digital Process Tools" }]
+keywords = ["claude-code", "batch", "file-ops", "tokens", "autonomous", "kevin", "round-trip"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Utilities",
+]
+
+[project.urls]
+Homepage = "https://github.com/Digital-Process-Tools/claude-supertool"
+Repository = "https://github.com/Digital-Process-Tools/claude-supertool"
+Issues = "https://github.com/Digital-Process-Tools/claude-supertool/issues"
+Changelog = "https://github.com/Digital-Process-Tools/claude-supertool/blob/main/CHANGELOG.md"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--cov=supertool --cov-report=term-missing --cov-fail-under=80"
