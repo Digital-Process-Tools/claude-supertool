@@ -194,6 +194,37 @@ The `check:PRESET:PATH` op still works — it reads from the `ops` section first
 
 ---
 
+## MCP integration — warm LSP for `resolve` / `refs` / `workspace`
+
+Heuristic grep is fast but lies. A real language server (intelephense, pyright, typescript-language-server, gopls, rust-analyzer) knows where every symbol is defined — but spawning one per CLI call pays a 5-60s cold-index every time.
+
+Supertool ships a long-lived **MCP daemon** as the `mcp` preset. The daemon owns one MCP server subprocess (typically [cclsp](https://github.com/ktnyt/cclsp) wrapping an LSP), stays warm across `supertool` invocations, and answers `resolve` / `refs` / `workspace` via Unix socket in milliseconds.
+
+```bash
+# 1. install LSP + MCP↔LSP bridge
+npm install -g intelephense cclsp
+
+# 2. point cclsp at the LSP
+cat > .claude/cclsp.json <<'EOF'
+{ "servers": [{ "extensions": ["php"], "command": ["intelephense", "--stdio"] }] }
+EOF
+
+# 3. wire supertool: add "mcp" preset + mcp block in .supertool.json
+#    (see docs/mcp-integration.md for the JSON shape)
+
+# 4. use it — first call auto-spawns the daemon, subsequent calls hit warm LSP
+./supertool 'resolve:My\Namespace\TargetClass:src/Caller.php'
+# → My\Namespace\TargetClass → /abs/path/src/My/Namespace/TargetClass.php  (<1s warm)
+```
+
+Ops shipped by the preset: `mcp_daemon`, `mcp_status`, `mcp_stop`, `mcp_stop_all`.
+
+LSP-backed ops once wired: `resolve`, `refs`, `diag`, `hover`, `rename`, and per-section LSP routing inside `workspace`.
+
+Full reference (architecture, all five LSP ops, recipe for adding a new MCP server / language, tool name reference, troubleshooting): [docs/mcp-integration.md](docs/mcp-integration.md).
+
+---
+
 ## RTK integration
 
 When [rtk](https://github.com/reachingforthejack/rtk) is installed, supertool automatically delegates `read`, `grep`, and `wc` to RTK for compressed output. No configuration needed — detected via `which rtk` at first use.
@@ -300,7 +331,7 @@ See [docs/contributing.md](docs/contributing.md) — custom ops, presets, valida
 
 - **One file.** `supertool.py` is ~980 LoC (16 ops, 3 integration tiers). No package, no `setup.py`, no required deps. Drop in and use.
 - **Python 3.9+.** macOS ships 3.9 via CommandLineTools; we don't force upgrades.
-- **No MCP server.** MCP is server-process-and-JSON-RPC ceremony for what's literally "run a script, get output." A Bash-invoked binary is simpler, faster, and plugs into Claude Code's existing `--allowedTools`/`--disallowedTools` flow.
+- **Supertool isn't an MCP server.** For the ops supertool ships (run a script, return output), MCP would be ceremony — Bash-invoked binaries are simpler, faster, and plug into Claude Code's existing `--allowedTools`/`--disallowedTools` flow. But supertool *consumes* MCP servers when you want LSP-grade accuracy on `resolve`/`refs`/`workspace` — see the [MCP integration](#mcp-integration--warm-lsp-for-resolve--refs--workspace) above.
 - **Trade Python work for LLM tokens.** LLM compute is expensive; local CPU is cheap. Any time the model would spend tokens computing, parsing, formatting, or finding — supertool should spend milliseconds instead. Richer op output (state hints, guards, semantic anchors, auto-formatting, syntax checks) is not feature creep — it's the whole thesis. Heavy Python is fine if it shaves tokens off the model side.
 
 ---

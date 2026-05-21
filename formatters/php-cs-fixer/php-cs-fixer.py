@@ -80,15 +80,18 @@ def main() -> None:
         })
         return
 
-    cmd = [phpcsfixer_bin, "fix"]
+    cmd = [phpcsfixer_bin, "fix", "--allow-risky=yes"]
     if phpcsfixer_config:
         cmd += ["--config", phpcsfixer_config]
     cmd.append(file)
 
+    env = os.environ.copy()
+    env.setdefault("PHP_CS_FIXER_IGNORE_ENV", "1")
+
     start = time.time()
     try:
         # php-cs-fixer exits 0 when no fixes, 1 when fixes applied, 16+ on error
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=60, env=env)
     except subprocess.TimeoutExpired:
         emit({
             "tool": "php-cs-fixer", "file": file, "ok": False, "count": 1,

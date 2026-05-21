@@ -1,109 +1,116 @@
 """Tests for MCP client primitives in supertool.py.
 
-Uses tests/fixtures/mock_mcp_server.py — a minimal stdio JSON-RPC server.
-No real LSP dependencies required.
+The mock server (tests/fixtures/mock_mcp_server.py) listens on a per-test Unix socket
+and speaks NDJSON JSON-RPC 2.0 — same wire format MCPClient uses against the daemon.
 """
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
 import threading
+import time
+import uuid
 from pathlib import Path
 
 import pytest
 
 import supertool
-from supertool import MCPServer, MCPServerError, MCPTimeout, _mcp_call, _mcp_get_server, _mcp_register, _MCP_SERVERS, _MCP_LOCK
+from supertool import (
+    MCPClient, MCPServerError, MCPTimeout,
+    _mcp_call, _mcp_get_server, _mcp_register, _MCP_SERVERS, _MCP_LOCK,
+)
 
 MOCK_SERVER = str(Path(__file__).parent / "fixtures" / "mock_mcp_server.py")
-MOCK_CMD = f"{sys.executable} {MOCK_SERVER}"
+
+
+@pytest.fixture
+def mock_uds():
+    """Spawn the UDS mock MCP server (sockets in /tmp/ — AF_UNIX path limit on macOS)."""
+    sock_path = f"/tmp/st-mock-{uuid.uuid4().hex[:8]}.sock"
+    proc = subprocess.Popen([sys.executable, MOCK_SERVER, sock_path])
+    deadline = time.time() + 5
+    while time.time() < deadline and not os.path.exists(sock_path):
+        time.sleep(0.05)
+    if not os.path.exists(sock_path):
+        proc.terminate()
+        raise RuntimeError(f"mock did not bind {sock_path}")
+    try:
+        yield sock_path
+    finally:
+        proc.terminate()
+        try: proc.wait(timeout=3)
+        except subprocess.TimeoutExpired: proc.kill()
+
+
+def _make_client(sock_path: str, timeout: int = 5) -> MCPClient:
+    return MCPClient(name="test", timeout=timeout, socket_path=sock_path)
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# spawn (connect) + is_alive
 # ---------------------------------------------------------------------------
 
-def _make_server(timeout: int = 5, env: dict | None = None) -> MCPServer:
-    return MCPServer(name="test", cmd=MOCK_CMD, env=env, timeout=timeout)
+def test_spawn_connects_to_daemon(mock_uds: str) -> None:
+    c = _make_client(mock_uds)
+    assert not c.is_alive()
+    c.spawn()
+    assert c.is_alive()
+    c.shutdown()
 
 
-# ---------------------------------------------------------------------------
-# spawn + is_alive
-# ---------------------------------------------------------------------------
-
-def test_spawn_starts_process() -> None:
-    srv = _make_server()
-    assert not srv.is_alive()
-    srv.spawn()
-    assert srv.is_alive()
-    srv.shutdown()
-
-
-def test_spawn_is_idempotent() -> None:
-    srv = _make_server()
-    srv.spawn()
-    pid1 = srv._proc.pid
-    srv.spawn()  # second call — must not replace process
-    pid2 = srv._proc.pid
-    assert pid1 == pid2
-    srv.shutdown()
+def test_spawn_is_idempotent(mock_uds: str) -> None:
+    c = _make_client(mock_uds)
+    c.spawn()
+    sock1 = c._sock
+    c.spawn()  # second call → no new connection
+    sock2 = c._sock
+    assert sock1 is sock2
+    c.shutdown()
 
 
 # ---------------------------------------------------------------------------
 # initialize
 # ---------------------------------------------------------------------------
 
-def test_initialize_returns_capabilities() -> None:
-    srv = _make_server()
-    srv.spawn()
-    result = srv.initialize()
+def test_initialize_returns_capabilities(mock_uds: str) -> None:
+    c = _make_client(mock_uds)
+    c.spawn()
+    result = c.initialize()
     assert isinstance(result, dict)
     assert result.get("protocolVersion") == "2024-11-05"
     assert "serverInfo" in result
-    srv.shutdown()
+    c.shutdown()
 
 
 # ---------------------------------------------------------------------------
 # list_tools
 # ---------------------------------------------------------------------------
 
-def test_list_tools_returns_tool_definitions() -> None:
-    srv = _make_server()
-    srv.spawn()
-    srv.initialize()
-    tools = srv.list_tools()
+def test_list_tools_returns_tool_definitions(mock_uds: str) -> None:
+    c = _make_client(mock_uds)
+    c.spawn()
+    c.initialize()
+    tools = c.list_tools()
     assert isinstance(tools, list)
     assert len(tools) >= 1
     assert tools[0]["name"] == "echo"
-    srv.shutdown()
+    c.shutdown()
 
 
 # ---------------------------------------------------------------------------
 # call_tool
 # ---------------------------------------------------------------------------
 
-def test_call_tool_roundtrips_args() -> None:
-    srv = _make_server()
-    srv.spawn()
-    srv.initialize()
-    result = srv.call_tool("echo", {"message": "hello"})
+def test_call_tool_roundtrips_args(mock_uds: str) -> None:
+    c = _make_client(mock_uds)
+    c.spawn()
+    c.initialize()
+    result = c.call_tool("echo", {"message": "hello"})
     assert isinstance(result, dict)
     content = result.get("content", [])
-    assert any("hello" in str(c) for c in content)
-    srv.shutdown()
-
-
-# ---------------------------------------------------------------------------
-# Timeout
-# ---------------------------------------------------------------------------
-
-@pytest.mark.skip(reason="hangs in CI — subprocess cleanup race; track in follow-up")
-def test_call_tool_raises_mcp_timeout() -> None:
-    srv = _make_server(timeout=1, env={"MOCK_MCP_HANG": "1"})
-    srv.spawn()
-    srv.initialize()
-    with pytest.raises(MCPTimeout):
-        srv.call_tool("echo", {})
-    srv.shutdown()
+    assert any("hello" in str(c2) for c2 in content)
+    c.shutdown()
 
 
 # ---------------------------------------------------------------------------
@@ -111,33 +118,46 @@ def test_call_tool_raises_mcp_timeout() -> None:
 # ---------------------------------------------------------------------------
 
 def test_call_tool_raises_mcp_server_error() -> None:
-    srv = _make_server(env={"MOCK_MCP_TOOL_ERROR": "1"})
-    srv.spawn()
-    srv.initialize()
-    with pytest.raises(MCPServerError) as exc_info:
-        srv.call_tool("echo", {})
-    assert exc_info.value.code == -32000
-    assert "tool execution failed" in str(exc_info.value)
-    srv.shutdown()
+    """Mock with MOCK_MCP_TOOL_ERROR=1 returns JSON-RPC error → client raises."""
+    sock_path = f"/tmp/st-err-{uuid.uuid4().hex[:8]}.sock"
+    env = os.environ.copy()
+    env["MOCK_MCP_TOOL_ERROR"] = "1"
+    proc = subprocess.Popen([sys.executable, MOCK_SERVER, sock_path], env=env)
+    deadline = time.time() + 5
+    while time.time() < deadline and not os.path.exists(sock_path):
+        time.sleep(0.05)
+    try:
+        c = _make_client(sock_path)
+        c.spawn()
+        c.initialize()
+        with pytest.raises(MCPServerError) as exc_info:
+            c.call_tool("echo", {})
+        assert exc_info.value.code == -32000
+        assert "tool execution failed" in str(exc_info.value)
+        c.shutdown()
+    finally:
+        proc.terminate()
+        try: proc.wait(timeout=3)
+        except subprocess.TimeoutExpired: proc.kill()
 
 
 # ---------------------------------------------------------------------------
 # shutdown
 # ---------------------------------------------------------------------------
 
-def test_shutdown_cleans_up_process() -> None:
-    srv = _make_server()
-    srv.spawn()
-    assert srv.is_alive()
-    srv.shutdown()
-    assert not srv.is_alive()
+def test_shutdown_closes_socket(mock_uds: str) -> None:
+    c = _make_client(mock_uds)
+    c.spawn()
+    assert c.is_alive()
+    c.shutdown()
+    assert not c.is_alive()
 
 
-def test_shutdown_is_idempotent() -> None:
-    srv = _make_server()
-    srv.spawn()
-    srv.shutdown()
-    srv.shutdown()  # must not raise
+def test_shutdown_is_idempotent(mock_uds: str) -> None:
+    c = _make_client(mock_uds)
+    c.spawn()
+    c.shutdown()
+    c.shutdown()  # must not raise
 
 
 # ---------------------------------------------------------------------------
@@ -149,37 +169,34 @@ def test_mcp_call_returns_none_when_server_not_in_registry() -> None:
     assert result is None
 
 
-def test_mcp_call_lazy_spawns_via_registry() -> None:
-    srv = _make_server()
-    srv.spawn()
-    srv.initialize()
-    with _MCP_LOCK:
-        _MCP_SERVERS["_test_lazy"] = srv
+def test_mcp_call_uses_registered_client(mock_uds: str) -> None:
+    c = _make_client(mock_uds)
+    c.spawn(); c.initialize()
+    _mcp_register("_test_call", c)
     try:
-        result = _mcp_call("_test_lazy", "echo", {"message": "lazy"})
+        result = _mcp_call("_test_call", "echo", {"message": "lazy"})
         assert result is not None
         content = result.get("content", [])
-        assert any("lazy" in str(c) for c in content)
+        assert any("lazy" in str(item) for item in content)
     finally:
         with _MCP_LOCK:
-            _MCP_SERVERS.pop("_test_lazy", None)
-        srv.shutdown()
+            _MCP_SERVERS.pop("_test_call", None)
+        c.shutdown()
 
 
 # ---------------------------------------------------------------------------
-# _mcp_get_server — dead server returns None
+# _mcp_get_server — dead client returns None
 # ---------------------------------------------------------------------------
 
-def test_mcp_get_server_removes_dead_server() -> None:
-    srv = _make_server()
-    srv.spawn()
-    srv.shutdown()  # kill it
+def test_mcp_get_server_removes_dead_client(mock_uds: str) -> None:
+    c = _make_client(mock_uds)
+    c.spawn()
+    c.shutdown()  # close → not alive
     with _MCP_LOCK:
-        _MCP_SERVERS["_test_dead"] = srv
+        _MCP_SERVERS["_test_dead"] = c
     try:
         result = _mcp_get_server("_test_dead")
         assert result is None
-        # Should have been removed from registry
         with _MCP_LOCK:
             assert "_test_dead" not in _MCP_SERVERS
     finally:
@@ -188,69 +205,41 @@ def test_mcp_get_server_removes_dead_server() -> None:
 
 
 # ---------------------------------------------------------------------------
-# M1: _mcp_register + _mcp_call
+# _mcp_register + _mcp_call
 # ---------------------------------------------------------------------------
 
-def test_mcp_register_allows_mcp_call() -> None:
-    """_mcp_register pre-registers a server; _mcp_call uses it without manual
-    registry manipulation."""
-    srv = _make_server()
-    srv.spawn()
-    srv.initialize()
-    _mcp_register("_test_register", srv)
+def test_mcp_register_allows_mcp_call(mock_uds: str) -> None:
+    c = _make_client(mock_uds)
+    c.spawn(); c.initialize()
+    _mcp_register("_test_register", c)
     try:
         result = _mcp_call("_test_register", "echo", {"message": "registered"})
         assert result is not None
         content = result.get("content", [])
-        assert any("registered" in str(c) for c in content)
+        assert any("registered" in str(item) for item in content)
     finally:
         with _MCP_LOCK:
             _MCP_SERVERS.pop("_test_register", None)
-        srv.shutdown()
+        c.shutdown()
 
 
 # ---------------------------------------------------------------------------
-# M2: timeout marks server dead; subsequent call fails fast
-# ---------------------------------------------------------------------------
-
-@pytest.mark.skip(reason="hangs in CI — subprocess cleanup race; track in follow-up")
-def test_timeout_marks_server_dead_and_second_call_fails_fast() -> None:
-    """After MCPTimeout the server is marked dead. The next call raises
-    MCPServerError immediately instead of hanging."""
-    srv = _make_server(timeout=1, env={"MOCK_MCP_HANG": "1"})
-    srv.spawn()
-    srv.initialize()
-    with pytest.raises(MCPTimeout):
-        srv.call_tool("echo", {})
-    # Server must now be marked dead
-    assert srv._dead is True
-    # Second call must fail fast — not hang
-    with pytest.raises(MCPServerError, match="marked dead"):
-        srv.call_tool("echo", {})
-    srv.shutdown()
-
-
-# ---------------------------------------------------------------------------
-# M3: thread-safe _next_id
+# Thread-safe _next_id
 # ---------------------------------------------------------------------------
 
 def test_next_id_unique_across_threads() -> None:
-    """Two threads calling _next_id() 1000 times each must produce 2000
-    unique IDs with no duplicates."""
-    srv = _make_server()
+    c = MCPClient(name="x", timeout=5, socket_path="/dev/null")
     ids: list[int] = []
     ids_lock = threading.Lock()
 
     def collect() -> None:
         for _ in range(1000):
             with ids_lock:
-                ids.append(srv._next_id())
+                ids.append(c._next_id())
 
     t1 = threading.Thread(target=collect)
     t2 = threading.Thread(target=collect)
-    t1.start()
-    t2.start()
-    t1.join()
-    t2.join()
+    t1.start(); t2.start()
+    t1.join(); t2.join()
     assert len(ids) == 2000
     assert len(set(ids)) == 2000

@@ -4,8 +4,24 @@
   "presets": [
     "github",
     "git",
-    "xml"
+    "xml",
+    "mcp"
   ],
+  "mcp": {
+    "py-lsp": {
+      "cmd": "cclsp",
+      "match": "*.py",
+      "env": { "CCLSP_CONFIG_PATH": ".claude/cclsp.json" },
+      "tools": {
+        "resolve": "find_workspace_symbols",
+        "refs":    "find_references",
+        "diag":    "get_diagnostics",
+        "hover":   "get_hover",
+        "rename":  "rename_symbol"
+      },
+      "timeout": 60
+    }
+  },
   "introduction": "./supertool 'op:args' 'op:args'... Batch 6-7 ops/call. Single quotes per op. Paths from root. Use ops not raw cmds (mysql_read, phpstan, batched reads). Read only before Edit.\n\n@file route (mutating ops: edit/replace/replace_lines/paste/vim): op:@payload or op:@- (stdin). Auto-detect: starts with { \u2192 JSON, else TOML. TOML '''triple-single-quote''' preserves backslashes/quotes/newlines \u2014 best for code blocks. Fields match syntax tokens lowercased (edit:::OLD:::NEW:::PATH \u2192 old, new, path).\n\nTo avoid escape problems, use chr(10)/chr(27) instead of \\n/\\x1b in payload content.",
   "output-format": "Each op: header + body.\n```\n--- op:args ---\n(meta)\noutput\n```",
   "builtin-ops": {
@@ -173,14 +189,36 @@
       "example": "workspace:src/app/Module.py"
     },
     "resolve": {
-      "syntax": "resolve:SYMBOL",
-      "description": "Smart-glob resolver: PHP FQN, Python dotted, JS/TS relative path \u2192 file on disk. Returns 'external' for npm/pip packages, 'not found' if no match. Used internally by workspace.",
-      "example": "resolve:foo.bar.baz"
+      "syntax": "resolve:SYMBOL[:FROM_FILE]",
+      "description": "Symbol \u2192 file. LSP via mcp.tools.resolve when configured, else heuristic glob.",
+      "example": "resolve:MCPClient:tests/test_mcp_client.py"
+    },
+    "diag": {
+      "syntax": "diag:FILE",
+      "description": "LSP errors/warnings for FILE.",
+      "example": "diag:supertool.py"
+    },
+    "hover": {
+      "syntax": "hover:SYMBOL:FILE",
+      "description": "LSP hover: type + docs for SYMBOL.",
+      "example": "hover:MCPClient:supertool.py"
+    },
+    "rename": {
+      "syntax": "rename:OLD:NEW:FILE",
+      "description": "LSP workspace rename. Safer than sed.",
+      "example": "rename:oldName:newName:supertool.py"
     }
   },
   "ops": {},
   "aliases": {},
   "validators": {
+    "lsp-diag": {
+      "cmd": "python3 {supertool_dir}/validators/lsp-diag/lsp-diag.py {file}",
+      "match": "*.{py,php,class.php,js,ts,jsx,tsx}",
+      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "rollback_on_fail": false,
+      "timeout": 15
+    },
     "jsonlint": {
       "cmd": "python3 -m json.tool {file}",
       "match": "*.json",

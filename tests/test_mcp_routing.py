@@ -1,21 +1,28 @@
-"""Tests for MCP config + extension routing (sub-PR 2)."""
+"""Tests for MCP config + extension routing.
+
+The MCP client talks to a UDS daemon. Tests use a UDS-server mock fixture spawned per
+test with a tmp socket path injected directly into the spec — bypasses the auto-spawn
+path while exercising the full NDJSON wire protocol.
+"""
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
+import time
+import uuid
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
 import supertool
 from supertool import (
-    MCPServer, _mcp_route, _mcp_ensure_server,
+    MCPClient, _mcp_route, _mcp_ensure_server,
     _extract_path_from_mcp_result, _MCP_SERVERS, _MCP_LOCK,
     op_resolve,
 )
 
 MOCK_SERVER = str(Path(__file__).parent / "fixtures" / "mock_mcp_server.py")
-MOCK_CMD = f"{sys.executable} {MOCK_SERVER}"
 
 
 def _set_mcp_specs(specs: dict) -> None:
@@ -24,32 +31,59 @@ def _set_mcp_specs(specs: dict) -> None:
     supertool._mcp_specs.update(specs)
 
 
-def test_route_matches_by_extension_glob() -> None:
+@pytest.fixture
+def mock_uds():
+    """Spawn the UDS-mode mock MCP server on a per-test socket path.
+
+    Sockets live in /tmp/ (macOS AF_UNIX path limit ~104 chars; pytest tmp_path is too deep).
+    """
+    sock_path = f"/tmp/st-mock-{uuid.uuid4().hex[:8]}.sock"
+    proc = subprocess.Popen([sys.executable, MOCK_SERVER, sock_path])
+    # Wait for the server to bind the socket
+    deadline = time.time() + 5
+    while time.time() < deadline and not os.path.exists(sock_path):
+        time.sleep(0.05)
+    if not os.path.exists(sock_path):
+        proc.terminate()
+        raise RuntimeError(f"mock MCP server did not bind {sock_path}")
+    try:
+        yield sock_path
+    finally:
+        proc.terminate()
+        try: proc.wait(timeout=3)
+        except subprocess.TimeoutExpired: proc.kill()
+        if os.path.exists(sock_path):
+            try: os.unlink(sock_path)
+            except OSError: pass
+
+
+def test_route_matches_by_extension_glob(mock_uds: str) -> None:
     _set_mcp_specs({
-        "php-lsp": {"cmd": MOCK_CMD, "match": "*.php",
+        "php-lsp": {"match": "*.php", "socket_path": mock_uds,
                     "tools": {"resolve": "definition"}}
     })
     assert _mcp_route("foo.php", "resolve") == ("php-lsp", "definition")
 
 
-def test_route_returns_none_when_no_match() -> None:
+def test_route_returns_none_when_no_match(mock_uds: str) -> None:
     _set_mcp_specs({
-        "php-lsp": {"cmd": MOCK_CMD, "match": "*.php",
+        "php-lsp": {"match": "*.php", "socket_path": mock_uds,
                     "tools": {"resolve": "definition"}}
     })
     assert _mcp_route("foo.py", "resolve") is None
 
 
-def test_route_returns_none_when_op_not_in_tools() -> None:
+def test_route_returns_none_when_op_not_in_tools(mock_uds: str) -> None:
     _set_mcp_specs({
-        "php-lsp": {"cmd": MOCK_CMD, "match": "*.php", "tools": {"resolve": "definition"}}
+        "php-lsp": {"match": "*.php", "socket_path": mock_uds,
+                    "tools": {"resolve": "definition"}}
     })
     assert _mcp_route("foo.php", "refs") is None
 
 
-def test_ensure_server_spawns_on_demand() -> None:
+def test_ensure_server_connects_on_demand(mock_uds: str) -> None:
     _set_mcp_specs({
-        "lsp-test": {"cmd": MOCK_CMD, "match": "*.php",
+        "lsp-test": {"match": "*.php", "socket_path": mock_uds,
                      "tools": {"resolve": "definition"}}
     })
     try:
@@ -66,9 +100,10 @@ def test_ensure_server_spawns_on_demand() -> None:
             srv.shutdown()
 
 
-def test_ensure_server_returns_none_on_bad_cmd() -> None:
+def test_ensure_server_returns_none_on_bad_socket(tmp_path: Path) -> None:
+    """Socket_path that doesn't exist → connect fails → ensure returns None."""
     _set_mcp_specs({
-        "broken": {"cmd": "/nonexistent/binary", "match": "*.php",
+        "broken": {"match": "*.php", "socket_path": str(tmp_path / "nope.sock"),
                    "tools": {"resolve": "definition"}}
     })
     srv = _mcp_ensure_server("broken")
@@ -102,17 +137,17 @@ def test_extract_path_from_file_uri_url_decode() -> None:
     assert _extract_path_from_mcp_result(result) == "/path with space.php"
 
 
-def test_op_resolve_uses_mcp_when_configured(tmp_path: Path) -> None:
-    """op_resolve delegates to MCP server when a matching spec is configured."""
+def test_op_resolve_uses_mcp_when_configured(tmp_path: Path, mock_uds: str) -> None:
+    """op_resolve delegates to the MCP daemon when a matching spec is configured."""
     php_file = str(tmp_path / "bar.php")
     _set_mcp_specs({
-        "php-lsp": {"cmd": MOCK_CMD, "match": "*.php",
+        "php-lsp": {"match": "*.php", "socket_path": mock_uds,
                     "tools": {"resolve": "definition"}}
     })
     srv_name = "php-lsp"
     try:
         result = op_resolve("Foo", from_file=php_file)
-        # Mock server returns the from_file value as the resolved path
+        # Mock returns file_path as the resolved path — proves MCP was hit
         assert php_file in result
         assert "→" in result
     finally:
@@ -126,10 +161,10 @@ def test_op_resolve_uses_mcp_when_configured(tmp_path: Path) -> None:
 def test_op_resolve_falls_back_to_heuristic_on_mcp_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """MCP failure (bad cmd) silently falls through to heuristic glob."""
+    """MCP failure (bad socket) silently falls through to heuristic glob."""
     monkeypatch.chdir(tmp_path)
     _set_mcp_specs({
-        "broken-lsp": {"cmd": "/nonexistent/binary", "match": "*.php",
+        "broken-lsp": {"match": "*.php", "socket_path": str(tmp_path / "nope.sock"),
                        "tools": {"resolve": "definition"}}
     })
     php_file = str(tmp_path / "bar.php")
@@ -138,4 +173,105 @@ def test_op_resolve_falls_back_to_heuristic_on_mcp_failure(
         # Must not raise; heuristic returns "not found"
         assert "not found" in result or "→" in result
     finally:
+        supertool._mcp_specs.clear()
+
+
+def test_op_hover_anchors_to_word_boundary(tmp_path: Path) -> None:
+    """`op_hover` two-step: find_workspace_symbols returns line:1, then op_hover must
+    re-anchor to the actual identifier offset using a word-boundary search.
+
+    Source: `public function handle(self $handle): void`
+    `handle` method-name at col 17. Plain str.find would also return 17 here (only
+    one substring match), so this test mainly verifies the two-step flow works.
+    """
+    php_file = tmp_path / "Widget.php"
+    src_line = "public function handle(self $handle): void\n"
+    php_file.write_text(src_line)
+
+    sock_path = f"/tmp/st-mock-{uuid.uuid4().hex[:8]}.sock"
+    env = os.environ.copy(); env["MOCK_HOVER_FILE"] = str(php_file)
+    proc = subprocess.Popen([sys.executable, MOCK_SERVER, sock_path], env=env)
+    deadline = time.time() + 5
+    while time.time() < deadline and not os.path.exists(sock_path):
+        time.sleep(0.05)
+    try:
+        _set_mcp_specs({
+            "php-lsp": {"match": "*.php", "socket_path": sock_path,
+                        "tools": {"resolve": "find_workspace_symbols", "hover": "get_hover"}}
+        })
+        from supertool import op_hover
+        result = op_hover("handle", str(php_file))
+        # Word-boundary 'handle' position: index 16 → col 17 (1-indexed)
+        assert "character=17" in result, f"expected character=17, got: {result}"
+    finally:
+        with _MCP_LOCK:
+            srv = _MCP_SERVERS.pop("php-lsp", None)
+        if srv: srv.shutdown()
+        supertool._mcp_specs.clear()
+        proc.terminate()
+        try: proc.wait(timeout=3)
+        except subprocess.TimeoutExpired: proc.kill()
+
+
+def test_op_hover_word_boundary_skips_substring_match(tmp_path: Path) -> None:
+    """Regression: `str.find(symbol)` matches `symbol` as a substring of a larger word.
+
+    Source: `// readd this comment | public function add(): void {}`
+                ^^^^                                  ^^^
+              col 4 (substring of 'readd')         col 41 (the real `add` method)
+
+    str.find('add') returns index 3 → column 4 (inside 'readd').
+    Word-boundary regex skips 'readd' and matches at index 40 → column 41.
+    """
+    php_file = tmp_path / "Widget.php"
+    src_line = "// readd this comment | public function add(): void {}\n"
+    php_file.write_text(src_line)
+
+    sock_path = f"/tmp/st-mock-{uuid.uuid4().hex[:8]}.sock"
+    env = os.environ.copy(); env["MOCK_HOVER_FILE"] = str(php_file)
+    proc = subprocess.Popen([sys.executable, MOCK_SERVER, sock_path], env=env)
+    deadline = time.time() + 5
+    while time.time() < deadline and not os.path.exists(sock_path):
+        time.sleep(0.05)
+    try:
+        _set_mcp_specs({
+            "php-lsp": {"match": "*.php", "socket_path": sock_path,
+                        "tools": {"resolve": "find_workspace_symbols", "hover": "get_hover"}}
+        })
+        from supertool import op_hover
+        result = op_hover("add", str(php_file))
+        assert "character=41" in result, f"expected character=41, got: {result}"
+    finally:
+        with _MCP_LOCK:
+            srv = _MCP_SERVERS.pop("php-lsp", None)
+        if srv: srv.shutdown()
+        supertool._mcp_specs.clear()
+        proc.terminate()
+        try: proc.wait(timeout=3)
+        except subprocess.TimeoutExpired: proc.kill()
+
+
+def test_cli_resolve_forwards_from_file_to_mcp(
+    tmp_path: Path, mock_uds: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`resolve:SYMBOL:FILE` CLI form must forward FILE so the MCP route triggers.
+
+    Regression: dispatcher previously dropped parts[2], so from_file=None and MCP never hit.
+    """
+    php_file = str(tmp_path / "bar.php")
+    _set_mcp_specs({
+        "php-lsp": {"match": "*.php", "socket_path": mock_uds,
+                    "tools": {"resolve": "definition"}}
+    })
+    srv_name = "php-lsp"
+    try:
+        rc = supertool.main([f"resolve:Foo:{php_file}"])
+        out = capsys.readouterr().out
+        assert php_file in out
+        assert rc == 0
+    finally:
+        with _MCP_LOCK:
+            srv = _MCP_SERVERS.pop(srv_name, None)
+        if srv:
+            srv.shutdown()
         supertool._mcp_specs.clear()

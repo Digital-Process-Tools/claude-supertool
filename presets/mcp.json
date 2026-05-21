@@ -1,0 +1,34 @@
+{
+  "description": "Long-lived MCP daemon — keeps LSPs (intelephense/pyright/etc) warm across calls. Avoids 30s+ cold-start per invocation.",
+  "requires": "python3",
+  "ops": {
+    "mcp_daemon": {
+      "cmd": "python3 {path}mcp/daemon.py {args}",
+      "timeout": 86400,
+      "description": "Start MCP daemon for SERVER_NAME. Blocking; --detach to background.",
+      "syntax": "mcp_daemon:SERVER_NAME[ --detach]",
+      "example": "mcp_daemon:php-lsp --detach"
+    },
+    "mcp_status": {
+      "cmd": "python3 {path}mcp/status.py",
+      "timeout": 10,
+      "description": "List running MCP daemons: name, pid, uptime, idle, socket.",
+      "syntax": "mcp_status",
+      "example": "mcp_status"
+    },
+    "mcp_stop": {
+      "cmd": "python3 {path}mcp/stop.py {args}",
+      "timeout": 30,
+      "description": "Stop MCP daemon SERVER_NAME. SIGTERM, SIGKILL after 3s.",
+      "syntax": "mcp_stop:SERVER_NAME",
+      "example": "mcp_stop:php-lsp"
+    },
+    "mcp_stop_all": {
+      "cmd": "python3 {path}mcp/stop.py --all",
+      "timeout": 60,
+      "description": "Stop every supertool MCP daemon.",
+      "syntax": "mcp_stop_all",
+      "example": "mcp_stop_all"
+    }
+  }
+}

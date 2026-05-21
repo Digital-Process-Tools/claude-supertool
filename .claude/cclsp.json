@@ -1,0 +1,9 @@
+{
+  "servers": [
+    {
+      "extensions": ["py"],
+      "command": ["pyright-langserver", "--stdio"],
+      "rootDir": "."
+    }
+  ]
+}
