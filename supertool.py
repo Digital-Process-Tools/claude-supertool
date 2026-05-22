@@ -7799,6 +7799,10 @@ def _sweep_old_notifier_temp_files(max_age_seconds: int = 3600) -> None:
             pass
 
 
+# Run at import time AND atexit. Import-time sweep clears orphans from prior
+# sessions before any new notifier fires. atexit catches any our process spawned
+# whose consumer didn't pick them up (best-effort double cleanup).
+_sweep_old_notifier_temp_files()
 atexit.register(_sweep_old_notifier_temp_files)
 
 
