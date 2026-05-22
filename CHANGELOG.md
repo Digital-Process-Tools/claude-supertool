@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.1]
+
+### Added
+
+- Per-validator `cache: false` opt-out (`_validator_run_one`). Useful when the validator's input file isn't the only thing affecting results (e.g. phpunit: source + test + bootstrap + DI graph all matter, cache key only hashes the resolved file → stale hits when source changes).
+
+### Changed
+
+- `validators/rector-mcp/`: drops bare "would refactor X" entries that have no `applied_rectors` or diff. Rector returns these in `--debug` mode (which we need for speed on large configs) but they carry no actionable info. Real errors with rule names + diffs still pass through.
+
 ## [0.13.0]
 
 ### Added

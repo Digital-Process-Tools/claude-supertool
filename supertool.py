@@ -7945,8 +7945,14 @@ def _validator_run_one(name: str, spec: Dict[str, Any], file: str) -> Optional[D
     cmd = spec["cmd"].replace("{supertool_dir}", _INSTALL_DIR).replace("{file}", target)
     timeout = int(spec.get("timeout", 60))
 
+    # Per-validator opt-out: spec.cache = false disables caching for this validator.
+    # Useful when the adapter's input file isn't the only thing that affects results
+    # (e.g. phpunit: source + test + bootstrap + DI graph all matter, but cache key
+    # only hashes the resolved file).
+    spec_cache_enabled = bool(spec.get("cache", True))
+
     cache_key: Optional[str] = None
-    if _validator_cache_enabled():
+    if _validator_cache_enabled() and spec_cache_enabled:
         cache_key = _validator_cache_key(target, name, cmd)
         if cache_key:
             cached = _validator_cache_read(cache_key)

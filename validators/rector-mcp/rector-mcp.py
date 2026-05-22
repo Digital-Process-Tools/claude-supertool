@@ -154,15 +154,28 @@ def format_response(file_path: str, mcp_resp: dict, duration_ms: int) -> dict:
             rector_json = None
 
     if rector_json:
-        changed = rector_json.get("changed_files", [])
-        errors = rector_json.get("errors", [])
-        # rector dry-run exit 2 = files would change; treat as warning.
-        if changed:
+        file_diffs = rector_json.get("file_diffs", []) or []
+        errors = rector_json.get("errors", []) or []
+
+        # Surface refactor suggestions ONLY when we have actionable detail (applied_rectors
+        # or a diff). Bare "would refactor X" with no specifics is noise — rector returns it
+        # in --debug mode (which we need for speed) but it has no signal. Real errors below
+        # always pass through.
+        for fd in file_diffs:
+            applied = fd.get("applied_rectors") or []
+            diff = fd.get("diff") or ""
+            if not applied and not diff:
+                continue
             base["ok"] = False
-            base["count"] = len(changed)
-            base["errors"] = [{"line": None, "col": None, "severity": "warning",
-                               "code": "rector.refactor",
-                               "msg": f"Rector would refactor {f}"} for f in changed]
+            base["count"] += 1
+            rules = [r.rsplit("\\", 1)[-1] for r in applied]
+            rules_str = ", ".join(rules) if rules else "unknown rule"
+            base["errors"].append({
+                "line": None, "col": None, "severity": "warning",
+                "code": "rector.refactor",
+                "msg": f"Would apply {rules_str}",
+                "diff": diff,
+            })
         if errors:
             base["ok"] = False
             for e in errors:
