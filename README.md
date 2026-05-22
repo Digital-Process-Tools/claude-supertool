@@ -247,17 +247,40 @@ Full reference: [docs/notifiers.md](docs/notifiers.md).
 
 ## Cursor Witness — watch the agent work in your editor
 
-The flagship notifier consumer. Ships in `notifiers/cursor-witness/`. A VSCode/Cursor extension listens on a Unix socket; supertool's notifier writes one JSON event per op. When the agent edits a file, Cursor opens it in a **diff view** (before vs after). When the agent reads a range, the lines are highlighted and the editor scrolls to them — highlight fades after 4 seconds.
+The flagship notifier consumer. A VSCode/Cursor extension listens on a Unix socket; supertool writes one JSON event per op. When the agent **edits** a file, Cursor opens it in a side-by-side **diff view** (before vs after). When the agent **reads** a range, the lines highlight in blue, the editor scrolls to center, and the highlight fades after 4 seconds. Status bar shows the recent op with op-type icons.
+
+Closest thing to pair-programming with an autonomous agent: the agent's work becomes visible in your editor as it happens, no extra commands.
+
+### Install
+
+One script:
 
 ```bash
-cd notifiers/cursor-witness/extension && npm install && npm run compile
-ln -s "$(pwd)" ~/.cursor/extensions/digital-process-tools.cursor-witness-0.1.0
-# Reload Cursor → "$(eye) Max: idle" in the status bar
+bash notifiers/cursor-witness/install.sh           # Cursor (default)
+bash notifiers/cursor-witness/install.sh --vscode  # also VSCode
 ```
 
-Then wire the notifier in `.supertool.json` (see [docs/cursor-witness.md](docs/cursor-witness.md)).
+The script checks Node ≥18, compiles the TypeScript extension, symlinks it into the editor's extensions directory, and prints the JSON snippet to drop into your project's `.supertool.json` notifier block. Reload your editor (`Cmd+Shift+P` → `Developer: Reload Window`) — status bar should show `$(eye) Max: idle`.
 
-It's the closest thing to pair-programming with an autonomous agent: the agent's work becomes visible in your editor as it happens, with no extra commands.
+### Self-hosted
+
+supertool's own `.supertool.json` already wires cursor-witness — every edit to supertool source surfaces in Cursor for whoever's running the agent locally. The simplest dogfood signal.
+
+### Debugging
+
+When the agent fires an op but Cursor doesn't react, enable the notifier debug logger:
+
+```bash
+SUPERTOOL_NOTIFIER_DEBUG=1 ./supertool 'edit:::OLD:::NEW:::FILE'
+tail -f /tmp/supertool-notifier-debug.log
+```
+
+Or set `"notifier_debug": true` in your `.supertool.json` for persistent traces. Override the log path with `SUPERTOOL_NOTIFIER_DEBUG_LOG=/path/to/log`.
+
+### Reference
+
+- Setup, settings, troubleshooting: [docs/cursor-witness.md](docs/cursor-witness.md)
+- Notifier protocol (generic): [docs/notifiers.md](docs/notifiers.md)
 
 ---
 

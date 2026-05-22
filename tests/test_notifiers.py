@@ -122,3 +122,90 @@ def test_notifiers_block_empty_when_unconfigured() -> None:
     """No notifiers block → empty dict, no spawn attempts."""
     _set_config({})
     assert supertool._applicable_notifiers("edit", "x.php") == {}
+
+
+def test_notifier_debug_log_off_by_default(tmp_path: Path, monkeypatch) -> None:
+    """No SUPERTOOL_NOTIFIER_DEBUG, no notifier_debug in config → no log file written."""
+    log = tmp_path / "notifier-debug.log"
+    monkeypatch.setenv("SUPERTOOL_NOTIFIER_DEBUG_LOG", str(log))
+    monkeypatch.delenv("SUPERTOOL_NOTIFIER_DEBUG", raising=False)
+    _set_config({
+        "notifiers": {
+            "n": {"cmd": "true", "match": "*", "hooks_into": ["edit"]}
+        }
+    })
+    supertool._run_notifiers("edit", "x.php")
+    time.sleep(0.2)
+    assert not log.exists(), "debug log written despite being off"
+
+
+def test_notifier_debug_log_via_env(tmp_path: Path, monkeypatch) -> None:
+    """SUPERTOOL_NOTIFIER_DEBUG=1 → logger writes notifier dispatch info."""
+    log = tmp_path / "notifier-debug.log"
+    monkeypatch.setenv("SUPERTOOL_NOTIFIER_DEBUG", "1")
+    monkeypatch.setenv("SUPERTOOL_NOTIFIER_DEBUG_LOG", str(log))
+    _set_config({
+        "notifiers": {
+            "n": {"cmd": "true", "match": "*.php", "hooks_into": ["edit"]}
+        }
+    })
+    supertool._run_notifiers("edit", "x.php")
+    time.sleep(0.2)
+    assert log.exists(), "debug log not written"
+    content = log.read_text()
+    assert "edit" in content
+    assert "x.php" in content
+
+
+def test_notifier_debug_log_via_config(tmp_path: Path, monkeypatch) -> None:
+    """Config `notifier_debug: true` enables logging (no env needed)."""
+    log = tmp_path / "notifier-debug.log"
+    monkeypatch.delenv("SUPERTOOL_NOTIFIER_DEBUG", raising=False)
+    monkeypatch.setenv("SUPERTOOL_NOTIFIER_DEBUG_LOG", str(log))
+    _set_config({
+        "notifier_debug": True,
+        "notifiers": {
+            "n": {"cmd": "true", "match": "*", "hooks_into": ["edit"]}
+        }
+    })
+    supertool._run_notifiers("edit", "y.php")
+    time.sleep(0.2)
+    assert log.exists()
+    assert "y.php" in log.read_text()
+
+
+def test_empty_placeholders_preserve_positional_argv(tmp_path: Path) -> None:
+    """Empty {line}/{line_end}/{before_file} must NOT collapse argv slots.
+
+    Regression: when supertool replaced empty placeholders with the empty string,
+    shlex.split collapsed adjacent spaces, shifting subsequent positional args.
+    Consumers like notify.py read argv[5] and got the wrong value (or IndexError).
+
+    Each placeholder must round-trip as an explicit empty arg.
+    """
+    # The notifier echoes its full argv list (one arg per line) into a marker
+    # file. We then count lines + check positional values.
+    marker = tmp_path / "argv.json"
+    _set_config({
+        "notifiers": {
+            "echo-argv": {
+                # 5 positional slots after the script — same shape as notify.py
+                "cmd": f'python3 -c "import sys, json; open(\'{marker}\', \'w\').write(json.dumps(sys.argv[1:]))" '
+                       f'{{op}} {{file}} {{line}} {{line_end}} {{before_file}}',
+                "match": "*",
+                "hooks_into": ["edit"],
+            }
+        }
+    })
+    # Fire with no line/line_end and no pre_content — three empties in the middle
+    supertool._run_notifiers("edit", "x.php")
+
+    deadline = time.time() + 2
+    while time.time() < deadline and not marker.exists():
+        time.sleep(0.05)
+    assert marker.exists(), "notifier did not fire"
+    import json as _json
+    args = _json.loads(marker.read_text())
+    # Expected 5 positional args: edit, x.php, "", "", ""
+    assert args == ["edit", "x.php", "", "", ""], \
+        f"positional argv corrupted: {args!r}"

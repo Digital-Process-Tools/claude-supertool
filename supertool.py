@@ -105,7 +105,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-VERSION = "0.11.0"
+VERSION = "0.12.0"  # bumped for MCP daemon + notifiers + cursor-witness
 
 MAX_READ_LINES = 300
 MAX_READ_BYTES = 20000  # ~20KB cap — prevents Claude Code "Output too large"
@@ -288,6 +288,31 @@ def _load_config() -> Dict[str, Any]:
 def _is_compact() -> bool:
     """Check if compact mode is enabled in .supertool.json."""
     return bool(_load_config().get("compact", False))
+
+
+def _notifier_debug_enabled() -> bool:
+    """Env SUPERTOOL_NOTIFIER_DEBUG=1 wins over JSON `notifier_debug: true`."""
+    env = os.environ.get("SUPERTOOL_NOTIFIER_DEBUG")
+    if env is not None:
+        return env.strip().lower() in ("1", "true", "yes", "on")
+    return bool(_load_config().get("notifier_debug", False))
+
+
+def _notifier_debug_log_path() -> str:
+    """Override via SUPERTOOL_NOTIFIER_DEBUG_LOG; default /tmp/supertool-notifier-debug.log."""
+    return os.environ.get("SUPERTOOL_NOTIFIER_DEBUG_LOG") or "/tmp/supertool-notifier-debug.log"
+
+
+def _notifier_log(msg: str) -> None:
+    """Append a timestamped line to the notifier debug log when enabled. Silent otherwise."""
+    if not _notifier_debug_enabled():
+        return
+    try:
+        with open(_notifier_debug_log_path(), "a") as f:
+            ts = datetime.now().isoformat(timespec="milliseconds")
+            f.write(f"[{ts}] {msg}\n")
+    except OSError:
+        pass
 
 
 def _parallel_workers() -> int:
@@ -7751,22 +7776,34 @@ def _applicable_notifiers(op: str, path: str) -> Dict[str, Dict[str, Any]]:
     return out
 
 
-_NOTIFIER_TEMP_FILES: List[str] = []
+def _sweep_old_notifier_temp_files(max_age_seconds: int = 3600) -> None:
+    """Unlink stale supertool-before-* files older than max_age_seconds.
 
+    NOT cleanup-on-exit: notifiers are fire-and-forget — the parent supertool
+    exits within milliseconds of spawning the notifier, but consumers
+    (cursor-witness extension) need the temp file alive for seconds (load
+    into a diff view) up to a minute (extension's 60s cleanup timer).
+    Deleting on parent atexit would race the consumer.
 
-def _cleanup_notifier_temp_files() -> None:
-    """Best-effort unlink of any before_file temp files this process created.
-
-    Observers (cursor-witness extension) normally delete the file after they
-    consume it. If the observer is absent or crashes, this atexit hook keeps
-    /tmp from filling up over many sessions.
+    Strategy: each supertool invocation sweeps before-files older than 1h.
+    Long enough that no live diff view depends on them, short enough that
+    /tmp doesn't fill over months.
     """
-    for p in _NOTIFIER_TEMP_FILES:
-        try: os.unlink(p)
-        except OSError: pass
+    import glob
+    now = time.time()
+    for p in glob.glob("/tmp/supertool-before-*"):
+        try:
+            if now - os.path.getmtime(p) > max_age_seconds:
+                os.unlink(p)
+        except OSError:
+            pass
 
 
-atexit.register(_cleanup_notifier_temp_files)
+# Run at import time AND atexit. Import-time sweep clears orphans from prior
+# sessions before any new notifier fires. atexit catches any our process spawned
+# whose consumer didn't pick them up (best-effort double cleanup).
+_sweep_old_notifier_temp_files()
+atexit.register(_sweep_old_notifier_temp_files)
 
 
 def _run_notifiers(op: str, path: str, line: Optional[int] = None,
@@ -7784,17 +7821,18 @@ def _run_notifiers(op: str, path: str, line: Optional[int] = None,
     """
     specs = _applicable_notifiers(op, path)
     if not specs:
+        _notifier_log(f"no notifier applicable for op={op} path={path}")
         return
+    _notifier_log(f"dispatch op={op} path={path} line={line} line_end={line_end} pre_content={len(pre_content) if pre_content else 0}B notifiers={list(specs.keys())}")
 
     before_file = ""
     if pre_content is not None:
         try:
             ext = os.path.splitext(path)[1] or ".txt"
             fd, before_file = tempfile.mkstemp(
-                prefix="supertool-before-", suffix=ext)
+                prefix="supertool-before-", suffix=ext, dir="/tmp")
             with os.fdopen(fd, "wb") as f:
                 f.write(pre_content)
-            _NOTIFIER_TEMP_FILES.append(before_file)
         except OSError:
             before_file = ""
 
@@ -7802,12 +7840,18 @@ def _run_notifiers(op: str, path: str, line: Optional[int] = None,
         cmd = spec.get("cmd")
         if not cmd:
             continue
+        # Empty placeholders must survive shlex.split as empty string args, not
+        # collapse into "two spaces" — which would shift positional argv on
+        # consumers like notify.py. shlex.quote("") → '' keeps the slot.
+        def _sub(val: Any) -> str:
+            s = str(val) if val is not None and val != "" else ""
+            return shlex.quote(s)
         cmd = (cmd
-               .replace("{op}", op)
-               .replace("{file}", path)
-               .replace("{line}", str(line if line is not None else ""))
-               .replace("{line_end}", str(line_end if line_end is not None else ""))
-               .replace("{before_file}", before_file)
+               .replace("{op}", _sub(op))
+               .replace("{file}", _sub(path))
+               .replace("{line}", _sub(line))
+               .replace("{line_end}", _sub(line_end))
+               .replace("{before_file}", _sub(before_file))
                .replace("{supertool_dir}", _INSTALL_DIR))
         try:
             subprocess.Popen(
