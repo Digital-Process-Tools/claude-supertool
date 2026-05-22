@@ -7,9 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0]
+
+### Added
+
+- `validators/rector-mcp/` — bridges supertool validators to [`dpt/mcp-rector-warm`](https://github.com/Digital-Process-Tools/mcp-rector-warm) via UDS daemon. ~14× faster per edit on Rector validation.
+- `validators/phpunit-mcp/` — bridges to [`dpt/mcp-phpunit-warm`](https://github.com/Digital-Process-Tools/mcp-phpunit-warm). ~25× faster per edit.
+- `validators/phpstan-mcp/` — bridges to [`dpt/mcp-phpstan-warm`](https://github.com/Digital-Process-Tools/mcp-phpstan-warm) (PHPStan worker over TCP NDJSON). ~30× faster per edit.
+- `docs/mcp-warm-process-servers.md` — overview of the three warm MCP servers and how to wire them.
+
+All three adapters share the same shape: auto-spawn UDS daemon via `presets/mcp/daemon.py`, send MCP `initialize` + `tools/call`, format response as SCHEMA.md validator JSON.
+
 ## [0.11.0]
 
 Initial public changelog. See git history for prior versions.
 
-[Unreleased]: https://github.com/Digital-Process-Tools/claude-supertool/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/Digital-Process-Tools/claude-supertool/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/Digital-Process-Tools/claude-supertool/releases/tag/v0.13.0
 [0.11.0]: https://github.com/Digital-Process-Tools/claude-supertool/releases/tag/v0.11.0
