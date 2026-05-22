@@ -8,6 +8,7 @@
     "vscode": "^1.80.0"
   },
   "categories": ["Other"],
+  "icon": "icon.png",
   "activationEvents": ["onStartupFinished"],
   "main": "./out/extension.js",
   "contributes": {
