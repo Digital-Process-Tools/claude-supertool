@@ -211,6 +211,13 @@
   },
   "ops": {},
   "aliases": {},
+  "notifiers": {
+    "cursor-witness": {
+      "cmd": "python3 {supertool_dir}/notifiers/cursor-witness/notify.py {op} {file} {line} {line_end} {before_file}",
+      "match": "*",
+      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim", "read", "around_line", "between", "map"]
+    }
+  },
   "validators": {
     "lsp-diag": {
       "cmd": "python3 {supertool_dir}/validators/lsp-diag/lsp-diag.py {file}",
