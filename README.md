@@ -225,6 +225,42 @@ Full reference (architecture, all five LSP ops, recipe for adding a new MCP serv
 
 ---
 
+## Notifiers — observe ops in flight
+
+Notifiers are validators' read-friendly sibling. Same `hooks_into` / `match` shape, but **spawn-and-forget** — fire on reads as well as writes, never block the parent op, no rollback semantics. They exist so external tools can tap supertool's op stream: editor sync, Slack pings, audit logs, anything.
+
+```json
+"notifiers": {
+  "my-observer": {
+    "cmd": "python3 observe.py {op} {file} {line} {line_end} {before_file}",
+    "match": "*",
+    "hooks_into": ["edit", "replace", "paste", "vim", "around_line", "between", "read"]
+  }
+}
+```
+
+Placeholders: `{op}`, `{file}`, `{line}`, `{line_end}`, `{before_file}` (pre-edit content path for mutating ops), `{supertool_dir}`. Unset values render as empty strings.
+
+Full reference: [docs/notifiers.md](docs/notifiers.md).
+
+---
+
+## Cursor Witness — watch the agent work in your editor
+
+The flagship notifier consumer. Ships in `notifiers/cursor-witness/`. A VSCode/Cursor extension listens on a Unix socket; supertool's notifier writes one JSON event per op. When the agent edits a file, Cursor opens it in a **diff view** (before vs after). When the agent reads a range, the lines are highlighted and the editor scrolls to them — highlight fades after 4 seconds.
+
+```bash
+cd notifiers/cursor-witness/extension && npm install && npm run compile
+ln -s "$(pwd)" ~/.cursor/extensions/digital-process-tools.cursor-witness-0.1.0
+# Reload Cursor → "$(eye) Max: idle" in the status bar
+```
+
+Then wire the notifier in `.supertool.json` (see [docs/cursor-witness.md](docs/cursor-witness.md)).
+
+It's the closest thing to pair-programming with an autonomous agent: the agent's work becomes visible in your editor as it happens, with no extra commands.
+
+---
+
 ## RTK integration
 
 When [rtk](https://github.com/reachingforthejack/rtk) is installed, supertool automatically delegates `read`, `grep`, and `wc` to RTK for compressed output. No configuration needed — detected via `which rtk` at first use.
