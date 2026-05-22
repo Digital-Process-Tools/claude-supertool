@@ -1493,6 +1493,17 @@ def _ts_node_name(node: Any, lang_name: str) -> str:
     if node.type == "const_element" and node.children:
         return node.children[0].text.decode("utf-8", errors="replace")
 
+    # PHP property_declaration (typed props since 7.4): nested
+    # property_element → variable_name → $name. Walk down to find the variable.
+    if node.type == "property_declaration":
+        for child in node.children:
+            if child.type == "property_element":
+                for grandchild in child.children:
+                    if grandchild.type == "variable_name":
+                        # variable_name → "$" + name child; strip the leading $
+                        text = grandchild.text.decode("utf-8", errors="replace")
+                        return text.lstrip("$")
+
     # Fallback: first identifier-like child
     for child in node.children:
         if child.type in ("identifier", "name", "type_identifier",

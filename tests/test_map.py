@@ -399,6 +399,36 @@ class MyClass {
     assert "method doSomething" in out
 
 
+@pytest.mark.skipif(
+    not _has_any_tree_sitter(),
+    reason="no tree-sitter package installed"
+)
+def test_map_php_typed_property_names(tmp_path: Path, enable_tree_sitter) -> None:
+    """PHP typed properties (PHP 7.4+) should show their real name, not <anonymous>.
+
+    Regression: tree-sitter's property_declaration node nests the name inside
+    property_element → variable_name, one level deeper than _ts_node_name walked.
+    """
+    f = tmp_path / "Helper.php"
+    f.write_text("""<?php
+class Helper {
+    private static array $repoPerKey = [];
+    protected static int $callerIndex = 2;
+    private static ?string $agency = null;
+    public string $simple;
+    public ?int $optional = null;
+}
+""")
+    out = supertool.op_map(str(f))
+    assert "tier: tree-sitter" in out
+    assert "property repoPerKey" in out
+    assert "property callerIndex" in out
+    assert "property agency" in out
+    assert "property simple" in out
+    assert "property optional" in out
+    assert "<anonymous>" not in out
+
+
 # ---------------------------------------------------------------------------
 # map — additional coverage for branches and error paths
 # ---------------------------------------------------------------------------
