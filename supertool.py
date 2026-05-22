@@ -105,7 +105,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-VERSION = "0.12.0"  # bumped for MCP daemon + notifiers + cursor-witness
+VERSION = "0.12.1"
 
 MAX_READ_LINES = 300
 MAX_READ_BYTES = 20000  # ~20KB cap — prevents Claude Code "Output too large"
