@@ -7730,6 +7730,98 @@ def _applicable_validators(op: str, path: str) -> Dict[str, Dict[str, Any]]:
     return out
 
 
+def _applicable_notifiers(op: str, path: str) -> Dict[str, Dict[str, Any]]:
+    """Notifiers are validator's read-friendly sibling: same hooks_into/match shape,
+    but fire-and-forget. Hook any op (reads included). No rollback, no receipt parsing.
+    """
+    cfg = _load_config()
+    notifiers = cfg.get("notifiers") or {}
+    if not notifiers:
+        return {}
+    out: Dict[str, Dict[str, Any]] = {}
+    for name, spec in notifiers.items():
+        if not isinstance(spec, dict):
+            continue
+        if op not in (spec.get("hooks_into") or []):
+            continue
+        glob = spec.get("match", "*")
+        if path and glob and not _match_glob(path, glob):
+            continue
+        out[name] = spec
+    return out
+
+
+_NOTIFIER_TEMP_FILES: List[str] = []
+
+
+def _cleanup_notifier_temp_files() -> None:
+    """Best-effort unlink of any before_file temp files this process created.
+
+    Observers (cursor-witness extension) normally delete the file after they
+    consume it. If the observer is absent or crashes, this atexit hook keeps
+    /tmp from filling up over many sessions.
+    """
+    for p in _NOTIFIER_TEMP_FILES:
+        try: os.unlink(p)
+        except OSError: pass
+
+
+atexit.register(_cleanup_notifier_temp_files)
+
+
+def _run_notifiers(op: str, path: str, line: Optional[int] = None,
+                   pre_content: Optional[bytes] = None,
+                   line_end: Optional[int] = None) -> None:
+    """Spawn-and-forget every matching notifier. Returns immediately.
+
+    line: start line (1-indexed) when known
+    line_end: end line (1-indexed inclusive) when the op exposes a range
+    pre_content: file bytes BEFORE the op ran. Written to a temp file and
+    exposed as `{before_file}` in the notifier cmd template — enables diff
+    visualization in observers like cursor-witness.
+
+    Notifier failures are swallowed — observation must never break the op.
+    """
+    specs = _applicable_notifiers(op, path)
+    if not specs:
+        return
+
+    before_file = ""
+    if pre_content is not None:
+        try:
+            ext = os.path.splitext(path)[1] or ".txt"
+            fd, before_file = tempfile.mkstemp(
+                prefix="supertool-before-", suffix=ext)
+            with os.fdopen(fd, "wb") as f:
+                f.write(pre_content)
+            _NOTIFIER_TEMP_FILES.append(before_file)
+        except OSError:
+            before_file = ""
+
+    for name, spec in specs.items():
+        cmd = spec.get("cmd")
+        if not cmd:
+            continue
+        cmd = (cmd
+               .replace("{op}", op)
+               .replace("{file}", path)
+               .replace("{line}", str(line if line is not None else ""))
+               .replace("{line_end}", str(line_end if line_end is not None else ""))
+               .replace("{before_file}", before_file)
+               .replace("{supertool_dir}", _INSTALL_DIR))
+        try:
+            subprocess.Popen(
+                shlex.split(cmd),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                close_fds=True,
+                start_new_session=True,
+            )
+        except (OSError, ValueError):
+            pass
+
+
 def _validator_resolve(spec: Dict[str, Any], file: str) -> Optional[str]:
     """Run optional `resolve` cmd to map source→target (e.g. source→test).
 
@@ -8131,14 +8223,27 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
         return do_op()
     applicable_fmt = _applicable_formatters(op, path)
     applicable = _applicable_validators(op, path)
+    applicable_notif = _applicable_notifiers(op, path)
     if not applicable_fmt and not applicable:
-        return do_op()
+        # No validators/formatters — still need pre_content for notifier diff view
+        pre_for_notif = None
+        if applicable_notif and os.path.isfile(path):
+            try:
+                with open(path, "rb") as f:
+                    pre_for_notif = f.read()
+            except OSError:
+                pass
+        body = do_op()
+        _run_notifiers(op, path, pre_content=pre_for_notif)
+        return body
 
     needs_rollback = any(v.get("rollback_on_fail") for v in applicable.values())
     needs_fmt_rollback = any(v.get("rollback_on_fail") for v in applicable_fmt.values())
 
+    # Capture pre_content for rollback AND/OR notifier diff view
     pre_content: Optional[bytes] = None
-    if (needs_rollback or needs_fmt_rollback) and os.path.isfile(path):
+    needs_pre = needs_rollback or needs_fmt_rollback or bool(applicable_notif)
+    if needs_pre and os.path.isfile(path):
         try:
             with open(path, "rb") as f:
                 pre_content = f.read()
@@ -8148,6 +8253,9 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
     before = _validators_run_batch(applicable, path) if applicable else {}
 
     body = do_op()
+
+    # Fire notifiers (observers) — never blocks, never raises
+    _run_notifiers(op, path, pre_content=pre_content)
 
     if isinstance(body, str) and body.startswith("ERROR"):
         return body
@@ -9822,7 +9930,105 @@ def dispatch(arg: str) -> str:
     except (ValueError, IndexError) as e:
         body = f"ERROR: argument parsing: {e}\n"
 
+    # Fire read-op notifiers (mutating ops already fire inside _run_with_validators)
+    try:
+        _notify_read_op(op, parts)
+    except Exception:
+        pass  # observation must never break the call
+
     return header + body
+
+
+# Read-op extractors → (path, line_start, line_end). Used by _notify_read_op.
+# Each entry maps `op` to a function that takes the parsed `parts` list and
+# returns either (path, line, line_end) or None if the op doesn't have a
+# meaningful single-file/range to notify on.
+def _read_target_around_line(parts: List[str]) -> Optional[Tuple[str, Optional[int], Optional[int]]]:
+    # around_line:PATH:LINE[:N]   default N=10
+    if len(parts) < 3:
+        return None
+    path = parts[1]
+    try:
+        line = int(parts[2])
+    except (TypeError, ValueError):
+        return None
+    n = 10
+    if len(parts) > 3:
+        try: n = int(parts[3])
+        except (TypeError, ValueError): pass
+    return (path, max(1, line - n), line + n)
+
+
+def _read_target_read(parts: List[str]) -> Optional[Tuple[str, Optional[int], Optional[int]]]:
+    # read:PATH[:OFFSET:LIMIT|:full]
+    if len(parts) < 2:
+        return None
+    path = parts[1]
+    if len(parts) >= 4:
+        try:
+            offset = int(parts[2]); limit = int(parts[3])
+            return (path, max(1, offset), offset + limit - 1)
+        except (TypeError, ValueError):
+            return (path, None, None)
+    return (path, None, None)
+
+
+def _read_target_file_only(parts: List[str]) -> Optional[Tuple[str, Optional[int], Optional[int]]]:
+    if len(parts) < 2:
+        return None
+    return (parts[1], None, None)
+
+
+def _read_target_between(parts: List[str]) -> Optional[Tuple[str, Optional[int], Optional[int]]]:
+    # between:SYMBOL:PATH (resolve range via tree-sitter)
+    # between:re:START:END:PATH (regex — line numbers unknown without re-running)
+    if len(parts) < 3:
+        return None
+    if parts[1] == "re" and len(parts) >= 5:
+        # Regex variant — return file only, no precomputable range
+        return (parts[4], None, None)
+    symbol = parts[1]
+    path = parts[2]
+    if not _has_tree_sitter():
+        return (path, None, None)
+    ext = os.path.splitext(path)[1].lower()  # keep the leading dot — that's the key
+    lang = _TS_LANG_MAP.get(ext)
+    if not lang:
+        return (path, None, None)
+    found = _ts_find_node(path, lang, symbol)
+    if found is None:
+        return (path, None, None)
+    node, _kind, _total = found
+    start_line = node.start_point[0] + 1  # 0-indexed → 1-indexed
+    end_line = node.end_point[0] + 1
+    return (path, start_line, end_line)
+
+
+_READ_OP_TARGETS: Dict[str, Any] = {
+    "around_line": _read_target_around_line,
+    "read":        _read_target_read,
+    "between":     _read_target_between,
+    "map":         _read_target_file_only,
+    "tail":        _read_target_file_only,
+    "head":        _read_target_file_only,
+    "wc":          _read_target_file_only,
+    "stat":        _read_target_file_only,
+    "blame":       _read_target_file_only,
+}
+
+
+def _notify_read_op(op: str, parts: List[str]) -> None:
+    """Fire notifiers for read ops (mutating ops fire inside _run_with_validators)."""
+    extractor = _READ_OP_TARGETS.get(op)
+    if not extractor:
+        return
+    target = extractor(parts)
+    if target is None:
+        return
+    path, line_start, line_end = target
+    if not path:
+        return
+    _run_notifiers(op, path, line=line_start, line_end=line_end)
 
 
 def caller_tag() -> str:
