@@ -243,3 +243,54 @@ def test_next_id_unique_across_threads() -> None:
     t1.join(); t2.join()
     assert len(ids) == 2000
     assert len(set(ids)) == 2000
+
+
+# ---------------------------------------------------------------------------
+# Auto-spawn connect timeout (PR #134)
+# ---------------------------------------------------------------------------
+
+def test_connect_timeout_default_is_60s() -> None:
+    """The retry budget for auto-spawn-then-connect is 60s by default.
+
+    Cold-starting cclsp+intelephense on a large repo (600K LOC) takes 30-60s.
+    The previous 7.5s budget gave up before the daemon bound its socket.
+    """
+    assert MCPClient._CONNECT_TIMEOUT_SECONDS == 60
+
+
+def test_connect_timeout_env_override(tmp_path: Path, monkeypatch) -> None:
+    """SUPERTOOL_MCP_CONNECT_TIMEOUT overrides the default budget."""
+    nonexistent = f"/tmp/st-timeout-{uuid.uuid4().hex[:8]}.sock"
+    c = MCPClient(name="x", timeout=1, socket_path=nonexistent)
+    monkeypatch.setenv("SUPERTOOL_MCP_CONNECT_TIMEOUT", "0.5")
+    start = time.time()
+    with pytest.raises(MCPServerError):
+        c.spawn()
+    elapsed = time.time() - start
+    # Should give up around 0.5s, not the 60s default
+    assert elapsed < 5.0, f"timeout override ignored: spent {elapsed:.2f}s"
+
+
+def test_connect_error_mentions_stderr_log_when_present(tmp_path: Path, monkeypatch) -> None:
+    """When the daemon wrote a stderr log, error points the user at it."""
+    sock = f"/tmp/st-broken-{uuid.uuid4().hex[:8]}.sock"
+    stderr_log = sock + ".stderr"
+    Path(stderr_log).write_text("cclsp: command not found\n")
+    c = MCPClient(name="lsp", timeout=1, socket_path=sock)
+    monkeypatch.setenv("SUPERTOOL_MCP_CONNECT_TIMEOUT", "0.3")
+    with pytest.raises(MCPServerError) as exc_info:
+        c.spawn()
+    msg = str(exc_info.value)
+    assert stderr_log in msg
+    assert "startup errors" in msg or "stderr" in msg
+
+
+def test_connect_error_hints_path_when_no_stderr_log(tmp_path: Path, monkeypatch) -> None:
+    """No stderr log → error hints that the configured cmd may not be on PATH."""
+    sock = f"/tmp/st-broken-{uuid.uuid4().hex[:8]}.sock"  # no .stderr companion
+    c = MCPClient(name="lsp", timeout=1, socket_path=sock)
+    monkeypatch.setenv("SUPERTOOL_MCP_CONNECT_TIMEOUT", "0.3")
+    with pytest.raises(MCPServerError) as exc_info:
+        c.spawn()
+    msg = str(exc_info.value)
+    assert "PATH" in msg or "cmd" in msg
