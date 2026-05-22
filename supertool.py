@@ -10210,12 +10210,22 @@ class MCPClient:
             self._sock_path = f"/tmp/supertool-mcp-{h}.sock"
             self._auto_spawn = True
 
+    # Auto-spawn connect-retry budget. Cold-starting cclsp+intelephense on a
+    # large repo (DVSI: 600K LOC) routinely takes 30-60s to bind the socket.
+    # First attempt fires the detached spawn; subsequent attempts poll.
+    # Override via SUPERTOOL_MCP_CONNECT_TIMEOUT (seconds).
+    _CONNECT_TIMEOUT_SECONDS = 60
+
     def spawn(self) -> None:
         """Connect to daemon socket. Auto-spawn detached daemon if not running."""
         with self._lock:
             if self._sock is not None:
                 return
-            for attempt in range(15):  # ~7.5s total
+            budget = float(os.environ.get("SUPERTOOL_MCP_CONNECT_TIMEOUT", self._CONNECT_TIMEOUT_SECONDS))
+            poll = 0.5
+            deadline = time.time() + budget
+            spawned = False
+            while time.time() < deadline:
                 try:
                     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
                     s.settimeout(self.timeout)
@@ -10223,18 +10233,24 @@ class MCPClient:
                     self._sock = s
                     return
                 except (FileNotFoundError, ConnectionRefusedError):
-                    if attempt == 0 and self._auto_spawn:
-                        # First miss → spawn daemon detached (production path only)
+                    if not spawned and self._auto_spawn:
                         try:
                             subprocess.Popen(
                                 [sys.executable, _MCP_DAEMON_SCRIPT, self.name, "--detach"],
                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                 stderr=subprocess.DEVNULL, close_fds=True,
                             )
+                            spawned = True
                         except OSError:
                             pass
-                    time.sleep(0.5)
-            raise MCPServerError(f"MCP daemon for '{self.name}' did not come up at {self._sock_path}")
+                    time.sleep(poll)
+            stderr_log = f"{self._sock_path}.stderr"
+            hint = (f"check {stderr_log} for cclsp/LSP startup errors"
+                    if os.path.exists(stderr_log)
+                    else "daemon never wrote a stderr log — check that mcp.<name>.cmd is on PATH")
+            raise MCPServerError(
+                f"MCP daemon for {self.name!r} did not bind {self._sock_path} within {budget:.0f}s. {hint}"
+            )
 
     def is_alive(self) -> bool:
         return self._sock is not None and not self._dead
