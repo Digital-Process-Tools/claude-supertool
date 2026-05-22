@@ -19,7 +19,6 @@ import socket
 import subprocess
 import sys
 import time
-import xml.etree.ElementTree as ET
 from shutil import which
 
 DAEMON_NAME = os.environ.get("MCP_PHPUNIT_DAEMON_NAME", "phpunit-warm")
@@ -131,58 +130,57 @@ def source_context(file_path: str, error_line: int | None) -> list[str]:
     return ctx
 
 
-def parse_junit(file_path: str, junit_xml: str, dur_ms: int) -> dict:
+def parse_json_output(file_path: str, output_json: str, dur_ms: int) -> dict:
     base = {"tool": "phpunit-mcp", "file": file_path, "ok": True, "count": 0,
             "errors": [], "duration_ms": dur_ms}
     try:
-        root = ET.fromstring(junit_xml)
-    except ET.ParseError as e:
+        data = json.loads(output_json)
+    except json.JSONDecodeError as e:
         base["ok"] = False
         base["count"] = 1
         base["errors"] = [{"line": None, "col": None, "severity": "error",
-                           "code": "adapter", "msg": f"junit parse: {e}"}]
+                           "code": "adapter", "msg": f"output parse: {e}"}]
         return base
 
-    tests_total = failures = errors_n = skipped = assertions = 0
-    err_list = []
-    for ts in root.iter("testsuite"):
-        has_direct_cases = any(child.tag == "testcase" for child in ts)
-        if not has_direct_cases:
-            continue
-        tests_total += int(ts.get("tests", 0) or 0)
-        failures += int(ts.get("failures", 0) or 0)
-        errors_n += int(ts.get("errors", 0) or 0)
-        skipped += int(ts.get("skipped", 0) or 0)
-        assertions += int(ts.get("assertions", 0) or 0)
-        for tc in ts.iter("testcase"):
-            for tag in ("failure", "error"):
-                el = tc.find(tag)
-                if el is None:
-                    continue
-                msg = (el.get("message") or el.text or "").strip().splitlines()[0]
-                line = tc.get("line")
-                try:
-                    line_int = int(line) if line else None
-                except ValueError:
-                    line_int = None
-                err_list.append({
-                    "line": line_int,
-                    "col": None,
-                    "severity": "error",
-                    "code": f"phpunit.{tag}",
-                    "msg": f"{tc.get('name', '?')}: {msg}",
-                    "source_context": source_context(file_path, line_int),
-                })
+    failures = data.get("failures", [])
+    errors   = data.get("errors", [])
+    skipped  = data.get("skipped", [])
 
-    fail_total = failures + errors_n
-    base["ok"] = fail_total == 0
-    base["count"] = fail_total
+    err_list = []
+    for entry in failures:
+        line_int = entry.get("line") or None
+        err_list.append({
+            "line": line_int,
+            "col": None,
+            "severity": "error",
+            "code": "phpunit.failure",
+            "msg": f"{entry.get('method', '?')}: {entry.get('message', '')}",
+            "source_context": source_context(entry.get("file", file_path), line_int),
+        })
+    for entry in errors:
+        line_int = entry.get("line") or None
+        err_list.append({
+            "line": line_int,
+            "col": None,
+            "severity": "error",
+            "code": "phpunit.error",
+            "msg": f"{entry.get('method', '?')}: {entry.get('message', '')}",
+            "source_context": source_context(entry.get("file", file_path), line_int),
+        })
+
+    tests_total = data.get("tests", 0)
+    fail_total  = len(failures) + len(errors)
+    assertions  = data.get("assertions", 0)
+    skipped_n   = len(skipped)
+
+    base["ok"]     = fail_total == 0
+    base["count"]  = fail_total
     base["errors"] = err_list
     base["metrics"] = {
-        "tests_total": tests_total,
-        "tests_passed": tests_total - fail_total - skipped,
-        "tests_skipped": skipped,
-        "assertions": assertions,
+        "tests_total":   tests_total,
+        "tests_passed":  tests_total - fail_total - skipped_n,
+        "tests_skipped": skipped_n,
+        "assertions":    assertions,
     }
     return base
 
@@ -199,18 +197,20 @@ def format_response(file_path: str, mcp_resp: dict, dur_ms: int) -> dict:
         return base
 
     structured = (mcp_resp.get("result", {}) or {}).get("structuredContent") or {}
-    junit_xml = structured.get("output", "") or ""
+    output    = structured.get("output", "") or ""
     exit_code = structured.get("exit_code", 0)
 
-    if junit_xml.strip().startswith("<"):
-        return parse_junit(file_path, junit_xml, dur_ms)
+    # v0.2.0+: output is always JSON from InMemorySubscriber
+    if output.strip().startswith("{"):
+        return parse_json_output(file_path, output, dur_ms)
 
+    # Fallback for empty output with non-zero exit (e.g. config error before any test ran)
     if exit_code != 0:
         base["ok"] = False
         base["count"] = 1
         base["errors"] = [{"line": None, "col": None, "severity": "error",
                            "code": "phpunit.exit",
-                           "msg": f"phpunit exit {exit_code} with no junit output"}]
+                           "msg": f"phpunit exit {exit_code} with no output"}]
     return base
 
 
