@@ -1,0 +1,208 @@
+#!/usr/bin/env python3
+"""Rector validator via warm MCP daemon.
+
+Usage: rector-mcp.py FILE
+
+Connects to the long-lived mcp-rector-warm daemon over UDS. Auto-spawns on first call.
+Daemon name + working dir + rector config are read from $MCP_RECTOR_* env vars (set by
+the `cmd` template in .supertool.json), with sensible fallbacks.
+
+Output: SCHEMA.md-compliant JSON on stdout (single line).
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import socket
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+DAEMON_NAME = os.environ.get("MCP_RECTOR_DAEMON_NAME", "rector-warm")
+DAEMON_PROC = os.environ.get("MCP_RECTOR_BIN", "mcp-rector-warm")
+WORKING_DIR = os.environ.get("MCP_RECTOR_WORKING_DIR", os.getcwd())
+RECTOR_CONFIG = os.environ.get("MCP_RECTOR_CONFIG")  # optional
+SPAWN_TIMEOUT_SEC = 30
+CALL_TIMEOUT_SEC = 120
+
+
+def sock_paths(cwd: str, name: str) -> tuple[str, str]:
+    h = hashlib.sha1(f"{cwd}::{name}".encode()).hexdigest()[:12]
+    base = f"/tmp/supertool-mcp-{h}"
+    return f"{base}.sock", f"{base}.pid"
+
+
+def ensure_daemon(cwd: str) -> str:
+    sock, pid = sock_paths(cwd, DAEMON_NAME)
+    if os.path.exists(sock) and is_alive(pid):
+        return sock
+
+    # Resolve mcp-rector-warm binary: env override > $PATH > absolute path in env.
+    bin_path = DAEMON_PROC
+    if not os.path.isabs(bin_path):
+        from shutil import which
+        resolved = which(bin_path)
+        if resolved is None:
+            raise RuntimeError(
+                f"mcp-rector-warm not found on $PATH. Install via: composer global require dpt/mcp-rector-warm\n"
+                f"Or set MCP_RECTOR_BIN=/abs/path/to/mcp-rector-warm."
+            )
+        bin_path = resolved
+
+    # daemon.py lives in supertool's presets/mcp/. Find it relative to this adapter file.
+    # adapter = .../claude-supertool/validators/rector-mcp/rector-mcp.py → 3 levels up = supertool root.
+    supertool_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    daemon_script = os.path.join(supertool_root, "presets/mcp/daemon.py")
+    if not os.path.isfile(daemon_script):
+        raise RuntimeError(f"daemon.py not found: {daemon_script}")
+
+    # Write spec into a temp .supertool.json override? Simpler: assume caller's
+    # .supertool.json has mcp.<DAEMON_NAME> entry. daemon.py reads it from cwd.
+    proc = subprocess.Popen(
+        ["python3", daemon_script, DAEMON_NAME, "--detach"],
+        cwd=cwd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    proc.wait(timeout=5)
+
+    deadline = time.monotonic() + SPAWN_TIMEOUT_SEC
+    while time.monotonic() < deadline:
+        if os.path.exists(sock):
+            return sock
+        time.sleep(0.1)
+    raise RuntimeError(f"daemon failed to bind {sock} within {SPAWN_TIMEOUT_SEC}s")
+
+
+def is_alive(pid_path: str) -> bool:
+    try:
+        with open(pid_path) as f:
+            pid = int(f.read().strip())
+        os.kill(pid, 0)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def ndjson_call(sock_path: str, file_path: str) -> dict:
+    """Initialize + tools/call(rector_process). Returns parsed MCP response dict."""
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+        s.settimeout(CALL_TIMEOUT_SEC)
+        s.connect(sock_path)
+
+        # initialize + notify + call — daemon bridges raw stdio so we speak JSON-RPC.
+        msgs = [
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+             "params": {"protocolVersion": "2024-11-05", "capabilities": {},
+                        "clientInfo": {"name": "rector-mcp-adapter", "version": "1.0.0"}}},
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+             "params": {"name": "rector_process",
+                        "arguments": {"path": file_path, "dryRun": True}}},
+        ]
+        s.sendall(("\n".join(json.dumps(m) for m in msgs) + "\n").encode())
+
+        # Read until id=2 response or EOF.
+        buf = b""
+        deadline = time.monotonic() + CALL_TIMEOUT_SEC
+        while time.monotonic() < deadline:
+            chunk = s.recv(65536)
+            if not chunk:
+                break
+            buf += chunk
+            # Try parse: look for response with id=2.
+            for line in buf.splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(obj, dict) and obj.get("id") == 2:
+                    return obj
+        raise RuntimeError("no id=2 response received within timeout")
+
+
+def format_response(file_path: str, mcp_resp: dict, duration_ms: int) -> dict:
+    """Convert MCP response to SCHEMA.md validator JSON."""
+    base = {"tool": "rector-mcp", "file": file_path,
+            "ok": True, "count": 0, "errors": [], "duration_ms": duration_ms}
+
+    if "error" in mcp_resp:
+        base["ok"] = False
+        base["count"] = 1
+        base["errors"] = [{"line": None, "col": None, "severity": "error",
+                           "code": "mcp", "msg": str(mcp_resp["error"])}]
+        return base
+
+    result = mcp_resp.get("result", {})
+    structured = result.get("structuredContent") or {}
+    exit_code = structured.get("exit_code", 0)
+    output = structured.get("output", "")
+
+    # Parse rector's JSON output if present. JsonOutputFormatter emits pretty-printed
+    # multi-line JSON, so find the first '{' and use raw_decode on the rest.
+    rector_json = None
+    text = output or ""
+    brace = text.find("{")
+    if brace != -1:
+        try:
+            rector_json, _ = json.JSONDecoder().raw_decode(text[brace:])
+        except json.JSONDecodeError:
+            rector_json = None
+
+    if rector_json:
+        changed = rector_json.get("changed_files", [])
+        errors = rector_json.get("errors", [])
+        # rector dry-run exit 2 = files would change; treat as warning.
+        if changed:
+            base["ok"] = False
+            base["count"] = len(changed)
+            base["errors"] = [{"line": None, "col": None, "severity": "warning",
+                               "code": "rector.refactor",
+                               "msg": f"Rector would refactor {f}"} for f in changed]
+        if errors:
+            base["ok"] = False
+            for e in errors:
+                base["count"] += 1
+                msg = e.get("message", str(e)) if isinstance(e, dict) else str(e)
+                base["errors"].append({"line": None, "col": None, "severity": "error",
+                                       "code": "rector.error", "msg": msg})
+    elif exit_code != 0:
+        base["ok"] = False
+        base["count"] = 1
+        base["errors"] = [{"line": None, "col": None, "severity": "error",
+                           "code": "rector.exit",
+                           "msg": f"rector exit {exit_code}"}]
+
+    return base
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) < 2:
+        sys.stderr.write("usage: rector-mcp.py FILE\n")
+        return 2
+    file_path = argv[1]
+    t0 = time.monotonic()
+    try:
+        sock = ensure_daemon(WORKING_DIR)
+        resp = ndjson_call(sock, os.path.abspath(file_path))
+    except Exception as e:
+        import traceback
+        tb = traceback.format_exc().splitlines()[-3:]
+        print(json.dumps({
+            "tool": "rector-mcp", "file": file_path, "ok": False, "count": 1,
+            "errors": [{"line": None, "col": None, "severity": "error",
+                        "code": "adapter", "msg": f"{type(e).__name__}: {e} | trace: {' | '.join(tb)}"}],
+            "duration_ms": int((time.monotonic() - t0) * 1000),
+        }))
+        return 0
+    duration_ms = int((time.monotonic() - t0) * 1000)
+    print(json.dumps(format_response(file_path, resp, duration_ms)))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

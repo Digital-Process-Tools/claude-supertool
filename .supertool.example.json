@@ -26,6 +26,13 @@
         "rename":  "rename_symbol"
       },
       "timeout": 60
+    },
+    "_example-rector-warm": {
+      "cmd": ["mcp-rector-warm", "--working-dir=/abs/path/to/project", "--config=/abs/path/to/project/rector.php"],
+      "match": "*.php",
+      "timeout": 120,
+      "idle_timeout": 1800,
+      "_install": "composer global require dpt/mcp-rector-warm — then this server is on $PATH. Pair with validators/rector-mcp/ adapter for warm-process Rector validation. See validators/rector-mcp/README.md."
     }
   },
   "introduction": "supertool batches multiple file operations into one Bash call.\n\nInvoke via Bash:\n./supertool \\\n    'read:src/app/Module.py' \\\n    'read:src/app/Config.py' \\\n    'grep:class:src/app/:20' \\\n    'glob:src/app/**/*.py'\n\nRules:\n- One call, many ops. 6-7 per call is normal. Each separate call wastes money.\n- Paths are relative to project root.\n- Single quotes around each op.\n- Use Read tool ONLY for the file you're about to Edit \u2014 supertool for everything else.\n\n@file payload route (mutating ops only \u2014 edit, replace, replace_lines, paste, vim):\n- Inline:  ./supertool 'edit:::OLD:::NEW:::PATH'\n- Payload: ./supertool 'edit:@-' <<'EOF' ... EOF   (or 'edit:@path.toml')\n- Format auto-detected: starts with { or [ \u2192 JSON; else TOML.\n- TOML '''triple-single-quote''' preserves backslashes/quotes/newlines byte-for-byte \u2014 use for code blocks. Single-quoted 'literal' for one-liners with \\e etc.\n- Field names match the syntax tokens lowercased (edit:::OLD:::NEW:::PATH \u2192 old, new, path).\n\nTo avoid escape problems, use chr(10)/chr(27) instead of \\n/\\x1b in payload content.",
