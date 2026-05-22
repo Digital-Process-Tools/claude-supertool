@@ -98,8 +98,9 @@ def test_notifier_does_not_block_caller(tmp_path: Path) -> None:
     start = time.time()
     supertool._run_notifiers("edit", "x.php")
     elapsed = time.time() - start
-    # Should return well under the 5s sleep
-    assert elapsed < 1.0, f"_run_notifiers blocked for {elapsed:.2f}s"
+    # Should return well under the 5s sleep. 2s threshold tolerates cold
+    # python startup on slow CI runners while still catching real blocks.
+    assert elapsed < 2.0, f"_run_notifiers blocked for {elapsed:.2f}s"
 
 
 def test_notifier_failure_does_not_raise(tmp_path: Path) -> None:

@@ -36,7 +36,7 @@ Add `read`, `grep`, `glob` to `hooks_into` if you also want to follow read ops (
 ## Settings
 
 - `cursorWitness.socketPath` — override the auto-derived socket path
-- `cursorWitness.openOnRead` — also focus files on read ops (default: false)
+- `cursorWitness.openOnRead` — focus files on read ops (default: `true`; set `false` for edit-only)
 
 ## How it works
 

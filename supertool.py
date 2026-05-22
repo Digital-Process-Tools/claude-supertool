@@ -7751,6 +7751,24 @@ def _applicable_notifiers(op: str, path: str) -> Dict[str, Dict[str, Any]]:
     return out
 
 
+_NOTIFIER_TEMP_FILES: List[str] = []
+
+
+def _cleanup_notifier_temp_files() -> None:
+    """Best-effort unlink of any before_file temp files this process created.
+
+    Observers (cursor-witness extension) normally delete the file after they
+    consume it. If the observer is absent or crashes, this atexit hook keeps
+    /tmp from filling up over many sessions.
+    """
+    for p in _NOTIFIER_TEMP_FILES:
+        try: os.unlink(p)
+        except OSError: pass
+
+
+atexit.register(_cleanup_notifier_temp_files)
+
+
 def _run_notifiers(op: str, path: str, line: Optional[int] = None,
                    pre_content: Optional[bytes] = None,
                    line_end: Optional[int] = None) -> None:
@@ -7776,6 +7794,7 @@ def _run_notifiers(op: str, path: str, line: Optional[int] = None,
                 prefix="supertool-before-", suffix=ext)
             with os.fdopen(fd, "wb") as f:
                 f.write(pre_content)
+            _NOTIFIER_TEMP_FILES.append(before_file)
         except OSError:
             before_file = ""
 

@@ -189,7 +189,15 @@ function startServer(): void {
 
 function bindServer(): void {
   server = net.createServer(handleConnection);
-  server.on("error", (err) => {
+  server.on("error", (err: NodeJS.ErrnoException) => {
+    // TOCTOU: another extension host probed + unlinked + bound between our
+    // probe and our bind. Treat EADDRINUSE as "they won, we back off."
+    if (err.code === "EADDRINUSE") {
+      fileLog(`bind lost race (EADDRINUSE) — backing off`);
+      try { server?.close(); } catch { /* ignore */ }
+      server = null;
+      return;
+    }
     fileLog(`server error: ${err.message}`);
   });
   server.listen(socketPath, () => {
