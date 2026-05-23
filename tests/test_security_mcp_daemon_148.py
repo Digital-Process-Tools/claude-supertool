@@ -56,11 +56,20 @@ class TestSocketPidPaths:
         assert sock.endswith(".sock")
         assert pid.endswith(".pid")
 
-    def test_paths_not_under_tmp(self, tmp_runtime):
-        """The whole point of #148 — socket no longer in /tmp/."""
+    def test_paths_not_under_bare_tmp(self, monkeypatch):
+        """The whole point of #148 — socket no longer in `/tmp/supertool-mcp-*`.
+
+        We unset all overrides + XDG so runtime_dir picks the platform default
+        (`~/Library/Caches/...` on macOS, `~/.cache/...` on Linux fallback).
+        Neither should land under `/tmp/`.
+        """
+        monkeypatch.delenv("SUPERTOOL_RUNTIME_DIR", raising=False)
+        monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
         sock, pid = _paths.socket_pid_paths("/cwd", "name")
-        assert not sock.startswith("/tmp/")
-        assert not pid.startswith("/tmp/")
+        assert not sock.startswith("/tmp/supertool-mcp-"), \
+            f"#148 regression: socket back in bare /tmp/: {sock}"
+        assert not pid.startswith("/tmp/supertool-mcp-"), \
+            f"#148 regression: pidfile back in bare /tmp/: {pid}"
 
     def test_same_inputs_same_paths(self, tmp_runtime):
         """Deterministic — supervisor + status + stop must all compute the same path."""
