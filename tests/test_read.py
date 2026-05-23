@@ -193,3 +193,46 @@ def test_dispatch_read_full_keyword(tmp_path: Path, monkeypatch) -> None:
     out = supertool.dispatch(f"read:{f}:full")
     assert "[php abstract" not in out
     assert "<?php" in out
+
+
+# ---------------------------------------------------------------------------
+# Meta suffix (symlink / git / encoding / mtime / exec / crlf / conflict)
+# ---------------------------------------------------------------------------
+
+def test_read_meta_symlink(tmp_path: Path) -> None:
+    target = tmp_path / "real.txt"
+    target.write_text("hi")
+    link = tmp_path / "link.txt"
+    link.symlink_to(target)
+    out = supertool.op_read(str(link))
+    assert "->real.txt" in out or "->" + str(target) in out
+
+
+def test_read_meta_binary(tmp_path: Path) -> None:
+    f = tmp_path / "blob.bin"
+    f.write_bytes(b"\x00\x01\x02\x03binary")
+    out = supertool.op_read(str(f))
+    assert " bin" in out.splitlines()[0]
+
+
+def test_read_meta_crlf(tmp_path: Path) -> None:
+    f = tmp_path / "win.txt"
+    f.write_bytes(b"line1\r\nline2\r\n")
+    out = supertool.op_read(str(f))
+    assert "crlf" in out.splitlines()[0]
+
+
+def test_read_meta_conflict_markers(tmp_path: Path) -> None:
+    f = tmp_path / "conflicted.txt"
+    f.write_text("ok\n<<<<<<< HEAD\nmine\n=======\ntheirs\n>>>>>>> branch\n")
+    out = supertool.op_read(str(f))
+    assert "cf!" in out.splitlines()[0]
+
+
+def test_read_meta_clean_tracked_is_silent(tmp_path: Path) -> None:
+    f = tmp_path / "plain.txt"
+    f.write_text("hello\n")
+    out = supertool.op_read(str(f))
+    first = out.splitlines()[0]
+    for tok in ("bin", "non-utf8", "crlf", "cf!", "->"):
+        assert tok not in first
