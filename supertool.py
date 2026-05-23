@@ -526,7 +526,11 @@ def _is_parallel_safe(arg: str) -> bool:
 # ---------------------------------------------------------------------------
 
 def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
-    """Try to run op as a custom shell command from config["ops"].
+    """Try to run op as a custom command from config["ops"].
+
+    Runs argv-form (shell=False) — shell metachars in the cmd template are
+    literal tokens, not shell operators. `$VAR` / `${VAR}` expansion from
+    the op's env is performed by supertool (see _expand_env below), no shell.
 
     Returns formatted output string on match, None if op is not a custom op.
     """

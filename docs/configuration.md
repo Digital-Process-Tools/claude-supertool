@@ -85,13 +85,13 @@ Use this in session-start hooks or agent prompts to onboard LLMs to your project
 
 Entries document built-in operations (`syntax`, `description`, `example`). Set `"status": 0` to hide an entry from `./supertool 'ops'` output (works on `builtin-ops`, `ops`, and `aliases`). Besides documentation, `builtin-ops` entries can also override default behavior:
 
-| Op | Key | Default | Effect |
-|----|-----|---------|--------|
-| `read` | `max_lines` | 300 | Max lines per read |
-| `read` | `max_bytes` | 20000 | Max bytes per read (truncates at cap) |
-| `grep` | `max_results` | 10 | Default result limit when not specified in the op |
-| `grep` | `extensions` | `[]` (all files) | Restrict grep to these file patterns (e.g. `["*.py", "*.js"]`). Empty = search all files |
-| `glob` | `max_results` | 50 | Max files returned |
+| Op     | Key           | Default          | Effect                                                                                   |
+| ------ | ------------- | ---------------- | ---------------------------------------------------------------------------------------- |
+| `read` | `max_lines`   | 300              | Max lines per read                                                                       |
+| `read` | `max_bytes`   | 20000            | Max bytes per read (truncates at cap)                                                    |
+| `grep` | `max_results` | 10               | Default result limit when not specified in the op                                        |
+| `grep` | `extensions`  | `[]` (all files) | Restrict grep to these file patterns (e.g. `["*.py", "*.js"]`). Empty = search all files |
+| `glob` | `max_results` | 50               | Max files returned                                                                       |
 
 Example — increase read cap and restrict grep to PHP/XML:
 
@@ -104,7 +104,7 @@ Example — increase read cap and restrict grep to PHP/XML:
 }
 ```
 
-## `ops` — custom shell commands
+## `ops` — custom commands (argv-form, no shell)
 
 Called directly by name:
 
@@ -113,6 +113,16 @@ Called directly by name:
 ```
 
 Each op has `cmd`, `timeout`, `description`, `example`, and optional `status`. Ops accept `{file}` and `{dir}` (dirname of file) placeholders. Shorthand string ops (`"lint": "ruff check {file}"`) still work with a 60s default timeout.
+
+**`cmd` runs argv-form (`shell=False`), not in a shell.** Templates are tokenized via `shlex.split` and dispatched to `subprocess.run([...])`. This means:
+
+- ✅ **Works**: `python3 tool.py {file}`, `glab issue view {arg}`, `ruff check {file}`
+- ❌ **Does NOT work**: pipes (`|`), redirects (`>`, `>>`), chains (`;`, `&&`, `||`), command substitution (`$()`, backticks), globs (`*`, `?`)
+- ✅ **Still works**: `$VAR` / `${VAR}` expansion from the op's env (see [Extra config keys as environment variables](#extra-config-keys-as-environment-variables) below) — performed by supertool, no shell involved
+
+If you need shell features, write a small wrapper script and reference it: `"cmd": "bash scripts/my-wrapper.sh {file}"`.
+
+This closes the [#145](https://github.com/Digital-Process-Tools/claude-supertool/issues/145) RCE vector where a malicious `.supertool.json` could chain shell metachars in `cmd` templates to execute arbitrary commands on the next edit op.
 
 ## `aliases` — one name to multiple ops
 
@@ -130,13 +140,13 @@ built-in ops → custom ops (including preset ops) → aliases. Built-ins always
 
 ## Placeholders in custom ops and aliases
 
-| Placeholder | Expands to | Example |
-|-------------|-----------|---------|
-| `{file}` | First argument, shell-quoted, treated as file path | `cat {file}` |
-| `{dir}` | Directory of `{file}` | `ls {dir}` |
-| `{arg}` | First argument, shell-quoted, no path validation | `glab issue view {arg}` |
-| `{args}` | All arguments, each shell-quoted | `python3 tool.py {args}` |
-| `{path}` | Preset directory with trailing `/` (presets only) | `python3 {path}gitlab/issue.py {arg}` |
+| Placeholder | Expands to                                        | Example                               |
+| ----------- | ------------------------------------------------- | ------------------------------------- |
+| `{file}`    | First argument (one argv token after shlex.split) | `cat {file}`                          |
+| `{dir}`     | Directory of `{file}`                             | `ls {dir}`                            |
+| `{arg}`     | First argument (one argv token)                   | `glab issue view {arg}`               |
+| `{args}`    | All arguments, expanded to N argv tokens          | `python3 tool.py {args}`              |
+| `{path}`    | Preset directory with trailing `/` (presets only) | `python3 {path}gitlab/issue.py {arg}` |
 
 Use `{file}`/`{dir}` for file operations, `{arg}`/`{args}` for non-file arguments (issue numbers, job IDs, etc.).
 

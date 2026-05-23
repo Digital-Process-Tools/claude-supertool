@@ -699,3 +699,97 @@ class TestShellMetacharsNotExecuted:
         }
         supertool._resolve_custom_op("x", ["x", "safe.txt"])
         assert not marker.exists(), "> must not redirect via shell"
+
+    def test_and_chain_not_executed(self, tmp_path: Path) -> None:
+        marker = tmp_path / "and"
+        supertool._CONFIG = {
+            "ops": {"x": {"cmd": f"true && touch {marker}"}}
+        }
+        supertool._resolve_custom_op("x", ["x", "safe.txt"])
+        assert not marker.exists(), "&& must not be interpreted by shell"
+
+    def test_or_chain_not_executed(self, tmp_path: Path) -> None:
+        marker = tmp_path / "or"
+        supertool._CONFIG = {
+            "ops": {"x": {"cmd": f"false || touch {marker}"}}
+        }
+        supertool._resolve_custom_op("x", ["x", "safe.txt"])
+        assert not marker.exists(), "|| must not be interpreted by shell"
+
+    def test_args_placeholder_expands_to_multiple_argv(self, tmp_path: Path) -> None:
+        """{args} expands to N argv tokens after shlex.split."""
+        captured = tmp_path / "argv.txt"
+        script = tmp_path / "dump_argv.py"
+        script.write_text(
+            "import sys\n"
+            f"open({str(captured)!r}, 'w').write(repr(sys.argv[1:]))\n"
+        )
+        supertool._CONFIG = {
+            "ops": {"echo": {"cmd": f"python3 {script} {{args}}"}}
+        }
+        # Three separate args via `:` delimiter → three argv elements
+        result = supertool.dispatch("echo:alpha:beta:gamma")
+        assert "PASS" in result
+        argv = eval(captured.read_text())
+        assert argv == ["alpha", "beta", "gamma"], (
+            f"{{args}} did not expand to N argv tokens: {argv!r}"
+        )
+
+    def test_arg_value_with_space_survives_shlex_split(self, tmp_path: Path) -> None:
+        """A single arg value containing a space stays one argv token.
+
+        Pass via `argjoin` (which keeps the raw value with `:::` separator,
+        so embedded `:` and ` ` in the value survive both dispatch parsing
+        and shlex.split downstream).
+        """
+        captured = tmp_path / "argv.txt"
+        script = tmp_path / "dump_argv.py"
+        script.write_text(
+            "import sys\n"
+            f"open({str(captured)!r}, 'w').write(repr(sys.argv[1:]))\n"
+        )
+        supertool._CONFIG = {
+            "ops": {"echo": {"cmd": f"python3 {script} {{arg}}"}}
+        }
+        # Single arg with embedded space
+        result = supertool._resolve_custom_op("echo", ["echo", "hello world"])
+        assert result is not None and "PASS" in result
+        argv = eval(captured.read_text())
+        assert argv == ["hello world"], (
+            f"value with space did not survive shlex.split: {argv!r}"
+        )
+
+    def test_unknown_env_var_left_literal(self, tmp_path: Path) -> None:
+        """$UNDEFINED stays literal — not replaced with empty string.
+
+        Shell behaviour: $UNDEFINED → '' (silent). Supertool's regex sub leaves
+        the literal `$UNDEFINED` instead, which is safer (no silent data loss).
+        """
+        captured = tmp_path / "out.txt"
+        script = tmp_path / "echo_argv.py"
+        script.write_text(
+            "import sys\n"
+            f"open({str(captured)!r}, 'w').write(repr(sys.argv[1:]))\n"
+        )
+        supertool._CONFIG = {
+            "ops": {"x": {"cmd": f"python3 {script} $UNDEFINED_VAR_XYZ"}}
+        }
+        result = supertool._resolve_custom_op("x", ["x", "unused.txt"])
+        assert result is not None and "PASS" in result
+        argv = eval(captured.read_text())
+        assert argv == ["$UNDEFINED_VAR_XYZ"], (
+            f"undefined var should stay literal, got: {argv!r}"
+        )
+
+
+class TestFormatterMetacharsNotExecuted:
+    """Same regression test for _formatter_run_one — defence in depth.
+    Validator gets covered by integration via _run_with_validators."""
+
+    def test_formatter_semicolon_not_executed(self, tmp_path: Path) -> None:
+        f = tmp_path / "x.json"
+        f.write_text("{}\n")
+        marker = tmp_path / "fmt_pwned"
+        spec = {"cmd": f"true; touch {marker}", "timeout": 5}
+        supertool._formatter_run_one("fmt", spec, str(f))
+        assert not marker.exists(), "formatter shell metachars must not chain"
