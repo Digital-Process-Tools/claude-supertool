@@ -194,3 +194,33 @@ class TestReplaceMultiline:
     def test_replacement_can_be_multiline(self, multiline_files):
         op_replace("[fr_all]\n[es_all]", "[fr_all]\n[de_all]\n[es_all]", str(multiline_files / "c.ini"), dry=False)
         assert (multiline_files / "c.ini").read_text() == "[fr_all]\n[de_all]\n[es_all]\n"
+
+
+class TestReplaceSafety:
+    """Regression tests for repo-corruption bug (Kevin worktree, 2026-05-23)."""
+
+    def test_replace_skips_git_dir(self, tmp_path):
+        """Default exclude-paths must keep .git/ out of replace walks."""
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".git" / "index").write_bytes(b"DIRC\x00\x00\x00\x02fakeindex")
+        (tmp_path / "src.txt").write_text("findme content\n")
+        cwd = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            out = op_replace("findme", "REPLACED", str(tmp_path))
+        finally:
+            os.chdir(cwd)
+        assert "REPLACED content" in (tmp_path / "src.txt").read_text()
+        # .git/index must be untouched (no string substitution)
+        assert (tmp_path / ".git" / "index").read_bytes() == b"DIRC\x00\x00\x00\x02fakeindex"
+
+    def test_replace_skips_binary_files(self, tmp_path):
+        """Files with null bytes in first 4KB must be skipped, even if matched."""
+        binary = tmp_path / "blob.bin"
+        binary.write_bytes(b"findme\x00data\x00more findme")
+        text = tmp_path / "src.txt"
+        text.write_text("findme here\n")
+        out = op_replace("findme", "OK", str(tmp_path))
+        assert "OK here" in text.read_text()
+        # Binary blob untouched
+        assert binary.read_bytes() == b"findme\x00data\x00more findme"

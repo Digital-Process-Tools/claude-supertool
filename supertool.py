@@ -2385,7 +2385,7 @@ def op_replace(old: str, new: str, path: str = ".", dry: bool = False) -> str:
     if path != "." and not os.path.isfile(path) and not os.path.isdir(path):
         return f"ERROR: path not found: {path}\n"
 
-    candidates = _grep_candidates(path)
+    candidates = _grep_candidates(path, _get_exclude_paths("replace"))
     if not candidates:
         return "(0 files to search)\n"
 
@@ -2395,6 +2395,13 @@ def op_replace(old: str, new: str, path: str = ".", dry: bool = False) -> str:
     total_count = 0
     for file_path in candidates:
         try:
+            with open(file_path, "rb") as f_bin:
+                head = f_bin.read(4096)
+            if b"\x00" in head:
+                # Binary file — skip. Avoids regex-sub corrupting git internals,
+                # images, compiled blobs, etc. (recovered cost: a `.git/index`
+                # walked into by a stray relative path arg.)
+                continue
             with open(file_path, "r", encoding="utf-8", errors="replace") as f:
                 content = f.read()
         except OSError:
