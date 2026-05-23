@@ -30,6 +30,14 @@ class _LineTrackingBuilder:
         self._parser.StartElementHandler = self._start
         self._parser.EndElementHandler = self._end
         self._parser.CharacterDataHandler = self._text
+        # Security: refuse all entity declarations (internal and external).
+        # This blocks XXE (SYSTEM entities) and billion-laughs (recursive
+        # internal entities). EntityDeclHandler fires before any expansion
+        # attempt, so raising here prevents the DoS entirely.
+        self._parser.EntityDeclHandler = self._entity_decl
+
+    def _entity_decl(self, *args: object) -> None:
+        raise expat.ExpatError("entity declarations are not permitted")
 
     def _start(self, tag: str, attrs: dict[str, str]) -> None:
         elem = LineElement(tag, attrs)
@@ -125,6 +133,9 @@ def load_xml(path: str) -> LineElement:
         sys.exit(1)
     except (ET.ParseError, expat.ExpatError) as exc:
         sys.stderr.write(f"ERROR: malformed XML in {path}: {exc}\n")
+        sys.exit(1)
+    except ValueError as exc:
+        sys.stderr.write(f"ERROR: invalid path {path!r}: {exc}\n")
         sys.exit(1)
 
 

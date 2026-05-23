@@ -7962,7 +7962,10 @@ def _validator_resolve(spec: Dict[str, Any], file: str) -> Optional[str]:
     if "resolve" not in spec:
         return file
     import subprocess
-    cmd = spec["resolve"].replace("{supertool_dir}", _INSTALL_DIR).replace("{file}", file)
+    # shlex.quote on {file}: spec["resolve"] runs with shell=True. Without
+    # quoting, a filename containing $(...) / backticks / ; would execute as
+    # shell. {supertool_dir} is a known constant — quoting unnecessary.
+    cmd = spec["resolve"].replace("{supertool_dir}", _INSTALL_DIR).replace("{file}", shlex.quote(file))
     try:
         r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
         resolved = r.stdout.strip().splitlines()[0] if r.stdout.strip() else ""
@@ -8029,7 +8032,10 @@ def _validator_run_one(name: str, spec: Dict[str, Any], file: str) -> Optional[D
     target = _validator_resolve(spec, file)
     if target is None:
         return {"tool": name, "skipped": "no target resolved"}
-    cmd = spec["cmd"].replace("{supertool_dir}", _INSTALL_DIR).replace("{file}", target)
+    # shlex.quote on {file}: cmd runs with shell=True. Filename containing
+    # $(...) / backticks / ; would execute as shell. {supertool_dir} is a
+    # known constant — no quote needed.
+    cmd = spec["cmd"].replace("{supertool_dir}", _INSTALL_DIR).replace("{file}", shlex.quote(target))
     timeout = int(spec.get("timeout", 60))
 
     # Per-validator opt-out: spec.cache = false disables caching for this validator.
@@ -8251,7 +8257,9 @@ def _formatter_run_one(name: str, spec: Dict[str, Any], file: str) -> Dict[str, 
     The result always carries ``"name"`` so callers can identify it.
     """
     import subprocess
-    cmd = spec["cmd"].replace("{supertool_dir}", _INSTALL_DIR).replace("{file}", file)
+    # shlex.quote on {file}: shell=True downstream. Same RCE concern as
+    # _validator_run_one and _validator_resolve.
+    cmd = spec["cmd"].replace("{supertool_dir}", _INSTALL_DIR).replace("{file}", shlex.quote(file))
     timeout = int(spec.get("timeout", 30))
     spec_env = spec.get("env") or {}
     run_env = {**os.environ, **{str(k): str(v) for k, v in spec_env.items()}} if spec_env else None
