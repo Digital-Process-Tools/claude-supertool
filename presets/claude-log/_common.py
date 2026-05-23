@@ -67,7 +67,16 @@ def session_path(uuid: str) -> Path:
     to scanning all projects under ~/.claude/projects/ if the UUID is not found
     locally — useful when inspecting sessions from worktrees or other projects
     without changing cwd.
+
+    Security: reject UUIDs that contain path separators, traversal segments,
+    or an absolute-path prefix. Python's pathlib treats `Path("a") / "/abs"`
+    as `/abs` (left side discarded), so an unvalidated UUID like
+    `/tmp/anything` would let the op read `/tmp/anything.jsonl` — any .jsonl
+    on the filesystem. Reject anything that isn't a plain identifier-like
+    string before constructing the path.
     """
+    if not uuid or "/" in uuid or "\\" in uuid or ".." in uuid.split("/") or os.path.isabs(uuid):
+        raise ValueError(f"invalid session UUID: {uuid!r}")
     direct = project_dir() / f"{uuid}.jsonl"
     if direct.is_file():
         return direct
