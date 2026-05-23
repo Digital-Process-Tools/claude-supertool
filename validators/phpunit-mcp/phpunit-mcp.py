@@ -26,6 +26,22 @@ DAEMON_PROC = os.environ.get("MCP_PHPUNIT_BIN", "mcp-phpunit-warm")
 WORKING_DIR = os.environ.get("MCP_PHPUNIT_WORKING_DIR", os.getcwd())
 SPAWN_TIMEOUT_SEC = 30
 CALL_TIMEOUT_SEC = 300
+# Cap each error message — phpunit assertion-on-HTML failures can dump
+# multi-megabyte string diffs that would blow up the validator output
+# (observed 2M+ tokens on a single PageIndexDelegate test failure).
+MSG_MAX_CHARS = int(os.environ.get("PHPUNIT_MCP_MSG_MAX_CHARS", "2000"))
+
+
+def _cap_msg(msg: str) -> str:
+    """Truncate a single error message to MSG_MAX_CHARS with an ellipsis hint."""
+    if len(msg) <= MSG_MAX_CHARS:
+        return msg
+    head = MSG_MAX_CHARS - 80
+    return (
+        msg[:head]
+        + f"... [TRUNCATED — {len(msg) - head} more chars; "
+        + "raise PHPUNIT_MCP_MSG_MAX_CHARS or run phpunit directly to see full]"
+    )
 
 
 def sock_paths(cwd: str, name: str) -> tuple[str, str]:
@@ -154,7 +170,7 @@ def parse_json_output(file_path: str, output_json: str, dur_ms: int) -> dict:
             "col": None,
             "severity": "error",
             "code": "phpunit.failure",
-            "msg": f"{entry.get('method', '?')}: {entry.get('message', '')}",
+            "msg": _cap_msg(f"{entry.get('method', '?')}: {entry.get('message', '')}"),
             "source_context": source_context(entry.get("file", file_path), line_int),
         })
     for entry in errors:
@@ -164,7 +180,7 @@ def parse_json_output(file_path: str, output_json: str, dur_ms: int) -> dict:
             "col": None,
             "severity": "error",
             "code": "phpunit.error",
-            "msg": f"{entry.get('method', '?')}: {entry.get('message', '')}",
+            "msg": _cap_msg(f"{entry.get('method', '?')}: {entry.get('message', '')}"),
             "source_context": source_context(entry.get("file", file_path), line_int),
         })
 
