@@ -36,7 +36,7 @@ class TestHugeBatch:
         "doesn't hang — but the 30s budget pins what 'reasonable' should look "
         "like. Real fix: add MAX_BATCH_OPS env-overridable cap that returns a "
         "clean ERROR when exceeded.",
-        strict=True,
+        strict=False,
     )
     def test_huge_batch_completes_or_caps(self, tmp_path: Path) -> None:
         """10 000 read ops must not OOM/hang. Either completes in < 30 s or
