@@ -234,7 +234,7 @@ class TestResolveCustomOp:
         """Reserved keys (cmd, timeout, description, etc.) are NOT passed as env vars."""
         supertool._CONFIG = {
             "ops": {"tool": {
-                "cmd": "env | grep SUPERTOOL_ | sort",
+                "cmd": "env",  # shell-less: dump all env, assertions filter via substring
                 "timeout": 10,
                 "description": "test",
                 "custom_key": "yes",
@@ -653,3 +653,49 @@ class TestArgPlaceholderColonHandling:
         result = supertool.dispatch(f"echo:{ts}")
         assert "PASS" in result
         assert captured.read_text() == ts
+
+
+class TestShellMetacharsNotExecuted:
+    """Regression: a malicious cmd template containing ; | && $() does NOT
+    invoke the shell. Templates are tokenized via shlex.split and run with
+    shell=False, so metachars become literal argv tokens. Closes #145."""
+
+    def test_semicolon_chain_not_executed(self, tmp_path: Path) -> None:
+        marker = tmp_path / "pwned"
+        supertool._CONFIG = {
+            "ops": {"x": {"cmd": f"echo {{file}}; touch {marker}"}}
+        }
+        supertool._resolve_custom_op("x", ["x", "safe.txt"])
+        assert not marker.exists(), "shell metachars must not chain commands"
+
+    def test_pipe_not_executed(self, tmp_path: Path) -> None:
+        marker = tmp_path / "piped"
+        supertool._CONFIG = {
+            "ops": {"x": {"cmd": f"echo {{file}} | tee {marker}"}}
+        }
+        supertool._resolve_custom_op("x", ["x", "safe.txt"])
+        assert not marker.exists(), "pipe must not be interpreted by shell"
+
+    def test_command_substitution_not_executed(self, tmp_path: Path) -> None:
+        marker = tmp_path / "subst"
+        supertool._CONFIG = {
+            "ops": {"x": {"cmd": f"echo $(touch {marker})"}}
+        }
+        supertool._resolve_custom_op("x", ["x", "safe.txt"])
+        assert not marker.exists(), "$() must not be interpreted by shell"
+
+    def test_backtick_not_executed(self, tmp_path: Path) -> None:
+        marker = tmp_path / "backtick"
+        supertool._CONFIG = {
+            "ops": {"x": {"cmd": f"echo `touch {marker}`"}}
+        }
+        supertool._resolve_custom_op("x", ["x", "safe.txt"])
+        assert not marker.exists(), "backticks must not be interpreted by shell"
+
+    def test_redirect_not_executed(self, tmp_path: Path) -> None:
+        marker = tmp_path / "redir"
+        supertool._CONFIG = {
+            "ops": {"x": {"cmd": f"echo data > {marker}"}}
+        }
+        supertool._resolve_custom_op("x", ["x", "safe.txt"])
+        assert not marker.exists(), "> must not redirect via shell"

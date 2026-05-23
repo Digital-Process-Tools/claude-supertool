@@ -78,9 +78,14 @@ def test_formatter_run_one_failure(tmp_path: Path) -> None:
 def test_formatter_run_one_substitutes_file_token(tmp_path: Path) -> None:
     f = tmp_path / "x.json"
     f.write_text("{}\n")
-    # cmd writes the file path into a sentinel file
+    # Adapter writes argv[1] (substituted {file}) into sentinel — no shell redirect.
     sentinel = tmp_path / "seen"
-    spec = {"cmd": f"printf '%s' {{file}} > {sentinel}", "timeout": 5}
+    adapter = tmp_path / "write_sentinel.py"
+    adapter.write_text(
+        "import sys, pathlib\n"
+        f"pathlib.Path({str(sentinel)!r}).write_text(sys.argv[1])\n"
+    )
+    spec = {"cmd": f"python3 {adapter} {{file}}", "timeout": 5}
     supertool._formatter_run_one("fmt", spec, str(f))
     assert sentinel.read_text() == str(f)
 
@@ -105,10 +110,17 @@ def test_formatter_runs_before_validator(tmp_path: Path) -> None:
 
     # Formatter appends a newline — validator checks the file ends with \n
     sentinel = tmp_path / "fmt_ran"
+    adapter = tmp_path / "append_nl.py"
+    adapter.write_text(
+        "import sys, pathlib\n"
+        "p = pathlib.Path(sys.argv[1])\n"
+        "p.write_text(p.read_text() + '\\n')\n"
+        f"pathlib.Path({str(sentinel)!r}).touch()\n"
+    )
     _set_config({
         "formatters": {
             "mock-fmt": {
-                "cmd": f"printf '\\n' >> {{file}} && touch {sentinel}",
+                "cmd": f"python3 {adapter} {{file}}",
                 "hooks_into": ["edit"],
                 "match": "*.json",
             }
