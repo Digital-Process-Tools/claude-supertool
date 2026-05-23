@@ -40,3 +40,9 @@ dev = [
     "pytest-xdist",
     "pytest-timeout",
 ]
+
+[tool.setuptools]
+# Single-file project — declare the top-level module explicitly so setuptools
+# doesn't try to flat-layout-autodiscover (hooks/, presets/, notifiers/, etc.
+# are tool dirs, not Python packages).
+py-modules = ["supertool"]
