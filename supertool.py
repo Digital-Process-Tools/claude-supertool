@@ -2402,7 +2402,7 @@ def op_replace(old: str, new: str, path: str = ".", dry: bool = False) -> str:
                 # images, compiled blobs, etc. (recovered cost: a `.git/index`
                 # walked into by a stray relative path arg.)
                 continue
-            with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+            with open(file_path, "r", encoding="utf-8", errors="surrogateescape") as f:
                 content = f.read()
         except OSError:
             continue
@@ -2428,7 +2428,7 @@ def op_replace(old: str, new: str, path: str = ".", dry: bool = False) -> str:
         for filepath, positions in file_matches:
             out.append(f"\n{filepath}\n")
             try:
-                with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+                with open(filepath, "r", encoding="utf-8", errors="surrogateescape") as f:
                     content = f.read()
             except OSError:
                 continue
@@ -2448,7 +2448,7 @@ def op_replace(old: str, new: str, path: str = ".", dry: bool = False) -> str:
     files_modified: Dict[str, int] = {}
     for file_path, positions in file_matches:
         try:
-            with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+            with open(file_path, "r", encoding="utf-8", errors="surrogateescape") as f:
                 content = f.read()
         except OSError:
             continue
@@ -2470,18 +2470,27 @@ def op_replace(old: str, new: str, path: str = ".", dry: bool = False) -> str:
 def _atomic_write(path: str, content: str) -> None:
     """Write content to path atomically — temp file + os.replace.
 
+    If `path` is a symlink, follow it to the real target — otherwise
+    os.replace would clobber the symlink with a regular file, leaving the
+    real file untouched (silent data divergence).
+
     Crash-safe: if interrupted mid-write, the original file is preserved
     (the temp file is incomplete but the target path still has old data).
+
+    Uses surrogateescape encoding so any bytes that round-tripped through
+    read(errors='surrogateescape') survive the write unchanged — protects
+    files containing illegal UTF-8 sequences (binary blobs, partial encodes).
     """
     import tempfile
-    target_dir = os.path.dirname(os.path.abspath(path)) or "."
+    real_path = os.path.realpath(path) if os.path.islink(path) else path
+    target_dir = os.path.dirname(os.path.abspath(real_path)) or "."
     fd, tmp_path = tempfile.mkstemp(
         prefix=".supertool-", suffix=".tmp", dir=target_dir
     )
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
+        with os.fdopen(fd, "w", encoding="utf-8", errors="surrogateescape") as f:
             f.write(content)
-        os.replace(tmp_path, path)
+        os.replace(tmp_path, real_path)
     except Exception:
         try:
             os.unlink(tmp_path)
@@ -2506,7 +2515,11 @@ def op_edit(old: str, new: str, path: str) -> str:
         return f"ERROR: file not found: {path}\n"
 
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
+        # surrogateescape: lone bytes that aren't valid UTF-8 round-trip via
+        # _atomic_write back to their original byte values. Prevents silent
+        # corruption of bytes outside the match window (CVE-class data loss
+        # on files with mixed encodings or partial binary content).
+        with open(path, "r", encoding="utf-8", errors="surrogateescape") as f:
             content = f.read()
     except OSError as e:
         return f"ERROR: failed to read {path}: {e}\n"
