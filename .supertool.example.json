@@ -279,6 +279,19 @@
       "rollback_on_fail": true,
       "timeout": 10
     },
+    "pyright": {
+      "cmd": "python3 {supertool_dir}/validators/pyright/pyright.py {file}",
+      "match": "*.py",
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste",
+        "vim"
+      ],
+      "rollback_on_fail": true,
+      "timeout": 60
+    },
     "bash-check": {
       "cmd": "python3 {supertool_dir}/validators/bash-check/bash-check.py {file}",
       "match": "*.sh",

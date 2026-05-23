@@ -56,6 +56,7 @@ Enable any of these by copying the relevant entry from `.supertool.example.json`
 | YAML (`.yaml`)      | `yaml-check-yaml`| PyYAML (`pip install pyyaml`)      | Identical logic, different glob            |
 | INI                 | `inilint`        | stdlib only                        | No external dep                            |
 | Python              | `py-compile`     | stdlib only                        | Uses `py_compile` — syntax only, not type  |
+| Python (types)      | `pyright`        | `pyright` (`npm install -g pyright`)| Real type-check via `pyright --outputjson` |
 | Bash                | `bash-check`     | `bash` on PATH                     | Uses `bash -n`                             |
 | JavaScript          | `node-check`     | `node` on PATH                     | Uses `node --check`                        |
 | CSS / SCSS          | `stylelint`      | `stylelint` npm package            | Config from project `.stylelintrc`         |

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-05-23
+
+### Added
+
+- **`validators/pyright/`** — Python type-check via `pyright --outputjson`. Sits next to `py-compile` (syntax-only). Hooks into `edit/replace/replace_lines/paste/vim` for `*.py`. Graceful skip when `pyright` not on PATH; pyright JSON 0-indexed `range.start` is converted to supertool's 1-indexed `line/col`. Configure via `.supertool.example.json`. README validator count bumped to 18.
+
+### Security
+
+- **`op_paste` containment ordering.** Previously `op_paste` called `os.makedirs(parent)` BEFORE `_atomic_write`'s `_safe_path` check, so a traversal path like `../../tmp/evil/foo` would create directories outside cwd before the write itself was rejected — leaving empty-dir pollution. `op_paste` now runs `_safe_path` at entry. Side benefit: closes the NUL-byte-in-path xfail (`_safe_path` rejects NUL before `os.replace` can leak a `ValueError`).
+
 ### Security
 
 - **Hardening bundle.** Smaller defence-in-depth items from the audit (closes [#150](https://github.com/Digital-Process-Tools/claude-supertool/issues/150)):

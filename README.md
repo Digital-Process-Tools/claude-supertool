@@ -158,7 +158,7 @@ Every mutating op (`edit`, `replace`, `replace_lines`, `paste`, `vim`) runs matc
 
 Example: edit a `.json` file with a missing comma → `jsonlint` catches it → file reverts → receipt shows the parse error with line/col.
 
-17 validators bundled out of the box (PHP, XML, JSON, YAML, INI, Python, Bash, JS, TS, SCSS, Markdown, Ruby, Dockerfile, Go, Terraform, Rust, TOML). Graceful skip when toolchain missing.
+18 validators bundled out of the box (PHP, XML, JSON, YAML, INI, Python syntax + types, Bash, JS, TS, SCSS, Markdown, Ruby, Dockerfile, Go, Terraform, Rust, TOML). Graceful skip when toolchain missing.
 
 Full reference: [docs/validators.md](docs/validators.md) — bundled list, how they hook in, adding your own.
 
