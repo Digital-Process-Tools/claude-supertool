@@ -59,6 +59,13 @@ def request(
     except urllib.error.URLError as e:
         sys.stderr.write(f"ERROR: network: {e.reason}\n")
         sys.exit(1)
+    except ValueError as e:
+        # http.client.InvalidURL subclasses ValueError. Triggered when the
+        # URL contains control chars (e.g. spaces from shell-meta input that
+        # slipped past resolve_article_id). Without this catch the raw
+        # traceback leaks; with it the user sees a clean rejection.
+        sys.stderr.write(f"ERROR: invalid URL: {e}\n")
+        sys.exit(1)
     if not text:
         return {}
     try:

@@ -49,7 +49,9 @@ def _save_session(session: dict[str, Any]) -> None:
 def _load_session() -> dict[str, Any] | None:
     try:
         return json.loads(SESSION_FILE.read_text())
-    except (FileNotFoundError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError):
+        # OSError covers FileNotFoundError + IsADirectoryError + permission
+        # errors — all map to "no usable session, force create_session".
         return None
 
 

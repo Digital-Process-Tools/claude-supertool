@@ -10,6 +10,19 @@ from typing import Any
 ENDPOINT = "https://gql.hashnode.com"
 
 
+def _scrub_token(s: str, token: str) -> str:
+    """Redact the auth token from any string before printing it.
+
+    Defense against upstream proxies that echo `Authorization: <token>` in
+    error bodies, OS errors that include auth context, or GraphQL servers
+    that mention the token in validation messages. Cheap, idempotent, and
+    cheaper than a credential leak.
+    """
+    if not token or not s:
+        return s
+    return s.replace(token, "[REDACTED]")
+
+
 def gql(query: str, variables: dict[str, Any], token: str, timeout: int = 30) -> dict[str, Any]:
     payload = json.dumps({"query": query, "variables": variables}).encode("utf-8")
     req = urllib.request.Request(
@@ -25,11 +38,11 @@ def gql(query: str, variables: dict[str, Any], token: str, timeout: int = 30) ->
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             body = resp.read().decode("utf-8")
     except urllib.error.HTTPError as e:
-        msg = _format_http_error(e)
+        msg = _scrub_token(_format_http_error(e), token)
         sys.stderr.write(f"ERROR: {msg}\n")
         sys.exit(1)
     except urllib.error.URLError as e:
-        sys.stderr.write(f"ERROR: network: {e.reason}\n")
+        sys.stderr.write(f"ERROR: network: {_scrub_token(str(e.reason), token)}\n")
         sys.exit(1)
     try:
         data = json.loads(body)
@@ -38,7 +51,7 @@ def gql(query: str, variables: dict[str, Any], token: str, timeout: int = 30) ->
         sys.exit(1)
     if "errors" in data:
         first = data["errors"][0]
-        msg = first.get("message", "unknown GraphQL error")
+        msg = _scrub_token(first.get("message", "unknown GraphQL error"), token)
         code = (first.get("extensions") or {}).get("code", "")
         hint = _hint_for(msg, code)
         sys.stderr.write(f"ERROR: {msg}{(' — ' + hint) if hint else ''}\n")
