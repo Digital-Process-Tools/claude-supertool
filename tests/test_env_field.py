@@ -134,3 +134,21 @@ def test_validator_env_prefix_reaches_child(tmp_path: Path) -> None:
     spec = {"cmd": cmd, "timeout": 5, "cache": False}
     out = supertool._validator_run_one("t", spec, "any.php")
     assert out.get("ok") is True, f"env-prefix did not reach child: {out}"
+
+
+def test_spec_env_wins_over_prefix(tmp_path: Path) -> None:
+    """When both shell prefix and spec.env set the same key, spec.env wins."""
+    adapter = tmp_path / "capture.py"
+    adapter.write_text(
+        "import os, sys, json\n"
+        "val = os.environ.get('SHARED_VAR', '<unset>')\n"
+        "sys.stdout.write(json.dumps({'tool':'t','file':'x','ok': val == 'from_spec', 'count':0,'errors':[],'duration_ms':1,'captured':val}))\n"
+    )
+    spec = {
+        "cmd": f"SHARED_VAR=from_prefix python3 {adapter}",
+        "timeout": 5,
+        "cache": False,
+        "env": {"SHARED_VAR": "from_spec"},
+    }
+    out = supertool._validator_run_one("t", spec, "any.php")
+    assert out.get("captured") == "from_spec", f"spec.env did not win: {out}"

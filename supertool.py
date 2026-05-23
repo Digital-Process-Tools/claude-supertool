@@ -8126,9 +8126,13 @@ def _validator_resolve(spec: Dict[str, Any], file: str) -> Optional[str]:
     # shlex.split. {supertool_dir} is a known constant.
     cmd = spec["resolve"].replace("{supertool_dir}", _INSTALL_DIR).replace("{file}", shlex.quote(file))
     _prefix_env, cmd = _extract_env_prefix(cmd)
-    cmd = _expand_env(cmd, {**os.environ, **_prefix_env})
+    _merged_env = {**os.environ, **_prefix_env}
+    cmd = _expand_env(cmd, _merged_env)
+    # Pass merged env to child so prefix vars actually reach the subprocess.
+    _run_env = _merged_env if _prefix_env else None
     try:
-        r = subprocess.run(shlex.split(cmd), shell=False, capture_output=True, text=True, timeout=30)
+        r = subprocess.run(shlex.split(cmd), shell=False, capture_output=True, text=True, timeout=30,
+                           env=_run_env)
         resolved = r.stdout.strip().splitlines()[0] if r.stdout.strip() else ""
         return resolved if resolved else None
     except (subprocess.TimeoutExpired, OSError):
