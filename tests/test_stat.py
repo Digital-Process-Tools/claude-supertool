@@ -43,3 +43,23 @@ def test_stat_dispatch(tmp_path: Path) -> None:
     out = supertool.dispatch(f"stat:{f}")
     assert "--- stat:" in out
     assert "file" in out
+
+
+def test_stat_symlink(tmp_path: Path) -> None:
+    target = tmp_path / "target.txt"
+    target.write_text("data")
+    link = tmp_path / "link.txt"
+    link.symlink_to(target)
+    out = supertool.op_stat(str(link))
+    assert "symlink" in out
+    assert "-> " in out
+    assert "target.txt" in out
+    assert "broken" not in out
+
+
+def test_stat_broken_symlink(tmp_path: Path) -> None:
+    link = tmp_path / "dangling.txt"
+    link.symlink_to(tmp_path / "missing.txt")
+    out = supertool.op_stat(str(link))
+    assert "symlink" in out
+    assert "(broken)" in out
