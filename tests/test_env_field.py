@@ -93,3 +93,62 @@ def test_formatter_env_field_absent_does_not_break(tmp_path: Path) -> None:
     spec = {"cmd": "true", "timeout": 5}
     result = supertool._formatter_run_one("fmt", spec, "any.php")
     assert result["ok"] is True
+
+
+# ---------------------------------------------------------------------------
+# Shell env-prefix lift (KEY=VAL cmd args) — argv-form compat (#145 regression)
+# ---------------------------------------------------------------------------
+
+def test_extract_env_prefix_basic() -> None:
+    env, cmd = supertool._extract_env_prefix("FOO=bar BAZ=qux python3 script.py")
+    assert env == {"FOO": "bar", "BAZ": "qux"}
+    assert cmd == "python3 script.py"
+
+
+def test_extract_env_prefix_no_prefix() -> None:
+    env, cmd = supertool._extract_env_prefix("python3 script.py")
+    assert env == {}
+    assert cmd == "python3 script.py"
+
+
+def test_extract_env_prefix_quoted_value() -> None:
+    env, cmd = supertool._extract_env_prefix("KEY='one two' python3 script.py")
+    assert env == {"KEY": "one two"}
+    assert "python3 script.py" in cmd
+
+
+def test_validator_env_prefix_reaches_child(tmp_path: Path) -> None:
+    """Closes the regression: shipped DVSI cmd templates use `KEY=VAL python3 ...`
+    shell env-prefix syntax. Argv-form must lift that into env=.
+    """
+    adapter = tmp_path / "capture.py"
+    payload = '{"tool":"t","file":"x","ok":true,"count":0,"errors":[],"duration_ms":1,"working_dir":"' + str(tmp_path) + '"}'
+    adapter.write_text(
+        "import os, sys\n"
+        f"if os.environ.get('MCP_PHPSTAN_WORKING_DIR') == {str(tmp_path)!r}:\n"
+        f"    sys.stdout.write({payload!r})\n"
+        "else:\n"
+        "    sys.stdout.write('{\"tool\":\"t\",\"file\":\"x\",\"ok\":false,\"count\":1,\"errors\":[{\"line\":null,\"col\":null,\"severity\":\"error\",\"code\":\"x\",\"msg\":\"env not set\"}],\"duration_ms\":1}')\n"
+    )
+    cmd = f"MCP_PHPSTAN_WORKING_DIR={tmp_path} python3 {adapter}"
+    spec = {"cmd": cmd, "timeout": 5, "cache": False}
+    out = supertool._validator_run_one("t", spec, "any.php")
+    assert out.get("ok") is True, f"env-prefix did not reach child: {out}"
+
+
+def test_spec_env_wins_over_prefix(tmp_path: Path) -> None:
+    """When both shell prefix and spec.env set the same key, spec.env wins."""
+    adapter = tmp_path / "capture.py"
+    adapter.write_text(
+        "import os, sys, json\n"
+        "val = os.environ.get('SHARED_VAR', '<unset>')\n"
+        "sys.stdout.write(json.dumps({'tool':'t','file':'x','ok': val == 'from_spec', 'count':0,'errors':[],'duration_ms':1,'captured':val}))\n"
+    )
+    spec = {
+        "cmd": f"SHARED_VAR=from_prefix python3 {adapter}",
+        "timeout": 5,
+        "cache": False,
+        "env": {"SHARED_VAR": "from_spec"},
+    }
+    out = supertool._validator_run_one("t", spec, "any.php")
+    assert out.get("captured") == "from_spec", f"spec.env did not win: {out}"
