@@ -112,21 +112,39 @@ def test_run_one_handles_bad_json() -> None:
     assert "bad json" in out["errors"][0]["msg"]
 
 
-def test_run_one_substitutes_file_token() -> None:
+def test_run_one_substitutes_file_token(tmp_path: Path) -> None:
     payload = {"tool": "fake", "file": "x.php", "ok": True, "count": 0,
                "errors": [], "duration_ms": 1}
-    spec = {"cmd": f"test {{file}} = a.php && {_fake_cmd(payload)}", "timeout": 5}
+    # Adapter checks argv[1] == 'a.php' before emitting payload (gates on substituted {file}).
+    adapter = tmp_path / "check_file.py"
+    adapter.write_text(
+        "import sys\n"
+        "if sys.argv[1] != 'a.php':\n"
+        "    sys.exit(0)\n"
+        f"sys.stdout.write({json.dumps(payload)!r})\n"
+    )
+    spec = {"cmd": f"python3 {adapter} {{file}}", "timeout": 5}
     out = supertool._validator_run_one("fake", spec, "a.php")
     assert out["ok"] is True
 
 
 def _counter_cmd(state_path: Path, ok_payload: str, fail_marker: str = "BROKEN") -> str:
-    """Returns ok_payload on first call, fail_marker on subsequent calls."""
-    return (
-        f"n=$(cat {state_path}); echo $((n+1)) > {state_path}; "
-        f"if [ \"$n\" = \"0\" ]; then printf '%s' '{ok_payload}'; "
-        f"else echo {fail_marker}; fi"
+    """Returns ok_payload on first call, fail_marker on subsequent calls.
+
+    Uses a Python wrapper (no shell) so it works under shell=False dispatch.
+    """
+    script = state_path.parent / f"_counter_{state_path.name}.py"
+    script.write_text(
+        "import pathlib, sys\n"
+        f"p = pathlib.Path({str(state_path)!r})\n"
+        "n = int(p.read_text())\n"
+        "p.write_text(str(n+1))\n"
+        "if n == 0:\n"
+        f"    sys.stdout.write({ok_payload!r})\n"
+        "else:\n"
+        f"    sys.stdout.write({fail_marker!r})\n"
     )
+    return f"python3 {script}"
 
 
 def test_cache_hit_skips_adapter(tmp_path: Path, monkeypatch) -> None:
@@ -300,11 +318,7 @@ def test_run_with_validators_rollback_on_regression(tmp_path: Path) -> None:
     # Achieved by writing a counter file.
     state = tmp_path / "n"
     state.write_text("0")
-    cmd = (
-        f"n=$(cat {state}); echo $((n+1)) > {state}; "
-        f"if [ \"$n\" = \"0\" ]; then printf '%s' '{json.dumps(payload_ok)}'; "
-        f"else printf '%s' '{json.dumps(payload_fail)}'; fi"
-    )
+    cmd = _counter_cmd(state, json.dumps(payload_ok), json.dumps(payload_fail))
     _set_validators({
         "fake": {"cmd": cmd, "hooks_into": ["edit"], "match": "*.php",
                  "rollback_on_fail": True},

@@ -68,12 +68,18 @@ def test_validator_env_field_overrides_parent_env(monkeypatch) -> None:
 # ---------------------------------------------------------------------------
 
 def test_formatter_env_field_passed_to_subprocess(tmp_path: Path) -> None:
-    """env block on formatter spec must reach the formatter subprocess."""
+    """env block on formatter spec must reach the formatter subprocess.
+
+    Uses a Python adapter (no shell redirect) since cmd templates are argv-form.
+    """
     sentinel = tmp_path / "env_capture.txt"
-    # Formatter writes the env var to a file (touch isn't a write, use printf).
-    cmd = f"printf '%s' \"$MY_FMT_VAR\" > {sentinel}"
+    adapter = tmp_path / "capture_env.py"
+    adapter.write_text(
+        "import os, pathlib, sys\n"
+        f"pathlib.Path({str(sentinel)!r}).write_text(os.environ.get('MY_FMT_VAR', ''))\n"
+    )
     spec = {
-        "cmd": cmd,
+        "cmd": f"python3 {adapter}",
         "timeout": 5,
         "env": {"MY_FMT_VAR": "fmt_env_value"},
     }
