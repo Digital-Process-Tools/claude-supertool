@@ -49,7 +49,7 @@ def _format_error(stderr: str, resource: str, identifier: str) -> str:
     s = stderr.lower()
     if "404" in s or "not found" in s or "could not resolve" in s:
         return f"ERROR: {resource} #{identifier} not found. Check the ID. Use gl-pipeline to list jobs first, then gl-job with the job ID."
-    if "401" in s or "unauthorized" in s or "token" in s:
+    if "401" in s or "unauthorized" in s or "glpat_" in s or "authenticate" in s or "bad token" in s or "token expired" in s:
         return "ERROR: glab not authenticated. Run: glab auth login"
     if "403" in s or "forbidden" in s:
         return f"ERROR: permission denied for {resource} #{identifier}. Check your GitLab access token permissions."
@@ -246,7 +246,26 @@ def main() -> int:
         if start > total:
             print(f"\n## Raw — start ({start}) > total ({total}); nothing to show")
             return 0
+        # Cap raw dumps that exceed GL_JOB_RAW_MAX_LINES, regardless of whether
+        # the user passed an explicit START:END. A user can still defeat the
+        # cap by raising the env var, but a 99999-line slice no longer
+        # silently dumps 10MB into validator output.
+        cap = int(os.environ.get("GL_JOB_RAW_MAX_LINES", "5000"))
         shown = lines[start - 1:end]
+        if len(shown) > cap:
+            kept = shown[:cap]
+            hint = (
+                "narrow the slice or raise GL_JOB_RAW_MAX_LINES=N"
+                if raw_end is not None
+                else "pass START:END to slice further, or set GL_JOB_RAW_MAX_LINES=N"
+            )
+            print(
+                f"\n## Raw lines {start}-{start + cap - 1} of {total} "
+                f"[CAPPED at {cap} — {hint}]"
+            )
+            for i, line in enumerate(kept):
+                print(f"  {start + i:>5} | {line}")
+            return 0
         print(f"\n## Raw lines {start}-{start + len(shown) - 1} of {total}")
         for i, line in enumerate(shown):
             print(f"  {start + i:>5} | {line}")
