@@ -246,7 +246,21 @@ def main() -> int:
         if start > total:
             print(f"\n## Raw — start ({start}) > total ({total}); nothing to show")
             return 0
+        # Cap unsliced full-trace dumps. Override via env. Avoids dumping a
+        # 100k-line / 10MB CI log into the validator output when the user
+        # forgot to pass START:END.
+        cap = int(os.environ.get("GL_JOB_RAW_MAX_LINES", "5000"))
         shown = lines[start - 1:end]
+        if len(shown) > cap and raw_end is None:
+            kept = shown[:cap]
+            print(
+                f"\n## Raw lines {start}-{start + cap - 1} of {total} "
+                f"[CAPPED at {cap} — pass START:END to slice further, "
+                f"or set GL_JOB_RAW_MAX_LINES=N]"
+            )
+            for i, line in enumerate(kept):
+                print(f"  {start + i:>5} | {line}")
+            return 0
         print(f"\n## Raw lines {start}-{start + len(shown) - 1} of {total}")
         for i, line in enumerate(shown):
             print(f"  {start + i:>5} | {line}")
