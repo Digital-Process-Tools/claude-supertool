@@ -670,7 +670,7 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
         return f"ERROR: could not read {path}: {e}\n"
 
     line_count = len(raw_lines)
-    out = [f"({line_count} lines, {size} bytes)\n"]
+    out = [f"({line_count} lines, {size} bytes){_path_meta_suffix(path, b''.join(raw_lines[:64]))}\n"]
     bytes_emitted = 0
     printed = 0
     end = min(offset + limit, line_count)
@@ -1257,20 +1257,87 @@ def op_diff(path1: str, path2: str) -> str:
     return "\n".join(diff) + "\n"
 
 
+def _path_meta_suffix(path: str, sample: bytes = b"") -> str:
+    """Compact suffix for read/workspace meta line. Empty when nothing notable.
+    Tokens: ->target [broken] | bin | non-utf8 | ? | ! | m | x | crlf | Nd|Nw|Nmo
+    """
+    parts = []
+    if sample:
+        head = sample[:8192]
+        if b"\x00" in head:
+            parts.append("bin")
+        else:
+            try:
+                head.decode("utf-8")
+            except UnicodeDecodeError:
+                parts.append("non-utf8")
+            if b"\r\n" in head:
+                parts.append("crlf")
+            if b"<<<<<<< " in head or b"\n=======\n" in head:
+                parts.append("cf!")
+    if os.path.islink(path):
+        try:
+            target = os.readlink(path)
+        except OSError:
+            target = "?"
+        broken = " broken" if not os.path.exists(path) else ""
+        parts.append(f"->{target}{broken}")
+    try:
+        st = os.lstat(path)
+        if st.st_mode & 0o111 and not os.path.isdir(path):
+            parts.append("x")
+        age_sec = max(0, int(time.time() - st.st_mtime))
+        SEVEN_DAYS = 7 * 86400
+        if age_sec > SEVEN_DAYS:
+            days = age_sec // 86400
+            if days < 30:
+                parts.append(f"{days}d")
+            elif days < 365:
+                parts.append(f"{days // 7}w")
+            else:
+                parts.append(f"{days // 30}mo")
+    except OSError:
+        pass
+    try:
+        r = subprocess.run(
+            ["git", "status", "--porcelain", "--ignored=matching", "--", path],
+            capture_output=True, text=True, timeout=2,
+            cwd=os.path.dirname(os.path.abspath(path)) or ".",
+        )
+        if r.returncode == 0 and r.stdout:
+            code = r.stdout[:2]
+            if code == "??":
+                parts.append("?")
+            elif code == "!!":
+                parts.append("!")
+            elif "M" in code or "A" in code:
+                parts.append("m")
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return (" " + " ".join(parts)) if parts else ""
+
+
 def op_stat(path: str) -> str:
-    """Show file or directory metadata: size and last modified time."""
+    """Show file/dir/symlink metadata: size, mtime, kind. Symlinks show target + broken flag."""
     if not path:
         return "ERROR: empty path\n"
-    if not os.path.exists(path):
+    if not os.path.lexists(path):
         return f"ERROR: not found: {path}\n"
 
     try:
-        st = os.stat(path)
+        st = os.lstat(path)
     except OSError as e:
         return f"ERROR: could not stat {path}: {e}\n"
 
     size = st.st_size
     modified = datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+    if os.path.islink(path):
+        try:
+            target = os.readlink(path)
+        except OSError:
+            target = "?"
+        broken = " (broken)" if not os.path.exists(path) else ""
+        return f"{size} {modified} symlink {path} -> {target}{broken}\n"
     kind = "dir" if os.path.isdir(path) else "file"
     return f"{size} {modified} {kind} {path}\n"
 
@@ -8827,7 +8894,7 @@ def op_workspace(path: str) -> str:
 
     line_count = len(raw_lines)
     _WS_LINE_CAP = 1000
-    out.append(f"({line_count} lines, {size} bytes)\n")
+    out.append(f"({line_count} lines, {size} bytes){_path_meta_suffix(path, b''.join(raw_lines[:64]))}\n")
     shown = min(line_count, _WS_LINE_CAP)
     for i in range(shown):
         try:
