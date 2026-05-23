@@ -547,17 +547,34 @@ def _safe_path(p: str, *, allow_outside_cwd: Optional[bool] = None) -> str:
     cwd. Symlinks crossing the boundary are rejected. `..` traversal that
     escapes cwd is rejected. Returns the resolved absolute path.
 
-    Opt-out: `allow_outside_cwd=True` (per-call) or env
-    `SUPERTOOL_ALLOW_OUTSIDE_CWD=1` (process-wide) skips the check.
+    Opt-out (any one is enough):
+      1. `allow_outside_cwd=True` per-call kwarg
+      2. `SUPERTOOL_ALLOW_OUTSIDE_CWD=1` env var (CI / one-off)
+      3. `"allow_outside_cwd": true` in `.supertool.json` (project-pinned)
+
     Test suites set the env var via conftest.py so tmp_path-based fixtures
     keep working; production deployments leave it unset.
+
+    Trust model note: lookup (3) reads from the project's `.supertool.json`,
+    same trust level as the other knobs there (validators, custom ops,
+    presets). A user cloning a hostile repo is already running its code via
+    supertool validators / ops; in-config opt-out adds no new attack
+    surface. The env var takes precedence for one-off overrides.
 
     `~` and env-var expansion happen via os.path.expanduser / expandvars —
     a user-supplied `~/.ssh/id_rsa` is resolved to the real path BEFORE
     the cwd check, which is what catches the threat.
     """
     if allow_outside_cwd is None:
-        allow_outside_cwd = os.environ.get("SUPERTOOL_ALLOW_OUTSIDE_CWD") == "1"
+        if os.environ.get("SUPERTOOL_ALLOW_OUTSIDE_CWD") == "1":
+            allow_outside_cwd = True
+        else:
+            # Project config opt-in. Wrapped in try/except so a broken /
+            # missing config never raises out of a path check.
+            try:
+                allow_outside_cwd = bool(_load_config().get("allow_outside_cwd"))
+            except Exception:
+                allow_outside_cwd = False
     # NUL byte rejection — os.path.* raises ValueError on embedded NULs which
     # would leak as an uncaught traceback. Reject early with a clean message.
     if "\x00" in p:
@@ -578,7 +595,8 @@ def _safe_path(p: str, *, allow_outside_cwd: Optional[bool] = None) -> str:
     if not abs_p_cmp.startswith(root_cmp + os.sep):
         raise SecurityError(
             f"path escapes cwd: {p!r} (resolved to {abs_p!r}). "
-            f"Set SUPERTOOL_ALLOW_OUTSIDE_CWD=1 to allow."
+            f"To allow: set SUPERTOOL_ALLOW_OUTSIDE_CWD=1 (env), or add "
+            f'`\"allow_outside_cwd\": true` to .supertool.json.'
         )
     return abs_p
 
