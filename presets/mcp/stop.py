@@ -10,13 +10,16 @@ to SIGKILL if it doesn't exit within 3s.
 """
 from __future__ import annotations
 
-import glob
 import hashlib
 import os
 import signal
 import sys
 import time
 from pathlib import Path
+
+# Shared path helpers (#148): per-user runtime dir, NOT /tmp.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _paths import list_pidfiles, socket_pid_paths  # noqa: E402
 
 
 def stop_pid(pid: int) -> bool:
@@ -54,7 +57,7 @@ def main(argv: list) -> int:
         sys.stderr.write("usage: stop.py NAME | --all\n")
         return 2
     if argv[1] == "--all":
-        pidfiles = sorted(glob.glob("/tmp/supertool-mcp-*.pid"))
+        pidfiles = list_pidfiles()
         if not pidfiles:
             print("No daemons running.")
             return 0
@@ -65,8 +68,7 @@ def main(argv: list) -> int:
 
     name = argv[1]
     cwd = os.path.abspath(os.getcwd())
-    h = hashlib.sha1(f"{cwd}::{name}".encode()).hexdigest()[:12]
-    pid_path = f"/tmp/supertool-mcp-{h}.pid"
+    _sock_path, pid_path = socket_pid_paths(cwd, name)
     if not os.path.exists(pid_path):
         print(f"No daemon found for '{name}' (expected {pid_path})")
         return 1
