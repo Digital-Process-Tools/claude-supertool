@@ -49,7 +49,7 @@ def _format_error(stderr: str, resource: str, identifier: str) -> str:
     s = stderr.lower()
     if "404" in s or "not found" in s or "could not resolve" in s:
         return f"ERROR: {resource} #{identifier} not found. Check the ID. Use gl-pipeline to list jobs first, then gl-job with the job ID."
-    if "401" in s or "unauthorized" in s or "glpat_" in s or "authenticate" in s:
+    if "401" in s or "unauthorized" in s or "glpat_" in s or "authenticate" in s or "bad token" in s or "token expired" in s:
         return "ERROR: glab not authenticated. Run: glab auth login"
     if "403" in s or "forbidden" in s:
         return f"ERROR: permission denied for {resource} #{identifier}. Check your GitLab access token permissions."
