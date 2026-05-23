@@ -380,6 +380,14 @@ Only the literal string `"1"` disables the check. `"0"`, `"false"`, empty — al
 
 Default excludes (`grep` / `glob` / `tree` / `map`) prune `.env/`, `.max/`, `.ssh/`, `.aws/`, `.gnupg/`, `.kube/`, `.docker/`, `.terraform/`, `.chef/`, `.npm/`, `secrets/`, `credentials/` so tokens don't surface into an LLM's context.
 
+**Vim shell verbs (`:!`, `:%!`, `:r !`) are disabled by default** — they're full shell exec inside a vim macro, full RCE if a prompt-injected payload reaches them. Opt-in:
+
+```bash
+export SUPERTOOL_ALLOW_VIM_SHELL=1
+```
+
+Editor verbs (i/a/o/d/s/etc.) work unconditionally. See [issue #147](https://github.com/Digital-Process-Tools/claude-supertool/issues/147).
+
 ## Contributing
 
 See [docs/contributing.md](docs/contributing.md) — custom ops, presets, validators, running tests, submitting upstream.

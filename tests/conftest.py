@@ -22,6 +22,10 @@ def pytest_configure(config):  # noqa: ARG001
     """
     import os
     os.environ.setdefault("SUPERTOOL_ALLOW_OUTSIDE_CWD", "1")
+    # #147: vim shell verbs (:! / :%! / :r !) gated behind opt-in. Existing
+    # vim tests exercise them, so opt the suite in. Security regression tests
+    # in test_security_vim_shell.py unset this via fixture to verify strict mode.
+    os.environ.setdefault("SUPERTOOL_ALLOW_VIM_SHELL", "1")
 
 
 @pytest.fixture(autouse=True)
