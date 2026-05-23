@@ -136,3 +136,65 @@ def test_edit_preserves_bytes_around_match_in_partly_corrupted_file(tmp_path: Pa
     # Fixed 2026-05-23: surrogateescape encoding round-trips lone illegal
     # bytes — they must survive the edit unchanged.
     assert after == b"GOOD\xc3REPLACED\xc3BAD"
+
+
+# ---------------------------------------------------------------------------
+# Coverage targets — OSError paths in edit/replace/atomic_write
+# ---------------------------------------------------------------------------
+
+def test_op_edit_unreadable_file_returns_error(tmp_path: Path) -> None:
+    """Edit a file with no read permission → clean ERROR, no traceback."""
+    f = tmp_path / "locked.txt"
+    f.write_text("content\n")
+    os.chmod(f, 0o000)
+    try:
+        out = supertool.op_edit("content", "new", str(f))
+        assert "ERROR" in out
+        assert "Traceback" not in out
+    finally:
+        os.chmod(f, 0o644)
+
+
+def test_op_replace_skips_unreadable_binary_peek(tmp_path: Path) -> None:
+    """Replace must continue when binary peek hits OSError on a single file."""
+    f1 = tmp_path / "good.txt"
+    f1.write_text("findme here\n")
+    f2 = tmp_path / "locked.txt"
+    f2.write_text("findme there\n")
+    os.chmod(f2, 0o000)
+    try:
+        out = supertool.op_replace("findme", "GOT", str(tmp_path))
+        assert "GOT here" in f1.read_text()
+        # locked file silently skipped, not raised
+        assert "ERROR" not in out
+    finally:
+        os.chmod(f2, 0o644)
+
+
+def test_atomic_write_recovers_from_write_failure(tmp_path: Path, monkeypatch) -> None:
+    """If write fails mid-flight, tmp file is cleaned up + original preserved."""
+    f = tmp_path / "target.txt"
+    f.write_text("original\n")
+    original_bytes = f.read_bytes()
+
+    # Force the inner write to raise by monkey-patching os.fdopen
+    real_fdopen = os.fdopen
+    def boom(*a, **kw):
+        class _F:
+            def __enter__(self): return self
+            def __exit__(self, *_): return False
+            def write(self, _): raise OSError("disk full")
+        return _F()
+    monkeypatch.setattr(os, "fdopen", boom)
+    raised = False
+    try:
+        supertool._atomic_write(str(f), "new content")
+    except OSError:
+        raised = True
+    monkeypatch.setattr(os, "fdopen", real_fdopen)
+    assert raised, "exception must propagate"
+    # Original unchanged
+    assert f.read_bytes() == original_bytes
+    # No leftover .supertool-*.tmp files in target dir
+    leftovers = list(tmp_path.glob(".supertool-*.tmp"))
+    assert leftovers == [], f"tmp not cleaned: {leftovers}"

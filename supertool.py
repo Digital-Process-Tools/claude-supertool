@@ -2170,7 +2170,14 @@ def _glob_files(
         return files
 
     from glob import glob
-    matches = sorted(glob(pattern, recursive=True))
+    # When exclude_paths is empty, the caller explicitly opted out of
+    # exclusions (no_exclude=True) — include dotfiles too so they actually
+    # see ".git/" / "node_modules/" etc. Python 3.11+ supports the kwarg;
+    # older versions silently skip dotfiles regardless.
+    glob_kwargs: Dict[str, Any] = {"recursive": True}
+    if not exclude_paths and sys.version_info >= (3, 11):
+        glob_kwargs["include_hidden"] = True
+    matches = sorted(glob(pattern, **glob_kwargs))
     files_out = [m for m in matches if os.path.isfile(m)]
     if exclude_paths:
         cwd = os.getcwd()
@@ -2613,7 +2620,10 @@ def op_replace_lines(path: str, start: int, end: int, content: str) -> str:
         return f"ERROR: end ({end}) must be >= 0\n"
 
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
+        # surrogateescape (not 'replace'): round-trip lone non-UTF-8 bytes
+        # via _atomic_write. 'replace' would silently mutate them to U+FFFD
+        # in untouched regions — same bug fix as op_edit / op_replace.
+        with open(path, "r", encoding="utf-8", errors="surrogateescape") as f:
             orig = f.read()
     except OSError as e:
         return f"ERROR: failed to read {path}: {e}\n"
@@ -5635,12 +5645,23 @@ def _op_vim_impl(path: str, script: str) -> str:
             # passed as \\X or re.sub raises "bad escape" on \B, \R, etc.
             # Digit-prefixed backslashes (\1..\9) are preserved as backrefs.
             srepl_safe = re.sub(r"\\(?=\D)", r"\\\\", srepl_dec)
+            # Per-line iteration matches real vim's line-oriented :s semantics
+            # and avoids the `.*` empty-match-per-line-boundary bug. But if
+            # the pattern explicitly contains a newline (`\n` decoded), the
+            # user wants cross-line matching — fall back to whole-buffer.
+            spat_decoded = _decode_escapes(spat)
+            pattern_is_multiline = "\n" in spat_decoded
             def _run_sub(_rx):
-                if sub_start == 0 and sub_end == len(content):
-                    return _rx.subn(srepl_safe, content, count=n_max)
-                # ranged path — iterate per line in the range so non-/g
-                # replaces the first match on EACH line (vim behavior),
-                # not just the first match in the whole range.
+                if pattern_is_multiline:
+                    # Whole-buffer: pattern needs to see newlines.
+                    head = content[:sub_start]
+                    tail = content[sub_end:]
+                    body = content[sub_start:sub_end]
+                    new_body, _n = _rx.subn(srepl_safe, body, count=n_max)
+                    return head + new_body + tail, _n
+                # Single-line pattern → iterate per-line in the range so
+                # /g vs no-flag means "all per line" vs "first per line",
+                # and `.*` doesn't double-fire at line boundaries.
                 head = content[:sub_start]
                 tail = content[sub_end:]
                 body = content[sub_start:sub_end]

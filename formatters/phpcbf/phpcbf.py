@@ -108,8 +108,11 @@ def main() -> None:
 
     dur = int((time.time() - start) * 1000)
 
-    # phpcbf: exit 0 = no fixes needed, exit 1 = fixes applied, exit 2+ = error
-    if r.returncode >= 2:
+    # phpcbf exit codes (PHP_CodeSniffer): 0=clean, 1=fixed, 2=errors remain
+    # that phpcbf cannot auto-fix, 3=internal failure. As a *formatter* we
+    # only fail on 3 — exit 2 means "I fixed what I could; the rest needs
+    # phpcs to surface as validation errors", not a formatter failure.
+    if r.returncode >= 3:
         msg = (r.stderr.strip() or r.stdout.strip())[:500]
         emit({
             "tool": "phpcbf", "file": file, "ok": False, "count": 1,
