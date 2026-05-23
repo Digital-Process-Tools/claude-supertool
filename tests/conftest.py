@@ -22,10 +22,19 @@ def pytest_configure(config):  # noqa: ARG001
     """
     import os
     os.environ.setdefault("SUPERTOOL_ALLOW_OUTSIDE_CWD", "1")
-    # #147: vim shell verbs (:! / :%! / :r !) gated behind opt-in. Existing
-    # vim tests exercise them, so opt the suite in. Security regression tests
-    # in test_security_vim_shell.py unset this via fixture to verify strict mode.
     os.environ.setdefault("SUPERTOOL_ALLOW_VIM_SHELL", "1")
+    # #149: publish-body allowlist + confirm gate. Existing publish tests use
+    # `tmp_path` for body files (outside the production .max/ / drafts/ /
+    # posts/ / blog/ allowlist) and don't `|force`, so opt the suite in.
+    # Security regression tests in test_security_publish.py unset these.
+    pytest_root = os.environ.get("PYTEST_CURRENT_TEST") or "/tmp/pytest-of-"
+    # tmp_path lives under /private/var/folders (macOS) or /tmp (Linux).
+    # Add the broadest sensible roots to the allowlist for tests.
+    os.environ.setdefault(
+        "SUPERTOOL_PUBLISH_BODY_ALLOWLIST",
+        "/private/var/folders:/tmp:/var/folders",
+    )
+    os.environ.setdefault("SUPERTOOL_NO_PUBLISH_CONFIRM", "1")
 
 
 @pytest.fixture(autouse=True)
