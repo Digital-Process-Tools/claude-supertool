@@ -366,6 +366,20 @@ Each saved round-trip avoids one prefix cache re-read. The bigger your prefix, t
 
 ---
 
+## Security — cwd containment
+
+Every path arg supertool sees is checked against the current working directory. A malicious `.supertool.json` or prompt-injected op like `paste:~/.ssh/authorized_keys:::pwned` or `read:/etc/passwd` is rejected with a clean error. Symlinks crossing the boundary are caught (realpath follows them). NUL bytes rejected early. See [issue #146](https://github.com/Digital-Process-Tools/claude-supertool/issues/146) for the full threat model.
+
+**Opt-out for CI / cross-repo workflows that legitimately read absolute paths:**
+
+```bash
+export SUPERTOOL_ALLOW_OUTSIDE_CWD=1
+```
+
+Only the literal string `"1"` disables the check. `"0"`, `"false"`, empty — all stay strict (fail closed).
+
+Default excludes (`grep` / `glob` / `tree` / `map`) prune `.env/`, `.max/`, `.ssh/`, `.aws/`, `.gnupg/`, `.kube/`, `.docker/`, `.terraform/`, `.chef/`, `.npm/`, `secrets/`, `credentials/` so tokens don't surface into an LLM's context.
+
 ## Contributing
 
 See [docs/contributing.md](docs/contributing.md) — custom ops, presets, validators, running tests, submitting upstream.

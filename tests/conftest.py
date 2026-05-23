@@ -11,6 +11,19 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import supertool  # noqa: E402
 
 
+def pytest_configure(config):  # noqa: ARG001
+    """Opt out of #146 cwd containment for the test suite.
+
+    `_safe_path` enforces that op paths resolve under cwd unless
+    `SUPERTOOL_ALLOW_OUTSIDE_CWD=1` is set. Tests use tmp_path fixtures
+    (under /tmp/pytest-...) so we flip the env var on for the whole suite.
+    Security regression tests that need strict mode unset it via
+    `monkeypatch.delenv("SUPERTOOL_ALLOW_OUTSIDE_CWD", raising=False)`.
+    """
+    import os
+    os.environ.setdefault("SUPERTOOL_ALLOW_OUTSIDE_CWD", "1")
+
+
 @pytest.fixture(autouse=True)
 def _disable_rtk_and_config():
     """Disable RTK delegation, config cache, tree-sitter, and ctags in tests."""

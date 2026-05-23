@@ -150,6 +150,16 @@ _DEFAULT_EXCLUDE_PATHS: Tuple[str, ...] = (
     ".git/", "node_modules/", ".svn/", ".hg/", ".idea/", ".vscode/",
     "__pycache__/", ".venv/", "venv/", "dist/", "build/",
     "phpstan-result-cache/", ".phpunit.cache/", ".rector/",
+    # #146: credential/secret dirs and files. Pruned so grep/glob/tree/map
+    # don't accidentally surface tokens in their output (which then lands in
+    # an LLM's context). Override per-project via .supertool.json exclude-paths.
+    # Note: trailing slash matches dirs AND files of the same name —
+    # `_is_excluded` appends `/` to rel_path before prefix-matching, so `.env/`
+    # catches a FILE named `.env` and a DIR named `.env/`. Distinct entries
+    # are needed for `.env.local`, `.env.production`, etc. (each is its own name).
+    ".env/", ".env.local/", ".env.production/", ".env.development/", ".env.test/",
+    ".max/", ".ssh/", ".aws/", ".gnupg/", ".kube/", ".docker/",
+    ".terraform/", ".chef/", ".npm/", "secrets/", "credentials/",
 )
 WILDCARD_CHARS = re.compile(r"[*?\[]")
 # Patterns for lines that are "blank or comment-only" across common languages
@@ -525,6 +535,54 @@ def _is_parallel_safe(arg: str) -> bool:
 # Custom ops and aliases — config-driven dispatch extensions
 # ---------------------------------------------------------------------------
 
+class SecurityError(Exception):
+    """Raised when a path arg violates the cwd containment policy."""
+    pass
+
+
+def _safe_path(p: str, *, allow_outside_cwd: Optional[bool] = None) -> str:
+    """Resolve `p` and enforce repo-root containment (closes #146).
+
+    Strict mode (default): the realpath of `p` must equal cwd or live under
+    cwd. Symlinks crossing the boundary are rejected. `..` traversal that
+    escapes cwd is rejected. Returns the resolved absolute path.
+
+    Opt-out: `allow_outside_cwd=True` (per-call) or env
+    `SUPERTOOL_ALLOW_OUTSIDE_CWD=1` (process-wide) skips the check.
+    Test suites set the env var via conftest.py so tmp_path-based fixtures
+    keep working; production deployments leave it unset.
+
+    `~` and env-var expansion happen via os.path.expanduser / expandvars —
+    a user-supplied `~/.ssh/id_rsa` is resolved to the real path BEFORE
+    the cwd check, which is what catches the threat.
+    """
+    if allow_outside_cwd is None:
+        allow_outside_cwd = os.environ.get("SUPERTOOL_ALLOW_OUTSIDE_CWD") == "1"
+    # NUL byte rejection — os.path.* raises ValueError on embedded NULs which
+    # would leak as an uncaught traceback. Reject early with a clean message.
+    if "\x00" in p:
+        raise SecurityError(f"path contains NUL byte: {p!r}")
+    expanded = os.path.expanduser(os.path.expandvars(p))
+    abs_p = os.path.realpath(expanded)
+    if allow_outside_cwd:
+        return abs_p
+    # Windows: NTFS is case-insensitive (`C:\Users` == `c:\users`) and uses
+    # backslash separators. `os.path.normcase` lowercases + normalises
+    # separators on Windows; on POSIX it's a no-op so the check stays exact.
+    # This also handles drive-letter case (`c:\` vs `C:\`) and forward-slash
+    # variants (`C:/Users` vs `C:\Users`).
+    abs_p_cmp = os.path.normcase(abs_p)
+    root_cmp = os.path.normcase(os.path.realpath(os.getcwd()))
+    if abs_p_cmp == root_cmp:
+        return abs_p
+    if not abs_p_cmp.startswith(root_cmp + os.sep):
+        raise SecurityError(
+            f"path escapes cwd: {p!r} (resolved to {abs_p!r}). "
+            f"Set SUPERTOOL_ALLOW_OUTSIDE_CWD=1 to allow."
+        )
+    return abs_p
+
+
 def _expand_env(s: str, env: Dict[str, str]) -> str:
     """Safe $VAR / ${VAR} expansion from env (no shell).
 
@@ -676,7 +734,15 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
     original line numbers preserved).
     When rtk is available and no special options are used, delegates to
     rtk read for compressed output.
+
+    Enforces _safe_path containment (closes #146) — the path must resolve
+    under cwd unless SUPERTOOL_ALLOW_OUTSIDE_CWD=1 is set. Catches read
+    attempts against /etc/passwd, ~/.ssh/*, .max/*token*, etc.
     """
+    try:
+        _safe_path(path)
+    except SecurityError as e:
+        return f"ERROR: {e}\n"
     if limit <= 0:
         limit = _get_op_int("read", "max_lines", MAX_READ_LINES)
     if not path or not os.path.isfile(path):
@@ -2507,9 +2573,15 @@ def op_replace(old: str, new: str, path: str = ".", dry: bool = False) -> str:
 def _atomic_write(path: str, content: str) -> None:
     """Write content to path atomically — temp file + os.replace.
 
+    Enforces _safe_path containment (closes #146) — the resolved path must
+    live under cwd unless SUPERTOOL_ALLOW_OUTSIDE_CWD=1 is set. Single
+    chokepoint for all mutation ops (paste/edit/replace_lines/vim/replace).
+
     If `path` is a symlink, follow it to the real target — otherwise
     os.replace would clobber the symlink with a regular file, leaving the
-    real file untouched (silent data divergence).
+    real file untouched (silent data divergence). The symlink target itself
+    is checked against cwd containment — a symlink in the repo pointing at
+    /etc/hosts is rejected.
 
     Crash-safe: if interrupted mid-write, the original file is preserved
     (the temp file is incomplete but the target path still has old data).
@@ -2519,6 +2591,9 @@ def _atomic_write(path: str, content: str) -> None:
     files containing illegal UTF-8 sequences (binary blobs, partial encodes).
     """
     import tempfile
+    # Containment check happens against the symlink target (real path) so a
+    # symlinked write doesn't escape cwd via the symlink itself.
+    _safe_path(path)
     real_path = os.path.realpath(path) if os.path.islink(path) else path
     target_dir = os.path.dirname(os.path.abspath(real_path)) or "."
     fd, tmp_path = tempfile.mkstemp(
@@ -9862,6 +9937,42 @@ def _dispatch_impl(arg: str) -> str:
     # bytes — backslashes and newlines must NOT be reinterpreted as shell-
     # style escapes. Only colon-CLI input needs `_decode_escapes`.
     _dec = (lambda s: s) if _at_file_used else _decode_escapes
+
+    # #146: dispatch-level path containment. Each op has a known position(s)
+    # of its path arg(s) in `parts`. _safe_path enforces cwd containment
+    # unless SUPERTOOL_ALLOW_OUTSIDE_CWD=1 is set. Chokepoint coverage
+    # (render_file, _atomic_write) catches internal callers that bypass
+    # dispatch (alias expansion, test code calling op_X directly).
+    _PATH_ARG_POSITIONS = {
+        "read": (1,), "head": (1,), "tail": (1,), "wc": (1,),
+        "stat": (1,), "around_line": (1,), "ls": (1,), "tree": (1,),
+        "map": (1,), "blame": (1,), "validate": (1,), "format": (1,),
+        "workspace": (1,), "diag": (1,),
+        # around:PATTERN:PATH, grep_around:PATTERN:PATH, grep:PATTERN:PATH
+        "around": (2,), "grep_around": (2,), "grep": (2,),
+        # hover:SYMBOL:FILE, rename:OLD:NEW:FILE, resolve:SYMBOL[:FROM_FILE]
+        "hover": (2,), "rename": (3,), "resolve": (2,),
+        # diff:PATH1:PATH2
+        "diff": (1, 2),
+        # between:SYMBOL:PATH (path at 2) | between:re:START:END:PATH (path at 4)
+        # — checking both positions covers both forms.
+        "between": (2, 4),
+        # check:PRESET:PATH — runs a custom op, path forwarded as {file}.
+        "check": (2,),
+        # mutating ops (also covered by _atomic_write chokepoint):
+        "edit": (3,), "replace": (3,), "replace_dry": (3,),
+        "replace_lines": (1,), "paste": (1,), "vim": (1,),
+    }
+    for _pos in _PATH_ARG_POSITIONS.get(op, ()):
+        if _pos < len(parts):
+            _candidate = parts[_pos]
+            # Skip empty / sentinel values — handlers default these to "." themselves.
+            if not _candidate or _candidate in (".", "full", "raw"):
+                continue
+            try:
+                _safe_path(_candidate)
+            except SecurityError as _se:
+                return header + f"ERROR: {_se}\n"
 
     try:
         if op == "read":
