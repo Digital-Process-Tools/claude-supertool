@@ -635,20 +635,27 @@ def _extract_env_prefix(cmd: str) -> Tuple[Dict[str, str], str]:
 def _check_vim_shell_allowed() -> Optional[str]:
     """Gate vim's `:!cmd`, `:%!cmd`, `:r !cmd` behind explicit opt-in (closes #147).
 
-    Returns None when SUPERTOOL_ALLOW_VIM_SHELL=1, else a clean ERROR string
-    the caller returns up the stack. Shell verbs in a vim macro are full RCE
-    by design — a prompt-injected vim payload like `:!rm -rf ~` runs verbatim.
-    Combined with the @file/batch routes, an LLM can be coerced into this in
-    a single op. Default-off keeps the editor verbs (i/a/o/d/s/etc.) working
-    unconditionally; opt-in restores shell parity for power users.
+    Returns None when allowed, else a clean ERROR string the caller returns
+    up the stack. Shell verbs in a vim macro are full RCE by design — a
+    prompt-injected vim payload like `:!rm -rf ~` runs verbatim. Default-off
+    keeps editor verbs (i/a/o/d/s/etc.) working unconditionally.
+
+    Opt-in (any one is enough):
+      1. `SUPERTOOL_ALLOW_VIM_SHELL=1` env var (one-off / CI)
+      2. `"allow_vim_shell": true` in `.supertool.json` (project-pinned)
     """
     if os.environ.get("SUPERTOOL_ALLOW_VIM_SHELL") == "1":
         return None
+    try:
+        if bool(_load_config().get("allow_vim_shell")):
+            return None
+    except Exception:
+        pass
     return (
         "ERROR: vim shell verbs (:!, :%!, :r !) are disabled by default. "
-        "Set SUPERTOOL_ALLOW_VIM_SHELL=1 to enable. "
-        "For one-off shell logic, write a wrapper script and call it via\n"
-        "a custom op in .supertool.json instead.\n"
+        'To allow: set SUPERTOOL_ALLOW_VIM_SHELL=1 (env), or add '
+        '`"allow_vim_shell": true` to .supertool.json. '
+        "For one-off shell logic, prefer a wrapper script + custom op.\n"
     )
 
 
