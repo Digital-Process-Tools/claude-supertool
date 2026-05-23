@@ -2792,7 +2792,14 @@ def op_paste(path: str, content: str) -> str:
     """
     if not path:
         return "ERROR: empty path\n"
-    parent = os.path.dirname(path)
+    # Containment check BEFORE makedirs — otherwise a path like
+    # `../../tmp/evil/foo` would create directories outside cwd before
+    # _atomic_write's own _safe_path check rejects the write itself.
+    try:
+        safe_resolved = _safe_path(path)
+    except SecurityError as e:
+        return f"ERROR: {e}\n"
+    parent = os.path.dirname(safe_resolved)
     if parent and not os.path.isdir(parent):
         try:
             os.makedirs(parent, exist_ok=True)

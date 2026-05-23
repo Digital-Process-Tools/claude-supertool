@@ -109,21 +109,12 @@ def test_paste_path_traversal_writes_relative_to_given_path(tmp_path: Path) -> N
 # 3. NUL byte in path — clean error, no traceback
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(
-    reason=(
-        "BUG: op_paste catches only OSError but os.replace raises ValueError "
-        "for embedded NUL bytes in the destination path. The ValueError leaks "
-        "as an unhandled exception instead of a clean ERROR string. "
-        "Fix: broaden the except clause in _atomic_write (or op_paste) to also "
-        "catch ValueError."
-    ),
-    strict=True,
-)
 def test_paste_nul_in_path_returns_error(tmp_path: Path) -> None:
     """A path containing \\x00 must produce a clean ERROR string, not raise.
 
-    Currently xfail: _atomic_write only catches OSError; os.replace raises
-    ValueError for NUL bytes, which propagates uncaught to the caller.
+    Fixed by the op_paste containment patch: `_safe_path` rejects NUL bytes
+    BEFORE the path reaches `os.replace`, returning a clean SecurityError
+    string instead of leaking a ValueError traceback.
     """
     bad_path = str(tmp_path / "file\x00.txt")
     out = supertool.op_paste(bad_path, "content")
@@ -380,3 +371,37 @@ def test_paste_crlf_only_preserved(tmp_path: Path) -> None:
 
     raw = target.read_bytes()
     assert b"\r\n" in raw, "CRLF was converted to LF"
+
+
+# ---------------------------------------------------------------------------
+# 12. Containment — outside-cwd path must NOT pollute filesystem with mkdir
+# ---------------------------------------------------------------------------
+
+def test_paste_outside_cwd_does_not_create_parent_dirs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: op_paste used to call os.makedirs(parent) BEFORE the
+    _safe_path containment check inside _atomic_write. A traversal path like
+    `../../tmp/evil/foo` would create `../../tmp/evil/` on disk before the
+    write itself was rejected — leaving empty directories outside cwd.
+
+    Fix: call _safe_path at op_paste entry so containment is enforced before
+    any filesystem mutation.
+    """
+    monkeypatch.delenv("SUPERTOOL_ALLOW_OUTSIDE_CWD", raising=False)
+    # cwd is the repo root in CI / dev; tmp_path is outside cwd (under
+    # /private/var/folders or /tmp). Build a path that targets a brand-new
+    # subdir of tmp_path so we can assert it was NOT created.
+    outside_dir = tmp_path / "should_not_exist"
+    outside_target = outside_dir / "file.txt"
+
+    monkeypatch.chdir(Path(__file__).parent.parent)  # supertool repo root
+    out = supertool.op_paste(str(outside_target), "evil content")
+
+    assert "ERROR" in out, f"expected SecurityError, got: {out!r}"
+    assert "escapes cwd" in out
+    assert not outside_dir.exists(), (
+        f"op_paste polluted filesystem: {outside_dir} was created before "
+        f"the containment check rejected the write"
+    )
+    assert not outside_target.exists()
