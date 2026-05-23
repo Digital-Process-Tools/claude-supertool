@@ -153,12 +153,21 @@ def format_response(file_path: str, mcp_resp: dict, dur_ms: int) -> dict:
                 line_int = int(line) if line else None
             except (TypeError, ValueError):
                 line_int = None
+            # Cap msg — phpstan can dump multi-MB type-info dumps that
+            # explode validator output. Override via PHPSTAN_MCP_MSG_MAX_CHARS.
+            _msg = e.get("message", "")
+            _cap = int(os.environ.get("PHPSTAN_MCP_MSG_MAX_CHARS", "2000"))
+            if len(_msg) > _cap:
+                _head = _cap - 80
+                _msg = (_msg[:_head]
+                        + f"... [TRUNCATED — {len(_msg) - _head} more chars; "
+                        + "raise PHPSTAN_MCP_MSG_MAX_CHARS or run phpstan directly]")
             base["errors"].append({
                 "line": line_int,
                 "col": None,
                 "severity": "error",
                 "code": e.get("identifier") or "phpstan",
-                "msg": e.get("message", ""),
+                "msg": _msg,
                 "source_context": source_context(file_path, line_int),
             })
     elif exit_code != 0:

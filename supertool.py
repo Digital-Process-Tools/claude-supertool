@@ -9702,6 +9702,10 @@ def _at_file_to_parts(op: str, payload: Any) -> Tuple[List[str], bool]:
     return parts, replace_all
 
 
+_DISPATCH_DEPTH = 0
+_DISPATCH_MAX_DEPTH = int(os.environ.get("SUPERTOOL_DISPATCH_MAX_DEPTH", "32"))
+
+
 def dispatch(arg: str) -> str:
     """Parse 'op:arg1:arg2:...' and route to the matching op function.
 
@@ -9718,7 +9722,26 @@ def dispatch(arg: str) -> str:
     Example: 'batch:@.max/ops.json'
     Payload: array of {"op":"X",...fields} OR
              {"continue_on_error":true,"ops":[...]}
+
+    A self-referencing batch (or any op chain) is bounded by
+    SUPERTOOL_DISPATCH_MAX_DEPTH (default 32) — exceeding returns a clean
+    ERROR string instead of a Python RecursionError.
     """
+    global _DISPATCH_DEPTH
+    if _DISPATCH_DEPTH >= _DISPATCH_MAX_DEPTH:
+        return (
+            f"ERROR: dispatch recursion limit ({_DISPATCH_MAX_DEPTH}) exceeded "
+            f"— check for a self-referencing batch payload\n"
+        )
+    _DISPATCH_DEPTH += 1
+    try:
+        return _dispatch_impl(arg)
+    finally:
+        _DISPATCH_DEPTH -= 1
+
+
+def _dispatch_impl(arg: str) -> str:
+    """Body of dispatch — separated so the recursion guard stays minimal."""
     # Strip :::no-exclude before splitting so it doesn't interfere with arg parsing
     no_exclude = arg.endswith(_NO_EXCLUDE_SUFFIX)
     if no_exclude:

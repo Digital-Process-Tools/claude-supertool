@@ -181,6 +181,14 @@ def format_response(file_path: str, mcp_resp: dict, duration_ms: int) -> dict:
             for e in errors:
                 base["count"] += 1
                 msg = e.get("message", str(e)) if isinstance(e, dict) else str(e)
+                # Cap msg — rector can dump diffs that explode validator output.
+                # Override via env: RECTOR_MCP_MSG_MAX_CHARS.
+                _cap = int(os.environ.get("RECTOR_MCP_MSG_MAX_CHARS", "2000"))
+                if len(msg) > _cap:
+                    head = _cap - 80
+                    msg = (msg[:head]
+                           + f"... [TRUNCATED — {len(msg) - head} more chars; "
+                           + "raise RECTOR_MCP_MSG_MAX_CHARS or run rector directly]")
                 base["errors"].append({"line": None, "col": None, "severity": "error",
                                        "code": "rector.error", "msg": msg})
     elif exit_code != 0:
