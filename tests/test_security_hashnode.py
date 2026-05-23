@@ -97,11 +97,10 @@ def test_known_http_errors_never_include_token(
 # 3. Unknown HTTP code path echoes body[:200] — KNOWN leak vector
 # ---------------------------------------------------------------------------
 
-def test_unknown_http_code_echoes_body_could_leak_token(capsys) -> None:
-    """KNOWN ISSUE: _format_http_error returns body[:200] for unknown codes.
-    If Hashnode 5xx body ever echoes the auth header (some upstream proxies
-    do this for debugging), the token leaks into stderr. Pin the current
-    leaky behavior so a fix lands intentionally."""
+def test_unknown_http_code_body_does_not_leak_token(capsys) -> None:
+    """Fixed 2026-05-23: _scrub_token redacts the token from any body
+    printed in error output. Upstream proxies echoing the Authorization
+    header in 5xx bodies no longer leak the credential to stderr."""
     err = urllib.error.HTTPError(
         "https://gql.hashnode.com",
         500,
@@ -117,11 +116,8 @@ def test_unknown_http_code_echoes_body_could_leak_token(capsys) -> None:
         with pytest.raises(SystemExit):
             hn_gql.gql("query{}", {}, FAKE_TOKEN)
     captured = capsys.readouterr()
-    # Pin current behavior: token leaks. When fixed, flip to assert NOT in.
-    assert FAKE_TOKEN in captured.err, (
-        "expected current (leaky) behavior — if this test starts failing, "
-        "the leak has been fixed and the assertion should be flipped"
-    )
+    assert FAKE_TOKEN not in captured.err
+    assert "[REDACTED]" in captured.err
 
 
 # ---------------------------------------------------------------------------
@@ -129,6 +125,9 @@ def test_unknown_http_code_echoes_body_could_leak_token(capsys) -> None:
 # ---------------------------------------------------------------------------
 
 def test_network_error_does_not_leak_token(capsys) -> None:
+    """Fixed 2026-05-23: URLError.reason now passed through _scrub_token
+    before stderr.write — if the OS error string contained the token
+    (rare but possible), it's redacted."""
     def fake_urlopen(*a, **k):
         raise urllib.error.URLError(f"refused: token was {FAKE_TOKEN}")
 
@@ -136,16 +135,7 @@ def test_network_error_does_not_leak_token(capsys) -> None:
         with pytest.raises(SystemExit):
             hn_gql.gql("query{}", {}, FAKE_TOKEN)
     captured = capsys.readouterr()
-    # URLError.reason is whatever the network layer passed — in this synthetic
-    # case the reason itself contains the token. The op surfaces reason.
-    # If this is intentional (it leaks what the OS gave us), pin it; otherwise
-    # the op should redact.
-    if FAKE_TOKEN in captured.err:
-        pytest.xfail(
-            "Network error echoes the URLError.reason string verbatim — "
-            "if upstream OS error includes auth context, token can leak. "
-            "TODO: scrub token from any error string before printing."
-        )
+    assert FAKE_TOKEN not in captured.err
 
 
 # ---------------------------------------------------------------------------
@@ -195,12 +185,9 @@ def test_graphql_errors_message_does_not_leak_token(capsys) -> None:
         with pytest.raises(SystemExit):
             hn_gql.gql("query{}", {}, FAKE_TOKEN)
     captured = capsys.readouterr()
-    # Current behavior: passes server's message through verbatim. Pin it.
-    if FAKE_TOKEN in captured.err:
-        pytest.xfail(
-            "GraphQL error.message is echoed verbatim — server-controlled "
-            "string with token could leak. TODO: redact secrets from msg."
-        )
+    # Fixed 2026-05-23: GraphQL error.message is now passed through
+    # _scrub_token before printing.
+    assert FAKE_TOKEN not in captured.err
 
 
 # ---------------------------------------------------------------------------
