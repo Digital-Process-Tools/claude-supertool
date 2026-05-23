@@ -254,6 +254,7 @@ def test_map_dispatch_integration(tmp_path: Path) -> None:
     assert "class Mod" in out
 
 
+@pytest.mark.slow
 def test_map_dispatch_default_cwd() -> None:
     out = supertool.dispatch("map:.")
     assert "tier:" in out
