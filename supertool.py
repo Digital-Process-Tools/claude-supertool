@@ -266,6 +266,11 @@ def _load_config() -> Dict[str, Any]:
             try:
                 with open(candidate) as f:
                     _CONFIG = json.load(f)
+                    # JSON `null` parses to None; bare scalars / lists parse
+                    # to non-dict. _merge_presets needs a dict — coerce to
+                    # empty to keep the rest of the loader honest.
+                    if not isinstance(_CONFIG, dict):
+                        _CONFIG = {}
                     project_dir = d
                     _merge_presets(_CONFIG, project_dir)
                     # Parse MCP server specs from the optional "mcp" block.
