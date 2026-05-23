@@ -583,6 +583,37 @@ def _safe_path(p: str, *, allow_outside_cwd: Optional[bool] = None) -> str:
     return abs_p
 
 
+def _extract_env_prefix(cmd: str) -> Tuple[Dict[str, str], str]:
+    """Split a leading `KEY=VAL KEY2=VAL2 ...` shell env-prefix off `cmd`.
+
+    Returns ({KEY:VAL,...}, remaining_cmd_without_prefix). Mirrors POSIX shell
+    semantics: a `KEY=VAL` token before the command sets KEY in the child's
+    env. Stops at the first non-assignment token. Tokens are parsed via
+    shlex.split, so quoted values (`KEY='one two'`) work.
+
+    Needed because the argv-form fix (#145) broke shipped cmd templates that
+    set env this way — `subprocess.run(shlex.split(cmd), shell=False)` treats
+    the assignment as a literal argv[0], yielding ENOENT.
+    """
+    env: Dict[str, str] = {}
+    tokens = shlex.split(cmd, posix=True)
+    idx = 0
+    _kv = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
+    while idx < len(tokens):
+        m = _kv.match(tokens[idx])
+        if not m:
+            break
+        env[m.group(1)] = m.group(2)
+        idx += 1
+    if not env:
+        return {}, cmd
+    # Rebuild remaining cmd as shell-safe string so callers can keep using
+    # shlex.split on it (the placeholder-substituted file path already
+    # passed through shlex.quote upstream, so it survives a second pass).
+    remaining = " ".join(shlex.quote(t) for t in tokens[idx:])
+    return env, remaining
+
+
 def _expand_env(s: str, env: Dict[str, str]) -> str:
     """Safe $VAR / ${VAR} expansion from env (no shell).
 
@@ -648,6 +679,8 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
             if k not in _RESERVED_KEYS:
                 env[f"SUPERTOOL_{k.upper()}"] = str(v)
 
+    _prefix_env, cmd = _extract_env_prefix(cmd)
+    env.update(_prefix_env)
     cmd = _expand_env(cmd, env)
 
     t0 = time.monotonic()
@@ -8092,7 +8125,8 @@ def _validator_resolve(spec: Dict[str, Any], file: str) -> Optional[str]:
     # tokens. {file} is still shlex.quote'd so values with spaces survive
     # shlex.split. {supertool_dir} is a known constant.
     cmd = spec["resolve"].replace("{supertool_dir}", _INSTALL_DIR).replace("{file}", shlex.quote(file))
-    cmd = _expand_env(cmd, dict(os.environ))
+    _prefix_env, cmd = _extract_env_prefix(cmd)
+    cmd = _expand_env(cmd, {**os.environ, **_prefix_env})
     try:
         r = subprocess.run(shlex.split(cmd), shell=False, capture_output=True, text=True, timeout=30)
         resolved = r.stdout.strip().splitlines()[0] if r.stdout.strip() else ""
@@ -8163,9 +8197,13 @@ def _validator_run_one(name: str, spec: Dict[str, Any], file: str) -> Optional[D
     # literal tokens. {file} stays shlex.quote'd so values with spaces survive
     # shlex.split. {supertool_dir} is a known constant.
     cmd = spec["cmd"].replace("{supertool_dir}", _INSTALL_DIR).replace("{file}", shlex.quote(target))
-    # $VAR / ${VAR} expansion from spec.env merged with os.environ (no shell).
-    _spec_env_dict = spec.get("env") or {}
-    cmd = _expand_env(cmd, {**os.environ, **{str(k): str(v) for k, v in _spec_env_dict.items()}})
+    # Lift leading `KEY=VAL` shell env-prefix into env dict (shipped cmd
+    # templates use this to set MCP_*_WORKING_DIR before the python invocation).
+    _prefix_env, cmd = _extract_env_prefix(cmd)
+    # $VAR / ${VAR} expansion + child env both need spec.env + prefix env.
+    _spec_env_dict = {**_prefix_env, **(spec.get("env") or {})}
+    _merged_env = {**os.environ, **{str(k): str(v) for k, v in _spec_env_dict.items()}}
+    cmd = _expand_env(cmd, _merged_env)
     timeout = int(spec.get("timeout", 60))
 
     # Per-validator opt-out: spec.cache = false disables caching for this validator.
@@ -8182,8 +8220,8 @@ def _validator_run_one(name: str, spec: Dict[str, Any], file: str) -> Optional[D
             if cached is not None:
                 return cached
 
-    spec_env = spec.get("env") or {}
-    run_env = {**os.environ, **{str(k): str(v) for k, v in spec_env.items()}} if spec_env else None
+    # Use _merged_env (built above) so the prefix env-vars reach the child too.
+    run_env = _merged_env if _spec_env_dict else None
 
     try:
         r = subprocess.run(shlex.split(cmd), shell=False, capture_output=True, text=True, timeout=timeout,
@@ -8396,11 +8434,12 @@ def _formatter_run_one(name: str, spec: Dict[str, Any], file: str) -> Dict[str, 
     # tokens, not shell operators. {file} stays shlex.quote'd so values with
     # spaces survive shlex.split. {supertool_dir} is a known constant.
     cmd = spec["cmd"].replace("{supertool_dir}", _INSTALL_DIR).replace("{file}", shlex.quote(file))
-    _spec_env_dict = spec.get("env") or {}
-    cmd = _expand_env(cmd, {**os.environ, **{str(k): str(v) for k, v in _spec_env_dict.items()}})
+    _prefix_env, cmd = _extract_env_prefix(cmd)
+    _spec_env_dict = {**_prefix_env, **(spec.get("env") or {})}
+    _merged_env = {**os.environ, **{str(k): str(v) for k, v in _spec_env_dict.items()}}
+    cmd = _expand_env(cmd, _merged_env)
     timeout = int(spec.get("timeout", 30))
-    spec_env = spec.get("env") or {}
-    run_env = {**os.environ, **{str(k): str(v) for k, v in spec_env.items()}} if spec_env else None
+    run_env = _merged_env if _spec_env_dict else None
     try:
         r = subprocess.run(shlex.split(cmd), shell=False, capture_output=True, text=True, timeout=timeout,
                            env=run_env)
