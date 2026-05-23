@@ -236,3 +236,87 @@ def test_read_meta_clean_tracked_is_silent(tmp_path: Path) -> None:
     first = out.splitlines()[0]
     for tok in ("bin", "non-utf8", "crlf", "cf!", "->"):
         assert tok not in first
+
+
+# ---------------------------------------------------------------------------
+# _path_meta_suffix direct unit tests (coverage for branches not exercised
+# via op_read end-to-end: exec bit, mtime, git ignored/modified, broken sym).
+# ---------------------------------------------------------------------------
+
+import os as _os
+import subprocess as _sp
+import time as _time
+
+
+def test_path_meta_suffix_executable_bit(tmp_path: Path) -> None:
+    f = tmp_path / "run.sh"
+    f.write_text("#!/bin/sh\necho hi\n")
+    _os.chmod(f, 0o755)
+    out = supertool._path_meta_suffix(str(f), b"#!/bin/sh\n")
+    assert " x" in out
+
+
+def test_path_meta_suffix_stale_mtime_days(tmp_path: Path) -> None:
+    f = tmp_path / "old.txt"
+    f.write_text("ancient")
+    old = _time.time() - 10 * 86400
+    _os.utime(f, (old, old))
+    out = supertool._path_meta_suffix(str(f), b"ancient")
+    assert "10d" in out
+
+
+def test_path_meta_suffix_stale_mtime_weeks(tmp_path: Path) -> None:
+    f = tmp_path / "weeks.txt"
+    f.write_text("middle")
+    old = _time.time() - 60 * 86400
+    _os.utime(f, (old, old))
+    out = supertool._path_meta_suffix(str(f), b"middle")
+    assert "8w" in out  # 60 // 7 = 8
+
+
+def test_path_meta_suffix_stale_mtime_months(tmp_path: Path) -> None:
+    f = tmp_path / "ancient.txt"
+    f.write_text("old")
+    old = _time.time() - 400 * 86400
+    _os.utime(f, (old, old))
+    out = supertool._path_meta_suffix(str(f), b"old")
+    assert "mo" in out
+
+
+def test_path_meta_suffix_broken_symlink(tmp_path: Path) -> None:
+    link = tmp_path / "dangling"
+    link.symlink_to(tmp_path / "nope")
+    out = supertool._path_meta_suffix(str(link))
+    assert "broken" in out
+
+
+def test_path_meta_suffix_git_modified(tmp_path: Path) -> None:
+    cwd = _os.getcwd()
+    _os.chdir(tmp_path)
+    try:
+        _sp.run(["git", "init", "-q"], check=True)
+        _sp.run(["git", "config", "user.email", "t@t"], check=True)
+        _sp.run(["git", "config", "user.name", "t"], check=True)
+        f = tmp_path / "tracked.txt"
+        f.write_text("orig\n")
+        _sp.run(["git", "add", "tracked.txt"], check=True)
+        _sp.run(["git", "commit", "-qm", "x"], check=True)
+        f.write_text("modified\n")
+        out = supertool._path_meta_suffix(str(f), b"modified\n")
+        assert " m" in out
+    finally:
+        _os.chdir(cwd)
+
+
+def test_path_meta_suffix_git_ignored(tmp_path: Path) -> None:
+    cwd = _os.getcwd()
+    _os.chdir(tmp_path)
+    try:
+        _sp.run(["git", "init", "-q"], check=True)
+        (tmp_path / ".gitignore").write_text("secret.txt\n")
+        f = tmp_path / "secret.txt"
+        f.write_text("hush")
+        out = supertool._path_meta_suffix(str(f), b"hush")
+        assert " !" in out
+    finally:
+        _os.chdir(cwd)
