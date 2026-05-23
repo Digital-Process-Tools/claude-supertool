@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Hardening bundle.** Smaller defence-in-depth items from the audit (closes [#150](https://github.com/Digital-Process-Tools/claude-supertool/issues/150)):
+  - **Gitcli flag smuggling**: `git-checkout REF`, `git-merge REF`, `git-blame PATH` reject refs/paths starting with `-` (e.g. `--orphan=evil`, `--abort`, `-X theirs`). `git-blame` uses `--` separator to keep a path-with-dash from being parsed as a flag.
+  - **Regex ReDoS guards** on `grep`: pattern length capped at 1000 chars; nested unbounded quantifiers (`(a+)+`, `(.+)*`) rejected before they touch file content.
+  - **`validate_staged` / `format_staged`** use `git diff -z --diff-filter=ACMR` (filenames with newlines/quotes survive) and reject symlinks — a staged symlink to `/etc/hosts` would otherwise be REWRITTEN by formatters.
+  - **`xmllint` validator** runs with `--nonet --noent` so libxml2 can't fetch external entities or follow URI references during validation (XXE defence-in-depth).
+  - **Validator cache HMAC** at `~/.cache/supertool/.cache_key` (mode 0600, 32 random bytes, generated on first use). Each cache entry wrapped with HMAC-SHA256 of its body. Attacker with write access to `~/.cache/supertool/validators/` cannot forge a passing `ok: true` entry without also reading the secret. Legacy unwrapped entries treated as miss.
 - **Social publishing safety.** Three guards for the dev.to / bluesky publish + comment ops (closes [#149](https://github.com/Digital-Process-Tools/claude-supertool/issues/149)):
   - `file://` body must resolve under `.max/`, `drafts/`, `posts/`, or `blog/` (relative to cwd). Closes the credential-exfil vector: `bluesky_publish:file:///Users/.../app_password` now rejected before the file is read. Extend additively via `$SUPERTOOL_PUBLISH_BODY_ALLOWLIST=path1:path2` or `"publish_body_allowlist": [...]` in `.supertool.json`.
   - Confirm-default — `bluesky_publish` / `devto_publish` refuse to run without `|force`, `SUPERTOOL_NO_PUBLISH_CONFIRM=1` env, or `"no_publish_confirm": true` in `.supertool.json`. Blocks single-shot publish from a prompt-injected op.

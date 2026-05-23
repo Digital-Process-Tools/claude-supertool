@@ -49,7 +49,9 @@ def main() -> int:
     end = line + n
     try:
         result = subprocess.run(
-            ["git", "blame", "-L", f"{start},{end}", "--date=short", path],
+            # #150: `--` separator so a PATH starting with `-` (e.g. literal
+            # file named `-foo`) is treated as a path, not a CLI flag.
+            ["git", "blame", "-L", f"{start},{end}", "--date=short", "--", path],
             capture_output=True, text=True, timeout=10,
         )
     except subprocess.TimeoutExpired:
