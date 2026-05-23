@@ -127,7 +127,13 @@ def resolve_reply_ref(session: dict, reply_to_uri: str) -> dict:
 
 
 def _get_root_uri(session: dict, reply_to_uri: str) -> str | None:
-    """Resolve the root URI of a reply chain. Returns None on failure."""
+    """Resolve the root URI of a reply chain. Returns None on failure.
+
+    Catches BaseException because xrpc() calls sys.exit(1) on HTTP errors —
+    SystemExit subclasses BaseException, not Exception, so bare `except
+    Exception` would let it escape and kill the whole publish op when the
+    reply target just happens to 404.
+    """
     try:
         thread = xrpc("app.bsky.feed.getPostThread", session,
                        params={"uri": reply_to_uri, "depth": 0})
@@ -135,14 +141,15 @@ def _get_root_uri(session: dict, reply_to_uri: str) -> str | None:
         record = post.get("record") or {}
         root = (record.get("reply") or {}).get("root") or {}
         return root.get("uri") or reply_to_uri
-    except Exception:
+    except (Exception, SystemExit):
         return None
 
 
 def preflight_publish(reply_uri: str, session: dict) -> bool:
     """Return True if own feed already has a reply to the same root as reply_uri.
 
-    Scans up to 50 own recent posts. Returns False on any API error (graceful degrade).
+    Scans up to 50 own recent posts. Returns False on any API error (graceful
+    degrade). Catches SystemExit for the same reason as _get_root_uri.
     """
     try:
         root_uri = _get_root_uri(session, reply_uri)
@@ -158,7 +165,7 @@ def preflight_publish(reply_uri: str, session: dict) -> bool:
             if item_root and item_root == root_uri:
                 return True
         return False
-    except Exception:
+    except (Exception, SystemExit):
         return False
 
 
