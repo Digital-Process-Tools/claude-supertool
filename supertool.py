@@ -525,6 +525,22 @@ def _is_parallel_safe(arg: str) -> bool:
 # Custom ops and aliases — config-driven dispatch extensions
 # ---------------------------------------------------------------------------
 
+def _expand_env(s: str, env: Dict[str, str]) -> str:
+    """Safe $VAR / ${VAR} expansion from env (no shell).
+
+    Replaces $NAME and ${NAME} with values from env. Unknown vars are left
+    literal (vs shell which silently empties them). Used at all argv-form
+    dispatch sites (custom ops, validators, formatters, resolve) so users
+    can keep cmd templates that rely on env-var expansion without invoking
+    a shell.
+    """
+    return re.sub(
+        r'\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)',
+        lambda m: env.get(m.group(1) or m.group(2), m.group(0)),
+        s,
+    )
+
+
 def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
     """Try to run op as a custom command from config["ops"].
 
@@ -574,15 +590,6 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
             if k not in _RESERVED_KEYS:
                 env[f"SUPERTOOL_{k.upper()}"] = str(v)
 
-    # Safe $VAR / ${VAR} expansion from env (no shell) — preserves the
-    # documented behaviour where extra config keys land as SUPERTOOL_* env
-    # vars usable in the cmd template. Unknown vars are left literal.
-    def _expand_env(s: str, e: Dict[str, str]) -> str:
-        return re.sub(
-            r'\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)',
-            lambda m: e.get(m.group(1) or m.group(2), m.group(0)),
-            s,
-        )
     cmd = _expand_env(cmd, env)
 
     t0 = time.monotonic()
@@ -8010,6 +8017,7 @@ def _validator_resolve(spec: Dict[str, Any], file: str) -> Optional[str]:
     # tokens. {file} is still shlex.quote'd so values with spaces survive
     # shlex.split. {supertool_dir} is a known constant.
     cmd = spec["resolve"].replace("{supertool_dir}", _INSTALL_DIR).replace("{file}", shlex.quote(file))
+    cmd = _expand_env(cmd, dict(os.environ))
     try:
         r = subprocess.run(shlex.split(cmd), shell=False, capture_output=True, text=True, timeout=30)
         resolved = r.stdout.strip().splitlines()[0] if r.stdout.strip() else ""
@@ -8080,6 +8088,9 @@ def _validator_run_one(name: str, spec: Dict[str, Any], file: str) -> Optional[D
     # literal tokens. {file} stays shlex.quote'd so values with spaces survive
     # shlex.split. {supertool_dir} is a known constant.
     cmd = spec["cmd"].replace("{supertool_dir}", _INSTALL_DIR).replace("{file}", shlex.quote(target))
+    # $VAR / ${VAR} expansion from spec.env merged with os.environ (no shell).
+    _spec_env_dict = spec.get("env") or {}
+    cmd = _expand_env(cmd, {**os.environ, **{str(k): str(v) for k, v in _spec_env_dict.items()}})
     timeout = int(spec.get("timeout", 60))
 
     # Per-validator opt-out: spec.cache = false disables caching for this validator.
@@ -8310,6 +8321,8 @@ def _formatter_run_one(name: str, spec: Dict[str, Any], file: str) -> Dict[str, 
     # tokens, not shell operators. {file} stays shlex.quote'd so values with
     # spaces survive shlex.split. {supertool_dir} is a known constant.
     cmd = spec["cmd"].replace("{supertool_dir}", _INSTALL_DIR).replace("{file}", shlex.quote(file))
+    _spec_env_dict = spec.get("env") or {}
+    cmd = _expand_env(cmd, {**os.environ, **{str(k): str(v) for k, v in _spec_env_dict.items()}})
     timeout = int(spec.get("timeout", 30))
     spec_env = spec.get("env") or {}
     run_env = {**os.environ, **{str(k): str(v) for k, v in spec_env.items()}} if spec_env else None
