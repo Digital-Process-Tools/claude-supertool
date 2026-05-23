@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Path containment (`_safe_path`).** Every op path arg now resolves under cwd. A malicious `.supertool.json` or prompt-injected op like `paste:~/.ssh/authorized_keys:::pwned` or `read:/etc/passwd` is rejected with a clean error. Symlinks crossing the boundary are caught (realpath follows them). NUL bytes rejected early. Closes [#146](https://github.com/Digital-Process-Tools/claude-supertool/issues/146).
+- **Opt-out**: set `SUPERTOOL_ALLOW_OUTSIDE_CWD=1` (process-wide) for CI / cross-repo workflows that legitimately read absolute paths.
+- **Default excludes extended**: `.env`, `.env.*`, `.max/`, `.ssh/`, `.aws/`, `.gnupg/`, `.kube/`, `.docker/`, `.terraform/`, `.chef/`, `.npm/`, `secrets/`, `credentials/` are now pruned by `grep`/`glob`/`tree`/`map` so tokens don't surface into an LLM's context.
+- Windows-compat: `os.path.normcase` handles case-insensitive drive letters (`c:\Users` == `C:\users`) and separator normalization.
+
 ## [0.13.1]
 
 ### Added

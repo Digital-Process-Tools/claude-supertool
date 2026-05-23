@@ -153,7 +153,12 @@ _DEFAULT_EXCLUDE_PATHS: Tuple[str, ...] = (
     # #146: credential/secret dirs and files. Pruned so grep/glob/tree/map
     # don't accidentally surface tokens in their output (which then lands in
     # an LLM's context). Override per-project via .supertool.json exclude-paths.
-    ".env/", ".max/", ".ssh/", ".aws/", ".gnupg/", ".kube/", ".docker/",
+    # Note: trailing slash matches dirs AND files of the same name —
+    # `_is_excluded` appends `/` to rel_path before prefix-matching, so `.env/`
+    # catches a FILE named `.env` and a DIR named `.env/`. Distinct entries
+    # are needed for `.env.local`, `.env.production`, etc. (each is its own name).
+    ".env/", ".env.local/", ".env.production/", ".env.development/", ".env.test/",
+    ".max/", ".ssh/", ".aws/", ".gnupg/", ".kube/", ".docker/",
     ".terraform/", ".chef/", ".npm/", "secrets/", "credentials/",
 )
 WILDCARD_CHARS = re.compile(r"[*?\[]")
@@ -9949,8 +9954,11 @@ def _dispatch_impl(arg: str) -> str:
         "hover": (2,), "rename": (3,), "resolve": (2,),
         # diff:PATH1:PATH2
         "diff": (1, 2),
-        # between:SYMBOL:PATH | between:re:START:END:PATH
+        # between:SYMBOL:PATH (path at 2) | between:re:START:END:PATH (path at 4)
+        # — checking both positions covers both forms.
         "between": (2, 4),
+        # check:PRESET:PATH — runs a custom op, path forwarded as {file}.
+        "check": (2,),
         # mutating ops (also covered by _atomic_write chokepoint):
         "edit": (3,), "replace": (3,), "replace_dry": (3,),
         "replace_lines": (1,), "paste": (1,), "vim": (1,),

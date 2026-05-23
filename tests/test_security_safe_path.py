@@ -152,3 +152,22 @@ class TestExcludeList:
         out = supertool.dispatch("tree:.")
         assert ".ssh" not in out
         assert "id_rsa" not in out
+
+
+class TestEnvVarSemantics:
+    def test_env_var_0_treated_as_strict(self, monkeypatch):
+        """Only the literal string "1" disables strict mode. "0", "false",
+        "no" stay strict — safer to fail closed."""
+        monkeypatch.setenv("SUPERTOOL_ALLOW_OUTSIDE_CWD", "0")
+        with pytest.raises(supertool.SecurityError, match="escapes cwd"):
+            supertool._safe_path("/etc/passwd")
+
+    def test_env_var_false_treated_as_strict(self, monkeypatch):
+        monkeypatch.setenv("SUPERTOOL_ALLOW_OUTSIDE_CWD", "false")
+        with pytest.raises(supertool.SecurityError, match="escapes cwd"):
+            supertool._safe_path("/etc/passwd")
+
+    def test_env_var_empty_treated_as_strict(self, monkeypatch):
+        monkeypatch.setenv("SUPERTOOL_ALLOW_OUTSIDE_CWD", "")
+        with pytest.raises(supertool.SecurityError, match="escapes cwd"):
+            supertool._safe_path("/etc/passwd")
