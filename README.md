@@ -370,13 +370,19 @@ Each saved round-trip avoids one prefix cache re-read. The bigger your prefix, t
 
 Every path arg supertool sees is checked against the current working directory. A malicious `.supertool.json` or prompt-injected op like `paste:~/.ssh/authorized_keys:::pwned` or `read:/etc/passwd` is rejected with a clean error. Symlinks crossing the boundary are caught (realpath follows them). NUL bytes rejected early. See [issue #146](https://github.com/Digital-Process-Tools/claude-supertool/issues/146) for the full threat model.
 
-**Opt-out for CI / cross-repo workflows that legitimately read absolute paths:**
+**Opt-out** (any one is enough):
 
 ```bash
+# 1. Env var — CI / one-off:
 export SUPERTOOL_ALLOW_OUTSIDE_CWD=1
 ```
 
-Only the literal string `"1"` disables the check. `"0"`, `"false"`, empty — all stay strict (fail closed).
+```json
+// 2. Project-pinned in .supertool.json (most ergonomic for daily dev):
+{ "allow_outside_cwd": true }
+```
+
+Env var only counts the literal `"1"`. `"0"`, `"false"`, empty — all stay strict (fail closed). Env precedence over JSON for one-off override.
 
 Default excludes (`grep` / `glob` / `tree` / `map`) prune `.env/`, `.max/`, `.ssh/`, `.aws/`, `.gnupg/`, `.kube/`, `.docker/`, `.terraform/`, `.chef/`, `.npm/`, `secrets/`, `credentials/` so tokens don't surface into an LLM's context.
 

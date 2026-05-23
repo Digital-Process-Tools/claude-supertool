@@ -547,17 +547,34 @@ def _safe_path(p: str, *, allow_outside_cwd: Optional[bool] = None) -> str:
     cwd. Symlinks crossing the boundary are rejected. `..` traversal that
     escapes cwd is rejected. Returns the resolved absolute path.
 
-    Opt-out: `allow_outside_cwd=True` (per-call) or env
-    `SUPERTOOL_ALLOW_OUTSIDE_CWD=1` (process-wide) skips the check.
+    Opt-out (any one is enough):
+      1. `allow_outside_cwd=True` per-call kwarg
+      2. `SUPERTOOL_ALLOW_OUTSIDE_CWD=1` env var (CI / one-off)
+      3. `"allow_outside_cwd": true` in `.supertool.json` (project-pinned)
+
     Test suites set the env var via conftest.py so tmp_path-based fixtures
     keep working; production deployments leave it unset.
+
+    Trust model note: lookup (3) reads from the project's `.supertool.json`,
+    same trust level as the other knobs there (validators, custom ops,
+    presets). A user cloning a hostile repo is already running its code via
+    supertool validators / ops; in-config opt-out adds no new attack
+    surface. The env var takes precedence for one-off overrides.
 
     `~` and env-var expansion happen via os.path.expanduser / expandvars —
     a user-supplied `~/.ssh/id_rsa` is resolved to the real path BEFORE
     the cwd check, which is what catches the threat.
     """
     if allow_outside_cwd is None:
-        allow_outside_cwd = os.environ.get("SUPERTOOL_ALLOW_OUTSIDE_CWD") == "1"
+        if os.environ.get("SUPERTOOL_ALLOW_OUTSIDE_CWD") == "1":
+            allow_outside_cwd = True
+        else:
+            # Project config opt-in. Wrapped in try/except so a broken /
+            # missing config never raises out of a path check.
+            try:
+                allow_outside_cwd = bool(_load_config().get("allow_outside_cwd"))
+            except Exception:
+                allow_outside_cwd = False
     # NUL byte rejection — os.path.* raises ValueError on embedded NULs which
     # would leak as an uncaught traceback. Reject early with a clean message.
     if "\x00" in p:
@@ -578,7 +595,8 @@ def _safe_path(p: str, *, allow_outside_cwd: Optional[bool] = None) -> str:
     if not abs_p_cmp.startswith(root_cmp + os.sep):
         raise SecurityError(
             f"path escapes cwd: {p!r} (resolved to {abs_p!r}). "
-            f"Set SUPERTOOL_ALLOW_OUTSIDE_CWD=1 to allow."
+            f"To allow: set SUPERTOOL_ALLOW_OUTSIDE_CWD=1 (env), or add "
+            f'`\"allow_outside_cwd\": true` to .supertool.json.'
         )
     return abs_p
 
@@ -617,20 +635,27 @@ def _extract_env_prefix(cmd: str) -> Tuple[Dict[str, str], str]:
 def _check_vim_shell_allowed() -> Optional[str]:
     """Gate vim's `:!cmd`, `:%!cmd`, `:r !cmd` behind explicit opt-in (closes #147).
 
-    Returns None when SUPERTOOL_ALLOW_VIM_SHELL=1, else a clean ERROR string
-    the caller returns up the stack. Shell verbs in a vim macro are full RCE
-    by design — a prompt-injected vim payload like `:!rm -rf ~` runs verbatim.
-    Combined with the @file/batch routes, an LLM can be coerced into this in
-    a single op. Default-off keeps the editor verbs (i/a/o/d/s/etc.) working
-    unconditionally; opt-in restores shell parity for power users.
+    Returns None when allowed, else a clean ERROR string the caller returns
+    up the stack. Shell verbs in a vim macro are full RCE by design — a
+    prompt-injected vim payload like `:!rm -rf ~` runs verbatim. Default-off
+    keeps editor verbs (i/a/o/d/s/etc.) working unconditionally.
+
+    Opt-in (any one is enough):
+      1. `SUPERTOOL_ALLOW_VIM_SHELL=1` env var (one-off / CI)
+      2. `"allow_vim_shell": true` in `.supertool.json` (project-pinned)
     """
     if os.environ.get("SUPERTOOL_ALLOW_VIM_SHELL") == "1":
         return None
+    try:
+        if bool(_load_config().get("allow_vim_shell")):
+            return None
+    except Exception:
+        pass
     return (
         "ERROR: vim shell verbs (:!, :%!, :r !) are disabled by default. "
-        "Set SUPERTOOL_ALLOW_VIM_SHELL=1 to enable. "
-        "For one-off shell logic, write a wrapper script and call it via\n"
-        "a custom op in .supertool.json instead.\n"
+        'To allow: set SUPERTOOL_ALLOW_VIM_SHELL=1 (env), or add '
+        '`"allow_vim_shell": true` to .supertool.json. '
+        "For one-off shell logic, prefer a wrapper script + custom op.\n"
     )
 
 

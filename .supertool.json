@@ -1,6 +1,8 @@
 {
   "compact": false,
   "rtk": false,
+  "allow_outside_cwd": true,
+  "allow_vim_shell": true,
   "presets": [
     "github",
     "git",

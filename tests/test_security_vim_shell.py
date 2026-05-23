@@ -126,3 +126,32 @@ class TestEditorVerbsStillWork:
         out = supertool.dispatch(f"vim:::{target}:::%s/foo/baz/g")
         assert "ERROR" not in out, out
         assert "baz bar" in target.read_text()
+
+
+class TestVimShellJsonOptIn:
+    """`.supertool.json` "allow_vim_shell": true also opens the gate."""
+
+    def test_json_allow_vim_shell_true_opens(self, vim_shell_off, monkeypatch):
+        monkeypatch.setattr(supertool, "_CONFIG", {"allow_vim_shell": True})
+        monkeypatch.setattr(supertool, "_CONFIG_CHECKED", True)
+        assert supertool._check_vim_shell_allowed() is None
+
+    def test_json_allow_vim_shell_false_stays_strict(self, vim_shell_off, monkeypatch):
+        monkeypatch.setattr(supertool, "_CONFIG", {"allow_vim_shell": False})
+        monkeypatch.setattr(supertool, "_CONFIG_CHECKED", True)
+        msg = supertool._check_vim_shell_allowed()
+        assert msg is not None
+        assert "SUPERTOOL_ALLOW_VIM_SHELL" in msg
+
+    def test_json_missing_key_stays_strict(self, vim_shell_off, monkeypatch):
+        monkeypatch.setattr(supertool, "_CONFIG", {"compact": True})
+        monkeypatch.setattr(supertool, "_CONFIG_CHECKED", True)
+        assert supertool._check_vim_shell_allowed() is not None
+
+    def test_error_message_mentions_both_knobs(self, vim_shell_off, monkeypatch):
+        monkeypatch.setattr(supertool, "_CONFIG", {})
+        monkeypatch.setattr(supertool, "_CONFIG_CHECKED", True)
+        msg = supertool._check_vim_shell_allowed()
+        assert "SUPERTOOL_ALLOW_VIM_SHELL" in msg
+        assert "allow_vim_shell" in msg
+        assert ".supertool.json" in msg

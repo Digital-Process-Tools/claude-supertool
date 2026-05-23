@@ -171,3 +171,37 @@ class TestEnvVarSemantics:
         monkeypatch.setenv("SUPERTOOL_ALLOW_OUTSIDE_CWD", "")
         with pytest.raises(supertool.SecurityError, match="escapes cwd"):
             supertool._safe_path("/etc/passwd")
+
+
+class TestJsonConfigOptOut:
+    """`.supertool.json` "allow_outside_cwd": true also opens strict mode.
+
+    Lookup order: env var (1) > project JSON (3) > strict default. Tests
+    flip the project _CONFIG dict directly (same trick test_custom_ops uses).
+    """
+
+    def test_json_allow_outside_cwd_true_opens(self, strict_mode, monkeypatch):
+        monkeypatch.setattr(supertool, "_CONFIG", {"allow_outside_cwd": True})
+        monkeypatch.setattr(supertool, "_CONFIG_CHECKED", True)
+        assert supertool._safe_path("/etc/passwd") == os.path.realpath("/etc/passwd")
+
+    def test_json_allow_outside_cwd_false_stays_strict(self, strict_mode, monkeypatch):
+        monkeypatch.setattr(supertool, "_CONFIG", {"allow_outside_cwd": False})
+        monkeypatch.setattr(supertool, "_CONFIG_CHECKED", True)
+        with pytest.raises(supertool.SecurityError, match="escapes cwd"):
+            supertool._safe_path("/etc/passwd")
+
+    def test_json_missing_key_stays_strict(self, strict_mode, monkeypatch):
+        monkeypatch.setattr(supertool, "_CONFIG", {"compact": True})
+        monkeypatch.setattr(supertool, "_CONFIG_CHECKED", True)
+        with pytest.raises(supertool.SecurityError, match="escapes cwd"):
+            supertool._safe_path("/etc/passwd")
+
+    def test_error_message_mentions_both_knobs(self, strict_mode):
+        try:
+            supertool._safe_path("/etc/passwd")
+        except supertool.SecurityError as e:
+            msg = str(e)
+            assert "SUPERTOOL_ALLOW_OUTSIDE_CWD" in msg
+            assert "allow_outside_cwd" in msg
+            assert ".supertool.json" in msg
