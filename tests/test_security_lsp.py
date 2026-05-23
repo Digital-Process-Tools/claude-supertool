@@ -211,6 +211,7 @@ class TestShellInjection:
     allow arbitrary command execution.  This test inspects the Popen call site.
     """
 
+    @pytest.mark.slow
     def test_mcp_daemon_spawn_uses_list_not_shell(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """MCPClient.spawn() must call subprocess.Popen([...], ...) — list form only.
 
@@ -715,6 +716,7 @@ class TestCclspConfigInjection:
         # (we can't prove shell didn't run, but we can verify no crash + no unexpected output)
         assert "rm -rf" not in result
 
+    @pytest.mark.slow
     def test_cmd_field_is_not_executed_directly(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

@@ -29,6 +29,7 @@ def _write_json(tmp_path: Path, name: str, payload) -> Path:
 # 1. Huge batch (10 000 ops) — DoS via memory / CPU
 # ---------------------------------------------------------------------------
 
+@pytest.mark.slow
 class TestHugeBatch:
     @pytest.mark.xfail(
         reason="PERF (2026-05-23): no batch-size cap. 10k read ops sequentially "

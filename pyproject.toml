@@ -28,4 +28,15 @@ Changelog = "https://github.com/Digital-Process-Tools/claude-supertool/blob/main
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--cov=supertool --cov-report=term-missing --cov-fail-under=86"
+addopts = "--cov=supertool --cov-report=term-missing --cov-fail-under=86 -m 'not slow'"
+markers = [
+    "slow: opt-in heavy tests (>5s). Run with `pytest -m slow` or `pytest -m ''` to include.",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "pytest-xdist",
+    "pytest-timeout",
+]

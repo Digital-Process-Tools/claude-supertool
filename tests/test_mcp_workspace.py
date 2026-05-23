@@ -156,6 +156,7 @@ def test_workspace_references_uses_mcp(tmp_path: Path, monkeypatch: pytest.Monke
         supertool._mcp_specs.clear()
 
 
+@pytest.mark.slow
 def test_workspace_references_falls_back_on_mcp_miss(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """When MCP returns no result (broken server), fall back to heuristic grep."""
     monkeypatch.chdir(tmp_path)
@@ -221,6 +222,7 @@ def test_workspace_symbols_falls_back_when_no_mcp(tmp_path: Path, monkeypatch: p
     assert "MyModule" in out
 
 
+@pytest.mark.slow
 def test_workspace_symbols_falls_back_on_bad_server(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
     f = tmp_path / "mymodule.py"
