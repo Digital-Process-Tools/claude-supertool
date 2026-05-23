@@ -28,10 +28,16 @@ SPAWN_TIMEOUT_SEC = 30
 CALL_TIMEOUT_SEC = 120
 
 
+# #148: use the shared presets/mcp/_paths helper so client + daemon agree on
+# the runtime dir (was /tmp/, now $XDG_RUNTIME_DIR/supertool/mcp/ etc.).
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parent.parent.parent / "presets" / "mcp"))
+from _paths import socket_pid_paths as _shared_socket_pid_paths  # noqa: E402
+
+
 def sock_paths(cwd: str, name: str) -> tuple[str, str]:
-    h = hashlib.sha1(f"{cwd}::{name}".encode()).hexdigest()[:12]
-    base = f"/tmp/supertool-mcp-{h}"
-    return f"{base}.sock", f"{base}.pid"
+    return _shared_socket_pid_paths(cwd, name)
 
 
 def ensure_daemon(cwd: str) -> str:

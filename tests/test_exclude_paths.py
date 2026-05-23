@@ -71,6 +71,26 @@ class TestIsExcluded:
         path = os.path.join(".git", "objects")
         assert supertool._is_excluded(path, (".git/",))
 
+    def test_nested_single_segment_match(self):
+        # __pycache__ anywhere in the tree should be excluded, not only at root.
+        # Mirrors .gitignore semantics for single-segment patterns.
+        assert supertool._is_excluded(
+            "presets/devto/__pycache__/foo.pyc", ("__pycache__/",)
+        )
+        assert supertool._is_excluded(
+            "frontend/node_modules/lodash/index.js", ("node_modules/",)
+        )
+
+    def test_multi_segment_stays_anchored(self):
+        # Multi-segment prefixes keep prefix-only semantics — they're
+        # anchored to repo root by design.
+        assert not supertool._is_excluded(
+            "src/Dvsi/dvsi-private/libs/foo", ("Dvsi/dvsi-private/libs/",)
+        )
+        assert supertool._is_excluded(
+            "Dvsi/dvsi-private/libs/foo", ("Dvsi/dvsi-private/libs/",)
+        )
+
 
 # ---------------------------------------------------------------------------
 # _get_exclude_paths unit tests
