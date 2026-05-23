@@ -17,8 +17,10 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))  # for _publish_safety
 from _auth import get_api_key
 from _rest import request
+from _publish_safety import safe_resolve_body_path, require_confirm  # noqa: E402
 
 
 def parse_args(arg: str) -> dict[str, object]:
@@ -29,9 +31,8 @@ def parse_args(arg: str) -> dict[str, object]:
     title = parts[0].strip()
     raw_path = parts[1].strip()
     used_file_prefix = raw_path.startswith("file://")
-    if used_file_prefix:
-        raw_path = raw_path[len("file://"):]
-    md_path = Path(raw_path)
+    # #149: body file must live under publish allowlist (.max/, drafts/, posts/, blog/).
+    md_path = safe_resolve_body_path(raw_path)
     if used_file_prefix and not md_path.is_file():
         sys.stderr.write(
             f"ERROR: file not found: {raw_path}\n"
@@ -94,6 +95,8 @@ def build_body(parsed: dict[str, object]) -> dict[str, object]:
 
 def main(arg: str) -> None:
     parsed = parse_args(arg)
+    preview = f"{parsed['title']} ({len(str(parsed['markdown']))} chars md)"
+    require_confirm("devto_publish", preview, force=bool(parsed["force"]))
     api_key = get_api_key()
     if not parsed["force"]:
         try:

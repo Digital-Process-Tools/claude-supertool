@@ -38,9 +38,11 @@ import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))  # for _publish_safety
 from _outbound import append as track_append
 from _resolve import resolve_article_id
 from _session import fetch_csrf_token, get_session_cookie, web_post_json
+from _publish_safety import safe_resolve_body_path  # noqa: E402
 
 WEB_BASE = "https://dev.to"
 API_BASE = "https://dev.to/api"
@@ -58,19 +60,20 @@ def _resolve_body(arg: str) -> tuple[str, bool]:
     - anything else returned as-is.
     """
     if arg.startswith(_FILE_PREFIX):
-        path = arg[len(_FILE_PREFIX):]
-        p = Path(path)
-        if not p.is_file():
+        path_str = arg[len(_FILE_PREFIX):]
+        resolved = safe_resolve_body_path(path_str)
+        if not resolved.is_file():
             sys.stderr.write(
-                f"ERROR: file not found: {path}\n"
+                f"ERROR: file not found: {path_str}\n"
                 "(file:// prefix requires the file to exist — typo or wrong path?)\n"
             )
             sys.exit(2)
-        return p.read_text(), True
+        return resolved.read_text(), True
     try:
         p = Path(arg)
         if p.is_file():
-            return p.read_text(), True
+            resolved = safe_resolve_body_path(arg)
+            return resolved.read_text(), True
     except OSError:
         pass
     return arg, False

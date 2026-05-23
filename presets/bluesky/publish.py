@@ -24,8 +24,10 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))  # for _publish_safety
 from _atproto import get_session, xrpc
 from _auth import get_app_password, get_handle
+from _publish_safety import safe_resolve_body_path, require_confirm  # noqa: E402
 
 MAX_LEN = 300
 
@@ -80,19 +82,20 @@ def _resolve_body(arg: str) -> tuple[str, bool]:
     - anything else — returned as-is (inline text).
     """
     if arg.startswith(_FILE_PREFIX):
-        path = arg[len(_FILE_PREFIX):]
-        p = Path(path)
-        if not p.is_file():
+        path_str = arg[len(_FILE_PREFIX):]
+        resolved = safe_resolve_body_path(path_str)
+        if not resolved.is_file():
             sys.stderr.write(
-                f"ERROR: file not found: {path}\n"
+                f"ERROR: file not found: {path_str}\n"
                 "(file:// prefix requires the file to exist — typo or wrong path?)\n"
             )
             sys.exit(2)
-        return p.read_text(), True
+        return resolved.read_text(), True
     try:
         p = Path(arg)
         if p.is_file():
-            return p.read_text(), True
+            resolved = safe_resolve_body_path(arg)
+            return resolved.read_text(), True
     except OSError:
         pass
     return arg, False
@@ -171,6 +174,7 @@ def preflight_publish(reply_uri: str, session: dict) -> bool:
 
 def main(arg: str) -> None:
     body, reply_uri, force = parse_args(arg)
+    require_confirm("bluesky_publish", body, force=force)
     handle = get_handle()
     session = get_session(handle, get_app_password())
     if reply_uri and not force:

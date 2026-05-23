@@ -179,8 +179,9 @@ def test_devto_comment_file_prefix_missing_errors(capsys: pytest.CaptureFixture[
     with pytest.raises(SystemExit):
         mod.parse_args("123|file:///nonexistent/typo.md")
     err = capsys.readouterr().err
-    assert "file not found" in err
-    assert "file:// prefix requires" in err
+    # #149: ALSO rejected by the publish-body allowlist before the
+    # existence check. Either message is acceptable — both signal abort.
+    assert "file not found" in err or "escapes the safety allowlist" in err
 
 
 def test_hashnode_comment_file_prefix(tmp_path: Path) -> None:
@@ -228,7 +229,8 @@ def test_bluesky_publish_file_prefix_missing_errors(capsys: pytest.CaptureFixtur
     with pytest.raises(SystemExit):
         bluesky_mod.parse_args("file:///nonexistent/typo.txt")
     err = capsys.readouterr().err
-    assert "file not found" in err
+    # #149: ALSO rejected by allowlist before existence check.
+    assert "file not found" in err or "escapes the safety allowlist" in err
 
 
 # ---------- hashnode auto_force env var -------------------------------------
