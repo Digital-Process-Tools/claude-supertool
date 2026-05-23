@@ -290,14 +290,16 @@ class TestPidFileToctouRace:
 # ===========================================================================
 
 class TestPathTraversalViaDaemonName:
-    """Severity: LOW — SHA-1 pre-image resistance prevents practical traversal.
+    """Severity: LOW — name validation + SHA-1 pre-image resistance prevent traversal.
 
-    socket_pid_paths(cwd, name) hashes f"{cwd}::{name}" with SHA-1 and takes
-    the first 12 hex characters.  Even if `name` contains path separators
-    (e.g. "../../etc/passwd"), the resulting path is always:
-        /tmp/supertool-mcp-<12hexchars>.sock
-    The hash output is hex-only and fixed-length, so no traversal is possible
-    regardless of what cwd or name contains.
+    Two layers (closes #148):
+      1. `daemon._validate_name` rejects names outside `[A-Za-z0-9_-]{1,64}`.
+      2. `socket_pid_paths(cwd, name)` hashes `f"{cwd}::{name}"` with SHA-1
+         and takes 12 hex chars — even if validation were bypassed, the
+         resulting path stays inside the per-user runtime dir.
+
+    Runtime dir is per-user (`$XDG_RUNTIME_DIR/supertool/mcp/` or
+    `~/Library/Caches/supertool/mcp/`), not `/tmp/` — that's the #148 fix.
     """
 
     @pytest.mark.parametrize("name", [
@@ -308,23 +310,41 @@ class TestPathTraversalViaDaemonName:
         "name\x00null",
         "../../../tmp/evil",
     ])
-    def test_traversal_names_stay_in_tmp(self, name):
+    def test_traversal_names_rejected_by_validation(self, name):
+        """Layer 1: malicious names abort via `_validate_name` (SystemExit)."""
+        with pytest.raises(SystemExit, match="invalid server name"):
+            daemon._validate_name(name)
+
+    @pytest.mark.parametrize("name", [
+        "../../etc/passwd",
+        "/etc/shadow",
+        "foo/bar/baz",
+        "name with spaces",
+        "name\x00null",
+        "../../../tmp/evil",
+    ])
+    def test_traversal_names_stay_in_runtime_dir(self, name):
+        """Layer 2: even if validation were bypassed, hash output is path-safe."""
+        sys.path.insert(0, os.path.dirname(os.path.abspath(daemon.__file__)))
+        from _paths import runtime_dir
         sock, pid = daemon.socket_pid_paths("/some/cwd", name)
-        assert sock.startswith("/tmp/supertool-mcp-"), \
-            f"sock path must stay under /tmp for name={name!r}"
-        assert pid.startswith("/tmp/supertool-mcp-"), \
-            f"pid path must stay under /tmp for name={name!r}"
+        base = runtime_dir()
+        assert sock.startswith(base + os.sep + "supertool-mcp-"), \
+            f"sock path must stay under runtime dir for name={name!r}: {sock}"
+        assert pid.startswith(base + os.sep + "supertool-mcp-"), \
+            f"pid path must stay under runtime dir for name={name!r}: {pid}"
         # Confirm no user-supplied content leaks into the filename
         h = hashlib.sha1(f"/some/cwd::{name}".encode()).hexdigest()[:12]
-        assert sock == f"/tmp/supertool-mcp-{h}.sock"
-        assert pid  == f"/tmp/supertool-mcp-{h}.pid"
+        assert sock == os.path.join(base, f"supertool-mcp-{h}.sock")
+        assert pid  == os.path.join(base, f"supertool-mcp-{h}.pid")
 
     def test_hash_is_hex_only(self):
         """Hash portion is [0-9a-f]{12} — no shell-special chars possible."""
         import re
-        for name in ["normal", "../../evil", "/abs/path"]:
+        for name in ["normal", "evil_name", "abs-path"]:
             sock, _ = daemon.socket_pid_paths("/cwd", name)
-            h = sock.removeprefix("/tmp/supertool-mcp-").removesuffix(".sock")
+            base_name = os.path.basename(sock)
+            h = base_name.removeprefix("supertool-mcp-").removesuffix(".sock")
             assert re.fullmatch(r"[0-9a-f]{12}", h), f"Hash {h!r} must be hex-only"
 
 

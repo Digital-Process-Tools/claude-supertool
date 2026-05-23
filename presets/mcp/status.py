@@ -7,13 +7,16 @@ match the socket; otherwise prints the hash-only entry for orphans.
 """
 from __future__ import annotations
 
-import glob
 import hashlib
 import json
 import os
 import sys
 import time
 from pathlib import Path
+
+# Shared path helpers (#148): per-user runtime dir, NOT /tmp.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _paths import list_pidfiles, runtime_dir  # noqa: E402
 
 
 def find_supertool_json() -> dict:
@@ -42,12 +45,13 @@ def main() -> int:
     declared = (cfg.get("mcp") or {}).keys()
     hash_to_name = {hash_for(name): name for name in declared}
 
+    base = runtime_dir()
     rows = []
-    for pid_path in sorted(glob.glob("/tmp/supertool-mcp-*.pid")):
+    for pid_path in list_pidfiles():
         h = Path(pid_path).stem.replace("supertool-mcp-", "")
         name = hash_to_name.get(h, "?")
-        sock_path = f"/tmp/supertool-mcp-{h}.sock"
-        log_path = f"/tmp/supertool-mcp-{h}.sock.log"
+        sock_path = os.path.join(base, f"supertool-mcp-{h}.sock")
+        log_path = os.path.join(base, f"supertool-mcp-{h}.sock.log")
         try:
             pid = int(Path(pid_path).read_text().strip())
         except (OSError, ValueError):
