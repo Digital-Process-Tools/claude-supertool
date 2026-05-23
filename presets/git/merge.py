@@ -71,6 +71,11 @@ def main() -> int:
         return 1
 
     ref = sys.argv[1]
+    # #150: a REF like `--abort` would call `git merge --abort` (state-mutating).
+    # `-X theirs` smuggles a strategy option. Refuse leading-dash refs.
+    if ref.startswith("-"):
+        print(f"ERROR: ref starts with '-' (refusing for safety): {ref!r}")
+        return 1
     preview = int(os.environ.get("SUPERTOOL_PREVIEW_LINES", str(DEFAULT_PREVIEW_LINES)))
 
     if _git(["rev-parse", "--verify", "--quiet", ref]).returncode != 0:

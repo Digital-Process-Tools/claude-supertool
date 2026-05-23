@@ -32,8 +32,14 @@ def main() -> None:
     file = sys.argv[1]
     start = time.time()
     try:
-        r = subprocess.run(["xmllint", "--noout", file],
-                           capture_output=True, text=True, timeout=30)
+        # #150 XXE defence-in-depth: `--nonet` blocks network access during
+        # entity resolution (DTDs, external entities); `--noent` resolves
+        # entities to their text rather than fetching them. Both narrow what
+        # libxml2 will do with attacker-influenced XML during validation.
+        r = subprocess.run(
+            ["xmllint", "--noout", "--nonet", "--noent", file],
+            capture_output=True, text=True, timeout=30,
+        )
     except FileNotFoundError:
         emit({"tool": "xmllint", "file": file, "ok": False, "count": 1,
               "errors": [{"line": None, "col": None, "severity": "error",

@@ -971,6 +971,21 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
     if not pattern:
         return "ERROR: empty pattern\n"
 
+    # #150 ReDoS guards. Python's stdlib `re` has no execution timeout, so
+    # we reject patterns that are obvious candidates for catastrophic
+    # backtracking before they touch any file content.
+    if len(pattern) > 1000:
+        return f"ERROR: pattern too long ({len(pattern)} > 1000 chars)\n"
+    # Nested unbounded quantifiers like `(a+)+`, `(a*)*`, `(.+)*` — the
+    # classic ReDoS shape. The check is intentionally loose; users with a
+    # legitimate need can split into simpler greps.
+    if re.search(r"\([^)]*[+*][^)]*\)[+*?]", pattern):
+        return (
+            "ERROR: pattern contains nested unbounded quantifiers "
+            f"({pattern!r}) — would risk catastrophic backtracking. "
+            "Rewrite without `(...+)+`-style nesting.\n"
+        )
+
     # Auto-convert bash grep BRE alternation (\|) to Python regex (|)
     if "\\|" in pattern:
         pattern = pattern.replace("\\|", "|")
@@ -8244,23 +8259,77 @@ def _validator_cache_path(key: str) -> Path:
     return Path.home() / ".cache" / "supertool" / "validators" / f"{key}.json"
 
 
+def _validator_cache_secret() -> bytes:
+    """Per-user HMAC secret for cache integrity (closes #150 cache-poison).
+
+    32-byte random secret stored at `~/.cache/supertool/.cache_key`, mode
+    0600. Attacker with write access to the cache dir (compromised account,
+    malicious npm postinstall) cannot forge a passing `ok: true` entry
+    without also reading the secret.
+    """
+    secret_path = Path.home() / ".cache" / "supertool" / ".cache_key"
+    try:
+        if secret_path.is_file():
+            data = secret_path.read_bytes()
+            if len(data) == 32:
+                return data
+    except OSError:
+        pass
+    secret = os.urandom(32)
+    try:
+        secret_path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(secret_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            os.write(fd, secret)
+        finally:
+            os.close(fd)
+        return secret
+    except FileExistsError:
+        try:
+            return secret_path.read_bytes()
+        except OSError:
+            return secret
+    except OSError:
+        return secret
+
+
 def _validator_cache_read(key: str) -> Optional[Dict[str, Any]]:
+    """Read + HMAC-verify a cache entry. Returns None on missing / tampered.
+
+    Legacy unwrapped entries (pre-HMAC) treated as miss — they get rewritten
+    in wrapped form next time the validator runs.
+    """
+    import hashlib
+    import hmac
     import json
     p = _validator_cache_path(key)
     if not p.exists():
         return None
     try:
-        return json.loads(p.read_text())
+        wrapped = json.loads(p.read_text())
     except (OSError, json.JSONDecodeError):
         return None
+    if not isinstance(wrapped, dict) or "data" not in wrapped or "mac" not in wrapped:
+        return None  # legacy unwrapped — don't trust ok=True
+    payload = json.dumps(wrapped["data"], sort_keys=True).encode("utf-8")
+    expected = hmac.new(_validator_cache_secret(), payload, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, str(wrapped.get("mac", ""))):
+        return None  # tampered or written by another machine's secret
+    return wrapped["data"] if isinstance(wrapped["data"], dict) else None
 
 
 def _validator_cache_write(key: str, data: Dict[str, Any]) -> None:
+    """Write a cache entry wrapped with HMAC over its JSON body."""
+    import hashlib
+    import hmac
     import json
     p = _validator_cache_path(key)
+    payload = json.dumps(data, sort_keys=True).encode("utf-8")
+    mac = hmac.new(_validator_cache_secret(), payload, hashlib.sha256).hexdigest()
+    wrapped = {"data": data, "mac": mac}
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(data))
+        p.write_text(json.dumps(wrapped))
     except OSError:
         pass
 
@@ -9566,11 +9635,15 @@ def op_validate_staged(tool_filter: Optional[list] = None, verbose: bool = False
 
     verbose=True: passed through to op_validate for each file — shows all errors
     and raw adapter output instead of the compact capped form.
+
+    #150: uses `git diff -z` for NUL-separated names (filenames with newlines /
+    quotes survive intact) and rejects symlinks (staged symlink to /etc/passwd
+    would otherwise be passed to validators that could process it).
     """
     import subprocess
     try:
         r = subprocess.run(
-            ["git", "diff", "--cached", "--name-only"],
+            ["git", "diff", "--cached", "-z", "--name-only", "--diff-filter=ACMR"],
             capture_output=True, text=True, timeout=15,
         )
         if r.returncode != 0:
@@ -9579,7 +9652,17 @@ def op_validate_staged(tool_filter: Optional[list] = None, verbose: bool = False
     except (subprocess.TimeoutExpired, OSError) as e:
         return f"ERROR: git unavailable: {e}\n"
 
-    staged = [p for p in r.stdout.splitlines() if p and os.path.isfile(p)]
+    # Split on NUL (git diff -z), reject empty + symlinks + paths outside cwd.
+    staged = []
+    for p in r.stdout.split("\x00"):
+        if not p or os.path.islink(p) or not os.path.isfile(p):
+            continue
+        # Reject paths that resolve outside cwd (symlink-following could leak).
+        real = os.path.realpath(p)
+        root = os.path.realpath(os.getcwd())
+        if real != root and not real.startswith(root + os.sep):
+            continue
+        staged.append(p)
     if not staged:
         return "no staged files\n"
 
@@ -9598,11 +9681,15 @@ def op_format_staged(tool_filter: Optional[list] = None, verbose: bool = False) 
 
     verbose=True: passed through to op_format for each file — shows full error
     messages and a [verbose] marker instead of the compact truncated form.
+
+    #150: uses `git diff -z` for NUL-separated names and rejects symlinks —
+    a staged symlink to /etc/hosts would otherwise be REWRITTEN by formatters
+    (prettier, php-cs-fixer, etc.).
     """
     import subprocess
     try:
         r = subprocess.run(
-            ["git", "diff", "--cached", "--name-only"],
+            ["git", "diff", "--cached", "-z", "--name-only", "--diff-filter=ACMR"],
             capture_output=True, text=True, timeout=15,
         )
         if r.returncode != 0:
@@ -9611,7 +9698,15 @@ def op_format_staged(tool_filter: Optional[list] = None, verbose: bool = False) 
     except (subprocess.TimeoutExpired, OSError) as e:
         return f"ERROR: git unavailable: {e}\n"
 
-    staged = [p for p in r.stdout.splitlines() if p and os.path.isfile(p)]
+    staged = []
+    for p in r.stdout.split("\x00"):
+        if not p or os.path.islink(p) or not os.path.isfile(p):
+            continue
+        real = os.path.realpath(p)
+        root = os.path.realpath(os.getcwd())
+        if real != root and not real.startswith(root + os.sep):
+            continue
+        staged.append(p)
     if not staged:
         return "no staged files\n"
 

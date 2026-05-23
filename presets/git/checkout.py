@@ -24,6 +24,13 @@ def main() -> int:
         return 1
 
     ref = sys.argv[1]
+    # #150: reject refs that look like CLI flags. `--orphan`, `--detach`,
+    # `--track=…` are valid git invocations that change semantics — a
+    # prompt-injected REF would silently do something other than switch
+    # branches. `-` (previous branch) is legitimate; allow it.
+    if ref.startswith("-") and ref != "-":
+        print(f"ERROR: ref starts with '-' (refusing for safety): {ref!r}")
+        return 1
 
     prev_branch = ""
     prev = _git(["rev-parse", "--abbrev-ref", "HEAD"])
