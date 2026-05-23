@@ -427,10 +427,21 @@ def _get_exclude_paths(op_name: str, no_exclude: bool = False) -> Tuple[str, ...
 
 
 def _is_excluded(rel_path: str, exclude_paths: Tuple[str, ...]) -> bool:
-    """Return True if rel_path starts with any of the exclude prefixes.
+    """Return True if rel_path matches any of the exclude prefixes.
 
-    rel_path should be relative to cwd and use os.sep.  The comparison
-    normalises separators and strips a leading './' so callers don't need to.
+    Two match modes (matches `.gitignore` semantics):
+      1. **Prefix match** — `rel_path` literally starts with a prefix (catches
+         a `node_modules/` at the project root).
+      2. **Component match** — any single-segment prefix (`__pycache__/`,
+         `.git/`, `node_modules/`) matches that name appearing ANYWHERE in
+         the path (catches nested `presets/devto/__pycache__/foo.pyc`,
+         which the old prefix-only logic missed).
+
+    Multi-segment prefixes (`Dvsi/dvsi-private/libs/`) keep prefix-only
+    semantics — anchoring to repo root is the whole point of them.
+
+    rel_path should be relative to cwd and use os.sep. Comparison normalises
+    separators and strips a leading './'.
     """
     if not exclude_paths:
         return False
@@ -441,8 +452,14 @@ def _is_excluded(rel_path: str, exclude_paths: Tuple[str, ...]) -> bool:
         normalised = normalised[2:]
     if not normalised.endswith("/"):
         normalised += "/"
+    # Component set for the "matches anywhere" check (skip empties).
+    components = {c for c in normalised.rstrip("/").split("/") if c}
     for prefix in exclude_paths:
         if normalised.startswith(prefix):
+            return True
+        # Single-segment prefixes also match anywhere in the path.
+        bare = prefix.rstrip("/")
+        if "/" not in bare and bare in components:
             return True
     return False
 
