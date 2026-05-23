@@ -614,6 +614,26 @@ def _extract_env_prefix(cmd: str) -> Tuple[Dict[str, str], str]:
     return env, remaining
 
 
+def _check_vim_shell_allowed() -> Optional[str]:
+    """Gate vim's `:!cmd`, `:%!cmd`, `:r !cmd` behind explicit opt-in (closes #147).
+
+    Returns None when SUPERTOOL_ALLOW_VIM_SHELL=1, else a clean ERROR string
+    the caller returns up the stack. Shell verbs in a vim macro are full RCE
+    by design — a prompt-injected vim payload like `:!rm -rf ~` runs verbatim.
+    Combined with the @file/batch routes, an LLM can be coerced into this in
+    a single op. Default-off keeps the editor verbs (i/a/o/d/s/etc.) working
+    unconditionally; opt-in restores shell parity for power users.
+    """
+    if os.environ.get("SUPERTOOL_ALLOW_VIM_SHELL") == "1":
+        return None
+    return (
+        "ERROR: vim shell verbs (:!, :%!, :r !) are disabled by default. "
+        "Set SUPERTOOL_ALLOW_VIM_SHELL=1 to enable. "
+        "For one-off shell logic, write a wrapper script and call it via\n"
+        "a custom op in .supertool.json instead.\n"
+    )
+
+
 def _expand_env(s: str, env: Dict[str, str]) -> str:
     """Safe $VAR / ${VAR} expansion from env (no shell).
 
@@ -5957,6 +5977,10 @@ def _op_vim_impl(path: str, script: str) -> str:
                 cmd = path_arg[1:].strip()
                 if not cmd:
                     return f"ERROR: action {i} '{action}': :r ! needs a command\n"
+                # #147: gate :r !cmd behind explicit opt-in.
+                _vim_gate = _check_vim_shell_allowed()
+                if _vim_gate is not None:
+                    return f"ERROR: action {i} '{action}': {_vim_gate}"
                 import subprocess as _sp
                 try:
                     proc = _sp.run(
@@ -5974,6 +5998,11 @@ def _op_vim_impl(path: str, script: str) -> str:
                 import sys as _sys
                 file_text = _sys.stdin.read()
             else:
+                # #146/#147: enforce cwd containment on :r FILE (without `!`).
+                try:
+                    _safe_path(path_arg)
+                except SecurityError as _se:
+                    return f"ERROR: action {i} '{action}': :r {path_arg!r}: {_se}\n"
                 try:
                     with open(path_arg, "r", encoding="utf-8", errors="replace") as _fh:
                         file_text = _fh.read()
@@ -6026,6 +6055,10 @@ def _op_vim_impl(path: str, script: str) -> str:
             _has_trailing_nl = _lines and _lines[-1] == ""
             _total_lines = len(_lines) - (1 if _has_trailing_nl else 0)
             _cursor_line, _ = _offset_to_line_col(content, cursor)
+            # #147: gate :!cmd / :%!cmd / :N!cmd behind explicit opt-in.
+            _vim_gate = _check_vim_shell_allowed()
+            if _vim_gate is not None:
+                return f"ERROR: action {i} '{action}': {_vim_gate}"
             if range_spec == "":
                 # bare :!cmd — run command, insert stdout after cursor line
                 try:
@@ -7530,7 +7563,13 @@ def _op_vim_impl(path: str, script: str) -> str:
                         else:
                             log.append(f"  {i}. .(p) register empty — skipped")
                     elif lc_verb == ":!":
-                        # Replay :!cmd — re-parse lc_arg (same \x1d encoding as original handler)
+                        # Replay :!cmd — re-parse lc_arg (same \x1d encoding as original handler).
+                        # #147 gate applies here too — dot-repeat of a shell verb still runs shell.
+                        # Returns ERROR (not just log) so batch:@file callers checking for
+                        # "ERROR" in output actually see the rejection.
+                        _vim_gate = _check_vim_shell_allowed()
+                        if _vim_gate is not None:
+                            return f"ERROR: action {i} '.(:!)': {_vim_gate}"
                         if lc_arg.startswith("\x1d"):
                             _dot_close = lc_arg.find("\x1d", 1)
                             if _dot_close != -1:
