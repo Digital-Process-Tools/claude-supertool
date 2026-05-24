@@ -108,6 +108,9 @@ def main() -> int:
         print(f"\n## {path}")
         print(_all_conflict_blocks(path, preview))
 
+    print("\nResolve: ./supertool 'git-resolve:::ours:::PATH' | ./supertool 'git-resolve:::theirs:::PATH'")
+    print("Or edit manually, then: git add PATH && git commit")
+
     return 0
 
 
