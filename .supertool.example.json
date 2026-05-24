@@ -11,7 +11,8 @@
     "devto",
     "bluesky",
     "xml",
-    "mcp"
+    "mcp",
+    "watch"
   ],
   "mcp": {
     "_example-php-lsp": {

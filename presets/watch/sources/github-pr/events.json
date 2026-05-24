@@ -1,0 +1,13 @@
+{
+  "source": "github-pr",
+  "events": [
+    {"key": "checks_failed",            "label": "PR checks failed"},
+    {"key": "checks_succeeded",         "label": "PR checks succeeded"},
+    {"key": "checks_pending",           "label": "PR checks started running"},
+    {"key": "review_approved",          "label": "PR approved"},
+    {"key": "review_changes_requested", "label": "Reviewer requested changes"},
+    {"key": "merged",                   "label": "PR merged"},
+    {"key": "closed",                   "label": "PR closed without merge"},
+    {"key": "conflicts_appeared",       "label": "PR became unmergeable"}
+  ]
+}
