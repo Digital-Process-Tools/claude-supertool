@@ -6,6 +6,7 @@ and want to see all conflicts in one call without re-running merge.
 """
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -82,37 +83,41 @@ def _incoming_branch(ref: str) -> str:
 
 
 def _incoming_mr(branch: str) -> str:
-    """Resolve MR/PR identifier for the incoming branch, glab first then gh. Empty on failure."""
+    """Resolve MR/PR identifier for the incoming branch, glab first then gh. Empty on failure.
+
+    Advisory only — every external-tool failure (timeout, missing binary,
+    malformed JSON, non-zero exit) collapses to an empty string so the
+    caller never sees a traceback that would wipe the conflict listing.
+    """
     if not branch:
         return ""
     if shutil.which("glab"):
-        res = subprocess.run(
-            ["glab", "mr", "list", "--source-branch", branch, "--output", "json"],
-            capture_output=True, text=True, timeout=5,
-        )
-        if res.returncode == 0 and res.stdout.strip().startswith("["):
-            import json
-            try:
+        try:
+            res = subprocess.run(
+                ["glab", "mr", "list", "--source-branch", branch, "--state", "opened", "--output", "json"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if res.returncode == 0 and res.stdout.strip().startswith("["):
                 mrs = json.loads(res.stdout)
-            except json.JSONDecodeError:
-                mrs = []
-            if mrs:
-                mr = mrs[0]
-                return f"!{mr.get('iid', '?')} {mr.get('title', '')}".strip()
+                if mrs:
+                    mr = mrs[0]
+                    return f"!{mr.get('iid', '?')} {mr.get('title', '')}".strip()
+        except (subprocess.TimeoutExpired, OSError, json.JSONDecodeError):
+            pass
     if shutil.which("gh"):
-        res = subprocess.run(
-            ["gh", "pr", "list", "--head", branch, "--json", "number,title", "--limit", "1"],
-            capture_output=True, text=True, timeout=5,
-        )
-        if res.returncode == 0 and res.stdout.strip().startswith("["):
-            import json
-            try:
+        try:
+            res = subprocess.run(
+                ["gh", "pr", "list", "--head", branch, "--state", "open",
+                 "--json", "number,title", "--limit", "1"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if res.returncode == 0 and res.stdout.strip().startswith("["):
                 prs = json.loads(res.stdout)
-            except json.JSONDecodeError:
-                prs = []
-            if prs:
-                pr = prs[0]
-                return f"#{pr.get('number', '?')} {pr.get('title', '')}".strip()
+                if prs:
+                    pr = prs[0]
+                    return f"#{pr.get('number', '?')} {pr.get('title', '')}".strip()
+        except (subprocess.TimeoutExpired, OSError, json.JSONDecodeError):
+            pass
     return ""
 
 

@@ -101,3 +101,26 @@ def test_incoming_info_no_mr_tool_available() -> None:
         f"  Last touched (theirs): {log_line}",
         "  Incoming branch: feature/x",
     ]
+
+
+def test_incoming_info_swallows_glab_timeout() -> None:
+    """A hanging glab must not crash the whole op."""
+    import subprocess as _sub
+    log_line = "abc Author 5m ago :: subject"
+    fake_git = mock.Mock(side_effect=[
+        _git_result(stdout=log_line + "\n"),
+        _git_result(stdout="feature/x\n"),
+    ])
+    fake_which = mock.Mock(side_effect=lambda c: f"/usr/bin/{c}" if c == "glab" else None)
+
+    def boom(*a, **kw):
+        raise _sub.TimeoutExpired(cmd="glab", timeout=5)
+
+    with mock.patch.object(conflicts, "_git", fake_git), \
+         mock.patch.object(conflicts.shutil, "which", fake_which), \
+         mock.patch.object(conflicts.subprocess, "run", side_effect=boom):
+        lines = conflicts._incoming_info("foo.py", "merge")
+    assert lines == [
+        f"  Last touched (theirs): {log_line}",
+        "  Incoming branch: feature/x",
+    ]
