@@ -3,6 +3,8 @@
 Polls a single GitLab merge request via `glab api` and emits events when
 status changes. Terminal when the MR is merged or closed.
 
+Reuses `_glab_api` from presets/gitlab/mr.py — no duplicated CLI wrapping.
+
 Source plugin contract:
 - INTERVAL: int seconds between polls (30s default)
 - poll(state, ctx) -> (events, new_state)
@@ -10,25 +12,30 @@ Source plugin contract:
 """
 from __future__ import annotations
 
+import importlib.util
 import json
-import shutil
-import subprocess
+from pathlib import Path
 from typing import Any
 
 INTERVAL = 30
 
 TERMINAL_MR_STATES = {"merged", "closed"}
 
+# Import the existing _glab_api CLI wrapper from the gl-mr op so we share
+# one source of truth for glab invocation, error handling, and timeouts.
+_MR_MODULE_PATH = Path(__file__).parents[3] / "gitlab" / "mr.py"
+_spec = importlib.util.spec_from_file_location("gitlab_mr_op", _MR_MODULE_PATH)
+assert _spec is not None and _spec.loader is not None
+_mr_op = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_mr_op)
+_glab_api_cli = _mr_op._glab_api  # type: ignore[attr-defined]
+
 
 def _glab_api(endpoint: str) -> dict | list | None:
-    if not shutil.which("glab"):
-        return None
+    """JSON-decode an _glab_api CLI call. None on any failure."""
     try:
-        r = subprocess.run(
-            ["glab", "api", endpoint],
-            capture_output=True, text=True, timeout=10,
-        )
-    except (subprocess.TimeoutExpired, OSError):
+        r = _glab_api_cli(endpoint)
+    except (FileNotFoundError, OSError):
         return None
     if r.returncode != 0:
         return None
@@ -58,11 +65,20 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
     pipeline_id = str(pipeline.get("id") or "") if isinstance(pipeline, dict) else ""
     title = str(data.get("title") or f"MR !{iid}")
     web_url = str(data.get("web_url") or "")
+    # GitLab's `user_notes_count` counts *all* notes including system notes
+    # (pipeline status changes, label edits, assignee changes). `comment_added`
+    # will therefore fire on some non-human events — accepted limitation for v1
+    # to avoid a second API call to /notes per poll. If the field is absent,
+    # keep it None so the rising-edge guard treats the next poll as a baseline
+    # rather than locking the count at 0 forever.
+    raw_notes = data.get("user_notes_count")
+    notes_count = int(raw_notes) if isinstance(raw_notes, int) else None
 
     events: list[dict] = []
     prev_pipeline = state.get("pipeline_status", "")
     prev_state = state.get("mr_state", "")
     prev_conflicts = bool(state.get("has_conflicts", False))
+    prev_notes_count = state.get("notes_count")  # None on first poll
 
     # Pipeline transitions
     if pipeline_status and pipeline_status != prev_pipeline:
@@ -112,11 +128,33 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
             "notify_message": title,
         })
 
+    # Notes count rising — new comment(s) since last poll. First poll
+    # (prev_notes_count is None) records the baseline without firing. If the
+    # current poll couldn't read the field (notes_count is None) we skip too
+    # so we don't compare against a stale baseline.
+    if (
+        prev_notes_count is not None
+        and notes_count is not None
+        and notes_count > prev_notes_count
+    ):
+        delta = notes_count - prev_notes_count
+        events.append({
+            "event": "comment_added",
+            "payload": {
+                "url": web_url,
+                "title": title,
+                "new_count": delta,
+            },
+            "notify_title": f"!{iid} new comment{'s' if delta > 1 else ''}",
+            "notify_message": title,
+        })
+
     new_state = {
         "mr_state": mr_state,
         "pipeline_status": pipeline_status,
         "pipeline_id": pipeline_id,
         "has_conflicts": has_conflicts,
+        "notes_count": notes_count,
         "title": title,
         "web_url": web_url,
     }
