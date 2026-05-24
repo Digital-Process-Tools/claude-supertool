@@ -1,0 +1,124 @@
+# `watch` preset
+
+Background pollers for external sources (GitLab MRs, jobs, calendar, …) that
+emit events when state changes. Reusable foundation — a Phase 2 channel
+consumer will plug into the same UDS socket to push events directly into
+Claude Code.
+
+## Ops
+
+```
+watch:SOURCE:ID[:only=event1,event2]    spawn poller (fire-and-forget)
+unwatch:SOURCE:ID                       kill poller, remove PID file
+watches                                 list active pollers (table)
+```
+
+Example:
+
+```bash
+./supertool 'watch:gitlab-mr:21803'                 # all events
+./supertool 'watch:gitlab-mr:21803:only=pipeline_failed,merged'
+./supertool 'watches'
+./supertool 'unwatch:gitlab-mr:21803'
+```
+
+## Transports
+
+Pollers emit through three channels (all best-effort, none can crash the poller):
+
+| Transport            | Purpose                                                              | Path                                                 |
+| -------------------- | -------------------------------------------------------------------- | ---------------------------------------------------- |
+| UDS socket (NDJSON)  | Live event stream — Phase 2 channel consumer reads this              | `/tmp/supertool-watch.sock`                          |
+| Status file (JSON)   | Last-known state for the `watches` op + offline inspection           | `/tmp/supertool-watch-{source}__{id}.state.json`     |
+| macOS osascript      | Desktop notification on terminal status (human-facing)               | system notification center                           |
+
+## Event payload (locked — Phase 2 depends on it)
+
+```json
+{
+  "ts": "2026-05-24T19:00:00Z",
+  "source": "gitlab-mr",
+  "id": "21803",
+  "event": "pipeline_failed",
+  "payload": {
+    "pipeline_id": "139928",
+    "url": "https://gitlab.example.com/.../merge_requests/21803",
+    "title": "feat: do the thing"
+  }
+}
+```
+
+## Lifecycle
+
+Each `watch` invocation forks a detached poller process. The process IS the
+subscription — no central config to manage:
+
+- PID file per active watcher: `/tmp/supertool-watch-{source}__{id}.pid`
+- `unwatch` reads the PID file, SIGTERM (then SIGKILL after 200ms), removes the file
+- Stale PIDs swept by the `watches` op automatically
+- Pollers auto-stop when the source declares the target terminal
+  (`is_terminal(state) -> bool`)
+
+## Writing a new source
+
+Drop a folder under `presets/watch/sources/<NAME>/`:
+
+```
+sources/your-source/
+  events.json     # event vocabulary (introspection only)
+  poller.py       # the polling implementation
+```
+
+### `events.json`
+
+```json
+{
+  "source": "your-source",
+  "events": [
+    {"key": "happened",        "label": "Something happened"},
+    {"key": "happened_again",  "label": "Something happened again"}
+  ]
+}
+```
+
+### `poller.py`
+
+```python
+INTERVAL = 30  # seconds between polls
+
+def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
+    """Return (events_to_emit, new_state).
+
+    ctx = {"source": "your-source", "id": "<watcher id>", "only": [...]}.
+
+    Each event is a dict:
+      {
+        "event": "happened",
+        "payload": {...},
+        "notify_title": "Optional macOS notification title",
+        "notify_message": "Optional macOS notification body",
+      }
+
+    Diff against `state`; return only NEW events. Returning the same event
+    on every tick produces a notification storm.
+
+    The framework persists `new_state` and passes it back on the next call.
+    """
+    ...
+
+def is_terminal(state: dict) -> bool:
+    """True if the watcher should stop on its own (e.g. MR merged)."""
+    return False
+```
+
+The dispatcher handles PID files, signals, transport, the `only=` filter, and
+state persistence. Source code stays focused on "what changed?".
+
+## Phase 2 — channel consumer
+
+Lives outside this preset. It will:
+1. Bind a UDS listener at `/tmp/supertool-watch.sock`
+2. Forward each NDJSON line to Claude Code via the Channels MCP protocol
+3. Claude sees events as `<channel source="gitlab-mr" id="21803" event="pipeline_failed">...`
+
+No changes to this preset will be required.

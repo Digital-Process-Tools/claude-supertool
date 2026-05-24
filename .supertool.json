@@ -7,7 +7,8 @@
     "github",
     "git",
     "xml",
-    "mcp"
+    "mcp",
+    "watch"
   ],
   "mcp": {
     "py-lsp": {
