@@ -115,6 +115,7 @@ def main() -> int:
     print(f"Status: CONFLICT ({len(conflicts)} file(s))")
     print(f"Ours: {head_before} | Theirs: {their_sha} | Base: {merge_base}")
     print("Next:")
+    print("  - See every conflict block (this output shows the first per file): ./supertool 'git-conflicts'")
     print("  - Edit files manually, then ./supertool 'git-commit:::resolve merge'")
     print("  - Or pick a side: ./supertool 'git-resolve:::ours:::PATH' (or theirs, or all)")
     print("  - Or abort: git merge --abort")
