@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "claude-channel": {
+      "command": "bun",
+      "args": ["./notifiers/claude-channel/channel.ts"]
+    }
+  }
+}
