@@ -237,7 +237,8 @@ def _budgeted_comments(notes: list, budget: int, tail: int) -> tuple[list[str], 
         head_kept.append(r)
         used += len(r)
     hidden = head_pool[len(head_kept):]
-    return head_kept + (["__GAP__"] if hidden else []) + tail_slice, len(hidden), sum(len(r) for r in hidden)
+    hidden_bytes = sum(len(r.encode("utf-8")) for r in hidden)
+    return head_kept + (["__GAP__"] if hidden else []) + tail_slice, len(hidden), hidden_bytes
 
 
 def main() -> int:

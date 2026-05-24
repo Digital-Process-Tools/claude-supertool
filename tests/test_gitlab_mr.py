@@ -410,3 +410,13 @@ def test_fmt_kb_thresholds() -> None:
     assert mr._fmt_kb(500) == "500B"
     assert mr._fmt_kb(2048) == "2.0KB"
     assert mr._fmt_kb(8192) == "8.0KB"
+
+
+def test_budgeted_comments_hidden_bytes_counts_utf8() -> None:
+    """Hidden-bytes must reflect UTF-8 byte length, not codepoint count."""
+    big_multibyte = "é" * 1500  # 2 bytes/char in UTF-8
+    notes = [_note(f"u{i}", big_multibyte) for i in range(8)]
+    _, hidden_count, hidden_bytes = mr._budgeted_comments(notes, budget=2000, tail=2)
+    assert hidden_count > 0
+    # Char-counting would give roughly hidden_count * 1500; UTF-8 ~doubles it.
+    assert hidden_bytes >= hidden_count * 1500
