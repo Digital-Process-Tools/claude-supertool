@@ -143,6 +143,54 @@ def _match_glob(path: str, pattern: str) -> bool:
     return False
 
 
+def _expand_braces(pattern: str) -> List[str]:
+    """Expand shell-style brace groups `{a,b,c}` into a list of patterns.
+
+    Supports multiple groups (`*.{a,b}.{x,y}` → 4 patterns) and nesting
+    (`{a,b{1,2}}` → `[a, b1, b2]`). Patterns without braces return `[pattern]`.
+    Unbalanced braces are returned unchanged (treated as a literal).
+    """
+    if "{" not in pattern:
+        return [pattern]
+    open_i = pattern.index("{")
+    depth = 0
+    close_i = -1
+    for i in range(open_i, len(pattern)):
+        c = pattern[i]
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                close_i = i
+                break
+    if close_i == -1:
+        return [pattern]
+    prefix = pattern[:open_i]
+    suffix = pattern[close_i + 1:]
+    inner = pattern[open_i + 1:close_i]
+    parts: List[str] = []
+    depth = 0
+    last = 0
+    for i, c in enumerate(inner):
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+        elif c == "," and depth == 0:
+            parts.append(inner[last:i])
+            last = i + 1
+    parts.append(inner[last:])
+    out: List[str] = []
+    seen = set()
+    for alt in parts:
+        for sub in _expand_braces(prefix + alt + suffix):
+            if sub not in seen:
+                seen.add(sub)
+                out.append(sub)
+    return out
+
+
 # Default exclude-paths applied to all traversal ops (glob, grep, tree, map).
 # These are pruned at the directory-walk boundary — the dirs are never opened.
 # Match is prefix-relative-to-cwd; trailing slash is normalised in _get_exclude_paths.
@@ -2341,6 +2389,20 @@ def _glob_files(
     glob.glob and filters results post-hoc (no subtree to prune anyway).
     """
     max_results = _get_op_int("glob", "max_results", MAX_GLOB_RESULTS)
+
+    # Brace expansion: `*.{json,xml}` → fan out + dedupe. Shell/fd semantics.
+    expanded = _expand_braces(pattern)
+    if expanded != [pattern]:
+        seen: set = set()
+        results: List[str] = []
+        for sub_pattern in expanded:
+            for f in _glob_files(sub_pattern, exclude_paths):
+                if f not in seen:
+                    seen.add(f)
+                    results.append(f)
+                    if len(results) >= max_results:
+                        return results
+        return results
 
     if exclude_paths and "**" in pattern and pattern.count("**") == 1:
         # Walk-based implementation for recursive globs with exclusions.
