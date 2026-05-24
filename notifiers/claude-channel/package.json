@@ -1,0 +1,16 @@
+{
+  "name": "claude-channel",
+  "version": "0.0.1",
+  "description": "MCP channel server bridging supertool 'watch' preset events to Claude Code",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun channel.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.0.0"
+  }
+}

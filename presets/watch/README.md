@@ -116,9 +116,8 @@ state persistence. Source code stays focused on "what changed?".
 
 ## Phase 2 — channel consumer
 
-Lives outside this preset. It will:
-1. Bind a UDS listener at `/tmp/supertool-watch.sock`
-2. Forward each NDJSON line to Claude Code via the Channels MCP protocol
-3. Claude sees events as `<channel source="gitlab-mr" id="21803" event="pipeline_failed">...`
-
-No changes to this preset will be required.
+Shipped at [`notifiers/claude-channel/`](../../notifiers/claude-channel/README.md).
+It binds the UDS socket this preset writes to and pushes each event into a
+running Claude Code session via the Channels feature. No changes to this
+preset are required to wire it up — just install Phase 2 separately and
+launch Claude with `--dangerously-load-development-channels server:claude-channel`.
