@@ -4,6 +4,7 @@
     {"key": "pipeline_failed",      "label": "Pipeline failed"},
     {"key": "pipeline_succeeded",   "label": "Pipeline succeeded"},
     {"key": "pipeline_running",     "label": "Pipeline started running"},
+    {"key": "comment_added",        "label": "New comment on the MR"},
     {"key": "merged",               "label": "MR merged"},
     {"key": "closed",               "label": "MR closed"},
     {"key": "conflicts_appeared",   "label": "Conflicts appeared"}

@@ -13,7 +13,8 @@ poller = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(poller)
 
 
-def _mr(state="opened", pipeline_status="running", pipeline_id="9", conflicts=False, **kw):
+def _mr(state="opened", pipeline_status="running", pipeline_id="9", conflicts=False,
+        user_notes_count=0, **kw):
     return {
         "iid": 21803,
         "title": kw.get("title", "feat: do the thing"),
@@ -21,6 +22,7 @@ def _mr(state="opened", pipeline_status="running", pipeline_id="9", conflicts=Fa
         "has_conflicts": conflicts,
         "head_pipeline": {"id": pipeline_id, "status": pipeline_status},
         "web_url": "https://example.com/mr/21803",
+        "user_notes_count": user_notes_count,
     }
 
 
@@ -91,3 +93,32 @@ def test_fetch_failure_returns_no_events() -> None:
         events, new_state = poller.poll({"x": 1}, {"id": "21803"})
     assert events == []
     assert new_state == {"x": 1}  # state preserved on transient failure
+
+
+def test_first_poll_records_notes_count_without_event() -> None:
+    """First poll on empty state must NOT fire comment_added — just baseline."""
+    with mock.patch.object(poller, "_fetch", return_value=_mr(user_notes_count=3)):
+        events, new_state = poller.poll({}, {"id": "21803"})
+    assert all(e["event"] != "comment_added" for e in events)
+    assert new_state["notes_count"] == 3
+
+
+def test_notes_count_increase_emits_comment_added() -> None:
+    state = {"notes_count": 1, "mr_state": "opened", "pipeline_status": "running"}
+    with mock.patch.object(poller, "_fetch", return_value=_mr(user_notes_count=2)):
+        events, _ = poller.poll(state, {"id": "21803"})
+    matches = [e for e in events if e["event"] == "comment_added"]
+    assert len(matches) == 1
+    assert matches[0]["payload"]["new_count"] == 1
+
+
+def test_notes_count_unchanged_no_event() -> None:
+    state = {"notes_count": 2, "mr_state": "opened", "pipeline_status": "running"}
+    with mock.patch.object(poller, "_fetch", return_value=_mr(user_notes_count=2)):
+        events, _ = poller.poll(state, {"id": "21803"})
+    assert all(e["event"] != "comment_added" for e in events)
+
+
+def test_glab_helper_imported_from_mr_op() -> None:
+    """The poller must reuse _glab_api from presets/gitlab/mr.py."""
+    assert poller._glab_api_cli.__module__ == "gitlab_mr_op"
