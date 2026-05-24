@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`glob` brace expansion.** `glob:src/**/*.{json,xml}` now fans out into `*.json` + `*.xml` (shell/fd/ripgrep semantics) and dedupes results, instead of silently returning 0 files. Supports multiple groups (`{a,b}.{x,y}` → 4) and nesting (`{a,b{1,2}}` → 3). Patterns without braces are unchanged. Closes [#161](https://github.com/Digital-Process-Tools/claude-supertool/issues/161).
+
 ## [0.14.0] — 2026-05-23
 
 ### Added
