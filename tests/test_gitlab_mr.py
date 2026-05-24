@@ -413,10 +413,17 @@ def test_fmt_kb_thresholds() -> None:
 
 
 def test_budgeted_comments_hidden_bytes_counts_utf8() -> None:
-    """Hidden-bytes must reflect UTF-8 byte length, not codepoint count."""
-    big_multibyte = "é" * 1500  # 2 bytes/char in UTF-8
+    """Hidden-bytes must reflect UTF-8 byte length, not codepoint count.
+
+    Body is truncated to COMMENT_MAX=500 chars before rendering; with all-multibyte
+    content the resulting render is ~1000 bytes — strictly larger than the codepoint
+    count, which proves we're counting bytes.
+    """
+    big_multibyte = "é" * 1500  # 2 bytes/char in UTF-8, gets truncated to 500 chars
     notes = [_note(f"u{i}", big_multibyte) for i in range(8)]
+    rendered_one_chars = len(mr._render_note(notes[0]))
+    rendered_one_bytes = len(mr._render_note(notes[0]).encode("utf-8"))
+    assert rendered_one_bytes > rendered_one_chars, "multibyte body must inflate byte count"
     _, hidden_count, hidden_bytes = mr._budgeted_comments(notes, budget=2000, tail=2)
     assert hidden_count > 0
-    # Char-counting would give roughly hidden_count * 1500; UTF-8 ~doubles it.
-    assert hidden_bytes >= hidden_count * 1500
+    assert hidden_bytes == hidden_count * rendered_one_bytes
