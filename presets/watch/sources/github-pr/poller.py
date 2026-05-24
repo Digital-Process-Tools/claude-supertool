@@ -29,10 +29,11 @@ _spec.loader.exec_module(_pr_op)
 _gh = _pr_op._gh  # type: ignore[attr-defined]
 
 # Fields we ask gh for on each poll. Cheap (single API call) and covers every
-# event in events.json.
+# event in events.json. `comments` returns the issue-comments array; we just
+# need its length to detect new comments.
 _VIEW_FIELDS = (
     "state,mergeable,isDraft,title,url,reviewDecision,"
-    "statusCheckRollup,number,headRefName"
+    "statusCheckRollup,number,headRefName,comments"
 )
 
 TERMINAL_PR_STATES = {"MERGED", "CLOSED"}
@@ -95,11 +96,14 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
     url = str(data.get("url") or "")
     review_decision = str(data.get("reviewDecision") or "").upper()
     checks_state = _rollup_state(data.get("statusCheckRollup"))
+    comments_list = data.get("comments") if isinstance(data.get("comments"), list) else []
+    comments_count = len(comments_list)
 
     prev_pr = state.get("pr_state", "")
     prev_checks = state.get("checks_state", "")
     prev_review = state.get("review_decision", "")
     prev_mergeable = state.get("mergeable", "")
+    prev_comments_count = state.get("comments_count")  # None on first poll
 
     events: list[dict] = []
 
@@ -159,6 +163,25 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
                 "notify_message": title,
             })
 
+    # Comment count rising — new issue-comment(s) added since last poll.
+    # First poll (prev_comments_count is None) only records the baseline so
+    # we don't fire an event on watch-start.
+    if prev_comments_count is not None and comments_count > prev_comments_count:
+        delta = comments_count - prev_comments_count
+        latest = comments_list[-1] if comments_list else {}
+        author = ((latest.get("author") or {}).get("login") if isinstance(latest, dict) else "") or "?"
+        events.append({
+            "event": "comment_added",
+            "payload": {
+                "url": url,
+                "title": title,
+                "author": author,
+                "new_count": delta,
+            },
+            "notify_title": f"#{number} new comment{'s' if delta > 1 else ''}",
+            "notify_message": f"by {author}: {title}",
+        })
+
     # Mergeable rising edge — fires when going from MERGEABLE/UNKNOWN to CONFLICTING
     if mergeable == "CONFLICTING" and prev_mergeable != "CONFLICTING":
         events.append({
@@ -173,6 +196,7 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
         "mergeable": mergeable,
         "checks_state": checks_state,
         "review_decision": review_decision,
+        "comments_count": comments_count,
         "title": title,
         "url": url,
     }

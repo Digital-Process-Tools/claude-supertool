@@ -15,6 +15,7 @@ _spec.loader.exec_module(poller)
 
 def _pr(
     state="OPEN", mergeable="MERGEABLE", review="", checks=None, title="some PR",
+    comments=None,
 ):
     return {
         "state": state,
@@ -26,6 +27,7 @@ def _pr(
         "isDraft": False,
         "reviewDecision": review,
         "statusCheckRollup": checks or [],
+        "comments": comments or [],
     }
 
 
@@ -151,6 +153,40 @@ def test_fetch_failure_preserves_state() -> None:
 
 def test_is_terminal_open_returns_false() -> None:
     assert poller.is_terminal({"pr_state": "OPEN"}) is False
+
+
+def test_first_poll_records_comment_count_without_event() -> None:
+    """First poll on empty state must NOT fire comment_added — just baseline."""
+    comments = [{"author": {"login": "alice"}, "body": "hi"}]
+    with mock.patch.object(poller, "_fetch", return_value=_pr(comments=comments)):
+        events, new_state = poller.poll({}, {"id": "42"})
+    assert all(e["event"] != "comment_added" for e in events)
+    assert new_state["comments_count"] == 1
+
+
+def test_comment_count_increase_emits_comment_added() -> None:
+    state = {"comments_count": 1}
+    comments = [
+        {"author": {"login": "alice"}, "body": "hi"},
+        {"author": {"login": "bob"}, "body": "second"},
+    ]
+    with mock.patch.object(poller, "_fetch", return_value=_pr(comments=comments)):
+        events, _ = poller.poll(state, {"id": "42"})
+    matches = [e for e in events if e["event"] == "comment_added"]
+    assert len(matches) == 1
+    assert matches[0]["payload"]["author"] == "bob"
+    assert matches[0]["payload"]["new_count"] == 1
+
+
+def test_comment_count_unchanged_no_event() -> None:
+    state = {"comments_count": 2}
+    comments = [
+        {"author": {"login": "alice"}, "body": "hi"},
+        {"author": {"login": "bob"}, "body": "second"},
+    ]
+    with mock.patch.object(poller, "_fetch", return_value=_pr(comments=comments)):
+        events, _ = poller.poll(state, {"id": "42"})
+    assert all(e["event"] != "comment_added" for e in events)
 
 
 def test_gh_helper_imported_from_pr_op() -> None:

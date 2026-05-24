@@ -6,6 +6,7 @@
     {"key": "checks_pending",           "label": "PR checks started running"},
     {"key": "review_approved",          "label": "PR approved"},
     {"key": "review_changes_requested", "label": "Reviewer requested changes"},
+    {"key": "comment_added",            "label": "New comment on the PR"},
     {"key": "merged",                   "label": "PR merged"},
     {"key": "closed",                   "label": "PR closed without merge"},
     {"key": "conflicts_appeared",       "label": "PR became unmergeable"}
