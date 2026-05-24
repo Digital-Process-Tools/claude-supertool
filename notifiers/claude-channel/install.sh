@@ -23,7 +23,9 @@ fi
 echo "==> Installing dependencies via bun"
 bun install
 
-cat <<'EOF'
+CHANNEL_PATH="$SCRIPT_DIR/channel.ts"
+
+cat <<EOF
 
 ==> Done.
 
@@ -31,12 +33,12 @@ Next steps:
 
 1. Register the server in MCP config. For project-level (this repo):
 
-     cat > .mcp.json <<'JSON'
+     cat > .mcp.json <<JSON
      {
        "mcpServers": {
          "claude-channel": {
            "command": "bun",
-           "args": ["$SCRIPT_DIR/channel.ts"]
+           "args": ["$CHANNEL_PATH"]
          }
        }
      }
@@ -54,6 +56,6 @@ Next steps:
      ./supertool 'watch:gitlab-mr:21803'
 
    When the MR's pipeline transitions, Claude sees the event as a
-   <channel source="gitlab-mr" id="21803" event="..."> tag in its context.
+   <channel source="claude-channel" watcher_source="gitlab-mr" id="21803" event="..."> tag.
 
 EOF

@@ -42,14 +42,19 @@ interface WatchEvent {
 const ATTR_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 function buildMeta(ev: WatchEvent): Record<string, string> {
+  // Claude Code auto-injects `source` from the MCP server name on every event,
+  // so we use `watcher_source` for the per-event source (e.g. "gitlab-mr") to
+  // avoid the collision. The instructions string tells Claude to route by
+  // `watcher_source`.
   const meta: Record<string, string> = {
-    source: ev.source,
+    watcher_source: ev.source,
     id: ev.id,
     event: ev.event,
     ts: ev.ts,
   };
   for (const [k, v] of Object.entries(ev.payload || {})) {
     if (!ATTR_KEY_RE.test(k)) continue;
+    if (k === "source") continue;  // never let payload overwrite the auto-injected key
     if (v === null || v === undefined) continue;
     meta[k] = String(v);
   }
@@ -75,21 +80,30 @@ const mcp = new Server(
     },
     instructions:
       "Events from the supertool 'watch' preset arrive as " +
-      "<channel source=\"<source>\" id=\"<watcher-id>\" event=\"<event-key>\" ...>. " +
-      "Examples: source=\"gitlab-mr\" event=\"pipeline_failed\". They are one-way " +
-      "(no reply expected). Read the source/id/event attributes to decide what to do — " +
-      "investigate via the matching supertool op (e.g. ./supertool 'gl-mr:<id>'), " +
-      "post a summary, or notify the human. Status-change is the signal; consecutive " +
-      "events for the same source/id supersede each other.",
+      "<channel source=\"claude-channel\" watcher_source=\"<source>\" id=\"<watcher-id>\" event=\"<event-key>\" ...>. " +
+      "Route by `watcher_source` (e.g. \"gitlab-mr\") and `event` (e.g. \"pipeline_failed\"). " +
+      "They are one-way (no reply expected). Investigate via the matching supertool op " +
+      "(e.g. ./supertool 'gl-mr:<id>'), post a summary, or notify the human. " +
+      "Status-change is the signal; consecutive events for the same watcher_source/id " +
+      "supersede each other.",
   },
 );
 
 await mcp.connect(new StdioServerTransport());
 
+// Ensure the socket's parent dir exists so non-default SUPERTOOL_WATCH_SOCK
+// paths (e.g. ~/.claude/supertool-watch.sock) don't fail with a cryptic ENOENT.
+try {
+  const parent = SOCK_PATH.includes("/") ? SOCK_PATH.slice(0, SOCK_PATH.lastIndexOf("/")) : "";
+  if (parent) fs.mkdirSync(parent, { recursive: true });
+} catch (err) {
+  process.stderr.write(`claude-channel: could not ensure parent dir: ${String(err)}\n`);
+}
+
 // Bind the UDS socket. Unlink stale file from a previous crash first.
 try {
   fs.unlinkSync(SOCK_PATH);
-} catch (e) {
+} catch {
   // ENOENT — fine, nothing to clean
 }
 
@@ -113,10 +127,16 @@ const server = net.createServer((conn) => {
       if (!ev || typeof ev.source !== "string" || typeof ev.id !== "string" || typeof ev.event !== "string") {
         continue;
       }
-      void mcp.notification({
-        method: "notifications/claude/channel",
-        params: { content: buildContent(ev), meta: buildMeta(ev) },
-      });
+      mcp
+        .notification({
+          method: "notifications/claude/channel",
+          params: { content: buildContent(ev), meta: buildMeta(ev) },
+        })
+        .catch((err) => {
+          // Surface to stderr so `claude --debug` picks it up. Common causes:
+          // Claude Code transport closed, channel not registered, JSON-RPC busy.
+          process.stderr.write(`claude-channel: notify failed: ${String(err)}\n`);
+        });
     }
   });
   conn.on("error", () => {
