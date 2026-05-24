@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+from unittest import mock
 
 
 PRESET = Path(__file__).parent.parent / "presets" / "git" / "conflicts.py"
@@ -47,3 +48,79 @@ def test_no_markers_message(tmp_path: Path) -> None:
     f.write_text("clean file\n")
     out = conflicts._all_conflict_blocks(str(f), max_lines_per_block=10)
     assert "no <<<<<<< marker" in out
+
+
+def _git_result(stdout: str = "", returncode: int = 0):
+    return mock.Mock(stdout=stdout, returncode=returncode, stderr="")
+
+
+def test_incoming_info_skipped_outside_merge_states() -> None:
+    assert conflicts._incoming_info("foo.py", "rebase") == []
+    assert conflicts._incoming_info("foo.py", "") == []
+
+
+def test_incoming_info_merge_includes_author_branch_and_mr() -> None:
+    log_line = "a1b2c3d Florian DAVID 2 hours ago :: Rename underscore properties"
+    fake_git = mock.Mock(side_effect=[
+        _git_result(stdout=log_line + "\n"),
+        _git_result(stdout="remotes/origin/feature/rename-props\n"),
+    ])
+    fake_which = mock.Mock(side_effect=lambda cmd: "/usr/bin/glab" if cmd == "glab" else None)
+    fake_run = mock.Mock(return_value=_git_result(
+        stdout='[{"iid": 21803, "title": "Rename underscore properties"}]\n'
+    ))
+    with mock.patch.object(conflicts, "_git", fake_git), \
+         mock.patch.object(conflicts.shutil, "which", fake_which), \
+         mock.patch.object(conflicts.subprocess, "run", fake_run):
+        lines = conflicts._incoming_info("foo.py", "merge")
+    assert lines == [
+        f"  Last touched (theirs): {log_line}",
+        "  Incoming branch: feature/rename-props",
+        "  MR: !21803 Rename underscore properties",
+    ]
+
+
+def test_incoming_info_cherry_pick_only_shows_log() -> None:
+    log_line = "a1b2c3d Author 1 hour ago :: pick subject"
+    fake_git = mock.Mock(return_value=_git_result(stdout=log_line + "\n"))
+    with mock.patch.object(conflicts, "_git", fake_git):
+        lines = conflicts._incoming_info("foo.py", "cherry-pick")
+    assert lines == [f"  Last touched (theirs): {log_line}"]
+
+
+def test_incoming_info_no_mr_tool_available() -> None:
+    log_line = "abc Author 5m ago :: subject"
+    fake_git = mock.Mock(side_effect=[
+        _git_result(stdout=log_line + "\n"),
+        _git_result(stdout="feature/x\n"),
+    ])
+    with mock.patch.object(conflicts, "_git", fake_git), \
+         mock.patch.object(conflicts.shutil, "which", return_value=None):
+        lines = conflicts._incoming_info("foo.py", "merge")
+    assert lines == [
+        f"  Last touched (theirs): {log_line}",
+        "  Incoming branch: feature/x",
+    ]
+
+
+def test_incoming_info_swallows_glab_timeout() -> None:
+    """A hanging glab must not crash the whole op."""
+    import subprocess as _sub
+    log_line = "abc Author 5m ago :: subject"
+    fake_git = mock.Mock(side_effect=[
+        _git_result(stdout=log_line + "\n"),
+        _git_result(stdout="feature/x\n"),
+    ])
+    fake_which = mock.Mock(side_effect=lambda c: f"/usr/bin/{c}" if c == "glab" else None)
+
+    def boom(*a, **kw):
+        raise _sub.TimeoutExpired(cmd="glab", timeout=5)
+
+    with mock.patch.object(conflicts, "_git", fake_git), \
+         mock.patch.object(conflicts.shutil, "which", fake_which), \
+         mock.patch.object(conflicts.subprocess, "run", side_effect=boom):
+        lines = conflicts._incoming_info("foo.py", "merge")
+    assert lines == [
+        f"  Last touched (theirs): {log_line}",
+        "  Incoming branch: feature/x",
+    ]
