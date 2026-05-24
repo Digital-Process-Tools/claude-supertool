@@ -15,7 +15,9 @@ Special MSG values:
 """
 from __future__ import annotations
 
+import json
 import os
+import shutil
 import subprocess
 import sys
 
@@ -27,6 +29,44 @@ def _git(args: list[str], timeout: int = 30) -> subprocess.CompletedProcess[str]
         ["git"] + args,
         capture_output=True, text=True, timeout=timeout,
     )
+
+
+def _existing_mr_for_branch(branch: str) -> str:
+    """Open MR/PR identifier for `branch`, or empty when none / no tool available.
+
+    Tries glab first (GitLab), falls back to gh (GitHub). All failures swallowed —
+    this is advisory output for the post-commit hint, never blocking.
+    """
+    if not branch:
+        return ""
+    if shutil.which("glab"):
+        try:
+            res = subprocess.run(
+                ["glab", "mr", "list", "--source-branch", branch, "--state", "opened",
+                 "--output", "json"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if res.returncode == 0 and res.stdout.strip().startswith("["):
+                mrs = json.loads(res.stdout)
+                if mrs:
+                    iid = mrs[0].get("iid") or mrs[0].get("number") or "?"
+                    return f"!{iid}"
+        except (subprocess.TimeoutExpired, OSError, json.JSONDecodeError):
+            pass
+    if shutil.which("gh"):
+        try:
+            res = subprocess.run(
+                ["gh", "pr", "list", "--head", branch, "--state", "open",
+                 "--json", "number", "--limit", "1"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if res.returncode == 0 and res.stdout.strip().startswith("["):
+                prs = json.loads(res.stdout)
+                if prs:
+                    return f"#{prs[0].get('number', '?')}"
+        except (subprocess.TimeoutExpired, OSError, json.JSONDecodeError):
+            pass
+    return ""
 
 
 def _head_sha() -> str:
@@ -120,7 +160,12 @@ def main() -> int:
         # Next-step hint
         upstream_res = _git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"])
         if upstream_res.returncode == 0 and upstream_res.stdout.strip():
-            print("Next: git push (or ./supertool 'mr:.max/mr.md|TIME|LABELS' for push+MR)")
+            branch = _git(["rev-parse", "--abbrev-ref", "HEAD"]).stdout.strip()
+            existing = _existing_mr_for_branch(branch)
+            if existing:
+                print(f"Next: git push (updates {existing})")
+            else:
+                print("Next: git push (or ./supertool 'mr:.max/mr.md|TIME|LABELS' for push+MR)")
         else:
             print("Next: git push -u origin HEAD (no upstream set)")
         return 0
