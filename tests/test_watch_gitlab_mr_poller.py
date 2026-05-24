@@ -122,3 +122,30 @@ def test_notes_count_unchanged_no_event() -> None:
 def test_glab_helper_imported_from_mr_op() -> None:
     """The poller must reuse _glab_api from presets/gitlab/mr.py."""
     assert poller._glab_api_cli.__module__ == "gitlab_mr_op"
+
+
+def test_missing_user_notes_count_does_not_lock_baseline_at_zero() -> None:
+    """Absent field keeps notes_count=None so a later real value can still baseline."""
+    mr_no_field = {
+        "iid": 21803, "title": "x", "state": "opened", "has_conflicts": False,
+        "head_pipeline": {"id": "9", "status": "running"},
+        "web_url": "https://example.com/mr/21803",
+        # user_notes_count intentionally absent
+    }
+    with mock.patch.object(poller, "_fetch", return_value=mr_no_field):
+        events, new_state = poller.poll({}, {"id": "21803"})
+    assert all(e["event"] != "comment_added" for e in events)
+    assert new_state["notes_count"] is None
+
+
+def test_notes_count_field_disappearing_skips_event() -> None:
+    """If notes_count drops to None on a later poll, no comparison, no event."""
+    state = {"notes_count": 5, "mr_state": "opened", "pipeline_status": "running"}
+    mr_no_field = {
+        "iid": 21803, "title": "x", "state": "opened", "has_conflicts": False,
+        "head_pipeline": {"id": "9", "status": "running"},
+        "web_url": "https://example.com/mr/21803",
+    }
+    with mock.patch.object(poller, "_fetch", return_value=mr_no_field):
+        events, _ = poller.poll(state, {"id": "21803"})
+    assert all(e["event"] != "comment_added" for e in events)

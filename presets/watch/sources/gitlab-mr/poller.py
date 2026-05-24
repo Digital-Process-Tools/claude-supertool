@@ -65,8 +65,14 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
     pipeline_id = str(pipeline.get("id") or "") if isinstance(pipeline, dict) else ""
     title = str(data.get("title") or f"MR !{iid}")
     web_url = str(data.get("web_url") or "")
+    # GitLab's `user_notes_count` counts *all* notes including system notes
+    # (pipeline status changes, label edits, assignee changes). `comment_added`
+    # will therefore fire on some non-human events — accepted limitation for v1
+    # to avoid a second API call to /notes per poll. If the field is absent,
+    # keep it None so the rising-edge guard treats the next poll as a baseline
+    # rather than locking the count at 0 forever.
     raw_notes = data.get("user_notes_count")
-    notes_count = int(raw_notes) if isinstance(raw_notes, int) else 0
+    notes_count = int(raw_notes) if isinstance(raw_notes, int) else None
 
     events: list[dict] = []
     prev_pipeline = state.get("pipeline_status", "")
@@ -123,8 +129,14 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
         })
 
     # Notes count rising — new comment(s) since last poll. First poll
-    # (prev_notes_count is None) records the baseline without firing.
-    if prev_notes_count is not None and notes_count > prev_notes_count:
+    # (prev_notes_count is None) records the baseline without firing. If the
+    # current poll couldn't read the field (notes_count is None) we skip too
+    # so we don't compare against a stale baseline.
+    if (
+        prev_notes_count is not None
+        and notes_count is not None
+        and notes_count > prev_notes_count
+    ):
         delta = notes_count - prev_notes_count
         events.append({
             "event": "comment_added",
