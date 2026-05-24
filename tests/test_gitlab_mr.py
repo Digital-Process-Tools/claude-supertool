@@ -363,3 +363,67 @@ def test_relative_age_formats() -> None:
     assert mr._relative_age((now - timedelta(days=3)).isoformat().replace("+00:00", "Z")).endswith("d ago")
     assert mr._relative_age("") == "?"
     assert mr._relative_age("not-a-date") == "?"
+
+
+def _note(author: str, body: str, day: str = "2026-05-24") -> dict:
+    return {"author": {"username": author}, "body": body, "created_at": f"{day}T00:00:00Z"}
+
+
+def test_budgeted_comments_no_truncation_when_under_budget() -> None:
+    notes = [_note("alice", "hi"), _note("bob", "hey")]
+    rendered, hidden_count, hidden_bytes = mr._budgeted_comments(notes, budget=10_000, tail=2)
+    assert "__GAP__" not in rendered
+    assert hidden_count == 0
+    assert hidden_bytes == 0
+    assert len(rendered) == 2
+
+
+def test_budgeted_comments_inserts_gap_and_keeps_tail() -> None:
+    big = "X" * 1500
+    notes = [_note(f"u{i}", big) for i in range(8)]
+    rendered, hidden_count, hidden_bytes = mr._budgeted_comments(notes, budget=2000, tail=2)
+    assert "__GAP__" in rendered
+    assert hidden_count >= 1
+    assert hidden_bytes > 0
+    # Tail of 2 still present at end
+    tail = [r for r in rendered if r != "__GAP__"][-2:]
+    assert any("u6" in r for r in tail)
+    assert any("u7" in r for r in tail)
+
+
+def test_budgeted_comments_empty_list() -> None:
+    rendered, hidden_count, hidden_bytes = mr._budgeted_comments([], budget=2000, tail=2)
+    assert rendered == []
+    assert hidden_count == 0
+    assert hidden_bytes == 0
+
+
+def test_budgeted_comments_tail_larger_than_list_skips_gap() -> None:
+    notes = [_note("a", "x"), _note("b", "y")]
+    rendered, hidden_count, _ = mr._budgeted_comments(notes, budget=2000, tail=5)
+    assert "__GAP__" not in rendered
+    assert hidden_count == 0
+    assert len(rendered) == 2
+
+
+def test_fmt_kb_thresholds() -> None:
+    assert mr._fmt_kb(500) == "500B"
+    assert mr._fmt_kb(2048) == "2.0KB"
+    assert mr._fmt_kb(8192) == "8.0KB"
+
+
+def test_budgeted_comments_hidden_bytes_counts_utf8() -> None:
+    """Hidden-bytes must reflect UTF-8 byte length, not codepoint count.
+
+    Body is truncated to COMMENT_MAX=500 chars before rendering; with all-multibyte
+    content the resulting render is ~1000 bytes — strictly larger than the codepoint
+    count, which proves we're counting bytes.
+    """
+    big_multibyte = "é" * 1500  # 2 bytes/char in UTF-8, gets truncated to 500 chars
+    notes = [_note(f"u{i}", big_multibyte) for i in range(8)]
+    rendered_one_chars = len(mr._render_note(notes[0]))
+    rendered_one_bytes = len(mr._render_note(notes[0]).encode("utf-8"))
+    assert rendered_one_bytes > rendered_one_chars, "multibyte body must inflate byte count"
+    _, hidden_count, hidden_bytes = mr._budgeted_comments(notes, budget=2000, tail=2)
+    assert hidden_count > 0
+    assert hidden_bytes == hidden_count * rendered_one_bytes

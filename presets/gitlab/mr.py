@@ -13,6 +13,8 @@ import sys
 
 DESCRIPTION_MAX = 2000
 COMMENT_MAX = 500
+COMMENT_TOTAL_MAX = 2000
+TAIL_COMMENTS = 2
 
 
 def _relative_age(iso: str) -> str:
@@ -197,13 +199,57 @@ def _format_error(stderr: str, resource: str, identifier: str) -> str:
     return f"ERROR: glab failed for {resource} #{identifier}: {stderr.strip()}"
 
 
+def _render_note(note: dict) -> str:
+    """Format one MR note for printing. Body capped at COMMENT_MAX chars."""
+    author = (note.get("author") or {}).get("username", "?")
+    body = (note.get("body") or "")[:COMMENT_MAX]
+    created = (note.get("created_at") or "")[:10]
+    return f"\n**{author}** ({created}):\n{body}\n"
+
+
+def _fmt_kb(nbytes: int) -> str:
+    if nbytes < 1024:
+        return f"{nbytes}B"
+    return f"{nbytes / 1024:.1f}KB"
+
+
+def _budgeted_comments(notes: list, budget: int, tail: int) -> tuple[list[str], int, int]:
+    """Pick rendered notes fitting a total-char budget, keeping the last `tail` for recency.
+
+    Returns (rendered_lines, hidden_count, hidden_bytes). Notes are assumed
+    sorted ascending (oldest first) — same order as the GitLab API.
+    """
+    rendered_all = [_render_note(n) for n in notes]
+    if not rendered_all:
+        return [], 0, 0
+    tail_keep = min(tail, len(rendered_all))
+    if tail_keep >= len(rendered_all):
+        return rendered_all, 0, 0
+    tail_slice = rendered_all[-tail_keep:] if tail_keep else []
+    head_pool = rendered_all[:-tail_keep] if tail_keep else rendered_all
+    tail_size = sum(len(r) for r in tail_slice)
+    remaining = max(0, budget - tail_size)
+    head_kept: list[str] = []
+    used = 0
+    for r in head_pool:
+        if used + len(r) > remaining:
+            break
+        head_kept.append(r)
+        used += len(r)
+    hidden = head_pool[len(head_kept):]
+    hidden_bytes = sum(len(r.encode("utf-8")) for r in hidden)
+    return head_kept + (["__GAP__"] if hidden else []) + tail_slice, len(hidden), hidden_bytes
+
+
 def main() -> int:
     if len(sys.argv) < 2:
-        print("ERROR: usage: mr.py NUMBER [status]")
+        print("ERROR: usage: mr.py NUMBER [status|full]")
         return 1
 
     arg = sys.argv[1]
-    slim = len(sys.argv) > 2 and sys.argv[2] == "status"
+    flags = sys.argv[2:]
+    slim = "status" in flags
+    full = "full" in flags
 
     # If not all digits, treat as branch name and resolve to MR number
     if not arg.isdigit():
@@ -544,12 +590,21 @@ def main() -> int:
         pass
 
     print(f"\n## Comments ({len(human_notes)})")
-    for note in human_notes[-10:]:
-        note_author = (note.get("author") or {}).get("username", "?")
-        body = (note.get("body") or "")[:COMMENT_MAX]
-        created = (note.get("created_at") or "")[:10]
-        print(f"\n**{note_author}** ({created}):")
-        print(body)
+    if full:
+        for r in (_render_note(n) for n in human_notes):
+            print(r, end="")
+    else:
+        rendered, hidden_count, hidden_bytes = _budgeted_comments(
+            human_notes, COMMENT_TOTAL_MAX, TAIL_COMMENTS,
+        )
+        for r in rendered:
+            if r == "__GAP__":
+                print(
+                    f"\n... {hidden_count} more comment(s) hidden ({_fmt_kb(hidden_bytes)})."
+                    f" Use gl-mr:{iid}:full for everything."
+                )
+                continue
+            print(r, end="")
 
     return 0
 
