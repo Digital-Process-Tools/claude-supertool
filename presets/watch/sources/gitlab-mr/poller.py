@@ -18,7 +18,6 @@ from typing import Any
 INTERVAL = 30
 
 TERMINAL_MR_STATES = {"merged", "closed"}
-TERMINAL_PIPELINE_STATES = {"success", "failed", "canceled", "skipped", "manual"}
 
 
 def _glab_api(endpoint: str) -> dict | list | None:

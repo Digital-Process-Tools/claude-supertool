@@ -39,14 +39,20 @@ def emit_socket(payload: dict[str, Any]) -> None:
     """Best-effort write of one NDJSON line to the UDS socket. Silent if no listener."""
     if not os.path.exists(SOCK_PATH):
         return
+    s: socket.socket | None = None
     try:
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         s.settimeout(0.5)
         s.connect(SOCK_PATH)
         s.sendall((json.dumps(payload) + "\n").encode("utf-8"))
-        s.close()
     except OSError:
         return
+    finally:
+        if s is not None:
+            try:
+                s.close()
+            except OSError:
+                pass
 
 
 def write_state(source: str, watcher_id: str, state: dict[str, Any]) -> None:

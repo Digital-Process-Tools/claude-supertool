@@ -50,6 +50,16 @@ def test_parse_args_empty_errors() -> None:
         dispatcher._parse_args([])
 
 
+def test_parse_args_rejects_double_underscore_in_source() -> None:
+    with pytest.raises(ValueError, match="must not contain '__'"):
+        dispatcher._parse_args(["bad__source", "21803"])
+
+
+def test_parse_args_rejects_double_underscore_in_id() -> None:
+    with pytest.raises(ValueError, match="must not contain '__'"):
+        dispatcher._parse_args(["gitlab-mr", "bad__id"])
+
+
 def test_load_source_known() -> None:
     mod = dispatcher._load_source("gitlab-mr")
     assert mod is not None

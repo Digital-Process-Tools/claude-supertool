@@ -66,6 +66,10 @@ def _parse_args(parts: list[str]) -> tuple[str, str, list[str]]:
     if len(parts) < 2 or not parts[1]:
         raise ValueError(f"missing ID for source {parts[0]!r}")
     source, watcher_id = parts[0], parts[1]
+    # PID/state filenames use `__` to separate source and id (see transport.py).
+    # Allowing it inside either field would make `list_active_pids` ambiguous.
+    if "__" in source or "__" in watcher_id:
+        raise ValueError("SOURCE and ID must not contain '__' (reserved as filename separator)")
     only: list[str] = []
     for p in parts[2:]:
         if p.startswith("only="):
