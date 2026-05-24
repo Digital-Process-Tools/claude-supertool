@@ -22,6 +22,11 @@ def test_empty_branch_returns_empty() -> None:
     assert commit._existing_mr_for_branch("") == ""
 
 
+def test_detached_head_returns_empty() -> None:
+    """`git rev-parse --abbrev-ref HEAD` returns 'HEAD' when detached."""
+    assert commit._existing_mr_for_branch("HEAD") == ""
+
+
 def test_glab_match_returns_bang_iid() -> None:
     fake_which = mock.Mock(side_effect=lambda c: "/usr/bin/glab" if c == "glab" else None)
     fake_run = mock.Mock(return_value=_proc('[{"iid": 21816, "title": "x"}]'))

@@ -37,7 +37,7 @@ def _existing_mr_for_branch(branch: str) -> str:
     Tries glab first (GitLab), falls back to gh (GitHub). All failures swallowed —
     this is advisory output for the post-commit hint, never blocking.
     """
-    if not branch:
+    if not branch or branch == "HEAD":
         return ""
     if shutil.which("glab"):
         try:
@@ -160,7 +160,6 @@ def main() -> int:
         # Next-step hint
         upstream_res = _git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"])
         if upstream_res.returncode == 0 and upstream_res.stdout.strip():
-            branch = _git(["rev-parse", "--abbrev-ref", "HEAD"]).stdout.strip()
             existing = _existing_mr_for_branch(branch)
             if existing:
                 print(f"Next: git push (updates {existing})")
