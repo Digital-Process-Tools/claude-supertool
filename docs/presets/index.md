@@ -20,6 +20,7 @@ Supertool merges preset ops at startup — project-level ops always override on 
 | `devto` | Publish, read, and engage on Dev.to | [devto.md](devto.md) | `python3`, `DEVTO_API_KEY` |
 | `bluesky` | Post, read, and engage on Bluesky | [bluesky.md](bluesky.md) | `python3`, `BLUESKY_HANDLE` + `BLUESKY_APP_PASSWORD` |
 | `xml` | Read-only XPath queries over XML files | [xml.md](xml.md) | `python3` |
+| `watch` | Background pollers + async wake on external events (PRs, MRs, pipelines) | [watch.md](watch.md) | `gh` and/or `glab` per source |
 
 ## Writing your own preset
 

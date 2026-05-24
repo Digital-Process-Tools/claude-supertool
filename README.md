@@ -284,6 +284,39 @@ Or set `"notifier_debug": true` in your `.supertool.json` for persistent traces.
 
 ---
 
+## Watch — react to external events while you're away
+
+The `watch` preset spawns background pollers that emit events when external state changes — a PR's checks flip red, a GitLab pipeline finishes, an MR gets a new comment. Pair it with the [claude-channel](notifiers/claude-channel/README.md) MCP server and Claude Code wakes up mid-session to handle the event without you typing anything.
+
+### Two layers
+
+1. **`watch` preset** — `watch:SOURCE:ID` spawns a detached poller. Events emit to a UDS socket, a status file, and macOS Notification Center. Bundled sources: `github-pr`, `gitlab-mr`. Write your own source in ~50 lines.
+2. **`claude-channel` MCP server** — TypeScript / Bun. Binds the UDS socket and pushes events into a running Claude Code session via the [Channels feature](https://code.claude.com/docs/en/channels.md) (research preview, v2.1.80+). Optional — the watch preset is useful even without it.
+
+### Quickstart
+
+```bash
+./supertool 'watch:github-pr:179'                 # start watching
+./supertool 'watch:github-pr:179:only=merged'     # filter event types
+./supertool 'watches'                             # list active pollers
+./supertool 'unwatch:github-pr:179'               # stop one
+```
+
+Run `bash notifiers/claude-channel/install.sh` to install the MCP server, register it in `.mcp.json`, and launch Claude with:
+
+```bash
+claude --dangerously-load-development-channels server:claude-channel
+```
+
+Each event lands in Claude as `<channel source="claude-channel" watcher_source="github-pr" id="179" event="merged" ...>`.
+
+### Reference
+
+- Preset deep-dive (ops, sources, lifecycle, plugin contract): [docs/presets/watch.md](docs/presets/watch.md)
+- MCP server (install, security, event format): [notifiers/claude-channel/README.md](notifiers/claude-channel/README.md)
+
+---
+
 ## RTK integration
 
 When [rtk](https://github.com/reachingforthejack/rtk) is installed, supertool automatically delegates `read`, `grep`, and `wc` to RTK for compressed output. No configuration needed — detected via `which rtk` at first use.

@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`watch` preset — background event pollers with async wake into Claude Code.** New ops `watch:SOURCE:ID[:only=...]`, `unwatch:SOURCE:ID`, `watches`. Each invocation forks a detached poller that emits state-change events to a UDS socket, a status file, and macOS Notification Center. Source-plugin contract makes new sources ~50 lines. Bundled sources: `github-pr` (PR state, checks, reviews, comments, merge/close, conflicts) and `gitlab-mr` (MR state, pipeline, merge/close, conflicts). Closes [#165](https://github.com/Digital-Process-Tools/claude-supertool/issues/165). See [docs/presets/watch.md](docs/presets/watch.md).
+- **`notifiers/claude-channel/` — MCP channel server for async wake.** TypeScript / Bun server that binds the watch UDS socket and pushes events into a running Claude Code session via the Channels feature (research preview, requires Claude Code v2.1.80+). Events arrive as `<channel source="claude-channel" watcher_source="<source>" id="<id>" event="<event>" ...>` tags. UDS file mode 0600 + localhost-only auth model. Launch with `claude --dangerously-load-development-channels server:claude-channel`. See [notifiers/claude-channel/README.md](notifiers/claude-channel/README.md).
 - **`glob` brace expansion.** `glob:src/**/*.{json,xml}` now fans out into `*.json` + `*.xml` (shell/fd/ripgrep semantics) and dedupes results, instead of silently returning 0 files. Supports multiple groups (`{a,b}.{x,y}` → 4) and nesting (`{a,b{1,2}}` → 3). Patterns without braces are unchanged. Closes [#161](https://github.com/Digital-Process-Tools/claude-supertool/issues/161).
 
 ## [0.14.0] — 2026-05-23
