@@ -2499,7 +2499,7 @@ def _glob_files(
 # Dispatch
 # ---------------------------------------------------------------------------
 
-_DRIVE_LETTER = re.compile(r"^[A-Za-z]$")
+_DRIVE_LETTER = re.compile(r"^@?[A-Za-z]$")
 _URL_SCHEMES = ("http", "https", "ftp", "ftps", "ssh", "git", "file", "ws", "wss")
 # Numeric port, optionally followed by '/path' or '?query' or end — used to
 # absorb 'https://host' + ':8080/path' fragments that arose from `:`-splitting.
