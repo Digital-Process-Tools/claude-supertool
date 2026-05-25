@@ -216,6 +216,9 @@ def test_token_resolution_only_reads_fixed_paths(monkeypatch, tmp_path) -> None:
     only HASHNODE_TOKEN (the value itself) is honored, not a path."""
     monkeypatch.delenv("HASHNODE_TOKEN", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
+    # os.path.expanduser uses USERPROFILE on Windows, HOME on POSIX. Set both
+    # so the test repoints `~` to tmp_path on every platform.
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     # Plant an "evil" file at a non-allowed location
     evil = tmp_path / "evil.txt"
     evil.write_text("STOLEN_FROM_EVIL_LOCATION\n")

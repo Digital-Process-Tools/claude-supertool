@@ -7,6 +7,7 @@ or pins a fix.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -155,6 +156,10 @@ def test_op_edit_unreadable_file_returns_error(tmp_path: Path) -> None:
         os.chmod(f, 0o644)
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows filesystem ignores chmod 0o000 — file stays readable.",
+)
 def test_op_replace_skips_unreadable_binary_peek(tmp_path: Path) -> None:
     """Replace must continue when binary peek hits OSError on a single file."""
     f1 = tmp_path / "good.txt"
@@ -171,6 +176,11 @@ def test_op_replace_skips_unreadable_binary_peek(tmp_path: Path) -> None:
         os.chmod(f2, 0o644)
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Mocked fdopen returns a stub that never closes the fd; Windows can't "
+    "unlink an open file, so the cleanup-leftover assertion fails on Windows only.",
+)
 def test_atomic_write_recovers_from_write_failure(tmp_path: Path, monkeypatch) -> None:
     """If write fails mid-flight, tmp file is cleaned up + original preserved."""
     f = tmp_path / "target.txt"
