@@ -113,6 +113,21 @@ def _fwd(p: str) -> str:
     return p.replace(os.sep, "/")
 
 
+def _safe_relpath(path: str, start: str = ".") -> str:
+    """os.path.relpath that survives cross-drive Windows paths.
+
+    On Windows, os.path.relpath raises ValueError when `path` and `start`
+    live on different drives (e.g. pytest tmp_path under C:\\Temp vs cwd
+    under D:\\). Falls back to the absolute path so traversal/exclude
+    logic keeps working — the prefix check downstream simply won't match
+    a cross-drive path, which is the correct behavior.
+    """
+    try:
+        return os.path.relpath(path, start)
+    except ValueError:
+        return os.path.abspath(path)
+
+
 MAX_READ_LINES = 300
 MAX_READ_BYTES = 20000  # ~20KB cap — prevents Claude Code "Output too large"
 MAX_GREP_RESULTS = 10
@@ -1216,7 +1231,7 @@ def op_around(pattern: str, path: str, n: int = 10) -> str:
                     continue
                 if not rendered:
                     continue
-                rel = _fwd(os.path.relpath(fpath, path))
+                rel = _fwd(_safe_relpath(fpath, path))
                 hits.append(f"=== {rel} ===\n{rendered}")
                 if len(hits) >= _AROUND_DIR_MAX_FILES:
                     break
@@ -1661,7 +1676,7 @@ def op_tree(path: str, depth: int = 3,
             out.append(f"{prefix}{f}\n")
         for d in dirs:
             if exclude_paths:
-                rel = os.path.relpath(os.path.join(dir_path, d), cwd)
+                rel = _safe_relpath(os.path.join(dir_path, d), cwd)
                 if _is_excluded(rel, exclude_paths):
                     continue
             out.append(f"{prefix}{d}/\n")
@@ -2124,7 +2139,7 @@ def _collect_files(
     cwd = os.getcwd()
     files: List[str] = []
     for root, dirs, filenames in os.walk(path):
-        rel_root = os.path.relpath(root, cwd)
+        rel_root = _safe_relpath(root, cwd)
         dirs[:] = sorted(
             d for d in dirs
             if d not in skip_dirs
@@ -2265,7 +2280,7 @@ def _grep_candidates(
         cwd = os.getcwd()
         for root, dirs, files in os.walk(path):
             if exclude_paths:
-                rel_root = os.path.relpath(root, cwd)
+                rel_root = _safe_relpath(root, cwd)
                 dirs[:] = [
                     d for d in dirs
                     if not _is_excluded(os.path.join(rel_root, d), exclude_paths)
@@ -2428,7 +2443,7 @@ def _glob_files(
         cwd = os.getcwd()
         files: List[str] = []
         for root, dirs, filenames in os.walk(root_part):
-            rel_root = os.path.relpath(root, cwd)
+            rel_root = _safe_relpath(root, cwd)
             dirs[:] = sorted(
                 d for d in dirs
                 if not _is_excluded(os.path.join(rel_root, d), exclude_paths)
@@ -2436,7 +2451,7 @@ def _glob_files(
             for name in sorted(filenames):
                 full = os.path.join(root, name)
                 # Match the tail pattern against the relative path from root_part
-                rel_from_root = os.path.relpath(full, root_part)
+                rel_from_root = _safe_relpath(full, root_part)
                 if not tail or fnmatch.fnmatch(name, tail) or fnmatch.fnmatch(rel_from_root, tail):
                     if os.path.isfile(full):
                         files.append(full)
@@ -2458,7 +2473,7 @@ def _glob_files(
         cwd = os.getcwd()
         files_out = [
             m for m in files_out
-            if not _is_excluded(os.path.relpath(m, cwd), exclude_paths)
+            if not _is_excluded(_safe_relpath(m, cwd), exclude_paths)
         ]
     return files_out[:max_results]
 
@@ -9140,7 +9155,7 @@ def _op_resolve_inner(symbol: str, from_file: Optional[str] = None) -> str:
             for h in hits:
                 norm = os.path.normpath(h).replace(os.sep, "/")
                 if norm.endswith(suffix) or norm == f"{fqn_path}{ext}":
-                    return f"{symbol} → {os.path.relpath(h)}\n"
+                    return f"{symbol} → {_safe_relpath(h)}\n"
         return f"{symbol} → not found\n"
 
     # ── Python relative import (starts with one or more dots, no /) ──────────
@@ -9166,19 +9181,19 @@ def _op_resolve_inner(symbol: str, from_file: Optional[str] = None) -> str:
             for ext in (".py", ".pyi"):
                 candidate = os.path.join(target_dir, module_path + ext)
                 if os.path.isfile(candidate):
-                    rel = os.path.relpath(candidate)
+                    rel = _safe_relpath(candidate)
                     return f"{symbol} → {rel}\n"
             # Also try as a package (directory with __init__.py)
             pkg_init = os.path.join(target_dir, module_path, "__init__.py")
             if os.path.isfile(pkg_init):
-                rel = os.path.relpath(pkg_init)
+                rel = _safe_relpath(pkg_init)
                 return f"{symbol} → {rel}\n"
             return f"{symbol} → not found\n"
         else:
             # Bare "." or ".." — refers to the package itself
             pkg_init = os.path.join(target_dir, "__init__.py")
             if os.path.isfile(pkg_init):
-                rel = os.path.relpath(pkg_init)
+                rel = _safe_relpath(pkg_init)
                 return f"{symbol} → {rel}\n"
             return f"{symbol} → not found\n"
 
@@ -9191,7 +9206,7 @@ def _op_resolve_inner(symbol: str, from_file: Optional[str] = None) -> str:
         for h in hits:
             norm = os.path.normpath(h).replace(os.sep, "/")
             if norm.endswith(suffix) or norm == f"{py_path}.py":
-                return f"{symbol} → {os.path.relpath(h)}\n"
+                return f"{symbol} → {_safe_relpath(h)}\n"
         return f"{symbol} → not found\n"
 
     # ── Relative path (starts with ./ or ../) ────────────────────────────────
@@ -9202,16 +9217,16 @@ def _op_resolve_inner(symbol: str, from_file: Optional[str] = None) -> str:
             for ext in (".ts", ".tsx", ".js", ".jsx", ".py", ".php"):
                 candidate = base + ext
                 if os.path.isfile(candidate):
-                    rel = os.path.relpath(candidate)
+                    rel = _safe_relpath(candidate)
                     return f"{symbol} → {rel}\n"
             # Also try .class.php
             candidate = base + ".class.php"
             if os.path.isfile(candidate):
-                rel = os.path.relpath(candidate)
+                rel = _safe_relpath(candidate)
                 return f"{symbol} → {rel}\n"
         else:
             if os.path.isfile(base):
-                rel = os.path.relpath(base)
+                rel = _safe_relpath(base)
                 return f"{symbol} → {rel}\n"
         return f"{symbol} → not found\n"
 
@@ -9225,7 +9240,7 @@ def _op_resolve_inner(symbol: str, from_file: Optional[str] = None) -> str:
         ):
             hits = _glob_files(pat, excl)
             if hits:
-                rel = os.path.relpath(hits[0])
+                rel = _safe_relpath(hits[0])
                 return f"{symbol} → {rel}\n"
         return f"{symbol} → not found\n"
 
