@@ -216,21 +216,21 @@
   "aliases": {},
   "notifiers": {
     "cursor-witness": {
-      "cmd": "python3 {supertool_dir}/notifiers/cursor-witness/notify.py {op} {file} {line} {line_end} {before_file}",
+      "cmd": "{python} {supertool_dir}/notifiers/cursor-witness/notify.py {op} {file} {line} {line_end} {before_file}",
       "match": "*",
       "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim", "read", "around_line", "between", "map"]
     }
   },
   "validators": {
     "lsp-diag": {
-      "cmd": "python3 {supertool_dir}/validators/lsp-diag/lsp-diag.py {file}",
+      "cmd": "{python} {supertool_dir}/validators/lsp-diag/lsp-diag.py {file}",
       "match": "*.{py,php,class.php,js,ts,jsx,tsx}",
       "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
       "rollback_on_fail": false,
       "timeout": 15
     },
     "jsonlint": {
-      "cmd": "python3 -m json.tool {file}",
+      "cmd": "{python} -m json.tool {file}",
       "match": "*.json",
       "hooks_into": [
         "edit",
@@ -243,7 +243,7 @@
       "timeout": 10
     },
     "git-status": {
-      "cmd": "python3 {supertool_dir}/validators/git-status/git-status.py {file}",
+      "cmd": "{python} {supertool_dir}/validators/git-status/git-status.py {file}",
       "match": "*",
       "hooks_into": [
         "edit",
