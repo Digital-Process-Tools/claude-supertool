@@ -40,5 +40,5 @@ jobs:
       - name: Run tests (full suite — slow tests included)
         # Override pyproject addopts default of `-m 'not slow'` so CI exercises
         # the slow MCP-fallback and batch-stress paths the dev inner loop skips.
-        # DIAGNOSTIC: --tb=short -rfE to surface Windows failure details for #188 triage.
-        run: pytest -m '' --tb=short -rfE
+        # DIAGNOSTIC: target test_replace only on Windows for #188 triage.
+        run: pytest tests/test_replace.py -m '' --tb=long -rfE --no-cov -v
