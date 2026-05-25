@@ -52,7 +52,13 @@ def main() -> None:
         return
 
     file = sys.argv[1]
-    phpcsfixer_bin = os.environ.get("PHPCSFIXER_BIN", "php-cs-fixer")
+    phpcsfixer_bin_cmd_str = os.environ.get("PHPCSFIXER_BIN", "php-cs-fixer")
+    # Accept either a single binary path or a shlex-split command line.
+    # Cross-platform test stubs pass e.g. "python /path/stub.py" so the
+    # stub runs on Windows too (no #!/usr/bin/env bash dependency).
+    import shlex as _shlex
+    bin_cmd = _shlex.split(phpcsfixer_bin_cmd_str.replace("\\", "/"), posix=True) or ["php-cs-fixer"]
+    phpcsfixer_bin = bin_cmd[0]
     phpcsfixer_config = os.environ.get("PHPCSFIXER_CONFIG", "")
 
     if not shutil.which(phpcsfixer_bin) and not (
@@ -80,7 +86,7 @@ def main() -> None:
         })
         return
 
-    cmd = [phpcsfixer_bin, "fix", "--allow-risky=yes"]
+    cmd = [*bin_cmd, "fix", "--allow-risky=yes"]
     if phpcsfixer_config:
         cmd += ["--config", phpcsfixer_config]
     cmd.append(file)

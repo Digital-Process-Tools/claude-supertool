@@ -53,7 +53,13 @@ def main() -> None:
         return
 
     file = sys.argv[1]
-    prettier_bin = os.environ.get("PRETTIER_BIN", "prettier")
+    prettier_bin_cmd_str = os.environ.get("PRETTIER_BIN", "prettier")
+    # Accept either a single binary path or a shlex-split command line.
+    # Cross-platform test stubs pass e.g. "python /path/stub.py" so the
+    # stub runs on Windows too (no #!/usr/bin/env bash dependency).
+    import shlex as _shlex
+    bin_cmd = _shlex.split(prettier_bin_cmd_str.replace("\\", "/"), posix=True) or ["prettier"]
+    prettier_bin = bin_cmd[0]
     prettier_config = os.environ.get("PRETTIER_CONFIG", "")
     prettier_ignore = os.environ.get("PRETTIER_IGNORE_PATH", "")
 
@@ -82,7 +88,7 @@ def main() -> None:
         })
         return
 
-    cmd = [prettier_bin, "--write"]
+    cmd = [*bin_cmd, "--write"]
     if prettier_config:
         cmd += ["--config", prettier_config]
     if prettier_ignore:
