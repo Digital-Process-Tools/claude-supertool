@@ -705,7 +705,8 @@ class TestOutboundLedgerPath:
 
     def test_track_file_is_fixed_path(self) -> None:
         """TRACK_FILE must be under ~/.config/devto/, not overridable via env or args."""
-        track_path = str(outbound_mod.TRACK_FILE)
+        # Normalise separators — Windows uses backslashes in Path.__str__.
+        track_path = str(outbound_mod.TRACK_FILE).replace("\\", "/")
         assert ".config/devto/my_outbound_comments" in track_path, (
             f"TRACK_FILE is not the expected fixed path: {track_path!r}"
         )

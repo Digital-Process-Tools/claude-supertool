@@ -34,7 +34,9 @@ def test_dispatch_grep(tmp_path: Path) -> None:
     f.write_text("foo\nbar\n")
     out = supertool.dispatch(f"grep:foo:{f}")
     assert "--- grep:" in out
-    assert str(f) + "\n" in out
+    # op output normalises paths to forward slashes (#189) — assert against the
+    # posix form so the test passes on both POSIX and Windows runners.
+    assert f.as_posix() + "\n" in out
     assert "  1:foo" in out
 
 
@@ -95,7 +97,8 @@ def test_dispatch_grep_with_context(tmp_path: Path) -> None:
     f = tmp_path / "src.py"
     f.write_text("before\nMATCH\nafter\n")
     out = supertool.dispatch(f"grep:MATCH:{f}:10:1")
-    assert str(f) + "\n" in out
+    # Forward-slash normalised output (#189).
+    assert f.as_posix() + "\n" in out
     assert "  2:MATCH" in out
     assert "  1-before" in out
     assert "  3-after" in out

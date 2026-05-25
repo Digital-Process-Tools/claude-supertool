@@ -305,8 +305,9 @@ class TestTomlPayload:
     def test_paste_with_triple_literal_preserves_backslash(self, tmp_path: Path) -> None:
         target = tmp_path / "out.sh"
         spec = tmp_path / "p.toml"
+        # as_posix avoids Windows backslashes being interpreted as TOML escapes.
         spec.write_text(
-            f'path = "{target}"\n'
+            f'path = "{target.as_posix()}"\n'
             "content = '''\n"
             "claude -p \"...\" --permission-mode bypass \\\n"
             "  --disallowedTools \"Grep,Glob\"\n"
@@ -327,7 +328,7 @@ class TestTomlPayload:
         spec.write_text(
             'old = "DEBUG = False"\n'
             'new = "DEBUG = True"\n'
-            f'path = "{target}"\n'
+            f'path = "{target.as_posix()}"\n'
         )
         out = supertool.dispatch(f"edit:@{spec}")
         assert "ERROR" not in out
@@ -338,7 +339,7 @@ class TestTomlPayload:
         target.write_text("a\nb\nc\nd\n")
         spec = tmp_path / "rl.toml"
         spec.write_text(
-            f'path = "{target}"\n'
+            f'path = "{target.as_posix()}"\n'
             "start = 2\n"
             "end = 3\n"
             "content = '''X\nY'''\n"
@@ -351,7 +352,7 @@ class TestTomlPayload:
         target = tmp_path / "out.txt"
         import io
         payload = (
-            f'path = "{target}"\n'
+            f'path = "{target.as_posix()}"\n'
             "content = '''line1\nline2 with \\ backslash\nline3'''\n"
         )
         monkeypatch.setattr("sys.stdin", io.StringIO(payload))
