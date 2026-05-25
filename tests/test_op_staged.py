@@ -57,7 +57,8 @@ def test_validate_staged_single_file(tmp_path: Path, monkeypatch: pytest.MonkeyP
 
     _set_validators({
         "jsoncheck": {
-            "cmd": "printf '%s' '{\"tool\":\"jsoncheck\",\"ok\":true,\"count\":0,\"errors\":[],\"duration_ms\":1}'",
+            # printf is POSIX-only; use python so the cmd works on Windows too.
+            "cmd": "{python} -c \"import sys; sys.stdout.write('{\\\"tool\\\":\\\"jsoncheck\\\",\\\"ok\\\":true,\\\"count\\\":0,\\\"errors\\\":[],\\\"duration_ms\\\":1}')\"",
             "match": "*.json",
             "hooks_into": ["edit"],
         }
@@ -98,7 +99,7 @@ def test_format_staged_single_file(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     sentinel = tmp_path / "fmt_ran"
     _set_formatters({
         "prettier": {
-            "cmd": f"touch {sentinel}",
+            "cmd": f"{{python}} -c \"open(r\'{sentinel.as_posix()}\', \'w\').close()\"",
             "match": "*.json",
         }
     })
@@ -155,7 +156,7 @@ def test_format_staged_verbose_passes_through(tmp_path: Path, monkeypatch: pytes
     _git(["add", "style.json"], repo)
 
     _set_formatters({
-        "prettier": {"cmd": "true", "match": "*.json"},
+        "prettier": {"cmd": "{python} -c \"pass\"", "match": "*.json"},
     })
     result = supertool.op_format_staged(verbose=True)
     assert "[verbose]" in result
@@ -198,6 +199,6 @@ def test_dispatch_format_staged_verbose(tmp_path: Path, monkeypatch: pytest.Monk
     f.write_text("{}\n")
     _git(["add", "style.json"], repo)
 
-    _set_formatters({"prettier": {"cmd": "true", "match": "*.json"}})
+    _set_formatters({"prettier": {"cmd": "{python} -c \"pass\"", "match": "*.json"}})
     result = supertool.dispatch("format_staged:verbose")
     assert "[verbose]" in result

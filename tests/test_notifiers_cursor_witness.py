@@ -18,6 +18,12 @@ from pathlib import Path
 import pytest
 
 
+pytestmark = pytest.mark.skipif(
+    not hasattr(socket, "AF_UNIX"),
+    reason="cursor-witness notifier uses AF_UNIX sockets — not available on this platform",
+)
+
+
 NOTIFY_SCRIPT = str(Path(__file__).parent.parent / "notifiers" / "cursor-witness" / "notify.py")
 
 
