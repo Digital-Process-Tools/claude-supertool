@@ -10811,6 +10811,24 @@ class MCPClient:
             if self._sock is not None:
                 return
             budget = float(os.environ.get("SUPERTOOL_MCP_CONNECT_TIMEOUT", self._CONNECT_TIMEOUT_SECONDS))
+            # Explicit socket_path (tests, externally managed daemons) → no one
+            # else will spawn it. Single-shot connect, fail fast on miss.
+            # Polling the same dead path burns the full 60s budget for nothing.
+            if not self._auto_spawn:
+                try:
+                    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                    s.settimeout(self.timeout)
+                    s.connect(self._sock_path)
+                    self._sock = s
+                    return
+                except (FileNotFoundError, ConnectionRefusedError) as e:
+                    stderr_log = f"{self._sock_path}.stderr"
+                    hint = (f"check {stderr_log} for cclsp/LSP startup errors"
+                            if os.path.exists(stderr_log)
+                            else "daemon never wrote a stderr log — check that mcp.<name>.cmd is on PATH")
+                    raise MCPServerError(
+                        f"MCP socket {self._sock_path} not reachable: {e}. {hint}"
+                    )
             poll = 0.5
             deadline = time.time() + budget
             spawned = False
@@ -10822,7 +10840,7 @@ class MCPClient:
                     self._sock = s
                     return
                 except (FileNotFoundError, ConnectionRefusedError):
-                    if not spawned and self._auto_spawn:
+                    if not spawned:
                         try:
                             subprocess.Popen(
                                 [sys.executable, _MCP_DAEMON_SCRIPT, self.name, "--detach"],

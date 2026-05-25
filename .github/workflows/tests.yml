@@ -7,10 +7,15 @@ on:
 
 jobs:
   pytest:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    # Windows currently surfaces ~100+ real path-sep / line-ending / Unix-tool
+    # failures (tracked separately). Treat windows-latest as informational
+    # until #182 follow-ups land, so PRs gate on linux+macos.
+    continue-on-error: ${{ matrix.os == 'windows-latest' }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
         python-version: ["3.9", "3.10", "3.11", "3.12"]
     steps:
       - uses: actions/checkout@v6
@@ -22,8 +27,16 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install pytest pytest-cov pytest-xdist pytest-timeout
-      - name: Create supertool symlink
-        run: ln -sf supertool.py supertool
+      - name: Install supertool (pip entry point — cross-platform, no symlink)
+        run: pip install -e .
+      - name: Stage ./supertool sibling (tests subprocess to repo-root path)
+        # tests/test_xml.py invokes `Path(__file__).parent.parent / "supertool"`
+        # via Popen — needs both the file present AND the exec bit set.
+        # `ln -sf` is POSIX-only; copy+chmod via Python works on all three OSes
+        # (chmod is a no-op on Windows; Popen there resolves via shebang).
+        run: |
+          python -c "import shutil; shutil.copyfile('supertool.py', 'supertool')"
+          python -c "import os, stat; os.chmod('supertool', os.stat('supertool').st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)"
       - name: Run tests (full suite — slow tests included)
         # Override pyproject addopts default of `-m 'not slow'` so CI exercises
         # the slow MCP-fallback and batch-stress paths the dev inner loop skips.
