@@ -38,6 +38,5 @@ jobs:
           python -c "import shutil; shutil.copyfile('supertool.py', 'supertool')"
           python -c "import os, stat; os.chmod('supertool', os.stat('supertool').st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)"
       - name: Run tests (full suite — slow tests included)
-        # Override pyproject addopts default of `-m 'not slow'` so CI exercises
-        # the slow MCP-fallback and batch-stress paths the dev inner loop skips.
-        run: pytest -m ''
+        # DIAG #188 — last residual buckets. Reverted before merge.
+        run: pytest tests/test_chaos_multi_op_chains.py tests/test_edge_cases_at_file_security.py tests/test_edge_cases_paste_security.py tests/test_edge_cases_replace_lines.py tests/test_env_field.py -m '' --tb=short --no-cov
