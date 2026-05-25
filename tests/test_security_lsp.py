@@ -239,8 +239,9 @@ class TestShellInjection:
         client = MCPClient(name="cclsp-test", timeout=1, socket_path="/tmp/nonexistent-test.sock")
         # _auto_spawn is False when socket_path is given; force it on
         client._auto_spawn = True
-        # Override budget so it doesn't loop
-        monkeypatch.setattr(supertool, "_CONNECT_TIMEOUT_SECONDS" , 0, raising=False)
+        # Shrink budget so the spawn loop exits fast after capturing Popen.
+        # (Patching the module attr is a no-op — budget lives on MCPClient.)
+        monkeypatch.setenv("SUPERTOOL_MCP_CONNECT_TIMEOUT", "0.05")
 
         try:
             client.spawn()
@@ -751,6 +752,8 @@ class TestCclspConfigInjection:
         client = MCPClient(name="evil-server", timeout=1)
         client._sock_path = sock_path
         client._auto_spawn = True
+        # Cut the 60s default poll budget; we only need to capture one Popen call.
+        monkeypatch.setenv("SUPERTOOL_MCP_CONNECT_TIMEOUT", "0.05")
 
         try:
             client.spawn()

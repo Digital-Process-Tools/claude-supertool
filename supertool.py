@@ -10813,7 +10813,7 @@ class MCPClient:
             budget = float(os.environ.get("SUPERTOOL_MCP_CONNECT_TIMEOUT", self._CONNECT_TIMEOUT_SECONDS))
             # Explicit socket_path (tests, externally managed daemons) → no one
             # else will spawn it. Single-shot connect, fail fast on miss.
-            # Polling the same dead path for 60s just stalls callers.
+            # Polling the same dead path burns the full 60s budget for nothing.
             if not self._auto_spawn:
                 try:
                     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -10822,8 +10822,12 @@ class MCPClient:
                     self._sock = s
                     return
                 except (FileNotFoundError, ConnectionRefusedError) as e:
+                    stderr_log = f"{self._sock_path}.stderr"
+                    hint = (f"check {stderr_log} for cclsp/LSP startup errors"
+                            if os.path.exists(stderr_log)
+                            else "daemon never wrote a stderr log — check that mcp.<name>.cmd is on PATH")
                     raise MCPServerError(
-                        f"MCP socket {self._sock_path} not reachable: {e}"
+                        f"MCP socket {self._sock_path} not reachable: {e}. {hint}"
                     )
             poll = 0.5
             deadline = time.time() + budget
@@ -11164,15 +11168,5 @@ def _body_indicates_failure(body: str) -> bool:
     return _FAIL_MARKER.search(body) is not None
 
 
-def _cli() -> int:
-    """Console-script entry point — declared in pyproject [project.scripts].
-
-    pip-installed wrapper invokes this with no args; main() expects argv, so
-    forward sys.argv[1:]. This is the install path that works on Windows
-    (no POSIX symlink required).
-    """
-    return main(sys.argv[1:])
-
-
 if __name__ == "__main__":
-    sys.exit(_cli())
+    sys.exit(main(sys.argv[1:]))
