@@ -52,7 +52,13 @@ def main() -> None:
         return
 
     file = sys.argv[1]
-    phpcbf_bin = os.environ.get("PHPCBF_BIN", "phpcbf")
+    phpcbf_bin_cmd_str = os.environ.get("PHPCBF_BIN", "phpcbf")
+    # Accept either a single binary path or a shlex-split command line.
+    # Cross-platform test stubs pass e.g. "python /path/stub.py" so the
+    # stub runs on Windows too (no #!/usr/bin/env bash dependency).
+    import shlex as _shlex
+    bin_cmd = _shlex.split(phpcbf_bin_cmd_str.replace("\\", "/"), posix=True) or ["phpcbf"]
+    phpcbf_bin = bin_cmd[0]
     phpcbf_standard = os.environ.get("PHPCBF_STANDARD", "PSR12")
 
     if not shutil.which(phpcbf_bin) and not (
@@ -80,7 +86,7 @@ def main() -> None:
         })
         return
 
-    cmd = [phpcbf_bin, f"--standard={phpcbf_standard}", file]
+    cmd = [*bin_cmd, f"--standard={phpcbf_standard}", file]
 
     start = time.time()
     try:

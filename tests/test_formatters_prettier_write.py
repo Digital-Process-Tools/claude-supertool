@@ -5,6 +5,8 @@ import json
 import os
 import shutil
 import subprocess
+import shlex
+import sys
 from pathlib import Path
 
 import pytest
@@ -12,8 +14,17 @@ import pytest
 ADAPTER = Path(__file__).parent.parent / "formatters" / "prettier-write" / "prettier-write.py"
 
 
+def _python_stub(tmp_path: Path, name: str, body: str) -> str:
+    """Create a Python stub file and return a `python <path>` command line
+    suitable for PRETTIER_BIN (the adapter shlex-splits the env var).
+    """
+    stub = tmp_path / f"{name}.py"
+    stub.write_text(body)
+    return f"{shlex.quote(sys.executable)} {shlex.quote(stub.as_posix())}"
+
+
 def test_no_arg_returns_schema_error() -> None:
-    r = subprocess.run(["python3", str(ADAPTER)], capture_output=True, text=True, timeout=10)
+    r = subprocess.run([sys.executable, str(ADAPTER)], capture_output=True, text=True, timeout=10)
     assert r.returncode == 0
     data = json.loads(r.stdout.strip())
     assert data["tool"] == "prettier-write"
@@ -26,7 +37,7 @@ def test_missing_binary_returns_schema_error(tmp_path: Path) -> None:
     f.write_text("const x=1\n")
     env = {**os.environ, "PRETTIER_BIN": "prettier-that-does-not-exist-xyz"}
     r = subprocess.run(
-        ["python3", str(ADAPTER), str(f)],
+        [sys.executable, str(ADAPTER), str(f)],
         capture_output=True, text=True, timeout=10, env=env,
     )
     assert r.returncode == 0
@@ -44,13 +55,10 @@ def test_clean_file_ok_noop_via_stub(tmp_path: Path) -> None:
     content = '{"a": 1}\n'
     f.write_text(content)
 
-    stub = tmp_path / "prettier"
-    stub.write_text("#!/usr/bin/env bash\nexit 0\n")
-    stub.chmod(0o755)
-
-    env = {**os.environ, "PRETTIER_BIN": str(stub)}
+    bin_cmd = _python_stub(tmp_path, "stub_exit0", "import sys; sys.exit(0)\n")
+    env = {**os.environ, "PRETTIER_BIN": bin_cmd}
     r = subprocess.run(
-        ["python3", str(ADAPTER), str(f)],
+        [sys.executable, str(ADAPTER), str(f)],
         capture_output=True, text=True, timeout=10, env=env,
     )
     assert r.returncode == 0
@@ -68,7 +76,7 @@ def test_live_clean_file_ok(tmp_path: Path) -> None:
     # Write content that prettier will not change (already formatted)
     f.write_text('{\n  "a": 1\n}\n')
     r = subprocess.run(
-        ["python3", str(ADAPTER), str(f)],
+        [sys.executable, str(ADAPTER), str(f)],
         capture_output=True, text=True, timeout=30,
     )
     assert r.returncode == 0
@@ -81,16 +89,15 @@ def test_file_needing_format_via_stub(tmp_path: Path) -> None:
     f = tmp_path / "x.js"
     f.write_text("const x=1\n")
 
-    # Stub that adds a line so metrics are non-zero
-    stub = tmp_path / "prettier"
-    stub.write_text(
-        f"#!/usr/bin/env bash\nprintf 'const x = 1\\nconst y = 2\\n' > {f}\nexit 0\n"
+    body = (
+        "import sys, pathlib\n"
+        f"pathlib.Path(r'{f.as_posix()}').write_text('const x = 1\\nconst y = 2\\n')\n"
+        "sys.exit(0)\n"
     )
-    stub.chmod(0o755)
-
-    env = {**os.environ, "PRETTIER_BIN": str(stub)}
+    bin_cmd = _python_stub(tmp_path, "stub_add_line", body)
+    env = {**os.environ, "PRETTIER_BIN": bin_cmd}
     r = subprocess.run(
-        ["python3", str(ADAPTER), str(f)],
+        [sys.executable, str(ADAPTER), str(f)],
         capture_output=True, text=True, timeout=10, env=env,
     )
     assert r.returncode == 0
