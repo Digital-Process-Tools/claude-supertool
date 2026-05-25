@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
+import pytest
 import supertool
 
 
@@ -235,6 +237,10 @@ def test_grep_recursive_invalid_regex(tmp_path: Path) -> None:
     assert isinstance(results, list)
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows filesystem ignores chmod 0o000 — file stays readable.",
+)
 def test_grep_recursive_unreadable_file(tmp_path: Path) -> None:
     """_grep_recursive skips unreadable files."""
     f = tmp_path / "secret.php"
@@ -301,6 +307,10 @@ def test_grep_recursive_context_invalid_regex(tmp_path: Path) -> None:
     assert isinstance(groups, list)
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows filesystem ignores chmod 0o000 — file stays readable.",
+)
 def test_grep_recursive_context_unreadable_file(tmp_path: Path) -> None:
     """_grep_recursive_context skips unreadable files."""
     f = tmp_path / "secret.php"
