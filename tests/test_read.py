@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
+import pytest
 import supertool
 
 
 def test_read_returns_line_numbered_content(tmp_path: Path) -> None:
     f = tmp_path / "hello.py"
-    f.write_text("line1\nline2\nline3\n")
+    # write_bytes preserves LF — write_text on Windows translates \n → \r\n,
+    # bumping byte count and adding a "crlf" meta tag.
+    f.write_bytes(b"line1\nline2\nline3\n")
     out = supertool.op_read(str(f))
     assert "(3 lines, 18 bytes)" in out
     assert "     1→line1" in out
@@ -199,6 +203,11 @@ def test_dispatch_read_full_keyword(tmp_path: Path, monkeypatch) -> None:
 # Meta suffix (symlink / git / encoding / mtime / exec / crlf / conflict)
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows symlinks resolve through the \\\\?\\ UNC prefix; the test "
+    "assertion expects a POSIX-style relative or absolute target.",
+)
 def test_read_meta_symlink(tmp_path: Path) -> None:
     target = tmp_path / "real.txt"
     target.write_text("hi")
@@ -231,7 +240,9 @@ def test_read_meta_conflict_markers(tmp_path: Path) -> None:
 
 def test_read_meta_clean_tracked_is_silent(tmp_path: Path) -> None:
     f = tmp_path / "plain.txt"
-    f.write_text("hello\n")
+    # write_bytes preserves LF — write_text on Windows would emit \r\n and
+    # trigger the "crlf" meta tag this test asserts is absent.
+    f.write_bytes(b"hello\n")
     out = supertool.op_read(str(f))
     first = out.splitlines()[0]
     for tok in ("bin", "non-utf8", "crlf", "cf!", "->"):
@@ -248,6 +259,10 @@ import subprocess as _sp
 import time as _time
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows filesystem doesn't expose Unix executable bit — chmod 0o755 is a no-op.",
+)
 def test_path_meta_suffix_executable_bit(tmp_path: Path) -> None:
     f = tmp_path / "run.sh"
     f.write_text("#!/bin/sh\necho hi\n")

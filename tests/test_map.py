@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -442,6 +443,10 @@ def test_map_directory_no_supported_files(tmp_path: Path) -> None:
     assert "no supported files" in out
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows filesystem ignores chmod 0o000 — file stays readable.",
+)
 def test_regex_extract_oserror(tmp_path: Path) -> None:
     """_regex_extract returns [] when file can't be read."""
     f = tmp_path / "broken.py"
