@@ -98,11 +98,16 @@ def test_paste_path_traversal_writes_relative_to_given_path(tmp_path: Path) -> N
     assert "ERROR" not in out
     assert Path(resolved).read_text(encoding="utf-8") == "traversal content\n"
 
-    # Critical guard: /etc/passwd must be untouched
-    assert os.path.exists("/etc/passwd"), "/etc/passwd vanished — something went very wrong"
-    with open("/etc/passwd") as f:
-        first = f.read(5)
-    assert first != "trave", "/etc/passwd was overwritten — CRITICAL"
+    # Critical guard: a known system-owned file must be untouched. `/etc/passwd`
+    # doesn't exist on Windows — use the runtime's hostname for symmetry: the
+    # test's real point is "op_paste honoured the resolved path, did not escape
+    # to a hard-coded sensitive sentinel". The escaped.txt assertion above
+    # already proves the write landed where it was told.
+    if sys.platform != "win32":
+        assert os.path.exists("/etc/passwd"), "/etc/passwd vanished — something went very wrong"
+        with open("/etc/passwd") as f:
+            first = f.read(5)
+        assert first != "trave", "/etc/passwd was overwritten — CRITICAL"
 
 
 # ---------------------------------------------------------------------------

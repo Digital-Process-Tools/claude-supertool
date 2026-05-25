@@ -2807,8 +2807,12 @@ def _atomic_write(path: str, content: str) -> None:
         prefix=".supertool-", suffix=".tmp", dir=target_dir
     )
     try:
-        with os.fdopen(fd, "w", encoding="utf-8", errors="surrogateescape") as f:
-            f.write(content)
+        # Open in binary mode + encode manually so Windows text-mode doesn't
+        # translate `\n` → `\r\n` (which corrupts mixed-line-ending content,
+        # binary blobs, and any caller that round-tripped through
+        # `read(errors='surrogateescape')`).
+        with os.fdopen(fd, "wb") as f:
+            f.write(content.encode("utf-8", errors="surrogateescape"))
         os.replace(tmp_path, real_path)
     except Exception:
         try:
