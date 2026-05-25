@@ -24,9 +24,12 @@ def _set_formatters(fmt: dict) -> None:
 def test_validator_env_field_passed_to_subprocess() -> None:
     """env block on validator spec must reach the adapter subprocess."""
     # Adapter reads MY_TEST_VAR from env and embeds it in JSON output.
+    # {python} keeps this cross-platform; printf is POSIX-only.
     cmd = (
-        'printf \'{"tool":"t","file":"x","ok":true,"count":0,'
-        '"errors":[],"duration_ms":1,"captured":"\'"$MY_TEST_VAR"\'"}\'  '
+        '{python} -c "import os, json, sys; '
+        'sys.stdout.write(json.dumps({\'tool\':\'t\',\'file\':\'x\',\'ok\':True,'
+        '\'count\':0,\'errors\':[],\'duration_ms\':1,'
+        '\'captured\':os.environ.get(\'MY_TEST_VAR\',\'\')}))"'
     )
     spec = {
         "cmd": cmd,
@@ -37,12 +40,23 @@ def test_validator_env_field_passed_to_subprocess() -> None:
     assert out.get("captured") == "hello_from_env"
 
 
-def test_validator_env_field_absent_does_not_break() -> None:
+def test_validator_env_field_absent_does_not_break(tmp_path: Path) -> None:
     """Spec without env field still works (no KeyError, no crash)."""
     payload = json.dumps(
         {"tool": "t", "file": "x", "ok": True, "count": 0, "errors": [], "duration_ms": 1}
-    ).replace("'", "'\\''")
-    spec = {"cmd": f"printf '%s' '{payload}'", "timeout": 5}
+    )
+    # {python} keeps this cross-platform; printf / shell single-quote escaping
+    # is POSIX-only. Spool the payload to a file and `type`/`cat` it via Python
+    # to dodge nested-quote escaping issues entirely.
+    payload_file = tmp_path / "payload.json"
+    payload_file.write_text(payload)
+    spec = {
+        "cmd": (
+            f"{{python}} -c \"import sys; "
+            f"sys.stdout.write(open(r'{payload_file.as_posix()}').read())\""
+        ),
+        "timeout": 5,
+    }
     out = supertool._validator_run_one("t", spec, "x")
     assert out["ok"] is True
 
@@ -51,8 +65,10 @@ def test_validator_env_field_overrides_parent_env(monkeypatch) -> None:
     """env spec value must shadow an identically named var in os.environ."""
     monkeypatch.setenv("MY_OVERRIDE_VAR", "original")
     cmd = (
-        'printf \'{"tool":"t","file":"x","ok":true,"count":0,'
-        '"errors":[],"duration_ms":1,"captured":"\'"$MY_OVERRIDE_VAR"\'"}\'  '
+        '{python} -c "import os, json, sys; '
+        'sys.stdout.write(json.dumps({\'tool\':\'t\',\'file\':\'x\',\'ok\':True,'
+        '\'count\':0,\'errors\':[],\'duration_ms\':1,'
+        '\'captured\':os.environ.get(\'MY_OVERRIDE_VAR\',\'\')}))"'
     )
     spec = {
         "cmd": cmd,

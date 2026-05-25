@@ -681,9 +681,14 @@ class TestRegexMetaCharInjection:
         the edit receipt + read both echo the new value, so substring match
         for 'pwned' would false-positive on legitimate output."""
         f = tmp_path / "chain_meta.py"
-        f.write_text("safe\n")
+        # write_bytes preserves LF — write_text translates to CRLF on Windows,
+        # which then drifts the read_text() assertion below.
+        f.write_bytes(b"safe\n")
         canary = tmp_path / "SHELL_RAN_CANARY"
-        payload = f"$(touch {canary}) && touch {canary}"
+        # as_posix avoids Windows backslashes inside the literal payload — the
+        # exact-equality assertion compares this string to file contents that
+        # would otherwise be subject to text-mode CRLF translation.
+        payload = f"$(touch {canary.as_posix()}) && touch {canary.as_posix()}"
         ops = [
             {"op": "edit", "old": "safe", "new": payload, "path": str(f)},
             {"op": "read", "path": str(f)},
