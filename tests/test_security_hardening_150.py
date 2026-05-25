@@ -87,7 +87,9 @@ class TestStagedSymlinkRejected:
         so we check that the implementation rejects symlinks at the filter
         step. The dispatch logic uses `os.path.islink` — verified by source.
         """
-        src = Path(supertool.__file__).read_text()
+        # encoding='utf-8' — supertool.py contains non-cp1252 chars (em-dash,
+        # arrows) that crash the Windows default codec.
+        src = Path(supertool.__file__).read_text(encoding="utf-8")
         # Both staged ops must check islink before isfile.
         # (Loose grep — exact line could shift.)
         assert "os.path.islink(p)" in src
@@ -139,6 +141,10 @@ class TestValidatorCacheHmac:
         )
         assert supertool._validator_cache_read("k3") is None
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Windows filesystem doesn't enforce Unix permission bits — chmod 0600 is a no-op",
+    )
     def test_secret_file_is_mode_600(self, cache_dir):
         # Force secret generation.
         supertool._validator_cache_secret()

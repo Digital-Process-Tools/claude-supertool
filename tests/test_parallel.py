@@ -1,11 +1,29 @@
 """Tests for parallel execution mode (SUPERTOOL_PARALLEL=1)."""
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 import supertool
+
+
+def _subprocess_env(extra: dict[str, str] | None = None) -> dict[str, str]:
+    """Subprocess env that works on POSIX + Windows.
+
+    Inherit the parent env (Windows Python needs SYSTEMROOT, APPDATA, etc.
+    to start at all; pinning a minimal POSIX-only env breaks the runner).
+    Force PYTHONIOENCODING=utf-8 so supertool's `→` arrow doesn't crash
+    the default cp1252 codec on Windows. Strip SUPERTOOL_PARALLEL so
+    callers control it explicitly via `extra`.
+    """
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+    env.pop("SUPERTOOL_PARALLEL", None)
+    if extra:
+        env.update(extra)
+    return env
 
 
 # ---------------------------------------------------------------------------
@@ -51,12 +69,11 @@ def _supertool_path() -> Path:
 
 
 def _run(argv: list[str], parallel: bool, tmp_path: Path) -> str:
-    env = {"PATH": "/usr/bin:/bin"}
-    if parallel:
-        env["SUPERTOOL_PARALLEL"] = "4"
+    extra = {"SUPERTOOL_PARALLEL": "4"} if parallel else None
     result = subprocess.run(
         [sys.executable, str(_supertool_path()), *argv],
-        capture_output=True, text=True, env=env, cwd=str(tmp_path),
+        capture_output=True, text=True, encoding="utf-8",
+        env=_subprocess_env(extra), cwd=str(tmp_path),
     )
     return result.stdout
 
@@ -102,8 +119,8 @@ def test_parallel_disabled_by_default(tmp_path: Path) -> None:
     f.write_text("hi\n")
     result = subprocess.run(
         [sys.executable, str(_supertool_path()), "read:x.txt"],
-        capture_output=True, text=True,
-        env={"PATH": "/usr/bin:/bin"},  # no SUPERTOOL_PARALLEL
+        capture_output=True, text=True, encoding="utf-8",
+        env=_subprocess_env(),  # no SUPERTOOL_PARALLEL
         cwd=str(tmp_path),
     )
     assert "1→hi" in result.stdout
