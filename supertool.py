@@ -113,6 +113,22 @@ def _fwd(p: str) -> str:
     return p.replace(os.sep, "/")
 
 
+def _python_token() -> str:
+    """Cross-platform shell-quoted Python interpreter for cmd templates.
+
+    Replaces ``{python}`` in custom op / formatter / validator cmd strings.
+    Authors used to hard-code ``python3`` (POSIX-only) or ``python`` (Windows)
+    in ``.supertool.json`` — neither was portable. ``{python}`` resolves to
+    ``sys.executable`` so the same template runs on Linux, macOS, and Windows.
+
+    Backslashes in ``sys.executable`` on Windows would be eaten by
+    ``shlex.split``'s POSIX backslash-escape; forward-slash normalisation
+    avoids that. Spaces in the install path (``C:/Program Files/...``) are
+    handled by ``shlex.quote``.
+    """
+    return shlex.quote(sys.executable.replace(os.sep, "/"))
+
+
 def _safe_relpath(path: str, start: str = ".") -> str:
     """os.path.relpath that survives cross-drive Windows paths.
 
@@ -788,9 +804,10 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
     if not cmd_template:
         return f"ERROR: empty command for custom op {op!r}\n"
 
-    # Build the command — replace {file}, {dir}, {arg}, {args}, {argjoin} placeholders
+    # Build the command — replace {file}, {dir}, {arg}, {args}, {argjoin}, {python} placeholders
     file_arg = parts[1] if len(parts) > 1 else ""
-    cmd = cmd_template.replace("{file}", shlex.quote(file_arg))
+    cmd = cmd_template.replace("{python}", _python_token())
+    cmd = cmd.replace("{file}", shlex.quote(file_arg))
     dir_arg = os.path.dirname(file_arg) if file_arg else "."
     cmd = cmd.replace("{dir}", shlex.quote(dir_arg))
     cmd = cmd.replace("{arg}", shlex.quote(file_arg))
@@ -8311,7 +8328,10 @@ def _validator_resolve(spec: Dict[str, Any], file: str) -> Optional[str]:
     # argv-form (shell=False): shell metachars in spec["resolve"] are literal
     # tokens. {file} is still shlex.quote'd so values with spaces survive
     # shlex.split. {supertool_dir} is a known constant.
-    cmd = spec["resolve"].replace("{supertool_dir}", _INSTALL_DIR).replace("{file}", shlex.quote(file))
+    cmd = (spec["resolve"]
+           .replace("{supertool_dir}", _INSTALL_DIR)
+           .replace("{python}", _python_token())
+           .replace("{file}", shlex.quote(file)))
     _prefix_env, cmd = _extract_env_prefix(cmd)
     _merged_env = {**os.environ, **_prefix_env}
     cmd = _expand_env(cmd, _merged_env)
@@ -8441,7 +8461,10 @@ def _validator_run_one(name: str, spec: Dict[str, Any], file: str) -> Optional[D
     # argv-form (shell=False) downstream: shell metachars in spec["cmd"] are
     # literal tokens. {file} stays shlex.quote'd so values with spaces survive
     # shlex.split. {supertool_dir} is a known constant.
-    cmd = spec["cmd"].replace("{supertool_dir}", _INSTALL_DIR).replace("{file}", shlex.quote(target))
+    cmd = (spec["cmd"]
+           .replace("{supertool_dir}", _INSTALL_DIR)
+           .replace("{python}", _python_token())
+           .replace("{file}", shlex.quote(target)))
     # Lift leading `KEY=VAL` shell env-prefix into env dict (shipped cmd
     # templates use this to set MCP_*_WORKING_DIR before the python invocation).
     _prefix_env, cmd = _extract_env_prefix(cmd)
@@ -8678,7 +8701,10 @@ def _formatter_run_one(name: str, spec: Dict[str, Any], file: str) -> Dict[str, 
     # argv-form (shell=False): shell metachars in spec["cmd"] are literal
     # tokens, not shell operators. {file} stays shlex.quote'd so values with
     # spaces survive shlex.split. {supertool_dir} is a known constant.
-    cmd = spec["cmd"].replace("{supertool_dir}", _INSTALL_DIR).replace("{file}", shlex.quote(file))
+    cmd = (spec["cmd"]
+           .replace("{supertool_dir}", _INSTALL_DIR)
+           .replace("{python}", _python_token())
+           .replace("{file}", shlex.quote(file)))
     _prefix_env, cmd = _extract_env_prefix(cmd)
     _spec_env_dict = {**_prefix_env, **(spec.get("env") or {})}
     _merged_env = {**os.environ, **{str(k): str(v) for k, v in _spec_env_dict.items()}}

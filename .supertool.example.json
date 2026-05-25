@@ -229,7 +229,7 @@
   "validator_cache": true,
   "validators": {
     "phplint": {
-      "cmd": "python3 {supertool_dir}/validators/phplint/phplint.py {file}",
+      "cmd": "{python} {supertool_dir}/validators/phplint/phplint.py {file}",
       "match": "*.php",
       "hooks_into": [
         "edit",
@@ -242,7 +242,7 @@
       "timeout": 30
     },
     "xmllint": {
-      "cmd": "python3 {supertool_dir}/validators/xmllint/xmllint.py {file}",
+      "cmd": "{python} {supertool_dir}/validators/xmllint/xmllint.py {file}",
       "match": "*.xml",
       "hooks_into": [
         "edit",
@@ -255,7 +255,7 @@
       "timeout": 30
     },
     "node-check": {
-      "cmd": "python3 {supertool_dir}/validators/node-check/node-check.py {file}",
+      "cmd": "{python} {supertool_dir}/validators/node-check/node-check.py {file}",
       "match": "*.js",
       "hooks_into": [
         "edit",
@@ -268,7 +268,7 @@
       "timeout": 30
     },
     "py-compile": {
-      "cmd": "python3 {supertool_dir}/validators/py-compile/py-compile.py {file}",
+      "cmd": "{python} {supertool_dir}/validators/py-compile/py-compile.py {file}",
       "match": "*.py",
       "hooks_into": [
         "edit",
@@ -281,7 +281,7 @@
       "timeout": 10
     },
     "pyright": {
-      "cmd": "python3 {supertool_dir}/validators/pyright/pyright.py {file}",
+      "cmd": "{python} {supertool_dir}/validators/pyright/pyright.py {file}",
       "match": "*.py",
       "hooks_into": [
         "edit",
@@ -294,7 +294,7 @@
       "timeout": 60
     },
     "bash-check": {
-      "cmd": "python3 {supertool_dir}/validators/bash-check/bash-check.py {file}",
+      "cmd": "{python} {supertool_dir}/validators/bash-check/bash-check.py {file}",
       "match": "*.sh",
       "hooks_into": [
         "edit",
@@ -307,7 +307,7 @@
       "timeout": 10
     },
     "jsonlint": {
-      "cmd": "python3 {supertool_dir}/validators/jsonlint/jsonlint.py {file}",
+      "cmd": "{python} {supertool_dir}/validators/jsonlint/jsonlint.py {file}",
       "match": "*.json",
       "hooks_into": [
         "edit",
@@ -320,7 +320,7 @@
       "timeout": 10
     },
     "stylelint": {
-      "cmd": "python3 {supertool_dir}/validators/stylelint/stylelint.py {file}",
+      "cmd": "{python} {supertool_dir}/validators/stylelint/stylelint.py {file}",
       "match": "*.scss",
       "hooks_into": [
         "edit",
@@ -332,7 +332,7 @@
       "timeout": 60
     },
     "yaml-check": {
-      "cmd": "python3 {supertool_dir}/validators/yaml-check/yaml-check.py {file}",
+      "cmd": "{python} {supertool_dir}/validators/yaml-check/yaml-check.py {file}",
       "match": "*.yml",
       "hooks_into": [
         "edit",
@@ -345,7 +345,7 @@
       "timeout": 10
     },
     "yaml-check-yaml": {
-      "cmd": "python3 {supertool_dir}/validators/yaml-check/yaml-check.py {file}",
+      "cmd": "{python} {supertool_dir}/validators/yaml-check/yaml-check.py {file}",
       "match": "*.yaml",
       "hooks_into": [
         "edit",
@@ -358,7 +358,7 @@
       "timeout": 10
     },
     "inilint": {
-      "cmd": "python3 {supertool_dir}/validators/inilint/inilint.py {file}",
+      "cmd": "{python} {supertool_dir}/validators/inilint/inilint.py {file}",
       "match": "*.ini",
       "hooks_into": [
         "edit",
@@ -371,7 +371,7 @@
       "timeout": 10
     },
     "gofmt-check": {
-      "cmd": "python3 {supertool_dir}/validators/gofmt-check/gofmt-check.py {file}",
+      "cmd": "{python} {supertool_dir}/validators/gofmt-check/gofmt-check.py {file}",
       "match": "*.go",
       "hooks_into": [
         "edit",
@@ -384,7 +384,7 @@
       "timeout": 30
     },
     "terraform-check": {
-      "cmd": "python3 {supertool_dir}/validators/terraform-check/terraform-check.py {file}",
+      "cmd": "{python} {supertool_dir}/validators/terraform-check/terraform-check.py {file}",
       "match": "*.tf",
       "hooks_into": [
         "edit",
@@ -397,7 +397,7 @@
       "timeout": 30
     },
     "cargo-check": {
-      "cmd": "python3 {supertool_dir}/validators/cargo-check/cargo-check.py {file}",
+      "cmd": "{python} {supertool_dir}/validators/cargo-check/cargo-check.py {file}",
       "match": "*.rs",
       "hooks_into": [
         "edit",
@@ -410,7 +410,7 @@
       "timeout": 60
     },
     "tsc-check": {
-      "cmd": "python3 {supertool_dir}/validators/tsc-check/tsc-check.py {file}",
+      "cmd": "{python} {supertool_dir}/validators/tsc-check/tsc-check.py {file}",
       "match": "*.ts",
       "hooks_into": [
         "edit",
@@ -423,7 +423,7 @@
       "timeout": 30
     },
     "tsc-check-tsx": {
-      "cmd": "python3 {supertool_dir}/validators/tsc-check/tsc-check.py {file}",
+      "cmd": "{python} {supertool_dir}/validators/tsc-check/tsc-check.py {file}",
       "match": "*.tsx",
       "hooks_into": [
         "edit",
@@ -436,7 +436,7 @@
       "timeout": 30
     },
     "tomllint": {
-      "cmd": "python3 {supertool_dir}/validators/tomllint/tomllint.py {file}",
+      "cmd": "{python} {supertool_dir}/validators/tomllint/tomllint.py {file}",
       "match": "*.toml",
       "hooks_into": [
         "edit",
@@ -449,7 +449,7 @@
       "timeout": 10
     },
     "markdownlint": {
-      "cmd": "python3 {supertool_dir}/validators/markdownlint/markdownlint.py {file}",
+      "cmd": "{python} {supertool_dir}/validators/markdownlint/markdownlint.py {file}",
       "match": "*.md",
       "hooks_into": [
         "edit",
@@ -462,7 +462,7 @@
       "timeout": 30
     },
     "ruby-check": {
-      "cmd": "python3 {supertool_dir}/validators/ruby-check/ruby-check.py {file}",
+      "cmd": "{python} {supertool_dir}/validators/ruby-check/ruby-check.py {file}",
       "match": "*.rb",
       "hooks_into": [
         "edit",
@@ -475,7 +475,7 @@
       "timeout": 30
     },
     "hadolint": {
-      "cmd": "python3 {supertool_dir}/validators/hadolint/hadolint.py {file}",
+      "cmd": "{python} {supertool_dir}/validators/hadolint/hadolint.py {file}",
       "match": "Dockerfile*",
       "hooks_into": [
         "edit",
@@ -488,7 +488,7 @@
       "timeout": 30
     },
     "psr": {
-      "cmd": "python3 {supertool_dir}/validators/psr/psr.py {file}",
+      "cmd": "{python} {supertool_dir}/validators/psr/psr.py {file}",
       "match": "*.php",
       "hooks_into": [],
       "rollback_on_fail": false,
@@ -499,7 +499,7 @@
       }
     },
     "git-status": {
-      "cmd": "python3 {supertool_dir}/validators/git-status/git-status.py {file}",
+      "cmd": "{python} {supertool_dir}/validators/git-status/git-status.py {file}",
       "match": "*",
       "hooks_into": [
         "edit",
@@ -512,7 +512,7 @@
       "timeout": 5
     },
     "prettier-check": {
-      "cmd": "python3 {supertool_dir}/validators/prettier-check/prettier-check.py {file}",
+      "cmd": "{python} {supertool_dir}/validators/prettier-check/prettier-check.py {file}",
       "match": "*.{xml,scss,css,js,json,yml,yaml,md}",
       "hooks_into": [
         "edit",

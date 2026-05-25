@@ -100,7 +100,7 @@ def test_workspace_validators_section_when_configured(tmp_path: Path, monkeypatc
     monkeypatch.setattr(supertool, "_CONFIG", {
         "validators": {
             "jsonlint": {
-                "cmd": "python3 -m json.tool {file}",
+                "cmd": "{python} -m json.tool {file}",
                 "match": "*.json",
                 "hooks_into": [],
                 "timeout": 10,

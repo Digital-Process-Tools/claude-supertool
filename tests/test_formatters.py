@@ -60,7 +60,9 @@ def test_applicable_formatters_ignores_malformed_specs() -> None:
 def test_formatter_run_one_success(tmp_path: Path) -> None:
     f = tmp_path / "x.json"
     f.write_text('{"a":1}\n')
-    spec = {"cmd": f"touch {f}", "timeout": 5}
+    # Cross-platform `touch` — Windows runners have no `touch` binary.
+    cmd = f"{{python}} -c \"open(r'{f.as_posix()}', 'w').close()\""
+    spec = {"cmd": cmd, "timeout": 5}
     result = supertool._formatter_run_one("prettier", spec, str(f))
     assert result["ok"] is True
     assert result["name"] == "prettier"
@@ -69,7 +71,8 @@ def test_formatter_run_one_success(tmp_path: Path) -> None:
 def test_formatter_run_one_failure(tmp_path: Path) -> None:
     f = tmp_path / "x.json"
     f.write_text("{}\n")
-    spec = {"cmd": "false", "timeout": 5}
+    # Cross-platform non-zero exit — Windows has no `false` binary.
+    spec = {"cmd": "{python} -c \"raise SystemExit(1)\"", "timeout": 5}
     result = supertool._formatter_run_one("prettier", spec, str(f))
     assert result["ok"] is False
     assert result["name"] == "prettier"
@@ -85,7 +88,9 @@ def test_formatter_run_one_substitutes_file_token(tmp_path: Path) -> None:
         "import sys, pathlib\n"
         f"pathlib.Path({str(sentinel)!r}).write_text(sys.argv[1])\n"
     )
-    spec = {"cmd": f"python3 {adapter} {{file}}", "timeout": 5}
+    # `python3` only exists by name on POSIX; Windows uses `python`.
+    # as_posix avoids shlex backslash-escape mangling of Windows paths.
+    spec = {"cmd": f"{{python}} {adapter.as_posix()} {{file}}", "timeout": 5}
     supertool._formatter_run_one("fmt", spec, str(f))
     assert sentinel.read_text() == str(f)
 
@@ -120,7 +125,7 @@ def test_formatter_runs_before_validator(tmp_path: Path) -> None:
     _set_config({
         "formatters": {
             "mock-fmt": {
-                "cmd": f"python3 {adapter} {{file}}",
+                "cmd": f"{{python}} {adapter.as_posix()} {{file}}",
                 "hooks_into": ["edit"],
                 "match": "*.json",
             }
@@ -144,7 +149,7 @@ def test_formatter_fail_rollback_false_keeps_file(tmp_path: Path) -> None:
     _set_config({
         "formatters": {
             "bad-fmt": {
-                "cmd": "false",  # always fails
+                "cmd": "{python} -c \"raise SystemExit(1)\"",  # always fails
                 "hooks_into": ["edit"],
                 "match": "*.json",
                 "rollback_on_fail": False,
@@ -174,7 +179,7 @@ def test_formatter_fail_rollback_true_reverts_file(tmp_path: Path) -> None:
     _set_config({
         "formatters": {
             "bad-fmt": {
-                "cmd": "false",
+                "cmd": "{python} -c \"raise SystemExit(1)\"",
                 "hooks_into": ["edit"],
                 "match": "*.json",
                 "rollback_on_fail": True,

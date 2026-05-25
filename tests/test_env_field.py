@@ -79,7 +79,7 @@ def test_formatter_env_field_passed_to_subprocess(tmp_path: Path) -> None:
         f"pathlib.Path({str(sentinel)!r}).write_text(os.environ.get('MY_FMT_VAR', ''))\n"
     )
     spec = {
-        "cmd": f"python3 {adapter}",
+        "cmd": f"{{python}} {adapter.as_posix()}",
         "timeout": 5,
         "env": {"MY_FMT_VAR": "fmt_env_value"},
     }
@@ -130,7 +130,7 @@ def test_validator_env_prefix_reaches_child(tmp_path: Path) -> None:
         "else:\n"
         "    sys.stdout.write('{\"tool\":\"t\",\"file\":\"x\",\"ok\":false,\"count\":1,\"errors\":[{\"line\":null,\"col\":null,\"severity\":\"error\",\"code\":\"x\",\"msg\":\"env not set\"}],\"duration_ms\":1}')\n"
     )
-    cmd = f"MCP_PHPSTAN_WORKING_DIR={tmp_path} python3 {adapter}"
+    cmd = f"MCP_PHPSTAN_WORKING_DIR={tmp_path.as_posix()} {{python}} {adapter.as_posix()}"
     spec = {"cmd": cmd, "timeout": 5, "cache": False}
     out = supertool._validator_run_one("t", spec, "any.php")
     assert out.get("ok") is True, f"env-prefix did not reach child: {out}"
@@ -145,7 +145,7 @@ def test_spec_env_wins_over_prefix(tmp_path: Path) -> None:
         "sys.stdout.write(json.dumps({'tool':'t','file':'x','ok': val == 'from_spec', 'count':0,'errors':[],'duration_ms':1,'captured':val}))\n"
     )
     spec = {
-        "cmd": f"SHARED_VAR=from_prefix python3 {adapter}",
+        "cmd": f"SHARED_VAR=from_prefix {{python}} {adapter.as_posix()}",
         "timeout": 5,
         "cache": False,
         "env": {"SHARED_VAR": "from_spec"},
