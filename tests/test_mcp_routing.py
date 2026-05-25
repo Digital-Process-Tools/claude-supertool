@@ -15,6 +15,13 @@ from pathlib import Path
 
 import pytest
 
+import socket as _socket
+
+_REQUIRES_AF_UNIX = pytest.mark.skipif(
+    not hasattr(_socket, "AF_UNIX"),
+    reason="MCP daemon uses AF_UNIX sockets — not available on this platform",
+)
+
 import supertool
 from supertool import (
     MCPClient, _mcp_route, _mcp_ensure_server,
@@ -36,7 +43,10 @@ def mock_uds():
     """Spawn the UDS-mode mock MCP server on a per-test socket path.
 
     Sockets live in /tmp/ (macOS AF_UNIX path limit ~104 chars; pytest tmp_path is too deep).
+    Skips on platforms without AF_UNIX (e.g. some Windows Python builds).
     """
+    if not hasattr(_socket, "AF_UNIX"):
+        pytest.skip("MCP daemon uses AF_UNIX sockets — not available on this platform")
     sock_path = f"/tmp/st-mock-{uuid.uuid4().hex[:8]}.sock"
     proc = subprocess.Popen([sys.executable, MOCK_SERVER, sock_path])
     # Wait for the server to bind the socket
@@ -100,6 +110,7 @@ def test_ensure_server_connects_on_demand(mock_uds: str) -> None:
             srv.shutdown()
 
 
+@_REQUIRES_AF_UNIX
 def test_ensure_server_returns_none_on_bad_socket(tmp_path: Path) -> None:
     """Socket_path that doesn't exist → connect fails → ensure returns None."""
     _set_mcp_specs({
@@ -158,6 +169,7 @@ def test_op_resolve_uses_mcp_when_configured(tmp_path: Path, mock_uds: str) -> N
         supertool._mcp_specs.clear()
 
 
+@_REQUIRES_AF_UNIX
 def test_op_resolve_falls_back_to_heuristic_on_mcp_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -176,6 +188,7 @@ def test_op_resolve_falls_back_to_heuristic_on_mcp_failure(
         supertool._mcp_specs.clear()
 
 
+@_REQUIRES_AF_UNIX
 def test_op_hover_anchors_to_word_boundary(tmp_path: Path) -> None:
     """`op_hover` two-step: find_workspace_symbols returns line:1, then op_hover must
     re-anchor to the actual identifier offset using a word-boundary search.
@@ -213,6 +226,7 @@ def test_op_hover_anchors_to_word_boundary(tmp_path: Path) -> None:
         except subprocess.TimeoutExpired: proc.kill()
 
 
+@_REQUIRES_AF_UNIX
 def test_op_hover_word_boundary_skips_substring_match(tmp_path: Path) -> None:
     """Regression: `str.find(symbol)` matches `symbol` as a substring of a larger word.
 

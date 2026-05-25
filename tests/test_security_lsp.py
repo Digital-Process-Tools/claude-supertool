@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket as _socket
 import subprocess
 import threading
 import uuid
@@ -24,6 +25,11 @@ from typing import Any, Optional
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+_REQUIRES_AF_UNIX = pytest.mark.skipif(
+    not hasattr(_socket, "AF_UNIX"),
+    reason="MCP daemon uses AF_UNIX sockets — not supported on this platform",
+)
 
 import supertool
 from supertool import (
@@ -212,6 +218,7 @@ class TestShellInjection:
     """
 
     @pytest.mark.slow
+    @_REQUIRES_AF_UNIX
     def test_mcp_daemon_spawn_uses_list_not_shell(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """MCPClient.spawn() must call subprocess.Popen([...], ...) — list form only.
 
@@ -718,6 +725,7 @@ class TestCclspConfigInjection:
         assert "rm -rf" not in result
 
     @pytest.mark.slow
+    @_REQUIRES_AF_UNIX
     def test_cmd_field_is_not_executed_directly(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

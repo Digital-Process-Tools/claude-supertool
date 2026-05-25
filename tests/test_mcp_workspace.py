@@ -11,6 +11,8 @@ from unittest.mock import patch
 
 import pytest
 
+import socket as _socket
+
 import supertool
 from supertool import (
     _mcp_route, _mcp_ensure_server, _mcp_call,
@@ -25,6 +27,9 @@ MOCK_SERVER = str(Path(__file__).parent / "fixtures" / "mock_mcp_server.py")
 @pytest.fixture
 def mock_uds():
     """Spawn the UDS mock MCP server (sockets in /tmp/ — AF_UNIX path limit on macOS)."""
+    if not hasattr(_socket, "AF_UNIX"):
+        import pytest as _pytest
+        _pytest.skip("MCP daemon uses AF_UNIX sockets — not available on this platform")
     sock_path = f"/tmp/st-mock-{uuid.uuid4().hex[:8]}.sock"
     proc = subprocess.Popen([sys.executable, MOCK_SERVER, sock_path])
     deadline = time.time() + 5

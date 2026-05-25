@@ -15,6 +15,13 @@ from pathlib import Path
 
 import pytest
 
+import socket as _socket
+
+_REQUIRES_AF_UNIX = pytest.mark.skipif(
+    not hasattr(_socket, "AF_UNIX"),
+    reason="MCP daemon uses AF_UNIX sockets — not available on this platform",
+)
+
 import supertool
 from supertool import (
     MCPClient, MCPServerError, MCPTimeout,
@@ -27,6 +34,9 @@ MOCK_SERVER = str(Path(__file__).parent / "fixtures" / "mock_mcp_server.py")
 @pytest.fixture
 def mock_uds():
     """Spawn the UDS mock MCP server (sockets in /tmp/ — AF_UNIX path limit on macOS)."""
+    if not hasattr(_socket, "AF_UNIX"):
+        import pytest as _pytest
+        _pytest.skip("MCP daemon uses AF_UNIX sockets — not available on this platform")
     sock_path = f"/tmp/st-mock-{uuid.uuid4().hex[:8]}.sock"
     proc = subprocess.Popen([sys.executable, MOCK_SERVER, sock_path])
     deadline = time.time() + 5
@@ -117,6 +127,7 @@ def test_call_tool_roundtrips_args(mock_uds: str) -> None:
 # Server-side error
 # ---------------------------------------------------------------------------
 
+@_REQUIRES_AF_UNIX
 def test_call_tool_raises_mcp_server_error() -> None:
     """Mock with MOCK_MCP_TOOL_ERROR=1 returns JSON-RPC error → client raises."""
     sock_path = f"/tmp/st-err-{uuid.uuid4().hex[:8]}.sock"
@@ -258,6 +269,7 @@ def test_connect_timeout_default_is_60s() -> None:
     assert MCPClient._CONNECT_TIMEOUT_SECONDS == 60
 
 
+@_REQUIRES_AF_UNIX
 def test_connect_timeout_env_override(tmp_path: Path, monkeypatch) -> None:
     """SUPERTOOL_MCP_CONNECT_TIMEOUT overrides the default budget."""
     nonexistent = f"/tmp/st-timeout-{uuid.uuid4().hex[:8]}.sock"
@@ -271,6 +283,7 @@ def test_connect_timeout_env_override(tmp_path: Path, monkeypatch) -> None:
     assert elapsed < 5.0, f"timeout override ignored: spent {elapsed:.2f}s"
 
 
+@_REQUIRES_AF_UNIX
 def test_connect_error_mentions_stderr_log_when_present(tmp_path: Path, monkeypatch) -> None:
     """When the daemon wrote a stderr log, error points the user at it."""
     sock = f"/tmp/st-broken-{uuid.uuid4().hex[:8]}.sock"
@@ -285,6 +298,7 @@ def test_connect_error_mentions_stderr_log_when_present(tmp_path: Path, monkeypa
     assert "startup errors" in msg or "stderr" in msg
 
 
+@_REQUIRES_AF_UNIX
 def test_connect_error_hints_path_when_no_stderr_log(tmp_path: Path, monkeypatch) -> None:
     """No stderr log → error hints that the configured cmd may not be on PATH."""
     sock = f"/tmp/st-broken-{uuid.uuid4().hex[:8]}.sock"  # no .stderr companion

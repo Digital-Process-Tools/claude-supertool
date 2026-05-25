@@ -10858,6 +10858,13 @@ class MCPClient:
         with self._lock:
             if self._sock is not None:
                 return
+            if not hasattr(socket, "AF_UNIX"):
+                # GH-hosted Windows Python builds don't expose AF_UNIX even when
+                # the OS supports it. Callers (_mcp_ensure_server) catch this
+                # specific error and fall back to the non-MCP heuristic path.
+                raise MCPServerError(
+                    "MCP daemon requires socket.AF_UNIX — not available on this platform"
+                )
             budget = float(os.environ.get("SUPERTOOL_MCP_CONNECT_TIMEOUT", self._CONNECT_TIMEOUT_SECONDS))
             # Explicit socket_path (tests, externally managed daemons) → no one
             # else will spawn it. Single-shot connect, fail fast on miss.
