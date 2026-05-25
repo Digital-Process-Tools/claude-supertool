@@ -27,7 +27,7 @@ def test_applicable_notifiers_filters_by_op_and_match(tmp_path: Path) -> None:
     _set_config({
         "notifiers": {
             "watch-php": {
-                "cmd": "true",
+                "cmd": "{python} -c \"pass\"",
                 "match": "*.php",
                 "hooks_into": ["edit", "read"],
             }
@@ -44,10 +44,15 @@ def test_applicable_notifiers_filters_by_op_and_match(tmp_path: Path) -> None:
 def test_notifier_fires_on_edit(tmp_path: Path) -> None:
     """Mutating an edit-hooked notifier writes its side effect."""
     marker = tmp_path / "fired.txt"
+    # sh -c is POSIX-only; use python so the cmd works on Windows too.
     _set_config({
         "notifiers": {
             "marker": {
-                "cmd": f"sh -c 'echo {{op}} {{file}} > {marker}'",
+                "cmd": (
+                    f"{{python}} -c \"import sys, pathlib; "
+                    f"pathlib.Path(r'{marker.as_posix()}').write_text(sys.argv[1] + ' ' + sys.argv[2])\" "
+                    f"{{op}} {{file}}"
+                ),
                 "match": "*",
                 "hooks_into": ["edit"],
             }
@@ -70,7 +75,11 @@ def test_notifier_fires_on_read(tmp_path: Path) -> None:
     _set_config({
         "notifiers": {
             "read-watch": {
-                "cmd": f"sh -c 'echo {{op}} {{file}} > {marker}'",
+                "cmd": (
+                    f"{{python}} -c \"import sys, pathlib; "
+                    f"pathlib.Path(r'{marker.as_posix()}').write_text(sys.argv[1] + ' ' + sys.argv[2])\" "
+                    f"{{op}} {{file}}"
+                ),
                 "match": "*",
                 "hooks_into": ["read"],
             }
@@ -131,7 +140,7 @@ def test_notifier_debug_log_off_by_default(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.delenv("SUPERTOOL_NOTIFIER_DEBUG", raising=False)
     _set_config({
         "notifiers": {
-            "n": {"cmd": "true", "match": "*", "hooks_into": ["edit"]}
+            "n": {"cmd": "{python} -c \"pass\"", "match": "*", "hooks_into": ["edit"]}
         }
     })
     supertool._run_notifiers("edit", "x.php")
@@ -146,7 +155,7 @@ def test_notifier_debug_log_via_env(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("SUPERTOOL_NOTIFIER_DEBUG_LOG", str(log))
     _set_config({
         "notifiers": {
-            "n": {"cmd": "true", "match": "*.php", "hooks_into": ["edit"]}
+            "n": {"cmd": "{python} -c \"pass\"", "match": "*.php", "hooks_into": ["edit"]}
         }
     })
     supertool._run_notifiers("edit", "x.php")
@@ -165,7 +174,7 @@ def test_notifier_debug_log_via_config(tmp_path: Path, monkeypatch) -> None:
     _set_config({
         "notifier_debug": True,
         "notifiers": {
-            "n": {"cmd": "true", "match": "*", "hooks_into": ["edit"]}
+            "n": {"cmd": "{python} -c \"pass\"", "match": "*", "hooks_into": ["edit"]}
         }
     })
     supertool._run_notifiers("edit", "y.php")
@@ -189,8 +198,9 @@ def test_empty_placeholders_preserve_positional_argv(tmp_path: Path) -> None:
     _set_config({
         "notifiers": {
             "echo-argv": {
-                # 5 positional slots after the script — same shape as notify.py
-                "cmd": f'python3 -c "import sys, json; open(\'{marker}\', \'w\').write(json.dumps(sys.argv[1:]))" '
+                # 5 positional slots after the script — same shape as notify.py.
+                # Use {python} token + as_posix so the cmd works on Windows too.
+                "cmd": f'{{python}} -c "import sys, json; open(r\'{marker.as_posix()}\', \'w\').write(json.dumps(sys.argv[1:]))" '
                        f'{{op}} {{file}} {{line}} {{line_end}} {{before_file}}',
                 "match": "*",
                 "hooks_into": ["edit"],

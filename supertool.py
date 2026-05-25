@@ -8275,8 +8275,9 @@ def _run_notifiers(op: str, path: str, line: Optional[int] = None,
     if pre_content is not None:
         try:
             ext = os.path.splitext(path)[1] or ".txt"
+            # tempfile.gettempdir() — `/tmp` is POSIX-only.
             fd, before_file = tempfile.mkstemp(
-                prefix="supertool-before-", suffix=ext, dir="/tmp")
+                prefix="supertool-before-", suffix=ext, dir=tempfile.gettempdir())
             with os.fdopen(fd, "wb") as f:
                 f.write(pre_content)
         except OSError:
@@ -8293,6 +8294,7 @@ def _run_notifiers(op: str, path: str, line: Optional[int] = None,
             s = str(val) if val is not None and val != "" else ""
             return shlex.quote(s)
         cmd = (cmd
+               .replace("{python}", _python_token())
                .replace("{op}", _sub(op))
                .replace("{file}", _sub(path))
                .replace("{line}", _sub(line))

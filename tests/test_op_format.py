@@ -26,7 +26,7 @@ def test_op_format_no_formatters_configured() -> None:
 
 
 def test_op_format_no_path_returns_error() -> None:
-    _set_formatters({"fmt": {"cmd": "true", "match": "*.json"}})
+    _set_formatters({"fmt": {"cmd": "{python} -c \"pass\"", "match": "*.json"}})
     result = supertool.op_format("")
     assert result.startswith("ERROR")
 
@@ -37,7 +37,7 @@ def test_op_format_runs_matching_formatter(tmp_path: Path) -> None:
     sentinel = tmp_path / "ran"
     _set_formatters({
         "prettier": {
-            "cmd": f"touch {sentinel}",
+            "cmd": f"{{python}} -c \"open(r\'{sentinel.as_posix()}\', \'w\').close()\"",
             "match": "*.json",
         }
     })
@@ -53,8 +53,8 @@ def test_op_format_with_tool_filter(tmp_path: Path) -> None:
     sentinel_a = tmp_path / "ran_a"
     sentinel_b = tmp_path / "ran_b"
     _set_formatters({
-        "fmt-a": {"cmd": f"touch {sentinel_a}", "match": "*.json"},
-        "fmt-b": {"cmd": f"touch {sentinel_b}", "match": "*.json"},
+        "fmt-a": {"cmd": f"{{python}} -c \"open(r\'{sentinel_a.as_posix()}\', \'w\').close()\"", "match": "*.json"},
+        "fmt-b": {"cmd": f"{{python}} -c \"open(r\'{sentinel_b.as_posix()}\', \'w\').close()\"", "match": "*.json"},
     })
     result = supertool.op_format(str(f), tool_filter=["fmt-a"])
     assert sentinel_a.exists()
@@ -64,7 +64,7 @@ def test_op_format_with_tool_filter(tmp_path: Path) -> None:
 
 
 def test_op_format_tool_filter_no_match() -> None:
-    _set_formatters({"prettier": {"cmd": "true", "match": "*.json"}})
+    _set_formatters({"prettier": {"cmd": "{python} -c \"pass\"", "match": "*.json"}})
     result = supertool.op_format("x.json", tool_filter=["nonexistent"])
     assert "no formatters matched filter" in result
 
@@ -72,7 +72,7 @@ def test_op_format_tool_filter_no_match() -> None:
 def test_op_format_no_glob_match(tmp_path: Path) -> None:
     f = tmp_path / "x.php"
     f.write_text("<?php\n")
-    _set_formatters({"prettier": {"cmd": "true", "match": "*.json"}})
+    _set_formatters({"prettier": {"cmd": "{python} -c \"pass\"", "match": "*.json"}})
     result = supertool.op_format(str(f))
     assert "no formatters matched this file" in result
 
@@ -80,7 +80,7 @@ def test_op_format_no_glob_match(tmp_path: Path) -> None:
 def test_op_format_formatter_failure_shown(tmp_path: Path) -> None:
     f = tmp_path / "x.json"
     f.write_text("{}\n")
-    _set_formatters({"bad-fmt": {"cmd": "false", "match": "*.json"}})
+    _set_formatters({"bad-fmt": {"cmd": "{python} -c \"raise SystemExit(1)\"", "match": "*.json"}})
     result = supertool.op_format(str(f))
     assert "fail" in result
     assert "bad-fmt" in result
@@ -93,7 +93,7 @@ def test_op_format_formatter_failure_shown(tmp_path: Path) -> None:
 def test_op_format_verbose_shows_marker(tmp_path: Path) -> None:
     f = tmp_path / "x.json"
     f.write_text("{}\n")
-    _set_formatters({"prettier": {"cmd": "true", "match": "*.json"}})
+    _set_formatters({"prettier": {"cmd": "{python} -c \"pass\"", "match": "*.json"}})
     result = supertool.op_format(str(f), verbose=True)
     assert "[verbose]" in result
 
@@ -101,7 +101,7 @@ def test_op_format_verbose_shows_marker(tmp_path: Path) -> None:
 def test_op_format_non_verbose_no_marker(tmp_path: Path) -> None:
     f = tmp_path / "x.json"
     f.write_text("{}\n")
-    _set_formatters({"prettier": {"cmd": "true", "match": "*.json"}})
+    _set_formatters({"prettier": {"cmd": "{python} -c \"pass\"", "match": "*.json"}})
     result = supertool.op_format(str(f), verbose=False)
     assert "[verbose]" not in result
 
@@ -113,7 +113,7 @@ def test_op_format_non_verbose_no_marker(tmp_path: Path) -> None:
 def test_dispatch_format_verbose_flag(tmp_path: Path) -> None:
     f = tmp_path / "x.json"
     f.write_text("{}\n")
-    _set_formatters({"prettier": {"cmd": "true", "match": "*.json"}})
+    _set_formatters({"prettier": {"cmd": "{python} -c \"pass\"", "match": "*.json"}})
     result = supertool.dispatch(f"format:{f}:verbose")
     assert "[verbose]" in result
 
@@ -124,8 +124,8 @@ def test_dispatch_format_tools_and_verbose(tmp_path: Path) -> None:
     sentinel_a = tmp_path / "ran_a"
     sentinel_b = tmp_path / "ran_b"
     _set_formatters({
-        "fmt-a": {"cmd": f"touch {sentinel_a}", "match": "*.json"},
-        "fmt-b": {"cmd": f"touch {sentinel_b}", "match": "*.json"},
+        "fmt-a": {"cmd": f"{{python}} -c \"open(r\'{sentinel_a.as_posix()}\', \'w\').close()\"", "match": "*.json"},
+        "fmt-b": {"cmd": f"{{python}} -c \"open(r\'{sentinel_b.as_posix()}\', \'w\').close()\"", "match": "*.json"},
     })
     result = supertool.dispatch(f"format:{f}:fmt-a:verbose")
     assert sentinel_a.exists()
