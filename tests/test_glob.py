@@ -25,7 +25,7 @@ def test_glob_recursive_double_star(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     out = supertool.op_glob("**/*.py")
     assert "top.py" in out
-    assert os.path.join("sub", "deep.py") in out
+    assert "sub/deep.py" in out
 
 
 def test_glob_empty_pattern_errors() -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import supertool
@@ -114,8 +115,8 @@ def test_grep_context_includes_surrounding_lines(tmp_path: Path) -> None:
     # Match at line 5, 2 lines of context → lines 3-7 shown; lines 1-2 and 8-10 excluded
     f.write_text("skip1\nskip2\nctx_before2\nctx_before1\nMATCH\nctx_after1\nctx_after2\nskip3\nskip4\n")
     out = supertool.op_grep("MATCH", str(f), limit=10, context=2)
-    # File path appears once as header
-    assert str(f) + "\n" in out
+    # File path appears once as header (forward-slash normalized for cross-platform output)
+    assert str(f).replace(os.sep, "/") + "\n" in out
     # Match line uses colon separator, indented
     assert "  5:MATCH" in out
     # Context lines use dash separator, indented
@@ -199,7 +200,7 @@ def test_grep_count_single_file(tmp_path: Path) -> None:
     f.write_text("import os\nimport sys\ndef main():\n    pass\n")
     out = supertool.op_grep("import", str(f), count_only=True)
     assert "2 total matches across 1 files" in out
-    assert f"{f}:2" in out
+    assert f"{str(f).replace(os.sep, '/')}:2" in out
 
 
 def test_grep_count_multiple_files(tmp_path: Path) -> None:
