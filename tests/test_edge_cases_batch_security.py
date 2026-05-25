@@ -7,6 +7,7 @@ and shell-expansion-looking paths.
 from __future__ import annotations
 
 import json
+import sys
 import time
 from pathlib import Path
 
@@ -29,51 +30,37 @@ def _write_json(tmp_path: Path, name: str, payload) -> Path:
 # 1. Huge batch (10 000 ops) — DoS via memory / CPU
 # ---------------------------------------------------------------------------
 
-@pytest.mark.slow
 class TestHugeBatch:
-    @pytest.mark.xfail(
-        reason="PERF (2026-05-23): no batch-size cap. 10k read ops sequentially "
-        "took ~390s (~39ms per dispatch round-trip). Not a DoS — process "
-        "doesn't hang — but the 30s budget pins what 'reasonable' should look "
-        "like. Real fix: add MAX_BATCH_OPS env-overridable cap that returns a "
-        "clean ERROR when exceeded.",
-        strict=False,
-    )
-    def test_huge_batch_completes_or_caps(self, tmp_path: Path) -> None:
-        """10 000 read ops must not OOM/hang. Either completes in < 30 s or
-        returns an error/truncation — both are acceptable; a hang or OOM is not."""
+    """MAX_BATCH_OPS cap enforced — prevents DoS via huge payload."""
+
+    def test_huge_batch_rejected_above_cap(self, tmp_path: Path) -> None:
+        """A batch exceeding MAX_BATCH_OPS returns a clean ERROR — no OOM,
+        no hang. Replaces the pre-cap 30-second perf budget."""
         target = tmp_path / "x.txt"
         target.write_text("hi\n")
-        ops = [{"op": "read", "path": str(target)}] * 10_000
+        ops = [{"op": "read", "path": str(target)}] * (supertool.MAX_BATCH_OPS + 1)
         spec = _write_json(tmp_path, "ops.json", ops)
 
         start = time.monotonic()
         out = supertool.dispatch(f"batch:@{spec}")
         elapsed = time.monotonic() - start
 
-        # Must return a string (no crash/exception)
-        assert isinstance(out, str)
-        # Must finish within 30 s (generous — even 10 000 reads should be fast)
-        assert elapsed < 30, f"Huge batch took {elapsed:.1f}s — likely DoS"
+        assert "ERROR" in out
+        assert "max_ops cap" in out
+        # Cap rejection is O(1) — must be near-instant.
+        assert elapsed < 5, f"Cap rejection took {elapsed:.1f}s — should be near-instant"
 
-    def test_huge_batch_no_size_cap_documented(self, tmp_path: Path) -> None:
-        """Pin current behavior: supertool has NO batch size cap (it runs all
-        10 000 ops). This test documents the absence of a guard so a future
-        cap can be measured against this baseline.
-
-        BUG (low severity): no upper limit on batch size — a caller can trivially
-        exhaust memory by passing a huge array. Recommended fix: add a
-        MAX_BATCH_OPS constant (e.g. 1 000) and return ERROR when exceeded.
-        """
+    def test_batch_at_cap_runs_to_completion(self, tmp_path: Path) -> None:
+        """A batch exactly at MAX_BATCH_OPS runs without rejection (cap is exclusive
+        of the threshold)."""
         target = tmp_path / "x.txt"
         target.write_text("hi\n")
-        ops = [{"op": "read", "path": str(target)}] * 10_000
+        ops = [{"op": "read", "path": str(target)}] * supertool.MAX_BATCH_OPS
         spec = _write_json(tmp_path, "ops.json", ops)
         out = supertool.dispatch(f"batch:@{spec}")
-        # Currently returns all 10 000 results — no cap enforced
-        assert out.count("--- read:") == 10_000, (
-            "Expected 10 000 read headers — if this fails, a cap was added (good!)"
-        )
+        # All ops dispatched (no cap rejection)
+        assert "max_ops cap" not in out
+        assert out.count("--- read:") == supertool.MAX_BATCH_OPS
 
 
 # ---------------------------------------------------------------------------

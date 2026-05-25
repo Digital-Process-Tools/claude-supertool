@@ -10,12 +10,23 @@ import stat
 import sys
 from pathlib import Path
 
+import socket as _socket
+
 import pytest
+
+pytestmark = pytest.mark.skipif(
+    not hasattr(_socket, "AF_UNIX"),
+    reason="MCP daemon module imports require AF_UNIX — not available on Windows runners.",
+)
 
 # Make presets/mcp importable as a flat module dir.
 sys.path.insert(0, str(Path(__file__).parent.parent / "presets" / "mcp"))
-import _paths  # noqa: E402
-import daemon as mcp_daemon  # noqa: E402
+if hasattr(_socket, "AF_UNIX"):
+    import _paths  # noqa: E402
+    import daemon as mcp_daemon  # noqa: E402
+else:
+    _paths = None  # type: ignore[assignment]
+    mcp_daemon = None  # type: ignore[assignment]
 
 
 @pytest.fixture
