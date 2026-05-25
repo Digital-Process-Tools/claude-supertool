@@ -107,6 +107,12 @@ from typing import Any, Dict, List, Optional, Tuple
 
 VERSION = "0.14.0"
 
+
+def _fwd(p: str) -> str:
+    """Normalize path separators to forward slashes for cross-platform output."""
+    return p.replace(os.sep, "/")
+
+
 MAX_READ_LINES = 300
 MAX_READ_BYTES = 20000  # ~20KB cap — prevents Claude Code "Output too large"
 MAX_GREP_RESULTS = 10
@@ -1068,7 +1074,7 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
         file_count = len(counts)
         out = [f"({total} total matches across {file_count} files)\n"]
         for fp, cnt in sorted(counts.items()):
-            out.append(f"{fp}:{cnt}\n")
+            out.append(f"{_fwd(fp)}:{cnt}\n")
         out.append("\n")
         return "".join(out)
 
@@ -1210,7 +1216,7 @@ def op_around(pattern: str, path: str, n: int = 10) -> str:
                     continue
                 if not rendered:
                     continue
-                rel = os.path.relpath(fpath, path)
+                rel = _fwd(os.path.relpath(fpath, path))
                 hits.append(f"=== {rel} ===\n{rendered}")
                 if len(hits) >= _AROUND_DIR_MAX_FILES:
                     break
@@ -1379,12 +1385,13 @@ def op_glob(pattern: str, no_exclude: bool = False, no_auto_read: bool = False) 
             prefix = ""
     out = [f"({len(files)} files)\n"]
     if prefix:
-        out.append(f"{prefix}\n")
+        fwd_prefix = _fwd(prefix)
+        out.append(f"{fwd_prefix}\n")
         for f in files:
-            out.append(f"  {f[len(prefix):]}\n")
+            out.append(f"  {_fwd(f[len(prefix):])}\n")
     else:
         for f in files:
-            out.append(f + "\n")
+            out.append(_fwd(f) + "\n")
     out.append("\n")
 
     # Auto-read: glob returned exactly 1 file — save the follow-up read round-trip
@@ -2055,7 +2062,7 @@ def _format_map_symbols(
     symbols: List[Tuple[str, str, int, int, int]], path: str, line_count: int
 ) -> str:
     """Format extracted symbols as an indented tree string."""
-    out = [f"{path} ({line_count} lines)\n"]
+    out = [f"{_fwd(path)} ({line_count} lines)\n"]
     for kind, name, line, end_line, depth in symbols:
         indent = "  " * (depth + 1)
         label = f"[{line}]" if line == end_line else f"[{line}-{end_line}]"
@@ -2070,7 +2077,7 @@ def _format_ctags_symbols(
 
     Uses scope field to infer nesting (symbols with a scope → depth 1).
     """
-    out = [f"{path} ({line_count} lines)\n"]
+    out = [f"{_fwd(path)} ({line_count} lines)\n"]
     for kind, name, line, scope in symbols:
         depth = 1 if scope else 0
         indent = "  " * (depth + 1)
@@ -2197,7 +2204,7 @@ def op_map(path: str, no_exclude: bool = False) -> str:
 
         if not symbols_found:
             # File exists but no symbols extracted — show it as empty
-            out_files.append(f"{fpath} ({line_count} lines)\n  (no symbols)\n")
+            out_files.append(f"{_fwd(fpath)} ({line_count} lines)\n  (no symbols)\n")
 
     out = [f"({len(files)} files, tier: {actual_tier})\n"] + out_files
     if truncated:
@@ -2298,7 +2305,7 @@ def _grep_recursive(
                     except Exception:
                         continue
                     if regex.search(line):
-                        results.append(f"{file_path}:{lineno}:{line.rstrip()}")
+                        results.append(f"{_fwd(file_path)}:{lineno}:{line.rstrip()}")
                         if len(results) >= limit:
                             break
         except OSError:
@@ -2370,7 +2377,7 @@ def _grep_recursive_context(
             group: List[Tuple[str, int, str, str]] = []
             for i in range(w_start, w_end + 1):
                 kind = "match" if i in match_set else "context"
-                group.append((file_path, i + 1, kind, lines[i]))
+                group.append((_fwd(file_path), i + 1, kind, lines[i]))
                 if kind == "match":
                     match_count += 1
             groups.append(group)
@@ -2701,7 +2708,7 @@ def op_replace(old: str, new: str, path: str = ".", dry: bool = False) -> str:
         old_lines = old.split("\n")
         new_lines = new.split("\n")
         for filepath, positions in file_matches:
-            out.append(f"\n{filepath}\n")
+            out.append(f"\n{_fwd(filepath)}\n")
             try:
                 with open(filepath, "r", encoding="utf-8", errors="surrogateescape") as f:
                     content = f.read()
@@ -2737,7 +2744,7 @@ def op_replace(old: str, new: str, path: str = ".", dry: bool = False) -> str:
     total = sum(files_modified.values())
     out = [f"({total} replacements in {len(files_modified)} files)\n"]
     for fp, cnt in sorted(files_modified.items()):
-        out.append(f"  {fp} ({cnt})\n")
+        out.append(f"  {_fwd(fp)} ({cnt})\n")
     out.append(f"\nDone: '{old}' → '{new}'\n")
     return "".join(out)
 
