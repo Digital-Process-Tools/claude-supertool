@@ -25,6 +25,10 @@ jobs:
           pip install pytest pytest-cov pytest-xdist pytest-timeout
       - name: Install supertool (pip entry point — cross-platform, no symlink)
         run: pip install -e .
+      - name: Stage ./supertool sibling (tests subprocess to repo-root path)
+        # tests/test_xml.py invokes `Path(__file__).parent.parent / "supertool"`.
+        # `ln -sf` is POSIX-only; cross-platform copy via Python works everywhere.
+        run: python -c "import shutil; shutil.copyfile('supertool.py', 'supertool')"
       - name: Run tests (full suite — slow tests included)
         # Override pyproject addopts default of `-m 'not slow'` so CI exercises
         # the slow MCP-fallback and batch-stress paths the dev inner loop skips.
