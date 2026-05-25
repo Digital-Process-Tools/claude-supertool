@@ -112,6 +112,30 @@ class TestFallback:
         assert "42" in result
 
 
+class TestGitHubNotARepo:
+    """gh in a non-GitHub cwd must not be misclassified as auth failure (issue #183)."""
+
+    NO_HOST_STDERR = (
+        "none of the git remotes configured for this repository point to a "
+        "known GitHub host. To tell gh about a new GitHub host, please use "
+        "`gh auth login`\n"
+    )
+
+    @pytest.mark.parametrize("script", ["issue.py", "pr.py", "run.py", "job.py"])
+    def test_no_github_host_not_misclassified_as_auth(self, script):
+        fn = _load_format_error("github", script)
+        result = fn(self.NO_HOST_STDERR, "Issue", "78")
+        assert "not authenticated" not in result.lower()
+        assert "github repo" in result.lower() or "--repo" in result
+
+    @pytest.mark.parametrize("script", ["issue.py", "pr.py", "run.py", "job.py"])
+    def test_not_a_git_repository(self, script):
+        fn = _load_format_error("github", script)
+        result = fn("fatal: not a git repository", "PR", "1")
+        assert "not authenticated" not in result.lower()
+        assert "--repo" in result or "GitHub-cloned" in result
+
+
 class TestJobSpecificHints:
     """Job error messages include hints about which op to use first."""
 
