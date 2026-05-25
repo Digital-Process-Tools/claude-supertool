@@ -1139,21 +1139,15 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
 
     hits = _grep_recursive(pattern, path, limit, excl)
     count = len(hits)
-    file_count = len({h.split(":", 1)[0] for h in hits if ":" in h})
+    file_count = len({fp for fp, _, _ in hits})
 
     out = [f"({count} results in {file_count} files, limit {limit})\n"]
     current_file = ""
-    for hit in hits:
-        # hits are "path:lineno:content" — split on first two colons
-        parts = hit.split(":", 2)
-        if len(parts) >= 3:
-            fp, lineno, content = parts[0], parts[1], parts[2]
-            if fp != current_file:
-                current_file = fp
-                out.append(f"{fp}\n")
-            out.append(f"  {lineno}:{content}\n")
-        else:
-            out.append(hit + "\n")
+    for fp, lineno, content in hits:
+        if fp != current_file:
+            current_file = fp
+            out.append(f"{fp}\n")
+        out.append(f"  {lineno}:{content}\n")
     out.append("\n")
 
     # Auto-read: single small file + at least one match → emit full file
@@ -2311,11 +2305,13 @@ def _grep_candidates(
 def _grep_recursive(
     pattern: str, path: str, limit: int,
     exclude_paths: Tuple[str, ...] = ()
-) -> List[str]:
-    """Return up to `limit` match lines as 'path:lineno:content' strings.
+) -> List[Tuple[str, int, str]]:
+    """Return up to `limit` matches as (file_path, lineno, content) tuples.
 
     Filters by common code/doc extensions when walking directories.
-    Always searches when `path` is a single file.
+    Always searches when `path` is a single file. file_path is normalised
+    to forward slashes; the colon in a Windows drive letter (`C:/...`)
+    would break a string-joined return shape on path:lineno:content split.
     """
     try:
         regex = re.compile(pattern)
@@ -2323,7 +2319,7 @@ def _grep_recursive(
         # Fall back to literal substring
         regex = re.compile(re.escape(pattern))
 
-    results: List[str] = []
+    results: List[Tuple[str, int, str]] = []
     candidates = _grep_candidates(path, exclude_paths)
 
     for file_path in candidates:
@@ -2337,7 +2333,7 @@ def _grep_recursive(
                     except Exception:
                         continue
                     if regex.search(line):
-                        results.append(f"{_fwd(file_path)}:{lineno}:{line.rstrip()}")
+                        results.append((_fwd(file_path), lineno, line.rstrip()))
                         if len(results) >= limit:
                             break
         except OSError:
@@ -9619,22 +9615,20 @@ def op_workspace(path: str) -> str:
                 pass
     if not _refs_mcp_used:
         excl = _get_exclude_paths("grep")
-        hits = _grep_recursive(symbol, ".", 200, excl)
+        # hits now (file, lineno, content) tuples — drive-letter safe.
+        hits_tuples = _grep_recursive(symbol, ".", 200, excl)
         abs_path = os.path.abspath(path)
         ext_family = _EXT_FAMILIES.get(ext, (ext,)) if ext else ()
         _test_marker = re.compile(r"(?:^|/)(?:test_[^/]+|[^/]+_test|[^/]+Test)\.[^/]+$")
         filtered_hits = []
-        for hit in hits:
-            # hit format: "filepath:lineno:content"
-            colon1 = hit.index(":")
-            hit_file = hit[:colon1]
+        for hit_file, lineno, content in hits_tuples:
             if os.path.abspath(hit_file) == abs_path:
                 continue
             if ext_family and not any(hit_file.endswith(e) for e in ext_family):
                 continue
             if _test_marker.search(hit_file):
                 continue
-            filtered_hits.append(hit)
+            filtered_hits.append(f"{hit_file}:{lineno}:{content}")
 
     total = len(filtered_hits)
     shown = filtered_hits[:display_cap]
@@ -9649,7 +9643,9 @@ def op_workspace(path: str) -> str:
     if shown:
         current_file = ""
         for hit in shown:
-            colon1 = hit.index(":")
+            # Drive-letter aware split — skip leading `X:` if a Windows path.
+            _start = 2 if len(hit) > 2 and hit[1] == ":" and hit[0].isalpha() else 0
+            colon1 = hit.index(":", _start)
             rest = hit[colon1 + 1:]
             colon2 = rest.index(":")
             hit_file = hit[:colon1]
