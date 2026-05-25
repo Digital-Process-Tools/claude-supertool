@@ -34,10 +34,12 @@ def _local_branch_check(source: str) -> str:
 def _format_error(stderr: str, resource: str, identifier: str) -> str:
     """Classify gh errors into actionable messages for LLMs."""
     s = stderr.lower()
+    if "github host" in s or "not a git repository" in s or "git remotes" in s:
+        return f"ERROR: cwd is not a GitHub repo. cd into a GitHub-cloned repo, or run gh directly with --repo OWNER/REPO."
     if "could not resolve" in s or "404" in s or "not found" in s:
         return f"ERROR: {resource} #{identifier} not found. Check the ID or verify you're in the right repo (gh repo view)."
-    if "auth" in s or "login" in s or "token" in s:
-        return f"ERROR: gh CLI not authenticated. Run: gh auth login"
+    if "401" in s or "unauthorized" in s or "not logged in" in s or "token" in s:
+        return f"ERROR: gh CLI not authenticated. Run: gh auth login (verify with: gh auth status)"
     if "rate limit" in s or "429" in s:
         return "ERROR: GitHub API rate limit exceeded. Wait a few minutes and retry."
     if "403" in s or "forbidden" in s:
