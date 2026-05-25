@@ -9,6 +9,13 @@ from pathlib import Path
 
 import pytest
 
+import sys
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Adapter tests use bash shebang stubs (#!/usr/bin/env bash) — not available on Windows runners",
+)
+
 ADAPTER = Path(__file__).parent.parent / "formatters" / "php-cs-fixer" / "php-cs-fixer.py"
 
 
