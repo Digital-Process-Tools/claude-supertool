@@ -20,6 +20,9 @@ classifiers = [
     "Topic :: Utilities",
 ]
 
+[project.scripts]
+supertool = "supertool:_cli"
+
 [project.urls]
 Homepage = "https://github.com/Digital-Process-Tools/claude-supertool"
 Repository = "https://github.com/Digital-Process-Tools/claude-supertool"

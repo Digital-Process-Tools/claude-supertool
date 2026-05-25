@@ -11150,5 +11150,15 @@ def _body_indicates_failure(body: str) -> bool:
     return _FAIL_MARKER.search(body) is not None
 
 
+def _cli() -> int:
+    """Console-script entry point — declared in pyproject [project.scripts].
+
+    pip-installed wrapper invokes this with no args; main() expects argv, so
+    forward sys.argv[1:]. This is the install path that works on Windows
+    (no POSIX symlink required).
+    """
+    return main(sys.argv[1:])
+
+
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    sys.exit(_cli())
