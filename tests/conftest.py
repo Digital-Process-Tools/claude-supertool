@@ -27,12 +27,15 @@ def pytest_configure(config):  # noqa: ARG001
     # `tmp_path` for body files (outside the production .max/ / drafts/ /
     # posts/ / blog/ allowlist) and don't `|force`, so opt the suite in.
     # Security regression tests in test_security_publish.py unset these.
-    pytest_root = os.environ.get("PYTEST_CURRENT_TEST") or "/tmp/pytest-of-"
-    # tmp_path lives under /private/var/folders (macOS) or /tmp (Linux).
-    # Add the broadest sensible roots to the allowlist for tests.
+    # tmp_path lives under tempfile.gettempdir() — /tmp (Linux), /var/folders
+    # (macOS), C:\Users\...\AppData\Local\Temp (Windows). Joining with the
+    # platform's path separator (os.pathsep) keeps the Windows drive-letter
+    # colon from being interpreted as a list separator.
+    import tempfile
+    _tmp_roots = [tempfile.gettempdir(), "/tmp", "/var/folders", "/private/var/folders"]
     os.environ.setdefault(
         "SUPERTOOL_PUBLISH_BODY_ALLOWLIST",
-        "/private/var/folders:/tmp:/var/folders",
+        os.pathsep.join(_tmp_roots),
     )
     os.environ.setdefault("SUPERTOOL_NO_PUBLISH_CONFIRM", "1")
 

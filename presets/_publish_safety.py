@@ -66,13 +66,16 @@ def _body_allowlist() -> tuple[Path, ...]:
 
     Additive sources:
       1. `_DEFAULT_BODY_ALLOWLIST`
-      2. `$SUPERTOOL_PUBLISH_BODY_ALLOWLIST` env (colon-separated)
+      2. `$SUPERTOOL_PUBLISH_BODY_ALLOWLIST` env (os.pathsep-separated:
+         `:` on POSIX, `;` on Windows)
       3. `"publish_body_allowlist": [...]` in `.supertool.json`
     """
     paths = list(_DEFAULT_BODY_ALLOWLIST)
     extra = os.environ.get("SUPERTOOL_PUBLISH_BODY_ALLOWLIST", "")
     if extra:
-        paths.extend(p for p in extra.split(":") if p)
+        # os.pathsep — `:` on POSIX, `;` on Windows. A literal `:` would
+        # mangle Windows paths like `C:\Temp\drafts` at the drive letter.
+        paths.extend(p for p in extra.split(os.pathsep) if p)
     cfg_extra = _supertool_config().get("publish_body_allowlist")
     if isinstance(cfg_extra, list):
         paths.extend(str(p) for p in cfg_extra if isinstance(p, str))
@@ -109,7 +112,7 @@ def safe_resolve_body_path(arg: str) -> Path:
         f"ERROR: publish body path escapes the safety allowlist: {raw_path!r}\n"
         f"  resolved to: {resolved}\n"
         f"  allowed dirs (relative to cwd): {rel}\n"
-        f"  Extend (additive): SUPERTOOL_PUBLISH_BODY_ALLOWLIST=path1:path2\n"
+        f"  Extend (additive): SUPERTOOL_PUBLISH_BODY_ALLOWLIST=path1{os.pathsep}path2\n"
         f"    or `\"publish_body_allowlist\": [\"path1\"]` in .supertool.json\n"
     )
     sys.exit(2)
