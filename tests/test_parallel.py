@@ -20,6 +20,10 @@ def _subprocess_env(extra: dict[str, str] | None = None) -> dict[str, str]:
     """
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
+    # Force unwrapped output — without this, supertool delegates `read` to rtk
+    # when rtk is on the user's PATH, which uses different rendering (`1 │ hi`
+    # vs `     1→hi`) and breaks the byte-identical assertions below.
+    env["SUPERTOOL_NO_RTK"] = "1"
     env.pop("SUPERTOOL_PARALLEL", None)
     if extra:
         env.update(extra)
