@@ -166,16 +166,22 @@ def test_main_full_mode_with_assignees_age_threads(monkeypatch, capsys) -> None:
         assignees=[{"login": "alice"}, {"login": "bob"}],
         createdAt="2026-05-01T10:00:00Z",
         updatedAt="2026-05-08T10:00:00Z",
-        reviewThreads=[
+    )
+    graphql_payload = json.dumps({
+        "data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": [
             {"isResolved": True},
             {"isResolved": False},
             {"isResolved": False},
-        ],
-    )
-    monkeypatch.setattr(
-        pr.subprocess, "run",
-        lambda *a, **kw: _fake_run(payload, returncode=0),
-    )
+        ]}}}}
+    })
+
+    def dispatch(*a, **kw):
+        argv = a[0] if a else kw.get("args", [])
+        if "graphql" in argv:
+            return _fake_run(graphql_payload, returncode=0)
+        return _fake_run(payload, returncode=0)
+
+    monkeypatch.setattr(pr.subprocess, "run", dispatch)
     monkeypatch.setattr(sys, "argv", ["pr.py", "12"])
     rc = pr.main()
     out = capsys.readouterr().out

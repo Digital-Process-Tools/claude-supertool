@@ -64,6 +64,36 @@ def _local_branch_check(source: str) -> str:
         return ""
 
 
+def _fetch_review_threads(url: str, number: int | str) -> list[dict]:
+    """Fetch reviewThreads via GraphQL — gh pr view --json doesn't expose them.
+
+    Parses owner/repo from PR URL. Returns [] on any failure (silent fallback).
+    """
+    if not url:
+        return []
+    m = re.match(r"https?://github\.com/([^/]+)/([^/]+)/pull/\d+", url)
+    if not m:
+        return []
+    owner, repo = m.group(1), m.group(2)
+    query = (
+        "query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r)"
+        "{pullRequest(number:$n){reviewThreads(first:100){nodes{isResolved}}}}}"
+    )
+    try:
+        r = _gh([
+            "api", "graphql",
+            "-f", f"query={query}",
+            "-F", f"o={owner}", "-F", f"r={repo}", "-F", f"n={number}",
+        ])
+        if r.returncode != 0:
+            return []
+        data = json.loads(r.stdout)
+        return (((data.get("data") or {}).get("repository") or {})
+                .get("pullRequest", {}).get("reviewThreads", {}).get("nodes") or [])
+    except (subprocess.TimeoutExpired, json.JSONDecodeError):
+        return []
+
+
 def _format_error(stderr: str, resource: str, identifier: str) -> str:
     """Classify gh errors into actionable messages for LLMs."""
     s = stderr.lower()
@@ -123,7 +153,7 @@ def main() -> int:
             "number,title,state,author,headRefName,baseRefName,labels,"
             "milestone,reviewDecision,reviews,mergeCommit,mergeable,"
             "isDraft,url,body,comments,additions,deletions,changedFiles,"
-            "statusCheckRollup,assignees,createdAt,updatedAt,reviewThreads"
+            "statusCheckRollup,assignees,createdAt,updatedAt"
         ])
     except FileNotFoundError:
         print("ERROR: gh not found — install from https://cli.github.com")
@@ -205,8 +235,8 @@ def main() -> int:
             age_str += f" | Updated: {_relative_age(updated_at)}"
         print(age_str)
 
-    # Unresolved review threads — distinct blocker from comments
-    review_threads = d.get("reviewThreads") or []
+    # Unresolved review threads — fetched via GraphQL (not exposed by gh pr view --json)
+    review_threads = _fetch_review_threads(d.get("url", ""), iid)
     if review_threads:
         unresolved = sum(1 for t in review_threads if not t.get("isResolved"))
         print(f"Unresolved threads: {unresolved} / {len(review_threads)}")
