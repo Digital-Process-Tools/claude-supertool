@@ -8832,6 +8832,40 @@ def _formatter_render_row(result: Dict[str, Any]) -> Optional[str]:
     return line
 
 
+# Deferred-formatter state for multi-op invocations.
+# When _DEFER_FORMATTERS is True, _run_with_validators queues formatter
+# (path → {name: spec}) instead of running them inline. main() drains the
+# queue once after all ops complete, ensuring tidy rules (e.g.
+# no_unused_imports) don't strip code that a later op in the same call
+# was about to use. See issue #164.
+_DEFER_FORMATTERS: bool = False
+_FORMAT_QUEUE: Dict[str, Dict[str, Dict[str, Any]]] = {}
+
+
+def _drain_format_queue() -> str:
+    """Run queued formatters on each path once. Returns rendered output block."""
+    global _FORMAT_QUEUE
+    if not _FORMAT_QUEUE:
+        return ""
+    rows: list = []
+    for path, applicable in _FORMAT_QUEUE.items():
+        if not applicable:
+            continue
+        results = _formatters_run_batch(applicable, path)
+        path_rows: list = []
+        for result in results:
+            row = _formatter_render_row(result)
+            if row:
+                path_rows.append(row)
+        if path_rows:
+            rows.append(f"  {path}")
+            rows.extend(f"    {r}" for r in path_rows)
+    _FORMAT_QUEUE = {}
+    if not rows:
+        return ""
+    return "\n--- formatters (deferred) ---\n" + "\n".join(rows) + "\n"
+
+
 def _formatters_run_batch(
     applicable: Dict[str, Dict[str, Any]], path: str
 ) -> list:
@@ -8866,6 +8900,15 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
     applicable_fmt = _applicable_formatters(op, path)
     applicable = _applicable_validators(op, path)
     applicable_notif = _applicable_notifiers(op, path)
+
+    # Multi-op invocation: queue formatters for end-of-batch instead of
+    # running inline. Tidy rules (no_unused_imports) would otherwise strip
+    # symbols a later op in the same call is about to consume. Issue #164.
+    if _DEFER_FORMATTERS and applicable_fmt:
+        abs_path = os.path.abspath(path)
+        bucket = _FORMAT_QUEUE.setdefault(abs_path, {})
+        bucket.update(applicable_fmt)
+        applicable_fmt = {}
     if not applicable_fmt and not applicable:
         # No validators/formatters — still need pre_content for notifier diff view
         pre_for_notif = None
@@ -11243,28 +11286,49 @@ def main(argv: List[str]) -> int:
     # sequential to keep reasoning simple. Output order = input order.
     bodies: List[str]
     workers = _parallel_workers()
-    if (
+    parallel_path = (
         workers >= 2
         and len(argv) > 1
         and all(_is_parallel_safe(a) for a in argv)
-    ):
-        # Warm caches before threads so module-global init races are avoided
-        _load_config()
-        _has_rtk()
-        _has_tree_sitter()
-        _has_ctags()
-        from concurrent.futures import ThreadPoolExecutor
-        max_workers = min(workers, len(argv))
-        with ThreadPoolExecutor(max_workers=max_workers) as ex:
-            bodies = list(ex.map(dispatch, argv))
-    else:
-        bodies = [dispatch(a) for a in argv]
+    )
+    # Defer formatters for multi-op sequential invocations (mutating ops).
+    # Parallel path is read-only — no formatters fire there anyway.
+    global _DEFER_FORMATTERS, _FORMAT_QUEUE
+    defer = len(argv) > 1 and not parallel_path
+    if defer:
+        _DEFER_FORMATTERS = True
+        _FORMAT_QUEUE = {}
+
+    try:
+        if parallel_path:
+            # Warm caches before threads so module-global init races are avoided
+            _load_config()
+            _has_rtk()
+            _has_tree_sitter()
+            _has_ctags()
+            from concurrent.futures import ThreadPoolExecutor
+            max_workers = min(workers, len(argv))
+            with ThreadPoolExecutor(max_workers=max_workers) as ex:
+                bodies = list(ex.map(dispatch, argv))
+        else:
+            bodies = [dispatch(a) for a in argv]
+    finally:
+        if defer:
+            _DEFER_FORMATTERS = False
 
     for body in bodies:
         sys.stdout.write(body)
         total_out_bytes += len(body.encode("utf-8"))
         if _body_indicates_failure(body):
             any_failure = True
+
+    # Drain deferred formatters now that every op has landed.
+    if defer:
+        drain_out = _drain_format_queue()
+        if drain_out:
+            sys.stdout.write(drain_out)
+            total_out_bytes += len(drain_out.encode("utf-8"))
+
     log_call(argv, total_out_bytes)
     return 1 if any_failure else 0
 
