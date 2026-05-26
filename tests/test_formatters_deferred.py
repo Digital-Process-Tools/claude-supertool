@@ -82,6 +82,53 @@ def test_defer_handles_different_files_independently(tmp_path, monkeypatch) -> N
     assert counter.read_text().count("run\n") == 2
 
 
+def test_defer_runs_formatter_on_survivor_when_later_op_rolls_back(tmp_path, monkeypatch) -> None:
+    """Op 1 succeeds, op 2's validator rolls back — formatter still runs on op 1's file."""
+    a = tmp_path / "a.py"
+    b = tmp_path / "b.py"
+    a.write_text("x = 1\n")
+    b.write_text("y = 1\n")
+
+    cmd, counter = _make_counting_cmd(tmp_path)
+    # Validator: fails when file contains "BAD". rollback_on_fail restores pre-content.
+    val_script = tmp_path / "val.sh"
+    val_script.write_text(
+        "#!/bin/sh\n"
+        'if grep -q BAD "$1"; then\n'
+        '  printf \'{"ok":false,"tool":"fakeval","errors":[{"msg":"bad token"}]}\'\n'
+        "  exit 1\n"
+        "fi\n"
+        'printf \'{"ok":true,"tool":"fakeval"}\'\n'
+    )
+    val_script.chmod(0o755)
+
+    supertool._CONFIG = {
+        "formatters": {
+            "fakefmt": {"cmd": cmd, "hooks_into": ["edit"], "match": "*.py"},
+        },
+        "validators": {
+            "fakeval": {
+                "cmd": f"{val_script} {{file}}",
+                "hooks_into": ["edit"],
+                "match": "*.py",
+                "rollback_on_fail": True,
+            },
+        },
+    }
+    supertool._CONFIG_CHECKED = True
+
+    monkeypatch.chdir(tmp_path)
+    supertool.main([
+        f"edit:::x = 1:::x = 2:::{a}",        # clean — survives
+        f"edit:::y = 1:::y = BAD:::{b}",      # validator fails → rollback
+    ])
+    # Survivor edited; rolled-back file restored.
+    assert a.read_text() == "x = 2\n"
+    assert b.read_text() == "y = 1\n"
+    # Formatter ran (deferred) at least once — survivor a.py must be in the queue.
+    assert counter.read_text().count("run\n") >= 1
+
+
 def test_defer_state_reset_between_invocations(tmp_path, monkeypatch) -> None:
     """Module-level queue must not leak across main() calls."""
     target = tmp_path / "c.py"
