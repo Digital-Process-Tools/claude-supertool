@@ -38,6 +38,10 @@ jobs:
           python -c "import shutil; shutil.copyfile('supertool.py', 'supertool')"
           python -c "import os, stat; os.chmod('supertool', os.stat('supertool').st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)"
       - name: Run tests (full suite — slow tests included)
-        # Override pyproject addopts default of `-m 'not slow'` so CI exercises
-        # the slow MCP-fallback and batch-stress paths the dev inner loop skips.
-        run: pytest -m ''
+        # DIAG #188 — write FAILED test IDs via junit-xml parser. Force bash
+        # shell so `|| true` works on Windows (PowerShell default would exit on
+        # pytest's non-zero status and skip the parser).
+        shell: bash
+        run: |
+          pytest -m '' --tb=no --no-cov -rfE -q --junit-xml=junit.xml || true
+          python -c "import xml.etree.ElementTree as ET; t=ET.parse('junit.xml'); [print('FAILED', tc.attrib['classname']+'.'+tc.attrib['name']) for tc in t.getroot().iter('testcase') if any(c.tag in ('failure','error') for c in tc)]"
