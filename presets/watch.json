@@ -2,19 +2,19 @@
   "description": "Watch ops — spawn background pollers for external sources (MRs, jobs, calendar) that emit events via UDS socket + status files + macOS notifications. Reusable foundation; channel consumer plugs in later.",
   "ops": {
     "watch": {
-      "cmd": "python3 {path}watch/dispatcher.py watch {args}",
+      "cmd": "{python} {path}watch/dispatcher.py watch {args}",
       "timeout": 15,
       "description": "Spawn a background poller for SOURCE:ID. Optional :only=ev1,ev2 filters which events emit notifications. PID file: /tmp/supertool-watch-{SOURCE}__{ID}.pid",
       "syntax": "watch:SOURCE:ID[:only=event1,event2]"
     },
     "unwatch": {
-      "cmd": "python3 {path}watch/dispatcher.py unwatch {args}",
+      "cmd": "{python} {path}watch/dispatcher.py unwatch {args}",
       "timeout": 10,
       "description": "Kill the poller for SOURCE:ID and remove its PID file.",
       "syntax": "unwatch:SOURCE:ID"
     },
     "watches": {
-      "cmd": "python3 {path}watch/dispatcher.py list",
+      "cmd": "{python} {path}watch/dispatcher.py list",
       "timeout": 5,
       "description": "List active watch pollers as a table: source, id, started, last_event, pid.",
       "syntax": "watches"

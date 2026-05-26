@@ -558,7 +558,7 @@ class TestArgPlaceholderColonHandling:
             "import sys; open(sys.argv[-1], 'w').write(repr(sys.argv[1:-1]))\n"
         )
         supertool._CONFIG = {
-            "ops": {"echo": {"cmd": f"python3 {script} {{arg}} {captured}"}}
+            "ops": {"echo": {"cmd": f"{{python}} {script.as_posix()} {{arg}} {captured.as_posix()}"}}
         }
         # Input: 'echo:16:9' tokenizes to parts = ['echo', '16', '9'].
         # With {arg}, only '16' goes through (ratio is NOT a URL — no greedy absorb).
@@ -575,7 +575,7 @@ class TestArgPlaceholderColonHandling:
             "import sys; open(sys.argv[-1], 'w').write(repr(sys.argv[1:-1]))\n"
         )
         supertool._CONFIG = {
-            "ops": {"echo": {"cmd": f"python3 {script} {{args}} {captured}"}}
+            "ops": {"echo": {"cmd": f"{{python}} {script.as_posix()} {{args}} {captured.as_posix()}"}}
         }
         result = supertool.dispatch("echo:16:9")
         assert "PASS" in result
@@ -595,7 +595,7 @@ class TestArgPlaceholderColonHandling:
             "open(sys.argv[-1], 'w').write(rejoined)\n"
         )
         supertool._CONFIG = {
-            "ops": {"echo": {"cmd": f"python3 {script} {{args}} {captured}"}}
+            "ops": {"echo": {"cmd": f"{{python}} {script.as_posix()} {{args}} {captured.as_posix()}"}}
         }
         # Compound colon-separated string (NOT a URL — _split_arg won't absorb).
         compound = "16:9:hd"
@@ -612,7 +612,7 @@ class TestArgPlaceholderColonHandling:
             "import sys; open(sys.argv[-1], 'w').write(repr(sys.argv[1:-1]))\n"
         )
         supertool._CONFIG = {
-            "ops": {"echo": {"cmd": f"python3 {script} {{args}} {captured}"}}
+            "ops": {"echo": {"cmd": f"{{python}} {script.as_posix()} {{args}} {captured.as_posix()}"}}
         }
         url = "https://dev.to/marcosomma/the-real-token-economy-3j3e"
         result = supertool.dispatch(f"echo:{url}")
@@ -629,7 +629,7 @@ class TestArgPlaceholderColonHandling:
             "import sys; open(sys.argv[-1], 'w').write(repr(sys.argv[1:-1]))\n"
         )
         supertool._CONFIG = {
-            "ops": {"echo": {"cmd": f"python3 {script} {{args}} {captured}"}}
+            "ops": {"echo": {"cmd": f"{{python}} {script.as_posix()} {{args}} {captured.as_posix()}"}}
         }
         result = supertool.dispatch("echo:1234|hello world|99")
         assert "PASS" in result
@@ -647,7 +647,7 @@ class TestArgPlaceholderColonHandling:
             "open(sys.argv[-1], 'w').write(rejoined)\n"
         )
         supertool._CONFIG = {
-            "ops": {"echo": {"cmd": f"python3 {script} {{args}} {captured}"}}
+            "ops": {"echo": {"cmd": f"{{python}} {script.as_posix()} {{args}} {captured.as_posix()}"}}
         }
         ts = "2026-05-02T15:01:45+00:00"
         result = supertool.dispatch(f"echo:{ts}")
@@ -725,7 +725,7 @@ class TestShellMetacharsNotExecuted:
             f"open({str(captured)!r}, 'w').write(repr(sys.argv[1:]))\n"
         )
         supertool._CONFIG = {
-            "ops": {"echo": {"cmd": f"python3 {script} {{args}}"}}
+            "ops": {"echo": {"cmd": f"{{python}} {script.as_posix()} {{args}}"}}
         }
         # Three separate args via `:` delimiter → three argv elements
         result = supertool.dispatch("echo:alpha:beta:gamma")
@@ -749,7 +749,7 @@ class TestShellMetacharsNotExecuted:
             f"open({str(captured)!r}, 'w').write(repr(sys.argv[1:]))\n"
         )
         supertool._CONFIG = {
-            "ops": {"echo": {"cmd": f"python3 {script} {{arg}}"}}
+            "ops": {"echo": {"cmd": f"{{python}} {script.as_posix()} {{arg}}"}}
         }
         # Single arg with embedded space
         result = supertool._resolve_custom_op("echo", ["echo", "hello world"])
@@ -772,7 +772,7 @@ class TestShellMetacharsNotExecuted:
             f"open({str(captured)!r}, 'w').write(repr(sys.argv[1:]))\n"
         )
         supertool._CONFIG = {
-            "ops": {"x": {"cmd": f"python3 {script} $UNDEFINED_VAR_XYZ"}}
+            "ops": {"x": {"cmd": f"{{python}} {script.as_posix()} $UNDEFINED_VAR_XYZ"}}
         }
         result = supertool._resolve_custom_op("x", ["x", "unused.txt"])
         assert result is not None and "PASS" in result

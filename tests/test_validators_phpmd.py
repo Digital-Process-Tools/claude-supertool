@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -22,6 +23,10 @@ def test_phpmd_no_arg_returns_schema_error() -> None:
     assert "no file arg" in data["errors"][0]["msg"]
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Stub uses bash shebang — not executable on Windows without WSL",
+)
 def test_phpmd_clean_output_parses_to_ok(tmp_path: Path) -> None:
     """When phpmd produces no output (no violations), adapter emits ok=True."""
     f = tmp_path / "clean.php"
@@ -43,6 +48,10 @@ def test_phpmd_clean_output_parses_to_ok(tmp_path: Path) -> None:
     assert data["errors"] == []
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Stub uses bash shebang — not executable on Windows without WSL",
+)
 def test_phpmd_parses_text_output(tmp_path: Path) -> None:
     """Adapter must parse phpmd text format into SCHEMA.md errors."""
     f = tmp_path / "dirty.php"

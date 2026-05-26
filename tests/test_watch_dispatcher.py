@@ -77,6 +77,12 @@ def test_list_empty(monkeypatch, tmp_path) -> None:
     assert rows == []
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="OpenProcess for PID-existence check raises OSError WinError 87 on "
+    "Windows for invalid PIDs; the stale-pruning logic uses POSIX "
+    "os.kill(pid, 0) semantics that don't map cleanly to Windows.",
+)
 def test_list_skips_stale_pid_file(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(transport, "STATE_DIR", str(tmp_path))
     # PID 1 exists (init); a clearly stale impossible PID — pick a very high one

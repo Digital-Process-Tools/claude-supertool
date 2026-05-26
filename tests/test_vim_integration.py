@@ -128,7 +128,7 @@ def test_vimgolf_strip_comments_swap_args(tmp_path: Path, monkeypatch) -> None:
         str(f),
         "%s/  +#.*//g␞%s/\\(a, b, c\\)/(c, b, a)/",
     )
-    assert f.read_text() == (
+    assert f.read_text(encoding="utf-8") == (
         "def foo(c, b, a):\n"
         "    x = a + b\n"
         "    return x\n"
@@ -143,9 +143,9 @@ def test_vimgolf_whitespace_to_csv(tmp_path: Path, monkeypatch) -> None:
         "name    age    city\n"
         "Alice   30     NYC\n"
         "Bob     25     LA\n"
-    )
+    , encoding="utf-8")
     supertool.op_vim(str(f), "%s/ +/,/g")
-    assert f.read_text() == (
+    assert f.read_text(encoding="utf-8") == (
         "name,age,city\n"
         "Alice,30,NYC\n"
         "Bob,25,LA\n"
@@ -158,7 +158,7 @@ def test_vimgolf_collapse_adjacent_duplicates(tmp_path: Path, monkeypatch) -> No
     f = tmp_path / "x.txt"
     f.write_text("aabbcc\nddeeff\ngghhii\n")
     supertool.op_vim(str(f), "%s/(.)\\1+/\\1/g")
-    assert f.read_text() == "abc\ndef\nghi\n"
+    assert f.read_text(encoding="utf-8") == "abc\ndef\nghi\n"
 
 
 def test_strip_blank_lines(tmp_path: Path, monkeypatch) -> None:
@@ -167,7 +167,7 @@ def test_strip_blank_lines(tmp_path: Path, monkeypatch) -> None:
     f = tmp_path / "x.txt"
     f.write_text("line1\n\nline2\n\n\nline3\n")
     supertool.op_vim(str(f), "%s/^\\n//g")
-    assert f.read_text() == "line1\nline2\nline3\n"
+    assert f.read_text(encoding="utf-8") == "line1\nline2\nline3\n"
 
 
 def test_markdown_deepen_headings(tmp_path: Path, monkeypatch) -> None:
@@ -176,7 +176,7 @@ def test_markdown_deepen_headings(tmp_path: Path, monkeypatch) -> None:
     f = tmp_path / "x.md"
     f.write_text("# Top\n\n## Sub\n\n# Another top\n")
     supertool.op_vim(str(f), "%s/^#/##/g")
-    assert f.read_text() == "## Top\n\n### Sub\n\n## Another top\n"
+    assert f.read_text(encoding="utf-8") == "## Top\n\n### Sub\n\n## Another top\n"
 
 
 def test_python_decorator_wrap_all_defs(tmp_path: Path, monkeypatch) -> None:
@@ -185,7 +185,7 @@ def test_python_decorator_wrap_all_defs(tmp_path: Path, monkeypatch) -> None:
     f = tmp_path / "x.py"
     f.write_text("def foo():\n    pass\n\ndef bar(x):\n    return x\n")
     supertool.op_vim(str(f), "%s/^def /@profile\\ndef /g")
-    assert f.read_text() == (
+    assert f.read_text(encoding="utf-8") == (
         "@profile\ndef foo():\n    pass\n\n"
         "@profile\ndef bar(x):\n    return x\n"
     )
@@ -200,12 +200,12 @@ def test_json_config_bump_and_insert(tmp_path: Path, monkeypatch) -> None:
         '    "version": "1.0.0",\n'
         '    "name": "demo"\n'
         "}\n"
-    )
+    , encoding="utf-8")
     supertool.op_vim(
         str(f),
         '%s/"1.0.0"/"2.0.0"/␞%s/"name": "demo"$/"name": "demo",/␞G␞?^}␞O    "debug": true',
     )
-    assert f.read_text() == (
+    assert f.read_text(encoding="utf-8") == (
         "{\n"
         '    "version": "2.0.0",\n'
         '    "name": "demo",\n'
@@ -228,7 +228,7 @@ def test_online_delete_lines_matching_pattern(tmp_path: Path, monkeypatch) -> No
         'console.log("three: ", three);\n'
     )
     supertool.op_vim(str(f), "%s/^.*console.*\\n//g")
-    assert f.read_text() == (
+    assert f.read_text(encoding="utf-8") == (
         "const one = 1;\n"
         "const two = 2;\n"
         "const three = 3;\n"
@@ -241,7 +241,7 @@ def test_online_append_semicolon_non_empty_lines(tmp_path: Path, monkeypatch) ->
     f = tmp_path / "x.js"
     f.write_text("const x = 5\nconst y = 10\nconst z = 15\n")
     supertool.op_vim(str(f), "%s/(.+)$/\\1;/g")
-    assert f.read_text() == "const x = 5;\nconst y = 10;\nconst z = 15;\n"
+    assert f.read_text(encoding="utf-8") == "const x = 5;\nconst y = 10;\nconst z = 15;\n"
 
 
 def test_online_reorder_lastname_firstname(tmp_path: Path, monkeypatch) -> None:
@@ -250,9 +250,9 @@ def test_online_reorder_lastname_firstname(tmp_path: Path, monkeypatch) -> None:
     f = tmp_path / "names.txt"
     f.write_text(
         "Smith, John\nJohnson, Sarah\nWilliams, Mike\nBrown, Emma\nDavis, Robert\n"
-    )
+    , encoding="utf-8")
     supertool.op_vim(str(f), "%s/(.*), (.*)/\\2 \\1/g")
-    assert f.read_text() == (
+    assert f.read_text(encoding="utf-8") == (
         "John Smith\nSarah Johnson\nMike Williams\nEmma Brown\nRobert Davis\n"
     )
 
@@ -287,7 +287,7 @@ def test_online_zen_of_python_refactor(tmp_path: Path, monkeypatch) -> None:
     keyword, prepend MD heading, append signature."""
     monkeypatch.setenv("SUPERTOOL_VIM_NO_PERSIST", "1")
     f = tmp_path / "zen.md"
-    f.write_text(ZEN_BEFORE)
+    f.write_text(ZEN_BEFORE, encoding="utf-8")
     supertool.op_vim(
         str(f),
         "%s/better/preferable/g"
@@ -295,7 +295,7 @@ def test_online_zen_of_python_refactor(tmp_path: Path, monkeypatch) -> None:
         "␞gg␞O# Zen of Python\\n"
         "␞G␞oEOF — annotated by Max",
     )
-    out = f.read_text()
+    out = f.read_text(encoding="utf-8")
     assert "# Zen of Python" in out.splitlines()[0]
     assert "Dutch" not in out
     assert out.count("preferable") == 8  # all 8 'better' → 'preferable'
@@ -345,7 +345,7 @@ def test_online_linux_kernel_rst_to_md(tmp_path: Path, monkeypatch) -> None:
     MD inline-code, add MD heading markers, delete a paragraph, append footer."""
     monkeypatch.setenv("SUPERTOOL_VIM_NO_PERSIST", "1")
     f = tmp_path / "linux.md"
-    f.write_text(LINUX_RST)
+    f.write_text(LINUX_RST, encoding="utf-8")
     supertool.op_vim(
         str(f),
         "gg␞dd␞dd"                                              # drop `.. _codingstyle:` + blank
@@ -357,7 +357,7 @@ def test_online_linux_kernel_rst_to_md(tmp_path: Path, monkeypatch) -> None:
         "␞gg␞/First off␞2dd"                                    # drop paragraph (First off + Burn them)
         "␞G␞oConverted from RST by vi",
     )
-    out = f.read_text()
+    out = f.read_text(encoding="utf-8")
     assert out.startswith("# Linux kernel coding style")
     assert "## 1) Indentation" in out
     assert "Burn them" not in out
@@ -378,9 +378,9 @@ def test_online_prepend_https_to_bare_domains(tmp_path: Path, monkeypatch) -> No
         "github.com\n"
         "http://legacy.example.com\n"
         "devhints.io\n"
-    )
+    , encoding="utf-8")
     supertool.op_vim(str(f), "%s/^([a-z]+\\.[a-z]+)$/https:\\/\\/\\1/g")
-    assert f.read_text() == (
+    assert f.read_text(encoding="utf-8") == (
         "https://example.com\n"
         "https://secure.example.com\n"
         "https://github.com\n"
@@ -399,7 +399,7 @@ def test_sql_migration_rename_table(tmp_path: Path, monkeypatch) -> None:
         "DROP INDEX idx_old_users_legacy;\n"
     )
     supertool.op_vim(str(f), "%s/old_users/account/g")
-    assert f.read_text() == (
+    assert f.read_text(encoding="utf-8") == (
         "ALTER TABLE account ADD COLUMN email VARCHAR(255);\n"
         "CREATE INDEX idx_account_email ON account (email);\n"
         "DROP INDEX idx_account_legacy;\n"
@@ -412,22 +412,25 @@ def test_nginx_refactor_one_call(tmp_path: Path, monkeypatch) -> None:
     11 actions, one vi call."""
     monkeypatch.setenv("SUPERTOOL_VIM_NO_PERSIST", "1")
     target = tmp_path / "site.conf"
-    target.write_text(NGINX_BEFORE)
+    target.write_text(NGINX_BEFORE, encoding="utf-8")
     extra = tmp_path / "extra.txt"
-    extra.write_text(NGINX_EXTRA)
+    extra.write_text(NGINX_EXTRA, encoding="utf-8")
 
     script = (
         "%s/old.example.com/new.example.com/g"
         "␞%s/\\/home\\/user\\/old-app\\//\\/srv\\/new-app\\//g"
         "␞gg␞/# deprecated:␞5dd"
         "␞G␞?^}␞k"
-        f"␞:r {extra}"
+        # as_posix avoids Windows backslashes in the vim `:r` path that would
+        # otherwise be interpreted as regex escapes by the vim parser.
+        f"␞:r {extra.as_posix()}"
         "␞gg␞O# generated 2026-05-16 — DO NOT EDIT"
     )
     out = supertool.op_vim(str(target), script)
     assert "ERROR" not in out, f"unexpected error:\n{out}"
-    assert target.read_text() == NGINX_AFTER, (
-        f"refactor diverged\n--- got ---\n{target.read_text()}\n--- want ---\n{NGINX_AFTER}"
+    got = target.read_text(encoding="utf-8")
+    assert got == NGINX_AFTER, (
+        f"refactor diverged\n--- got ---\n{got}\n--- want ---\n{NGINX_AFTER}"
     )
 
 
@@ -436,9 +439,9 @@ def test_weirdest_combo_one_call(tmp_path: Path, monkeypatch) -> None:
     swap greeting, inject method inside class, prepend class docblock."""
     monkeypatch.setenv("SUPERTOOL_VIM_NO_PERSIST", "1")
     target = tmp_path / "demo.php"
-    target.write_text(DEMO_BEFORE)
+    target.write_text(DEMO_BEFORE, encoding="utf-8")
     body = tmp_path / "method-body.txt"
-    body.write_text(METHOD_BODY)
+    body.write_text(METHOD_BODY, encoding="utf-8")
 
     script = (
         "%s/OldName/Greeter/g"
@@ -453,9 +456,10 @@ def test_weirdest_combo_one_call(tmp_path: Path, monkeypatch) -> None:
     )
     out = supertool.op_vim(str(target), script)
     assert "ERROR" not in out, f"unexpected error in script:\n{out}"
-    assert target.read_text() == DEMO_AFTER, (
+    got = target.read_text(encoding="utf-8")
+    assert got == DEMO_AFTER, (
         f"refactor diverged from expected output\n"
-        f"--- got ---\n{target.read_text()}\n"
+        f"--- got ---\n{got}\n"
         f"--- want ---\n{DEMO_AFTER}"
     )
 
@@ -479,7 +483,7 @@ def test_literal_semicolon_chained_in_real_script(tmp_path: Path, monkeypatch) -
         ":s/^.*echo \\$debug; \\/\\/ remove me\\n//"
         "␞gg␞A // touched",
     )
-    assert f.read_text() == (
+    assert f.read_text(encoding="utf-8") == (
         "<?php // touched\n"
         "function go(): void {\n"
         "    return;\n"

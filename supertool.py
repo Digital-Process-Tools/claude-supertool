@@ -270,8 +270,12 @@ _CONFIG_CHECKED = False
 # MCP server specs parsed from _CONFIG["mcp"] — populated by _load_config()
 _mcp_specs: Dict[str, dict] = {}
 
-# Supertool install directory (where supertool.py actually lives, following symlinks)
-_INSTALL_DIR = os.path.dirname(os.path.realpath(__file__))
+# Supertool install directory (where supertool.py actually lives, following symlinks).
+# Normalised to forward slashes so the directory survives `shlex.split(posix=True)`
+# which would otherwise eat Windows backslashes as escape sequences when
+# `{supertool_dir}` is substituted into validator / formatter / notifier cmd
+# templates. Windows accepts forward-slash paths everywhere; POSIX is unaffected.
+_INSTALL_DIR = os.path.dirname(os.path.realpath(__file__)).replace(os.sep, "/")
 
 
 def _find_preset_file(name: str, project_dir: str) -> str | None:
@@ -298,8 +302,12 @@ def _resolve_preset_cmd(cmd: str, preset_dir: str) -> str:
 
     Example: 'python3 {path}gitlab/issue.py {arg}'
     becomes: 'python3 /home/user/.local/supertool/presets/gitlab/issue.py {arg}'
+
+    Normalises preset_dir to forward slashes — the cmd template flows through
+    `shlex.split(posix=True)` which would otherwise eat Windows backslashes
+    as escape sequences. Forward slashes work on every platform.
     """
-    path_prefix = preset_dir.rstrip("/") + "/"
+    path_prefix = preset_dir.replace(os.sep, "/").rstrip("/") + "/"
     return cmd.replace("{path}", path_prefix)
 
 
@@ -8395,7 +8403,11 @@ def _validator_cache_secret() -> bytes:
     secret = os.urandom(32)
     try:
         secret_path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(secret_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        # O_BINARY is required on Windows to prevent CR/LF translation that
+        # would corrupt the 32-byte raw secret and make len(data) != 32 on
+        # subsequent reads, causing a new secret to be generated every call.
+        _o_binary = getattr(os, "O_BINARY", 0)
+        fd = os.open(secret_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _o_binary, 0o600)
         try:
             os.write(fd, secret)
         finally:

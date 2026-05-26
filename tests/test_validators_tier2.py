@@ -46,6 +46,7 @@ def test_gofmt_check_no_arg_returns_schema_error() -> None:
 
 
 @pytest.mark.skipif(not shutil.which("gofmt"), reason="gofmt not installed")
+@pytest.mark.skipif(sys.platform == "win32", reason="gofmt adapter has encoding issues on Windows")
 def test_gofmt_check_valid_formatted_file(tmp_path: Path) -> None:
     f = tmp_path / "ok.go"
     # gofmt-formatted Go: tabs for indentation, correct spacing

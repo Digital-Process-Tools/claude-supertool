@@ -184,11 +184,19 @@ def split_arg(arg: str, n: int) -> list[str]:
         return result
     if n == 1:
         return [arg]
+    # Skip a leading Windows drive letter (`C:/...` or `C:\...`) when computing
+    # split boundaries so the drive-letter colon is not mistaken for a field
+    # separator. Detect: arg[0] alpha + arg[1] == ':' + arg[2] in '/\\'.
+    _start = (
+        2
+        if len(arg) > 2 and arg[1] == ":" and arg[0].isalpha() and arg[2] in ("/", "\\")
+        else 0
+    )
     if n == 2:
-        idx = arg.index(":")
+        idx = arg.index(":", _start)
         return [arg[:idx], arg[idx + 1:]]
     # n >= 3: first ':' left boundary, last ':' right boundary
-    left = arg.index(":")
+    left = arg.index(":", _start)
     right = arg.rindex(":")
     if left == right:
         result = [arg[:left], arg[left + 1:]]
