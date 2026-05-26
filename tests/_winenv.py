@@ -24,7 +24,7 @@ from typing import Dict
 # ``python.exe`` launch — only SYSTEMROOT + WINDIR for DLL resolution.
 # PATHEXT is kept so ``shutil.which`` behaves the same way for the validator
 # adapter (still returns None for missing tools).
-_KEEP = ("SYSTEMROOT", "WINDIR", "TEMP", "TMP", "PATHEXT", "COMSPEC")
+_KEEP = frozenset({"SYSTEMROOT", "WINDIR", "TEMP", "TMP", "PATHEXT", "COMSPEC"})
 
 
 def empty_path_env() -> Dict[str, str]:

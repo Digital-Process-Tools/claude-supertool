@@ -20,11 +20,11 @@ def _subprocess_env(extra: dict[str, str] | None = None) -> dict[str, str]:
     """
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
-    # Force unwrapped output — without this, supertool delegates `read` to rtk
-    # when rtk is on the user's PATH, which uses different rendering (`1 │ hi`
-    # vs `     1→hi`) and breaks the byte-identical assertions below.
-    env["SUPERTOOL_NO_RTK"] = "1"
     env.pop("SUPERTOOL_PARALLEL", None)
+    # SUPERTOOL_NO_RTK=1 is set in conftest.pytest_configure (covers all
+    # subprocess-spawning tests) — env.copy() picks it up here. Without it,
+    # supertool delegates `read` to rtk and rtk's output format (`1 │ hi`)
+    # breaks the byte-identical assertions below.
     if extra:
         env.update(extra)
     return env
