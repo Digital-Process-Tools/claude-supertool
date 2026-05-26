@@ -722,7 +722,10 @@ def _safe_path(p: str, *, allow_outside_cwd: Optional[bool] = None) -> str:
     try:
         abs_p = os.path.realpath(expanded)
     except (ValueError, OSError) as e:
-        raise SecurityError(f"path cannot be resolved: {p!r} ({e})")
+        # Truncate path in the error message — matches existing SecurityError
+        # style of not echoing arbitrarily-large user input back verbatim.
+        shown = p if len(p) <= 120 else p[:120] + "…"
+        raise SecurityError(f"path cannot be resolved: {shown!r} ({e})")
     if allow_outside_cwd:
         return abs_p
     # Windows: NTFS is case-insensitive (`C:\Users` == `c:\users`) and uses

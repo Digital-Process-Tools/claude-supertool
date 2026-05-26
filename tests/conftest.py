@@ -23,6 +23,11 @@ def pytest_configure(config):  # noqa: ARG001
     import os
     os.environ.setdefault("SUPERTOOL_ALLOW_OUTSIDE_CWD", "1")
     os.environ.setdefault("SUPERTOOL_ALLOW_VIM_SHELL", "1")
+    # Tests that spawn supertool as a subprocess must not delegate `read` to
+    # rtk (different output format breaks byte-identical assertions). The
+    # in-process _disable_rtk_and_config fixture covers same-process tests;
+    # SUPERTOOL_NO_RTK covers subprocess-spawned tests like test_parallel.
+    os.environ.setdefault("SUPERTOOL_NO_RTK", "1")
     # #149: publish-body allowlist + confirm gate. Existing publish tests use
     # `tmp_path` for body files (outside the production .max/ / drafts/ /
     # posts/ / blog/ allowlist) and don't `|force`, so opt the suite in.
