@@ -323,7 +323,9 @@ class TestTomlSpacePrefixedBrace:
         """' {' (leading space, then brace) → JSON. Clean parse."""
         target = tmp_path / "t.txt"
         target.write_text("old_val\n")
-        payload_str = ' {"old": "old_val", "new": "new_val", "path": "' + str(target) + '"}'
+        # as_posix avoids backslash sequences in the JSON string (Windows
+        # paths like `C:\Users\...` would otherwise be invalid escapes).
+        payload_str = ' {"old": "old_val", "new": "new_val", "path": "' + target.as_posix() + '"}'
         f = tmp_path / "p.json"
         f.write_text(payload_str)
         out = _dispatch_reset(f"edit:@{f}")

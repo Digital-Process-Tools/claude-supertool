@@ -145,6 +145,10 @@ def _safe_relpath(path: str, start: str = ".") -> str:
 
 
 MAX_READ_LINES = 300
+# Hard cap on batch:@file op count — prevents DoS via huge payload
+# (10k ops sequentially took ~390s on macOS, hung past timeout on Windows).
+# Override via ops.batch.max_ops in .supertool.json for one-off bulk runs.
+MAX_BATCH_OPS = 1000
 MAX_READ_BYTES = 20000  # ~20KB cap — prevents Claude Code "Output too large"
 MAX_GREP_RESULTS = 10
 MAX_GLOB_RESULTS = 50
@@ -10483,14 +10487,26 @@ def _dispatch_impl(arg: str) -> str:
                         if not isinstance(batch_ops, list):
                             body = "ERROR: batch 'ops' must be a JSON array\n"
                         else:
-                            # Snapshot mode: reorder replace_lines ops on the
-                            # same file bottom-up so caller's line numbers
-                            # refer to the original file state, not the file
-                            # as mutated by earlier ops in the same batch.
-                            batch_ops, _snap_err = _reorder_batch_for_snapshot(batch_ops)
-                            if _snap_err:
-                                body = f"ERROR: {_snap_err}\n"
+                            _cap = _get_op_int("batch", "max_ops", MAX_BATCH_OPS)
+                            _cap_exceeded = len(batch_ops) > _cap
+                            if _cap_exceeded:
+                                body = (
+                                    f"ERROR: batch size {len(batch_ops)} exceeds "
+                                    f"max_ops cap ({_cap}). Override via "
+                                    f"`ops.batch.max_ops` in .supertool.json or split "
+                                    f"into smaller batches.\n"
+                                )
                                 batch_ops = []
+                                _snap_err = ""
+                            else:
+                                # Snapshot mode: reorder replace_lines ops on
+                                # the same file bottom-up so caller line
+                                # numbers refer to the original file state,
+                                # not the file as mutated by earlier ops.
+                                batch_ops, _snap_err = _reorder_batch_for_snapshot(batch_ops)
+                                if _snap_err:
+                                    body = f"ERROR: {_snap_err}\n"
+                                    batch_ops = []
                             results: List[str] = []
                             for _item in batch_ops:
                                 if not isinstance(_item, dict):
@@ -10535,7 +10551,9 @@ def _dispatch_impl(arg: str) -> str:
                                     _sub_result.split("\n")[1].startswith("ERROR")
                                 ):
                                     break
-                            if not _snap_err:
+                            # Only override `body` with joined results when no
+                            # upstream error fired (cap rejection, snapshot reorder).
+                            if not _snap_err and not _cap_exceeded:
                                 body = "".join(results)
         elif op == "validate":
             # verbose flag: literal "verbose" token anywhere after op name.

@@ -29,6 +29,12 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.skipif(
+    not hasattr(socket, "AF_UNIX"),
+    reason="MCP daemon test suite exercises AF_UNIX socket paths / daemon spawn; "
+    "GH Windows runners don't expose AF_UNIX and the suite hangs the runner.",
+)
+
 # ---------------------------------------------------------------------------
 # Helpers: import the modules under test without executing their __main__
 # ---------------------------------------------------------------------------
