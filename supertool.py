@@ -595,12 +595,20 @@ _RTK_CHECKED = False
 
 
 def _has_rtk() -> str | None:
-    """Return rtk binary path if available, None otherwise. Cached."""
+    """Return rtk binary path if available, None otherwise. Cached.
+
+    Honours ``SUPERTOOL_NO_RTK=1`` — used by tests that spawn supertool in a
+    subprocess and need the unwrapped output format regardless of whether the
+    user has rtk on their PATH.
+    """
     global _RTK_PATH, _RTK_CHECKED
     if not _RTK_CHECKED:
         _RTK_CHECKED = True
-        from shutil import which
-        _RTK_PATH = which("rtk")
+        if os.environ.get("SUPERTOOL_NO_RTK") == "1":
+            _RTK_PATH = None
+        else:
+            from shutil import which
+            _RTK_PATH = which("rtk")
     return _RTK_PATH
 
 
@@ -654,6 +662,13 @@ class SecurityError(Exception):
     pass
 
 
+# Hard cap on path length passed to _safe_path. Sized well above MAX_PATH (260)
+# and the extended-length namespace (32767) is too permissive for an op arg —
+# 4096 catches obvious abuse (1MB args from fuzz tests) while leaving every
+# legitimate path well under the limit.
+_MAX_SAFE_PATH_LEN = 4096
+
+
 def _safe_path(p: str, *, allow_outside_cwd: Optional[bool] = None) -> str:
     """Resolve `p` and enforce repo-root containment (closes #146).
 
@@ -693,8 +708,24 @@ def _safe_path(p: str, *, allow_outside_cwd: Optional[bool] = None) -> str:
     # would leak as an uncaught traceback. Reject early with a clean message.
     if "\x00" in p:
         raise SecurityError(f"path contains NUL byte: {p!r}")
+    # Windows: paths longer than MAX_PATH (260) make _getfinalpathname raise
+    # ValueError("path too long for Windows") from inside os.path.realpath.
+    # Reject oversized paths up front with a clean SecurityError so dispatch
+    # returns a clean "ERROR: ..." instead of an uncaught traceback. 4096 is
+    # well above MAX_PATH (260) and extended-length (32767) workable values
+    # — any real op path stays well under it.
+    if len(p) > _MAX_SAFE_PATH_LEN:
+        raise SecurityError(
+            f"path too long ({len(p)} chars, max {_MAX_SAFE_PATH_LEN})"
+        )
     expanded = os.path.expanduser(os.path.expandvars(p))
-    abs_p = os.path.realpath(expanded)
+    try:
+        abs_p = os.path.realpath(expanded)
+    except (ValueError, OSError) as e:
+        # Truncate path in the error message — matches existing SecurityError
+        # style of not echoing arbitrarily-large user input back verbatim.
+        shown = p if len(p) <= 120 else p[:120] + "…"
+        raise SecurityError(f"path cannot be resolved: {shown!r} ({e})")
     if allow_outside_cwd:
         return abs_p
     # Windows: NTFS is case-insensitive (`C:\Users` == `c:\users`) and uses

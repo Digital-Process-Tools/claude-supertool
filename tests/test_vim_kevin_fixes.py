@@ -573,11 +573,11 @@ def test_kevin_log_unescaped_paren_assertTrue_true():
 
 
 def test_kevin_log_HasTagChecker_overescape_dollar():
-    """Mined from log 9abd0ba5 — Kevin actual paste:
-    `:s/HasTagChecker::class, \\$checkerClass/$checkerClass, HasTagChecker::class/`.
+    r"""Mined from log 9abd0ba5 — Kevin actual paste:
+    `:s/HasTagChecker::class, \$checkerClass/$checkerClass, HasTagChecker::class/`.
 
-    Over-escaped `\\$checkerClass` in PAT. Literal-fallback must strip
-    `\\` → `\` → `` to get `$checkerClass`, then content.replace.
+    Over-escaped `\$checkerClass` in PAT. Literal-fallback must strip
+    `\` → `` to get `$checkerClass`, then content.replace.
     """
     p = _tmp("    $checkerClass = $this->api->get(HasTagChecker::class, $checkerClass);\n")
     try:
