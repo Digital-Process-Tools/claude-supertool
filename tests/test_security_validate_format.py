@@ -164,7 +164,8 @@ class TestNulBytePath:
         monkeypatch.setenv("SUPERTOOL_NO_VALIDATOR_CACHE", "1")
 
         bad_path = "/tmp/foo\x00.php"
-        with pytest.raises(ValueError, match="embedded null byte"):
+        # "embedded null byte" on POSIX, "embedded null character" on Windows
+        with pytest.raises(ValueError, match="embedded null"):
             supertool.op_validate(bad_path)
 
     def test_format_nul_byte_in_path_errors_cleanly(self, monkeypatch) -> None:
@@ -178,7 +179,8 @@ class TestNulBytePath:
         _inject_config(monkeypatch, _make_formatter_config("echo {file}"))
 
         bad_path = "/tmp/foo\x00.php"
-        with pytest.raises(ValueError, match="embedded null byte"):
+        # "embedded null byte" on POSIX, "embedded null character" on Windows
+        with pytest.raises(ValueError, match="embedded null"):
             supertool.op_format(bad_path)
 
 

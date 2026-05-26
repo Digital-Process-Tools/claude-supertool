@@ -38,13 +38,16 @@ count_mod = _load("count")
 def _write_xml(tmp_path: Path, content: str, name: str = "test.xml") -> str:
     f = tmp_path / name
     f.write_text(content, encoding="utf-8")
-    return str(f)
+    # Use forward-slash paths so the colon in Windows drive letters (C:\...)
+    # doesn't confuse split_arg's colon-based field separator.
+    return f.as_posix()
 
 
 def _write_xml_bytes(tmp_path: Path, content: bytes, name: str = "test.xml") -> str:
     f = tmp_path / name
     f.write_bytes(content)
-    return str(f)
+    # Use forward-slash paths for the same reason as _write_xml.
+    return f.as_posix()
 
 
 # ---------------------------------------------------------------------------
@@ -338,6 +341,10 @@ def test_nul_byte_in_path_xml_count(tmp_path: Path, capsys) -> None:
 #    If the target is valid XML, the op reads through the symlink.
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows symlink creation requires admin privileges or Developer Mode",
+)
 def test_symlink_to_valid_xml_reads_through(tmp_path: Path, capsys) -> None:
     """SEVERITY: LOW — symlink to valid XML: current behavior is read-through (pin it)."""
     real = tmp_path / "real.xml"

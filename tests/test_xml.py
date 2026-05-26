@@ -45,7 +45,9 @@ common_spec.loader.exec_module(common_mod)
 def _write_xml(tmp_path: Path, content: str, name: str = "test.xml") -> str:
     f = tmp_path / name
     f.write_text(content, encoding="utf-8")
-    return str(f)
+    # Use forward-slash paths so the colon in Windows drive letters (C:\...)
+    # doesn't confuse split_arg's colon-based field separator.
+    return f.as_posix()
 
 
 SIMPLE_XML = """\
@@ -522,13 +524,13 @@ class TestDispatchEndToEnd:
         import subprocess
         result = subprocess.run(
             [
-                str(self._supertool()),
+                sys.executable, str(self._supertool()),
                 f"xml_attr:::{CLOVER_SAMPLE}:::"
                 ".//file[contains(@name,'CommandX')]/line[@count='0']:::num",
             ],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, encoding="utf-8", timeout=10,
         )
-        assert result.returncode == 0, f"stderr: {result.stderr}"
+        assert result.returncode == 0, f"returncode={result.returncode} stderr={result.stderr!r} stdout={result.stdout!r}"
         assert "PASS" in result.stdout
         nums = [line for line in result.stdout.splitlines() if line.strip().isdigit()]
         assert set(nums) == {"32", "34", "40", "50", "52"}
@@ -538,13 +540,13 @@ class TestDispatchEndToEnd:
         import subprocess
         result = subprocess.run(
             [
-                str(self._supertool()),
+                sys.executable, str(self._supertool()),
                 f"xml_attr:{CLOVER_SAMPLE}:"
                 ".//file[contains(@name,'CommandX')]/line[@count='0']:num",
             ],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, encoding="utf-8", timeout=10,
         )
-        assert result.returncode == 0, f"stderr: {result.stderr}"
+        assert result.returncode == 0, f"returncode={result.returncode} stderr={result.stderr!r} stdout={result.stdout!r}"
         nums = [line for line in result.stdout.splitlines() if line.strip().isdigit()]
         assert set(nums) == {"32", "34", "40", "50", "52"}
 
@@ -553,12 +555,12 @@ class TestDispatchEndToEnd:
         import subprocess
         result = subprocess.run(
             [
-                str(self._supertool()),
+                sys.executable, str(self._supertool()),
                 f"xml_count:::{CLOVER_SAMPLE}:::.//file",
             ],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, encoding="utf-8", timeout=10,
         )
-        assert result.returncode == 0, f"stderr: {result.stderr}"
+        assert result.returncode == 0, f"returncode={result.returncode} stderr={result.stderr!r} stdout={result.stdout!r}"
         # Output contains "PASS" header + integer count
         ints = [line for line in result.stdout.splitlines() if line.strip().isdigit()]
         assert len(ints) >= 1

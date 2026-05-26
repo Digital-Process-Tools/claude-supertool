@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -38,6 +39,10 @@ def test_psr_missing_binary_returns_schema_error(tmp_path: Path) -> None:
     assert "PSR_BIN not found" in data["errors"][0]["msg"]
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Stub uses bash shebang — not executable on Windows without WSL",
+)
 def test_psr_clean_output_parses_to_ok(tmp_path: Path) -> None:
     """When phpcs produces no violations, adapter emits ok=True."""
     f = tmp_path / "clean.php"
@@ -59,6 +64,10 @@ def test_psr_clean_output_parses_to_ok(tmp_path: Path) -> None:
     assert data["errors"] == []
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Stub uses bash shebang — not executable on Windows without WSL",
+)
 def test_psr_parses_json_violations(tmp_path: Path) -> None:
     """Adapter must parse phpcs JSON report into SCHEMA.md errors."""
     f = tmp_path / "dirty.php"

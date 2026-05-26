@@ -3,25 +3,25 @@
   "requires": "glab",
   "ops": {
     "gl-issue": {
-      "cmd": "python3 {path}gitlab/issue.py {args}",
+      "cmd": "{python} {path}gitlab/issue.py {args}",
       "timeout": 30,
       "description": "GitLab issue: desc, comments, images, related MRs. :full = no truncation, all comments",
       "syntax": "gl-issue:NUMBER[:full]"
     },
     "gl-mr": {
-      "cmd": "python3 {path}gitlab/mr.py {args}",
+      "cmd": "{python} {path}gitlab/mr.py {args}",
       "timeout": 20,
       "description": "MR review: branch, pipeline, approval, linked issue, diff stat, comments. :status = slim merge-state only",
       "syntax": "gl-mr:NUMBER_OR_BRANCH[:status]"
     },
     "gl-pipeline": {
-      "cmd": "python3 {path}gitlab/pipeline.py {arg}",
+      "cmd": "{python} {path}gitlab/pipeline.py {arg}",
       "timeout": 15,
       "description": "Pipeline jobs by stage with statuses + failed job IDs",
       "syntax": "gl-pipeline:NUMBER"
     },
     "gl-job": {
-      "cmd": "python3 {path}gitlab/job.py {args}",
+      "cmd": "{python} {path}gitlab/job.py {args}",
       "timeout": 30,
       "description": "Why job failed: MR ctx + error patterns + log tail. :raw dumps full trace; :raw:START[:END] slices lines (1-indexed, inclusive)",
       "syntax": "gl-job:NUMBER[:raw[:START[:END]]]",

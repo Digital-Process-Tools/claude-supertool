@@ -138,15 +138,18 @@ def test_validator_env_prefix_reaches_child(tmp_path: Path) -> None:
     shell env-prefix syntax. Argv-form must lift that into env=.
     """
     adapter = tmp_path / "capture.py"
-    payload = '{"tool":"t","file":"x","ok":true,"count":0,"errors":[],"duration_ms":1,"working_dir":"' + str(tmp_path) + '"}'
+    # Use as_posix on both the env-prefix value AND the adapter's comparison
+    # so the equality check works on Windows (str(tmp_path) → backslashes).
+    tmp_str = tmp_path.as_posix()
+    payload = '{"tool":"t","file":"x","ok":true,"count":0,"errors":[],"duration_ms":1,"working_dir":"' + tmp_str + '"}'
     adapter.write_text(
         "import os, sys\n"
-        f"if os.environ.get('MCP_PHPSTAN_WORKING_DIR') == {str(tmp_path)!r}:\n"
+        f"if os.environ.get('MCP_PHPSTAN_WORKING_DIR') == {tmp_str!r}:\n"
         f"    sys.stdout.write({payload!r})\n"
         "else:\n"
         "    sys.stdout.write('{\"tool\":\"t\",\"file\":\"x\",\"ok\":false,\"count\":1,\"errors\":[{\"line\":null,\"col\":null,\"severity\":\"error\",\"code\":\"x\",\"msg\":\"env not set\"}],\"duration_ms\":1}')\n"
     )
-    cmd = f"MCP_PHPSTAN_WORKING_DIR={tmp_path.as_posix()} {{python}} {adapter.as_posix()}"
+    cmd = f"MCP_PHPSTAN_WORKING_DIR={tmp_str} {{python}} {adapter.as_posix()}"
     spec = {"cmd": cmd, "timeout": 5, "cache": False}
     out = supertool._validator_run_one("t", spec, "any.php")
     assert out.get("ok") is True, f"env-prefix did not reach child: {out}"

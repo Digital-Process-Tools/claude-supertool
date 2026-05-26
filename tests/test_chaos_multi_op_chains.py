@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import threading
 import time
 from pathlib import Path
@@ -382,6 +383,12 @@ class TestBatchErrorMidChain:
 # ---------------------------------------------------------------------------
 
 class TestConcurrentReadEditAtomicity:
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Windows can't open a file that another process has open for "
+        "writing — concurrent read during in-flight edit raises PermissionError "
+        "instead of POSIX's last-writer-wins. Torn-write contract is POSIX-only.",
+    )
     def test_concurrent_read_sees_consistent_content(self, tmp_path: Path) -> None:
         """A read running concurrently with an edit must see either the
         complete old content or the complete new content — never a torn write.

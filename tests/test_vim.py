@@ -866,9 +866,9 @@ def test_receipt_shows_cursor_and_context(tmp_path: Path) -> None:
 
 def test_insert_emoji(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
-    f.write_text("hello\n")
+    f.write_text("hello\n", encoding="utf-8")
     out = supertool.op_vim(str(f), "$␞a 🦫")
-    assert f.read_text() == "hello 🦫\n"
+    assert f.read_text(encoding="utf-8") == "hello 🦫\n"
 
 
 def test_insert_regex_meta_chars(tmp_path: Path) -> None:

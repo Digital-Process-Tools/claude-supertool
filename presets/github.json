@@ -3,25 +3,25 @@
   "requires": "gh",
   "ops": {
     "gh-issue": {
-      "cmd": "python3 {path}github/issue.py {args}",
+      "cmd": "{python} {path}github/issue.py {args}",
       "timeout": 30,
       "description": "GitHub issue: desc, comments, images, linked PRs. :full = no truncation, all comments",
       "syntax": "gh-issue:NUMBER[:full]"
     },
     "gh-pr": {
-      "cmd": "python3 {path}github/pr.py {args}",
+      "cmd": "{python} {path}github/pr.py {args}",
       "timeout": 20,
       "description": "Review a pull request: branch, checks, reviews/approval, linked issue, diff stat, comments — the full dashboard. :status = slim merge-state only (~250B, fits hook cache).",
       "syntax": "gh-pr:NUMBER_OR_BRANCH[:status]"
     },
     "gh-run": {
-      "cmd": "python3 {path}github/run.py {arg}",
+      "cmd": "{python} {path}github/run.py {arg}",
       "timeout": 15,
       "description": "What passed, what failed? Workflow run jobs with statuses and failed step names.",
       "syntax": "gh-run:NUMBER"
     },
     "gh-job": {
-      "cmd": "python3 {path}github/job.py {args}",
+      "cmd": "{python} {path}github/job.py {args}",
       "timeout": 30,
       "description": "Why did this job fail? PR context + error pattern search + log tail. :raw dumps full trace; :raw:START[:END] slices lines (1-indexed, inclusive)",
       "syntax": "gh-job:NUMBER[:raw[:START[:END]]]",
@@ -30,14 +30,14 @@
       "error_context": 5
     },
     "gh-follow": {
-      "cmd": "python3 {path}github/follow.py {arg}",
+      "cmd": "{python} {path}github/follow.py {arg}",
       "timeout": 10,
       "description": "Follow a GitHub user via the authenticated gh CLI session.",
       "syntax": "gh-follow:USERNAME",
       "example": "gh-follow:simonw"
     },
     "gh-following": {
-      "cmd": "python3 {path}github/following.py {arg}",
+      "cmd": "{python} {path}github/following.py {arg}",
       "timeout": 15,
       "description": "List users you follow on GitHub.",
       "syntax": "gh-following[:N]",
@@ -45,7 +45,7 @@
       "default_limit": 30
     },
     "gh-batch-follow": {
-      "cmd": "python3 {path}github/batch_follow.py {arg}",
+      "cmd": "{python} {path}github/batch_follow.py {arg}",
       "timeout": 600,
       "description": "Follow each username from a file (one per line, '#' comments). Sleeps 1s between calls.",
       "syntax": "gh-batch-follow:FILE",
@@ -53,14 +53,14 @@
       "follow_delay": "1.0"
     },
     "gh-star": {
-      "cmd": "python3 {path}github/star.py {arg}",
+      "cmd": "{python} {path}github/star.py {arg}",
       "timeout": 10,
       "description": "Star a GitHub repository via gh CLI.",
       "syntax": "gh-star:OWNER/REPO",
       "example": "gh-star:simonw/llm"
     },
     "gh-starred": {
-      "cmd": "python3 {path}github/starred.py {arg}",
+      "cmd": "{python} {path}github/starred.py {arg}",
       "timeout": 15,
       "description": "List repos you have starred.",
       "syntax": "gh-starred[:N]",
@@ -68,7 +68,7 @@
       "default_limit": 30
     },
     "gh-batch-star": {
-      "cmd": "python3 {path}github/batch_star.py {arg}",
+      "cmd": "{python} {path}github/batch_star.py {arg}",
       "timeout": 600,
       "description": "Star each OWNER/REPO from a file (one per line, '#' comments). Sleeps 1s between calls.",
       "syntax": "gh-batch-star:FILE",
@@ -76,7 +76,7 @@
       "star_delay": "1.0"
     },
     "gh-find-followable": {
-      "cmd": "python3 {path}github/find_followable.py {arg}",
+      "cmd": "{python} {path}github/find_followable.py {arg}",
       "timeout": 90,
       "description": "Discover candidate users to follow: pulls stargazers + contributors of a repo, dedupes, filters out orgs. Pipe to a file then review before gh-batch-follow.",
       "syntax": "gh-find-followable:OWNER/REPO[|N]",
@@ -84,7 +84,7 @@
       "default_limit": 100
     },
     "gh-find-starable": {
-      "cmd": "python3 {path}github/find_starable.py {arg}",
+      "cmd": "{python} {path}github/find_starable.py {arg}",
       "timeout": 30,
       "description": "Discover repos worth starring by topic. Pulls top N repos for the topic, sorted by stars. Pipe to a file then review before gh-batch-star.",
       "syntax": "gh-find-starable:TOPIC[|N]",

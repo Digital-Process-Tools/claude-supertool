@@ -79,8 +79,10 @@ class TestBodyAllowlist:
 
     def test_json_extension_adds_to_allowlist(self, strict_publish, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
+        import json as _json
+        # Use json.dumps so Windows backslashes are properly escaped in JSON.
         (tmp_path / ".supertool.json").write_text(
-            f'{{"publish_body_allowlist": ["{tmp_path / "custom"}"]}}'
+            _json.dumps({"publish_body_allowlist": [(tmp_path / "custom").as_posix()]})
         )
         (tmp_path / "custom").mkdir()
         body = tmp_path / "custom" / "x.md"
@@ -133,6 +135,10 @@ class TestTokenFileMode:
         err = capsys.readouterr().err
         assert "loose permissions" in err
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Windows chmod(0o600) is a no-op — permission bits are not enforced",
+    )
     def test_accepts_owner_only(self, tmp_path):
         tok = tmp_path / "tok"
         tok.write_text("SECRET")

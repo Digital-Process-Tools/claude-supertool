@@ -3,61 +3,61 @@
   "requires": "git",
   "ops": {
     "git-status": {
-      "cmd": "python3 {path}git/status.py",
+      "cmd": "{python} {path}git/status.py",
       "timeout": 10,
       "description": "Branch, commits + base divergence, changes, stashes, open MR/PR with diff size",
       "syntax": "git-status"
     },
     "git-investigate": {
-      "cmd": "python3 {path}git/investigate.py {arg}",
+      "cmd": "{python} {path}git/investigate.py {arg}",
       "timeout": 15,
       "description": "File history: commits, uncommitted, blame hotspots",
       "syntax": "git-investigate:PATH"
     },
     "git-trail": {
-      "cmd": "python3 {path}git/trail.py {args}",
+      "cmd": "{python} {path}git/trail.py {args}",
       "timeout": 15,
       "description": "Trace pattern through history — who/when/why",
       "syntax": "git-trail:PATTERN:PATH"
     },
     "git-blame": {
-      "cmd": "python3 {path}git/blame.py {args}",
+      "cmd": "{python} {path}git/blame.py {args}",
       "timeout": 10,
       "description": "Git blame N lines around LINE",
       "syntax": "git-blame:PATH:LINE[:N]"
     },
     "git-checkout": {
-      "cmd": "python3 {path}git/checkout.py {arg}",
+      "cmd": "{python} {path}git/checkout.py {arg}",
       "timeout": 15,
       "description": "Switch to REF — branch, tracking, dirty, last commits",
       "syntax": "git-checkout:REF"
     },
     "git-diverge": {
-      "cmd": "python3 {path}git/diverge.py {args}",
+      "cmd": "{python} {path}git/diverge.py {args}",
       "timeout": 15,
       "description": "Branch vs base — ahead/behind, commits, files, +/- totals",
       "syntax": "git-diverge:BRANCH[:BASE]"
     },
     "git-merge": {
-      "cmd": "python3 {path}git/merge.py {arg}",
+      "cmd": "{python} {path}git/merge.py {arg}",
       "timeout": 60,
       "description": "Merge REF — on conflict: UU files, markers, ours/theirs SHAs",
       "syntax": "git-merge:REF"
     },
     "git-conflicts": {
-      "cmd": "python3 {path}git/conflicts.py",
+      "cmd": "{python} {path}git/conflicts.py",
       "timeout": 10,
       "description": "List UU files + every conflict block + abort hint",
       "syntax": "git-conflicts"
     },
     "git-resolve": {
-      "cmd": "python3 {path}git/resolve.py {args}",
+      "cmd": "{python} {path}git/resolve.py {args}",
       "timeout": 30,
       "description": "Pick ours/theirs for PATH (single, comma-separated list, or 'all') + stage + continue cmd",
       "syntax": "git-resolve:::SIDE:::PATH[,PATH...]"
     },
     "git-commit": {
-      "cmd": "python3 {path}git/commit.py {args}",
+      "cmd": "{python} {path}git/commit.py {args}",
       "timeout": 60,
       "description": "Commit MSG (stages PATHS) — HEAD before/after, hook errors surfaced. MSG=--no-edit reuses MERGE_MSG/CHERRY_PICK msg (merge or cherry-pick must be in progress)",
       "syntax": "git-commit:::MSG[:::PATH...]"

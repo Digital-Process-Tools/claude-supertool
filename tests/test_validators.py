@@ -22,9 +22,19 @@ def _set_validators(cfg: dict) -> None:
 
 
 def _fake_cmd(payload: dict) -> str:
-    """Build a shell cmd that prints the given JSON payload."""
-    js = json.dumps(payload).replace("'", "'\\''")
-    return f"printf '%s' '{js}'"
+    """Build a cross-platform cmd that prints the given JSON payload.
+
+    Base64-encodes the JSON so it survives nested-quote escaping across both
+    POSIX and Windows. printf is POSIX-only; this {python} -c approach runs
+    on Windows runners too.
+    """
+    import base64
+    encoded = base64.b64encode(json.dumps(payload).encode()).decode()
+    return (
+        f'{{python}} -c "import sys, base64; '
+        f"sys.stdout.write(base64.b64decode('{encoded}').decode())"
+        f'"'
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -76,12 +86,12 @@ def test_resolve_returns_file_when_no_resolve_cmd() -> None:
 
 
 def test_resolve_invokes_cmd_and_returns_first_line() -> None:
-    spec = {"resolve": "printf 'tests/aTest.php\\nextra'"}
+    spec = {"resolve": '{python} -c "import sys; sys.stdout.write(\'tests/aTest.php\\\\nextra\')"'}
     assert supertool._validator_resolve(spec, "a.php") == "tests/aTest.php"
 
 
 def test_resolve_returns_none_on_empty_output() -> None:
-    spec = {"resolve": "true"}  # exit 0, no stdout
+    spec = {"resolve": "{python} -c \"pass\""}  # exit 0, no stdout
     assert supertool._validator_resolve(spec, "a.php") is None
 
 
@@ -99,14 +109,14 @@ def test_run_one_parses_adapter_json() -> None:
 
 
 def test_run_one_handles_no_output() -> None:
-    spec = {"cmd": "true", "timeout": 5}
+    spec = {"cmd": "{python} -c \"pass\"", "timeout": 5}
     out = supertool._validator_run_one("fake", spec, "x.php")
     assert out["ok"] is False
     assert "no output" in out["errors"][0]["msg"]
 
 
 def test_run_one_handles_bad_json() -> None:
-    spec = {"cmd": "printf 'not json'", "timeout": 5}
+    spec = {"cmd": "{python} -c \"import sys; sys.stdout.write('not json')\"", "timeout": 5}
     out = supertool._validator_run_one("fake", spec, "x.php")
     assert out["ok"] is False
     assert "bad json" in out["errors"][0]["msg"]
@@ -123,7 +133,7 @@ def test_run_one_substitutes_file_token(tmp_path: Path) -> None:
         "    sys.exit(0)\n"
         f"sys.stdout.write({json.dumps(payload)!r})\n"
     )
-    spec = {"cmd": f"python3 {adapter} {{file}}", "timeout": 5}
+    spec = {"cmd": f"{{python}} {adapter.as_posix()} {{file}}", "timeout": 5}
     out = supertool._validator_run_one("fake", spec, "a.php")
     assert out["ok"] is True
 
@@ -144,7 +154,7 @@ def _counter_cmd(state_path: Path, ok_payload: str, fail_marker: str = "BROKEN")
         "else:\n"
         f"    sys.stdout.write({fail_marker!r})\n"
     )
-    return f"python3 {script}"
+    return f"{{python}} {script.as_posix()}"
 
 
 def test_cache_hit_skips_adapter(tmp_path: Path, monkeypatch) -> None:
@@ -206,10 +216,14 @@ def test_env_var_disables_cache(tmp_path: Path, monkeypatch) -> None:
 
 
 def test_run_one_substitutes_supertool_dir_token() -> None:
-    # cmd embeds the token; subprocess emits it inside the JSON `d` field
+    # cmd embeds the {supertool_dir} token; subprocess emits it inside the JSON
+    # `d` field. Use {python} + sys.argv pass-through so we don't have to
+    # escape JSON inside a shell-quoted -c string (Windows-incompatible).
     cmd = (
-        "printf '{\"tool\":\"t\",\"file\":\"x\",\"ok\":true,\"count\":0,"
-        "\"errors\":[],\"duration_ms\":1,\"d\":\"{supertool_dir}\"}'"
+        '{python} -c "import sys, json; sys.stdout.write(json.dumps({'
+        "'tool':'t','file':'x','ok':True,'count':0,'errors':[],"
+        "'duration_ms':1,'d':sys.argv[1]"
+        '}))" "{supertool_dir}"'
     )
     spec = {"cmd": cmd, "timeout": 5}
     out = supertool._validator_run_one("t", spec, "x")
@@ -223,12 +237,15 @@ def test_run_one_adds_resolved_to_when_resolve_returns_other_path(tmp_path: Path
     payload = {"tool": "fake", "file": str(target), "ok": True, "count": 0,
                "errors": [], "duration_ms": 1}
     spec = {
-        "resolve": f"printf '{target}'",
+        # printf is POSIX-only; {python} writes the resolved path to stdout.
+        "resolve": f'{{python}} -c "import sys; sys.stdout.write({target.as_posix()!r})"',
         "cmd": _fake_cmd(payload),
         "timeout": 5,
     }
     out = supertool._validator_run_one("fake", spec, "a.php")
-    assert out["resolved_to"] == str(target)
+    # `resolve` stdout returns as_posix; the test compares against the same
+    # form to be platform-independent (str(target) uses `\` on Windows).
+    assert out["resolved_to"] == target.as_posix()
 
 
 # ---------------------------------------------------------------------------
