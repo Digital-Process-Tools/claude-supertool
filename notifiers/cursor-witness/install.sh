@@ -44,22 +44,36 @@ echo "→ tsc compile"
 (cd "$EXT_DIR" && npm run --silent compile)
 [[ -f "$EXT_DIR/out/extension.js" ]] || { echo "ERROR: compile produced no out/extension.js"; exit 1; }
 
-# 3. Symlink into editor extensions dir(s)
-link_into() {
-  local editor_name="$1" dir="$2"
-  mkdir -p "$dir"
-  local target="$dir/$TARGET_NAME"
-  # Remove any prior install (real folder or stale symlink)
-  if [[ -L "$target" || -d "$target" ]]; then
-    rm -rf "$target"
+# 3. Package as .vsix + install via editor CLI.
+#
+# Symlink-only installs silently fail on profile-aware Cursor builds (≥3.5.x)
+# because the authoritative installed-extensions registry moved to
+# ~/Library/Application Support/Cursor/User/profiles/<hash>/extensions.json
+# and Cursor no longer scans ~/.cursor/extensions/ for unregistered folders.
+# Going through the CLI lets the editor write the correct registry entry
+# for whichever profile/path layout it uses. Issue #136.
+echo "→ vsce package"
+# Use npx so dev doesn't have to install vsce globally. --no-dependencies skips
+# the (very slow) marketplace dependency audit — we're packaging local code.
+VSIX_PATH="$EXT_DIR/$TARGET_NAME.vsix"
+rm -f "$VSIX_PATH" "$EXT_DIR"/*.vsix
+(cd "$EXT_DIR" && npx --yes @vscode/vsce package --no-dependencies --out "$VSIX_PATH" >/dev/null)
+[[ -f "$VSIX_PATH" ]] || { echo "ERROR: vsce produced no $VSIX_PATH"; exit 1; }
+
+install_into() {
+  local editor_name="$1" cli="$2"
+  if ! command -v "$cli" >/dev/null; then
+    echo "  ⚠ $editor_name: '$cli' CLI not on PATH — skip. Install via $editor_name → Cmd+Shift+P → 'Shell Command: Install $editor_name in PATH', then re-run."
+    return 1
   fi
-  ln -s "$EXT_DIR" "$target"
-  echo "  ✓ $editor_name: $target → $EXT_DIR"
+  # --force overwrites any prior install (symlink, real folder, older vsix).
+  "$cli" --force --install-extension "$VSIX_PATH" >/dev/null
+  echo "  ✓ $editor_name: $VSIX_PATH installed via $cli"
 }
 
-echo "→ symlinking"
-(( INSTALL_CURSOR )) && link_into "Cursor"  "$HOME/.cursor/extensions"
-(( INSTALL_VSCODE )) && link_into "VSCode"  "$HOME/.vscode/extensions"
+echo "→ installing"
+(( INSTALL_CURSOR )) && install_into "Cursor" "cursor"
+(( INSTALL_VSCODE )) && install_into "VSCode" "code"
 
 # 4. Next steps
 cat <<EOF
