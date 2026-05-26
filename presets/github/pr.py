@@ -88,9 +88,11 @@ def _fetch_review_threads(url: str, number: int | str) -> list[dict]:
         if r.returncode != 0:
             return []
         data = json.loads(r.stdout)
-        return (((data.get("data") or {}).get("repository") or {})
-                .get("pullRequest", {}).get("reviewThreads", {}).get("nodes") or [])
-    except (subprocess.TimeoutExpired, json.JSONDecodeError):
+        repo_node = (data.get("data") or {}).get("repository") or {}
+        pr_node = repo_node.get("pullRequest") or {}
+        threads = pr_node.get("reviewThreads") or {}
+        return threads.get("nodes") or []
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, AttributeError, TypeError):
         return []
 
 
