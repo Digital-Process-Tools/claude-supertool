@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+from _winenv import empty_path_env
+
 ADAPTER = Path(__file__).parent.parent / "validators" / "hadolint" / "hadolint.py"
 
 
@@ -33,7 +35,7 @@ def test_missing_tool_graceful(tmp_path: Path) -> None:
         [sys.executable, str(ADAPTER), str(f)],
         capture_output=True,
         text=True,
-        env={"PATH": ""},
+        env=empty_path_env(),
     )
     out = json.loads(result.stdout)
     assert out["ok"] is True
