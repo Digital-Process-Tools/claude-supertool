@@ -8,6 +8,13 @@
       "description": "GitHub issue: desc, comments, images, linked PRs. :full = no truncation, all comments",
       "syntax": "gh-issue:NUMBER[:full]"
     },
+    "gh-issue-create": {
+      "cmd": "{python} {path}github/issue_create.py {arg}",
+      "timeout": 30,
+      "description": "Create a GitHub issue from a JSON/TOML payload file. Supports labels, assignees, and milestone (by title).",
+      "syntax": "gh-issue-create:@FILE",
+      "example": "gh-issue-create:@.max/new-issue.json"
+    },
     "gh-pr": {
       "cmd": "{python} {path}github/pr.py {args}",
       "timeout": 20,

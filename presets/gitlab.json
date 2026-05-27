@@ -14,6 +14,13 @@
       "description": "MR review: branch, pipeline, approval, linked issue, diff stat, comments. :status = slim merge-state only",
       "syntax": "gl-mr:NUMBER_OR_BRANCH[:status]"
     },
+    "gl-issue-create": {
+      "cmd": "{python} {path}gitlab/issue_create.py {arg}",
+      "timeout": 30,
+      "description": "Create a GitLab issue from a JSON/TOML payload file. Supports milestone_id, labels, assignee_ids, estimate (quick action), and issue links.",
+      "syntax": "gl-issue-create:@FILE",
+      "example": "gl-issue-create:@.max/new-issue.json"
+    },
     "gl-pipeline": {
       "cmd": "{python} {path}gitlab/pipeline.py {arg}",
       "timeout": 15,
