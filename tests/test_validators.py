@@ -270,27 +270,56 @@ def test_render_row_shows_errors_capped_at_5() -> None:
 
 def test_render_diff_unchanged() -> None:
     before = {"tool": "t", "ok": True, "count": 0, "errors": []}
-    after = {"tool": "t", "ok": True, "count": 0, "errors": []}
+    after = {"tool": "t", "ok": True, "count": 0, "errors": [], "elapsed_s": 1.2}
     lines = supertool._validator_render_diff(before, after)
     assert "(unchanged)" in lines[0]
-    assert "·" in lines[0]
+    assert "1.2s" in lines[0]
 
 
 def test_render_diff_regression_shows_new_errors_only() -> None:
     before = {"tool": "t", "ok": False, "count": 1, "errors": [{"msg": "old"}]}
-    after = {"tool": "t", "ok": False, "count": 2, "errors": [{"msg": "old"}, {"msg": "new"}]}
+    after = {"tool": "t", "ok": False, "count": 2, "errors": [{"msg": "old"}, {"msg": "new"}], "elapsed_s": 0.5}
     lines = supertool._validator_render_diff(before, after)
     assert "1 → 2" in lines[0]
     assert "✗" in lines[0]
+    assert "0.5s" in lines[0]
     assert any("new" in l for l in lines[1:])
     assert not any("old" in l for l in lines[1:])
 
 
 def test_render_diff_improvement_marker() -> None:
     before = {"tool": "t", "ok": False, "count": 3, "errors": []}
-    after = {"tool": "t", "ok": False, "count": 1, "errors": []}
+    after = {"tool": "t", "ok": False, "count": 1, "errors": [], "elapsed_s": 2.0}
     lines = supertool._validator_render_diff(before, after)
     assert "⚠" in lines[0]
+    assert "2.0s" in lines[0]
+
+
+def test_render_diff_elapsed_missing_no_crash() -> None:
+    before = {"tool": "t", "ok": True, "count": 0, "errors": []}
+    after = {"tool": "t", "ok": True, "count": 0, "errors": []}
+    lines = supertool._validator_render_diff(before, after)
+    assert "(unchanged)" in lines[0]
+
+
+def test_render_diff_skipped_shows_dash() -> None:
+    after = {"tool": "mything", "skipped": "no target resolved"}
+    lines = supertool._validator_render_diff(None, after)
+    assert lines[0].endswith("-")
+
+
+def test_render_diff_elapsed_appears_in_run_with_validators_output(tmp_path) -> None:
+    import re
+    f = tmp_path / "x.php"
+    f.write_text("<?php\n")
+    payload_ok = {"tool": "fake", "file": str(f), "ok": True, "count": 0,
+                  "errors": [], "duration_ms": 1}
+    _set_validators({
+        "fake": {"cmd": _fake_cmd(payload_ok), "hooks_into": ["edit"], "match": "*.php"},
+    })
+    out = supertool._run_with_validators("edit", ["edit", "", "", str(f)], lambda: "edited\n")
+    assert "[validators]" in out
+    assert re.search(r"\d+\.\d+s", out)
 
 
 # ---------------------------------------------------------------------------

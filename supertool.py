@@ -8540,16 +8540,20 @@ def _validator_run_one(name: str, spec: Dict[str, Any], file: str) -> Optional[D
     # Use _merged_env (built above) so the prefix env-vars reach the child too.
     run_env = _merged_env if _spec_env_dict else None
 
+    import time
+    _t0 = time.monotonic()
     try:
         r = subprocess.run(shlex.split(cmd), shell=False, capture_output=True, text=True, timeout=timeout,
                            env=run_env)
+        _elapsed = time.monotonic() - _t0
         out = r.stdout.strip()
         if not out:
             return {"tool": name, "file": target, "ok": False, "count": 1,
                     "errors": [{"line": None, "col": None, "severity": "error",
                                 "code": "orchestrator", "msg": "adapter produced no output"}],
-                    "duration_ms": 0}
+                    "duration_ms": 0, "elapsed_s": _elapsed}
         data = json.loads(out.splitlines()[-1])
+        data["elapsed_s"] = _elapsed
         if target != file:
             data["resolved_to"] = target
         if cache_key:
@@ -8559,17 +8563,17 @@ def _validator_run_one(name: str, spec: Dict[str, Any], file: str) -> Optional[D
         return {"tool": name, "file": target, "ok": False, "count": 1,
                 "errors": [{"line": None, "col": None, "severity": "error",
                             "code": "orchestrator", "msg": f"timeout after {timeout}s"}],
-                "duration_ms": timeout * 1000}
+                "duration_ms": timeout * 1000, "elapsed_s": time.monotonic() - _t0}
     except OSError as e:
         return {"tool": name, "file": target, "ok": False, "count": 1,
                 "errors": [{"line": None, "col": None, "severity": "error",
                             "code": "orchestrator", "msg": f"adapter not found or unrunnable: {e}"}],
-                "duration_ms": 0}
+                "duration_ms": 0, "elapsed_s": time.monotonic() - _t0}
     except (json.JSONDecodeError, IndexError) as e:
         return {"tool": name, "file": target, "ok": False, "count": 1,
                 "errors": [{"line": None, "col": None, "severity": "error",
                             "code": "orchestrator", "msg": f"adapter bad json: {e}"}],
-                "duration_ms": 0}
+                "duration_ms": 0, "elapsed_s": time.monotonic() - _t0}
 
 
 def _validator_render_row(data: Dict[str, Any], verbose: bool = False) -> list:
@@ -8586,13 +8590,13 @@ def _validator_render_row(data: Dict[str, Any], verbose: bool = False) -> list:
     want verbose output to include their full output should populate them.
     """
     if "skipped" in data:
-        return [f"{data['tool']:8s}: skipped — {data['skipped']}"]
+        return [f"{data['tool']:12s}: skipped — {data['skipped']}"]
     tool = data.get("tool", "?")
     ok = data.get("ok", False)
     count = data.get("count", 0)
     dur = data.get("duration_ms", 0)
     status = "ok" if ok else f"{count} err"
-    line = f"{tool:8s}: {status:12s} ({dur}ms)"
+    line = f"{tool:12s}: {status:<10}  ({dur}ms)"
     metrics = data.get("metrics")
     if metrics and tool == "git-status":
         added = metrics.get("lines_added", 0)
@@ -8635,8 +8639,11 @@ def _validator_render_row(data: Dict[str, Any], verbose: bool = False) -> list:
 
 
 def _validator_render_diff(before: Optional[Dict[str, Any]], after: Dict[str, Any]) -> list:
+    # Skipped path never started a timer, so elapsed_s is absent — `-` rendered in time col.
+    elapsed = after.get("elapsed_s")
+    time_col = f"{elapsed:.1f}s" if elapsed is not None else "-"
     if "skipped" in after:
-        return [f"{after['tool']:8s}: skipped"]
+        return [f"{after['tool']:12s}: {'skipped':<10}  {'':<11}  {time_col:>5}"]
     tool = after["tool"]
     b_count = before.get("count", 0) if before else 0
     a_count = after.get("count", 0)
@@ -8661,7 +8668,7 @@ def _validator_render_diff(before: Optional[Dict[str, Any]], after: Dict[str, An
             metric_parts.append(f"{k} {bv}\u2192{av} ({'+' if d > 0 else ''}{d})")
         if metric_parts:
             marker = "\u2713" if a_ok else "\u2717"
-            return [f"{tool:8s}: {', '.join(metric_parts)} {marker}"]
+            return [f"{tool:12s}: {', '.join(metric_parts)} {marker}  {'':<11}  {time_col:>5}"]
         # Truly unchanged — fold the most relevant absolute metric into the row.
         if a_ok and a_metrics:
             primary = None
@@ -8669,13 +8676,15 @@ def _validator_render_diff(before: Optional[Dict[str, Any]], after: Dict[str, An
                 if k in a_metrics:
                     primary = (k, a_metrics[k]); break
             if primary is not None:
-                return [f"{tool:8s}: ok {primary[0]}={primary[1]} (unchanged) \u00b7"]
+                status = f"ok {primary[0]}={primary[1]}"
+                return [f"{tool:12s}: {status:<10}  {'(unchanged)':<11}  {time_col:>5}"]
         status = "ok" if a_ok else f"{a_count} err"
-        return [f"{tool:8s}: {status:12s} (unchanged) \u00b7"]
+        return [f"{tool:12s}: {status:<10}  {'(unchanged)':<11}  {time_col:>5}"]
     marker = "✓" if a_ok else ("⚠" if delta < 0 else "✗")
     arrow = f"{b_count} → {a_count}"
     sign = f"({'+' if delta >= 0 else ''}{delta})"
-    out = [f"{tool:8s}: {arrow:12s} {sign:6s} {marker}"]
+    state_col = f"{sign} {marker}"
+    out = [f"{tool:12s}: {arrow:<10}  {state_col:<11}  {time_col:>5}"]
     if not a_ok:
         before_msgs = {e.get("msg") for e in (before.get("errors") or [])} if before else set()
         new = [e for e in (after.get("errors") or []) if e.get("msg") not in before_msgs]
