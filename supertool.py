@@ -8885,19 +8885,30 @@ def _drain_format_queue() -> str:
 
 
 def _drain_validator_queue() -> str:
-    """Run queued slow validators once per unique (name, path) pair. Returns rendered output block."""
+    """Run queued slow validators once per unique (name, path) pair. Returns rendered output block.
+
+    Output groups results by path with a file header per group, so the
+    reader knows which file each validator row belongs to (issue #234).
+    """
     global _VALIDATOR_DEFER_QUEUE, _VALIDATOR_DEFER_SEEN
     if not _VALIDATOR_DEFER_QUEUE:
         return ""
-    rows: list = []
+    by_path: "dict[str, list[str]]" = {}
     for name, spec, path in _VALIDATOR_DEFER_QUEUE:
         data = _validator_run_one(name, spec, path)
-        if data is not None:
-            rows.extend(_validator_render_diff(None, data))
+        if data is None:
+            continue
+        path_rows = _validator_render_diff(None, data)
+        if path_rows:
+            by_path.setdefault(path, []).extend(path_rows)
     _VALIDATOR_DEFER_QUEUE = []
     _VALIDATOR_DEFER_SEEN = set()
-    if not rows:
+    if not by_path:
         return ""
+    rows: list = []
+    for path, path_rows in by_path.items():
+        rows.append(f"  {path}")
+        rows.extend(f"    {r}" for r in path_rows)
     return "\n[validators-deferred]\n" + "\n".join(rows) + "\n"
 
 
