@@ -7,6 +7,7 @@ end-of-batch to keep "1 invocation = 1 round-trip" honest.
 """
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import supertool
@@ -18,18 +19,24 @@ def _set_formatters(fmt: dict) -> None:
 
 
 def _make_counting_cmd(tmp_path: Path) -> tuple[str, Path]:
-    """Build a formatter cmd that appends a line to a counter file each call."""
+    """Build a formatter cmd that appends a line to a counter file each call.
+
+    Uses ``sys.executable -c`` so the command runs cross-platform (no POSIX shell needed).
+    The counter path is written to a helper .py file to avoid quoting/escaping issues
+    with spaces or backslashes in tmp_path on Windows.
+    """
     counter = tmp_path / "fmt_runs.log"
     counter.write_text("")
-    script = tmp_path / "fmt.sh"
-    script.write_text(
-        "#!/bin/sh\n"
-        f"echo run >> {counter}\n"
-        # Emit SCHEMA noop so renderer stays silent.
-        'printf \'{"ok":true,"changes":{"lines_added":0,"lines_removed":0,"bytes_delta":0}}\'\n'
+    helper = tmp_path / "_fmt_helper.py"
+    helper.write_text(
+        "import sys\n"
+        f"open({str(counter)!r}, 'a').write('run\\n')\n"
+        'print(\'{"ok":true,"changes":{"lines_added":0,"lines_removed":0,"bytes_delta":0}}\')\n'
     )
-    script.chmod(0o755)
-    return f"{script} {{file}}", counter
+    # Use forward slashes so shlex.split (POSIX mode) doesn't eat backslashes on Windows.
+    exe = sys.executable.replace("\\", "/")
+    helper_fwd = str(helper).replace("\\", "/")
+    return f"{exe} {helper_fwd} {{file}}", counter
 
 
 def test_defer_runs_formatter_once_per_file_across_multi_op(tmp_path, monkeypatch, capsys) -> None:
@@ -91,16 +98,19 @@ def test_defer_runs_formatter_on_survivor_when_later_op_rolls_back(tmp_path, mon
 
     cmd, counter = _make_counting_cmd(tmp_path)
     # Validator: fails when file contains "BAD". rollback_on_fail restores pre-content.
-    val_script = tmp_path / "val.sh"
-    val_script.write_text(
-        "#!/bin/sh\n"
-        'if grep -q BAD "$1"; then\n'
-        '  printf \'{"ok":false,"tool":"fakeval","errors":[{"msg":"bad token"}]}\'\n'
-        "  exit 1\n"
-        "fi\n"
-        'printf \'{"ok":true,"tool":"fakeval"}\'\n'
+    # Written to a helper .py file so there are no quoting/escaping issues on Windows.
+    val_helper = tmp_path / "_val_helper.py"
+    val_helper.write_text(
+        "import sys, json\n"
+        "content = open(sys.argv[1]).read()\n"
+        "bad = 'BAD' in content\n"
+        "print(json.dumps({'ok': False, 'tool': 'fakeval', 'errors': [{'msg': 'bad token'}]}"
+        " if bad else {'ok': True, 'tool': 'fakeval'}))\n"
+        "raise SystemExit(1 if bad else 0)\n"
     )
-    val_script.chmod(0o755)
+    # Use forward slashes so shlex.split (POSIX mode) doesn't eat backslashes on Windows.
+    exe = sys.executable.replace("\\", "/")
+    val_helper_fwd = str(val_helper).replace("\\", "/")
 
     supertool._CONFIG = {
         "formatters": {
@@ -108,7 +118,7 @@ def test_defer_runs_formatter_on_survivor_when_later_op_rolls_back(tmp_path, mon
         },
         "validators": {
             "fakeval": {
-                "cmd": f"{val_script} {{file}}",
+                "cmd": f"{exe} {val_helper_fwd} {{file}}",
                 "hooks_into": ["edit"],
                 "match": "*.py",
                 "rollback_on_fail": True,
