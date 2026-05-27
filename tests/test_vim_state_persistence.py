@@ -21,6 +21,7 @@ def test_vim_save_cursor_respects_no_persist(tmp_path: Path, monkeypatch) -> Non
 def test_vim_save_cursor_preserves_marks(tmp_path: Path, monkeypatch) -> None:
     """_vim_save_cursor preserves existing marks/last_edit by reading then writing."""
     monkeypatch.delenv("SUPERTOOL_VIM_NO_PERSIST", raising=False)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     f = tmp_path / "x.txt"
     f.write_text("hello world\n")
     state_path = Path(supertool._vim_cursor_state_path(str(f)))

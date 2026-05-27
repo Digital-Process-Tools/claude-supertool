@@ -245,9 +245,11 @@ class TestEditValidateRollback:
 # ---------------------------------------------------------------------------
 
 class TestVimCursorStateAcrossBatchOps:
-    def test_cursor_persists_between_two_vim_ops(self, tmp_path: Path) -> None:
+    def test_cursor_persists_between_two_vim_ops(self, tmp_path: Path, monkeypatch) -> None:
         """First vim op leaves cursor on line 3; second op inserts at that
         cursor position. The final file must reflect op2 acting at line 3."""
+        monkeypatch.delenv("SUPERTOOL_VIM_NO_PERSIST", raising=False)
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
         f = tmp_path / "vim_chain.py"
         f.write_text("line1\nline2\nMARKER\nline4\n")
 
