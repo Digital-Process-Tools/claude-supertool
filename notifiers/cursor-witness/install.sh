@@ -13,7 +13,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EXT_DIR="$SCRIPT_DIR/extension"
-TARGET_NAME="digital-process-tools.cursor-witness-0.1.0"
+TARGET_NAME="digital-process-tools.cursor-witness-0.1.1"
 
 INSTALL_CURSOR=1
 INSTALL_VSCODE=0

@@ -2,7 +2,7 @@
   "name": "cursor-witness",
   "displayName": "Cursor Witness",
   "description": "Watch your supertool agent work in Cursor — opens files the agent edits, jumps to changed lines.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "digital-process-tools",
   "engines": {
     "vscode": "^1.80.0"
