@@ -122,6 +122,7 @@ Full list of `.supertool.json` validator config fields:
 | `resolve`          | Shell cmd returning an alternate target path (e.g. source-file → test-file).           |
 | `timeout`          | Seconds. Default 60.                                                                    |
 | `opt_in`           | If true, validator only runs on explicit request via the `validate` op.                |
+| `tier`             | `"fast"` (default) or `"slow"`. `slow` defers the validator to end-of-call, deduped by `(validator, path)` — runs once per unique pair regardless of how many ops touched the file. See [Slow tier](#slow-tier--defer-to-end-of-call). |
 | `env`              | Optional `{KEY: VAL}` block merged into the subprocess environment. Values are coerced to strings. Useful for pointing wrappers at a project-local binary or config without touching the system environment. |
 
 ### env — usage
@@ -144,6 +145,32 @@ Pass tool-specific config without shell exports:
 ```
 
 The `env` block is merged on top of the inherited process environment (`os.environ | spec.env`), so unset keys fall through to whatever the shell already has.
+
+## Slow tier — defer to end of call
+
+Heavy validators (phpstan, phpunit, rector, tsc, cargo-check) often take 5–30s per run. In a multi-op batch — three edits on the same file — running them after each op is pure waste: same file content gets re-analyzed N times.
+
+Set `"tier": "slow"` on the validator and supertool defers it: queued during the batch, drained once at end-of-call, deduped by `(validator, path)` so each pair runs exactly once regardless of how many ops touched it.
+
+```json
+"phpstan": {
+  "cmd": "python3 {supertool_dir}/validators/phpstan/phpstan.py {file}",
+  "match": "*.php",
+  "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+  "tier": "slow",
+  "rollback_on_fail": false,
+  "timeout": 60
+}
+```
+
+Behavior:
+
+- **Single-op calls always run inline**, regardless of tier — defer only kicks in for multi-op batches where dedup pays off.
+- **Failures don't roll back prior ops.** Slow-tier results arrive after every op has already committed; mirrors the deferred-formatter contract. Keep `rollback_on_fail: false` on slow validators.
+- **Output appears under a `[validators-deferred]` header**, separate from the per-op `[validators]` block, so it's clear which results came from the dedup pass.
+- **Default is `"fast"`** — omitting the field preserves the original per-op behavior. Zero change for users who don't opt in.
+
+Use `slow` for anything where a single analysis pass on the final file content is enough. Use `fast` (default) when you want per-op rollback semantics (syntax linters, json/yaml/xml parsers — these are cheap anyway).
 
 ## Caching
 
