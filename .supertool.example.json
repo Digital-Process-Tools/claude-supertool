@@ -217,21 +217,92 @@
       "example": "rename:oldName:newName:src/app/Module.py"
     }
   },
+  "_comment_exclude_paths": "Paths are RELATIVE to cwd. Two match modes: (1) single segment like 'vendor/' matches that name anywhere in the tree; (2) multi-segment like 'src/legacy/generated/' anchors at repo root. Built-in defaults (.git/, node_modules/, __pycache__/, .venv/, venv/, dist/, build/, .idea/, .vscode/, .svn/, .hg/) are merged additively — list only project-specific extras.",
   "ops": {
     "glob": {
-      "exclude-paths": []
+      "exclude-paths": [
+        "vendor/",
+        "tmp/",
+        "coverage/"
+      ]
     },
     "grep": {
-      "exclude-paths": []
+      "exclude-paths": [
+        "vendor/",
+        "tmp/",
+        "coverage/"
+      ]
     },
     "tree": {
-      "exclude-paths": []
+      "exclude-paths": [
+        "vendor/"
+      ]
     },
     "map": {
-      "exclude-paths": []
+      "exclude-paths": [
+        "vendor/"
+      ]
+    },
+    "mypy": {
+      "cmd": "python -m mypy --no-error-summary {file}",
+      "timeout": 60,
+      "description": "Type-check a Python file with mypy.",
+      "example": "mypy:src/app/Module.py"
+    },
+    "pytest": {
+      "cmd": "python -m pytest --no-header -q {file}",
+      "timeout": 120,
+      "description": "Run pytest on a test file or directory.",
+      "example": "pytest:tests/test_module.py"
+    },
+    "ruff": {
+      "cmd": "ruff check {file}",
+      "timeout": 30,
+      "description": "Lint a Python file with ruff.",
+      "example": "ruff:src/app/Module.py"
+    },
+    "job": {
+      "cmd": "python3 scripts/inspect_job.py {arg}",
+      "timeout": 30,
+      "description": "Inspect a CI job by ID. Extra keys below pass through to the script as SUPERTOOL_* env vars — tune behavior from JSON without editing scripts.",
+      "example": "job:1234567",
+      "lines": 80,
+      "error_patterns": "ERROR,FAIL,Fatal"
+    },
+    "_hidden_internal": {
+      "cmd": "echo internal-helper",
+      "description": "Hidden from `./supertool ops` output via status:0 — useful for ops that exist for aliases or scripts but shouldn't clutter the public listing.",
+      "status": 0
     }
   },
-  "aliases": {},
+  "aliases": {
+    "verify": {
+      "ops": [
+        "ruff:{file}",
+        "mypy:{file}"
+      ],
+      "description": "Lint + type-check in one round-trip.",
+      "example": "verify:src/app/Module.py"
+    },
+    "qa": {
+      "ops": [
+        "ruff:{file}",
+        "mypy:{file}",
+        "pytest:tests/"
+      ],
+      "description": "Full quality check: lint, types, tests.",
+      "example": "qa:src/app/Module.py"
+    },
+    "context": {
+      "ops": [
+        "read:{file}",
+        "map:{dir}",
+        "grep:TODO:{dir}:10"
+      ],
+      "description": "Bootstrap context for a file: contents + sibling symbols + TODOs.",
+      "example": "context:src/app/Module.py"
+    }
+  },
   "validator_cache": true,
   "validators": {
     "phplint": {
@@ -442,7 +513,8 @@
         "vim"
       ],
       "rollback_on_fail": false,
-      "timeout": 30
+      "timeout": 30,
+      "tier": "slow"
     },
     "tomllint": {
       "cmd": "{python} {supertool_dir}/validators/tomllint/tomllint.py {file}",
@@ -507,6 +579,30 @@
         "PSR_SEVERITY": "9"
       },
       "tier": "slow"
+    },
+    "_example-opt-in-strict": {
+      "cmd": "phpcs --standard=PSR12 --severity=1 {file}",
+      "match": "*.php",
+      "hooks_into": [],
+      "rollback_on_fail": false,
+      "timeout": 30,
+      "opt_in": true,
+      "_doc": "opt_in=true gates the validator behind explicit `validate:PATH:_example-opt-in-strict` calls — never runs after edits. Use for expensive or noisy checks you only want on demand."
+    },
+    "_example-resolve-to-test": {
+      "cmd": "{python} -m pytest -q {file}",
+      "match": "src/**/*.py",
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste",
+        "vim"
+      ],
+      "rollback_on_fail": false,
+      "timeout": 120,
+      "resolve": "echo tests/test_$(basename {file} .py).py",
+      "_doc": "After editing src/foo.py, `resolve` rewrites the target to tests/test_foo.py before running pytest on it. Shell cmd that prints an alternate path on stdout."
     },
     "git-status": {
       "cmd": "{python} {supertool_dir}/validators/git-status/git-status.py {file}",
