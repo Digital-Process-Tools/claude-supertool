@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -95,6 +96,9 @@ def main() -> int:
             body = description
 
         if estimate:
+            if not re.match(r"^\d+(\.\d+)?[mhdw]$", estimate):
+                print(f"ERROR: invalid estimate format: {estimate!r} (expected e.g. '4h', '30m', '2d')")
+                return 1
             body = body.rstrip() + f"\n\n/estimate {estimate}"
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
@@ -145,7 +149,9 @@ def main() -> int:
             parts = url.rstrip("/").split("/")
             iid = parts[-1] if parts else "?"
 
-        if links and iid and iid != "?":
+        if links and iid and iid != "?" and not iid.isdigit():
+            print(f"gl-issue-create OK iid={iid} url={url}  (links skipped — could not extract numeric iid)", file=sys.stderr)
+        elif links and iid and iid != "?":
             encoded_project = project.replace("/", "%2F")
             for link in links:
                 target_iid = link.get("target_iid")

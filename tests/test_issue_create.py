@@ -232,6 +232,46 @@ class TestGitlabIssueCreate:
         assert rc != 0
         assert "description" in out
 
+    def test_estimate_invalid_format_rejected(self, monkeypatch, capsys, tmp_path):
+        for i, bad in enumerate(["abc", "4h; /spend 8h", "4h\n/spend", "4 h"]):
+            sub = tmp_path / f"bad_{i}"
+            sub.mkdir()
+            payload = {**GL_MINIMAL, "estimate": bad}
+            payload_file = _write_payload(sub, payload)
+            monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
+            monkeypatch.setattr(gl, "_glab", lambda args, timeout=20: _ok(GL_URL))
+            monkeypatch.setattr(gl, "_glab_api", lambda *a, **kw: _ok("{}"))
+            rc = gl.main()
+            out = capsys.readouterr().out
+            assert rc != 0, f"expected failure for estimate={bad!r}"
+            assert "invalid estimate" in out.lower() or "error" in out.lower()
+
+    def test_links_skipped_when_iid_non_numeric(self, monkeypatch, capsys, tmp_path):
+        payload = {
+            **GL_MINIMAL,
+            "links": [{"target_iid": 100, "type": "relates_to"}],
+        }
+        payload_file = _write_payload(tmp_path, payload)
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
+
+        api_calls: list = []
+
+        def fake_glab(args, timeout=20):
+            return _ok("https://gitlab.dp.tools/fdavid/dvsi/-/issues/some-slug")
+
+        def fake_glab_api(method, endpoint, *extra, timeout=15):
+            api_calls.append((method, endpoint))
+            return _ok("{}")
+
+        monkeypatch.setattr(gl, "_glab", fake_glab)
+        monkeypatch.setattr(gl, "_glab_api", fake_glab_api)
+
+        rc = gl.main()
+        err = capsys.readouterr().err
+        assert rc == 0
+        assert len(api_calls) == 0, "link API should not be called for non-numeric iid"
+        assert "links skipped" in err
+
     def test_batch_two_issues(self, monkeypatch, capsys, tmp_path):
         urls = [
             "https://gitlab.dp.tools/fdavid/dvsi/-/issues/100",
@@ -397,6 +437,24 @@ class TestGithubIssueCreate:
         out = capsys.readouterr().out
         assert rc != 0
         assert "body" in out
+
+    def test_url_extraction_with_warning_lines(self, monkeypatch, capsys, tmp_path):
+        payload_file = _write_payload(tmp_path, GH_MINIMAL)
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
+
+        noisy_stdout = (
+            "Opening in browser...\n"
+            "Warning: 2 assignees found with username 'fdavid'\n"
+            "https://github.com/Digital-Process-Tools/claude-supertool/issues/42\n"
+        )
+
+        monkeypatch.setattr(gh, "_gh", lambda args, timeout=20: _ok(noisy_stdout))
+
+        rc = gh.main()
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "number=42" in out
+        assert "url=https://github.com/Digital-Process-Tools/claude-supertool/issues/42" in out
 
     def test_batch_two_issues(self, monkeypatch, capsys, tmp_path):
         urls = [

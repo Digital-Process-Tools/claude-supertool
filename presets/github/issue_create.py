@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -116,8 +117,13 @@ def main() -> int:
             print(result.stderr.strip() or result.stdout.strip())
             return 1
 
-        url = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else "?"
-        number = url.rstrip("/").split("/")[-1] if "/" in url else "?"
+        match = re.search(r"https?://github\.com/[^/\s]+/[^/\s]+/issues/(\d+)", result.stdout)
+        if match:
+            url = match.group(0)
+            number = match.group(1)
+        else:
+            url = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else "?"
+            number = url.rstrip("/").split("/")[-1] if "/" in url else "?"
 
         print(f"gh-issue-create OK number={number} url={url}")
         return 0
