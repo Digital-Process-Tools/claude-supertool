@@ -8563,7 +8563,8 @@ def _validator_run_one(name: str, spec: Dict[str, Any], file: str) -> Optional[D
         return {"tool": name, "file": target, "ok": False, "count": 1,
                 "errors": [{"line": None, "col": None, "severity": "error",
                             "code": "orchestrator", "msg": f"timeout after {timeout}s"}],
-                "duration_ms": timeout * 1000, "elapsed_s": time.monotonic() - _t0}
+                "duration_ms": timeout * 1000, "elapsed_s": time.monotonic() - _t0,
+                "timeout": True}
     except OSError as e:
         return {"tool": name, "file": target, "ok": False, "count": 1,
                 "errors": [{"line": None, "col": None, "severity": "error",
@@ -8679,7 +8680,8 @@ def _validator_render_diff(before: Optional[Dict[str, Any]], after: Dict[str, An
                 status = f"ok {primary[0]}={primary[1]}"
                 return [f"{tool:12s}: {status:<10}  {'(unchanged)':<11}  {time_col:>5}"]
         status = "ok" if a_ok else f"{a_count} err"
-        return [f"{tool:12s}: {status:<10}  {'(unchanged)':<11}  {time_col:>5}"]
+        marker_col = "(timeout)" if after.get("timeout") else "(unchanged)"
+        return [f"{tool:12s}: {status:<10}  {marker_col:<11}  {time_col:>5}"]
     marker = "✓" if a_ok else ("⚠" if delta < 0 else "✗")
     arrow = f"{b_count} → {a_count}"
     sign = f"({'+' if delta >= 0 else ''}{delta})"

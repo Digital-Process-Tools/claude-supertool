@@ -52,3 +52,29 @@ def test_render_diff_metric_bv_non_numeric_coerced_to_zero() -> None:
     rows = supertool._validator_render_diff(before, after)
     joined = "".join(rows)
     assert "k" in joined and "5" in joined
+
+
+def test_render_diff_unchanged_timeout_marker() -> None:
+    """Issue #228 — timeout-induced 'err' should render '(timeout)', not '(unchanged)'."""
+    before = {"tool": "lsp-diag", "count": 1, "ok": False,
+              "errors": [{"code": "orchestrator", "msg": "timeout after 3s"}],
+              "timeout": True, "elapsed_s": 3.0}
+    after = {"tool": "lsp-diag", "count": 1, "ok": False,
+             "errors": [{"code": "orchestrator", "msg": "timeout after 3s"}],
+             "timeout": True, "elapsed_s": 3.0}
+    rows = supertool._validator_render_diff(before, after)
+    joined = "".join(rows)
+    assert "(timeout)" in joined
+    assert "(unchanged)" not in joined
+
+
+def test_render_diff_unchanged_real_err_still_unchanged() -> None:
+    """Real persisting error keeps '(unchanged)' marker — no timeout flag set."""
+    before = {"tool": "phpstan", "count": 1, "ok": False,
+              "errors": [{"code": "E001", "msg": "real error"}]}
+    after = {"tool": "phpstan", "count": 1, "ok": False,
+             "errors": [{"code": "E001", "msg": "real error"}]}
+    rows = supertool._validator_render_diff(before, after)
+    joined = "".join(rows)
+    assert "(unchanged)" in joined
+    assert "(timeout)" not in joined
