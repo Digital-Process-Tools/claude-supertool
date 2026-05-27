@@ -89,6 +89,24 @@ async function openFile(event: WitnessEvent): Promise<void> {
       const beforeUri = vscode.Uri.file(event.before_file);
       const label = `${event.op} ${path.basename(event.file)} (Max)`;
       await vscode.commands.executeCommand("vscode.diff", beforeUri, fileUri, label, { preview: false });
+      // Scroll the diff to the edited line (issue #236). vscode.diff focuses
+      // the right-hand (after) editor by default, so activeTextEditor is the
+      // after-file — check fsPath to confirm before revealing.
+      if (event.line && event.line > 0) {
+        const editor = vscode.window.activeTextEditor;
+        if (editor && editor.document.uri.fsPath === event.file) {
+          const startLine = Math.max(0, event.line - 1);
+          const endLine = event.line_end && event.line_end >= event.line
+            ? Math.min(event.line_end - 1, editor.document.lineCount - 1)
+            : startLine;
+          const lastLine = Math.min(endLine, editor.document.lineCount - 1);
+          const range = new vscode.Range(
+            new vscode.Position(startLine, 0),
+            new vscode.Position(lastLine, editor.document.lineAt(lastLine).text.length),
+          );
+          editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
+        }
+      }
       // Best-effort cleanup of the temp before-file once VSCode has read it.
       // Delay so the diff editor finishes loading.
       setTimeout(() => {

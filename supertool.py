@@ -8299,6 +8299,28 @@ _sweep_old_notifier_temp_files()
 atexit.register(_sweep_old_notifier_temp_files)
 
 
+def _first_changed_line(pre: bytes, post_path: str) -> Optional[int]:
+    """Return the 1-indexed line of the first difference between pre bytes
+    and the current contents of post_path. None if the file is unreadable
+    or unchanged. Used by mutating-op notifiers so observers (cursor-witness)
+    can scroll the diff view to the edit (issue #236)."""
+    try:
+        with open(post_path, "rb") as f:
+            post = f.read()
+    except OSError:
+        return None
+    if pre == post:
+        return None
+    pre_lines = pre.splitlines(keepends=True)
+    post_lines = post.splitlines(keepends=True)
+    n = min(len(pre_lines), len(post_lines))
+    for i in range(n):
+        if pre_lines[i] != post_lines[i]:
+            return i + 1
+    # All shared lines match — the divergence is at the tail (insert/delete).
+    return n + 1 if (len(pre_lines) != len(post_lines)) else None
+
+
 def _run_notifiers(op: str, path: str, line: Optional[int] = None,
                    pre_content: Optional[bytes] = None,
                    line_end: Optional[int] = None) -> None:
@@ -8316,6 +8338,10 @@ def _run_notifiers(op: str, path: str, line: Optional[int] = None,
     if not specs:
         _notifier_log(f"no notifier applicable for op={op} path={path}")
         return
+    # Mutating ops carry no caller-supplied line but the diff against pre_content
+    # gives us the first changed line — let observers (cursor-witness) scroll to it.
+    if line is None and pre_content is not None and path and os.path.isfile(path):
+        line = _first_changed_line(pre_content, path)
     _notifier_log(f"dispatch op={op} path={path} line={line} line_end={line_end} pre_content={len(pre_content) if pre_content else 0}B notifiers={list(specs.keys())}")
 
     before_file = ""
