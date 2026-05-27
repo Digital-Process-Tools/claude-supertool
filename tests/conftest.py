@@ -28,6 +28,11 @@ def pytest_configure(config):  # noqa: ARG001
     # in-process _disable_rtk_and_config fixture covers same-process tests;
     # SUPERTOOL_NO_RTK covers subprocess-spawned tests like test_parallel.
     os.environ.setdefault("SUPERTOOL_NO_RTK", "1")
+    # Disable cursor/undo persistence so tests start with a clean cursor=0
+    # regardless of what a previous pytest run left in ~/.cache/supertool/.
+    # Tests that explicitly exercise persistence (test_vim_persist*) unset
+    # this via monkeypatch.delenv("SUPERTOOL_VIM_NO_PERSIST").
+    os.environ.setdefault("SUPERTOOL_VIM_NO_PERSIST", "1")
     # #149: publish-body allowlist + confirm gate. Existing publish tests use
     # `tmp_path` for body files (outside the production .max/ / drafts/ /
     # posts/ / blog/ allowlist) and don't `|force`, so opt the suite in.
@@ -48,6 +53,7 @@ def pytest_configure(config):  # noqa: ARG001
 @pytest.fixture(autouse=True)
 def _disable_rtk_and_config():
     """Disable RTK delegation, config cache, tree-sitter, and ctags in tests."""
+    import os
     old_rtk_checked = supertool._RTK_CHECKED
     old_rtk_path = supertool._RTK_PATH
     old_config_checked = supertool._CONFIG_CHECKED
@@ -78,6 +84,10 @@ def _disable_rtk_and_config():
     supertool._TS_PACKAGE = old_ts_package
     supertool._CTAGS_CHECKED = old_ctags_checked
     supertool._CTAGS_PATH = old_ctags_path
+    # Restore NO_PERSIST so tests that use os.environ.pop() don't leave the
+    # flag absent for subsequent tests (pytest does not restore env vars set
+    # via os.environ directly — only monkeypatch does).
+    os.environ["SUPERTOOL_VIM_NO_PERSIST"] = "1"
 
 
 @pytest.fixture

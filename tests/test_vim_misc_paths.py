@@ -24,7 +24,9 @@ def _write_state(file_path: str, content: str) -> Path:
     return state_path
 
 
-def test_vim_load_state_with_invalid_json_falls_back_to_legacy(tmp_path: Path) -> None:
+def test_vim_load_state_with_invalid_json_falls_back_to_legacy(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("SUPERTOOL_VIM_NO_PERSIST", raising=False)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     f = tmp_path / "x.txt"
     f.write_text("hello\n")
     sp = _write_state(str(f), "5")  # bare int — legacy form
@@ -72,7 +74,9 @@ def test_vim_load_state_with_negative_cursor_clamped(tmp_path: Path) -> None:
         sp.unlink(missing_ok=True)
 
 
-def test_vim_load_state_with_oversize_cursor_clamped(tmp_path: Path) -> None:
+def test_vim_load_state_with_oversize_cursor_clamped(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("SUPERTOOL_VIM_NO_PERSIST", raising=False)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     f = tmp_path / "x.txt"
     f.write_text("hi\n")
     sp = _write_state(str(f), '{"cursor": 9999}')
