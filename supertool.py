@@ -8590,13 +8590,13 @@ def _validator_render_row(data: Dict[str, Any], verbose: bool = False) -> list:
     want verbose output to include their full output should populate them.
     """
     if "skipped" in data:
-        return [f"{data['tool']:8s}: skipped — {data['skipped']}"]
+        return [f"{data['tool']:12s}: skipped — {data['skipped']}"]
     tool = data.get("tool", "?")
     ok = data.get("ok", False)
     count = data.get("count", 0)
     dur = data.get("duration_ms", 0)
     status = "ok" if ok else f"{count} err"
-    line = f"{tool:8s}: {status:12s} ({dur}ms)"
+    line = f"{tool:12s}: {status:<10}  ({dur}ms)"
     metrics = data.get("metrics")
     if metrics and tool == "git-status":
         added = metrics.get("lines_added", 0)
@@ -8639,10 +8639,11 @@ def _validator_render_row(data: Dict[str, Any], verbose: bool = False) -> list:
 
 
 def _validator_render_diff(before: Optional[Dict[str, Any]], after: Dict[str, Any]) -> list:
+    # Skipped path never started a timer, so elapsed_s is absent — `-` rendered in time col.
     elapsed = after.get("elapsed_s")
     time_col = f"{elapsed:.1f}s" if elapsed is not None else "-"
     if "skipped" in after:
-        return [f"{after['tool']:12s}: {'skipped':<10}  {'':11}  {time_col:>5}"]
+        return [f"{after['tool']:12s}: {'skipped':<10}  {'':<11}  {time_col:>5}"]
     tool = after["tool"]
     b_count = before.get("count", 0) if before else 0
     a_count = after.get("count", 0)
