@@ -110,3 +110,65 @@ def test_phpstan_missing_binary_emits_json(tmp_path: Path) -> None:
     assert data["ok"] is False
     assert "PHPSTAN_BIN not found" in data["errors"][0]["msg"]
     assert "errors" in data
+
+
+# ---------------------------------------------------------------------------
+# Hermetic adapter coverage — fake `php` shim emitting canned phpstan JSON.
+# Exercises the parse/aggregate path with no real phpstan/php, so coverage holds
+# in envs where the behavioral tests above skip (global phpstan can't emit JSON).
+# ---------------------------------------------------------------------------
+
+def _run_adapter_with_fake_php(tmp_path: Path, php_stdout: str) -> dict:
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    fake_php = bindir / "php"
+    fake_php.write_text("#!/bin/sh\ncat <<'JSON'\n" + php_stdout + "\nJSON\n")
+    fake_php.chmod(0o755)
+    dummy_bin = bindir / "phpstan"
+    dummy_bin.write_text("#!/bin/sh\n:\n")
+    dummy_bin.chmod(0o755)
+    target = tmp_path / "x.php"
+    target.write_text("<?php\n$x = 1;\n")
+    env = {**os.environ,
+           "PATH": str(bindir) + os.pathsep + os.environ.get("PATH", ""),
+           "PHPSTAN_BIN": str(dummy_bin)}
+    r = subprocess.run(["python3", str(PHPSTAN_PY), str(target)],
+                       capture_output=True, text=True, timeout=30, env=env)
+    assert r.returncode == 0
+    return json.loads(r.stdout.strip())
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX /bin/sh shim")
+def test_phpstan_clean_via_fake_php(tmp_path: Path) -> None:
+    data = _run_adapter_with_fake_php(tmp_path, '{"totals": {"file_errors": 0}, "files": {}}')
+    assert data["tool"] == "phpstan"
+    assert data["ok"] is True
+    assert data["count"] == 0
+    assert data["errors"] == []
+    assert isinstance(data["duration_ms"], int)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX /bin/sh shim")
+def test_phpstan_errors_via_fake_php(tmp_path: Path) -> None:
+    payload = json.dumps({
+        "totals": {"file_errors": 1},
+        "files": {"x.php": {"messages": [
+            {"line": 2, "identifier": "return.type", "message": "bad return"}]}},
+    })
+    data = _run_adapter_with_fake_php(tmp_path, payload)
+    assert data["ok"] is False
+    assert data["count"] == 1
+    assert len(data["errors"]) == 1
+    err = data["errors"][0]
+    assert err["line"] == 2
+    assert err["code"] == "return.type"
+    assert err["msg"] == "bad return"
+    assert "source_context" in err
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX /bin/sh shim")
+def test_phpstan_non_json_output_via_fake_php(tmp_path: Path) -> None:
+    data = _run_adapter_with_fake_php(tmp_path, "PHP Fatal error: boom")
+    assert data["ok"] is False
+    assert data["errors"][0]["code"] == "adapter"
+    assert "not json" in data["errors"][0]["msg"]
