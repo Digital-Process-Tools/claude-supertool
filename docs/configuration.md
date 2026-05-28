@@ -174,6 +174,14 @@ Set `"compact": true` in `.supertool.json` to enable compact reads. When enabled
 
 Compact is disabled when using `grep=` filter or `offset` (editing needs exact lines).
 
+## Advise on new class without test
+
+```json
+{ "adviseForNewTest": true }
+```
+
+Opt-in (default false). When set, a `paste` that creates a new `*.php` file with no resolvable sibling test gets a non-blocking `[advice]` line appended to the op output. It reuses a validator's `resolve` cmd to find the would-be test path. Full contract in [validators.md → resolve](validators.md#resolve--map-a-source-file-to-its-real-target).
+
 ## Parallel execution
 
 Read-only ops in a batch can run concurrently. Output order is preserved (matches input order, not completion order).

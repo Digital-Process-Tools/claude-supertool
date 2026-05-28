@@ -8953,6 +8953,55 @@ def _formatters_run_batch(
     return [_formatter_run_one(name, spec, path) for name, spec in applicable.items()]
 
 
+def _advise_new_test(op: str, path: str, pre_existed: bool) -> str:
+    """Advisory (never blocks): nag when a `paste` creates a new source file
+    that has no sibling test.
+
+    Opt-in via top-level config ``adviseForNewTest: true``. Reuses a validator's
+    ``resolve`` cmd (the source→test resolver) to find the would-be test target:
+    the resolver exits 3 and prints the target on stderr when no test exists
+    (stdout stays empty so the phpunit validator still skips). Returns an
+    ``[advice]`` block, or "" when not applicable.
+    """
+    if pre_existed or op != "paste":
+        return ""
+    cfg = _load_config()
+    if not cfg.get("adviseForNewTest"):
+        return ""
+    if not path.endswith(".php"):
+        return ""
+    # Reuse the source→test resolver declared on a validator (e.g. phpunit).
+    resolve_cmd = None
+    for spec in (cfg.get("validators") or {}).values():
+        if isinstance(spec, dict) and spec.get("resolve"):
+            resolve_cmd = spec["resolve"]
+            break
+    if not resolve_cmd:
+        return ""
+    cmd = (resolve_cmd
+           .replace("{supertool_dir}", _INSTALL_DIR)
+           .replace("{python}", _python_token())
+           .replace("{file}", shlex.quote(path)))
+    _prefix_env, cmd = _extract_env_prefix(cmd)
+    _merged_env = {**os.environ, **_prefix_env}
+    cmd = _expand_env(cmd, _merged_env)
+    try:
+        r = subprocess.run(shlex.split(cmd), shell=False, capture_output=True,
+                           text=True, timeout=30,
+                           env=(_merged_env if _prefix_env else None))
+    except (subprocess.TimeoutExpired, OSError):
+        return ""
+    if r.returncode != 3:
+        return ""
+    target = ""
+    if r.stderr.strip():
+        target = r.stderr.strip().splitlines()[-1]
+    msg = "ℹ new class without test"
+    if target:
+        msg += f" — consider {target}"
+    return "\n[advice]\n" + msg + "\n"
+
+
 def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
     """Wrap edit op with format+snapshot+run+diff using configured formatters/validators.
 
@@ -8969,6 +9018,7 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
         return do_op()
     if not path:
         return do_op()
+    _pre_existed = os.path.isfile(path)
     applicable_fmt = _applicable_formatters(op, path)
     applicable_all = _applicable_validators(op, path)
     applicable_notif = _applicable_notifiers(op, path)
@@ -9009,7 +9059,9 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
                 pass
         body = do_op()
         _run_notifiers(op, path, pre_content=pre_for_notif)
-        return body
+        if isinstance(body, str) and body.startswith("ERROR"):
+            return body
+        return body + _advise_new_test(op, path, _pre_existed)
 
     needs_rollback = any(v.get("rollback_on_fail") for v in applicable.values())
     needs_fmt_rollback = any(v.get("rollback_on_fail") for v in applicable_fmt.values())
@@ -9090,7 +9142,7 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
     if applicable:
         suffix += "\n[validators]\n" + diff_out
 
-    return body + suffix
+    return body + suffix + _advise_new_test(op, path, _pre_existed)
 
 
 def op_validate(path: str, tool_filter: Optional[list] = None, verbose: bool = False) -> str:

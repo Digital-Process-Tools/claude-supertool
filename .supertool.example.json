@@ -2,6 +2,7 @@
   "compact": false,
   "rtk": false,
   "parallel": 0,
+  "adviseForNewTest": false,
   "presets": [
     "git",
     "github",

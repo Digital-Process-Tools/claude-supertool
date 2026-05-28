@@ -209,6 +209,52 @@ Custom validators must conform to the adapter contract in `validators/SCHEMA.md`
 
 Two optional output fields worth knowing: `source_context` (array of source lines centered on the error, rendered indented under each error in verbose mode) and `diff` (unified diff string, rendered as a fenced block — useful for tools like Rector that produce a suggested patch). Full spec in [SCHEMA.md](../validators/SCHEMA.md).
 
+## resolve — map a source file to its real target
+
+By default a validator runs against the file the op touched. The optional `resolve` key lets it run against a *different* file derived from that one — the canonical case is "edited a source file, run its test." `resolve` is a shell cmd that takes the edited file (`{file}`) and prints the path to run instead:
+
+```json
+"phpunit": {
+  "cmd": "... {file}",
+  "match": "*.php",
+  "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+  "resolve": "bash .claude/scripts/resolve_test.sh {file}",
+  "tier": "slow"
+}
+```
+
+**Contract — supertool reads stdout only:**
+
+- Non-empty stdout → that path becomes the validator's target.
+- Empty stdout → the validator is **skipped** for this op (nothing sensible to run).
+
+The exit code is **ignored** by the validator path. That is deliberate, and it's what makes the advisory below possible.
+
+### adviseForNewTest — nag on a new class with no test
+
+Autonomous flows that write only through supertool bypass the editor/git-hook reminders to write a test. With the top-level flag enabled:
+
+```json
+// .supertool.json — opt-in, default false
+{ "adviseForNewTest": true }
+```
+
+a `paste` that **creates a new `*.php` file** (it did not exist before) with no resolvable sibling test gets a non-blocking line appended to the op output:
+
+```
+[advice]
+ℹ new class without test — consider tests/unit/SiX/FooTest.php
+```
+
+It reuses the same `resolve` cmd declared on a validator, so the source→test path logic lives in exactly one place. Because the advisory needs the *would-be* target (which doesn't exist yet) while the validator path needs stdout to stay empty on a miss, the resolver signals the two cases on different channels:
+
+| case | stdout | stderr | exit |
+|------|--------|--------|------|
+| test exists | test path | — | 0 |
+| no test | *(empty)* | would-be target | 3 |
+
+stdout stays empty on a miss → the validator still skips, unchanged. The miss target rides on **stderr**, flagged by **exit 3** → only the advisory reads it. Advisory only: it never blocks the write, and never fires on a rewrite of an existing file.
+
 ## Format-on-save
 
 See [formatters.md](formatters.md) — formatters run after every edit, before validators, normalizing whitespace and style before the safety check runs.
