@@ -9023,6 +9023,14 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
     applicable_all = _applicable_validators(op, path)
     applicable_notif = _applicable_notifiers(op, path)
 
+    # New file (#239): warm LSP daemons don't index brand-new classes, so they
+    # report phantom errors. Servers opting into stopOnNewFile must be stopped
+    # once this op creates the file, before ANY validator (inline OR deferred
+    # slow-tier) runs against it. Computed here, fired after do_op() in whichever
+    # path runs below — deferred slow validators (drained later by main()) rely
+    # on this stop having already cold-restarted the daemon.
+    _new_file_servers = [] if _pre_existed else _mcp_servers_to_stop_on_new_file(path)
+
     # Split validators into fast (run per-op) and slow (deferred to end-of-call).
     # tier="slow" validators are queued in _VALIDATOR_DEFER_QUEUE and drained by
     # main() after all ops complete. Dedup by (name, path) preserves insertion order.
@@ -9061,6 +9069,8 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
         _run_notifiers(op, path, pre_content=pre_for_notif)
         if isinstance(body, str) and body.startswith("ERROR"):
             return body
+        for _srv in _new_file_servers:
+            _mcp_stop_server(_srv)
         return body + _advise_new_test(op, path, _pre_existed)
 
     needs_rollback = any(v.get("rollback_on_fail") for v in applicable.values())
@@ -9113,6 +9123,12 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
                 row = _formatter_render_row(result)
                 if row:
                     fmt_rows.append(row)
+
+    # Stop warm daemons for this new file before the inline validators run, so
+    # they cold-start with the file indexed (see _new_file_servers above). Same
+    # list covers any deferred slow-tier validators drained later by main().
+    for _srv in _new_file_servers:
+        _mcp_stop_server(_srv)
 
     after_results = _validators_run_batch(applicable, path) if applicable else {}
     diff_lines: list = []
@@ -11061,6 +11077,44 @@ def _mcp_route(path: str, op: str) -> Optional[Tuple[str, str]]:
 
 
 _MCP_DAEMON_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "presets", "mcp", "daemon.py")
+_MCP_STOP_SCRIPT = os.path.join(os.path.dirname(_MCP_DAEMON_SCRIPT), "stop.py")
+
+
+def _mcp_stop_server(name: str) -> None:
+    """Best-effort SIGTERM the warm daemon for `name` via stop.py.
+
+    The next op that touches this server cold-starts a fresh daemon, so its LSP
+    re-indexes the workspace. Used by the new-file auto-invalidation path (#239):
+    a just-created class isn't in the warm reflection cache, so a stale daemon
+    reports phantom errors. Silent on any failure — invalidation is an
+    optimization, never blocks the op.
+    """
+    import subprocess
+    try:
+        subprocess.run(
+            [sys.executable, _MCP_STOP_SCRIPT, name],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, timeout=30, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def _mcp_servers_to_stop_on_new_file(path: str) -> List[str]:
+    """MCP servers whose `match` covers `path` and that opt into `stopOnNewFile`.
+
+    Returns [] for non-LSP files or when no server opts in — the common case.
+    """
+    if not path:
+        return []
+    out: List[str] = []
+    for name, spec in _mcp_specs.items():
+        if not spec.get("stopOnNewFile"):
+            continue
+        glob = spec.get("match")
+        if glob and _match_glob(path, glob):
+            out.append(name)
+    return out
 
 
 class MCPClient:
