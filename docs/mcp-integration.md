@@ -131,6 +131,7 @@ Edit `.supertool.json`:
 - `env` — environment for the spawned MCP server
 - `tools` — maps supertool op names to MCP tool names exposed by the server. Omit any op you don't want to use; that op falls back to the heuristic path (where one exists)
 - `timeout` — request timeout in seconds (LSP cold-start can be slow; 60s is comfortable)
+- `stopOnNewFile` — `true` to SIGTERM this daemon when a mutating op (`edit`/`paste`/etc.) **creates a brand-new file** matching `match`. The warm LSP holds a reflection cache that doesn't index new classes, so it reports phantom errors on a just-created file (#239); stopping it forces the next validator run to cold-start a daemon that sees the file. Cost: that one post-create validate pays the cold-reindex (~30-60s on a large repo). Leave unset for servers that index new files fine.
 
 ### 4. Use it
 
@@ -211,6 +212,10 @@ binary, the wiring is the same.
    - `timeout` — request timeout in seconds.
    - `idle_timeout` (optional) — daemon shuts itself down after this many seconds idle
      (default 600).
+   - `stopOnNewFile` (optional) — `true` to SIGTERM this daemon when a mutating op
+     creates a brand-new file matching `match`, so the next validator run cold-starts a
+     daemon that has indexed it. Fixes phantom errors on new classes from the warm
+     reflection cache (#239), at the cost of one cold reindex on that post-create run.
 
 3. **Discover the tool names** — first time wiring a new MCP server, you don't know
    what tool names it exposes. Two quick options:

@@ -9114,6 +9114,15 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
                 if row:
                     fmt_rows.append(row)
 
+    # New file (#239): warm LSP daemons don't index brand-new classes, so they
+    # report phantom errors on the post-op run. Servers opting into stopOnNewFile
+    # get SIGTERM'd here — the validator's next connect cold-starts a daemon that
+    # sees the file. Gated on _pre_existed so it only fires when this op created
+    # the path, and only matters when there are validators to run below.
+    if applicable and not _pre_existed:
+        for _srv in _mcp_servers_to_stop_on_new_file(path):
+            _mcp_stop_server(_srv)
+
     after_results = _validators_run_batch(applicable, path) if applicable else {}
     diff_lines: list = []
     for name in applicable:  # stable order from config
@@ -11061,6 +11070,44 @@ def _mcp_route(path: str, op: str) -> Optional[Tuple[str, str]]:
 
 
 _MCP_DAEMON_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "presets", "mcp", "daemon.py")
+_MCP_STOP_SCRIPT = os.path.join(os.path.dirname(_MCP_DAEMON_SCRIPT), "stop.py")
+
+
+def _mcp_stop_server(name: str) -> None:
+    """Best-effort SIGTERM the warm daemon for `name` via stop.py.
+
+    The next op that touches this server cold-starts a fresh daemon, so its LSP
+    re-indexes the workspace. Used by the new-file auto-invalidation path (#239):
+    a just-created class isn't in the warm reflection cache, so a stale daemon
+    reports phantom errors. Silent on any failure — invalidation is an
+    optimization, never blocks the op.
+    """
+    import subprocess
+    try:
+        subprocess.run(
+            [sys.executable, _MCP_STOP_SCRIPT, name],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, timeout=30, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def _mcp_servers_to_stop_on_new_file(path: str) -> List[str]:
+    """MCP servers whose `match` covers `path` and that opt into `stopOnNewFile`.
+
+    Returns [] for non-LSP files or when no server opts in — the common case.
+    """
+    if not path:
+        return []
+    out: List[str] = []
+    for name, spec in _mcp_specs.items():
+        if not spec.get("stopOnNewFile"):
+            continue
+        glob = spec.get("match")
+        if glob and _match_glob(path, glob):
+            out.append(name)
+    return out
 
 
 class MCPClient:
