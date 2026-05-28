@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import subprocess
 import sys
@@ -49,6 +50,13 @@ def _write_body_file(tmp_path: Path, content: str) -> str:
     p = tmp_path / "body.md"
     p.write_text(content)
     return str(p)
+
+
+def _flag_value(args: list[str], flag: str) -> str | None:
+    for i, a in enumerate(args):
+        if a == flag and i + 1 < len(args):
+            return args[i + 1]
+    return None
 
 
 # ===========================================================================
@@ -144,12 +152,10 @@ class TestGitlabIssueCreate:
         payload_file = _write_payload(tmp_path, payload)
         monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
 
-        written_bodies: list[str] = []
+        captured: list[list[str]] = []
 
         def fake_glab(args, timeout=20):
-            for i, a in enumerate(args):
-                if a == "--description-file" and i + 1 < len(args):
-                    written_bodies.append(Path(args[i + 1]).read_text())
+            captured.append(args)
             return _ok(GL_URL)
 
         monkeypatch.setattr(gl, "_glab", fake_glab)
@@ -157,8 +163,11 @@ class TestGitlabIssueCreate:
 
         rc = gl.main()
         assert rc == 0
-        assert written_bodies, "description-file arg not passed"
-        assert "From file" in written_bodies[0]
+        assert captured, "glab not called"
+        assert "--description-file" not in captured[0], "should use --description, not --description-file"
+        desc = _flag_value(captured[0], "--description")
+        assert desc is not None, "--description arg not passed"
+        assert "From file" in desc
 
     def test_estimate_appended_to_description(self, monkeypatch, capsys, tmp_path):
         payload = {
@@ -170,12 +179,10 @@ class TestGitlabIssueCreate:
         payload_file = _write_payload(tmp_path, payload)
         monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
 
-        written_bodies: list[str] = []
+        captured: list[list[str]] = []
 
         def fake_glab(args, timeout=20):
-            for i, a in enumerate(args):
-                if a == "--description-file" and i + 1 < len(args):
-                    written_bodies.append(Path(args[i + 1]).read_text())
+            captured.append(args)
             return _ok(GL_URL)
 
         monkeypatch.setattr(gl, "_glab", fake_glab)
@@ -183,8 +190,45 @@ class TestGitlabIssueCreate:
 
         rc = gl.main()
         assert rc == 0
-        assert written_bodies
-        assert "/estimate 4h" in written_bodies[0]
+        assert captured
+        desc = _flag_value(captured[0], "--description")
+        assert desc is not None
+        assert "/estimate 4h" in desc
+
+    def test_uses_description_flag_not_file(self, monkeypatch, capsys, tmp_path):
+        payload_file = _write_payload(tmp_path, GL_MINIMAL)
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
+
+        captured: list[list[str]] = []
+        monkeypatch.setattr(gl, "_glab", lambda args, timeout=20: captured.append(args) or _ok(GL_URL))
+        monkeypatch.setattr(gl, "_glab_api", lambda *a, **kw: _ok("{}"))
+
+        rc = gl.main()
+        assert rc == 0
+        assert "--description-file" not in captured[0]
+        assert _flag_value(captured[0], "--description") == "Hello world"
+
+    def test_at_prefix_stripped(self, monkeypatch, capsys, tmp_path):
+        payload_file = _write_payload(tmp_path, GL_MINIMAL)
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", "@" + payload_file])
+        monkeypatch.setattr(gl, "_glab", lambda args, timeout=20: _ok(GL_URL))
+        monkeypatch.setattr(gl, "_glab_api", lambda *a, **kw: _ok("{}"))
+
+        rc = gl.main()
+        out = capsys.readouterr().out
+        assert rc == 0, out
+        assert "gl-issue-create OK" in out
+
+    def test_stdin_via_at_dash(self, monkeypatch, capsys):
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", "@-"])
+        monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(GL_MINIMAL)))
+        monkeypatch.setattr(gl, "_glab", lambda args, timeout=20: _ok(GL_URL))
+        monkeypatch.setattr(gl, "_glab_api", lambda *a, **kw: _ok("{}"))
+
+        rc = gl.main()
+        out = capsys.readouterr().out
+        assert rc == 0, out
+        assert "gl-issue-create OK" in out
 
     def test_error_path_propagates(self, monkeypatch, capsys, tmp_path):
         payload_file = _write_payload(tmp_path, GL_MINIMAL)
@@ -483,3 +527,23 @@ class TestGithubIssueCreate:
             out = capsys.readouterr().out
             assert rc == 0
             assert f"number={expected_number}" in out
+
+    def test_at_prefix_stripped(self, monkeypatch, capsys, tmp_path):
+        payload_file = _write_payload(tmp_path, GH_MINIMAL)
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", "@" + payload_file])
+        monkeypatch.setattr(gh, "_gh", lambda args, timeout=20: _ok(GH_URL))
+
+        rc = gh.main()
+        out = capsys.readouterr().out
+        assert rc == 0, out
+        assert "gh-issue-create OK" in out
+
+    def test_stdin_via_at_dash(self, monkeypatch, capsys):
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", "@-"])
+        monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(GH_MINIMAL)))
+        monkeypatch.setattr(gh, "_gh", lambda args, timeout=20: _ok(GH_URL))
+
+        rc = gh.main()
+        out = capsys.readouterr().out
+        assert rc == 0, out
+        assert "gh-issue-create OK" in out
