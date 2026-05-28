@@ -694,3 +694,74 @@ def test_advise_silent_when_test_exists() -> None:
 def test_advise_silent_when_no_resolve_cmd() -> None:
     _set_advice_config(True, resolve=None)
     assert supertool._advise_new_test("paste", "Foo.class.php", pre_existed=False) == ""
+
+
+# ---------------------------------------------------------------------------
+# Integration: advisory driven by a real external resolver script
+# (a resolve_test.sh equivalent) — proves the subprocess + exit-3 + stderr
+# contract end-to-end, not just inline {python} -c stand-ins.
+# ---------------------------------------------------------------------------
+
+def _write_resolver_script(tmp_path: Path) -> Path:
+    """A cross-platform resolve_test.sh equivalent.
+
+    Mirrors the real script's contract against the actual filesystem:
+      already a test (*Test.php)  -> echo it on stdout, exit 0
+      mirror test exists on disk  -> echo it on stdout, exit 0
+      no test                     -> mirror target on stderr, exit 3
+    Mirror rule: /src/ -> /tests/, Foo.php -> FooTest.php.
+
+    argv path is normalized to forward slashes so the /src/ -> /tests/
+    mirror rule works on Windows, where the path arrives with backslashes.
+    """
+    script = tmp_path / "resolve_test_equiv.py"
+    script.write_text(
+        "import os, sys\n"
+        "src = sys.argv[1].replace(os.sep, '/')\n"
+        "if src.endswith('Test.php'):\n"
+        "    sys.stdout.write(src); sys.exit(0)\n"
+        "mirror = src.replace('/src/', '/tests/')\n"
+        "if mirror.endswith('.php'):\n"
+        "    mirror = mirror[:-4] + 'Test.php'\n"
+        "if os.path.isfile(mirror):\n"
+        "    sys.stdout.write(mirror); sys.exit(0)\n"
+        "sys.stderr.write(mirror); sys.exit(3)\n"
+    )
+    return script
+
+
+def _set_advice_config_with_script(script: Path) -> None:
+    resolve = f'{{python}} {script.as_posix()} {{file}}'
+    supertool._CONFIG = {
+        "adviseForNewTest": True,
+        "validators": {"phpunit": {"cmd": "noop", "resolve": resolve}},
+    }
+    supertool._CONFIG_CHECKED = True
+
+
+def test_advise_real_script_emits_when_no_test_on_disk(tmp_path: Path) -> None:
+    src_dir = tmp_path / "src" / "Mod"
+    src_dir.mkdir(parents=True)
+    src = src_dir / "Foo.php"
+    src.write_text("<?php\nclass Foo {}\n")
+    _set_advice_config_with_script(_write_resolver_script(tmp_path))
+
+    out = supertool._advise_new_test("paste", str(src), pre_existed=False)
+    assert "[advice]" in out
+    # The would-be target the real script wrote to stderr (exit 3).
+    expected = src.as_posix().replace("/src/", "/tests/")[:-4] + "Test.php"
+    assert expected in out
+
+
+def test_advise_real_script_silent_when_test_on_disk(tmp_path: Path) -> None:
+    src_dir = tmp_path / "src" / "Mod"
+    src_dir.mkdir(parents=True)
+    src = src_dir / "Foo.php"
+    src.write_text("<?php\nclass Foo {}\n")
+    # Create the mirror test so the script takes the hit branch (exit 0 + stdout).
+    test_dir = tmp_path / "tests" / "Mod"
+    test_dir.mkdir(parents=True)
+    (test_dir / "FooTest.php").write_text("<?php\nclass FooTest {}\n")
+    _set_advice_config_with_script(_write_resolver_script(tmp_path))
+
+    assert supertool._advise_new_test("paste", str(src), pre_existed=False) == ""
