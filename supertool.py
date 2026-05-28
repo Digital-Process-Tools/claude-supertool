@@ -9023,6 +9023,14 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
     applicable_all = _applicable_validators(op, path)
     applicable_notif = _applicable_notifiers(op, path)
 
+    # New file (#239): warm LSP daemons don't index brand-new classes, so they
+    # report phantom errors. Servers opting into stopOnNewFile must be stopped
+    # once this op creates the file, before ANY validator (inline OR deferred
+    # slow-tier) runs against it. Computed here, fired after do_op() in whichever
+    # path runs below — deferred slow validators (drained later by main()) rely
+    # on this stop having already cold-restarted the daemon.
+    _new_file_servers = [] if _pre_existed else _mcp_servers_to_stop_on_new_file(path)
+
     # Split validators into fast (run per-op) and slow (deferred to end-of-call).
     # tier="slow" validators are queued in _VALIDATOR_DEFER_QUEUE and drained by
     # main() after all ops complete. Dedup by (name, path) preserves insertion order.
@@ -9061,6 +9069,8 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
         _run_notifiers(op, path, pre_content=pre_for_notif)
         if isinstance(body, str) and body.startswith("ERROR"):
             return body
+        for _srv in _new_file_servers:
+            _mcp_stop_server(_srv)
         return body + _advise_new_test(op, path, _pre_existed)
 
     needs_rollback = any(v.get("rollback_on_fail") for v in applicable.values())
@@ -9114,14 +9124,11 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
                 if row:
                     fmt_rows.append(row)
 
-    # New file (#239): warm LSP daemons don't index brand-new classes, so they
-    # report phantom errors on the post-op run. Servers opting into stopOnNewFile
-    # get SIGTERM'd here — the validator's next connect cold-starts a daemon that
-    # sees the file. Gated on _pre_existed so it only fires when this op created
-    # the path, and only matters when there are validators to run below.
-    if applicable and not _pre_existed:
-        for _srv in _mcp_servers_to_stop_on_new_file(path):
-            _mcp_stop_server(_srv)
+    # Stop warm daemons for this new file before the inline validators run, so
+    # they cold-start with the file indexed (see _new_file_servers above). Same
+    # list covers any deferred slow-tier validators drained later by main().
+    for _srv in _new_file_servers:
+        _mcp_stop_server(_srv)
 
     after_results = _validators_run_batch(applicable, path) if applicable else {}
     diff_lines: list = []

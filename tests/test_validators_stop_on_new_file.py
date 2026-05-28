@@ -57,6 +57,33 @@ def test_stops_server_on_new_file(tmp_path: Path, record_stops, monkeypatch) -> 
     assert record_stops == ["php-lsp"]
 
 
+def test_stops_server_on_new_file_with_deferred_slow_validator(
+        tmp_path: Path, record_stops, monkeypatch) -> None:
+    """The warm phpstan/rector validators are tier=slow → deferred in batch mode,
+    so `applicable` (inline) is empty. The stop must still fire, else the deferred
+    validators run against a stale daemon (#239 in a multi-op call)."""
+    monkeypatch.setattr(supertool, "_mcp_specs",
+                        {"php-lsp": {"match": "*.php", "stopOnNewFile": True}})
+    payload_ok = {"tool": "slow", "ok": True, "count": 0, "errors": [], "duration_ms": 1}
+    supertool._CONFIG = {"validators": {
+        "slow": {"cmd": _fake_cmd(payload_ok), "hooks_into": ["edit"],
+                 "match": "*.php", "tier": "slow"},
+    }}
+    supertool._CONFIG_CHECKED = True
+    monkeypatch.setattr(supertool, "_DEFER_FORMATTERS", True)
+    monkeypatch.setattr(supertool, "_VALIDATOR_DEFER_QUEUE", [])
+    monkeypatch.setattr(supertool, "_VALIDATOR_DEFER_SEEN", set())
+    f = tmp_path / "New.class.php"
+
+    def do_op() -> str:
+        f.write_text("<?php\nclass NewThing {}\n")
+        return "created\n"
+
+    supertool._run_with_validators("edit", ["edit", "", "", str(f)], do_op)
+    assert record_stops == ["php-lsp"]
+    assert any(name == "slow" for name, _spec, _p in supertool._VALIDATOR_DEFER_QUEUE)
+
+
 def test_no_stop_when_file_pre_existed(tmp_path: Path, record_stops, monkeypatch) -> None:
     monkeypatch.setattr(supertool, "_mcp_specs",
                         {"php-lsp": {"match": "*.php", "stopOnNewFile": True}})
