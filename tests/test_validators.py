@@ -635,3 +635,62 @@ def test_phplint_adapter_no_arg_returns_schema_error() -> None:
     assert data["tool"] == "phplint"
     assert data["ok"] is False
     assert "no file arg" in data["errors"][0]["msg"]
+
+
+# ---------------------------------------------------------------------------
+# _advise_new_test — paste-time "write a test" advisory
+# ---------------------------------------------------------------------------
+
+# resolve cmd that signals a miss: exit 3 + would-be target on stderr.
+_RESOLVE_MISS = (
+    '{python} -c "import sys; '
+    "sys.stderr.write('tests/unit/SiX/FooTest.php'); sys.exit(3)\""
+)
+# resolve cmd that signals a hit: exit 0 + test path on stdout.
+_RESOLVE_HIT = '{python} -c "import sys; sys.stdout.write(\'tests/unit/SiX/FooTest.php\')"'
+
+
+def _set_advice_config(enabled: bool, resolve: str | None = _RESOLVE_MISS) -> None:
+    validators: dict = {}
+    if resolve is not None:
+        validators["phpunit"] = {"cmd": "noop", "resolve": resolve}
+    supertool._CONFIG = {"adviseForNewTest": enabled, "validators": validators}
+    supertool._CONFIG_CHECKED = True
+
+
+def test_advise_emitted_for_new_class_without_test() -> None:
+    _set_advice_config(True)
+    out = supertool._advise_new_test("paste", "Dvsi/.../Foo.class.php", pre_existed=False)
+    assert "[advice]" in out
+    assert "new class without test" in out
+    assert "tests/unit/SiX/FooTest.php" in out
+
+
+def test_advise_silent_when_flag_disabled() -> None:
+    _set_advice_config(False)
+    assert supertool._advise_new_test("paste", "Foo.class.php", pre_existed=False) == ""
+
+
+def test_advise_silent_when_file_already_existed() -> None:
+    _set_advice_config(True)
+    assert supertool._advise_new_test("paste", "Foo.class.php", pre_existed=True) == ""
+
+
+def test_advise_silent_for_non_paste_op() -> None:
+    _set_advice_config(True)
+    assert supertool._advise_new_test("edit", "Foo.class.php", pre_existed=False) == ""
+
+
+def test_advise_silent_for_non_php_file() -> None:
+    _set_advice_config(True)
+    assert supertool._advise_new_test("paste", "styles.scss", pre_existed=False) == ""
+
+
+def test_advise_silent_when_test_exists() -> None:
+    _set_advice_config(True, resolve=_RESOLVE_HIT)
+    assert supertool._advise_new_test("paste", "Foo.class.php", pre_existed=False) == ""
+
+
+def test_advise_silent_when_no_resolve_cmd() -> None:
+    _set_advice_config(True, resolve=None)
+    assert supertool._advise_new_test("paste", "Foo.class.php", pre_existed=False) == ""
