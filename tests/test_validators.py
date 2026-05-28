@@ -710,11 +710,14 @@ def _write_resolver_script(tmp_path: Path) -> Path:
       mirror test exists on disk  -> echo it on stdout, exit 0
       no test                     -> mirror target on stderr, exit 3
     Mirror rule: /src/ -> /tests/, Foo.php -> FooTest.php.
+
+    argv path is normalized to forward slashes so the /src/ -> /tests/
+    mirror rule works on Windows, where the path arrives with backslashes.
     """
     script = tmp_path / "resolve_test_equiv.py"
     script.write_text(
         "import os, sys\n"
-        "src = sys.argv[1]\n"
+        "src = sys.argv[1].replace(os.sep, '/')\n"
         "if src.endswith('Test.php'):\n"
         "    sys.stdout.write(src); sys.exit(0)\n"
         "mirror = src.replace('/src/', '/tests/')\n"
@@ -746,7 +749,7 @@ def test_advise_real_script_emits_when_no_test_on_disk(tmp_path: Path) -> None:
     out = supertool._advise_new_test("paste", str(src), pre_existed=False)
     assert "[advice]" in out
     # The would-be target the real script wrote to stderr (exit 3).
-    expected = str(src).replace("/src/", "/tests/")[:-4] + "Test.php"
+    expected = src.as_posix().replace("/src/", "/tests/")[:-4] + "Test.php"
     assert expected in out
 
 
