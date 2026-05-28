@@ -27,6 +27,8 @@ def _gh(args: list[str], timeout: int = 20) -> subprocess.CompletedProcess[str]:
 
 
 def _load_payload(path: str) -> dict:
+    if path.startswith("@"):
+        path = path[1:]
     if path == "-":
         raw = sys.stdin.read()
     else:
