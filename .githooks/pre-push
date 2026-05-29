@@ -8,8 +8,13 @@ cd "$(git rev-parse --show-toplevel)"
 
 PYTHON="${PYTHON:-python3}"
 
-echo "── pre-push: running supertool tests ──"
-if ! "$PYTHON" -m pytest tests/ --tb=short; then
+echo "── pre-push: running full test suite (mirrors CI) ──"
+# Mirror the CI gate exactly (.github/workflows/tests.yml): run ALL tests
+# including slow ones (-m '' overrides the addopts 'not slow' filter), and do
+# NOT gate coverage (--no-cov). CI is the authority on what's mergeable; gating
+# coverage here — which CI doesn't — only produces local-only false aborts, and
+# the default 'not slow' filter would let a slow test that CI runs slip through.
+if ! "$PYTHON" -m pytest -m '' --no-cov --tb=short; then
     echo ""
     echo "✗ Tests failed. Push aborted."
     echo "  Fix failures or run: git push --no-verify  (to bypass, discouraged)"
