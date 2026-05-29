@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import stat
+import subprocess
 import sys
 from pathlib import Path
 
@@ -115,6 +116,55 @@ class TestNameValidation:
     def test_invalid_names_rejected(self, name):
         with pytest.raises(SystemExit, match="invalid server name"):
             mcp_daemon._validate_name(name)
+
+
+class TestClientDaemonPathAgreement:
+    """#148 follow-up: the CLIENT must look for the socket where the daemon binds it.
+
+    The daemon, status, and stop helpers were all migrated to _paths.socket_pid_paths
+    (runtime dir). MCPClient was not — it hardcoded /tmp/, so it polled a path the
+    daemon never bound, timed out, and reported the server 'unavailable' on every call.
+    """
+
+    def test_client_sock_path_matches_paths_helper(self, tmp_runtime, monkeypatch):
+        import supertool
+        cwd = os.path.abspath(os.getcwd())
+        expected_sock, _ = _paths.socket_pid_paths(cwd, "lsp")
+        client = supertool.MCPClient("lsp")
+        assert client._sock_path == expected_sock, (
+            "client/daemon socket path mismatch: client polls "
+            f"{client._sock_path}, daemon binds {expected_sock}"
+        )
+
+    def test_client_sock_not_in_bare_tmp(self, monkeypatch):
+        import supertool
+        monkeypatch.delenv("SUPERTOOL_RUNTIME_DIR", raising=False)
+        monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+        client = supertool.MCPClient("lsp")
+        assert not client._sock_path.startswith("/tmp/supertool-mcp-"), \
+            f"#148 regression: client socket back in bare /tmp/: {client._sock_path}"
+
+
+class TestSymlinkInvocation:
+    """supertool is installed as a symlink (e.g. dvsi/supertool -> claude-supertool/supertool.py).
+
+    Package-relative paths (_MCP_DAEMON_SCRIPT, the _paths import) must resolve from the
+    REAL file location, not the symlink's dir — else `from _paths import ...` crashes the
+    whole tool on import, and the daemon script path points at a nonexistent file so the
+    warm daemon never spawns. abspath(__file__) doesn't follow symlinks; realpath does.
+    """
+
+    def test_runs_clean_through_symlink(self, tmp_path):
+        real = Path(__file__).parent.parent / "supertool.py"
+        link = tmp_path / "supertool"
+        link.symlink_to(real)
+        r = subprocess.run(
+            [sys.executable, str(link), "version"],
+            capture_output=True, text=True, cwd=str(tmp_path), timeout=30,
+        )
+        assert r.returncode == 0, f"symlinked invocation crashed:\n{r.stderr}"
+        assert "ModuleNotFoundError" not in r.stderr, \
+            f"package-relative import failed under symlink:\n{r.stderr}"
 
 
 class TestListPidfiles:

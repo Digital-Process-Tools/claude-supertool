@@ -10,8 +10,8 @@ Usage:
     python3 daemon.py SERVER_NAME --detach  # double-fork detach
 
 Reads .supertool.json from cwd, looks up mcp[SERVER_NAME] = {cmd, env, timeout, ...}.
-Socket path: /tmp/supertool-mcp-<sha1(cwd+name)[:12]>.sock
-Pid file:    /tmp/supertool-mcp-<sha1(cwd+name)[:12]>.pid
+Socket/pid paths: per-user runtime dir (#148), via _paths.socket_pid_paths —
+hashed sha1(cwd+name)[:12], NOT /tmp.
 """
 from __future__ import annotations
 

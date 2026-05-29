@@ -11131,8 +11131,33 @@ def _mcp_route(path: str, op: str) -> Optional[Tuple[str, str]]:
     return None
 
 
-_MCP_DAEMON_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "presets", "mcp", "daemon.py")
+_MCP_DAEMON_SCRIPT = os.path.join(os.path.dirname(os.path.realpath(__file__)), "presets", "mcp", "daemon.py")
 _MCP_STOP_SCRIPT = os.path.join(os.path.dirname(_MCP_DAEMON_SCRIPT), "stop.py")
+
+# #148: socket/pid paths live under the per-user runtime dir, NOT /tmp. The
+# daemon/status/stop helpers all compute them via _paths.socket_pid_paths — the
+# client MUST use the same helper or it polls a path the daemon never binds.
+_MCP_SOCKET_PID_PATHS_FN = None
+
+
+def _mcp_socket_pid_paths(cwd: str, name: str) -> Tuple[str, str]:
+    """Compute (sock_path, pid_path) via presets/mcp/_paths.py — the single source
+    of truth the daemon binds with (#148).
+
+    Loaded lazily by absolute file path under a unique module name: avoids
+    prepending presets/mcp to the process-wide sys.path (where the generic name
+    `_paths` could shadow other imports), and a missing/broken _paths.py only
+    fails MCP ops instead of crashing the whole tool at import time.
+    """
+    global _MCP_SOCKET_PID_PATHS_FN
+    if _MCP_SOCKET_PID_PATHS_FN is None:
+        import importlib.util
+        paths_file = os.path.join(os.path.dirname(_MCP_DAEMON_SCRIPT), "_paths.py")
+        spec = importlib.util.spec_from_file_location("_supertool_mcp_paths", paths_file)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _MCP_SOCKET_PID_PATHS_FN = mod.socket_pid_paths
+    return _MCP_SOCKET_PID_PATHS_FN(cwd, name)
 
 
 def _mcp_stop_server(name: str) -> None:
@@ -11181,7 +11206,8 @@ class MCPClient:
     Wire format: each JSON-RPC message is a single line terminated by `\n` (NDJSON).
     Matches what the official MCP Python SDK speaks over stdio.
 
-    socket_path: optional override. Default = /tmp/supertool-mcp-<sha1(cwd+name)[:12]>.sock.
+    socket_path: optional override. Default = _paths.socket_pid_paths(cwd, name)[0]
+    (per-user runtime dir, #148) — the same helper the daemon binds with.
     Tests pass an explicit path to talk to a pre-spawned mock server.
     """
 
@@ -11199,8 +11225,7 @@ class MCPClient:
             self._auto_spawn = False
         else:
             cwd = os.path.abspath(os.getcwd())
-            h = hashlib.sha1(f"{cwd}::{name}".encode()).hexdigest()[:12]
-            self._sock_path = f"/tmp/supertool-mcp-{h}.sock"
+            self._sock_path, _ = _mcp_socket_pid_paths(cwd, name)
             self._auto_spawn = True
 
     # Auto-spawn connect-retry budget. Cold-starting cclsp+intelephense on a
