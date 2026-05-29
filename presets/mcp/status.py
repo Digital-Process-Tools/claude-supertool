@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """List running supertool MCP daemons.
 
-Inspects /tmp/supertool-mcp-*.{sock,pid} pairs and reports name, pid, uptime, and last
+Inspects supertool-mcp-*.{sock,pid} pairs in the per-user runtime dir (#148) and
+reports name, pid, uptime, and last
 activity. Discovers names by reading .supertool.json mcp block + hashing cwd+name to
 match the socket; otherwise prints the hash-only entry for orphans.
 """
