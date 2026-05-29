@@ -52,13 +52,13 @@
     },
     "around": {
       "syntax": "around:PATTERN:PATH[:N]",
-      "description": "First match + N lines ctx (def 10). 1-shot grep+read",
+      "description": "First match + N lines ctx (def 10). 1-shot grep+read. Output capped ~16KB (max_bytes) — truncates at line boundary",
       "example": "around:def dispatch:supertool.py:15",
       "hint": true
     },
     "grep_around": {
       "syntax": "grep_around:PATTERN:PATH[:N[:LIMIT]]",
-      "description": "Every match + N ctx lines (def 3, limit 10). Bulk usage scan",
+      "description": "Every match + N ctx lines (def 3, limit 10). Bulk usage scan. Output capped ~16KB (max_bytes) — truncates at line boundary",
       "example": "grep_around:def dispatch:supertool.py:5",
       "hint": true
     },

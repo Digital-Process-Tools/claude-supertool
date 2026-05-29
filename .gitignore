@@ -19,3 +19,4 @@ supertool
 .claude/worktrees/
 
 .max/
+.max-ci.log
