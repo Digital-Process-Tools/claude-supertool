@@ -13,9 +13,19 @@ from __future__ import annotations
 
 import os
 import stat
+import sys
 from pathlib import Path
 
+import pytest
+
 import supertool
+
+# POSIX file modes only — Windows has no executable bit and os.chmod there
+# honors just the read-only flag, so st_mode reads back 0o666 regardless.
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX file modes; Windows has no executable bit",
+)
 
 
 def _mode(p: Path) -> int:
