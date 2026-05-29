@@ -58,6 +58,17 @@ def test_replace_preserves_executable_bit(tmp_path: Path) -> None:
     assert _mode(f) == 0o755, f"mode lost: {oct(_mode(f))}"
 
 
+def test_vim_preserves_executable_bit(tmp_path: Path) -> None:
+    """vim is named in the issue and routes through _atomic_write too."""
+    f = tmp_path / "macro.sh"
+    f.write_text("echo X\n")
+    os.chmod(f, 0o755)
+    out = supertool.op_vim(str(f), ":s/X/Y/")
+    assert "ERROR" not in out, out
+    assert f.read_text() == "echo Y\n", "substitution must apply"
+    assert _mode(f) == 0o755, f"mode lost: {oct(_mode(f))}"
+
+
 def test_edit_preserves_nondefault_readonly_group(tmp_path: Path) -> None:
     """Any non-default mode survives — not just the executable bit."""
     f = tmp_path / "data.txt"
