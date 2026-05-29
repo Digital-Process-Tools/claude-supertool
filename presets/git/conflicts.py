@@ -192,6 +192,7 @@ def main() -> int:
         print(_all_conflict_blocks(path, preview))
 
     print("\nResolve: ./supertool 'git-resolve:::ours:::PATH' | ./supertool 'git-resolve:::theirs:::PATH'")
+    print("Keep both sides (union): ./supertool 'git-resolve:::both:::PATH'")
     print("Or edit manually, then: git add PATH && git commit")
 
     return 0

@@ -53,8 +53,8 @@
     "git-resolve": {
       "cmd": "{python} {path}git/resolve.py {args}",
       "timeout": 30,
-      "description": "Pick ours/theirs for PATH (single, comma-separated list, or 'all') + stage + continue cmd",
-      "syntax": "git-resolve:::SIDE:::PATH[,PATH...]"
+      "description": "Pick ours/theirs/both(union) for PATH (single, comma-separated list, or 'all') + stage + continue cmd",
+      "syntax": "git-resolve:::SIDE:::PATH[,PATH...]  (SIDE: ours|theirs|both)"
     },
     "git-commit": {
       "cmd": "{python} {path}git/commit.py {args}",

@@ -18,7 +18,7 @@ Git investigation and workflow ops. Replaces the 4-6 raw `git` calls you'd norma
 | `git-diverge` | `git-diverge:BRANCH[:BASE]` | Branch vs base: ahead/behind counts, commit list, changed files, +/− line totals |
 | `git-merge` | `git-merge:REF` | Merge REF — on conflict surfaces the UU file list, conflict markers, and ours/theirs SHAs |
 | `git-conflicts` | `git-conflicts` | List all UU files + every conflict block + abort hint |
-| `git-resolve` | `git-resolve:::SIDE:::PATH[,PATH...]` | Pick ours/theirs for one file, a comma-separated list, or `all` — stages and prints the continue command |
+| `git-resolve` | `git-resolve:::SIDE:::PATH[,PATH...]` | Pick `ours`/`theirs`/`both` for one file, a comma-separated list, or `all` — stages and prints the continue command. `both` is a union: it strips the conflict markers and keeps both sides (ours then theirs), like git's `merge=union` driver — use it when both branches added different non-overlapping lines |
 | `git-commit` | `git-commit:::MSG[:::PATH...]` | Stage PATHs (or all staged if omitted) and commit with MSG — surfaces hook errors, shows HEAD before/after. Use `MSG=--no-edit` to reuse MERGE_MSG/CHERRY_PICK_HEAD during an in-progress merge or cherry-pick |
 
 ## Common workflows
@@ -40,6 +40,8 @@ One call gives you branch health + exactly what differs from base — no follow-
 ./supertool 'git-conflicts'
 # review, then:
 ./supertool 'git-resolve:::ours:::src/app/Config.py'
+# or keep both sides when each branch added different lines:
+./supertool 'git-resolve:::both:::src/app/Config.py'
 ./supertool 'git-commit:::Merge master into feature/auth'
 ```
 
