@@ -151,6 +151,7 @@ MAX_READ_LINES = 300
 MAX_BATCH_OPS = 1000
 MAX_READ_BYTES = 20000  # ~20KB cap — prevents Claude Code "Output too large"
 CHAR_WINDOW_CHARS = 1000  # head/tail peek window for minified single-line files
+MINIFIED_LINE_CHARS = 5000  # a single line this long means line-based view is useless
 MAX_GREP_RESULTS = 10
 MAX_GLOB_RESULTS = 50
 LOG_FILE = os.path.join(tempfile.gettempdir(), "supertool-calls.log")
@@ -1488,23 +1489,33 @@ def op_ls(path: str = ".") -> str:
     return "".join(out)
 
 
-def _looks_minified(path: str) -> bool:
-    """True when the first line overflows the byte cap with no newline — the
-    degenerate case (minified JSON/JS/CSS) where line-based head/tail/wc return
-    one giant useless line. Probes only the first MAX_READ_BYTES, so it's cheap.
+def _probe_minified(probe: str) -> bool:
+    """True when text overflows the byte cap AND holds a line long enough that
+    line-based head/tail/wc return one giant useless line. Catches both pure
+    single-line blobs and minified bodies behind a short leading comment
+    (e.g. `/* license */\\n` + 300KB of minified JS), which a plain
+    "no newline in the first chunk" test misses (#240).
     """
+    if len(probe) <= MAX_READ_BYTES:
+        return False
+    longest = max((len(seg) for seg in probe.split("\n")), default=0)
+    return longest >= MINIFIED_LINE_CHARS
+
+
+def _looks_minified(path: str) -> bool:
+    """Cheap minified-file detector: probes only the first MAX_READ_BYTES."""
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             probe = f.read(MAX_READ_BYTES + 1)
     except OSError:
         return False
-    return len(probe) > MAX_READ_BYTES and "\n" not in probe
+    return _probe_minified(probe)
 
 
 def _char_window(path: str, n_chars: int, from_end: bool = False) -> str:
     """First/last n_chars of a file as a character window, with a marker
-    reporting total size. For minified single-line files where line slicing
-    is meaningless (#240).
+    reporting total size. For minified files where line slicing is
+    meaningless (#240).
     """
     with open(path, "r", encoding="utf-8", errors="replace") as f:
         data = f.read()
@@ -1512,12 +1523,12 @@ def _char_window(path: str, n_chars: int, from_end: bool = False) -> str:
     if from_end:
         window = data[-n_chars:]
         clipped = total - len(window)
-        return (f"({total} chars, single line — minified; showing last "
-                f"{len(window)}, {clipped} clipped)\n{window}\n")
+        return (f"({total} chars, minified; showing last {len(window)}, "
+                f"{clipped} clipped)\n… ({clipped} earlier chars)\n{window}\n")
     window = data[:n_chars]
     clipped = total - len(window)
-    return (f"({total} chars, single line — minified; showing first "
-            f"{len(window)})\n{window}\n… ({clipped} more chars truncated)\n")
+    return (f"({total} chars, minified; showing first {len(window)})\n"
+            f"{window}\n… ({clipped} more chars truncated)\n")
 
 
 def op_tail(path: str, n: int = 20) -> str:
@@ -1584,8 +1595,8 @@ def op_wc(path: str) -> str:
     words = len(text.split())
     chars = len(text)
     result = f"{lines} {words} {chars} {path}"
-    if lines <= 1 and chars > MAX_READ_BYTES:
-        result += f"  [single-line / minified — {chars} chars, {len(data)} bytes]"
+    if _probe_minified(text):
+        result += f"  [minified — {chars} chars, {len(data)} bytes]"
     return result + "\n"
 
 
