@@ -146,3 +146,46 @@ def test_origin_head_skipped_when_no_upstream(tmp_path: Path, monkeypatch) -> No
     _stub_no_mr(monkeypatch)
     out = _run_main(repo, monkeypatch)
     assert "Origin HEAD:" not in out
+
+
+def test_other_branch_unpushed_commit_surfaced(tmp_path: Path, monkeypatch) -> None:
+    """Commit on a branch you're NOT standing on is surfaced, not hidden.
+
+    The exact failure that motivated this: work committed to master, then a
+    feature branch checked out — from `feature` the work looked lost.
+    """
+    upstream = tmp_path / "upstream.git"
+    upstream.mkdir()
+    _git(upstream, "init", "--bare", "-b", "master")
+
+    repo = _init_repo(tmp_path)
+    _git(repo, "remote", "add", "origin", str(upstream))
+    _git(repo, "push", "-u", "origin", "master")
+
+    # Commit on master (now ahead of origin/master), then leave it behind.
+    (repo / "g").write_text("y\n")
+    _git(repo, "add", "g")
+    _git(repo, "commit", "-m", "work that lands on master")
+    _git(repo, "checkout", "-b", "feature")
+
+    _stub_no_mr(monkeypatch)
+    out = _run_main(repo, monkeypatch)
+    assert "Other branches with unpushed/unpulled work" in out
+    assert "master" in out
+    assert "ahead 1" in out
+
+
+def test_no_other_branches_section_when_all_in_sync(tmp_path: Path, monkeypatch) -> None:
+    """Section is omitted entirely when no other branch has divergent work."""
+    upstream = tmp_path / "upstream2.git"
+    upstream.mkdir()
+    _git(upstream, "init", "--bare", "-b", "master")
+
+    repo = _init_repo(tmp_path)
+    _git(repo, "remote", "add", "origin", str(upstream))
+    _git(repo, "push", "-u", "origin", "master")
+    _git(repo, "checkout", "-b", "feature")
+
+    _stub_no_mr(monkeypatch)
+    out = _run_main(repo, monkeypatch)
+    assert "Other branches with unpushed/unpulled work" not in out
