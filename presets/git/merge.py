@@ -117,7 +117,7 @@ def main() -> int:
     print("Next:")
     print("  - See every conflict block (this output shows the first per file): ./supertool 'git-conflicts'")
     print("  - Edit files manually, then ./supertool 'git-commit:::resolve merge'")
-    print("  - Or pick a side: ./supertool 'git-resolve:::ours:::PATH' (or theirs, or all)")
+    print("  - Or pick a side: ./supertool 'git-resolve:::ours:::PATH' (or theirs, both, or all)")
     print("  - Or abort: git merge --abort")
 
     for path in conflicts:

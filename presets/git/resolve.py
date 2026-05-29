@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Git resolve — pick ours/theirs for a conflicted PATH (or all) + stage.
+"""Git resolve — pick ours/theirs/both for a conflicted PATH (or all) + stage.
 
-Atomic: checkout --SIDE PATH + git add PATH. Receipt shows which
-files were resolved and how many conflicts remain.
+ours/theirs: checkout --SIDE PATH + git add PATH (atomic).
+both: union — strip conflict markers, keep both sides, write back + git add.
+Receipt shows which files were resolved and how many conflicts remain.
 """
 from __future__ import annotations
 
@@ -24,18 +25,79 @@ def _list_conflicts() -> list[str]:
     return [l for l in res.stdout.splitlines() if l.strip()]
 
 
+def _union_file(path: str) -> tuple[bool, str]:
+    """Strip conflict markers from PATH, keeping both sides (ours then theirs).
+
+    Mirrors git's ``merge=union`` driver: for every conflict hunk, drop the
+    ``<<<<<<<``, ``=======`` and ``>>>>>>>`` marker lines and concatenate both
+    content blocks. diff3 ``|||||||`` base sections are dropped. Writes the
+    result back to PATH atomically (single rewrite — no formatter runs between
+    marker removals). Returns (ok, error_message).
+    """
+    try:
+        with open(path, "rb") as fh:
+            raw = fh.read()
+    except OSError as e:
+        return False, f"cannot read: {e}"
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return False, "not a UTF-8 text file (binary conflict?)"
+
+    out: list[str] = []
+    state = "normal"  # normal | ours | base | theirs
+    saw_conflict = False
+    for line in text.splitlines(keepends=True):
+        s = line.rstrip("\r\n")
+        if state == "normal":
+            if s.startswith("<<<<<<<"):
+                state, saw_conflict = "ours", True
+                continue
+            out.append(line)
+        elif state == "ours":
+            if s.startswith("|||||||"):
+                state = "base"
+            elif s.startswith("======="):
+                state = "theirs"
+            elif s.startswith(">>>>>>>"):  # malformed — recover, keep nothing
+                state = "normal"
+            else:
+                out.append(line)
+        elif state == "base":
+            if s.startswith("======="):
+                state = "theirs"
+            # else: drop base content
+        elif state == "theirs":
+            if s.startswith(">>>>>>>"):
+                state = "normal"
+            else:
+                out.append(line)
+
+    if state != "normal":
+        return False, "unterminated conflict marker (file unchanged)"
+    if not saw_conflict:
+        return False, "no conflict markers found (file unchanged)"
+
+    try:
+        with open(path, "wb") as fh:
+            fh.write("".join(out).encode("utf-8"))
+    except OSError as e:
+        return False, f"cannot write: {e}"
+    return True, ""
+
+
 def main() -> int:
     if len(sys.argv) < 3:
         print("ERROR: usage: resolve.py SIDE PATH[,PATH...]")
-        print("  SIDE — 'ours' or 'theirs'")
+        print("  SIDE — 'ours', 'theirs', or 'both' (union: keep both sides)")
         print("  PATH — conflicted file path, comma-separated list, or 'all' for every UU file")
         return 1
 
     side = sys.argv[1].lower()
     target = sys.argv[2]
 
-    if side not in ("ours", "theirs"):
-        print(f"ERROR: SIDE must be 'ours' or 'theirs', got {side!r}")
+    if side not in ("ours", "theirs", "both"):
+        print(f"ERROR: SIDE must be 'ours', 'theirs', or 'both', got {side!r}")
         return 1
 
     if _git(["rev-parse", "--git-dir"]).returncode != 0:
@@ -65,10 +127,16 @@ def main() -> int:
     resolved: list[str] = []
     failed: list[tuple[str, str]] = []
     for path in targets:
-        co = _git(["checkout", f"--{side}", "--", path])
-        if co.returncode != 0:
-            failed.append((path, co.stderr.strip() or co.stdout.strip()))
-            continue
+        if side == "both":
+            ok, err = _union_file(path)
+            if not ok:
+                failed.append((path, err))
+                continue
+        else:
+            co = _git(["checkout", f"--{side}", "--", path])
+            if co.returncode != 0:
+                failed.append((path, co.stderr.strip() or co.stdout.strip()))
+                continue
         add = _git(["add", "--", path])
         if add.returncode != 0:
             failed.append((path, add.stderr.strip() or add.stdout.strip()))
