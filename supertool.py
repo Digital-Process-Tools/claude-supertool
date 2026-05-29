@@ -91,6 +91,7 @@ import json
 import difflib
 import hashlib
 import os
+import stat
 import re
 import shlex
 import shutil
@@ -2901,6 +2902,15 @@ def _atomic_write(path: str, content: str) -> None:
     _safe_path(path)
     real_path = os.path.realpath(path) if os.path.islink(path) else path
     target_dir = os.path.dirname(os.path.abspath(real_path)) or "."
+    # Preserve the original file's mode (#259). mkstemp creates the temp file
+    # with 0600; os.replace would then clobber the target's mode, silently
+    # dropping the executable bit on scripts/git hooks. Capture the existing
+    # mode and re-apply it to the temp file before the rename. A brand-new
+    # file keeps mkstemp's default — no spurious +x.
+    try:
+        orig_mode = stat.S_IMODE(os.stat(real_path).st_mode)
+    except OSError:
+        orig_mode = None
     fd, tmp_path = tempfile.mkstemp(
         prefix=".supertool-", suffix=".tmp", dir=target_dir
     )
@@ -2911,6 +2921,8 @@ def _atomic_write(path: str, content: str) -> None:
         # `read(errors='surrogateescape')`).
         with os.fdopen(fd, "wb") as f:
             f.write(content.encode("utf-8", errors="surrogateescape"))
+        if orig_mode is not None:
+            os.chmod(tmp_path, orig_mode)
         os.replace(tmp_path, real_path)
     except Exception:
         try:
