@@ -91,6 +91,29 @@ def main() -> int:
     if origin_head.returncode == 0 and origin_head.stdout.strip():
         print(f"Origin HEAD: {origin_head.stdout.strip()}")
 
+    # Other local branches with unpushed/unpulled work — so a commit made on a
+    # branch you're NOT standing on stays visible (classic: committed to master,
+    # then checked out a feature branch — the work looks lost from `feature`).
+    others = _git(["for-each-ref",
+                   "--format=%(refname:short)\t%(upstream:track)", "refs/heads"])
+    if others.returncode == 0:
+        rows = []
+        for line in others.stdout.splitlines():
+            name, _, track = line.partition("\t")
+            track = track.strip()
+            # Only actionable divergence — skip the current branch (covered
+            # above) and stale [gone] branches (merged, upstream pruned).
+            if name and name != branch_name and ("ahead" in track or "behind" in track):
+                # Drop git's surrounding brackets so it reads like the rest of
+                # the file: `ahead 1, behind 3`, not `[ahead 1, behind 3]`.
+                rows.append((name, track.strip("[]")))
+        if rows:
+            print("\n## Other branches with unpushed/unpulled work")
+            for name, track in rows[:10]:
+                print(f"  {name}  {track}")
+            if len(rows) > 10:
+                print(f"  ... ({len(rows) - 10} more)")
+
     # 2. Last 5 commits
     log_result = _git(["log", "-5", "--format=%h %ad %an | %s", "--date=short"])
     if log_result.returncode == 0 and log_result.stdout.strip():
