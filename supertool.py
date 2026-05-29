@@ -150,6 +150,7 @@ MAX_READ_LINES = 300
 # Override via ops.batch.max_ops in .supertool.json for one-off bulk runs.
 MAX_BATCH_OPS = 1000
 MAX_READ_BYTES = 20000  # ~20KB cap — prevents Claude Code "Output too large"
+MAX_AROUND_BYTES = 16000  # per-op cap for around:/grep_around: context windows (#241)
 CHAR_WINDOW_CHARS = 1000  # head/tail peek window for minified single-line files
 MINIFIED_LINE_CHARS = 5000  # a single line this long means line-based view is useless
 MAX_GREP_RESULTS = 10
@@ -1180,7 +1181,7 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
                 else:
                     out.append(f"  {lineno}-{content}\n")
         out.append("\n")
-        return "".join(out)
+        return _cap_context_window("".join(out), "grep_around")
 
     hits = _grep_recursive(pattern, path, limit, excl)
     count = len(hits)
@@ -1208,6 +1209,29 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
 
 _AROUND_DIR_SKIP = {".git", "node_modules", "__pycache__", ".venv", "venv", ".tox", "vendor"}
 _AROUND_DIR_MAX_FILES = 20
+
+
+def _cap_context_window(text: str, op_name: str) -> str:
+    """Cap a context-window op's output at a byte budget (#241).
+
+    around:/grep_around: with a large :N on a file of long (e.g. minified)
+    lines can emit hundreds of KB in one op, blowing the caller's context.
+    Truncate at the last line boundary within the cap and append a footer
+    that points at the narrower tools. Configurable via
+    builtin-ops.<op>.max_bytes or SUPERTOOL_<OP>_MAX_BYTES.
+    """
+    cap = _get_op_int(op_name, "max_bytes", MAX_AROUND_BYTES)
+    encoded = text.encode("utf-8", errors="surrogateescape")
+    if len(encoded) <= cap:
+        return text
+    clipped = encoded[:cap].decode("utf-8", errors="ignore")
+    nl = clipped.rfind("\n")
+    if nl > 0:
+        clipped = clipped[:nl + 1]
+    dropped = len(encoded) - len(clipped.encode("utf-8", errors="surrogateescape"))
+    return (clipped +
+            f"… truncated (~{dropped} more bytes) — narrow context (:N) "
+            f"or use between: for the whole symbol\n")
 
 
 def _around_one_file(regex: "re.Pattern[str]", path: str, n: int) -> str:
@@ -1248,7 +1272,7 @@ def _around_one_file(regex: "re.Pattern[str]", path: str, n: int) -> str:
         marker = "→" if i == match_lineno else " "
         out.append(f"{i + 1:>6}{marker}{lines[i]}")
     out.append("\n")
-    return "".join(out)
+    return _cap_context_window("".join(out), "around")
 
 
 def op_around(pattern: str, path: str, n: int = 10) -> str:
@@ -1299,7 +1323,7 @@ def op_around(pattern: str, path: str, n: int = 10) -> str:
         if len(hits) >= _AROUND_DIR_MAX_FILES:
             header += f", capped at {_AROUND_DIR_MAX_FILES}"
         header += f", scanned {scanned})\n"
-        return header + "".join(hits)
+        return _cap_context_window(header + "".join(hits), "around")
 
     if not os.path.isfile(path):
         return f"ERROR: file not found: {path}\n"
