@@ -166,7 +166,12 @@ def bridge_client(client_sock: socket.socket, proc: subprocess.Popen, last_activ
         # next client's bridge owns the cclsp stdout fd cleanly.
         try:
             while not stop.is_set():
-                r, _, _ = select.select([out_fd], [], [], 0.5)
+                # Short poll so this thread notices a client disconnect (stop set by
+                # client_to_proc) quickly. The daemon serves one client at a time, so a
+                # long timeout here makes the NEXT connection wait out this teardown —
+                # cheap per-call tools (phpmd ~60ms) end up dominated by it. 50ms keeps
+                # teardown tight without meaningful idle-wakeup cost (bridge is short-lived).
+                r, _, _ = select.select([out_fd], [], [], 0.05)
                 if not r:
                     continue
                 try:

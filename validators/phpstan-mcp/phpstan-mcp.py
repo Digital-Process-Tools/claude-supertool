@@ -57,13 +57,21 @@ def ensure_daemon(cwd: str) -> str:
 
     bin_path = DAEMON_PROC
     if not os.path.isabs(bin_path):
-        resolved = which(bin_path)
-        if resolved is None:
-            raise RuntimeError(
-                f"mcp-phpstan-warm not found on $PATH. Install via: composer require --dev dpt/mcp-phpstan-warm\n"
-                f"Or set MCP_PHPSTAN_BIN=/abs/path/to/mcp-phpstan-warm."
-            )
-        bin_path = resolved
+        if "/" in bin_path or os.sep in bin_path:
+            # Relative path with a separator → resolve against cwd (project root).
+            # Keeps a committed/shared .supertool.json portable across machines.
+            candidate = os.path.abspath(os.path.join(cwd, bin_path))
+            if not os.path.isfile(candidate):
+                raise RuntimeError(f"mcp-phpstan-warm not found at: {candidate}")
+            bin_path = candidate
+        else:
+            resolved = which(bin_path)
+            if resolved is None:
+                raise RuntimeError(
+                    f"mcp-phpstan-warm not found on $PATH. Install via: composer require --dev dpt/mcp-phpstan-warm\n"
+                    f"Or set MCP_PHPSTAN_BIN to a path (abs, or relative to the project root)."
+                )
+            bin_path = resolved
 
     supertool_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     daemon_script = os.path.join(supertool_root, "presets/mcp/daemon.py")

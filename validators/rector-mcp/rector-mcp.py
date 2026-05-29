@@ -48,14 +48,22 @@ def ensure_daemon(cwd: str) -> str:
     # Resolve mcp-rector-warm binary: env override > $PATH > absolute path in env.
     bin_path = DAEMON_PROC
     if not os.path.isabs(bin_path):
-        from shutil import which
-        resolved = which(bin_path)
-        if resolved is None:
-            raise RuntimeError(
-                f"mcp-rector-warm not found on $PATH. Install via: composer global require dpt/mcp-rector-warm\n"
-                f"Or set MCP_RECTOR_BIN=/abs/path/to/mcp-rector-warm."
-            )
-        bin_path = resolved
+        if "/" in bin_path or os.sep in bin_path:
+            # Relative path with a separator → resolve against cwd (project root).
+            # Keeps a committed/shared .supertool.json portable across machines.
+            candidate = os.path.abspath(os.path.join(cwd, bin_path))
+            if not os.path.isfile(candidate):
+                raise RuntimeError(f"mcp-rector-warm not found at: {candidate}")
+            bin_path = candidate
+        else:
+            from shutil import which
+            resolved = which(bin_path)
+            if resolved is None:
+                raise RuntimeError(
+                    f"mcp-rector-warm not found on $PATH. Install via: composer global require dpt/mcp-rector-warm\n"
+                    f"Or set MCP_RECTOR_BIN to a path (abs, or relative to the project root)."
+                )
+            bin_path = resolved
 
     # daemon.py lives in supertool's presets/mcp/. Find it relative to this adapter file.
     # adapter = .../claude-supertool/validators/rector-mcp/rector-mcp.py → 3 levels up = supertool root.
