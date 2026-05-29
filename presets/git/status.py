@@ -104,9 +104,11 @@ def main() -> int:
             # Only actionable divergence — skip the current branch (covered
             # above) and stale [gone] branches (merged, upstream pruned).
             if name and name != branch_name and ("ahead" in track or "behind" in track):
-                rows.append((name, track))
+                # Drop git's surrounding brackets so it reads like the rest of
+                # the file: `ahead 1, behind 3`, not `[ahead 1, behind 3]`.
+                rows.append((name, track.strip("[]")))
         if rows:
-            print(f"\n## Other branches with unpushed/unpulled work")
+            print("\n## Other branches with unpushed/unpulled work")
             for name, track in rows[:10]:
                 print(f"  {name}  {track}")
             if len(rows) > 10:

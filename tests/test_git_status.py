@@ -171,8 +171,56 @@ def test_other_branch_unpushed_commit_surfaced(tmp_path: Path, monkeypatch) -> N
     _stub_no_mr(monkeypatch)
     out = _run_main(repo, monkeypatch)
     assert "Other branches with unpushed/unpulled work" in out
+    # The master line must be present and bracket-free, matching the clean
+    # `ahead N, behind N` style the rest of the file prints.
+    master_line = next(l for l in out.splitlines()
+                       if l.strip().startswith("master"))
+    assert master_line.strip() == "master  ahead 1"
+    assert "[ahead" not in out
+
+
+def test_gone_branch_filtered_from_section(tmp_path: Path, monkeypatch) -> None:
+    """A branch whose upstream was deleted ([gone]) is stale, not work — skipped."""
+    upstream = tmp_path / "upstream_gone.git"
+    upstream.mkdir()
+    _git(upstream, "init", "--bare", "-b", "master")
+
+    repo = _init_repo(tmp_path)
+    _git(repo, "remote", "add", "origin", str(upstream))
+    _git(repo, "push", "-u", "origin", "master")
+
+    # A branch that tracks an upstream which then disappears → [gone].
+    _git(repo, "checkout", "-b", "doomed")
+    _git(repo, "push", "-u", "origin", "doomed")
+    _git(repo, "push", "origin", "--delete", "doomed")
+    _git(repo, "fetch", "--prune")
+    _git(repo, "checkout", "master")
+    _git(repo, "checkout", "-b", "feature")
+
+    _stub_no_mr(monkeypatch)
+    out = _run_main(repo, monkeypatch)
+    assert "doomed" not in out
+
+
+def test_detached_head_still_lists_diverging_branches(tmp_path: Path, monkeypatch) -> None:
+    """Detached HEAD has no current branch — all diverging branches are 'other'
+    and must still be surfaced (no orienting branch = need the overview most)."""
+    upstream = tmp_path / "upstream_det.git"
+    upstream.mkdir()
+    _git(upstream, "init", "--bare", "-b", "master")
+
+    repo = _init_repo(tmp_path)
+    _git(repo, "remote", "add", "origin", str(upstream))
+    _git(repo, "push", "-u", "origin", "master")
+    (repo / "g").write_text("y\n")
+    _git(repo, "add", "g")
+    _git(repo, "commit", "-m", "ahead on master")
+    _git(repo, "checkout", "--detach", "HEAD")
+
+    _stub_no_mr(monkeypatch)
+    out = _run_main(repo, monkeypatch)
+    assert "Other branches with unpushed/unpulled work" in out
     assert "master" in out
-    assert "ahead 1" in out
 
 
 def test_no_other_branches_section_when_all_in_sync(tmp_path: Path, monkeypatch) -> None:
