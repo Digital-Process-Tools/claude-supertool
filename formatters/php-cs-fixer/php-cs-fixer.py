@@ -92,7 +92,6 @@ def main() -> None:
     cmd.append(file)
 
     env = os.environ.copy()
-    env.setdefault("PHP_CS_FIXER_IGNORE_ENV", "1")
 
     start = time.time()
     try:
