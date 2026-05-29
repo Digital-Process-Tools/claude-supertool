@@ -71,3 +71,27 @@ def test_around_env_override(tmp_path: Path, monkeypatch) -> None:
     out = supertool.op_around("TARGET20", str(f), 40)
     assert len(out.encode()) <= 4000 + 200, f"env cap ignored: {len(out)} bytes"
     assert "truncated" in out
+
+
+def test_around_dir_aggregate_capped(tmp_path: Path) -> None:
+    """Dir fan-out caps the TOTAL op output, not just each file (#241 review)."""
+    d = tmp_path / "pkg"
+    d.mkdir()
+    for i in range(10):
+        (d / f"f{i}.js").write_text(f"head{i}\n{LONG} TARGET\n{LONG}\n")
+    out = supertool.op_around("TARGET", str(d), 20)
+    assert len(out.encode()) <= 16000 + 200, f"dir aggregate not capped: {len(out)}"
+    assert "truncated" in out
+    # Exactly one truncation footer — the per-file cap was removed, so footers
+    # don't appear interleaved between files.
+    assert out.count("… truncated") == 1
+
+
+def test_around_single_giant_line_no_newline(tmp_path: Path) -> None:
+    """A single line longer than the cap: pass the partial through + footer,
+    never crash (nl == -1 branch)."""
+    f = tmp_path / "min.js"
+    f.write_text("TARGET " + "y" * 40000)  # one line, no trailing context lines
+    out = supertool.op_around("TARGET", str(f), 0)
+    assert len(out.encode()) <= 16000 + 200, f"giant line not capped: {len(out)}"
+    assert "truncated" in out

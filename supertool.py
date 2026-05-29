@@ -1225,10 +1225,13 @@ def _cap_context_window(text: str, op_name: str) -> str:
     if len(encoded) <= cap:
         return text
     clipped = encoded[:cap].decode("utf-8", errors="ignore")
+    # Truncate at the last line boundary so we never cut mid-line. nl == -1
+    # means a single line longer than the cap — nothing to trim to, pass the
+    # partial through (the footer still flags it).
     nl = clipped.rfind("\n")
-    if nl > 0:
+    if nl >= 0:
         clipped = clipped[:nl + 1]
-    dropped = len(encoded) - len(clipped.encode("utf-8", errors="surrogateescape"))
+    dropped = len(encoded) - len(clipped.encode("utf-8", errors="ignore"))
     return (clipped +
             f"… truncated (~{dropped} more bytes) — narrow context (:N) "
             f"or use between: for the whole symbol\n")
@@ -1272,7 +1275,7 @@ def _around_one_file(regex: "re.Pattern[str]", path: str, n: int) -> str:
         marker = "→" if i == match_lineno else " "
         out.append(f"{i + 1:>6}{marker}{lines[i]}")
     out.append("\n")
-    return _cap_context_window("".join(out), "around")
+    return "".join(out)
 
 
 def op_around(pattern: str, path: str, n: int = 10) -> str:
@@ -1331,7 +1334,7 @@ def op_around(pattern: str, path: str, n: int = 10) -> str:
     rendered = _around_one_file(regex, path, n)
     if not rendered:
         return f"(no match for {pattern!r} in {path})\n\n"
-    return rendered
+    return _cap_context_window(rendered, "around")
 
 
 def op_between_symbol(symbol: str, path: str) -> str:

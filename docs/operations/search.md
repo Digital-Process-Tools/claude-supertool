@@ -18,6 +18,8 @@ Pattern-based ops for finding content across files or zooming into a known locat
 
 A large `:N` context on a file of long (e.g. minified) lines can over-fetch — one op can dump hundreds of KB and blow your context budget. `around:` and `grep_around:` cap their output at **~16KB**, truncating at a line boundary with a footer that points at the narrower tools (smaller `:N`, or `between:` for a whole symbol). Tune via `builtin-ops.around.max_bytes` / `builtin-ops.grep_around.max_bytes` in `.supertool.json` (or `SUPERTOOL_AROUND_MAX_BYTES` / `SUPERTOOL_GREP_AROUND_MAX_BYTES`). See [configuration.md](../configuration.md#builtin-ops).
 
+`grep:` with an explicit `CONTEXT` argument (`grep:PATTERN:PATH:LIMIT:CONTEXT`) shares the `grep_around:` code path, so it is capped under the same `grep_around.max_bytes` budget. Plain `grep:` (no context) is unaffected — it has its own `LIMIT`/`max_results` bound.
+
 ## Common patterns
 
 Find all usages of a function across a codebase, with 2 lines of context:
