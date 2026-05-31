@@ -85,6 +85,41 @@ def test_unknown_ref_recovers_after_auto_fetch(monkeypatch, capsys) -> None:
     assert "→ feature" in out
 
 
+def test_narrowed_refspec_recovers_via_single_ref_fetch(monkeypatch, capsys) -> None:
+    """#267: single-branch refspec → `fetch --all` never creates origin/<branch>,
+    so the plain-checkout retry still fails. Falls back to an explicit
+    `fetch origin <branch>` + `checkout -B <branch> FETCH_HEAD`."""
+    calls: list[list[str]] = []
+    on_feature = {"yet": False}
+
+    def fake(args, timeout=10):
+        calls.append(args)
+        if args[:2] == ["rev-parse", "--abbrev-ref"] and "--symbolic-full-name" not in args:
+            return _fake_run("feature\n" if on_feature["yet"] else "master\n")
+        if args[:2] == ["rev-parse", "--short"]:
+            return _fake_run("abc1234\n")
+        if args[:3] == ["rev-parse", "--abbrev-ref", "--symbolic-full-name"]:
+            return _fake_run("", "", 1)
+        if args[0] == "checkout" and args[1] == "-B":
+            on_feature["yet"] = True
+            return _fake_run("Reset branch 'feature'\n")
+        if args[0] == "checkout":
+            return _fake_run("", "error: pathspec 'feature' did not match any file(s)", 1)
+        if args[0] == "fetch":
+            return _fake_run()
+        return _fake_run()
+
+    monkeypatch.setattr(checkout, "_git", fake)
+    monkeypatch.setattr(checkout.sys, "argv", ["checkout.py", "feature"])
+    rc = checkout.main()
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert ["fetch", "origin", "feature"] in calls, "should fall back to single-ref fetch"
+    assert ["checkout", "-B", "feature", "FETCH_HEAD"] in calls
+    assert "FETCH_HEAD" in out
+    assert "→ feature" in out
+
+
 def test_checkout_worktree_locked_suggests_path(monkeypatch, capsys) -> None:
     """When ref is checked out in another worktree, suggest cd <path>."""
     err = (
