@@ -67,6 +67,20 @@ GitHub ops via the `gh` CLI. Replaces the 4-6 separate `gh` calls needed to revi
 
 Otherwise inherits from `gh auth status` — no project-specific tokens needed.
 
+### Default repo for `gh-issue-create`
+
+`gh-issue-create` needs a `repo` in every payload. To omit it, set a default:
+
+```json
+{
+  "defaults": {
+    "github_repo": "Digital-Process-Tools/claude-supertool"
+  }
+}
+```
+
+Resolution order (most specific wins): explicit `repo` in the payload → `defaults.github_repo` → the `origin` git remote when its host is `github.com`. In a GitHub checkout the remote covers it with zero config; the explicit default is for when `origin` points elsewhere.
+
 ## Authoring notes
 
 Preset JSON: `presets/github.json`. Helper scripts: `presets/github/` — one Python file per op. `gh-find-followable` and `gh-find-starable` are discovery ops: they produce a list for human review, not an immediate action. Always review the file before running `gh-batch-follow` or `gh-batch-star`.
