@@ -23,6 +23,7 @@ import os
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 
 WATCH_SOURCE = "gitlab-mr"
 STATE_DIR = "/tmp"
@@ -235,7 +236,8 @@ def _watched_iids(state_dir: str = STATE_DIR) -> set[str]:
         name = os.path.basename(path)
         iid = name[len(prefix):-len(".pid")]
         try:
-            pid = int(open(path).read().strip())
+            with open(path) as f:
+                pid = int(f.read().strip())
         except (OSError, ValueError):
             continue
         if _pid_alive(pid):
@@ -292,16 +294,17 @@ def _age(iso: str) -> str:
     if not iso:
         return ""
     try:
-        from datetime import datetime, timezone
         dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
-        secs = int((datetime.now(timezone.utc) - dt).total_seconds())
-        if secs < 3600:
-            return f"{secs // 60}m"
-        if secs < 86400:
-            return f"{secs // 3600}h"
-        return f"{secs // 86400}d"
-    except (ValueError, ImportError):
+    except ValueError:
         return ""
+    secs = int((datetime.now(timezone.utc) - dt).total_seconds())
+    if secs < 0:  # future timestamp (clock skew) — don't render "-1d"
+        return "now"
+    if secs < 3600:
+        return f"{secs // 60}m"
+    if secs < 86400:
+        return f"{secs // 3600}h"
+    return f"{secs // 86400}d"
 
 
 def _sort_key(m: dict) -> tuple[int, str]:
@@ -405,7 +408,9 @@ def main() -> int:
     # Bare iid list — for piping into the watch supervisor.
     if iids_only:
         for m in mrs:
-            print(m.get("iid"))
+            iid = m.get("iid")
+            if iid is not None:
+                print(iid)
         return 0
 
     if show_pipe and len(mrs) > cfg["enrich_cap"]:

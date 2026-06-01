@@ -7,6 +7,8 @@ without hitting the live glab CLI.
 from __future__ import annotations
 
 import importlib.util
+import subprocess
+import sys
 from pathlib import Path
 
 PRESET_PATH = Path(__file__).parent.parent / "presets" / "gitlab" / "mrs.py"
@@ -363,3 +365,86 @@ def test_footer_no_failures_just_count() -> None:
 
 def test_footer_empty_when_nopipe() -> None:
     assert mrs._footer([{"iid": 1, "_pipeline": "failed"}], set(), False) == ""
+
+
+# ---------------------------------------------------------------------------
+# _age
+# ---------------------------------------------------------------------------
+
+def test_age_future_timestamp_is_now() -> None:
+    """Clock skew (updated_at in the future) must not render '-1d'."""
+    assert mrs._age("2999-01-01T00:00:00Z") == "now"
+
+
+def test_age_bad_iso_is_empty() -> None:
+    assert mrs._age("not-a-date") == ""
+
+
+def test_age_empty_is_empty() -> None:
+    assert mrs._age("") == ""
+
+
+# ---------------------------------------------------------------------------
+# _flags
+# ---------------------------------------------------------------------------
+
+def test_flags_threads_only_when_unresolved() -> None:
+    assert "threads" in mrs._flags({"blocking_discussions_resolved": False})
+    assert mrs._flags({"blocking_discussions_resolved": True}) == ""
+    assert mrs._flags({}) == ""  # field absent → no flag
+
+
+# ---------------------------------------------------------------------------
+# main() integration — the watch-mine.sh contract
+# ---------------------------------------------------------------------------
+
+def _fake_list(stdout: str, returncode: int = 0):
+    def _run(cmd, timeout=25):
+        return subprocess.CompletedProcess(cmd, returncode, stdout, "")
+    return _run
+
+
+def test_main_iids_outputs_bare_ids(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(sys, "argv", ["mrs.py", "author=@me,nopipe,iids"])
+    monkeypatch.setattr(mrs, "_run", _fake_list('[{"iid": 10}, {"iid": 20}]'))
+    rc = mrs.main()
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert out.split() == ["10", "20"]  # bare ids, nothing else
+
+
+def test_main_iids_skips_missing_iid(monkeypatch, capsys) -> None:
+    """A row without an iid must not print 'None' into the watch feed."""
+    monkeypatch.setattr(sys, "argv", ["mrs.py", "nopipe,iids"])
+    monkeypatch.setattr(mrs, "_run", _fake_list('[{"iid": 10}, {"title": "no iid"}]'))
+    mrs.main()
+    out = capsys.readouterr().out
+    assert "None" not in out
+    assert out.split() == ["10"]
+
+
+def test_main_failed_filters_to_failing(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(sys, "argv", ["mrs.py", "author=@me,failed,iids"])
+    monkeypatch.setattr(mrs, "_run", _fake_list('[{"iid": 10}, {"iid": 20}]'))
+
+    def fake_enrich(mr_list, *a, **k):
+        for m in mr_list:
+            m["_pipeline"] = "failed" if m["iid"] == 10 else "success"
+    monkeypatch.setattr(mrs, "_enrich", fake_enrich)
+    rc = mrs.main()
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert out.split() == ["10"]  # only the failing MR survives the filter
+
+
+def test_main_glab_error_returns_1(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(sys, "argv", ["mrs.py", ""])
+    monkeypatch.setattr(mrs, "_run", _fake_list("", returncode=1))
+    rc = mrs.main()
+    assert rc == 1
+
+
+def test_main_bad_json_returns_1(monkeypatch) -> None:
+    monkeypatch.setattr(sys, "argv", ["mrs.py", "nopipe"])
+    monkeypatch.setattr(mrs, "_run", _fake_list("not json"))
+    assert mrs.main() == 1
