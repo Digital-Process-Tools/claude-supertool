@@ -12,6 +12,7 @@ GitLab ops via the `glab` CLI. Replaces the 3-5 separate `glab` calls needed to 
 |----|--------|-----------------|
 | `gl-issue` | `gl-issue:NUMBER[:full]` | Issue metadata, description, comments (truncated by default), related MRs. `:full` disables truncation |
 | `gl-mr` | `gl-mr:NUMBER_OR_BRANCH[:status]` | MR dashboard: branch, pipeline, reviewer/approval state, linked issue, diff stat, comments. `:status` returns slim merge-state only |
+| `gl-mrs` | `gl-mrs[:filters,flags]` | MR triage board, sorted failing-first then stalest. Per MR (enriched in parallel): pipeline status (a failure shows the failed **job name** = the failure class), approval state, age, diff size, watch-state cross-reference, and `conflict`/`draft`/`threads` flags — plus an actionable footer. Filters (comma-sep): `author`/`reviewer`/`assignee`/`label`/`milestone`/`state`/`per`. Flags: `nopipe` (skip enrichment), `iids` (bare id list), `failed` (only failing) |
 | `gl-pipeline` | `gl-pipeline:NUMBER` | Pipeline job list grouped by stage with pass/fail status and failed job IDs |
 | `gl-job` | `gl-job:NUMBER[:raw[:START[:END]]]` | Job failure detail: MR context + error pattern search + log tail. `:raw` dumps the full trace; `:raw:START:END` slices lines (1-indexed, inclusive) |
 
@@ -38,7 +39,32 @@ Returns approval state, pipeline status, diff stat, and all comments in one call
 ```
 Gets the full issue context and checks whether an MR already exists for the branch.
 
+**Triage your open MRs:**
+```bash
+./supertool 'gl-mrs'                          # my MRs: pipeline, approval, age, watch-state
+./supertool 'gl-mrs:reviewer=@me'             # MRs I'm reviewing
+./supertool 'gl-mrs:author=@me,failed,iids'   # bare ids of my failing MRs
+```
+The last form feeds the [`watch`](watch.md) supervisor: pipe failing-MR ids straight into background pollers.
+
 ## Configuration
+
+`gl-mrs` enrichment is tunable (parallelism, how many MRs to enrich, page size):
+
+```json
+{
+  "ops": {
+    "gl-mrs": {
+      "cmd": "python3 {path}gitlab/mrs.py {args}",
+      "enrich_workers": 8,
+      "enrich_cap": 40,
+      "per_page": 50
+    }
+  }
+}
+```
+
+The list endpoint omits pipeline, approval, and diff data, so each MR costs a couple of `glab api` calls (MR detail + approvals, plus failed-job names for failing MRs). `enrich_workers` threads those calls; `enrich_cap` bounds how many MRs get enriched; `per_page` bounds how many are listed.
 
 `gl-job` error pattern search and log tail length are configurable:
 
