@@ -3,6 +3,8 @@
   "rtk": false,
   "parallel": 0,
   "adviseForNewTest": false,
+  "validator_cache": true,
+  "validator_cache_ttl_hours": 24,
   "presets": [
     "git",
     "github",

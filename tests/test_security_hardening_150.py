@@ -13,6 +13,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -163,3 +164,67 @@ class TestValidatorCacheHmac:
         # Force regeneration with a fresh secret.
         supertool._validator_cache_secret()
         assert supertool._validator_cache_read("k4") is None
+
+
+class TestValidatorCacheTtl:
+    """TTL expiry on the validator cache read path (validator_cache_ttl_hours)."""
+
+    @pytest.fixture
+    def cache_dir(self, tmp_path, monkeypatch):
+        original_home = Path.home
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        yield tmp_path / ".cache" / "supertool" / "validators"
+        monkeypatch.setattr(Path, "home", original_home)
+
+    def _set_ttl(self, monkeypatch, hours):
+        monkeypatch.setattr(supertool, "_load_config",
+                            lambda: {"validator_cache_ttl_hours": hours})
+
+    def test_fresh_entry_is_a_hit(self, cache_dir, monkeypatch):
+        self._set_ttl(monkeypatch, 24)
+        data = {"tool": "fake", "ok": True, "count": 0}
+        supertool._validator_cache_write("ttl1", data)
+        assert supertool._validator_cache_read("ttl1") == data
+
+    def test_expired_entry_is_a_miss(self, cache_dir, monkeypatch):
+        self._set_ttl(monkeypatch, 24)
+        data = {"tool": "fake", "ok": True, "count": 0}
+        supertool._validator_cache_write("ttl2", data)
+        # Backdate the file mtime well past the 24h window.
+        old = time.time() - 100 * 3600
+        os.utime(supertool._validator_cache_path("ttl2"), (old, old))
+        assert supertool._validator_cache_read("ttl2") is None
+
+    def test_ttl_zero_disables_expiry(self, cache_dir, monkeypatch):
+        self._set_ttl(monkeypatch, 0)
+        data = {"tool": "fake", "ok": True, "count": 0}
+        supertool._validator_cache_write("ttl3", data)
+        old = time.time() - 100 * 3600
+        os.utime(supertool._validator_cache_path("ttl3"), (old, old))
+        assert supertool._validator_cache_read("ttl3") == data
+
+
+class TestValidatorResultIsCacheable:
+    """Non-deterministic engine failures must not be cached (poisoning guard)."""
+
+    def test_ok_result_is_cacheable(self):
+        assert supertool._validator_result_is_cacheable({"ok": True, "errors": []})
+
+    def test_real_finding_is_cacheable(self):
+        data = {"ok": False, "errors": [
+            {"code": "rector.refactor", "msg": "Would apply SomeRector"}]}
+        assert supertool._validator_result_is_cacheable(data)
+
+    def test_rector_system_error_not_cacheable(self):
+        data = {"ok": False, "errors": [
+            {"code": "rector.error",
+             "msg": 'System error: "ClassReflection must be resolved for class XTest"'}]}
+        assert not supertool._validator_result_is_cacheable(data)
+
+    def test_mcp_transport_error_not_cacheable(self):
+        data = {"ok": False, "errors": [{"code": "mcp", "msg": "connection refused"}]}
+        assert not supertool._validator_result_is_cacheable(data)
+
+    def test_exit_code_failure_not_cacheable(self):
+        data = {"ok": False, "errors": [{"code": "rector.exit", "msg": "rector exit 1"}]}
+        assert not supertool._validator_result_is_cacheable(data)

@@ -8582,9 +8582,25 @@ def _validator_cache_read(key: str) -> Optional[Dict[str, Any]]:
     import hashlib
     import hmac
     import json
+    import time
     p = _validator_cache_path(key)
     if not p.exists():
         return None
+    # TTL: the cache key only hashes file content, so an entry can outlive changes
+    # it can't see — an updated validator adapter / rector.php, or a transient engine
+    # failure that a clean re-run would now pass. Expire on access (treat as a miss,
+    # which re-runs and rewrites with a fresh mtime) so no staleness survives past the
+    # window. Config `validator_cache_ttl_hours` (default 24; 0 disables expiry).
+    try:
+        _ttl_hours = float(_load_config().get("validator_cache_ttl_hours", 24))
+    except (TypeError, ValueError):
+        _ttl_hours = 24.0
+    if _ttl_hours > 0:
+        try:
+            if time.time() - p.stat().st_mtime > _ttl_hours * 3600:
+                return None
+        except OSError:
+            return None
     try:
         wrapped = json.loads(p.read_text())
     except (OSError, json.JSONDecodeError):
@@ -8612,6 +8628,43 @@ def _validator_cache_write(key: str, data: Dict[str, Any]) -> None:
         p.write_text(json.dumps(wrapped))
     except OSError:
         pass
+
+
+# Engine-failure error codes/messages that are NON-deterministic: a clean re-run
+# can flip them. These must never be cached (the cache key is the file's content
+# hash, so a frozen failure replays on every later run until the file changes).
+_NONDETERMINISTIC_ERROR_CODES = {"mcp", "orchestrator", "rector.exit"}
+
+
+def _validator_result_is_cacheable(data: Dict[str, Any]) -> bool:
+    """True unless the result is a non-deterministic engine/transport failure.
+
+    WHY THIS EXISTS (2026-06, the 2100-poisoned-entries incident):
+    rector-mcp's warm daemon intermittently trips rector's own known bug —
+    `System error: "ClassReflection must be resolved for class XTest"` — on test
+    classes. It depends on warm-process state, NOT on the file: a cold/clean
+    daemon (and plain `rector` CLI) reflect the same file fine. But the failed
+    result got cached keyed on file content, so every subsequent run replayed the
+    stale error — same message, same frozen duration_ms — long after the live
+    daemon recovered. 2100 test files were silently "failing" rector this way.
+
+    Real findings stay cacheable (phpstan types, `rector.refactor` suggestions are
+    deterministic — same input, same output, caching them is the whole point).
+    Only engine glitches — MCP transport errors, non-zero exits, and rector's
+    "System error:" reflection failures — are filtered out here so a transient
+    hiccup can't pin itself into the cache. See validators/rector-mcp/rector-mcp.py
+    which also drops "System error:" at the source.
+    """
+    if data.get("ok"):
+        return True
+    for err in data.get("errors") or []:
+        if not isinstance(err, dict):
+            continue
+        if err.get("code") in _NONDETERMINISTIC_ERROR_CODES:
+            return False
+        if str(err.get("msg") or "").startswith("System error:"):
+            return False
+    return True
 
 
 def _validator_run_one(name: str, spec: Dict[str, Any], file: str) -> Optional[Dict[str, Any]]:
@@ -8676,7 +8729,7 @@ def _validator_run_one(name: str, spec: Dict[str, Any], file: str) -> Optional[D
         data["elapsed_s"] = _elapsed
         if target != file:
             data["resolved_to"] = target
-        if cache_key:
+        if cache_key and _validator_result_is_cacheable(data):
             _validator_cache_write(cache_key, data)
         return data
     except subprocess.TimeoutExpired:

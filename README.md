@@ -161,7 +161,9 @@ Example: edit a `.json` file with a missing comma → `jsonlint` catches it → 
 
 18 validators bundled out of the box (PHP, XML, JSON, YAML, INI, Python syntax + types, Bash, JS, TS, SCSS, Markdown, Ruby, Dockerfile, Go, Terraform, Rust, TOML). Graceful skip when toolchain missing.
 
-Full reference: [docs/validators.md](docs/validators.md) — bundled list, how they hook in, adding your own.
+Results are cached per file-content hash and skipped on unchanged files, with a TTL (`validator_cache_ttl_hours`, default 24h) so stale results self-heal. Non-deterministic engine failures are never cached.
+
+Full reference: [docs/validators.md](docs/validators.md) — bundled list, how they hook in, caching, adding your own.
 
 ---
 

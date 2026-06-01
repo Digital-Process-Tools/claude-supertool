@@ -183,10 +183,17 @@ def format_response(file_path: str, mcp_resp: dict, duration_ms: int) -> dict:
                 "diff": diff,
             })
         if errors:
-            base["ok"] = False
             for e in errors:
-                base["count"] += 1
                 msg = e.get("message", str(e)) if isinstance(e, dict) else str(e)
+                # Rector's warm in-process engine intermittently fails to resolve a
+                # BetterReflection for the analyzed class and emits
+                # "System error: ... must be resolved". It's an engine/reflection
+                # failure, NOT a code finding — plain rector CLI runs the same file
+                # clean — so suppress it: don't fail, don't print, don't get cached.
+                if msg.startswith("System error:"):
+                    continue
+                base["ok"] = False
+                base["count"] += 1
                 # Cap msg — rector can dump diffs that explode validator output.
                 # Override via env: RECTOR_MCP_MSG_MAX_CHARS.
                 _cap = int(os.environ.get("RECTOR_MCP_MSG_MAX_CHARS", "2000"))
