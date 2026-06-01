@@ -178,6 +178,10 @@ Results are auto-cached at `~/.cache/supertool/validators/`, keyed on `sha256(fi
 
 Disable caching per-call with the `SUPERTOOL_NO_VALIDATOR_CACHE=1` env var, or per-project with `"validator_cache": false` in `.supertool.json`.
 
+**TTL.** Entries expire `validator_cache_ttl_hours` after they're written (default `24`; set `0` to disable expiry). The key only hashes file content, so an entry can outlive changes it can't see — an updated validator adapter, a changed `rector.php`, or a transient engine failure a clean re-run would now pass. Expiry is on access: a stale entry is treated as a miss, re-runs, and is rewritten with a fresh timestamp. No cron needed.
+
+**Engine failures are never cached.** Non-deterministic infrastructure errors — MCP transport errors, non-zero adapter exits, and rector's `System error: ...` reflection failures — are excluded from the cache. Real findings (PHPStan types, `rector.refactor` suggestions) are deterministic and stay cached. This prevents a transient warm-daemon hiccup from freezing a failure that replays on every later run. (See `validators/rector-mcp/rector-mcp.py`, which also drops rector `System error:` results at the source.)
+
 ## Manual run
 
 Run validators explicitly against any file without an edit op:
