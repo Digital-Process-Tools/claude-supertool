@@ -269,6 +269,74 @@ class TestCheckoutNonGitDirectory:
         ), f"Unexpected error message: {out!r}"
 
 
+class TestCheckoutRemoteOnlyBranch:
+    """#277: branch exists on a remote but was never checked out locally.
+
+    git's DWIM (`git checkout <branch>` → create local tracking branch) can
+    fail to fire; the op must resolve it explicitly via the remote-tracking
+    ref instead of erroring 'not found even after fetch'.
+    """
+
+    def _make_clone_with_remote_branch(self, tmp_path: Path) -> Path:
+        """Clone with a remote-only branch 'feature/remote-only'.
+
+        Returns the clone repo. The branch exists on origin and as a
+        remote-tracking ref, but has no local branch.
+        """
+        origin = self._make_origin(tmp_path)
+        clone = tmp_path / "clone"
+        _git(tmp_path, "clone", str(origin), str(clone), check=True)
+        _git(clone, "config", "user.email", "test@test.com", check=True)
+        _git(clone, "config", "user.name", "Test", check=True)
+        # Tracking ref exists (from clone), but no local branch.
+        assert _git(clone, "rev-parse", "--verify", "--quiet",
+                     "origin/feature/remote-only").returncode == 0
+        assert _git(clone, "rev-parse", "--verify", "--quiet",
+                     "feature/remote-only").returncode != 0
+        return clone
+
+    def _make_origin(self, tmp_path: Path) -> Path:
+        seed = _make_repo(tmp_path)
+        _git(seed, "checkout", "-b", "feature/remote-only", check=True)
+        (seed / "feature.txt").write_text("remote work\n")
+        _git(seed, "add", "feature.txt", check=True)
+        _git(seed, "commit", "-m", "remote-only feature", check=True)
+        _git(seed, "checkout", "master", check=True)
+        origin = tmp_path / "origin.git"
+        _git(tmp_path, "clone", "--bare", str(seed), str(origin), check=True)
+        return origin
+
+    def test_checks_out_remote_only_branch(self, tmp_path, monkeypatch, capsys):
+        clone = self._make_clone_with_remote_branch(tmp_path)
+
+        rc, out = _run_checkout(clone, "feature/remote-only", monkeypatch, capsys)
+
+        assert rc == 0, f"Expected success, got rc={rc}: {out!r}"
+        branch = _git(clone, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+        assert branch == "feature/remote-only", f"On wrong branch: {branch!r}"
+        # Local tracking branch must now exist with the remote's content.
+        assert (clone / "feature.txt").read_text() == "remote work\n"
+
+    def test_dwim_disabled_still_resolves(self, tmp_path, monkeypatch, capsys):
+        """checkout.guess=false disables git's DWIM — op must still resolve."""
+        clone = self._make_clone_with_remote_branch(tmp_path)
+        _git(clone, "config", "checkout.guess", "false", check=True)
+
+        rc, out = _run_checkout(clone, "feature/remote-only", monkeypatch, capsys)
+
+        assert rc == 0, f"Expected success with guess disabled, got rc={rc}: {out!r}"
+        branch = _git(clone, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+        assert branch == "feature/remote-only"
+
+    def test_genuinely_missing_branch_still_errors(self, tmp_path, monkeypatch, capsys):
+        clone = self._make_clone_with_remote_branch(tmp_path)
+
+        rc, out = _run_checkout(clone, "no/such/branch", monkeypatch, capsys)
+
+        assert rc != 0
+        assert "not found" in out.lower(), f"Expected not-found error, got: {out!r}"
+
+
 # ===========================================================================
 # git-resolve tests
 # ===========================================================================
