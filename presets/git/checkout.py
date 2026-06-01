@@ -42,6 +42,8 @@ def main() -> int:
     if prev_sha_res.returncode == 0:
         prev_sha = prev_sha_res.stdout.strip()
 
+    stderr = ""
+    s = ""
     result = _git(["checkout", ref])
     if result.returncode != 0:
         stderr = result.stderr.strip() or result.stdout.strip()
@@ -57,6 +59,32 @@ def main() -> int:
                 else:
                     stderr = result.stderr.strip() or result.stdout.strip()
                     s = stderr.lower()
+        # #277: remote-only branch. git's DWIM (`checkout <branch>` →
+        # create local tracking branch) can fail to fire — e.g.
+        # checkout.guess=false, or after a fetch that only moved FETCH_HEAD.
+        # Resolve it ourselves: if exactly one remote has
+        # refs/remotes/<remote>/REF, create the tracking branch explicitly.
+        # Multiple matches → error like git does.
+        if result.returncode != 0 and ("did not match" in s or "pathspec" in s):
+            remotes_res = _git(["remote"])
+            remotes = remotes_res.stdout.split() if remotes_res.returncode == 0 else []
+            matches = [
+                r for r in remotes
+                if _git(["rev-parse", "--verify", "--quiet", f"{r}/{ref}"]).returncode == 0
+            ]
+            if len(matches) == 1:
+                track = _git(["checkout", "-b", ref, "--track", f"{matches[0]}/{ref}"])
+                if track.returncode == 0:
+                    print(f"# (created local branch tracking {matches[0]}/{ref})")
+                    result = track
+                else:
+                    stderr = track.stderr.strip() or track.stdout.strip()
+                    s = stderr.lower()
+            elif len(matches) > 1:
+                joined = ", ".join(f"{r}/{ref}" for r in matches)
+                print(f"ERROR: ref {ref!r} matches multiple remotes: {joined}. "
+                      f"Disambiguate, e.g. git checkout -b {ref} --track <remote>/{ref}")
+                return 1
     if result.returncode != 0:
         if "not a git repository" in s:
             print("ERROR: not inside a git repository.")
