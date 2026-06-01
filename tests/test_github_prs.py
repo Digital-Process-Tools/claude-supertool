@@ -100,6 +100,19 @@ def test_check_failed_handles_checkrun_and_statuscontext() -> None:
     assert not prs._check_failed({"state": "SUCCESS"})
 
 
+def test_check_pending_checkrun_and_statuscontext() -> None:
+    # CheckRun in flight: status carries the live value
+    assert prs._check_pending({"status": "IN_PROGRESS"})
+    assert prs._check_pending({"status": "QUEUED"})
+    # StatusContext pending: state carries the live value (status absent)
+    assert prs._check_pending({"state": "PENDING"})
+    assert prs._check_pending({"state": "EXPECTED"})
+    # terminal states are not pending
+    assert not prs._check_pending({"status": "COMPLETED", "conclusion": "SUCCESS"})
+    assert not prs._check_pending({"state": "SUCCESS"})
+    assert not prs._check_pending({"state": "FAILURE"})
+
+
 def test_rollup_state_priorities() -> None:
     assert prs._rollup_state([]) == ""
     assert prs._rollup_state([{"conclusion": "SUCCESS"}]) == "success"
