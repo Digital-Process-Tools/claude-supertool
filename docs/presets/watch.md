@@ -37,11 +37,11 @@ bash presets/watch/watch-mine.sh
 # re-sync every 5 min from inside Claude Code
 /loop 5m bash presets/watch/watch-mine.sh
 
-# any feed op + source — e.g. my failing GitHub PRs (once a gh-prs op exists)
+# any feed op + source — e.g. my failing GitHub PRs
 bash presets/watch/watch-mine.sh 'gh-prs:author=@me,failed,iids' github-pr
 ```
 
-Args: `$1` feed op (default `gl-mrs:author=@me,failed,iids`), `$2` watch source (default `gitlab-mr`), `$3` notify events (default `pipeline_failed,merged`). The separation is deliberate — the list op owns *what's mine* (a platform concern), the watch preset stays generic. The feed op just has to emit bare ids (the `iids` flow); only `gl-mrs` ships today, a `gh-prs` twin is the obvious next one.
+Args: `$1` feed op (default `gl-mrs:author=@me,failed,iids`), `$2` watch source (default `gitlab-mr`), `$3` notify events (default `pipeline_failed,merged`). The separation is deliberate — the list op owns *what's mine* (a platform concern), the watch preset stays generic. The feed op just has to emit bare ids (the `iids` flow); both `gl-mrs` (GitLab) and `gh-prs` (GitHub) ship today.
 
 ## Bundled sources
 
