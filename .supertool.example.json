@@ -272,6 +272,15 @@
       "lines": 80,
       "error_patterns": "ERROR,FAIL,Fatal"
     },
+    "gl-mrs": {
+      "cmd": "python3 {path}gitlab/mrs.py {args}",
+      "timeout": 60,
+      "description": "MR triage board. Override the gitlab preset's defaults to tune pipeline enrichment — extra keys pass through as SUPERTOOL_ENRICH_WORKERS / SUPERTOOL_ENRICH_CAP / SUPERTOOL_PER_PAGE.",
+      "example": "gl-mrs:author=@me,failed",
+      "enrich_workers": 8,
+      "enrich_cap": 40,
+      "per_page": 50
+    },
     "_hidden_internal": {
       "cmd": "echo internal-helper",
       "description": "Hidden from `./supertool ops` output via status:0 — useful for ops that exist for aliases or scripts but shouldn't clutter the public listing.",

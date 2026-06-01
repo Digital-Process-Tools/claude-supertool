@@ -26,6 +26,23 @@ Composable in one batched call:
 ./supertool 'watch:github-pr:179' 'watch:github-pr:180' 'watches'
 ```
 
+## Watch many from a query — `watch-mine.sh`
+
+`watch:SOURCE:ID` watches one id. To watch *every id a query returns* — e.g. all your failing MRs — pair it with a list op via the bundled supervisor `presets/watch/watch-mine.sh`. It runs a "list mine" op (`gl-mrs`/`gh-prs`), extracts the ids, and spawns one watcher each. Idempotent (the `watch` op skips ids already watched), so it's safe on a loop:
+
+```bash
+# default: my failing GitLab MRs → gitlab-mr watchers
+bash presets/watch/watch-mine.sh
+
+# re-sync every 5 min from inside Claude Code
+/loop 5m bash presets/watch/watch-mine.sh
+
+# any feed op + source — e.g. my failing GitHub PRs (once a gh-prs op exists)
+bash presets/watch/watch-mine.sh 'gh-prs:author=@me,failed,iids' github-pr
+```
+
+Args: `$1` feed op (default `gl-mrs:author=@me,failed,iids`), `$2` watch source (default `gitlab-mr`), `$3` notify events (default `pipeline_failed,merged`). The separation is deliberate — the list op owns *what's mine* (a platform concern), the watch preset stays generic. The feed op just has to emit bare ids (the `iids` flow); only `gl-mrs` ships today, a `gh-prs` twin is the obvious next one.
+
 ## Bundled sources
 
 | Source | Polls | Events |

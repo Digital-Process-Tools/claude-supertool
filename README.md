@@ -32,6 +32,7 @@ supertool 'read:src/Module.py' 'read:src/Auth.py' 'grep:TODO:src/:20' 'map:src/'
 
 - **`git-status`** — branch + tracking + ahead/behind + dirty files + open MR/PR + suggested next step. One call, decision ready.
 - **`gl-mr:NUMBER`** / **`gh-pr:NUMBER`** — full MR/PR dashboard: branch, pipeline, reviewer, approval, diff stat, comments. Replaces 4-5 `glab`/`gh` calls.
+- **`gl-mrs`** — MR triage board: your open MRs + per-MR pipeline status + which already have a `watch` poller running + an actionable footer. Pairs with `watch` to auto-watch every failing MR.
 - **`claude-log-summary:UUID`** — model, duration, tool calls, tokens, cache hit %, errors-by-tool. Audit your own runs.
 
 That's a sample. supertool ships ~40 ops out of the box (built-ins + `gitlab` / `github` / `git` / `claude-log` presets) — add your own and you're past 60 fast.
