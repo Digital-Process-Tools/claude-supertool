@@ -911,8 +911,11 @@ def _maybe_restart_mcp(entry: object) -> str:
       true       -> every server in the config "mcp" block
       ["a","b"]  -> only those servers
       "name"     -> a single server
-    Returns a one-line status suffix (empty when nothing to restart). Best-effort
-    like the new-file path — a stop failure never fails the op.
+    Names not present in the config "mcp" block are reported separately instead
+    of being counted as restarted, so the status line never claims to have
+    stopped a daemon that was never configured. Returns a one-line status suffix
+    (empty when nothing to restart). Best-effort like the new-file path — a stop
+    failure never fails the op.
     """
     if not isinstance(entry, dict):
         return ""
@@ -925,11 +928,16 @@ def _maybe_restart_mcp(entry: object) -> str:
         names = [str(n) for n in spec]
     else:
         names = [str(spec)]
-    if not names:
-        return ""
-    for name in names:
+    known = [n for n in names if n in _mcp_specs]
+    unknown = [n for n in names if n not in _mcp_specs]
+    for name in known:
         _mcp_stop_server(name)
-    return f"↻ mcp: restarted {len(names)} daemon(s) ({', '.join(names)})\n"
+    note = ""
+    if known:
+        note += f"mcp: restarted {len(known)} daemon(s) ({', '.join(known)})\n"
+    if unknown:
+        note += f"mcp: unknown server(s) ignored ({', '.join(unknown)})\n"
+    return note
 
 
 _IN_ALIAS = False  # recursion guard — prevents alias-from-alias expansion

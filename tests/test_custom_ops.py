@@ -109,6 +109,30 @@ class TestResolveCustomOp:
         result = supertool._resolve_custom_op("clean", ["clean", "x"])
         assert result is not None
         assert stopped == ["rector-warm"]
+        assert "phpstan-warm" not in stopped
+
+    def test_restart_mcp_single_string(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """restartMcp: "name" (a single string) stops just that server."""
+        stopped: list[str] = []
+        monkeypatch.setattr(supertool, "_mcp_stop_server", lambda name: stopped.append(name))
+        monkeypatch.setattr(supertool, "_mcp_specs", {"phpstan-warm": {}, "rector-warm": {}})
+        supertool._CONFIG = {"ops": {"clean": {"cmd": "echo ok", "restartMcp": "phpstan-warm"}}}
+        result = supertool._resolve_custom_op("clean", ["clean", "x"])
+        assert result is not None
+        assert stopped == ["phpstan-warm"]
+        assert "restarted 1 daemon(s)" in result
+
+    def test_restart_mcp_unknown_name_not_counted(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A name absent from the mcp block is reported as ignored, not restarted."""
+        stopped: list[str] = []
+        monkeypatch.setattr(supertool, "_mcp_stop_server", lambda name: stopped.append(name))
+        monkeypatch.setattr(supertool, "_mcp_specs", {"phpstan-warm": {}})
+        supertool._CONFIG = {"ops": {"clean": {"cmd": "echo ok", "restartMcp": ["phpstan-warm", "typo-warm"]}}}
+        result = supertool._resolve_custom_op("clean", ["clean", "x"])
+        assert result is not None
+        assert stopped == ["phpstan-warm"]
+        assert "restarted 1 daemon(s)" in result
+        assert "unknown server(s) ignored (typo-warm)" in result
 
     def test_restart_mcp_skipped_on_cmd_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A failed cmd must not restart any daemon."""
