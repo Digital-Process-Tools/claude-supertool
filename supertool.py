@@ -867,7 +867,7 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
     cmd = cmd.replace("{argjoin}", shlex.quote(arg_join))
 
     # Pass extra config keys as SUPERTOOL_ env vars
-    _RESERVED_KEYS = {"cmd", "timeout", "description", "syntax", "example", "status"}
+    _RESERVED_KEYS = {"cmd", "timeout", "description", "syntax", "example", "status", "restartMcp"}
     env = dict(os.environ)
     if isinstance(entry, dict):
         for k, v in entry.items():
@@ -893,12 +893,43 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
             if result.stderr:
                 output += result.stderr
             return f"FAIL ({elapsed:.2f}s)\n{output}"
-        return f"PASS ({elapsed:.2f}s)\n{output}"
+        return f"PASS ({elapsed:.2f}s)\n{output}{_maybe_restart_mcp(entry)}"
     except subprocess.TimeoutExpired:
         elapsed = time.monotonic() - t0
         return f"FAIL (timeout {elapsed:.1f}s > {timeout}s)\n"
     except OSError as e:
         return f"FAIL: {e}\n"
+
+
+def _maybe_restart_mcp(entry: object) -> str:
+    """SIGTERM the warm MCP daemons a custom op asks to restart via `restartMcp`.
+
+    A custom op that invalidates state the warm LSP daemons cache (autoload map,
+    PHPStan result cache, etc.) can declare `restartMcp` so the daemons are
+    stopped after the cmd succeeds; the next op that touches each server
+    cold-starts a fresh daemon that re-reads the cleared state. Accepts:
+      true       -> every server in the config "mcp" block
+      ["a","b"]  -> only those servers
+      "name"     -> a single server
+    Returns a one-line status suffix (empty when nothing to restart). Best-effort
+    like the new-file path — a stop failure never fails the op.
+    """
+    if not isinstance(entry, dict):
+        return ""
+    spec = entry.get("restartMcp")
+    if not spec:
+        return ""
+    if spec is True:
+        names = list(_mcp_specs.keys())
+    elif isinstance(spec, list):
+        names = [str(n) for n in spec]
+    else:
+        names = [str(spec)]
+    if not names:
+        return ""
+    for name in names:
+        _mcp_stop_server(name)
+    return f"↻ mcp: restarted {len(names)} daemon(s) ({', '.join(names)})\n"
 
 
 _IN_ALIAS = False  # recursion guard — prevents alias-from-alias expansion
