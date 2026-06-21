@@ -11,7 +11,7 @@
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue)](https://www.python.org/)
 [![OS](https://img.shields.io/badge/tested%20on-Linux%20%7C%20macOS%20%7C%20Windows-blue)](https://github.com/Digital-Process-Tools/claude-supertool/actions/workflows/tests.yml)
 [![License](https://img.shields.io/badge/license-Community-brightgreen)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.11.0-orange)](.claude-plugin/plugin.json)
+[![Version](https://img.shields.io/badge/version-0.14.1-orange)](.claude-plugin/plugin.json)
 
 Saves tokens. Saves money. Saves turns. Works the same in interactive sessions and autonomous runs — humans pair-programming with Claude Code use it every day, not just Kevin-style headless agents. One Python file, zero deps, Python 3.9+.
 
