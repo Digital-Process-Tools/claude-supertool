@@ -5,6 +5,11 @@
   "adviseForNewTest": false,
   "validator_cache": true,
   "validator_cache_ttl_hours": 24,
+  "_comment_defaults": "Default project/repo for payload ops that would otherwise require one. gl-issue-create reads 'gitlab_project' when the payload omits 'project'; gh-issue-create reads 'github_repo' when it omits 'repo'. Resolution order: explicit payload field > this config > the 'origin' git remote (host-matched). Omit this block to rely on git-remote auto-detect alone.",
+  "defaults": {
+    "gitlab_project": "fdavid/dvsi",
+    "github_repo": "Digital-Process-Tools/claude-supertool"
+  },
   "presets": [
     "git",
     "github",

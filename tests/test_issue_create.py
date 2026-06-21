@@ -246,11 +246,28 @@ class TestGitlabIssueCreate:
     def test_missing_project_field(self, monkeypatch, capsys, tmp_path):
         payload_file = _write_payload(tmp_path, {"title": "No project"})
         monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
+        # No config default and no matching git remote → still an error.
+        monkeypatch.setattr(gl._rd, "resolve", lambda *a, **k: None)
 
         rc = gl.main()
         out = capsys.readouterr().out
         assert rc != 0
         assert "project" in out
+
+    def test_project_defaulted_when_missing(self, monkeypatch, capsys, tmp_path):
+        payload_file = _write_payload(tmp_path, {"title": "No project", "description": "x"})
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
+        monkeypatch.setattr(gl._rd, "resolve", lambda *a, **k: "fdavid/dvsi")
+
+        captured: list[list[str]] = []
+        monkeypatch.setattr(gl, "_glab", lambda args, timeout=20: captured.append(args) or _ok(GL_URL))
+        monkeypatch.setattr(gl, "_glab_api", lambda *a, **kw: _ok("{}"))
+
+        rc = gl.main()
+        out = capsys.readouterr().out
+        assert rc == 0, out
+        assert "gl-issue-create OK" in out
+        assert _flag_value(captured[0], "--repo") == "fdavid/dvsi"
 
     def test_missing_title_field(self, monkeypatch, capsys, tmp_path):
         payload_file = _write_payload(tmp_path, {"project": "fdavid/dvsi"})
@@ -452,11 +469,27 @@ class TestGithubIssueCreate:
     def test_missing_repo_field(self, monkeypatch, capsys, tmp_path):
         payload_file = _write_payload(tmp_path, {"title": "No repo"})
         monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
+        # No config default and no matching git remote → still an error.
+        monkeypatch.setattr(gh._rd, "resolve", lambda *a, **k: None)
 
         rc = gh.main()
         out = capsys.readouterr().out
         assert rc != 0
         assert "repo" in out
+
+    def test_repo_defaulted_when_missing(self, monkeypatch, capsys, tmp_path):
+        payload_file = _write_payload(tmp_path, {"title": "No repo", "body": "x"})
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
+        monkeypatch.setattr(gh._rd, "resolve", lambda *a, **k: "Digital-Process-Tools/claude-supertool")
+
+        captured: list[list[str]] = []
+        monkeypatch.setattr(gh, "_gh", lambda args, timeout=20: captured.append(args) or _ok(GH_URL))
+
+        rc = gh.main()
+        out = capsys.readouterr().out
+        assert rc == 0, out
+        assert "gh-issue-create OK" in out
+        assert _flag_value(captured[0], "--repo") == "Digital-Process-Tools/claude-supertool"
 
     def test_missing_title_field(self, monkeypatch, capsys, tmp_path):
         payload_file = _write_payload(tmp_path, {"repo": "org/repo"})

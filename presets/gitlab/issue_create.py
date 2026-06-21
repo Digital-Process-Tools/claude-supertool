@@ -16,6 +16,9 @@ except ModuleNotFoundError:
     except ModuleNotFoundError:
         tomllib = None  # type: ignore[assignment]
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import _remote_default as _rd  # noqa: E402
+
 
 def _glab(args: list[str], timeout: int = 20) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
@@ -72,6 +75,11 @@ def main() -> int:
     except (json.JSONDecodeError, ValueError) as e:
         print(f"ERROR: failed to parse payload: {e}")
         return 1
+
+    if not payload.get("project"):
+        auto = _rd.resolve("gitlab_project", "gitlab")
+        if auto:
+            payload["project"] = auto
 
     err = _validate(payload)
     if err:

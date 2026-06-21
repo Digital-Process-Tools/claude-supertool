@@ -83,6 +83,20 @@ The list endpoint omits pipeline, approval, and diff data, so each MR costs a co
 
 Otherwise inherits from `glab auth status` — no project-specific tokens needed.
 
+### Default project for `gl-issue-create`
+
+`gl-issue-create` needs a `project` in every payload. To omit it, set a default:
+
+```json
+{
+  "defaults": {
+    "gitlab_project": "fdavid/dvsi"
+  }
+}
+```
+
+Resolution order (most specific wins): explicit `project` in the payload → `defaults.gitlab_project` → the `origin` git remote when its host contains `gitlab`. In a GitLab checkout the remote covers it with zero config; the explicit default is for when `origin` points elsewhere.
+
 ## Authoring notes
 
 Preset JSON: `presets/gitlab.json`. Helper scripts: `presets/gitlab/`. `gl-mr` accepts either an MR number or a branch name — it resolves branches to MRs automatically.

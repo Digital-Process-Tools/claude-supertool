@@ -1,4 +1,5 @@
 {
+  "defaults": { "github_repo": "Digital-Process-Tools/claude-supertool" },
   "compact": false,
   "rtk": false,
   "allow_outside_cwd": true,
