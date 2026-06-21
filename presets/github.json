@@ -18,8 +18,17 @@
     "gh-pr": {
       "cmd": "{python} {path}github/pr.py {args}",
       "timeout": 20,
-      "description": "Review a pull request: branch, checks, reviews/approval, linked issue, diff stat, comments — the full dashboard. :status = slim merge-state only (~250B, fits hook cache).",
+      "description": "Review a pull request: branch, checks, reviews/approval, linked issue, diff stat, comments \u2014 the full dashboard. :status = slim merge-state only (~250B, fits hook cache).",
       "syntax": "gh-pr:NUMBER_OR_BRANCH[:status]"
+    },
+    "gh-prs": {
+      "cmd": "{python} {path}github/prs.py {args}",
+      "timeout": 60,
+      "description": "PR triage board: list PRs (default author=@me), sorted failing-first. Per PR: check rollup (failed\u2192check name), approval (reviewDecision), age, diff size, watch-state, draft/conflict/threads flags + actionable footer. Filters (comma-sep): author/reviewer/assignee/label/state. Flags: nopipe (skip review-thread enrichment), iids, failed. The core board is one gh call; review threads enrich in parallel.",
+      "syntax": "gh-prs[:author=@me,reviewer=@me,state=open,failed,nopipe,iids]",
+      "enrich_workers": 8,
+      "enrich_cap": 40,
+      "per_page": 50
     },
     "gh-run": {
       "cmd": "{python} {path}github/run.py {arg}",
