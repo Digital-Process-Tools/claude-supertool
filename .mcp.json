@@ -2,7 +2,7 @@
   "mcpServers": {
     "claude-channel": {
       "command": "bun",
-      "args": ["./notifiers/claude-channel/channel.ts"]
+      "args": ["${CLAUDE_PLUGIN_ROOT}/notifiers/claude-channel/channel.ts"]
     }
   }
 }

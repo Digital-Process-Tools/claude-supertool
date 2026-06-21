@@ -23,10 +23,12 @@ import supertool
 PRESETS_GIT = Path(__file__).parent.parent / "presets" / "git"
 
 
-def _run_git_preset(script: str, *args: str) -> subprocess.CompletedProcess:
+def _run_git_preset(
+    script: str, *args: str, cwd: str | os.PathLike | None = None
+) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["python3", str(PRESETS_GIT / script), *args],
-        capture_output=True, text=True, timeout=10,
+        capture_output=True, text=True, timeout=10, cwd=cwd,
     )
 
 
@@ -36,12 +38,32 @@ class TestGitcliFlagSmuggling:
         assert "refusing for safety" in r.stdout
         assert r.returncode != 0
 
-    def test_checkout_allows_dash_alone(self):
+    def test_checkout_allows_dash_alone(self, tmp_path):
         # "-" = previous branch in git checkout, allow it.
-        r = _run_git_preset("checkout.py", "-")
-        # May succeed or fail depending on repo state — the key is we
-        # don't refuse it for the leading-dash reason.
+        # MUST run in an isolated repo: checkout.py executes a real
+        # `git checkout -` against the cwd, so running it in this project's
+        # checkout would switch the live repo to its previous branch and
+        # revert the working tree — which is exactly what happens when the
+        # full suite runs under the .githooks/pre-push hook.
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+               "PATH": os.environ["PATH"]}
+        for cmd in (
+            ["git", "init", "-q", "-b", "main", str(repo)],
+            ["git", "-C", str(repo), "commit", "-q", "--allow-empty", "-m", "init"],
+            ["git", "-C", str(repo), "checkout", "-q", "-b", "feature"],
+        ):
+            subprocess.run(cmd, env=env, check=True, capture_output=True)
+        # previous branch is now "main"; "-" must switch back to it
+        r = _run_git_preset("checkout.py", "-", cwd=repo)
         assert "refusing for safety" not in r.stdout
+        branch = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        assert branch == "main", f"`-` should switch to previous branch, on {branch!r}"
 
     def test_merge_rejects_dash_abort(self):
         r = _run_git_preset("merge.py", "--abort")
