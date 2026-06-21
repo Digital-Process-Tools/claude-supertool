@@ -85,6 +85,19 @@ def main() -> int:
                 print(f"ERROR: ref {ref!r} matches multiple remotes: {joined}. "
                       f"Disambiguate, e.g. git checkout -b {ref} --track <remote>/{ref}")
                 return 1
+        # #267: single-branch / narrowed-refspec workspaces never create a
+        # refs/remotes/origin/<branch> tracking ref, so the #277 path above
+        # finds no match and `git fetch --all` only moved FETCH_HEAD. Fall
+        # back to an explicit single-ref fetch + checkout of FETCH_HEAD.
+        if result.returncode != 0 and ("did not match any" in s or "pathspec" in s):
+            single = _git(["fetch", "origin", ref], timeout=30)
+            if single.returncode == 0:
+                cob = _git(["checkout", "-B", ref, "FETCH_HEAD"])
+                if cob.returncode == 0:
+                    print(f"# (fetched origin {ref}, reset local branch to FETCH_HEAD)")
+                    result = cob
+                    stderr = ""
+                    s = ""
     if result.returncode != 0:
         if "not a git repository" in s:
             print("ERROR: not inside a git repository.")
