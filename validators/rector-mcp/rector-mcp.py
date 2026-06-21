@@ -193,11 +193,14 @@ def format_response(file_path: str, mcp_resp: dict, duration_ms: int) -> dict:
         if errors:
             for e in errors:
                 msg = e.get("message", str(e)) if isinstance(e, dict) else str(e)
-                # Rector's warm in-process engine intermittently fails to resolve a
-                # BetterReflection for the analyzed class and emits
-                # "System error: ... must be resolved". It's an engine/reflection
-                # failure, NOT a code finding — plain rector CLI runs the same file
-                # clean — so suppress it: don't fail, don't print, don't get cached.
+                # Defense-in-depth (root cause fixed upstream in mcp-rector-warm
+                # 0.4.0, claude-supertool#273): the warm daemon used to serve a stale
+                # reflection source-locator across files and emit
+                # "System error: ClassReflection must be resolved for class X" on a
+                # later file that a cold rector CLI handled clean. mcp-rector-warm now
+                # resets that state per call, so this branch should no longer fire —
+                # it stays only to keep any future non-deterministic engine glitch
+                # (NOT a code finding) from failing/printing/caching.
                 if msg.startswith("System error:"):
                     continue
                 base["ok"] = False
