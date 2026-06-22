@@ -160,3 +160,83 @@ def test_phpstan_identifier_marker_matches_default(monkeypatch, capsys) -> None:
     # The phpstan error should appear in error context section
     assert "generics.notSubtype" in out
     assert "Error context" in out
+
+
+def test_grep_matches_with_context(monkeypatch, capsys) -> None:
+    """grep mode returns matching lines plus surrounding context."""
+    lines = [f"line {i}" for i in range(20)] + [
+        '    "applied_rectors": [',
+        '        "AddTestCommentToClassRector"',
+    ] + [f"trail {i}" for i in range(20)]
+    rc = _run_main(monkeypatch, ["job.py", "123", "grep", "applied_rectors"], lines)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "grep /applied_rectors/ — 1 matching lines" in out
+    assert "applied_rectors" in out
+    assert "Raw lines" not in out
+
+
+def test_grep_no_match_falls_back_to_tail(monkeypatch, capsys) -> None:
+    """No match never returns empty — names the pattern and shows a tail."""
+    lines = [f"line {i}" for i in range(100)]
+    rc = _run_main(monkeypatch, ["job.py", "123", "grep", "zzz_nonexistent"], lines)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "No lines match /zzz_nonexistent/ (searched 100 lines)" in out
+    assert "Showing last" in out
+    assert "fallback" in out
+
+
+def test_grep_bad_regex_falls_back_to_literal(monkeypatch, capsys) -> None:
+    """An invalid regex is matched literally instead of crashing."""
+    lines = ["before", "value[0] = 1", "after"]
+    rc = _run_main(monkeypatch, ["job.py", "123", "grep", "value["], lines)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "literal — regex failed to compile" in out
+    assert "value[0] = 1" in out
+
+
+def test_grep_missing_pattern_returns_error(monkeypatch, capsys) -> None:
+    """grep with no pattern is a usage error."""
+    rc = _run_main(monkeypatch, ["job.py", "123", "grep"], ["x"])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "usage: gl-job:JOB_ID:grep:PATTERN" in out
+
+
+def test_select_job_patterns_matches_by_name() -> None:
+    table = [
+        {"job": "^phpstan", "patterns": ["🪪"]},
+        {"job": "rector", "patterns": ["applied_rectors"], "resolution": "rector_ci_apply:{id}"},
+    ]
+    patterns, resolution = job._select_job_patterns("rector", table, ["DEFAULT"])
+    assert patterns == ["applied_rectors"]
+    assert resolution == "rector_ci_apply:{id}"
+
+
+def test_select_job_patterns_no_match_falls_back() -> None:
+    patterns, resolution = job._select_job_patterns(
+        "mystery", [{"job": "rector", "patterns": ["x"]}], ["DEFAULT"]
+    )
+    assert patterns == ["DEFAULT"]
+    assert resolution is None
+
+
+def test_parse_job_patterns_malformed_returns_empty() -> None:
+    assert job._parse_job_patterns("not json") == []
+    assert job._parse_job_patterns("") == []
+    assert job._parse_job_patterns('{"not": "a list"}') == []
+
+
+def test_job_patterns_shows_resolution_with_interpolated_id(monkeypatch, capsys) -> None:
+    """A matched job prints its resolution op with {id} replaced by the job id."""
+    monkeypatch.setenv("SUPERTOOL_JOB_PATTERNS", json.dumps([
+        {"job": "test-job", "patterns": ["BOOM"], "resolution": "rector_ci_apply:{id}"}
+    ]))
+    lines = ["noise", "BOOM goes the build", "noise"]
+    rc = _run_main(monkeypatch, ["job.py", "777"], lines)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "BOOM goes the build" in out
+    assert "Resolve:  ./supertool 'rector_ci_apply:777'" in out

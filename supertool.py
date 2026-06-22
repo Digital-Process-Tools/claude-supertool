@@ -354,8 +354,17 @@ def _merge_presets(config: Dict[str, Any], project_dir: str) -> None:
                 op_def = _resolve_preset_cmd(op_def, preset_dir)
             merged_ops[op_name] = op_def
 
-    # Project-level ops override preset ops
-    merged_ops.update(project_ops)
+    # Project-level ops override preset ops. Dict op-defs deep-merge key-by-key
+    # so a project override can add/replace individual keys (e.g. job_patterns)
+    # without restating the preset's cmd; non-dicts replace wholesale.
+    for op_name, op_def in project_ops.items():
+        base = merged_ops.get(op_name)
+        if isinstance(base, dict) and isinstance(op_def, dict):
+            merged = dict(base)
+            merged.update(op_def)
+            merged_ops[op_name] = merged
+        else:
+            merged_ops[op_name] = op_def
     config["ops"] = merged_ops
 
 
@@ -872,7 +881,11 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
     if isinstance(entry, dict):
         for k, v in entry.items():
             if k not in _RESERVED_KEYS:
-                env[f"SUPERTOOL_{k.upper()}"] = str(v)
+                # Strings pass through verbatim (e.g. CSV "error_patterns").
+                # Non-scalars (lists/dicts, e.g. "job_patterns") are JSON-encoded
+                # so the receiving preset can json.loads them back — str() would
+                # emit a Python repr that json.loads can't parse.
+                env[f"SUPERTOOL_{k.upper()}"] = v if isinstance(v, str) else json.dumps(v)
 
     _prefix_env, cmd = _extract_env_prefix(cmd)
     env.update(_prefix_env)

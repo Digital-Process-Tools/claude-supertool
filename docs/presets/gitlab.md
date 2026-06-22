@@ -14,7 +14,7 @@ GitLab ops via the `glab` CLI. Replaces the 3-5 separate `glab` calls needed to 
 | `gl-mr` | `gl-mr:NUMBER_OR_BRANCH[:status]` | MR dashboard: branch, pipeline, reviewer/approval state, linked issue, diff stat, comments. `:status` returns slim merge-state only |
 | `gl-mrs` | `gl-mrs[:filters,flags]` | MR triage board, sorted failing-first then stalest. Per MR (enriched in parallel): pipeline status (a failure shows the failed **job name** = the failure class), approval state, age, diff size, watch-state cross-reference, and `conflict`/`draft`/`threads` flags — plus an actionable footer. Filters (comma-sep): `author`/`reviewer`/`assignee`/`label`/`milestone`/`state`/`per`. Flags: `nopipe` (skip enrichment), `iids` (bare id list), `failed` (only failing) |
 | `gl-pipeline` | `gl-pipeline:NUMBER` | Pipeline job list grouped by stage with pass/fail status and failed job IDs |
-| `gl-job` | `gl-job:NUMBER[:raw[:START[:END]]]` | Job failure detail: MR context + error pattern search + log tail. `:raw` dumps the full trace; `:raw:START:END` slices lines (1-indexed, inclusive) |
+| `gl-job` | `gl-job:NUMBER[:raw[:START[:END]]\|:grep:PATTERN]` | Job failure detail: MR context + error pattern search + log tail. `:raw` dumps the full trace; `:raw:START:END` slices lines (1-indexed, inclusive); `:grep:PATTERN` runs an ad-hoc regex over the trace (literal fallback on bad regex, ±context, names the pattern + tail on no-match — never silent-empty) |
 
 ## Common workflows
 
@@ -31,7 +31,34 @@ Returns approval state, pipeline status, diff stat, and all comments in one call
 ./supertool 'gl-job:67890'
 # if you need more log context:
 ./supertool 'gl-job:67890:raw:1:150'
+# or hunt a specific marker yourself (regex, ±context, never silent-empty):
+./supertool 'gl-job:67890:grep:applied_rectors'
 ```
+
+### Per-job failure patterns + resolution op
+
+`gl-job`'s default failure view searches `error_patterns` (a flat list). For repos
+with several CI tools, configure a per-job-name table so each job type gets tighter
+patterns **and** a one-line fix command. In `.supertool.json`:
+
+```json
+{
+  "ops": {
+    "gl-job": {
+      "job_patterns": [
+        { "job": "rector", "patterns": ["applied_rectors"], "resolution": "rector_ci_apply:{id}" },
+        { "job": "phpstan", "patterns": ["🪪", "notSubtype"] }
+      ]
+    }
+  }
+}
+```
+
+The first entry whose `job` regex matches the job name wins; no match falls back to
+the flat `error_patterns`. When a matched entry has a `resolution`, `gl-job` prints
+`Resolve: ./supertool '<op>'` with `{id}` replaced by the job id — e.g. a failed
+`rector` job ends with `Resolve: ./supertool 'rector_ci_apply:67890'`. Project config
+deep-merges into the preset op, so adding `job_patterns` keeps the built-in `cmd`.
 
 **Check an issue before starting work:**
 ```bash

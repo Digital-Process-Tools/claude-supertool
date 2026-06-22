@@ -67,7 +67,45 @@ def _get_config() -> dict:
             "SUPERTOOL_ERROR_PATTERNS", "ERROR,FAILED,Error:,Failed,fatal:,##[error]"
         ).split(","),
         "error_context": int(os.environ.get("SUPERTOOL_ERROR_CONTEXT", "5")),
+        "job_patterns": _parse_job_patterns(os.environ.get("SUPERTOOL_JOB_PATTERNS", "")),
     }
+
+
+def _parse_job_patterns(raw: str) -> list[dict]:
+    """Parse the optional per-job-name pattern table (JSON list).
+
+    Each entry: {"job": <name-regex>, "patterns": [<str>...], "resolution": <op>?}.
+    Returns [] on empty or malformed config — the flat error_patterns still apply.
+    """
+    if not raw.strip():
+        return []
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, list) else []
+    except (json.JSONDecodeError, ValueError):
+        return []
+
+
+def _select_job_patterns(
+    job_name: str, job_patterns: list[dict], default_patterns: list[str]
+) -> tuple[list[str], str | None]:
+    """Pick patterns + resolution op for this job by name.
+
+    First entry whose "job" regex matches job_name wins. No match → the flat
+    default_patterns with no resolution (backward compatible).
+    """
+    for entry in job_patterns:
+        name_re = entry.get("job", "")
+        if not name_re:
+            continue
+        try:
+            matched = re.search(name_re, job_name) is not None
+        except re.error:
+            matched = name_re in job_name
+        if matched:
+            patterns = entry.get("patterns") or default_patterns
+            return patterns, entry.get("resolution")
+    return default_patterns, None
 
 
 def _find_error_sections(lines: list[str], patterns: list[str], context: int) -> list[tuple[int, str]]:
@@ -105,6 +143,11 @@ def main() -> int:
 
     job_id = sys.argv[1]
     raw_mode = len(sys.argv) > 2 and sys.argv[2] == "raw"
+    grep_mode = len(sys.argv) > 2 and sys.argv[2] == "grep"
+    grep_pattern = sys.argv[3] if grep_mode and len(sys.argv) > 3 else None
+    if grep_mode and not grep_pattern:
+        print("ERROR: usage: gh-job:JOB_ID:grep:PATTERN")
+        return 1
     raw_start: int | None = None
     raw_end: int | None = None
     if raw_mode:
@@ -234,10 +277,50 @@ def main() -> int:
             print(f"  {start + i:>5} | {line}")
         return 0
 
-    # 4. Error pattern search
-    error_sections = _find_error_sections(
-        lines, config["error_patterns"], config["error_context"]
+    # 3b. Grep mode — ad-hoc regex over the log, context + gap markers.
+    # Honest primitive: caller's pattern, no config. Regex with literal
+    # fallback on re.error (mirrors supertool's grep). Never silent-empty.
+    if grep_mode and grep_pattern is not None:
+        try:
+            rx = re.compile(grep_pattern)
+            shown_pattern = grep_pattern
+        except re.error:
+            rx = re.compile(re.escape(grep_pattern))
+            shown_pattern = f"{grep_pattern} (literal — regex failed to compile)"
+        ctx = config["error_context"]
+        hits: set[int] = set()
+        for i, line in enumerate(lines):
+            if rx.search(line):
+                for j in range(max(0, i - ctx), min(len(lines), i + ctx + 1)):
+                    hits.add(j)
+        if not hits:
+            print(f"\n## No lines match /{shown_pattern}/ (searched {total} lines)")
+            tail = lines[-tail_lines:] if len(lines) > tail_lines else lines
+            print(f"Showing last {len(tail)} lines as fallback:")
+            start = total - len(tail) + 1
+            for i, line in enumerate(tail):
+                print(f"  {start + i:>5} | {line}")
+            return 0
+        match_count = sum(1 for line in lines if rx.search(line))
+        print(f"\n## grep /{shown_pattern}/ — {match_count} matching lines (±{ctx} context)")
+        prev = -2
+        for idx in sorted(hits):
+            if idx > prev + 1:
+                print("...")
+            print(f"  {idx + 1:>5} | {lines[idx]}")
+            prev = idx
+        return 0
+
+    # 4. Error pattern search. Per-job-name table (if configured) picks tighter
+    # patterns + a resolution op; else the flat default applies.
+    patterns, resolution = _select_job_patterns(
+        job_name, config["job_patterns"], config["error_patterns"]
     )
+    resolution_line = (
+        f"Resolve:  ./supertool '{resolution.replace('{id}', job_id)}'"
+        if resolution else ""
+    )
+    error_sections = _find_error_sections(lines, patterns, config["error_context"])
 
     if error_sections and display_status == "failure":
         print(f"\n## Error context ({len([e for e in error_sections if e[0] > 0])} lines matched)")
@@ -246,6 +329,9 @@ def main() -> int:
                 print(text)
             else:
                 print(f"  {line_num:>5} | {text}")
+
+        if resolution_line:
+            print(f"\n{resolution_line}")
 
         print(f"\n## Tail (last {tail_lines} lines)")
         shown = lines[-tail_lines:] if len(lines) > tail_lines else lines
