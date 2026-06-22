@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-06-22
+
 ### Added
 
 - **`gl-job` / `gh-job` `:grep:PATTERN` + per-job failure patterns with resolution ops.** `gl-job:ID:grep:PATTERN` (and the `gh-job` twin) runs an ad-hoc regex over the job trace — context window, gap markers, regex with literal fallback on `re.error`, and never silent-empty (no match names the pattern and shows a tail). Complements the existing `:raw` slice when you don't yet know the line numbers. Plus an optional per-job-name table in `.supertool.json`: `ops.gl-job.job_patterns` maps a job-name regex to tighter `patterns` and a `resolution` op — a failed `rector` job ends with `Resolve: ./supertool 'rector_ci_apply:<id>'` (`{id}` interpolated). No match falls back to the flat `error_patterns`. Two enablers: non-scalar custom-op config values are now JSON-encoded into their `SUPERTOOL_*` env var (so presets can `json.loads` structured config), and project-level `ops` overrides **deep-merge** into preset op-defs key-by-key (add `job_patterns` without restating the preset `cmd`). Closes [#289](https://github.com/Digital-Process-Tools/claude-supertool/issues/289). See [docs/presets/gitlab.md](docs/presets/gitlab.md).
