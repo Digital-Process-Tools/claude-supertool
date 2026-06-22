@@ -1125,6 +1125,24 @@ def op_read(path: str, offset: int = 0, limit: int = 0,
     return render_file(path, offset, limit, grep_filter, force_full)
 
 
+_REGEX_METACHARS = re.compile(r"[()\[\]{}|.*+?^$\\]")
+
+
+def _is_regexy(pattern: str) -> bool:
+    """True if pattern holds regex metacharacters that could make a literal
+    code fragment match the wrong thing — or nothing. Gates the zero-hit
+    literal fallback so plain-word searches never pay for a second pass."""
+    return bool(_REGEX_METACHARS.search(pattern))
+
+
+def _literal_note(pattern: str, count: int) -> str:
+    """One-line banner shown when a pattern found 0 regex hits but matched
+    literally once metacharacters were escaped — tells the caller the search
+    auto-corrected so they learn the pattern was regex-ambiguous."""
+    return (f"(no regex match; showing {count} literal "
+            f"match(es) for {pattern!r})\n")
+
+
 def op_grep(pattern: str, path: str = ".", limit: int = 0,
             context: int = 0, count_only: bool = False,
             no_exclude: bool = False) -> str:
@@ -1183,14 +1201,21 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
                 rtk_args.append(f"--exclude-dir={d}")
             rtk_args.extend([pattern, path])
             rtk_out = _rtk_run(rtk_args)
-            if rtk_out is not None:
+            if rtk_out is not None and (rtk_out.strip() or not _is_regexy(pattern)):
                 return rtk_out + "\n"
+            # Empty RTK result + regexy pattern: fall through to the native
+            # walker so the zero-hit literal fallback below can run.
 
     if count_only:
         counts = _grep_count(pattern, path, limit, excl)
+        literal_note = ""
+        if not counts and _is_regexy(pattern):
+            counts = _grep_count(re.escape(pattern), path, limit, excl)
+            if counts:
+                literal_note = _literal_note(pattern, sum(counts.values()))
         total = sum(counts.values())
         file_count = len(counts)
-        out = [f"({total} total matches across {file_count} files)\n"]
+        out = [literal_note, f"({total} total matches across {file_count} files)\n"]
         for fp, cnt in sorted(counts.items()):
             out.append(f"{_fwd(fp)}:{cnt}\n")
         out.append("\n")
@@ -1198,11 +1223,19 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
 
     if context > 0:
         groups = _grep_recursive_context(pattern, path, limit, context, excl)
+        literal_note = ""
+        if not groups and _is_regexy(pattern):
+            groups = _grep_recursive_context(
+                re.escape(pattern), path, limit, context, excl)
+            if groups:
+                hit_count = sum(
+                    1 for g in groups for line in g if line[2] == "match")
+                literal_note = _literal_note(pattern, hit_count)
         count = sum(
             1 for g in groups for line in g if line[2] == "match"
         )
         file_count = len({g[0][0] for g in groups if g})
-        out = [f"({count} results in {file_count} files, "
+        out = [literal_note, f"({count} results in {file_count} files, "
                f"limit {limit}, context {context})\n"]
         current_file: str = ""
         first_group = True
@@ -1224,10 +1257,15 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
         return _cap_context_window("".join(out), "grep_around")
 
     hits = _grep_recursive(pattern, path, limit, excl)
+    literal_note = ""
+    if not hits and _is_regexy(pattern):
+        hits = _grep_recursive(re.escape(pattern), path, limit, excl)
+        if hits:
+            literal_note = _literal_note(pattern, len(hits))
     count = len(hits)
     file_count = len({fp for fp, _, _ in hits})
 
-    out = [f"({count} results in {file_count} files, limit {limit})\n"]
+    out = [literal_note, f"({count} results in {file_count} files, limit {limit})\n"]
     current_file = ""
     for fp, lineno, content in hits:
         if fp != current_file:
@@ -1338,43 +1376,54 @@ def op_around(pattern: str, path: str, n: int = 10) -> str:
     except re.error:
         regex = re.compile(re.escape(pattern))
 
-    if os.path.isdir(path):
-        hits: List[str] = []
-        scanned = 0
-        for root, dirs, files in os.walk(path):
-            dirs[:] = [d for d in dirs
-                       if not d.startswith(".") and d not in _AROUND_DIR_SKIP]
-            for name in sorted(files):
-                if name.startswith("."):
-                    continue
-                fpath = os.path.join(root, name)
-                scanned += 1
-                rendered = _around_one_file(regex, fpath, n)
-                if rendered and rendered.startswith("ERROR:"):
-                    continue
-                if not rendered:
-                    continue
-                rel = _fwd(_safe_relpath(fpath, path))
-                hits.append(f"=== {rel} ===\n{rendered}")
-                if len(hits) >= _AROUND_DIR_MAX_FILES:
-                    break
-            if len(hits) >= _AROUND_DIR_MAX_FILES:
-                break
-        if not hits:
-            return f"(no match for {pattern!r} in {path}, scanned {scanned} file(s))\n\n"
-        header = f"(matched {len(hits)} file(s) under {path}"
-        if len(hits) >= _AROUND_DIR_MAX_FILES:
-            header += f", capped at {_AROUND_DIR_MAX_FILES}"
-        header += f", scanned {scanned})\n"
-        return _cap_context_window(header + "".join(hits), "around")
-
-    if not os.path.isfile(path):
+    if not os.path.isdir(path) and not os.path.isfile(path):
         return f"ERROR: file not found: {path}\n"
 
-    rendered = _around_one_file(regex, path, n)
-    if not rendered:
-        return f"(no match for {pattern!r} in {path})\n\n"
-    return _cap_context_window(rendered, "around")
+    def _render(rx: "re.Pattern[str]") -> Tuple[str, bool]:
+        """Render the around-window for `rx`. Returns (output, matched) so the
+        caller can decide whether to retry with an escaped literal pattern."""
+        if os.path.isdir(path):
+            hits: List[str] = []
+            scanned = 0
+            for root, dirs, files in os.walk(path):
+                dirs[:] = [d for d in dirs
+                           if not d.startswith(".") and d not in _AROUND_DIR_SKIP]
+                for name in sorted(files):
+                    if name.startswith("."):
+                        continue
+                    fpath = os.path.join(root, name)
+                    scanned += 1
+                    rendered = _around_one_file(rx, fpath, n)
+                    if rendered and rendered.startswith("ERROR:"):
+                        continue
+                    if not rendered:
+                        continue
+                    rel = _fwd(_safe_relpath(fpath, path))
+                    hits.append(f"=== {rel} ===\n{rendered}")
+                    if len(hits) >= _AROUND_DIR_MAX_FILES:
+                        break
+                if len(hits) >= _AROUND_DIR_MAX_FILES:
+                    break
+            if not hits:
+                return (f"(no match for {pattern!r} in {path}, "
+                        f"scanned {scanned} file(s))\n\n", False)
+            header = f"(matched {len(hits)} file(s) under {path}"
+            if len(hits) >= _AROUND_DIR_MAX_FILES:
+                header += f", capped at {_AROUND_DIR_MAX_FILES}"
+            header += f", scanned {scanned})\n"
+            return _cap_context_window(header + "".join(hits), "around"), True
+
+        rendered = _around_one_file(rx, path, n)
+        if not rendered:
+            return f"(no match for {pattern!r} in {path})\n\n", False
+        return _cap_context_window(rendered, "around"), True
+
+    out_text, matched = _render(regex)
+    if not matched and _is_regexy(pattern):
+        lit_text, lit_matched = _render(re.compile(re.escape(pattern)))
+        if lit_matched:
+            return _literal_note(pattern, lit_text.count("=== ") or 1) + lit_text
+    return out_text
 
 
 def op_between_symbol(symbol: str, path: str) -> str:
