@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-06-22
+
+### Added
+
+- **`git-push` op — update the branch behind an already-open MR.** The `mr` op covers push **and** create; there was no op for the common follow-up — pushing a fix to an MR that already exists — so it dropped to raw `git push -u origin HEAD`. `git-push` pushes the current branch (setting upstream on first push), then prints a verifiable receipt: remote SHA before/after with commits pushed (or "already up to date" / "branch created"), ahead/behind vs upstream, and the open MR/PR for the branch with its pipeline status (the push triggers a run). Non-fast-forward rejections surface a `pull --rebase` / `--force-with-lease` hint; server-side rejections (protected branch / pre-receive hook) get a distinct "a rebase won't help" message instead — never auto-forced, mirroring `git-commit`'s no-silent-bypass philosophy. The glab→gh MR lookup that was drifting across `commit.py` / `push.py` is now a shared `presets/git/_git_common.py` (`query_open_mr`, plus `_git` / `_first_error_line`). Closes [#288](https://github.com/Digital-Process-Tools/claude-supertool/issues/288). See [docs/presets/git.md](docs/presets/git.md).
+
 ## [0.15.0] - 2026-06-22
 
 ### Added
