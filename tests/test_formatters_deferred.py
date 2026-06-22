@@ -150,3 +150,52 @@ def test_defer_state_reset_between_invocations(tmp_path, monkeypatch) -> None:
     supertool.main([f"edit:::x = 1:::x = 2:::{target}", f"edit:::x = 2:::x = 3:::{target}"])
     assert supertool._DEFER_FORMATTERS is False
     assert supertool._FORMAT_QUEUE == {}
+
+
+def test_batch_defers_formatter_once_per_file(tmp_path, monkeypatch) -> None:
+    """Issue #291: ops inside a single batch:@file call must also defer formatters.
+
+    A batch is one logical change but runs through a single argv element, so the
+    len(argv)>1 guard in main() never fired — formatters ran inline per-op and
+    no_unused_imports stripped an import a later op was about to use.
+    """
+    import json
+
+    target = tmp_path / "a.py"
+    target.write_text("x = 1\n")
+    cmd, counter = _make_counting_cmd(tmp_path)
+    _set_formatters({"fakefmt": {"cmd": cmd, "hooks_into": ["edit"], "match": "*.py"}})
+
+    ops_file = tmp_path / "ops.json"
+    ops_file.write_text(json.dumps([
+        {"op": "edit", "path": str(target), "old": "x = 1", "new": "x = 2"},
+        {"op": "edit", "path": str(target), "old": "x = 2", "new": "x = 3"},
+    ]))
+
+    monkeypatch.chdir(tmp_path)
+    rc = supertool.main([f"batch:@{ops_file}"])
+    assert rc == 0
+    assert target.read_text() == "x = 3\n"
+    runs = counter.read_text().count("run\n")
+    assert runs == 1, f"expected 1 deferred run inside batch, got {runs}"
+
+
+def test_batch_defer_resets_state(tmp_path, monkeypatch) -> None:
+    """Batch's own defer setup must not leak the module-level queue."""
+    import json
+
+    target = tmp_path / "b.py"
+    target.write_text("x = 1\n")
+    cmd, _counter = _make_counting_cmd(tmp_path)
+    _set_formatters({"fakefmt": {"cmd": cmd, "hooks_into": ["edit"], "match": "*.py"}})
+
+    ops_file = tmp_path / "ops.json"
+    ops_file.write_text(json.dumps([
+        {"op": "edit", "path": str(target), "old": "x = 1", "new": "x = 2"},
+        {"op": "edit", "path": str(target), "old": "x = 2", "new": "x = 3"},
+    ]))
+
+    monkeypatch.chdir(tmp_path)
+    supertool.main([f"batch:@{ops_file}"])
+    assert supertool._DEFER_FORMATTERS is False
+    assert supertool._FORMAT_QUEUE == {}
