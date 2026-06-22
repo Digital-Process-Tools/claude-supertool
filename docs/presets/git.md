@@ -20,6 +20,7 @@ Git investigation and workflow ops. Replaces the 4-6 raw `git` calls you'd norma
 | `git-conflicts` | `git-conflicts` | List all UU files + every conflict block + abort hint |
 | `git-resolve` | `git-resolve:::SIDE:::PATH[,PATH...]` | Pick `ours`/`theirs`/`both` for one file, a comma-separated list, or `all` — stages and prints the continue command. `both` is a union: it strips the conflict markers and keeps both sides (ours then theirs), like git's `merge=union` driver — use it when both branches added different non-overlapping lines |
 | `git-commit` | `git-commit:::MSG[:::PATH...]` | Stage PATHs (or all staged if omitted) and commit with MSG — surfaces hook errors, shows HEAD before/after. Use `MSG=--no-edit` to reuse MERGE_MSG/CHERRY_PICK_HEAD during an in-progress merge or cherry-pick |
+| `git-push` | `git-push` | Push the current branch (sets upstream on first push) — remote SHA before/after with commits pushed, ahead/behind vs upstream, and the open MR/PR + pipeline status. For **updating** an already-open MR; use the `mr` op for push+create. Non-fast-forward gets a `pull --rebase` / `--force-with-lease` hint; server-side rejections (protected branch / hook) a distinct one — never auto-forced |
 
 ## Common workflows
 
@@ -45,6 +46,12 @@ One call gives you branch health + exactly what differs from base — no follow-
 ./supertool 'git-commit:::Merge master into feature/auth'
 ```
 
+**Update an MR that already exists:**
+```bash
+./supertool 'git-commit:::Fix the thing:::src/app/Thing.py' 'git-push'
+```
+`git-commit` shows HEAD before/after; `git-push` updates the remote and reports the open MR + the pipeline the push just triggered — no raw `git push` fallback.
+
 ## Configuration
 
 No project-specific config required. Two environment variables tune `git-investigate` behavior:
@@ -63,8 +70,8 @@ Set via the op's JSON config if you want project-wide defaults:
 }
 ```
 
-`git-status` tries `glab` then `gh` to surface the open MR/PR — skips gracefully if neither is installed.
+`git-status` and `git-push` try `glab` then `gh` to surface the open MR/PR — skip gracefully if neither is installed.
 
 ## Authoring notes
 
-Preset JSON: `presets/git.json`. Helper scripts: `presets/git/` — one Python file per op (`status.py`, `investigate.py`, `trail.py`, etc.). The `{path}` placeholder in `cmd` resolves to `presets/git/` at runtime.
+Preset JSON: `presets/git.json`. Helper scripts: `presets/git/` — one Python file per op (`status.py`, `investigate.py`, `trail.py`, etc.). The `{path}` placeholder in `cmd` resolves to `presets/git/` at runtime. Helpers shared across scripts (`_git`, `_first_error_line`, the glab→gh `query_open_mr` lookup) live in `presets/git/_git_common.py`; each script adds its own dir to `sys.path` then imports from it — named `_git_common` (not `_common`) to avoid colliding with `presets/claude-log/_common.py` when both load in the same test process.
