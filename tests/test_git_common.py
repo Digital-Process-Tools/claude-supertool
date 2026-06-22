@@ -1,0 +1,134 @@
+"""Unit tests for presets/git/_git_common.py — shared git helpers."""
+from __future__ import annotations
+
+import importlib.util
+import subprocess
+from pathlib import Path
+from unittest import mock
+
+
+PRESET = Path(__file__).parent.parent / "presets" / "git" / "_git_common.py"
+_spec = importlib.util.spec_from_file_location("git_common_mod", PRESET)
+assert _spec is not None and _spec.loader is not None
+common = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(common)
+
+
+def _proc(stdout: str = "", returncode: int = 0):
+    return mock.Mock(stdout=stdout, returncode=returncode, stderr="")
+
+
+# ── _first_error_line ────────────────────────────────────────────────────
+
+def test_first_error_line_picks_error_keyword() -> None:
+    text = "Running pre-commit\nok 12 files\nfatal: hook rejected\nbye"
+    assert common._first_error_line(text) == "fatal: hook rejected"
+
+
+def test_first_error_line_picks_emoji_marker() -> None:
+    assert "❌" in common._first_error_line("step 1\n❌ Push blocked\n")
+
+
+def test_first_error_line_picks_rejected_bracket() -> None:
+    text = "To origin\n ! [rejected] main -> main (non-fast-forward)\ndone"
+    assert "! [rejected]" in common._first_error_line(text)
+
+
+def test_first_error_line_falls_back_to_last_nonempty() -> None:
+    assert common._first_error_line("a\nb\n\n") == "b"
+
+
+def test_first_error_line_empty_input() -> None:
+    assert common._first_error_line("") == ""
+    assert common._first_error_line("\n\n") == ""
+
+
+# ── query_open_mr ────────────────────────────────────────────────────────
+
+def test_query_empty_branch_returns_none() -> None:
+    assert common.query_open_mr("") is None
+    assert common.query_open_mr("HEAD") is None
+
+
+def test_query_glab_match_returns_gitlab_fields() -> None:
+    fake_which = mock.Mock(side_effect=lambda c: "/usr/bin/glab" if c == "glab" else None)
+    fake_run = mock.Mock(return_value=_proc(
+        '[{"iid": 21816, "target_branch": "master", '
+        '"pipeline": {"status": "running"}}]'))
+    with mock.patch.object(common.shutil, "which", fake_which), \
+         mock.patch.object(common.subprocess, "run", fake_run):
+        mr = common.query_open_mr("feature/x")
+    assert mr == {"source": "gitlab", "iid": 21816,
+                  "target": "master", "pipeline": "running"}
+
+
+def test_query_glab_no_pipeline_yields_none_status() -> None:
+    fake_which = mock.Mock(side_effect=lambda c: "/usr/bin/glab" if c == "glab" else None)
+    fake_run = mock.Mock(return_value=_proc('[{"iid": 5, "target_branch": "main"}]'))
+    with mock.patch.object(common.shutil, "which", fake_which), \
+         mock.patch.object(common.subprocess, "run", fake_run):
+        mr = common.query_open_mr("feature/x")
+    assert mr is not None and mr["pipeline"] is None
+
+
+def test_query_gh_fallback_returns_github_fields() -> None:
+    fake_which = mock.Mock(side_effect=lambda c: "/usr/bin/gh" if c == "gh" else None)
+    fake_run = mock.Mock(return_value=_proc('[{"number": 172, "baseRefName": "main"}]'))
+    with mock.patch.object(common.shutil, "which", fake_which), \
+         mock.patch.object(common.subprocess, "run", fake_run):
+        mr = common.query_open_mr("feature/x")
+    assert mr == {"source": "github", "iid": 172,
+                  "target": "main", "pipeline": None}
+
+
+def test_query_no_tool_returns_none() -> None:
+    with mock.patch.object(common.shutil, "which", return_value=None):
+        assert common.query_open_mr("feature/x") is None
+
+
+def test_query_glab_empty_falls_through_to_gh() -> None:
+    fake_which = mock.Mock(side_effect=lambda c: f"/usr/bin/{c}" if c in ("glab", "gh") else None)
+    call_count = {"n": 0}
+
+    def fake_run(*_a, **_k):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return _proc("[]")
+        return _proc('[{"number": 9, "baseRefName": "dev"}]')
+
+    with mock.patch.object(common.shutil, "which", fake_which), \
+         mock.patch.object(common.subprocess, "run", side_effect=fake_run):
+        mr = common.query_open_mr("feature/x")
+    assert mr is not None and mr["source"] == "github" and mr["iid"] == 9
+
+
+def test_query_glab_timeout_falls_through() -> None:
+    fake_which = mock.Mock(side_effect=lambda c: f"/usr/bin/{c}" if c in ("glab", "gh") else None)
+    call_count = {"n": 0}
+
+    def fake_run(*_a, **_k):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise subprocess.TimeoutExpired(cmd="glab", timeout=5)
+        return _proc('[{"number": 42, "baseRefName": "main"}]')
+
+    with mock.patch.object(common.shutil, "which", fake_which), \
+         mock.patch.object(common.subprocess, "run", side_effect=fake_run):
+        mr = common.query_open_mr("feature/x")
+    assert mr is not None and mr["iid"] == 42
+
+
+def test_query_glab_malformed_json_falls_through() -> None:
+    fake_which = mock.Mock(side_effect=lambda c: f"/usr/bin/{c}" if c in ("glab", "gh") else None)
+    call_count = {"n": 0}
+
+    def fake_run(*_a, **_k):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return _proc("[not json")
+        return _proc('[{"number": 7, "baseRefName": "main"}]')
+
+    with mock.patch.object(common.shutil, "which", fake_which), \
+         mock.patch.object(common.subprocess, "run", side_effect=fake_run):
+        mr = common.query_open_mr("feature/x")
+    assert mr is not None and mr["iid"] == 7

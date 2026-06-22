@@ -61,6 +61,12 @@
       "timeout": 60,
       "description": "Commit MSG (stages PATHS) — HEAD before/after, hook errors surfaced. MSG=--no-edit reuses MERGE_MSG/CHERRY_PICK msg (merge or cherry-pick must be in progress)",
       "syntax": "git-commit:::MSG[:::PATH...]"
+    },
+    "git-push": {
+      "cmd": "{python} {path}git/push.py",
+      "timeout": 120,
+      "description": "Push current branch (sets upstream if missing) — remote before/after, ahead/behind, open MR/PR + pipeline. For updating an existing MR; use mr op for push+create",
+      "syntax": "git-push"
     }
   }
 }

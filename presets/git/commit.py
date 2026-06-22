@@ -15,78 +15,33 @@ Special MSG values:
 """
 from __future__ import annotations
 
-import json
 import os
-import shutil
-import subprocess
 import sys
+
+# Sibling import: runtime puts this dir on sys.path[0]; the test harness
+# loads scripts via importlib (no dir on path), so add it explicitly.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from _git_common import _first_error_line, _git, query_open_mr  # noqa: E402
 
 # triple-colon separator handled by supertool; we receive plain argv here.
 
 
-def _git(args: list[str], timeout: int = 30) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["git"] + args,
-        capture_output=True, text=True, timeout=timeout,
-    )
-
-
 def _existing_mr_for_branch(branch: str) -> str:
-    """Open MR/PR identifier for `branch`, or empty when none / no tool available.
+    """Open MR/PR identifier for `branch` (e.g. !42 / #7), or empty when none.
 
-    Tries glab first (GitLab), falls back to gh (GitHub). All failures swallowed —
-    this is advisory output for the post-commit hint, never blocking.
+    Thin formatter over the shared lookup — kept for the post-commit hint.
     """
-    if not branch or branch == "HEAD":
+    mr = query_open_mr(branch)
+    if not mr:
         return ""
-    if shutil.which("glab"):
-        try:
-            res = subprocess.run(
-                ["glab", "mr", "list", "--source-branch", branch, "--state", "opened",
-                 "--output", "json"],
-                capture_output=True, text=True, timeout=5,
-            )
-            if res.returncode == 0 and res.stdout.strip().startswith("["):
-                mrs = json.loads(res.stdout)
-                if mrs:
-                    iid = mrs[0].get("iid") or mrs[0].get("number") or "?"
-                    return f"!{iid}"
-        except (subprocess.TimeoutExpired, OSError, json.JSONDecodeError):
-            pass
-    if shutil.which("gh"):
-        try:
-            res = subprocess.run(
-                ["gh", "pr", "list", "--head", branch, "--state", "open",
-                 "--json", "number", "--limit", "1"],
-                capture_output=True, text=True, timeout=5,
-            )
-            if res.returncode == 0 and res.stdout.strip().startswith("["):
-                prs = json.loads(res.stdout)
-                if prs:
-                    return f"#{prs[0].get('number', '?')}"
-        except (subprocess.TimeoutExpired, OSError, json.JSONDecodeError):
-            pass
-    return ""
+    prefix = "!" if mr["source"] == "gitlab" else "#"
+    return f"{prefix}{mr['iid']}"
 
 
 def _head_sha() -> str:
     r = _git(["rev-parse", "--short", "HEAD"])
     return r.stdout.strip() if r.returncode == 0 else ""
-
-
-def _first_error_line(text: str) -> str:
-    for line in text.splitlines():
-        s = line.strip()
-        if not s:
-            continue
-        low = s.lower()
-        if "error" in low or "fatal" in low or "aborted" in low or "failed" in low or "❌" in s:
-            return s
-    # Fallback to last non-empty line
-    for line in reversed(text.splitlines()):
-        if line.strip():
-            return line.strip()
-    return ""
 
 
 def main() -> int:
