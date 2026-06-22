@@ -298,6 +298,24 @@ class TestResolveCustomOp:
         assert "200" in result
         assert "verbose" in result
 
+    def test_nonscalar_config_value_passed_as_json(self) -> None:
+        """List/dict config values are JSON-encoded (so presets can json.loads them),
+        not str()'d into a Python repr that json.loads can't parse."""
+        import json as _json
+        supertool._CONFIG = {
+            "ops": {"tool": {
+                "cmd": "env",
+                "job_patterns": [{"job": "rector", "patterns": ["applied_rectors"]}],
+            }}
+        }
+        result = supertool._resolve_custom_op("tool", ["tool", "x"])
+        assert result is not None
+        line = next(ln for ln in result.splitlines() if ln.startswith("SUPERTOOL_JOB_PATTERNS="))
+        payload = line.split("=", 1)[1]
+        # Must be valid JSON, not a Python repr with single quotes
+        parsed = _json.loads(payload)
+        assert parsed == [{"job": "rector", "patterns": ["applied_rectors"]}]
+
     def test_reserved_keys_not_in_env(self) -> None:
         """Reserved keys (cmd, timeout, description, etc.) are NOT passed as env vars."""
         supertool._CONFIG = {

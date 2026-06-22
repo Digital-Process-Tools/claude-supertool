@@ -123,3 +123,70 @@ def test_default_mode_runs_smart_filter(monkeypatch, capsys) -> None:
     assert rc == 0
     assert "Raw lines" not in out
     assert "Log: 3 lines total" in out
+
+
+def test_grep_matches_with_context(monkeypatch, capsys) -> None:
+    """grep mode returns matching lines plus surrounding context."""
+    lines = [f"line {i}" for i in range(20)] + [
+        "##[error]Process completed with exit code 1",
+    ] + [f"trail {i}" for i in range(20)]
+    rc = _run_main(monkeypatch, ["job.py", "123", "grep", "exit code"], lines)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "grep /exit code/ — 1 matching lines" in out
+    assert "exit code 1" in out
+    assert "Raw lines" not in out
+
+
+def test_grep_no_match_falls_back_to_tail(monkeypatch, capsys) -> None:
+    """No match never returns empty — names the pattern and shows a tail."""
+    lines = [f"line {i}" for i in range(100)]
+    rc = _run_main(monkeypatch, ["job.py", "123", "grep", "zzz_nonexistent"], lines)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "No lines match /zzz_nonexistent/ (searched 100 lines)" in out
+    assert "Showing last" in out
+    assert "fallback" in out
+
+
+def test_grep_bad_regex_falls_back_to_literal(monkeypatch, capsys) -> None:
+    """An invalid regex is matched literally instead of crashing."""
+    lines = ["before", "value[0] = 1", "after"]
+    rc = _run_main(monkeypatch, ["job.py", "123", "grep", "value["], lines)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "literal — regex failed to compile" in out
+    assert "value[0] = 1" in out
+
+
+def test_grep_missing_pattern_returns_error(monkeypatch, capsys) -> None:
+    """grep with no pattern is a usage error."""
+    rc = _run_main(monkeypatch, ["job.py", "123", "grep"], ["x"])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "usage: gh-job:JOB_ID:grep:PATTERN" in out
+
+
+def test_select_job_patterns_matches_by_name() -> None:
+    table = [{"job": "build", "patterns": ["##[error]"], "resolution": "rerun:{id}"}]
+    patterns, resolution = job._select_job_patterns("build", table, ["DEFAULT"])
+    assert patterns == ["##[error]"]
+    assert resolution == "rerun:{id}"
+
+
+def test_parse_job_patterns_malformed_returns_empty() -> None:
+    assert job._parse_job_patterns("not json") == []
+    assert job._parse_job_patterns("") == []
+
+
+def test_job_patterns_shows_resolution_with_interpolated_id(monkeypatch, capsys) -> None:
+    """A matched job prints its resolution op with {id} replaced by the job id."""
+    monkeypatch.setenv("SUPERTOOL_JOB_PATTERNS", json.dumps([
+        {"job": "test-job", "patterns": ["BOOM"], "resolution": "rerun:{id}"}
+    ]))
+    lines = ["noise", "BOOM goes the build", "noise"]
+    rc = _run_main(monkeypatch, ["job.py", "555"], lines)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "BOOM goes the build" in out
+    assert "Resolve:  ./supertool 'rerun:555'" in out

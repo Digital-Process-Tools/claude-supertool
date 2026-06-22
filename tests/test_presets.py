@@ -100,6 +100,24 @@ class TestMergePresets:
         supertool._merge_presets(config, str(tmp_path))
         assert config["ops"]["tool"]["cmd"] == "echo FROM_PROJECT"
 
+    def test_project_op_deep_merges_keys_with_preset(self, tmp_path: Path) -> None:
+        """A project override adding one key keeps the preset's other keys
+        (e.g. add job_patterns without restating cmd)."""
+        presets_dir = tmp_path / "presets"
+        presets_dir.mkdir()
+        (presets_dir / "test.json").write_text(json.dumps({
+            "ops": {"gl-job": {"cmd": "echo PRESET", "error_patterns": "ERROR"}}
+        }))
+        config: dict = {
+            "presets": ["test"],
+            "ops": {"gl-job": {"job_patterns": [{"job": "rector", "patterns": ["x"]}]}}
+        }
+        supertool._merge_presets(config, str(tmp_path))
+        gl = config["ops"]["gl-job"]
+        assert gl["cmd"] == "echo PRESET"            # preset key preserved
+        assert gl["error_patterns"] == "ERROR"        # preset key preserved
+        assert gl["job_patterns"] == [{"job": "rector", "patterns": ["x"]}]  # added
+
     def test_multiple_presets_merged(self, tmp_path: Path) -> None:
         """Multiple presets merge their ops together."""
         presets_dir = tmp_path / "presets"
