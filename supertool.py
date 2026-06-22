@@ -106,7 +106,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-VERSION = "0.15.0"
+VERSION = "0.15.1"
 
 
 def _fwd(p: str) -> str:
@@ -10999,53 +10999,74 @@ def _dispatch_impl(arg: str) -> str:
                                     body = f"ERROR: {_snap_err}\n"
                                     batch_ops = []
                             results: List[str] = []
-                            for _item in batch_ops:
-                                if not isinstance(_item, dict):
-                                    err = f"ERROR: each batch op must be a JSON object, got {type(_item).__name__}\n"
-                                    results.append(err)
-                                    if not continue_on_error:
-                                        break
-                                    continue
-                                _sub_op = _item.get("op", "")
-                                if not _sub_op:
-                                    err = "ERROR: batch op missing 'op' field\n"
-                                    results.append(err)
-                                    if not continue_on_error:
-                                        break
-                                    continue
-                                # Build the arg string from the op + its fields,
-                                # using the @file→parts machinery for mutating ops
-                                # (preserves validators) and plain dispatch for others.
-                                if _at_file_fields(_sub_op):
-                                    try:
-                                        _sub_parts, _sub_replace_all = _at_file_to_parts(_sub_op, _item)
-                                    except ValueError as _ve:
-                                        err = f"ERROR: {_ve}\n"
+                            # A batch is one logical change: defer per-op formatters
+                            # (no_unused_imports etc.) so an import added by op N survives
+                            # until op N+1's usage lands. main()'s len(argv)>1 guard never
+                            # fires for a lone batch:@file arg, so own the defer locally —
+                            # unless already inside a deferred multi-arg call, where main()
+                            # owns the queue. Issue #291.
+                            global _DEFER_FORMATTERS, _FORMAT_QUEUE
+                            global _VALIDATOR_DEFER_QUEUE, _VALIDATOR_DEFER_SEEN
+                            _batch_owns_defer = not _DEFER_FORMATTERS
+                            if _batch_owns_defer:
+                                _DEFER_FORMATTERS = True
+                                _FORMAT_QUEUE = {}
+                                _VALIDATOR_DEFER_QUEUE = []
+                                _VALIDATOR_DEFER_SEEN = set()
+                            try:
+                                for _item in batch_ops:
+                                    if not isinstance(_item, dict):
+                                        err = f"ERROR: each batch op must be a JSON object, got {type(_item).__name__}\n"
                                         results.append(err)
                                         if not continue_on_error:
                                             break
                                         continue
-                                    # replace_all: true on an edit op → promote to replace
-                                    if _sub_replace_all and _sub_op == "edit":
-                                        _sub_parts[0] = "replace"
-                                    # Reconstruct a triple-colon arg string so dispatch
-                                    # parses it correctly (handles colons in content).
-                                    _sub_arg = ":::".join(_sub_parts)
-                                else:
-                                    # Read-only op: build plain colon arg from known fields.
-                                    # For unknown ops, pass what we have and let dispatch error.
-                                    _fields = [str(_item[k]) for k in sorted(_item) if k != "op"]
-                                    _sub_arg = ":".join([_sub_op] + _fields) if _fields else _sub_op
-                                _sub_result = dispatch(_sub_arg)
-                                results.append(_sub_result)
-                                if not continue_on_error and _sub_result.split("\n")[1:2] and (
-                                    _sub_result.split("\n")[1].startswith("ERROR")
-                                ):
-                                    break
+                                    _sub_op = _item.get("op", "")
+                                    if not _sub_op:
+                                        err = "ERROR: batch op missing 'op' field\n"
+                                        results.append(err)
+                                        if not continue_on_error:
+                                            break
+                                        continue
+                                    # Build the arg string from the op + its fields,
+                                    # using the @file→parts machinery for mutating ops
+                                    # (preserves validators) and plain dispatch for others.
+                                    if _at_file_fields(_sub_op):
+                                        try:
+                                            _sub_parts, _sub_replace_all = _at_file_to_parts(_sub_op, _item)
+                                        except ValueError as _ve:
+                                            err = f"ERROR: {_ve}\n"
+                                            results.append(err)
+                                            if not continue_on_error:
+                                                break
+                                            continue
+                                        # replace_all: true on an edit op → promote to replace
+                                        if _sub_replace_all and _sub_op == "edit":
+                                            _sub_parts[0] = "replace"
+                                        # Reconstruct a triple-colon arg string so dispatch
+                                        # parses it correctly (handles colons in content).
+                                        _sub_arg = ":::".join(_sub_parts)
+                                    else:
+                                        # Read-only op: build plain colon arg from known fields.
+                                        # For unknown ops, pass what we have and let dispatch error.
+                                        _fields = [str(_item[k]) for k in sorted(_item) if k != "op"]
+                                        _sub_arg = ":".join([_sub_op] + _fields) if _fields else _sub_op
+                                    _sub_result = dispatch(_sub_arg)
+                                    results.append(_sub_result)
+                                    if not continue_on_error and _sub_result.split("\n")[1:2] and (
+                                        _sub_result.split("\n")[1].startswith("ERROR")
+                                    ):
+                                        break
+                            finally:
+                                if _batch_owns_defer:
+                                    _DEFER_FORMATTERS = False
                             # Only override `body` with joined results when no
                             # upstream error fired (cap rejection, snapshot reorder).
                             if not _snap_err and not _cap_exceeded:
                                 body = "".join(results)
+                                if _batch_owns_defer:
+                                    body += _drain_format_queue()
+                                    body += _drain_validator_queue()
         elif op == "validate":
             # verbose flag: literal "verbose" token anywhere after op name.
             # Forms: validate:PATH:verbose  or  validate:PATH:tool1,tool2:verbose
