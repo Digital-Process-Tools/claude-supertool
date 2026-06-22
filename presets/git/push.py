@@ -81,10 +81,15 @@ def main() -> int:
         err = _first_error_line(combined)
         if err:
             print(f"First error: {err}")
-        if "non-fast-forward" in combined or "rejected" in combined.lower():
+        low = combined.lower()
+        if "non-fast-forward" in low:
             print("Hint: remote has commits you lack — `git pull --rebase` then "
                   "retry, or force only if intentional: "
                   "`git push --force-with-lease`")
+        elif "rejected" in low or "declined" in low:
+            print("Hint: rejected by a server-side rule (protected branch / hook), "
+                  "not a divergence — check branch protection or the hook output "
+                  "above. A rebase will not help.")
         print("\n--- git output ---")
         print(combined.strip() or "(no output)")
         return result.returncode
@@ -100,8 +105,12 @@ def main() -> int:
         print(f"Remote {remote_before} → {remote_after} ({n} commit(s))")
     elif not remote_before and remote_after:
         print(f"Remote now at {remote_after} (branch created)")
-    else:
+    elif remote_before and remote_after and remote_before == remote_after:
         print("Already up to date — nothing to push")
+    else:
+        # Push succeeded but the remote-tracking SHA isn't locally resolvable
+        # (shallow clone, odd remote layout). Don't claim up-to-date.
+        print("Pushed — remote ref not locally resolvable for a before/after diff")
 
     # Ahead/behind vs upstream after the push (should be in sync on success)
     ab = _git(["rev-list", "--left-right", "--count", "HEAD...@{upstream}"])

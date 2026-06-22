@@ -102,6 +102,59 @@ def test_main_rejected_push_surfaces_hint(capsys) -> None:
     assert "pull --rebase" in out
 
 
+def test_main_protected_branch_rejection_no_rebase_hint(capsys) -> None:
+    """Server-side rejection (protected branch) must NOT advise pull --rebase."""
+    rejected = ("To origin\n ! [remote rejected] main -> main "
+                "(protected branch hook declined)\nerror: failed to push some refs")
+
+    def fake_git(args, timeout=30):
+        if args[:2] == ["rev-parse", "--git-dir"]:
+            return _proc(".git\n", 0)
+        if args[:2] == ["rev-parse", "--abbrev-ref"] and "@{upstream}" not in args:
+            return _proc("main\n", 0)
+        if args[0] == "rev-parse" and "@{upstream}" in args:
+            return _proc("origin/main\n", 0)
+        if args[0] == "rev-parse" and args[1] == "--short":
+            return _proc("aaa1111\n", 0)
+        if args[0] == "push":
+            return _proc("", 1, rejected)
+        return _proc("", 0)
+
+    with mock.patch.object(push, "_git", side_effect=fake_git):
+        rc = push.main()
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "PUSH REJECTED" in out
+    assert "server-side rule" in out
+    assert "pull --rebase" not in out
+    assert "force-with-lease" not in out
+
+
+def test_main_up_to_date_when_remote_unchanged(capsys) -> None:
+    """Push succeeds but remote SHA is unchanged → 'Already up to date'."""
+    def fake_git(args, timeout=30):
+        if args[:2] == ["rev-parse", "--git-dir"]:
+            return _proc(".git\n", 0)
+        if args[:2] == ["rev-parse", "--abbrev-ref"] and "@{upstream}" not in args:
+            return _proc("feat\n", 0)
+        if args[0] == "rev-parse" and "@{upstream}" in args:
+            return _proc("origin/feat\n", 0)
+        if args[0] == "rev-parse" and args[1] == "--short":
+            return _proc("aaa1111\n", 0)  # same before and after
+        if args[0] == "push":
+            return _proc("", 0)
+        if args[:2] == ["rev-list", "--left-right"]:
+            return _proc("0\t0\n", 0)
+        return _proc("", 0)
+
+    with mock.patch.object(push, "_git", side_effect=fake_git), \
+         mock.patch.object(push, "query_open_mr", return_value=None):
+        rc = push.main()
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Already up to date — nothing to push" in out
+
+
 def test_main_success_receipt_with_mr(capsys) -> None:
     """Happy path: upstream set, remote advances, MR line appended."""
     shas = iter(["aaa1111", "bbb2222"])  # before, after
