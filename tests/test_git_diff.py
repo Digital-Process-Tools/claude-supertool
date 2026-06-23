@@ -125,6 +125,21 @@ def test_added_line_starting_with_plusplus_is_scanned(tmp_path: Path) -> None:
     assert "var_dump" in out
 
 
+def test_ext_filter_on_red_flags_extra(tmp_path: Path) -> None:
+    """A red_flags_extra entry with an `ext` filter fires only on that extension."""
+    _init_repo(tmp_path)
+    _write(tmp_path, "app.js", "const x = 1;\nbreakpoint();\n")
+    _write(tmp_path, "app.py", "x = 1\nbreakpoint()\n")
+    subprocess.run(["git", "add", "-A"], check=True, cwd=tmp_path)
+
+    flags = json.dumps([{"pattern": r"\bbreakpoint\s*\(", "ext": ".py", "label": "bp"}])
+    out = _run(tmp_path, "staged", env_extra={"SUPERTOOL_RED_FLAGS_EXTRA": flags})
+
+    # Red flags print "path:line"; the file list prints "status  path" (no colon).
+    assert "app.py:2" in out   # .py matches the ext filter -> flagged
+    assert "app.js:" not in out  # .js excluded by the ext filter
+
+
 def test_not_a_git_repo(tmp_path: Path) -> None:
     res = subprocess.run(
         [sys.executable, str(DIFF), "staged"],
