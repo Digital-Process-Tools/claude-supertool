@@ -227,6 +227,11 @@ def _path_hints(changed: list[tuple[str, str]], rules: list[dict]) -> list[str]:
 
 
 def main() -> int:
+    # Windows stdout defaults to cp1252, which can't encode the ⚠/✓ glyphs we
+    # print — force UTF-8 so the op doesn't crash with UnicodeEncodeError on a
+    # non-UTF-8 console.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
     arg1 = sys.argv[1] if len(sys.argv) > 1 else ""
     arg2 = sys.argv[2] if len(sys.argv) > 2 else ""
 
