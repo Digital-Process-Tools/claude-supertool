@@ -32,6 +32,27 @@ import sys
 MAX_FILES = 60
 MAX_FLAGS = 40
 
+# ASCII fallbacks for the status glyphs, keyed by the rich glyph. Presets run as
+# standalone subprocesses and can't import supertool's helpers, so this mirrors
+# supertool.mark() locally. Honoured when SUPERTOOL_PLAIN is set (by the --plain
+# flag, which exports it, or directly) — see issue #308.
+_PLAIN_MARKERS = {
+    "⚠": "[WARN]", "✓": "[OK]", "✗": "[FAIL]", "ℹ": "[INFO]",
+    # Decorative separators — folded too so plain output is fully ASCII.
+    "→": "->", "—": "--", "…": "...",
+}
+
+
+def _plain() -> bool:
+    return os.environ.get("SUPERTOOL_PLAIN", "").strip().lower() in (
+        "1", "true", "yes", "on"
+    )
+
+
+def _mark(glyph: str) -> str:
+    """Rich glyph, or its stable ASCII marker in plain mode. Unknown → unchanged."""
+    return _PLAIN_MARKERS.get(glyph, glyph) if _plain() else glyph
+
 # Generic, universal red flags — debug leftovers + conflict markers. Project
 # config (red_flags_extra) adds language/house-rule patterns on top.
 DEFAULT_RED_FLAGS = [
@@ -156,7 +177,7 @@ def _scan_red_flags(diff_args: list[str], patterns: list[dict]) -> list[str]:
                 if ext and not cur_path.endswith(ext):
                     continue
                 if rx.search(content):
-                    hits.append(f"{cur_path}:{new_line}  {label}  →  {content.strip()[:80]}")
+                    hits.append(f"{cur_path}:{new_line}  {label}  {_mark('→')}  {content.strip()[:80]}")
             new_line += 1
     return hits
 
@@ -173,7 +194,7 @@ def _check_forbidden(paths: list[str], rules: list[dict]) -> list[str]:
             except re.error:
                 hit = pat in p
             if hit:
-                out.append(f"{p}  —  {rule.get('reason', 'forbidden path')}")
+                out.append(f"{p}  {_mark('—')}  {rule.get('reason', 'forbidden path')}")
                 break
     return out
 
@@ -204,7 +225,7 @@ def _check_test_pairing(changed: list[tuple[str, str]], rules: list[dict]) -> li
                 continue
             on_disk = os.path.exists(expected)
             if expected not in changed_set and not on_disk:
-                out.append(f"{path}  —  no test ({expected})")
+                out.append(f"{path}  {_mark('—')}  no test ({expected})")
             break
     return out
 
@@ -229,9 +250,15 @@ def _path_hints(changed: list[tuple[str, str]], rules: list[dict]) -> list[str]:
 def main() -> int:
     # Windows stdout defaults to cp1252, which can't encode the ⚠/✓ glyphs we
     # print — force UTF-8 so the op doesn't crash with UnicodeEncodeError on a
-    # non-UTF-8 console.
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
+    # non-UTF-8 console. Cheap insurance even in plain mode (a stray glyph in a
+    # diffed line shouldn't crash the process). See issue #308.
+    for _stream in (sys.stdout, sys.stderr):
+        _reconfigure = getattr(_stream, "reconfigure", None)
+        if _reconfigure is not None:
+            try:
+                _reconfigure(encoding="utf-8")
+            except (ValueError, OSError):
+                pass
     arg1 = sys.argv[1] if len(sys.argv) > 1 else ""
     arg2 = sys.argv[2] if len(sys.argv) > 2 else ""
 
@@ -282,7 +309,7 @@ def main() -> int:
             print(f"  {r}")
             shown += 1
         if shown >= MAX_FILES:
-            print(f"  … truncated at {MAX_FILES} files")
+            print(f"  {_mark('…')} truncated at {MAX_FILES} files")
             break
 
     # Policy from .supertool.json (env), generic defaults otherwise
@@ -295,21 +322,21 @@ def main() -> int:
 
     forbidden_hits = _check_forbidden(paths, forbidden)
     if forbidden_hits:
-        print(f"\n## ⚠ Forbidden paths ({len(forbidden_hits)})")
+        print(f"\n## {_mark('⚠')} Forbidden paths ({len(forbidden_hits)})")
         for h in forbidden_hits:
             print(f"  {h}")
 
     flag_hits = _scan_red_flags(diff_args, red_flags)
     if flag_hits:
-        print(f"\n## ⚠ Red flags in added lines ({len(flag_hits)})")
+        print(f"\n## {_mark('⚠')} Red flags in added lines ({len(flag_hits)})")
         for h in flag_hits[:MAX_FLAGS]:
             print(f"  {h}")
         if len(flag_hits) > MAX_FLAGS:
-            print(f"  … {len(flag_hits) - MAX_FLAGS} more")
+            print(f"  {_mark('…')} {len(flag_hits) - MAX_FLAGS} more")
 
     pairing_hits = _check_test_pairing(changed, pairing)
     if pairing_hits:
-        print(f"\n## ⚠ New source without a test ({len(pairing_hits)})")
+        print(f"\n## {_mark('⚠')} New source without a test ({len(pairing_hits)})")
         for h in pairing_hits:
             print(f"  {h}")
 
@@ -320,7 +347,7 @@ def main() -> int:
             print(f"  {m}")
 
     if not (forbidden_hits or flag_hits or pairing_hits):
-        print("\n✓ No red flags, forbidden paths, or missing tests.")
+        print(f"\n{_mark('✓')} No red flags, forbidden paths, or missing tests.")
 
     return 0
 

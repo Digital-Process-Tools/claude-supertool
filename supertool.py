@@ -428,6 +428,64 @@ def _notifier_debug_log_path() -> str:
     return os.environ.get("SUPERTOOL_NOTIFIER_DEBUG_LOG") or "/tmp/supertool-notifier-debug.log"
 
 
+def plain_mode() -> bool:
+    """True when ASCII-only output is requested via --plain or SUPERTOOL_PLAIN.
+
+    Hooks, ``grep``, and CI parse op output with no UTF-8 / locale guarantees.
+    The ``⚠``/``✓`` glyphs are nice UX for the model but a liability downstream:
+    a C/POSIX-locale ``grep`` won't reliably match a multibyte glyph, and a
+    cp1252 console crashes on it. Plain mode swaps every glyph for an ASCII
+    marker (``[WARN]``/``[OK]``/``[FAIL]``) so machine consumers parse reliably.
+
+    Set by the ``--plain`` CLI flag (which exports ``SUPERTOOL_PLAIN=1`` so it
+    reaches preset subprocesses too) or directly via ``SUPERTOOL_PLAIN=1``.
+    """
+    return os.environ.get("SUPERTOOL_PLAIN", "").strip().lower() in (
+        "1", "true", "yes", "on"
+    )
+
+
+# Glyph → ASCII marker map. Keys are the rich-mode glyphs; values the ASCII
+# fallback emitted in plain mode. Centralised so every call site routes through
+# mark() rather than hard-coding a glyph and a separate plain branch.
+_PLAIN_MARKERS = {
+    "⚠": "[WARN]",  # ⚠
+    "✓": "[OK]",    # ✓
+    "✗": "[FAIL]",  # ✗
+    "ℹ": "[INFO]",  # ℹ
+}
+
+
+def mark(glyph: str) -> str:
+    """Return ``glyph`` in rich mode, or its stable ASCII marker in plain mode.
+
+    Unknown glyphs pass through unchanged so callers can't silently emit a
+    non-ASCII character that plain mode was supposed to strip.
+    """
+    if plain_mode():
+        return _PLAIN_MARKERS.get(glyph, glyph)
+    return glyph
+
+
+def _reconfigure_stdout_utf8() -> None:
+    """Force stdout/stderr to UTF-8 so ops never crash on a non-UTF-8 console.
+
+    Windows defaults stdout to cp1252, which can't encode the glyphs ops print
+    and raises ``UnicodeEncodeError`` (returncode 1) — caught in CI on git-diff.
+    This is cheap insurance even when plain mode is on (a stray glyph in user
+    content shouldn't crash the process). No-op on Pythons / streams without
+    ``reconfigure`` (< 3.7 or wrapped streams).
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8")
+        except (ValueError, OSError):
+            pass
+
+
 def _notifier_log(msg: str) -> None:
     """Append a timestamped line to the notifier debug log when enabled. Silent otherwise."""
     if not _notifier_debug_enabled():
@@ -6506,7 +6564,7 @@ def _op_vim_impl(path: str, script: str) -> str:
                 content = content[:insert_pos] + out + content[insert_pos:]
                 cursor = insert_pos
                 last_change = {"verb": ":!", "count": count, "arg": arg}
-                log.append(f"  {i}. :!{cmd} ({len(out)} chars inserted) ⚠ SHELL EXECUTION (cmd ran with shell=True, no sanitization)")
+                log.append(f"  {i}. :!{cmd} ({len(out)} chars inserted) {mark('⚠')} SHELL EXECUTION (cmd ran with shell=True, no sanitization)")
             else:
                 # ranged :N!cmd / :%!cmd — pipe selected lines, replace with stdout
                 def _vim_resolve_ex(addr: str) -> int:
@@ -6564,7 +6622,7 @@ def _op_vim_impl(path: str, script: str) -> str:
                 log.append(
                     f"  {i}. :{range_spec}!{cmd} "
                     f"(replaced {line_b - line_a + 1} lines -> {out.count(chr(10))} lines)"
-                    f" ⚠ SHELL EXECUTION (cmd ran with shell=True, no sanitization)"
+                    f" {mark('⚠')} SHELL EXECUTION (cmd ran with shell=True, no sanitization)"
                 )
 
         # --- ex delete: :%d, :Nd, :N,Md, :.d, :$d, :.,$d, :g/PAT/d, :v/PAT/d ---
@@ -8413,7 +8471,7 @@ def op_ops(compact: bool = False) -> str:
     # is complete.
     if compact and len(body.encode("utf-8")) > _HOOK_OUTPUT_CAP_BYTES:
         warning = (
-            f"> ⚠ Output is {len(body.encode('utf-8'))} bytes, exceeds the "
+            f"> {mark('⚠')} Output is {len(body.encode('utf-8'))} bytes, exceeds the "
             f"~{_HOOK_OUTPUT_CAP_BYTES}-byte SessionStart hook cap. The tail "
             f"of this listing will be truncated — ops below the cut-off are "
             f"hidden. Run `./supertool 'ops'` to see the full listing.\n\n"
@@ -8959,7 +9017,7 @@ def _validator_render_diff(before: Optional[Dict[str, Any]], after: Dict[str, An
             d = av - bv
             metric_parts.append(f"{k} {bv}\u2192{av} ({'+' if d > 0 else ''}{d})")
         if metric_parts:
-            marker = "\u2713" if a_ok else "\u2717"
+            marker = mark("\u2713") if a_ok else mark("\u2717")
             return [f"{tool:12s}: {', '.join(metric_parts)} {marker}  {'':<11}  {time_col:>5}"]
         # Truly unchanged — fold the most relevant absolute metric into the row.
         if a_ok and a_metrics:
@@ -8987,7 +9045,7 @@ def _validator_render_diff(before: Optional[Dict[str, Any]], after: Dict[str, An
             if len(after.get("errors") or []) > 5:
                 out.append(f"  ... +{len(after['errors']) - 5} more")
         return out
-    marker = "✓" if a_ok else ("⚠" if delta < 0 else "✗")
+    marker = mark("✓") if a_ok else (mark("⚠") if delta < 0 else mark("✗"))
     arrow = f"{b_count} → {a_count}"
     sign = f"({'+' if delta >= 0 else ''}{delta})"
     state_col = f"{sign} {marker}"
@@ -9275,7 +9333,7 @@ def _advise_new_test(op: str, path: str, pre_existed: bool) -> str:
     target = ""
     if r.stderr.strip():
         target = r.stderr.strip().splitlines()[-1]
-    msg = "ℹ new class without test"
+    msg = f"{mark('ℹ')} new class without test"
     if target:
         msg += f" — consider {target}"
     return "\n[advice]\n" + msg + "\n"
@@ -9422,7 +9480,7 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
             if not spec.get("rollback_on_fail"):
                 continue
             for line in diff_lines:
-                if line.lstrip().startswith(name) and "✗" in line:
+                if line.lstrip().startswith(name) and (mark("✗") in line):
                     try:
                         with open(path, "wb") as f:
                             f.write(pre_content)
@@ -11855,9 +11913,19 @@ def _mcp_call(server_name: str, tool: str, args: dict) -> Optional[dict]:
 
 
 def main(argv: List[str]) -> int:
+    # Cheap insurance: a stray glyph in user content must never crash the
+    # process on a non-UTF-8 console (Windows cp1252). Runs even in plain mode.
+    _reconfigure_stdout_utf8()
+
+    # --plain consumes the flag and exports SUPERTOOL_PLAIN=1 so preset
+    # subprocesses (run via {python} {path}*.py) inherit it through the env.
+    if "--plain" in argv:
+        argv = [a for a in argv if a != "--plain"]
+        os.environ["SUPERTOOL_PLAIN"] = "1"
+
     if not argv:
         sys.stderr.write(
-            "Usage: supertool op:args [op:args ...]\n"
+            "Usage: supertool [--plain] op:args [op:args ...]\n"
             "       supertool 'read:file.py' 'grep:foo:src/:20' 'glob:**/*.md'\n"
         )
         return 1
