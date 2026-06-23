@@ -49,10 +49,15 @@ def test_first_error_line_skips_green_success_banner() -> None:
     assert common._first_error_line(text) == "error: failed to push some refs"
 
 
-def test_first_error_line_all_success_returns_empty() -> None:
-    # A hook fatal whose message is 'pushed successfully' is success noise.
-    assert common._first_error_line(
-        "Fatal: Uncaught RuntimeException: pushed successfully.") == ""
+def test_first_error_line_pure_success_returns_empty() -> None:
+    assert common._first_error_line("✅ format done. 0 errors.") == ""
+
+
+def test_first_error_line_hard_error_wins_over_success_marker() -> None:
+    # A line carrying a hard error keyword is surfaced even if it also has a
+    # success phrase — suppressing a real error is the worse failure.
+    line = "Fatal: Uncaught RuntimeException: pushed successfully."
+    assert common._first_error_line(line) == line
 
 
 def test_looks_like_success_markers() -> None:

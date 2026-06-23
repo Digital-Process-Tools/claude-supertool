@@ -106,9 +106,9 @@ def test_main_non_ff_rebase_clean_pushes(capsys) -> None:
             return _proc("", 0)
         if args[:2] == ["log", "--format=%h %an: %s"]:
             return _proc("bbb2222 cj.adams: fix wallet rounding\n", 0)
-        if args[:2] == ["rev-list", "--count"] and "@{upstream}..HEAD" in args:
+        if args[:2] == ["rev-list", "--count"] and "origin/feat..HEAD" in args:
             return _proc("1\n", 0)
-        if args == ["rebase"]:
+        if args[:2] == ["rebase", "origin/feat"]:
             return _proc("Successfully rebased\n", 0)
         if args[0] == "push":
             return next(pushes)
@@ -151,9 +151,9 @@ def test_main_non_ff_rebase_conflict_leaves_paused_and_points_to_git_conflicts(c
             return _proc("", 0)
         if args[:2] == ["log", "--format=%h %an: %s"]:
             return _proc("ddd4444 cj.adams: refactor wallet\n", 0)
-        if args[:2] == ["rev-list", "--count"] and "@{upstream}..HEAD" in args:
+        if args[:2] == ["rev-list", "--count"] and "origin/feat..HEAD" in args:
             return _proc("2\n", 0)
-        if args == ["rebase"]:
+        if args[:2] == ["rebase", "origin/feat"]:
             return _proc("", 1, "CONFLICT (content): Merge conflict in src/foo.php")
         if args[:2] == ["diff", "--name-only"]:
             return _proc("src/foo.php\n", 0)
@@ -290,11 +290,10 @@ def test_first_error_line_skips_green_success_line() -> None:
         "error: failed to push some refs to 'origin'")
 
 
-def test_first_error_line_ignores_pushed_successfully_fatal() -> None:
-    # A hook stack trace whose message ends 'pushed successfully' is a
-    # success notice, not the failure cause — never surface it.
+def test_first_error_line_surfaces_fatal_despite_success_phrase() -> None:
+    # Hard error keyword wins over a success phrase — don't hide a real fatal.
     text = "Fatal error: Uncaught RuntimeException: branch pushed successfully."
-    assert push._first_error_line(text) == ""
+    assert push._first_error_line(text) == text
 
 
 # ── hook amended HEAD + pushed, exited non-zero (issue #297) ─────────────
@@ -498,6 +497,149 @@ def test_advisories_autowatch_flag_spawns(capsys) -> None:
     sp.assert_called_once_with("gitlab-mr", "42")
     assert "Watching →" in out
     assert "Watch pipeline" not in out
+
+
+def test_main_non_ff_fetch_failure_rejects_not_false_clean(capsys) -> None:
+    """Non-ff, but the fetch fails → REJECTED with the real cause, no false clean."""
+    rejected = ("To origin\n ! [rejected] feat -> feat (non-fast-forward)\n"
+                "error: failed to push some refs")
+
+    def fake_git(args, timeout=30):
+        if args[:2] == ["rev-parse", "--git-dir"]:
+            return _proc(".git\n", 0)
+        if args[:2] == ["rev-parse", "--abbrev-ref"] and "@{upstream}" not in args:
+            return _proc("feat\n", 0)
+        if args[0] == "rev-parse" and "@{upstream}" in args:
+            return _proc("origin/feat\n", 0)
+        if args[0] == "rev-parse" and args[1] == "--short":
+            return _proc("aaa1111\n", 0)
+        if args[:2] == ["rev-parse", "HEAD"]:
+            return _proc("localhead000\n", 0)
+        if args[0] == "ls-remote":
+            return _proc("remotehead999\trefs/heads/feat\n", 0)
+        if args[0] == "fetch":
+            return _proc("", 1, "fatal: unable to access 'origin': could not resolve host")
+        if args[0] == "push":
+            return _proc("", 1, rejected)
+        return _proc("", 0)
+
+    with mock.patch.object(push, "_git", side_effect=fake_git):
+        rc = push.main()
+    out = capsys.readouterr().out
+    assert rc != 0
+    assert "fetch of origin/feat failed" in out
+    assert "Rebase clean" not in out
+    assert "REBASE PAUSED" not in out
+
+
+def test_main_force_with_lease_stale_gives_correct_hint(capsys) -> None:
+    """A stale-lease rejection must NOT get the 'protected branch' hint."""
+    rejected = ("To origin\n ! [rejected] feat -> feat (stale info)\n"
+                "error: failed to push some refs")
+
+    def fake_git(args, timeout=30):
+        if args[:2] == ["rev-parse", "--git-dir"]:
+            return _proc(".git\n", 0)
+        if args[:2] == ["rev-parse", "--abbrev-ref"] and "@{upstream}" not in args:
+            return _proc("feat\n", 0)
+        if args[0] == "rev-parse" and "@{upstream}" in args:
+            return _proc("origin/feat\n", 0)
+        if args[0] == "rev-parse" and args[1] == "--short":
+            return _proc("aaa1111\n", 0)
+        if args[:2] == ["rev-parse", "HEAD"]:
+            return _proc("localhead000\n", 0)
+        if args[0] == "ls-remote":
+            return _proc("remotehead999\trefs/heads/feat\n", 0)
+        if args[0] == "push":
+            return _proc("", 1, rejected)
+        return _proc("", 0)
+
+    with mock.patch.object(push, "_git", side_effect=fake_git), \
+         mock.patch.object(push.sys, "argv", ["push.py", "force-with-lease"]):
+        rc = push.main()
+    out = capsys.readouterr().out
+    assert rc != 0
+    assert "lease is stale" in out
+    assert "protected branch" not in out
+    assert "REBASE PAUSED" not in out  # force suppresses auto-rebase
+
+
+def test_main_non_ff_rebase_cannot_start_aborts_not_phantom_paused(capsys) -> None:
+    """Rebase fails to start (no unmerged paths) → abort + 'could not start', not PAUSED."""
+    rejected = ("To origin\n ! [rejected] feat -> feat (non-fast-forward)\n"
+                "error: failed to push some refs")
+    aborted: list[bool] = []
+
+    def fake_git(args, timeout=30):
+        if args[:2] == ["rev-parse", "--git-dir"]:
+            return _proc(".git\n", 0)
+        if args[:2] == ["rev-parse", "--abbrev-ref"] and "@{upstream}" not in args:
+            return _proc("feat\n", 0)
+        if args[0] == "rev-parse" and "@{upstream}" in args:
+            return _proc("origin/feat\n", 0)
+        if args[0] == "rev-parse" and args[1] == "--short":
+            return _proc("aaa1111\n", 0)
+        if args[:2] == ["rev-parse", "HEAD"]:
+            return _proc("localhead000\n", 0)
+        if args[0] == "ls-remote":
+            return _proc("remotehead999\trefs/heads/feat\n", 0)
+        if args[0] == "fetch":
+            return _proc("", 0)
+        if args[:2] == ["log", "--format=%h %an: %s"]:
+            return _proc("", 0)
+        if args[:2] == ["rev-list", "--count"]:
+            return _proc("0\n", 0)
+        if args[:2] == ["rebase", "origin/feat"]:
+            return _proc("", 128, "fatal: invalid upstream 'origin/feat'")
+        if args[:2] == ["diff", "--name-only"]:
+            return _proc("", 0)  # no unmerged paths — rebase never started
+        if args[:2] == ["rebase", "--abort"]:
+            aborted.append(True)
+            return _proc("", 0)
+        if args[0] == "push":
+            return _proc("", 1, rejected)
+        return _proc("", 0)
+
+    with mock.patch.object(push, "_git", side_effect=fake_git):
+        rc = push.main()
+    out = capsys.readouterr().out
+    assert rc != 0
+    assert "could not start" in out
+    assert "REBASE PAUSED" not in out
+    assert aborted, "must restore a clean tree when the rebase never started"
+
+
+def test_main_hook_amended_head_surfaces_advisories(capsys) -> None:
+    """Hook-amend success path carries the post-push advisories (watch, mergeability)."""
+    heads = iter(["old0000aaaa", "new1111bbbb"])
+
+    def fake_git(args, timeout=30):
+        if args[:2] == ["rev-parse", "--git-dir"]:
+            return _proc(".git\n", 0)
+        if args[:2] == ["rev-parse", "--abbrev-ref"] and "@{upstream}" not in args:
+            return _proc("feat\n", 0)
+        if args[0] == "rev-parse" and "@{upstream}" in args:
+            return _proc("origin/feat\n", 0)
+        if args[0] == "rev-parse" and args[1] == "--short":
+            return _proc("aaa1111\n", 0)
+        if args[:2] == ["rev-parse", "HEAD"]:
+            return _proc(next(heads) + "\n", 0)
+        if args[0] == "push":
+            return _proc("", 1, "! [rejected]\n✅ done. 0 errors.")
+        if args[0] == "ls-remote":
+            return _proc("new1111bbbb\trefs/heads/feat\n", 0)
+        return _proc("", 0)
+
+    with mock.patch.object(push, "_git", side_effect=fake_git), \
+         mock.patch.object(push, "query_open_mr", return_value={
+             "source": "gitlab", "iid": 42, "target": "master",
+             "merge_status": "cannot_be_merged"}):
+        rc = push.main()
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "PUSHED (pre-push hook amended HEAD)" in out
+    assert "watch:gitlab-mr:42" in out
+    assert "conflicts with master" in out
 
 
 def test_main_force_aftermath_lists_discarded(capsys) -> None:

@@ -230,7 +230,7 @@ def _success_receipt(branch: str, remote_before: str, upstream: str,
 
 def _report_hook_pushed(head_before: str, head_after: str,
                         remote: str, ref: str, remote_sha: str,
-                        branch: str) -> None:
+                        branch: str, flags: set[str]) -> None:
     """Receipt for the 'non-zero exit but the ref actually moved' case."""
     if head_after != head_before:
         print("Status: PUSHED (pre-push hook amended HEAD) ✓")
@@ -239,41 +239,58 @@ def _report_hook_pushed(head_before: str, head_after: str,
         print("Status: pushed ✓ (pre-push hook exited non-zero; "
               "remote already matches HEAD)")
     print(f"Remote {remote}/{ref} now at {remote_sha[:7]}")
-    mr_line = _open_mr_line(query_open_mr(branch))
+    # This IS a landed push — surface the same next-decision signals as the
+    # normal success path (mergeability, stale base, leftovers, watch).
+    mr = query_open_mr(branch)
+    mr_line = _open_mr_line(mr)
     if mr_line:
         print(mr_line)
+    _post_push_advisories(mr, flags)
 
 
 _INCOMING_CAP = 5
 
 
-def _incoming_commits() -> tuple[list[str], int, int]:
+def _incoming_commits(ref: str) -> tuple[list[str], int, int]:
     """After a fetch: (incoming commit lines, #remote-added, #local-to-replay).
 
-    Incoming = commits the remote has that we lack (HEAD..@{upstream}), each
-    as 'sha author: subject' — the authorship is what tells force-vs-integrate
-    apart: forcing over a teammate's commit destroys it.
+    Incoming = commits `ref` has that we lack (HEAD..ref), each as
+    'sha author: subject' — the authorship is what tells force-vs-integrate
+    apart: forcing over a teammate's commit destroys it. `ref` is an explicit
+    remote ref (origin/foo), not @{upstream}, so this works on a first push
+    that has no tracking ref yet.
     """
-    log = _git(["log", "--format=%h %an: %s", "HEAD..@{upstream}"])
+    log = _git(["log", "--format=%h %an: %s", f"HEAD..{ref}"])
     incoming = [ln for ln in log.stdout.splitlines() if ln.strip()]
-    mine = _git(["rev-list", "--count", "@{upstream}..HEAD"])
+    mine = _git(["rev-list", "--count", f"{ref}..HEAD"])
     ahead = int(mine.stdout.strip()) if mine.returncode == 0 and mine.stdout.strip().isdigit() else 0
     return incoming, len(incoming), ahead
 
 
 def _recover_by_rebase(branch: str, remote_before: str, upstream: str,
-                       flags: set[str]) -> int:
+                       remote_name: str, remote_ref: str, flags: set[str]) -> int:
     """Remote moved ahead — rebase local work onto it, then push.
 
     Fetches first so the incoming remote commits (author + subject) can be
-    surfaced — that's the signal for force-vs-integrate. Clean rebase →
+    surfaced — that's the signal for force-vs-integrate. Rebases onto the
+    explicit remote ref so it works with or without a tracking ref. Clean →
     push + normal receipt. Conflict → leave the rebase paused, list the
     conflicting files, and point at git-conflicts: the resolve/continue/
     abort decision is the caller's, not the tool's.
     """
-    print("Remote moved ahead — fetching to rebase onto it…")
-    _git(["fetch"], timeout=120)
-    incoming, behind, ahead = _incoming_commits()
+    target = f"{remote_name}/{remote_ref}"
+    print(f"Remote moved ahead — fetching to rebase onto {target}…")
+    fetched = _git(["fetch", remote_name, remote_ref], timeout=120)
+    if fetched.returncode != 0:
+        combined = (fetched.stdout or "") + "\n" + (fetched.stderr or "")
+        print(f"Status: PUSH REJECTED ✗ — fetch of {target} failed, cannot rebase")
+        err = _first_error_line(combined)
+        if err:
+            print(f"First error: {err}")
+        print("Hint: remote unreachable or ref gone — check connectivity, then retry.")
+        return fetched.returncode or 1
+
+    incoming, behind, ahead = _incoming_commits(target)
     if behind:
         print(f"Remote added {behind} commit(s) you lack; replaying {ahead} of yours:")
         for ln in incoming[:_INCOMING_CAP]:
@@ -281,21 +298,27 @@ def _recover_by_rebase(branch: str, remote_before: str, upstream: str,
         if behind > _INCOMING_CAP:
             print(f"  … +{behind - _INCOMING_CAP} more")
 
-    rebase = _git(["rebase"], timeout=120)
+    rebase = _git(["rebase", target], timeout=120)
     if rebase.returncode != 0:
-        # Leave the rebase paused at the conflict (don't abort) so git-conflicts
-        # can read the blocks. The state is non-clean but explicit — the receipt
-        # names the files and the exact way forward or back out.
+        # Distinguish a real merge conflict (unmerged paths → leave paused for
+        # git-conflicts) from a rebase that never started (bad ref, etc.).
         unmerged = _git(["diff", "--name-only", "--diff-filter=U"])
         files = [f for f in unmerged.stdout.splitlines() if f.strip()]
-        print("Status: REBASE PAUSED ✗ — conflict (remote and local both changed):")
-        if files:
-            for f in files:
-                print(f"  {f}")
-        else:
-            err = _first_error_line((rebase.stdout or "") + "\n" + (rebase.stderr or ""))
+        combined = (rebase.stdout or "") + "\n" + (rebase.stderr or "")
+        if not files:
+            _git(["rebase", "--abort"])  # nothing to keep paused; restore clean
+            print(f"Status: PUSH REJECTED ✗ — rebase onto {target} could not start")
+            err = _first_error_line(combined)
             if err:
-                print(f"  {err}")
+                print(f"First error: {err}")
+            print("\n--- git output ---")
+            print(combined.strip() or "(no output)")
+            return rebase.returncode
+        # Real conflict — leave it paused (don't abort) so git-conflicts can
+        # read the blocks. Non-clean but explicit; the receipt names the way out.
+        print("Status: REBASE PAUSED ✗ — conflict (remote and local both changed):")
+        for f in files:
+            print(f"  {f}")
         print("Inspect: ./supertool 'git-conflicts'  — every conflict block + abort hint")
         if behind:
             print("Before you force: that would discard the remote commit(s) listed "
@@ -310,6 +333,8 @@ def _recover_by_rebase(branch: str, remote_before: str, upstream: str,
     push_args = ["push"]
     if "no-verify" in flags:
         push_args.append("--no-verify")
+    if not upstream:
+        push_args += ["-u", remote_name, "HEAD"]
     result = _git(push_args, timeout=120)
     if result.returncode != 0:
         combined = (result.stdout or "") + "\n" + (result.stderr or "")
@@ -371,20 +396,27 @@ def main() -> int:
         live = _live_remote_sha(remote_name, remote_ref)
         if live and head_after and live == head_after:
             _report_hook_pushed(head_before, head_after,
-                                 remote_name, remote_ref, live, branch)
+                                 remote_name, remote_ref, live, branch, flags)
             return 0
 
         # Routine recoverable case: remote moved ahead. Rebase onto it and
         # push — unless the caller already chose to force (their decision).
         if _is_non_fast_forward(combined) and "force-with-lease" not in flags:
-            return _recover_by_rebase(branch, remote_before, upstream, flags)
+            return _recover_by_rebase(branch, remote_before, upstream,
+                                      remote_name, remote_ref, flags)
 
         print("Status: PUSH REJECTED ✗")
         err = _first_error_line(combined)
         if err:
             print(f"First error: {err}")
         low = combined.lower()
-        if "rejected" in low or "declined" in low:
+        if "force-with-lease" in flags and ("stale info" in low or "stale" in low):
+            # The lease check failed — the remote moved since you fetched.
+            # NOT a server-side rule; a rebase isn't the fix either.
+            print("Hint: the lease is stale — remote moved since you last fetched. "
+                  "`git fetch` to review the new commits, then retry "
+                  "`git-push:force-with-lease`.")
+        elif "rejected" in low or "declined" in low:
             print("Hint: rejected by a server-side rule (protected branch / hook), "
                   "not a divergence — check branch protection or the hook output "
                   "above. A rebase will not help.")

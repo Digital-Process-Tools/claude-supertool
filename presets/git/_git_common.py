@@ -35,12 +35,18 @@ def _looks_like_success(line: str) -> bool:
     s = line.strip()
     if not s:
         return False
-    if "✅" in s or "✓" in s:
-        return True
     low = s.lower()
-    return any(m in low for m in (
-        "0 errors", "no errors", "pushed successfully", "successfully pushed",
-    ))
+    has_success = ("✅" in s or "✓" in s or any(m in low for m in (
+        "0 errors", "no errors", "pushed successfully", "successfully pushed")))
+    if not has_success:
+        return False
+    # A success marker doesn't win if the same line also carries a hard error
+    # signal (e.g. 'lint ✓ — push blocked: error: …'). 'error:' (with colon)
+    # avoids matching the '0 errors' / 'no errors' success phrases.
+    has_error = any(k in low for k in (
+        "error:", "fatal", "rejected", "aborted", "failed", "declined")) \
+        or "! [" in s or "❌" in s
+    return not has_error
 
 
 def _first_error_line(text: str) -> str:
