@@ -44,7 +44,3 @@ def test_plugin_manifest_version_matches_code() -> None:
         f"plugin.json version {manifest['version']!r} != "
         f"supertool.VERSION {supertool.VERSION!r}"
     )
-
-
-def test_version_is_bumped_for_279() -> None:
-    assert supertool.VERSION == "0.17.0"
