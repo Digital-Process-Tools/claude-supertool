@@ -24,30 +24,65 @@ def _git(args: list[str], timeout: int = 30) -> subprocess.CompletedProcess[str]
     )
 
 
+def _looks_like_success(line: str) -> bool:
+    """True for lines that report success — must never be picked as an error.
+
+    Pre-push / pre-receive hooks that auto-format print green '✅ … 0 errors.'
+    lines and 'pushed successfully' notices; the substrings 'errors' /
+    'fatal' would otherwise match the error scan and surface a success line
+    as the "first error".
+    """
+    s = line.strip()
+    if not s:
+        return False
+    low = s.lower()
+    has_success = ("✅" in s or "✓" in s or any(m in low for m in (
+        "0 errors", "no errors", "pushed successfully", "successfully pushed")))
+    if not has_success:
+        return False
+    # A success marker doesn't win if the same line also carries a hard error
+    # signal (e.g. 'lint ✓ — push blocked: error: …'). 'error:' (with colon)
+    # avoids matching the '0 errors' / 'no errors' success phrases.
+    has_error = any(k in low for k in (
+        "error:", "fatal", "rejected", "aborted", "failed", "declined")) \
+        or "! [" in s or "❌" in s
+    return not has_error
+
+
 def _first_error_line(text: str) -> str:
-    """First line mentioning an error/rejection, else last non-empty line."""
-    for line in text.splitlines():
+    """First line mentioning an error/rejection, else last non-empty line.
+
+    Skips success lines (green ✅, '0 errors', 'pushed successfully') so a
+    hook's success banner is never misreported as the failure cause.
+    """
+    lines = text.splitlines()
+    for line in lines:
         s = line.strip()
-        if not s:
+        if not s or _looks_like_success(s):
             continue
         low = s.lower()
         if ("error" in low or "fatal" in low or "rejected" in low
                 or "aborted" in low or "failed" in low
                 or "! [" in s or "❌" in s):
             return s
-    for line in reversed(text.splitlines()):
-        if line.strip():
-            return line.strip()
+    for line in reversed(lines):
+        s = line.strip()
+        if s and not _looks_like_success(s):
+            return s
     return ""
 
 
 def query_open_mr(branch: str) -> Optional[dict]:
     """Open MR/PR for `branch`, or None when none / no tool available.
 
-    Returns {source, iid, target, pipeline}. `pipeline` is the GitLab
-    pipeline status when known, else None (gh list carries no cheap check
-    state). Tries glab (GitLab) first, falls back to gh (GitHub). All
-    failures swallowed — this is advisory output, never blocking.
+    Returns {source, iid, target, pipeline, pipeline_id, pipeline_url,
+    merge_status}. `pipeline` is the GitLab pipeline status when known, else
+    None (gh list carries no cheap check state). `merge_status` is the
+    server's view of mergeability ('can_be_merged' / 'cannot_be_merged' /
+    None). The extra fields ride the same call — no added round-trip — and
+    are best-effort: absent on a glab version that doesn't emit them. Tries
+    glab (GitLab) first, falls back to gh (GitHub). All failures swallowed —
+    this is advisory output, never blocking.
     """
     if not branch or branch == "HEAD":
         return None
@@ -68,6 +103,10 @@ def query_open_mr(branch: str) -> Optional[dict]:
                         "iid": mr.get("iid") or mr.get("number") or "?",
                         "target": mr.get("target_branch", "?"),
                         "pipeline": pipeline.get("status"),
+                        "pipeline_id": pipeline.get("id"),
+                        "pipeline_url": pipeline.get("web_url"),
+                        "merge_status": mr.get("detailed_merge_status")
+                        or mr.get("merge_status"),
                     }
         except (subprocess.TimeoutExpired, OSError, json.JSONDecodeError):
             pass
@@ -75,18 +114,25 @@ def query_open_mr(branch: str) -> Optional[dict]:
         try:
             res = subprocess.run(
                 ["gh", "pr", "list", "--head", branch, "--state", "open",
-                 "--json", "number,baseRefName", "--limit", "1"],
+                 "--json", "number,baseRefName,mergeable", "--limit", "1"],
                 capture_output=True, text=True, timeout=5,
             )
             if res.returncode == 0 and res.stdout.strip().startswith("["):
                 prs = json.loads(res.stdout)
                 if prs:
                     pr = prs[0]
+                    # gh: mergeable is CONFLICTING / MERGEABLE / UNKNOWN
+                    gh_merge = pr.get("mergeable")
+                    merge_status = ("cannot_be_merged"
+                                    if gh_merge == "CONFLICTING" else None)
                     return {
                         "source": "github",
                         "iid": pr.get("number", "?"),
                         "target": pr.get("baseRefName", "?"),
                         "pipeline": None,
+                        "pipeline_id": None,
+                        "pipeline_url": None,
+                        "merge_status": merge_status,
                     }
         except (subprocess.TimeoutExpired, OSError, json.JSONDecodeError):
             pass

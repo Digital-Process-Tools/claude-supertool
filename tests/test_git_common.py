@@ -43,6 +43,31 @@ def test_first_error_line_empty_input() -> None:
     assert common._first_error_line("\n\n") == ""
 
 
+def test_first_error_line_skips_green_success_banner() -> None:
+    # '0 errors' contains 'error' — must not be picked over the real failure.
+    text = "✅ Prettier done. 0 errors.\nerror: failed to push some refs"
+    assert common._first_error_line(text) == "error: failed to push some refs"
+
+
+def test_first_error_line_pure_success_returns_empty() -> None:
+    assert common._first_error_line("✅ format done. 0 errors.") == ""
+
+
+def test_first_error_line_hard_error_wins_over_success_marker() -> None:
+    # A line carrying a hard error keyword is surfaced even if it also has a
+    # success phrase — suppressing a real error is the worse failure.
+    line = "Fatal: Uncaught RuntimeException: pushed successfully."
+    assert common._first_error_line(line) == line
+
+
+def test_looks_like_success_markers() -> None:
+    assert common._looks_like_success("✅ done")
+    assert common._looks_like_success("formatted, 0 errors")
+    assert common._looks_like_success("branch pushed successfully")
+    assert not common._looks_like_success("error: failed to push")
+    assert not common._looks_like_success("")
+
+
 # ── query_open_mr ────────────────────────────────────────────────────────
 
 def test_query_empty_branch_returns_none() -> None:
@@ -59,7 +84,9 @@ def test_query_glab_match_returns_gitlab_fields() -> None:
          mock.patch.object(common.subprocess, "run", fake_run):
         mr = common.query_open_mr("feature/x")
     assert mr == {"source": "gitlab", "iid": 21816,
-                  "target": "master", "pipeline": "running"}
+                  "target": "master", "pipeline": "running",
+                  "pipeline_id": None, "pipeline_url": None,
+                  "merge_status": None}
 
 
 def test_query_glab_no_pipeline_yields_none_status() -> None:
@@ -78,7 +105,9 @@ def test_query_gh_fallback_returns_github_fields() -> None:
          mock.patch.object(common.subprocess, "run", fake_run):
         mr = common.query_open_mr("feature/x")
     assert mr == {"source": "github", "iid": 172,
-                  "target": "main", "pipeline": None}
+                  "target": "main", "pipeline": None,
+                  "pipeline_id": None, "pipeline_url": None,
+                  "merge_status": None}
 
 
 def test_query_no_tool_returns_none() -> None:
