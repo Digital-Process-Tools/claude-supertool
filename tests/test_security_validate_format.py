@@ -802,3 +802,64 @@ class TestValidateStagedGitSubprocessForm:
         # No shell=True calls for the git invocation
         git_shell_calls = [c for c in shell_calls if "git diff" in str(c)]
         assert len(git_shell_calls) == 0
+
+
+# ---------------------------------------------------------------------------
+# 11. validate list form (issue #306) — routing + per-file path security
+# ---------------------------------------------------------------------------
+
+class TestValidateListForm:
+    """validate:f1,f2,...:filter — multi-file form routes to op_validate_multi
+    and still security-checks every path in the list at dispatch."""
+
+    def test_comma_path_routes_to_multi(self, tmp_path: Path, monkeypatch) -> None:
+        """A comma-separated PATH dispatches the list form, one block per file."""
+        executed_cmds: list = []
+
+        def fake_run(cmd, **kwargs):
+            executed_cmds.append(cmd)
+            r = MagicMock()
+            r.returncode = 0
+            r.stdout = json.dumps({"tool": "test-validator", "ok": True, "count": 0,
+                                   "errors": [], "duration_ms": 1})
+            r.stderr = ""
+            return r
+
+        a = tmp_path / "a.php"; a.write_text("<?php\n")
+        b = tmp_path / "b.php"; b.write_text("<?php\n")
+        _inject_config(monkeypatch, _make_validator_config("echo {file}", match="*.php"))
+        monkeypatch.setenv("SUPERTOOL_NO_VALIDATOR_CACHE", "1")
+
+        with patch("subprocess.run", side_effect=fake_run):
+            out = supertool.dispatch(f"validate:{a},{b}")
+
+        assert out.count("validate: ") == 2
+        assert str(a) in out and str(b) in out
+
+    def test_single_path_still_one_block_backcompat(self, tmp_path: Path, monkeypatch) -> None:
+        """A path with no comma keeps the single-file form unchanged."""
+        def fake_run(cmd, **kwargs):
+            r = MagicMock()
+            r.returncode = 0
+            r.stdout = json.dumps({"tool": "test-validator", "ok": True, "count": 0,
+                                   "errors": [], "duration_ms": 1})
+            r.stderr = ""
+            return r
+
+        a = tmp_path / "a.php"; a.write_text("<?php\n")
+        _inject_config(monkeypatch, _make_validator_config("echo {file}", match="*.php"))
+        monkeypatch.setenv("SUPERTOOL_NO_VALIDATOR_CACHE", "1")
+
+        with patch("subprocess.run", side_effect=fake_run):
+            out = supertool.dispatch(f"validate:{a}")
+
+        assert out.count("validate: ") == 1
+        assert str(a) in out
+
+    def test_list_form_rejects_nul_byte_in_any_member(self, tmp_path: Path, monkeypatch) -> None:
+        """A NUL byte anywhere in the list is rejected at dispatch (each path is
+        run through _safe_path, not just the first)."""
+        a = tmp_path / "a.php"; a.write_text("<?php\n")
+        _inject_config(monkeypatch, _make_validator_config("echo {file}", match="*.php"))
+        out = supertool.dispatch(f"validate:{a},bad\x00name.php")
+        assert "ERROR" in out

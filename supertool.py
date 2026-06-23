@@ -9409,6 +9409,44 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
     return body + suffix + _advise_new_test(op, path, _pre_existed)
 
 
+# Filter sentinel: `@syntax` selects validators that declare `"syntax": true`
+# in their spec (parser/compiler checks), keeping the syntax scope declarative
+# in config instead of hardcoded in callers (e.g. git-resolve's digest).
+_SYNTAX_FILTER_SENTINEL = "@syntax"
+
+
+def _select_validators(validators: dict, tool_filter: Optional[list]) -> dict:
+    """Apply a tool_filter to a validators dict.
+
+    A plain filter keeps validators whose name is in the list. The
+    ``@syntax`` sentinel keeps validators whose spec sets ``syntax: true``.
+    """
+    if not tool_filter:
+        return validators
+    if _SYNTAX_FILTER_SENTINEL in tool_filter:
+        return {k: v for k, v in validators.items()
+                if isinstance(v, dict) and v.get("syntax")}
+    return {k: v for k, v in validators.items() if k in tool_filter}
+
+
+def _validate_one_block(path: str, validators: dict, verbose: bool = False) -> List[str]:
+    """Render the validator rows for a single ``path`` (no trailing newline join).
+
+    Returns the lines for one ``validate: PATH`` block — shared by the
+    single-file and multi-file forms so they stay byte-identical per file.
+    """
+    out = [f"validate: {path}"]
+    for name, spec in validators.items():
+        glob = spec.get("match", "*")
+        if path and glob and not _match_glob(path, glob):
+            continue
+        data = _validator_run_one(name, spec, path)
+        if data is None:
+            continue
+        out.extend(_validator_render_row(data, verbose=verbose))
+    return out
+
+
 def op_validate(path: str, tool_filter: Optional[list] = None, verbose: bool = False) -> str:
     """Manual one-shot: run validators on ``path``, render current state (no diff).
 
@@ -9421,20 +9459,37 @@ def op_validate(path: str, tool_filter: Optional[list] = None, verbose: bool = F
     if not validators:
         return "no validators configured\n"
     if tool_filter:
-        validators = {k: v for k, v in validators.items() if k in tool_filter}
+        validators = _select_validators(validators, tool_filter)
         if not validators:
             return "no validators matched filter\n"
-    import fnmatch
-    out = [f"validate: {path}"]
-    for name, spec in validators.items():
-        glob = spec.get("match", "*")
-        if path and glob and not _match_glob(path, glob):
-            continue
-        data = _validator_run_one(name, spec, path)
-        if data is None:
-            continue
-        out.extend(_validator_render_row(data, verbose=verbose))
-    return "\n".join(out) + "\n"
+    return "\n".join(_validate_one_block(path, validators, verbose=verbose)) + "\n"
+
+
+def op_validate_multi(paths: list, tool_filter: Optional[list] = None,
+                      verbose: bool = False) -> str:
+    """List form: validate several files in one invocation.
+
+    Renders one ``validate: PATH`` block per file, in order, so a caller can
+    fold each block back to its source file. Config is loaded once for the whole
+    batch — the throughput win over shelling ``validate:PATH`` per file.
+
+    A single-element list is byte-identical to ``op_validate(paths[0], …)``.
+    """
+    paths = [p for p in (paths or []) if p]
+    if not paths:
+        return "ERROR: validate requires file path\n"
+    cfg = _load_config()
+    validators = cfg.get("validators") or {}
+    if not validators:
+        return "no validators configured\n"
+    if tool_filter:
+        validators = _select_validators(validators, tool_filter)
+        if not validators:
+            return "no validators matched filter\n"
+    blocks: List[str] = []
+    for path in paths:
+        blocks.append("\n".join(_validate_one_block(path, validators, verbose=verbose)))
+    return "\n".join(blocks) + "\n"
 
 
 # ---------------------------------------------------------------------------
@@ -11070,11 +11125,21 @@ def _dispatch_impl(arg: str) -> str:
         elif op == "validate":
             # verbose flag: literal "verbose" token anywhere after op name.
             # Forms: validate:PATH:verbose  or  validate:PATH:tool1,tool2:verbose
+            #   list form: validate:f1,f2,...:tool1,tool2:verbose  (commas in PATH)
             v_verbose = "verbose" in parts[1:]
             v_parts = [p for p in parts[1:] if p != "verbose"]
             v_path = v_parts[0] if len(v_parts) > 0 else ""
             v_tools = [t for t in (v_parts[1].split(",") if len(v_parts) > 1 and v_parts[1] else []) if t]
-            body = op_validate(v_path, v_tools or None, verbose=v_verbose)
+            v_files = [f for f in v_path.split(",") if f]
+            if len(v_files) > 1:
+                try:
+                    for _vf in v_files:
+                        _safe_path(_vf)
+                except SecurityError as _se:
+                    return header + f"ERROR: {_se}\n"
+                body = op_validate_multi(v_files, v_tools or None, verbose=v_verbose)
+            else:
+                body = op_validate(v_path, v_tools or None, verbose=v_verbose)
         elif op == "format":
             # verbose flag: literal "verbose" token anywhere after op name.
             # Forms: format:PATH:verbose  or  format:PATH:tool1,tool2:verbose
