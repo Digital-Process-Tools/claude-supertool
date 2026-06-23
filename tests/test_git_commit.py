@@ -60,6 +60,37 @@ def test_no_edit_outside_merge_rejected(monkeypatch, capsys, tmp_path) -> None:
     assert "MERGE_HEAD" in out or "merge" in out.lower()
 
 
+def test_next_hint_recommends_git_push_op(monkeypatch, capsys, tmp_path) -> None:
+    """With an upstream set and no existing MR, the Next hint points at the
+    git-push op — not raw `git push` (issue #310)."""
+    import subprocess
+    remote = tmp_path / "remote.git"
+    work = tmp_path / "work"
+    subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+    subprocess.run(["git", "init", "-q", "-b", "main", str(work)], check=True)
+    monkeypatch.chdir(work)
+    subprocess.run(["git", "config", "user.email", "t@t"], check=True)
+    subprocess.run(["git", "config", "user.name", "t"], check=True)
+    subprocess.run(["git", "remote", "add", "origin", str(remote)], check=True)
+    (work / "a.txt").write_text("hi\n")
+    subprocess.run(["git", "add", "a.txt"], check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], check=True)
+    subprocess.run(["git", "push", "-q", "-u", "origin", "main"], check=True)
+
+    # Stage a new change to commit via the preset.
+    (work / "a.txt").write_text("hi\nmore\n")
+    subprocess.run(["git", "add", "a.txt"], check=True)
+
+    monkeypatch.setattr(commit, "_existing_mr_for_branch", lambda branch: None)
+    monkeypatch.setattr(commit.sys, "argv", ["commit.py", "second"])
+
+    rc = commit.main()
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Next: ./supertool 'git-push'" in out
+    assert "Next: git push (" not in out
+
+
 def test_no_edit_during_merge_uses_prepared_message(monkeypatch, capsys, tmp_path) -> None:
     """With MERGE_HEAD present, --no-edit calls `git commit --no-edit`."""
     import subprocess
