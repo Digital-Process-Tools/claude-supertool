@@ -16,9 +16,10 @@ Git investigation and workflow ops. Replaces the 4-6 raw `git` calls you'd norma
 | `git-blame` | `git-blame:PATH:LINE[:N]` | Blame for N lines (default 5) around a specific line number |
 | `git-checkout` | `git-checkout:REF` | Switch to branch/tag/SHA — reports tracking state, dirty files, last commits after switch |
 | `git-diverge` | `git-diverge:BRANCH[:BASE]` | Branch vs base: ahead/behind counts, commit list, changed files, +/− line totals |
+| `git-diff` | `git-diff[:staged\|:branch[:BASE]\|:PATH]` | Review-aware diff (working / `staged` / `branch` merge-base / `PATH`): files grouped by kind + shortstat, red-flag scan of **added** lines (debug code, conflict markers; reported `file:line`), forbidden-path guard, missing-test pairing, next-step hints. Generic defaults built in; project policy via config (below) |
 | `git-merge` | `git-merge:REF` | Merge REF — on conflict surfaces the UU file list, conflict markers, and ours/theirs SHAs |
 | `git-conflicts` | `git-conflicts` | List all UU files + every conflict block + abort hint |
-| `git-resolve` | `git-resolve:::SIDE:::PATH[,PATH...]` | Pick `ours`/`theirs`/`both` for one file, a comma-separated list, or `all` — stages and prints the continue command. `both` is a union: it strips the conflict markers and keeps both sides (ours then theirs), like git's `merge=union` driver — use it when both branches added different non-overlapping lines |
+| `git-resolve` | `git-resolve:::SIDE:::PATH[,PATH...]` | Pick `ours`/`theirs`/`both` for one file, a comma-separated list, or `all` — stages and prints the continue command. `both` is a union: it strips the conflict markers and keeps both sides (ours then theirs), like git's `merge=union` driver — use it when both branches added different non-overlapping lines. **Self-verifies before staging:** a leftover `<<<<<<<` / `>>>>>>>` is a hard fail (file left unstaged), and each resolved file's receipt carries a warn-only validator digest (`markers: clean \| validate: ok`) |
 | `git-commit` | `git-commit:::MSG[:::PATH...]` | Stage PATHs (or all staged if omitted) and commit with MSG — surfaces hook errors, shows HEAD before/after. Use `MSG=--no-edit` to reuse MERGE_MSG/CHERRY_PICK_HEAD during an in-progress merge or cherry-pick |
 | `git-push` | `git-push[:force-with-lease][:no-verify]` | Push the current branch (sets upstream on first push) — remote SHA before/after with commits pushed, ahead/behind vs upstream, and the open MR/PR + pipeline status. For **updating** an already-open MR; use the `mr` op for push+create. **Non-fast-forward** is handled in-op: it fetches, surfaces the **incoming remote commits** (SHA, author, subject) so you can see whose work you'd be rebasing over, then rebases your work onto the remote and re-pushes; on conflict it leaves the rebase **paused**, warns to check the incoming authors before forcing, and points you at `git-conflicts` + the keep-both/cancel/force paths — never auto-forced, never silently rewritten. A **pre-push hook that amends HEAD and pushes** the fixed commit itself (exiting non-zero) is reported as `PUSHED`, not `REJECTED`, since the live remote ref already matches HEAD. The **post-push receipt** carries the next-decision signals (all on calls already made): MR **mergeability** (warns if it now `cannot_be_merged` with target), **stale base** (`N behind origin/<target>`), **uncommitted leftovers** (changes not in this push), the **pipeline id + url**, and a ready `watch:gitlab-mr:<iid>` command. `:force-with-lease` also reports **what it discarded** (author + subject of overwritten remote commits). Flags: `:force-with-lease` (safe force — overwrite only if the remote hasn't moved; skips the auto-rebase, and lists discarded commits), `:no-verify` (skip the local pre-push hook, e.g. when a local formatter diverges from CI), `:watch` (spawn a background pipeline poller instead of just recommending the command) |
 
@@ -45,6 +46,29 @@ One call gives you branch health + exactly what differs from base — no follow-
 ./supertool 'git-resolve:::both:::src/app/Config.py'
 ./supertool 'git-commit:::Merge master into feature/auth'
 ```
+Every resolve **self-verifies before it stages**: it scans the resolved file for
+leftover conflict markers (`<<<<<<<` / `>>>>>>>`) and then runs the file-type
+validator (xmllint / phplint / …) so the receipt tells you the resolution is
+actually clean — the routine you'd otherwise run by hand:
+```text
+# git-resolve: ours (1 file(s))
+  ✓ src/app/Config.py
+      markers: clean | validate: ok
+Resolved: 1 | Failed: 0 | Remaining: 0
+Next: ./supertool 'git-commit:::Merge resolved' (or git merge --continue)
+```
+A marker left behind is a **hard fail** — the file is *not* staged, so a broken
+merge can never reach a commit:
+```text
+  ✗ src/app/Config.py: conflict markers remain at line(s) 63 — not staged
+```
+The validate line is **advisory** (warn-only): `validate: ⚠ phplint 2 err` flags
+syntax to look at but never blocks the resolve — an "invalid" file is often just
+a merge that needs the next hunk resolved, not a corrupt write. It is scoped to
+**parser/compiler** validators (phplint, xmllint, jsonlint, …), never semantic or
+style ones (lsp-diag, pyright, prettier), since only a parse break is something a
+side-pick can introduce — and it is omitted entirely when no syntax validator is
+configured for that file type (you'll just see `markers: clean`).
 
 **Update an MR that already exists:**
 ```bash
@@ -67,7 +91,7 @@ To **cancel** and get back to exactly where you were before the push (your commi
 
 ## Configuration
 
-No project-specific config required. Two environment variables tune `git-investigate` behavior:
+Most ops need no project config. `git-investigate` takes two env vars (below); `git-diff` takes optional review policy (see **git-diff policy** below).
 
 | Variable | Default | Effect |
 |----------|---------|--------|
@@ -84,6 +108,42 @@ Set via the op's JSON config if you want project-wide defaults:
 ```
 
 `git-status` and `git-push` try `glab` then `gh` to surface the open MR/PR — skip gracefully if neither is installed.
+
+### git-diff policy
+
+`git-diff` ships generic red-flag defaults (debug-code and conflict markers) and reads optional **project policy** from its op config, surfaced to the script as `SUPERTOOL_*` env vars — the same mechanism `gl-job` uses for `job_patterns`. All four keys are optional.
+
+| Key | Shape | Effect |
+|-----|-------|--------|
+| `forbidden_paths` | `[{pattern, reason}]` | Warn when a changed file's path matches `pattern` (regex); `reason` is printed verbatim. |
+| `test_pairing` | `[{src, test}]` | For each **added** source file matching `src` (regex with named groups), warn if the derived `test` path exists neither in the diff nor on disk. `test` is a template — `{name}` placeholders are filled from `src`'s named captures. |
+| `hints` | `[{added, message}]` | Print `message` once if any **added** path matches `added` (regex) — for follow-up reminders. |
+| `red_flags_extra` | `[{pattern, ext?, label}]` | Extra added-line red flags on top of the defaults. `pattern` (regex) is tested per added line; optional `ext` (e.g. `.js`) scopes it to one extension; `label` names the hit. |
+
+```json
+{
+  "ops": {
+    "git-diff": {
+      "forbidden_paths": [
+        { "pattern": "/Generated/", "reason": "generated — edit the source class, not this" }
+      ],
+      "test_pairing": [
+        { "src": "src2/(?P<rest>.+)\\.class\\.php$", "test": "tests/unit/{rest}Test.php" }
+      ],
+      "hints": [
+        { "added": "src2/.+\\.class\\.php$", "message": "new class — regenerate XSD + autoload cache" }
+      ],
+      "red_flags_extra": [
+        { "pattern": "^\\s*var\\b", "ext": ".js", "label": "var (use const/let)" }
+      ]
+    }
+  }
+}
+```
+
+The `test_pairing` capture→template pairing is the one non-obvious bit: `src2/(?P<rest>.+)\.class\.php$` captures `rest` (e.g. `SiFoo/Bar`), and `tests/unit/{rest}Test.php` expands to `tests/unit/SiFoo/BarTest.php`. Pairing fires only for **added** files classified as source — renames, edits, and non-source files are never flagged.
+
+**Dogfood:** this repo's own `.githooks/pre-commit` runs `git-diff:staged` as an advisory review (never blocks). Wire it into any project the same way.
 
 ## Authoring notes
 

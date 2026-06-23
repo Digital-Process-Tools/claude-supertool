@@ -1,0 +1,22 @@
+#!/bin/bash
+# Pre-commit hook: advisory review of staged changes — dogfoods the git-diff op.
+# Scans staged content for red flags (debug code, conflict markers) and other
+# warnings, then prints them. NEVER blocks: the commit always proceeds.
+# Enable once per clone with: git config core.hooksPath .githooks
+
+cd "$(git rev-parse --show-toplevel)" || exit 0
+
+# Degrade cleanly if the supertool entrypoint isn't present/executable.
+[ -x ./supertool ] || exit 0
+
+review=$(./supertool 'git-diff:staged' 2>/dev/null)
+# Gate on ASCII section titles (not the multibyte ⚠) so a C/POSIX locale can't
+# silently swallow the warnings; awk prints from the first warning to the end.
+if echo "$review" | grep -q "Red flags\|Forbidden paths\|New source without"; then
+    echo ""
+    echo "$review" | awk '/Red flags|Forbidden paths|New source without/{p=1} p'
+    echo ""
+    echo "(advisory — commit proceeds; nothing to bypass)"
+fi
+
+exit 0

@@ -213,7 +213,16 @@
       "example": "rename:oldName:newName:supertool.py"
     }
   },
-  "ops": {},
+  "ops": {
+    "git-diff": {
+      "red_flags_extra": [
+        { "pattern": "\\bbreakpoint\\s*\\(", "ext": ".py", "label": "breakpoint()" },
+        { "pattern": "pdb\\.set_trace", "ext": ".py", "label": "pdb.set_trace" },
+        { "pattern": "\\bimport i?pdb\\b", "ext": ".py", "label": "import pdb" },
+        { "pattern": "\\bfrom i?pdb\\b", "ext": ".py", "label": "from pdb import" }
+      ]
+    }
+  },
   "aliases": {},
   "notifiers": {
     "cursor-witness": {

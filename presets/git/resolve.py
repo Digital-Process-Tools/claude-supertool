@@ -7,8 +7,19 @@ Receipt shows which files were resolved and how many conflicts remain.
 """
 from __future__ import annotations
 
+import os
+import re
 import subprocess
 import sys
+from pathlib import Path
+from typing import Optional
+
+
+# Unambiguous conflict markers — `<<<<<<<` / `>>>>>>>` at line start. A bare row
+# of `=======` is intentionally NOT matched: it is legitimate decoration (RST/MD
+# underlines, comment rules) and a real leftover always carries the angle markers
+# too, so the angle scan never misses an actual unresolved hunk.
+_MARKER_RE = re.compile(r"^(<{7,}|>{7,})(\s|$)")
 
 
 def _git(args: list[str], timeout: int = 10) -> subprocess.CompletedProcess[str]:
@@ -86,6 +97,83 @@ def _union_file(path: str) -> tuple[bool, str]:
     return True, ""
 
 
+def _scan_markers(path: str) -> list[int]:
+    """1-indexed line numbers carrying a leftover conflict marker, else [].
+
+    Reads bytes and decodes UTF-8 — a binary (non-decodable) file scans clean
+    (a text marker can't live in it). Used as a hard gate before staging:
+    `checkout --ours/theirs` cannot leave markers, but `both`/union and any
+    future per-hunk path can, and a staged marker is a broken commit.
+    """
+    try:
+        with open(path, "rb") as fh:
+            raw = fh.read()
+    except OSError:
+        return []
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return []
+    return [i for i, line in enumerate(text.splitlines(), 1) if _MARKER_RE.match(line)]
+
+
+# Parser/compiler validators only — the class of check a side-pick can actually
+# break. Semantic/diagnostic/style validators (lsp-diag, pyright, psr, tsc-check,
+# prettier-check, git-status, …) are deliberately excluded: they report the
+# file's pre-existing state, not what the resolve introduced, so they'd cry wolf
+# on every resolve. The stack's normal before/after diffing can't filter that
+# here — the "before" is a marker-filled conflicted file — so we scope by name.
+# A name not present in the live config is simply skipped (safe degradation: no
+# digest line rather than a false "ok").
+_SYNTAX_VALIDATORS = (
+    "phplint", "xmllint", "jsonlint", "node-check", "py-compile",
+    "bash-check", "yaml-check", "yaml-check-yaml", "inilint", "tomllint",
+    "ruby-check", "terraform-check", "gofmt-check",
+)
+
+
+def _validate_path(path: str) -> Optional[str]:
+    """Warn-only post-resolve syntax digest, via the declarative validator stack.
+
+    Shells back into supertool's `validate` op (the single source of truth for
+    which validator runs on which file type), scoped to syntax/parser validators
+    only, and condenses its rows into one receipt line. Returns ``None`` when
+    nothing applies (no supertool, no file, no syntax validator for this type,
+    or timeout): advisory only — it never blocks or fails the resolve.
+    """
+    if not os.path.isfile(path):
+        return None
+    st = Path(__file__).resolve().parents[2] / "supertool.py"
+    if not st.is_file():
+        return None
+    tool_filter = ",".join(_SYNTAX_VALIDATORS)
+    try:
+        res = subprocess.run(
+            [sys.executable, str(st), f"validate:{path}:{tool_filter}"],
+            capture_output=True, text=True, timeout=90,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    out = res.stdout
+    # No syntax validator configured/matched for this file type → no digest line.
+    if "no validators" in out:
+        return None
+    fails: list[str] = []
+    ran = False
+    for line in out.splitlines():
+        m = re.match(r"^([\w-]+)\s*:\s*(ok|(\d+) err)\b", line)
+        if not m:
+            continue
+        ran = True
+        if m.group(3):
+            fails.append(f"{m.group(1)} {m.group(3)} err")
+    if not ran:
+        return None
+    if fails:
+        return "validate: ⚠ " + ", ".join(fails)
+    return "validate: ok"
+
+
 def main() -> int:
     if len(sys.argv) < 3:
         print("ERROR: usage: resolve.py SIDE PATH[,PATH...]")
@@ -126,6 +214,7 @@ def main() -> int:
 
     resolved: list[str] = []
     failed: list[tuple[str, str]] = []
+    digests: dict[str, Optional[str]] = {}
     for path in targets:
         if side == "both":
             ok, err = _union_file(path)
@@ -137,14 +226,24 @@ def main() -> int:
             if co.returncode != 0:
                 failed.append((path, co.stderr.strip() or co.stdout.strip()))
                 continue
+        # HARD GATE — never stage a file that still carries a conflict marker.
+        marker_lines = _scan_markers(path)
+        if marker_lines:
+            shown = ", ".join(str(n) for n in marker_lines[:5])
+            more = f" (+{len(marker_lines) - 5} more)" if len(marker_lines) > 5 else ""
+            failed.append((path, f"conflict markers remain at line(s) {shown}{more} — not staged"))
+            continue
         add = _git(["add", "--", path])
         if add.returncode != 0:
             failed.append((path, add.stderr.strip() or add.stdout.strip()))
             continue
         resolved.append(path)
+        digests[path] = _validate_path(path)
 
     for path in resolved:
         print(f"  ✓ {path}")
+        digest = digests.get(path)
+        print(f"      markers: clean | {digest}" if digest else "      markers: clean")
     for path, err in failed:
         print(f"  ✗ {path}: {err}")
 
