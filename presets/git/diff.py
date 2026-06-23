@@ -40,9 +40,12 @@ DEFAULT_RED_FLAGS = [
     {"pattern": r"\bvar_export\s*\(", "label": "var_export"},
     {"pattern": r"\bconsole\.(log|debug|warn)\s*\(", "label": "console.*"},
     {"pattern": r"\bdebugger\s*;", "label": "debugger"},
-    {"pattern": r"<<<<<<<", "label": "conflict marker"},
-    {"pattern": r">>>>>>>", "label": "conflict marker"},
-    {"pattern": r"\|\|\|\|\|\|\|", "label": "conflict marker"},
+    # Anchored to line start: a real git conflict marker is always at column 0.
+    # Matching the bare substring would false-positive on any file that merely
+    # mentions markers (resolve.py, its tests, these very docs).
+    {"pattern": r"^<<<<<<<", "label": "conflict marker"},
+    {"pattern": r"^>>>>>>>", "label": "conflict marker"},
+    {"pattern": r"^\|\|\|\|\|\|\|", "label": "conflict marker"},
 ]
 
 

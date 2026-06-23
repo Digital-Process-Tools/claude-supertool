@@ -140,6 +140,19 @@ def test_ext_filter_on_red_flags_extra(tmp_path: Path) -> None:
     assert "app.js:" not in out  # .js excluded by the ext filter
 
 
+def test_conflict_marker_only_at_line_start(tmp_path: Path) -> None:
+    """A real conflict marker (column 0) flags; a mid-line mention does not."""
+    _init_repo(tmp_path)
+    _write(tmp_path, "note.txt", "ok\n# discusses <<<<<<< in prose\n")  # mention
+    _write(tmp_path, "conflict.txt", "ok\n<<<<<<< HEAD\n")              # real marker
+    subprocess.run(["git", "add", "-A"], check=True, cwd=tmp_path)
+
+    out = _run(tmp_path, "staged")
+
+    assert "conflict.txt:2" in out  # real marker at BOL -> flagged
+    assert "note.txt:" not in out   # mid-line mention -> not flagged
+
+
 def test_not_a_git_repo(tmp_path: Path) -> None:
     res = subprocess.run(
         [sys.executable, str(DIFF), "staged"],
