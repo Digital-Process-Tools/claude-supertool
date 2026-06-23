@@ -65,7 +65,7 @@
     "git-commit": {
       "cmd": "{python} {path}git/commit.py {args}",
       "timeout": 60,
-      "description": "Commit MSG (stages PATHS) — HEAD before/after, hook errors surfaced. MSG=--no-edit reuses MERGE_MSG/CHERRY_PICK msg (merge or cherry-pick must be in progress)",
+      "description": "Commit MSG (stages PATHS) — HEAD before/after, hook errors surfaced. MSG=--no-edit reuses MERGE_MSG/CHERRY_PICK msg (merge or cherry-pick must be in progress). Auto-appends a `Co-Authored-By:` trailer when absent; identity via .supertool.json ops.git-commit.coauthor (default 'Max <noreply>'; set '' / 'none' to disable).",
       "syntax": "git-commit:::MSG[:::PATH...]"
     },
     "git-push": {

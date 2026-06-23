@@ -100,3 +100,59 @@ def test_no_edit_during_merge_uses_prepared_message(monkeypatch, capsys, tmp_pat
     assert ["commit", "--no-edit"] in calls
     # No -m was passed for any commit invocation
     assert all("-m" not in c for c in calls if c[:1] == ["commit"])
+
+
+# --- Co-Authored-By trailer (issue #286) ---------------------------------
+
+def test_coauthor_appended_when_absent(monkeypatch) -> None:
+    monkeypatch.delenv("SUPERTOOL_COAUTHOR", raising=False)
+    out = commit._with_coauthor("feat: thing")
+    assert out == "feat: thing\n\nCo-Authored-By: Max <noreply>"
+
+
+def test_coauthor_blank_line_separates_body(monkeypatch) -> None:
+    monkeypatch.delenv("SUPERTOOL_COAUTHOR", raising=False)
+    out = commit._with_coauthor("subject\n\nbody line")
+    assert out == "subject\n\nbody line\n\nCo-Authored-By: Max <noreply>"
+
+
+def test_coauthor_skipped_when_already_present(monkeypatch) -> None:
+    monkeypatch.delenv("SUPERTOOL_COAUTHOR", raising=False)
+    msg = "fix: x\n\nCo-Authored-By: Someone <s@e>"
+    assert commit._with_coauthor(msg) == msg
+
+
+def test_coauthor_skip_is_case_insensitive(monkeypatch) -> None:
+    monkeypatch.delenv("SUPERTOOL_COAUTHOR", raising=False)
+    msg = "fix: x\n\nco-authored-by: Someone <s@e>"
+    assert commit._with_coauthor(msg) == msg
+
+
+def test_coauthor_configurable_via_env(monkeypatch) -> None:
+    monkeypatch.setenv("SUPERTOOL_COAUTHOR", "Jane Doe <jane@x>")
+    out = commit._with_coauthor("chore: y")
+    assert out == "chore: y\n\nCo-Authored-By: Jane Doe <jane@x>"
+
+
+def test_coauthor_disabled_via_env(monkeypatch) -> None:
+    for val in ("", "none", "off", "false"):
+        monkeypatch.setenv("SUPERTOOL_COAUTHOR", val)
+        assert commit._with_coauthor("chore: y") == "chore: y"
+
+
+def test_coauthor_in_real_commit(monkeypatch, tmp_path) -> None:
+    """End-to-end: the trailer lands in the actual commit message."""
+    import subprocess
+    subprocess.run(["git", "init", "-q", "-b", "main", str(tmp_path)], check=True)
+    monkeypatch.chdir(tmp_path)
+    subprocess.run(["git", "config", "user.email", "t@t"], check=True)
+    subprocess.run(["git", "config", "user.name", "t"], check=True)
+    (tmp_path / "a.txt").write_text("hi\n")
+    monkeypatch.setenv("SUPERTOOL_COAUTHOR", "Max <noreply>")
+    monkeypatch.setattr(commit.sys, "argv", ["commit.py", "feat: a", "a.txt"])
+    rc = commit.main()
+    assert rc == 0
+    body = subprocess.run(["git", "log", "-1", "--pretty=%B"],
+                          capture_output=True, text=True, check=True).stdout
+    assert "Co-Authored-By: Max <noreply>" in body
+    assert body.count("Co-Authored-By:") == 1
