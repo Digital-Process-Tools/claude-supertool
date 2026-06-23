@@ -63,10 +63,10 @@
       "syntax": "git-commit:::MSG[:::PATH...]"
     },
     "git-push": {
-      "cmd": "{python} {path}git/push.py",
+      "cmd": "{python} {path}git/push.py {args}",
       "timeout": 120,
-      "description": "Push current branch (sets upstream if missing) — remote before/after, ahead/behind, open MR/PR + pipeline. For updating an existing MR; use mr op for push+create",
-      "syntax": "git-push"
+      "description": "Push current branch (sets upstream if missing). Receipt: remote before/after, ahead/behind, MR/PR + pipeline, mergeability, behind-target, uncommitted leftovers, watch cmd. Non-ff auto-rebases (conflict → paused + git-conflicts). Hook amend+push reported as PUSHED. Flags: :force-with-lease, :no-verify, :watch",
+      "syntax": "git-push[:force-with-lease][:no-verify][:watch]"
     }
   }
 }

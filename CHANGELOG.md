@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-06-23
+
+### Fixed
+
+- **`git-push` no longer misreports a pre-push hook's amend-and-push as `PUSH REJECTED`.** A pre-push hook that auto-formats commonly amends HEAD, pushes the corrected commit itself, then exits non-zero so git won't also push the stale pre-amend ref — that non-zero is *success*, not failure. `git-push` now trusts the live remote SHA (`ls-remote`) over the exit code: when the remote already matches local HEAD it reports `PUSHED (pre-push hook amended HEAD)` with the rewritten SHA, instead of `REJECTED`. And `_first_error_line` no longer picks a green `✅ … 0 errors` / `pushed successfully` line as the "first error" (the substring `errors` was matching the error scan). Closes [#297](https://github.com/Digital-Process-Tools/claude-supertool/issues/297).
+
+### Added
+
+- **`git-push` embeds non-fast-forward recovery.** When the remote has moved ahead, `git-push` now fetches, surfaces the **incoming remote commits** (short SHA, author, subject — the signal for force-vs-integrate, since forcing over a teammate's commit destroys it) with the ahead/behind counts, then rebases your work onto the remote and re-pushes in the same call — no manual `pull --rebase` → `git-push` round-trip. Computing is cheap; LLM round-trips are not. On conflict it leaves the rebase **paused** (never silently aborted or force-pushed), lists the conflicting files, warns to check the incoming authors before forcing, and points at `git-conflicts` to inspect plus the exact keep-both / cancel (`git rebase --abort`) / force paths — the resolution stays the caller's decision.
+- **`git-push` post-push receipt surfaces the next decision.** A push isn't the end of an action, it's the start of "get this MR merged" — so the receipt now carries the signals you'd otherwise spend round-trips discovering, all riding calls already made: **mergeability** (warns loudly if the MR now `cannot_be_merged` with its target — caught at push time, not 20 min later at merge), **stale base** (`N commit(s) behind origin/<target>`), **uncommitted leftovers** (`git status --porcelain` — the "I fixed two things, committed one, pushed" catch), the **pipeline id + url** on the MR line, and a ready **`watch:gitlab-mr:<iid>`** command to hand the pipeline to a background poller. `:force-with-lease` additionally reports **what it discarded** (author + subject of the overwritten remote commits — the receipt for "did I just nuke a teammate's work"). Watching stays opt-in: the receipt recommends the command by default; `git-push:watch` spawns the poller for the push you're actually iterating on (no stray daemons on WIP pushes).
+- **`git-push:force-with-lease` and `git-push:no-verify` variants.** `:force-with-lease` is the safe force (overwrite only if the remote hasn't moved since you fetched) and suppresses the auto-rebase, since the force is your explicit decision; `:no-verify` skips the local pre-push hook, the documented escape when a local formatter legitimately diverges from CI. The op cmd switched from `{arg}` to `{args}` so the flag tokens reach the script. Part of [#297](https://github.com/Digital-Process-Tools/claude-supertool/issues/297).
+
 ## [0.17.0] - 2026-06-23
 
 ### Added

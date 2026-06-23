@@ -20,7 +20,7 @@ Git investigation and workflow ops. Replaces the 4-6 raw `git` calls you'd norma
 | `git-conflicts` | `git-conflicts` | List all UU files + every conflict block + abort hint |
 | `git-resolve` | `git-resolve:::SIDE:::PATH[,PATH...]` | Pick `ours`/`theirs`/`both` for one file, a comma-separated list, or `all` — stages and prints the continue command. `both` is a union: it strips the conflict markers and keeps both sides (ours then theirs), like git's `merge=union` driver — use it when both branches added different non-overlapping lines |
 | `git-commit` | `git-commit:::MSG[:::PATH...]` | Stage PATHs (or all staged if omitted) and commit with MSG — surfaces hook errors, shows HEAD before/after. Use `MSG=--no-edit` to reuse MERGE_MSG/CHERRY_PICK_HEAD during an in-progress merge or cherry-pick |
-| `git-push` | `git-push` | Push the current branch (sets upstream on first push) — remote SHA before/after with commits pushed, ahead/behind vs upstream, and the open MR/PR + pipeline status. For **updating** an already-open MR; use the `mr` op for push+create. Non-fast-forward gets a `pull --rebase` / `--force-with-lease` hint; server-side rejections (protected branch / hook) a distinct one — never auto-forced |
+| `git-push` | `git-push[:force-with-lease][:no-verify]` | Push the current branch (sets upstream on first push) — remote SHA before/after with commits pushed, ahead/behind vs upstream, and the open MR/PR + pipeline status. For **updating** an already-open MR; use the `mr` op for push+create. **Non-fast-forward** is handled in-op: it fetches, surfaces the **incoming remote commits** (SHA, author, subject) so you can see whose work you'd be rebasing over, then rebases your work onto the remote and re-pushes; on conflict it leaves the rebase **paused**, warns to check the incoming authors before forcing, and points you at `git-conflicts` + the keep-both/cancel/force paths — never auto-forced, never silently rewritten. A **pre-push hook that amends HEAD and pushes** the fixed commit itself (exiting non-zero) is reported as `PUSHED`, not `REJECTED`, since the live remote ref already matches HEAD. The **post-push receipt** carries the next-decision signals (all on calls already made): MR **mergeability** (warns if it now `cannot_be_merged` with target), **stale base** (`N behind origin/<target>`), **uncommitted leftovers** (changes not in this push), the **pipeline id + url**, and a ready `watch:gitlab-mr:<iid>` command. `:force-with-lease` also reports **what it discarded** (author + subject of overwritten remote commits). Flags: `:force-with-lease` (safe force — overwrite only if the remote hasn't moved; skips the auto-rebase, and lists discarded commits), `:no-verify` (skip the local pre-push hook, e.g. when a local formatter diverges from CI), `:watch` (spawn a background pipeline poller instead of just recommending the command) |
 
 ## Common workflows
 
@@ -51,6 +51,19 @@ One call gives you branch health + exactly what differs from base — no follow-
 ./supertool 'git-commit:::Fix the thing:::src/app/Thing.py' 'git-push'
 ```
 `git-commit` shows HEAD before/after; `git-push` updates the remote and reports the open MR + the pipeline the push just triggered — no raw `git push` fallback.
+
+**Push when the remote has moved ahead (non-fast-forward):**
+```bash
+./supertool 'git-push'
+```
+`git-push` rebases your work onto the remote and re-pushes in the same call — no manual `pull --rebase` round-trip. If the rebase conflicts, it stops with the rebase **paused** and the conflicting files listed, then points you at `git-conflicts`:
+```bash
+./supertool 'git-conflicts'                       # inspect the blocks
+./supertool 'git-resolve:::ours:::src/app/X.py'   # decide
+# then continue the rebase and push:
+git rebase --continue && ./supertool 'git-push'
+```
+To **cancel** and get back to exactly where you were before the push (your commits intact, nothing pushed), `git rebase --abort`. To overwrite the remote intentionally (your history wins), `git rebase --abort` then `./supertool 'git-push:force-with-lease'`. To skip a local pre-push hook that diverges from CI, `./supertool 'git-push:no-verify'`.
 
 ## Configuration
 
