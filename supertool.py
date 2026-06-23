@@ -1135,7 +1135,19 @@ def op_read(path: str, offset: int = 0, limit: int = 0,
                       f"or read:{path}:::grep=PATTERN to filter]\n")
     if limit <= 0:
         limit = _get_op_int("read", "max_lines", MAX_READ_LINES)
-    return render_file(path, offset, limit, grep_filter, force_full)
+    body = render_file(path, offset, limit, grep_filter, force_full)
+    return body + _read_edit_hint(path, body)
+
+
+def _read_edit_hint(path: str, body: str) -> str:
+    """One-line nudge appended to a single-file read receipt: supertool's edit
+    op bypasses the harness must-Read-first gate, so the file can be modified
+    without a harness Read tool call (#309). Scoped to successful single-file
+    reads only — render_file errors get no hint, and grep/glob multi-file
+    branches don't route through op_read."""
+    if body.startswith("ERROR:"):
+        return ""
+    return f"↳ to modify: ./supertool 'edit:::OLD:::NEW:::{path}'  (or edit:@- ; no harness Read needed)\n"
 
 
 _REGEX_METACHARS = re.compile(r"[()\[\]{}|.*+?^$\\]")
