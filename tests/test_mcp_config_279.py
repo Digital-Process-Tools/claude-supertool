@@ -47,4 +47,4 @@ def test_plugin_manifest_version_matches_code() -> None:
 
 
 def test_version_is_bumped_for_279() -> None:
-    assert supertool.VERSION == "0.16.0"
+    assert supertool.VERSION == "0.17.0"

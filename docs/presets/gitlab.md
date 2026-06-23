@@ -13,7 +13,7 @@ GitLab ops via the `glab` CLI. Replaces the 3-5 separate `glab` calls needed to 
 | `gl-issue` | `gl-issue:NUMBER[:full]` | Issue metadata, description, comments (truncated by default), related MRs. `:full` disables truncation |
 | `gl-mr` | `gl-mr:NUMBER_OR_BRANCH[:status]` | MR dashboard: branch, pipeline, reviewer/approval state, linked issue, diff stat, comments. `:status` returns slim merge-state only |
 | `gl-mrs` | `gl-mrs[:filters,flags]` | MR triage board, sorted failing-first then stalest. Per MR (enriched in parallel): pipeline status (a failure shows the failed **job name** = the failure class), approval state, age, diff size, watch-state cross-reference, and `conflict`/`draft`/`threads` flags — plus an actionable footer. Filters (comma-sep): `author`/`reviewer`/`assignee`/`label`/`milestone`/`state`/`per`. Flags: `nopipe` (skip enrichment), `iids` (bare id list), `failed` (only failing) |
-| `gl-pipeline` | `gl-pipeline:NUMBER` | Pipeline job list grouped by stage with pass/fail status and failed job IDs |
+| `gl-pipeline` | `gl-pipeline:NUMBER[:active\|:failed]` | Pipeline job list grouped by stage with pass/fail status and failed job IDs. The default board collapses the `manual`/`created`/`skipped` bulk to a one-line count so the running/done/failed jobs aren't buried. `:active` shows only running/pending jobs ("what's still going"); `:failed` shows only failed jobs plus their job IDs/URLs ("what broke") |
 | `gl-job` | `gl-job:NUMBER[:raw[:START[:END]]\|:grep:PATTERN]` | Job failure detail: MR context + error pattern search + log tail. `:raw` dumps the full trace; `:raw:START:END` slices lines (1-indexed, inclusive); `:grep:PATTERN` runs an ad-hoc regex over the trace (literal fallback on bad regex, ±context, names the pattern + tail on no-match — never silent-empty) |
 
 ## Common workflows
@@ -26,8 +26,10 @@ Returns approval state, pipeline status, diff stat, and all comments in one call
 
 **Debug a failed pipeline:**
 ```bash
-./supertool 'gl-pipeline:12345'
-# find the failed job ID, then:
+./supertool 'gl-pipeline:12345:failed'   # only the failed jobs + their IDs/URLs
+# or, while it's still running, what's left:
+./supertool 'gl-pipeline:12345:active'   # only running/pending jobs
+# then dig into a failed job by ID:
 ./supertool 'gl-job:67890'
 # if you need more log context:
 ./supertool 'gl-job:67890:raw:1:150'

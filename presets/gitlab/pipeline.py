@@ -1,10 +1,29 @@
 #!/usr/bin/env python3
-"""GitLab pipeline job list via glab CLI."""
+"""GitLab pipeline job list via glab CLI.
+
+`gl-pipeline:ID` prints every job by stage. When polling a running pipeline
+that's ~90 lines of `manual`/`created` bulk you never read, re-paid every turn.
+Two filter modes cover the only questions you actually ask mid-pipeline:
+
+    gl-pipeline:ID          full board — manual/created/skipped bulk collapsed
+                            to a one-line count
+    gl-pipeline:ID:active   only running/pending jobs — "what's still going"
+    gl-pipeline:ID:failed   only failed jobs + their job IDs/URLs — "what broke"
+"""
 from __future__ import annotations
 
 import json
 import subprocess
 import sys
+from collections import Counter
+
+# Statuses that answer "what's still going on right now".
+_ACTIVE_STATUSES = {"running", "pending"}
+# Bulk statuses that are never what you're polling for — collapsed to a
+# one-line count in the default view instead of one row each.
+_NOISE_STATUSES = {"manual", "created", "skipped"}
+
+_FILTERS = {"full", "active", "failed"}
 
 
 def _format_error(stderr: str, resource: str, identifier: str) -> str:
@@ -19,12 +38,48 @@ def _format_error(stderr: str, resource: str, identifier: str) -> str:
     return f"ERROR: glab failed for {resource} #{identifier}: {stderr.strip()}"
 
 
+def _print_table(jobs: list[dict]) -> None:
+    """Render the job table header + one row per job, with status markers."""
+    print(f"{'Job':<40} {'Stage':<20} {'Status':<12} {'Duration':<10}")
+    print("-" * 82)
+    for job in jobs:
+        name = job.get("name", "?")
+        stage = job.get("stage", "?")
+        status = job.get("status", "?")
+        duration = job.get("duration")
+        duration_str = f"{duration:.0f}s" if duration else "-"
+
+        marker = ""
+        if status == "failed":
+            marker = " <!"
+        elif status == "running":
+            marker = " ..."
+
+        print(f"{name:<40} {stage:<20} {status:<12} {duration_str:<10}{marker}")
+
+
+def _print_failed_detail(failed: list[dict]) -> None:
+    """The failed-job names with job IDs + web URLs — the 'what broke' answer."""
+    print(f"\n## Failed jobs ({len(failed)})")
+    for job in failed:
+        name = job.get("name", "?")
+        job_id = job.get("id", "?")
+        web_url = job.get("web_url", "")
+        print(f"  - {name} (job #{job_id})")
+        if web_url:
+            print(f"    {web_url}")
+
+
 def main() -> int:
     if len(sys.argv) < 2:
-        print("ERROR: usage: pipeline.py PIPELINE_ID")
+        print("ERROR: usage: pipeline.py PIPELINE_ID [active|failed]")
         return 1
 
     pipeline_id = sys.argv[1]
+    mode = sys.argv[2].lower() if len(sys.argv) > 2 and sys.argv[2] else "full"
+    if mode not in _FILTERS:
+        print(f"ERROR: unknown filter {mode!r} — use 'active', 'failed', or omit for the full board")
+        return 1
 
     # glab ci view doesn't support --output json directly for pipelines,
     # so we use the API endpoint
@@ -61,41 +116,45 @@ def main() -> int:
         pipe = jobs[0].get("pipeline", {})
         pipe_status = pipe.get("status", "unknown")
 
-    print(f"# Pipeline #{pipeline_id} — {pipe_status}")
-    print(f"{'Job':<40} {'Stage':<20} {'Status':<12} {'Duration':<10}")
-    print("-" * 82)
-
     # Sort by stage then name
     jobs.sort(key=lambda j: (j.get("stage", ""), j.get("name", "")))
+    failed = [j for j in jobs if j.get("status") == "failed"]
 
-    failed = []
-    for job in jobs:
-        name = job.get("name", "?")
-        stage = job.get("stage", "?")
-        status = job.get("status", "?")
-        duration = job.get("duration")
-        duration_str = f"{duration:.0f}s" if duration else "-"
+    print(f"# Pipeline #{pipeline_id} — {pipe_status}")
 
-        marker = ""
-        if status == "failed":
-            marker = " <!"
-            failed.append(job)
-        elif status == "success":
-            marker = ""
-        elif status == "running":
-            marker = " ..."
+    if mode == "failed":
+        if not failed:
+            print("No failed jobs.")
+            return 0
+        _print_table(failed)
+        _print_failed_detail(failed)
+        return 0
 
-        print(f"{name:<40} {stage:<20} {status:<12} {duration_str:<10}{marker}")
+    if mode == "active":
+        active = [j for j in jobs if j.get("status") in _ACTIVE_STATUSES]
+        if not active:
+            print("No running or pending jobs.")
+            return 0
+        _print_table(active)
+        return 0
+
+    # Full board — collapse the manual/created/skipped bulk to a count line so
+    # the running/failed/done jobs you actually care about aren't buried.
+    shown = [j for j in jobs if j.get("status") not in _NOISE_STATUSES]
+    hidden = [j for j in jobs if j.get("status") in _NOISE_STATUSES]
+
+    _print_table(shown)
+
+    if hidden:
+        counts = Counter(str(j.get("status", "?")) for j in hidden)
+        summary = ", ".join(f"+{n} {status}" for status, n in sorted(counts.items()))
+        print(
+            f"{summary} (hidden — "
+            f"gl-pipeline:{pipeline_id}:active / :failed to filter)"
+        )
 
     if failed:
-        print(f"\n## Failed jobs ({len(failed)})")
-        for job in failed:
-            name = job.get("name", "?")
-            job_id = job.get("id", "?")
-            web_url = job.get("web_url", "")
-            print(f"  - {name} (job #{job_id})")
-            if web_url:
-                print(f"    {web_url}")
+        _print_failed_detail(failed)
 
     return 0
 

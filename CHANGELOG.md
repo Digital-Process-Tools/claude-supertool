@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-06-23
+
+### Added
+
+- **`gl-pipeline` filter modes — `:active` and `:failed`.** Polling a running pipeline across turns re-paid ~90 lines of `manual`/`created` bulk every call. Two filter modes cover the only questions you ask mid-pipeline: `gl-pipeline:ID:active` shows just running/pending jobs ("what's still going"), `gl-pipeline:ID:failed` shows just the failed jobs plus their job IDs/URLs ("what broke"). The default board now collapses the `manual`/`created`/`skipped` bulk to a one-line count (`+60 manual, +10 created (hidden — …)`) instead of one row each, so the running/failed/done jobs aren't buried. The op cmd switched from `{arg}` to `{args}` so the filter token reaches the script. Closes [#298](https://github.com/Digital-Process-Tools/claude-supertool/issues/298).
+
 ## [0.16.0] - 2026-06-22
 
 ### Added
