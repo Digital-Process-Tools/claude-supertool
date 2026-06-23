@@ -59,8 +59,8 @@
     "git-resolve": {
       "cmd": "{python} {path}git/resolve.py {args}",
       "timeout": 30,
-      "description": "Pick ours/theirs/both(union) for PATH (single, comma-separated list, or 'all') + stage + continue cmd",
-      "syntax": "git-resolve:::SIDE:::PATH[,PATH...]  (SIDE: ours|theirs|both)"
+      "description": "Pick ours/theirs/both(union) for PATH (single, comma-separated list, or 'all') + stage + continue cmd. Optional 1-indexed BLOCKS selector (single file) resolves only those conflict blocks (as git-conflicts numbers them); a partial resolve keeps the other blocks' markers and stays unstaged ('N of M blocks resolved')",
+      "syntax": "git-resolve:::SIDE:::PATH[,PATH...][:::BLOCKS]  (SIDE: ours|theirs|both; BLOCKS: e.g. 1,3 — single file only)"
     },
     "git-commit": {
       "cmd": "{python} {path}git/commit.py {args}",

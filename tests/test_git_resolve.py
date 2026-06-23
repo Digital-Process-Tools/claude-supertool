@@ -392,3 +392,244 @@ def test_validate_paths_single_supertool_call_for_many_files(monkeypatch, tmp_pa
     assert all(f in arg for f in files)
     assert set(digests) == set(files)
     assert all(d == "validate: ok" for d in digests.values())
+
+
+# ----- per-block resolution (issue #305) -----
+
+# Three conflict blocks — numbered 1, 2, 3 as git-conflicts lists them.
+THREE_BLOCKS = (
+    "head\n"
+    "<<<<<<< HEAD\n"
+    "ours-1\n"
+    "=======\n"
+    "theirs-1\n"
+    ">>>>>>> branch\n"
+    "middle\n"
+    "<<<<<<< HEAD\n"
+    "ours-2\n"
+    "=======\n"
+    "theirs-2\n"
+    ">>>>>>> branch\n"
+    "more\n"
+    "<<<<<<< HEAD\n"
+    "ours-3\n"
+    "=======\n"
+    "theirs-3\n"
+    ">>>>>>> branch\n"
+    "tail\n"
+)
+
+
+def test_count_blocks(tmp_path) -> None:
+    f = tmp_path / "a.py"
+    f.write_text(THREE_BLOCKS, encoding="utf-8")
+    assert resolve._count_blocks(str(f)) == 3
+
+
+def test_resolve_blocks_selected_only(tmp_path) -> None:
+    """Blocks 1 and 3 take ours; block 2 keeps its markers verbatim."""
+    f = tmp_path / "a.py"
+    f.write_text(THREE_BLOCKS, encoding="utf-8")
+    ok, err, resolved, total = resolve._resolve_blocks(str(f), "ours", {1, 3})
+    assert ok and err == ""
+    assert (resolved, total) == (2, 3)
+    txt = f.read_text(encoding="utf-8")
+    # block 1 resolved to ours
+    assert "ours-1" in txt and "theirs-1" not in txt
+    # block 2 untouched — markers intact
+    assert "<<<<<<< HEAD\nours-2\n=======\ntheirs-2\n>>>>>>> branch" in txt
+    # block 3 resolved to ours
+    assert "ours-3" in txt and "theirs-3" not in txt
+
+
+def test_resolve_blocks_theirs_side(tmp_path) -> None:
+    f = tmp_path / "a.py"
+    f.write_text(THREE_BLOCKS, encoding="utf-8")
+    ok, _, resolved, total = resolve._resolve_blocks(str(f), "theirs", {2})
+    assert ok and (resolved, total) == (1, 3)
+    txt = f.read_text(encoding="utf-8")
+    assert "theirs-2" in txt and "ours-2" not in txt
+    # blocks 1 and 3 still conflicted
+    assert txt.count("<<<<<<<") == 2
+
+
+def test_resolve_blocks_both_union(tmp_path) -> None:
+    f = tmp_path / "a.py"
+    f.write_text(THREE_BLOCKS, encoding="utf-8")
+    ok, _, resolved, total = resolve._resolve_blocks(str(f), "both", {1})
+    assert ok and (resolved, total) == (1, 3)
+    txt = f.read_text(encoding="utf-8")
+    # block 1 union keeps both sides, drops markers
+    assert "ours-1\ntheirs-1\n" in txt
+    assert txt.count("<<<<<<<") == 2  # 2 and 3 remain
+
+
+def test_resolve_blocks_out_of_range(tmp_path) -> None:
+    f = tmp_path / "a.py"
+    f.write_text(THREE_BLOCKS, encoding="utf-8")
+    ok, err, _, total = resolve._resolve_blocks(str(f), "ours", {4})
+    assert not ok
+    assert "out of range" in err and total == 3
+    # file untouched
+    assert f.read_text(encoding="utf-8") == THREE_BLOCKS
+
+
+def test_resolve_blocks_all_blocks_clean(tmp_path) -> None:
+    """Selecting every block leaves no markers."""
+    f = tmp_path / "a.py"
+    f.write_text(THREE_BLOCKS, encoding="utf-8")
+    ok, _, resolved, total = resolve._resolve_blocks(str(f), "ours", {1, 2, 3})
+    assert ok and (resolved, total) == (3, 3)
+    assert "<<<<<<<" not in f.read_text(encoding="utf-8")
+
+
+def _fake_git_single(f, calls):
+    """Build a fake_git for one conflicted file `f`, recording into `calls`."""
+    import subprocess
+
+    def fake_git(args, timeout=10):
+        calls.append(args)
+        if args[:2] == ["rev-parse", "--git-dir"]:
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout=".git\n", stderr="")
+        if args[:3] == ["diff", "--name-only", "--diff-filter=U"]:
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout=f"{f}\n", stderr="")
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    return fake_git
+
+
+def test_partial_resolve_reports_n_of_m_not_staged(monkeypatch, capsys, tmp_path) -> None:
+    """Partial resolve: 'N of M blocks resolved', markers kept, NOT staged."""
+    f = tmp_path / "x.py"
+    f.write_text(THREE_BLOCKS, encoding="utf-8")
+    calls: list[list[str]] = []
+    monkeypatch.setattr(resolve, "_git", _fake_git_single(f, calls))
+    monkeypatch.setattr(resolve, "_validate_paths", lambda ps: {p: None for p in ps})
+    monkeypatch.setattr(resolve.sys, "argv", ["resolve.py", "ours", str(f), "1,3"])
+    rc = resolve.main()
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert "2 of 3 block(s) resolved, file still conflicted" in out
+    assert "Not staged" in out
+    # remaining markers preserved
+    assert "<<<<<<<" in f.read_text(encoding="utf-8")
+    # NEVER staged
+    assert not any(c[:2] == ["add", "--"] for c in calls)
+
+
+def test_full_selector_stages_clean(monkeypatch, capsys, tmp_path) -> None:
+    """Selecting every block clears markers → file is staged."""
+    f = tmp_path / "x.py"
+    f.write_text(THREE_BLOCKS, encoding="utf-8")
+    calls: list[list[str]] = []
+    monkeypatch.setattr(resolve, "_git", _fake_git_single(f, calls))
+    monkeypatch.setattr(resolve, "_validate_paths", lambda ps: {p: "validate: ok" for p in ps})
+    monkeypatch.setattr(resolve.sys, "argv", ["resolve.py", "theirs", str(f), "1,2,3"])
+    rc = resolve.main()
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert "3 of 3 block(s) resolved" in out
+    assert "staged" in out
+    assert "markers: clean | validate: ok" in out
+    assert "<<<<<<<" not in f.read_text(encoding="utf-8")
+    assert any(c[:2] == ["add", "--"] for c in calls)
+
+
+def test_blocks_invalid_token_rejected(monkeypatch, capsys) -> None:
+    import subprocess
+    fake = subprocess.CompletedProcess(args=["git"], returncode=0, stdout=".git\n", stderr="")
+    monkeypatch.setattr(resolve, "_git", lambda args, timeout=10: fake)
+    monkeypatch.setattr(resolve.sys, "argv", ["resolve.py", "ours", "x.py", "1,abc"])
+    rc = resolve.main()
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "BLOCKS must be 1-indexed" in out
+
+
+def test_blocks_zero_rejected(monkeypatch, capsys) -> None:
+    import subprocess
+    fake = subprocess.CompletedProcess(args=["git"], returncode=0, stdout=".git\n", stderr="")
+    monkeypatch.setattr(resolve, "_git", lambda args, timeout=10: fake)
+    monkeypatch.setattr(resolve.sys, "argv", ["resolve.py", "ours", "x.py", "0"])
+    rc = resolve.main()
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "BLOCKS must be 1-indexed" in out
+
+
+def test_blocks_require_single_file(monkeypatch, capsys) -> None:
+    """A block selector with a CSV multi-file target is rejected."""
+    import subprocess
+
+    def fake_git(args, timeout=10):
+        if args[:2] == ["rev-parse", "--git-dir"]:
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout=".git\n", stderr="")
+        if args[:3] == ["diff", "--name-only", "--diff-filter=U"]:
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="a.py\nb.py\n", stderr="")
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(resolve, "_git", fake_git)
+    monkeypatch.setattr(resolve.sys, "argv", ["resolve.py", "ours", "a.py,b.py", "1"])
+    rc = resolve.main()
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "requires exactly one PATH" in out
+
+
+def test_blocks_require_single_file_not_all(monkeypatch, capsys) -> None:
+    """A block selector with target 'all' is rejected."""
+    import subprocess
+
+    def fake_git(args, timeout=10):
+        if args[:2] == ["rev-parse", "--git-dir"]:
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout=".git\n", stderr="")
+        if args[:3] == ["diff", "--name-only", "--diff-filter=U"]:
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="a.py\nb.py\n", stderr="")
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(resolve, "_git", fake_git)
+    monkeypatch.setattr(resolve.sys, "argv", ["resolve.py", "ours", "all", "1"])
+    rc = resolve.main()
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "requires exactly one PATH" in out
+
+
+def test_no_blocks_is_whole_file_backcompat(monkeypatch, capsys, tmp_path) -> None:
+    """No block selector → unchanged whole-file behavior (checkout + stage)."""
+    import subprocess
+    f = tmp_path / "x.py"
+    f.write_text("clean\n", encoding="utf-8")
+    calls: list[list[str]] = []
+
+    def fake_git(args, timeout=10):
+        calls.append(args)
+        if args[:2] == ["rev-parse", "--git-dir"]:
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout=".git\n", stderr="")
+        if args[:3] == ["diff", "--name-only", "--diff-filter=U"]:
+            n = len([c for c in calls if c[:3] == ["diff", "--name-only", "--diff-filter=U"]])
+            stdout = f"{f}\n" if n == 1 else ""
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout=stdout, stderr="")
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(resolve, "_git", fake_git)
+    monkeypatch.setattr(resolve, "_validate_paths", lambda ps: {p: None for p in ps})
+    monkeypatch.setattr(resolve.sys, "argv", ["resolve.py", "ours", str(f)])
+    rc = resolve.main()
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert "git-resolve: ours (1 file(s))" in out
+    # whole-file path uses checkout --ours, then add
+    assert any(c[:2] == ["checkout", "--ours"] for c in calls)
+    assert any(c[:2] == ["add", "--"] for c in calls)
+
+
+def test_resolve_blocks_unterminated(tmp_path) -> None:
+    f = tmp_path / "a.py"
+    f.write_text("<<<<<<< HEAD\nours\n=======\ntheirs\n", encoding="utf-8")  # no >>>>>>>
+    ok, err, _, _ = resolve._resolve_blocks(str(f), "ours", {1})
+    assert not ok
+    assert "unterminated" in err
