@@ -14,6 +14,12 @@
       "description": "File history: commits, uncommitted, blame hotspots",
       "syntax": "git-investigate:PATH"
     },
+    "git-diff": {
+      "cmd": "{python} {path}git/diff.py {args}",
+      "timeout": 15,
+      "description": "Review-aware diff: classified files + +/-, red-flag scan of added lines (debug code/conflict markers w/ file:line), forbidden-path guard, missing-test pairing, next hints. Policy via .supertool.json ops.git-diff.{red_flags_extra,forbidden_paths,test_pairing,hints}",
+      "syntax": "git-diff[:staged|:branch[:BASE]|:PATH]"
+    },
     "git-trail": {
       "cmd": "{python} {path}git/trail.py {args}",
       "timeout": 15,
