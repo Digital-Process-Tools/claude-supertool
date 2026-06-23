@@ -31,10 +31,10 @@
       "example": "gl-issue-create:@.max/new-issue.json"
     },
     "gl-pipeline": {
-      "cmd": "{python} {path}gitlab/pipeline.py {arg}",
+      "cmd": "{python} {path}gitlab/pipeline.py {args}",
       "timeout": 15,
-      "description": "Pipeline jobs by stage with statuses + failed job IDs",
-      "syntax": "gl-pipeline:NUMBER"
+      "description": "Pipeline jobs by stage with statuses + failed job IDs. Default collapses manual/created/skipped bulk to a count. :active = running/pending only; :failed = failed jobs + IDs/URLs",
+      "syntax": "gl-pipeline:NUMBER[:active|:failed]"
     },
     "gl-job": {
       "cmd": "{python} {path}gitlab/job.py {args}",
