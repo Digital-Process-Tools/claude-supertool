@@ -98,6 +98,14 @@ def main() -> int:
                     result = cob
                     stderr = ""
                     s = ""
+                else:
+                    # ref WAS found and fetched — the `-B FETCH_HEAD` checkout
+                    # itself failed (commonly a dirty tree blocking the switch).
+                    # Surface that real error instead of the stale "pathspec"
+                    # one, so the reporter below names the true blocker.
+                    result = cob
+                    stderr = cob.stderr.strip() or cob.stdout.strip()
+                    s = stderr.lower()
     if result.returncode != 0:
         if "not a git repository" in s:
             print("ERROR: not inside a git repository.")
