@@ -8954,8 +8954,22 @@ def _validator_render_diff(before: Optional[Dict[str, Any]], after: Dict[str, An
                 status = f"ok {primary[0]}={primary[1]}"
                 return [f"{tool:12s}: {status:<10}  {'(unchanged)':<11}  {time_col:>5}"]
         status = "ok" if a_ok else f"{a_count} err"
-        marker_col = "(timeout)" if after.get("timeout") else "(unchanged)"
-        return [f"{tool:12s}: {status:<10}  {marker_col:<11}  {time_col:>5}"]
+        if a_ok:
+            marker_col = "(unchanged)"
+        elif after.get("timeout"):
+            marker_col = "(timeout)"
+        else:
+            marker_col = "(pre-existing — not from this edit)"
+        out = [f"{tool:12s}: {status:<10}  {marker_col}  {time_col:>5}"]
+        if not a_ok and not after.get("timeout"):
+            for e in (after.get("errors") or [])[:5]:
+                line_n = f"L{e['line']}" if e.get("line") else "  "
+                code = e.get("code") or ""
+                msg = (e.get("msg") or "").strip().replace("\n", " ")[:120]
+                out.append(f"  {line_n} {code}  {msg}")
+            if len(after.get("errors") or []) > 5:
+                out.append(f"  ... +{len(after['errors']) - 5} more")
+        return out
     marker = "✓" if a_ok else ("⚠" if delta < 0 else "✗")
     arrow = f"{b_count} → {a_count}"
     sign = f"({'+' if delta >= 0 else ''}{delta})"
