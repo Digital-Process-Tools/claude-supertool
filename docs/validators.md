@@ -189,9 +189,15 @@ Run validators explicitly against any file without an edit op:
 ```bash
 ./supertool 'validate:src/Foo.php'                    # all matching validators
 ./supertool 'validate:src/Foo.php:phplint,phpstan'    # filtered to named validators
+./supertool 'validate:a.php,b.php,c.php'              # list form — many files, config loaded once
+./supertool 'validate:a.php,b.php:@syntax'            # only parser/compiler validators
 ```
 
 Useful for a pre-commit sweep or spot-checking a file you didn't edit this session.
+
+**List form** — pass a comma-separated path list (`validate:f1,f2,…[:tool_filter]`) to validate several files in one invocation; the config is loaded once for the whole batch and each path is independently security-checked at dispatch. Single-file `validate:PATH` is unchanged.
+
+**`@syntax` filter** — the special filter `@syntax` selects only validators that declare `"syntax": true` in their spec (the parser/compiler tier), keeping that scope in config rather than a hardcoded caller list. Falls back to the bundled name list for older configs that predate the flag.
 
 ## Output example
 

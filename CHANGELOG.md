@@ -7,15 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-06-24
+
 ### Added
 
-- **`validate` op gained a list form — `validate:f1,f2,…:tool_filter`** — validating several files in one invocation (config loaded once for the whole batch). Single-file `validate:PATH` is unchanged. Each path in the list is independently security-checked at dispatch.
+- **`validate` op gained a list form — `validate:f1,f2,…:tool_filter`** — validating several files in one invocation (config loaded once for the whole batch). Single-file `validate:PATH` is unchanged. Each path in the list is independently security-checked at dispatch. Closes [#306](https://github.com/Digital-Process-Tools/claude-supertool/issues/306).
 - **Declarative `@syntax` validator filter** — `validate:PATH:@syntax` selects validators that set `"syntax": true` in their spec, keeping the parser/compiler scope in config instead of a hardcoded caller list.
+- **`git-resolve` per-hunk side selection via an optional `BLOCKS` arg** — `git-resolve:::SIDE:::PATH:::1,3` resolves only the listed 1-indexed conflict blocks (numbered as `git-conflicts` lists them); the rest stay conflicted. No block list = whole-file behavior unchanged. Honors the marker hard-gate: a partial resolve reports "N of M blocks resolved, file still conflicted" and never stages the file. Mixed sides per call are out of scope (v1). Closes [#305](https://github.com/Digital-Process-Tools/claude-supertool/issues/305).
+- **`git-commit` auto-appends a configurable `Co-Authored-By` trailer** when the message lacks one. The value comes from `SUPERTOOL_COAUTHOR` (default `Max <noreply>`); disable with an empty value or `none`/`off`/`false`. Closes [#286](https://github.com/Digital-Process-Tools/claude-supertool/issues/286).
 - **Plain / ASCII output mode for hooks, `grep` and CI.** Pass `--plain` (or set `SUPERTOOL_PLAIN=1`) to emit ASCII-only output — `[WARN]` / `[OK]` / `[FAIL]` / `[INFO]` in place of the `⚠` / `✓` / `✗` / `ℹ` glyphs — so downstream consumers parse reliably without UTF-8/locale assumptions (a C/POSIX-locale `grep` won't match a multibyte glyph; a cp1252 console crashes on one). Stable ASCII section keys (`Red flags in added lines`, `Forbidden paths`, …) stay intact for grepping. The `--plain` flag exports `SUPERTOOL_PLAIN=1` so preset ops (run as subprocesses) inherit it. Stdout/stderr are also defensively reconfigured to UTF-8 at startup, so a stray glyph in diffed content never raises `UnicodeEncodeError` on a non-UTF-8 console — even with plain mode on. Default (rich) output is unchanged. Closes [#308](https://github.com/Digital-Process-Tools/claude-supertool/issues/308).
 
 ### Changed
 
+- **Validator receipts now label pre-existing errors instead of an ambiguous `(unchanged)`.** When a mutating op leaves the error count unchanged from a pre-existing baseline, the row reads `(pre-existing — not from this edit)` and lists up to 5 of the offending errors, so a failure that predates the edit is no longer misread as caused by it. Closes [#307](https://github.com/Digital-Process-Tools/claude-supertool/issues/307).
 - **`git-resolve`'s post-resolve syntax digest now shells `validate` ONCE for all resolved files** instead of once per file, via the new list form. It uses the declarative `@syntax` scope (falling back to the hardcoded name list for older configs) and folds the per-file rows back into each receipt line. Closes [#306](https://github.com/Digital-Process-Tools/claude-supertool/issues/306).
+- **`read` op now hints that a following supertool `edit` needs no preceding harness `Read`** — supertool's read is a Bash subprocess that never registers with the harness must-Read-first gate, so the hint steers callers to `edit`/`replace`/`vim` (which validate independently) rather than the harness `Edit`, which would fail with "File has not been read yet". Closes [#309](https://github.com/Digital-Process-Tools/claude-supertool/issues/309).
+- **`git-commit`'s "Next:" hint recommends the `git-push` op** instead of raw `git push`, so the suggested follow-up carries the op's ahead/behind and mergeability receipt. Closes [#310](https://github.com/Digital-Process-Tools/claude-supertool/issues/310).
+
+### Fixed
+
+- **`gl-job`/`gh-job` `:grep:` regex fallback message reworded to a neutral `(literal match)`.** An unbalanced-paren pattern (e.g. `1)`) that fails to compile as a regex falls back to a literal substring search; the message no longer reads like an error. Closes [#299](https://github.com/Digital-Process-Tools/claude-supertool/issues/299).
 
 ## [0.18.0] - 2026-06-23
 

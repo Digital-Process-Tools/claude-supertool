@@ -161,6 +161,16 @@
       "description": "Git blame N lines around LINE (def 5)",
       "example": "blame:src/app/Module.py:42:3"
     },
+    "replace_dry": {
+      "syntax": "replace_dry:::OLD:::NEW:::PATH",
+      "description": "Preview a replace without writing — shows -old/+new per match. Use ::: when content has ':'.",
+      "example": "replace_dry:::TYPE_CUSTOMER:::TYPE_ENUM_CUSTOMER:::src/"
+    },
+    "replace": {
+      "syntax": "replace:::OLD:::NEW:::PATH  |  replace:@payload",
+      "description": "Replace every OLD→NEW across PATH (file or dir), returns a receipt. Auto-validates per file type, rolls back on syntax fail. Use ::: when content has ':'.",
+      "example": "replace:::TYPE_CUSTOMER:::TYPE_ENUM_CUSTOMER:::src/"
+    },
     "edit": {
       "syntax": "edit:::OLD:::NEW:::PATH  |  edit:@payload",
       "description": "Single-file edit, OLD must match exactly once. Bypasses native Edit must-Read state \u2014 saves a round-trip. Use ::: separator so content with ':' works.",
@@ -176,9 +186,14 @@
       "description": "Replace entire file with CONTENT. Atomic, creates file (+ parent dirs) if missing. Use for full-file rewrites.",
       "example": "paste:::src/app/new_file.py:::print('hello')\\n"
     },
+    "vim": {
+      "syntax": "vim:::PATH:::SCRIPT  |  vim:@payload",
+      "description": "Cursor-based multi-action edit parsed like a vim macro — the DEFAULT op for pattern-based edits (find+change, insert relative to a pattern, multi-step chains). NORMAL verbs read char-by-char; insert/search/ex verbs enter greedy modes until \\e (ESC, U+001B). Fall back to paste (full file) / edit (unique literal swap) / replace_lines (known range) when vim doesn't fit. Full reference: ./supertool help vim.",
+      "example": "vim:::skill.md:::/## Process\\eO## Task list\\eo1. Foo"
+    },
     "validate": {
-      "syntax": "validate:PATH[:tool1,tool2][:verbose]",
-      "description": "Run registered validators matching PATH (by extension). Optional tool_filter limits to named validators. Same validators that fire after every mutating op. Append `verbose` for uncapped errors + source context + raw stdout/stderr.",
+      "syntax": "validate:PATH[,PATH...][:tool_filter][:verbose]",
+      "description": "Run registered validators matching PATH (by extension). Pass a comma-separated PATH list to validate many files in one call (config loaded once for the batch; each path security-checked at dispatch). Optional tool_filter limits to named validators; the special filter `@syntax` selects only parser/compiler validators (those with `\"syntax\": true`). Same validators that fire after every mutating op. Append `verbose` for uncapped errors + source context + raw stdout/stderr.",
       "example": "validate:src/app/Module.py"
     },
     "format": {
@@ -287,6 +302,10 @@
       "enrich_workers": 8,
       "enrich_cap": 40,
       "per_page": 50
+    },
+    "git-commit": {
+      "coauthor": "Max <noreply>",
+      "_doc": "Overrides the git preset's git-commit op. 'coauthor' passes through as SUPERTOOL_COAUTHOR — the Co-Authored-By trailer auto-appended when the commit message lacks one (default 'Max <noreply>'). Set to '' / 'none' / 'off' / 'false' to disable."
     },
     "_hidden_internal": {
       "cmd": "echo internal-helper",
