@@ -2801,8 +2801,13 @@ def _split_arg(arg: str) -> List[str]:
         while i + 1 < len(raw):
             next_piece = raw[i + 1]
             last_seg = piece.rsplit("|", 1)[-1]
+            # Drive-letter detection also splits on ',' so a comma-joined
+            # multi-path keeps reassembling each member's drive letter
+            # (e.g. 'C:\a.php,C' + '\b.php' → 'C:\a.php,C:\b.php' for the
+            # validate list form). The drive letter is the last ','/'|'-segment.
+            drive_seg = last_seg.rsplit(",", 1)[-1]
             is_drive = (
-                _DRIVE_LETTER.match(last_seg) is not None
+                _DRIVE_LETTER.match(drive_seg) is not None
                 and next_piece
                 and next_piece[0] in ("/", "\\")
             )
