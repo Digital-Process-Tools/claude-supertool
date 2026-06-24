@@ -335,3 +335,39 @@ def test_path_meta_suffix_git_ignored(tmp_path: Path) -> None:
         assert " !" in out
     finally:
         _os.chdir(cwd)
+
+
+# --- #309: read→edit hint ----------------------------------------------------
+# A supertool read is a Bash subprocess, so the harness Edit tool's
+# must-Read-first gate rejects it. supertool's own edit op bypasses that gate,
+# so a single-file read receipt carries a one-line nudge toward it. The hint is
+# scoped to single-file reads — grep/glob multi-file branches don't get it.
+
+_HINT = "no harness Read needed"
+
+
+def test_read_appends_edit_hint(tmp_path: Path) -> None:
+    f = tmp_path / "hello.py"
+    f.write_bytes(b"line1\nline2\n")
+    out = supertool.op_read(str(f))
+    assert _HINT in out
+    assert f"edit:::OLD:::NEW:::{f}" in out
+
+
+def test_read_hint_absent_on_missing_file(tmp_path: Path) -> None:
+    out = supertool.op_read(str(tmp_path / "nope.py"))
+    assert _HINT not in out
+
+
+def test_read_hint_absent_on_grep(tmp_path: Path) -> None:
+    f = tmp_path / "a.txt"
+    f.write_bytes(b"needle here\nother\n")
+    out = supertool.op_grep("needle", str(f))
+    assert _HINT not in out
+
+
+def test_read_hint_absent_on_glob(tmp_path: Path) -> None:
+    (tmp_path / "a.txt").write_bytes(b"x\n")
+    (tmp_path / "b.txt").write_bytes(b"y\n")
+    out = supertool.op_glob(str(tmp_path / "*.txt"))
+    assert _HINT not in out
