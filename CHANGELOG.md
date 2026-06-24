@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`validate` op gained a list form — `validate:f1,f2,…:tool_filter`** — validating several files in one invocation (config loaded once for the whole batch). Single-file `validate:PATH` is unchanged. Each path in the list is independently security-checked at dispatch.
 - **Declarative `@syntax` validator filter** — `validate:PATH:@syntax` selects validators that set `"syntax": true` in their spec, keeping the parser/compiler scope in config instead of a hardcoded caller list.
+- **Plain / ASCII output mode for hooks, `grep` and CI.** Pass `--plain` (or set `SUPERTOOL_PLAIN=1`) to emit ASCII-only output — `[WARN]` / `[OK]` / `[FAIL]` / `[INFO]` in place of the `⚠` / `✓` / `✗` / `ℹ` glyphs — so downstream consumers parse reliably without UTF-8/locale assumptions (a C/POSIX-locale `grep` won't match a multibyte glyph; a cp1252 console crashes on one). Stable ASCII section keys (`Red flags in added lines`, `Forbidden paths`, …) stay intact for grepping. The `--plain` flag exports `SUPERTOOL_PLAIN=1` so preset ops (run as subprocesses) inherit it. Stdout/stderr are also defensively reconfigured to UTF-8 at startup, so a stray glyph in diffed content never raises `UnicodeEncodeError` on a non-UTF-8 console — even with plain mode on. Default (rich) output is unchanged. Closes [#308](https://github.com/Digital-Process-Tools/claude-supertool/issues/308).
 
 ### Changed
 

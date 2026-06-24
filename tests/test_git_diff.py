@@ -38,7 +38,7 @@ def _run(repo: Path, *args: str, env_extra: dict | None = None) -> str:
         env.update(env_extra)
     res = subprocess.run(
         [sys.executable, str(DIFF), *args],
-        capture_output=True, text=True, cwd=repo, env=env,
+        capture_output=True, text=True, encoding="utf-8", cwd=repo, env=env,
     )
     assert res.returncode == 0, res.stderr
     return res.stdout
@@ -153,10 +153,55 @@ def test_conflict_marker_only_at_line_start(tmp_path: Path) -> None:
     assert "note.txt:" not in out   # mid-line mention -> not flagged
 
 
+def test_plain_mode_replaces_glyphs_with_ascii(tmp_path: Path) -> None:
+    """SUPERTOOL_PLAIN=1 → warning sections use [WARN], no ⚠ glyph (issue #308)."""
+    _init_repo(tmp_path)
+    _write(tmp_path, "src2/SiFoo/Foo.class.php",
+           "<?php\nclass Foo {\n    function go() { var_dump($this); }\n}\n")
+    subprocess.run(["git", "add", "-A"], check=True, cwd=tmp_path)
+
+    out = _run(tmp_path, "staged", env_extra={"SUPERTOOL_PLAIN": "1"})
+
+    assert "[WARN]" in out
+    assert "⚠" not in out
+    # Stable ASCII section key survives — machine consumers grep this, not glyphs.
+    assert "Red flags in added lines" in out
+    # Entire output is ASCII-encodable (the whole point of plain mode).
+    out.encode("ascii")
+
+
+def test_plain_mode_clean_diff_uses_ok_marker(tmp_path: Path) -> None:
+    """Clean diff in plain mode → [OK], no ✓ glyph."""
+    _init_repo(tmp_path)
+    _write(tmp_path, "src2/SiFoo/Foo.class.php", "<?php\nclass Foo {}\n")
+    _write(tmp_path, "tests/unit/SiFoo/FooTest.php", "<?php\nclass FooTest {}\n")
+    subprocess.run(["git", "add", "-A"], check=True, cwd=tmp_path)
+
+    out = _run(tmp_path, "staged",
+               env_extra={"SUPERTOOL_PLAIN": "1", "SUPERTOOL_TEST_PAIRING": DVSI_PAIRING})
+
+    assert "[OK]" in out
+    assert "✓" not in out
+    assert "No red flags" in out
+
+
+def test_default_mode_keeps_glyphs(tmp_path: Path) -> None:
+    """Without SUPERTOOL_PLAIN, rich glyphs are unchanged (no regression)."""
+    _init_repo(tmp_path)
+    _write(tmp_path, "src2/SiFoo/Foo.class.php",
+           "<?php\nclass Foo {\n    function go() { var_dump($this); }\n}\n")
+    subprocess.run(["git", "add", "-A"], check=True, cwd=tmp_path)
+
+    out = _run(tmp_path, "staged", env_extra={"SUPERTOOL_PLAIN": "0"})
+
+    assert "⚠" in out
+    assert "[WARN]" not in out
+
+
 def test_not_a_git_repo(tmp_path: Path) -> None:
     res = subprocess.run(
         [sys.executable, str(DIFF), "staged"],
-        capture_output=True, text=True, cwd=tmp_path,
+        capture_output=True, text=True, encoding="utf-8", cwd=tmp_path,
     )
     assert res.returncode == 1
     assert "not inside a git repository" in res.stdout

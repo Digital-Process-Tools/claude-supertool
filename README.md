@@ -107,6 +107,17 @@ Just install. The session-start hook runs `./supertool 'introduction' 'output-fo
 >
 > The session-start hook uses `ops-compact` to stay under the cap: examples are dropped on self-explanatory ops, and only kept on ops marked `"hint": true` in `.supertool.json`. If the body still exceeds the cap, `ops-compact` prepends a warning telling the model to fetch the full listing via `./supertool 'ops'`. Plain `'ops'` always returns everything.
 
+### Plain / ASCII output mode (hooks & CI)
+
+Op output uses `⚠` / `✓` glyphs — nice UX for the model, a liability for anything that parses the output without UTF-8/locale guarantees (git hooks, `grep`, CI on a non-UTF-8 console). Pass `--plain` (or set `SUPERTOOL_PLAIN=1`) to emit ASCII-only output: `[WARN]` / `[OK]` / `[FAIL]` / `[INFO]` in place of the glyphs, with the stable section keys (`Red flags in added lines`, `Forbidden paths`, …) intact for grepping.
+
+```bash
+./supertool --plain 'git-diff:staged'        # flag
+SUPERTOOL_PLAIN=1 ./supertool 'git-diff:staged'   # env (propagates to preset subprocesses)
+```
+
+The flag exports `SUPERTOOL_PLAIN=1` so preset ops (run as subprocesses) inherit it. Stdout/stderr are also reconfigured to UTF-8 at startup as cheap insurance, so a stray glyph in diffed content never crashes the process on a cp1252 console. Default (rich) output is unchanged.
+
 ### Hard-block native tools (optional)
 
 If you want to force the model to batch via supertool — typical for autonomous / Kevin-style runs — block the competing tools at the Claude Code layer. Two paths:
