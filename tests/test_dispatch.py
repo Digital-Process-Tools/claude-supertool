@@ -308,7 +308,7 @@ def test_split_arg_comma_multipath_unix_unaffected() -> None:
 
 def test_parse_grep_args_simple() -> None:
     parts = ["grep", "TODO", "src/", "10"]
-    pattern, path, limit, context, count_only = supertool._parse_grep_args(parts)
+    pattern, path, limit, context, count_only, _ = supertool._parse_grep_args(parts)
     assert pattern == "TODO"
     assert path == "src/"
     assert limit == 10
@@ -321,7 +321,7 @@ def test_parse_grep_args_double_colon_pattern() -> None:
     parts = supertool._split_arg(
         "grep:TransmissionStatus::STATUS_PENDING:Dvsi/**/*.php:50:1"
     )
-    pattern, path, limit, context, count_only = supertool._parse_grep_args(parts)
+    pattern, path, limit, context, count_only, _ = supertool._parse_grep_args(parts)
     assert pattern == "TransmissionStatus::STATUS_PENDING"
     assert path == "Dvsi/**/*.php"
     assert limit == 50
@@ -333,7 +333,7 @@ def test_parse_grep_args_double_colon_with_count() -> None:
     parts = supertool._split_arg(
         "grep:Foo::BAR:src/:20:0:count"
     )
-    pattern, path, limit, context, count_only = supertool._parse_grep_args(parts)
+    pattern, path, limit, context, count_only, _ = supertool._parse_grep_args(parts)
     assert pattern == "Foo::BAR"
     assert path == "src/"
     assert limit == 20
@@ -343,7 +343,7 @@ def test_parse_grep_args_double_colon_with_count() -> None:
 
 def test_parse_grep_args_no_limit_no_context() -> None:
     parts = ["grep", "pattern", "path/"]
-    pattern, path, limit, context, count_only = supertool._parse_grep_args(parts)
+    pattern, path, limit, context, count_only, _ = supertool._parse_grep_args(parts)
     assert pattern == "pattern"
     assert path == "path/"
     assert limit == supertool.MAX_GREP_RESULTS
@@ -352,14 +352,14 @@ def test_parse_grep_args_no_limit_no_context() -> None:
 
 def test_parse_grep_args_pattern_only() -> None:
     parts = ["grep", "TODO"]
-    pattern, path, limit, context, count_only = supertool._parse_grep_args(parts)
+    pattern, path, limit, context, count_only, _ = supertool._parse_grep_args(parts)
     assert pattern == "TODO"
     assert path == "."
 
 
 def test_parse_grep_args_empty() -> None:
     parts = ["grep"]
-    pattern, path, limit, context, count_only = supertool._parse_grep_args(parts)
+    pattern, path, limit, context, count_only, _ = supertool._parse_grep_args(parts)
     assert pattern == ""
     assert path == "."
 
@@ -367,7 +367,7 @@ def test_parse_grep_args_empty() -> None:
 def test_parse_grep_args_pattern_and_path_only() -> None:
     """Two tokens after 'grep' — pattern + path, no trailing ints."""
     parts = ["grep", "TODO", "src/"]
-    pattern, path, limit, context, count_only = supertool._parse_grep_args(parts)
+    pattern, path, limit, context, count_only, _ = supertool._parse_grep_args(parts)
     assert pattern == "TODO"
     assert path == "src/"
     assert limit == supertool.MAX_GREP_RESULTS
@@ -379,7 +379,7 @@ def test_parse_grep_args_triple_colon_pattern() -> None:
     parts = supertool._split_arg(
         "grep:A::B::C:src/:5"
     )
-    pattern, path, limit, context, count_only = supertool._parse_grep_args(parts)
+    pattern, path, limit, context, count_only, _ = supertool._parse_grep_args(parts)
     assert pattern == "A::B::C"
     assert path == "src/"
     assert limit == 5
