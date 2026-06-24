@@ -114,12 +114,20 @@ def main() -> int:
     print(f"# git-commit on {branch}")
     print(f"HEAD before: {head_before}")
 
-    # Stage PATHS if given
+    # Stage PATHS if given. A path that's already a staged deletion (gone from
+    # disk after `git rm`) would make `git add` abort with "pathspec did not
+    # match any files" — so drop those from the add list; their deletion is
+    # already staged and will be committed (issue #324). Genuinely-unknown
+    # paths stay in the list, so they still error as before.
     if paths:
-        add = _git(["add", "--"] + paths)
-        if add.returncode != 0:
-            print(f"ERROR: git add failed: {add.stderr.strip() or add.stdout.strip()}")
-            return 1
+        deleted = _git(["diff", "--cached", "--diff-filter=D", "--name-only"])
+        staged_deletions = {l for l in deleted.stdout.splitlines() if l.strip()}
+        to_add = [p for p in paths if p not in staged_deletions]
+        if to_add:
+            add = _git(["add", "--"] + to_add)
+            if add.returncode != 0:
+                print(f"ERROR: git add failed: {add.stderr.strip() or add.stdout.strip()}")
+                return 1
         print(f"Staged: {len(paths)} path(s)")
 
     # Pre-commit staged check

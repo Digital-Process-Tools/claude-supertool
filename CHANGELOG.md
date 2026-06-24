@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`grep` gained a `:no-auto-read` flag** — `grep:PATTERN:PATH:no-auto-read` suppresses the single-small-file auto-read so only the matching line(s) are emitted, mirroring `glob`'s existing flag. Default behavior (auto-read a concrete file < 20KB on a match) is unchanged. The flag is order-independent with `:count` and any `LIMIT`/`CONTEXT` args. Avoids silently dumping 10-18KB of unrequested file content when the caller only wants the hit. Closes [#320](https://github.com/Digital-Process-Tools/claude-supertool/issues/320).
 
+### Fixed
+
+- **`git-commit` no longer aborts on an already-staged deletion** — listing a `git rm`'d path (gone from disk) alongside present files made the op's `git add` step fail with `pathspec did not match any files`, killing the whole commit. The op now drops paths that are already staged as deletions from the `git add` step (their deletion is already staged and gets committed), so a mixed changeset of modifications + new files + deletions lands in one commit. Genuinely-unknown paths still error as before. Closes [#324](https://github.com/Digital-Process-Tools/claude-supertool/issues/324).
+
 ## [0.19.0] - 2026-06-24
 
 ### Added
