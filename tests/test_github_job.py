@@ -151,12 +151,13 @@ def test_grep_no_match_falls_back_to_tail(monkeypatch, capsys) -> None:
 
 def test_grep_bad_regex_falls_back_to_literal(monkeypatch, capsys) -> None:
     """An invalid regex is matched literally instead of crashing."""
-    lines = ["before", "value[0] = 1", "after"]
-    rc = _run_main(monkeypatch, ["job.py", "123", "grep", "value["], lines)
+    lines = ["before", "1) FooTest::testBar", "after"]
+    rc = _run_main(monkeypatch, ["job.py", "123", "grep", "1)"], lines)
     out = capsys.readouterr().out
     assert rc == 0
-    assert "literal — regex failed to compile" in out
-    assert "value[0] = 1" in out
+    assert "(literal match)" in out
+    assert "regex failed to compile" not in out
+    assert "1) FooTest::testBar" in out
 
 
 def test_grep_missing_pattern_returns_error(monkeypatch, capsys) -> None:

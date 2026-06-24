@@ -286,7 +286,7 @@ def main() -> int:
             shown_pattern = grep_pattern
         except re.error:
             rx = re.compile(re.escape(grep_pattern))
-            shown_pattern = f"{grep_pattern} (literal — regex failed to compile)"
+            shown_pattern = f"{grep_pattern} (literal match)"
         ctx = config["error_context"]
         hits: set[int] = set()
         for i, line in enumerate(lines):
