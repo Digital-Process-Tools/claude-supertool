@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`validate` op gained a list form — `validate:f1,f2,…:tool_filter`** — validating several files in one invocation (config loaded once for the whole batch). Single-file `validate:PATH` is unchanged. Each path in the list is independently security-checked at dispatch.
+- **Declarative `@syntax` validator filter** — `validate:PATH:@syntax` selects validators that set `"syntax": true` in their spec, keeping the parser/compiler scope in config instead of a hardcoded caller list.
+
+### Changed
+
+- **`git-resolve`'s post-resolve syntax digest now shells `validate` ONCE for all resolved files** instead of once per file, via the new list form. It uses the declarative `@syntax` scope (falling back to the hardcoded name list for older configs) and folds the per-file rows back into each receipt line. Closes [#306](https://github.com/Digital-Process-Tools/claude-supertool/issues/306).
+
 ## [0.18.0] - 2026-06-23
 
 ### Fixed

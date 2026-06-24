@@ -261,6 +261,47 @@ def test_split_arg_port_absorb_does_not_eat_unrelated_colon() -> None:
     assert result == ["grep", "pat", "https://example.com:8080", "other", "more"]
 
 
+def test_split_arg_comma_multipath_two_windows_drives() -> None:
+    """validate list form (#306): a comma-joined PATH where BOTH members are
+    Windows drive-letter paths must reassemble into ONE token, not three.
+
+    Before the fix, the second 'C:' was treated as a tool-filter delimiter, so
+    'validate:C:\\a.php,C:\\b.php' split into
+      ['validate', 'C:\\a.php,C', '\\b.php']
+    and the second path bled into the tool-filter slot → 0 validators matched.
+    Constructed directly (no os.path) so the regression is covered on Linux/mac
+    where the Windows CI failure could not otherwise be reproduced.
+    """
+    result = supertool._split_arg(
+        "validate:C:\\Users\\me\\a.php,C:\\Users\\me\\b.php"
+    )
+    assert result == [
+        "validate",
+        "C:\\Users\\me\\a.php,C:\\Users\\me\\b.php",
+    ]
+
+
+def test_split_arg_comma_multipath_two_windows_drives_forward_slash() -> None:
+    """Same as above but with forward-slash drive paths."""
+    result = supertool._split_arg("validate:C:/a.php,D:/b.php")
+    assert result == ["validate", "C:/a.php,D:/b.php"]
+
+
+def test_split_arg_comma_multipath_windows_drives_with_filter() -> None:
+    """Multi-path with a trailing tool filter: the two drive paths reassemble
+    into the PATH token and the filter stays a separate token."""
+    result = supertool._split_arg(
+        "validate:C:\\a.php,C:\\b.php:phplint"
+    )
+    assert result == ["validate", "C:\\a.php,C:\\b.php", "phplint"]
+
+
+def test_split_arg_comma_multipath_unix_unaffected() -> None:
+    """Unix multi-path (no colons) is untouched — single token, no merging."""
+    result = supertool._split_arg("validate:/tmp/a.php,/tmp/b.php")
+    assert result == ["validate", "/tmp/a.php,/tmp/b.php"]
+
+
 # ---------------------------------------------------------------------------
 # _parse_grep_args — handles '::' in patterns (PHP static access, etc.)
 # ---------------------------------------------------------------------------

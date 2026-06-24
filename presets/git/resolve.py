@@ -132,35 +132,21 @@ _SYNTAX_VALIDATORS = (
 )
 
 
-def _validate_path(path: str) -> Optional[str]:
-    """Warn-only post-resolve syntax digest, via the declarative validator stack.
+# Declarative syntax-scope sentinel: supertool's `validate` op selects validators
+# that set `"syntax": true` in their spec. Preferred over the hardcoded name list
+# above so the scope lives in config; the list remains the fallback for configs
+# that predate the flag (see _validate_paths).
+_SYNTAX_FILTER = "@syntax"
 
-    Shells back into supertool's `validate` op (the single source of truth for
-    which validator runs on which file type), scoped to syntax/parser validators
-    only, and condenses its rows into one receipt line. Returns ``None`` when
-    nothing applies (no supertool, no file, no syntax validator for this type,
-    or timeout): advisory only — it never blocks or fails the resolve.
+
+def _digest_block(block: str) -> Optional[str]:
+    """Condense one file's validator rows into a single receipt line.
+
+    Returns ``None`` when no syntax validator ran for this file type.
     """
-    if not os.path.isfile(path):
-        return None
-    st = Path(__file__).resolve().parents[2] / "supertool.py"
-    if not st.is_file():
-        return None
-    tool_filter = ",".join(_SYNTAX_VALIDATORS)
-    try:
-        res = subprocess.run(
-            [sys.executable, str(st), f"validate:{path}:{tool_filter}"],
-            capture_output=True, text=True, timeout=90,
-        )
-    except (subprocess.TimeoutExpired, OSError):
-        return None
-    out = res.stdout
-    # No syntax validator configured/matched for this file type → no digest line.
-    if "no validators" in out:
-        return None
     fails: list[str] = []
     ran = False
-    for line in out.splitlines():
+    for line in block.splitlines():
         m = re.match(r"^([\w-]+)\s*:\s*(ok|(\d+) err)\b", line)
         if not m:
             continue
@@ -172,6 +158,64 @@ def _validate_path(path: str) -> Optional[str]:
     if fails:
         return "validate: ⚠ " + ", ".join(fails)
     return "validate: ok"
+
+
+def _validate_paths(paths: list[str]) -> dict[str, Optional[str]]:
+    """Warn-only post-resolve syntax digest for every resolved file, in ONE call.
+
+    Shells back into supertool's `validate` op (the single source of truth for
+    which validator runs on which file type) using the list form
+    ``validate:f1,f2,…:FILTER`` — one subprocess for the whole batch instead of
+    one per file. Scoped to syntax/parser validators via the declarative
+    ``@syntax`` filter, falling back to the hardcoded name list for older configs.
+    Output blocks are split on ``validate: PATH`` headers and folded back to each
+    path. Returns ``{path: digest_or_None}``; advisory only — never blocks the
+    resolve. Missing/timeout → every path maps to ``None``.
+    """
+    files = [p for p in paths if os.path.isfile(p)]
+    digests: dict[str, Optional[str]] = {p: None for p in paths}
+    if not files:
+        return digests
+    st = Path(__file__).resolve().parents[2] / "supertool.py"
+    if not st.is_file():
+        return digests
+    # Prefer the declarative @syntax scope; fall back to the name allowlist so a
+    # config that hasn't adopted the flag still gets the same parser-only digest.
+    for tool_filter in (_SYNTAX_FILTER, ",".join(_SYNTAX_VALIDATORS)):
+        try:
+            res = subprocess.run(
+                [sys.executable, str(st), f"validate:{','.join(files)}:{tool_filter}"],
+                capture_output=True, text=True, timeout=90,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return digests
+        out = res.stdout
+        if "no validators matched filter" in out:
+            # @syntax selected nothing (older config) → retry with the name list.
+            continue
+        if "no validators" in out:
+            return digests
+        # Split the combined output into per-file blocks on the header lines.
+        # Blocks are emitted in the same order as `files` (op_validate_multi
+        # guarantees input order), so fold them back positionally — robust to any
+        # path normalization the echoed header might apply.
+        blocks: list[str] = []
+        buf: list[str] = []
+        started = False
+        for line in out.splitlines():
+            if re.match(r"^validate:\s+", line):
+                if started:
+                    blocks.append("\n".join(buf))
+                buf = []
+                started = True
+            elif started:
+                buf.append(line)
+        if started:
+            blocks.append("\n".join(buf))
+        for path, block in zip(files, blocks):
+            digests[path] = _digest_block(block)
+        return digests
+    return digests
 
 
 def main() -> int:
@@ -238,7 +282,10 @@ def main() -> int:
             failed.append((path, add.stderr.strip() or add.stdout.strip()))
             continue
         resolved.append(path)
-        digests[path] = _validate_path(path)
+
+    # Syntax digest for the whole batch in ONE supertool call (folded per-file).
+    if resolved:
+        digests = _validate_paths(resolved)
 
     for path in resolved:
         print(f"  ✓ {path}")

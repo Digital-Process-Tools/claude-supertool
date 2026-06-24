@@ -430,6 +430,89 @@ def test_op_validate_with_tool_filter() -> None:
 
 
 # ---------------------------------------------------------------------------
+# op_validate_multi (list form — issue #306)
+# ---------------------------------------------------------------------------
+
+def test_op_validate_multi_renders_block_per_file() -> None:
+    payload = {"tool": "fake", "ok": True, "count": 0, "errors": [], "duration_ms": 1}
+    _set_validators({"fake": {"cmd": _fake_cmd(payload), "match": "*.php"}})
+    out = supertool.op_validate_multi(["a.php", "b.php"])
+    assert "validate: a.php" in out
+    assert "validate: b.php" in out
+    # one header per file, in order
+    assert out.index("validate: a.php") < out.index("validate: b.php")
+    assert out.count("validate: ") == 2
+
+
+def test_op_validate_multi_single_element_matches_single_form() -> None:
+    payload = {"tool": "fake", "ok": True, "count": 0, "errors": [], "duration_ms": 1}
+    spec = {"fake": {"cmd": _fake_cmd(payload), "match": "*.php"}}
+    _set_validators(spec)
+    single = supertool.op_validate("a.php")
+    _set_validators(spec)
+    multi = supertool.op_validate_multi(["a.php"])
+    assert single == multi
+
+
+def test_op_validate_multi_no_validators_configured() -> None:
+    _set_validators({})
+    out = supertool.op_validate_multi(["a.php", "b.php"])
+    assert "no validators" in out
+
+
+def test_op_validate_multi_empty_paths_errors() -> None:
+    payload = {"tool": "fake", "ok": True, "count": 0, "errors": [], "duration_ms": 1}
+    _set_validators({"fake": {"cmd": _fake_cmd(payload), "match": "*.php"}})
+    assert "ERROR" in supertool.op_validate_multi([])
+    assert "ERROR" in supertool.op_validate_multi(["", ""])
+
+
+def test_op_validate_multi_tool_filter_applies_to_all_files() -> None:
+    payload = {"tool": "a", "ok": True, "count": 0, "errors": [], "duration_ms": 1}
+    _set_validators({
+        "a": {"cmd": _fake_cmd(payload), "match": "*.php"},
+        "b": {"cmd": "echo SHOULD_NOT_RUN", "match": "*.php"},
+    })
+    out = supertool.op_validate_multi(["a.php", "b.php"], ["a"])
+    assert "SHOULD_NOT_RUN" not in out
+    assert out.count("validate: ") == 2
+
+
+# ---------------------------------------------------------------------------
+# @syntax filter sentinel (declarative syntax scope — issue #306)
+# ---------------------------------------------------------------------------
+
+def test_select_validators_syntax_sentinel_keeps_only_flagged() -> None:
+    cfg = {
+        "phplint": {"cmd": "x", "match": "*.php", "syntax": True},
+        "lsp-diag": {"cmd": "x", "match": "*.php"},
+    }
+    sel = supertool._select_validators(cfg, ["@syntax"])
+    assert set(sel) == {"phplint"}
+
+
+def test_select_validators_plain_filter_by_name() -> None:
+    cfg = {"a": {"cmd": "x"}, "b": {"cmd": "x"}}
+    assert set(supertool._select_validators(cfg, ["a"])) == {"a"}
+
+
+def test_select_validators_no_filter_passes_through() -> None:
+    cfg = {"a": {"cmd": "x"}, "b": {"cmd": "x"}}
+    assert supertool._select_validators(cfg, None) is cfg
+
+
+def test_op_validate_syntax_filter_excludes_unflagged() -> None:
+    payload = {"tool": "phplint", "ok": True, "count": 0, "errors": [], "duration_ms": 1}
+    _set_validators({
+        "phplint": {"cmd": _fake_cmd(payload), "match": "*.php", "syntax": True},
+        "noisy": {"cmd": "echo SHOULD_NOT_RUN", "match": "*.php"},
+    })
+    out = supertool.op_validate("a.php", ["@syntax"])
+    assert "phplint" in out
+    assert "SHOULD_NOT_RUN" not in out
+
+
+# ---------------------------------------------------------------------------
 # _validator_render_row verbose mode
 # ---------------------------------------------------------------------------
 

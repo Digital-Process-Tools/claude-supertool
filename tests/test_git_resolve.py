@@ -66,7 +66,7 @@ def test_comma_separated_paths(monkeypatch, capsys) -> None:
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(resolve, "_git", fake_git)
-    monkeypatch.setattr(resolve, "_validate_path", lambda p: None)
+    monkeypatch.setattr(resolve, "_validate_paths", lambda ps: {p: None for p in ps})
     monkeypatch.setattr(resolve.sys, "argv", ["resolve.py", "theirs", "a.php,b.php"])
     rc = resolve.main()
     out = capsys.readouterr().out
@@ -193,7 +193,7 @@ def test_both_end_to_end(monkeypatch, capsys, tmp_path) -> None:
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(resolve, "_git", fake_git)
-    monkeypatch.setattr(resolve, "_validate_path", lambda p: None)
+    monkeypatch.setattr(resolve, "_validate_paths", lambda ps: {p: None for p in ps})
     monkeypatch.setattr(resolve.sys, "argv", ["resolve.py", "both", str(f)])
     rc = resolve.main()
     out = capsys.readouterr().out
@@ -281,7 +281,7 @@ def test_validate_digest_in_receipt(monkeypatch, capsys, tmp_path) -> None:
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(resolve, "_git", fake_git)
-    monkeypatch.setattr(resolve, "_validate_path", lambda p: "validate: ok")
+    monkeypatch.setattr(resolve, "_validate_paths", lambda ps: {p: "validate: ok" for p in ps})
     monkeypatch.setattr(resolve.sys, "argv", ["resolve.py", "ours", str(f)])
     rc = resolve.main()
     out = capsys.readouterr().out
@@ -291,21 +291,23 @@ def test_validate_digest_in_receipt(monkeypatch, capsys, tmp_path) -> None:
 
 
 def test_validate_digest_parses_err_rows(monkeypatch) -> None:
-    """_validate_path digests validator 'N err' rows into a warn line."""
+    """_validate_paths digests validator 'N err' rows into a warn line."""
     import subprocess
     sample = "validate: x.php\nxmllint     : ok          (5ms)\nphplint     : 2 err       (9ms)\n"
     monkeypatch.setattr(
         resolve.subprocess, "run",
         lambda *a, **k: subprocess.CompletedProcess(args=a, returncode=0, stdout=sample, stderr=""),
     )
-    # path must exist for the guard; use this test file itself
-    digest = resolve._validate_path(__file__)
+    # path must exist for the guard; use this test file itself, mapped to x.php
+    monkeypatch.setattr(resolve.os.path, "isfile", lambda p: True)
+    digests = resolve._validate_paths(["x.php"])
+    digest = digests["x.php"]
     assert digest is not None
     assert "⚠" in digest and "phplint 2 err" in digest
 
 
 def test_validate_scopes_to_syntax_validators(monkeypatch) -> None:
-    """The validate call filters to parser validators — semantic ones excluded."""
+    """The validate call prefers the declarative @syntax filter."""
     import subprocess
     seen: dict[str, list] = {}
 
@@ -314,13 +316,34 @@ def test_validate_scopes_to_syntax_validators(monkeypatch) -> None:
         return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="validate: x\nphplint     : ok\n", stderr="")
 
     monkeypatch.setattr(resolve.subprocess, "run", fake_run)
-    resolve._validate_path(__file__)
-    arg = seen["cmd"][-1]  # validate:PATH:tool1,tool2,...
+    monkeypatch.setattr(resolve.os.path, "isfile", lambda p: True)
+    resolve._validate_paths([__file__])
+    arg = seen["cmd"][-1]  # validate:PATH:FILTER
     assert arg.startswith("validate:")
-    assert "phplint" in arg and "xmllint" in arg
-    # noisy semantic/diagnostic validators must NOT be requested
+    # declarative scope: the @syntax sentinel keeps the scope in config, not code
+    assert arg.endswith(":@syntax")
+    # noisy semantic/diagnostic validators must NOT be named in the request
     for noisy in ("lsp-diag", "pyright", "psr", "tsc-check", "prettier-check", "git-status"):
         assert noisy not in arg
+
+
+def test_validate_falls_back_to_name_list_when_syntax_unmatched(monkeypatch) -> None:
+    """@syntax matches nothing (old config) → retry with the hardcoded list."""
+    import subprocess
+    cmds: list[list[str]] = []
+
+    def fake_run(cmd, *a, **k):
+        cmds.append(cmd)
+        if cmd[-1].endswith(":@syntax"):
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="no validators matched filter\n", stderr="")
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="validate: x\nphplint     : ok\n", stderr="")
+
+    monkeypatch.setattr(resolve.subprocess, "run", fake_run)
+    monkeypatch.setattr(resolve.os.path, "isfile", lambda p: True)
+    digests = resolve._validate_paths(["x.php"])
+    assert len(cmds) == 2
+    assert cmds[1][-1].endswith(":" + ",".join(resolve._SYNTAX_VALIDATORS))
+    assert digests["x.php"] == "validate: ok"
 
 
 def test_validate_no_matching_validator_returns_none(monkeypatch) -> None:
@@ -328,9 +351,10 @@ def test_validate_no_matching_validator_returns_none(monkeypatch) -> None:
     import subprocess
     monkeypatch.setattr(
         resolve.subprocess, "run",
-        lambda *a, **k: subprocess.CompletedProcess(args=a, returncode=0, stdout="no validators matched filter\n", stderr=""),
+        lambda *a, **k: subprocess.CompletedProcess(args=a, returncode=0, stdout="no validators configured\n", stderr=""),
     )
-    assert resolve._validate_path(__file__) is None
+    monkeypatch.setattr(resolve.os.path, "isfile", lambda p: True)
+    assert resolve._validate_paths([__file__])[__file__] is None
 
 
 def test_validate_all_ok_returns_ok(monkeypatch) -> None:
@@ -340,4 +364,31 @@ def test_validate_all_ok_returns_ok(monkeypatch) -> None:
         resolve.subprocess, "run",
         lambda *a, **k: subprocess.CompletedProcess(args=a, returncode=0, stdout="validate: x\nxmllint     : ok          (5ms)\n", stderr=""),
     )
-    assert resolve._validate_path(__file__) == "validate: ok"
+    monkeypatch.setattr(resolve.os.path, "isfile", lambda p: True)
+    assert resolve._validate_paths([__file__])[__file__] == "validate: ok"
+
+
+def test_validate_paths_single_supertool_call_for_many_files(monkeypatch, tmp_path) -> None:
+    """The digest shells supertool ONCE for all resolved files (issue #306)."""
+    import subprocess
+    files = []
+    for name in ("a.php", "b.php", "c.php"):
+        p = tmp_path / name
+        p.write_text("x\n", encoding="utf-8")
+        files.append(str(p))
+    cmds: list[list[str]] = []
+
+    def fake_run(cmd, *a, **k):
+        cmds.append(cmd)
+        blocks = "".join(f"validate: {f}\nphplint     : ok\n" for f in files)
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=blocks, stderr="")
+
+    monkeypatch.setattr(resolve.subprocess, "run", fake_run)
+    digests = resolve._validate_paths(files)
+    # exactly one subprocess for the whole batch
+    assert len(cmds) == 1
+    # all files comma-joined into the single validate arg, folded back per file
+    arg = cmds[0][-1]
+    assert all(f in arg for f in files)
+    assert set(digests) == set(files)
+    assert all(d == "validate: ok" for d in digests.values())
