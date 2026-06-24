@@ -19,7 +19,7 @@ Git investigation and workflow ops. Replaces the 4-6 raw `git` calls you'd norma
 | `git-diff` | `git-diff[:staged\|:branch[:BASE]\|:PATH]` | Review-aware diff (working / `staged` / `branch` merge-base / `PATH`): files grouped by kind + shortstat, red-flag scan of **added** lines (debug code, conflict markers; reported `file:line`), forbidden-path guard, missing-test pairing, next-step hints. Generic defaults built in; project policy via config (below) |
 | `git-merge` | `git-merge:REF` | Merge REF — on conflict surfaces the UU file list, conflict markers, and ours/theirs SHAs |
 | `git-conflicts` | `git-conflicts` | List all UU files + every conflict block + abort hint |
-| `git-resolve` | `git-resolve:::SIDE:::PATH[,PATH...]` | Pick `ours`/`theirs`/`both` for one file, a comma-separated list, or `all` — stages and prints the continue command. `both` is a union: it strips the conflict markers and keeps both sides (ours then theirs), like git's `merge=union` driver — use it when both branches added different non-overlapping lines. **Self-verifies before staging:** a leftover `<<<<<<<` / `>>>>>>>` is a hard fail (file left unstaged), and each resolved file's receipt carries a warn-only validator digest (`markers: clean \| validate: ok`) |
+| `git-resolve` | `git-resolve:::SIDE:::PATH[,PATH...][:::BLOCKS]` | Pick `ours`/`theirs`/`both` for one file, a comma-separated list, or `all` — stages and prints the continue command. `both` is a union: it strips the conflict markers and keeps both sides (ours then theirs), like git's `merge=union` driver — use it when both branches added different non-overlapping lines. Optional **`BLOCKS`** selector (e.g. `1,3`) resolves only those 1-indexed conflict blocks of a **single** file, numbered exactly as `git-conflicts` lists them; one side per call (mixed sides → run twice). A **partial** resolve leaves the other blocks' markers in place by design, so the file stays conflicted and **unstaged** — the receipt reads `N of M block(s) resolved, file still conflicted`; only when the selector covers every block does the file go clean and get staged. **Self-verifies before staging:** a leftover `<<<<<<<` / `>>>>>>>` is a hard fail (file left unstaged), and each resolved file's receipt carries a warn-only validator digest (`markers: clean \| validate: ok`) |
 | `git-commit` | `git-commit:::MSG[:::PATH...]` | Stage PATHs (or all staged if omitted) and commit with MSG — surfaces hook errors, shows HEAD before/after. Use `MSG=--no-edit` to reuse MERGE_MSG/CHERRY_PICK_HEAD during an in-progress merge or cherry-pick |
 | `git-push` | `git-push[:force-with-lease][:no-verify]` | Push the current branch (sets upstream on first push) — remote SHA before/after with commits pushed, ahead/behind vs upstream, and the open MR/PR + pipeline status. For **updating** an already-open MR; use the `mr` op for push+create. **Non-fast-forward** is handled in-op: it fetches, surfaces the **incoming remote commits** (SHA, author, subject) so you can see whose work you'd be rebasing over, then rebases your work onto the remote and re-pushes; on conflict it leaves the rebase **paused**, warns to check the incoming authors before forcing, and points you at `git-conflicts` + the keep-both/cancel/force paths — never auto-forced, never silently rewritten. A **pre-push hook that amends HEAD and pushes** the fixed commit itself (exiting non-zero) is reported as `PUSHED`, not `REJECTED`, since the live remote ref already matches HEAD. The **post-push receipt** carries the next-decision signals (all on calls already made): MR **mergeability** (warns if it now `cannot_be_merged` with target), **stale base** (`N behind origin/<target>`), **uncommitted leftovers** (changes not in this push), the **pipeline id + url**, and a ready `watch:gitlab-mr:<iid>` command. `:force-with-lease` also reports **what it discarded** (author + subject of overwritten remote commits). Flags: `:force-with-lease` (safe force — overwrite only if the remote hasn't moved; skips the auto-rebase, and lists discarded commits), `:no-verify` (skip the local pre-push hook, e.g. when a local formatter diverges from CI), `:watch` (spawn a background pipeline poller instead of just recommending the command) |
 
@@ -69,6 +69,23 @@ a merge that needs the next hunk resolved, not a corrupt write. It is scoped to
 style ones (lsp-diag, pyright, prettier), since only a parse break is something a
 side-pick can introduce — and it is omitted entirely when no syntax validator is
 configured for that file type (you'll just see `markers: clean`).
+
+**Resolve specific conflict blocks (per-hunk side selection):**
+```bash
+./supertool 'git-conflicts'                          # blocks are numbered per file
+# keep ours for blocks 1 and 3 only — block 2 stays conflicted:
+./supertool 'git-resolve:::ours:::src/app/Config.py:::1,3'
+```
+One side per call (mixed sides → run twice). A partial resolve never stages — it
+keeps the unselected blocks' markers and reports what's left:
+```text
+# git-resolve: ours block(s) 1, 3 in src/app/Config.py
+  ~ src/app/Config.py: 2 of 3 block(s) resolved, file still conflicted
+Resolved blocks: 2 | Remaining blocks: 1 | Not staged (still conflicted).
+Next: resolve the remaining block(s), then ./supertool 'git-resolve:::SIDE:::PATH' (whole file) or git add once clean.
+```
+When the selector covers every block the file goes clean and is staged like a
+whole-file resolve.
 
 **Update an MR that already exists:**
 ```bash

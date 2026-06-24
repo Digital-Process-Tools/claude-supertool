@@ -97,6 +97,102 @@ def _union_file(path: str) -> tuple[bool, str]:
     return True, ""
 
 
+def _count_blocks(path: str) -> int:
+    """Number of conflict blocks in PATH, counted exactly as `git-conflicts`
+    numbers them: one per ``<<<<<<<`` marker line, in file order.
+    """
+    try:
+        with open(path, "rb") as fh:
+            text = fh.read().decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        return 0
+    return sum(1 for line in text.splitlines() if line.startswith("<<<<<<<"))
+
+
+def _resolve_blocks(path: str, side: str, selected: set[int]) -> tuple[bool, str, int, int]:
+    """Resolve only the SELECTED conflict blocks of PATH; leave the rest verbatim.
+
+    Blocks are 1-indexed in file order — the same numbering `git-conflicts`
+    prints. For each selected block, keep the chosen side (``ours``/``theirs``)
+    or, for ``both``, the union (ours then theirs, diff3 base dropped) and drop
+    that block's markers. Unselected blocks — including their markers — are
+    written back untouched, so the file stays conflicted and the caller's hard
+    gate refuses to stage it.
+
+    Returns ``(ok, error, num_resolved, num_total)``: ``num_total`` is every
+    conflict block in the file, ``num_resolved`` how many the selector matched.
+    """
+    try:
+        with open(path, "rb") as fh:
+            raw = fh.read()
+    except OSError as e:
+        return False, f"cannot read: {e}", 0, 0
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return False, "not a UTF-8 text file (binary conflict?)", 0, 0
+
+    out: list[str] = []
+    state = "normal"  # normal | ours | base | theirs
+    block_idx = 0
+    keep = False  # is the current block selected for resolution?
+    total = 0
+    resolved = 0
+    for line in text.splitlines(keepends=True):
+        s = line.rstrip("\r\n")
+        if state == "normal":
+            if s.startswith("<<<<<<<"):
+                block_idx += 1
+                total += 1
+                keep = block_idx in selected
+                if keep:
+                    resolved += 1
+                    state = "ours"
+                    continue
+                state = "passthrough"
+                out.append(line)  # keep the marker verbatim
+            else:
+                out.append(line)
+        elif state == "passthrough":
+            out.append(line)
+            if s.startswith(">>>>>>>"):
+                state = "normal"
+        elif state == "ours":
+            if s.startswith("|||||||"):
+                state = "base"
+            elif s.startswith("======="):
+                state = "theirs"
+            elif s.startswith(">>>>>>>"):  # malformed — recover
+                state = "normal"
+            elif side in ("ours", "both"):
+                out.append(line)
+        elif state == "base":
+            if s.startswith("======="):
+                state = "theirs"
+            # else: drop diff3 base content
+        elif state == "theirs":
+            if s.startswith(">>>>>>>"):
+                state = "normal"
+            elif side in ("theirs", "both"):
+                out.append(line)
+
+    if state not in ("normal", "passthrough"):
+        return False, "unterminated conflict marker (file unchanged)", 0, total
+    if total == 0:
+        return False, "no conflict markers found (file unchanged)", 0, 0
+    unknown = sorted(b for b in selected if b > total)
+    if unknown:
+        nums = ", ".join(str(b) for b in unknown)
+        return False, f"block(s) {nums} out of range — file has {total} block(s)", 0, total
+
+    try:
+        with open(path, "wb") as fh:
+            fh.write("".join(out).encode("utf-8"))
+    except OSError as e:
+        return False, f"cannot write: {e}", 0, total
+    return True, "", resolved, total
+
+
 def _scan_markers(path: str) -> list[int]:
     """1-indexed line numbers carrying a leftover conflict marker, else [].
 
@@ -218,19 +314,78 @@ def _validate_paths(paths: list[str]) -> dict[str, Optional[str]]:
     return digests
 
 
+def _resolve_partial(path: str, side: str, selected: set[int]) -> int:
+    """Resolve only the selected blocks of one file (issue #305).
+
+    A partial resolve always leaves the unselected blocks' markers in place, so
+    the file stays conflicted by design — it is NEVER staged. The receipt reports
+    "N of M blocks resolved, file still conflicted" and points back at the
+    remaining work, honoring the marker hard-gate rather than fighting it.
+    """
+    blocks_label = ", ".join(str(b) for b in sorted(selected))
+    print(f"# git-resolve: {side} block(s) {blocks_label} in {path}")
+
+    ok, err, resolved, total = _resolve_blocks(path, side, selected)
+    if not ok:
+        print(f"  ✗ {path}: {err}")
+        return 1
+
+    remaining_blocks = total - resolved
+
+    # HARD GATE — only a file with no leftover markers may be staged. If the
+    # selector happened to cover every block, the file is clean: stage it and
+    # report a full resolve. Otherwise the markers stay and we never stage.
+    marker_lines = _scan_markers(path)
+    if marker_lines:
+        print(f"  ~ {path}: {resolved} of {total} block(s) resolved, file still conflicted")
+        digest = _validate_paths([path]).get(path)
+        if digest:
+            print(f"      {digest}")
+        print(f"\nResolved blocks: {resolved} | Remaining blocks: {remaining_blocks} | Not staged (still conflicted).")
+        print("Next: resolve the remaining block(s), then ./supertool 'git-resolve:::SIDE:::PATH' (whole file) or git add once clean.")
+        print("Inspect: ./supertool 'git-conflicts'")
+        return 0
+
+    add = _git(["add", "--", path])
+    if add.returncode != 0:
+        print(f"  ✗ {path}: {add.stderr.strip() or add.stdout.strip()}")
+        return 1
+    digest = _validate_paths([path]).get(path)
+    print(f"  ✓ {path}: {resolved} of {total} block(s) resolved — all blocks clean, staged")
+    print(f"      markers: clean | {digest}" if digest else "      markers: clean")
+    print(f"\nResolved blocks: {resolved} | Remaining blocks: {remaining_blocks}")
+    return 0
+
+
 def main() -> int:
     if len(sys.argv) < 3:
-        print("ERROR: usage: resolve.py SIDE PATH[,PATH...]")
+        print("ERROR: usage: resolve.py SIDE PATH[,PATH...] [BLOCKS]")
         print("  SIDE — 'ours', 'theirs', or 'both' (union: keep both sides)")
         print("  PATH — conflicted file path, comma-separated list, or 'all' for every UU file")
+        print("  BLOCKS — optional 1-indexed block list (e.g. '1,3') — per-file, as git-conflicts numbers them")
         return 1
 
     side = sys.argv[1].lower()
     target = sys.argv[2]
+    blocks_arg = sys.argv[3] if len(sys.argv) > 3 else ""
 
     if side not in ("ours", "theirs", "both"):
         print(f"ERROR: SIDE must be 'ours', 'theirs', or 'both', got {side!r}")
         return 1
+
+    selected: set[int] = set()
+    if blocks_arg:
+        for tok in blocks_arg.split(","):
+            tok = tok.strip()
+            if not tok:
+                continue
+            if not tok.isdigit() or int(tok) < 1:
+                print(f"ERROR: BLOCKS must be 1-indexed positive integers, got {tok!r}")
+                return 1
+            selected.add(int(tok))
+        if not selected:
+            print(f"ERROR: BLOCKS list is empty, got {blocks_arg!r}")
+            return 1
 
     if _git(["rev-parse", "--git-dir"]).returncode != 0:
         print("ERROR: not inside a git repository.")
@@ -253,6 +408,14 @@ def main() -> int:
             print(f"Conflicts: {', '.join(all_conflicts) or '(none)'}")
             return 1
         targets = requested
+
+    # Block selector is per-file numbered — only meaningful for a single file.
+    if selected and (target == "all" or len(targets) != 1):
+        print("ERROR: BLOCKS selector requires exactly one PATH (block numbers are per-file).")
+        return 1
+
+    if selected:
+        return _resolve_partial(targets[0], side, selected)
 
     print(f"# git-resolve: {side} ({len(targets)} file(s))")
 
