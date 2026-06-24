@@ -144,6 +144,7 @@ def main() -> int:
     job_id = sys.argv[1]
     raw_mode = len(sys.argv) > 2 and sys.argv[2] == "raw"
     grep_mode = len(sys.argv) > 2 and sys.argv[2] == "grep"
+    errors_mode = len(sys.argv) > 2 and sys.argv[2] in ("errors", "fail")
     grep_pattern = sys.argv[3] if grep_mode and len(sys.argv) > 3 else None
     if grep_mode and not grep_pattern:
         print("ERROR: usage: gh-job:JOB_ID:grep:PATTERN")
@@ -321,6 +322,22 @@ def main() -> int:
         if resolution else ""
     )
     error_sections = _find_error_sections(lines, patterns, config["error_context"])
+
+    # fail/errors mode — dump ALL matched blocks, no tail cap
+    if errors_mode:
+        if not error_sections:
+            print("\n## No error patterns matched")
+            return 0
+        matched_count = len([e for e in error_sections if e[0] > 0])
+        print(f"\n## All error blocks ({matched_count} lines matched, no tail truncation)")
+        for line_num, text in error_sections:
+            if line_num == -1:
+                print(text)
+            else:
+                print(f"  {line_num:>5} | {text}")
+        if resolution_line:
+            print(f"\n{resolution_line}")
+        return 0
 
     if error_sections and display_status == "failure":
         print(f"\n## Error context ({len([e for e in error_sections if e[0] > 0])} lines matched)")

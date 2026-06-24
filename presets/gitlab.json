@@ -39,8 +39,8 @@
     "gl-job": {
       "cmd": "{python} {path}gitlab/job.py {args}",
       "timeout": 30,
-      "description": "Why job failed: MR ctx + error patterns + log tail. :raw dumps full trace; :raw:START[:END] slices lines (1-indexed, inclusive); :grep:PATTERN ad-hoc regex over the trace (literal fallback, context, tail on no-match)",
-      "syntax": "gl-job:NUMBER[:raw[:START[:END]]|:grep:PATTERN]",
+      "description": "Why job failed: MR ctx + error patterns + log tail. :fail (alias :errors) = matched failure blocks only, no tail — the tight triage view, per-job patterns; :raw dumps full trace; :raw:START[:END] slices lines (1-indexed, inclusive); :grep:PATTERN ad-hoc regex over the trace (literal fallback, context, tail on no-match)",
+      "syntax": "gl-job:NUMBER[:fail|:raw[:START[:END]]|:grep:PATTERN]",
       "lines": 80,
       "error_patterns": "ERROR,FAILURES!,Fatal,Failed asserting,PHP Warning,PHP Notice,PHP Deprecated",
       "error_context": 5
