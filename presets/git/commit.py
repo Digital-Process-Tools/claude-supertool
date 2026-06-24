@@ -44,6 +44,42 @@ def _head_sha() -> str:
     return r.stdout.strip() if r.returncode == 0 else ""
 
 
+# Default co-author trailer. Configurable via the git-commit op:
+#   .supertool.json -> ops.git-commit.coauthor  (exported as SUPERTOOL_COAUTHOR)
+# Set to an empty string / "none" / "off" / "false" to disable.
+_DEFAULT_COAUTHOR = "Max <noreply>"
+_DISABLE_VALUES = {"", "none", "off", "false", "no", "0"}
+
+
+def _coauthor_value() -> str:
+    """Trailer identity ('Name <email>') or '' when disabled.
+
+    Env SUPERTOOL_COAUTHOR (set from .supertool.json ops.git-commit.coauthor)
+    wins; falls back to the built-in default. Same env-over-config convention
+    used by the other git/gitlab presets.
+    """
+    raw = os.environ.get("SUPERTOOL_COAUTHOR")
+    val = _DEFAULT_COAUTHOR if raw is None else raw
+    return "" if val.strip().lower() in _DISABLE_VALUES else val.strip()
+
+
+def _with_coauthor(msg: str) -> str:
+    """Append a `Co-Authored-By:` trailer when absent and one is configured.
+
+    Skips entirely if the message already carries a `Co-Authored-By:` line
+    (case-insensitive) or if the trailer is disabled via config.
+    """
+    identity = _coauthor_value()
+    if not identity:
+        return msg
+    if any(l.strip().lower().startswith("co-authored-by:")
+           for l in msg.splitlines()):
+        return msg
+    trailer = f"Co-Authored-By: {identity}"
+    body = msg.rstrip("\n")
+    return f"{body}\n\n{trailer}"
+
+
 def main() -> int:
     if len(sys.argv) < 2:
         print("ERROR: usage: commit.py MSG [PATH ...]")
@@ -97,7 +133,7 @@ def main() -> int:
     if no_edit:
         result = _git(["commit", "--no-edit"])
     else:
-        result = _git(["commit", "-m", msg])
+        result = _git(["commit", "-m", _with_coauthor(msg)])
     head_after = _head_sha()
 
     if result.returncode == 0 and head_after and head_after != head_before:
