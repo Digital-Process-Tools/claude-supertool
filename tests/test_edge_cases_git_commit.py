@@ -194,6 +194,42 @@ def test_nonexistent_path_gives_clean_error(
 
 
 # ---------------------------------------------------------------------------
+# 5b. Staged deletion among the paths → commit must include it (issue #324)
+# ---------------------------------------------------------------------------
+
+def test_staged_deletion_path_committed(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """A `git rm`'d path (gone from disk, staged as deletion) listed alongside
+    present files must not abort the commit — the deletion lands in one commit.
+    """
+    _init_repo(tmp_path)
+    # Commit a file we will later delete
+    (tmp_path / "doomed.txt").write_text("delete me\n")
+    subprocess.run(["git", "add", "--", "doomed.txt"], check=True, cwd=tmp_path)
+    subprocess.run(["git", "commit", "-q", "-m", "add doomed"], check=True, cwd=tmp_path)
+
+    # Stage the deletion (file now absent from disk) + a new present file
+    subprocess.run(["git", "rm", "-q", "--", "doomed.txt"], check=True, cwd=tmp_path)
+    (tmp_path / "new.txt").write_text("new\n")
+    monkeypatch.chdir(tmp_path)
+
+    monkeypatch.setattr(commit.sys, "argv",
+                        ["commit.py", "delete + add", "new.txt", "doomed.txt"])
+    rc = commit.main()
+    out = capsys.readouterr().out
+
+    assert rc == 0, f"commit with staged deletion failed:\n{out}"
+
+    files = subprocess.run(
+        ["git", "show", "--name-status", "--format=", "HEAD"],
+        capture_output=True, text=True, cwd=tmp_path, check=True,
+    ).stdout
+    assert "D\tdoomed.txt" in files, f"deletion not in commit:\n{files}"
+    assert "A\tnew.txt" in files, f"new file not in commit:\n{files}"
+
+
+# ---------------------------------------------------------------------------
 # 6. Path outside repo → should reject cleanly
 # ---------------------------------------------------------------------------
 
