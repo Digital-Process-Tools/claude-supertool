@@ -119,7 +119,7 @@ def main() -> int:
             if existing:
                 print(f"Next: git push (updates {existing})")
             else:
-                print("Next: git push (or ./supertool 'mr:.max/mr.md|TIME|LABELS' for push+MR)")
+                print("Next: ./supertool 'git-push' (or ./supertool 'mr:.max/mr.md|TIME|LABELS' for push+MR)")
         else:
             print("Next: git push -u origin HEAD (no upstream set)")
         return 0
