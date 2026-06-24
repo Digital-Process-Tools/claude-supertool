@@ -68,13 +68,30 @@ def test_render_diff_unchanged_timeout_marker() -> None:
     assert "(unchanged)" not in joined
 
 
-def test_render_diff_unchanged_real_err_still_unchanged() -> None:
-    """Real persisting error keeps '(unchanged)' marker — no timeout flag set."""
-    before = {"tool": "phpstan", "count": 1, "ok": False,
-              "errors": [{"code": "E001", "msg": "real error"}]}
-    after = {"tool": "phpstan", "count": 1, "ok": False,
-             "errors": [{"code": "E001", "msg": "real error"}]}
+def test_render_diff_unchanged_real_err_labelled_pre_existing() -> None:
+    """Issue #307 — a persisting error is labelled pre-existing, not '(unchanged)',
+    and the error message is surfaced inline so the count is actionable."""
+    before = {"tool": "jsonlint", "count": 1, "ok": False,
+              "errors": [{"line": 4, "code": "E001", "msg": "trailing comma"}]}
+    after = {"tool": "jsonlint", "count": 1, "ok": False,
+             "errors": [{"line": 4, "code": "E001", "msg": "trailing comma"}]}
     rows = supertool._validator_render_diff(before, after)
     joined = "".join(rows)
-    assert "(unchanged)" in joined
+    assert "pre-existing" in joined
+    assert "not from this edit" in joined
+    assert "(unchanged)" not in joined
     assert "(timeout)" not in joined
+    # Error detail surfaced inline.
+    assert "trailing comma" in joined
+    assert "L4" in joined
+
+
+def test_render_diff_pre_existing_caps_errors_at_five() -> None:
+    """More than 5 persisting errors are capped with a '+N more' line."""
+    errors = [{"line": i, "code": "E", "msg": f"err {i}"} for i in range(7)]
+    before = {"tool": "phpstan", "count": 7, "ok": False, "errors": errors}
+    after = {"tool": "phpstan", "count": 7, "ok": False, "errors": errors}
+    rows = supertool._validator_render_diff(before, after)
+    joined = "".join(rows)
+    assert "pre-existing" in joined
+    assert "+2 more" in joined
