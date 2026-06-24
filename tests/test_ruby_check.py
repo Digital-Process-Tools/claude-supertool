@@ -15,12 +15,21 @@ ADAPTER = Path(__file__).parent.parent / "validators" / "ruby-check" / "ruby-che
 
 
 def _run(file_path: str) -> dict:
-    result = subprocess.run(
-        [sys.executable, str(ADAPTER), file_path],
-        capture_output=True,
-        text=True,
+    # Windows runners occasionally yield empty stdout from the freshly-spawned
+    # adapter (cold subprocess start); retry once, then fail with diagnostics
+    # instead of a cryptic JSONDecodeError.
+    for attempt in range(2):
+        result = subprocess.run(
+            [sys.executable, str(ADAPTER), file_path],
+            capture_output=True,
+            text=True,
+        )
+        if result.stdout.strip():
+            return json.loads(result.stdout)
+    raise AssertionError(
+        f"ruby-check adapter produced empty stdout (rc={result.returncode}); "
+        f"stderr={result.stderr!r}"
     )
-    return json.loads(result.stdout)
 
 
 # ---------------------------------------------------------------------------

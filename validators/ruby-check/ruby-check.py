@@ -92,4 +92,11 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:  # never leave stdout empty — callers json.loads() it
+        file = sys.argv[1] if len(sys.argv) > 1 else ""
+        emit({"tool": "ruby-check", "file": file, "ok": False, "count": 1,
+              "errors": [{"line": None, "col": None, "severity": "error",
+                          "code": "adapter", "msg": str(exc)[:300]}],
+              "duration_ms": 0})
