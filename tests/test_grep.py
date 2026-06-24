@@ -100,6 +100,60 @@ def test_grep_no_auto_read_on_large_file(tmp_path: Path, monkeypatch) -> None:
     assert "[auto-read:" not in out
 
 
+def test_grep_no_auto_read_flag_suppresses_auto_read(tmp_path: Path) -> None:
+    f = tmp_path / "small.py"
+    f.write_text("found_it = True\n")
+    out = supertool.op_grep("found_it", str(f), no_auto_read=True)
+    # Match still reported, but the full file is not dumped
+    assert "[auto-read:" not in out
+    assert "found_it" in out
+    assert "1:found_it = True" in out
+
+
+def test_grep_dispatch_no_auto_read_flag(tmp_path: Path) -> None:
+    f = tmp_path / "small.py"
+    f.write_text("found_it = True\n")
+    out = supertool.dispatch(f"grep:found_it:{f}:no-auto-read")
+    assert "[auto-read:" not in out
+    assert "found_it" in out
+
+
+def test_grep_dispatch_no_auto_read_with_limit(tmp_path: Path) -> None:
+    f = tmp_path / "small.py"
+    f.write_text("found_it = True\n")
+    out = supertool.dispatch(f"grep:found_it:{f}:5:no-auto-read")
+    assert "[auto-read:" not in out
+    assert "found_it" in out
+
+
+def test_grep_dispatch_default_still_auto_reads(tmp_path: Path) -> None:
+    f = tmp_path / "small.py"
+    f.write_text("found_it = True\n")
+    out = supertool.dispatch(f"grep:found_it:{f}")
+    assert "[auto-read:" in out
+
+
+def test_parse_grep_args_peels_no_auto_read(tmp_path: Path) -> None:
+    pattern, path, limit, context, count_only, no_auto_read = \
+        supertool._parse_grep_args(["grep", "needle", "src/", "no-auto-read"])
+    assert pattern == "needle"
+    assert path == "src/"
+    assert no_auto_read is True
+    assert count_only is False
+
+
+def test_parse_grep_args_no_auto_read_with_count_and_ints(tmp_path: Path) -> None:
+    pattern, path, limit, context, count_only, no_auto_read = \
+        supertool._parse_grep_args(
+            ["grep", "needle", "src/", "5", "2", "count", "no-auto-read"])
+    assert pattern == "needle"
+    assert path == "src/"
+    assert limit == 5
+    assert context == 2
+    assert count_only is True
+    assert no_auto_read is True
+
+
 # ---------------------------------------------------------------------------
 # op_grep with context lines
 # ---------------------------------------------------------------------------

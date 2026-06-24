@@ -42,6 +42,9 @@ OPERATIONS
     grep:PATTERN:PATH          Search pattern (10 results default).
                                 Auto-reads full file if PATH is a concrete
                                 file < 20KB with a match.
+    grep:PATTERN:PATH:no-auto-read
+                               Suppress the single-file auto-read — only the
+                                matching line(s) are emitted (parity with glob).
     grep:PATTERN:PATH:LIMIT    Search with custom result limit
     grep:PATTERN:PATH:LIMIT:CONTEXT
                                Search with context lines (like grep -C).
@@ -1228,7 +1231,7 @@ def _literal_note(pattern: str, count: int) -> str:
 
 def op_grep(pattern: str, path: str = ".", limit: int = 0,
             context: int = 0, count_only: bool = False,
-            no_exclude: bool = False) -> str:
+            no_exclude: bool = False, no_auto_read: bool = False) -> str:
     """Search pattern recursively. Auto-reads small single file on match.
 
     When context > 0, emits N lines before/after each match in grep -C style:
@@ -1238,6 +1241,9 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
     Auto-read is skipped when context > 0 (output already contains context).
 
     When count_only=True, returns match counts per file instead of content.
+
+    When no_auto_read=True, suppresses the single-small-file auto-read so only
+    the matching line(s) are emitted (parity with glob's :no-auto-read flag).
     """
     if limit <= 0:
         limit = _get_op_int("grep", "max_results", MAX_GREP_RESULTS)
@@ -1358,7 +1364,8 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
     out.append("\n")
 
     # Auto-read: single small file + at least one match → emit full file
-    if (count > 0
+    if (not no_auto_read
+            and count > 0
             and os.path.isfile(path)
             and os.path.getsize(path) < _get_op_int("read", "max_bytes", MAX_READ_BYTES)):
         out.append(f"[auto-read: single file < {_get_op_int('read', 'max_bytes', MAX_READ_BYTES)} bytes, "
@@ -2912,12 +2919,16 @@ def _parse_grep_args(parts: List[str]) -> tuple:
     # parts[0] is 'grep', work with parts[1:]
     args = parts[1:]
     if not args:
-        return ("", ".", _get_op_int("grep", "max_results", MAX_GREP_RESULTS), 0, False)
+        return ("", ".", _get_op_int("grep", "max_results", MAX_GREP_RESULTS), 0, False, False)
 
-    # Peel known trailing fields from the right
+    # Peel known trailing string flags from the right (order-independent)
     count_only = False
-    if args and args[-1] == "count":
-        count_only = True
+    no_auto_read = False
+    while args and args[-1] in ("count", "no-auto-read"):
+        if args[-1] == "count":
+            count_only = True
+        else:
+            no_auto_read = True
         args = args[:-1]
 
     # Peel trailing ints: format is ...PATH:LIMIT:CONTEXT
@@ -2944,7 +2955,7 @@ def _parse_grep_args(parts: List[str]) -> tuple:
         pattern = args[0] if args else ""
         path = "."
 
-    return (pattern, path, limit, context, count_only)
+    return (pattern, path, limit, context, count_only, no_auto_read)
 
 
 def _parse_around_args(parts: List[str]) -> tuple:
@@ -10972,9 +10983,10 @@ def _dispatch_impl(arg: str) -> str:
                 grep_filter = parts[4][5:]
             body = op_read(path, offset, limit, grep_filter, force_full)
         elif op == "grep":
-            pattern, path, limit, context, count_only = _parse_grep_args(parts)
+            pattern, path, limit, context, count_only, no_auto_read = \
+                _parse_grep_args(parts)
             body = op_grep(pattern, path, limit, context, count_only,
-                           no_exclude=no_exclude)
+                           no_exclude=no_exclude, no_auto_read=no_auto_read)
         elif op == "grep_around":
             # grep_around:PATTERN:PATH[:N[:LIMIT]] — every match with N lines
             # context. Sane defaults for "show me how everyone uses this".
