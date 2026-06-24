@@ -50,6 +50,92 @@ def pytest_configure(config):  # noqa: ARG001
     os.environ.setdefault("SUPERTOOL_NO_PUBLISH_CONFIRM", "1")
 
 
+_GIT_DIRS_CACHE = "unset"
+
+
+def _repo_git_dirs():
+    """Locate the real suite repo's git dirs, or None when not in a repo.
+
+    Returns ``(common_dir, git_dir)``. In a normal clone both are ``.git``; in
+    a worktree ``common_dir`` is the shared ``.git`` (where ``config`` and
+    ``refs/heads`` live) and ``git_dir`` is the per-worktree dir (where ``HEAD``
+    lives). The corruption we guard against — ``core.bare=true`` + junk commits
+    on master from a test running git against an ambient repo — lands in the
+    common dir, so that is what we fingerprint.
+
+    Cached after the first call: the dirs never move during a run, and the two
+    ``git rev-parse`` subprocesses would otherwise fire once per test (~7k
+    spawns over the suite — minutes of pure overhead).
+    """
+    global _GIT_DIRS_CACHE
+    if _GIT_DIRS_CACHE != "unset":
+        return _GIT_DIRS_CACHE
+    import subprocess
+    root = Path(__file__).resolve().parent.parent
+    result = None
+    try:
+        common = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--git-common-dir"],
+            capture_output=True, text=True, timeout=5,
+        )
+        gitdir = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--git-dir"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if common.returncode == 0 and gitdir.returncode == 0:
+            result = (
+                (root / common.stdout.strip()).resolve(),
+                (root / gitdir.stdout.strip()).resolve(),
+            )
+    except (OSError, subprocess.SubprocessError):
+        result = None
+    _GIT_DIRS_CACHE = result
+    return result
+
+
+def _git_state_fingerprint(dirs):
+    """Hash the bits a leaking test would mutate: config, HEAD, and every head ref."""
+    import hashlib
+    common_dir, git_dir = dirs
+    h = hashlib.sha256()
+    for p in (common_dir / "config", git_dir / "HEAD", common_dir / "packed-refs"):
+        try:
+            h.update(p.read_bytes())
+        except OSError:
+            h.update(b"<absent>")
+    heads = common_dir / "refs" / "heads"
+    if heads.is_dir():
+        for ref in sorted(heads.rglob("*")):
+            if ref.is_file():
+                h.update(str(ref.relative_to(heads)).encode())
+                h.update(ref.read_bytes())
+    return h.hexdigest()
+
+
+@pytest.fixture(autouse=True)
+def _guard_repo_git_state():
+    """Fail any test that mutates the suite repo's own git state (#319).
+
+    Tests must build git fixtures inside ``tmp_path`` and run every git call
+    with ``cwd=tmp_path`` (or ``git -C tmp_path``). A test that runs ``git
+    init``/``commit``/``config`` against the ambient cwd corrupts the real repo
+    — and when the suite runs inside a *worktree* (shared ``.git``), it
+    corrupts the main checkout too (``core.bare=true``, junk commits on master).
+    A standalone clone hides this; this guard surfaces the culprit by name.
+    """
+    dirs = _repo_git_dirs()
+    before = _git_state_fingerprint(dirs) if dirs else None
+    yield
+    if before is None:
+        return
+    after = _git_state_fingerprint(dirs)
+    assert before == after, (
+        "test mutated the suite repo's git state (config/HEAD/refs changed) — "
+        "build git fixtures in tmp_path and pass cwd=tmp_path to every git call. "
+        "See conftest._guard_repo_git_state / issue #319."
+    )
+
+
 @pytest.fixture(autouse=True)
 def _disable_rtk_and_config():
     """Disable RTK delegation, config cache, tree-sitter, and ctags in tests."""
