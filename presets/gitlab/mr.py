@@ -15,6 +15,8 @@ DESCRIPTION_MAX = 2000
 COMMENT_MAX = 500
 COMMENT_TOTAL_MAX = 2000
 TAIL_COMMENTS = 2
+NAMESTATUS_DISPLAY_MAX = 50
+NAMESTATUS_FETCH_CAP = 500
 
 
 def _relative_age(iso: str) -> str:
@@ -239,6 +241,95 @@ def _budgeted_comments(notes: list, budget: int, tail: int) -> tuple[list[str], 
     hidden = head_pool[len(head_kept):]
     hidden_bytes = sum(len(r.encode("utf-8")) for r in hidden)
     return head_kept + (["__GAP__"] if hidden else []) + tail_slice, len(hidden), hidden_bytes
+
+
+def _name_status_flag(f: dict) -> str:
+    """Map a GitLab diff entry to a one-char change type (A/D/R/M)."""
+    if f.get("new_file"):
+        return "A"
+    if f.get("deleted_file"):
+        return "D"
+    if f.get("renamed_file"):
+        return "R"
+    return "M"
+
+
+def _get_name_status(iid: str | int, fetch_all: bool) -> list[tuple[str, str]]:
+    """Return per-file (flag, path) for an MR via the paginated diffs endpoint.
+
+    Default fetches only the first page (100 files) — enough for the display
+    cap. With fetch_all (gl-mr:N:full) it paginates up to NAMESTATUS_FETCH_CAP
+    files. Returns [] on any API/parse failure so the caller silently omits
+    the block rather than erroring.
+    """
+    entries: list[tuple[str, str]] = []
+    page = 1
+    while True:
+        try:
+            r = _glab_api(
+                f"projects/:id/merge_requests/{iid}/diffs?per_page=100&page={page}"
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            break
+        if r.returncode != 0:
+            break
+        try:
+            diffs = json.loads(r.stdout)
+        except json.JSONDecodeError:
+            break
+        if not isinstance(diffs, list) or not diffs:
+            break
+        for f in diffs:
+            flag = _name_status_flag(f)
+            new_path = f.get("new_path") or ""
+            old_path = f.get("old_path") or ""
+            if flag == "R" and old_path and new_path and old_path != new_path:
+                path = f"{old_path} → {new_path}"
+            else:
+                path = new_path or old_path or "?"
+            entries.append((flag, path))
+        if not fetch_all or len(diffs) < 100 or len(entries) >= NAMESTATUS_FETCH_CAP:
+            break
+        page += 1
+    return entries
+
+
+def _coerce_count(changes: object) -> int | None:
+    """Return the leading integer of GitLab's changes_count.
+
+    changes_count comes back as a string — "18" on normal MRs, "1000+" when
+    capped. Returns the leading int (1000 for "1000+"), or None when there are
+    no leading digits, so callers can fall back to the fetched-entry count.
+    """
+    m = re.match(r"\d+", str(changes))
+    return int(m.group()) if m else None
+
+
+def _render_name_status(
+    entries: list[tuple[str, str]], changes: object, full: bool, iid: str | int
+) -> list[str]:
+    """Build the '## Files' block lines from name-status entries.
+
+    Returns [] when there are no entries (caller omits the block). The total
+    file count drives the "+N more" overflow line: it comes from changes_count
+    (authoritative, survives the display cap and single-page fetch) and falls
+    back to the fetched count when changes_count is missing or smaller.
+    """
+    if not entries:
+        return []
+    shown = entries if full else entries[:NAMESTATUS_DISPLAY_MAX]
+    total = _coerce_count(changes)
+    if total is None or total < len(entries):
+        total = len(entries)
+    lines = [f"\n## Files ({changes})"]
+    lines.extend(f" {flag}  {path}" for flag, path in shown)
+    hidden = total - len(shown)
+    if hidden > 0:
+        if full:
+            lines.append(f" … +{hidden} more (output capped at {NAMESTATUS_FETCH_CAP} files)")
+        else:
+            lines.append(f" … +{hidden} more (use gl-mr:{iid}:full)")
+    return lines
 
 
 def main() -> int:
@@ -499,6 +590,12 @@ def main() -> int:
     elif changes:
         # glab mr view omits diff_stats on large MRs (typically 1000+ files)
         print(f"Changes: {changes} files (line counts unavailable on large MRs)")
+
+    # File-level name-status — the deletion/addition list is the high-signal
+    # scan when reviewing an MR. Default-capped; gl-mr:N:full uncaps.
+    if changes:
+        for line in _render_name_status(_get_name_status(iid, full), changes, full, iid):
+            print(line)
 
     # Conflicts
     conflict_files: list[str] = []
