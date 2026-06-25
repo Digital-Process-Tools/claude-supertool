@@ -125,6 +125,41 @@ def test_default_mode_runs_smart_filter(monkeypatch, capsys) -> None:
     assert "Log: 3 lines total" in out
 
 
+def test_fail_mode_shows_all_matched_blocks(monkeypatch, capsys) -> None:
+    """`:fail` shows every error block with no tail truncation."""
+    lines = ["build start"] + [f"line {i}" for i in range(150)] + [
+        "##[error]Process completed with exit code 1",
+    ] + [f"trail {i}" for i in range(40)]
+    rc = _run_main(monkeypatch, ["job.py", "123", "fail"], lines)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "All error blocks" in out
+    assert "exit code 1" in out
+    assert "Tail (last" not in out
+
+
+def test_fail_mode_no_matches(monkeypatch, capsys) -> None:
+    """`:fail` prints a clear message when nothing matched."""
+    lines = ["build started", "all good", "build done"]
+    rc = _run_main(monkeypatch, ["job.py", "123", "fail"], lines)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "No error patterns matched" in out
+
+
+def test_fail_is_alias_of_errors(monkeypatch, capsys) -> None:
+    """`:fail` produces byte-identical output to `:errors` — pure alias."""
+    lines = ["build start"] + [f"line {i}" for i in range(150)] + [
+        "##[error]Process completed with exit code 1",
+    ] + [f"trail {i}" for i in range(40)]
+    _run_main(monkeypatch, ["job.py", "123", "errors"], lines)
+    errors_out = capsys.readouterr().out
+    _run_main(monkeypatch, ["job.py", "123", "fail"], lines)
+    fail_out = capsys.readouterr().out
+    assert fail_out == errors_out
+    assert "All error blocks" in fail_out
+
+
 def test_grep_matches_with_context(monkeypatch, capsys) -> None:
     """grep mode returns matching lines plus surrounding context."""
     lines = [f"line {i}" for i in range(20)] + [
