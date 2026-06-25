@@ -72,7 +72,17 @@ When `old` or `new` spans multiple lines or contains characters that clash with 
 { "old": "return false;", "new": "return true;", "path": "src/app/Foo.py" }
 ```
 
-Use `@-` to pipe from stdin instead of a file.
+Use `@-` to pipe from stdin instead of a file — a heredoc keeps the whole edit in one command with nothing written to disk, and a TOML body takes raw multi-line code with no escaping:
+
+```bash
+./supertool 'edit:@-' <<'EOF'
+path = "src/app/Foo.py"
+old = '''return false;'''
+new = '''return true;'''
+EOF
+```
+
+Because the line starts with `./supertool` (not `cat`/`echo`), this is the form to reach for under enforced or autonomous runs that block bare shell builtins. See [Which form?](../input-forms.md#which-form) for choosing between colon-CLI, `@-`, and `@file`.
 
 ### `batch:@file` — mixed ops in one round-trip
 
