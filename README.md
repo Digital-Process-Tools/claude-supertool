@@ -31,7 +31,7 @@ supertool 'read:src/Module.py' 'read:src/Auth.py' 'grep:TODO:src/:20' 'map:src/'
 **Drill in 2026.** supertool gives the agent variants that pack the *next question* into the *current call*:
 
 - **`git-status`** — branch + tracking + ahead/behind + dirty files + open MR/PR + suggested next step. One call, decision ready.
-- **`gl-mr:NUMBER`** / **`gh-pr:NUMBER`** — full MR/PR dashboard: branch, pipeline, reviewer, approval, diff stat, comments. Replaces 4-5 `glab`/`gh` calls.
+- **`gl-mr:NUMBER`** / **`gh-pr:NUMBER`** — full MR/PR dashboard: branch, pipeline, reviewer, approval, diff stat, per-file name-status (A/D/R/M) list, comments. Replaces 4-5 `glab`/`gh` calls.
 - **`gl-mrs`** — MR triage board: your open MRs + per-MR pipeline status + which already have a `watch` poller running + an actionable footer. Pairs with `watch` to auto-watch every failing MR.
 - **`claude-log-summary:UUID`** — model, duration, tool calls, tokens, cache hit %, errors-by-tool. Audit your own runs.
 

@@ -427,3 +427,95 @@ def test_budgeted_comments_hidden_bytes_counts_utf8() -> None:
     _, hidden_count, hidden_bytes = mr._budgeted_comments(notes, budget=2000, tail=2)
     assert hidden_count > 0
     assert hidden_bytes == hidden_count * rendered_one_bytes
+
+
+# ---------------------------------------------------------------------------
+# _name_status_flag / _get_name_status
+# ---------------------------------------------------------------------------
+
+def test_name_status_flag_mapping() -> None:
+    assert mr._name_status_flag({"new_file": True}) == "A"
+    assert mr._name_status_flag({"deleted_file": True}) == "D"
+    assert mr._name_status_flag({"renamed_file": True}) == "R"
+    assert mr._name_status_flag({}) == "M"
+
+
+def _api_json(payload: Any, returncode: int = 0) -> Any:
+    import json as _json
+    return subprocess.CompletedProcess(
+        args=["glab"], returncode=returncode, stdout=_json.dumps(payload), stderr=""
+    )
+
+
+def test_get_name_status_parses_flags_and_paths(monkeypatch) -> None:
+    diffs = [
+        {"new_file": True, "new_path": "a.py", "old_path": "a.py"},
+        {"deleted_file": True, "new_path": "b.py", "old_path": "b.py"},
+        {"renamed_file": True, "new_path": "d.py", "old_path": "c.py"},
+        {"new_path": "e.py", "old_path": "e.py"},
+    ]
+    monkeypatch.setattr(mr, "_glab_api", lambda *a, **kw: _api_json(diffs))
+    assert mr._get_name_status(42, fetch_all=False) == [
+        ("A", "a.py"), ("D", "b.py"), ("R", "d.py"), ("M", "e.py"),
+    ]
+
+
+def test_get_name_status_deleted_uses_old_path_when_new_missing(monkeypatch) -> None:
+    diffs = [{"deleted_file": True, "new_path": "", "old_path": "gone.py"}]
+    monkeypatch.setattr(mr, "_glab_api", lambda *a, **kw: _api_json(diffs))
+    assert mr._get_name_status(1, fetch_all=False) == [("D", "gone.py")]
+
+
+def test_get_name_status_api_failure_returns_empty(monkeypatch) -> None:
+    monkeypatch.setattr(mr, "_glab_api", lambda *a, **kw: _api_json([], returncode=1))
+    assert mr._get_name_status(1, fetch_all=False) == []
+
+
+def test_get_name_status_bad_json_returns_empty(monkeypatch) -> None:
+    bad = subprocess.CompletedProcess(args=["glab"], returncode=0, stdout="not json", stderr="")
+    monkeypatch.setattr(mr, "_glab_api", lambda *a, **kw: bad)
+    assert mr._get_name_status(1, fetch_all=False) == []
+
+
+def test_get_name_status_timeout_returns_empty(monkeypatch) -> None:
+    def boom(*a: Any, **kw: Any) -> Any:
+        raise subprocess.TimeoutExpired(cmd="glab", timeout=10)
+    monkeypatch.setattr(mr, "_glab_api", boom)
+    assert mr._get_name_status(1, fetch_all=False) == []
+
+
+def test_get_name_status_single_page_when_not_fetch_all(monkeypatch) -> None:
+    """A full page (100) must NOT trigger a second fetch unless fetch_all."""
+    calls = []
+    full_page = [{"new_path": f"f{i}.py", "old_path": f"f{i}.py"} for i in range(100)]
+
+    def fake(endpoint: str, *a: Any, **kw: Any) -> Any:
+        calls.append(endpoint)
+        return _api_json(full_page)
+
+    monkeypatch.setattr(mr, "_glab_api", fake)
+    entries = mr._get_name_status(1, fetch_all=False)
+    assert len(entries) == 100
+    assert len(calls) == 1
+
+
+def test_get_name_status_paginates_when_fetch_all(monkeypatch) -> None:
+    """fetch_all walks pages until a short page signals the end."""
+    page1 = [{"new_path": f"p1_{i}.py", "old_path": f"p1_{i}.py"} for i in range(100)]
+    page2 = [{"new_path": "p2_0.py", "old_path": "p2_0.py"}]  # short page -> stop
+
+    def fake(endpoint: str, *a: Any, **kw: Any) -> Any:
+        return _api_json(page1 if "&page=1" in endpoint else page2)
+
+    monkeypatch.setattr(mr, "_glab_api", fake)
+    entries = mr._get_name_status(1, fetch_all=True)
+    assert len(entries) == 101
+    assert entries[-1] == ("M", "p2_0.py")
+
+
+def test_get_name_status_respects_fetch_cap(monkeypatch) -> None:
+    """fetch_all stops once NAMESTATUS_FETCH_CAP files are collected."""
+    full_page = [{"new_path": f"f{i}.py", "old_path": f"f{i}.py"} for i in range(100)]
+    monkeypatch.setattr(mr, "_glab_api", lambda *a, **kw: _api_json(full_page))
+    entries = mr._get_name_status(1, fetch_all=True)
+    assert len(entries) == mr.NAMESTATUS_FETCH_CAP

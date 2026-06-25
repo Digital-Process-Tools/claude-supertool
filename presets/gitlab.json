@@ -11,8 +11,8 @@
     "gl-mr": {
       "cmd": "{python} {path}gitlab/mr.py {args}",
       "timeout": 20,
-      "description": "MR review: branch, pipeline, approval, linked issue, diff stat, comments. :status = slim merge-state only",
-      "syntax": "gl-mr:NUMBER_OR_BRANCH[:status]"
+      "description": "MR review: branch, pipeline, approval, linked issue, diff stat, per-file name-status (A/D/R/M) list, comments. :status = slim merge-state only. :full uncaps the file list + comments",
+      "syntax": "gl-mr:NUMBER_OR_BRANCH[:status|:full]"
     },
     "gl-mrs": {
       "cmd": "{python} {path}gitlab/mrs.py {args}",
