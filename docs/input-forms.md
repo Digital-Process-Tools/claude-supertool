@@ -2,6 +2,18 @@
 
 Three ways to pass arguments to supertool ops.
 
+## Which form? {#which-form}
+
+Pick by the shape of your content, not by habit:
+
+| Use | When | Why |
+| --- | --- | --- |
+| **Colon-CLI** | Short, single-line content with no `:` / quotes / newlines | Zero ceremony — it's just the op string |
+| **`@-` heredoc** | Multi-line / quoted / colon-bearing content, **one** op, nothing to keep | No file written; the command line starts with `./supertool`, so it survives enforced or autonomous runs that block bare shell builtins (`cat`, `echo`, …) |
+| **`@file`** | Same messy content, but you want to **re-run, batch, or diff** it | The payload is a durable artifact. Write it with an editor or your harness's file-write tool — **not** `cat > file`, which puts a blocked builtin at the start of the line under enforcement |
+
+The trap to avoid: writing a payload with `cat > .max/x.json <<'EOF'` and then reading it back. That line *starts* with `cat`, so an enforced/autonomous run flags it — and it forces hand-escaped `\n` JSON. If you need a single edit, pipe the heredoc straight into `@-`; if you need the file, write it with a tool, not `cat`.
+
 ## Colon-CLI (default)
 
 Most ops take arguments via `:` — `read:PATH:OFFSET:LIMIT`, `grep:PATTERN:PATH:LIMIT`. When content itself contains colons (code, SQL, timestamps), switch to `:::` triple-colon separators: `edit:::OLD:::NEW:::PATH`.
