@@ -280,12 +280,56 @@ def _get_name_status(iid: str | int, fetch_all: bool) -> list[tuple[str, str]]:
         if not isinstance(diffs, list) or not diffs:
             break
         for f in diffs:
-            path = f.get("new_path") or f.get("old_path") or "?"
-            entries.append((_name_status_flag(f), path))
+            flag = _name_status_flag(f)
+            new_path = f.get("new_path") or ""
+            old_path = f.get("old_path") or ""
+            if flag == "R" and old_path and new_path and old_path != new_path:
+                path = f"{old_path} → {new_path}"
+            else:
+                path = new_path or old_path or "?"
+            entries.append((flag, path))
         if not fetch_all or len(diffs) < 100 or len(entries) >= NAMESTATUS_FETCH_CAP:
             break
         page += 1
     return entries
+
+
+def _coerce_count(changes: object) -> int | None:
+    """Return the leading integer of GitLab's changes_count.
+
+    changes_count comes back as a string — "18" on normal MRs, "1000+" when
+    capped. Returns the leading int (1000 for "1000+"), or None when there are
+    no leading digits, so callers can fall back to the fetched-entry count.
+    """
+    m = re.match(r"\d+", str(changes))
+    return int(m.group()) if m else None
+
+
+def _render_name_status(
+    entries: list[tuple[str, str]], changes: object, full: bool, iid: str | int
+) -> list[str]:
+    """Build the '## Files' block lines from name-status entries.
+
+    Returns [] when there are no entries (caller omits the block). The total
+    file count drives the "+N more" overflow line: it comes from changes_count
+    (authoritative, survives the display cap and single-page fetch) and falls
+    back to the fetched count when changes_count is missing or smaller.
+    """
+    if not entries:
+        return []
+    shown = entries if full else entries[:NAMESTATUS_DISPLAY_MAX]
+    total = _coerce_count(changes)
+    if total is None or total < len(entries):
+        total = len(entries)
+    lines = [f"\n## Files ({changes})"]
+    lines.extend(f" {flag}  {path}" for flag, path in shown)
+    hidden = total - len(shown)
+    if hidden > 0:
+        if full:
+            lines.append(f" … +{hidden} more (output capped at {NAMESTATUS_FETCH_CAP} files)")
+        else:
+            lines.append(f" … +{hidden} more (use gl-mr:{iid}:full)")
+    return lines
 
 
 def main() -> int:
@@ -550,19 +594,8 @@ def main() -> int:
     # File-level name-status — the deletion/addition list is the high-signal
     # scan when reviewing an MR. Default-capped; gl-mr:N:full uncaps.
     if changes:
-        ns_entries = _get_name_status(iid, full)
-        if ns_entries:
-            shown = ns_entries if full else ns_entries[:NAMESTATUS_DISPLAY_MAX]
-            print(f"\n## Files ({changes})")
-            for flag, path in shown:
-                print(f" {flag}  {path}")
-            total = changes if isinstance(changes, int) and changes else len(ns_entries)
-            hidden = total - len(shown)
-            if hidden > 0:
-                if full:
-                    print(f" … +{hidden} more (output capped at {NAMESTATUS_FETCH_CAP} files)")
-                else:
-                    print(f" … +{hidden} more (use gl-mr:{iid}:full)")
+        for line in _render_name_status(_get_name_status(iid, full), changes, full, iid):
+            print(line)
 
     # Conflicts
     conflict_files: list[str] = []

@@ -456,8 +456,15 @@ def test_get_name_status_parses_flags_and_paths(monkeypatch) -> None:
     ]
     monkeypatch.setattr(mr, "_glab_api", lambda *a, **kw: _api_json(diffs))
     assert mr._get_name_status(42, fetch_all=False) == [
-        ("A", "a.py"), ("D", "b.py"), ("R", "d.py"), ("M", "e.py"),
+        ("A", "a.py"), ("D", "b.py"), ("R", "c.py → d.py"), ("M", "e.py"),
     ]
+
+
+def test_get_name_status_rename_without_path_change_shows_single(monkeypatch) -> None:
+    """A renamed_file flag with identical paths (mode-only change) shows one path."""
+    diffs = [{"renamed_file": True, "new_path": "x.py", "old_path": "x.py"}]
+    monkeypatch.setattr(mr, "_glab_api", lambda *a, **kw: _api_json(diffs))
+    assert mr._get_name_status(1, fetch_all=False) == [("R", "x.py")]
 
 
 def test_get_name_status_deleted_uses_old_path_when_new_missing(monkeypatch) -> None:
@@ -519,3 +526,56 @@ def test_get_name_status_respects_fetch_cap(monkeypatch) -> None:
     monkeypatch.setattr(mr, "_glab_api", lambda *a, **kw: _api_json(full_page))
     entries = mr._get_name_status(1, fetch_all=True)
     assert len(entries) == mr.NAMESTATUS_FETCH_CAP
+
+
+# ---------------------------------------------------------------------------
+# _coerce_count / _render_name_status (display-block math)
+# ---------------------------------------------------------------------------
+
+def test_coerce_count_handles_string_and_capped() -> None:
+    assert mr._coerce_count("18") == 18
+    assert mr._coerce_count("1000+") == 1000  # GitLab caps large MRs as "N+"
+    assert mr._coerce_count(42) == 42
+    assert mr._coerce_count("") is None
+    assert mr._coerce_count(None) is None
+
+
+def test_render_name_status_empty_entries_returns_nothing() -> None:
+    assert mr._render_name_status([], "0", full=False, iid=1) == []
+
+
+def test_render_name_status_under_cap_no_overflow() -> None:
+    entries = [("A", "a.py"), ("D", "b.py")]
+    lines = mr._render_name_status(entries, "2", full=False, iid=7)
+    assert lines == ["\n## Files (2)", " A  a.py", " D  b.py"]
+    assert not any("more" in ln for ln in lines)
+
+
+def test_render_name_status_overflow_uses_changes_count_not_fetched() -> None:
+    """The +N more count must come from changes_count, not the fetched page.
+
+    Regression: changes_count is a *string* ("200"), so an isinstance(int)
+    guard always fell through to the fetched-entry count — undercounting the
+    overflow on >100-file MRs. Here 100 fetched, 50 shown, true total 200.
+    """
+    entries = [("M", f"f{i}.py") for i in range(100)]
+    lines = mr._render_name_status(entries, "200", full=False, iid=9)
+    assert lines[0] == "\n## Files (200)"
+    assert len([ln for ln in lines if ln.startswith(" M")]) == mr.NAMESTATUS_DISPLAY_MAX
+    assert lines[-1] == f" … +{200 - mr.NAMESTATUS_DISPLAY_MAX} more (use gl-mr:9:full)"
+
+
+def test_render_name_status_falls_back_to_len_when_count_smaller() -> None:
+    """If changes_count is missing/smaller than fetched, use the fetched count."""
+    entries = [("A", f"a{i}.py") for i in range(60)]
+    lines = mr._render_name_status(entries, "", full=False, iid=1)
+    assert lines[-1] == f" … +{60 - mr.NAMESTATUS_DISPLAY_MAX} more (use gl-mr:1:full)"
+
+
+def test_render_name_status_full_mode_cap_message() -> None:
+    """In full mode an overflow points at the fetch cap, not :full again."""
+    entries = [("M", f"f{i}.py") for i in range(mr.NAMESTATUS_FETCH_CAP)]
+    lines = mr._render_name_status(entries, "1200", full=True, iid=3)
+    body = [ln for ln in lines if ln.startswith(" M")]
+    assert len(body) == mr.NAMESTATUS_FETCH_CAP  # full = uncapped display
+    assert lines[-1] == f" … +{1200 - mr.NAMESTATUS_FETCH_CAP} more (output capped at {mr.NAMESTATUS_FETCH_CAP} files)"
