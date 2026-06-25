@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`gl-job` / `gh-job` gained a `:fail` suffix** — `gl-job:ID:fail` (alias `:errors`) prints only the matched failure blocks with no tail, the tight triage view. It applies the same per-job pattern table as the default mode (rector → diff lines, phpstan → 🪪/type markers, unit → `FAILURES!`/`Failed asserting`), so a red job shows just its actionable failures instead of the default's blocks-plus-80-line-tail. This names the discoverable front door for a behavior that previously only existed as the undocumented `:errors` mode on `gl-job` (and was entirely absent on `gh-job`); `:errors` stays as a back-compat alias. The default (no suffix), `:grep:PATTERN`, and `:raw` are unchanged. Closes [#326](https://github.com/Digital-Process-Tools/claude-supertool/issues/326).
 - **`grep` gained a `:no-auto-read` flag** — `grep:PATTERN:PATH:no-auto-read` suppresses the single-small-file auto-read so only the matching line(s) are emitted, mirroring `glob`'s existing flag. Default behavior (auto-read a concrete file < 20KB on a match) is unchanged. The flag is order-independent with `:count` and any `LIMIT`/`CONTEXT` args. Avoids silently dumping 10-18KB of unrequested file content when the caller only wants the hit. Closes [#320](https://github.com/Digital-Process-Tools/claude-supertool/issues/320).
 
 ### Fixed

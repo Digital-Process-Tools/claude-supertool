@@ -147,7 +147,7 @@ def main() -> int:
 
     job_id = sys.argv[1]
     raw_mode = len(sys.argv) > 2 and sys.argv[2] == "raw"
-    errors_mode = len(sys.argv) > 2 and sys.argv[2] == "errors"
+    errors_mode = len(sys.argv) > 2 and sys.argv[2] in ("errors", "fail")
     grep_mode = len(sys.argv) > 2 and sys.argv[2] == "grep"
     grep_pattern = sys.argv[3] if grep_mode and len(sys.argv) > 3 else None
     if grep_mode and not grep_pattern:

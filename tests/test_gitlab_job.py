@@ -145,6 +145,22 @@ def test_errors_mode_no_matches(monkeypatch, capsys) -> None:
     assert "No error patterns matched" in out
 
 
+def test_fail_is_alias_of_errors(monkeypatch, capsys) -> None:
+    """`:fail` produces byte-identical output to `:errors` — pure alias."""
+    lines = ["build start"] + [f"line {i}" for i in range(150)] + [
+        " ------ ---- ",
+        "    🪪  generics.notSubtype ",
+        " ------ ---- ",
+    ] + [f"trail {i}" for i in range(40)]
+    _run_main(monkeypatch, ["job.py", "123", "errors"], lines)
+    errors_out = capsys.readouterr().out
+    _run_main(monkeypatch, ["job.py", "123", "fail"], lines)
+    fail_out = capsys.readouterr().out
+    assert fail_out == errors_out
+    assert "All error blocks" in fail_out
+    assert "generics.notSubtype" in fail_out
+
+
 def test_phpstan_identifier_marker_matches_default(monkeypatch, capsys) -> None:
     """🪪 marker (phpstan identifier) is in default patterns."""
     lines = [
