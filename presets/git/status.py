@@ -3,6 +3,13 @@
 
 Combines branch info, recent commits, working tree state, and stash
 list into one structured report.
+
+Modes (colon-appended: `git-status:full`):
+  - (default) — each file/branch/stash list is capped with a `... (N more)`
+    marker, keeping the overview cheap.
+  - full (alias: porcelain) — uncaps every list for the complete untruncated
+    view, e.g. to drive precise staging (excluding a few pre-existing untracked
+    items from a large commit) where a truncated list isn't enough.
 """
 from __future__ import annotations
 
@@ -19,6 +26,12 @@ def _git(args: list[str], timeout: int = 5) -> subprocess.CompletedProcess[str]:
 
 
 def main() -> int:
+    # `git-status:full` (alias `:porcelain`) uncaps every list below — for when
+    # the default truncated overview isn't enough to drive precise staging
+    # (e.g. excluding a few pre-existing untracked items from a large commit).
+    mode = (sys.argv[1] if len(sys.argv) > 1 else "").lower()
+    full = mode in ("full", "porcelain")
+
     # 1. Branch + tracking
     branch_result = _git(["branch", "-vv", "--no-color"])
     if branch_result.returncode != 0:
@@ -109,9 +122,9 @@ def main() -> int:
                 rows.append((name, track.strip("[]")))
         if rows:
             print("\n## Other branches with unpushed/unpulled work")
-            for name, track in rows[:10]:
+            for name, track in (rows if full else rows[:10]):
                 print(f"  {name}  {track}")
-            if len(rows) > 10:
+            if not full and len(rows) > 10:
                 print(f"  ... ({len(rows) - 10} more)")
 
     # 2. Last 5 commits
@@ -135,21 +148,21 @@ def main() -> int:
             print(f"\n## Working tree ({len(lines)} changes)")
             if staged:
                 print(f"\n### Staged ({len(staged)})")
-                for l in staged[:20]:
+                for l in (staged if full else staged[:20]):
                     print(f"  {l}")
-                if len(staged) > 20:
+                if not full and len(staged) > 20:
                     print(f"  ... ({len(staged) - 20} more)")
             if unstaged:
                 print(f"\n### Unstaged ({len(unstaged)})")
-                for l in unstaged[:20]:
+                for l in (unstaged if full else unstaged[:20]):
                     print(f"  {l}")
-                if len(unstaged) > 20:
+                if not full and len(unstaged) > 20:
                     print(f"  ... ({len(unstaged) - 20} more)")
             if untracked:
                 print(f"\n### Untracked ({len(untracked)})")
-                for l in untracked[:10]:
+                for l in (untracked if full else untracked[:10]):
                     print(f"  {l[3:]}")
-                if len(untracked) > 10:
+                if not full and len(untracked) > 10:
                     print(f"  ... ({len(untracked) - 10} more)")
 
     # 4. Stash
@@ -157,9 +170,9 @@ def main() -> int:
     if stash_result.returncode == 0 and stash_result.stdout.strip():
         stashes = stash_result.stdout.strip().splitlines()
         print(f"\n## Stashes ({len(stashes)})")
-        for s in stashes[:5]:
+        for s in (stashes if full else stashes[:5]):
             print(f"  {s}")
-        if len(stashes) > 5:
+        if not full and len(stashes) > 5:
             print(f"  ... ({len(stashes) - 5} more)")
 
     # 5. MR/PR for current branch (try glab, then gh — skip if neither available)

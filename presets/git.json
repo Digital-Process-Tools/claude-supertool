@@ -3,10 +3,10 @@
   "requires": "git",
   "ops": {
     "git-status": {
-      "cmd": "{python} {path}git/status.py",
+      "cmd": "{python} {path}git/status.py {args}",
       "timeout": 10,
-      "description": "Branch, commits + base divergence, changes, stashes, open MR/PR with diff size",
-      "syntax": "git-status"
+      "description": "Branch, commits + base divergence, changes, stashes, open MR/PR with diff size. `:full` (alias `:porcelain`) uncaps every file/branch/stash list — full untruncated view for driving precise staging",
+      "syntax": "git-status[:full]"
     },
     "git-investigate": {
       "cmd": "{python} {path}git/investigate.py {arg}",

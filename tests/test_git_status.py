@@ -51,8 +51,9 @@ def _stub_no_mr(monkeypatch) -> None:
     monkeypatch.setattr(status.subprocess, "run", fake_run)
 
 
-def _run_main(repo: Path, monkeypatch) -> str:
+def _run_main(repo: Path, monkeypatch, *args: str) -> str:
     monkeypatch.chdir(repo)
+    monkeypatch.setattr(status.sys, "argv", ["status.py", *args])
     buf = io.StringIO()
     with redirect_stdout(buf):
         status.main()
@@ -177,6 +178,42 @@ def test_other_branch_unpushed_commit_surfaced(tmp_path: Path, monkeypatch) -> N
                        if l.strip().startswith("master"))
     assert master_line.strip() == "master  ahead 1"
     assert "[ahead" not in out
+
+
+def test_untracked_truncated_by_default(tmp_path: Path, monkeypatch) -> None:
+    """Default view caps untracked at 10 and prints a '... (N more)' marker."""
+    repo = _init_repo(tmp_path)
+    for i in range(15):
+        (repo / f"untracked_{i:02d}").write_text("x\n")
+    _stub_no_mr(monkeypatch)
+    out = _run_main(repo, monkeypatch)
+    assert "### Untracked (15)" in out
+    assert "... (5 more)" in out
+    assert "untracked_14" not in out
+
+
+def test_full_mode_lists_every_untracked_file(tmp_path: Path, monkeypatch) -> None:
+    """`git-status:full` drops the cap — every path listed, no truncation marker."""
+    repo = _init_repo(tmp_path)
+    for i in range(15):
+        (repo / f"untracked_{i:02d}").write_text("x\n")
+    _stub_no_mr(monkeypatch)
+    out = _run_main(repo, monkeypatch, "full")
+    assert "### Untracked (15)" in out
+    assert "more)" not in out
+    assert "untracked_00" in out
+    assert "untracked_14" in out
+
+
+def test_porcelain_alias_also_uncaps(tmp_path: Path, monkeypatch) -> None:
+    """`:porcelain` is an accepted alias for `:full`."""
+    repo = _init_repo(tmp_path)
+    for i in range(15):
+        (repo / f"untracked_{i:02d}").write_text("x\n")
+    _stub_no_mr(monkeypatch)
+    out = _run_main(repo, monkeypatch, "porcelain")
+    assert "untracked_14" in out
+    assert "more)" not in out
 
 
 def test_gone_branch_filtered_from_section(tmp_path: Path, monkeypatch) -> None:
