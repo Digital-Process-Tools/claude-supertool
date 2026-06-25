@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`git-status` gained a `:full` mode** — `git-status:full` (alias `:porcelain`) uncaps every list in the dashboard (staged/unstaged/untracked files, other branches, stashes), printing the complete untruncated set instead of the default `... (N more)` markers. The default view stays capped (20 staged/unstaged, 10 untracked/branches, 5 stashes) — a cheap overview that answers ahead/behind + dirty + MR. The bug wasn't the truncation (correct for the common case) but the lack of an escape hatch: driving precise staging — e.g. excluding a few pre-existing untracked items from a large commit — needs the full machine-readable list, which previously forced a drop back to raw `git status --porcelain`. Closes [#330](https://github.com/Digital-Process-Tools/claude-supertool/issues/330).
 - **`grep` gained a `:no-auto-read` flag** — `grep:PATTERN:PATH:no-auto-read` suppresses the single-small-file auto-read so only the matching line(s) are emitted, mirroring `glob`'s existing flag. Default behavior (auto-read a concrete file < 20KB on a match) is unchanged. The flag is order-independent with `:count` and any `LIMIT`/`CONTEXT` args. Avoids silently dumping 10-18KB of unrequested file content when the caller only wants the hit. Closes [#320](https://github.com/Digital-Process-Tools/claude-supertool/issues/320).
 
 ### Fixed
