@@ -873,3 +873,16 @@ class TestMcpInfraSkip:
         out = supertool.op_diag(str(php_file))
         assert not out.startswith("diag:"), f"real diagnostic wrongly prefixed: {out!r}"
         assert "missing semicolon" in out
+
+    def test_dispatch_prefixes_iserror_result(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A structural isError result must also be prefixed and dropped, even
+        when its text matches no infra pattern."""
+        php_file = tmp_path / "Foo.php"
+        php_file.write_text("<?php\\n")
+        _stub_server(monkeypatch, "php-lsp",
+                     {"isError": True, "content": [{"type": "text", "text": "server exploded"}]})
+        out = supertool.op_diag(str(php_file))
+        assert out.startswith("diag:"), f"isError result not prefixed: {out!r}"
+        assert "server exploded" in out

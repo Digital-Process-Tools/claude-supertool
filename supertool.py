@@ -9624,7 +9624,7 @@ def op_validate_multi(paths: list, tool_filter: Optional[list] = None,
 # timeout and return it as normal text content with the `isError` flag unset —
 # these patterns catch that case. Overridable per server via
 # mcp.<name>.infra_patterns in .supertool.json. See #346.
-_MCP_INFRA_DEFAULT_PATTERNS = ("orchestrator timeout", "timed out", "timeout after")
+_MCP_INFRA_DEFAULT_PATTERNS = ("orchestrator timeout", "timed out after")
 
 
 def _mcp_result_text(result: object) -> str:
@@ -9633,7 +9633,7 @@ def _mcp_result_text(result: object) -> str:
     if isinstance(content, list):
         texts = [item.get("text", "") for item in content
                  if isinstance(item, dict) and item.get("type") == "text"]
-        return chr(10).join(t for t in texts if t)
+        return "\n".join(t for t in texts if t)
     return ""
 
 
