@@ -10,6 +10,7 @@ Ops for self-documentation and version introspection. Used primarily in session-
 | `output-format` | `output-format` | Output format examples from `.supertool.json`. Shows what responses look like. |
 | `ops` | `ops` | Full operations reference from `.supertool.json` — built-in ops, custom ops, and aliases with descriptions and examples. |
 | `version` | `version` | Show supertool version. |
+| `help` | `help:OP` | Print the full reference for a single op — syntax, full (uncompacted) description, and example — read from `.supertool.json`. Discovers an op's payload shape (e.g. `vim`'s macro grammar) without grepping source. Errors with a pointer to `ops` for an unknown or undocumented op. |
 | `cwd` | `cwd:PATH` | Set the working dir for the whole call. **Must be the first op** — chdir's once before dispatch, then is stripped, so every following op resolves against `PATH`. Replaces a `cd PATH && ./supertool …` prefix (which trips the use-supertool hook and risks stale-cwd path poisoning) for cross-repo sessions. `~`/`$VAR` expanded; non-directory or non-first → error before any op runs. |
 
 ## Common patterns
@@ -27,6 +28,14 @@ Check installed version:
 ```bash
 ./supertool 'version'
 ```
+
+Discover one op's full payload shape — the front door for ops with non-obvious input (e.g. `vim`):
+
+```bash
+./supertool 'help:vim'
+```
+
+`help:OP` prints that op's uncompacted description from `.supertool.json`. Use it when an op's signature isn't enough; use `ops` when you don't yet know which op you want.
 
 Compact variant used by the session-start hook to stay under Claude Code's ~7KB hook output cap:
 

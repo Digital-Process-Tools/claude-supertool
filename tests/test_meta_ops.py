@@ -380,3 +380,85 @@ def test_hook_output_cap_constant_exists() -> None:
     """The cap constant is a module-level int — tunable without code changes."""
     assert isinstance(supertool._HOOK_OUTPUT_CAP_BYTES, int)
     assert supertool._HOOK_OUTPUT_CAP_BYTES > 0
+
+
+# ---------------------------------------------------------------------------
+# op_help — per-op reference, scoped and uncompacted (issue #341)
+# ---------------------------------------------------------------------------
+
+def test_help_renders_full_op_reference(tmp_path: Path, monkeypatch) -> None:
+    """help:OP prints syntax, full description, and example for a builtin op."""
+    _set_config(monkeypatch, tmp_path, {
+        "builtin-ops": {
+            "vim": {
+                "syntax": "vim:::PATH:::SCRIPT",
+                "description": "Cursor-based multi-action edit. /PAT then iTEXT\\\\e.",
+                "example": "vim:::f.md:::/Foo\\\\eo1. Bar",
+            }
+        }
+    })
+    out = supertool.op_help("vim")
+    assert "vim:::PATH:::SCRIPT" in out
+    assert "Cursor-based multi-action edit" in out
+    assert "Example: vim:::f.md:::/Foo" in out
+
+
+def test_help_finds_custom_op_and_alias(tmp_path: Path, monkeypatch) -> None:
+    """help:OP looks through custom ops and aliases, not just builtins."""
+    _set_config(monkeypatch, tmp_path, {
+        "ops": {"phpstan": {"syntax": "phpstan:PATH", "description": "Static analysis"}},
+        "aliases": {"survey": {"syntax": "survey:PATH", "description": "Survey pack",
+                               "ops": ["read:{path}", "map:{path}"]}},
+    })
+    custom = supertool.op_help("phpstan")
+    assert "phpstan:PATH" in custom
+    assert "Static analysis" in custom
+    alias = supertool.op_help("survey")
+    assert "survey:PATH" in alias
+    assert "Survey pack" in alias
+    assert "Ops:" in alias
+
+
+def test_help_missing_arg_errors_with_pointer(tmp_path: Path, monkeypatch) -> None:
+    """help with no op name errors clearly and points at 'ops'."""
+    _set_config(monkeypatch, tmp_path, {"builtin-ops": {}})
+    out = supertool.op_help("")
+    assert out.startswith("ERROR: help needs an op name")
+    assert "ops" in out
+
+
+def test_help_unknown_op_errors(tmp_path: Path, monkeypatch) -> None:
+    """help:UNKNOWN errors with a pointer to the full list."""
+    _set_config(monkeypatch, tmp_path, {"builtin-ops": {}})
+    out = supertool.op_help("definitely_not_an_op")
+    assert "ERROR: no help for op: definitely_not_an_op" in out
+    assert "ops" in out
+
+
+def test_help_known_builtin_without_docs(tmp_path: Path, monkeypatch) -> None:
+    """A real builtin with no config entry says so rather than 'unknown op'."""
+    _set_config(monkeypatch, tmp_path, {"builtin-ops": {}})
+    op = next(iter(supertool._BUILTIN_OPS))
+    out = supertool.op_help(op)
+    assert "has no documented help" in out
+    assert op in out
+
+
+def test_help_routes_via_dispatch(tmp_path: Path, monkeypatch) -> None:
+    """`./supertool 'help:vim'` routes through dispatch() with a header."""
+    _set_config(monkeypatch, tmp_path, {
+        "builtin-ops": {
+            "vim": {"syntax": "vim:::PATH:::SCRIPT", "description": "Macro edit",
+                    "example": "vim:::f:::x"}
+        }
+    })
+    out = supertool.dispatch("help:vim")
+    assert "--- help:vim ---" in out
+    assert "Macro edit" in out
+    err = supertool.dispatch("help:nope")
+    assert "no help for op: nope" in err
+
+
+def test_help_in_parallel_safe_set() -> None:
+    """help is read-only — must be batchable in parallel with other reads."""
+    assert "help" in supertool._PARALLEL_SAFE_OPS

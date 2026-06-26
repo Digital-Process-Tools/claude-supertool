@@ -725,7 +725,7 @@ _PARALLEL_SAFE_OPS = {
     "read", "grep", "glob", "ls", "head", "tail", "wc", "stat",
     "map", "tree", "around", "around_line", "between", "diff", "blame",
     "version", "validate", "validate_staged", "format_staged", "workspace",
-    "resolve", "diag", "hover",
+    "resolve", "diag", "hover", "help",
 }
 
 
@@ -8386,6 +8386,46 @@ def op_version() -> str:
     return f"supertool {VERSION}\n"
 
 
+def op_help(op_name: str) -> str:
+    """Output the full reference for a single op from .supertool.json.
+
+    Same metadata `ops` lists, but scoped to one op and never compacted — so
+    payload shapes (e.g. vim's macro grammar) are readable without grepping
+    source. Looks through builtin-ops, then custom ops, then aliases.
+    """
+    if not op_name:
+        return ("ERROR: help needs an op name — help:OP (e.g. help:vim).\n"
+                "Run 'ops' for the full list.\n")
+    config = _load_config()
+    for section in ("builtin-ops", "ops", "aliases"):
+        entry = config.get(section, {})
+        if not isinstance(entry, dict) or op_name not in entry:
+            continue
+        info = entry[op_name]
+        if not isinstance(info, dict):
+            continue
+        out: List[str] = [str(info.get("syntax", op_name))]
+        desc = info.get("description", "")
+        if desc:
+            out.append("")
+            out.append(str(desc))
+        ops_list = info.get("ops", [])
+        if ops_list:
+            out.append("")
+            out.append("Ops: " + " ".join(str(o) for o in ops_list))
+        example = info.get("example", "")
+        if example:
+            out.append("")
+            out.append(f"Example: {example}")
+        return "\n".join(out) + "\n"
+    if op_name in _BUILTIN_OPS:
+        return (f"ERROR: op '{op_name}' has no documented help in "
+                f".supertool.json. It's a valid built-in — run 'ops' for the "
+                f"list, or see docs/operations.\n")
+    return (f"ERROR: no help for op: {op_name}\n"
+            f"Run 'ops' for the full list of operations.\n")
+
+
 # Threshold above which compact ops output gets a "truncation likely" warning.
 # Claude Code's hook-stdout cap appears to be ~7KB; anything over that gets
 # saved to disk and only a ~2KB preview is injected into the model's context,
@@ -11501,6 +11541,8 @@ def _dispatch_impl(arg: str) -> str:
         elif op == "workspace":
             ws_path = parts[1] if len(parts) > 1 else ""
             body = op_workspace(ws_path)
+        elif op == "help":
+            body = op_help(parts[1] if len(parts) > 1 else "")
         elif op in ("introduction", "output-format", "ops", "ops-compact", "version"):
             # Meta-ops use markdown headers instead of --- header ---
             header = ""
@@ -12193,6 +12235,22 @@ def main(argv: List[str]) -> int:
         argv = argv[1:]
         if not argv:
             return 0
+
+    # At most one '@-' (stdin) op per call. sys.stdin is a single stream:
+    # the first op's sys.stdin.read() drains it, so a second '@-' reads empty
+    # and dies with an opaque '@file ... parse error' that names neither the
+    # cause nor the fix. Detect the clash up front and point at the escape
+    # hatches (per-op @file, or one batch:@- ops array). Issue #341.
+    stdin_ops = [a for a in argv if ":" in a and a.split(":", 1)[1] == "@-"]
+    if len(stdin_ops) > 1:
+        sys.stderr.write(
+            "stdin: only one '@-' op is allowed per call "
+            f"(got {len(stdin_ops)}: {', '.join(stdin_ops)}). sys.stdin is a "
+            "single stream — the second '@-' reads empty and fails. Give the "
+            "others a file payload (e.g. edit:@.max/e1.toml), or fold them "
+            "into one 'batch:@-' ops array.\n"
+        )
+        return 1
 
     # Normal batched-ops mode
     total_out_bytes = 0
