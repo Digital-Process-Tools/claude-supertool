@@ -10,6 +10,7 @@ Ops for self-documentation and version introspection. Used primarily in session-
 | `output-format` | `output-format` | Output format examples from `.supertool.json`. Shows what responses look like. |
 | `ops` | `ops` | Full operations reference from `.supertool.json` — built-in ops, custom ops, and aliases with descriptions and examples. |
 | `version` | `version` | Show supertool version. |
+| `cwd` | `cwd:PATH` | Set the working dir for the whole call. **Must be the first op** — chdir's once before dispatch, then is stripped, so every following op resolves against `PATH`. Replaces a `cd PATH && ./supertool …` prefix (which trips the use-supertool hook and risks stale-cwd path poisoning) for cross-repo sessions. `~`/`$VAR` expanded; non-directory or non-first → error before any op runs. |
 
 ## Common patterns
 
