@@ -91,3 +91,43 @@ def test_no_cwd_op_leaves_cwd_untouched(monkeypatch, restore_cwd) -> None:
     supertool.main(["read:foo"])
 
     assert os.getcwd() == before
+
+
+def test_cwd_op_expands_env_var(monkeypatch, restore_cwd) -> None:
+    seen_cwd: list[str] = []
+    monkeypatch.setattr(
+        supertool, "dispatch",
+        lambda a: (seen_cwd.append(os.getcwd()), "")[-1],
+    )
+    monkeypatch.setattr(supertool, "log_call", lambda *a, **k: None)
+
+    rc = supertool.main(["cwd:$HOME", "read:foo"])
+
+    assert rc == 0
+    assert os.path.realpath(seen_cwd[0]) == os.path.realpath(os.path.expanduser("~"))
+
+
+def test_cwd_op_empty_path_errors(monkeypatch, restore_cwd) -> None:
+    before = os.getcwd()
+    called: list[str] = []
+    monkeypatch.setattr(supertool, "dispatch", lambda a: called.append(a) or "")
+    monkeypatch.setattr(supertool, "log_call", lambda *a, **k: None)
+
+    rc = supertool.main(["cwd:", "read:foo"])
+
+    assert rc == 1
+    assert called == []                  # bailed before dispatch
+    assert os.getcwd() == before
+
+
+def test_cwd_op_rejects_multiple(tmp_path, monkeypatch, restore_cwd) -> None:
+    before = os.getcwd()
+    called: list[str] = []
+    monkeypatch.setattr(supertool, "dispatch", lambda a: called.append(a) or "")
+    monkeypatch.setattr(supertool, "log_call", lambda *a, **k: None)
+
+    rc = supertool.main([f"cwd:{tmp_path}", "read:foo", f"cwd:{tmp_path}"])
+
+    assert rc == 1
+    assert called == []                  # rejected before any dispatch
+    assert os.getcwd() == before

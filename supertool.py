@@ -11968,6 +11968,9 @@ def main(argv: List[str]) -> int:
     # not a silently-honored mid-call cwd switch.
     cwd_positions = [i for i, a in enumerate(argv) if a.split(":", 1)[0] == "cwd"]
     if cwd_positions:
+        if len(cwd_positions) > 1:
+            sys.stderr.write("cwd: only one cwd: op is allowed per call\n")
+            return 1
         if cwd_positions != [0]:
             sys.stderr.write("cwd: must be the first op (cwd:PATH op1 op2 ...)\n")
             return 1
@@ -11976,6 +11979,9 @@ def main(argv: List[str]) -> int:
             sys.stderr.write("cwd: requires a path (cwd:PATH)\n")
             return 1
         target = os.path.expanduser(os.path.expandvars(spec.split(":", 1)[1]))
+        if not target:
+            sys.stderr.write("cwd: empty path (cwd:PATH)\n")
+            return 1
         if not os.path.isdir(target):
             sys.stderr.write(f"cwd: not a directory: {target}\n")
             return 1
