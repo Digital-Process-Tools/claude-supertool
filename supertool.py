@@ -8853,10 +8853,14 @@ def _validator_result_is_cacheable(data: Dict[str, Any]) -> bool:
 
     Real findings stay cacheable (phpstan types, `rector.refactor` suggestions are
     deterministic — same input, same output, caching them is the whole point).
-    Only engine glitches — MCP transport errors, non-zero exits, and rector's
-    "System error:" reflection failures — are filtered out here so a transient
-    hiccup can't pin itself into the cache. See validators/rector-mcp/rector-mcp.py
-    which also drops "System error:" at the source.
+    This core filter is intentionally GENERIC: it keys only off non-deterministic
+    error *codes* (MCP transport errors, non-zero exits), never off tool-specific
+    message text (SCHEMA.md: "Validator core never parses tool-specific output").
+    Message-level engine-glitch suppression (rector's "System error:" /
+    "toMutatingScope() on null") now lives in the adapter, configured per-mcp via
+    the .supertool.json `validators.rector.engine_glitches` prop; see
+    validators/rector-mcp/rector-mcp.py, which drops those at the source so they
+    never reach this cache as a red.
     """
     if data.get("ok"):
         return True
@@ -8864,8 +8868,6 @@ def _validator_result_is_cacheable(data: Dict[str, Any]) -> bool:
         if not isinstance(err, dict):
             continue
         if err.get("code") in _NONDETERMINISTIC_ERROR_CODES:
-            return False
-        if str(err.get("msg") or "").startswith("System error:"):
             return False
     return True
 

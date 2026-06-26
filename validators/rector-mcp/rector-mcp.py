@@ -11,6 +11,7 @@ Output: SCHEMA.md-compliant JSON on stdout (single line).
 """
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import os
@@ -26,6 +27,46 @@ WORKING_DIR = os.environ.get("MCP_RECTOR_WORKING_DIR", os.getcwd())
 RECTOR_CONFIG = os.environ.get("MCP_RECTOR_CONFIG")  # optional
 SPAWN_TIMEOUT_SEC = 30
 CALL_TIMEOUT_SEC = 120
+
+# Non-deterministic warm-daemon engine glitches: PHP fatals / engine-state
+# corruption inside rector itself, NOT findings about the edited file (a cold
+# `rector` CLI handles the same file clean). Signatures are a config prop in
+# .supertool.json: validators.rector.engine_glitches (a JSON list of substrings).
+# The signature *values* are config, not env. The file is located in WORKING_DIR
+# (the project root supertool runs from; pinnable via MCP_RECTOR_WORKING_DIR) —
+# a single read, no parent-dir walk (unlike daemon.py / the core loader), which is
+# fine because the daemon cmd runs at the project root where .supertool.json lives.
+# The generic supertool core stays oblivious to these signatures. Built-in defaults
+# below are the safety net when the prop is absent or the file can't be read.
+# Substring match, case-sensitive. Add new signatures in .supertool.json, no code change.
+_DEFAULT_ENGINE_GLITCHES = ("System error:", "toMutatingScope() on null")
+
+
+def _supertool_config() -> dict:
+    """Load .supertool.json from the working dir (project root). {} on any failure."""
+    try:
+        with open(os.path.join(WORKING_DIR, ".supertool.json")) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+@functools.lru_cache(maxsize=1)
+def engine_glitch_signatures() -> list[str]:
+    """Glitch signatures from .supertool.json validators.rector.engine_glitches,
+    or the built-in defaults when the prop is absent / not a list / unreadable.
+    Memoized: the adapter is a fresh process per validator call, so the config
+    can't change underneath a run — this avoids re-reading the file per error."""
+    sigs = (((_supertool_config().get("validators") or {}).get("rector") or {})
+            .get("engine_glitches"))
+    if isinstance(sigs, list):
+        return [str(s).strip() for s in sigs if str(s).strip()]
+    return list(_DEFAULT_ENGINE_GLITCHES)
+
+
+def is_engine_glitch(msg: str) -> bool:
+    """True if `msg` matches a configured non-deterministic engine glitch."""
+    return bool(msg) and any(sig in msg for sig in engine_glitch_signatures())
 
 
 # #148: use the shared presets/mcp/_paths helper so client + daemon agree on
@@ -193,15 +234,16 @@ def format_response(file_path: str, mcp_resp: dict, duration_ms: int) -> dict:
         if errors:
             for e in errors:
                 msg = e.get("message", str(e)) if isinstance(e, dict) else str(e)
-                # Defense-in-depth (root cause fixed upstream in mcp-rector-warm
-                # 0.4.0, claude-supertool#273): the warm daemon used to serve a stale
-                # reflection source-locator across files and emit
-                # "System error: ClassReflection must be resolved for class X" on a
-                # later file that a cold rector CLI handled clean. mcp-rector-warm now
-                # resets that state per call, so this branch should no longer fire —
-                # it stays only to keep any future non-deterministic engine glitch
-                # (NOT a code finding) from failing/printing/caching.
-                if msg.startswith("System error:"):
+                # Drop non-deterministic engine glitches at the source: a PHP fatal
+                # or stale-reflection error from inside rector's warm daemon is not a
+                # finding about this file (a cold `rector` CLI handles it clean), so it
+                # must never surface as a red or get cached. Signatures are configured
+                # per-mcp via the .supertool.json validators.rector.engine_glitches prop; see
+                # _DEFAULT_ENGINE_GLITCHES. Root cause for the original "System error:
+                # ClassReflection" case is fixed upstream in mcp-rector-warm 0.4.0
+                # (claude-supertool#273); this stays to absorb future engine glitches
+                # (e.g. "toMutatingScope() on null", #345).
+                if is_engine_glitch(msg):
                     continue
                 base["ok"] = False
                 base["count"] += 1
