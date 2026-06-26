@@ -180,13 +180,16 @@ class TestAtFileNotAppliedToReadOps:
 
 class TestFieldsFromSyntax:
     @pytest.mark.parametrize("syntax,expected", [
-        ("edit:::OLD:::NEW:::PATH",           ["old", "new", "path"]),
-        ("replace:::OLD:::NEW:::PATH",        ["old", "new", "path"]),
-        ("replace_lines:::PATH:::START:::END:::CONTENT", ["path", "start", "end", "content"]),
-        ("paste:::PATH:::CONTENT",            ["path", "content"]),
-        ("vim:::PATH:::SCRIPT",               ["path", "script"]),
+        ("edit:::OLD:::NEW:::PATH",           [("old", False, False), ("new", False, False), ("path", False, False)]),
+        ("replace:::OLD:::NEW:::PATH",        [("old", False, False), ("new", False, False), ("path", False, False)]),
+        ("replace_lines:::PATH:::START:::END:::CONTENT", [("path", False, False), ("start", False, False), ("end", False, False), ("content", False, False)]),
+        ("paste:::PATH:::CONTENT",            [("path", False, False), ("content", False, False)]),
+        ("vim:::PATH:::SCRIPT",               [("path", False, False), ("script", False, False)]),
+        # Trailing optional group → optional; '...' → variadic. Brackets/ellipsis stripped from names.
+        ("git-commit:::MESSAGE[:::PATHS...]", [("message", False, False), ("paths", True, True)]),
+        ("op:::A[:::B]",                      [("a", False, False), ("b", True, False)]),
         # First alternative is used when ' | ' separates alternatives
-        ("op:::A:::B | op:::X:::Y",           ["a", "b"]),
+        ("op:::A:::B | op:::X:::Y",           [("a", False, False), ("b", False, False)]),
         # Read-only op (no :::) → empty list
         ("read:PATH",                         []),
         ("grep:PATTERN:PATH",                 []),
@@ -195,16 +198,20 @@ class TestFieldsFromSyntax:
         assert supertool._fields_from_syntax(syntax) == expected
 
     def test_builtin_defaults_cover_all_write_ops(self) -> None:
-        """_AT_FILE_BUILTIN_DEFAULTS must derive the same field lists as the hardcoded table."""
+        """_AT_FILE_BUILTIN_DEFAULTS must derive the same field specs as the hardcoded table."""
         expected = {
-            "edit":          ["old", "new", "path"],
-            "replace":       ["old", "new", "path"],
-            "replace_dry":   ["old", "new", "path"],
-            "replace_lines": ["path", "start", "end", "content"],
-            "paste":         ["path", "content"],
-            "vim":           ["path", "script"],
+            "edit":          [("old", False, False), ("new", False, False), ("path", False, False)],
+            "replace":       [("old", False, False), ("new", False, False), ("path", False, False)],
+            "replace_dry":   [("old", False, False), ("new", False, False), ("path", False, False)],
+            "replace_lines": [("path", False, False), ("start", False, False), ("end", False, False), ("content", False, False)],
+            "paste":         [("path", False, False), ("content", False, False)],
+            "vim":           [("path", False, False), ("script", False, False)],
         }
         assert supertool._AT_FILE_BUILTIN_DEFAULTS == expected
+
+    def test_at_file_fields_returns_names_only(self) -> None:
+        """_at_file_fields stays name-only for the truthiness/sub-op callers."""
+        assert supertool._at_file_fields("edit") == ["old", "new", "path"]
 
     def test_registry_populated_after_first_dispatch(self, tmp_path: Path) -> None:
         """After any dispatch call the registry must contain the builtin write ops."""
@@ -529,3 +536,51 @@ class TestReorderHelper:
         ]
         new, err = supertool._reorder_batch_for_snapshot(ops)
         assert err == ""
+
+
+# ---------------------------------------------------------------------------
+# Optional + variadic fields (#340 — git-commit:@- multi-line message route)
+# ---------------------------------------------------------------------------
+
+class TestAtFileOptionalVariadic:
+    """_at_file_to_parts honours optional fields and expands variadic lists.
+
+    Uses the same (name, optional, variadic) spec shape the registry builds
+    for `git-commit:::MESSAGE[:::PATHS...]` — message required, paths optional
+    and list-valued — without depending on a preset config being loaded.
+    """
+
+    _SPECS = [("message", False, False), ("paths", True, True)]
+
+    def _patch(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            supertool, "_at_file_specs",
+            lambda op: self._SPECS if op == "git-commit" else [],
+        )
+
+    def test_message_only_omits_optional_paths(self, monkeypatch) -> None:
+        self._patch(monkeypatch)
+        parts, replace_all = supertool._at_file_to_parts(
+            "git-commit", {"message": "subject\n\nbody"}
+        )
+        assert parts == ["git-commit", "subject\n\nbody"]
+        assert replace_all is False
+
+    def test_paths_list_expands_to_multiple_parts(self, monkeypatch) -> None:
+        self._patch(monkeypatch)
+        parts, _ = supertool._at_file_to_parts(
+            "git-commit", {"message": "m", "paths": ["a.txt", "b.txt"]}
+        )
+        assert parts == ["git-commit", "m", "a.txt", "b.txt"]
+
+    def test_paths_scalar_becomes_single_part(self, monkeypatch) -> None:
+        self._patch(monkeypatch)
+        parts, _ = supertool._at_file_to_parts(
+            "git-commit", {"message": "m", "paths": "only.txt"}
+        )
+        assert parts == ["git-commit", "m", "only.txt"]
+
+    def test_missing_required_message_raises(self, monkeypatch) -> None:
+        self._patch(monkeypatch)
+        with pytest.raises(ValueError, match="missing required field 'message'"):
+            supertool._at_file_to_parts("git-commit", {"paths": ["a.txt"]})

@@ -133,7 +133,7 @@ def main() -> int:
     # Pre-commit staged check
     staged = _git(["diff", "--cached", "--name-only"])
     if staged.returncode != 0 or not staged.stdout.strip():
-        print("ERROR: nothing staged. Use `git-commit:::MSG:::PATHS` or stage manually first.")
+        print("ERROR: nothing staged. Use `git-commit:::MESSAGE:::PATHS` or stage manually first.")
         return 1
     staged_files = [l for l in staged.stdout.splitlines() if l.strip()]
 

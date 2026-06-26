@@ -10686,37 +10686,53 @@ def _load_at_file(ref: str) -> Any:
 # Dynamic @file field registry — built lazily from op syntax strings.
 # Maps op name → ordered list of JSON field names (positional parts[1..N]).
 # Populated on first dispatch call via _build_at_file_registry().
-_AT_FILE_REGISTRY: Dict[str, List[str]] = {}
+_AT_FILE_REGISTRY: Dict[str, List[Tuple[str, bool, bool]]] = {}
 _AT_FILE_REGISTRY_BUILT: bool = False
 
 
-def _fields_from_syntax(syntax: str) -> List[str]:
-    """Derive positional field names from a syntax string using ':::' separator.
+def _fields_from_syntax(syntax: str) -> List[Tuple[str, bool, bool]]:
+    """Derive field specs from a syntax string using ':::' separator.
+
+    Returns a list of (name, optional, variadic) tuples:
+      - name:     lowercased field name, stripped of [ ] ... and whitespace
+      - optional: field sits inside a trailing [...] optional group
+      - variadic: field token carried '...' — payload value may be a list,
+                  expanded into multiple positional parts
 
     Takes the first alternative (before ' | '), splits on ':::', drops the
-    first token (op name), and lowercases the rest.
-
-    Returns [] if the syntax has no ':::' (read-only op — no @file route).
+    first token (op name). Returns [] if the syntax has no ':::' (read-only
+    op — no @file route). Optional groups are assumed trailing (the only
+    shape used across the op syntaxes), so a field is optional once any '['
+    has opened.
 
     Examples:
-      'edit:::OLD:::NEW:::PATH'    → ['old', 'new', 'path']
-      'paste:::PATH:::CONTENT'     → ['path', 'content']
-      'read:PATH'                  → []
+      'edit:::OLD:::NEW:::PATH'            → [('old',F,F),('new',F,F),('path',F,F)]
+      'git-commit:::MESSAGE[:::PATHS...]'  → [('message',F,F),('paths',T,T)]
+      'read:PATH'                          → []
     """
     first_alt = re.split(r"\s*\|\s*", syntax)[0]
     if ":::" not in first_alt:
         return []
-    tokens = first_alt.split(":::")
-    return [t.strip().lower() for t in tokens[1:]]
+    specs: List[Tuple[str, bool, bool]] = []
+    seen_open = False
+    for tok in first_alt.split(":::")[1:]:
+        variadic = "..." in tok
+        optional = seen_open
+        if "[" in tok:
+            seen_open = True
+        name = (tok.replace("[", "").replace("]", "")
+                   .replace("...", "").strip().lower())
+        specs.append((name, optional, variadic))
+    return specs
 
 
-_AT_FILE_BUILTIN_DEFAULTS: Dict[str, List[str]] = {
-    "edit":          ["old", "new", "path"],
-    "replace":       ["old", "new", "path"],
-    "replace_dry":   ["old", "new", "path"],
-    "replace_lines": ["path", "start", "end", "content"],
-    "paste":         ["path", "content"],
-    "vim":           ["path", "script"],
+_AT_FILE_BUILTIN_DEFAULTS: Dict[str, List[Tuple[str, bool, bool]]] = {
+    "edit":          [("old", False, False), ("new", False, False), ("path", False, False)],
+    "replace":       [("old", False, False), ("new", False, False), ("path", False, False)],
+    "replace_dry":   [("old", False, False), ("new", False, False), ("path", False, False)],
+    "replace_lines": [("path", False, False), ("start", False, False), ("end", False, False), ("content", False, False)],
+    "paste":         [("path", False, False), ("content", False, False)],
+    "vim":           [("path", False, False), ("script", False, False)],
 }
 
 
@@ -10733,7 +10749,7 @@ def _build_at_file_registry() -> None:
     global _AT_FILE_REGISTRY, _AT_FILE_REGISTRY_BUILT
     if _AT_FILE_REGISTRY_BUILT:
         return
-    registry: Dict[str, List[str]] = dict(_AT_FILE_BUILTIN_DEFAULTS)
+    registry: Dict[str, List[Tuple[str, bool, bool]]] = dict(_AT_FILE_BUILTIN_DEFAULTS)
     config = _load_config()
     for section in ("builtin-ops", "ops"):
         for op_name, info in config.get(section, {}).items():
@@ -10749,10 +10765,19 @@ def _build_at_file_registry() -> None:
     _AT_FILE_REGISTRY_BUILT = True
 
 
-def _at_file_fields(op: str) -> List[str]:
-    """Return the field list for *op*, or [] if the op has no @file route."""
+def _at_file_specs(op: str) -> List[Tuple[str, bool, bool]]:
+    """Return (name, optional, variadic) specs for *op*, or [] if no @file route."""
     _build_at_file_registry()
     return _AT_FILE_REGISTRY.get(op, [])
+
+
+def _at_file_fields(op: str) -> List[str]:
+    """Return the field NAMES for *op*, or [] if the op has no @file route.
+
+    Kept name-only for the truthiness/sub-op callers; field semantics
+    (optional, variadic) live in _at_file_specs.
+    """
+    return [name for name, _opt, _var in _at_file_specs(op)]
 
 
 def _reorder_batch_for_snapshot(batch_ops: List[Any]) -> Tuple[List[Any], str]:
@@ -10838,18 +10863,27 @@ def _at_file_to_parts(op: str, payload: Any) -> Tuple[List[str], bool]:
             f"@file payload for op '{op}' must be a JSON object, "
             f"got {type(payload).__name__}"
         )
-    fields = _at_file_fields(op)
-    if not fields:
+    specs = _at_file_specs(op)
+    if not specs:
         raise ValueError(f"@file route not supported for op '{op}'")
     # Case-insensitive key lookup — normalise payload keys once.
     lower_payload = {k.lower(): v for k, v in payload.items()}
     parts = [op]
-    for field in fields:
-        if field not in lower_payload:
+    for name, optional, variadic in specs:
+        if name not in lower_payload:
+            if optional:
+                continue
             raise ValueError(
-                f"@file payload for op '{op}' missing required field '{field}'"
+                f"@file payload for op '{op}' missing required field '{name}'"
             )
-        parts.append(str(lower_payload[field]))
+        value = lower_payload[name]
+        if variadic:
+            # Accept a single scalar or a list; each element becomes one
+            # positional part (e.g. git-commit paths → PATH PATH ...).
+            items = value if isinstance(value, list) else [value]
+            parts.extend(str(v) for v in items)
+        else:
+            parts.append(str(value))
     replace_all = bool(lower_payload.get("replace_all", False))
     return parts, replace_all
 
