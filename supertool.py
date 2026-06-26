@@ -107,7 +107,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 VERSION = "0.19.0"
 
@@ -9619,9 +9619,47 @@ def op_validate_multi(paths: list, tool_filter: Optional[list] = None,
 # make sense with a real language server).
 # ---------------------------------------------------------------------------
 
+# Patterns that mark an MCP text result as an infrastructure condition (timeout,
+# overload) rather than a real tool result. Some servers (cclsp) swallow their own
+# timeout and return it as normal text content with the `isError` flag unset —
+# these patterns catch that case. Overridable per server via
+# mcp.<name>.infra_patterns in .supertool.json. See #346.
+_MCP_INFRA_DEFAULT_PATTERNS = ("orchestrator timeout", "timed out", "timeout after")
+
+
+def _mcp_result_text(result: object) -> str:
+    """Join the text content items of an MCP tool result into one string."""
+    content = result.get("content") if isinstance(result, dict) else None
+    if isinstance(content, list):
+        texts = [item.get("text", "") for item in content
+                 if isinstance(item, dict) and item.get("type") == "text"]
+        return chr(10).join(t for t in texts if t)
+    return ""
+
+
+def _mcp_result_is_infra(result: object, patterns: Iterable[str]) -> bool:
+    """True if an MCP tool result is an infra condition, not real content.
+
+    Two signals, in order:
+      1. structural — the MCP `isError` flag (spec-standard, any server).
+      2. textual — the content matches a configured infra pattern, for servers
+         that report a timeout/overload as normal text with isError unset.
+    """
+    if not isinstance(result, dict):
+        return False
+    if result.get("isError"):
+        return True
+    text = _mcp_result_text(result).lower()
+    return bool(text) and any(p.lower() in text for p in patterns)
+
+
 def _mcp_call_or_message(op_name: str, file_path: str, args: dict) -> str:
     """Shared dispatch for diag/hover/rename. Returns the MCP text result or a
     diagnostic message if no route / no server / call failed.
+
+    Infra conditions (timeout/overload) are returned prefixed `op_name: ...` —
+    same shape as our own errors — so adapters (lsp-diag) drop them via their
+    op_name-guard instead of counting them as findings. See #346.
     """
     if not file_path:
         return f"{op_name}: missing file path\n"
@@ -9638,14 +9676,16 @@ def _mcp_call_or_message(op_name: str, file_path: str, args: dict) -> str:
         return f"{op_name}: MCP error: {e}\n"
     if result is None:
         return f"{op_name}: no result from {mcp_tool}\n"
+    # Infra condition (timeout/overload) → prefix it so adapters drop it (#346).
+    infra_patterns = _mcp_specs.get(server_name, {}).get(
+        "infra_patterns", _MCP_INFRA_DEFAULT_PATTERNS)
+    if _mcp_result_is_infra(result, infra_patterns):
+        text = _mcp_result_text(result).strip() or "infra condition"
+        return f"{op_name}: {text}\n"
     # Pull text content (most common MCP response shape)
-    content = result.get("content") if isinstance(result, dict) else None
-    if isinstance(content, list):
-        texts = [item.get("text", "") for item in content
-                 if isinstance(item, dict) and item.get("type") == "text"]
-        text = "\n".join(t for t in texts if t)
-        if text:
-            return text.rstrip("\n") + "\n"
+    text = _mcp_result_text(result)
+    if text:
+        return text.rstrip("\n") + "\n"
     return json.dumps(result, indent=2) + "\n"
 
 

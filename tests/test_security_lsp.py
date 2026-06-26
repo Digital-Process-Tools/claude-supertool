@@ -802,3 +802,74 @@ class TestCclspConfigInjection:
         """
         # This is a documentation test — always passes
         assert True, "See docstring for threat model."
+
+
+# ---------------------------------------------------------------------------
+# 11. Infra timeout/error must not surface as a diagnostic (#346)
+# ---------------------------------------------------------------------------
+
+class TestMcpInfraSkip:
+    """#346: an MCP timeout/fatal is an infra condition, not a code diagnostic.
+
+    Two detection signals, both in the shared dispatch so every MCP-backed op
+    (diag/hover/rename) benefits:
+      - structural: the MCP `isError` flag (spec-standard, any server).
+      - textual: a configurable per-server `infra_patterns` list, for servers
+        (cclsp) that swallow their own timeout into normal text content.
+    """
+
+    def test_iserror_flag_is_infra(self) -> None:
+        result = {"isError": True, "content": [{"type": "text", "text": "boom"}]}
+        assert supertool._mcp_result_is_infra(result, supertool._MCP_INFRA_DEFAULT_PATTERNS)
+
+    def test_orchestrator_timeout_text_is_infra(self) -> None:
+        result = _make_mcp_text_response("orchestrator timeout after 3s")
+        assert supertool._mcp_result_is_infra(result, supertool._MCP_INFRA_DEFAULT_PATTERNS)
+
+    def test_timed_out_text_is_infra(self) -> None:
+        result = _make_mcp_text_response("MCP daemon 'cclsp' read timed out after 3s")
+        assert supertool._mcp_result_is_infra(result, supertool._MCP_INFRA_DEFAULT_PATTERNS)
+
+    def test_match_is_case_insensitive(self) -> None:
+        result = _make_mcp_text_response("Orchestrator Timeout after 10s")
+        assert supertool._mcp_result_is_infra(result, supertool._MCP_INFRA_DEFAULT_PATTERNS)
+
+    def test_real_diagnostic_is_not_infra(self) -> None:
+        result = _make_mcp_text_response("• [error] undefined variable $foo at line 42, col 13")
+        assert not supertool._mcp_result_is_infra(result, supertool._MCP_INFRA_DEFAULT_PATTERNS)
+
+    def test_empty_content_is_not_infra(self) -> None:
+        assert not supertool._mcp_result_is_infra({"content": []}, supertool._MCP_INFRA_DEFAULT_PATTERNS)
+
+    def test_non_dict_is_not_infra(self) -> None:
+        assert not supertool._mcp_result_is_infra("nope", supertool._MCP_INFRA_DEFAULT_PATTERNS)
+
+    def test_custom_patterns_override_default(self) -> None:
+        result = _make_mcp_text_response("server overloaded, try later")
+        assert not supertool._mcp_result_is_infra(result, supertool._MCP_INFRA_DEFAULT_PATTERNS)
+        assert supertool._mcp_result_is_infra(result, ["overloaded"])
+
+    def test_dispatch_prefixes_infra_so_adapter_guard_drops_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """End-to-end: a server-swallowed timeout returned from diag must come back
+        prefixed `diag: ...` so the lsp-diag adapter's startswith-guard drops it
+        rather than counting it as a +1 advisory."""
+        php_file = tmp_path / "Foo.php"
+        php_file.write_text("<?php\n")
+        _stub_server(monkeypatch, "php-lsp",
+                     _make_mcp_text_response("orchestrator timeout after 3s"))
+        out = supertool.op_diag(str(php_file))
+        assert out.startswith("diag:"), f"infra timeout not prefixed: {out!r}"
+        assert "orchestrator timeout" in out
+
+    def test_dispatch_passes_real_diagnostic_through_unprefixed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        php_file = tmp_path / "Foo.php"
+        php_file.write_text("<?php\n")
+        _stub_server(monkeypatch, "php-lsp",
+                     _make_mcp_text_response("• [error] missing semicolon at line 5, col 10"))
+        out = supertool.op_diag(str(php_file))
+        assert not out.startswith("diag:"), f"real diagnostic wrongly prefixed: {out!r}"
+        assert "missing semicolon" in out

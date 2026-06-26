@@ -131,6 +131,7 @@ Edit `.supertool.json`:
 - `env` — environment for the spawned MCP server
 - `tools` — maps supertool op names to MCP tool names exposed by the server. Omit any op you don't want to use; that op falls back to the heuristic path (where one exists)
 - `timeout` — request timeout in seconds (LSP cold-start can be slow; 60s is comfortable)
+- `infra_patterns` — list of substrings that mark a tool result as an infrastructure condition (timeout/overload) rather than a real diagnostic. Some servers (cclsp) swallow their own internal timeout and hand it back as normal text content (e.g. `orchestrator timeout after 3s`) with the MCP `isError` flag unset — without this, `diag` would count that text as a phantom `+1` diagnostic that reads like the edit caused a regression (#346). Matched results are returned prefixed `op: …` so adapters drop them. Defaults to `["orchestrator timeout", "timed out", "timeout after"]`; the structural `isError` flag is always honored regardless
 - `stopOnNewFile` — `true` to SIGTERM this daemon when a mutating op (`edit`/`paste`/etc.) **creates a brand-new file** matching `match`. The warm LSP holds a reflection cache that doesn't index new classes, so it reports phantom errors on a just-created file (#239); stopping it forces the next validator run to cold-start a daemon that sees the file. Cost: that one post-create validate pays the cold-reindex (~30-60s on a large repo). Leave unset for servers that index new files fine.
 
 ### 4. Use it
@@ -210,6 +211,11 @@ binary, the wiring is the same.
      server exposes via `tools/list`. Without this, the op falls through to the
      heuristic path.
    - `timeout` — request timeout in seconds.
+   - `infra_patterns` (optional) — substrings that mark a result as an infra
+     condition (timeout/overload) not a real diagnostic; matched results are
+     prefixed `op: …` so adapters drop them. Defaults to
+     `["orchestrator timeout", "timed out", "timeout after"]`. The structural
+     MCP `isError` flag is always honored regardless (#346).
    - `idle_timeout` (optional) — daemon shuts itself down after this many seconds idle
      (default 600).
    - `stopOnNewFile` (optional) — `true` to SIGTERM this daemon when a mutating op
