@@ -120,6 +120,12 @@
       "description": "Show supertool version",
       "example": "version"
     },
+    "help": {
+      "syntax": "help:OP",
+      "description": "Print the full reference for a single op (syntax, description, example) from .supertool.json — the same metadata 'ops' lists, but scoped to one op and never compacted, so payload shapes like vim's are readable without grepping source.",
+      "example": "help:vim",
+      "hint": true
+    },
     "cwd": {
       "syntax": "cwd:PATH",
       "description": "Set working dir for the whole call. MUST be first op. chdir before dispatch, then stripped. Avoids `cd ... &&` prefix (hook-safe, no stale-cwd poisoning). ~/$VAR expanded",
