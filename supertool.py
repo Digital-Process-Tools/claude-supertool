@@ -12241,7 +12241,8 @@ def main(argv: List[str]) -> int:
     # and dies with an opaque '@file ... parse error' that names neither the
     # cause nor the fix. Detect the clash up front and point at the escape
     # hatches (per-op @file, or one batch:@- ops array). Issue #341.
-    stdin_ops = [a for a in argv if ":" in a and a.split(":", 1)[1] == "@-"]
+    stdin_ops = [a for a in argv
+                 if ":" in a and a.split(":", 1)[1].lstrip(":") == "@-"]
     if len(stdin_ops) > 1:
         sys.stderr.write(
             "stdin: only one '@-' op is allowed per call "

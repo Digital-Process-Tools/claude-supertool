@@ -63,3 +63,19 @@ def test_bare_dash_arg_is_not_treated_as_stdin(stub_dispatch) -> None:
     rc = supertool.main(["edit:@-", "@-"])
     assert rc == 0  # only one real stdin op
     assert stub_dispatch == ["edit:@-", "@-"]
+
+
+def test_triple_colon_stdin_form_is_caught(stub_dispatch, capsys) -> None:
+    """`op:::@-` reads stdin too (parts split on ':::') — must clash like `op:@-`."""
+    rc = supertool.main(["edit:::@-", "edit:::@-"])
+    assert rc == 1
+    assert stub_dispatch == []
+    assert "only one '@-'" in capsys.readouterr().err
+
+
+def test_mixed_colon_forms_clash(stub_dispatch, capsys) -> None:
+    """A single-colon and a triple-colon stdin op together are still two readers."""
+    rc = supertool.main(["edit:@-", "paste:::@-"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "edit:@-" in err and "paste:::@-" in err
