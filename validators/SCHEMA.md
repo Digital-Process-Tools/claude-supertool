@@ -54,6 +54,7 @@ Universal JSON. Every adapter emits this shape. Validator core never parses tool
 | `cmd`             | string           | yes      | Shell command. `{file}` and `{supertool_dir}` are substituted before execution.           |
 | `hooks_into`      | array of strings | yes      | Ops that trigger this validator automatically (`edit`, `paste`, `vim`, ...).              |
 | `match`           | string           | no       | Glob pattern to filter by filename (e.g. `*.php`). Matches all files when absent.        |
+| `exclude`         | string or list   | no       | Glob (or list of globs) to skip even when `match` matches (e.g. `*tests/*`). Skip if any matches. |
 | `timeout`         | int              | no       | Seconds before the subprocess is killed. Default 60 (validators), 30 (formatters).       |
 | `rollback_on_fail`| bool             | no       | Revert the file if the validator reports a regression. Default false.                     |
 | `opt_in`          | bool             | no       | When true, validator only runs when explicitly requested (not on every hook).             |

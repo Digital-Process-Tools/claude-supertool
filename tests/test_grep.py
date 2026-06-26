@@ -30,6 +30,15 @@ def test_grep_empty_pattern_errors() -> None:
     assert "ERROR: empty pattern" in out
 
 
+def test_grep_missing_path_error_includes_cwd() -> None:
+    """A non-existent path errors with the CWD, so 'wrong path' vs 'wrong CWD' is
+    distinguishable — the recurring trap where a stale cwd makes a relative path
+    silently miss."""
+    out = supertool.op_grep("anything", "does-not-exist-xyzzy.json")
+    assert "ERROR: path not found" in out
+    assert os.getcwd() in out
+
+
 def test_grep_respects_limit(tmp_path: Path) -> None:
     f = tmp_path / "many.py"
     content = "\n".join(f"match line {i}" for i in range(1, 20)) + "\n"

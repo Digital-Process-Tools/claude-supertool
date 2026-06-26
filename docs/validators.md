@@ -117,6 +117,7 @@ Full list of `.supertool.json` validator config fields:
 |--------------------|----------------------------------------------------------------------------------------|
 | `cmd`              | Shell command. `{file}` → target path. `{supertool_dir}` → supertool install dir.      |
 | `match`            | Glob filter on the target path (default `*`).                                          |
+| `exclude`          | Glob (or list of globs) to skip even when `match` hits — e.g. `"*tests/*"`. Per-validator on purpose: `phpunit` must still scan tests. |
 | `hooks_into`       | Op names to wrap (subset of `edit`, `replace`, `replace_lines`, `paste`, `vim`).       |
 | `rollback_on_fail` | Restore pre-edit file content if the validator's count went up or ok flipped to false. |
 | `resolve`          | Shell cmd returning an alternate target path (e.g. source-file → test-file).           |

@@ -77,6 +77,31 @@ def test_applicable_ignores_malformed_specs() -> None:
     assert set(supertool._applicable_validators("edit", "a.php")) == {"good"}
 
 
+def test_applicable_exclude_skips_matching_path() -> None:
+    _set_validators({
+        "phpmd": {"cmd": "x", "hooks_into": ["edit"], "match": "*.php", "exclude": "*tests/*"},
+    })
+    assert set(supertool._applicable_validators("edit", "tests/aTest.php")) == set()
+    assert set(supertool._applicable_validators("edit", "src/Foo.php")) == {"phpmd"}
+
+
+def test_applicable_no_exclude_unchanged() -> None:
+    _set_validators({
+        "phpmd": {"cmd": "x", "hooks_into": ["edit"], "match": "*.php"},
+    })
+    assert set(supertool._applicable_validators("edit", "tests/aTest.php")) == {"phpmd"}
+
+
+def test_applicable_exclude_list_skips_if_any_matches() -> None:
+    _set_validators({
+        "phpmd": {"cmd": "x", "hooks_into": ["edit"], "match": "*.php",
+                  "exclude": ["*tests/*", "*/Generated/*"]},
+    })
+    assert set(supertool._applicable_validators("edit", "tests/aTest.php")) == set()
+    assert set(supertool._applicable_validators("edit", "src/Generated/Foo.php")) == set()
+    assert set(supertool._applicable_validators("edit", "src/Foo.php")) == {"phpmd"}
+
+
 # ---------------------------------------------------------------------------
 # _validator_resolve
 # ---------------------------------------------------------------------------
