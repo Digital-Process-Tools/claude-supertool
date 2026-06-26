@@ -11,7 +11,7 @@
 | **Symbol map** | `map` | [map.md](map.md) |
 | **Edits** | `edit`, `replace`, `replace_dry`, `replace_lines`, `paste`, `vim` | [edits.md](edits.md) |
 | **Validate / Format** | `validate`, `format`, `validate_staged`, `format_staged` | — |
-| **Meta** | `introduction`, `output-format`, `ops`, `version` | [meta.md](meta.md) |
+| **Meta** | `cwd`, `introduction`, `output-format`, `ops`, `version` | [meta.md](meta.md) |
 
 ## Full op table
 
@@ -40,6 +40,7 @@
 | `tree` | `tree:PATH` or `tree:PATH:DEPTH` | Directory structure with depth limit (default 3). Hides dotfiles. Files listed before subdirectories. |
 | `blame` | `blame:PATH:LINE` or `blame:PATH:LINE:N` | Git blame for N lines (default 5) around a specific line number. Requires git repo. |
 | `version` | `version` | Show supertool version. |
+| `cwd` | `cwd:PATH` | Set the working dir for the whole call. **Must be the first op** — chdir's once before any dispatch (so every following op resolves against `PATH`), then is stripped. Mirrors `cd PATH && …` without the `cd` (which trips the use-supertool hook and risks stale-cwd path poisoning). `~`/`$VAR` expanded; non-directory or non-first → error before any op runs. |
 | `edit` | `edit:::OLD:::NEW:::PATH` | Single-file, single-occurrence edit (mirrors native Edit). Errors if 0 or >1 matches. **Bypasses native Edit must-Read state** — saves a round-trip when you already know the unique snippet. Use `:::` separator so content with `:` works. |
 | `replace_lines` | `replace_lines:::PATH:::START:::END:::CONTENT` | Swap lines `[START, END]` (1-indexed, inclusive) with CONTENT. `END < START` = pure insert before line START. Empty CONTENT = delete. Receipt shows new line numbers + ±2 context. |
 | `paste` | `paste:::PATH:::CONTENT` | **NARROW USE:** replace ENTIRE file. Only for creating a new file or fully rewriting one. NOT for partial edits — `vim` is the default for those. Atomic, creates file + parent dirs if missing. CONTENT via triple-colon → holds any chars (`:`, quotes, braces, newlines). |

@@ -120,6 +120,12 @@
       "description": "Show supertool version",
       "example": "version"
     },
+    "cwd": {
+      "syntax": "cwd:PATH",
+      "description": "Set working dir for the whole call. MUST be first op. chdir before dispatch, then stripped. Avoids `cd ... &&` prefix (hook-safe, no stale-cwd poisoning). ~/$VAR expanded",
+      "example": "cwd:~/repo",
+      "hint": true
+    },
     "tree": {
       "syntax": "tree:PATH[:DEPTH]",
       "description": "Dir tree, depth=N (def 3). Hides dotfiles",

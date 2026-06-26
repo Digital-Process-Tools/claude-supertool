@@ -11960,6 +11960,36 @@ def main(argv: List[str]) -> int:
         )
         return 1
 
+    # cwd:PATH — must be the FIRST op. chdir once before any dispatch so every
+    # remaining op resolves against PATH (mirrors `cd PATH && …`), then strip
+    # it. Handled here in the pre-pass (like --plain) — never reaches dispatch,
+    # so it can't race the parallel read path or force a batch sequential.
+    # Required-first keeps the rule unambiguous: appearing later is an error,
+    # not a silently-honored mid-call cwd switch.
+    cwd_positions = [i for i, a in enumerate(argv) if a.split(":", 1)[0] == "cwd"]
+    if cwd_positions:
+        if len(cwd_positions) > 1:
+            sys.stderr.write("cwd: only one cwd: op is allowed per call\n")
+            return 1
+        if cwd_positions != [0]:
+            sys.stderr.write("cwd: must be the first op (cwd:PATH op1 op2 ...)\n")
+            return 1
+        spec = argv[0]
+        if ":" not in spec:
+            sys.stderr.write("cwd: requires a path (cwd:PATH)\n")
+            return 1
+        target = os.path.expanduser(os.path.expandvars(spec.split(":", 1)[1]))
+        if not target:
+            sys.stderr.write("cwd: empty path (cwd:PATH)\n")
+            return 1
+        if not os.path.isdir(target):
+            sys.stderr.write(f"cwd: not a directory: {target}\n")
+            return 1
+        os.chdir(target)
+        argv = argv[1:]
+        if not argv:
+            return 0
+
     # Normal batched-ops mode
     total_out_bytes = 0
     any_failure = False
