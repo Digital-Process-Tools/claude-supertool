@@ -188,8 +188,15 @@ class TestFieldsFromSyntax:
         # Trailing optional group → optional; '...' → variadic. Brackets/ellipsis stripped from names.
         ("git-commit:::MESSAGE[:::PATHS...]", [("message", False, False), ("paths", True, True)]),
         ("op:::A[:::B]",                      [("a", False, False), ("b", True, False)]),
+        # Bracket depth, not "seen any '['": a required field AFTER a closed
+        # optional group stays required.
+        ("op:::A[:::B]:::C",                  [("a", False, False), ("b", True, False), ("c", False, False)]),
         # First alternative is used when ' | ' separates alternatives
         ("op:::A:::B | op:::X:::Y",           [("a", False, False), ("b", False, False)]),
+        # Syntax carrying prose/punctuation a payload key can't match → no @file
+        # route at all (git-resolve's real syntax: comma list + inline prose).
+        ("git-resolve:::SIDE:::PATH[,PATH...][:::BLOCKS]  (SIDE: ours|theirs|both)", []),
+        ("op:::A:::B WITH WORDS",             []),
         # Read-only op (no :::) → empty list
         ("read:PATH",                         []),
         ("grep:PATTERN:PATH",                 []),
@@ -579,6 +586,28 @@ class TestAtFileOptionalVariadic:
             "git-commit", {"message": "m", "paths": "only.txt"}
         )
         assert parts == ["git-commit", "m", "only.txt"]
+
+    def test_paths_empty_list_omits(self, monkeypatch) -> None:
+        self._patch(monkeypatch)
+        parts, _ = supertool._at_file_to_parts(
+            "git-commit", {"message": "m", "paths": []}
+        )
+        assert parts == ["git-commit", "m"]
+
+    def test_paths_null_omits_no_literal_none(self, monkeypatch) -> None:
+        """paths:null (JSON) must not emit a literal 'None' positional arg."""
+        self._patch(monkeypatch)
+        parts, _ = supertool._at_file_to_parts(
+            "git-commit", {"message": "m", "paths": None}
+        )
+        assert parts == ["git-commit", "m"]
+
+    def test_paths_list_drops_null_elements(self, monkeypatch) -> None:
+        self._patch(monkeypatch)
+        parts, _ = supertool._at_file_to_parts(
+            "git-commit", {"message": "m", "paths": ["a.txt", None, "b.txt"]}
+        )
+        assert parts == ["git-commit", "m", "a.txt", "b.txt"]
 
     def test_missing_required_message_raises(self, monkeypatch) -> None:
         self._patch(monkeypatch)

@@ -10701,9 +10701,15 @@ def _fields_from_syntax(syntax: str) -> List[Tuple[str, bool, bool]]:
 
     Takes the first alternative (before ' | '), splits on ':::', drops the
     first token (op name). Returns [] if the syntax has no ':::' (read-only
-    op — no @file route). Optional groups are assumed trailing (the only
-    shape used across the op syntaxes), so a field is optional once any '['
-    has opened.
+    op — no @file route). Optionality is tracked by '[' / ']' bracket depth,
+    so a field is optional whenever an unclosed group is open at its position
+    (correct even for a non-trailing optional group).
+
+    Returns [] when any derived field name is not a clean identifier
+    ([a-z][a-z0-9_]*). That guards against syntax strings carrying inline
+    prose or punctuation a payload key could never match — e.g. git-resolve's
+    'PATH[,PATH...][:::BLOCKS]  (SIDE: ...)'. Such ops simply have no @file
+    route rather than a falsely-registered, non-functional one.
 
     Examples:
       'edit:::OLD:::NEW:::PATH'            → [('old',F,F),('new',F,F),('path',F,F)]
@@ -10714,14 +10720,15 @@ def _fields_from_syntax(syntax: str) -> List[Tuple[str, bool, bool]]:
     if ":::" not in first_alt:
         return []
     specs: List[Tuple[str, bool, bool]] = []
-    seen_open = False
+    depth = 0
     for tok in first_alt.split(":::")[1:]:
         variadic = "..." in tok
-        optional = seen_open
-        if "[" in tok:
-            seen_open = True
+        optional = depth > 0
+        depth += tok.count("[") - tok.count("]")
         name = (tok.replace("[", "").replace("]", "")
                    .replace("...", "").strip().lower())
+        if not re.fullmatch(r"[a-z][a-z0-9_]*", name):
+            return []
         specs.append((name, optional, variadic))
     return specs
 
@@ -10879,9 +10886,16 @@ def _at_file_to_parts(op: str, payload: Any) -> Tuple[List[str], bool]:
         value = lower_payload[name]
         if variadic:
             # Accept a single scalar or a list; each element becomes one
-            # positional part (e.g. git-commit paths → PATH PATH ...).
-            items = value if isinstance(value, list) else [value]
-            parts.extend(str(v) for v in items)
+            # positional part (e.g. git-commit paths → PATH PATH ...). A null
+            # value or null elements are dropped, so paths:null / paths:[]
+            # cleanly omit rather than emitting a literal "None" arg.
+            if value is None:
+                items: List[Any] = []
+            elif isinstance(value, list):
+                items = value
+            else:
+                items = [value]
+            parts.extend(str(v) for v in items if v is not None)
         else:
             parts.append(str(value))
     replace_all = bool(lower_payload.get("replace_all", False))
