@@ -475,7 +475,7 @@ def main() -> int:
         elif exists(join(gd, "CHERRY_PICK_HEAD")):
             print("Next: git cherry-pick --continue")
         else:
-            print("Next: ./supertool 'git-commit:::MSG' to commit the resolution.")
+            print("Next: ./supertool 'git-commit:::MESSAGE' to commit the resolution.")
 
     return 0 if not failed else 1
 
