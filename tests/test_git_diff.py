@@ -96,6 +96,63 @@ def test_branch_mode_scope(tmp_path: Path) -> None:
     assert "Foo.class.php" in out
 
 
+def _run_raw(repo: Path, *args: str) -> subprocess.CompletedProcess:
+    """Like _run but without the returncode==0 assertion (guard paths return 1)."""
+    return subprocess.run(
+        [sys.executable, str(DIFF), *args],
+        capture_output=True, text=True, encoding="utf-8", cwd=repo, env=dict(os.environ),
+    )
+
+
+def test_path_mode_missing_path_warns_not_silent(tmp_path: Path) -> None:
+    """A path that doesn't exist must NOT read as 'No changes.' — it warns + exits 1.
+
+    Regression for the wrong-CWD trap: git-diff:PATH on an absent file silently
+    printed 'No changes.', indistinguishable from a clean tracked file.
+    """
+    _init_repo(tmp_path)
+    res = _run_raw(tmp_path, "does-not-exist.json")
+    assert res.returncode == 1
+    assert "No changes." not in res.stdout
+    assert "not found" in res.stdout
+    assert "wrong CWD" in res.stdout
+    assert "Repo:" in res.stdout
+
+
+def test_path_mode_untracked_path_warns(tmp_path: Path) -> None:
+    """An on-disk but untracked file warns 'untracked' rather than 'No changes.'"""
+    _init_repo(tmp_path)
+    _write(tmp_path, "scratch.txt", "hi\\n")
+    res = _run_raw(tmp_path, "scratch.txt")
+    assert res.returncode == 0
+    assert "No changes." not in res.stdout
+    assert "untracked" in res.stdout
+
+
+def test_path_mode_tracked_clean_still_says_no_changes(tmp_path: Path) -> None:
+    """Regression guard: a tracked, unmodified file is genuinely clean → 'No changes.'"""
+    _init_repo(tmp_path)
+    res = _run(tmp_path, "seed.txt")
+    assert "No changes." in res
+
+
+def test_path_mode_tracked_modified_still_diffs(tmp_path: Path) -> None:
+    """The guard must NOT swallow a legit diff: a modified tracked file scoped by
+    PATH still renders its diff (proves ls-files lets tracked paths through)."""
+    _init_repo(tmp_path)
+    (tmp_path / "seed.txt").write_text("seed\\nmore\\n")
+    res = _run(tmp_path, "seed.txt")
+    assert "No changes." not in res
+    assert "seed.txt" in res
+
+
+def test_header_shows_repo_root(tmp_path: Path) -> None:
+    """Every mode stamps the resolved repo root so a wrong-CWD run is visible."""
+    _init_repo(tmp_path)
+    out = _run(tmp_path, "staged")
+    assert "Repo:" in out
+
+
 def test_migration_path_not_flagged_but_module_is(tmp_path: Path) -> None:
     """Bug 2 regression: 'migration' substring must not exempt real source classes."""
     _init_repo(tmp_path)

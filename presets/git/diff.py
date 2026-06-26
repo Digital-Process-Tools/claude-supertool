@@ -275,11 +275,25 @@ def main() -> int:
             return 1
         mode, scope, diff_args = "branch", f"merge-base({base})..HEAD", [f"{base}...HEAD"]
     elif arg1:
+        # Guard: a path absent or untracked in THIS repo produces an empty diff,
+        # which would print "No changes." — indistinguishable from a clean file.
+        # Surface it as an explicit miss so a wrong-CWD invocation is obvious
+        # instead of silently reading as "nothing changed".
+        if not _git(["ls-files", "--", arg1]).stdout.strip():
+            root = _git(["rev-parse", "--show-toplevel"]).stdout.strip()
+            print("# git-diff (path)")
+            print(f"Repo: {root}")
+            if not os.path.exists(arg1):
+                print(f"{_mark('⚠')} {arg1!r} not found under {os.getcwd()} — wrong CWD?")
+                return 1
+            print(f"{_mark('⚠')} {arg1!r} is untracked (not in git).")
+            return 0
         mode, scope, diff_args = "path", f"working vs HEAD — {arg1}", ["HEAD", "--", arg1]
     else:
         mode, scope, diff_args = "working", "working tree vs HEAD", ["HEAD"]
 
     print(f"# git-diff ({mode})")
+    print(f"Repo: {_git(['rev-parse', '--show-toplevel']).stdout.strip()}")
     print(f"Scope: {scope}")
 
     changed = _changed_files(diff_args)

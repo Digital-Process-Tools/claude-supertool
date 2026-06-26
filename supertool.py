@@ -191,6 +191,20 @@ def _match_glob(path: str, pattern: str) -> bool:
     return False
 
 
+def _matches_any_glob(path: str, patterns: Any) -> bool:
+    """True if `path` matches any glob in `patterns`.
+
+    `patterns` may be a single glob string or a list of globs (skip if any
+    matches). Falsy patterns (None, "", []) match nothing. Used by validator
+    and formatter dispatch to honor a per-spec `exclude` glob.
+    """
+    if not patterns:
+        return False
+    if isinstance(patterns, str):
+        patterns = [patterns]
+    return any(_match_glob(path, p) for p in patterns if p)
+
+
 def _expand_braces(pattern: str) -> List[str]:
     """Expand shell-style brace groups `{a,b,c}` into a list of patterns.
 
@@ -1274,7 +1288,7 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
         # Could be a glob pattern — check if it expands to anything
         from glob import glob as _glob
         if not _glob(path, recursive=True):
-            return f"ERROR: path not found: {path}\n"
+            return f"ERROR: path not found: {path} (cwd: {os.getcwd()}) — wrong CWD?\n"
 
     excl = _get_exclude_paths("grep", no_exclude)
 
@@ -8525,6 +8539,8 @@ def _applicable_validators(op: str, path: str) -> Dict[str, Dict[str, Any]]:
         glob = spec.get("match", "*")
         if path and glob and not _match_glob(path, glob):
             continue
+        if path and _matches_any_glob(path, spec.get("exclude")):
+            continue
         out[name] = spec
     return out
 
@@ -9118,6 +9134,8 @@ def _applicable_formatters(op: str, path: str) -> Dict[str, Dict[str, Any]]:
             continue
         glob = spec.get("match", "*")
         if path and glob and not _match_glob(path, glob):
+            continue
+        if path and _matches_any_glob(path, spec.get("exclude")):
             continue
         out[name] = spec
     return out

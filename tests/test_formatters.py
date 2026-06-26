@@ -53,6 +53,24 @@ def test_applicable_formatters_ignores_malformed_specs() -> None:
     assert set(supertool._applicable_formatters("edit", "a.json")) == {"good"}
 
 
+def test_applicable_formatters_exclude_mirrors_validators() -> None:
+    _set_formatters({
+        "fmt": {"cmd": "x", "hooks_into": ["edit"], "match": "*.php", "exclude": "*tests/*"},
+    })
+    assert set(supertool._applicable_formatters("edit", "tests/aTest.php")) == set()
+    assert set(supertool._applicable_formatters("edit", "src/Foo.php")) == {"fmt"}
+
+
+def test_applicable_formatters_exclude_list() -> None:
+    _set_formatters({
+        "fmt": {"cmd": "x", "hooks_into": ["edit"], "match": "*.php",
+                "exclude": ["*tests/*", "*/Generated/*"]},
+    })
+    assert set(supertool._applicable_formatters("edit", "tests/aTest.php")) == set()
+    assert set(supertool._applicable_formatters("edit", "src/Generated/Foo.php")) == set()
+    assert set(supertool._applicable_formatters("edit", "src/Foo.php")) == {"fmt"}
+
+
 # ---------------------------------------------------------------------------
 # _formatter_run_one
 # ---------------------------------------------------------------------------
