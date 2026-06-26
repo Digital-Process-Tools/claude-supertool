@@ -58,6 +58,16 @@ class TestEngineGlitchSignatures:
         assert not m.is_engine_glitch('Unused parameter $x')
         assert not m.is_engine_glitch('')
 
+    def test_malformed_json_falls_back_to_defaults(self, tmp_path):
+        (tmp_path / ".supertool.json").write_text("{ this is not valid json ")
+        m = _load(tmp_path)
+        assert m.engine_glitch_signatures() == DEFAULTS
+
+    def test_non_list_prop_falls_back_to_defaults(self, tmp_path):
+        _write_config(tmp_path, {"engine_glitches": "System error:"})
+        m = _load(tmp_path)
+        assert m.engine_glitch_signatures() == DEFAULTS
+
 
 class TestFormatResponseDropsGlitch:
     def _resp(self, message):

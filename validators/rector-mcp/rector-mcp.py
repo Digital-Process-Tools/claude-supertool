@@ -11,6 +11,7 @@ Output: SCHEMA.md-compliant JSON on stdout (single line).
 """
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import os
@@ -31,9 +32,12 @@ CALL_TIMEOUT_SEC = 120
 # corruption inside rector itself, NOT findings about the edited file (a cold
 # `rector` CLI handles the same file clean). Signatures are a config prop in
 # .supertool.json: validators.rector.engine_glitches (a JSON list of substrings).
-# The adapter reads its own prop straight from .supertool.json (the same file
-# daemon.py already reads from cwd) — no env, and the generic supertool core stays
-# oblivious. Built-in defaults below are the safety net when the prop is absent.
+# The signature *values* are config, not env. The file is located in WORKING_DIR
+# (the project root supertool runs from; pinnable via MCP_RECTOR_WORKING_DIR) —
+# a single read, no parent-dir walk (unlike daemon.py / the core loader), which is
+# fine because the daemon cmd runs at the project root where .supertool.json lives.
+# The generic supertool core stays oblivious to these signatures. Built-in defaults
+# below are the safety net when the prop is absent or the file can't be read.
 # Substring match, case-sensitive. Add new signatures in .supertool.json, no code change.
 _DEFAULT_ENGINE_GLITCHES = ("System error:", "toMutatingScope() on null")
 
@@ -47,7 +51,12 @@ def _supertool_config() -> dict:
         return {}
 
 
+@functools.lru_cache(maxsize=1)
 def engine_glitch_signatures() -> list[str]:
+    """Glitch signatures from .supertool.json validators.rector.engine_glitches,
+    or the built-in defaults when the prop is absent / not a list / unreadable.
+    Memoized: the adapter is a fresh process per validator call, so the config
+    can't change underneath a run — this avoids re-reading the file per error."""
     sigs = (((_supertool_config().get("validators") or {}).get("rector") or {})
             .get("engine_glitches"))
     if isinstance(sigs, list):
