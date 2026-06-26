@@ -27,6 +27,38 @@ RECTOR_CONFIG = os.environ.get("MCP_RECTOR_CONFIG")  # optional
 SPAWN_TIMEOUT_SEC = 30
 CALL_TIMEOUT_SEC = 120
 
+# Non-deterministic warm-daemon engine glitches: PHP fatals / engine-state
+# corruption inside rector itself, NOT findings about the edited file (a cold
+# `rector` CLI handles the same file clean). Signatures are a config prop in
+# .supertool.json: validators.rector.engine_glitches (a JSON list of substrings).
+# The adapter reads its own prop straight from .supertool.json (the same file
+# daemon.py already reads from cwd) — no env, and the generic supertool core stays
+# oblivious. Built-in defaults below are the safety net when the prop is absent.
+# Substring match, case-sensitive. Add new signatures in .supertool.json, no code change.
+_DEFAULT_ENGINE_GLITCHES = ("System error:", "toMutatingScope() on null")
+
+
+def _supertool_config() -> dict:
+    """Load .supertool.json from the working dir (project root). {} on any failure."""
+    try:
+        with open(os.path.join(WORKING_DIR, ".supertool.json")) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def engine_glitch_signatures() -> list[str]:
+    sigs = (((_supertool_config().get("validators") or {}).get("rector") or {})
+            .get("engine_glitches"))
+    if isinstance(sigs, list):
+        return [str(s).strip() for s in sigs if str(s).strip()]
+    return list(_DEFAULT_ENGINE_GLITCHES)
+
+
+def is_engine_glitch(msg: str) -> bool:
+    """True if `msg` matches a configured non-deterministic engine glitch."""
+    return bool(msg) and any(sig in msg for sig in engine_glitch_signatures())
+
 
 # #148: use the shared presets/mcp/_paths helper so client + daemon agree on
 # the runtime dir (was /tmp/, now $XDG_RUNTIME_DIR/supertool/mcp/ etc.).
@@ -193,15 +225,16 @@ def format_response(file_path: str, mcp_resp: dict, duration_ms: int) -> dict:
         if errors:
             for e in errors:
                 msg = e.get("message", str(e)) if isinstance(e, dict) else str(e)
-                # Defense-in-depth (root cause fixed upstream in mcp-rector-warm
-                # 0.4.0, claude-supertool#273): the warm daemon used to serve a stale
-                # reflection source-locator across files and emit
-                # "System error: ClassReflection must be resolved for class X" on a
-                # later file that a cold rector CLI handled clean. mcp-rector-warm now
-                # resets that state per call, so this branch should no longer fire —
-                # it stays only to keep any future non-deterministic engine glitch
-                # (NOT a code finding) from failing/printing/caching.
-                if msg.startswith("System error:"):
+                # Drop non-deterministic engine glitches at the source: a PHP fatal
+                # or stale-reflection error from inside rector's warm daemon is not a
+                # finding about this file (a cold `rector` CLI handles it clean), so it
+                # must never surface as a red or get cached. Signatures are configured
+                # per-mcp via the .supertool.json validators.rector.engine_glitches prop; see
+                # _DEFAULT_ENGINE_GLITCHES. Root cause for the original "System error:
+                # ClassReflection" case is fixed upstream in mcp-rector-warm 0.4.0
+                # (claude-supertool#273); this stays to absorb future engine glitches
+                # (e.g. "toMutatingScope() on null", #345).
+                if is_engine_glitch(msg):
                     continue
                 base["ok"] = False
                 base["count"] += 1

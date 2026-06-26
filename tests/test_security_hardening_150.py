@@ -237,11 +237,16 @@ class TestValidatorResultIsCacheable:
             {"code": "rector.refactor", "msg": "Would apply SomeRector"}]}
         assert supertool._validator_result_is_cacheable(data)
 
-    def test_rector_system_error_not_cacheable(self):
+    def test_core_does_not_filter_by_message_text(self):
+        # Engine-glitch suppression by message moved to the adapter (config-driven,
+        # validators.rector.engine_glitches). The core cache filter is generic — it
+        # keys only off error codes, never message text (SCHEMA.md: "Validator core
+        # never parses tool-specific output"). The adapter drops a glitch before it
+        # reaches this filter; a rector.error that reaches core is a real finding.
         data = {"ok": False, "errors": [
             {"code": "rector.error",
              "msg": 'System error: "ClassReflection must be resolved for class XTest"'}]}
-        assert not supertool._validator_result_is_cacheable(data)
+        assert supertool._validator_result_is_cacheable(data)
 
     def test_mcp_transport_error_not_cacheable(self):
         data = {"ok": False, "errors": [{"code": "mcp", "msg": "connection refused"}]}
