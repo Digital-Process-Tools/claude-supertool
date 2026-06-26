@@ -241,30 +241,60 @@ By default a validator runs against the file the op touched. The optional `resol
 
 The exit code is **ignored** by the validator path. That is deliberate, and it's what makes the advisory below possible.
 
-### adviseForNewTest — nag on a new class with no test
+### advice — config-driven post-op hints
 
-Autonomous flows that write only through supertool bypass the editor/git-hook reminders to write a test. With the top-level flag enabled:
+Autonomous flows that write only through supertool bypass the editor/git-hook reminders to do follow-up work (write a test, regenerate the XSD, …). The top-level `advice` block emits non-blocking `[advice]` lines after a mutating op when a rule matches:
 
 ```json
-// .supertool.json — opt-in, default false
-{ "adviseForNewTest": true }
+// .supertool.json
+{
+  "advice": {
+    "newTest": {
+      "hooks_into": ["paste"],
+      "match": "*.php",
+      "when": "new-file",
+      "resolveFromValidator": true,
+      "message": "new class without test"
+    },
+    "newComponent": {
+      "hooks_into": ["edit", "paste"],
+      "match": "*.php",
+      "contains": "extends \\w*ComponentBase|implements \\w*IComponent",
+      "message": "XSD/cache regen likely (dvsi_xsd + dvsi_clearcache)"
+    }
+  }
+}
 ```
 
-a `paste` that **creates a new `*.php` file** (it did not exist before) with no resolvable sibling test gets a non-blocking line appended to the op output:
+Each rule is gated by (all optional):
+
+| field | meaning | default |
+|-------|---------|---------|
+| `hooks_into` | ops that trigger the rule | all mutating (`edit`, `paste`, `replace`, `replace_lines`, `vim`) |
+| `match` | path glob | `*` |
+| `when` | `new-file` \\| `existing-file` \\| `always` — gated on whether the file existed before the op | `always` |
+| `contains` | regex tested against the **content the op added** (lines present after but not before) — fires only when the op *introduces* the pattern, not when the file already held it | — (no content gate) |
+| `resolve` | a subprocess (a source→target resolver) emitting a would-be target | — |
+| `resolveFromValidator` | reuse the first `resolve` cmd declared on a validator instead of duplicating it | `false` |
+| `message` | the line shown; `{target}`/`{path}`/`{op}` interpolate. A message with no `{target}` gets ` — consider <target>` appended when a resolver produced one | `""` |
+
+A `paste` that **creates a new `*.php` file** with no resolvable sibling test (the `newTest` rule above) appends:
 
 ```
 [advice]
 ℹ new class without test — consider tests/unit/SiX/FooTest.php
 ```
 
-It reuses the same `resolve` cmd declared on a validator, so the source→test path logic lives in exactly one place. Because the advisory needs the *would-be* target (which doesn't exist yet) while the validator path needs stdout to stay empty on a miss, the resolver signals the two cases on different channels:
+#### The resolve contract
+
+A `resolve`/`resolveFromValidator` rule reuses the same `resolve` cmd declared on a validator, so the source→target path logic lives in exactly one place. Because the advisory needs the *would-be* target (which doesn't exist yet) while the validator path needs stdout to stay empty on a miss, the resolver signals the two cases on different channels:
 
 | case | stdout | stderr | exit |
 |------|--------|--------|------|
-| test exists | test path | — | 0 |
-| no test | *(empty)* | would-be target | 3 |
+| target exists | target path | — | 0 |
+| no target | *(empty)* | would-be target | 3 |
 
-stdout stays empty on a miss → the validator still skips, unchanged. The miss target rides on **stderr**, flagged by **exit 3** → only the advisory reads it. Advisory only: it never blocks the write, and never fires on a rewrite of an existing file.
+stdout stays empty on a miss → the validator still skips, unchanged. The miss target rides on **stderr**, flagged by **exit 3** → only the advisory reads it. Advisory only: it never blocks the write.
 
 ## Format-on-save
 

@@ -9319,31 +9319,33 @@ def _formatters_run_batch(
     return [_formatter_run_one(name, spec, path) for name, spec in applicable.items()]
 
 
-def _advise_new_test(op: str, path: str, pre_existed: bool) -> str:
-    """Advisory (never blocks): nag when a `paste` creates a new source file
-    that has no sibling test.
+_ADVICE_DEFAULT_OPS = ("edit", "paste", "replace", "replace_lines", "vim")
 
-    Opt-in via top-level config ``adviseForNewTest: true``. Reuses a validator's
-    ``resolve`` cmd (the source→test resolver) to find the would-be test target:
-    the resolver exits 3 and prints the target on stderr when no test exists
-    (stdout stays empty so the phpunit validator still skips). Returns an
-    ``[advice]`` block, or "" when not applicable.
-    """
-    if pre_existed or op != "paste":
+
+def _advice_added_text(path: str, pre_content: Optional[bytes]) -> str:
+    """Text the op introduced: lines in the current file absent from
+    ``pre_content``. When ``pre_content`` is None (no snapshot taken) the whole
+    current file is returned — correct for a freshly created file, slightly
+    broad for an in-place edit. Gates ``contains`` rules on what the op *added*,
+    not on what the file already held."""
+    try:
+        with open(path, "rb") as f:
+            post = f.read()
+    except OSError:
         return ""
-    cfg = _load_config()
-    if not cfg.get("adviseForNewTest"):
-        return ""
-    if not path.endswith(".php"):
-        return ""
-    # Reuse the source→test resolver declared on a validator (e.g. phpunit).
-    resolve_cmd = None
-    for spec in (cfg.get("validators") or {}).values():
-        if isinstance(spec, dict) and spec.get("resolve"):
-            resolve_cmd = spec["resolve"]
-            break
-    if not resolve_cmd:
-        return ""
+    if pre_content is None:
+        return post.decode("utf-8", "replace")
+    pre_lines = set(pre_content.splitlines())
+    added = [ln for ln in post.splitlines() if ln not in pre_lines]
+    return b"\n".join(added).decode("utf-8", "replace")
+
+
+def _advice_resolve(resolve_cmd: str, path: str) -> Optional[str]:
+    """Run a rule's ``resolve`` subprocess (a source→target resolver). Returns
+    the target string (possibly empty) when the resolver signals "advice
+    applies" via exit 3 — the would-be target rides on stderr while stdout stays
+    empty so a validator reusing the same cmd still skips. Returns None to
+    suppress (exit 0 = target already exists, or any error)."""
     cmd = (resolve_cmd
            .replace("{supertool_dir}", _INSTALL_DIR)
            .replace("{python}", _python_token())
@@ -9356,16 +9358,97 @@ def _advise_new_test(op: str, path: str, pre_existed: bool) -> str:
                            text=True, timeout=30,
                            env=(_merged_env if _prefix_env else None))
     except (subprocess.TimeoutExpired, OSError):
-        return ""
+        return None
     if r.returncode != 3:
+        return None
+    return r.stderr.strip().splitlines()[-1] if r.stderr.strip() else ""
+
+
+def _resolve_cmd_from_validators(cfg: Dict[str, Any],
+                                 name: Optional[str] = None) -> Optional[str]:
+    """A ``resolve`` cmd declared on a validator — lets an advice rule reuse the
+    source→target resolver instead of duplicating it. ``name`` picks a specific
+    validator (unambiguous when several declare a resolver); without it, the
+    first validator that declares one wins."""
+    validators = cfg.get("validators") or {}
+    if name:
+        spec = validators.get(name)
+        return spec.get("resolve") if isinstance(spec, dict) else None
+    for spec in validators.values():
+        if isinstance(spec, dict) and spec.get("resolve"):
+            return spec["resolve"]
+    return None
+
+
+def _eval_advice_rule(spec: Dict[str, Any], op: str, path: str,
+                      pre_existed: bool, pre_content: Optional[bytes],
+                      cfg: Dict[str, Any]) -> str:
+    """Evaluate one advice rule. Returns the rendered advice line, or "" when
+    the rule does not apply to this op/path/state."""
+    if op not in (spec.get("hooks_into") or _ADVICE_DEFAULT_OPS):
         return ""
-    target = ""
-    if r.stderr.strip():
-        target = r.stderr.strip().splitlines()[-1]
-    msg = f"{mark('ℹ')} new class without test"
-    if target:
-        msg += f" — consider {target}"
-    return "\n[advice]\n" + msg + "\n"
+    glob = spec.get("match", "*")
+    if glob and not _match_glob(path, glob):
+        return ""
+    when = spec.get("when", "always")
+    if when == "new-file" and pre_existed:
+        return ""
+    if when == "existing-file" and not pre_existed:
+        return ""
+    contains = spec.get("contains")
+    if contains:
+        try:
+            if not re.search(contains, _advice_added_text(path, pre_content)):
+                return ""
+        except re.error:
+            return ""
+    target = None
+    rfv = spec.get("resolveFromValidator")
+    if spec.get("resolve") or rfv:
+        resolve_cmd = spec.get("resolve")
+        if not resolve_cmd and rfv:
+            resolve_cmd = _resolve_cmd_from_validators(
+                cfg, rfv if isinstance(rfv, str) else None)
+        if not resolve_cmd:
+            return ""
+        target = _advice_resolve(resolve_cmd, path)
+        if target is None:
+            return ""
+    message = spec.get("message", "")
+    if "{target}" in message:
+        message = message.replace("{target}", target or "")
+    elif target:
+        message += f" — consider {target}"
+    message = message.replace("{path}", path).replace("{op}", op)
+    return f"{mark('ℹ')} {message}".rstrip()
+
+
+def _run_advice(op: str, path: str, pre_existed: bool,
+                pre_content: Optional[bytes] = None) -> str:
+    """Advisory (never blocks): emit config-driven hints after a mutating op.
+
+    Rules live under the top-level ``advice`` config block. Each rule may gate
+    on ``hooks_into`` (ops, default all mutating), ``match`` (path glob),
+    ``when`` (new-file|existing-file|always), ``contains`` (regex over the
+    content the op *added*) and ``resolve``/``resolveFromValidator`` (a
+    subprocess emitting a would-be target via exit 3 + stderr). ``message`` is
+    the line shown; ``{target}``/``{path}``/``{op}`` interpolate, and a bare
+    ``{target}``-less message gets " — consider <target>" appended when a
+    resolver produced one. Returns an ``[advice]`` block, or "" when nothing
+    applies."""
+    cfg = _load_config()
+    rules = {name: spec for name, spec in (cfg.get("advice") or {}).items()
+             if isinstance(spec, dict)}
+    if not rules:
+        return ""
+    lines = []
+    for spec in rules.values():
+        line = _eval_advice_rule(spec, op, path, pre_existed, pre_content, cfg)
+        if line:
+            lines.append(line)
+    if not lines:
+        return ""
+    return "\n[advice]\n" + "\n".join(lines) + "\n"
 
 
 def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
@@ -9437,7 +9520,7 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
             return body
         for _srv in _new_file_servers:
             _mcp_stop_server(_srv)
-        return body + _advise_new_test(op, path, _pre_existed)
+        return body + _run_advice(op, path, _pre_existed, pre_for_notif)
 
     needs_rollback = any(v.get("rollback_on_fail") for v in applicable.values())
     needs_fmt_rollback = any(v.get("rollback_on_fail") for v in applicable_fmt.values())
@@ -9524,7 +9607,7 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
     if applicable:
         suffix += "\n[validators]\n" + diff_out
 
-    return body + suffix + _advise_new_test(op, path, _pre_existed)
+    return body + suffix + _run_advice(op, path, _pre_existed, pre_content)
 
 
 # Filter sentinel: `@syntax` selects validators that declare `"syntax": true`
