@@ -746,7 +746,7 @@ def test_phplint_adapter_no_arg_returns_schema_error() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _advise_new_test — paste-time "write a test" advisory
+# _run_advice — config-driven post-op advisories (the `advice` block)
 # ---------------------------------------------------------------------------
 
 # resolve cmd that signals a miss: exit 3 + would-be target on stderr.
@@ -757,55 +757,198 @@ _RESOLVE_MISS = (
 # resolve cmd that signals a hit: exit 0 + test path on stdout.
 _RESOLVE_HIT = '{python} -c "import sys; sys.stdout.write(\'tests/unit/SiX/FooTest.php\')"'
 
+# The newTest rule, expressed purely as config (the old adviseForNewTest bool).
+_NEW_TEST_RULE = {
+    "hooks_into": ["paste"],
+    "match": "*.php",
+    "when": "new-file",
+    "resolveFromValidator": True,
+    "message": "new class without test",
+}
 
-def _set_advice_config(enabled: bool, resolve: str | None = _RESOLVE_MISS) -> None:
+
+def _set_advice(rules: dict, resolve: str | None = _RESOLVE_MISS) -> None:
     validators: dict = {}
     if resolve is not None:
         validators["phpunit"] = {"cmd": "noop", "resolve": resolve}
-    supertool._CONFIG = {"adviseForNewTest": enabled, "validators": validators}
+    supertool._CONFIG = {"advice": rules, "validators": validators}
     supertool._CONFIG_CHECKED = True
 
 
-def test_advise_emitted_for_new_class_without_test() -> None:
-    _set_advice_config(True)
-    out = supertool._advise_new_test("paste", "Dvsi/.../Foo.class.php", pre_existed=False)
+# --- newTest rule (resolveFromValidator) ------------------------------------
+
+def test_newtest_rule_emits_for_new_class_without_test() -> None:
+    _set_advice({"newTest": _NEW_TEST_RULE})
+    out = supertool._run_advice("paste", "Dvsi/.../Foo.class.php", pre_existed=False)
     assert "[advice]" in out
     assert "new class without test" in out
     assert "tests/unit/SiX/FooTest.php" in out
 
 
-def test_advise_silent_when_flag_disabled() -> None:
-    _set_advice_config(False)
-    assert supertool._advise_new_test("paste", "Foo.class.php", pre_existed=False) == ""
+def test_advice_silent_when_no_advice_block() -> None:
+    _set_advice({})
+    assert supertool._run_advice("paste", "Foo.class.php", pre_existed=False) == ""
 
 
-def test_advise_silent_when_file_already_existed() -> None:
-    _set_advice_config(True)
-    assert supertool._advise_new_test("paste", "Foo.class.php", pre_existed=True) == ""
+def test_advice_block_uses_real_newlines_not_literal() -> None:
+    _set_advice({"n": {"hooks_into": ["paste"], "message": "hi"}}, resolve=None)
+    out = supertool._run_advice("paste", "Foo.class.php", pre_existed=False)
+    assert out.startswith("\n[advice]\n")
+    assert out.endswith("\n")
+    assert "\\n" not in out  # literal backslash-n must never appear
 
 
-def test_advise_silent_for_non_paste_op() -> None:
-    _set_advice_config(True)
-    assert supertool._advise_new_test("edit", "Foo.class.php", pre_existed=False) == ""
+def test_newtest_silent_when_file_already_existed() -> None:
+    _set_advice({"newTest": _NEW_TEST_RULE})
+    assert supertool._run_advice("paste", "Foo.class.php", pre_existed=True) == ""
 
 
-def test_advise_silent_for_non_php_file() -> None:
-    _set_advice_config(True)
-    assert supertool._advise_new_test("paste", "styles.scss", pre_existed=False) == ""
+def test_newtest_silent_for_non_paste_op() -> None:
+    _set_advice({"newTest": _NEW_TEST_RULE})
+    assert supertool._run_advice("edit", "Foo.class.php", pre_existed=False) == ""
 
 
-def test_advise_silent_when_test_exists() -> None:
-    _set_advice_config(True, resolve=_RESOLVE_HIT)
-    assert supertool._advise_new_test("paste", "Foo.class.php", pre_existed=False) == ""
+def test_newtest_silent_for_non_php_file() -> None:
+    _set_advice({"newTest": _NEW_TEST_RULE})
+    assert supertool._run_advice("paste", "styles.scss", pre_existed=False) == ""
 
 
-def test_advise_silent_when_no_resolve_cmd() -> None:
-    _set_advice_config(True, resolve=None)
-    assert supertool._advise_new_test("paste", "Foo.class.php", pre_existed=False) == ""
+def test_newtest_silent_when_test_exists() -> None:
+    _set_advice({"newTest": _NEW_TEST_RULE}, resolve=_RESOLVE_HIT)
+    assert supertool._run_advice("paste", "Foo.class.php", pre_existed=False) == ""
+
+
+def test_newtest_silent_when_no_resolve_cmd() -> None:
+    _set_advice({"newTest": _NEW_TEST_RULE}, resolve=None)
+    assert supertool._run_advice("paste", "Foo.class.php", pre_existed=False) == ""
+
+
+def test_resolvefromvalidator_by_name_picks_the_right_resolver() -> None:
+    # A wrong resolver is declared first; the name disambiguates (the real
+    # ordering trap: phpstan-component's resolve precedes phpunit's in DVSI).
+    supertool._CONFIG = {
+        "advice": {"newTest": {**_NEW_TEST_RULE, "resolveFromValidator": "phpunit"}},
+        "validators": {
+            "phpstan-component": {"cmd": "noop", "resolve": _RESOLVE_HIT},
+            "phpunit": {"cmd": "noop", "resolve": _RESOLVE_MISS},
+        },
+    }
+    supertool._CONFIG_CHECKED = True
+    out = supertool._run_advice("paste", "Foo.class.php", pre_existed=False)
+    assert "new class without test" in out
+    assert "tests/unit/SiX/FooTest.php" in out
+
+
+# --- contains gate (matches added content, not the whole file) --------------
+
+def test_contains_rule_emits_when_added_text_matches(tmp_path: Path) -> None:
+    f = tmp_path / "Widget.php"
+    f.write_text("<?php\nclass Widget extends ComponentBase {}\n")
+    _set_advice({"comp": {
+        "hooks_into": ["paste"],
+        "contains": r"extends \w*ComponentBase",
+        "message": "XSD/cache regen likely",
+    }}, resolve=None)
+    out = supertool._run_advice("paste", str(f), pre_existed=False)
+    assert "XSD/cache regen likely" in out
+
+
+def test_contains_rule_silent_when_added_text_misses(tmp_path: Path) -> None:
+    f = tmp_path / "Plain.php"
+    f.write_text("<?php\nclass Plain {}\n")
+    _set_advice({"comp": {
+        "hooks_into": ["paste"],
+        "contains": r"extends \w*ComponentBase",
+        "message": "XSD/cache regen likely",
+    }}, resolve=None)
+    assert supertool._run_advice("paste", str(f), pre_existed=False) == ""
+
+
+def test_contains_matches_only_added_lines_not_preexisting(tmp_path: Path) -> None:
+    # Pattern already present in pre_content → not "added" → no advice.
+    f = tmp_path / "Widget.php"
+    f.write_text("<?php\nclass Widget extends ComponentBase {}\n// touched\n")
+    pre = b"<?php\nclass Widget extends ComponentBase {}\n"
+    _set_advice({"comp": {
+        "hooks_into": ["edit"],
+        "contains": r"extends \w*ComponentBase",
+        "message": "regen",
+    }}, resolve=None)
+    out = supertool._run_advice("edit", str(f), pre_existed=True, pre_content=pre)
+    assert out == ""
+
+
+def test_added_text_multiset_counts_duplicate_line(tmp_path: Path) -> None:
+    # A second copy of an existing line is "added" — set-diff would lose it.
+    f = tmp_path / "f.txt"
+    f.write_text("dup\ndup\nother\n")
+    added = supertool._advice_added_text(str(f), b"dup\n")
+    assert added.count("dup") == 1  # one consumed by pre, one remains
+    assert "other" in added
+
+
+def test_advice_wants_pre_gates_on_contains_rules() -> None:
+    # The fix for the pre_content=None over-fire: a contains rule that applies
+    # to this op/path makes the caller snapshot pre-edit bytes.
+    _set_advice({"comp": {
+        "hooks_into": ["edit"],
+        "match": "*/Components/*.php",
+        "contains": r"extends ComponentBase",
+        "message": "regen",
+    }}, resolve=None)
+    assert supertool._advice_wants_pre("edit", "SiX/Components/Foo.php") is True
+    assert supertool._advice_wants_pre("edit", "SiX/Other/Foo.php") is False  # match
+    assert supertool._advice_wants_pre("paste", "SiX/Components/Foo.php") is False  # hooks_into
+    # A rule without `contains` never needs pre.
+    _set_advice({"n": {"hooks_into": ["edit"], "message": "hi"}}, resolve=None)
+    assert supertool._advice_wants_pre("edit", "SiX/Components/Foo.php") is False
+
+
+# --- when gate + default ops ------------------------------------------------
+
+def test_when_existing_file_fires_only_on_existing(tmp_path: Path) -> None:
+    f = tmp_path / "X.php"
+    f.write_text("<?php\n")
+    _set_advice({"e": {"hooks_into": ["edit"], "when": "existing-file",
+                       "message": "edited"}}, resolve=None)
+    assert "edited" in supertool._run_advice("edit", str(f), pre_existed=True)
+    assert supertool._run_advice("edit", str(f), pre_existed=False) == ""
+
+
+def test_default_ops_cover_all_mutating(tmp_path: Path) -> None:
+    f = tmp_path / "X.php"
+    f.write_text("<?php\n")
+    _set_advice({"any": {"message": "touched"}}, resolve=None)
+    for op in ("edit", "paste", "replace", "replace_lines", "vim"):
+        assert "touched" in supertool._run_advice(op, str(f), pre_existed=True)
+
+
+# --- multiple rules + interpolation -----------------------------------------
+
+def test_multiple_rules_each_emit_a_line(tmp_path: Path) -> None:
+    f = tmp_path / "Widget.php"
+    f.write_text("<?php\nclass Widget extends ComponentBase {}\n")
+    _set_advice({
+        "newTest": _NEW_TEST_RULE,
+        "comp": {"hooks_into": ["paste"], "contains": r"ComponentBase",
+                 "message": "regen"},
+    })
+    out = supertool._run_advice("paste", str(f), pre_existed=False)
+    assert "new class without test" in out
+    assert "regen" in out
+
+
+def test_target_template_interpolation(tmp_path: Path) -> None:
+    f = tmp_path / "Foo.php"
+    f.write_text("<?php\n")
+    _set_advice({"r": {"hooks_into": ["paste"], "resolve": _RESOLVE_MISS,
+                       "message": "create {target} please"}})
+    out = supertool._run_advice("paste", str(f), pre_existed=False)
+    assert "create tests/unit/SiX/FooTest.php please" in out
 
 
 # ---------------------------------------------------------------------------
-# Integration: advisory driven by a real external resolver script
+# Integration: newTest advisory driven by a real external resolver script
 # (a resolve_test.sh equivalent) — proves the subprocess + exit-3 + stderr
 # contract end-to-end, not just inline {python} -c stand-ins.
 # ---------------------------------------------------------------------------
@@ -818,9 +961,6 @@ def _write_resolver_script(tmp_path: Path) -> Path:
       mirror test exists on disk  -> echo it on stdout, exit 0
       no test                     -> mirror target on stderr, exit 3
     Mirror rule: /src/ -> /tests/, Foo.php -> FooTest.php.
-
-    argv path is normalized to forward slashes so the /src/ -> /tests/
-    mirror rule works on Windows, where the path arrives with backslashes.
     """
     script = tmp_path / "resolve_test_equiv.py"
     script.write_text(
@@ -838,10 +978,10 @@ def _write_resolver_script(tmp_path: Path) -> Path:
     return script
 
 
-def _set_advice_config_with_script(script: Path) -> None:
+def _set_advice_with_script(script: Path) -> None:
     resolve = f'{{python}} {script.as_posix()} {{file}}'
     supertool._CONFIG = {
-        "adviseForNewTest": True,
+        "advice": {"newTest": dict(_NEW_TEST_RULE)},
         "validators": {"phpunit": {"cmd": "noop", "resolve": resolve}},
     }
     supertool._CONFIG_CHECKED = True
@@ -852,11 +992,10 @@ def test_advise_real_script_emits_when_no_test_on_disk(tmp_path: Path) -> None:
     src_dir.mkdir(parents=True)
     src = src_dir / "Foo.php"
     src.write_text("<?php\nclass Foo {}\n")
-    _set_advice_config_with_script(_write_resolver_script(tmp_path))
+    _set_advice_with_script(_write_resolver_script(tmp_path))
 
-    out = supertool._advise_new_test("paste", str(src), pre_existed=False)
+    out = supertool._run_advice("paste", str(src), pre_existed=False)
     assert "[advice]" in out
-    # The would-be target the real script wrote to stderr (exit 3).
     expected = src.as_posix().replace("/src/", "/tests/")[:-4] + "Test.php"
     assert expected in out
 
@@ -866,10 +1005,9 @@ def test_advise_real_script_silent_when_test_on_disk(tmp_path: Path) -> None:
     src_dir.mkdir(parents=True)
     src = src_dir / "Foo.php"
     src.write_text("<?php\nclass Foo {}\n")
-    # Create the mirror test so the script takes the hit branch (exit 0 + stdout).
     test_dir = tmp_path / "tests" / "Mod"
     test_dir.mkdir(parents=True)
     (test_dir / "FooTest.php").write_text("<?php\nclass FooTest {}\n")
-    _set_advice_config_with_script(_write_resolver_script(tmp_path))
+    _set_advice_with_script(_write_resolver_script(tmp_path))
 
-    assert supertool._advise_new_test("paste", str(src), pre_existed=False) == ""
+    assert supertool._run_advice("paste", str(src), pre_existed=False) == ""

@@ -176,13 +176,25 @@ Set `"compact": true` in `.supertool.json` to enable compact reads. When enabled
 
 Compact is disabled when using `grep=` filter or `offset` (editing needs exact lines).
 
-## Advise on new class without test
+## Advice — config-driven post-edit hints
 
 ```json
-{ "adviseForNewTest": true }
+{
+  "advice": {
+    "newTest": {
+      "hooks_into": ["paste"], "match": "*.php", "when": "new-file",
+      "resolveFromValidator": true, "message": "new class without test"
+    },
+    "newComponent": {
+      "hooks_into": ["edit", "paste"], "match": "*.php",
+      "contains": "extends \\w*ComponentBase|implements \\w*IComponent",
+      "message": "XSD/cache regen likely (dvsi_xsd + dvsi_clearcache)"
+    }
+  }
+}
 ```
 
-Opt-in (default false). When set, a `paste` that creates a new `*.php` file with no resolvable sibling test gets a non-blocking `[advice]` line appended to the op output. It reuses a validator's `resolve` cmd to find the would-be test path. Full contract in [validators.md → resolve](validators.md#resolve--map-a-source-file-to-its-real-target).
+Each rule appends a non-blocking `[advice]` line after a mutating op when it matches. Gates: `hooks_into` (ops, default all mutating), `match` (path glob), `when` (`new-file`|`existing-file`|`always`), `contains` (regex over the content the op *added*), and `resolve`/`resolveFromValidator` (a subprocess emitting a would-be target). Full field reference and the resolve contract in [validators.md → advice](validators.md#advice--config-driven-post-op-hints).
 
 ## Parallel execution
 
