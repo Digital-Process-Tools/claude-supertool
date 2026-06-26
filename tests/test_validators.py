@@ -878,6 +878,32 @@ def test_contains_matches_only_added_lines_not_preexisting(tmp_path: Path) -> No
     assert out == ""
 
 
+def test_added_text_multiset_counts_duplicate_line(tmp_path: Path) -> None:
+    # A second copy of an existing line is "added" — set-diff would lose it.
+    f = tmp_path / "f.txt"
+    f.write_text("dup\ndup\nother\n")
+    added = supertool._advice_added_text(str(f), b"dup\n")
+    assert added.count("dup") == 1  # one consumed by pre, one remains
+    assert "other" in added
+
+
+def test_advice_wants_pre_gates_on_contains_rules() -> None:
+    # The fix for the pre_content=None over-fire: a contains rule that applies
+    # to this op/path makes the caller snapshot pre-edit bytes.
+    _set_advice({"comp": {
+        "hooks_into": ["edit"],
+        "match": "*/Components/*.php",
+        "contains": r"extends ComponentBase",
+        "message": "regen",
+    }}, resolve=None)
+    assert supertool._advice_wants_pre("edit", "SiX/Components/Foo.php") is True
+    assert supertool._advice_wants_pre("edit", "SiX/Other/Foo.php") is False  # match
+    assert supertool._advice_wants_pre("paste", "SiX/Components/Foo.php") is False  # hooks_into
+    # A rule without `contains` never needs pre.
+    _set_advice({"n": {"hooks_into": ["edit"], "message": "hi"}}, resolve=None)
+    assert supertool._advice_wants_pre("edit", "SiX/Components/Foo.php") is False
+
+
 # --- when gate + default ops ------------------------------------------------
 
 def test_when_existing_file_fires_only_on_existing(tmp_path: Path) -> None:

@@ -9335,8 +9335,18 @@ def _advice_added_text(path: str, pre_content: Optional[bytes]) -> str:
         return ""
     if pre_content is None:
         return post.decode("utf-8", "replace")
-    pre_lines = set(pre_content.splitlines())
-    added = [ln for ln in post.splitlines() if ln not in pre_lines]
+    # Multiset diff (not set): a line duplicated by the op counts as added even
+    # when an identical line already existed. Each post line consumes one pre
+    # occurrence; the leftovers are what the op introduced.
+    pre_counts: Dict[bytes, int] = {}
+    for ln in pre_content.splitlines():
+        pre_counts[ln] = pre_counts.get(ln, 0) + 1
+    added = []
+    for ln in post.splitlines():
+        if pre_counts.get(ln, 0) > 0:
+            pre_counts[ln] -= 1
+        else:
+            added.append(ln)
     return b"\n".join(added).decode("utf-8", "replace")
 
 
@@ -9414,12 +9424,14 @@ def _eval_advice_rule(spec: Dict[str, Any], op: str, path: str,
         target = _advice_resolve(resolve_cmd, path)
         if target is None:
             return ""
-    message = spec.get("message", "")
+    # Interpolate {path}/{op} first so a resolver-produced target can never be
+    # re-scanned for placeholders. strip() on the append branch drops the leading
+    # space left when the configured message is empty.
+    message = spec.get("message", "").replace("{path}", path).replace("{op}", op)
     if "{target}" in message:
         message = message.replace("{target}", target or "")
     elif target:
-        message += f" — consider {target}"
-    message = message.replace("{path}", path).replace("{op}", op)
+        message = f"{message} — consider {target}".strip()
     return f"{mark('ℹ')} {message}".rstrip()
 
 
@@ -9449,6 +9461,24 @@ def _run_advice(op: str, path: str, pre_existed: bool,
     if not lines:
         return ""
     return "\n[advice]\n" + "\n".join(lines) + "\n"
+
+
+def _advice_wants_pre(op: str, path: str) -> bool:
+    """True when a configured advice rule with a ``contains`` gate applies to
+    this op/path. The caller snapshots pre-edit bytes so the added-content diff
+    is exact even when no rollback/notifier would otherwise capture them —
+    without this, ``contains`` silently falls back to whole-file matching and
+    fires on content the op did not introduce."""
+    for spec in (_load_config().get("advice") or {}).values():
+        if not isinstance(spec, dict) or not spec.get("contains"):
+            continue
+        if op not in (spec.get("hooks_into") or _ADVICE_DEFAULT_OPS):
+            continue
+        glob = spec.get("match", "*")
+        if glob and not _match_glob(path, glob):
+            continue
+        return True
+    return False
 
 
 def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
@@ -9508,7 +9538,7 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
     if not applicable_fmt and not applicable:
         # No validators/formatters — still need pre_content for notifier diff view
         pre_for_notif = None
-        if applicable_notif and os.path.isfile(path):
+        if (applicable_notif or _advice_wants_pre(op, path)) and os.path.isfile(path):
             try:
                 with open(path, "rb") as f:
                     pre_for_notif = f.read()
@@ -9527,7 +9557,8 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
 
     # Capture pre_content for rollback AND/OR notifier diff view
     pre_content: Optional[bytes] = None
-    needs_pre = needs_rollback or needs_fmt_rollback or bool(applicable_notif)
+    needs_pre = (needs_rollback or needs_fmt_rollback or bool(applicable_notif)
+                or _advice_wants_pre(op, path))
     if needs_pre and os.path.isfile(path):
         try:
             with open(path, "rb") as f:
