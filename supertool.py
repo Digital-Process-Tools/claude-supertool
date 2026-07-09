@@ -154,6 +154,8 @@ MAX_READ_LINES = 300
 # Override via ops.batch.max_ops in .supertool.json for one-off bulk runs.
 MAX_BATCH_OPS = 1000
 MAX_READ_BYTES = 20000  # ~20KB cap — prevents Claude Code "Output too large"
+MAX_AUTOREAD_LINES = 60  # glob:/grep: auto-read line cap (#362) — a file under the
+# byte cap but with many lines still overshoots context; skip auto-read above this.
 MAX_AROUND_BYTES = 16000  # per-op cap for around:/grep_around: context windows (#241)
 CHAR_WINDOW_CHARS = 1000  # head/tail peek window for minified single-line files
 MINIFIED_LINE_CHARS = 5000  # a single line this long means line-based view is useless
@@ -1243,6 +1245,29 @@ def _literal_note(pattern: str, count: int) -> str:
             f"match(es) for {pattern!r})\n")
 
 
+def _count_lines(path: str) -> int:
+    """Count lines in a file cheaply, streaming in binary (#362).
+
+    Used by the glob:/grep: auto-read line cap so a file under the byte cap but
+    with many lines isn't fully dumped. Returns a large sentinel on read error
+    so a file we can't measure is treated as over-cap (skip auto-read)."""
+    try:
+        count = 0
+        last = b""
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(65536), b""):
+                count += chunk.count(b"\n")
+                last = chunk
+        if last == b"":
+            return 0  # empty file
+        # trailing line without a final newline
+        if not last.endswith(b"\n"):
+            count += 1
+        return count
+    except OSError:
+        return MAX_AUTOREAD_LINES + 1
+
+
 def op_grep(pattern: str, path: str = ".", limit: int = 0,
             context: int = 0, count_only: bool = False,
             no_exclude: bool = False, no_auto_read: bool = False) -> str:
@@ -1377,14 +1402,21 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
         out.append(f"  {lineno}:{content}\n")
     out.append("\n")
 
-    # Auto-read: single small file + at least one match → emit full file
+    # Auto-read: single small file + at least one match → emit full file.
+    # Gated on BOTH byte size and line count (#362): a file under the byte cap
+    # but with many lines still overshoots context, so cap both dimensions.
     if (not no_auto_read
             and count > 0
             and os.path.isfile(path)
             and os.path.getsize(path) < _get_op_int("read", "max_bytes", MAX_READ_BYTES)):
-        out.append(f"[auto-read: single file < {_get_op_int('read', 'max_bytes', MAX_READ_BYTES)} bytes, "
-                   "match found]\n")
-        out.append(render_file(path, 0, _get_op_int("read", "max_lines", MAX_READ_LINES)))
+        line_cap = _get_op_int("read", "max_autoread_lines", MAX_AUTOREAD_LINES)
+        if _count_lines(path) > line_cap:
+            out.append(f"[auto-read skipped: > {line_cap} lines — "
+                       f"read:{path}:full to see it]\n")
+        else:
+            out.append(f"[auto-read: single file < {_get_op_int('read', 'max_bytes', MAX_READ_BYTES)} bytes, "
+                       "match found]\n")
+            out.append(render_file(path, 0, _get_op_int("read", "max_lines", MAX_READ_LINES)))
 
     return "".join(out)
 
@@ -1685,10 +1717,16 @@ def op_glob(pattern: str, no_exclude: bool = False, no_auto_read: bool = False) 
             out.append(_fwd(f) + "\n")
     out.append("\n")
 
-    # Auto-read: glob returned exactly 1 file — save the follow-up read round-trip
+    # Auto-read: glob returned exactly 1 file — save the follow-up read round-trip.
+    # Gated on BOTH byte size and line count (#362): see op_grep for rationale.
     if not no_auto_read and len(files) == 1 and os.path.getsize(files[0]) < _get_op_int("read", "max_bytes", MAX_READ_BYTES):
-        out.append(f"[auto-read: glob returned 1 file]\n")
-        out.append(render_file(files[0], 0, _get_op_int("read", "max_lines", MAX_READ_LINES)))
+        line_cap = _get_op_int("read", "max_autoread_lines", MAX_AUTOREAD_LINES)
+        if _count_lines(files[0]) > line_cap:
+            out.append(f"[auto-read skipped: > {line_cap} lines — "
+                       f"read:{files[0]}:full to see it]\n")
+        else:
+            out.append(f"[auto-read: glob returned 1 file]\n")
+            out.append(render_file(files[0], 0, _get_op_int("read", "max_lines", MAX_READ_LINES)))
 
     return "".join(out)
 
