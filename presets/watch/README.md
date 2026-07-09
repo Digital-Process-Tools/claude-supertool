@@ -18,9 +18,18 @@ Example:
 ```bash
 ./supertool 'watch:gitlab-mr:21803'                 # all events
 ./supertool 'watch:gitlab-mr:21803:only=pipeline_failed,merged'
+./supertool 'watch:gl-pipeline:151111'              # poll a CI pipeline to completion
 ./supertool 'watches'
 ./supertool 'unwatch:gitlab-mr:21803'
 ```
+
+## Sources
+
+| SOURCE        | ID is a…                | Terminal when…                                     |
+| ------------- | ----------------------- | -------------------------------------------------- |
+| `gitlab-mr`   | GitLab MR iid           | MR merged or closed                                |
+| `github-pr`   | GitHub PR number        | PR merged or closed                                |
+| `gl-pipeline` | GitLab CI pipeline id   | pipeline success / failed / canceled / skipped     |
 
 ## Transports
 
