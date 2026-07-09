@@ -106,9 +106,9 @@ def test_main_non_ff_rebase_clean_pushes(capsys) -> None:
             return _proc("", 0)
         if args[:2] == ["log", "--format=%h %an: %s"]:
             return _proc("bbb2222 cj.adams: fix wallet rounding\n", 0)
-        if args[:2] == ["rev-list", "--count"] and "origin/feat..HEAD" in args:
+        if args[:2] == ["rev-list", "--count"] and "FETCH_HEAD..HEAD" in args:
             return _proc("1\n", 0)
-        if args[:2] == ["rebase", "origin/feat"]:
+        if args[:2] == ["rebase", "FETCH_HEAD"]:
             return _proc("Successfully rebased\n", 0)
         if args[0] == "push":
             return next(pushes)
@@ -151,9 +151,9 @@ def test_main_non_ff_rebase_conflict_leaves_paused_and_points_to_git_conflicts(c
             return _proc("", 0)
         if args[:2] == ["log", "--format=%h %an: %s"]:
             return _proc("ddd4444 cj.adams: refactor wallet\n", 0)
-        if args[:2] == ["rev-list", "--count"] and "origin/feat..HEAD" in args:
+        if args[:2] == ["rev-list", "--count"] and "FETCH_HEAD..HEAD" in args:
             return _proc("2\n", 0)
-        if args[:2] == ["rebase", "origin/feat"]:
+        if args[:2] == ["rebase", "FETCH_HEAD"]:
             return _proc("", 1, "CONFLICT (content): Merge conflict in src/foo.php")
         if args[:2] == ["diff", "--name-only"]:
             return _proc("src/foo.php\n", 0)
@@ -589,7 +589,7 @@ def test_main_non_ff_rebase_cannot_start_aborts_not_phantom_paused(capsys) -> No
             return _proc("", 0)
         if args[:2] == ["rev-list", "--count"]:
             return _proc("0\n", 0)
-        if args[:2] == ["rebase", "origin/feat"]:
+        if args[:2] == ["rebase", "FETCH_HEAD"]:
             return _proc("", 128, "fatal: invalid upstream 'origin/feat'")
         if args[:2] == ["diff", "--name-only"]:
             return _proc("", 0)  # no unmerged paths — rebase never started
