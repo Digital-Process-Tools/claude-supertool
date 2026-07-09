@@ -10741,10 +10741,16 @@ def op_format_staged(tool_filter: Optional[list] = None, verbose: bool = False) 
 
 
 def _detect_payload_format(raw: str) -> str:
-    """Return 'json' if first non-whitespace char is { or [, else 'toml'."""
-    for c in raw:
-        if c in " \t\r\n":
-            continue
+    """Return 'json' if first non-whitespace char is { or [, else 'toml'.
+
+    Exception: a leading '[[' is a TOML table-array header (never valid
+    JSON), so it is detected as TOML. This lets '[[ops]]' batch payloads
+    parse correctly instead of being misread as a JSON array.
+    """
+    stripped = raw.lstrip(" \t\r\n")
+    if stripped.startswith("[["):
+        return "toml"
+    for c in stripped:
         return "json" if c in "{[" else "toml"
     return "json"
 
