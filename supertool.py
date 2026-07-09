@@ -11103,8 +11103,14 @@ _DISPATCH_STATE = _threading.local()
 _DISPATCH_MAX_DEPTH = int(os.environ.get("SUPERTOOL_DISPATCH_MAX_DEPTH", "32"))
 
 
-def dispatch(arg: str) -> str:
+def dispatch(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = None) -> str:
     """Parse 'op:arg1:arg2:...' and route to the matching op function.
+
+    *pre_parsed*, when given, is an already-structured (parts, replace_all)
+    tuple — the same shape `_at_file_to_parts` produces from a JSON payload.
+    Callers (batch sub-ops) pass it to bypass BOTH the `:::` re-tokenization
+    and the shell-escape decoding, so content containing `:::` or backslashes
+    survives verbatim — exactly as a standalone `edit:@file` call behaves.
 
     Traversal ops (grep, glob, tree, map) support an optional :::no-exclude
     suffix that bypasses all exclude-paths for that one call.
@@ -11134,12 +11140,12 @@ def dispatch(arg: str) -> str:
         )
     _DISPATCH_STATE.depth = depth + 1
     try:
-        return _dispatch_impl(arg)
+        return _dispatch_impl(arg, pre_parsed)
     finally:
         _DISPATCH_STATE.depth = depth
 
 
-def _dispatch_impl(arg: str) -> str:
+def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = None) -> str:
     """Body of dispatch — separated so the recursion guard stays minimal."""
     # Strip :::no-exclude before splitting so it doesn't interfere with arg parsing
     no_exclude = arg.endswith(_NO_EXCLUDE_SUFFIX)
@@ -11152,21 +11158,36 @@ def _dispatch_impl(arg: str) -> str:
     # arbitrary `:` in content. Only triggers when the op name is followed
     # immediately by `:::`. Existing `:::no-exclude` (suffix, stripped above)
     # and `read:PATH:::grep=` (mid-arg) keep working under single-colon parsing.
-    import re as _re
-    triple_match = _re.match(r"^([a-zA-Z_][a-zA-Z0-9_-]*):::", arg)
-    if triple_match:
-        parts = arg.split(":::")
+    _at_file_replace_all: bool = False
+    _at_file_used: bool = False
+
+    if pre_parsed is not None:
+        # Batch sub-op: parts already structured from a JSON payload (via
+        # _at_file_to_parts). Skip ALL string tokenization and reuse the
+        # @file semantics — literal bytes, no `:::` split, no escape decode.
+        # This is what routes `:::`-containing content through unharmed.
+        parts, _at_file_replace_all = pre_parsed
+        _at_file_used = True
+        op = parts[0] if parts else ""
     else:
-        parts = _split_arg(arg)
-    op = parts[0] if parts else ""
+        # `op:::FIELD:::FIELD:::...` — triple-colon mode for write ops with
+        # arbitrary `:` in content. Only triggers when the op name is followed
+        # immediately by `:::`. Existing `:::no-exclude` (suffix, stripped above)
+        # and `read:PATH:::grep=` (mid-arg) keep working under single-colon parsing.
+        import re as _re
+        triple_match = _re.match(r"^([a-zA-Z_][a-zA-Z0-9_-]*):::", arg)
+        if triple_match:
+            parts = arg.split(":::")
+        else:
+            parts = _split_arg(arg)
+        op = parts[0] if parts else ""
 
     # @file route — 'op:@path' or 'op:@-' (stdin).
     # Load JSON, rebuild parts list, then fall through to the normal handlers.
     # Applies to mutating ops that have ':::' fields in their syntax string.
-    _at_file_replace_all: bool = False
-    _at_file_used: bool = False
     if (
-        len(parts) >= 2
+        pre_parsed is None
+        and len(parts) >= 2
         and parts[1].startswith("@")
         and _at_file_fields(op)
     ):
@@ -11449,6 +11470,7 @@ def _dispatch_impl(arg: str) -> str:
                                     # Build the arg string from the op + its fields,
                                     # using the @file→parts machinery for mutating ops
                                     # (preserves validators) and plain dispatch for others.
+                                    _sub_pre_parsed = None
                                     if _at_file_fields(_sub_op):
                                         try:
                                             _sub_parts, _sub_replace_all = _at_file_to_parts(_sub_op, _item)
@@ -11461,15 +11483,19 @@ def _dispatch_impl(arg: str) -> str:
                                         # replace_all: true on an edit op → promote to replace
                                         if _sub_replace_all and _sub_op == "edit":
                                             _sub_parts[0] = "replace"
-                                        # Reconstruct a triple-colon arg string so dispatch
-                                        # parses it correctly (handles colons in content).
-                                        _sub_arg = ":::".join(_sub_parts)
+                                        # Route the ALREADY-structured parts straight through
+                                        # dispatch via pre_parsed — do NOT re-serialize to a
+                                        # `:::` string, which would re-tokenize and corrupt
+                                        # content that itself contains `:::` (issue #252).
+                                        # A readable colon summary is used only for the header.
+                                        _sub_pre_parsed = (_sub_parts, _sub_replace_all)
+                                        _sub_arg = ":".join(_sub_parts)
                                     else:
                                         # Read-only op: build plain colon arg from known fields.
                                         # For unknown ops, pass what we have and let dispatch error.
                                         _fields = [str(_item[k]) for k in sorted(_item) if k != "op"]
                                         _sub_arg = ":".join([_sub_op] + _fields) if _fields else _sub_op
-                                    _sub_result = dispatch(_sub_arg)
+                                    _sub_result = dispatch(_sub_arg, pre_parsed=_sub_pre_parsed)
                                     results.append(_sub_result)
                                     if not continue_on_error and _sub_result.split("\n")[1:2] and (
                                         _sub_result.split("\n")[1].startswith("ERROR")
