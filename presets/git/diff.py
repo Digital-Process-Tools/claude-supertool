@@ -20,6 +20,10 @@ Modes (first arg):
   staged   index vs HEAD         — what a commit would capture
   branch   merge-base(base)..HEAD — the reviewer's diff (base: master|main|$2)
   PATH     working tree vs HEAD, scoped to PATH
+
+Trailing `full` (last arg, any mode) appends the raw +/- hunks under `## Patch`
+below the summary — for reading a change / writing an honest commit message.
+  git-diff:full   git-diff:PATH:full   git-diff:staged:full   git-diff:branch:BASE:full
 """
 from __future__ import annotations
 
@@ -259,8 +263,17 @@ def main() -> int:
                 _reconfigure(encoding="utf-8")
             except (ValueError, OSError):
                 pass
-    arg1 = sys.argv[1] if len(sys.argv) > 1 else ""
-    arg2 = sys.argv[2] if len(sys.argv) > 2 else ""
+    # `full` is an opt-in trailing flag (like read:PATH:full): it appends the
+    # raw +/- hunks below the review summary. Strip it from the positional args
+    # first so it never collides with staged/branch/PATH dispatch — it works as
+    # the last token in every mode (git-diff:full, git-diff:PATH:full,
+    # git-diff:staged:full, git-diff:branch:BASE:full).
+    positional = list(sys.argv[1:])
+    full = bool(positional) and positional[-1] == "full"
+    if full:
+        positional.pop()
+    arg1 = positional[0] if len(positional) > 0 else ""
+    arg2 = positional[1] if len(positional) > 1 else ""
 
     if _git(["rev-parse", "--is-inside-work-tree"]).returncode != 0:
         print("ERROR: not inside a git repository.")
@@ -362,6 +375,12 @@ def main() -> int:
 
     if not (forbidden_hits or flag_hits or pairing_hits):
         print(f"\n{_mark('✓')} No red flags, forbidden paths, or missing tests.")
+
+    if full:
+        patch = _git(["diff"] + diff_args)
+        if patch.returncode == 0 and patch.stdout.strip():
+            print("\n## Patch")
+            print(patch.stdout.rstrip("\n"))
 
     return 0
 
