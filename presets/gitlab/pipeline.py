@@ -26,6 +26,33 @@ _NOISE_STATUSES = {"manual", "created", "skipped"}
 _FILTERS = {"full", "active", "failed"}
 
 
+def _parse_paginated_json(raw: str) -> list[dict]:
+    """Parse glab's `--paginate` output — one JSON array per page, concatenated.
+
+    glab emits each page's body back-to-back with no separator, e.g.
+    `[{job1}][{job2},{job3}]`. A single `json.loads` chokes on the second `[`.
+    We walk the string with `raw_decode`, consuming one document at a time and
+    flattening every array's elements into a single list. Robust to the common
+    single-page case (one array) and to empty pages (`[]`).
+    """
+    decoder = json.JSONDecoder()
+    merged: list[dict] = []
+    idx = 0
+    length = len(raw)
+    while idx < length:
+        # Skip whitespace glab may insert between concatenated documents.
+        while idx < length and raw[idx].isspace():
+            idx += 1
+        if idx >= length:
+            break
+        doc, end = decoder.raw_decode(raw, idx)
+        if not isinstance(doc, list):
+            raise ValueError("expected a JSON array per page")
+        merged.extend(doc)
+        idx = end
+    return merged
+
+
 def _format_error(stderr: str, resource: str, identifier: str) -> str:
     """Classify glab errors into actionable messages for LLMs."""
     s = stderr.lower()
@@ -101,12 +128,11 @@ def main() -> int:
         return 1
 
     try:
-        jobs = json.loads(result.stdout)
+        jobs = _parse_paginated_json(result.stdout)
     except json.JSONDecodeError:
         print(f"ERROR: invalid JSON from glab\n{result.stdout[:500]}")
         return 1
-
-    if not isinstance(jobs, list):
+    except ValueError:
         print("ERROR: unexpected response format")
         return 1
 
