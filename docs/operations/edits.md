@@ -100,6 +100,8 @@ Read, edit, and re-read in a single call:
 ]
 ```
 
+Each write sub-op's fields (`old`/`new`/`content`/…) are taken **literally** — the structured payload bypasses the `:::` tokenizer and the shell-escape decoder, so content that itself contains `:::` or backslashes survives byte-for-byte, exactly as a standalone `edit:@file` call behaves. You never re-escape payload content for batch.
+
 ## See also
 
 - [docs/validators.md](../validators.md) — full validator reference: bundled list, rollback behavior, adding your own
