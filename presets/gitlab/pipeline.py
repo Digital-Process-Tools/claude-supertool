@@ -46,10 +46,9 @@ def _parse_paginated_json(raw: str) -> list[dict]:
         if idx >= length:
             break
         doc, end = decoder.raw_decode(raw, idx)
-        if isinstance(doc, list):
-            merged.extend(doc)
-        else:
-            merged.append(doc)
+        if not isinstance(doc, list):
+            raise ValueError("expected a JSON array per page")
+        merged.extend(doc)
         idx = end
     return merged
 
@@ -132,6 +131,9 @@ def main() -> int:
         jobs = _parse_paginated_json(result.stdout)
     except json.JSONDecodeError:
         print(f"ERROR: invalid JSON from glab\n{result.stdout[:500]}")
+        return 1
+    except ValueError:
+        print("ERROR: unexpected response format")
         return 1
 
     # Get pipeline status from first job's pipeline field

@@ -151,3 +151,23 @@ def test_helper_parses_concatenated_arrays() -> None:
 
 def test_helper_single_array() -> None:
     assert pipe._parse_paginated_json("[{\"a\":1}]") == [{"a": 1}]
+
+
+# ---------------------------------------------------------------------------
+# regression — a non-array top-level doc (bare error object) must not be
+# rendered as a garbage job row; it keeps the explicit error message.
+# ---------------------------------------------------------------------------
+
+def test_helper_rejects_non_array_document() -> None:
+    import pytest
+
+    with pytest.raises(ValueError):
+        pipe._parse_paginated_json("{\"message\":\"401 Unauthorized\"}")
+
+
+def test_non_array_response_surfaces_unexpected_format(monkeypatch, capsys) -> None:
+    _patch(monkeypatch, "{\"message\":\"401 Unauthorized\"}", ["pipeline.py", "42"])
+    assert pipe.main() == 1
+    out = capsys.readouterr().out
+    assert "unexpected response format" in out
+    assert "401 Unauthorized" not in out
