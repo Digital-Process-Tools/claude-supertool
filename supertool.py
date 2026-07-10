@@ -154,6 +154,8 @@ MAX_READ_LINES = 300
 # Override via ops.batch.max_ops in .supertool.json for one-off bulk runs.
 MAX_BATCH_OPS = 1000
 MAX_READ_BYTES = 20000  # ~20KB cap — prevents Claude Code "Output too large"
+MAX_AUTOREAD_LINES = 60  # glob:/grep: auto-read line cap (#362) — a file under the
+# byte cap but with many lines still overshoots context; skip auto-read above this.
 MAX_AROUND_BYTES = 16000  # per-op cap for around:/grep_around: context windows (#241)
 CHAR_WINDOW_CHARS = 1000  # head/tail peek window for minified single-line files
 MINIFIED_LINE_CHARS = 5000  # a single line this long means line-based view is useless
@@ -1243,6 +1245,29 @@ def _literal_note(pattern: str, count: int) -> str:
             f"match(es) for {pattern!r})\n")
 
 
+def _count_lines(path: str) -> int:
+    """Count lines in a file cheaply, streaming in binary (#362).
+
+    Used by the glob:/grep: auto-read line cap so a file under the byte cap but
+    with many lines isn't fully dumped. Returns a large sentinel on read error
+    so a file we can't measure is treated as over-cap (skip auto-read)."""
+    try:
+        count = 0
+        last = b""
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(65536), b""):
+                count += chunk.count(b"\n")
+                last = chunk
+        if last == b"":
+            return 0  # empty file
+        # trailing line without a final newline
+        if not last.endswith(b"\n"):
+            count += 1
+        return count
+    except OSError:
+        return MAX_AUTOREAD_LINES + 1
+
+
 def op_grep(pattern: str, path: str = ".", limit: int = 0,
             context: int = 0, count_only: bool = False,
             no_exclude: bool = False, no_auto_read: bool = False) -> str:
@@ -1377,14 +1402,21 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
         out.append(f"  {lineno}:{content}\n")
     out.append("\n")
 
-    # Auto-read: single small file + at least one match → emit full file
+    # Auto-read: single small file + at least one match → emit full file.
+    # Gated on BOTH byte size and line count (#362): a file under the byte cap
+    # but with many lines still overshoots context, so cap both dimensions.
     if (not no_auto_read
             and count > 0
             and os.path.isfile(path)
             and os.path.getsize(path) < _get_op_int("read", "max_bytes", MAX_READ_BYTES)):
-        out.append(f"[auto-read: single file < {_get_op_int('read', 'max_bytes', MAX_READ_BYTES)} bytes, "
-                   "match found]\n")
-        out.append(render_file(path, 0, _get_op_int("read", "max_lines", MAX_READ_LINES)))
+        line_cap = _get_op_int("read", "max_autoread_lines", MAX_AUTOREAD_LINES)
+        if _count_lines(path) > line_cap:
+            out.append(f"[auto-read skipped: > {line_cap} lines — "
+                       f"read:{path}:full to see it]\n")
+        else:
+            out.append(f"[auto-read: single file < {_get_op_int('read', 'max_bytes', MAX_READ_BYTES)} bytes, "
+                       "match found]\n")
+            out.append(render_file(path, 0, _get_op_int("read", "max_lines", MAX_READ_LINES)))
 
     return "".join(out)
 
@@ -1685,10 +1717,16 @@ def op_glob(pattern: str, no_exclude: bool = False, no_auto_read: bool = False) 
             out.append(_fwd(f) + "\n")
     out.append("\n")
 
-    # Auto-read: glob returned exactly 1 file — save the follow-up read round-trip
+    # Auto-read: glob returned exactly 1 file — save the follow-up read round-trip.
+    # Gated on BOTH byte size and line count (#362): see op_grep for rationale.
     if not no_auto_read and len(files) == 1 and os.path.getsize(files[0]) < _get_op_int("read", "max_bytes", MAX_READ_BYTES):
-        out.append(f"[auto-read: glob returned 1 file]\n")
-        out.append(render_file(files[0], 0, _get_op_int("read", "max_lines", MAX_READ_LINES)))
+        line_cap = _get_op_int("read", "max_autoread_lines", MAX_AUTOREAD_LINES)
+        if _count_lines(files[0]) > line_cap:
+            out.append(f"[auto-read skipped: > {line_cap} lines — "
+                       f"read:{files[0]}:full to see it]\n")
+        else:
+            out.append(f"[auto-read: glob returned 1 file]\n")
+            out.append(render_file(files[0], 0, _get_op_int("read", "max_lines", MAX_READ_LINES)))
 
     return "".join(out)
 
@@ -11103,8 +11141,14 @@ _DISPATCH_STATE = _threading.local()
 _DISPATCH_MAX_DEPTH = int(os.environ.get("SUPERTOOL_DISPATCH_MAX_DEPTH", "32"))
 
 
-def dispatch(arg: str) -> str:
+def dispatch(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = None) -> str:
     """Parse 'op:arg1:arg2:...' and route to the matching op function.
+
+    *pre_parsed*, when given, is an already-structured (parts, replace_all)
+    tuple — the same shape `_at_file_to_parts` produces from a JSON payload.
+    Callers (batch sub-ops) pass it to bypass BOTH the `:::` re-tokenization
+    and the shell-escape decoding, so content containing `:::` or backslashes
+    survives verbatim — exactly as a standalone `edit:@file` call behaves.
 
     Traversal ops (grep, glob, tree, map) support an optional :::no-exclude
     suffix that bypasses all exclude-paths for that one call.
@@ -11134,12 +11178,12 @@ def dispatch(arg: str) -> str:
         )
     _DISPATCH_STATE.depth = depth + 1
     try:
-        return _dispatch_impl(arg)
+        return _dispatch_impl(arg, pre_parsed)
     finally:
         _DISPATCH_STATE.depth = depth
 
 
-def _dispatch_impl(arg: str) -> str:
+def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = None) -> str:
     """Body of dispatch — separated so the recursion guard stays minimal."""
     # Strip :::no-exclude before splitting so it doesn't interfere with arg parsing
     no_exclude = arg.endswith(_NO_EXCLUDE_SUFFIX)
@@ -11152,21 +11196,36 @@ def _dispatch_impl(arg: str) -> str:
     # arbitrary `:` in content. Only triggers when the op name is followed
     # immediately by `:::`. Existing `:::no-exclude` (suffix, stripped above)
     # and `read:PATH:::grep=` (mid-arg) keep working under single-colon parsing.
-    import re as _re
-    triple_match = _re.match(r"^([a-zA-Z_][a-zA-Z0-9_-]*):::", arg)
-    if triple_match:
-        parts = arg.split(":::")
+    _at_file_replace_all: bool = False
+    _at_file_used: bool = False
+
+    if pre_parsed is not None:
+        # Batch sub-op: parts already structured from a JSON payload (via
+        # _at_file_to_parts). Skip ALL string tokenization and reuse the
+        # @file semantics — literal bytes, no `:::` split, no escape decode.
+        # This is what routes `:::`-containing content through unharmed.
+        parts, _at_file_replace_all = pre_parsed
+        _at_file_used = True
+        op = parts[0] if parts else ""
     else:
-        parts = _split_arg(arg)
-    op = parts[0] if parts else ""
+        # `op:::FIELD:::FIELD:::...` — triple-colon mode for write ops with
+        # arbitrary `:` in content. Only triggers when the op name is followed
+        # immediately by `:::`. Existing `:::no-exclude` (suffix, stripped above)
+        # and `read:PATH:::grep=` (mid-arg) keep working under single-colon parsing.
+        import re as _re
+        triple_match = _re.match(r"^([a-zA-Z_][a-zA-Z0-9_-]*):::", arg)
+        if triple_match:
+            parts = arg.split(":::")
+        else:
+            parts = _split_arg(arg)
+        op = parts[0] if parts else ""
 
     # @file route — 'op:@path' or 'op:@-' (stdin).
     # Load JSON, rebuild parts list, then fall through to the normal handlers.
     # Applies to mutating ops that have ':::' fields in their syntax string.
-    _at_file_replace_all: bool = False
-    _at_file_used: bool = False
     if (
-        len(parts) >= 2
+        pre_parsed is None
+        and len(parts) >= 2
         and parts[1].startswith("@")
         and _at_file_fields(op)
     ):
@@ -11449,6 +11508,7 @@ def _dispatch_impl(arg: str) -> str:
                                     # Build the arg string from the op + its fields,
                                     # using the @file→parts machinery for mutating ops
                                     # (preserves validators) and plain dispatch for others.
+                                    _sub_pre_parsed = None
                                     if _at_file_fields(_sub_op):
                                         try:
                                             _sub_parts, _sub_replace_all = _at_file_to_parts(_sub_op, _item)
@@ -11461,15 +11521,19 @@ def _dispatch_impl(arg: str) -> str:
                                         # replace_all: true on an edit op → promote to replace
                                         if _sub_replace_all and _sub_op == "edit":
                                             _sub_parts[0] = "replace"
-                                        # Reconstruct a triple-colon arg string so dispatch
-                                        # parses it correctly (handles colons in content).
-                                        _sub_arg = ":::".join(_sub_parts)
+                                        # Route the ALREADY-structured parts straight through
+                                        # dispatch via pre_parsed — do NOT re-serialize to a
+                                        # `:::` string, which would re-tokenize and corrupt
+                                        # content that itself contains `:::` (issue #252).
+                                        # A readable colon summary is used only for the header.
+                                        _sub_pre_parsed = (_sub_parts, _sub_replace_all)
+                                        _sub_arg = ":".join(_sub_parts)
                                     else:
                                         # Read-only op: build plain colon arg from known fields.
                                         # For unknown ops, pass what we have and let dispatch error.
                                         _fields = [str(_item[k]) for k in sorted(_item) if k != "op"]
                                         _sub_arg = ":".join([_sub_op] + _fields) if _fields else _sub_op
-                                    _sub_result = dispatch(_sub_arg)
+                                    _sub_result = dispatch(_sub_arg, pre_parsed=_sub_pre_parsed)
                                     results.append(_sub_result)
                                     if not continue_on_error and _sub_result.split("\n")[1:2] and (
                                         _sub_result.split("\n")[1].startswith("ERROR")

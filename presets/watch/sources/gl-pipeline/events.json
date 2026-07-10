@@ -1,0 +1,9 @@
+{
+  "source": "gl-pipeline",
+  "events": [
+    {"key": "pipeline_succeeded",   "label": "Pipeline succeeded"},
+    {"key": "pipeline_failed",      "label": "Pipeline failed"},
+    {"key": "pipeline_canceled",    "label": "Pipeline canceled"},
+    {"key": "pipeline_running",     "label": "Pipeline started running"}
+  ]
+}
