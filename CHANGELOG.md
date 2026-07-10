@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-07-10
+
 ### Added
 
 - **`phpmd` validator auto-detects the project's CI rulesets so local findings match CI** — the adapter ran phpmd with a fixed built-in ruleset list (`cleancode,codesize,…`), while DVSI's CI runs phpmd with the project's own `gitlab-ci/md/*.xml` rulesets — so an edit could pass the local validator and then fail the CI `phpmd` job on a rule the project tuned, or vice-versa. When `PHPMD_RULESETS` is unset, the adapter now walks up from the file being validated for a `gitlab-ci/md/*.xml` directory and, if found, runs phpmd with those project XMLs plus the built-in categories the project does not override (a project `design.xml` supersedes the built-in `design`), mirroring CI. A new `PHPMD_NO_AUTODETECT=1` env var opts out (back to the built-in default), and setting `PHPMD_RULESETS` explicitly still wins and disables detection. Every emitted result carries a `ruleset_source` field — `"project"`, `"env"`, or `"default"` — so which ruleset ran is visible in the output. Closes [#356](https://github.com/Digital-Process-Tools/claude-supertool/issues/356).
@@ -160,6 +162,7 @@ All three adapters share the same shape: auto-spawn UDS daemon via `presets/mcp/
 
 Initial public changelog. See git history for prior versions.
 
-[Unreleased]: https://github.com/Digital-Process-Tools/claude-supertool/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/Digital-Process-Tools/claude-supertool/compare/v0.20.0...HEAD
+[0.20.0]: https://github.com/Digital-Process-Tools/claude-supertool/releases/tag/v0.20.0
 [0.13.0]: https://github.com/Digital-Process-Tools/claude-supertool/releases/tag/v0.13.0
 [0.11.0]: https://github.com/Digital-Process-Tools/claude-supertool/releases/tag/v0.11.0
