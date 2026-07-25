@@ -11,10 +11,6 @@ import pytest
 
 import supertool
 
-# Interpreter path in cmd-template form — forward slashes + quoted, since the
-# template is shlex.split (a raw Windows path would lose its backslashes).
-_PY = shlex.quote(Path(sys.executable).as_posix())
-
 
 # ---------------------------------------------------------------------------
 # Placeholder substitution — values must never be re-scanned (#377)
@@ -51,7 +47,7 @@ class TestPlaceholderInjection:
 
     def test_argjoin_token_in_value_is_not_expanded(self, tmp_path: Path) -> None:
         script = self._echo_argv(tmp_path)
-        supertool._CONFIG = {"ops": {"say": {"cmd": f"{_PY} {script} {{args}}"}}}
+        supertool._CONFIG = {"ops": {"say": {"cmd": f"{{python}} {script} {{args}}"}}}
         value = "docs about {argjoin} tokens"
         result = supertool._resolve_custom_op("say", ["say", value])
         assert result is not None
@@ -60,7 +56,7 @@ class TestPlaceholderInjection:
 
     def test_args_token_in_value_is_not_expanded(self, tmp_path: Path) -> None:
         script = self._echo_argv(tmp_path)
-        supertool._CONFIG = {"ops": {"say": {"cmd": f"{_PY} {script} {{argjoin}}"}}}
+        supertool._CONFIG = {"ops": {"say": {"cmd": f"{{python}} {script} {{argjoin}}"}}}
         result = supertool._resolve_custom_op("say", ["say", "mentions {args} here", "second"])
         assert result is not None
         assert "1=mentions {args} here:::second" in result
@@ -68,24 +64,38 @@ class TestPlaceholderInjection:
 
     def test_file_token_in_value_is_not_expanded(self, tmp_path: Path) -> None:
         script = self._echo_argv(tmp_path)
-        supertool._CONFIG = {"ops": {"say": {"cmd": f"{_PY} {script} {{args}}"}}}
+        supertool._CONFIG = {"ops": {"say": {"cmd": f"{{python}} {script} {{args}}"}}}
         value = "talks about {file} and {dir}"
         result = supertool._resolve_custom_op("say", ["say", value])
         assert result is not None
         assert f"1={value}" in result
 
+    def test_python_token_in_value_is_not_expanded(self, tmp_path: Path) -> None:
+        """Guard, not a regression repro: under the old chain {python} was
+        substituted FIRST, so a value arriving later via {args} was never
+        rescanned by it. Only tokens substituted AFTER the carrier were
+        vulnerable. The one-pass rule makes carrier order irrelevant, and
+        this pins that — reordering the dict must not resurrect the bug."""
+        script = self._echo_argv(tmp_path)
+        supertool._CONFIG = {"ops": {"say": {"cmd": f"{{python}} {script} {{args}}"}}}
+        value = "mentions {python} in prose"
+        result = supertool._resolve_custom_op("say", ["say", value])
+        assert result is not None
+        assert f"1={value}" in result
+        assert "2=" not in result
+
     def test_value_with_placeholder_keeps_argv_intact(self, tmp_path: Path) -> None:
         """The whole value stays ONE argv entry — the quoting-shatter regression."""
         script = self._script(tmp_path, "argc.py",
                               "import sys; print('ARGC', len(sys.argv) - 1)")
-        supertool._CONFIG = {"ops": {"argc": {"cmd": f"{_PY} {script} {{args}}"}}}
+        supertool._CONFIG = {"ops": {"argc": {"cmd": f"{{python}} {script} {{args}}"}}}
         result = supertool._resolve_custom_op("argc", ["argc", "subject {argjoin} more words"])
         assert result is not None
         assert "ARGC 1" in result
 
     def test_alias_placeholder_in_value_is_not_expanded(self, tmp_path: Path) -> None:
         f = tmp_path / "{args}.txt"
-        f.write_text("ok\\n")
+        f.write_text("ok")
         supertool._CONFIG = {
             "ops": {"say": {"cmd": "echo {args}"}},
             "aliases": {"twice": {"ops": ["say:{file}"]}},
