@@ -8798,7 +8798,91 @@ def _validator_cache_enabled() -> bool:
     return bool(_load_config().get("validator_cache", True))
 
 
-def _validator_cache_key(file_path: str, name: str, cmd: str) -> Optional[str]:
+# Tool fingerprints are stable for a process lifetime — stat once per distinct
+# (cmd, spec paths) pair rather than on every cached lookup.
+_VALIDATOR_FINGERPRINT_CACHE: Dict[str, str] = {}
+
+
+def _stat_signature(path: str) -> Optional[str]:
+    """`path`'s identity as (size, mtime_ns), or None when it is not a real file."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return f"{path}:{st.st_size}:{st.st_mtime_ns}"
+
+
+def _validator_fingerprint(spec: Dict[str, Any], cmd: str,
+                           exclude: Optional[str] = None) -> str:
+    """Identify the TOOLS behind a validator, so upgrading one misses the cache.
+
+    The cache key used to describe only what was analysed, never what did the
+    analysing — so a fixed analyser and a buggy one produced the same key, and a
+    result computed by the buggy version kept being replayed after the upgrade
+    (mcp-phpstan-warm 0.6.0 -> 0.7.0 was found this way). TTL bounded that to a
+    day; this closes it.
+
+    Two sources, both cheap stats:
+
+    - every token of `cmd` that resolves to an existing file — the adapter
+      script, the interpreter, any binary passed inline. Catches adapter edits.
+    - `fingerprint_paths` on the validator spec, plus `validator_fingerprint_paths`
+      at config top level. This is where a lockfile belongs: `composer.lock` or
+      `package-lock.json` changes on ANY dependency upgrade, which covers
+      analysers whose launcher is a stable wrapper script whose own bytes never
+      change between versions (composer bin proxies are exactly that).
+
+    An unreadable path contributes nothing rather than failing the lookup: a
+    missing lockfile must not disable caching, it only makes the fingerprint
+    weaker — which is where we already were.
+    """
+    cache_key = repr((cmd, spec.get("fingerprint_paths"), exclude))
+    memo = _VALIDATOR_FINGERPRINT_CACHE.get(cache_key)
+    if memo is not None:
+        return memo
+
+    parts: list = []
+    # Two tokenisations, unioned. shlex handles quoted paths containing spaces;
+    # a naive whitespace split handles paths containing backslashes, which shlex
+    # in POSIX mode eats as escapes, so a Windows path shreds into a
+    # token that matches no file, so on Windows every cmd token silently
+    # contributed nothing and the fingerprint degraded to a constant.
+    tokens = set(cmd.split())
+    try:
+        tokens |= set(shlex.split(cmd, posix=(os.name != "nt")))
+    except ValueError:
+        pass
+    # The analysed file is itself a cmd token ({file} is substituted before the
+    # key is built), and it must NOT contribute: the cache is content-addressed
+    # so identical content reuses a result. Stat-ing the target would put its
+    # mtime in the key, and a checkout/stash/rsync that rewrites identical bytes
+    # would miss the cache and re-run every validator on every touched file.
+    skip = os.path.realpath(exclude) if exclude else None
+    for token in tokens:
+        token = token.strip("'\"")
+        if skip is not None and os.path.realpath(token) == skip:
+            continue
+        sig = _stat_signature(token)
+        if sig is not None:
+            parts.append(sig)
+
+    extra = list(spec.get("fingerprint_paths") or [])
+    cfg_extra = _load_config().get("validator_fingerprint_paths") or []
+    if isinstance(cfg_extra, list):
+        extra.extend(str(p) for p in cfg_extra)
+    for path in extra:
+        sig = _stat_signature(path)
+        if sig is not None:
+            parts.append(sig)
+
+    import hashlib
+    fingerprint = hashlib.sha256("\x00".join(sorted(parts)).encode("utf-8")).hexdigest()
+    _VALIDATOR_FINGERPRINT_CACHE[cache_key] = fingerprint
+    return fingerprint
+
+
+def _validator_cache_key(file_path: str, name: str, cmd: str,
+                         spec: Optional[Dict[str, Any]] = None) -> Optional[str]:
     import hashlib
     try:
         with open(file_path, "rb") as f:
@@ -8809,6 +8893,7 @@ def _validator_cache_key(file_path: str, name: str, cmd: str) -> Optional[str]:
     h.update(content)
     h.update(b"\x00" + name.encode("utf-8"))
     h.update(b"\x00" + cmd.encode("utf-8"))
+    h.update(b"\x00" + _validator_fingerprint(spec or {}, cmd, file_path).encode("utf-8"))
     return h.hexdigest()
 
 
@@ -8867,11 +8952,13 @@ def _validator_cache_read(key: str) -> Optional[Dict[str, Any]]:
     p = _validator_cache_path(key)
     if not p.exists():
         return None
-    # TTL: the cache key only hashes file content, so an entry can outlive changes
-    # it can't see — an updated validator adapter / rector.php, or a transient engine
-    # failure that a clean re-run would now pass. Expire on access (treat as a miss,
-    # which re-runs and rewrites with a fresh mtime) so no staleness survives past the
-    # window. Config `validator_cache_ttl_hours` (default 24; 0 disables expiry).
+    # TTL: a backstop for staleness the key still cannot see. Tool upgrades and
+    # adapter edits are now keyed directly (see _validator_fingerprint), but a
+    # transient engine failure that a clean re-run would pass, or a config file
+    # nobody listed in fingerprint_paths, still slips through. Expire on access
+    # (treat as a miss, which re-runs and rewrites with a fresh mtime) so no
+    # staleness survives past the window. Config `validator_cache_ttl_hours`
+    # (default 24; 0 disables expiry).
     try:
         _ttl_hours = float(_load_config().get("validator_cache_ttl_hours", 24))
     except (TypeError, ValueError):
@@ -8955,8 +9042,9 @@ def _validator_run_one(name: str, spec: Dict[str, Any], file: str) -> Optional[D
 
     Adapter contract: prints one JSON object on last stdout line. Exit 0 unless
     infra fail. Failures here produce a synthetic error dict so the row still
-    renders. Cached by (file content hash, name, cmd) at
-    ~/.cache/supertool/validators/<sha256>.json.
+    renders. Cached by (file content hash, name, cmd, tool fingerprint) at
+    ~/.cache/supertool/validators/<sha256>.json — see _validator_fingerprint for
+    why the tools themselves are part of the key.
     """
     import subprocess
     import json
@@ -8987,7 +9075,7 @@ def _validator_run_one(name: str, spec: Dict[str, Any], file: str) -> Optional[D
 
     cache_key: Optional[str] = None
     if _validator_cache_enabled() and spec_cache_enabled:
-        cache_key = _validator_cache_key(target, name, cmd)
+        cache_key = _validator_cache_key(target, name, cmd, spec)
         if cache_key:
             cached = _validator_cache_read(cache_key)
             if cached is not None:

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Validator cache replayed results from a tool that had since been fixed.** The key was `sha256(file_content) + name + cmd` — it described *what was analysed*, never *what did the analysing*, so a fixed analyser and the buggy one it replaced produced identical keys. Upgrading `mcp-phpstan-warm` 0.6.0 → 0.7.0 (two reflection-staleness fixes) and re-running the exact repro still served 0.6.0's wrong answers, in 0.2s, without launching a worker at all; the 24h TTL meant that persisted for a day per affected file. The key now includes a **tool fingerprint**: `size` + `mtime_ns` of every `cmd` token that resolves to a real file, plus `fingerprint_paths` (per validator) and `validator_fingerprint_paths` (project-wide — this is where a lockfile belongs, since composer bin proxies and similar wrapper launchers are byte-identical across versions). Missing paths weaken the fingerprint rather than disabling the cache; fingerprints are memoised per process, so the cost is a handful of `stat` calls per run. Token extraction unions a naive whitespace split with `shlex` (POSIX mode off on Windows): `shlex` treats `\\` as an escape, so a Windows path shredded into a token matching no file — every cmd token contributed nothing and the fingerprint silently degraded to a constant on Windows, which is the exact failure this change exists to prevent. A backslash is a legal POSIX filename character, so the regression test reproduces it on every platform.
+
+### Added
+
+- `validator_fingerprint_paths` (config top level) and `fingerprint_paths` (validator spec) — declare files whose change must invalidate cached results.
+- Unit tests `test_validator_cache_fingerprint` (8 cases): stability when nothing changed, invalidation on adapter edit / spec path / config path, missing paths still cacheable, file-content contract preserved, optional spec arg, unreadable target still returns no key.
+
 ## [0.20.0] - 2026-07-10
 
 ### Added
