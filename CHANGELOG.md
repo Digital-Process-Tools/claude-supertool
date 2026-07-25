@@ -181,7 +181,8 @@ All three adapters share the same shape: auto-spawn UDS daemon via `presets/mcp/
 
 Initial public changelog. See git history for prior versions.
 
-[Unreleased]: https://github.com/Digital-Process-Tools/claude-supertool/compare/v0.20.0...HEAD
+[Unreleased]: https://github.com/Digital-Process-Tools/claude-supertool/compare/v0.21.0...HEAD
+[0.21.0]: https://github.com/Digital-Process-Tools/claude-supertool/releases/tag/v0.21.0
 [0.20.0]: https://github.com/Digital-Process-Tools/claude-supertool/releases/tag/v0.20.0
 [0.13.0]: https://github.com/Digital-Process-Tools/claude-supertool/releases/tag/v0.13.0
 [0.11.0]: https://github.com/Digital-Process-Tools/claude-supertool/releases/tag/v0.11.0
