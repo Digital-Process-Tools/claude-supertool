@@ -10741,10 +10741,16 @@ def op_format_staged(tool_filter: Optional[list] = None, verbose: bool = False) 
 
 
 def _detect_payload_format(raw: str) -> str:
-    """Return 'json' if first non-whitespace char is { or [, else 'toml'."""
-    for c in raw:
-        if c in " \t\r\n":
-            continue
+    """Return 'json' if first non-whitespace char is { or [, else 'toml'.
+
+    Exception: a leading '[[' is a TOML table-array header (never valid
+    JSON), so it is detected as TOML. This lets '[[ops]]' batch payloads
+    parse correctly instead of being misread as a JSON array.
+    """
+    stripped = raw.lstrip(" \t\r\n")
+    if stripped.startswith("[["):
+        return "toml"
+    for c in stripped:
         return "json" if c in "{[" else "toml"
     return "json"
 
@@ -10770,12 +10776,20 @@ def _mini_toml_loads(raw: str) -> Dict[str, Any]:
 
     Supports: bare keys, integers, true/false, single-line strings
     ("..." with escapes, '...' literal), multi-line strings (\"\"\"...\"\"\"
-    with escapes, '''...''' literal), # comments. No arrays, no tables,
-    no dotted keys, no dates — only what payloads need.
+    with escapes, '''...''' literal), # comments, and `[[table]]`
+    array-of-tables headers. No inline arrays, no single `[table]`, no dotted
+    keys, no dates — only what payloads need.
+
+    `[[ops]]` matters specifically: it is the shape a `batch:@-` payload takes,
+    and this parser is what runs on Python <3.11, where stdlib `tomllib` is
+    absent. Without it a batch payload parses on 3.11+ and dies below it.
 
     Used as fallback when stdlib `tomllib` is unavailable (Python <3.11).
     """
     result: Dict[str, Any] = {}
+    # Key/value pairs land here: the top-level dict, or the most recent
+    # [[table]] entry once one has been opened.
+    current: Dict[str, Any] = result
     i, n = 0, len(raw)
     while i < n:
         while i < n and raw[i] in " \t\r\n":
@@ -10785,6 +10799,25 @@ def _mini_toml_loads(raw: str) -> Dict[str, Any]:
         if raw[i] == "#":
             while i < n and raw[i] != "\n":
                 i += 1
+            continue
+        if raw[i] == "[":
+            if raw[i:i + 2] != "[[":
+                raise ValueError(
+                    f"single [table] header at offset {i} is not supported by the "
+                    "fallback TOML parser (Python <3.11); use [[table]] or JSON"
+                )
+            end = raw.find("]]", i + 2)
+            if end < 0:
+                raise ValueError(f"unterminated [[table]] header at offset {i}")
+            name = raw[i + 2:end].strip()
+            if not name or not all(c.isalnum() or c in "_-" for c in name):
+                raise ValueError(f"bad [[table]] name {name!r} at offset {i}")
+            bucket = result.setdefault(name, [])
+            if not isinstance(bucket, list):
+                raise ValueError(f"{name!r} is both a value and a [[table]]")
+            current = {}
+            bucket.append(current)
+            i = end + 2
             continue
         ks = i
         while i < n and (raw[i].isalnum() or raw[i] in "_-"):
@@ -10864,7 +10897,7 @@ def _mini_toml_loads(raw: str) -> Dict[str, Any]:
                 raise ValueError(f"bad number for '{key}': {_e}") from _e
         else:
             raise ValueError(f"unknown value type for '{key}' at offset {i}")
-        result[key] = val
+        current[key] = val
         while i < n and raw[i] in " \t":
             i += 1
         if i < n and raw[i] == "#":

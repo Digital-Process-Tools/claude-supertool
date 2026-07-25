@@ -29,7 +29,7 @@ Mutating ops (`edit`, `replace`, `replace_lines`, `paste`, `vim`) accept a paylo
 
 **Only one `@-` per call.** stdin is a single stream: two `@-` ops both read it — the first drains it, the second reads empty and fails. supertool rejects this up front (`only one '@-' op is allowed per call`) rather than letting it surface as an opaque parse error. For several payload edits in one call, give all but one a real `@file` path, or fold them into a single `batch:@-` ops array.
 
-The payload holds the fields that would otherwise go after `:::`. Format auto-detected from the first non-whitespace character — `{` or `[` → **JSON**, anything else → **TOML**.
+The payload holds the fields that would otherwise go after `:::`. Format auto-detected from the first non-whitespace character — `{` or `[` → **JSON**, anything else → **TOML**. One exception: a leading `[[` is a TOML table-array header (never valid JSON), so it's read as **TOML** — this is what lets a `[[ops]]` batch payload parse instead of being misread as a JSON array.
 
 ### JSON — concise, machine-friendly
 
