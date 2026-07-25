@@ -140,6 +140,34 @@ def test_missing_fingerprint_path_does_not_disable_caching(tmp_path, monkeypatch
     assert key is not None
 
 
+def test_analysed_file_mtime_does_not_leak_into_the_key(tmp_path, monkeypatch) -> None:
+    """A checkout that rewrites identical bytes must still hit the cache.
+
+    `{file}` is substituted into cmd before the key is built, so the analysed
+    file is itself a cmd token. Stat-ing it would put its mtime in the key, and
+    the cache is content-addressed precisely so identical content reuses a
+    result — a `git checkout` / `stash pop` / rsync touching hundreds of files
+    would otherwise re-run every validator on all of them.
+    """
+    _fresh(monkeypatch)
+    target = tmp_path / "Subject.php"
+    target.write_text("<?php\\n")
+    adapter = tmp_path / "adapter.py"
+    adapter.write_text("print('{}')\\n")
+    cmd = f"python3 {adapter} {target}"
+
+    before = supertool._validator_cache_key(str(target), "phpstan-mcp", cmd, {})
+    stat = os.stat(target)
+    os.utime(target, ns=(stat.st_atime_ns, stat.st_mtime_ns + 2_000_000_000))
+    supertool._VALIDATOR_FINGERPRINT_CACHE.clear()
+    after = supertool._validator_cache_key(str(target), "phpstan-mcp", cmd, {})
+
+    assert before == after, (
+        "the analysed file must not be fingerprinted as a tool — its mtime moving "
+        "with identical content has to stay a cache hit"
+    )
+
+
 def test_key_still_tracks_file_content(tmp_path, monkeypatch) -> None:
     """The original contract survives: different content, different key."""
     _fresh(monkeypatch)

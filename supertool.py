@@ -8812,7 +8812,8 @@ def _stat_signature(path: str) -> Optional[str]:
     return f"{path}:{st.st_size}:{st.st_mtime_ns}"
 
 
-def _validator_fingerprint(spec: Dict[str, Any], cmd: str) -> str:
+def _validator_fingerprint(spec: Dict[str, Any], cmd: str,
+                           exclude: Optional[str] = None) -> str:
     """Identify the TOOLS behind a validator, so upgrading one misses the cache.
 
     The cache key used to describe only what was analysed, never what did the
@@ -8835,7 +8836,7 @@ def _validator_fingerprint(spec: Dict[str, Any], cmd: str) -> str:
     missing lockfile must not disable caching, it only makes the fingerprint
     weaker — which is where we already were.
     """
-    cache_key = repr((cmd, spec.get("fingerprint_paths")))
+    cache_key = repr((cmd, spec.get("fingerprint_paths"), exclude))
     memo = _VALIDATOR_FINGERPRINT_CACHE.get(cache_key)
     if memo is not None:
         return memo
@@ -8851,8 +8852,17 @@ def _validator_fingerprint(spec: Dict[str, Any], cmd: str) -> str:
         tokens |= set(shlex.split(cmd, posix=(os.name != "nt")))
     except ValueError:
         pass
+    # The analysed file is itself a cmd token ({file} is substituted before the
+    # key is built), and it must NOT contribute: the cache is content-addressed
+    # so identical content reuses a result. Stat-ing the target would put its
+    # mtime in the key, and a checkout/stash/rsync that rewrites identical bytes
+    # would miss the cache and re-run every validator on every touched file.
+    skip = os.path.realpath(exclude) if exclude else None
     for token in tokens:
-        sig = _stat_signature(token.strip("'\""))
+        token = token.strip("'\"")
+        if skip is not None and os.path.realpath(token) == skip:
+            continue
+        sig = _stat_signature(token)
         if sig is not None:
             parts.append(sig)
 
@@ -8883,7 +8893,7 @@ def _validator_cache_key(file_path: str, name: str, cmd: str,
     h.update(content)
     h.update(b"\x00" + name.encode("utf-8"))
     h.update(b"\x00" + cmd.encode("utf-8"))
-    h.update(b"\x00" + _validator_fingerprint(spec or {}, cmd).encode("utf-8"))
+    h.update(b"\x00" + _validator_fingerprint(spec or {}, cmd, file_path).encode("utf-8"))
     return h.hexdigest()
 
 
