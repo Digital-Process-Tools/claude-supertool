@@ -290,7 +290,14 @@ def _recover_by_rebase(branch: str, remote_before: str, upstream: str,
         print("Hint: remote unreachable or ref gone — check connectivity, then retry.")
         return fetched.returncode or 1
 
-    incoming, behind, ahead = _incoming_commits(target)
+    # Rebase onto FETCH_HEAD, not origin/<branch>: a one-shot `git fetch origin
+    # <branch>` always populates FETCH_HEAD, but only updates the remote-tracking
+    # ref refs/remotes/origin/<branch> when a fetch refspec is configured. A
+    # fresh worktree / refspec-less clone has no such ref, so rebasing onto
+    # origin/<branch> aborts with `fatal: invalid upstream` (issue #354).
+    # FETCH_HEAD points at the same commit and is guaranteed present here.
+    rebase_target = "FETCH_HEAD"
+    incoming, behind, ahead = _incoming_commits(rebase_target)
     if behind:
         print(f"Remote added {behind} commit(s) you lack; replaying {ahead} of yours:")
         for ln in incoming[:_INCOMING_CAP]:
@@ -298,7 +305,7 @@ def _recover_by_rebase(branch: str, remote_before: str, upstream: str,
         if behind > _INCOMING_CAP:
             print(f"  … +{behind - _INCOMING_CAP} more")
 
-    rebase = _git(["rebase", target], timeout=120)
+    rebase = _git(["rebase", rebase_target], timeout=120)
     if rebase.returncode != 0:
         # Distinguish a real merge conflict (unmerged paths → leave paused for
         # git-conflicts) from a rebase that never started (bad ref, etc.).
