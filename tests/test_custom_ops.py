@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 import os
 import shlex
-import sys
 from pathlib import Path
 
 import pytest
@@ -73,9 +72,9 @@ class TestPlaceholderInjection:
     def test_python_token_in_value_is_not_expanded(self, tmp_path: Path) -> None:
         """Guard, not a regression repro: under the old chain {python} was
         substituted FIRST, so a value arriving later via {args} was never
-        rescanned by it. Only tokens substituted AFTER the carrier were
-        vulnerable. The one-pass rule makes carrier order irrelevant, and
-        this pins that — reordering the dict must not resurrect the bug."""
+        rescanned by it — only tokens substituted AFTER the carrier were
+        vulnerable. Kept so a future rewrite that reintroduces sequential
+        substitution fails here too, not just on the {argjoin} cases."""
         script = self._echo_argv(tmp_path)
         supertool._CONFIG = {"ops": {"say": {"cmd": f"{{python}} {script} {{args}}"}}}
         value = "mentions {python} in prose"
