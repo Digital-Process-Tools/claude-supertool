@@ -10,6 +10,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import pytest
+
 import supertool
 
 
@@ -58,6 +60,12 @@ def test_editing_the_adapter_changes_the_key(tmp_path, monkeypatch) -> None:
     assert before != after, "an edited adapter must not serve results it did not produce"
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="a backslash is a path separator on Windows, so this filename cannot exist "
+           "there; the mangling reproduced here is POSIX-shlex behaviour, and the "
+           "Windows side is covered by test_editing_the_adapter_changes_the_key",
+)
 def test_backslash_path_in_cmd_is_still_fingerprinted(tmp_path, monkeypatch) -> None:
     """A backslash in a cmd path must not make the token invisible.
 
