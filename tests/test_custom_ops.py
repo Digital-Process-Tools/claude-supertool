@@ -3,11 +3,17 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
+import sys
 from pathlib import Path
 
 import pytest
 
 import supertool
+
+# Interpreter path in cmd-template form — forward slashes + quoted, since the
+# template is shlex.split (a raw Windows path would lose its backslashes).
+_PY = shlex.quote(Path(sys.executable).as_posix())
 
 
 # ---------------------------------------------------------------------------
@@ -24,18 +30,28 @@ class TestPlaceholderInjection:
     """
 
     @staticmethod
-    def _echo_argv(tmp_path: Path) -> Path:
+    def _script(tmp_path: Path, name: str, body: str) -> str:
+        """Write a helper script and return a cmd-template-safe path.
+
+        Forward slashes + shlex.quote: a raw Windows path would lose its
+        backslashes to the shlex.split the cmd template goes through.
+        """
+        script = tmp_path / name
+        script.write_text(body)
+        return shlex.quote(script.as_posix())
+
+    @classmethod
+    def _echo_argv(cls, tmp_path: Path) -> str:
         """Script printing each argv entry on its own <N>=<value> line."""
-        script = tmp_path / "argv.py"
-        script.write_text(
+        return cls._script(
+            tmp_path, "argv.py",
             "import sys" + chr(10) +
-            "for i, a in enumerate(sys.argv[1:], 1): print(str(i) + '=' + a)"
+            "for i, a in enumerate(sys.argv[1:], 1): print(str(i) + '=' + a)",
         )
-        return script
 
     def test_argjoin_token_in_value_is_not_expanded(self, tmp_path: Path) -> None:
         script = self._echo_argv(tmp_path)
-        supertool._CONFIG = {"ops": {"say": {"cmd": f"python3 {script} {{args}}"}}}
+        supertool._CONFIG = {"ops": {"say": {"cmd": f"{_PY} {script} {{args}}"}}}
         value = "docs about {argjoin} tokens"
         result = supertool._resolve_custom_op("say", ["say", value])
         assert result is not None
@@ -44,7 +60,7 @@ class TestPlaceholderInjection:
 
     def test_args_token_in_value_is_not_expanded(self, tmp_path: Path) -> None:
         script = self._echo_argv(tmp_path)
-        supertool._CONFIG = {"ops": {"say": {"cmd": f"python3 {script} {{argjoin}}"}}}
+        supertool._CONFIG = {"ops": {"say": {"cmd": f"{_PY} {script} {{argjoin}}"}}}
         result = supertool._resolve_custom_op("say", ["say", "mentions {args} here", "second"])
         assert result is not None
         assert "1=mentions {args} here:::second" in result
@@ -52,7 +68,7 @@ class TestPlaceholderInjection:
 
     def test_file_token_in_value_is_not_expanded(self, tmp_path: Path) -> None:
         script = self._echo_argv(tmp_path)
-        supertool._CONFIG = {"ops": {"say": {"cmd": f"python3 {script} {{args}}"}}}
+        supertool._CONFIG = {"ops": {"say": {"cmd": f"{_PY} {script} {{args}}"}}}
         value = "talks about {file} and {dir}"
         result = supertool._resolve_custom_op("say", ["say", value])
         assert result is not None
@@ -60,9 +76,9 @@ class TestPlaceholderInjection:
 
     def test_value_with_placeholder_keeps_argv_intact(self, tmp_path: Path) -> None:
         """The whole value stays ONE argv entry — the quoting-shatter regression."""
-        script = tmp_path / "argc.py"
-        script.write_text("import sys; print('ARGC', len(sys.argv) - 1)")
-        supertool._CONFIG = {"ops": {"argc": {"cmd": f"python3 {script} {{args}}"}}}
+        script = self._script(tmp_path, "argc.py",
+                              "import sys; print('ARGC', len(sys.argv) - 1)")
+        supertool._CONFIG = {"ops": {"argc": {"cmd": f"{_PY} {script} {{args}}"}}}
         result = supertool._resolve_custom_op("argc", ["argc", "subject {argjoin} more words"])
         assert result is not None
         assert "ARGC 1" in result
