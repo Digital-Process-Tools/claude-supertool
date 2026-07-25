@@ -322,6 +322,26 @@ def _find_preset_file(name: str, project_dir: str) -> str | None:
     return None
 
 
+_PLACEHOLDER_RE = re.compile(r"\{([a-z_]+)\}")
+
+
+def _substitute_placeholders(template: str, values: Dict[str, str]) -> str:
+    """Substitute {name} placeholders in a single left-to-right pass.
+
+    Text inserted by a substitution is never rescanned, so an argument VALUE
+    that happens to contain a placeholder token stays literal. Chained
+    str.replace calls did rescan, which let a value expand a later
+    placeholder inside itself and break the command's shell quoting.
+
+    Unknown names are left untouched (e.g. {path}, resolved earlier by
+    _resolve_preset_cmd).
+    """
+    return _PLACEHOLDER_RE.sub(
+        lambda m: values[m.group(1)] if m.group(1) in values else m.group(0),
+        template,
+    )
+
+
 def _resolve_preset_cmd(cmd: str, preset_dir: str) -> str:
     """Replace {path} placeholder with the preset's directory (trailing slash).
 
@@ -939,20 +959,26 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
     if not cmd_template:
         return f"ERROR: empty command for custom op {op!r}\n"
 
-    # Build the command — replace {file}, {dir}, {arg}, {args}, {argjoin}, {python} placeholders
+    # Build the command — substitute {file}, {dir}, {arg}, {args}, {argjoin},
+    # {python} in ONE pass. Chained str.replace calls would rescan the text a
+    # previous pass just inserted, so an ARGUMENT VALUE containing a later
+    # placeholder token (a commit message mentioning {argjoin}) got expanded
+    # inside its own shlex.quote'd value — shattering the quoting and leaking
+    # the value's words into argv. One pass never looks at inserted text.
     file_arg = parts[1] if len(parts) > 1 else ""
-    cmd = cmd_template.replace("{python}", _python_token())
-    cmd = cmd.replace("{file}", shlex.quote(file_arg))
     dir_arg = os.path.dirname(file_arg) if file_arg else "."
-    cmd = cmd.replace("{dir}", shlex.quote(dir_arg))
-    cmd = cmd.replace("{arg}", shlex.quote(file_arg))
-    all_args = " ".join(shlex.quote(p) for p in parts[1:]) if len(parts) > 1 else ""
-    cmd = cmd.replace("{args}", all_args)
     # {argjoin}: parts[1:] rejoined with ':::' as a single shell-quoted arg.
     # Lets the receiving script split fields itself when they contain colons
     # (e.g. XPath like .//ns:tag or [position()=1]).
     arg_join = ":::".join(parts[1:]) if len(parts) > 1 else ""
-    cmd = cmd.replace("{argjoin}", shlex.quote(arg_join))
+    cmd = _substitute_placeholders(cmd_template, {
+        "python": _python_token(),
+        "file": shlex.quote(file_arg),
+        "dir": shlex.quote(dir_arg),
+        "arg": shlex.quote(file_arg),
+        "args": " ".join(shlex.quote(p) for p in parts[1:]) if len(parts) > 1 else "",
+        "argjoin": shlex.quote(arg_join),
+    })
 
     # Pass extra config keys as SUPERTOOL_ env vars
     _RESERVED_KEYS = {"cmd", "timeout", "description", "syntax", "example", "status", "restartMcp"}
@@ -1069,11 +1095,14 @@ def _resolve_alias(op: str, parts: List[str]) -> str | None:
     _IN_ALIAS = True
     try:
         output_parts: List[str] = []
+        alias_values = {
+            "file": file_arg, "dir": dir_arg,
+            "arg": file_arg, "args": all_args,
+        }
         for expanded_op in op_list:
-            resolved = expanded_op.replace("{file}", file_arg)
-            resolved = resolved.replace("{dir}", dir_arg)
-            resolved = resolved.replace("{arg}", file_arg)
-            resolved = resolved.replace("{args}", all_args)
+            # Single pass — same reason as _resolve_custom_op: a path or
+            # argument containing '{args}' must not expand itself.
+            resolved = _substitute_placeholders(expanded_op, alias_values)
             output_parts.append(dispatch(resolved))
         return "".join(output_parts)
     finally:
