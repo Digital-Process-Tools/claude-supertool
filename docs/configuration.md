@@ -90,6 +90,7 @@ Entries document built-in operations (`syntax`, `description`, `example`). Set `
 | `read` | `max_lines`   | 300              | Max lines per read                                                                       |
 | `read` | `max_bytes`   | 20000            | Max bytes per read (truncates at cap)                                                    |
 | `grep` | `max_results` | 10               | Default result limit when not specified in the op                                        |
+| `grep` | `max_line_chars` | 500           | Max chars per output line (match or context); remainder shown as `… (+N chars)`           |
 | `grep` | `extensions`  | `[]` (all files) | Restrict grep to these file patterns (e.g. `["*.py", "*.js"]`). Empty = search all files |
 | `around` | `max_bytes` | 16000            | Max bytes for an `around:` context window (truncates at a line boundary)                 |
 | `grep_around` | `max_bytes` | 16000       | Max bytes for a `grep_around:` (and `grep:`-with-context) window                          |

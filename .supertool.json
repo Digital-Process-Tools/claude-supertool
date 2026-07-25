@@ -42,7 +42,7 @@
     },
     "grep": {
       "syntax": "grep:PATTERN:PATH[:LIMIT[:CONTEXT]][:no-auto-read]",
-      "description": "Search (10 results def). CONTEXT=N lines around match. :no-auto-read suppresses single-file auto-read",
+      "description": "Search (10 results def). CONTEXT=N lines around match. Lines capped at max_line_chars (500). :no-auto-read suppresses single-file auto-read",
       "example": "grep:dispatch:supertool.py:10:2"
     },
     "grep-count": {
@@ -65,7 +65,7 @@
     },
     "glob": {
       "syntax": "glob:PATTERN",
-      "description": "Find files (**). Auto-reads concrete paths",
+      "description": "Find files (**). Unanchored no-match retried as **/PATTERN. Auto-reads concrete paths",
       "example": "glob:tests/**/*.py"
     },
     "ls": {
@@ -111,7 +111,7 @@
     },
     "between": {
       "syntax": "between:SYMBOL:PATH | between:re:START:END:PATH",
-      "description": "Chunk of file. Symbol mode (tree-sitter, multi-lang) or re:START:END pattern mode",
+      "description": "Chunk of file. Symbol mode (tree-sitter, multi-lang; source-shaped names OK: 'async function foo') or re:START:END pattern mode",
       "example": "between:op_dispatch:supertool.py",
       "hint": true
     },

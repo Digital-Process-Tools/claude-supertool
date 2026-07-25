@@ -109,7 +109,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-VERSION = "0.20.0"
+VERSION = "0.21.0"
 
 
 def _fwd(p: str) -> str:
@@ -157,6 +157,8 @@ MAX_READ_BYTES = 20000  # ~20KB cap — prevents Claude Code "Output too large"
 MAX_AUTOREAD_LINES = 60  # glob:/grep: auto-read line cap (#362) — a file under the
 # byte cap but with many lines still overshoots context; skip auto-read above this.
 MAX_AROUND_BYTES = 16000  # per-op cap for around:/grep_around: context windows (#241)
+MAX_GREP_LINE_CHARS = 500  # per-line cap on grep output (#363) — one 25KB single-line
+# PHPDoc/@extends annotation used to eat a screenful for a single hit.
 CHAR_WINDOW_CHARS = 1000  # head/tail peek window for minified single-line files
 MINIFIED_LINE_CHARS = 5000  # a single line this long means line-based view is useless
 MAX_GREP_RESULTS = 10
@@ -1377,10 +1379,11 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
                 out.append("  --\n")
             first_group = False
             for _fp, lineno, kind, content in group:
+                capped = _cap_grep_line(content)
                 if kind == "match":
-                    out.append(f"  {lineno}:{content}\n")
+                    out.append(f"  {lineno}:{capped}\n")
                 else:
-                    out.append(f"  {lineno}-{content}\n")
+                    out.append(f"  {lineno}-{capped}\n")
         out.append("\n")
         return _cap_context_window("".join(out), "grep_around")
 
@@ -1399,7 +1402,7 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
         if fp != current_file:
             current_file = fp
             out.append(f"{fp}\n")
-        out.append(f"  {lineno}:{content}\n")
+        out.append(f"  {lineno}:{_cap_grep_line(content)}\n")
     out.append("\n")
 
     # Auto-read: single small file + at least one match → emit full file.
@@ -1423,6 +1426,21 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
 
 _AROUND_DIR_SKIP = {".git", "node_modules", "__pycache__", ".venv", "venv", ".tox", "vendor"}
 _AROUND_DIR_MAX_FILES = 20
+
+
+def _cap_grep_line(content: str) -> str:
+    """Truncate one grep output line to a char budget (#363).
+
+    Files with pathological single lines (minified JS, a 25KB one-line
+    `@extends` PHPDoc) turn a single hit into a screenful. Cap the line and
+    say how much was dropped so the reader knows to widen deliberately.
+    Configurable via builtin-ops.grep.max_line_chars or
+    SUPERTOOL_GREP_MAX_LINE_CHARS.
+    """
+    cap = _get_op_int("grep", "max_line_chars", MAX_GREP_LINE_CHARS)
+    if len(content) <= cap:
+        return content
+    return f"{content[:cap]}… (+{len(content) - cap} chars)"
 
 
 def _cap_context_window(text: str, op_name: str) -> str:
@@ -1590,8 +1608,16 @@ def op_between_symbol(symbol: str, path: str) -> str:
                 "Use 'between:re:START:END:PATH' for regex line slicing.\n")
 
     found = _ts_find_node(path, lang_name, symbol)
+    # Retry with modifiers/parens stripped so a signature pasted from source
+    # resolves like the bare name would (#363). Exact match still wins.
+    normalized = _normalize_symbol_query(symbol)
+    if found is None and normalized != symbol:
+        found = _ts_find_node(path, lang_name, normalized)
+        if found is not None:
+            symbol = normalized
     if found is None:
-        return f"ERROR: symbol {symbol!r} not found in {path}\n"
+        extra = "" if normalized == symbol else f" (also tried {normalized!r})"
+        return f"ERROR: symbol {symbol!r} not found in {path}{extra}\n"
     node, kind, total = found
 
     start_line = node.start_point[0]
@@ -1696,7 +1722,20 @@ def op_glob(pattern: str, no_exclude: bool = False, no_auto_read: bool = False) 
         return ("[auto-read: concrete path, no wildcards]\n"
                 + render_file(pattern, 0, _get_op_int("read", "max_lines", MAX_READ_LINES)))
 
-    files = _glob_files(pattern, _get_exclude_paths("glob", no_exclude))
+    excl = _get_exclude_paths("glob", no_exclude)
+    files = _glob_files(pattern, excl)
+    # glob is repo-root relative, so a pattern naming a mid-path segment
+    # (`SiBrief/**/*.php` for a dir nested under Dvsi/src2/) returns 0 while the
+    # same segment works fine in grep. Retry once with a `**/` prefix so both
+    # ops accept the same mental model (#363).
+    midpath_note = ""
+    if (not files and "/" in pattern
+            and not pattern.startswith(("/", "~", "**", "./", "../"))):
+        retry = "**/" + pattern
+        files = _glob_files(retry, excl)
+        if files:
+            midpath_note = (f"[mid-path retry: no match at repo root for "
+                            f"{pattern!r} — matched {retry!r}]\n")
     # Strip common directory prefix when 2+ files share one
     prefix = ""
     if len(files) >= 2:
@@ -1706,7 +1745,7 @@ def op_glob(pattern: str, no_exclude: bool = False, no_auto_read: bool = False) 
         # Only strip if it saves something meaningful (> 10 chars)
         if len(prefix) <= 10:
             prefix = ""
-    out = [f"({len(files)} files)\n"]
+    out = [midpath_note, f"({len(files)} files)\n"]
     if prefix:
         fwd_prefix = _fwd(prefix)
         out.append(f"{fwd_prefix}\n")
@@ -2156,6 +2195,39 @@ _TS_DEF_NODES_DEFAULT: Dict[str, str] = {
     "method_declaration": "method", "method_definition": "method",
     "interface_declaration": "interface",
 }
+
+
+# Keywords that appear in front of a symbol when it's copy-pasted out of source
+# (`async function foo`, `public static function bar`, `class Baz`). `between:`
+# used to reject those verbatim strings, so a caller who typed the signature the
+# way it reads in the file fell back to grep+read (#363).
+_SYMBOL_MODIFIER_WORDS = frozenset({
+    "async", "function", "func", "fn", "def", "class", "interface", "trait",
+    "enum", "struct", "type", "method", "public", "private", "protected",
+    "static", "final", "abstract", "readonly", "export", "default", "const",
+    "let", "var", "impl", "sub", "proc",
+})
+
+
+def _normalize_symbol_query(symbol: str) -> str:
+    """Reduce a source-shaped symbol query to the bare definition name.
+
+    `async function fillAndSubmit` -> `fillAndSubmit`
+    `public static function getFoo` -> `getFoo`
+    `fillAndSubmit(page)` -> `fillAndSubmit`
+
+    A query that is *only* a keyword (`function`) is returned unchanged — it
+    may legitimately be the name being looked for.
+    """
+    s = symbol.strip()
+    if "(" in s:
+        s = s.split("(", 1)[0].strip()
+    tokens = [t for t in s.split() if t]
+    if not tokens:
+        return symbol.strip()
+    while len(tokens) > 1 and tokens[0].lower() in _SYMBOL_MODIFIER_WORDS:
+        tokens.pop(0)
+    return tokens[0]
 
 
 def _ts_parse(parser: Any, source_bytes: bytes) -> Any:
@@ -11815,7 +11887,7 @@ def _read_target_between(parts: List[str]) -> Optional[Tuple[str, Optional[int],
     if parts[1] == "re" and len(parts) >= 5:
         # Regex variant — return file only, no precomputable range
         return (parts[4], None, None)
-    symbol = parts[1]
+    symbol = _normalize_symbol_query(parts[1])
     path = parts[2]
     if not _has_tree_sitter():
         return (path, None, None)
@@ -12373,6 +12445,63 @@ def _mcp_call(server_name: str, tool: str, args: dict) -> Optional[dict]:
         return None
 
 
+_AUTO_CWD_MARKER = ".supertool.json"
+
+
+def _project_root_above_cwd() -> Optional[str]:
+    """Nearest ancestor of cwd holding a .supertool.json, or None.
+
+    Returns None when cwd IS a project root — nothing to recover from there.
+    """
+    d = os.path.realpath(os.getcwd())
+    if os.path.isfile(os.path.join(d, _AUTO_CWD_MARKER)):
+        return None
+    parent = os.path.dirname(d)
+    while parent and parent != d:
+        if os.path.isfile(os.path.join(parent, _AUTO_CWD_MARKER)):
+            return parent
+        d, parent = parent, os.path.dirname(parent)
+    return None
+
+
+def _auto_cwd_root(argv: List[str]) -> Optional[str]:
+    """Project root to chdir into so this call's path args resolve (#363).
+
+    cwd drift (a `cd` into a subdir for a test run, then a root-relative op)
+    used to die with "path not found … wrong CWD?" and cost two round-trips:
+    read the error, retry with `cwd:`. Recover instead — but only when the
+    evidence is unambiguous:
+
+      * an ancestor dir carries a .supertool.json (explicit project marker),
+      * no path-shaped arg resolves against the current cwd,
+      * at least one path-shaped arg resolves against that root.
+
+    Anything else returns None and the call runs exactly as before.
+    """
+    root = _project_root_above_cwd()
+    if root is None:
+        return None
+    candidates: List[str] = []
+    for arg in argv:
+        if ":" not in arg:
+            continue
+        for tok in arg.split(":")[1:]:
+            tok = tok.strip()
+            if not tok or tok.startswith(("@", "-", "~", "/")):
+                continue
+            if "/" not in tok and "." not in tok:
+                continue
+            if WILDCARD_CHARS.search(tok):
+                continue
+            if os.path.exists(tok):
+                return None  # resolves locally — cwd is right, leave it alone
+            candidates.append(tok)
+    for tok in candidates:
+        if os.path.exists(os.path.join(root, tok)):
+            return root
+    return None
+
+
 def main(argv: List[str]) -> int:
     # Cheap insurance: a stray glyph in user content must never crash the
     # process on a non-UTF-8 console (Windows cp1252). Runs even in plain mode.
@@ -12420,6 +12549,18 @@ def main(argv: List[str]) -> int:
         argv = argv[1:]
         if not argv:
             return 0
+    else:
+        # No explicit cwd: — recover from cwd drift when the args only make
+        # sense from the project root (#363). Best-effort: never let a probe
+        # failure break the call.
+        try:
+            auto_root = _auto_cwd_root(argv)
+        except OSError:
+            auto_root = None
+        if auto_root:
+            os.chdir(auto_root)
+            sys.stdout.write(
+                f"[cwd auto-resolved to project root: {auto_root}]\n")
 
     # At most one '@-' (stdin) op per call. sys.stdin is a single stream:
     # the first op's sys.stdin.read() drains it, so a second '@-' reads empty
