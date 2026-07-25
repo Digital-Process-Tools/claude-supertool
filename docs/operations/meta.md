@@ -13,6 +13,18 @@ Ops for self-documentation and version introspection. Used primarily in session-
 | `help` | `help:OP` | Print the full reference for a single op — syntax, full (uncompacted) description, and example — read from `.supertool.json`. Discovers an op's payload shape (e.g. `vim`'s macro grammar) without grepping source. Errors with a pointer to `ops` for an unknown or undocumented op. |
 | `cwd` | `cwd:PATH` | Set the working dir for the whole call. **Must be the first op** — chdir's once before dispatch, then is stripped, so every following op resolves against `PATH`. Replaces a `cd PATH && ./supertool …` prefix (which trips the use-supertool hook and risks stale-cwd path poisoning) for cross-repo sessions. `~`/`$VAR` expanded; non-directory or non-first → error before any op runs. |
 
+## cwd auto-resolve
+
+Without an explicit `cwd:`, a call whose path args only make sense from the project root recovers instead of failing. The pre-pass chdir's to the root and prints `[cwd auto-resolved to project root: …]` — so after a `cd` into a subdirectory (a browser test run, a package build), `./supertool 'wc:src/app/Module.py'` still answers rather than returning `path not found … wrong CWD?` and costing a second round-trip.
+
+The trigger is deliberately narrow, and all three conditions must hold:
+
+- an ancestor directory carries a `.supertool.json` (explicit project marker),
+- **no** path-shaped arg resolves against the current cwd,
+- at least one path-shaped arg resolves against that root.
+
+So a subdirectory-relative call is never hijacked. An explicit `cwd:` op disables the probe entirely; `@` payloads, flags, absolute paths, `~` paths and wildcards are ignored when probing.
+
 ## Common patterns
 
 Full LLM onboarding in one call — everything an agent needs to use supertool:

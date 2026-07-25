@@ -22,7 +22,7 @@
 | `grep` | `grep:PATTERN:PATH` or `grep:PATTERN:PATH:LIMIT` | 10 results default, code + doc extensions only. **Auto-reads** full file if PATH is a concrete file < 20KB with a match. Append `:no-auto-read` to suppress (parity with `glob`). |
 | `grep` (context) | `grep:PATTERN:PATH:LIMIT:CONTEXT` | Show CONTEXT lines before/after each match (like `grep -C`). Match lines: `path:lineno:content`. Context lines: `path-lineno-content`. Non-adjacent groups separated by `--`. |
 | `grep` (count) | `grep:PATTERN:PATH:LIMIT:CONTEXT:count` | Return match counts per file instead of content. Output: `filepath:COUNT` per line. |
-| `glob` | `glob:PATTERN` | `**` supported. **Auto-reads** if PATTERN is a concrete file path (no wildcards). |
+| `glob` | `glob:PATTERN` | `**` supported. Unanchored pattern matching nothing is retried once as `**/PATTERN` (mid-path segments resolve, announced in the output). **Auto-reads** if PATTERN is a concrete file path (no wildcards). |
 | `ls` | `ls:PATH` | Trailing `/` on subdirs |
 | `tail` | `tail:PATH:N` | Last N lines (default 20). Minified single-line files return a char-window peek; size via `builtin-ops.tail.char_window` (default 1000). |
 | `head` | `head:PATH:N` | First N lines (default 20). Minified single-line files return a char-window peek; size via `builtin-ops.head.char_window` (default 1000). |
@@ -36,7 +36,7 @@
 | `diff` | `diff:PATH1:PATH2` | Unified diff between two files. |
 | `stat` | `stat:PATH` | File/directory metadata: size (bytes), last modified (ISO datetime), type (file/dir). |
 | `around_line` | `around_line:PATH:LINE` or `around_line:PATH:LINE:N` | Show N lines (default 10) of context around a specific line number. Target line marked with `→`. |
-| `between` | `between:SYMBOL:PATH` or `between:re:START:END:PATH` | Return a chunk of a file. **Symbol mode (default):** full body of a named function/method/class via tree-sitter (PHP, Python, JS, TS, Go, Rust, Java, Ruby — symbols with `::` like PHP `Foo::bar` work). **Pattern mode (`re:` prefix):** inclusive line slice from first line matching START regex to first line after matching END regex (language-agnostic). |
+| `between` | `between:SYMBOL:PATH` or `between:re:START:END:PATH` | Return a chunk of a file. **Symbol mode (default):** full body of a named function/method/class via tree-sitter (PHP, Python, JS, TS, Go, Rust, Java, Ruby — symbols with `::` like PHP `Foo::bar` work). SYMBOL tolerates source-shaped input (`async function foo`, `public static function bar`, `foo(...)`). **Pattern mode (`re:` prefix):** inclusive line slice from first line matching START regex to first line after matching END regex (language-agnostic). |
 | `tree` | `tree:PATH` or `tree:PATH:DEPTH` | Directory structure with depth limit (default 3). Hides dotfiles. Files listed before subdirectories. |
 | `blame` | `blame:PATH:LINE` or `blame:PATH:LINE:N` | Git blame for N lines (default 5) around a specific line number. Requires git repo. |
 | `version` | `version` | Show supertool version. |
