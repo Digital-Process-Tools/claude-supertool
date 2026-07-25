@@ -8841,12 +8841,18 @@ def _validator_fingerprint(spec: Dict[str, Any], cmd: str) -> str:
         return memo
 
     parts: list = []
+    # Two tokenisations, unioned. shlex handles quoted paths containing spaces;
+    # a naive whitespace split handles paths containing backslashes, which shlex
+    # in POSIX mode eats as escapes, so a Windows path shreds into a
+    # token that matches no file, so on Windows every cmd token silently
+    # contributed nothing and the fingerprint degraded to a constant.
+    tokens = set(cmd.split())
     try:
-        tokens = shlex.split(cmd)
+        tokens |= set(shlex.split(cmd, posix=(os.name != "nt")))
     except ValueError:
-        tokens = []
+        pass
     for token in tokens:
-        sig = _stat_signature(token)
+        sig = _stat_signature(token.strip("'\""))
         if sig is not None:
             parts.append(sig)
 

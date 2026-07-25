@@ -58,6 +58,33 @@ def test_editing_the_adapter_changes_the_key(tmp_path, monkeypatch) -> None:
     assert before != after, "an edited adapter must not serve results it did not produce"
 
 
+def test_backslash_path_in_cmd_is_still_fingerprinted(tmp_path, monkeypatch) -> None:
+    """A backslash in a cmd path must not make the token invisible.
+
+    shlex in POSIX mode treats `\\` as an escape, so a Windows path like
+    C:\\Users\\x\\adapter.py shredded into a token matching no file — every cmd
+    token contributed nothing and the fingerprint silently degraded to a
+    constant on Windows. A backslash is a legal filename character on POSIX
+    too, so this reproduces the mangling on any platform.
+    """
+    _fresh(monkeypatch)
+    target = tmp_path / "Subject.php"
+    target.write_text("<?php\\n")
+    adapter = tmp_path / "we\\\\ird.py"
+    adapter.write_text("print('{}')\\n")
+    cmd = f"python3 {adapter}"
+
+    before = supertool._validator_cache_key(str(target), "phpstan-mcp", cmd, {})
+    _bump_mtime(adapter)
+    supertool._VALIDATOR_FINGERPRINT_CACHE.clear()
+    after = supertool._validator_cache_key(str(target), "phpstan-mcp", cmd, {})
+
+    assert before != after, (
+        "a cmd path containing a backslash must still be stat-ed; otherwise the "
+        "fingerprint is a constant and the cache never invalidates on tool change"
+    )
+
+
 def test_touching_a_fingerprint_path_changes_the_key(tmp_path, monkeypatch) -> None:
     """The lockfile case: the launcher is a stable wrapper, the analyser moved."""
     _fresh(monkeypatch)
