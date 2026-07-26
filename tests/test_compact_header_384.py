@@ -206,6 +206,52 @@ def test_sh_helper_matches_only_the_shell_suffixes() -> None:
     assert not supertool._sh_backslash_warning("a.sh", "cmd \\\n")
 
 
+def test_zero_match_replace_keeps_its_verbatim_header(tmp_path: Path) -> None:
+    """op_replace's zero-match returns "(0 occurrences of 'x' found)" — a
+    failure that never says ERROR. The header swap tests whether anything was
+    WRITTEN, not whether the receipt looks like an error."""
+    f = tmp_path / "x.py"
+    f.write_text("nothing matching here\n")
+    old = _long("old")
+    arg = f"replace:::{old}:::changed:::{f}"
+    out = supertool.dispatch(arg)
+    assert "0 occurrences" in out
+    assert out.startswith(f"--- {arg} ---\n")
+    assert "line 19 of the old block here" in out
+
+
+def test_replace_dry_keeps_its_verbatim_header(tmp_path: Path) -> None:
+    """A preview writes nothing, so its arguments are all the caller has."""
+    f = tmp_path / "x.py"
+    old = _long("old")
+    f.write_text(old + "\n")
+    arg = f"replace_dry:::{old}:::changed:::{f}"
+    out = supertool.dispatch(arg)
+    assert out.startswith(f"--- {arg} ---\n")
+
+
+def test_successful_replace_gets_the_compact_header(tmp_path: Path) -> None:
+    """The counterpart: a write did happen, so the elision is safe."""
+    f = tmp_path / "x.py"
+    old = _long("old")
+    f.write_text(old + "\n")
+    out = supertool.dispatch(f"replace:::{old}:::changed:::{f}")
+    assert out.splitlines()[0].startswith('--- replace: "    line 0 of the old')
+
+
+def test_backslash_before_trailing_whitespace_is_flagged(tmp_path: Path) -> None:
+    """A backslash followed by spaces never continues the line — the escape
+    applies to the space — and the difference is invisible in a diff."""
+    warning = supertool._sh_backslash_warning("a.sh", "cmd \\ \n")
+    assert "followed by whitespace" in warning
+
+
+def test_trailing_whitespace_case_is_parity_independent(tmp_path: Path) -> None:
+    for run in range(1, 5):
+        content = "cmd " + "\\" * run + "  \n"
+        assert supertool._sh_backslash_warning("a.sh", content), run
+
+
 @pytest.mark.parametrize("n,warns", [(1, False), (2, True), (3, False),
                                      (4, True), (5, False)])
 def test_backslash_run_parity_decides(n: int, warns: bool) -> None:

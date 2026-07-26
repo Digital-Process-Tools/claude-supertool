@@ -3297,11 +3297,6 @@ def _atomic_write(path: str, content: str) -> None:
     # at the one place every mutating op passes through (#380).
     _warn = _sh_backslash_warning(path, content)
     _key = os.path.abspath(path)
-    # A rollback rewrites the same path, so drop any stale entry for it
-    # first: the queue must describe the bytes currently on disk.
-    _drop_write_warnings(path)
-    if _warn:
-        _WRITE_WARNINGS.append((_key, _warn))
     real_path = os.path.realpath(path) if os.path.islink(path) else path
     target_dir = os.path.dirname(os.path.abspath(real_path)) or "."
     # Preserve the original file's mode (#259). mkstemp creates the temp file
@@ -3332,6 +3327,15 @@ def _atomic_write(path: str, content: str) -> None:
         except OSError:
             pass
         raise
+    # Only past the rename: the counter says "bytes reached disk", and the
+    # warning queue must describe what is on disk. A write that raised did
+    # neither, and counting it would let dispatch treat a failed op as a
+    # successful one.
+    _WRITE_COUNT[0] += 1
+    # A rollback rewrites the same path, so drop any stale entry for it first.
+    _drop_write_warnings(path)
+    if _warn:
+        _WRITE_WARNINGS.append((_key, _warn))
 
 
 _BRANCH_CACHE: List[Optional[str]] = [None]
@@ -3459,17 +3463,27 @@ _HEADER_ARG_MAX = 160
 _HEADER_ANCHOR_MAX = 60
 
 _SH_SUFFIXES = (".sh", ".bash", ".zsh", ".ksh")
-# A run of backslashes immediately before a newline. Bash consumes them
-# pairwise from the left, so PARITY decides the meaning: an even run is all
-# escaped backslashes and the line genuinely ends, while an odd run leaves one
-# backslash over to continue the line. Only the even case is the bug.
-_TRAILING_BACKSLASH_RUN = re.compile(r"(\\+)\r?\n")
+# A run of backslashes at end of line, plus any whitespace between it and the
+# newline. Two ways this is not the continuation it looks like:
+#   - PARITY: bash consumes backslashes pairwise from the left, so an even run
+#     is all escaped backslashes and the line genuinely ends; an odd run leaves
+#     one over to continue it. Only even runs are the bug.
+#   - TRAILING WHITESPACE: a backslash followed by spaces or tabs never
+#     continues the line, whatever the parity — the escape applies to the
+#     space. Invisible in a diff, and it silently ends a command.
+_TRAILING_BACKSLASH_RUN = re.compile(r"(\\+)([ \t]*)\r?\n")
 
 # Warnings raised at the write chokepoint, drained by dispatch onto the
 # receipt. Keyed by path so a rollback can retract the warning for the
 # content it just reverted — the bytes complained about are no longer on
 # disk, and a warning about them would be worse than none.
 _WRITE_WARNINGS: List[Tuple[str, str]] = []
+
+# Bumped by _atomic_write. Lets dispatch ask 'did this op actually write?'
+# instead of sniffing the receipt for an ERROR prefix — receipts are prose
+# and not every no-op failure says ERROR (op_replace's zero-match returns
+# "(0 occurrences of 'x' found)").
+_WRITE_COUNT: List[int] = [0]
 
 
 def _drop_write_warnings(path: str) -> None:
@@ -3520,9 +3534,22 @@ def _sh_backslash_warning(path: str, content: str) -> str:
     """
     if not path.endswith(_SH_SUFFIXES):
         return ""
-    if not any(len(m.group(1)) % 2 == 0
-               for m in _TRAILING_BACKSLASH_RUN.finditer(content)):
+    trailing_ws = False
+    even_run = False
+    for m in _TRAILING_BACKSLASH_RUN.finditer(content):
+        if m.group(2):
+            trailing_ws = True
+        elif len(m.group(1)) % 2 == 0:
+            even_run = True
+    if not (trailing_ws or even_run):
         return ""
+    if trailing_ws and not even_run:
+        return (
+            f"{mark('⚠')} {path}: a line ends with a backslash followed by "
+            f"whitespace. That is not a line continuation — the backslash "
+            f"escapes the space, the command ends there, and the difference "
+            f"is invisible in a diff.\n"
+        )
     return (
         f"{mark('⚠')} {path}: a line ends with `\\\\`. In bash that is an "
         f"escaped backslash, not a line continuation — it parses cleanly and "
@@ -11829,6 +11856,7 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
     _compact_header = ""
     if len(arg) > _HEADER_ARG_MAX:
         _compact_header = _compact_header_arg(op, parts)
+    _writes_before = _WRITE_COUNT[0]
 
     # #146: dispatch-level path containment. Each op has a known position(s)
     # of its path arg(s) in `parts`. _safe_path enforces cwd containment
@@ -12265,10 +12293,12 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
         body += "".join(w[1] for w in _WRITE_WARNINGS)
         _WRITE_WARNINGS.clear()
 
-    # Swap in the compact header only on success — see the note where it was
-    # built. `body` is the op's own receipt here; an ERROR means nothing was
-    # written, so nothing below the header shows what was sent.
-    if _compact_header and not body.lstrip().startswith("ERROR"):
+    # Swap in the compact header only if the op actually wrote — see the note
+    # where it was built. The test is the write counter, not an ERROR prefix on
+    # the receipt: `op_replace`'s zero-match returns "(0 occurrences of 'x'
+    # found)", which is a failure that says nothing about being one, and that
+    # is precisely the case where the caller needs the verbatim `old` back.
+    if _compact_header and _WRITE_COUNT[0] > _writes_before:
         header = (f"--- {_compact_header}"
                   f"{_NO_EXCLUDE_SUFFIX if no_exclude else ''} ---\n")
     # Right file, wrong branch is silent until commit time, and supertool is
