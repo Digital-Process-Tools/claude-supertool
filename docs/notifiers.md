@@ -42,7 +42,7 @@ Same place as validators in `.supertool.json`:
 | `{file}` | Absolute file path the op targeted | Every fire |
 | `{line}` | Start line (1-indexed) | When the op exposes a line: `around_line`, `between` (symbol mode), `read:F:OFFSET:LIMIT` |
 | `{line_end}` | End line (1-indexed inclusive) | Same as `{line}` when a range is known |
-| `{before_file}` | Path to a temp file holding pre-edit content | Mutating ops only (`edit`/`replace`/`paste`/`vim`/`replace_lines`) |
+| `{before_file}` | Path to a temp file holding pre-edit content | Mutating ops only (`edit`/`replace`/`paste`/`append`/`vim`/`replace_lines`) |
 | `{supertool_dir}` | Install dir of supertool | Always |
 
 Unset placeholders render as empty strings — your notifier should treat them as optional.
@@ -53,7 +53,7 @@ Mutating ops fire after the file is rewritten (post-validator). Read ops fire af
 
 | Op | Line range | Notes |
 |---|---|---|
-| `edit`, `replace`, `replace_lines`, `paste`, `vim` | — | `{before_file}` set; ideal for diff view |
+| `edit`, `replace`, `replace_lines`, `paste`, `append`, `vim` | — | `{before_file}` set; ideal for diff view |
 | `around_line:FILE:LINE:N` | LINE-N to LINE+N | Computed from args |
 | `between:SYMBOL:FILE` | Symbol's body | Resolved via tree-sitter |
 | `between:re:START:END:FILE` | — | Regex variant, range too dynamic to precompute |

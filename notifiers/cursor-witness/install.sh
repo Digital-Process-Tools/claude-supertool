@@ -93,7 +93,7 @@ Next steps:
        "cmd": "python3 $SCRIPT_DIR/notify.py {op} {file} {line} {line_end} {before_file}",
        "match": "*",
        "hooks_into": [
-         "edit", "replace", "replace_lines", "paste", "vim",
+         "edit", "replace", "replace_lines", "paste", "append", "vim",
          "read", "around_line", "between", "map"
        ]
      }

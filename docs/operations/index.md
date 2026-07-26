@@ -9,7 +9,7 @@
 | **Reads** | `read`, `read-grep`, `head`, `tail`, `wc`, `stat`, `ls`, `glob`, `tree`, `diff` | [reads.md](reads.md) |
 | **Search** | `grep`, `grep-count`, `grep_around`, `around`, `around_line`, `between` | [search.md](search.md) |
 | **Symbol map** | `map` | [map.md](map.md) |
-| **Edits** | `edit`, `replace`, `replace_dry`, `replace_lines`, `paste`, `vim` | [edits.md](edits.md) |
+| **Edits** | `edit`, `replace`, `replace_dry`, `replace_lines`, `paste`, `append`, `vim` | [edits.md](edits.md) |
 | **Validate / Format** | `validate`, `format`, `validate_staged`, `format_staged` | — |
 | **Meta** | `cwd`, `introduction`, `output-format`, `ops`, `version` | [meta.md](meta.md) |
 
@@ -45,6 +45,7 @@
 | `edit` | `edit:::OLD:::NEW:::PATH` | Single-file, single-occurrence edit (mirrors native Edit). Errors if 0 or >1 matches. **Bypasses native Edit must-Read state** — saves a round-trip when you already know the unique snippet. Use `:::` separator so content with `:` works. |
 | `replace_lines` | `replace_lines:::PATH:::START:::END:::CONTENT` | Swap lines `[START, END]` (1-indexed, inclusive) with CONTENT. `END < START` = pure insert before line START. Empty CONTENT = delete. Receipt shows new line numbers + ±2 context. |
 | `paste` | `paste:::PATH:::CONTENT` | **NARROW USE:** replace ENTIRE file. Only for creating a new file or fully rewriting one. NOT for partial edits — `vim` is the default for those. Atomic, creates file + parent dirs if missing. CONTENT via triple-colon → holds any chars (`:`, quotes, braces, newlines). |
+| `append` | `append:::PATH:::CONTENT` | Append CONTENT to the end of a file, creating it if missing. No `wc` round-trip, no inverted-range `replace_lines` trick. Adds a missing trailing newline first so the block starts on its own line. |
 | `vim` | `vim:::PATH:::SCRIPT` | vim-flavored cursor-based multi-action edit. SCRIPT is parsed like a real vim macro. **DEFAULT EDIT OP** for any pattern-based edit. See [edits.md](edits.md) for full syntax reference. |
 | `replace` / `replace_dry` | `replace:::OLD:::NEW:::PATH` | Recursive find/replace across PATH (`replace_dry` = preview). Use `:::` separator when content has `:`. |
 | `validate` | `validate:PATH[:tool1,tool2][:verbose]` | Run registered validators matching PATH (by file extension). Optional `tool_filter` limits to named validators. Append `verbose` for uncapped errors + source context + raw stdout/stderr. Same validators that fire after every mutating op. |

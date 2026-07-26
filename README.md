@@ -160,14 +160,14 @@ Quick examples:
 Three ways to pass arguments. Full reference: [docs/input-forms.md](docs/input-forms.md).
 
 - **Colon-CLI** (default) — `read:PATH:OFFSET:LIMIT` (or `read:PATH:START-END` for an explicit, inclusive line range). Use `:::` when content contains colons: `edit:::OLD:::NEW:::PATH`.
-- **`@file` route** — JSON payload for `edit`/`replace_lines`/`paste`/`vim` when content is multi-line or shell-hostile: `edit:@.max/my-edit.json`.
+- **`@file` route** — JSON payload for `edit`/`replace_lines`/`paste`/`append`/`vim` when content is multi-line or shell-hostile: `edit:@.max/my-edit.json`.
 - **`batch:@file`** — mixed reads + writes in one round-trip: `batch:@.max/ops.json` (bare array or `{continue_on_error, ops}` wrapper).
 
 ---
 
 ## Validators — squiggle-on-save for the LLM
 
-Every mutating op (`edit`, `replace`, `replace_lines`, `paste`, `vim`) runs matching validators on the result. Syntax fail → atomic rollback. The model gets an immediate error receipt and retries cleanly.
+Every mutating op (`edit`, `replace`, `replace_lines`, `paste`, `append`, `vim`) runs matching validators on the result. Syntax fail → atomic rollback. The model gets an immediate error receipt and retries cleanly.
 
 Example: edit a `.json` file with a missing comma → `jsonlint` catches it → file reverts → receipt shows the parse error with line/col.
 

@@ -2,7 +2,7 @@
 
 ## What formatters are
 
-Formatters are the cosmetic counterpart to validators. After every mutating op — `edit`, `replace`, `replace_lines`, `paste`, `vim` — supertool runs the matching formatters against the result file, normalizing whitespace, quotes, and import order before validators check correctness.
+Formatters are the cosmetic counterpart to validators. After every mutating op — `edit`, `replace`, `replace_lines`, `paste`, `append`, `vim` — supertool runs the matching formatters against the result file, normalizing whitespace, quotes, and import order before validators check correctness.
 
 Run order:
 

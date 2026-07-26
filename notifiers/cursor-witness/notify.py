@@ -10,7 +10,7 @@ Wired via .supertool.json:
       "cursor-witness": {
         "cmd": "python3 {supertool_dir}/notifiers/cursor-witness/notify.py {op} {file} {line}",
         "match": "*",
-        "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"]
+        "hooks_into": ["edit", "replace", "replace_lines", "paste", "append", "vim"]
       }
     }
 

@@ -212,6 +212,7 @@ class TestFieldsFromSyntax:
             "replace_dry":   [("old", False, False), ("new", False, False), ("path", False, False)],
             "replace_lines": [("path", False, False), ("start", False, False), ("end", False, False), ("content", False, False)],
             "paste":         [("path", False, False), ("content", False, False)],
+            "append":        [("path", False, False), ("content", False, False)],
             "vim":           [("path", False, False), ("script", False, False)],
         }
         assert supertool._AT_FILE_BUILTIN_DEFAULTS == expected
@@ -224,7 +225,7 @@ class TestFieldsFromSyntax:
         """After any dispatch call the registry must contain the builtin write ops."""
         # Force a dispatch so the registry is built
         supertool.dispatch(f"read:{tmp_path}/nope")
-        for op in ("edit", "replace", "replace_dry", "replace_lines", "paste", "vim"):
+        for op in ("edit", "replace", "replace_dry", "replace_lines", "paste", "append", "vim"):
             assert supertool._at_file_fields(op), f"missing @file fields for op '{op}'"
 
 
