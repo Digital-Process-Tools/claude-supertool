@@ -3296,8 +3296,12 @@ def _atomic_write(path: str, content: str) -> None:
     # Byte-pattern warnings a syntax validator structurally cannot catch, raised
     # at the one place every mutating op passes through (#380).
     _warn = _sh_backslash_warning(path, content)
-    if _warn and _warn not in _WRITE_WARNINGS:
-        _WRITE_WARNINGS.append(_warn)
+    _key = os.path.abspath(path)
+    # A rollback rewrites the same path, so drop any stale entry for it
+    # first: the queue must describe the bytes currently on disk.
+    _drop_write_warnings(path)
+    if _warn:
+        _WRITE_WARNINGS.append((_key, _warn))
     real_path = os.path.realpath(path) if os.path.islink(path) else path
     target_dir = os.path.dirname(os.path.abspath(real_path)) or "."
     # Preserve the original file's mode (#259). mkstemp creates the temp file
@@ -3455,11 +3459,23 @@ _HEADER_ARG_MAX = 160
 _HEADER_ANCHOR_MAX = 60
 
 _SH_SUFFIXES = (".sh", ".bash", ".zsh", ".ksh")
-# `\\` at end-of-line in bash is an escaped backslash, NOT a line continuation.
-_TRAILING_DOUBLE_BACKSLASH = re.compile(r"\\\\[ \t]*\r?\n")
+# A run of backslashes immediately before a newline. Bash consumes them
+# pairwise from the left, so PARITY decides the meaning: an even run is all
+# escaped backslashes and the line genuinely ends, while an odd run leaves one
+# backslash over to continue the line. Only the even case is the bug.
+_TRAILING_BACKSLASH_RUN = re.compile(r"(\\+)\r?\n")
 
-# Warnings raised at the write chokepoint, drained by dispatch onto the receipt.
-_WRITE_WARNINGS: List[str] = []
+# Warnings raised at the write chokepoint, drained by dispatch onto the
+# receipt. Keyed by path so a rollback can retract the warning for the
+# content it just reverted — the bytes complained about are no longer on
+# disk, and a warning about them would be worse than none.
+_WRITE_WARNINGS: List[Tuple[str, str]] = []
+
+
+def _drop_write_warnings(path: str) -> None:
+    """Retract queued warnings for `path` — its write was rolled back."""
+    key = os.path.abspath(path)
+    _WRITE_WARNINGS[:] = [w for w in _WRITE_WARNINGS if w[0] != key]
 
 
 def _elide(s: str, limit: int) -> str:
@@ -3504,7 +3520,8 @@ def _sh_backslash_warning(path: str, content: str) -> str:
     """
     if not path.endswith(_SH_SUFFIXES):
         return ""
-    if not _TRAILING_DOUBLE_BACKSLASH.search(content):
+    if not any(len(m.group(1)) % 2 == 0
+               for m in _TRAILING_BACKSLASH_RUN.finditer(content)):
         return ""
     return (
         f"{mark('⚠')} {path}: a line ends with `\\\\`. In bash that is an "
@@ -10179,6 +10196,7 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
                         try:
                             with open(path, "wb") as fw:
                                 fw.write(pre_content)
+                            _drop_write_warnings(path)
                             fmt_rows.append(f"[rolled back] {result_name} failed; file restored")
                         except OSError as e:
                             fmt_rows.append(f"[ROLLBACK FAILED] {result_name}: {e}")
@@ -10218,6 +10236,7 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
                     try:
                         with open(path, "wb") as f:
                             f.write(pre_content)
+                        _drop_write_warnings(path)
                         diff_out += f"\n[rolled back] {name} regressed; file restored\n"
                     except OSError as e:
                         diff_out += f"\n[ROLLBACK FAILED] {name}: {e}\n"
@@ -11801,11 +11820,15 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
     # the diff below is the useful part and already shows what changed (#384).
     # A batch sub-op arrives with `arg` joined from its parts, which is exactly
     # the case the issue was filed about.
+    #
+    # Deferred, not applied here: on FAILURE no diff renders, and the verbatim
+    # header is then the only surviving copy of what the caller sent. Eliding
+    # it would take the reproduction material away at the one moment it is
+    # needed. So the compact form is computed now, while `parts` is in hand,
+    # and swapped in at the end only if the op succeeded.
+    _compact_header = ""
     if len(arg) > _HEADER_ARG_MAX:
-        _compact = _compact_header_arg(op, parts)
-        if _compact:
-            header = (f"--- {_compact}"
-                      f"{_NO_EXCLUDE_SUFFIX if no_exclude else ''} ---\n")
+        _compact_header = _compact_header_arg(op, parts)
 
     # #146: dispatch-level path containment. Each op has a known position(s)
     # of its path arg(s) in `parts`. _safe_path enforces cwd containment
@@ -12239,8 +12262,15 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
         pass  # observation must never break the call
 
     if _WRITE_WARNINGS:
-        body += "".join(_WRITE_WARNINGS)
+        body += "".join(w[1] for w in _WRITE_WARNINGS)
         _WRITE_WARNINGS.clear()
+
+    # Swap in the compact header only on success — see the note where it was
+    # built. `body` is the op's own receipt here; an ERROR means nothing was
+    # written, so nothing below the header shows what was sent.
+    if _compact_header and not body.lstrip().startswith("ERROR"):
+        header = (f"--- {_compact_header}"
+                  f"{_NO_EXCLUDE_SUFFIX if no_exclude else ''} ---\n")
     # Right file, wrong branch is silent until commit time, and supertool is
     # the thing that knows (#381). Success and failure both get it — a failed
     # edit is the exact moment a wrong-branch hypothesis should be available,

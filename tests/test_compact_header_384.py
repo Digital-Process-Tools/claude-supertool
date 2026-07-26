@@ -12,6 +12,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 import supertool
 
 
@@ -112,6 +114,29 @@ def test_long_replace_lines_header_keeps_the_range(tmp_path: Path) -> None:
     assert "new block" not in head
 
 
+def test_failed_edit_keeps_its_verbatim_header(tmp_path: Path) -> None:
+    """On failure no diff renders, so the header is the only surviving copy of
+    what the caller sent — eliding it takes the reproduction material away at
+    the one moment it is needed."""
+    f = tmp_path / "x.py"
+    f.write_text("something else entirely\n")
+    old = _long("old")
+    arg = f"edit:::{old}:::changed:::{f}"
+    out = supertool.dispatch(arg)
+    assert "ERROR: old string not found" in out
+    assert out.startswith(f"--- {arg} ---\n")
+    assert "line 19 of the old block here" in out
+
+
+def test_failed_write_keeps_its_verbatim_header(tmp_path: Path) -> None:
+    """Same rule for a write that never happened, whatever the reason."""
+    content = _long("pasted")
+    arg = f"paste:::{tmp_path}:::{content}"  # a directory — cannot be written
+    out = supertool.dispatch(arg)
+    assert "ERROR" in out
+    assert out.startswith(f"--- {arg} ---\n")
+
+
 def test_compact_header_helper_returns_empty_for_unknown_op() -> None:
     """A non-mutating op keeps its verbatim header rather than losing args."""
     assert supertool._compact_header_arg("grep", ["grep", "x", "y"]) == ""
@@ -179,6 +204,37 @@ def test_sh_helper_matches_only_the_shell_suffixes() -> None:
     assert supertool._sh_backslash_warning("a.zsh", bad)
     assert not supertool._sh_backslash_warning("a.py", bad)
     assert not supertool._sh_backslash_warning("a.sh", "cmd \\\n")
+
+
+@pytest.mark.parametrize("n,warns", [(1, False), (2, True), (3, False),
+                                     (4, True), (5, False)])
+def test_backslash_run_parity_decides(n: int, warns: bool) -> None:
+    """Bash consumes trailing backslashes pairwise from the left, so parity is
+    the whole question. A run of 3 is one escaped backslash plus a genuine
+    continuation — correct code, and a substring check for `\\\\` flags it."""
+    content = "cmd " + "\\" * n + "\n"
+    assert bool(supertool._sh_backslash_warning("a.sh", content)) is warns
+
+
+def test_rollback_retracts_its_warning(tmp_path: Path) -> None:
+    """The bytes complained about are no longer on disk after a rollback, and a
+    warning about them would be worse than none."""
+    f = tmp_path / "deploy.sh"
+    supertool._WRITE_WARNINGS.clear()
+    supertool._atomic_write(str(f), "cmd \\\\\n")
+    assert supertool._WRITE_WARNINGS, "warning was not queued"
+    supertool._drop_write_warnings(str(f))
+    assert supertool._WRITE_WARNINGS == []
+
+
+def test_rewriting_a_path_replaces_its_warning(tmp_path: Path) -> None:
+    """The queue describes what is on disk now, not every write that happened."""
+    f = tmp_path / "deploy.sh"
+    supertool._WRITE_WARNINGS.clear()
+    supertool._atomic_write(str(f), "cmd \\\\\n")
+    assert len(supertool._WRITE_WARNINGS) == 1
+    supertool._atomic_write(str(f), "cmd \\\n")   # fixed — a real continuation
+    assert supertool._WRITE_WARNINGS == []
 
 
 # ---------------------------------------------------------------------------
