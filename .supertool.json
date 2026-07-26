@@ -30,7 +30,7 @@
   "output-format": "Each op: header + body.\n```\n--- op:args ---\n(meta)\noutput\n```",
   "builtin-ops": {
     "read": {
-      "syntax": "read:PATH[:OFFSET:LIMIT]",
+      "syntax": "read:PATH[:OFFSET:LIMIT|:START-END|:full]",
       "description": "Read file (300 lines, 20KB cap)",
       "example": "read:supertool.py:1:50"
     },

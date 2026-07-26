@@ -159,7 +159,7 @@ Quick examples:
 
 Three ways to pass arguments. Full reference: [docs/input-forms.md](docs/input-forms.md).
 
-- **Colon-CLI** (default) — `read:PATH:OFFSET:LIMIT`. Use `:::` when content contains colons: `edit:::OLD:::NEW:::PATH`.
+- **Colon-CLI** (default) — `read:PATH:OFFSET:LIMIT` (or `read:PATH:START-END` for an explicit, inclusive line range). Use `:::` when content contains colons: `edit:::OLD:::NEW:::PATH`.
 - **`@file` route** — JSON payload for `edit`/`replace_lines`/`paste`/`vim` when content is multi-line or shell-hostile: `edit:@.max/my-edit.json`.
 - **`batch:@file`** — mixed reads + writes in one round-trip: `batch:@.max/ops.json` (bare array or `{continue_on_error, ops}` wrapper).
 

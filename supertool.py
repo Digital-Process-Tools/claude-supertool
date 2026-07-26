@@ -38,6 +38,7 @@ shell glob expansion:
 OPERATIONS
 ----------
     read:PATH                  Read file (first 300 lines, 20KB cap)
+    read:PATH:START-END        Read an explicit line range, inclusive
     read:PATH:OFFSET:LIMIT     Read with offset and line limit
     grep:PATTERN:PATH          Search pattern (10 results default).
                                 Auto-reads full file if PATH is a concrete
@@ -1209,6 +1210,33 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
         out.append("[complete file — no more lines]\n")
     out.append("\n")
     return "".join(out)
+
+
+_READ_RANGE_RE = re.compile(r"\d+-\d+")
+
+
+def _read_range_note(path: str, offset: int, limit: int, body: str) -> str:
+    """One-line nudge when `read:PATH:A:B` looks like a misread line range (#382).
+
+    `:A:B` is OFFSET:LIMIT, but it reads like START:END to anyone who has used
+    `sed -n 'A,Bp'`, and the overshoot is quiet — the output just looks long.
+    Fires only on the combination that is near-certain in the misread case and
+    rare otherwise: LIMIT > OFFSET (a real limit is seldom larger than the point
+    it starts from) *and* OFFSET+LIMIT running past EOF.
+    """
+    if offset <= 0 or limit <= 0 or limit <= offset:
+        return ""
+    if body.startswith("ERROR:"):
+        return ""
+    total = _count_lines(path)
+    if total <= 0 or offset + limit <= total:
+        return ""
+    emitted = max(0, total - offset)
+    return (
+        f"note: read {emitted} lines (offset {offset}, limit {limit}) — those "
+        f"args are OFFSET:LIMIT, not START:END. For lines {offset}-{limit}, "
+        f"use read:{path}:{offset}-{limit}\n"
+    )
 
 
 def op_read(path: str, offset: int = 0, limit: int = 0,
@@ -11522,20 +11550,40 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
             offset = 0
             limit = 0
             force_full = False
+            range_form = False
             if len(parts) > 2 and parts[2]:
                 if parts[2] in ("full", "raw"):
                     force_full = True
+                elif _READ_RANGE_RE.fullmatch(parts[2]):
+                    r_start, r_end = (int(x) for x in parts[2].split("-"))
+                    if r_start < 1:
+                        return header + "ERROR: read range START must be >= 1\n"
+                    if r_end < r_start:
+                        return header + (
+                            f"ERROR: read range END ({r_end}) is before "
+                            f"START ({r_start})\n"
+                        )
+                    offset = r_start - 1
+                    limit = r_end - r_start + 1
+                    range_form = True
                 else:
                     offset = int(parts[2])
             if len(parts) > 3 and parts[3]:
                 if parts[3] in ("full", "raw"):
                     force_full = True
+                elif range_form:
+                    return header + (
+                        f"ERROR: read:PATH:START-END takes no LIMIT "
+                        f"(got {parts[3]!r}) — the range already bounds it\n"
+                    )
                 else:
                     limit = int(parts[3])
             grep_filter = ""
             if len(parts) > 4 and parts[4].startswith("grep="):
                 grep_filter = parts[4][5:]
             body = op_read(path, offset, limit, grep_filter, force_full)
+            if not range_form:
+                body += _read_range_note(path, offset, limit, body)
         elif op == "grep":
             pattern, path, limit, context, count_only, no_auto_read = \
                 _parse_grep_args(parts)
