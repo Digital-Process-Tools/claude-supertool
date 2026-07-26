@@ -4,6 +4,8 @@ Mutating ops for modifying files. Every edit op runs matching validators on the 
 
 **Default edit op:** `vim`. Use `edit` for single known snippets, `replace` for cross-file renames, `paste` only for full rewrites or new files.
 
+Every mutating op closes with `[branch: X]` — right file, wrong branch is otherwise silent until commit time. A failed `edit` also reports why the anchor probably missed: doubled backslashes (TOML literal strings don't process escapes), a whitespace-only difference with its line number, or the nearest line by similarity.
+
 ## Ops
 
 | Op | Syntax | What it does |

@@ -3327,6 +3327,124 @@ def _atomic_write(path: str, content: str) -> None:
         raise
 
 
+_BRANCH_CACHE: List[Optional[str]] = [None]
+
+# Above this, the nearest-line scan is skipped — the diagnostic is a courtesy
+# on a failure path and must never become the slow part of a failed edit.
+_EDIT_DIAG_MAX_LINES = 20000
+
+
+def _current_branch() -> str:
+    """Current git branch, or "" when there isn't one to report.
+
+    Cached for the process: a single supertool invocation cannot change branch
+    mid-call, and a batch of edits would otherwise pay a subprocess each.
+    Returns "" for a non-repo, a missing git, or any error — the branch is a
+    convenience on the receipt and must never be the thing that fails an op.
+    """
+    if _BRANCH_CACHE[0] is None:
+        branch = ""
+        try:
+            # symbolic-ref, not rev-parse: it resolves an *unborn* branch (a
+            # fresh `git init` before the first commit), where rev-parse fails
+            # with "ambiguous argument 'HEAD'". It exits non-zero on a detached
+            # HEAD, which is the one case worth a second call.
+            r = subprocess.run(
+                ["git", "symbolic-ref", "--short", "-q", "HEAD"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if r.returncode == 0:
+                branch = r.stdout.strip()
+            else:
+                d = subprocess.run(
+                    ["git", "rev-parse", "--short", "HEAD"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if d.returncode == 0 and d.stdout.strip():
+                    branch = f"detached HEAD at {d.stdout.strip()}"
+        except (subprocess.TimeoutExpired, OSError):
+            branch = ""
+        _BRANCH_CACHE[0] = branch
+    return _BRANCH_CACHE[0] or ""
+
+
+def _branch_line() -> str:
+    """`[branch: X]` footer for a mutating op (#381).
+
+    Two near-misses in one session were the same shape — right file, wrong
+    branch — and supertool is the thing that knows. A handful of tokens per
+    call, against a class of mistake that is otherwise silent until commit time.
+    """
+    branch = _current_branch()
+    return f"[branch: {branch}]\n" if branch else ""
+
+
+def _normalise_ws(s: str) -> str:
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _edit_miss_diagnostic(old: str, content: str) -> str:
+    """Why `old` didn't match (#380).
+
+    `ERROR: old string not found` was the whole message, so the natural next
+    move was a `read` round-trip — the one the payload route exists to save.
+    These are the three ways a payload comes back close but not exact, ranked
+    by how often each was the real cause.
+    """
+    hints: List[str] = []
+
+    # 1. Doubled backslashes. TOML literal strings ('''...''') do not process
+    #    escapes, so `\\302` in a payload is backslash-backslash-3-0-2 and can
+    #    never match a file holding `\302`.
+    if "\\\\" in old and old.replace("\\\\", "\\") in content:
+        hints.append(
+            "the file matches with SINGLE backslashes — TOML literal strings "
+            "('''...''') do not process escapes, so `\\\\` in the payload is "
+            "two literal backslashes"
+        )
+
+    lines = content.splitlines()
+    if len(lines) > _EDIT_DIAG_MAX_LINES:
+        return "".join(f"  ↳ {h}\n" for h in hints)
+
+    # 2. Whitespace. Indentation drift is the other half of "close but not
+    #    exact", and it is invisible in a diff read by eye.
+    if not hints:
+        norm_old = _normalise_ws(old)
+        if norm_old and "\n" not in old.strip():
+            for i, ln in enumerate(lines, 1):
+                if _normalise_ws(ln) == norm_old:
+                    hints.append(
+                        f"line {i} matches ignoring whitespace: {ln.strip()!r} "
+                        f"— check indentation"
+                    )
+                    break
+
+    # 3. Nearest line. Even one line of "closest is line 142: ..." turns a
+    #    three-call debug loop into one.
+    if not hints:
+        first = next((ln for ln in old.splitlines() if ln.strip()), "")
+        if first:
+            best_ratio, best_i = 0.0, 0
+            matcher = difflib.SequenceMatcher(a=first, autojunk=False)
+            for i, ln in enumerate(lines, 1):
+                matcher.set_seq2(ln)
+                if matcher.real_quick_ratio() <= best_ratio:
+                    continue
+                if matcher.quick_ratio() <= best_ratio:
+                    continue
+                ratio = matcher.ratio()
+                if ratio > best_ratio:
+                    best_ratio, best_i = ratio, i
+            if best_ratio >= 0.6:
+                hints.append(
+                    f"nearest match at line {best_i} ({best_ratio:.0%}): "
+                    f"{lines[best_i - 1]!r}"
+                )
+
+    return "".join(f"  ↳ {h}\n" for h in hints)
+
+
 def op_edit(old: str, new: str, path: str) -> str:
     """Single-file, single-occurrence edit — mirrors native Edit semantics.
 
@@ -3354,7 +3472,8 @@ def op_edit(old: str, new: str, path: str) -> str:
 
     count = content.count(old)
     if count == 0:
-        return f"ERROR: old string not found in {path}\n"
+        return (f"ERROR: old string not found in {path}\n"
+                + _edit_miss_diagnostic(old, content))
     if count > 1:
         return (
             f"ERROR: old string found {count} times in {path} — ambiguous. "
@@ -12029,6 +12148,13 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
         _notify_read_op(op, parts)
     except Exception:
         pass  # observation must never break the call
+
+    # Right file, wrong branch is silent until commit time, and supertool is
+    # the thing that knows (#381). Success and failure both get it — a failed
+    # edit is the exact moment a wrong-branch hypothesis should be available,
+    # instead of being reached for only after re-reading the file.
+    if op in _OP_TARGETS:
+        body += _branch_line()
 
     return header + body
 
