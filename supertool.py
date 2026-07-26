@@ -1306,12 +1306,16 @@ def _literal_note(pattern: str, count: int) -> str:
             f"match(es) for {pattern!r})\n")
 
 
-def _count_lines(path: str) -> int:
+def _count_lines(path: str, on_error: int = 0) -> int:
     """Count lines in a file cheaply, streaming in binary (#362).
 
-    Used by the glob:/grep: auto-read line cap so a file under the byte cap but
-    with many lines isn't fully dumped. Returns a large sentinel on read error
-    so a file we can't measure is treated as over-cap (skip auto-read)."""
+    `on_error` is what an unreadable file counts as, because the callers want
+    opposite things and one hardcoded answer is wrong for the other (#388). The
+    glob:/grep: auto-read line cap passes `MAX_AUTOREAD_LINES + 1` so a file it
+    cannot measure is treated as over-cap and left unread — failing closed.
+    `map` and the workspace summary keep the default 0, since a sentinel would
+    render as a wildly wrong line count in a listing.
+    """
     try:
         count = 0
         last = b""
@@ -1326,7 +1330,7 @@ def _count_lines(path: str) -> int:
             count += 1
         return count
     except OSError:
-        return MAX_AUTOREAD_LINES + 1
+        return on_error
 
 
 def op_grep(pattern: str, path: str = ".", limit: int = 0,
@@ -1472,7 +1476,7 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
             and os.path.isfile(path)
             and os.path.getsize(path) < _get_op_int("read", "max_bytes", MAX_READ_BYTES)):
         line_cap = _get_op_int("read", "max_autoread_lines", MAX_AUTOREAD_LINES)
-        if _count_lines(path) > line_cap:
+        if _count_lines(path, on_error=MAX_AUTOREAD_LINES + 1) > line_cap:
             out.append(f"[auto-read skipped: > {line_cap} lines — "
                        f"read:{path}:full to see it]\n")
         else:
@@ -1819,7 +1823,7 @@ def op_glob(pattern: str, no_exclude: bool = False, no_auto_read: bool = False) 
     # Gated on BOTH byte size and line count (#362): see op_grep for rationale.
     if not no_auto_read and len(files) == 1 and os.path.getsize(files[0]) < _get_op_int("read", "max_bytes", MAX_READ_BYTES):
         line_cap = _get_op_int("read", "max_autoread_lines", MAX_AUTOREAD_LINES)
-        if _count_lines(files[0]) > line_cap:
+        if _count_lines(files[0], on_error=MAX_AUTOREAD_LINES + 1) > line_cap:
             out.append(f"[auto-read skipped: > {line_cap} lines — "
                        f"read:{files[0]}:full to see it]\n")
         else:
@@ -2602,15 +2606,6 @@ def _format_ctags_symbols(
 _MAP_EXTENSIONS = frozenset(
     list(_TS_LANG_MAP.keys()) + list(_REGEX_PATTERNS.keys())
 )
-
-
-def _count_lines(path: str) -> int:
-    """Count lines in a file (fast, doesn't read into memory if big)."""
-    try:
-        with open(path, "rb") as f:
-            return sum(1 for _ in f)
-    except OSError:
-        return 0
 
 
 def _collect_files(
