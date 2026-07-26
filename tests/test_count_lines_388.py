@@ -56,14 +56,26 @@ def test_unreadable_can_fail_closed() -> None:
 
 
 def test_only_one_definition_survives() -> None:
-    """The bug was a second module-scope def silently shadowing the first."""
+    """The bug was a second module-scope def silently shadowing the first.
+
+    Parsed rather than grepped: a string search would miss an indented or
+    nested duplicate and could be tripped by the name appearing in a docstring.
+    """
+    import ast
     import inspect
-    src = inspect.getsource(supertool)
-    assert src.count("\ndef _count_lines(") == 1
+    tree = ast.parse(inspect.getsource(supertool))
+    defs = [n for n in tree.body
+            if isinstance(n, ast.FunctionDef) and n.name == "_count_lines"]
+    assert len(defs) == 1, f"{len(defs)} module-scope definitions"
 
 
+# getattr, not a bare os.geteuid() — a skipif condition is evaluated at
+# COLLECTION time, and os.geteuid does not exist on Windows, so naming it
+# directly raises AttributeError during collection and takes the whole module
+# down before the skipif on the line above can apply.
 @pytest.mark.skipif(os.name == "nt", reason="chmod 000 is not a read barrier on Windows")
-@pytest.mark.skipif(os.geteuid() == 0, reason="root reads regardless of mode")
+@pytest.mark.skipif(getattr(os, "geteuid", lambda: 1)() == 0,
+                    reason="root reads regardless of mode")
 def test_permission_denied_uses_the_error_value(tmp_path: Path) -> None:
     f = tmp_path / "secret.txt"
     f.write_bytes(b"a\nb\n")
