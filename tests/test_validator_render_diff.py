@@ -21,7 +21,7 @@ def test_render_diff_unchanged_falls_through_to_primary_metric() -> None:
     after = {"tool": "phpunit", "count": 0, "ok": True, "metrics": {"tests_total": 7}}
     rows = supertool._validator_render_diff(before, after)
     joined = "".join(rows)
-    assert "unchanged" in joined
+    assert "no new errors" in joined
     assert "tests_total" in joined
 
 
@@ -31,7 +31,7 @@ def test_render_diff_unchanged_no_metrics() -> None:
     after = {"tool": "phpstan", "count": 0, "ok": True}
     rows = supertool._validator_render_diff(before, after)
     joined = "".join(rows)
-    assert "unchanged" in joined
+    assert "no new errors" in joined
 
 
 def test_render_diff_metric_with_non_numeric_skipped() -> None:
@@ -65,7 +65,7 @@ def test_render_diff_unchanged_timeout_marker() -> None:
     rows = supertool._validator_render_diff(before, after)
     joined = "".join(rows)
     assert "(timeout)" in joined
-    assert "(unchanged)" not in joined
+    assert "(no new errors)" not in joined
 
 
 def test_render_diff_unchanged_real_err_labelled_pre_existing() -> None:
@@ -79,7 +79,7 @@ def test_render_diff_unchanged_real_err_labelled_pre_existing() -> None:
     joined = "".join(rows)
     assert "pre-existing" in joined
     assert "not from this edit" in joined
-    assert "(unchanged)" not in joined
+    assert "(no new errors)" not in joined
     assert "(timeout)" not in joined
     # Error detail surfaced inline.
     assert "trailing comma" in joined

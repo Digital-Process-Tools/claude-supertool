@@ -1378,7 +1378,8 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
         # Could be a glob pattern — check if it expands to anything
         from glob import glob as _glob
         if not _glob(path, recursive=True):
-            return f"ERROR: path not found: {path} (cwd: {os.getcwd()}) — wrong CWD?\n"
+            return (f"ERROR: path not found: {path} (cwd: {os.getcwd()}) — wrong CWD? "
+                    f"Prefix the call with cwd:PATH to run it from elsewhere.\n")
 
     excl = _get_exclude_paths("grep", no_exclude)
 
@@ -3292,6 +3293,11 @@ def _atomic_write(path: str, content: str) -> None:
     # Containment check happens against the symlink target (real path) so a
     # symlinked write doesn't escape cwd via the symlink itself.
     _safe_path(path)
+    # Byte-pattern warnings a syntax validator structurally cannot catch, raised
+    # at the one place every mutating op passes through (#380).
+    _warn = _sh_backslash_warning(path, content)
+    if _warn and _warn not in _WRITE_WARNINGS:
+        _WRITE_WARNINGS.append(_warn)
     real_path = os.path.realpath(path) if os.path.islink(path) else path
     target_dir = os.path.dirname(os.path.abspath(real_path)) or "."
     # Preserve the original file's mode (#259). mkstemp creates the temp file
@@ -3440,6 +3446,72 @@ def _edit_miss_diagnostic(old: str, content: str) -> str:
                 )
 
     return "".join(f"  {mark('↳')} {h}\n" for h in hints)
+# A mutating op prints its full arguments in the section header and then the
+# diff underneath, so for a content-heavy edit the old and new strings appear
+# twice. Above this many characters the header is rebuilt from the parsed
+# fields instead — the diff below is the useful part and already shows what
+# changed. Short ops keep their verbatim header (#384).
+_HEADER_ARG_MAX = 160
+_HEADER_ANCHOR_MAX = 60
+
+_SH_SUFFIXES = (".sh", ".bash", ".zsh", ".ksh")
+# `\\` at end-of-line in bash is an escaped backslash, NOT a line continuation.
+_TRAILING_DOUBLE_BACKSLASH = re.compile(r"\\\\[ \t]*\r?\n")
+
+# Warnings raised at the write chokepoint, drained by dispatch onto the receipt.
+_WRITE_WARNINGS: List[str] = []
+
+
+def _elide(s: str, limit: int) -> str:
+    """One-line, length-capped rendering of an op argument for a header.
+
+    Reports the elided character count rather than trailing off — a silent
+    truncation reads as "that was the whole argument".
+    """
+    s = s.replace("\r\n", "⏎").replace("\n", "⏎")
+    if len(s) <= limit:
+        return s
+    return f"{s[:limit]}… (+{len(s) - limit} chars)"
+
+
+def _compact_header_arg(op: str, parts: List[str]) -> str:
+    """Identifying header for a content-heavy mutating op, or "" to keep the
+    verbatim one. Each op keeps whatever identifies the *target* — path, line
+    range, anchor — and drops the content the diff is about to show anyway."""
+    def _p(i: int) -> str:
+        return parts[i] if len(parts) > i else ""
+
+    if op in ("edit", "replace", "replace_dry"):
+        return f'{op}: "{_elide(_p(1), _HEADER_ANCHOR_MAX)}" → {_p(3)}'
+    if op == "replace_lines":
+        return f"{op}: {_p(1)} lines {_p(2)}-{_p(3)}"
+    if op in ("paste", "append"):
+        content = ":".join(parts[2:])
+        return f"{op}: {_p(1)} ({len(content)} chars)"
+    if op == "vim":
+        return f"{op}: {_p(1)} {_elide(':'.join(parts[2:]), _HEADER_ANCHOR_MAX)}"
+    return ""
+
+
+def _sh_backslash_warning(path: str, content: str) -> str:
+    """Flag `\\\\` at end-of-line in a shell script (#380).
+
+    The trap is that getting the escaping wrong does not always fail to match —
+    sometimes it writes. `FOO=$(cmd \\\\` + newline is syntactically valid bash
+    (an escaped backslash, then a new command), passes `bash -n`, passes the
+    bash-check validator, and does something entirely different from what was
+    meant. The validator cannot see it; only the byte pattern can.
+    """
+    if not path.endswith(_SH_SUFFIXES):
+        return ""
+    if not _TRAILING_DOUBLE_BACKSLASH.search(content):
+        return ""
+    return (
+        f"{mark('⚠')} {path}: a line ends with `\\\\`. In bash that is an "
+        f"escaped backslash, not a line continuation — it parses cleanly and "
+        f"runs differently. TOML literal strings ('''...''') preserve "
+        f"backslashes verbatim, so `\\\\` in a payload stays two.\n"
+    )
 
 
 def op_edit(old: str, new: str, path: str) -> str:
@@ -9562,10 +9634,13 @@ def _validator_render_diff(before: Optional[Dict[str, Any]], after: Dict[str, An
                     primary = (k, a_metrics[k]); break
             if primary is not None:
                 status = f"ok {primary[0]}={primary[1]}"
-                return [f"{tool:12s}: {status:<10}  {'(unchanged)':<11}  {time_col:>5}"]
+                return [f"{tool:12s}: {status:<10}  {'(no new errors)':<15}  {time_col:>5}"]
         status = "ok" if a_ok else f"{a_count} err"
         if a_ok:
-            marker_col = "(unchanged)"
+            # Not "(unchanged)" — that reads as "the file is unchanged", which is
+            # the opposite of what just happened. This column reports the delta in
+            # the validator's own result (#380).
+            marker_col = "(no new errors)"
         elif after.get("timeout"):
             marker_col = "(timeout)"
         else:
@@ -11720,6 +11795,18 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
     # style escapes. Only colon-CLI input needs `_decode_escapes`.
     _dec = (lambda s: s) if _at_file_used else _decode_escapes
 
+    # A content-heavy mutating op echoes its old and new strings in the header
+    # and then again in the diff underneath. Rebuild the header from the parsed
+    # fields once the arguments are long enough for that to cost real tokens —
+    # the diff below is the useful part and already shows what changed (#384).
+    # A batch sub-op arrives with `arg` joined from its parts, which is exactly
+    # the case the issue was filed about.
+    if len(arg) > _HEADER_ARG_MAX:
+        _compact = _compact_header_arg(op, parts)
+        if _compact:
+            header = (f"--- {_compact}"
+                      f"{_NO_EXCLUDE_SUFFIX if no_exclude else ''} ---\n")
+
     # #146: dispatch-level path containment. Each op has a known position(s)
     # of its path arg(s) in `parts`. _safe_path enforces cwd containment
     # unless SUPERTOOL_ALLOW_OUTSIDE_CWD=1 is set. Chokepoint coverage
@@ -12151,6 +12238,9 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
     except Exception:
         pass  # observation must never break the call
 
+    if _WRITE_WARNINGS:
+        body += "".join(_WRITE_WARNINGS)
+        _WRITE_WARNINGS.clear()
     # Right file, wrong branch is silent until commit time, and supertool is
     # the thing that knows (#381). Success and failure both get it — a failed
     # edit is the exact moment a wrong-branch hypothesis should be available,

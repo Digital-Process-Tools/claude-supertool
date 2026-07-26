@@ -297,7 +297,7 @@ def test_render_diff_unchanged() -> None:
     before = {"tool": "t", "ok": True, "count": 0, "errors": []}
     after = {"tool": "t", "ok": True, "count": 0, "errors": [], "elapsed_s": 1.2}
     lines = supertool._validator_render_diff(before, after)
-    assert "(unchanged)" in lines[0]
+    assert "(no new errors)" in lines[0]
     assert "1.2s" in lines[0]
 
 
@@ -324,7 +324,7 @@ def test_render_diff_elapsed_missing_no_crash() -> None:
     before = {"tool": "t", "ok": True, "count": 0, "errors": []}
     after = {"tool": "t", "ok": True, "count": 0, "errors": []}
     lines = supertool._validator_render_diff(before, after)
-    assert "(unchanged)" in lines[0]
+    assert "(no new errors)" in lines[0]
 
 
 def test_render_diff_skipped_shows_dash() -> None:
