@@ -3492,6 +3492,20 @@ def _drop_write_warnings(path: str) -> None:
     _WRITE_WARNINGS[:] = [w for w in _WRITE_WARNINGS if w[0] != key]
 
 
+def _retract_write(path: str) -> None:
+    """A rollback reverted a write: un-count it and drop its warnings.
+
+    Both rollback paths restore the previous bytes with a raw write that never
+    reaches `_atomic_write`, so without this the op still looks like it wrote.
+    That matters beyond tidiness: the compact header is gated on the counter,
+    and a change that did not stick leaves no diff to read it from — the same
+    reproducibility gap the header rule exists to avoid.
+    """
+    _drop_write_warnings(path)
+    if _WRITE_COUNT[0] > 0:
+        _WRITE_COUNT[0] -= 1
+
+
 def _elide(s: str, limit: int) -> str:
     """One-line, length-capped rendering of an op argument for a header.
 
@@ -10223,7 +10237,7 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
                         try:
                             with open(path, "wb") as fw:
                                 fw.write(pre_content)
-                            _drop_write_warnings(path)
+                            _retract_write(path)
                             fmt_rows.append(f"[rolled back] {result_name} failed; file restored")
                         except OSError as e:
                             fmt_rows.append(f"[ROLLBACK FAILED] {result_name}: {e}")
@@ -10263,7 +10277,7 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
                     try:
                         with open(path, "wb") as f:
                             f.write(pre_content)
-                        _drop_write_warnings(path)
+                        _retract_write(path)
                         diff_out += f"\n[rolled back] {name} regressed; file restored\n"
                     except OSError as e:
                         diff_out += f"\n[ROLLBACK FAILED] {name}: {e}\n"

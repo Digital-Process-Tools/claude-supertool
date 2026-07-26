@@ -262,6 +262,23 @@ def test_backslash_run_parity_decides(n: int, warns: bool) -> None:
     assert bool(supertool._sh_backslash_warning("a.sh", content)) is warns
 
 
+def test_rollback_un_counts_the_write(tmp_path: Path) -> None:
+    """A change that did not stick leaves no diff to read the arguments from,
+    so it must not be treated as a write for the header rule either."""
+    f = tmp_path / "x.py"
+    supertool._WRITE_COUNT[0] = 0
+    supertool._atomic_write(str(f), "a = 1\n")
+    assert supertool._WRITE_COUNT[0] == 1
+    supertool._retract_write(str(f))
+    assert supertool._WRITE_COUNT[0] == 0
+
+
+def test_retract_never_drives_the_counter_negative(tmp_path: Path) -> None:
+    supertool._WRITE_COUNT[0] = 0
+    supertool._retract_write(str(tmp_path / "never-written.py"))
+    assert supertool._WRITE_COUNT[0] == 0
+
+
 def test_rollback_retracts_its_warning(tmp_path: Path) -> None:
     """The bytes complained about are no longer on disk after a rollback, and a
     warning about them would be worse than none."""
