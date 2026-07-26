@@ -18,6 +18,8 @@ The trap to avoid: writing a payload with `cat > .max/x.json <<'EOF'` and then r
 
 Most ops take arguments via `:` — `read:PATH:OFFSET:LIMIT`, `grep:PATTERN:PATH:LIMIT`. When content itself contains colons (code, SQL, timestamps), switch to `:::` triple-colon separators: `edit:::OLD:::NEW:::PATH`.
 
+`read` also accepts an explicit line range, `read:PATH:START-END`, inclusive on both ends. Prefer it whenever you know the lines you want: `:OFFSET:LIMIT` reads like `start:end` but is not, and the overshoot is silent — `read:file.py:352:372` returns line 353 onward for 372 lines, not lines 352 to 372.
+
 ## `@file` route — long or structured payloads
 
 Mutating ops (`edit`, `replace`, `replace_lines`, `paste`, `vim`) accept a payload file instead of inline args. Pass the path with an `@` prefix; use `@-` for stdin.
