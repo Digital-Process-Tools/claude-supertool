@@ -2,7 +2,7 @@
 
 ## What validators are
 
-Validators are squiggle-on-save for the LLM. After every mutating op — `edit`, `replace`, `replace_lines`, `paste`, `vim` — supertool runs the matching validators against the result file. If one fails and `rollback_on_fail: true` is set, the file reverts atomically to its pre-edit state and the model gets an immediate error receipt with the parse error, line number, and column. No broken files sitting around. No "edit succeeded, discovered it three turns later."
+Validators are squiggle-on-save for the LLM. After every mutating op — `edit`, `replace`, `replace_lines`, `paste`, `append`, `vim` — supertool runs the matching validators against the result file. If one fails and `rollback_on_fail: true` is set, the file reverts atomically to its pre-edit state and the model gets an immediate error receipt with the parse error, line number, and column. No broken files sitting around. No "edit succeeded, discovered it three turns later."
 
 The model retries with real information instead of hallucinating a fix.
 
@@ -295,7 +295,7 @@ Each rule is gated by (all optional):
 
 | field | meaning | default |
 |-------|---------|---------|
-| `hooks_into` | ops that trigger the rule | all mutating (`edit`, `paste`, `replace`, `replace_lines`, `vim`) |
+| `hooks_into` | ops that trigger the rule | all mutating (`edit`, `paste`, `append`, `replace`, `replace_lines`, `vim`) |
 | `match` | path glob | `*` |
 | `when` | `new-file` \\| `existing-file` \\| `always` — gated on whether the file existed before the op | `always` |
 | `contains` | regex tested against the **content the op added** (lines present after but not before) — fires only when the op *introduces* the pattern, not when the file already held it | — (no content gate) |

@@ -5,7 +5,7 @@
   "_comment_advice": "Non-blocking [advice] lines emitted after a mutating op. Each rule: hooks_into (ops, default all mutating), match (path glob), when (new-file|existing-file|always), contains (regex over ADDED content), resolve/resolveFromValidator (subprocess emitting a would-be target via exit 3 + stderr), message ({target}/{path}/{op} interpolate). See docs/validators.md#advice.",
   "advice": {
     "newTest": {
-      "hooks_into": ["paste"],
+      "hooks_into": ["paste", "append"],
       "match": "*.php",
       "when": "new-file",
       "resolveFromValidator": true,
@@ -191,6 +191,11 @@
       "description": "Swap lines [START,END] (1-indexed inclusive) with CONTENT. END<START = insert before START. Empty CONTENT = delete.",
       "example": "replace_lines:::src/app/Foo.py:::42:::45:::    return x"
     },
+    "append": {
+      "syntax": "append:::PATH:::CONTENT  |  append:@payload",
+      "description": "Append CONTENT to end of file. Creates it if missing. Adds a missing trailing newline first. Use instead of wc + replace_lines with an inverted range.",
+      "example": "append:::docs/notes.md:::## New section\\n"
+    },
     "paste": {
       "syntax": "paste:::PATH:::CONTENT  |  paste:@payload",
       "description": "Replace entire file with CONTENT. Atomic, creates file (+ parent dirs) if missing. Use for full-file rewrites.",
@@ -360,7 +365,7 @@
         "edit",
         "replace",
         "replace_lines",
-        "paste",
+        "paste", "append",
         "vim"
       ],
       "rollback_on_fail": true,
@@ -373,7 +378,7 @@
         "edit",
         "replace",
         "replace_lines",
-        "paste",
+        "paste", "append",
         "vim"
       ],
       "rollback_on_fail": true,
@@ -386,7 +391,7 @@
         "edit",
         "replace",
         "replace_lines",
-        "paste",
+        "paste", "append",
         "vim"
       ],
       "rollback_on_fail": true,
@@ -399,7 +404,7 @@
         "edit",
         "replace",
         "replace_lines",
-        "paste",
+        "paste", "append",
         "vim"
       ],
       "rollback_on_fail": true,
@@ -412,7 +417,7 @@
         "edit",
         "replace",
         "replace_lines",
-        "paste",
+        "paste", "append",
         "vim"
       ],
       "rollback_on_fail": true,
@@ -426,7 +431,7 @@
         "edit",
         "replace",
         "replace_lines",
-        "paste",
+        "paste", "append",
         "vim"
       ],
       "rollback_on_fail": true,
@@ -439,7 +444,7 @@
         "edit",
         "replace",
         "replace_lines",
-        "paste",
+        "paste", "append",
         "vim"
       ],
       "rollback_on_fail": true,
@@ -452,7 +457,7 @@
         "edit",
         "replace",
         "replace_lines",
-        "paste",
+        "paste", "append",
         "vim"
       ],
       "timeout": 60
@@ -464,7 +469,7 @@
         "edit",
         "replace",
         "replace_lines",
-        "paste",
+        "paste", "append",
         "vim"
       ],
       "rollback_on_fail": true,
@@ -477,7 +482,7 @@
         "edit",
         "replace",
         "replace_lines",
-        "paste",
+        "paste", "append",
         "vim"
       ],
       "rollback_on_fail": true,
@@ -490,7 +495,7 @@
         "edit",
         "replace",
         "replace_lines",
-        "paste",
+        "paste", "append",
         "vim"
       ],
       "rollback_on_fail": true,
@@ -503,7 +508,7 @@
         "edit",
         "replace",
         "replace_lines",
-        "paste",
+        "paste", "append",
         "vim"
       ],
       "rollback_on_fail": false,
@@ -516,7 +521,7 @@
         "edit",
         "replace",
         "replace_lines",
-        "paste",
+        "paste", "append",
         "vim"
       ],
       "rollback_on_fail": true,
@@ -529,7 +534,7 @@
         "edit",
         "replace",
         "replace_lines",
-        "paste",
+        "paste", "append",
         "vim"
       ],
       "rollback_on_fail": false,
@@ -543,7 +548,7 @@
         "edit",
         "replace",
         "replace_lines",
-        "paste",
+        "paste", "append",
         "vim"
       ],
       "rollback_on_fail": false,
@@ -557,7 +562,7 @@
         "edit",
         "replace",
         "replace_lines",
-        "paste",
+        "paste", "append",
         "vim"
       ],
       "rollback_on_fail": false,
@@ -571,7 +576,7 @@
         "edit",
         "replace",
         "replace_lines",
-        "paste",
+        "paste", "append",
         "vim"
       ],
       "rollback_on_fail": true,
@@ -584,7 +589,7 @@
         "edit",
         "replace",
         "replace_lines",
-        "paste",
+        "paste", "append",
         "vim"
       ],
       "rollback_on_fail": false,
@@ -597,7 +602,7 @@
         "edit",
         "replace",
         "replace_lines",
-        "paste",
+        "paste", "append",
         "vim"
       ],
       "rollback_on_fail": true,
@@ -610,7 +615,7 @@
         "edit",
         "replace",
         "replace_lines",
-        "paste",
+        "paste", "append",
         "vim"
       ],
       "rollback_on_fail": false,
@@ -644,7 +649,7 @@
         "edit",
         "replace",
         "replace_lines",
-        "paste",
+        "paste", "append",
         "vim"
       ],
       "rollback_on_fail": false,
@@ -659,7 +664,7 @@
         "edit",
         "replace",
         "replace_lines",
-        "paste",
+        "paste", "append",
         "vim"
       ],
       "rollback_on_fail": false,
@@ -672,7 +677,7 @@
         "edit",
         "replace",
         "replace_lines",
-        "paste",
+        "paste", "append",
         "vim"
       ],
       "rollback_on_fail": false,
@@ -687,7 +692,7 @@
         "edit",
         "replace",
         "replace_lines",
-        "paste",
+        "paste", "append",
         "vim"
       ],
       "rollback_on_fail": false,
@@ -700,7 +705,7 @@
         "edit",
         "replace",
         "replace_lines",
-        "paste",
+        "paste", "append",
         "vim"
       ],
       "rollback_on_fail": false,
@@ -713,7 +718,7 @@
         "edit",
         "replace",
         "replace_lines",
-        "paste",
+        "paste", "append",
         "vim"
       ],
       "rollback_on_fail": false,
@@ -726,7 +731,7 @@
         "edit",
         "replace",
         "replace_lines",
-        "paste",
+        "paste", "append",
         "vim"
       ],
       "rollback_on_fail": false,
@@ -739,7 +744,7 @@
         "edit",
         "replace",
         "replace_lines",
-        "paste",
+        "paste", "append",
         "vim"
       ],
       "rollback_on_fail": false,
@@ -752,7 +757,7 @@
         "edit",
         "replace",
         "replace_lines",
-        "paste",
+        "paste", "append",
         "vim"
       ],
       "rollback_on_fail": false,
@@ -765,7 +770,7 @@
         "edit",
         "replace",
         "replace_lines",
-        "paste",
+        "paste", "append",
         "vim"
       ],
       "rollback_on_fail": false,
@@ -778,7 +783,7 @@
         "edit",
         "replace",
         "replace_lines",
-        "paste",
+        "paste", "append",
         "vim"
       ],
       "rollback_on_fail": false,

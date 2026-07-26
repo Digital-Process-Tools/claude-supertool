@@ -165,6 +165,13 @@
       "status": 1,
       "hint": true
     },
+    "append": {
+      "syntax": "append:::PATH:::CONTENT",
+      "description": "Append CONTENT to end of file. Creates it if missing. No wc round-trip, no inverted-range trick. Adds a missing trailing newline first so the block starts on its own line. Same validators as paste/edit.",
+      "example": "append:::CHANGELOG.md:::## New section",
+      "status": 1,
+      "hint": true
+    },
     "paste": {
       "syntax": "paste:::PATH:::CONTENT",
       "description": "NARROW USE: replace ENTIRE file. Only for creating a new file or fully rewriting one. NOT for partial edits \u2014 vim is default for those. Atomic, creates file + parent dirs if missing. CONTENT via triple-colon \u2192 holds any chars.",
@@ -240,14 +247,14 @@
     "cursor-witness": {
       "cmd": "{python} {supertool_dir}/notifiers/cursor-witness/notify.py {op} {file} {line} {line_end} {before_file}",
       "match": "*",
-      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim", "read", "around_line", "between", "map"]
+      "hooks_into": ["edit", "replace", "replace_lines", "paste", "append", "vim", "read", "around_line", "between", "map"]
     }
   },
   "validators": {
     "lsp-diag": {
       "cmd": "{python} {supertool_dir}/validators/lsp-diag/lsp-diag.py {file}",
       "match": "*.{py,php,class.php,js,ts,jsx,tsx}",
-      "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
+      "hooks_into": ["edit", "replace", "replace_lines", "paste", "append", "vim"],
       "rollback_on_fail": false,
       "timeout": 15
     },
@@ -258,7 +265,7 @@
         "edit",
         "replace",
         "replace_lines",
-        "paste",
+        "paste", "append",
         "vim"
       ],
       "rollback_on_fail": true,
@@ -271,7 +278,7 @@
         "edit",
         "replace",
         "replace_lines",
-        "paste",
+        "paste", "append",
         "vim"
       ],
       "rollback_on_fail": false,

@@ -741,7 +741,7 @@ def _rtk_run(args: List[str], timeout: int = 30) -> str | None:
     return None
 
 # Built-in op names — custom ops/aliases with these names are ignored
-_BUILTIN_OPS = {"read", "grep", "grep_around", "glob", "ls", "tail", "head", "wc", "check", "around", "map", "diff", "stat", "around_line", "tree", "replace", "replace_dry", "edit", "replace_lines", "paste", "vi", "validate", "format", "validate_staged", "format_staged", "workspace", "resolve", "diag", "hover", "rename"}
+_BUILTIN_OPS = {"read", "grep", "grep_around", "glob", "ls", "tail", "head", "wc", "check", "around", "map", "diff", "stat", "around_line", "tree", "replace", "replace_dry", "edit", "replace_lines", "paste", "append", "vi", "validate", "format", "validate_staged", "format_staged", "workspace", "resolve", "diag", "hover", "rename"}
 
 # Read-only built-in ops — safe to run in parallel across a batch.
 # Excludes mutating ops (replace, edit, replace_lines) and custom ops
@@ -3426,6 +3426,93 @@ def op_paste(path: str, content: str) -> str:
     return (
         f"{verb} {path} ({new_lines} lines, {old_size} → {new_size} bytes)\n"
     )
+
+
+_APPEND_RECEIPT_LINES = 10
+
+
+def op_append(path: str, content: str) -> str:
+    """Append content to the end of a file. Atomic. Creates it if missing.
+
+    Appending used to need two calls: `wc:PATH` to learn the line count, then
+    `replace_lines` with `start = N+1, end = N` — the inverted-range insert
+    form. That is a round-trip spent computing an argument, and `887:886` reads
+    like a typo to whoever reviews the command later.
+
+    A file whose last line has no trailing newline gets one first, so the
+    appended block always starts on its own line; the receipt says so, since
+    silently touching a byte the caller did not ask about is worth a word.
+    """
+    if not path:
+        return "ERROR: empty path\n"
+    if not content:
+        return "ERROR: empty content — nothing to append\n"
+    # Containment check BEFORE makedirs, same ordering as op_paste: a path like
+    # `../../tmp/evil/foo` must not create directories outside cwd.
+    try:
+        safe_resolved = _safe_path(path)
+    except SecurityError as e:
+        return f"ERROR: {e}\n"
+    if os.path.isdir(path):
+        return f"ERROR: {path} is a directory\n"
+    parent = os.path.dirname(safe_resolved)
+    if parent and not os.path.isdir(parent):
+        try:
+            os.makedirs(parent, exist_ok=True)
+        except OSError as e:
+            return f"ERROR: failed to create parent dir {parent}: {e}\n"
+
+    existed = os.path.isfile(path)
+    orig = ""
+    if existed:
+        try:
+            # surrogateescape: lone non-UTF-8 bytes round-trip through
+            # _atomic_write instead of being mangled to U+FFFD — same contract
+            # as op_edit / op_replace_lines.
+            # newline="": no universal-newline translation, so a CRLF file is
+            # not silently rewritten to LF throughout. An append touches the
+            # end of the file; every other byte must come back out unchanged.
+            with open(path, "r", encoding="utf-8", errors="surrogateescape",
+                      newline="") as f:
+                orig = f.read()
+        except OSError as e:
+            return f"ERROR: failed to read {path}: {e}\n"
+
+    block = content if content.endswith("\n") else content + "\n"
+    newline_hint = ""
+    if orig and not orig.endswith(("\n", "\r")):
+        # Match the file's own convention rather than imposing LF on a CRLF file.
+        orig += "\r\n" if "\r\n" in orig else "\n"
+        newline_hint = " [added the missing trailing newline first]"
+
+    old_size = len(orig.encode("utf-8", errors="surrogateescape")) if existed else 0
+    new_content = orig + block
+    try:
+        _atomic_write(path, new_content)
+    except OSError as e:
+        return f"ERROR: failed to write {path}: {e}\n"
+
+    all_lines = new_content.splitlines()
+    added = block.count("\n")
+    start_line = len(all_lines) - added + 1
+    new_size = len(new_content.encode("utf-8", errors="surrogateescape"))
+    verb = "appended to" if existed else "created"
+    out = [
+        f"{verb} {path}: {added} lines at {start_line}-{len(all_lines)} "
+        f"({old_size} → {new_size} bytes){newline_hint}\n"
+    ]
+    # Receipt shows 2 lines of preceding context so the caller can see what the
+    # block landed after, then the block itself — capped, because append is the
+    # op you reach for with a long changelog entry and echoing it back in full
+    # is pure token cost on content the caller already had.
+    ctx_start = max(1, start_line - 2)
+    shown_end = min(len(all_lines), start_line + _APPEND_RECEIPT_LINES - 1)
+    for ln in range(ctx_start, shown_end + 1):
+        marker = "→" if ln >= start_line else " "
+        out.append(f"  {ln:>5} {marker} {all_lines[ln - 1]}\n")
+    if shown_end < len(all_lines):
+        out.append(f"  … (+{len(all_lines) - shown_end} more appended lines)\n")
+    return "".join(out)
 
 
 def op_replace_lines(path: str, start: int, end: int, content: str) -> str:
@@ -8724,6 +8811,7 @@ _OP_TARGETS: Dict[str, Any] = {
     "replace":       lambda parts: parts[3] if len(parts) > 3 else "",
     "replace_lines": lambda parts: parts[1] if len(parts) > 1 else "",
     "paste":         lambda parts: parts[1] if len(parts) > 1 else "",
+    "append":        lambda parts: parts[1] if len(parts) > 1 else "",
     "vim":           lambda parts: parts[1] if len(parts) > 1 else "",
 }
 
@@ -9620,7 +9708,7 @@ def _formatters_run_batch(
     return [_formatter_run_one(name, spec, path) for name, spec in applicable.items()]
 
 
-_ADVICE_DEFAULT_OPS = ("edit", "paste", "replace", "replace_lines", "vim")
+_ADVICE_DEFAULT_OPS = ("edit", "paste", "append", "replace", "replace_lines", "vim")
 
 
 def _advice_added_text(path: str, pre_content: Optional[bytes]) -> str:
@@ -11234,6 +11322,7 @@ _AT_FILE_BUILTIN_DEFAULTS: Dict[str, List[Tuple[str, bool, bool]]] = {
     "replace_dry":   [("old", False, False), ("new", False, False), ("path", False, False)],
     "replace_lines": [("path", False, False), ("start", False, False), ("end", False, False), ("content", False, False)],
     "paste":         [("path", False, False), ("content", False, False)],
+    "append":        [("path", False, False), ("content", False, False)],
     "vim":           [("path", False, False), ("script", False, False)],
 }
 
@@ -11531,7 +11620,7 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
         "check": (2,),
         # mutating ops (also covered by _atomic_write chokepoint):
         "edit": (3,), "replace": (3,), "replace_dry": (3,),
-        "replace_lines": (1,), "paste": (1,), "vim": (1,),
+        "replace_lines": (1,), "paste": (1,), "append": (1,), "vim": (1,),
     }
     for _pos in _PATH_ARG_POSITIONS.get(op, ()):
         if _pos < len(parts):
@@ -11706,6 +11795,11 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
             # CONTENT may contain ':' — rejoin everything after the path
             p_content = _dec(":".join(parts[2:]) if len(parts) > 2 else "")
             body = _run_with_validators(op, parts, lambda: op_paste(p_path, p_content))
+        elif op == "append":
+            a_path = parts[1] if len(parts) > 1 else ""
+            # CONTENT may contain ':' — rejoin everything after the path
+            a_content = _dec(":".join(parts[2:]) if len(parts) > 2 else "")
+            body = _run_with_validators(op, parts, lambda: op_append(a_path, a_content))
         elif op == "vim":
             vim_path = parts[1] if len(parts) > 1 else ""
             vim_script = ":".join(parts[2:]) if len(parts) > 2 else ""

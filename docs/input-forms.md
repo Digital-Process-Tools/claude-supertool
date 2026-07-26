@@ -22,7 +22,7 @@ Most ops take arguments via `:` — `read:PATH:OFFSET:LIMIT`, `grep:PATTERN:PATH
 
 ## `@file` route — long or structured payloads
 
-Mutating ops (`edit`, `replace`, `replace_lines`, `paste`, `vim`) accept a payload file instead of inline args. Pass the path with an `@` prefix; use `@-` for stdin.
+Mutating ops (`edit`, `replace`, `replace_lines`, `paste`, `append`, `vim`) accept a payload file instead of inline args. Pass the path with an `@` prefix; use `@-` for stdin.
 
 ```bash
 ./supertool 'edit:@.max/my-edit.json'
