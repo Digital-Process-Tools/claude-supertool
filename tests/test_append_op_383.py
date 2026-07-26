@@ -93,6 +93,20 @@ def test_append_matches_crlf_when_supplying_the_missing_newline(tmp_path: Path) 
     assert f.read_bytes() == b"a\r\nb\r\nc\n"
 
 
+def test_append_through_symlink_writes_to_the_target(tmp_path: Path) -> None:
+    """_atomic_write must write through to the real file, not replace the link."""
+    real = tmp_path / "real.txt"
+    real.write_bytes(b"original\n")
+    link = tmp_path / "link.txt"
+    link.symlink_to(real)
+
+    out = supertool.op_append(str(link), "added\n")
+
+    assert "ERROR" not in out
+    assert link.is_symlink(), "symlink was clobbered"
+    assert real.read_text() == "original\nadded\n"
+
+
 # ---------------------------------------------------------------------------
 # receipt
 # ---------------------------------------------------------------------------

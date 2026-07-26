@@ -33,7 +33,7 @@ const readDecoration = vscode.window.createTextEditorDecorationType({
 let highlightTimer: NodeJS.Timeout | null = null;
 
 const READ_OPS = new Set(["read", "grep", "glob", "ls", "around", "around_line", "between", "map"]);
-const MUTATING_OPS = new Set(["edit", "replace", "replace_lines", "paste", "vim"]);
+const MUTATING_OPS = new Set(["edit", "replace", "replace_lines", "paste", "append", "vim"]);
 
 let server: net.Server | null = null;
 let statusBar: vscode.StatusBarItem | null = null;

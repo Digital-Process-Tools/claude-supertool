@@ -225,7 +225,7 @@ class TestFieldsFromSyntax:
         """After any dispatch call the registry must contain the builtin write ops."""
         # Force a dispatch so the registry is built
         supertool.dispatch(f"read:{tmp_path}/nope")
-        for op in ("edit", "replace", "replace_dry", "replace_lines", "paste", "vim"):
+        for op in ("edit", "replace", "replace_dry", "replace_lines", "paste", "append", "vim"):
             assert supertool._at_file_fields(op), f"missing @file fields for op '{op}'"
 
 

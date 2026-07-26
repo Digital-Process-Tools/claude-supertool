@@ -3454,6 +3454,10 @@ def op_append(path: str, content: str) -> str:
     except SecurityError as e:
         return f"ERROR: {e}\n"
     if os.path.isdir(path):
+        # Explicit, unlike op_paste which lets _atomic_write's OSError surface.
+        # `append` is the op most likely to be aimed at a directory by mistake
+        # — a notes/ or logs/ path with the filename left off — and saying so
+        # beats an mkstemp errno.
         return f"ERROR: {path} is a directory\n"
     parent = os.path.dirname(safe_resolved)
     if parent and not os.path.isdir(parent):

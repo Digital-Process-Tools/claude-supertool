@@ -42,7 +42,7 @@ def test_parallel_safe_includes_read_only_ops() -> None:
 
 
 def test_parallel_safe_excludes_mutating_ops() -> None:
-    for op in ("edit", "replace", "replace_dry", "replace_lines"):
+    for op in ("edit", "replace", "replace_dry", "replace_lines", "paste", "append", "vim"):
         assert not supertool._is_parallel_safe(f"{op}:a:b:c")
         assert not supertool._is_parallel_safe(f"{op}:::a:::b:::c")
 

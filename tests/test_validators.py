@@ -919,7 +919,7 @@ def test_default_ops_cover_all_mutating(tmp_path: Path) -> None:
     f = tmp_path / "X.php"
     f.write_text("<?php\n")
     _set_advice({"any": {"message": "touched"}}, resolve=None)
-    for op in ("edit", "paste", "replace", "replace_lines", "vim"):
+    for op in ("edit", "paste", "append", "replace", "replace_lines", "vim"):
         assert "touched" in supertool._run_advice(op, str(f), pre_existed=True)
 
 
