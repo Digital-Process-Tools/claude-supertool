@@ -8842,14 +8842,15 @@ def _run_notifiers(op: str, path: str, line: Optional[int] = None,
         def _sub(val: Any) -> str:
             s = str(val) if val is not None and val != "" else ""
             return shlex.quote(s)
-        cmd = (cmd
-               .replace("{python}", _python_token())
-               .replace("{op}", _sub(op))
-               .replace("{file}", _sub(path))
-               .replace("{line}", _sub(line))
-               .replace("{line_end}", _sub(line_end))
-               .replace("{before_file}", _sub(before_file))
-               .replace("{supertool_dir}", _INSTALL_DIR))
+        cmd = _substitute_placeholders(cmd, {
+            "python": _python_token(),
+            "op": _sub(op),
+            "file": _sub(path),
+            "line": _sub(line),
+            "line_end": _sub(line_end),
+            "before_file": _sub(before_file),
+            "supertool_dir": _INSTALL_DIR,
+        })
         try:
             subprocess.Popen(
                 shlex.split(cmd),
@@ -8875,10 +8876,11 @@ def _validator_resolve(spec: Dict[str, Any], file: str) -> Optional[str]:
     # argv-form (shell=False): shell metachars in spec["resolve"] are literal
     # tokens. {file} is still shlex.quote'd so values with spaces survive
     # shlex.split. {supertool_dir} is a known constant.
-    cmd = (spec["resolve"]
-           .replace("{supertool_dir}", _INSTALL_DIR)
-           .replace("{python}", _python_token())
-           .replace("{file}", shlex.quote(file)))
+    cmd = _substitute_placeholders(spec["resolve"], {
+        "supertool_dir": _INSTALL_DIR,
+        "python": _python_token(),
+        "file": shlex.quote(file),
+    })
     _prefix_env, cmd = _extract_env_prefix(cmd)
     _merged_env = {**os.environ, **_prefix_env}
     cmd = _expand_env(cmd, _merged_env)
@@ -9155,10 +9157,11 @@ def _validator_run_one(name: str, spec: Dict[str, Any], file: str) -> Optional[D
     # argv-form (shell=False) downstream: shell metachars in spec["cmd"] are
     # literal tokens. {file} stays shlex.quote'd so values with spaces survive
     # shlex.split. {supertool_dir} is a known constant.
-    cmd = (spec["cmd"]
-           .replace("{supertool_dir}", _INSTALL_DIR)
-           .replace("{python}", _python_token())
-           .replace("{file}", shlex.quote(target)))
+    cmd = _substitute_placeholders(spec["cmd"], {
+        "supertool_dir": _INSTALL_DIR,
+        "python": _python_token(),
+        "file": shlex.quote(target),
+    })
     # Lift leading `KEY=VAL` shell env-prefix into env dict (shipped cmd
     # templates use this to set MCP_*_WORKING_DIR before the python invocation).
     _prefix_env, cmd = _extract_env_prefix(cmd)
@@ -9422,10 +9425,11 @@ def _formatter_run_one(name: str, spec: Dict[str, Any], file: str) -> Dict[str, 
     # argv-form (shell=False): shell metachars in spec["cmd"] are literal
     # tokens, not shell operators. {file} stays shlex.quote'd so values with
     # spaces survive shlex.split. {supertool_dir} is a known constant.
-    cmd = (spec["cmd"]
-           .replace("{supertool_dir}", _INSTALL_DIR)
-           .replace("{python}", _python_token())
-           .replace("{file}", shlex.quote(file)))
+    cmd = _substitute_placeholders(spec["cmd"], {
+        "supertool_dir": _INSTALL_DIR,
+        "python": _python_token(),
+        "file": shlex.quote(file),
+    })
     _prefix_env, cmd = _extract_env_prefix(cmd)
     _spec_env_dict = {**_prefix_env, **(spec.get("env") or {})}
     _merged_env = {**os.environ, **{str(k): str(v) for k, v in _spec_env_dict.items()}}
@@ -9625,10 +9629,11 @@ def _advice_resolve(resolve_cmd: str, path: str) -> Optional[str]:
     applies" via exit 3 — the would-be target rides on stderr while stdout stays
     empty so a validator reusing the same cmd still skips. Returns None to
     suppress (exit 0 = target already exists, or any error)."""
-    cmd = (resolve_cmd
-           .replace("{supertool_dir}", _INSTALL_DIR)
-           .replace("{python}", _python_token())
-           .replace("{file}", shlex.quote(path)))
+    cmd = _substitute_placeholders(resolve_cmd, {
+        "supertool_dir": _INSTALL_DIR,
+        "python": _python_token(),
+        "file": shlex.quote(path),
+    })
     _prefix_env, cmd = _extract_env_prefix(cmd)
     _merged_env = {**os.environ, **_prefix_env}
     cmd = _expand_env(cmd, _merged_env)
@@ -9693,13 +9698,19 @@ def _eval_advice_rule(spec: Dict[str, Any], op: str, path: str,
         target = _advice_resolve(resolve_cmd, path)
         if target is None:
             return ""
-    # Interpolate {path}/{op} first so a resolver-produced target can never be
-    # re-scanned for placeholders. strip() on the append branch drops the leading
-    # space left when the configured message is empty.
-    message = spec.get("message", "").replace("{path}", path).replace("{op}", op)
-    if "{target}" in message:
-        message = message.replace("{target}", target or "")
-    elif target:
+    # One pass, so neither a resolver-produced target nor a path can be
+    # re-scanned for placeholders. The {target} test reads the TEMPLATE, not the
+    # substituted text — otherwise a path containing the literal string
+    # "{target}" would silently pick the interpolate branch over the append one.
+    # strip() on the append branch drops the leading space left when the
+    # configured message is empty.
+    raw_message = spec.get("message", "")
+    message = _substitute_placeholders(raw_message, {
+        "path": path,
+        "op": op,
+        "target": target or "",
+    })
+    if "{target}" not in raw_message and target:
         message = f"{message} — consider {target}".strip()
     return f"{mark('ℹ')} {message}".rstrip()
 
