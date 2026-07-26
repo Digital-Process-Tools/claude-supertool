@@ -495,6 +495,7 @@ _PLAIN_MARKERS = {
     "✓": "[OK]",    # ✓
     "✗": "[FAIL]",  # ✗
     "ℹ": "[INFO]",  # ℹ
+    "↳": "->",      # ↳ — sub-line continuation
 }
 
 
@@ -1283,7 +1284,8 @@ def _read_edit_hint(path: str, body: str) -> str:
     branches don't route through op_read."""
     if body.startswith("ERROR:"):
         return ""
-    return f"↳ to modify: ./supertool 'edit:::OLD:::NEW:::{path}'  (or edit:@- ; no harness Read needed)\n"
+    return (f"{mark('↳')} to modify: ./supertool 'edit:::OLD:::NEW:::{path}'"
+            f"  (or edit:@- ; no harness Read needed)\n")
 
 
 _REGEX_METACHARS = re.compile(r"[()\[\]{}|.*+?^$\\]")
@@ -3405,7 +3407,7 @@ def _edit_miss_diagnostic(old: str, content: str) -> str:
 
     lines = content.splitlines()
     if len(lines) > _EDIT_DIAG_MAX_LINES:
-        return "".join(f"  ↳ {h}\n" for h in hints)
+        return "".join(f"  {mark('↳')} {h}\n" for h in hints)
 
     # 2. Whitespace. Indentation drift is the other half of "close but not
     #    exact", and it is invisible in a diff read by eye.
@@ -3442,7 +3444,7 @@ def _edit_miss_diagnostic(old: str, content: str) -> str:
                     f"{lines[best_i - 1]!r}"
                 )
 
-    return "".join(f"  ↳ {h}\n" for h in hints)
+    return "".join(f"  {mark('↳')} {h}\n" for h in hints)
 
 
 def op_edit(old: str, new: str, path: str) -> str:
@@ -11671,6 +11673,9 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
     # and `read:PATH:::grep=` (mid-arg) keep working under single-colon parsing.
     _at_file_replace_all: bool = False
     _at_file_used: bool = False
+    # Set when a batch runs a mutating sub-op, so the branch footer is
+    # emitted once for the batch and only when something was written.
+    _batch_mutated: bool = False
 
     if pre_parsed is not None:
         # Batch sub-op: parts already structured from a JSON payload (via
@@ -12039,6 +12044,8 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                                         # For unknown ops, pass what we have and let dispatch error.
                                         _fields = [str(_item[k]) for k in sorted(_item) if k != "op"]
                                         _sub_arg = ":".join([_sub_op] + _fields) if _fields else _sub_op
+                                    if _sub_op in _OP_TARGETS:
+                                        _batch_mutated = True
                                     _sub_result = dispatch(_sub_arg, pre_parsed=_sub_pre_parsed)
                                     results.append(_sub_result)
                                     if not continue_on_error and _sub_result.split("\n")[1:2] and (
@@ -12153,8 +12160,15 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
     # the thing that knows (#381). Success and failure both get it — a failed
     # edit is the exact moment a wrong-branch hypothesis should be available,
     # instead of being reached for only after re-reading the file.
-    if op in _OP_TARGETS:
-        body += _branch_line()
+    #
+    # Once per call, never per sub-op: a batch runs each of its ops through this
+    # same function recursively, so an unguarded footer would print the branch
+    # once per edit — 50 identical lines for a 50-edit batch, which is the
+    # opposite of the handful of tokens this is meant to cost. The batch itself
+    # carries the single footer, and only when it actually mutated something.
+    if getattr(_DISPATCH_STATE, "depth", 1) <= 1:
+        if op in _OP_TARGETS or (op == "batch" and _batch_mutated):
+            body += _branch_line()
 
     return header + body
 

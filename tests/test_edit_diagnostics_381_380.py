@@ -11,6 +11,7 @@ content when the anchor misses. Both are nearly free to report.
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -150,9 +151,66 @@ def test_no_footer_when_there_is_no_branch(tmp_path: Path, monkeypatch) -> None:
     assert "[branch:" not in out
 
 
+def test_batch_emits_one_footer_not_one_per_sub_op(tmp_path: Path, monkeypatch) -> None:
+    """A batch runs each sub-op through dispatch recursively — unguarded, a
+    50-edit batch would print the branch 50 times."""
+    monkeypatch.setattr(supertool, "_current_branch", lambda: "my-feature")
+    f = tmp_path / "x.py"
+    f.write_text("a\nb\nc\n")
+    payload = tmp_path / "ops.json"
+    payload.write_text(json.dumps([
+        {"op": "edit", "path": str(f), "old": "a", "new": "A"},
+        {"op": "edit", "path": str(f), "old": "b", "new": "B"},
+        {"op": "edit", "path": str(f), "old": "c", "new": "C"},
+    ]))
+    out = supertool.dispatch(f"batch:@{payload}")
+    assert out.count("[branch: my-feature]") == 1
+    assert out.rstrip().endswith("[branch: my-feature]")
+
+
+def test_read_only_batch_has_no_footer(tmp_path: Path, monkeypatch) -> None:
+    """Nothing was written, so there is no branch worth reporting."""
+    monkeypatch.setattr(supertool, "_current_branch", lambda: "my-feature")
+    f = tmp_path / "x.py"
+    f.write_text("a\n")
+    payload = tmp_path / "ops.json"
+    payload.write_text(json.dumps([{"op": "read", "path": str(f)}]))
+    out = supertool.dispatch(f"batch:@{payload}")
+    assert "[branch:" not in out
+
+
+def test_append_gets_the_footer_too(tmp_path: Path, monkeypatch) -> None:
+    """"Every mutating op" has to mean every one — a silently excluded op is
+    exactly the wrong-branch miss #381 exists to close."""
+    monkeypatch.setattr(supertool, "_current_branch", lambda: "my-feature")
+    f = tmp_path / "x.py"
+    f.write_text("a\n")
+    out = supertool.dispatch(f"append:::{f}:::b")
+    assert "[branch: my-feature]" in out
+
+
+def test_replace_dry_stays_footer_free(tmp_path: Path, monkeypatch) -> None:
+    """A preview op writes nothing, so there is no branch to warn about."""
+    monkeypatch.setattr(supertool, "_current_branch", lambda: "my-feature")
+    f = tmp_path / "x.py"
+    f.write_text("a = 1\n")
+    out = supertool.dispatch(f"replace_dry:::a = 1:::a = 2:::{f}")
+    assert "[branch:" not in out
+
+
 # ---------------------------------------------------------------------------
 # edit-miss diagnostics
 # ---------------------------------------------------------------------------
+
+def test_diagnostic_marker_is_ascii_in_plain_mode(tmp_path: Path, monkeypatch) -> None:
+    """plain_mode exists so a C/POSIX-locale grep can match the output — a new
+    message must not reintroduce a multibyte glyph it was meant to strip."""
+    monkeypatch.setenv("SUPERTOOL_PLAIN", "1")
+    f = tmp_path / "x.py"
+    f.write_text("alpha = 1\n")
+    out = supertool.op_edit("alpha = 11", "q", str(f))
+    assert "↳" not in out
+    assert "  -> nearest match" in out
 
 def test_doubled_backslash_is_named(tmp_path: Path) -> None:
     """TOML literal strings don't process escapes, so `\\\\302` in a payload is
