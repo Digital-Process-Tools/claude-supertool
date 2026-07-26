@@ -11571,6 +11571,8 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
             if len(parts) > 3 and parts[3]:
                 if parts[3] in ("full", "raw"):
                     force_full = True
+                elif parts[3].startswith("grep="):
+                    pass  # picked up by the filter scan below
                 elif range_form:
                     return header + (
                         f"ERROR: read:PATH:START-END takes no LIMIT "
@@ -11578,9 +11580,15 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                     )
                 else:
                     limit = int(parts[3])
+            # The filter can land in any trailing slot: parts[4] for the
+            # documented `read:PATH:::grep=` (the `:::` yields two empty parts),
+            # parts[3] when a range consumed only one slot. Scan rather than
+            # index, so every spelling reaches the same place.
             grep_filter = ""
-            if len(parts) > 4 and parts[4].startswith("grep="):
-                grep_filter = parts[4][5:]
+            for _tok in parts[3:]:
+                if _tok.startswith("grep="):
+                    grep_filter = _tok[5:]
+                    break
             body = op_read(path, offset, limit, grep_filter, force_full)
             if not range_form:
                 body += _read_range_note(path, offset, limit, body)

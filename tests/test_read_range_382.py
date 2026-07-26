@@ -72,6 +72,42 @@ def test_range_form_accepts_trailing_full(tmp_path: Path) -> None:
     assert "     3→line3" in out
 
 
+def test_range_form_composes_with_grep_filter(tmp_path: Path) -> None:
+    """The range consumes one slot, so the filter lands in parts[3] — it must be
+    found there and not mistaken for a LIMIT."""
+    f = _numbered(tmp_path, "many.txt", 30)
+    out = supertool.dispatch(f"read:{f}:3-25:grep=line13")
+    assert "ERROR" not in out
+    assert "    13→line13" in out
+    assert "    12→line12" not in out  # filtered out
+    assert "    14→line14" not in out
+
+
+def test_range_form_still_bounds_a_grep_filter(tmp_path: Path) -> None:
+    """The filter narrows within the range; it does not widen past it."""
+    f = _numbered(tmp_path, "many.txt", 30)
+    out = supertool.dispatch(f"read:{f}:3-25:grep=line2")
+    assert "    20→line20" in out
+    assert "     2→line2" not in out  # matches the filter, but precedes the range
+    assert "    26→line26" not in out  # matches the filter, but follows the range
+
+
+def test_range_form_composes_with_triple_colon_grep(tmp_path: Path) -> None:
+    """`:::grep=` puts the filter in parts[5] once a range is present."""
+    f = _numbered(tmp_path, "many.txt", 30)
+    out = supertool.dispatch(f"read:{f}:3-25:::grep=line1")
+    assert "ERROR" not in out
+    assert "    13→line13" in out
+
+
+def test_offset_limit_form_still_finds_grep_filter(tmp_path: Path) -> None:
+    """Backwards compatibility for the documented spelling."""
+    f = _numbered(tmp_path, "many.txt", 30)
+    out = supertool.dispatch(f"read:{f}:::grep=line1")
+    assert "ERROR" not in out
+    assert "    13→line13" in out
+
+
 def test_offset_limit_form_still_offset_limit(tmp_path: Path) -> None:
     """Backwards compatibility: `:A:B` keeps its documented meaning."""
     f = _numbered(tmp_path, "many.txt", 10)
