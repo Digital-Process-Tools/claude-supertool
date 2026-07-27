@@ -333,6 +333,71 @@ def test_render_table_empty() -> None:
 
 
 # ---------------------------------------------------------------------------
+# _branches / two-line rows — the board is read by a human (#421)
+# ---------------------------------------------------------------------------
+
+def test_branches_renders_source_arrow_target() -> None:
+    m = {"source_branch": "max/generator-testability-coverage", "target_branch": "master"}
+    assert mrs._branches(m) == "max/generator-testability-coverage -> master"
+
+
+def test_branches_marks_a_missing_side_rather_than_dropping_the_pair() -> None:
+    assert mrs._branches({"source_branch": "max/foo"}) == "max/foo -> ?"
+    assert mrs._branches({"target_branch": "master"}) == "? -> master"
+
+
+def test_branches_is_empty_when_neither_side_is_known() -> None:
+    """'? -> ?' is noise, not information."""
+    assert mrs._branches({}) == ""
+    assert mrs._branches({"source_branch": "", "target_branch": None}) == ""
+
+
+def test_row_renders_a_long_title_in_full_on_its_own_line() -> None:
+    title = "Make the Generator module loadable and cover TemplatesDescriptor"
+    assert len(title) > 42, "fixture must exceed the old 42-char truncation"
+    row = mrs._row({"iid": 33173, "title": title, "source_branch": "max/gen",
+                    "target_branch": "master", "_pipeline": "failed"}, set(), True)
+    status, title_line = row.split("\n")
+    assert "max/gen -> master" in status
+    assert title not in status
+    assert title_line == f"{mrs.TITLE_INDENT}{title}"
+
+
+def test_row_keeps_flags_on_the_status_line() -> None:
+    row = mrs._row({"iid": 1, "title": "t", "source_branch": "b",
+                    "target_branch": "master", "draft": True,
+                    "_pipeline": "success"}, set(), True)
+    assert row.split("\n")[0].endswith("b -> master [draft]")
+
+
+def test_row_without_a_title_is_a_single_line() -> None:
+    """No blank second line for an MR whose title we never got."""
+    row = mrs._row({"iid": 1, "source_branch": "b", "target_branch": "master",
+                    "_pipeline": "success"}, set(), True)
+    assert "\n" not in row
+    assert row.endswith("b -> master")
+
+
+def test_row_suffix_is_appended_to_the_status_line_not_the_title() -> None:
+    row = mrs._row({"iid": 1, "title": "prose", "source_branch": "b",
+                    "target_branch": "master", "_pipeline": "success"},
+                   set(), True, "  [healed]")
+    status, title_line = row.split("\n")
+    assert status.endswith("[healed]")
+    assert title_line == f"{mrs.TITLE_INDENT}prose"
+
+
+def test_render_table_emits_two_lines_per_mr() -> None:
+    mr_list = [
+        {"iid": 1, "title": "first", "source_branch": "a", "target_branch": "master",
+         "_pipeline": "success"},
+        {"iid": 2, "title": "second", "source_branch": "b", "target_branch": "master",
+         "_pipeline": "success"},
+    ]
+    assert len(mrs._render_table(mr_list, set(), True).splitlines()) == 4
+
+
+# ---------------------------------------------------------------------------
 # _footer
 # ---------------------------------------------------------------------------
 
