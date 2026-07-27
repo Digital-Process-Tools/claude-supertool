@@ -73,24 +73,52 @@ _FILTER_FLAG = {
 }
 
 
-def _parse_args(arg_str: str) -> tuple[dict[str, str], set[str]]:
-    """Split a comma-separated arg string into (filters, flags).
+def _parse_multi(arg_str: str) -> tuple[dict[str, list[str]], set[str]]:
+    """Tokenise a comma-separated arg string, keeping every value of a key.
 
     Comma-separated so the single supertool arg segment never collides with
-    the ':' op tokenizer. 'author=@me,state=merged,nopipe' becomes
-    ({'author': '@me', 'state': 'merged'}, {'nopipe'}).
+    the ':' op tokenizer. A repeated key accumulates rather than overwriting,
+    which is how a caller asks for more than one author: GitLab's list
+    endpoint takes one `author_username`, so `author=a,author=b` is two
+    queries unioned, not one. `_parse_args` is the scalar view of this, so
+    both readings of an arg string come from one tokenizer.
     """
-    filters: dict[str, str] = {}
+    filters: dict[str, list[str]] = {}
     flags: set[str] = set()
     for tok in (t.strip() for t in arg_str.split(",")):
         if not tok:
             continue
         if "=" in tok:
             key, _, val = tok.partition("=")
-            filters[key.strip()] = val.strip()
+            filters.setdefault(key.strip(), []).append(val.strip())
         elif tok in _FLAGS:
             flags.add(tok)
     return filters, flags
+
+
+def _parse_args(arg_str: str) -> tuple[dict[str, str], set[str]]:
+    """Split a comma-separated arg string into (filters, flags).
+
+    'author=@me,state=merged,nopipe' becomes
+    ({'author': '@me', 'state': 'merged'}, {'nopipe'}).
+    A repeated key resolves to its last value — one query, one value.
+    """
+    multi, flags = _parse_multi(arg_str)
+    return {k: v[-1] for k, v in multi.items()}, flags
+
+
+def _expand_filters(multi: dict[str, list[str]]) -> list[dict[str, str]]:
+    """One scalar filter dict per combination of the multi-valued keys.
+
+    The list endpoint accepts a single value per key, so a key carrying N
+    values fans out into N queries whose results are unioned by iid. Key order
+    is preserved so a single-valued arg string produces exactly the dict
+    `_parse_args` would have produced, and therefore exactly the same argv.
+    """
+    combos: list[dict[str, str]] = [{}]
+    for key, values in multi.items():
+        combos = [{**combo, key: val} for combo in combos for val in values]
+    return combos
 
 
 def _build_list_cmd(filters: dict[str, str], per_page: int) -> list[str]:

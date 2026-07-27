@@ -318,9 +318,13 @@ The `watch` preset spawns background pollers that emit events when external stat
 ./supertool 'watches'                             # list active pollers
 ./supertool 'unwatch:github-pr:179'               # stop one
 ./supertool 'radar'                               # reconcile + report every open MR
+./supertool 'radar:author=modular.system'         # someone else's MRs — same board
+./supertool 'radar:author=@me,author=modular.system'   # both, one board
 ```
 
 `watches` tells you which pollers are alive. `radar` tells you what is **true**: it treats live GitLab as authoritative (state files are cache), respawns watchers for open MRs that lost theirs, prunes state files for merged MRs, and flags drift where the last event fired on a pipeline that has since been superseded. Pollers die with the machine and events are fire-and-forget, so at session start an event-driven view knows nothing — and "knows nothing" looks exactly like "all green". Run `radar` on every session start; it is idempotent.
+
+`radar` takes the same filter vocabulary as `gl-mrs`, and **one filter drives the whole op**: the board, the watcher fleet it heals, and the `gitlab-mr-feed` poller it keeps alive are three views of one query, never derived separately. Repeat a key to cover more than one author — GitLab's list endpoint takes a single `author_username`, so `author=@me,author=modular.system` fans out into two calls unioned by iid. Each filter keeps its own snapshot, so two radars over different populations in the same window both report honest deltas instead of reading each other's rows as new and gone. A non-default board prints its filter in the footer.
 
 `radar` also keeps a `gitlab-mr-feed` poller alive. Per-MR pollers only ever poll one known iid, so without it nothing in a running session could discover an MR opened after that session started — the board would stay confidently complete and quietly missing a row until someone typed `radar` again. The feed polls the whole filter every 5 minutes, watches and announces new MRs itself, and radar reports loudly when it is down.
 

@@ -20,10 +20,10 @@
       "syntax": "watches"
     },
     "radar": {
-      "cmd": "{python} {path}watch/radar.py",
+      "cmd": "{python} {path}watch/radar.py {args}",
       "timeout": 90,
-      "description": "Reconcile watch coverage against live GitLab, then report. Live MRs are authoritative; state files are cache. Prunes terminal state files, flags pipeline drift (last_event vs source_state), respawns watchers for open MRs with no live poller, and ensures one live gitlab-mr-feed poller so MRs opened after this run are still discovered. Full board on cold start, delta-only after. Idempotent — safe on every session start.",
-      "syntax": "radar"
+      "description": "Reconcile watch coverage against live GitLab, then report. Live MRs are authoritative; state files are cache. Prunes terminal state files, flags pipeline drift (last_event vs source_state), respawns watchers for open MRs with no live poller, and ensures one live gitlab-mr-feed poller so MRs opened after this run are still discovered. Full board on cold start, delta-only after. Idempotent — safe on every session start. Takes the gl-mrs filter vocabulary; the board, the watcher fleet and the feed all come from that one filter, and each filter keeps its own snapshot. A repeated key (author=@me,author=modular.system) fans out into one query per value, unioned by iid.",
+      "syntax": "radar[:author=@me,author=modular.system,state=opened]"
     }
   }
 }

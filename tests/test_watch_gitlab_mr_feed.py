@@ -356,3 +356,56 @@ def test_every_default_filtered_event_is_declared_by_this_source() -> None:
     declared = {e["key"] for e in
                 json.loads((SOURCE_DIR / "events.json").read_text())["events"]}
     assert set(feed.defaults.DEFAULT_FEED_ONLY.split(",")) <= declared
+
+
+# ---------------------------------------------------------------------------
+# multi-author scopes (issue #425)
+#
+# The feed is the third view of radar's population. A scope radar can express
+# but the feed cannot poll would put discovery back out of step with the
+# board — the same silent incompleteness, one tier down.
+# ---------------------------------------------------------------------------
+
+class _Result:
+    def __init__(self, stdout: str, returncode: int = 0) -> None:
+        self.stdout = stdout
+        self.returncode = returncode
+        self.stderr = ""
+
+
+def _glab(monkeypatch, by_author: dict[str, list[int]], fail_for: tuple = ()) -> list[str]:
+    """Serve `glab mr list` from a per-author map. Returns the author log."""
+    seen: list[str] = []
+
+    def _run(cmd, timeout=25):
+        author = cmd[cmd.index("--author") + 1] if "--author" in cmd else ""
+        seen.append(author)
+        if author in fail_for:
+            return _Result("", returncode=1)
+        return _Result(json.dumps([
+            {"iid": i, "title": f"title {i}", "web_url": f"https://gl/mr/{i}"}
+            for i in by_author.get(author, [])
+        ]))
+
+    monkeypatch.setattr(feed.mrs, "_run", _run)
+    return seen
+
+
+def test_a_two_author_scope_fans_out_and_unions(monkeypatch) -> None:
+    seen = _glab(monkeypatch, {"@me": [1, 2], "modular.system": [2, 3]})
+    pop = feed.fetch_population("author=@me,author=modular.system,state=opened")
+    assert seen == ["@me", "modular.system"]
+    assert sorted(pop) == ["1", "2", "3"]
+
+
+def test_a_single_author_scope_still_makes_exactly_one_call(monkeypatch) -> None:
+    seen = _glab(monkeypatch, {"@me": [1]})
+    assert sorted(feed.fetch_population("@me")) == ["1"]
+    assert seen == ["@me"]
+
+
+def test_one_failing_query_fails_the_whole_poll(monkeypatch) -> None:
+    """Half a population is worse than none: every iid the missing query would
+    have returned reads as a departure and fires an event saying so."""
+    _glab(monkeypatch, {"@me": [1]}, fail_for=("modular.system",))
+    assert feed.fetch_population("author=@me,author=modular.system,state=opened") is None

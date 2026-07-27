@@ -15,9 +15,16 @@ from __future__ import annotations
 
 import sys
 
+# The population every "watch everything of mine" flow covers, in gl-mrs
+# filter vocabulary. Radar resolves its board, its fleet and its feed from
+# this when given no argument, so editing it here moves all of them together
+# — the drift this module exists to prevent, in the one field a caller is
+# most likely to change.
+DEFAULT_FILTER = "author=@me,state=opened"
+
 # Every open MR, not just the failing ones: a watcher can only report an MR
 # going red if it was already watching while the MR was green.
-DEFAULT_FEED = "gl-mrs:author=@me,state=opened,iids"
+DEFAULT_FEED = f"gl-mrs:{DEFAULT_FILTER},iids"
 
 DEFAULT_SOURCE = "gitlab-mr"
 
@@ -46,6 +53,7 @@ DEFAULT_FEED_ONLY = "mr_opened,mr_merged,mr_closed,mr_left_feed"
 
 VALUES = {
     "feed": DEFAULT_FEED,
+    "filter": DEFAULT_FILTER,
     "source": DEFAULT_SOURCE,
     "only": DEFAULT_ONLY,
     "feed-source": DEFAULT_FEED_SOURCE,

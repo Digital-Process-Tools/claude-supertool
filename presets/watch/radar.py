@@ -36,6 +36,22 @@ Hence a reconcile, not a printer:
                   exactly like a day on which nothing happened.
   4. report       full board on cold start, delta-only afterwards.
 
+The population is an argument, in the same filter vocabulary as `gl-mrs`:
+
+    radar                            defaults.DEFAULT_FILTER
+    radar:author=modular.system      what the automated agent opened
+    radar:author=@me,author=x        two queries, unioned by iid
+
+One filter, one population, one board. `live_open_mrs`, `heal` and the feed
+poller are three views of a single resolved filter and are never derived from
+different ones — a board that omits MRs it is actively receiving events for
+renders exactly like a board where those MRs are fine, which is the same
+silent incompleteness this op exists to remove.
+
+The snapshot is keyed by that filter for the same reason. Two populations
+sharing one snapshot file would report every MR of the first as new and every
+MR of the second as gone; a lying delta is worse than no delta.
+
 Idempotent, so it is safe on every session start and on a loop. That includes
 the feed: a live PID short-circuits the spawn, so N radar runs still leave one
 feed poller and one copy of every discovery event.
@@ -51,6 +67,7 @@ that failed to run.
 from __future__ import annotations
 
 import glob
+import hashlib
 import importlib.util
 import json
 import os
@@ -79,7 +96,7 @@ dispatcher = _load("radar_watch_dispatcher", _HERE / "dispatcher.py")
 SOURCE = defaults.DEFAULT_SOURCE
 FEED_SOURCE = defaults.DEFAULT_FEED_SOURCE
 FEED_SCOPE = defaults.DEFAULT_FEED_SCOPE
-SNAPSHOT_NAME = "supertool-radar.snapshot.json"
+SNAPSHOT_PREFIX = "supertool-radar"
 
 FEED_LABEL = {"alive": "feed ok", "spawned": "feed respawned", "failed": "feed DOWN"}
 
@@ -88,24 +105,61 @@ class RadarError(RuntimeError):
     """Live GitLab could not be reached. Never degrade to 'all green'."""
 
 
-def _snapshot_path() -> str:
-    return os.path.join(transport.STATE_DIR, SNAPSHOT_NAME)
+def default_filter() -> dict[str, list[str]]:
+    """The population a bare `radar` covers, read from defaults.py.
+
+    Not a literal here: the whole point of that module is that the shell
+    supervisor and this op cannot describe different populations.
+    """
+    return mrs._parse_multi(defaults.DEFAULT_FILTER)[0]
+
+
+def resolve_filter(argv: list[str] | None = None) -> dict[str, list[str]]:
+    """The one filter every other step reads. gl-mrs vocabulary, or default.
+
+    A key may repeat — `author=@me,author=modular.system` — because GitLab
+    takes one author per query and the union is the population the caller
+    described.
+    """
+    arg = argv[1].strip() if argv and len(argv) > 1 and argv[1] else ""
+    multi = mrs._parse_multi(arg)[0] if arg else {}
+    return multi or default_filter()
+
+
+def filter_string(multi: dict[str, list[str]]) -> str:
+    """The filter back in gl-mrs arg form — what the user typed, normalised."""
+    return ",".join(f"{k}={v}" for k, vals in multi.items() for v in vals)
+
+
+def filter_key(multi: dict[str, list[str]]) -> str:
+    """Stable short hash of the filter, insensitive to key and value order.
+
+    `author=a,author=b` and `author=b,author=a` are the same population and
+    must share a snapshot; `author=a` and `author=b` must not.
+    """
+    norm = {k: sorted(set(v)) for k, v in sorted(multi.items())}
+    blob = json.dumps(norm, sort_keys=True).encode("utf-8")
+    return hashlib.sha1(blob).hexdigest()[:12]
+
+
+def _snapshot_path(multi: dict[str, list[str]]) -> str:
+    return os.path.join(transport.STATE_DIR,
+                        f"{SNAPSHOT_PREFIX}.{filter_key(multi)}.snapshot.json")
 
 
 # ---------------------------------------------------------------------------
 # 1. live truth
 # ---------------------------------------------------------------------------
 
-def live_open_mrs() -> list[dict]:
-    """Every open MR of mine, pipeline-enriched. One gl-mrs query.
+def _query(filters: dict[str, str], per_page: int) -> list[dict]:
+    """One `glab mr list`. RadarError on any failure, never an empty list.
 
-    Raises RadarError on any failure rather than returning an empty list — an
-    empty board and an unreachable GitLab must never render the same.
+    A partial union is a board that is quietly missing rows, so one failing
+    query fails the whole reconcile — an unreachable GitLab must never render
+    as an MR that is fine.
     """
-    cfg = mrs._get_config()
-    cmd = mrs._build_list_cmd({"author": "@me", "state": "opened"}, cfg["per_page"])
     try:
-        result = mrs._run(cmd)
+        result = mrs._run(mrs._build_list_cmd(filters, per_page))
     except Exception as exc:  # noqa: BLE001 — surfaced as RadarError
         raise RadarError(f"glab mr list failed: {exc}") from exc
     if result.returncode != 0:
@@ -119,6 +173,24 @@ def live_open_mrs() -> list[dict]:
         raise RadarError("could not parse glab JSON output") from exc
     if not isinstance(data, list):
         raise RadarError("glab returned no MR list")
+    return data
+
+
+def live_open_mrs(multi: dict[str, list[str]] | None = None) -> list[dict]:
+    """Every open MR the filter describes, pipeline-enriched.
+
+    One gl-mrs query per value combination, unioned by iid — the list endpoint
+    takes a single author, so two authors is two calls. Enrichment runs once
+    over the union, so an MR both queries return is enriched once.
+    """
+    multi = default_filter() if multi is None else multi
+    cfg = mrs._get_config()
+    merged: dict[str, dict] = {}
+    for filters in mrs._expand_filters(multi):
+        for m in _query(filters, cfg["per_page"]):
+            if isinstance(m, dict) and m.get("iid") is not None:
+                merged.setdefault(str(m["iid"]), m)
+    data = list(merged.values())
     mrs._enrich(data, cfg["enrich_cap"], cfg["enrich_workers"])
     return data
 
@@ -153,7 +225,8 @@ def prune_terminal(states: dict[str, dict], watched: set[str]) -> list[str]:
     A file owned by a live poller is left alone — the poller will clear it
     itself when it stops. Only MRs whose live state is terminal are pruned;
     "absent from my open list" is deliberately not a prune trigger, because a
-    watcher may legitimately follow an MR the `author=@me` query never returns.
+    watcher may legitimately follow an MR this radar's filter never returns —
+    a second radar over another population is exactly that case.
     """
     poller = dispatcher._load_source(SOURCE)
     is_terminal = getattr(poller, "is_terminal", None) if poller else None
@@ -215,10 +288,29 @@ def heal(open_iids: list[str], watched: set[str]) -> tuple[list[str], list[str]]
 # 3b. feed — the tier that discovers MRs radar has never seen
 # ---------------------------------------------------------------------------
 
-def feed_pid() -> int:
+def feed_scope(multi: dict[str, list[str]] | None = None) -> str:
+    """The feed watcher id covering this population.
+
+    The feed source accepts either one of its aliases or a literal gl-mrs
+    filter string as its id, so the board's filter reaches the discovery tier
+    unchanged. An alias is preferred when it expands to the same filter: the
+    id is the pid filename, so `@me` and `author=@me,state=opened` would
+    otherwise be two pollers over one population, i.e. two copies of every
+    mr_opened.
+    """
+    multi = default_filter() if multi is None else multi
+    poller = dispatcher._load_source(FEED_SOURCE)
+    aliases = getattr(poller, "ALIASES", None) or {}
+    for alias, expansion in aliases.items():
+        if mrs._parse_multi(expansion)[0] == multi:
+            return alias
+    return filter_string(multi)
+
+
+def feed_pid(scope: str = FEED_SCOPE) -> int:
     """PID recorded for the feed poller, or 0 when there is no readable file."""
     try:
-        raw = Path(transport.pid_path(FEED_SOURCE, FEED_SCOPE)).read_text()
+        raw = Path(transport.pid_path(FEED_SOURCE, scope)).read_text()
     except OSError:
         return 0
     try:
@@ -227,7 +319,7 @@ def feed_pid() -> int:
         return 0
 
 
-def ensure_feed() -> str:
+def ensure_feed(scope: str = FEED_SCOPE) -> str:
     """Guarantee exactly one live feed poller. "alive" | "spawned" | "failed".
 
     Radar is idempotent and run on a loop, so the feed must be too: a live PID
@@ -235,20 +327,20 @@ def ensure_feed() -> str:
     stack another feed poller, and n pollers over one filter means n copies of
     every mr_opened.
     """
-    pid = feed_pid()
+    pid = feed_pid(scope)
     if pid and transport._pid_alive(pid):
         return "alive"
     if dispatcher._load_source(FEED_SOURCE) is None:
         return "failed"
     only = [e for e in defaults.DEFAULT_FEED_ONLY.split(",") if e]
     try:
-        spawned = dispatcher._spawn_poller(FEED_SOURCE, FEED_SCOPE, only)
+        spawned = dispatcher._spawn_poller(FEED_SOURCE, scope, only)
     except OSError:
         spawned = 0
     return "spawned" if spawned else "failed"
 
 
-def feed_error() -> str:
+def feed_error(scope: str = FEED_SCOPE) -> str:
     """Last error the feed poller recorded, or "" when it is polling cleanly.
 
     A feed that is alive but erroring every tick discovers nothing while
@@ -256,7 +348,7 @@ def feed_error() -> str:
     the same report. The dispatcher clears this key on a successful poll, so a
     message here is current rather than a scar.
     """
-    state = transport.read_state(FEED_SOURCE, FEED_SCOPE)
+    state = transport.read_state(FEED_SOURCE, scope)
     return str((state.get("last_error") or {}).get("message") or "")
 
 
@@ -274,10 +366,15 @@ def _snap_entry(m: dict) -> dict[str, Any]:
     }
 
 
-def read_snapshot() -> dict[str, Any] | None:
-    """Previous board, or None on cold start (no snapshot on disk)."""
+def read_snapshot(multi: dict[str, list[str]] | None = None) -> dict[str, Any] | None:
+    """Previous board for this filter, or None on cold start.
+
+    Keyed by filter: comparing one population against another's snapshot
+    reports every row of each as a change, which is a delta column that lies.
+    """
+    multi = default_filter() if multi is None else multi
     try:
-        with open(_snapshot_path(), encoding="utf-8") as f:
+        with open(_snapshot_path(multi), encoding="utf-8") as f:
             loaded = json.load(f)
     except (OSError, json.JSONDecodeError):
         return None
@@ -286,8 +383,9 @@ def read_snapshot() -> dict[str, Any] | None:
     return loaded
 
 
-def write_snapshot(entries: dict[str, dict]) -> None:
-    path = _snapshot_path()
+def write_snapshot(entries: dict[str, dict],
+                   multi: dict[str, list[str]] | None = None) -> None:
+    path = _snapshot_path(default_filter() if multi is None else multi)
     tmp = f"{path}.tmp"
     try:
         with open(tmp, "w", encoding="utf-8") as f:
@@ -323,11 +421,12 @@ def _is_standing_problem(m: dict) -> bool:
 
 def _footer(open_mrs: list[dict], covered: set[str], healed: list[str],
             drifted: dict[str, tuple[str, str]], pruned: list[str],
-            uncovered: list[str], gone: int, feed: str) -> str:
+            uncovered: list[str], gone: int, feed: str, label: str = "") -> str:
     counts: dict[str, int] = {}
     for m in open_mrs:
         counts[str(m.get("_pipeline") or "none")] = counts.get(str(m.get("_pipeline") or "none"), 0) + 1
-    parts = [f"{len(open_mrs)} open"]
+    parts = [label] if label else []
+    parts.append(f"{len(open_mrs)} open")
     if counts.get("failed"):
         parts.append(f"{counts['failed']} failing")
     if counts.get("running"):
@@ -364,8 +463,13 @@ def _feed_warnings(feed: str, feed_err: str) -> list[str]:
 def render(open_mrs: list[dict], covered: set[str], healed: list[str],
            drifted: dict[str, tuple[str, str]], pruned: list[str],
            uncovered: list[str], previous: dict[str, Any] | None,
-           feed: str = "alive", feed_err: str = "") -> str:
-    """Full board on cold start; changed + standing-problem rows afterwards."""
+           feed: str = "alive", feed_err: str = "", label: str = "") -> str:
+    """Full board on cold start; changed + standing-problem rows afterwards.
+
+    `label` names the population when it is not the default, because two
+    radars over different filters in one window otherwise print two boards
+    that are indistinguishable from one board printed twice.
+    """
     cold = previous is None
     prev_entries: dict[str, Any] = (previous or {}).get("mrs", {}) or {}
     healed_set, uncovered_set = set(healed), set(uncovered)
@@ -380,7 +484,8 @@ def render(open_mrs: list[dict], covered: set[str], healed: list[str],
             shown.append(mrs._row(m, covered, True, marks))
 
     gone = len([i for i in prev_entries if i not in {str(m.get("iid")) for m in open_mrs}])
-    footer = _footer(open_mrs, covered, healed, drifted, pruned, uncovered, gone, feed)
+    footer = _footer(open_mrs, covered, healed, drifted, pruned, uncovered, gone,
+                     feed, label)
 
     lines = _feed_warnings(feed, feed_err)
     if cold:
@@ -399,8 +504,9 @@ def render(open_mrs: list[dict], covered: set[str], healed: list[str],
 
 
 def main(argv: list[str] | None = None) -> int:
+    multi = resolve_filter(argv)
     try:
-        open_mrs = live_open_mrs()
+        open_mrs = live_open_mrs(multi)
     except RadarError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
@@ -415,13 +521,18 @@ def main(argv: list[str] | None = None) -> int:
     healed, uncovered = heal(open_iids, watched)
     covered = watched | set(healed)
 
-    feed = ensure_feed()
-    feed_err = feed_error() if feed == "alive" else ""
+    scope = feed_scope(multi)
+    feed = ensure_feed(scope)
+    feed_err = feed_error(scope) if feed == "alive" else ""
 
-    previous = read_snapshot()
+    label = "" if multi == default_filter() else filter_string(multi)
+    previous = read_snapshot(multi)
     print(render(open_mrs, covered, healed, drifted, pruned, uncovered, previous,
-                 feed, feed_err))
-    write_snapshot({str(m.get("iid")): _snap_entry(m) for m in open_mrs if m.get("iid") is not None})
+                 feed, feed_err, label))
+    write_snapshot(
+        {str(m.get("iid")): _snap_entry(m) for m in open_mrs if m.get("iid") is not None},
+        multi,
+    )
     return 0
 
 

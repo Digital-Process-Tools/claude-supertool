@@ -40,6 +40,24 @@ def test_default_feed_is_every_open_mr() -> None:
     assert defaults.DEFAULT_FEED == EXPECTED_FEED
 
 
+def test_the_feed_op_is_built_from_the_shared_filter() -> None:
+    """radar reads DEFAULT_FILTER and the shell reads DEFAULT_FEED. Equal
+    values are not enough — two literals that happen to agree today are the
+    drift this module exists to prevent, so pin that one is *derived* from
+    the other rather than merely matching it."""
+    assert defaults.DEFAULT_FILTER == "author=@me,state=opened"
+    assert defaults.DEFAULT_FEED == f"gl-mrs:{defaults.DEFAULT_FILTER},iids"
+
+    source = (WATCH_DIR / "defaults.py").read_text()
+    assert 'DEFAULT_FEED = f"gl-mrs:{DEFAULT_FILTER},iids"' in source
+
+
+def test_defaults_cli_prints_filter() -> None:
+    r = _run_defaults("filter")
+    assert r.returncode == 0
+    assert r.stdout == defaults.DEFAULT_FILTER + "\n"
+
+
 def test_default_only_includes_success_and_terminal_events() -> None:
     assert defaults.DEFAULT_ONLY == EXPECTED_ONLY
 
