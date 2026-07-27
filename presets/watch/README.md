@@ -11,6 +11,7 @@ Claude Code.
 watch:SOURCE:ID[:only=event1,event2]    spawn poller (fire-and-forget)
 unwatch:SOURCE:ID                       kill poller, remove PID file
 watches                                 list active pollers (table)
+radar                                   reconcile coverage vs live GitLab, then report
 ```
 
 Example:
@@ -21,7 +22,17 @@ Example:
 ./supertool 'watch:gl-pipeline:151111'              # poll a CI pipeline to completion
 ./supertool 'watches'
 ./supertool 'unwatch:gitlab-mr:21803'
+./supertool 'radar'                                 # prune, heal, report
 ```
+
+`watches` says which pollers are alive; `radar` says what is *true*. Pollers
+die with the machine and events are fire-and-forget, so at session start an
+event-driven view knows nothing — which renders identically to "all green".
+`radar` treats live GitLab as authoritative and the state files as cache: it
+prunes terminal state files, flags drift where `last_event` fired on an older
+pipeline than `source_state` reports, respawns watchers for open MRs that lost
+theirs, then prints a full board (cold start) or the delta. Idempotent — run it
+on every session start. Details in [docs/presets/watch.md](../../docs/presets/watch.md).
 
 ## Sources
 

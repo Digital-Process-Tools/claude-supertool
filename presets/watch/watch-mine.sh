@@ -9,18 +9,24 @@
 #   /loop 5m bash presets/watch/watch-mine.sh
 #
 # Args (all optional):
-#   $1 FEED    supertool op emitting bare ids   (default: my failing MRs)
+#   $1 FEED    supertool op emitting bare ids   (default: every open MR of mine)
 #   $2 SOURCE  watch source for those ids       (default: gitlab-mr)
-#   $3 ONLY    events to emit notifications for  (default: pipeline_failed,merged)
+#   $3 ONLY    events to emit notifications for (default: see defaults.py)
+#
+# The defaults live in defaults.py so this script and the `radar` op cannot
+# drift apart — both spawn watchers over the same population with the same
+# event filter.
 #
 # Example — watch my failing GitHub PRs instead:
 #   bash watch-mine.sh 'gh-prs:author=@me,failed,iids' github-pr
 set -euo pipefail
 
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PY="${SUPERTOOL_PYTHON:-python3}"
 ST="${SUPERTOOL:-./supertool}"
-FEED="${1:-gl-mrs:author=@me,failed,iids}"
-SOURCE="${2:-gitlab-mr}"
-ONLY="${3:-pipeline_failed,merged}"
+FEED="${1:-$("$PY" "$HERE/defaults.py" feed)}"
+SOURCE="${2:-$("$PY" "$HERE/defaults.py" source)}"
+ONLY="${3:-$("$PY" "$HERE/defaults.py" only)}"
 
 # The supertool wrapper frames output with a header + PASS line; the bare ids
 # are the only all-digit lines.

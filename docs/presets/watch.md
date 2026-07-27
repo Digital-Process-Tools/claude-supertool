@@ -8,6 +8,7 @@ Background pollers for external sources that emit events on state-change. The fr
 watch:SOURCE:ID[:only=event1,event2]   spawn poller (fire-and-forget)
 unwatch:SOURCE:ID                      kill the poller, remove PID file
 watches                                list active pollers
+radar                                  reconcile coverage vs live GitLab, then report
 ```
 
 Example:
@@ -31,7 +32,7 @@ Composable in one batched call:
 `watch:SOURCE:ID` watches one id. To watch *every id a query returns* — e.g. all your failing MRs — pair it with a list op via the bundled supervisor `presets/watch/watch-mine.sh`. It runs a "list mine" op (`gl-mrs`/`gh-prs`), extracts the ids, and spawns one watcher each. Idempotent (the `watch` op skips ids already watched), so it's safe on a loop:
 
 ```bash
-# default: my failing GitLab MRs → gitlab-mr watchers
+# default: every open GitLab MR of mine → gitlab-mr watchers
 bash presets/watch/watch-mine.sh
 
 # re-sync every 5 min from inside Claude Code
@@ -41,7 +42,70 @@ bash presets/watch/watch-mine.sh
 bash presets/watch/watch-mine.sh 'gh-prs:author=@me,failed,iids' github-pr
 ```
 
-Args: `$1` feed op (default `gl-mrs:author=@me,failed,iids`), `$2` watch source (default `gitlab-mr`), `$3` notify events (default `pipeline_failed,merged`). The separation is deliberate — the list op owns *what's mine* (a platform concern), the watch preset stays generic. The feed op just has to emit bare ids (the `iids` flow); both `gl-mrs` (GitLab) and `gh-prs` (GitHub) ship today.
+Args: `$1` feed op, `$2` watch source, `$3` notify events. The defaults live in `presets/watch/defaults.py` — one place, read by both this script and the `radar` op so a healed watcher is identical to a spawned one:
+
+| Default | Value | Why |
+|---|---|---|
+| feed | `gl-mrs:author=@me,state=opened,iids` | Every open MR, not just the failing ones. A watcher can only report an MR *going* red if it was already watching while the MR was green. |
+| source | `gitlab-mr` | |
+| only | `pipeline_failed,pipeline_succeeded,merged,closed,conflicts_appeared` | `pipeline_succeeded` closes the red → fix → push → *?* loop, and is the only proof an automated fix worked. `pipeline_running` is excluded (you just pushed; no information) and `comment_added` is excluded because `user_notes_count` counts system notes. |
+
+The separation is deliberate — the list op owns *what's mine* (a platform concern), the watch preset stays generic. The feed op just has to emit bare ids (the `iids` flow); both `gl-mrs` (GitLab) and `gh-prs` (GitHub) ship today.
+
+## `radar` — reconcile, don't just report
+
+`watches` reports that pollers are alive. It cannot report what is *true*, and the two diverge routinely:
+
+```
+last_event    : pipeline_failed  on pipeline 154177
+source_state  : running          on pipeline 154180
+```
+
+**`source_state` is truth; `last_event` is history.** A board built on `last_event` calls that MR broken when it is mid-retry on a newer pipeline.
+
+Events also cannot survive a session boundary: the transport is fire-and-forget so an event emitted with no listener is gone permanently, pollers are processes that die with the machine, and pollers stop themselves on terminal state by design. At the start of a session an event-driven view knows *nothing* — and "knows nothing" renders identically to "everything is green". So state is the floor and events are the optimisation, not the reverse.
+
+`radar` is therefore an idempotent reconcile, safe on every session start:
+
+```
+1. live truth   one gl-mrs query for open MRs — authoritative. State files are
+                cache and may be absent or hours stale.
+2. reconcile    prune state files whose watcher reached a terminal state; flag
+                drift where the last event fired on an older pipeline.
+3. heal         respawn a watcher for every open MR with no live poller —
+                covers reboot, crash, a cleared /tmp, and MRs that were green
+                when watchers were last spawned.
+4. report       full board on cold start, delta-only afterwards.
+```
+
+```bash
+./supertool 'radar'
+```
+
+```
+radar: cold start — no prior snapshot, full board
+👁 ✗ test_unit_dpt +5   ·   4h   12Δ  !33161  SiNotificationConfiguration scaffold
+👁 ● running            ✓   5m    3Δ  !33173  Generator loadable + coverage   [drift: 154177→154180]
+  ✓ ok                  ✓  39m    1Δ  !33172  docs(vocab): CKEditor          [healed]
+
+3 open | 1 failing | 1 running | 1 green | 3 watched | 1 healed | 1 drift | 2 pruned
+```
+
+Rows use the same format as `gl-mrs`, plus two marks radar alone can report:
+
+| Mark | Meaning |
+|---|---|
+| `[drift: A→B]` | the last event fired on pipeline A, but pipeline B is current — the event is stale history |
+| `[healed]` | this open MR had no live poller; radar respawned one |
+| `[unwatched]` | radar could not respawn a poller — a real coverage gap |
+
+**"Nothing moved"** means the set of open MRs is unchanged, no MR changed pipeline status / pipeline id / draft / conflict flag, and radar took no action. Then radar prints one summary line — not nothing:
+
+```
+radar: no change | 7 open | 7 watched
+```
+
+Total silence would be indistinguishable from a radar that failed to run, which is the failure this op exists to remove. For the same reason an unreachable GitLab is a hard error (exit 1, no board, nothing pruned or healed) rather than an empty green board. Standing failures and conflicts are re-printed even when unchanged — an unfixed red is a current fact, not history.
 
 ## Bundled sources
 

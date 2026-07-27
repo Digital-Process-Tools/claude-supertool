@@ -324,6 +324,20 @@ def _flags(m: dict) -> str:
     return f" [{','.join(flags)}]" if flags else ""
 
 
+def _row(m: dict, watched: set[str], show_pipe: bool) -> str:
+    """One triage row. The single definition of the board's line format —
+    the `radar` op renders through here so the two boards stay identical."""
+    iid = str(m.get("iid", "?"))
+    eye = "👁" if iid in watched else " "
+    pipe = _pipe_cell(m, show_pipe)
+    appr = _appr_cell(m)
+    age = _age(str(m.get("updated_at", "")))
+    chg = m.get("_changes")
+    chg_s = f"{chg}Δ" if isinstance(chg, int) else ""
+    title = str(m.get("title", ""))[:42]
+    return f"{eye} {pipe:<16} {appr} {age:>3} {chg_s:>5}  !{iid:<6} {title}{_flags(m)}"
+
+
 def _render_table(mrs: list[dict], watched: set[str], show_pipe: bool) -> str:
     """Triage table: pipeline (+ failed job), approval, age, diff size, flags.
 
@@ -331,20 +345,7 @@ def _render_table(mrs: list[dict], watched: set[str], show_pipe: bool) -> str:
     """
     if not mrs:
         return "No MRs match."
-    lines = []
-    for m in sorted(mrs, key=_sort_key):
-        iid = str(m.get("iid", "?"))
-        eye = "👁" if iid in watched else " "
-        pipe = _pipe_cell(m, show_pipe)
-        appr = _appr_cell(m)
-        age = _age(str(m.get("updated_at", "")))
-        chg = m.get("_changes")
-        chg_s = f"{chg}Δ" if isinstance(chg, int) else ""
-        title = str(m.get("title", ""))[:42]
-        lines.append(
-            f"{eye} {pipe:<16} {appr} {age:>3} {chg_s:>5}  !{iid:<6} {title}{_flags(m)}"
-        )
-    return "\n".join(lines)
+    return "\n".join(_row(m, watched, show_pipe) for m in sorted(mrs, key=_sort_key))
 
 
 def _footer(mrs: list[dict], watched: set[str], show_pipe: bool) -> str:
