@@ -7,6 +7,8 @@ import json
 import os
 from pathlib import Path
 
+import pytest
+
 import supertool
 
 
@@ -129,3 +131,36 @@ def test_hint_stays_silent_when_no_literal_block_opens() -> None:
 def test_hint_still_fires_when_a_value_opens_with_the_delimiter() -> None:
     raw = "path = 'x.py'\nnew = '''a ''' b'''\n"
     assert "basic" in supertool._toml_delimiter_hint(raw)
+
+
+def test_hint_routes_its_glyph_through_mark(monkeypatch) -> None:
+    """Every other arrow in the file goes through mark(); this one was written
+    as a literal, so plain mode leaked a multibyte glyph into hook/CI output."""
+    raw = "path = 'x.py'\nnew = '''a ''' b'''\n"
+    monkeypatch.setenv("SUPERTOOL_PLAIN", "1")
+    out = supertool._toml_delimiter_hint(raw)
+    assert "\u21b3" not in out
+    assert "->" in out
+
+
+# ---------------------------------------------------------------------------
+# #393 follow-up: _FORMATTER_SKIPS is module-level and drained only on the
+# normal return path. An exception that escapes skips the drain, and the next
+# top-level call reports skips belonging to a call that already died.
+# ---------------------------------------------------------------------------
+
+def test_a_dying_call_does_not_leak_its_formatter_skips(
+    tmp_path: Path, monkeypatch
+) -> None:
+    f = tmp_path / "x.py"
+    f.write_text("a = 1\n")
+
+    def boom(*a, **k):
+        supertool._FORMATTER_SKIPS.append("prettier")
+        raise RuntimeError("op died past the skip bookkeeping")
+
+    monkeypatch.setattr(supertool, "op_read", boom)
+    supertool._FORMATTER_SKIPS.clear()
+    with pytest.raises(RuntimeError):
+        supertool.dispatch(f"read:{f}")
+    assert supertool._FORMATTER_SKIPS == []

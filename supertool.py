@@ -11668,7 +11668,7 @@ def _toml_delimiter_hint(raw: str) -> str:
     if not re.search(r"=[ \t]*'''", raw):
         return ""
     return (
-        "\n  ↳ the payload has an odd number of ''' runs — content containing "
+        f"\n  {mark('↳')} the payload has an odd number of ''' runs — content containing "
         "''' closes the block early.\n"
         '    Use a \"\"\"basic\"\"\" block instead (escapes apply, so \\ doubles), '
         "or the JSON payload form,\n"
@@ -11992,6 +11992,12 @@ def dispatch(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = None) ->
         return _dispatch_impl(arg, pre_parsed)
     finally:
         _DISPATCH_STATE.depth = depth
+        # _FORMATTER_SKIPS is module-level and drained on the normal return
+        # path. An exception escaping _dispatch_impl skips that drain, and the
+        # next top-level call would report skips belonging to a call that
+        # already died. The outermost frame owns the reset either way.
+        if depth == 0:
+            _FORMATTER_SKIPS.clear()
 
 
 def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = None) -> str:
