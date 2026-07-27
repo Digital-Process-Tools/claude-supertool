@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -220,6 +221,141 @@ def test_grep_missing_pattern_returns_error(monkeypatch, capsys) -> None:
     out = capsys.readouterr().out
     assert rc == 1
     assert "usage: gl-job:JOB_ID:grep:PATTERN" in out
+
+
+def _phpunit_failure_trace() -> list[str]:
+    """A realistic PHPUnit failure: a rendered HTML artifact between head and tail."""
+    html = ['<tr data-url="/absence/5" data-entity-id="5" class="list-row">']
+    html += [f'<td class="cell-{i}"><span class="value">value {i}</span></td>' for i in range(12)]
+    html += ['<td class="num-days"><span class="value">2.5</span></td>']
+    html += [f'<td class="cell-{i}"><span class="value">tail {i}</span></td>' for i in range(12)]
+    html += ["</tr>"]
+    return (
+        ["PHPUnit 10.5.0 by Sebastian Bergmann and contributors."]
+        + [f"runner noise {i}" for i in range(40)]
+        + [
+            "",
+            "There was 1 failure:",
+            "",
+            "1) SiAbsence\\Components\\AbsenceUserDaysHistoryTrListRendererTest::testBasic",
+            "Failed asserting that '" + html[0],
+        ]
+        + html[1:]
+        + [
+            "' [ASCII](length: 2170) does not contain \"5</\" [ASCII](length: 3).",
+            "",
+            "/builds/dvsi/tests/unit/AbsenceUserDaysHistoryTrListRendererTest.php:42",
+            "",
+            "FAILURES!",
+            "Tests: 120, Assertions: 340, Failures: 1.",
+        ]
+    )
+
+
+def _shown_line_numbers(out: str) -> list[int]:
+    """Line numbers of the trace lines actually printed by a smart-mode dump."""
+    numbers = []
+    for line in out.splitlines():
+        m = re.match(r"^\s+(\d+) \| ", line)
+        if m:
+            numbers.append(int(m.group(1)))
+    return numbers
+
+
+def test_fail_keeps_the_whole_phpunit_failure_block(monkeypatch, capsys) -> None:
+    """The evidence inside a PHPUnit failure (issue #404) survives :fail."""
+    lines = _phpunit_failure_trace()
+    rc = _run_main(monkeypatch, ["job.py", "123", "fail"], lines)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "1) SiAbsence\\Components\\AbsenceUserDaysHistoryTrListRendererTest::testBasic" in out
+    assert '<td class="num-days"><span class="value">2.5</span></td>' in out
+    assert '<td class="cell-6"><span class="value">value 6</span></td>' in out
+    assert '<td class="cell-6"><span class="value">tail 6</span></td>' in out
+    assert "' [ASCII](length: 2170) does not contain \"5</\" [ASCII](length: 3)." in out
+    assert "/builds/dvsi/tests/unit/AbsenceUserDaysHistoryTrListRendererTest.php:42" in out
+
+    block_start = lines.index(
+        "1) SiAbsence\\Components\\AbsenceUserDaysHistoryTrListRendererTest::testBasic"
+    ) + 1
+    block_end = lines.index(
+        "/builds/dvsi/tests/unit/AbsenceUserDaysHistoryTrListRendererTest.php:42"
+    ) + 1
+    shown = _shown_line_numbers(out)
+    assert [n for n in range(block_start, block_end + 1)] == [
+        n for n in shown if block_start <= n <= block_end
+    ]
+
+
+def test_fail_gap_marker_states_how_many_lines_were_elided(monkeypatch, capsys) -> None:
+    """Elision is never silent — the marker carries the exact dropped count."""
+    lines = ["ERROR: first boom"] + [f"quiet {i}" for i in range(60)] + ["ERROR: second boom"]
+    rc = _run_main(monkeypatch, ["job.py", "123", "fail"], lines)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "ERROR: first boom" in out
+    assert "ERROR: second boom" in out
+    shown = _shown_line_numbers(out)
+    assert shown == list(range(1, 10)) + list(range(54, 63))
+    assert "... (44 lines elided)" in out
+    assert "..." not in out.replace("... (44 lines elided)", "")
+
+
+def test_fail_no_gap_marker_when_nothing_is_dropped(monkeypatch, capsys) -> None:
+    """A contiguous match set prints no elision marker at all."""
+    lines = ["ERROR: boom", "detail one", "detail two"]
+    rc = _run_main(monkeypatch, ["job.py", "123", "fail"], lines)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert _shown_line_numbers(out) == [1, 2, 3]
+    assert "elided" not in out
+    assert "..." not in out
+
+
+def test_fail_oversize_phpunit_block_elides_visibly(monkeypatch, capsys) -> None:
+    """Past the block cap, head and tail are kept and the drop is announced."""
+    monkeypatch.setenv("GL_JOB_PHPUNIT_BLOCK_MAX_LINES", "20")
+    lines = (
+        ["1) FooTest::testBar", "Failed asserting that '<html>"]
+        + [f"<div>row {i}</div>" for i in range(100)]
+        + [
+            "' does not contain \"needle\".",
+            "/builds/tests/FooTest.php:99",
+            "",
+            "FAILURES!",
+        ]
+    )
+    rc = _run_main(monkeypatch, ["job.py", "123", "fail"], lines)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "1) FooTest::testBar" in out
+    assert "<div>row 0</div>" in out
+    assert "' does not contain \"needle\"." in out
+    assert "/builds/tests/FooTest.php:99" in out
+    assert "<div>row 50</div>" not in out
+    assert "lines elided)" in out
+
+
+def test_phpunit_blocks_bounds() -> None:
+    lines = [
+        "There was 1 failure:",
+        "1) FooTest::testA",
+        "Failed asserting that false is true.",
+        "",
+        "/builds/FooTest.php:10",
+        "",
+        "2) FooTest::testB",
+        "boom",
+        "/builds/FooTest.php:20",
+        "",
+        "FAILURES!",
+        "Tests: 2.",
+    ]
+    assert job._phpunit_blocks(lines) == [(1, 4), (6, 8)]
+
+
+def test_phpunit_blocks_ignores_non_phpunit_numbering() -> None:
+    assert job._phpunit_blocks(["1) do a thing", "2. and another"]) == []
 
 
 def test_select_job_patterns_matches_by_name() -> None:
