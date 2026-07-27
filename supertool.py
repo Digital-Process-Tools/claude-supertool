@@ -4348,11 +4348,30 @@ def _vim_render_diff(before: str, after: str) -> str:
     return "".join(out)
 
 
+_LINT_TIMEOUT_DEFAULT = 5
+
+
+def _lint_timeout() -> int:
+    """Post-edit lint subprocess timeout, overridable per environment (#396).
+
+    A slow runner (Windows antivirus scanning a freshly written temp file is
+    the usual suspect) needs room without a code change.
+    """
+    try:
+        val = int(os.environ.get("SUPERTOOL_LINT_TIMEOUT", ""))
+    except (TypeError, ValueError):
+        return _LINT_TIMEOUT_DEFAULT
+    return val if val > 0 else _LINT_TIMEOUT_DEFAULT
+
+
 def _vim_render_lint(path: str) -> str:
     """Post-edit syntax lint based on file extension.
 
-    Returns "" when no lint applies (unknown ext or missing binary).
+    Returns "" when no lint applies (unknown ext or missing binary) — silence
+    means clean, and only that.
     On success: '--- lint: <tool> ---\\n<output>\\n'.
+    On timeout: '--- POST-EDIT LINT TIMED OUT — <tool> (<N>s) ---' (#396) —
+    never "", which would read as a file that linted clean.
     On failure: '--- POST-EDIT LINT FAILED — <tool> ---\\n<output>\\n'.
     Never raises; never rolls back the edit.
     """
@@ -4391,14 +4410,21 @@ def _vim_render_lint(path: str) -> str:
         except (OSError, json.JSONDecodeError) as e:
             return f"--- POST-EDIT LINT FAILED — {tool} ---\n{e}\n"
 
+    timeout = _lint_timeout()
     try:
         proc = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
-            timeout=5,
+            timeout=timeout,
         )
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+    except subprocess.TimeoutExpired:
+        return (
+            f"--- POST-EDIT LINT TIMED OUT — {tool} ({timeout}s) ---\n"
+            "lint did not run to completion; the file was NOT checked. "
+            "Raise SUPERTOOL_LINT_TIMEOUT if this recurs.\n"
+        )
+    except (FileNotFoundError, OSError):
         return ""
 
     output = (proc.stdout + proc.stderr).strip()

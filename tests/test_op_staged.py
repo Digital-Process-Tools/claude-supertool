@@ -94,7 +94,6 @@ def test_format_staged_single_file(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     # #393: format_staged sweeps files nobody named, so it applies the repo
     # opt-in gate. Give the repo the config a prettier user would have.
     (repo / ".prettierrc").write_text("{}\n")
-    supertool._REPO_ROOT_WALK_CACHE.clear()
 
     f = repo / "style.json"
     f.write_text("{}\n")
@@ -155,7 +154,6 @@ def test_format_staged_verbose_passes_through(tmp_path: Path, monkeypatch: pytes
     repo = _make_repo(tmp_path)
     monkeypatch.chdir(repo)
     (repo / ".prettierrc").write_text("{}\n")
-    supertool._REPO_ROOT_WALK_CACHE.clear()
 
     f = repo / "style.json"
     f.write_text("{}\n")
@@ -201,7 +199,6 @@ def test_dispatch_format_staged_verbose(tmp_path: Path, monkeypatch: pytest.Monk
     repo = _make_repo(tmp_path)
     monkeypatch.chdir(repo)
     (repo / ".prettierrc").write_text("{}\n")
-    supertool._REPO_ROOT_WALK_CACHE.clear()
 
     f = repo / "style.json"
     f.write_text("{}\n")
