@@ -108,6 +108,75 @@ def _select_job_patterns(
     return default_patterns, None
 
 
+_PHPUNIT_BLOCK_START = re.compile(r'^\s*\d+\)\s+\S+::\S+')
+_PHPUNIT_BLOCK_SUMMARY = re.compile(
+    r'^\s*(FAILURES!|ERRORS!|WARNINGS!|OK \(|OK, but|There (was|were) \d+)'
+)
+
+
+def _phpunit_blocks(lines: list[str]) -> list[tuple[int, int]]:
+    """Locate PHPUnit failure blocks as (start, end) inclusive 0-based indices.
+
+    A block runs from its `N) Class::method` header to the last non-blank line
+    before the next header or the run summary — typically the trailing
+    `/path/File.php:LINE` frames.
+    """
+    blocks: list[tuple[int, int]] = []
+    for i, line in enumerate(lines):
+        if not _PHPUNIT_BLOCK_START.match(line):
+            continue
+        j = i + 1
+        while (
+            j < len(lines)
+            and not _PHPUNIT_BLOCK_START.match(lines[j])
+            and not _PHPUNIT_BLOCK_SUMMARY.match(lines[j])
+        ):
+            j += 1
+        end = j - 1
+        while end > i and not lines[end].strip():
+            end -= 1
+        blocks.append((i, end))
+    return blocks
+
+
+def _expand_phpunit_blocks(
+    lines: list[str], matches: set[int], block_max: int, total_max: int
+) -> tuple[int, int]:
+    """Widen any touched PHPUnit failure to its whole block, in place.
+
+    The assertion diff / rendered artifact sits in the middle of the block, so
+    a pattern window centred on `Failed asserting` drops exactly the evidence.
+    Blocks longer than block_max keep their head and tail; the elision is then
+    reported by the gap marker.
+
+    total_max budgets expansion across all blocks. Past it whole failures are
+    dropped rather than gutted — a dropped block keeps whatever its pattern
+    windows already selected, so no input returns less than it did before.
+    Returns (dropped, touched) for the caller to announce.
+    """
+    touched = [
+        (start, end)
+        for start, end in _phpunit_blocks(lines)
+        if any(idx in matches for idx in range(start, end + 1))
+    ]
+    budget = total_max
+    dropped = 0
+    for start, end in touched:
+        size = end - start + 1
+        cost = min(size, block_max)
+        if cost > budget:
+            dropped += 1
+            continue
+        budget -= cost
+        if size <= block_max:
+            matches.update(range(start, end + 1))
+            continue
+        head = block_max // 2
+        matches.update(range(start, start + head))
+        matches.update(range(end - (block_max - head) + 1, end + 1))
+    return dropped, len(touched)
+
+
 def _find_error_sections(lines: list[str], patterns: list[str], context: int) -> list[tuple[int, str]]:
     """Find lines matching error patterns and return them with context.
 
@@ -128,14 +197,31 @@ def _find_error_sections(lines: list[str], patterns: list[str], context: int) ->
     if not matches:
         return []
 
+    dropped, touched = _expand_phpunit_blocks(
+        lines,
+        matches,
+        int(os.environ.get("GL_JOB_PHPUNIT_BLOCK_MAX_LINES", "500")),
+        int(os.environ.get("GL_JOB_PHPUNIT_TOTAL_MAX_LINES", "2000")),
+    )
+
     result: list[tuple[int, str]] = []
     sorted_matches = sorted(matches)
-    prev = -2
+    prev = -1
     for idx in sorted_matches:
-        if idx > prev + 1:
-            result.append((-1, "..."))  # gap marker
+        gap = idx - prev - 1
+        if gap > 0:
+            plural = "" if gap == 1 else "s"
+            result.append((-1, f"... ({gap} line{plural} elided)"))
         result.append((idx + 1, lines[idx]))  # 1-indexed line numbers
         prev = idx
+
+    if dropped:
+        plural = "" if dropped == 1 else "s"
+        result.append((
+            -1,
+            f"... ({dropped} of {touched} PHPUnit failure{plural} not shown in full — "
+            f"raise GL_JOB_PHPUNIT_TOTAL_MAX_LINES=N)",
+        ))
 
     return result
 

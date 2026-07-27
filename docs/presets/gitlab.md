@@ -62,6 +62,25 @@ the flat `error_patterns`. When a matched entry has a `resolution`, `gl-job` pri
 `rector` job ends with `Resolve: ./supertool 'rector_ci_apply:67890'`. Project config
 deep-merges into the preset op, so adding `job_patterns` keeps the built-in `cmd`.
 
+### PHPUnit failures are kept whole
+
+A matched line is shown with `error_context` lines around it, which is right for a
+stack trace and wrong for a PHPUnit assertion failure — there the middle *is* the
+evidence (the rendered HTML/JSON, the expected-vs-actual diff) and the head/tail are
+just `Failed asserting that '` and `does not contain "X"`. So a failure block, from
+its `N) Class::method` header to the trailing `/path/File.php:LINE` frames, is never
+elided in the middle: touching it anywhere pulls in the whole block. Blocks longer
+than `GL_JOB_PHPUNIT_BLOCK_MAX_LINES` (default 500) keep their head and tail, and
+every gap marker states the count — `... (44 lines elided)` — so a trimmed view can
+never be mistaken for a complete one.
+
+Expansion is budgeted across the whole log by `GL_JOB_PHPUNIT_TOTAL_MAX_LINES`
+(default 2000), because one broken shared component fails dozens of tests at once.
+Past the budget whole failures are dropped in file order rather than gutted — a
+dropped failure falls back to its ordinary pattern window, so nothing disappears —
+and the view ends with `... (3 of 21 PHPUnit failures not shown in full — raise
+GL_JOB_PHPUNIT_TOTAL_MAX_LINES=N)`.
+
 **Check an issue before starting work:**
 ```bash
 ./supertool 'gl-issue:999' 'gl-mr:feature/my-branch:status'
