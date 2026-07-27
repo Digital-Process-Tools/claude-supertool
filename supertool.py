@@ -3479,6 +3479,14 @@ _TRAILING_BACKSLASH_RUN = re.compile(r"(\\+)([ \t]*)\r?\n")
 # disk, and a warning about them would be worse than none.
 _WRITE_WARNINGS: List[Tuple[str, str]] = []
 
+# Bumped when a mutating op RUNS, before its outcome is known — the branch
+# footer's signal. A write counter cannot serve that role: `_retract_write`
+# decrements on rollback and a failed edit never reaches `_atomic_write` at all,
+# so keying the footer on bytes-that-landed silently drops the two cases where a
+# wrong-branch hypothesis is most useful. Read once per call by dispatch; never
+# decremented.
+_MUTATION_ATTEMPTS: List[int] = [0]
+
 # Bumped by _atomic_write. Lets dispatch ask 'did this op actually write?'
 # instead of sniffing the receipt for an ERROR prefix — receipts are prose
 # and not every no-op failure says ERROR (op_replace's zero-match returns
@@ -9865,13 +9873,29 @@ def _repo_opts_into_formatter(name: str, spec: Dict[str, Any], path: str) -> boo
     return False
 
 
+_REPO_ROOT_WALK_CACHE: Dict[str, List[str]] = {}
+
+
 def _dirs_up_to_repo_root(path: str) -> List[str]:
     """`path`'s directory and every parent up to and including its repo root.
 
     Stops at the first directory holding `.git` (worktrees use a `.git` file,
     so existence is the test, not is-a-directory), else at the filesystem root.
+
+    Symlinks are resolved first, for the same reason `_atomic_write` resolves
+    them: a file reached through a symlinked directory has its real repo
+    somewhere else entirely, and walking the link's own location climbs to the
+    filesystem root without ever meeting the config that governs the file.
+
+    Cached per directory — a batch editing 40 files under one root would
+    otherwise repeat the identical walk 40 times, once per formatter.
     """
-    current = os.path.dirname(os.path.abspath(path)) or os.sep
+    real = os.path.realpath(path)
+    start = os.path.dirname(real) or os.sep
+    cached = _REPO_ROOT_WALK_CACHE.get(start)
+    if cached is not None:
+        return cached
+    current = start
     out: List[str] = []
     while True:
         out.append(current)
@@ -9881,6 +9905,7 @@ def _dirs_up_to_repo_root(path: str) -> List[str]:
         if parent == current:
             break
         current = parent
+    _REPO_ROOT_WALK_CACHE[start] = out
     return out
 
 
@@ -10269,6 +10294,10 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
     extract = _OP_TARGETS.get(op)
     if not extract:
         return do_op()
+    # Counted here, before the op runs and whatever it returns: this is the
+    # branch footer's signal, and the cases worth reporting most are the ones
+    # where nothing lands on disk — a failed anchor, a validator rollback.
+    _MUTATION_ATTEMPTS[0] += 1
     try:
         path = extract(parts)
     except (IndexError, TypeError):
@@ -11302,11 +11331,19 @@ def op_workspace(path: str) -> str:
     return "".join(out)
 
 
-def op_format(path: str, tool_filter: Optional[list] = None, verbose: bool = False) -> str:
+def op_format(path: str, tool_filter: Optional[list] = None, verbose: bool = False,
+              gated: bool = False) -> str:
     """Manual one-shot: run formatters on ``path``, render ok/fail + duration.
 
     verbose=True: show the formatter's full error message (untruncated) and
     a ``[verbose]`` marker on the row so callers can distinguish the mode.
+
+    gated=True applies the #393 repo opt-in rule. Off by default and on for
+    `format_staged`, which is the honest split: `format:PATH` names one file,
+    so the caller has already said what they want done to it and a tool that
+    silently declined would be the wrong answer. `format_staged` sweeps files
+    nobody named, frequently from a pre-commit hook, which is the same shape
+    as the post-edit hook the gate was written for.
     """
     if not path:
         return "ERROR: format requires file path\n"
@@ -11326,6 +11363,12 @@ def op_format(path: str, tool_filter: Optional[list] = None, verbose: bool = Fal
             continue
         glob = spec.get("match", "*")
         if path and glob and not _match_glob(path, glob):
+            continue
+        if gated and not _repo_opts_into_formatter(name, spec, path):
+            matched = True
+            out.append(
+                f"\n  {name}: skipped — no config for it in this file's repo (#393)"
+            )
             continue
         matched = True
         result = _formatter_run_one(name, spec, path)
@@ -11434,7 +11477,7 @@ def op_format_staged(tool_filter: Optional[list] = None, verbose: bool = False) 
     parts = []
     for fpath in staged:
         parts.append(f"format_staged: {fpath}")
-        block = op_format(fpath, tool_filter, verbose=verbose)
+        block = op_format(fpath, tool_filter, verbose=verbose, gated=True)
         for line in block.splitlines():
             parts.append(f"  {line}")
     return "\n".join(parts) + "\n"
@@ -11615,9 +11658,14 @@ def _toml_delimiter_hint(raw: str) -> str:
     closes, so a stray one means the content carried its own.
 
     Silent when the payload has no ''' at all — then the failure is ordinary
-    TOML and a delimiter lecture would be noise.
+    TOML and a delimiter lecture would be noise. Silent too when no ''' ever
+    opens a value: `new = "isn't it''' odd"` carries the run harmlessly inside
+    a basic string, and a delimiter lecture there sends the reader after the
+    wrong cause, which is worse than saying nothing at all.
     """
     if raw.count("'''") % 2 == 0:
+        return ""
+    if not re.search(r"=[ \t]*'''", raw):
         return ""
     return (
         "\n  ↳ the payload has an odd number of ''' runs — content containing "
@@ -12025,6 +12073,7 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
     if len(arg) > _HEADER_ARG_MAX:
         _compact_header = _compact_header_arg(op, parts)
     _writes_before = _WRITE_COUNT[0]
+    _attempts_before = _MUTATION_ATTEMPTS[0]
 
     # #146: dispatch-level path containment. Each op has a known position(s)
     # of its path arg(s) in `parts`. _safe_path enforces cwd containment
@@ -12491,7 +12540,7 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
     # branch at all (#392). The counter is bumped at `_atomic_write`, which every
     # mutating op passes through however deeply it is nested.
     if getattr(_DISPATCH_STATE, "depth", 1) <= 1:
-        if op in _OP_TARGETS or _WRITE_COUNT[0] > _writes_before:
+        if op in _OP_TARGETS or _MUTATION_ATTEMPTS[0] > _attempts_before:
             body += _branch_line()
 
     return header + body

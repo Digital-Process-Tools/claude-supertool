@@ -128,9 +128,16 @@ A formatter therefore runs only where there is evidence the repo wants it:
 | `"requires_config": ["house.toml"]` | run only when that marker is present |
 | The tool is unknown to supertool | never gated — absence of knowledge is not evidence of opt-out |
 
-The search stops at the repo root (the first directory holding `.git`), so a
-parent repo's config never opts a nested one in. `SUPERTOOL_FORMAT_WITHOUT_CONFIG=1`
-restores the old always-run behaviour for a whole invocation.
+The search stops at the repo root (the first directory holding `.git`), and
+symlinks are resolved first, so a file reached through a link is judged by the
+repo that actually holds it. `SUPERTOOL_FORMAT_WITHOUT_CONFIG=1` restores the
+old always-run behaviour for a whole invocation.
+
+The gate applies to the automatic post-edit hook and to `format_staged`, which
+sweeps files nobody named and usually runs from a pre-commit hook. It does
+**not** apply to `format:PATH` — there the caller named one file and said what
+they want done to it, and a tool that silently declined would be the wrong
+answer.
 
 Note that the *policy* — which `.supertool.json` is loaded — still comes from the
 shell's cwd, while the *opt-in evidence* comes from the edited file's own repo.
