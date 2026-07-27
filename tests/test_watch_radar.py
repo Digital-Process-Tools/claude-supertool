@@ -115,7 +115,7 @@ def _live_feed(tmp_path: Path) -> Path:
 
 
 def _set_live(env, mrs_list):
-    env["monkeypatch"].setattr(radar, "live_open_mrs", lambda: mrs_list)
+    env["monkeypatch"].setattr(radar, "live_open_mrs", lambda multi=None: mrs_list)
 
 
 def _run(env, capsys) -> str:
@@ -458,7 +458,7 @@ def test_board_costs_no_extra_api_call_for_the_branch(env) -> None:
 # ---------------------------------------------------------------------------
 
 def test_glab_failure_exits_nonzero_and_prints_no_board(env, capsys) -> None:
-    def _boom():
+    def _boom(multi=None):
         raise radar.RadarError("glab not authenticated. Run: glab auth login")
 
     env["monkeypatch"].setattr(radar, "live_open_mrs", _boom)
@@ -471,7 +471,7 @@ def test_glab_failure_exits_nonzero_and_prints_no_board(env, capsys) -> None:
 def test_glab_failure_does_not_prune_heal_or_snapshot(env, capsys) -> None:
     merged = _state_file(env["dir"], "33136", mr_state="merged")
 
-    def _boom():
+    def _boom(multi=None):
         raise radar.RadarError("boom")
 
     env["monkeypatch"].setattr(radar, "live_open_mrs", _boom)
@@ -527,7 +527,7 @@ def test_live_truth_is_one_gl_mrs_query(env) -> None:
 # ---------------------------------------------------------------------------
 
 def test_corrupt_snapshot_is_treated_as_cold_start(env, capsys) -> None:
-    Path(radar._snapshot_path()).write_text("{ not json")
+    Path(radar._snapshot_path(radar.default_filter())).write_text("{ not json")
     _live_pid_file(env["dir"], "33172")
     _set_live(env, [_mr(33172, "success")])
     assert "cold start" in _run(env, capsys)
@@ -627,7 +627,7 @@ def test_a_healthy_feed_produces_no_warning(env, capsys) -> None:
 
 def test_unreachable_gitlab_does_not_start_a_feed_poller(env, capsys) -> None:
     """The hard-error path takes no action at all, feed included."""
-    def _boom():
+    def _boom(multi=None):
         raise radar.RadarError("boom")
 
     env["monkeypatch"].setattr(radar, "live_open_mrs", _boom)
@@ -643,3 +643,215 @@ def test_snapshot_records_the_reported_facts(env, capsys) -> None:
     assert snap is not None
     assert snap["mrs"]["33161"]["pipeline"] == "failed"
     assert snap["mrs"]["33161"]["pipeline_id"] == "154177"
+
+
+# ---------------------------------------------------------------------------
+# the filter arg (issue #425)
+#
+# These stub `glab mr list` rather than `live_open_mrs`, because the whole
+# point of the issue is that the *board* is built from the filter. A test that
+# stubs live_open_mrs cannot tell a working radar from one that reads the
+# filter for its watcher fleet and keeps a hardcoded author for its board.
+# ---------------------------------------------------------------------------
+
+class _Result:
+    def __init__(self, stdout: str, returncode: int = 0) -> None:
+        self.stdout = stdout
+        self.returncode = returncode
+        self.stderr = ""
+
+
+def _glab(env, by_author: dict[str, list[dict]]) -> list[list[str]]:
+    """Serve `glab mr list` from a per-author map. Returns the argv log."""
+    calls: list[list[str]] = []
+
+    def _run_cmd(cmd, timeout=25):
+        calls.append(list(cmd))
+        author = cmd[cmd.index("--author") + 1] if "--author" in cmd else ""
+        return _Result(json.dumps(by_author.get(author, [])))
+
+    env["monkeypatch"].setattr(radar.mrs, "_run", _run_cmd)
+    env["monkeypatch"].setattr(radar.mrs, "_enrich", lambda data, cap, workers: None)
+    return calls
+
+
+def _authors(calls: list[list[str]]) -> list[str]:
+    return [c[c.index("--author") + 1] for c in calls if "--author" in c]
+
+
+def _feed_ids(env) -> list[str]:
+    return [wid for _src, wid, _only in _feed_spawns(env)]
+
+
+def test_a_filter_arg_moves_the_board_the_fleet_and_the_feed_together(env, capsys) -> None:
+    """One filter, one population. The invariant, pinned on all three views.
+
+    Half-implementing this — filter the fleet, keep `author=@me` for the board
+    — produces a session receiving events for MRs the board does not list,
+    which renders exactly like a board where those MRs are fine.
+    """
+    _glab(env, {"@me": [_mr(33161)], "modular.system": [_mr(991, "failed", "800")]})
+
+    assert radar.main(["radar", "author=modular.system"]) == 0
+    out = capsys.readouterr().out
+
+    assert "!991" in out
+    assert "!33161" not in out
+    assert _mr_spawns(env) == ["991"]
+    assert _feed_ids(env) == ["author=modular.system"]
+
+
+def test_a_bare_radar_still_covers_my_own_open_mrs(env, capsys) -> None:
+    _glab(env, {"@me": [_mr(33161)], "modular.system": [_mr(991)]})
+    assert radar.main([]) == 0
+    out = capsys.readouterr().out
+    assert "!33161" in out
+    assert "!991" not in out
+
+
+def test_a_bare_radar_keeps_the_feed_alias_rather_than_forking_a_second_poller(env, capsys) -> None:
+    """The feed id is a filename. `@me` and its expansion are one population,
+    so they must not become two pollers emitting two copies of every event."""
+    _glab(env, {"@me": [_mr(33161)]})
+    assert radar.main([]) == 0
+    assert _feed_ids(env) == ["@me"]
+
+
+def test_a_filter_matching_a_feed_alias_reuses_that_alias(env, capsys) -> None:
+    _glab(env, {"": [_mr(4242)]})
+    assert radar.main(["radar", "reviewer=@me,state=opened"]) == 0
+    assert "!4242" in capsys.readouterr().out
+    assert _feed_ids(env) == ["@reviewer"]
+
+
+def test_an_arg_carrying_only_flags_is_still_the_default_population(env, capsys) -> None:
+    """`radar:nopipe` names no filter. Resolving it to an empty dict would mint
+    an empty feed scope — a third poller over the population `@me` already
+    covers, and therefore duplicate discovery events."""
+    _glab(env, {"@me": [_mr(33161)]})
+    assert radar.main(["radar", "nopipe"]) == 0
+    out = capsys.readouterr().out
+    assert "!33161" in out
+    assert _feed_ids(env) == ["@me"]
+    assert radar.resolve_filter(["radar", "nopipe"]) == radar.default_filter()
+
+
+def test_editing_the_shared_default_moves_radar_too(env, capsys) -> None:
+    """The drift hole this issue names: `DEFAULT_FEED` used to move only the
+    shell supervisor, leaving radar on its own hardcoded author."""
+    calls = _glab(env, {"someone.else": [_mr(77)]})
+    env["monkeypatch"].setattr(radar.defaults, "DEFAULT_FILTER",
+                               "author=someone.else,state=opened")
+    assert radar.main([]) == 0
+    assert "!77" in capsys.readouterr().out
+    assert _authors(calls) == ["someone.else"]
+
+
+# ---------------------------------------------------------------------------
+# multi-author fan-out
+# ---------------------------------------------------------------------------
+
+def test_two_authors_become_two_queries_unioned_by_iid(env, capsys) -> None:
+    calls = _glab(env, {"@me": [_mr(33161), _mr(500)],
+                        "modular.system": [_mr(991), _mr(500)]})
+
+    assert radar.main(["radar", "author=@me,author=modular.system"]) == 0
+    out = capsys.readouterr().out
+
+    assert _authors(calls) == ["@me", "modular.system"]
+    assert sorted(_mr_spawns(env)) == ["33161", "500", "991"]
+    assert "3 open" in out
+
+
+def test_an_mr_both_authors_return_is_listed_once(env, capsys) -> None:
+    _glab(env, {"@me": [_mr(500)], "modular.system": [_mr(500)]})
+    assert radar.main(["radar", "author=@me,author=modular.system"]) == 0
+    out = capsys.readouterr().out
+    assert out.count("!500") == 1
+    assert "1 open" in out
+
+
+def test_a_failing_query_in_the_fanout_fails_the_whole_board(env, capsys) -> None:
+    """A partial union is a board quietly missing rows — the exact failure
+    RadarError exists to prevent, so one bad query is not survivable."""
+    def _run_cmd(cmd, timeout=25):
+        author = cmd[cmd.index("--author") + 1] if "--author" in cmd else ""
+        if author == "modular.system":
+            return _Result("", returncode=1)
+        return _Result(json.dumps([_mr(33161)]))
+
+    env["monkeypatch"].setattr(radar.mrs, "_run", _run_cmd)
+    assert radar.main(["radar", "author=@me,author=modular.system"]) == 1
+    assert capsys.readouterr().out == ""
+
+
+def test_a_non_default_board_names_its_population(env, capsys) -> None:
+    """Two radars in one window otherwise print two indistinguishable boards."""
+    _glab(env, {"modular.system": [_mr(991)]})
+    assert radar.main(["radar", "author=modular.system"]) == 0
+    assert "author=modular.system" in capsys.readouterr().out
+
+
+def test_the_default_board_is_not_labelled(env, capsys) -> None:
+    _glab(env, {"@me": [_mr(33161)]})
+    assert radar.main([]) == 0
+    assert "author=@me" not in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# snapshot keying — two filters, two deltas
+# ---------------------------------------------------------------------------
+
+def test_each_filter_gets_its_own_snapshot_file() -> None:
+    mine = radar._snapshot_path(radar.default_filter())
+    kevin = radar._snapshot_path(radar.resolve_filter(["radar", "author=modular.system"]))
+    assert mine != kevin
+
+
+def test_filter_key_ignores_order_but_not_identity() -> None:
+    both_ways = [radar.filter_key(radar.resolve_filter(["radar", arg]))
+                 for arg in ("author=a,author=b", "author=b,author=a")]
+    assert both_ways[0] == both_ways[1]
+    assert radar.filter_key(radar.resolve_filter(["radar", "author=a"])) != both_ways[0]
+
+
+def test_a_second_population_does_not_read_as_everything_new_and_everything_gone(
+        env, capsys) -> None:
+    """Sharing one snapshot file makes the delta column lie in both directions:
+    every row of one population is new, every row of the other is gone."""
+    _glab(env, {"@me": [_mr(33161)], "modular.system": [_mr(991)]})
+
+    assert radar.main([]) == 0
+    capsys.readouterr()
+
+    assert radar.main(["radar", "author=modular.system"]) == 0
+    kevin = capsys.readouterr().out
+    assert "cold start" in kevin
+    assert "no longer open" not in kevin
+
+    assert radar.main([]) == 0
+    mine = capsys.readouterr().out
+    assert "radar: no change" in mine
+    assert "no longer open" not in mine
+
+
+def test_a_filtered_run_writes_only_its_own_snapshot(env, capsys) -> None:
+    _glab(env, {"@me": [_mr(33161)], "modular.system": [_mr(991)]})
+    kevin_filter = radar.resolve_filter(["radar", "author=modular.system"])
+
+    assert radar.main(["radar", "author=modular.system"]) == 0
+    capsys.readouterr()
+
+    assert radar.read_snapshot() is None
+    assert set(radar.read_snapshot(kevin_filter)["mrs"]) == {"991"}
+
+
+# ---------------------------------------------------------------------------
+# the op wiring — without {args} the whole feature is unreachable
+# ---------------------------------------------------------------------------
+
+def test_the_radar_op_forwards_its_args() -> None:
+    manifest = json.loads((Path(__file__).parent.parent / "presets" / "watch.json").read_text())
+    op = manifest["ops"]["radar"]
+    assert op["cmd"].endswith("{args}")
+    assert "author=" in op["syntax"]

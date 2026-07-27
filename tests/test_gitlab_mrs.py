@@ -513,3 +513,46 @@ def test_main_bad_json_returns_1(monkeypatch) -> None:
     monkeypatch.setattr(sys, "argv", ["mrs.py", "nopipe"])
     monkeypatch.setattr(mrs, "_run", _fake_list("not json"))
     assert mrs.main() == 1
+
+
+# ---------------------------------------------------------------------------
+# _parse_multi / _expand_filters — the plural reading of one filter vocabulary
+# ---------------------------------------------------------------------------
+
+def test_parse_multi_keeps_every_value_of_a_repeated_key() -> None:
+    filters, flags = mrs._parse_multi("author=@me,author=modular.system,state=opened")
+    assert filters == {"author": ["@me", "modular.system"], "state": ["opened"]}
+    assert flags == set()
+
+
+def test_parse_multi_agrees_with_parse_args_on_flags() -> None:
+    assert mrs._parse_multi("reviewer=@me,iids")[1] == {"iids"}
+
+
+def test_parse_args_resolves_a_repeated_key_to_one_value() -> None:
+    """gl-mrs issues one query, so its view of a repeated key stays scalar."""
+    filters, _flags = mrs._parse_args("author=@me,author=modular.system")
+    assert filters == {"author": "modular.system"}
+
+
+def test_expand_filters_fans_a_repeated_key_into_one_dict_per_value() -> None:
+    multi, _flags = mrs._parse_multi("author=@me,author=modular.system,state=opened")
+    assert mrs._expand_filters(multi) == [
+        {"author": "@me", "state": "opened"},
+        {"author": "modular.system", "state": "opened"},
+    ]
+
+
+def test_expand_filters_leaves_a_scalar_filter_exactly_as_parse_args_saw_it() -> None:
+    """The single-query path must produce byte-identical argv, or every caller
+    of the plural parser quietly changes the command it was already sending."""
+    arg = "author=@me,state=opened"
+    scalar, _f = mrs._parse_args(arg)
+    multi, _g = mrs._parse_multi(arg)
+    assert mrs._expand_filters(multi) == [scalar]
+    assert (mrs._build_list_cmd(mrs._expand_filters(multi)[0], 50)
+            == mrs._build_list_cmd(scalar, 50))
+
+
+def test_expand_filters_of_an_empty_filter_is_one_unfiltered_query() -> None:
+    assert mrs._expand_filters({}) == [{}]

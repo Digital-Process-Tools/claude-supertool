@@ -88,30 +88,35 @@ def fetch_population(scope: str) -> dict[str, dict[str, str]] | None:
 
     No pipeline enrichment — the feed answers "which MRs exist", and the
     per-MR watcher it spawns answers "what is happening to this one". One
-    `glab mr list` call per poll, whatever the population size.
+    `glab mr list` call per poll and per author, whatever the population size:
+    a repeated key in the scope fans out, because GitLab takes one
+    `author_username` per query and the scope describes their union. Any one
+    of those calls failing fails the whole poll — a partial population reads
+    as a departure for everything the missing query would have returned.
     """
-    filters, _flags = mrs._parse_args(resolve_filter(scope))
+    multi, _flags = mrs._parse_multi(resolve_filter(scope))
     cfg = mrs._get_config()
-    try:
-        result = mrs._run(mrs._build_list_cmd(filters, cfg["per_page"]))
-    except (OSError, ValueError):
-        return None
-    if result.returncode != 0:
-        return None
-    try:
-        data = json.loads(result.stdout)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(data, list):
-        return None
     out: dict[str, dict[str, str]] = {}
-    for m in data:
-        if not isinstance(m, dict) or m.get("iid") is None:
-            continue
-        out[str(m["iid"])] = {
-            "title": str(m.get("title") or ""),
-            "web_url": str(m.get("web_url") or ""),
-        }
+    for filters in mrs._expand_filters(multi):
+        try:
+            result = mrs._run(mrs._build_list_cmd(filters, cfg["per_page"]))
+        except (OSError, ValueError):
+            return None
+        if result.returncode != 0:
+            return None
+        try:
+            data = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(data, list):
+            return None
+        for m in data:
+            if not isinstance(m, dict) or m.get("iid") is None:
+                continue
+            out.setdefault(str(m["iid"]), {
+                "title": str(m.get("title") or ""),
+                "web_url": str(m.get("web_url") or ""),
+            })
     return out
 
 
