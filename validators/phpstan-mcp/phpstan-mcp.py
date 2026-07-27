@@ -27,9 +27,8 @@ WORKING_DIR = os.environ.get("MCP_PHPSTAN_WORKING_DIR", os.getcwd())
 SPAWN_TIMEOUT_SEC = 60
 CALL_TIMEOUT_SEC = 180
 
-# Extra refusal substrings (comma-separated) and analysis roots, both opt-in.
+# Extra refusal substrings (comma-separated), opt-in per repo.
 SKIP_PATTERNS_ENV = "PHPSTAN_MCP_SKIP_PATTERNS"
-PATHS_ENV = "PHPSTAN_MCP_PATHS"
 
 
 # #148: use the shared presets/mcp/_paths helper so client + daemon agree on
@@ -158,10 +157,6 @@ def skipped(file_path: str, reason: str, dur_ms: int) -> dict:
     return _refusal.skipped("phpstan-mcp", file_path, reason, dur_ms)
 
 
-def out_of_configured_paths(file_path: str) -> bool:
-    return _refusal.out_of_configured_paths(file_path, PATHS_ENV)
-
-
 def format_response(file_path: str, mcp_resp: dict, dur_ms: int) -> dict:
     base = {"tool": "phpstan-mcp", "file": file_path,
             "ok": True, "count": 0, "errors": [], "duration_ms": dur_ms}
@@ -220,10 +215,6 @@ def main(argv: list[str]) -> int:
         return 2
     file_path = argv[1]
     t0 = time.monotonic()
-    if out_of_configured_paths(file_path):
-        print(json.dumps(skipped(file_path, "path outside PHPSTAN_MCP_PATHS allowlist",
-                                 int((time.monotonic() - t0) * 1000))))
-        return 0
     try:
         sock = ensure_daemon(WORKING_DIR)
         resp = ndjson_call(sock, os.path.abspath(file_path))

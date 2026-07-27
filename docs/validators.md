@@ -51,12 +51,7 @@ phpstan-mcp : skipped    (path outside --paths allowlist)     0.1s
 
 Skips never enter the before/after delta, never render a `✗`, are never cached (a skip is decided by config, and the cache key is a content hash), and — most importantly — **never roll back an edit**, even for a validator with `rollback_on_fail: true`. Counting a refusal-to-run as one error would let a scope-config mismatch revert perfectly good code.
 
-`phpstan-mcp` recognises phpstan's own refusal messages (`--paths` allowlist, "no files found to analyse"). Two env vars tune it:
-
-| Env var                     | Effect                                                                                     |
-|-----------------------------|--------------------------------------------------------------------------------------------|
-| `PHPSTAN_MCP_SKIP_PATTERNS` | Extra comma-separated, case-insensitive substrings that mark a refusal rather than a finding |
-| `PHPSTAN_MCP_PATHS`         | Analysis roots. When set, a file outside them is skipped without contacting the daemon      |
+`phpstan-mcp` and `phpmd-mcp` recognise their tool's own refusal messages (`--paths` allowlist, "no files found to analyse"). An exit they cannot explain still reports as an error — swallowing an unknown failure is the same category mistake pointing the other way. Teach an adapter a house-specific refusal with `PHPSTAN_MCP_SKIP_PATTERNS` / `PHPMD_MCP_SKIP_PATTERNS`: extra comma-separated, case-insensitive substrings.
 
 ## Bundled validators
 

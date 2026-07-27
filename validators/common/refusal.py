@@ -49,19 +49,3 @@ def skipped(tool: str, file_path: str, reason: str, dur_ms: int) -> dict:
     """
     return {"tool": tool, "file": file_path, "ok": True, "count": 0,
             "errors": [], "duration_ms": dur_ms, "skipped": reason}
-
-
-def out_of_configured_paths(file_path: str, env_var: str) -> bool:
-    """True when `env_var` lists analysis roots and `file_path` is outside all of them.
-
-    Opt-in. Unset means the adapter has no local knowledge of the tool's scope
-    and the tool stays the authority. When set, it saves the round trip the
-    analyser otherwise spends to conclude it will not analyse anything.
-    """
-    raw = os.environ.get(env_var, "")
-    entries = [e.strip() for part in raw.split(os.pathsep) for e in part.split(",")]
-    roots = [os.path.abspath(e) for e in entries if e]
-    if not roots:
-        return False
-    target = os.path.abspath(file_path)
-    return not any(target == r or target.startswith(r + os.sep) for r in roots)

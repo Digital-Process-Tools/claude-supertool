@@ -121,37 +121,12 @@ def test_transport_error_still_reported_as_error() -> None:
     assert out["count"] == 1
 
 
-def test_paths_allowlist_short_circuits_before_the_daemon(monkeypatch: pytest.MonkeyPatch,
-                                                          tmp_path: Path) -> None:
-    """PHPSTAN_MCP_PATHS set + file outside it → skip without touching the daemon."""
+def test_clean_analysis_passes_through_main(monkeypatch: pytest.MonkeyPatch,
+                                            tmp_path: Path) -> None:
+    """Guard: a file phpstan does analyse still reports a plain pass, not a skip."""
     mod = _load_adapter()
-    (tmp_path / "src").mkdir()
-    (tmp_path / "tests").mkdir()
-    target = tmp_path / "tests" / "FooTest.php"
+    target = tmp_path / "Foo.php"
     target.write_text("<?php\n")
-    monkeypatch.setenv("PHPSTAN_MCP_PATHS", str(tmp_path / "src"))
-
-    def _explode(*_a, **_k):
-        raise AssertionError("daemon must not be contacted for an out-of-scope path")
-
-    monkeypatch.setattr(mod, "ensure_daemon", _explode)
-    monkeypatch.setattr(mod, "ndjson_call", _explode)
-    captured: list = []
-    monkeypatch.setattr("builtins.print", lambda s: captured.append(s))
-    assert mod.main(["phpstan-mcp.py", str(target)]) == 0
-    data = json.loads(captured[-1])
-    assert data.get("skipped")
-    assert data["count"] == 0
-
-
-def test_paths_allowlist_lets_in_scope_files_through(monkeypatch: pytest.MonkeyPatch,
-                                                     tmp_path: Path) -> None:
-    """Guard: the short-circuit must not swallow files that ARE in scope."""
-    mod = _load_adapter()
-    (tmp_path / "src").mkdir()
-    target = tmp_path / "src" / "Foo.php"
-    target.write_text("<?php\n")
-    monkeypatch.setenv("PHPSTAN_MCP_PATHS", str(tmp_path / "src"))
     monkeypatch.setattr(mod, "ensure_daemon", lambda cwd: "/sock")
     monkeypatch.setattr(mod, "ndjson_call",
                         lambda s, f: _mcp_resp(errors=[], exit_code=0))
