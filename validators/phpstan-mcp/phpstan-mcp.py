@@ -27,6 +27,10 @@ WORKING_DIR = os.environ.get("MCP_PHPSTAN_WORKING_DIR", os.getcwd())
 SPAWN_TIMEOUT_SEC = 60
 CALL_TIMEOUT_SEC = 180
 
+# Extra refusal substrings (comma-separated) and analysis roots, both opt-in.
+SKIP_PATTERNS_ENV = "PHPSTAN_MCP_SKIP_PATTERNS"
+PATHS_ENV = "PHPSTAN_MCP_PATHS"
+
 
 # #148: use the shared presets/mcp/_paths helper so client + daemon agree on
 # the runtime dir (was /tmp/, now $XDG_RUNTIME_DIR/supertool/mcp/ etc.).
@@ -34,6 +38,9 @@ import sys as _sys
 from pathlib import Path as _Path
 _sys.path.insert(0, str(_Path(__file__).resolve().parent.parent.parent / "presets" / "mcp"))
 from _paths import socket_pid_paths as _shared_socket_pid_paths  # noqa: E402
+
+_sys.path.insert(0, str(_Path(__file__).resolve().parent.parent / "common"))
+import refusal as _refusal  # noqa: E402
 
 
 def sock_paths(cwd: str, name: str) -> tuple[str, str]:
@@ -143,6 +150,18 @@ def source_context(file_path: str, error_line: int | None) -> list[str]:
     return ctx
 
 
+def is_refusal(msg: str) -> bool:
+    return _refusal.is_refusal(msg, SKIP_PATTERNS_ENV)
+
+
+def skipped(file_path: str, reason: str, dur_ms: int) -> dict:
+    return _refusal.skipped("phpstan-mcp", file_path, reason, dur_ms)
+
+
+def out_of_configured_paths(file_path: str) -> bool:
+    return _refusal.out_of_configured_paths(file_path, PATHS_ENV)
+
+
 def format_response(file_path: str, mcp_resp: dict, dur_ms: int) -> dict:
     base = {"tool": "phpstan-mcp", "file": file_path,
             "ok": True, "count": 0, "errors": [], "duration_ms": dur_ms}
@@ -185,11 +204,13 @@ def format_response(file_path: str, mcp_resp: dict, dur_ms: int) -> dict:
                 "source_context": source_context(file_path, line_int),
             })
     elif exit_code != 0:
+        msg = structured.get("error") or f"phpstan exit {exit_code}"
+        if is_refusal(msg):
+            return skipped(file_path, msg, dur_ms)
         base["ok"] = False
         base["count"] = 1
         base["errors"] = [{"line": None, "col": None, "severity": "error",
-                           "code": "phpstan.exit",
-                           "msg": structured.get("error") or f"phpstan exit {exit_code}"}]
+                           "code": "phpstan.exit", "msg": msg}]
     return base
 
 
@@ -199,6 +220,10 @@ def main(argv: list[str]) -> int:
         return 2
     file_path = argv[1]
     t0 = time.monotonic()
+    if out_of_configured_paths(file_path):
+        print(json.dumps(skipped(file_path, "path outside PHPSTAN_MCP_PATHS allowlist",
+                                 int((time.monotonic() - t0) * 1000))))
+        return 0
     try:
         sock = ensure_daemon(WORKING_DIR)
         resp = ndjson_call(sock, os.path.abspath(file_path))

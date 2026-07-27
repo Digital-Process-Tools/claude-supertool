@@ -43,6 +43,21 @@ You can also invoke any validator explicitly, without an edit, via the `validate
 
 When the underlying toolchain is missing (e.g. `stylelint` not installed, `terraform` not on PATH), the validator wrapper warns and exits 0. Supertool stays fully usable in any repo without pre-installed dependencies. No validator failure blocks an unrelated edit.
 
+A validator that declined to run is a **third state**, distinct from both "clean" and "has errors": it produced no information about the file. An adapter reports it by adding a `skipped` key to its SCHEMA.md JSON (with `ok: true`, `count: 0`, `errors: []`), and the row renders as:
+
+```
+phpstan-mcp : skipped    (path outside --paths allowlist)     0.1s
+```
+
+Skips never enter the before/after delta, never render a `✗`, are never cached (a skip is decided by config, and the cache key is a content hash), and — most importantly — **never roll back an edit**, even for a validator with `rollback_on_fail: true`. Counting a refusal-to-run as one error would let a scope-config mismatch revert perfectly good code.
+
+`phpstan-mcp` recognises phpstan's own refusal messages (`--paths` allowlist, "no files found to analyse"). Two env vars tune it:
+
+| Env var                     | Effect                                                                                     |
+|-----------------------------|--------------------------------------------------------------------------------------------|
+| `PHPSTAN_MCP_SKIP_PATTERNS` | Extra comma-separated, case-insensitive substrings that mark a refusal rather than a finding |
+| `PHPSTAN_MCP_PATHS`         | Analysis roots. When set, a file outside them is skipped without contacting the daemon      |
+
 ## Bundled validators
 
 Enable any of these by copying the relevant entry from `.supertool.example.json` into your project's `.supertool.json`. Each ships as a thin Python wrapper that delegates to the real tool and handles graceful skip when the tool is absent.
