@@ -456,6 +456,7 @@ def main() -> int:
         merge_commit = d.get("merge_commit_sha") or d.get("squash_commit_sha") or ""
         web_url = d.get("web_url", "")
         print(f"!{iid} | state: {state} | merge_status: {merge_status} | conflicts: {'yes' if has_conflicts else 'no'}")
+        print(f"branch: {d.get('source_branch') or '?'} -> {d.get('target_branch') or '?'}")
         pipe_str = pipe_status + (f" (#{pipe_id})" if pipe_id else "")
         meta = _pipe_meta(pipeline)
         if meta:

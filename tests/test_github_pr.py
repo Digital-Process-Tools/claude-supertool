@@ -77,11 +77,43 @@ def test_main_slim_status_mode_outputs_minimal_dashboard(monkeypatch, capsys) ->
     assert "review: APPROVED" in out
     assert "merge_commit: abc123def456" in out
     assert "url: https://github.com/foo/bar/pull/12" in out
+    # Branch is identity, not detail — must be here so nobody escalates to full
+    assert "branch: max/gl-mr-status -> master" in out
     # Full-dashboard sections must NOT appear
     assert "## Description" not in out
     assert "## Comments" not in out
-    assert "Branch:" not in out
+    assert "Labels:" not in out
+    assert "Changes:" not in out
     assert len(out) < 500
+
+
+def test_main_slim_status_shows_non_default_base(monkeypatch, capsys) -> None:
+    """Base branch matters as much as head: a stacked PR must say so."""
+    payload = _pr_json_payload(state="OPEN", headRefName="max/part-2",
+                               baseRefName="max/part-1")
+    monkeypatch.setattr(
+        pr.subprocess, "run",
+        lambda *a, **kw: _fake_run(payload, returncode=0),
+    )
+    monkeypatch.setattr(sys, "argv", ["pr.py", "12", "status"])
+    rc = pr.main()
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "branch: max/part-2 -> max/part-1" in out
+
+
+def test_main_slim_status_missing_branch_fields(monkeypatch, capsys) -> None:
+    """Absent branch data degrades to '?' rather than crashing or vanishing."""
+    payload = _pr_json_payload(headRefName=None, baseRefName=None)
+    monkeypatch.setattr(
+        pr.subprocess, "run",
+        lambda *a, **kw: _fake_run(payload, returncode=0),
+    )
+    monkeypatch.setattr(sys, "argv", ["pr.py", "12", "status"])
+    rc = pr.main()
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "branch: ? -> ?" in out
 
 
 def test_main_slim_status_with_conflicts(monkeypatch, capsys) -> None:

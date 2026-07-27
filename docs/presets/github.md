@@ -11,7 +11,7 @@ GitHub ops via the `gh` CLI. Replaces the 4-6 separate `gh` calls needed to revi
 | Op | Syntax | What it returns |
 |----|--------|-----------------|
 | `gh-issue` | `gh-issue:NUMBER[:full]` | Issue metadata, description, all comments (truncated by default), linked PRs, image download. `:full` disables truncation |
-| `gh-pr` | `gh-pr:NUMBER_OR_BRANCH[:status]` | Full PR dashboard: branch, checks, reviews/approval state, linked issue, diff stat, comments. `:status` returns slim merge-state only (~250 bytes) |
+| `gh-pr` | `gh-pr:NUMBER_OR_BRANCH[:status]` | Full PR dashboard: branch, checks, reviews/approval state, linked issue, diff stat, comments. `:status` returns slim merge-state plus the `head -> base` branch line only (~250 bytes) |
 | `gh-prs` | `gh-prs[:author=@me,reviewer=@me,state=open,failed,nopipe,iids]` | PR triage board: your open PRs sorted failing-first then stalest. Per PR: check rollup (a failure shows the failing **check name**), approval state, age, diff size, watch-state, `draft`/`conflict`/`threads` flags + footer pointing at the first failing-and-unwatched PR. The gl-mrs twin. `iids` emits a bare number list for `watch-mine.sh` |
 | `gh-run` | `gh-run:NUMBER` | Workflow run job list with statuses and failed step names |
 | `gh-job` | `gh-job:NUMBER[:raw[:START[:END]]\|:grep:PATTERN]` | Job failure detail: PR context + error pattern search + log tail. `:raw` dumps the full trace; `:raw:START:END` slices lines (1-indexed, inclusive); `:grep:PATTERN` runs an ad-hoc regex over the log (literal fallback on bad regex, ±context, names the pattern + tail on no-match — never silent-empty). Optional per-job `job_patterns` table in `.supertool.json` (see gitlab preset doc) maps job names to tighter patterns + a `resolution` op |
