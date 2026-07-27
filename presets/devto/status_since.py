@@ -31,14 +31,14 @@ def _now_iso() -> str:
 
 def _read_state() -> str | None:
     try:
-        return STATE_FILE.read_text().strip() or None
+        return STATE_FILE.read_text(encoding="utf-8").strip() or None
     except FileNotFoundError:
         return None
 
 
 def _write_state(value: str) -> None:
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    STATE_FILE.write_text(value + "\n")
+    STATE_FILE.write_text(value + "\n", encoding="utf-8")
 
 
 def resolve_since(arg: str) -> str:

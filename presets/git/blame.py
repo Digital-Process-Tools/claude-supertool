@@ -6,10 +6,17 @@ import os
 import subprocess
 import sys
 
+# Sibling import: runtime puts this dir on sys.path[0]; the test harness
+# loads scripts via importlib (no dir on path), so add it explicitly.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from _git_common import use_utf8_stdout  # noqa: E402
+
 DEFAULT_CONTEXT = 5
 
 
 def main() -> int:
+    use_utf8_stdout()
     if len(sys.argv) < 3:
         print("ERROR: usage: blame.py PATH LINE [N]")
         print("  PATH — file to blame")

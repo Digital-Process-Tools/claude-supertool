@@ -310,7 +310,7 @@ def feed_scope(multi: dict[str, list[str]] | None = None) -> str:
 def feed_pid(scope: str = FEED_SCOPE) -> int:
     """PID recorded for the feed poller, or 0 when there is no readable file."""
     try:
-        raw = Path(transport.pid_path(FEED_SOURCE, scope)).read_text()
+        raw = Path(transport.pid_path(FEED_SOURCE, scope)).read_text(encoding="utf-8")
     except OSError:
         return 0
     try:

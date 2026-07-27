@@ -12,6 +12,12 @@ import os
 import subprocess
 import sys
 
+# Sibling import: runtime puts this dir on sys.path[0]; the test harness
+# loads scripts via importlib (no dir on path), so add it explicitly.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from _git_common import use_utf8_stdout  # noqa: E402
+
 DEFAULT_PREVIEW_LINES = 12
 
 
@@ -120,6 +126,7 @@ def _fresh_merge_ref(ref: str) -> tuple[str, str | None]:
 
 
 def main() -> int:
+    use_utf8_stdout()
     if len(sys.argv) < 2:
         print("ERROR: usage: merge.py REF")
         return 1

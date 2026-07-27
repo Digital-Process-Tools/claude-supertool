@@ -34,7 +34,7 @@ def get_session_cookie() -> str | None:
         return val
     p = Path(os.path.expanduser("~/.config/devto/session_cookie"))
     if p.is_file():
-        return p.read_text().strip() or None
+        return p.read_text(encoding="utf-8").strip() or None
     return None
 
 

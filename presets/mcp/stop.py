@@ -41,7 +41,7 @@ def stop_pid(pid: int) -> bool:
 
 def stop_by_pidfile(pid_path: str) -> str:
     try:
-        pid = int(Path(pid_path).read_text().strip())
+        pid = int(Path(pid_path).read_text(encoding="utf-8").strip())
     except (OSError, ValueError):
         return f"  {pid_path}: invalid pidfile"
     if stop_pid(pid):

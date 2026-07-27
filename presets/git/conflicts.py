@@ -12,6 +12,12 @@ import shutil
 import subprocess
 import sys
 
+# Sibling import: runtime puts this dir on sys.path[0]; the test harness
+# loads scripts via importlib (no dir on path), so add it explicitly.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from _git_common import use_utf8_stdout  # noqa: E402
+
 DEFAULT_PREVIEW_LINES = 12
 
 _STATE_TO_REF = {
@@ -158,6 +164,7 @@ def _detect_state() -> str:
 
 
 def main() -> int:
+    use_utf8_stdout()
     preview = int(os.environ.get("SUPERTOOL_PREVIEW_LINES", str(DEFAULT_PREVIEW_LINES)))
 
     if _git(["rev-parse", "--git-dir"]).returncode != 0:

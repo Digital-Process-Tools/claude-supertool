@@ -40,7 +40,7 @@ def _load_payload(path: str) -> dict:
     if path == "-":
         raw = sys.stdin.read()
     else:
-        raw = Path(path).read_text()
+        raw = Path(path).read_text(encoding="utf-8")
 
     raw = raw.strip()
     if raw.startswith("{"):
@@ -97,7 +97,7 @@ def main() -> int:
     links: list[dict] = payload.get("links") or []
 
     if description_file:
-        body = Path(description_file).read_text()
+        body = Path(description_file).read_text(encoding="utf-8")
     else:
         body = description
 

@@ -95,7 +95,7 @@ def cmd_watch(parts: list[str]) -> int:
     pid_file = transport.pid_path(source, watcher_id)
     if os.path.exists(pid_file):
         try:
-            existing = int(Path(pid_file).read_text().strip())
+            existing = int(Path(pid_file).read_text(encoding="utf-8").strip())
             if transport._pid_alive(existing):
                 print(f"Already watching {source}:{watcher_id} (PID {existing}). "
                       f"Use ./supertool 'unwatch:{source}:{watcher_id}' to stop.")
@@ -129,7 +129,7 @@ def cmd_unwatch(parts: list[str]) -> int:
         print(f"No active watcher for {source}:{watcher_id}.")
         return 0
     try:
-        pid = int(Path(pid_file).read_text().strip())
+        pid = int(Path(pid_file).read_text(encoding="utf-8").strip())
     except (OSError, ValueError):
         try:
             os.unlink(pid_file)
@@ -230,7 +230,7 @@ def _run_poll_loop(source: str, watcher_id: str, only: list[str]) -> None:
 
     pid_file = transport.pid_path(source, watcher_id)
     try:
-        Path(pid_file).write_text(f"{os.getpid()}\n")
+        Path(pid_file).write_text(f"{os.getpid()}\n", encoding="utf-8")
     except OSError:
         return
 

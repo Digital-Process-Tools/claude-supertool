@@ -45,7 +45,7 @@ _DEFAULT_ENGINE_GLITCHES = ("System error:", "toMutatingScope() on null")
 def _supertool_config() -> dict:
     """Load .supertool.json from the working dir (project root). {} on any failure."""
     try:
-        with open(os.path.join(WORKING_DIR, ".supertool.json")) as f:
+        with open(os.path.join(WORKING_DIR, ".supertool.json"), encoding="utf-8") as f:
             return json.load(f)
     except (OSError, ValueError):
         return {}
@@ -133,7 +133,7 @@ def ensure_daemon(cwd: str) -> str:
 
 def is_alive(pid_path: str) -> bool:
     try:
-        with open(pid_path) as f:
+        with open(pid_path, encoding="utf-8") as f:
             pid = int(f.read().strip())
         os.kill(pid, 0)
         return True

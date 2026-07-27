@@ -41,11 +41,11 @@ def _resolve_body(arg: str) -> tuple[str, bool]:
                 "(file:// prefix requires the file to exist — typo or wrong path?)\n"
             )
             sys.exit(2)
-        return p.read_text(), True
+        return p.read_text(encoding="utf-8"), True
     try:
         p = Path(arg)
         if p.is_file():
-            return p.read_text(), True
+            return p.read_text(encoding="utf-8"), True
     except OSError:
         pass
     return arg, False

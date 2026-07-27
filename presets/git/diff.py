@@ -33,6 +33,12 @@ import re
 import subprocess
 import sys
 
+# Sibling import: runtime puts this dir on sys.path[0]; the test harness
+# loads scripts via importlib (no dir on path), so add it explicitly.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from _git_common import use_utf8_stdout  # noqa: E402
+
 MAX_FILES = 60
 MAX_FLAGS = 40
 
@@ -252,17 +258,11 @@ def _path_hints(changed: list[tuple[str, str]], rules: list[dict]) -> list[str]:
 
 
 def main() -> int:
-    # Windows stdout defaults to cp1252, which can't encode the ⚠/✓ glyphs we
-    # print — force UTF-8 so the op doesn't crash with UnicodeEncodeError on a
-    # non-UTF-8 console. Cheap insurance even in plain mode (a stray glyph in a
-    # diffed line shouldn't crash the process). See issue #308.
-    for _stream in (sys.stdout, sys.stderr):
-        _reconfigure = getattr(_stream, "reconfigure", None)
-        if _reconfigure is not None:
-            try:
-                _reconfigure(encoding="utf-8")
-            except (ValueError, OSError):
-                pass
+    # The #308 copy this used to carry inline. _git_common owns the one
+    # definition now, the way _proc owns the one liveness probe (#429): a
+    # duplicate is what lets the two drift, and this one is the reason the
+    # other eleven git presets looked like they had a reason not to bother.
+    use_utf8_stdout()
     # `full` is an opt-in trailing flag (like read:PATH:full): it appends the
     # raw +/- hunks below the review summary. Strip it from the positional args
     # first so it never collides with staged/branch/PATH dispatch — it works as

@@ -293,6 +293,12 @@ _COMPACT_SKIP = re.compile(
 _CONFIG: Dict[str, Any] | None = None
 _CONFIG_CHECKED = False
 
+# Files the loader had to skip, reported once on stderr by main(). A config it
+# cannot read is skipped rather than fatal — but skipping in silence means the
+# user's ops are simply absent with nothing on screen to connect that to a
+# file, so the reason is kept and surfaced (#418).
+_CONFIG_WARNINGS: List[str] = []
+
 # MCP server specs parsed from _CONFIG["mcp"] — populated by _load_config()
 _mcp_specs: Dict[str, dict] = {}
 
@@ -377,11 +383,18 @@ def _merge_presets(config: Dict[str, Any], project_dir: str) -> None:
             )
             continue
         try:
-            with open(preset_path) as f:
+            with open(preset_path, encoding="utf-8") as f:
                 preset_data = json.load(f)
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
+            # UnicodeDecodeError is a ValueError, not an OSError, so it used to
+            # slip this clause entirely: presets/git.json holds — and ✓, which
+            # an ASCII locale cannot decode, and supertool died at startup with
+            # a traceback over a file we ship (#418). Named rather than widened
+            # to Exception — the merge below can raise TypeError or KeyError on
+            # a malformed op-def, and that is a bug here that must stay loud.
             config.setdefault("_preset_warnings", []).append(
-                f"preset {name!r}: failed to load {preset_path}"
+                f"preset {name!r}: failed to load {preset_path} "
+                f"({exc.__class__.__name__}: {exc})"
             )
             continue
 
@@ -426,7 +439,7 @@ def _load_config() -> Dict[str, Any]:
         candidate = os.path.join(d, ".supertool.json")
         if os.path.isfile(candidate):
             try:
-                with open(candidate) as f:
+                with open(candidate, encoding="utf-8") as f:
                     _CONFIG = json.load(f)
                     # JSON `null` parses to None; bare scalars / lists parse
                     # to non-dict. _merge_presets needs a dict — coerce to
@@ -442,8 +455,18 @@ def _load_config() -> Dict[str, Any]:
                             if isinstance(spec, dict) and "cmd" in spec:
                                 _mcp_specs[srv_name] = spec
                     return _CONFIG
-            except (json.JSONDecodeError, OSError):
-                pass
+            except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
+                # Skip and keep walking up, which is what this loop has always
+                # done with a config it cannot use — but record why. A config
+                # that is not UTF-8 raises UnicodeDecodeError, a ValueError,
+                # which escaped the old clause and took startup down for every
+                # op including the ones that never needed the config (#418).
+                # Not `except Exception`: this try also covers _merge_presets
+                # and the mcp block, and a TypeError out of either is a bug
+                # that must not be swallowed as "bad config file".
+                _CONFIG_WARNINGS.append(
+                    f"skipped {candidate}: {exc.__class__.__name__}: {exc}"
+                )
         parent = os.path.dirname(d)
         if parent == d:
             break
@@ -534,7 +557,7 @@ def _notifier_log(msg: str) -> None:
     if not _notifier_debug_enabled():
         return
     try:
-        with open(_notifier_debug_log_path(), "a") as f:
+        with open(_notifier_debug_log_path(), "a", encoding="utf-8") as f:
             ts = datetime.now().isoformat(timespec="milliseconds")
             f.write(f"[{ts}] {msg}\n")
     except OSError:
@@ -2022,9 +2045,9 @@ def op_diff(path1: str, path2: str) -> str:
             return f"ERROR: file not found: {p}\n"
 
     try:
-        with open(path1, "r", errors="replace") as f:
+        with open(path1, "r", errors="replace", encoding="utf-8") as f:
             lines1 = f.readlines()
-        with open(path2, "r", errors="replace") as f:
+        with open(path2, "r", errors="replace", encoding="utf-8") as f:
             lines2 = f.readlines()
     except OSError as e:
         return f"ERROR: could not read file: {e}\n"
@@ -2130,7 +2153,7 @@ def op_around_line(path: str, line: int, n: int = 10) -> str:
         return f"ERROR: line number must be >= 1, got {line}\n"
 
     try:
-        with open(path, "r", errors="replace") as f:
+        with open(path, "r", errors="replace", encoding="utf-8") as f:
             lines = f.readlines()
     except OSError as e:
         return f"ERROR: could not read {path}: {e}\n"
@@ -2584,7 +2607,7 @@ def _regex_extract(path: str) -> List[Tuple[str, str, int, int, int]]:
         return []
 
     try:
-        with open(path, "r", errors="replace") as f:
+        with open(path, "r", errors="replace", encoding="utf-8") as f:
             content = f.read()
     except OSError:
         return []
@@ -9524,7 +9547,7 @@ def _validator_cache_read(key: str) -> Optional[Dict[str, Any]]:
         except OSError:
             return None
     try:
-        wrapped = json.loads(p.read_text())
+        wrapped = json.loads(p.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
     if not isinstance(wrapped, dict) or "data" not in wrapped or "mac" not in wrapped:
@@ -9547,7 +9570,7 @@ def _validator_cache_write(key: str, data: Dict[str, Any]) -> None:
     wrapped = {"data": data, "mac": mac}
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(wrapped))
+        p.write_text(json.dumps(wrapped), encoding="utf-8")
     except OSError:
         pass
 
@@ -12841,7 +12864,7 @@ def log_call(args: List[str], out_bytes: int) -> None:
     estimate round-trips saved vs a naive (one-op-per-call) baseline.
     """
     try:
-        with open(LOG_FILE, "a") as f:
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             meta = f"ops={len(args)} out={out_bytes}b"
             f.write(f"{timestamp} | {caller_tag()} | {meta} | {' '.join(args)}\n")
@@ -13396,6 +13419,17 @@ def main(argv: List[str]) -> int:
     # process on a non-UTF-8 console (Windows cp1252). Runs even in plain mode.
     _reconfigure_stdout_utf8()
 
+    # Every child we launch — presets, validators, formatters, notifiers — is a
+    # separate process that inherits none of the reconfiguration above, and we
+    # decode what it writes as UTF-8 (#415). So the writer is pinned to match
+    # the reader here, once, instead of in each of the four spawn sites and
+    # every preset script: on a cp1252 console a preset otherwise dies with
+    # UnicodeEncodeError printing its own ✓ success line, and the work lands
+    # while the receipt says it crashed — which invites the operator to run a
+    # state-mutating op twice. An explicit `VAR=… cmd` prefix on an op still
+    # overrides it, since that env is applied after os.environ is copied.
+    os.environ["PYTHONIOENCODING"] = "utf-8"
+
     # --plain consumes the flag and exports SUPERTOOL_PLAIN=1 so preset
     # subprocesses (run via {python} {path}*.py) inherit it through the env.
     if "--plain" in argv:
@@ -13467,6 +13501,14 @@ def main(argv: List[str]) -> int:
             "into one 'batch:@-' ops array.\n"
         )
         return 1
+
+    # Loader warnings, once, before any op output. Skipping an unreadable
+    # config beats a startup traceback that blocks every op — but a skip
+    # nobody can see is the other way to lose (#418), so it goes to stderr,
+    # which keeps op receipts on stdout clean.
+    _preset_warnings = list(_load_config().get("_preset_warnings") or [])
+    for _warning in list(_CONFIG_WARNINGS) + _preset_warnings:
+        sys.stderr.write(f"supertool: {_warning}\n")
 
     # Normal batched-ops mode
     total_out_bytes = 0

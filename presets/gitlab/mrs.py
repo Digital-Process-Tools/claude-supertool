@@ -264,7 +264,7 @@ def _watched_iids(state_dir: str = STATE_DIR) -> set[str]:
         name = os.path.basename(path)
         iid = name[len(prefix):-len(".pid")]
         try:
-            with open(path) as f:
+            with open(path, encoding="utf-8") as f:
                 pid = int(f.read().strip())
         except (OSError, ValueError):
             continue

@@ -14,6 +14,12 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+# Sibling import: runtime puts this dir on sys.path[0]; the test harness
+# loads scripts via importlib (no dir on path), so add it explicitly.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from _git_common import use_utf8_stdout  # noqa: E402
+
 
 # Unambiguous conflict markers — `<<<<<<<` / `>>>>>>>` at line start. A bare row
 # of `=======` is intentionally NOT matched: it is legitimate decoration (RST/MD
@@ -358,6 +364,7 @@ def _resolve_partial(path: str, side: str, selected: set[int]) -> int:
 
 
 def main() -> int:
+    use_utf8_stdout()
     if len(sys.argv) < 3:
         print("ERROR: usage: resolve.py SIDE PATH[,PATH...] [BLOCKS]")
         print("  SIDE — 'ours', 'theirs', or 'both' (union: keep both sides)")

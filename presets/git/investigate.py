@@ -13,6 +13,12 @@ import re
 import subprocess
 import sys
 
+# Sibling import: runtime puts this dir on sys.path[0]; the test harness
+# loads scripts via importlib (no dir on path), so add it explicitly.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from _git_common import use_utf8_stdout  # noqa: E402
+
 DEFAULT_COMMITS = 15
 DEFAULT_BLAME_RECENT = 10
 
@@ -38,6 +44,7 @@ def _format_error(stderr: str, path: str) -> str:
 
 
 def main() -> int:
+    use_utf8_stdout()
     if len(sys.argv) < 2:
         print("ERROR: usage: investigate.py PATH")
         return 1

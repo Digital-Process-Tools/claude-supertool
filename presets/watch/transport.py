@@ -162,7 +162,7 @@ def list_active_pids() -> list[dict[str, Any]]:
             continue
         path = os.path.join(STATE_DIR, name)
         try:
-            pid = int(Path(path).read_text().strip())
+            pid = int(Path(path).read_text(encoding="utf-8").strip())
         except (OSError, ValueError):
             try:
                 os.unlink(path)

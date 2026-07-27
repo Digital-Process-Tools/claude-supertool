@@ -53,7 +53,12 @@ from typing import Optional
 # loads scripts via importlib (no dir on path), so add it explicitly.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from _git_common import _first_error_line, _git, query_open_mr  # noqa: E402
+from _git_common import (  # noqa: E402
+    _first_error_line,
+    _git,
+    query_open_mr,
+    use_utf8_stdout,
+)
 
 _KNOWN_FLAGS = ("force-with-lease", "no-verify")
 
@@ -417,6 +422,7 @@ def _recover_by_rebase(branch: str, remote_before: str, upstream: str,
 
 
 def main() -> int:
+    use_utf8_stdout()
     if _git(["rev-parse", "--git-dir"]).returncode != 0:
         print("ERROR: not inside a git repository.")
         return 1

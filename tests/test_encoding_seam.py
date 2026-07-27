@@ -128,6 +128,44 @@ def test_no_shipped_file_decodes_by_locale() -> None:
     )
 
 
+GIT_PRESETS = sorted(
+    p for p in (ROOT / "presets" / "git").glob("*.py")
+    if not p.name.startswith("_")
+)
+
+
+def test_every_git_preset_reconfigures_its_own_stdout() -> None:
+    """The stdout half, enumerated. Every git entry point calls the one helper.
+
+    Scoped to ``presets/git/`` on purpose. Supertool now pins
+    ``PYTHONIOENCODING=utf-8`` for every child it spawns, which covers all ~50
+    presets on the path that matters — so this is about the other path: the git
+    scripts are the ones a developer runs straight from a shell mid-conflict,
+    with no supertool in front of them, and they are where the family started
+    (#308 in diff.py, #415 in commit.py). ``use_utf8_stdout()`` must be the
+    first statement, because anything above it may print.
+    """
+    missing = []
+    for path in GIT_PRESETS:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        main = next((n for n in tree.body
+                     if isinstance(n, ast.FunctionDef) and n.name == "main"), None)
+        if main is None:
+            continue
+        first = main.body[0] if main.body else None
+        called = (isinstance(first, ast.Expr) and isinstance(first.value, ast.Call)
+                  and getattr(first.value.func, "id", None) == "use_utf8_stdout")
+        if not called:
+            missing.append(path.name)
+    assert not missing, (
+        "these git presets print non-ASCII but leave stdout on the console "
+        "default — a cp1252 console kills them with UnicodeEncodeError while "
+        "they print their own success line, so the work lands and the receipt "
+        "says it crashed. Call use_utf8_stdout() first in main(): "
+        + ", ".join(missing)
+    )
+
+
 def _run(args, cwd, env_overrides, extra_python_flags=()):
     env = dict(os.environ)
     for key in ("PYTHONIOENCODING", "PYTHONUTF8", "PYTHONCOERCECLOCALE",

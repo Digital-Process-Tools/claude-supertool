@@ -35,7 +35,7 @@ def _load_payload(path: str) -> dict:
     if path == "-":
         raw = sys.stdin.read()
     else:
-        raw = Path(path).read_text()
+        raw = Path(path).read_text(encoding="utf-8")
 
     raw = raw.strip()
     if raw.startswith("{"):
@@ -92,7 +92,7 @@ def main() -> int:
     tmp_body: str | None = None
     try:
         if body_file:
-            content = Path(body_file).read_text()
+            content = Path(body_file).read_text(encoding="utf-8")
         else:
             content = body
 

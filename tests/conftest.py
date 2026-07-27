@@ -337,6 +337,7 @@ def _guard_repo_git_state():
 # silent, and shows up as a test that passes alone and fails in suite order.
 RESET_GLOBALS = (
     "_BRANCH_CACHE",
+    "_CONFIG_WARNINGS",
     "_FORMATTER_SKIPS",
     "_FORMAT_QUEUE",
     "_MUTATION_ATTEMPTS",

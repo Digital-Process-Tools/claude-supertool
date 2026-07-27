@@ -11,6 +11,12 @@ import os
 import subprocess
 import sys
 
+# Sibling import: runtime puts this dir on sys.path[0]; the test harness
+# loads scripts via importlib (no dir on path), so add it explicitly.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from _git_common import use_utf8_stdout  # noqa: E402
+
 DEFAULT_BASE = "master"
 DEFAULT_MAX_COMMITS = 30
 
@@ -33,6 +39,7 @@ def _resolve_base(arg: str) -> str:
 
 
 def main() -> int:
+    use_utf8_stdout()
     if len(sys.argv) < 2:
         print("ERROR: usage: diverge.py BRANCH [BASE]")
         print("  BRANCH — branch to inspect (or 'HEAD')")
