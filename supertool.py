@@ -1420,27 +1420,35 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
             # Empty RTK result + regexy pattern: fall through to the native
             # walker so the zero-hit literal fallback below can run.
 
+    # Resolved once and threaded through so a zero-result report can state how
+    # many files were actually scanned (#407) — without it, "0 results" is
+    # ambiguous between "searched everything, found nothing" and "path/glob
+    # resolved to nothing, so nothing was searched".
+    candidates = _grep_candidates(path, excl)
+    scanned = len(candidates)
+
     if count_only:
-        counts = _grep_count(pattern, path, limit, excl)
+        counts = _grep_count(pattern, path, limit, excl, candidates=candidates)
         literal_note = ""
         if not counts and _is_regexy(pattern):
-            counts = _grep_count(re.escape(pattern), path, limit, excl)
+            counts = _grep_count(re.escape(pattern), path, limit, excl, candidates=candidates)
             if counts:
                 literal_note = _literal_note(pattern, sum(counts.values()))
         total = sum(counts.values())
         file_count = len(counts)
-        out = [literal_note, f"({total} total matches across {file_count} files)\n"]
+        out = [literal_note,
+               f"({total} total matches across {file_count} files{_scanned_suffix(scanned)})\n"]
         for fp, cnt in sorted(counts.items()):
             out.append(f"{_fwd(fp)}:{cnt}\n")
         out.append("\n")
         return "".join(out)
 
     if context > 0:
-        groups = _grep_recursive_context(pattern, path, limit, context, excl)
+        groups = _grep_recursive_context(pattern, path, limit, context, excl, candidates=candidates)
         literal_note = ""
         if not groups and _is_regexy(pattern):
             groups = _grep_recursive_context(
-                re.escape(pattern), path, limit, context, excl)
+                re.escape(pattern), path, limit, context, excl, candidates=candidates)
             if groups:
                 hit_count = sum(
                     1 for g in groups for line in g if line[2] == "match")
@@ -1449,7 +1457,7 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
             1 for g in groups for line in g if line[2] == "match"
         )
         file_count = len({g[0][0] for g in groups if g})
-        out = [literal_note, f"({count} results in {file_count} files, "
+        out = [literal_note, f"({count} results in {file_count} files{_scanned_suffix(scanned)}, "
                f"limit {limit}, context {context})\n"]
         current_file: str = ""
         first_group = True
@@ -1471,16 +1479,17 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
         out.append("\n")
         return _cap_context_window("".join(out), "grep_around")
 
-    hits = _grep_recursive(pattern, path, limit, excl)
+    hits = _grep_recursive(pattern, path, limit, excl, candidates=candidates)
     literal_note = ""
     if not hits and _is_regexy(pattern):
-        hits = _grep_recursive(re.escape(pattern), path, limit, excl)
+        hits = _grep_recursive(re.escape(pattern), path, limit, excl, candidates=candidates)
         if hits:
             literal_note = _literal_note(pattern, len(hits))
     count = len(hits)
     file_count = len({fp for fp, _, _ in hits})
 
-    out = [literal_note, f"({count} results in {file_count} files, limit {limit})\n"]
+    out = [literal_note,
+           f"({count} results in {file_count} files{_scanned_suffix(scanned)}, limit {limit})\n"]
     current_file = ""
     for fp, lineno, content in hits:
         if fp != current_file:
@@ -2746,9 +2755,21 @@ def op_map(path: str, no_exclude: bool = False) -> str:
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _scanned_suffix(scanned: int) -> str:
+    """Report format's ", scanned N files" clause (#407).
+
+    A zero scanned count means the path/glob resolved to nothing, so the
+    zero-result report above it must not read like a completed search.
+    """
+    if scanned == 0:
+        return ", scanned 0 files — nothing matched the path/glob"
+    return f", scanned {scanned} files"
+
+
 def _grep_count(
     pattern: str, path: str, limit: int,
-    exclude_paths: Tuple[str, ...] = ()
+    exclude_paths: Tuple[str, ...] = (),
+    candidates: Optional[List[str]] = None,
 ) -> Dict[str, int]:
     """Return match counts per file as {filepath: count}."""
     try:
@@ -2757,7 +2778,8 @@ def _grep_count(
         regex = re.compile(re.escape(pattern))
 
     counts: Dict[str, int] = {}
-    candidates = _grep_candidates(path, exclude_paths)
+    if candidates is None:
+        candidates = _grep_candidates(path, exclude_paths)
 
     for file_path in candidates:
         cnt = 0
@@ -2807,7 +2829,8 @@ def _grep_candidates(
 
 def _grep_recursive(
     pattern: str, path: str, limit: int,
-    exclude_paths: Tuple[str, ...] = ()
+    exclude_paths: Tuple[str, ...] = (),
+    candidates: Optional[List[str]] = None,
 ) -> List[Tuple[str, int, str]]:
     """Return up to `limit` matches as (file_path, lineno, content) tuples.
 
@@ -2823,7 +2846,8 @@ def _grep_recursive(
         regex = re.compile(re.escape(pattern))
 
     results: List[Tuple[str, int, str]] = []
-    candidates = _grep_candidates(path, exclude_paths)
+    if candidates is None:
+        candidates = _grep_candidates(path, exclude_paths)
 
     for file_path in candidates:
         if len(results) >= limit:
@@ -2846,7 +2870,8 @@ def _grep_recursive(
 
 def _grep_recursive_context(
     pattern: str, path: str, limit: int, context: int,
-    exclude_paths: Tuple[str, ...] = ()
+    exclude_paths: Tuple[str, ...] = (),
+    candidates: Optional[List[str]] = None,
 ) -> List[List[Tuple[str, int, str, str]]]:
     """Return match groups with surrounding context lines.
 
@@ -2861,7 +2886,8 @@ def _grep_recursive_context(
     except re.error:
         regex = re.compile(re.escape(pattern))
 
-    candidates = _grep_candidates(path, exclude_paths)
+    if candidates is None:
+        candidates = _grep_candidates(path, exclude_paths)
     groups: List[List[Tuple[str, int, str, str]]] = []
     match_count = 0
 
