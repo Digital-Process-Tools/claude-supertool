@@ -187,6 +187,7 @@ def main() -> int:
         web_url = d.get("url", "")
         conflicts = "yes" if mergeable == "CONFLICTING" else "no"
         print(f"#{iid} | state: {state} | mergeable: {mergeable} | conflicts: {conflicts}")
+        print(f"branch: {d.get('headRefName') or '?'} -> {d.get('baseRefName') or '?'}")
         print(f"checks: {passed} passed, {failed} failed, {pending} pending")
         print(f"review: {review_decision}")
         if merge_commit:

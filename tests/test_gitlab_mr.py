@@ -222,6 +222,8 @@ def _mr_json_payload(**overrides: Any) -> str:
         "state": "merged",
         "merge_status": "merged",
         "has_conflicts": False,
+        "source_branch": "12167-notification-configuration-ui",
+        "target_branch": "master",
         "head_pipeline": {"status": "success", "id": 136900},
         "merged_at": "2026-05-04T13:48:21.913Z",
         "merge_commit_sha": "b5cd36306f6712345678",
@@ -251,11 +253,14 @@ def test_main_slim_status_mode_outputs_minimal_dashboard(monkeypatch, capsys) ->
     assert "merged_at: 2026-05-04T13:48:21.913Z" in out
     assert "merge_commit: b5cd36306f67" in out
     assert "url: https://gitlab.example/foo/-/merge_requests/20881" in out
+    # Branch is identity, not detail — must be here so nobody escalates to :full for it
+    assert "branch: 12167-notification-configuration-ui -> master" in out
     # Full-dashboard sections must NOT appear
     assert "## Description" not in out
     assert "## Comments" not in out
+    assert "## Files" not in out
     assert "Reviewers:" not in out
-    assert "Branch:" not in out
+    assert "Labels:" not in out
     # Output stays under 500 bytes — fits in hook cache
     assert len(out) < 500
 
@@ -275,6 +280,35 @@ def test_main_slim_status_with_conflicts(monkeypatch, capsys) -> None:
     assert "conflicts: yes" in out
     assert "merged_at: -" in out
     assert "merge_commit:" not in out
+
+
+def test_main_slim_status_shows_non_master_target(monkeypatch, capsys) -> None:
+    """Target matters as much as source: a release-targeted MR must say so."""
+    payload = _mr_json_payload(state="opened", source_branch="hotfix/38-crash",
+                               target_branch="release/v19.0.x")
+    monkeypatch.setattr(
+        mr.subprocess, "run",
+        lambda *a, **kw: _fake_run(payload, returncode=0),
+    )
+    monkeypatch.setattr(sys, "argv", ["mr.py", "20881", "status"])
+    rc = mr.main()
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "branch: hotfix/38-crash -> release/v19.0.x" in out
+
+
+def test_main_slim_status_missing_branch_fields(monkeypatch, capsys) -> None:
+    """Absent branch data degrades to '?' rather than crashing or vanishing."""
+    payload = _mr_json_payload(source_branch=None, target_branch=None)
+    monkeypatch.setattr(
+        mr.subprocess, "run",
+        lambda *a, **kw: _fake_run(payload, returncode=0),
+    )
+    monkeypatch.setattr(sys, "argv", ["mr.py", "20881", "status"])
+    rc = mr.main()
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "branch: ? -> ?" in out
 
 
 def test_main_full_mode_unaffected(monkeypatch, capsys) -> None:
