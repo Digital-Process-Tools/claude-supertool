@@ -31,6 +31,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import supertool  # noqa: E402
 
@@ -204,12 +206,28 @@ def test_colon_route_preserves_real_newlines(tmp_path: Path) -> None:
     )
 
 
-def test_reported_mangling_happens_in_the_shell_not_in_the_op(tmp_path: Path) -> None:
+# What #400's reproduction actually collapses to. Pinned as a literal so the
+# half of the demonstration that is about *supertool* runs everywhere, and
+# only the half that is about POSIX shell semantics needs a shell.
+MANGLED_BY_SHELL = "subject (#12167)Co-Authored-By: Max <noreply>"
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "asserts a POSIX shell property (command substitution strips trailing "
+        "newlines). Driving bash from Python on Windows goes through "
+        "list2cmdline, whose backslash-escaping of the nested double quotes "
+        "Git Bash re-parses differently — the script arrives corrupted and "
+        "exits 1, which would test the quoting round-trip rather than the "
+        "shell behaviour. The op-side assertion below is not skipped."
+    ),
+)
+def test_reported_mangling_is_produced_by_the_shell() -> None:
     """#400's reproduction loses its newlines before supertool sees them.
 
     `"...$(printf '\\n\\n')..."` — command substitution strips ALL trailing
-    newlines, so bash builds a single-line string. The op then faithfully
-    commits that single line, which is the reported symptom.
+    newlines, so bash builds a single-line string.
     """
     built = subprocess.run(
         ["bash", "-c",
@@ -217,15 +235,20 @@ def test_reported_mangling_happens_in_the_shell_not_in_the_op(tmp_path: Path) ->
          "Co-Authored-By: Max <noreply>\""],
         capture_output=True, text=True, check=True,
     ).stdout
-    assert built == "subject (#12167)Co-Authored-By: Max <noreply>"
+    assert built == MANGLED_BY_SHELL
     assert "\n" not in built
 
+
+def test_op_faithfully_commits_what_the_shell_handed_it(tmp_path: Path) -> None:
+    """Given the collapsed string, the op commits exactly that.
+
+    This is the half that indicts the shell rather than the op, so it runs on
+    every platform — no shell involved, the collapsed value is a constant.
+    """
     work = _repo(tmp_path)
-    code, out, err = _run([f"git-commit:::{built}:::a.txt"], cwd=work)
+    code, out, err = _run([f"git-commit:::{MANGLED_BY_SHELL}:::a.txt"], cwd=work)
     assert code == 0, f"stdout={out} stderr={err}"
-    assert _message(work).splitlines()[0] == (
-        "subject (#12167)Co-Authored-By: Max <noreply>"
-    )
+    assert _message(work).splitlines()[0] == MANGLED_BY_SHELL
 
 
 # --- The fallback TOML parser: `paths = [...]` on Python < 3.11 -------------
@@ -291,10 +314,18 @@ def test_mini_toml_still_rejects_a_genuinely_unknown_value() -> None:
 def test_commit_succeeds_on_a_non_utf8_console(tmp_path: Path) -> None:
     """commit.py prints ✓ and runs as its own process.
 
-    supertool.py reconfigures its streams; the preset does not inherit that.
-    Forcing cp1252 reproduces the Windows failure on any OS: before the fix
-    this died with UnicodeEncodeError on '\\u2713' and reported a crash for a
-    commit that had in fact been made.
+    Forcing cp1252 reproduces the Windows failure on any OS. Two distinct
+    defects sit on this one line, which is why the glyph itself is asserted
+    rather than just the exit code:
+
+      - commit.py did not reconfigure its own stdout, so writing ✓ raised
+        UnicodeEncodeError *after* the commit had landed;
+      - supertool.py then decoded the preset's output with the locale
+        encoding, so the UTF-8 bytes E2 9C 93 came back as the three cp1252
+        characters 'â\\u0153\\u201c' — a receipt reporting mojibake for an op
+        that worked.
+
+    Asserting only `code == 0` would have passed against the second bug.
     """
     work = _repo(tmp_path)
     payload = 'message = """feat(git): non-utf8 console"""\npaths = ["a.txt"]\n'
@@ -304,9 +335,51 @@ def test_commit_succeeds_on_a_non_utf8_console(tmp_path: Path) -> None:
     )
     assert code == 0, f"stdout={out} stderr={err}"
     assert "UnicodeEncodeError" not in out + err
+    assert "UnicodeDecodeError" not in out + err
     assert "✓" in out
     assert _message(work) == (
         "feat(git): non-utf8 console\n"
         "\n"
         f"Co-Authored-By: {COAUTHOR}\n"
     )
+
+
+def test_receipt_keeps_utf8_glyphs_under_a_non_utf8_locale(tmp_path: Path) -> None:
+    """supertool must decode an op's output as UTF-8, not as the locale.
+
+    The git preset is deliberately not used here. `text=True` without an
+    explicit encoding decodes with `locale.getpreferredencoding()`, so on a
+    cp1252 console the UTF-8 bytes E2 9C 93 came back as three wrong
+    characters and the receipt showed mojibake for an op that succeeded.
+
+    Forcing an ASCII locale makes that decode *raise* rather than merely
+    mangle, so the pin goes red on Linux and macOS too instead of relying on
+    the Windows jobs alone. The config here is ASCII-only and declares its op
+    inline: `presets/git.json` contains non-ASCII, and supertool reads its
+    config files without an explicit encoding — an unrelated defect that
+    would otherwise crash this test before it reached the code under test.
+    """
+    work = tmp_path / "w"
+    work.mkdir()
+    emitter = work / "emit.py"
+    emitter.write_text(
+        "import sys\n"
+        "sys.stdout.reconfigure(encoding='utf-8')\n"
+        "print('done \\u2713')\n",
+        encoding="ascii",
+    )
+    (work / ".supertool.json").write_text(
+        '{"ops": {"emit": {"cmd": "%s emit.py", "syntax": "emit"}}}'
+        % sys.executable.replace("\\", "/"),
+        encoding="ascii",
+    )
+    code, out, err = _run(
+        ["emit"], cwd=work,
+        extra_env={
+            "LC_ALL": "C", "LANG": "C",
+            "PYTHONCOERCECLOCALE": "0", "PYTHONUTF8": "0",
+        },
+    )
+    assert code == 0, f"stdout={out} stderr={err}"
+    assert "UnicodeDecodeError" not in out + err
+    assert "done ✓" in out

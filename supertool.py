@@ -1003,9 +1003,14 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
         # argv-form (shell=False) — shell metachars in the template become
         # literal tokens, not shell operators. Placeholder values are still
         # shlex.quote'd above so values containing spaces survive shlex.split.
+        # encoding is pinned rather than left to the locale: presets print
+        # ✓/✗/⚠ as UTF-8, and a cp1252 default decodes those three bytes into
+        # three wrong characters, so the receipt renders mojibake for an op
+        # that worked. errors="replace" keeps a preset emitting genuinely
+        # undecodable bytes from taking the whole run down with it.
         result = subprocess.run(
             shlex.split(cmd), shell=False, capture_output=True, text=True, timeout=timeout,
-            env=env,
+            encoding="utf-8", errors="replace", env=env,
         )
         elapsed = time.monotonic() - t0
         output = result.stdout
