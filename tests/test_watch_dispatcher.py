@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import sys
 from pathlib import Path
@@ -58,6 +59,17 @@ def test_parse_args_rejects_double_underscore_in_source() -> None:
 def test_parse_args_rejects_double_underscore_in_id() -> None:
     with pytest.raises(ValueError, match="must not contain '__'"):
         dispatcher._parse_args(["gitlab-mr", "bad__id"])
+
+
+def test_parse_args_rejects_a_slash_in_source() -> None:
+    with pytest.raises(ValueError, match="must not contain '/'"):
+        dispatcher._parse_args(["../../etc", "21803"])
+
+
+def test_parse_args_rejects_a_slash_in_id() -> None:
+    """Feed sources take a filter string as their id, and it lands in a path."""
+    with pytest.raises(ValueError, match="must not contain '/'"):
+        dispatcher._parse_args(["gitlab-mr-feed", "author=@me,path=a/b"])
 
 
 def test_load_source_known() -> None:
@@ -187,3 +199,16 @@ def test_non_terminal_poller_keeps_its_state_file(monkeypatch, tmp_path) -> None
     _run_loop_in_child(monkeypatch, tmp_path, _OpenPoller)
     assert state.exists()
     assert not (tmp_path / "supertool-watch-gitlab-mr__33136.pid").exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="requires os.fork")
+def test_a_successful_poll_clears_a_previous_error(monkeypatch, tmp_path) -> None:
+    """`radar` reports a poller's last_error as a current fact, so a message
+    that outlived the failure would be a permanent false alarm."""
+    state = tmp_path / "supertool-watch-gitlab-mr__33136.state.json"
+    state.write_text(json.dumps({
+        "source_state": {"mr_state": "opened"},
+        "last_error": {"ts": "2026-07-27T16:00:00Z", "message": "401 Unauthorized"},
+    }))
+    _run_loop_in_child(monkeypatch, tmp_path, _OpenPoller)
+    assert "last_error" not in json.loads(state.read_text())

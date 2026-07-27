@@ -26,10 +26,31 @@ DEFAULT_SOURCE = "gitlab-mr"
 # comment_added is excluded because user_notes_count counts system notes.
 DEFAULT_ONLY = "pipeline_failed,pipeline_succeeded,merged,closed,conflicts_appeared"
 
+# The discovery tier. DEFAULT_FEED above is a one-shot query a caller runs and
+# pipes; this is the poller that runs the same query forever, so a session
+# started before an MR existed still learns about it.
+DEFAULT_FEED_SOURCE = "gitlab-mr-feed"
+
+# Scope, not an id: an alias the feed source resolves to a gl-mrs filter.
+DEFAULT_FEED_SCOPE = "@me"
+
+# mr_opened is on by default because it is the event that closes the discovery
+# gap, and a board that gains a row without saying so is the failure being
+# fixed. It is deliberately NOT added to DEFAULT_ONLY: that filter belongs to
+# the gitlab-mr source, which cannot emit mr_opened, and listing an event
+# beside a source that never emits it is a claim that is simply untrue.
+# mr_merged/mr_closed are on so a merge is still reported when no per-MR
+# watcher was alive to report it; the feed emits them without a desktop
+# notification so the normal path does not ping twice.
+DEFAULT_FEED_ONLY = "mr_opened,mr_merged,mr_closed,mr_left_feed"
+
 VALUES = {
     "feed": DEFAULT_FEED,
     "source": DEFAULT_SOURCE,
     "only": DEFAULT_ONLY,
+    "feed-source": DEFAULT_FEED_SOURCE,
+    "feed-scope": DEFAULT_FEED_SCOPE,
+    "feed-only": DEFAULT_FEED_ONLY,
 }
 
 

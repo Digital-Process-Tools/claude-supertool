@@ -70,6 +70,10 @@ def _parse_args(parts: list[str]) -> tuple[str, str, list[str]]:
     # Allowing it inside either field would make `list_active_pids` ambiguous.
     if "__" in source or "__" in watcher_id:
         raise ValueError("SOURCE and ID must not contain '__' (reserved as filename separator)")
+    # Both fields are interpolated straight into a /tmp path. Feed sources take
+    # a filter string as their id, so this is now reachable from ordinary use.
+    if "/" in source or "/" in watcher_id:
+        raise ValueError("SOURCE and ID must not contain '/' (they are filename components)")
     only: list[str] = []
     for p in parts[2:]:
         if p.startswith("only="):
@@ -275,6 +279,7 @@ def _run_poll_loop(source: str, watcher_id: str, only: list[str]) -> None:
 
             full = transport.read_state(source, watcher_id)
             full["source_state"] = new_state
+            full.pop("last_error", None)
             transport.write_state(source, watcher_id, full)
             state = new_state
 

@@ -28,9 +28,17 @@ Hence a reconcile, not a printer:
   3. heal         respawn a watcher for every open MR with no live poller.
                   Covers reboot, crash, a cleared /tmp, and MRs that were
                   green when watchers were last spawned — in one step.
+  3b. feed        ensure one live gitlab-mr-feed poller. Reconcile is a
+                  snapshot; the feed is the thing that keeps discovering after
+                  radar returns, so a session idle for an hour still learns
+                  about an MR opened fifty minutes ago. Its absence is
+                  reported loudly, because a feed that is not running looks
+                  exactly like a day on which nothing happened.
   4. report       full board on cold start, delta-only afterwards.
 
-Idempotent, so it is safe on every session start and on a loop.
+Idempotent, so it is safe on every session start and on a loop. That includes
+the feed: a live PID short-circuits the spawn, so N radar runs still leave one
+feed poller and one copy of every discovery event.
 
 "Nothing moved" means: the set of open MRs is unchanged, no MR changed
 pipeline status / pipeline id / draft / conflict flag, and radar itself took
@@ -69,7 +77,11 @@ mrs = _load("radar_gitlab_mrs", _HERE.parents[1] / "presets" / "gitlab" / "mrs.p
 dispatcher = _load("radar_watch_dispatcher", _HERE / "dispatcher.py")
 
 SOURCE = defaults.DEFAULT_SOURCE
+FEED_SOURCE = defaults.DEFAULT_FEED_SOURCE
+FEED_SCOPE = defaults.DEFAULT_FEED_SCOPE
 SNAPSHOT_NAME = "supertool-radar.snapshot.json"
+
+FEED_LABEL = {"alive": "feed ok", "spawned": "feed respawned", "failed": "feed DOWN"}
 
 
 class RadarError(RuntimeError):
@@ -200,6 +212,55 @@ def heal(open_iids: list[str], watched: set[str]) -> tuple[list[str], list[str]]
 
 
 # ---------------------------------------------------------------------------
+# 3b. feed — the tier that discovers MRs radar has never seen
+# ---------------------------------------------------------------------------
+
+def feed_pid() -> int:
+    """PID recorded for the feed poller, or 0 when there is no readable file."""
+    try:
+        raw = Path(transport.pid_path(FEED_SOURCE, FEED_SCOPE)).read_text()
+    except OSError:
+        return 0
+    try:
+        return int(raw.strip())
+    except ValueError:
+        return 0
+
+
+def ensure_feed() -> str:
+    """Guarantee exactly one live feed poller. "alive" | "spawned" | "failed".
+
+    Radar is idempotent and run on a loop, so the feed must be too: a live PID
+    short-circuits before any spawn. Without that check every radar run would
+    stack another feed poller, and n pollers over one filter means n copies of
+    every mr_opened.
+    """
+    pid = feed_pid()
+    if pid and transport._pid_alive(pid):
+        return "alive"
+    if dispatcher._load_source(FEED_SOURCE) is None:
+        return "failed"
+    only = [e for e in defaults.DEFAULT_FEED_ONLY.split(",") if e]
+    try:
+        spawned = dispatcher._spawn_poller(FEED_SOURCE, FEED_SCOPE, only)
+    except OSError:
+        spawned = 0
+    return "spawned" if spawned else "failed"
+
+
+def feed_error() -> str:
+    """Last error the feed poller recorded, or "" when it is polling cleanly.
+
+    A feed that is alive but erroring every tick discovers nothing while
+    looking healthy in `watches` — the same silence as a dead one, so it gets
+    the same report. The dispatcher clears this key on a successful poll, so a
+    message here is current rather than a scar.
+    """
+    state = transport.read_state(FEED_SOURCE, FEED_SCOPE)
+    return str((state.get("last_error") or {}).get("message") or "")
+
+
+# ---------------------------------------------------------------------------
 # 4. report
 # ---------------------------------------------------------------------------
 
@@ -262,7 +323,7 @@ def _is_standing_problem(m: dict) -> bool:
 
 def _footer(open_mrs: list[dict], covered: set[str], healed: list[str],
             drifted: dict[str, tuple[str, str]], pruned: list[str],
-            uncovered: list[str], gone: int) -> str:
+            uncovered: list[str], gone: int, feed: str) -> str:
     counts: dict[str, int] = {}
     for m in open_mrs:
         counts[str(m.get("_pipeline") or "none")] = counts.get(str(m.get("_pipeline") or "none"), 0) + 1
@@ -284,12 +345,26 @@ def _footer(open_mrs: list[dict], covered: set[str], healed: list[str],
         parts.append(f"{len(pruned)} pruned")
     if gone:
         parts.append(f"{gone} no longer open")
+    parts.append(FEED_LABEL.get(feed, feed))
     return " | ".join(parts)
+
+
+def _feed_warnings(feed: str, feed_err: str) -> list[str]:
+    """A blind radar must say so. A dead or erroring feed discovers nothing,
+    and the symptom of that is a board that simply stops gaining rows — which
+    is exactly what an all-quiet day looks like."""
+    if feed == "failed":
+        return ["radar: WARNING — MR feed poller is down. New MRs will not be "
+                "discovered until the next radar run."]
+    if feed_err:
+        return [f"radar: WARNING — MR feed poller is failing to poll: {feed_err}"]
+    return []
 
 
 def render(open_mrs: list[dict], covered: set[str], healed: list[str],
            drifted: dict[str, tuple[str, str]], pruned: list[str],
-           uncovered: list[str], previous: dict[str, Any] | None) -> str:
+           uncovered: list[str], previous: dict[str, Any] | None,
+           feed: str = "alive", feed_err: str = "") -> str:
     """Full board on cold start; changed + standing-problem rows afterwards."""
     cold = previous is None
     prev_entries: dict[str, Any] = (previous or {}).get("mrs", {}) or {}
@@ -305,9 +380,9 @@ def render(open_mrs: list[dict], covered: set[str], healed: list[str],
             shown.append(mrs._row(m, covered, True, marks))
 
     gone = len([i for i in prev_entries if i not in {str(m.get("iid")) for m in open_mrs}])
-    footer = _footer(open_mrs, covered, healed, drifted, pruned, uncovered, gone)
+    footer = _footer(open_mrs, covered, healed, drifted, pruned, uncovered, gone, feed)
 
-    lines = []
+    lines = _feed_warnings(feed, feed_err)
     if cold:
         lines.append("radar: cold start — no prior snapshot, full board")
     if shown:
@@ -340,8 +415,12 @@ def main(argv: list[str] | None = None) -> int:
     healed, uncovered = heal(open_iids, watched)
     covered = watched | set(healed)
 
+    feed = ensure_feed()
+    feed_err = feed_error() if feed == "alive" else ""
+
     previous = read_snapshot()
-    print(render(open_mrs, covered, healed, drifted, pruned, uncovered, previous))
+    print(render(open_mrs, covered, healed, drifted, pruned, uncovered, previous,
+                 feed, feed_err))
     write_snapshot({str(m.get("iid")): _snap_entry(m) for m in open_mrs if m.get("iid") is not None})
     return 0
 
