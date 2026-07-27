@@ -22,7 +22,7 @@
     "radar": {
       "cmd": "{python} {path}watch/radar.py",
       "timeout": 90,
-      "description": "Reconcile watch coverage against live GitLab, then report. Live MRs are authoritative; state files are cache. Prunes terminal state files, flags pipeline drift (last_event vs source_state), respawns watchers for open MRs with no live poller. Full board on cold start, delta-only after. Idempotent — safe on every session start.",
+      "description": "Reconcile watch coverage against live GitLab, then report. Live MRs are authoritative; state files are cache. Prunes terminal state files, flags pipeline drift (last_event vs source_state), respawns watchers for open MRs with no live poller, and ensures one live gitlab-mr-feed poller so MRs opened after this run are still discovered. Full board on cold start, delta-only after. Idempotent — safe on every session start.",
       "syntax": "radar"
     }
   }

@@ -36,11 +36,18 @@ on every session start. Details in [docs/presets/watch.md](../../docs/presets/wa
 
 ## Sources
 
-| SOURCE        | ID is a…                | Terminal when…                                     |
-| ------------- | ----------------------- | -------------------------------------------------- |
-| `gitlab-mr`   | GitLab MR iid           | MR merged or closed                                |
-| `github-pr`   | GitHub PR number        | PR merged or closed                                |
-| `gl-pipeline` | GitLab CI pipeline id   | pipeline success / failed / canceled / skipped     |
+| SOURCE            | ID is a…                       | Terminal when…                                 |
+| ----------------- | ------------------------------ | ---------------------------------------------- |
+| `gitlab-mr`       | GitLab MR iid                  | MR merged or closed                            |
+| `github-pr`       | GitHub PR number               | PR merged or closed                            |
+| `gl-pipeline`     | GitLab CI pipeline id          | pipeline success / failed / canceled / skipped |
+| `gitlab-mr-feed`  | scope (`@me`, `@reviewer`, …)  | never — discovery has no end state             |
+
+Every source but the last polls **one known id**, so none of them can discover
+an MR that did not exist when they were spawned. `gitlab-mr-feed` polls the
+whole population instead: new iids get a `gitlab-mr` watcher and an
+`mr_opened` event, departed iids are looked up and reported as what actually
+happened to them. `radar` keeps exactly one alive and says so when it is not.
 
 ## Transports
 

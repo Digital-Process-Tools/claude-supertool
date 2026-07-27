@@ -91,11 +91,27 @@ def env(tmp_path, monkeypatch):
 
     def _fake_spawn(source, watcher_id, only):
         spawned.append((source, watcher_id, list(only)))
-        _live_pid_file(tmp_path, watcher_id)
+        path = tmp_path / f"supertool-watch-{source}__{watcher_id}.pid"
+        path.write_text(f"{os.getpid()}\n")
         return 4242
 
     monkeypatch.setattr(radar.dispatcher, "_spawn_poller", _fake_spawn)
     return {"dir": tmp_path, "spawned": spawned, "monkeypatch": monkeypatch}
+
+
+def _mr_spawns(env) -> list[str]:
+    """iids of per-MR watchers radar spawned — the feed is a separate source."""
+    return [iid for src, iid, _o in env["spawned"] if src == radar.SOURCE]
+
+
+def _feed_spawns(env) -> list[tuple[str, str, list[str]]]:
+    return [row for row in env["spawned"] if row[0] == radar.FEED_SOURCE]
+
+
+def _live_feed(tmp_path: Path) -> Path:
+    path = tmp_path / f"supertool-watch-{radar.FEED_SOURCE}__{radar.FEED_SCOPE}.pid"
+    path.write_text(f"{os.getpid()}\n")
+    return path
 
 
 def _set_live(env, mrs_list):
@@ -123,7 +139,7 @@ def test_cold_start_renders_full_board_from_live_gitlab(env, capsys) -> None:
 def test_cold_start_spawns_a_watcher_for_every_open_mr(env, capsys) -> None:
     _set_live(env, [_mr(33161, "failed"), _mr(33172, "success"), _mr(33173, "running")])
     _run(env, capsys)
-    assert sorted(iid for _s, iid, _o in env["spawned"]) == ["33161", "33172", "33173"]
+    assert sorted(_mr_spawns(env)) == ["33161", "33172", "33173"]
 
 
 def test_healed_watchers_use_the_shared_default_event_filter(env, capsys) -> None:
@@ -141,7 +157,7 @@ def test_cold_start_with_no_open_mrs_says_so(env, capsys) -> None:
     _set_live(env, [])
     out = _run(env, capsys)
     assert "No open MRs." in out
-    assert env["spawned"] == []
+    assert _mr_spawns(env) == []
 
 
 # ---------------------------------------------------------------------------
@@ -152,13 +168,14 @@ def test_open_mr_with_dead_poller_is_healed(env, capsys) -> None:
     _dead_pid_file(env["dir"], "33161")
     _set_live(env, [_mr(33161, "running")])
     out = _run(env, capsys)
-    assert [iid for _s, iid, _o in env["spawned"]] == ["33161"]
+    assert _mr_spawns(env) == ["33161"]
     assert "[healed]" in out
     assert "1 healed" in out
 
 
 def test_open_mr_with_live_poller_is_not_respawned(env, capsys) -> None:
     _live_pid_file(env["dir"], "33161")
+    _live_feed(env["dir"])
     _set_live(env, [_mr(33161, "running")])
     out = _run(env, capsys)
     assert env["spawned"] == []
@@ -277,10 +294,11 @@ def test_absent_state_files_do_not_suppress_a_live_red_mr(env, capsys) -> None:
 
 def test_second_run_with_nothing_moved_is_one_summary_line(env, capsys) -> None:
     _live_pid_file(env["dir"], "33172")
+    _live_feed(env["dir"])
     _set_live(env, [_mr(33172, "success", "100")])
     _run(env, capsys)
     out = _run(env, capsys)
-    assert out == "radar: no change | 1 open | 1 green | 1 watched\n"
+    assert out == "radar: no change | 1 open | 1 green | 1 watched | feed ok\n"
 
 
 def test_nothing_moved_still_reports_coverage_rather_than_silence(env, capsys) -> None:
@@ -513,6 +531,108 @@ def test_corrupt_snapshot_is_treated_as_cold_start(env, capsys) -> None:
     _live_pid_file(env["dir"], "33172")
     _set_live(env, [_mr(33172, "success")])
     assert "cold start" in _run(env, capsys)
+
+
+# ---------------------------------------------------------------------------
+# feed — reconcile is a snapshot, the feed is what keeps discovering (#422)
+# ---------------------------------------------------------------------------
+
+def _feed_state(tmp_path: Path, body: dict) -> Path:
+    path = (tmp_path /
+            f"supertool-watch-{radar.FEED_SOURCE}__{radar.FEED_SCOPE}.state.json")
+    path.write_text(json.dumps(body))
+    return path
+
+
+def test_radar_starts_the_feed_poller_with_the_shared_feed_defaults(env, capsys) -> None:
+    _set_live(env, [_mr(33161)])
+    _run(env, capsys)
+    assert _feed_spawns(env) == [
+        ("gitlab-mr-feed", "@me",
+         ["mr_opened", "mr_merged", "mr_closed", "mr_left_feed"]),
+    ]
+
+
+def test_a_second_radar_run_does_not_start_a_second_feed_poller(env, capsys) -> None:
+    """Idempotence is the whole point of radar; n feeds means n mr_opened."""
+    _set_live(env, [_mr(33161)])
+    _run(env, capsys)
+    _run(env, capsys)
+    _run(env, capsys)
+    assert len(_feed_spawns(env)) == 1
+
+
+def test_a_feed_poller_already_alive_is_left_alone(env, capsys) -> None:
+    _live_feed(env["dir"])
+    _set_live(env, [_mr(33161)])
+    out = _run(env, capsys)
+    assert _feed_spawns(env) == []
+    assert "feed ok" in out
+
+
+def test_a_dead_feed_poller_is_respawned_and_the_respawn_is_reported(env, capsys) -> None:
+    (env["dir"] /
+     f"supertool-watch-{radar.FEED_SOURCE}__{radar.FEED_SCOPE}.pid").write_text("9999999\n")
+    _set_live(env, [_mr(33161)])
+    out = _run(env, capsys)
+    assert len(_feed_spawns(env)) == 1
+    assert "feed respawned" in out
+
+
+def test_a_feed_that_cannot_be_started_is_reported_not_silently_absent(env, capsys) -> None:
+    """A missing feed and a quiet day render identically unless radar says so."""
+    real = radar.dispatcher._spawn_poller
+    env["monkeypatch"].setattr(
+        radar.dispatcher, "_spawn_poller",
+        lambda source, wid, only: 0 if source == radar.FEED_SOURCE else real(source, wid, only))
+    _set_live(env, [_mr(33161)])
+    out = _run(env, capsys)
+    assert "WARNING" in out
+    assert "will not be discovered" in out
+    assert "feed DOWN" in out
+
+
+def test_a_down_feed_still_warns_on_a_run_where_nothing_moved(env, capsys) -> None:
+    """Delta suppression must not swallow the report that discovery is off."""
+    real = radar.dispatcher._spawn_poller
+    env["monkeypatch"].setattr(
+        radar.dispatcher, "_spawn_poller",
+        lambda source, wid, only: 0 if source == radar.FEED_SOURCE else real(source, wid, only))
+    _live_pid_file(env["dir"], "33172")
+    _set_live(env, [_mr(33172, "success", "100")])
+    _run(env, capsys)
+    out = _run(env, capsys)
+    assert "WARNING" in out
+    assert "radar: no change" in out
+
+
+def test_a_feed_alive_but_failing_every_poll_is_reported(env, capsys) -> None:
+    """`watches` shows it green. Discovery is still dead, so radar says so."""
+    _live_feed(env["dir"])
+    _feed_state(env["dir"], {"last_error": {"ts": "2026-07-27T16:00:00Z",
+                                            "message": "glab: 401 Unauthorized"}})
+    _set_live(env, [_mr(33161)])
+    out = _run(env, capsys)
+    assert "WARNING" in out
+    assert "glab: 401 Unauthorized" in out
+
+
+def test_a_healthy_feed_produces_no_warning(env, capsys) -> None:
+    _live_feed(env["dir"])
+    _feed_state(env["dir"], {"source_state": {"known": {"33161": {}}}})
+    _set_live(env, [_mr(33161)])
+    out = _run(env, capsys)
+    assert "WARNING" not in out
+
+
+def test_unreachable_gitlab_does_not_start_a_feed_poller(env, capsys) -> None:
+    """The hard-error path takes no action at all, feed included."""
+    def _boom():
+        raise radar.RadarError("boom")
+
+    env["monkeypatch"].setattr(radar, "live_open_mrs", _boom)
+    assert radar.main([]) == 1
+    assert _feed_spawns(env) == []
 
 
 def test_snapshot_records_the_reported_facts(env, capsys) -> None:

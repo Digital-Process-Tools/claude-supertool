@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import sys
 from pathlib import Path
@@ -60,6 +61,17 @@ def test_parse_args_rejects_double_underscore_in_id() -> None:
         dispatcher._parse_args(["gitlab-mr", "bad__id"])
 
 
+def test_parse_args_rejects_a_slash_in_source() -> None:
+    with pytest.raises(ValueError, match="must not contain '/'"):
+        dispatcher._parse_args(["../../etc", "21803"])
+
+
+def test_parse_args_rejects_a_slash_in_id() -> None:
+    """Feed sources take a filter string as their id, and it lands in a path."""
+    with pytest.raises(ValueError, match="must not contain '/'"):
+        dispatcher._parse_args(["gitlab-mr-feed", "author=@me,path=a/b"])
+
+
 def test_load_source_known() -> None:
     mod = dispatcher._load_source("gitlab-mr")
     assert mod is not None
@@ -77,13 +89,10 @@ def test_list_empty(monkeypatch, tmp_path) -> None:
     assert rows == []
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="OpenProcess for PID-existence check raises OSError WinError 87 on "
-    "Windows for invalid PIDs; the stale-pruning logic uses POSIX "
-    "os.kill(pid, 0) semantics that don't map cleanly to Windows.",
-)
 def test_list_skips_stale_pid_file(monkeypatch, tmp_path) -> None:
+    """Was skipped on Windows because `_pid_alive` raised WinError 87 for a
+    PID that cannot exist. It answers on every platform now, so stale-pruning
+    is finally exercised on Windows too."""
     monkeypatch.setattr(transport, "STATE_DIR", str(tmp_path))
     # PID 1 exists (init); a clearly stale impossible PID — pick a very high one
     stale = tmp_path / "supertool-watch-fake__stale.pid"
@@ -187,3 +196,16 @@ def test_non_terminal_poller_keeps_its_state_file(monkeypatch, tmp_path) -> None
     _run_loop_in_child(monkeypatch, tmp_path, _OpenPoller)
     assert state.exists()
     assert not (tmp_path / "supertool-watch-gitlab-mr__33136.pid").exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="requires os.fork")
+def test_a_successful_poll_clears_a_previous_error(monkeypatch, tmp_path) -> None:
+    """`radar` reports a poller's last_error as a current fact, so a message
+    that outlived the failure would be a permanent false alarm."""
+    state = tmp_path / "supertool-watch-gitlab-mr__33136.state.json"
+    state.write_text(json.dumps({
+        "source_state": {"mr_state": "opened"},
+        "last_error": {"ts": "2026-07-27T16:00:00Z", "message": "401 Unauthorized"},
+    }))
+    _run_loop_in_child(monkeypatch, tmp_path, _OpenPoller)
+    assert "last_error" not in json.loads(state.read_text())

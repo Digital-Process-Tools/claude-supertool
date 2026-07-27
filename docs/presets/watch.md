@@ -113,8 +113,37 @@ Total silence would be indistinguishable from a radar that failed to run, which 
 |---|---|---|
 | `github-pr` | `gh pr view <N> --json state,mergeable,reviewDecision,statusCheckRollup,comments,...` | `checks_failed`, `checks_succeeded`, `checks_pending`, `review_approved`, `review_changes_requested`, `comment_added`, `merged`, `closed`, `conflicts_appeared` |
 | `gitlab-mr` | `glab api projects/:id/merge_requests/<iid>` | `pipeline_failed`, `pipeline_succeeded`, `pipeline_running`, `merged`, `closed`, `conflicts_appeared` |
+| `gitlab-mr-feed` | `glab mr list` for a whole filter | `mr_opened`, `mr_merged`, `mr_closed`, `mr_left_feed` |
 
 Each source declares its event vocabulary in `presets/watch/sources/<NAME>/events.json` for introspection.
+
+## Discovery — `gitlab-mr-feed`
+
+Every source above polls **one known id**, so nothing in a running watch session can discover an MR that did not exist when the poller was spawned. Observed: !33176 opened between two `radar` runs, and only the second run found it. In between, the board was not visibly wrong — it was confidently complete and missing an MR, which renders identically to all-green.
+
+`gitlab-mr-feed` polls the *population* instead of a member of it:
+
+```bash
+./supertool 'watch:gitlab-mr-feed:@me'          # everything I author
+./supertool 'watch:gitlab-mr-feed:@reviewer'    # everything I owe a review
+./supertool 'watch:gitlab-mr-feed:milestone=v18.9,state=opened'
+```
+
+The ID is a **scope**: `@me` and `@reviewer` are aliases for `gl-mrs` filters, anything else is used as a literal filter. Per poll it makes one `glab mr list` call with no pipeline enrichment — the feed answers *which MRs exist*, and the per-MR watcher it spawns answers *what is happening to this one*.
+
+| Behaviour | |
+|---|---|
+| interval | 300s. MRs appear on human timescales; the per-MR pollers already carry the 30s traffic. |
+| first poll | Records the baseline **silently**. Announcing every MR that was already open is not discovery, it is a notification storm. Watchers are still spawned. |
+| new iid | `watch:gitlab-mr:<iid>` with the shared `DEFAULT_ONLY` filter, plus an `mr_opened` event and a desktop ping — nothing else can report it. |
+| known iid with a dead watcher | Respawned. Coverage is continuous for the same reason discovery is. |
+| vanished iid | One `glab api` lookup, then `mr_merged` / `mr_closed` / `mr_left_feed`. |
+| `is_terminal` | Never. A population has no final state. |
+| fetch failure | No events, state kept. An unreachable GitLab must never read as "everything vanished". |
+
+**Vanished is not merged.** An iid leaving `author=@me,state=opened` could have merged, closed, been reassigned, or the filter could have changed. Guessing `mr_merged` is right most of the time and confidently wrong the rest, so the feed spends one lookup on the truth — departures are rare, so the call is too. Only a confirmed `merged`/`closed` stops the watcher and, since the per-MR watcher reaches the same conclusion within 30s and owns the desktop ping, `mr_merged`/`mr_closed` are emitted on the wire **without** a notification so a merge never pings twice. A still-open MR gets `mr_left_feed` and **keeps its watcher** — following an MR the feed no longer returns is legitimate, the same distinction `radar`'s prune already makes.
+
+`radar` ensures exactly one feed poller is alive on every run (a live PID short-circuits the spawn — N radar runs, one feed), and reports it in the footer as `feed ok` / `feed respawned` / `feed DOWN`. A feed that is down, or alive but erroring every tick, gets an explicit `WARNING` line that survives delta suppression — a feed that stopped discovering looks exactly like a day on which nothing happened.
 
 ## Transports
 
@@ -154,7 +183,7 @@ Each `watch` invocation forks a detached poller process. The process IS the subs
 - Stale PIDs swept by the `watches` op automatically
 - Pollers auto-stop when the source declares the target terminal (`is_terminal(state) -> bool`)
 
-`SOURCE` and `ID` must not contain `__` (reserved as the filename separator).
+`SOURCE` and `ID` must not contain `__` (reserved as the filename separator) or `/` (both are interpolated into a `/tmp` path).
 
 ## Writing a new source
 

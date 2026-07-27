@@ -1,0 +1,9 @@
+{
+  "source": "gitlab-mr-feed",
+  "events": [
+    {"key": "mr_opened",    "label": "A new MR appeared in the feed"},
+    {"key": "mr_merged",    "label": "A watched MR left the feed by merging"},
+    {"key": "mr_closed",    "label": "A watched MR left the feed by closing"},
+    {"key": "mr_left_feed", "label": "An MR left the feed while still open (reassigned, or the filter changed)"}
+  ]
+}

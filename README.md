@@ -322,6 +322,8 @@ The `watch` preset spawns background pollers that emit events when external stat
 
 `watches` tells you which pollers are alive. `radar` tells you what is **true**: it treats live GitLab as authoritative (state files are cache), respawns watchers for open MRs that lost theirs, prunes state files for merged MRs, and flags drift where the last event fired on a pipeline that has since been superseded. Pollers die with the machine and events are fire-and-forget, so at session start an event-driven view knows nothing — and "knows nothing" looks exactly like "all green". Run `radar` on every session start; it is idempotent.
 
+`radar` also keeps a `gitlab-mr-feed` poller alive. Per-MR pollers only ever poll one known iid, so without it nothing in a running session could discover an MR opened after that session started — the board would stay confidently complete and quietly missing a row until someone typed `radar` again. The feed polls the whole filter every 5 minutes, watches and announces new MRs itself, and radar reports loudly when it is down.
+
 Run `bash notifiers/claude-channel/install.sh` to install the MCP server, register it in `.mcp.json`, and launch Claude with:
 
 ```bash
