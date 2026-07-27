@@ -74,6 +74,13 @@ than `GL_JOB_PHPUNIT_BLOCK_MAX_LINES` (default 500) keep their head and tail, an
 every gap marker states the count — `... (44 lines elided)` — so a trimmed view can
 never be mistaken for a complete one.
 
+Expansion is budgeted across the whole log by `GL_JOB_PHPUNIT_TOTAL_MAX_LINES`
+(default 2000), because one broken shared component fails dozens of tests at once.
+Past the budget whole failures are dropped in file order rather than gutted — a
+dropped failure falls back to its ordinary pattern window, so nothing disappears —
+and the view ends with `... (3 of 21 PHPUnit failures not shown in full — raise
+GL_JOB_PHPUNIT_TOTAL_MAX_LINES=N)`.
+
 **Check an issue before starting work:**
 ```bash
 ./supertool 'gl-issue:999' 'gl-mr:feature/my-branch:status'

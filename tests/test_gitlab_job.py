@@ -336,6 +336,99 @@ def test_fail_oversize_phpunit_block_elides_visibly(monkeypatch, capsys) -> None
     assert "lines elided)" in out
 
 
+def _failure_block(n: int) -> list[str]:
+    """One 25-line PHPUnit failure whose middle sits outside any ±8 window."""
+    return (
+        [f"{n}) FooTest::testCase{n}", f"Failed asserting that '<html-{n}>"]
+        + [f"<div>block {n} row {i}</div>" for i in range(20)]
+        + [f"' does not contain \"needle-{n}\".", "", f"/builds/tests/FooTest{n}.php:{n}0"]
+    )
+
+
+def _many_failures_trace(count: int) -> list[str]:
+    lines = [f"runner noise {i}" for i in range(20)] + ["", f"There were {count} failures:", ""]
+    for n in range(1, count + 1):
+        lines += _failure_block(n)
+    return lines + ["", "FAILURES!", f"Tests: 40, Failures: {count}."]
+
+
+def _block_span(lines: list[str], n: int) -> tuple[int, int]:
+    """1-indexed (first, last) printed line numbers of failure block n."""
+    start = lines.index(f"{n}) FooTest::testCase{n}") + 1
+    end = lines.index(f"/builds/tests/FooTest{n}.php:{n}0") + 1
+    return start, end
+
+
+def test_fail_over_budget_drops_whole_failures_and_says_how_many(monkeypatch, capsys) -> None:
+    """Past the aggregate budget, failures are dropped whole — never gutted."""
+    monkeypatch.setenv("GL_JOB_PHPUNIT_TOTAL_MAX_LINES", "60")
+    lines = _many_failures_trace(4)
+    rc = _run_main(monkeypatch, ["job.py", "123", "fail"], lines)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert (
+        "... (2 of 4 PHPUnit failures not shown in full "
+        "— raise GL_JOB_PHPUNIT_TOTAL_MAX_LINES=N)"
+    ) in out
+
+    shown = _shown_line_numbers(out)
+    for kept in (1, 2):
+        first, last = _block_span(lines, kept)
+        assert [n for n in shown if first <= n <= last] == list(range(first, last + 1))
+        assert f"<div>block {kept} row 12</div>" in out
+        assert f'does not contain "needle-{kept}"' in out
+
+    for skipped in (3, 4):
+        assert f"<div>block {skipped} row 12</div>" not in out
+        assert f"{skipped}) FooTest::testCase{skipped}" in out
+        assert f"<div>block {skipped} row 0</div>" in out
+
+
+def test_fail_under_budget_keeps_every_failure_whole(monkeypatch, capsys) -> None:
+    """Inside the budget there is no announcement and nothing is dropped."""
+    lines = _many_failures_trace(3)
+    rc = _run_main(monkeypatch, ["job.py", "123", "fail"], lines)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "not shown in full" not in out
+    shown = _shown_line_numbers(out)
+    for n in (1, 2, 3):
+        first, last = _block_span(lines, n)
+        assert [i for i in shown if first <= i <= last] == list(range(first, last + 1))
+        assert f"<div>block {n} row 12</div>" in out
+
+
+def test_fail_exactly_at_budget_drops_nothing(monkeypatch, capsys) -> None:
+    """A budget equal to the total cost keeps both failures, silently."""
+    monkeypatch.setenv("GL_JOB_PHPUNIT_TOTAL_MAX_LINES", "50")
+    lines = _many_failures_trace(2)
+    rc = _run_main(monkeypatch, ["job.py", "123", "fail"], lines)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "not shown in full" not in out
+    shown = _shown_line_numbers(out)
+    for n in (1, 2):
+        first, last = _block_span(lines, n)
+        assert [i for i in shown if first <= i <= last] == list(range(first, last + 1))
+    assert "<div>block 1 row 12</div>" in out
+    assert "<div>block 2 row 12</div>" in out
+
+
+def test_expand_phpunit_blocks_never_removes_pattern_window_lines() -> None:
+    """Union-only: a zero budget leaves the caller's own selection intact."""
+    lines = _many_failures_trace(2)
+    outside = {5, 6, 7}
+    dropped, touched = job._expand_phpunit_blocks(lines, outside, 500, 0)
+    assert (dropped, touched) == (0, 0)
+    assert outside == {5, 6, 7}
+
+    first, _ = _block_span(lines, 1)
+    inside = {first}
+    dropped, touched = job._expand_phpunit_blocks(lines, inside, 500, 0)
+    assert (dropped, touched) == (1, 1)
+    assert inside == {first}
+
+
 def test_phpunit_blocks_bounds() -> None:
     lines = [
         "There was 1 failure:",
