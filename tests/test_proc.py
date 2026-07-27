@@ -271,13 +271,21 @@ def test_every_consumer_uses_the_one_shared_probe(name: str, relpath: str) -> No
     assert mod._pid_alive is _proc.pid_alive
 
 
+def _defines_a_probe(path: Path) -> bool:
+    """Read as UTF-8 explicitly. A bare read_text() decodes by locale, which is
+    cp1252 on Windows — the seam #418 is about, and it made this very test red
+    on all four Windows legs against preset sources holding glyphs."""
+    src = path.read_text(encoding="utf-8")
+    return "def pid_alive" in src or "def _pid_alive" in src
+
+
 def _null_signal_kills(path: Path) -> bool:
-    """True if the file really calls `os.kill(x, 0)`.
+    """True if the file really calls `os.kill(x, 0)`. UTF-8, not locale.
 
     Parsed rather than grepped, so the prose explaining the bug in the files
     that no longer contain it does not count as containing it.
     """
-    tree = ast.parse(path.read_text())
+    tree = ast.parse(path.read_text(encoding="utf-8"))
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call) or len(node.args) != 2:
             continue
@@ -311,6 +319,30 @@ def test_proc_is_the_only_definition_of_the_probe() -> None:
     definitions = sorted(
         str(path.relative_to(PRESETS_DIR))
         for path in PRESETS_DIR.rglob("*.py")
-        if "def pid_alive" in path.read_text() or "def _pid_alive" in path.read_text()
+        if _defines_a_probe(path)
     )
     assert definitions == ["_proc.py"]
+
+
+def test_the_source_scans_do_not_decode_by_locale() -> None:
+    """#418's seam. A bare `read_text()` decodes with
+    `locale.getpreferredencoding()` — cp1252 on Windows — so these two scans
+    died with `UnicodeDecodeError: 'charmap' codec` on every Windows leg,
+    against preset sources that hold glyphs. Run under
+    `-X warn_default_encoding` with EncodingWarning promoted to an error, so a
+    reintroduced bare read is caught by this suite on any OS rather than
+    discovered by CI on one.
+    """
+    probe = (
+        "import sys; sys.path.insert(0, %r)\n"
+        "import test_proc\n"
+        "test_proc._null_signal_kills(test_proc.PRESETS_DIR / '_proc.py')\n"
+        "test_proc._defines_a_probe(test_proc.PRESETS_DIR / '_proc.py')\n"
+        % str(Path(__file__).parent)
+    )
+    r = subprocess.run(
+        [sys.executable, "-X", "warn_default_encoding", "-W", "error::EncodingWarning",
+         "-c", probe],
+        capture_output=True, text=True,
+    )
+    assert r.returncode == 0, r.stderr
