@@ -179,6 +179,24 @@ def test_read_only_batch_has_no_footer(tmp_path: Path, monkeypatch) -> None:
     assert "[branch:" not in out
 
 
+def test_nested_batch_still_reports_the_branch(tmp_path: Path, monkeypatch) -> None:
+    """#392: a mutation buried in an inner batch used to produce ZERO footers —
+    the inner one suppressed by depth, the outer one blind because its only
+    sub-op was "batch", which is not in _OP_TARGETS."""
+    monkeypatch.setattr(supertool, "_current_branch", lambda: "my-feature")
+    f = tmp_path / "x.py"
+    f.write_text("a = 1\\n")
+    inner = tmp_path / "inner.json"
+    inner.write_text(json.dumps([
+        {"op": "edit", "path": str(f), "old": "a = 1", "new": "a = 2"},
+    ]))
+    outer = tmp_path / "outer.json"
+    outer.write_text(json.dumps([{"op": "batch", "path": f"@{inner}"}]))
+    out = supertool.dispatch(f"batch:@{outer}")
+    assert f.read_text() == "a = 2\\n"
+    assert out.count("[branch: my-feature]") == 1
+
+
 def test_append_gets_the_footer_too(tmp_path: Path, monkeypatch) -> None:
     """"Every mutating op" has to mean every one — a silently excluded op is
     exactly the wrong-branch miss #381 exists to close."""

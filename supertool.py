@@ -9760,8 +9760,133 @@ def _validators_run_batch(
 # are the safety net.
 # ---------------------------------------------------------------------------
 
+# Config files that prove a repo actually runs a given formatter (#393).
+# Keyed by a substring of the formatter's name in .supertool.json. A tool with
+# no entry here (gofmt, which has no config, or anything custom) is never
+# gated — absence of knowledge is not evidence of opt-out.
+#
+# Each value is (filename globs, ((manifest file, substring that must appear), ...)).
+_FORMATTER_CONFIG_MARKERS: Dict[str, Any] = {
+    "prettier": (
+        (".prettierrc*", "prettier.config.*"),
+        (("package.json", '"prettier"'),),
+    ),
+    "black": ((), (("pyproject.toml", "[tool.black]"),)),
+    "ruff": (("ruff.toml", ".ruff.toml"), (("pyproject.toml", "[tool.ruff"),)),
+    "isort": ((".isort.cfg",), (("pyproject.toml", "[tool.isort]"),
+                                ("setup.cfg", "[isort]"))),
+    "eslint": ((".eslintrc*", "eslint.config.*"),
+               (("package.json", '"eslintConfig"'),)),
+    "php-cs-fixer": ((".php-cs-fixer*.php", ".php_cs*"), ()),
+    "phpcbf": (("phpcs.xml*", ".phpcs.xml*", "phpcs.dist.xml"), ()),
+    "phpcs": (("phpcs.xml*", ".phpcs.xml*", "phpcs.dist.xml"), ()),
+    "rustfmt": (("rustfmt.toml", ".rustfmt.toml"), ()),
+    "clang-format": ((".clang-format",), ()),
+}
+
+# Formatters gated out by the opt-in rule, drained onto the receipt by dispatch.
+# A silent skip reads as "nothing to format here", which is the same failure the
+# gate exists to fix, one direction over: the caller cannot tell a formatted file
+# from an ungated one. Keyed by name so a batch of edits reports each tool once.
+_FORMATTER_SKIPS: List[str] = []
+
+
+# An env key ending in one of these, with a value, means the spec carries its
+# own rules — the repo opted in through .supertool.json rather than through a
+# config file of the tool's own (DVSI's phpcbf runs PSR12 with no phpcs.xml).
+_FORMATTER_EXPLICIT_ENV_SUFFIXES = ("_CONFIG", "_STANDARD", "_RULES", "_RULESET")
+
+
+def _formatter_markers_for(name: str) -> Optional[Any]:
+    """Marker table entry for a formatter name, or None when the tool is unknown.
+
+    The config name must CONTAIN the table key ("prettier-write" → prettier), not
+    the other way round: a spec called "fmt" is a house tool, and matching it
+    against "rustfmt" because one is a substring of the other would gate a
+    formatter on config for a tool it has nothing to do with.
+    """
+    lowered = name.lower()
+    for key, markers in _FORMATTER_CONFIG_MARKERS.items():
+        if key in lowered:
+            return markers
+    return None
+
+
+def _repo_opts_into_formatter(name: str, spec: Dict[str, Any], path: str) -> bool:
+    """Does the repo holding `path` show evidence it runs this formatter? (#393)
+
+    A formatter rewrites the whole file, so running one the repo never runs
+    turns a two-line edit into a hundred-line diff of changes nobody asked
+    for — and in a repo with hand-aligned tables it is simply wrong. The
+    default flips to "validate, never rewrite" unless there is evidence:
+
+      * `requires_config: false` in the spec — explicit always-run opt-out;
+      * an `env` entry naming the tool's config or standard (the spec itself
+        carries the rules, so no repo config file is expected);
+      * a config file for the tool, searched from the file's own directory up
+        to its repo root — NOT from cwd, so editing another repo from this
+        shell applies that repo's answer, not this one's;
+      * an unknown tool (no marker table entry), which is left alone.
+    """
+    if os.environ.get("SUPERTOOL_FORMAT_WITHOUT_CONFIG") == "1":
+        return True
+    requires = spec.get("requires_config")
+    if requires is False:
+        return True
+    markers = _formatter_markers_for(name)
+    if isinstance(requires, str):
+        markers = ((requires,), ())
+    elif isinstance(requires, list) and requires:
+        markers = (tuple(str(m) for m in requires), ())
+    if markers is None:
+        return True
+    env = spec.get("env")
+    if isinstance(env, dict):
+        for key, value in env.items():
+            if value and str(key).upper().endswith(_FORMATTER_EXPLICIT_ENV_SUFFIXES):
+                return True
+    import fnmatch
+    globs, manifests = markers
+    for directory in _dirs_up_to_repo_root(path):
+        for glob in globs:
+            try:
+                if any(fnmatch.fnmatch(entry, glob) for entry in os.listdir(directory)):
+                    return True
+            except OSError:
+                continue
+        for manifest, needle in manifests:
+            candidate = os.path.join(directory, manifest)
+            try:
+                with open(candidate, "r", encoding="utf-8", errors="replace") as fh:
+                    if needle in fh.read():
+                        return True
+            except OSError:
+                continue
+    return False
+
+
+def _dirs_up_to_repo_root(path: str) -> List[str]:
+    """`path`'s directory and every parent up to and including its repo root.
+
+    Stops at the first directory holding `.git` (worktrees use a `.git` file,
+    so existence is the test, not is-a-directory), else at the filesystem root.
+    """
+    current = os.path.dirname(os.path.abspath(path)) or os.sep
+    out: List[str] = []
+    while True:
+        out.append(current)
+        if os.path.exists(os.path.join(current, ".git")):
+            break
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    return out
+
+
 def _applicable_formatters(op: str, path: str) -> Dict[str, Dict[str, Any]]:
-    """Return formatters that should run after this op. Same logic as validators."""
+    """Return formatters that should run after this op. Same logic as validators,
+    plus the opt-in gate of #393 — see `_repo_opts_into_formatter`."""
     cfg = _load_config()
     formatters = cfg.get("formatters") or {}
     if not formatters:
@@ -9777,6 +9902,10 @@ def _applicable_formatters(op: str, path: str) -> Dict[str, Dict[str, Any]]:
         if path and glob and not _match_glob(path, glob):
             continue
         if path and _matches_any_glob(path, spec.get("exclude")):
+            continue
+        if path and not _repo_opts_into_formatter(name, spec, path):
+            if name not in _FORMATTER_SKIPS:
+                _FORMATTER_SKIPS.append(name)
             continue
         out[name] = spec
     return out
@@ -11477,6 +11606,28 @@ def _mini_toml_loads(raw: str) -> Dict[str, Any]:
     return result
 
 
+def _toml_delimiter_hint(raw: str) -> str:
+    """Explain a TOML parse failure caused by ''' inside a ''' block (#394).
+
+    The parse error points at a column in the payload, which is where the
+    delimiter closed — not at the ''' in the content that closed it. An odd
+    number of ''' runs is exactly that shape: every literal block opens and
+    closes, so a stray one means the content carried its own.
+
+    Silent when the payload has no ''' at all — then the failure is ordinary
+    TOML and a delimiter lecture would be noise.
+    """
+    if raw.count("'''") % 2 == 0:
+        return ""
+    return (
+        "\n  ↳ the payload has an odd number of ''' runs — content containing "
+        "''' closes the block early.\n"
+        '    Use a \"\"\"basic\"\"\" block instead (escapes apply, so \\ doubles), '
+        "or the JSON payload form,\n"
+        "    which needs no delimiter: {\"path\": ..., \"old\": ..., \"new\": ...}\n"
+    )
+
+
 def _load_at_file(ref: str) -> Any:
     """Load JSON or TOML from an @file reference.
 
@@ -11487,6 +11638,11 @@ def _load_at_file(ref: str) -> Any:
     Format detected from first non-whitespace char: { or [ → JSON, else TOML.
     TOML lets you embed code blocks with backslashes/quotes/newlines without
     JSON's double-escaping. Use '''triple-single-quote''' for literal content.
+
+    When the content itself contains ''' — Python source that inspects Python
+    source is the common case — that delimiter cannot carry it. Fall back to a
+    \"\"\"basic\"\"\" block (escapes apply, so backslashes double) or to the JSON
+    payload form, which needs no delimiter at all. #394.
 
     Returns the parsed value (dict, list, etc.).
     Raises ValueError with a human-readable message on any error.
@@ -11518,7 +11674,9 @@ def _load_at_file(ref: str) -> Any:
     try:
         return parser(raw)
     except Exception as _e:
-        raise ValueError(f"@file TOML parse error ({source}): {_e}") from _e
+        raise ValueError(
+            f"@file TOML parse error ({source}): {_e}{_toml_delimiter_hint(raw)}"
+        ) from _e
 
 
 # Dynamic @file field registry — built lazily from op syntax strings.
@@ -11803,10 +11961,6 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
     # and `read:PATH:::grep=` (mid-arg) keep working under single-colon parsing.
     _at_file_replace_all: bool = False
     _at_file_used: bool = False
-    # Set when a batch runs a mutating sub-op, so the branch footer is
-    # emitted once for the batch and only when something was written.
-    _batch_mutated: bool = False
-
     if pre_parsed is not None:
         # Batch sub-op: parts already structured from a JSON payload (via
         # _at_file_to_parts). Skip ALL string tokenization and reuse the
@@ -12191,8 +12345,6 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                                         # For unknown ops, pass what we have and let dispatch error.
                                         _fields = [str(_item[k]) for k in sorted(_item) if k != "op"]
                                         _sub_arg = ":".join([_sub_op] + _fields) if _fields else _sub_op
-                                    if _sub_op in _OP_TARGETS:
-                                        _batch_mutated = True
                                     _sub_result = dispatch(_sub_arg, pre_parsed=_sub_pre_parsed)
                                     results.append(_sub_result)
                                     if not continue_on_error and _sub_result.split("\n")[1:2] and (
@@ -12307,6 +12459,13 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
         body += "".join(w[1] for w in _WRITE_WARNINGS)
         _WRITE_WARNINGS.clear()
 
+    if _FORMATTER_SKIPS and getattr(_DISPATCH_STATE, "depth", 1) <= 1:
+        body += (
+            "[formatters] skipped: " + ", ".join(_FORMATTER_SKIPS)
+            + " — no config for it in the edited file's repo (#393)\n"
+        )
+        _FORMATTER_SKIPS.clear()
+
     # Swap in the compact header only if the op actually wrote — see the note
     # where it was built. The test is the write counter, not an ERROR prefix on
     # the receipt: `op_replace`'s zero-match returns "(0 occurrences of 'x'
@@ -12325,8 +12484,14 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
     # once per edit — 50 identical lines for a 50-edit batch, which is the
     # opposite of the handful of tokens this is meant to cost. The batch itself
     # carries the single footer, and only when it actually mutated something.
+    #
+    # The "did anything get written" test is the write counter, not a flag set
+    # in the batch loop: `"batch"` is not in `_OP_TARGETS`, so a mutation buried
+    # in an INNER batch never propagated outward and a nested batch reported no
+    # branch at all (#392). The counter is bumped at `_atomic_write`, which every
+    # mutating op passes through however deeply it is nested.
     if getattr(_DISPATCH_STATE, "depth", 1) <= 1:
-        if op in _OP_TARGETS or (op == "batch" and _batch_mutated):
+        if op in _OP_TARGETS or _WRITE_COUNT[0] > _writes_before:
             body += _branch_line()
 
     return header + body

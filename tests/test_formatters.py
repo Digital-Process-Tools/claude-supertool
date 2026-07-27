@@ -31,8 +31,11 @@ def test_applicable_formatters_empty_when_no_config() -> None:
 
 
 def test_applicable_formatters_filters_by_hooks_into() -> None:
+    # requires_config: this repo has no .prettierrc, and since #393 that alone
+    # would gate prettier out — which is not what this test is about.
     _set_formatters({
-        "prettier": {"cmd": "prettier --write {file}", "hooks_into": ["edit"]},
+        "prettier": {"cmd": "prettier --write {file}", "hooks_into": ["edit"],
+                     "requires_config": False},
         "other":    {"cmd": "x", "hooks_into": ["paste"]},
     })
     out = supertool._applicable_formatters("edit", "x.json")
@@ -217,17 +220,20 @@ def test_formatter_fail_rollback_true_reverts_file(tmp_path: Path) -> None:
 
 def test_formatter_multi_glob_match(tmp_path: Path) -> None:
     """Both .json and .md files trigger the prettier formatter."""
+    # requires_config: the glob is what is under test, not the #393 opt-in gate.
     _set_config({
         "formatters": {
             "prettier": {
                 "cmd": "true",
                 "hooks_into": ["edit"],
                 "match": "*.json",
+                "requires_config": False,
             },
             "prettier-md": {
                 "cmd": "true",
                 "hooks_into": ["edit"],
                 "match": "*.md",
+                "requires_config": False,
             },
         },
         "validators": {},

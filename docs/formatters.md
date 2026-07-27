@@ -111,6 +111,32 @@ The `{file}` placeholder is replaced with the absolute path to the file being fo
 
 `rollback_on_fail: false` is the right default for formatters. If `prettier` chokes on a file that's structurally valid, the edit should still land — the validator is the safety net. Set `rollback_on_fail: true` only if you want a formatter failure to revert the file entirely.
 
+## Repo opt-in
+
+A formatter rewrites the whole file, so one that runs where the repo does not
+format turns a two-line edit into a hundred-line diff — and in a repo with
+hand-aligned markdown tables it is also simply wrong.
+
+A formatter therefore runs only where there is evidence the repo wants it:
+
+| Evidence | Example |
+|---|---|
+| The tool's own config file, searched from the edited file's directory up to **its** repo root | `.prettierrc`, `phpcs.xml`, `.php-cs-fixer.php`, `pyproject.toml` with `[tool.black]` |
+| A manifest that names the tool | `package.json` holding a `"prettier"` key |
+| An `env` entry in the spec carrying the rules | `"PHPCBF_STANDARD": "PSR12"` — no repo config expected |
+| `"requires_config": false` in the spec | always run, whatever the repo looks like |
+| `"requires_config": ["house.toml"]` | run only when that marker is present |
+| The tool is unknown to supertool | never gated — absence of knowledge is not evidence of opt-out |
+
+The search stops at the repo root (the first directory holding `.git`), so a
+parent repo's config never opts a nested one in. `SUPERTOOL_FORMAT_WITHOUT_CONFIG=1`
+restores the old always-run behaviour for a whole invocation.
+
+Note that the *policy* — which `.supertool.json` is loaded — still comes from the
+shell's cwd, while the *opt-in evidence* comes from the edited file's own repo.
+Prefixing a call with `cwd:PATH` switches the policy too, which is what you want
+when editing another checkout from this shell.
+
 ## Graceful skip
 
 When the underlying tool is missing (e.g. `prettier` not installed), the formatter warns and continues. No formatter failure blocks an unrelated edit. The project stays fully usable without pre-installed dependencies.
@@ -126,6 +152,8 @@ Full list of `.supertool.json` formatter config fields:
 | `hooks_into`       | Op names to wrap (subset of `edit`, `replace`, `replace_lines`, `paste`, `vim`).  |
 | `rollback_on_fail` | Restore pre-edit file content if the formatter fails. Default `false`.             |
 | `timeout`          | Seconds. Default 30.                                                               |
+| `requires_config`  | Opt-in override: `false` = always run; a list of filename globs = run only when one is present. Default: supertool's marker table for known tools. |
+| `env`              | Extra environment for the command. A key ending `_CONFIG` / `_STANDARD` / `_RULES` / `_RULESET` counts as repo opt-in. |
 
 ## Output example
 

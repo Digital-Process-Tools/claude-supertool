@@ -59,6 +59,8 @@ def _edit(f: Path, content: str = "new\n") -> str:
 def test_black_dispatch_ok(tmp_path: Path) -> None:
     f = tmp_path / "hello.py"
     f.write_text("x=1\n")
+    # Since #393 a known formatter runs only where the repo shows it opts in.
+    (tmp_path / "pyproject.toml").write_text("[tool.black]\n")
     sentinel = tmp_path / "ran"
     _set_formatter("black", _touch(sentinel), "*.py")
     _edit(f)
@@ -121,6 +123,7 @@ def test_gofmt_graceful_skip_missing_binary(tmp_path: Path) -> None:
 def test_rustfmt_dispatch_ok(tmp_path: Path) -> None:
     f = tmp_path / "lib.rs"
     f.write_text("fn main(){}\n")
+    (tmp_path / "rustfmt.toml").write_text("")
     sentinel = tmp_path / "ran"
     _set_formatter("rustfmt", _touch(sentinel), "*.rs")
     _edit(f)
@@ -152,6 +155,7 @@ def test_rustfmt_graceful_skip_missing_binary(tmp_path: Path) -> None:
 def test_phpcbf_dispatch_ok(tmp_path: Path) -> None:
     f = tmp_path / "Foo.php"
     f.write_text("<?php\n")
+    (tmp_path / "phpcs.xml").write_text("<ruleset/>\n")
     sentinel = tmp_path / "ran"
     _set_formatter("phpcbf", _touch(sentinel), "*.php")
     _edit(f)
