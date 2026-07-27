@@ -441,6 +441,167 @@ class TestResolveCustomOp:
 
 
 # ---------------------------------------------------------------------------
+# phpstan `errors-only` — strips the project-injected "Instructions for
+# interpreting errors" preamble that arrives ahead of the diagnostics on
+# every call (#402). The "phpstan" op is a project-configured custom op, so
+# the filter lives in _resolve_custom_op and is scoped to op == "phpstan".
+# ---------------------------------------------------------------------------
+
+_PHPSTAN_PREAMBLE = (
+    "Instructions for interpreting errors\n"
+    "---------\n"
+    "\n"
+    "Each error has an associated identifier, like `argument.type` ...\n"
+    "Before fixing the error, fetch the documentation page for its identifier.\n"
+    "The error usually indicates a real bug or incorrect type in the code. ...\n"
+    "Do not add `@phpstan-ignore` comments ...\n"
+    "Do not use assert() or inline @var PHPDoc tag ...\n"
+    "\n"
+)
+
+_PHPSTAN_TABLE = (
+    " ------ -------------------------------------------\n"
+    "  Line   src/Foo.php\n"
+    " ------ -------------------------------------------\n"
+    "  10     Call to an undefined method Foo::bar().\n"
+    " ------ -------------------------------------------\n"
+    "\n"
+    " [ERROR] Found 1 error\n"
+)
+
+_PHPSTAN_CLEAN = "\n [OK] No errors\n"
+
+
+class TestPhpstanErrorsOnly:
+    """errors-only strips everything before the first diagnostic-shaped
+    line (path:line:message, or the `------` table frame), never on
+    preamble wording."""
+
+    @staticmethod
+    def _script(tmp_path: Path, stdout: str, exit_code: int = 0) -> str:
+        script = tmp_path / "fake_phpstan.py"
+        script.write_text(
+            "import sys\n"
+            f"sys.stdout.write({stdout!r})\n"
+            f"sys.exit({exit_code})\n"
+        )
+        return shlex.quote(script.as_posix())
+
+    def _configure(self, tmp_path: Path, stdout: str, exit_code: int = 0) -> None:
+        script = self._script(tmp_path, stdout, exit_code)
+        supertool._CONFIG = {
+            "ops": {"phpstan": {"cmd": f"{{python}} {script} {{file}} {{args}}"}}
+        }
+
+    def test_default_output_unchanged(self, tmp_path: Path) -> None:
+        """Without errors-only, output is byte-for-byte unchanged — preamble
+        and all."""
+        text = _PHPSTAN_PREAMBLE + _PHPSTAN_TABLE
+        self._configure(tmp_path, text, exit_code=1)
+        result = supertool._resolve_custom_op("phpstan", ["phpstan", str(tmp_path / "x.php")])
+        assert result is not None
+        assert result.endswith(text)
+
+    def test_errors_only_strips_preamble(self, tmp_path: Path) -> None:
+        text = _PHPSTAN_PREAMBLE + _PHPSTAN_TABLE
+        self._configure(tmp_path, text, exit_code=1)
+        result = supertool._resolve_custom_op(
+            "phpstan", ["phpstan", str(tmp_path / "x.php"), "errors-only"]
+        )
+        assert result is not None
+        assert "Instructions for interpreting errors" not in result
+        assert "Call to an undefined method Foo::bar()." in result
+        assert "[ERROR] Found 1 error" in result
+
+    def test_errors_only_clean_run_keeps_success_line(self, tmp_path: Path) -> None:
+        """Clean run, no diagnostics at all — must not swallow the success
+        line or return empty."""
+        text = _PHPSTAN_PREAMBLE + _PHPSTAN_CLEAN
+        self._configure(tmp_path, text, exit_code=0)
+        result = supertool._resolve_custom_op(
+            "phpstan", ["phpstan", str(tmp_path / "x.php"), "errors-only"]
+        )
+        assert result is not None
+        assert result.strip() != ""
+        assert "[OK] No errors" in result
+
+    def test_errors_only_no_preamble_passes_through(self, tmp_path: Path) -> None:
+        """Many projects never inject the preamble — output must be
+        unchanged when there's nothing to strip."""
+        self._configure(tmp_path, _PHPSTAN_TABLE, exit_code=1)
+        result = supertool._resolve_custom_op(
+            "phpstan", ["phpstan", str(tmp_path / "x.php"), "errors-only"]
+        )
+        assert result is not None
+        assert result.endswith(_PHPSTAN_TABLE)
+
+    def test_errors_only_preamble_present_zero_errors(self, tmp_path: Path) -> None:
+        """Preamble present, exit 0, no errors — no diagnostic line to
+        anchor on, so nothing is swallowed."""
+        text = _PHPSTAN_PREAMBLE + _PHPSTAN_CLEAN
+        self._configure(tmp_path, text, exit_code=0)
+        result = supertool._resolve_custom_op(
+            "phpstan", ["phpstan", str(tmp_path / "x.php"), "errors-only"]
+        )
+        assert result is not None
+        assert "[OK] No errors" in result
+        assert result.strip() != ""
+
+    def test_errors_only_diagnostic_message_says_instructions(self, tmp_path: Path) -> None:
+        """A diagnostic whose message happens to contain the word
+        'Instructions' must survive — the detector matches line SHAPE
+        (path:line: or table frame), never an allowlist of preamble words."""
+        table = (
+            " ------ -------------------------------------------\n"
+            "  Line   src/Foo.php\n"
+            " ------ -------------------------------------------\n"
+            "  10     Instructions for something weird happened here.\n"
+            " ------ -------------------------------------------\n"
+            "\n"
+            " [ERROR] Found 1 error\n"
+        )
+        text = _PHPSTAN_PREAMBLE + table
+        self._configure(tmp_path, text, exit_code=1)
+        result = supertool._resolve_custom_op(
+            "phpstan", ["phpstan", str(tmp_path / "x.php"), "errors-only"]
+        )
+        assert result is not None
+        assert "Instructions for interpreting errors" not in result
+        assert "Instructions for something weird happened here." in result
+
+    def test_errors_only_raw_diagnostic_line_shape(self, tmp_path: Path) -> None:
+        """The other diagnostic shape: <abs-path>:<line>:<message>."""
+        text = (
+            _PHPSTAN_PREAMBLE
+            + "/abs/path/src/Foo.php:10:Call to an undefined method Foo::bar().\n"
+            + "\n [ERROR] Found 1 error\n"
+        )
+        self._configure(tmp_path, text, exit_code=1)
+        result = supertool._resolve_custom_op(
+            "phpstan", ["phpstan", str(tmp_path / "x.php"), "errors-only"]
+        )
+        assert result is not None
+        assert "Instructions for interpreting errors" not in result
+        assert "/abs/path/src/Foo.php:10:Call to an undefined method Foo::bar()." in result
+        assert "[ERROR] Found 1 error" in result
+
+    def test_other_custom_ops_unaffected_by_errors_only_arg(self, tmp_path: Path) -> None:
+        """errors-only filtering is scoped to op == 'phpstan' — a differently
+        named custom op that happens to receive the literal string
+        'errors-only' as an argument is not touched."""
+        text = _PHPSTAN_PREAMBLE + _PHPSTAN_TABLE
+        script = self._script(tmp_path, text, exit_code=1)
+        supertool._CONFIG = {
+            "ops": {"othertool": {"cmd": f"{{python}} {script} {{file}} {{args}}"}}
+        }
+        result = supertool._resolve_custom_op(
+            "othertool", ["othertool", str(tmp_path / "x.php"), "errors-only"]
+        )
+        assert result is not None
+        assert "Instructions for interpreting errors" in result
+
+
+# ---------------------------------------------------------------------------
 # _resolve_alias
 # ---------------------------------------------------------------------------
 

@@ -934,6 +934,28 @@ def _expand_env(s: str, env: Dict[str, str]) -> str:
     )
 
 
+_PHPSTAN_DIAGNOSTIC_RE = re.compile(r'^\s*(?:-{3,}|\S+:\d+:)')
+
+
+def _phpstan_errors_only_filter(text: str) -> str:
+    """Strip PHPStan's project-injected "Instructions for interpreting
+    errors" preamble under `errors-only` (#402), keeping the diagnostics
+    and the trailing `[ERROR] Found N errors` / `[OK]` summary.
+
+    Anchors on the first line that LOOKS like a diagnostic — a
+    `path:line:message` row or a `------` table-formatter frame — never on
+    the preamble's wording, so a diagnostic whose message happens to
+    contain the word "Instructions" is never mistaken for preamble. When
+    no such line is found (clean run, or a project that never injects the
+    preamble), the text is returned unchanged.
+    """
+    lines = text.splitlines(keepends=True)
+    for i, line in enumerate(lines):
+        if _PHPSTAN_DIAGNOSTIC_RE.match(line):
+            return "".join(lines[i:])
+    return text
+
+
 def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
     """Try to run op as a custom command from config["ops"].
 
@@ -1009,6 +1031,8 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
         )
         elapsed = time.monotonic() - t0
         output = result.stdout
+        if op == "phpstan" and "errors-only" in parts[1:]:
+            output = _phpstan_errors_only_filter(output)
         if result.returncode != 0:
             if result.stderr:
                 output += result.stderr
