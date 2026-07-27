@@ -10,6 +10,19 @@ tests/test_at_file_route.py stub `_at_file_specs`, so a regression in the
 syntax-derived field registry, in preset argv quoting, or in commit.py's
 message handling would leave them green while no correct message ever
 reached git. These tests assert the committed bytes instead.
+
+Running them for the first time found two real defects that in-process
+tests could not see, both fixed alongside:
+
+  - `paths = [...]` did not parse on Python < 3.11. `_mini_toml_loads` — the
+    fallback used when stdlib `tomllib` is absent — had no inline-array
+    support, so the op's own documented payload form died with
+    `unknown value type for 'paths'` on a third of the supported matrix
+    (`requires-python = ">=3.9"`).
+  - `git-commit` crashed on a non-UTF-8 console. commit.py prints ✓/✗ and
+    runs as its own process, which does not inherit supertool.py's stdout
+    reconfiguration, so a cp1252 console turned a successful commit into a
+    UnicodeEncodeError traceback.
 """
 from __future__ import annotations
 
@@ -17,6 +30,9 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+import supertool  # noqa: E402
 
 REPO = Path(__file__).parent.parent
 SUPERTOOL = REPO / "supertool.py"
@@ -38,13 +54,17 @@ def _repo(tmp_path: Path) -> Path:
     return work
 
 
-def _run(args: list[str], cwd: Path, stdin: str = "") -> tuple[int, str, str]:
+def _run(
+    args: list[str], cwd: Path, stdin: str = "", extra_env: dict = None,
+) -> tuple[int, str, str]:
     env = dict(os.environ)
     env["SUPERTOOL_COAUTHOR"] = COAUTHOR
+    if extra_env:
+        env.update(extra_env)
     proc = subprocess.run(
         [sys.executable, str(SUPERTOOL), *args],
         input=stdin, capture_output=True, text=True, timeout=60,
-        cwd=str(cwd), env=env,
+        encoding="utf-8", errors="replace", cwd=str(cwd), env=env,
     )
     return proc.returncode, proc.stdout, proc.stderr
 
@@ -52,7 +72,8 @@ def _run(args: list[str], cwd: Path, stdin: str = "") -> tuple[int, str, str]:
 def _message(cwd: Path) -> str:
     return subprocess.run(
         ["git", "log", "-1", "--pretty=format:%B"],
-        cwd=cwd, capture_output=True, text=True, check=True,
+        cwd=cwd, capture_output=True, text=True,
+        encoding="utf-8", check=True,
     ).stdout
 
 
@@ -204,4 +225,88 @@ def test_reported_mangling_happens_in_the_shell_not_in_the_op(tmp_path: Path) ->
     assert code == 0, f"stdout={out} stderr={err}"
     assert _message(work).splitlines()[0] == (
         "subject (#12167)Co-Authored-By: Max <noreply>"
+    )
+
+
+# --- The fallback TOML parser: `paths = [...]` on Python < 3.11 -------------
+#
+# These call _mini_toml_loads directly rather than going through a payload,
+# so they exercise the fallback on EVERY interpreter. Routed through the
+# @file loader they would only run on 3.9/3.10, and the 3.11+ jobs — the
+# ones that were green while the route was broken — would prove nothing.
+
+
+def test_mini_toml_parses_the_paths_array_from_the_documented_payload() -> None:
+    """The exact payload shape `git-commit:@-` documents."""
+    parsed = supertool._mini_toml_loads(
+        'message = """subject: here\n\nbody"""\npaths = ["src/Foo", "src/Bar"]\n'
+    )
+    assert parsed == {
+        "message": "subject: here\n\nbody",
+        "paths": ["src/Foo", "src/Bar"],
+    }
+
+
+def test_mini_toml_array_accepts_empty_trailing_comma_and_comments() -> None:
+    assert supertool._mini_toml_loads("paths = []\n") == {"paths": []}
+    assert supertool._mini_toml_loads('paths = ["a",]\n') == {"paths": ["a"]}
+    assert supertool._mini_toml_loads(
+        'paths = [\n  "a",  # keep\n  # skip\n  "b",\n]\n'
+    ) == {"paths": ["a", "b"]}
+
+
+def test_mini_toml_array_holds_every_scalar_the_parser_supports() -> None:
+    """Elements reuse the scalar parser, so all its types work — and nest."""
+    assert supertool._mini_toml_loads(
+        "vals = [1, -2, true, false, 'lit', \"esc\\tx\", '''raw''']\n"
+    ) == {"vals": [1, -2, True, False, "lit", "esc\tx", "raw"]}
+    assert supertool._mini_toml_loads('n = [["a"], []]\n') == {
+        "n": [["a"], []]
+    }
+
+
+def test_mini_toml_array_errors_are_explicit_not_a_truncated_list() -> None:
+    """A malformed array must raise, never silently return fewer elements."""
+    for bad in ('paths = ["a"\n', 'paths = ["a" "b"]\n', "paths = [\n"):
+        try:
+            supertool._mini_toml_loads(bad)
+        except ValueError:
+            continue
+        raise AssertionError(f"expected ValueError for {bad!r}")
+
+
+def test_mini_toml_still_rejects_a_genuinely_unknown_value() -> None:
+    """The array branch must not have swallowed the unknown-type error."""
+    try:
+        supertool._mini_toml_loads("k = @\n")
+    except ValueError as exc:
+        assert "unknown value type" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
+
+
+# --- The preset's own stdout encoding --------------------------------------
+
+
+def test_commit_succeeds_on_a_non_utf8_console(tmp_path: Path) -> None:
+    """commit.py prints ✓ and runs as its own process.
+
+    supertool.py reconfigures its streams; the preset does not inherit that.
+    Forcing cp1252 reproduces the Windows failure on any OS: before the fix
+    this died with UnicodeEncodeError on '\\u2713' and reported a crash for a
+    commit that had in fact been made.
+    """
+    work = _repo(tmp_path)
+    payload = 'message = """feat(git): non-utf8 console"""\npaths = ["a.txt"]\n'
+    code, out, err = _run(
+        ["git-commit:@-"], cwd=work, stdin=payload,
+        extra_env={"PYTHONIOENCODING": "cp1252"},
+    )
+    assert code == 0, f"stdout={out} stderr={err}"
+    assert "UnicodeEncodeError" not in out + err
+    assert "✓" in out
+    assert _message(work) == (
+        "feat(git): non-utf8 console\n"
+        "\n"
+        f"Co-Authored-By: {COAUTHOR}\n"
     )

@@ -11623,14 +11623,138 @@ def _toml_basic_unescape(s: str) -> str:
     return "".join(out)
 
 
+def _toml_skip_ws_comments(raw: str, i: int) -> int:
+    """Advance past whitespace, newlines and # comments; return the new offset.
+
+    Used inside inline arrays, where TOML allows both to appear between
+    elements — a `paths = [\n  "a",  # keep\n  "b",\n]` payload is ordinary.
+    """
+    n = len(raw)
+    while i < n:
+        if raw[i] in " \t\r\n":
+            i += 1
+        elif raw[i] == "#":
+            while i < n and raw[i] != "\n":
+                i += 1
+        else:
+            break
+    return i
+
+
+def _toml_parse_array(raw: str, i: int, key: str) -> Tuple[List[Any], int]:
+    """Parse an inline array at *i* (on its '['); return (items, next offset).
+
+    Elements are whatever `_toml_parse_value` accepts, so arrays nest. A
+    trailing comma is allowed (TOML permits it), whitespace and comments may
+    separate elements, and a missing separator is an error rather than a
+    silently truncated list.
+    """
+    n = len(raw)
+    i += 1
+    items: List[Any] = []
+    while True:
+        i = _toml_skip_ws_comments(raw, i)
+        if i >= n:
+            raise ValueError(f"unterminated array for '{key}'")
+        if raw[i] == "]":
+            return items, i + 1
+        val, i = _toml_parse_value(raw, i, key)
+        items.append(val)
+        i = _toml_skip_ws_comments(raw, i)
+        if i < n and raw[i] == ",":
+            i += 1
+            continue
+        if i < n and raw[i] == "]":
+            return items, i + 1
+        raise ValueError(
+            f"expected ',' or ']' in array for '{key}' at offset {i}"
+        )
+
+
+def _toml_parse_value(raw: str, i: int, key: str) -> Tuple[Any, int]:
+    """Parse one TOML value at *i*; return (value, offset just past it).
+
+    Split out of `_mini_toml_loads` so inline arrays can recurse into it
+    rather than reimplementing every scalar form.
+    """
+    n = len(raw)
+    if raw[i:i + 3] == '"""':
+        i += 3
+        end = raw.find('"""', i)
+        if end < 0:
+            raise ValueError(f"unterminated \"\"\" for '{key}'")
+        val: Any = _toml_basic_unescape(raw[i:end])
+        if val.startswith("\r\n"):
+            val = val[2:]
+        elif val.startswith("\n"):
+            val = val[1:]
+        return val, end + 3
+    if raw[i:i + 3] == "'''":
+        i += 3
+        end = raw.find("'''", i)
+        if end < 0:
+            raise ValueError(f"unterminated ''' for '{key}'")
+        val = raw[i:end]
+        if val.startswith("\r\n"):
+            val = val[2:]
+        elif val.startswith("\n"):
+            val = val[1:]
+        return val, end + 3
+    if raw[i] == '"':
+        i += 1
+        buf = []
+        while i < n and raw[i] != '"':
+            if raw[i] == "\\" and i + 1 < n:
+                buf.append(_TOML_ESCAPES.get(raw[i + 1], raw[i + 1]))
+                i += 2
+            elif raw[i] == "\n":
+                raise ValueError(f"newline in single-line string for '{key}'")
+            else:
+                buf.append(raw[i])
+                i += 1
+        if i >= n:
+            raise ValueError(f"unterminated string for '{key}'")
+        return "".join(buf), i + 1
+    if raw[i] == "'":
+        i += 1
+        end = raw.find("'", i)
+        if end < 0 or raw.find("\n", i, end) >= 0:
+            raise ValueError(f"unterminated literal for '{key}'")
+        return raw[i:end], end + 1
+    if raw[i:i + 4] == "true" and (i + 4 == n or not raw[i + 4].isalnum()):
+        return True, i + 4
+    if raw[i:i + 5] == "false" and (i + 5 == n or not raw[i + 5].isalnum()):
+        return False, i + 5
+    if raw[i] == "[":
+        return _toml_parse_array(raw, i, key)
+    if raw[i] == "-" or raw[i].isdigit():
+        ns = i
+        if raw[i] == "-":
+            i += 1
+        while i < n and raw[i].isdigit():
+            i += 1
+        try:
+            return int(raw[ns:i]), i
+        except ValueError as _e:
+            raise ValueError(f"bad number for '{key}': {_e}") from _e
+    raise ValueError(f"unknown value type for '{key}' at offset {i}")
+
+
 def _mini_toml_loads(raw: str) -> Dict[str, Any]:
     """Minimal TOML parser for @file payloads.
 
     Supports: bare keys, integers, true/false, single-line strings
     ("..." with escapes, '...' literal), multi-line strings (\"\"\"...\"\"\"
-    with escapes, '''...''' literal), # comments, and `[[table]]`
-    array-of-tables headers. No inline arrays, no single `[table]`, no dotted
-    keys, no dates — only what payloads need.
+    with escapes, '''...''' literal), inline arrays (nesting, trailing comma,
+    comments between elements), # comments, and `[[table]]` array-of-tables
+    headers. No single `[table]`, no dotted keys, no dates — only what
+    payloads need.
+
+    Inline arrays matter specifically: a variadic payload field is written as
+    a list, and `git-commit:@-` with `paths = ["a", "b"]` is the documented
+    form. Without them that payload parsed on 3.11+ (stdlib `tomllib`) and
+    died below it with `unknown value type for 'paths'` — the op's own
+    documented syntax failing on a third of the supported matrix.
 
     `[[ops]]` matters specifically: it is the shape a `batch:@-` payload takes,
     and this parser is what runs on Python <3.11, where stdlib `tomllib` is
@@ -11686,69 +11810,7 @@ def _mini_toml_loads(raw: str) -> Dict[str, Any]:
             i += 1
         if i >= n:
             raise ValueError(f"missing value for '{key}'")
-        if raw[i:i + 3] == '"""':
-            i += 3
-            end = raw.find('"""', i)
-            if end < 0:
-                raise ValueError(f"unterminated \"\"\" for '{key}'")
-            val = _toml_basic_unescape(raw[i:end])
-            if val.startswith("\r\n"):
-                val = val[2:]
-            elif val.startswith("\n"):
-                val = val[1:]
-            i = end + 3
-        elif raw[i:i + 3] == "'''":
-            i += 3
-            end = raw.find("'''", i)
-            if end < 0:
-                raise ValueError(f"unterminated ''' for '{key}'")
-            val = raw[i:end]
-            if val.startswith("\r\n"):
-                val = val[2:]
-            elif val.startswith("\n"):
-                val = val[1:]
-            i = end + 3
-        elif raw[i] == '"':
-            i += 1
-            buf = []
-            while i < n and raw[i] != '"':
-                if raw[i] == "\\" and i + 1 < n:
-                    buf.append(_TOML_ESCAPES.get(raw[i + 1], raw[i + 1]))
-                    i += 2
-                elif raw[i] == "\n":
-                    raise ValueError(f"newline in single-line string for '{key}'")
-                else:
-                    buf.append(raw[i])
-                    i += 1
-            if i >= n:
-                raise ValueError(f"unterminated string for '{key}'")
-            val = "".join(buf)
-            i += 1
-        elif raw[i] == "'":
-            i += 1
-            end = raw.find("'", i)
-            if end < 0 or raw.find("\n", i, end) >= 0:
-                raise ValueError(f"unterminated literal for '{key}'")
-            val = raw[i:end]
-            i = end + 1
-        elif raw[i:i + 4] == "true" and (i + 4 == n or not raw[i + 4].isalnum()):
-            val = True
-            i += 4
-        elif raw[i:i + 5] == "false" and (i + 5 == n or not raw[i + 5].isalnum()):
-            val = False
-            i += 5
-        elif raw[i] == "-" or raw[i].isdigit():
-            ns = i
-            if raw[i] == "-":
-                i += 1
-            while i < n and raw[i].isdigit():
-                i += 1
-            try:
-                val = int(raw[ns:i])
-            except ValueError as _e:
-                raise ValueError(f"bad number for '{key}': {_e}") from _e
-        else:
-            raise ValueError(f"unknown value type for '{key}' at offset {i}")
+        val, i = _toml_parse_value(raw, i, key)
         current[key] = val
         while i < n and raw[i] in " \t":
             i += 1
