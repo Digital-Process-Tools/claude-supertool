@@ -1,6 +1,7 @@
 """Shared fixtures and helpers for supertool tests."""
 from __future__ import annotations
 
+import copy
 import sys
 from pathlib import Path
 
@@ -136,10 +137,80 @@ def _guard_repo_git_state():
     )
 
 
+# Module-level mutable state that must not survive a test (#397). Every entry
+# is per-invocation scratch or a cache; the fixture below restores each to its
+# import-time value between tests, in place, because supertool holds direct
+# references to these objects. test_state_reset_and_lint_timeout.py fails when
+# a new mutable global appears in neither tuple — the forgetting is otherwise
+# silent, and shows up as a test that passes alone and fails in suite order.
+RESET_GLOBALS = (
+    "_BRANCH_CACHE",
+    "_FORMATTER_SKIPS",
+    "_FORMAT_QUEUE",
+    "_MUTATION_ATTEMPTS",
+    "_REPO_ROOT_WALK_CACHE",
+    "_VALIDATOR_DEFER_QUEUE",
+    "_VALIDATOR_DEFER_SEEN",
+    "_VALIDATOR_FINGERPRINT_CACHE",
+    "_WRITE_COUNT",
+    "_WRITE_WARNINGS",
+)
+
+# Not scratch, for four different reasons.
+#  - _MCP_SERVERS holds live MCP client objects; clearing it drops warm daemon
+#    connections that outlive a single test on purpose.
+#  - _CONFIG is already saved and restored by name in the fixture below.
+#  - _AT_FILE_REGISTRY is built once, guarded by _AT_FILE_REGISTRY_BUILT, and
+#    _build_at_file_registry rebinds the name rather than mutating. Emptying it
+#    in place is permanent: the guard means it never rebuilds.
+#  - the rest are constant lookup tables that happen to be dicts/lists/sets.
+#    They are read, never written. Resetting them would be harmless but says
+#    something untrue about their lifetime.
+RESET_EXEMPT_GLOBALS = (
+    "_MCP_SERVERS",
+    "_CONFIG",
+    "_AT_FILE_REGISTRY",
+    "_AROUND_DIR_SKIP",
+    "_AT_FILE_BUILTIN_DEFAULTS",
+    "_BUILTIN_OPS",
+    "_EXT_FAMILIES",
+    "_FORMATTER_CONFIG_MARKERS",
+    "_NONDETERMINISTIC_ERROR_CODES",
+    "_OP_TARGETS",
+    "_PARALLEL_SAFE_OPS",
+    "_PLAIN_MARKERS",
+    "_READ_OP_TARGETS",
+    "_REGEX_PATTERNS",
+    "_TOML_ESCAPES",
+    "_TS_DEF_NODES",
+    "_TS_DEF_NODES_DEFAULT",
+    "_TS_LANG_MAP",
+)
+
+_PRISTINE_GLOBALS = {
+    name: copy.deepcopy(getattr(supertool, name)) for name in RESET_GLOBALS
+}
+
+
+def _reset_module_state():
+    for name in RESET_GLOBALS:
+        current = getattr(supertool, name)
+        pristine = copy.deepcopy(_PRISTINE_GLOBALS[name])
+        if isinstance(current, dict):
+            current.clear()
+            current.update(pristine)
+        elif isinstance(current, set):
+            current.clear()
+            current.update(pristine)
+        else:
+            current[:] = pristine
+
+
 @pytest.fixture(autouse=True)
 def _disable_rtk_and_config():
     """Disable RTK delegation, config cache, tree-sitter, and ctags in tests."""
     import os
+    _reset_module_state()
     old_rtk_checked = supertool._RTK_CHECKED
     old_rtk_path = supertool._RTK_PATH
     old_config_checked = supertool._CONFIG_CHECKED
@@ -161,6 +232,7 @@ def _disable_rtk_and_config():
     supertool._IN_ALIAS = False
     yield
     supertool._IN_ALIAS = False
+    _reset_module_state()
     supertool._RTK_CHECKED = old_rtk_checked
     supertool._RTK_PATH = old_rtk_path
     supertool._CONFIG_CHECKED = old_config_checked

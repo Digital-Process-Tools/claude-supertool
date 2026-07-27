@@ -83,7 +83,6 @@ def test_gate_follows_symlinks_to_the_real_repo(tmp_path: Path) -> None:
     (sub / "x.md").write_text("x\n")
     link = tmp_path / "link"
     os.symlink(sub, link)
-    supertool._REPO_ROOT_WALK_CACHE.clear()
     assert supertool._repo_opts_into_formatter("prettier", SPEC, str(link / "x.md"))
 
 
@@ -92,7 +91,6 @@ def test_format_staged_applies_the_gate(tmp_path: Path, monkeypatch) -> None:
     f = root / "x.md"
     f.write_text("x\n")
     monkeypatch.chdir(root)
-    supertool._REPO_ROOT_WALK_CACHE.clear()
     monkeypatch.setattr(supertool, "_load_config", lambda: {"formatters": {"prettier": SPEC}})
     monkeypatch.setattr(supertool, "_formatter_run_one",
                         lambda *a, **k: pytest_fail_marker())
@@ -105,7 +103,6 @@ def test_named_format_is_never_gated(tmp_path: Path, monkeypatch) -> None:
     root = _repo(tmp_path, "named")
     f = root / "x.md"
     f.write_text("x\n")
-    supertool._REPO_ROOT_WALK_CACHE.clear()
     monkeypatch.setattr(supertool, "_load_config", lambda: {"formatters": {"prettier": SPEC}})
     ran = []
     monkeypatch.setattr(supertool, "_formatter_run_one",
