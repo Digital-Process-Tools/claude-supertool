@@ -24,6 +24,11 @@ import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))  # for _board
+
+import _board  # noqa: E402
 
 WATCH_SOURCE = "gitlab-mr"
 STATE_DIR = "/tmp"
@@ -324,51 +329,39 @@ def _flags(m: dict) -> str:
     return f" [{','.join(flags)}]" if flags else ""
 
 
-TITLE_INDENT = " " * 8
+TITLE_INDENT = _board.TITLE_INDENT
 
 
 def _branches(m: dict) -> str:
     """`source -> target`, the field a human acts on (checkout, worktree add).
 
     Both keys ship in the `glab mr list` response this op already parses, so
-    the branch pair costs no extra API call. Empty when neither is present —
-    a bare '? -> ?' would be noise, not information.
+    the branch pair costs no extra API call.
     """
-    src = str(m.get("source_branch") or "")
-    tgt = str(m.get("target_branch") or "")
-    if not src and not tgt:
-        return ""
-    return f"{src or '?'} -> {tgt or '?'}"
+    return _board.branch_pair(m.get("source_branch"), m.get("target_branch"))
 
 
 def _row(m: dict, watched: set[str], show_pipe: bool, suffix: str = "") -> str:
-    """One triage row, two lines. The single definition of the board's line
-    format — the `radar` op renders through here so the two boards stay
-    identical.
+    """One triage row, rendered through the shared board layout so `gl-mrs`,
+    `radar` and `gh-prs` cannot drift apart.
 
-    Line 1 is the status line and ends with the branch pair; line 2 carries the
-    full title. One line cannot hold both, and the old single line resolved
-    that by truncating the title at 42 chars — which cut rows mid-word, exactly
-    where the disambiguating detail lives. Branch wins the status line because
-    branch is actionable and title is context.
-
-    `suffix` is appended to the status line so callers that annotate rows
-    (radar's drift/healed marks) land their marks there rather than on the
-    title line.
+    Everything GitLab-specific — iid, pipeline cell, branch keys — is resolved
+    here; `_board.render_row` only decides the shape.
     """
-    iid = str(m.get("iid", "?"))
-    eye = "👁" if iid in watched else " "
-    pipe = _pipe_cell(m, show_pipe)
-    appr = _appr_cell(m)
-    age = _age(str(m.get("updated_at", "")))
     chg = m.get("_changes")
-    chg_s = f"{chg}Δ" if isinstance(chg, int) else ""
-    head = (
-        f"{eye} {pipe:<16} {appr} {age:>3} {chg_s:>5}  "
-        f"!{iid:<6} {_branches(m)}{_flags(m)}{suffix}"
-    ).rstrip()
-    title = str(m.get("title", "")).strip()
-    return f"{head}\n{TITLE_INDENT}{title}" if title else head
+    return _board.render_row(
+        sigil="!",
+        ident=str(m.get("iid", "?")),
+        watched=str(m.get("iid", "?")) in watched,
+        status=_pipe_cell(m, show_pipe),
+        appr=_appr_cell(m),
+        age=_age(str(m.get("updated_at", ""))),
+        changes=f"{chg}Δ" if isinstance(chg, int) else "",
+        branches=_branches(m),
+        flags=_flags(m),
+        title=str(m.get("title", "")),
+        suffix=suffix,
+    )
 
 
 def _render_table(mrs: list[dict], watched: set[str], show_pipe: bool) -> str:

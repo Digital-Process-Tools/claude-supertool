@@ -33,7 +33,9 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pr import _gh, _fetch_review_threads  # noqa: E402  (reuse the gh-pr helpers)
+import _board  # noqa: E402  (the board layout shared with gl-mrs / radar)
 
 WATCH_SOURCE = "github-pr"
 STATE_DIR = "/tmp"
@@ -315,6 +317,42 @@ def _flags(p: dict) -> str:
     return f" [{','.join(flags)}]" if flags else ""
 
 
+TITLE_INDENT = _board.TITLE_INDENT
+
+
+def _branches(p: dict) -> str:
+    """`head -> base`, the field a human acts on (checkout, worktree add).
+
+    Both keys already ship in the single `gh pr list --json` response this op
+    parses (`headRefName`/`baseRefName` are in _LIST_FIELDS), so the branch
+    pair costs no extra API call.
+    """
+    return _board.branch_pair(p.get("headRefName"), p.get("baseRefName"))
+
+
+def _row(p: dict, watched: set[str], suffix: str = "") -> str:
+    """One triage row, rendered through the shared board layout so `gh-prs`,
+    `gl-mrs` and `radar` cannot drift apart.
+
+    Everything GitHub-specific — the number, the check-rollup cell, the ref
+    names — is resolved here; `_board.render_row` only decides the shape.
+    """
+    chg = p.get("_changes")
+    return _board.render_row(
+        sigil="#",
+        ident=str(p.get("number", "?")),
+        watched=str(p.get("number", "?")) in watched,
+        status=_check_cell(p),
+        appr=_appr_cell(p),
+        age=_age(str(p.get("updatedAt", ""))),
+        changes=f"{chg}Δ" if isinstance(chg, int) else "",
+        branches=_branches(p),
+        flags=_flags(p),
+        title=str(p.get("title", "")),
+        suffix=suffix,
+    )
+
+
 def _render_table(prs: list[dict], watched: set[str]) -> str:
     """Triage table: checks (+ failed check), approval, age, diff size, flags.
 
@@ -322,20 +360,7 @@ def _render_table(prs: list[dict], watched: set[str]) -> str:
     """
     if not prs:
         return "No PRs match."
-    lines = []
-    for p in sorted(prs, key=_sort_key):
-        number = str(p.get("number", "?"))
-        eye = "👁" if number in watched else " "
-        check = _check_cell(p)
-        appr = _appr_cell(p)
-        age = _age(str(p.get("updatedAt", "")))
-        chg = p.get("_changes")
-        chg_s = f"{chg}Δ" if isinstance(chg, int) else ""
-        title = str(p.get("title", ""))[:42]
-        lines.append(
-            f"{eye} {check:<16} {appr} {age:>3} {chg_s:>5}  #{number:<6} {title}{_flags(p)}"
-        )
-    return "\n".join(lines)
+    return "\n".join(_row(p, watched) for p in sorted(prs, key=_sort_key))
 
 
 def _footer(prs: list[dict], watched: set[str]) -> str:

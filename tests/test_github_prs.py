@@ -325,6 +325,70 @@ def test_render_table_empty() -> None:
     assert prs._render_table([], set()) == "No PRs match."
 
 
+# ---------------------------------------------------------------------------
+# _branches / two-line rows — a human reads this board (#424)
+# ---------------------------------------------------------------------------
+
+def test_branches_renders_head_arrow_base() -> None:
+    p = {"headRefName": "feat/421-radar-legible-board", "baseRefName": "master"}
+    assert prs._branches(p) == "feat/421-radar-legible-board -> master"
+
+
+def test_branches_marks_a_missing_side_rather_than_dropping_the_pair() -> None:
+    assert prs._branches({"headRefName": "max/foo"}) == "max/foo -> ?"
+    assert prs._branches({"baseRefName": "master"}) == "? -> master"
+
+
+def test_branches_is_empty_when_neither_side_is_known() -> None:
+    assert prs._branches({}) == ""
+    assert prs._branches({"headRefName": "", "baseRefName": None}) == ""
+
+
+def test_row_renders_a_long_title_in_full_on_its_own_line() -> None:
+    """The reported bug: titles were cut at 42 chars, mid-word, exactly where
+    the disambiguating detail lives."""
+    title = "give each board row its branch and its full title"
+    assert len(title) > 42, "fixture must exceed the old truncation budget"
+    row = prs._row(
+        {"number": 423, "title": title,
+         "headRefName": "feat/421-radar-legible-board", "baseRefName": "master"},
+        set(),
+    )
+    head, title_line = row.split("\n")
+    assert head.endswith("#423    feat/421-radar-legible-board -> master")
+    assert title_line == f"{prs.TITLE_INDENT}{title}"
+
+
+def test_row_keeps_flags_on_the_status_line() -> None:
+    row = prs._row({"number": 1, "title": "t", "headRefName": "b",
+                    "baseRefName": "master", "isDraft": True}, set())
+    head, title_line = row.split("\n")
+    assert head.endswith("[draft]")
+    assert title_line == f"{prs.TITLE_INDENT}t"
+
+
+def test_row_without_a_title_is_a_single_line() -> None:
+    row = prs._row({"number": 1, "headRefName": "b", "baseRefName": "master"}, set())
+    assert "\n" not in row
+    assert row.endswith("b -> master")
+
+
+def test_row_suffix_is_appended_to_the_status_line_not_the_title() -> None:
+    row = prs._row({"number": 1, "title": "prose", "headRefName": "b",
+                    "baseRefName": "master"}, set(), "  [mark]")
+    head, title_line = row.split("\n")
+    assert head.endswith("[mark]")
+    assert title_line == f"{prs.TITLE_INDENT}prose"
+
+
+def test_render_table_emits_two_lines_per_pr() -> None:
+    pr_list = [
+        {"number": 1, "title": "a", "headRefName": "x", "baseRefName": "master"},
+        {"number": 2, "title": "b", "headRefName": "y", "baseRefName": "master"},
+    ]
+    assert len(prs._render_table(pr_list, set()).splitlines()) == 4
+
+
 def test_footer_points_at_first_unwatched_failure() -> None:
     pr_list = [
         {"number": 10, "_checks": "failed"},
@@ -386,6 +450,30 @@ def test_main_failed_filters_to_failing(monkeypatch, capsys) -> None:
     out = capsys.readouterr().out
     assert rc == 0
     assert out.split() == ["10"]
+
+
+def test_board_costs_no_extra_api_call_for_the_branch(monkeypatch, capsys) -> None:
+    """headRefName/baseRefName ride along in the single `gh pr list` response,
+    so the branch column adds no request."""
+    calls = []
+
+    def _run(cmd, capture_output=True, text=True, timeout=30):
+        calls.append(cmd)
+        payload = (
+            '[{"number": 423, "title": "give each board row its branch",'
+            ' "headRefName": "feat/421-radar-legible-board",'
+            ' "baseRefName": "master", "updatedAt": ""}]'
+        )
+        return subprocess.CompletedProcess(cmd, 0, payload, "")
+
+    monkeypatch.setattr(sys, "argv", ["prs.py", "nopipe"])
+    monkeypatch.setattr(prs.subprocess, "run", _run)
+    monkeypatch.setattr(prs, "_watched_numbers", lambda *a, **k: set())
+    assert prs.main() == 0
+    out = capsys.readouterr().out
+    assert len(calls) == 1
+    assert "feat/421-radar-legible-board -> master" in out
+    assert "give each board row its branch" in out
 
 
 def test_main_gh_error_returns_1(monkeypatch) -> None:
