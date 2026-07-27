@@ -5,6 +5,7 @@ Holds the bits that were drifting across commit.py / push.py:
   - _git            : thin subprocess wrapper
   - _first_error_line: pick the salient line out of git/hook output
   - query_open_mr   : open MR/PR for a branch, as structured fields
+  - use_utf8_stdout : stop the ✓/✗ glyphs crashing a cp1252 console
 
 Each script formats query_open_mr's output its own way — the lookup
 (glab → gh fallback, all failures swallowed) lives here once.
@@ -14,7 +15,31 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import sys
 from typing import Optional
+
+
+def use_utf8_stdout() -> None:
+    """Force UTF-8 on this process's stdout/stderr.
+
+    Windows stdout defaults to cp1252, which cannot encode the ✓/✗/⚠ glyphs
+    these scripts print — writing one kills the process with
+    UnicodeEncodeError, so a commit that actually succeeded reports as a
+    crash. supertool.py reconfigures its own streams, but each preset runs as
+    a separate process and does not inherit that. diff.py carried this inline
+    from issue #308; it lives here so the rest do not each need a copy.
+
+    A stream without ``reconfigure`` (wrapped or replaced, as under pytest's
+    capture) is left alone rather than treated as an error.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8")
+        except (ValueError, OSError):
+            pass
 
 
 def _git(args: list[str], timeout: int = 30) -> subprocess.CompletedProcess[str]:
