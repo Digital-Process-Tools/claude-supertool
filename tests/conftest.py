@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import supertool  # noqa: E402
 
 
-def pytest_configure(config):  # noqa: ARG001
+def pytest_configure(config):
     """Opt out of #146 cwd containment for the test suite.
 
     `_safe_path` enforces that op paths resolve under cwd unless
@@ -49,6 +49,57 @@ def pytest_configure(config):  # noqa: ARG001
         os.pathsep.join(_tmp_roots),
     )
     os.environ.setdefault("SUPERTOOL_NO_PUBLISH_CONFIRM", "1")
+    # #416: the autouse fixture below cannot cover collection-time module
+    # bodies or session helpers, which run before any fixture. Scrub once here
+    # too, and remember what was leaked so it gets reported rather than hidden.
+    config._supertool_leaked_git_env = scrub_git_env()
+
+
+def pytest_report_header(config):
+    """Surface a leaked git environment instead of silently swallowing it."""
+    leaked = getattr(config, "_supertool_leaked_git_env", [])
+    if not leaked:
+        return []
+    return (
+        "scrubbed inherited git env (would have run tests against this repo, "
+        f"see #416): {', '.join(leaked)}"
+    )
+
+
+# Git exports these to every hook it runs. A hook that invokes pytest (our
+# .githooks/pre-push does) hands them to the whole suite, and every test that
+# shells out to git then targets the REAL repo instead of its tmp_path fixture
+# — fixture commits stacked on master, core.bare flipped, index desynced (#416).
+# The hook scrubs them too; this layer makes the bug class unreachable from any
+# caller, not just that one entry point.
+GIT_ENV_VARS = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+)
+
+
+def scrub_git_env(environ=None):
+    """Delete git's repo pointers from ``environ``; return the names removed."""
+    import os
+    env = os.environ if environ is None else environ
+    removed = [name for name in GIT_ENV_VARS if name in env]
+    for name in removed:
+        del env[name]
+    return removed
+
+
+@pytest.fixture(autouse=True)
+def _scrub_git_env():
+    """Strip inherited git repo pointers before every test (#416).
+
+    Never restored: the point is that no test may run with an ambient GIT_DIR.
+    No test in this suite depends on one — every git fixture builds its own repo
+    under ``tmp_path`` and passes ``cwd=``/``git -C``.
+    """
+    scrub_git_env()
 
 
 _GIT_DIRS_CACHE = "unset"

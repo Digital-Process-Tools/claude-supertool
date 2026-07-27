@@ -6,6 +6,24 @@ set -e
 
 cd "$(git rev-parse --show-toplevel)"
 
+# Git exports its repo pointers to every hook (GIT_DIR, GIT_INDEX_FILE, ...).
+# Tests that shell out to git would inherit them and operate on THIS repo
+# instead of their own tmp_path fixture — fixture commits landing on master,
+# core.bare flipped to true, index desynced (#416). Drop them before pytest.
+# The cd above already resolved the toplevel; anything that still needs the
+# repo rediscovers it from cwd. Reported, not silent: a scrub that leaves no
+# trace hides the fact that the caller leaked in the first place.
+leaked=""
+for var in GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES; do
+    if [ -n "${!var:-}" ]; then
+        leaked="$leaked $var"
+    fi
+done
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
+if [ -n "$leaked" ]; then
+    echo "── pre-push: scrubbed inherited git env from the test run:$leaked (#416) ──"
+fi
+
 PYTHON="${PYTHON:-python3}"
 
 echo "── pre-push: running full test suite (mirrors CI) ──"
