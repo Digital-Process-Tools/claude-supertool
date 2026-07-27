@@ -61,7 +61,7 @@ def load_spec(name: str) -> dict:
     while True:
         p = os.path.join(d, ".supertool.json")
         if os.path.isfile(p):
-            with open(p) as f:
+            with open(p, encoding="utf-8") as f:
                 cfg = json.load(f)
             spec = (cfg.get("mcp") or {}).get(name)
             if spec is None:
@@ -266,7 +266,7 @@ def serve(name: str, spec: dict) -> int:
                          0o600)
     except FileExistsError:
         sys.exit(f"daemon: pidfile {pid_path} already exists — race with another start?")
-    with os.fdopen(pid_fd, "w") as f:
+    with os.fdopen(pid_fd, "w", encoding="utf-8") as f:
         f.write(str(os.getpid()))
 
     # Signal-driven shutdown
@@ -339,7 +339,7 @@ def main(argv: list) -> int:
     # Already running? (pidfile + alive process)
     if os.path.exists(pid_path):
         try:
-            with open(pid_path) as f:
+            with open(pid_path, encoding="utf-8") as f:
                 existing_pid = int(f.read().strip())
         except (OSError, ValueError):
             existing_pid = 0

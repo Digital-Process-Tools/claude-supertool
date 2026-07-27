@@ -24,7 +24,7 @@ def get_username(token: str) -> str:
     if env:
         return env
     try:
-        cached = CACHE_FILE.read_text().strip()
+        cached = CACHE_FILE.read_text(encoding="utf-8").strip()
         if cached:
             return cached
     except FileNotFoundError:
@@ -34,5 +34,5 @@ def get_username(token: str) -> str:
     username = me.get("username") or ""
     if username:
         CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        CACHE_FILE.write_text(username + "\n")
+        CACHE_FILE.write_text(username + "\n", encoding="utf-8")
     return username

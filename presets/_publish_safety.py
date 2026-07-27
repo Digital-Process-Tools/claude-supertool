@@ -38,7 +38,7 @@ def _supertool_config() -> dict:
         candidate = d / ".supertool.json"
         if candidate.is_file():
             try:
-                cfg = json.loads(candidate.read_text())
+                cfg = json.loads(candidate.read_text(encoding="utf-8"))
                 if not isinstance(cfg, dict):
                     cfg = {}
             except (OSError, json.JSONDecodeError):

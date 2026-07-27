@@ -18,7 +18,7 @@ TRACK_FILE = Path(os.path.expanduser("~/.config/hashnode/my_outbound_comments"))
 
 def append(record: dict) -> None:
     TRACK_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with TRACK_FILE.open("a") as f:
+    with TRACK_FILE.open("a", encoding="utf-8") as f:
         f.write(json.dumps(record) + "\n")
 
 
@@ -26,7 +26,7 @@ def read() -> list[dict]:
     if not TRACK_FILE.is_file():
         return []
     out: list[dict] = []
-    for line in TRACK_FILE.read_text().splitlines():
+    for line in TRACK_FILE.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line:
             continue

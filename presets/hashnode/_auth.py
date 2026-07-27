@@ -21,7 +21,7 @@ def _read_first(env: str, *paths: str) -> str | None:
     for p in paths:
         path = Path(os.path.expanduser(p))
         if path.is_file():
-            return path.read_text().strip()
+            return path.read_text(encoding="utf-8").strip()
     return None
 
 

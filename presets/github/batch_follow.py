@@ -38,7 +38,7 @@ def main(arg: str) -> int:
         sys.stderr.write(f"ERROR: file not found: {path}\n")
         return 2
     users = []
-    for line in path.read_text().splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
             continue

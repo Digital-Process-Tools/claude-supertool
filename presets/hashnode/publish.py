@@ -68,7 +68,7 @@ def parse_args(arg: str) -> dict[str, object]:
             for s in tags_csv.split(",") if s.strip()]
     return {
         "title": title,
-        "markdown": md_path.read_text(),
+        "markdown": md_path.read_text(encoding="utf-8"),
         "canonical": canonical,
         "tags": tags,
         "cover": cover,

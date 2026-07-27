@@ -39,7 +39,7 @@ def _format_http_error(e: urllib.error.HTTPError) -> str:
 
 def _save_session(session: dict[str, Any]) -> None:
     SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
-    SESSION_FILE.write_text(json.dumps(session))
+    SESSION_FILE.write_text(json.dumps(session), encoding="utf-8")
     try:
         os.chmod(SESSION_FILE, 0o600)
     except OSError:
@@ -48,7 +48,7 @@ def _save_session(session: dict[str, Any]) -> None:
 
 def _load_session() -> dict[str, Any] | None:
     try:
-        return json.loads(SESSION_FILE.read_text())
+        return json.loads(SESSION_FILE.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         # OSError covers FileNotFoundError + IsADirectoryError + permission
         # errors — all map to "no usable session, force create_session".

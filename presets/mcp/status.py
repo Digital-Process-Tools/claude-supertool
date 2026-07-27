@@ -28,7 +28,7 @@ def find_supertool_json() -> dict:
         p = os.path.join(d, ".supertool.json")
         if os.path.isfile(p):
             try:
-                with open(p) as f:
+                with open(p, encoding="utf-8") as f:
                     return json.load(f)
             except (OSError, json.JSONDecodeError):
                 return {}
@@ -56,7 +56,7 @@ def main() -> int:
         sock_path = os.path.join(base, f"supertool-mcp-{h}.sock")
         log_path = os.path.join(base, f"supertool-mcp-{h}.sock.log")
         try:
-            pid = int(Path(pid_path).read_text().strip())
+            pid = int(Path(pid_path).read_text(encoding="utf-8").strip())
         except (OSError, ValueError):
             pid = 0
         alive = _proc.pid_alive(pid) if pid else False

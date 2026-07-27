@@ -49,7 +49,7 @@ def config_default(key: str) -> str | None:
         if not candidate.is_file():
             continue
         try:
-            data = json.loads(candidate.read_text())
+            data = json.loads(candidate.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             return None
         if not isinstance(data, dict):

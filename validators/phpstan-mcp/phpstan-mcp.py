@@ -48,7 +48,7 @@ def sock_paths(cwd: str, name: str) -> tuple[str, str]:
 
 def is_alive(pid_path: str) -> bool:
     try:
-        with open(pid_path) as f:
+        with open(pid_path, encoding="utf-8") as f:
             pid = int(f.read().strip())
         os.kill(pid, 0)
         return True
@@ -137,7 +137,7 @@ def source_context(file_path: str, error_line: int | None) -> list[str]:
     if error_line is None or error_line <= 0:
         return []
     try:
-        lines = pathlib.Path(file_path).read_text(errors="replace").splitlines()
+        lines = pathlib.Path(file_path).read_text(errors="replace", encoding="utf-8").splitlines()
     except OSError:
         return []
     ctx = []

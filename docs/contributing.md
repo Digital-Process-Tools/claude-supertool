@@ -154,6 +154,42 @@ Validators are post-write hooks — they run after a file is written and report 
 
 ---
 
+## Text encoding
+
+Two rules, both enforced by `tests/test_encoding_seam.py`. They exist because four separate defects came out of this seam one at a time ([#400](https://github.com/Digital-Process-Tools/claude-supertool/issues/400), [#415](https://github.com/Digital-Process-Tools/claude-supertool/pull/415), [#418](https://github.com/Digital-Process-Tools/claude-supertool/issues/418), [#431](https://github.com/Digital-Process-Tools/claude-supertool/pull/431)) — each found only once the previous one was fixed, and every one of them on a platform the author was not sitting on.
+
+**1. Every text read and write names its codec.**
+
+```python
+path.read_text(encoding="utf-8")          # yes
+open(path, encoding="utf-8")              # yes
+open(path, "rb")                          # yes — binary decodes nothing
+path.read_text()                          # no  — decodes with the locale
+```
+
+Without `encoding=`, Python decodes with `locale.getpreferredencoding()`: **cp1252** on a Windows console, **ASCII** under the C/POSIX locale that a great many cron jobs, containers and CI runners default to. Any file holding a `—` or a `✓` — which includes `presets/git.json`, shipped in this repo — then raises `UnicodeDecodeError`. A static AST scan over `supertool.py`, `presets/`, `hooks/`, `validators/`, `formatters/` and `notifiers/` fails the suite on a new one and names the file and line.
+
+**2. A preset that prints non-ASCII must not depend on the console encoding.**
+
+Presets run as separate processes and inherit none of supertool's stream setup. Supertool pins `PYTHONIOENCODING=utf-8` for every child it spawns, so an op invoked through supertool is covered without the script doing anything. A `presets/git/*.py` script is additionally required to call `use_utf8_stdout()` as the first statement of `main()`, because those are the ones run straight from a shell during conflict work, with no supertool in front of them. It lives in `presets/git/_git_common.py` — one definition, never a copy.
+
+The failure this prevents is worth naming: printing a `✓` on a cp1252 console raises `UnicodeEncodeError` and kills the process *after* the work is done, so a commit that succeeded reports as a crash — and the operator runs it again.
+
+**Testing this without a Windows runner.** Both halves reproduce on Linux and macOS, which is the whole point:
+
+```bash
+# read half — a bare open() becomes a hard error (3.10+)
+python3 -X warn_default_encoding -W error::EncodingWarning supertool.py read:file.py
+
+# stdout half — the Windows console default, anywhere
+PYTHONIOENCODING=cp1252 python3 supertool.py git-status
+
+# config decode — a C locale, with PEP 538/540 coercion disabled so it stays ASCII
+LC_ALL=C PYTHONCOERCECLOCALE=0 PYTHONUTF8=0 python3 supertool.py git-status
+```
+
+---
+
 ## Running tests
 
 ```bash

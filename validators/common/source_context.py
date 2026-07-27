@@ -13,7 +13,7 @@ def source_context(file_path: str, line: int | None, radius: int = 2) -> list[st
     if line is None:
         return []
     try:
-        lines = pathlib.Path(file_path).read_text(errors="replace").splitlines()
+        lines = pathlib.Path(file_path).read_text(errors="replace", encoding="utf-8").splitlines()
     except OSError:
         return []
     ctx: list[str] = []

@@ -7,8 +7,15 @@ flurry with a single round-trip.
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
+
+# Sibling import: runtime puts this dir on sys.path[0]; the test harness
+# loads scripts via importlib (no dir on path), so add it explicitly.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from _git_common import use_utf8_stdout  # noqa: E402
 
 
 def _git(args: list[str], timeout: int = 10) -> subprocess.CompletedProcess[str]:
@@ -19,6 +26,7 @@ def _git(args: list[str], timeout: int = 10) -> subprocess.CompletedProcess[str]
 
 
 def main() -> int:
+    use_utf8_stdout()
     if len(sys.argv) < 2:
         print("ERROR: usage: checkout.py REF")
         return 1
