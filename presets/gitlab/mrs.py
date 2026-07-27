@@ -26,9 +26,10 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))  # for _board
+sys.path.insert(0, str(Path(__file__).parent.parent))  # for _board, _proc
 
 import _board  # noqa: E402
+import _proc  # noqa: E402  (the one liveness probe, shared with watch / gh-prs)
 
 WATCH_SOURCE = "gitlab-mr"
 STATE_DIR = "/tmp"
@@ -244,16 +245,10 @@ def _enrich(
             m["_failed_jobs"] = names
 
 
-def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True  # exists, owned by someone else
-    except OSError:
-        return False
-    return True
+# One shared probe (presets/_proc.py). `os.kill(pid, 0)` used to live here,
+# which on Windows terminates the process it was asked about rather than
+# reporting on it — a read-only status query must never be able to kill (#429).
+_pid_alive = _proc.pid_alive
 
 
 def _watched_iids(state_dir: str = STATE_DIR) -> set[str]:

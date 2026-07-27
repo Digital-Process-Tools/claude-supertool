@@ -36,6 +36,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pr import _gh, _fetch_review_threads  # noqa: E402  (reuse the gh-pr helpers)
 import _board  # noqa: E402  (the board layout shared with gl-mrs / radar)
+import _proc  # noqa: E402  (the one liveness probe, shared with watch / gl-mrs)
 
 WATCH_SOURCE = "github-pr"
 STATE_DIR = "/tmp"
@@ -213,16 +214,10 @@ def _enrich(prs: list[dict], cap: int = ENRICH_CAP, workers: int = ENRICH_WORKER
         p["_unresolved"] = n
 
 
-def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True  # exists, owned by someone else
-    except OSError:
-        return False
-    return True
+# One shared probe (presets/_proc.py). `os.kill(pid, 0)` used to live here,
+# which on Windows terminates the process it was asked about rather than
+# reporting on it — a read-only status query must never be able to kill (#429).
+_pid_alive = _proc.pid_alive
 
 
 def _watched_numbers(state_dir: str = STATE_DIR) -> set[str]:

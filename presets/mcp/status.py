@@ -17,6 +17,8 @@ from pathlib import Path
 
 # Shared path helpers (#148): per-user runtime dir, NOT /tmp.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import _proc  # noqa: E402  (the one liveness probe — never os.kill(pid, 0), #429)
 from _paths import list_pidfiles, runtime_dir  # noqa: E402
 
 
@@ -57,13 +59,7 @@ def main() -> int:
             pid = int(Path(pid_path).read_text().strip())
         except (OSError, ValueError):
             pid = 0
-        alive = False
-        if pid:
-            try:
-                os.kill(pid, 0)
-                alive = True
-            except (ProcessLookupError, PermissionError):
-                pass
+        alive = _proc.pid_alive(pid) if pid else False
         try: st = os.stat(pid_path); uptime = int(time.time() - st.st_mtime)
         except OSError: uptime = -1
         try: lst = os.stat(log_path); idle = int(time.time() - lst.st_mtime)
