@@ -19,6 +19,8 @@ from pathlib import Path
 
 # Shared path helpers (#148): per-user runtime dir, NOT /tmp.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import _proc  # noqa: E402  (the one liveness probe — never os.kill(pid, 0), #429)
 from _paths import list_pidfiles, socket_pid_paths  # noqa: E402
 
 
@@ -29,14 +31,12 @@ def stop_pid(pid: int) -> bool:
     except PermissionError: return False
     deadline = time.time() + 3
     while time.time() < deadline:
-        try: os.kill(pid, 0)
-        except ProcessLookupError: return True
+        if not _proc.pid_alive(pid): return True
         time.sleep(0.1)
     try: os.kill(pid, signal.SIGKILL)
     except ProcessLookupError: return True
     time.sleep(0.5)
-    try: os.kill(pid, 0); return False
-    except ProcessLookupError: return True
+    return not _proc.pid_alive(pid)
 
 
 def stop_by_pidfile(pid_path: str) -> str:

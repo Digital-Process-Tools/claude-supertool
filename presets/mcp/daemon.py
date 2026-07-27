@@ -35,6 +35,8 @@ from typing import Optional, Tuple
 # script (python3 daemon.py — script-dir added automatically) or is imported
 # as a module from another cwd (tests — script-dir not in sys.path).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import _proc  # noqa: E402  (the one liveness probe — never os.kill(pid, 0), #429)
 from _paths import socket_pid_paths  # noqa: E402
 
 IDLE_TIMEOUT_SEC = 600  # shutdown after 10min idle
@@ -339,12 +341,13 @@ def main(argv: list) -> int:
         try:
             with open(pid_path) as f:
                 existing_pid = int(f.read().strip())
-            os.kill(existing_pid, 0)  # check alive
+        except (OSError, ValueError):
+            existing_pid = 0
+        if existing_pid and _proc.pid_alive(existing_pid):
             sys.stderr.write(f"daemon: already running pid={existing_pid} sock={sock_path}\n")
             return 0
-        except (ProcessLookupError, ValueError):
-            try: os.unlink(pid_path)
-            except FileNotFoundError: pass
+        try: os.unlink(pid_path)
+        except FileNotFoundError: pass
 
     if do_detach:
         detach()
