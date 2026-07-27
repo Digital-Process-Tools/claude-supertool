@@ -30,12 +30,17 @@ _ID = ["-c", "user.email=fixture@example.invalid", "-c", "user.name=fixture"]
 
 
 def _fake_repo(tmp_path: Path) -> tuple[Path, Path]:
-    """Build a minimal (common_dir, git_dir) layout the snapshot reads."""
+    """Build a minimal (common_dir, git_dir) layout the snapshot reads.
+
+    Written as bytes, not text: git writes ``\n`` into these files on every
+    platform, and ``write_text`` would translate to ``\r\n`` on Windows and make
+    the fixture describe a repo git never produces.
+    """
     common = tmp_path / ".git"
     (common / "refs" / "heads").mkdir(parents=True)
-    (common / "config").write_text("[core]\n\tbare = false\n")
-    (common / "HEAD").write_text("ref: refs/heads/master\n")
-    (common / "refs" / "heads" / "master").write_text("a" * 40 + "\n")
+    (common / "config").write_bytes(b"[core]\n\tbare = false\n")
+    (common / "HEAD").write_bytes(b"ref: refs/heads/master\n")
+    (common / "refs" / "heads" / "master").write_bytes(b"a" * 40 + b"\n")
     return common, common
 
 
@@ -57,28 +62,28 @@ def test_snapshot_stable_when_unchanged(tmp_path: Path) -> None:
 def test_snapshot_detects_core_bare_flip(tmp_path: Path) -> None:
     dirs = _fake_repo(tmp_path)
     before = conftest._git_state_snapshot(dirs)
-    (dirs[0] / "config").write_text("[core]\n\tbare = true\n")
+    (dirs[0] / "config").write_bytes(b"[core]\n\tbare = true\n")
     assert conftest._git_state_snapshot(dirs) != before
 
 
 def test_snapshot_detects_junk_commit_on_a_branch(tmp_path: Path) -> None:
     dirs = _fake_repo(tmp_path)
     before = conftest._git_state_snapshot(dirs)
-    (dirs[0] / "refs" / "heads" / "master").write_text("b" * 40 + "\n")
+    (dirs[0] / "refs" / "heads" / "master").write_bytes(b"b" * 40 + b"\n")
     assert conftest._git_state_snapshot(dirs) != before
 
 
 def test_snapshot_detects_new_branch_ref(tmp_path: Path) -> None:
     dirs = _fake_repo(tmp_path)
     before = conftest._git_state_snapshot(dirs)
-    (dirs[0] / "refs" / "heads" / "junk").write_text("c" * 40 + "\n")
+    (dirs[0] / "refs" / "heads" / "junk").write_bytes(b"c" * 40 + b"\n")
     assert conftest._git_state_snapshot(dirs) != before
 
 
 def test_snapshot_detects_head_move(tmp_path: Path) -> None:
     dirs = _fake_repo(tmp_path)
     before = conftest._git_state_snapshot(dirs)
-    (dirs[1] / "HEAD").write_text("ref: refs/heads/other\n")
+    (dirs[1] / "HEAD").write_bytes(b"ref: refs/heads/other\n")
     assert conftest._git_state_snapshot(dirs) != before
 
 
@@ -86,7 +91,7 @@ def test_snapshot_detects_packed_refs_rewrite(tmp_path: Path) -> None:
     dirs = _fake_repo(tmp_path)
     before = conftest._git_state_snapshot(dirs)
     assert before["packed-refs"] == b"<absent>"
-    (dirs[0] / "packed-refs").write_text("d" * 40 + " refs/heads/packed\n")
+    (dirs[0] / "packed-refs").write_bytes(b"d" * 40 + b" refs/heads/packed\n")
     assert conftest._git_state_snapshot(dirs)["packed-refs"] != b"<absent>"
 
 
@@ -94,7 +99,7 @@ def test_snapshot_names_nested_refs_by_their_branch_name(tmp_path: Path) -> None
     """A ref two levels down must be keyed ``feat/428``, not its filesystem path."""
     dirs = _fake_repo(tmp_path)
     (dirs[0] / "refs" / "heads" / "feat").mkdir()
-    (dirs[0] / "refs" / "heads" / "feat" / "428").write_text("e" * 40 + "\n")
+    (dirs[0] / "refs" / "heads" / "feat" / "428").write_bytes(b"e" * 40 + b"\n")
     snapshot = conftest._git_state_snapshot(dirs)
     assert sorted(snapshot["refs"]) == ["feat/428", "master"]
     assert snapshot["refs"]["feat/428"] == b"e" * 40 + b"\n"
@@ -118,45 +123,96 @@ def test_head_branch_is_none_when_detached_or_missing() -> None:
     assert conftest._head_branch(b"<absent>") is None
 
 
-PORCELAIN = """worktree /repo/main
-HEAD {a}
-branch refs/heads/master
+def _porcelain(tmp_path: Path, newline: str = "\n") -> tuple[str, Path, Path, Path]:
+    """Real, resolvable worktree paths — the only kind ``resolve()`` agrees on.
 
-worktree /repo/st-wt/424
-HEAD {b}
-branch refs/heads/feat/424-gh-prs-legible-board
+    A literal ``/repo/main`` is not a path on Windows: ``resolve()`` anchors it
+    to the current drive and it stops comparing equal to the same string left
+    unresolved, so a fixture built from invented paths tests the fixture rather
+    than the parser.
+    """
+    main, sib, detached = (tmp_path / name for name in ("main", "sibling", "detached"))
+    for path in (main, sib, detached):
+        path.mkdir(exist_ok=True)
+    main, sib, detached = (path.resolve() for path in (main, sib, detached))
+    text = newline.join([
+        f"worktree {main}", "HEAD " + "a" * 40, "branch refs/heads/master", "",
+        f"worktree {sib}", "HEAD " + "b" * 40,
+        "branch refs/heads/feat/424-gh-prs-legible-board", "",
+        f"worktree {detached}", "HEAD " + "c" * 40, "detached", "",
+    ])
+    return text, main, sib, detached
 
-worktree /repo/st-wt/422
-HEAD {c}
-detached
-""".format(a="a" * 40, b="b" * 40, c="c" * 40)
 
-
-def test_parse_worktree_list_excludes_our_own_branch() -> None:
-    branches, _ = conftest._parse_worktree_list(PORCELAIN, Path("/repo/main"))
+def test_parse_worktree_list_excludes_our_own_branch(tmp_path: Path) -> None:
+    text, main, _, _ = _porcelain(tmp_path)
+    branches, _ = conftest._parse_worktree_list(text, main)
     assert "master" not in branches
 
 
-def test_parse_worktree_list_collects_sibling_branches() -> None:
-    branches, has_siblings = conftest._parse_worktree_list(PORCELAIN, Path("/repo/main"))
+def test_parse_worktree_list_collects_sibling_branches(tmp_path: Path) -> None:
+    text, main, _, _ = _porcelain(tmp_path)
+    branches, has_siblings = conftest._parse_worktree_list(text, main)
     assert branches == frozenset({"feat/424-gh-prs-legible-board"})
     assert has_siblings is True
 
 
-def test_parse_worktree_list_sees_a_detached_sibling_as_a_sibling() -> None:
+def test_parse_worktree_list_sees_a_detached_sibling_as_a_sibling(tmp_path: Path) -> None:
     """A sibling on a detached HEAD owns no branch but can still move refs."""
-    branches, has_siblings = conftest._parse_worktree_list(
-        PORCELAIN, Path("/repo/st-wt/424")
-    )
+    text, _, sib, _ = _porcelain(tmp_path)
+    branches, has_siblings = conftest._parse_worktree_list(text, sib)
     assert branches == frozenset({"master"})
     assert has_siblings is True
 
 
-def test_parse_worktree_list_reports_no_siblings_for_a_lone_checkout() -> None:
-    lone = "worktree /repo/main\nHEAD {}\nbranch refs/heads/master\n".format("a" * 40)
-    branches, has_siblings = conftest._parse_worktree_list(lone, Path("/repo/main"))
+def test_parse_worktree_list_reports_no_siblings_for_a_lone_checkout(tmp_path: Path) -> None:
+    main = (tmp_path / "main")
+    main.mkdir()
+    main = main.resolve()
+    lone = "worktree {}\nHEAD {}\nbranch refs/heads/master\n".format(main, "a" * 40)
+    branches, has_siblings = conftest._parse_worktree_list(lone, main)
     assert branches == frozenset()
     assert has_siblings is False
+
+
+def test_parse_worktree_list_reads_crlf_porcelain_identically(tmp_path: Path) -> None:
+    """Git emits CRLF on Windows. A ``split("\\n")`` here would leave a trailing
+    ``\\r`` on every branch name, so our own branch would stop matching and land
+    in the sibling set. Pinned from any OS by feeding the CRLF bytes directly,
+    rather than waiting for a Windows leg to notice.
+    """
+    crlf, main, _, _ = _porcelain(tmp_path, newline="\r\n")
+    lf, _, _, _ = _porcelain(tmp_path, newline="\n")
+    assert "\r\n" in crlf
+    assert conftest._parse_worktree_list(crlf, main) == conftest._parse_worktree_list(lf, main)
+    assert conftest._parse_worktree_list(crlf, main)[0] == frozenset(
+        {"feat/424-gh-prs-legible-board"}
+    )
+
+
+def test_same_path_delegates_case_sensitivity_to_the_platform() -> None:
+    """On POSIX ``normcase`` is a no-op, so the two really are different dirs."""
+    import os
+    assert conftest._same_path(Path("/repo/Main"), Path("/repo/Main")) is True
+    expected = os.path.normcase("/repo/Main") == os.path.normcase("/repo/main")
+    assert conftest._same_path(Path("/repo/Main"), Path("/repo/main")) is expected
+
+
+def test_same_path_folds_case_under_windows_rules(monkeypatch) -> None:
+    """Forcing ``ntpath`` semantics pins the Windows behaviour from any runner.
+
+    ``C:\\\\Repo`` and ``c:\\\\repo`` are one directory on NTFS. A plain string
+    comparison calls them two, which makes *this* checkout read as a sibling of
+    itself: ``has_siblings`` goes true on a lone Windows clone and the
+    unattributable bucket softens to a warning where it must still fail. That
+    is unobservable on a POSIX runner, so the platform's rule is imported
+    rather than waited for.
+    """
+    import ntpath
+    import os
+    monkeypatch.setattr(os.path, "normcase", ntpath.normcase)
+    assert conftest._same_path(Path("C:/Repo/Main"), Path("C:/repo/main")) is True
+    assert conftest._same_path(Path("C:/Repo/Main"), Path("C:/repo/other")) is False
 
 
 def test_other_worktree_branches_never_lists_our_own_branch() -> None:
@@ -281,6 +337,48 @@ def test_classify_still_fails_when_our_change_hides_among_a_siblings() -> None:
     )
     assert verdict == "mutated"
     assert changed == ["refs/heads/feat/424", "refs/heads/master"]
+
+
+def test_classify_still_blames_us_when_the_sibling_set_wrongly_contains_our_branch() -> None:
+    """Defence in depth: a mis-parsed sibling set must not be able to excuse #416.
+
+    If identifying our own worktree by path ever fails — a Windows case
+    difference, an 8.3 short name, a UNC spelling — our own branch lands in
+    ``other_branches`` and would fall into the *clean* bucket. It cannot,
+    because ownership is derived from the ``HEAD`` bytes and tested first. That
+    ordering is the invariant; this pins it so a reordering cannot pass.
+    """
+    ours_leaked = frozenset({"master", "feat/424"})
+    verdict, _ = conftest._classify_git_state_change(
+        _snapshot("master", master="a" * 40),
+        _snapshot("master", master="b" * 40),
+        ours_leaked,
+        True,
+    )
+    assert verdict == "mutated"
+
+    bare_before = _snapshot("master", master="a" * 40)
+    bare_after = _snapshot("master", master="a" * 40)
+    bare_after["config"] = b"[core]\n\tbare = true\n"
+    assert conftest._classify_git_state_change(
+        bare_before, bare_after, ours_leaked, True
+    )[0] == "mutated"
+
+
+def test_snapshot_keeps_ref_bytes_verbatim(tmp_path: Path) -> None:
+    """No newline translation on the way in: git writes ``\\n``, we compare ``\\n``.
+
+    Reading a ref in text mode would turn a Windows checkout's every value into
+    something that never equals what the ref actually holds — the mirror image
+    of the CRLF bug above, and it would produce false *failures* rather than
+    false silence.
+    """
+    dirs = _fake_repo(tmp_path)
+    (dirs[0] / "refs" / "heads" / "crlf").write_bytes(b"f" * 40 + b"\r\n")
+    snapshot = conftest._git_state_snapshot(dirs)
+    assert snapshot["refs"]["master"] == b"a" * 40 + b"\n"
+    assert snapshot["refs"]["crlf"] == b"f" * 40 + b"\r\n"
+    assert snapshot["HEAD"] == b"ref: refs/heads/master\n"
 
 
 def test_classify_reports_every_key_that_moved() -> None:

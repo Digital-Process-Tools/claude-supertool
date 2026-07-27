@@ -187,18 +187,36 @@ def _head_branch(head_bytes):
     return text[len(prefix):] or None
 
 
+def _same_path(a, b):
+    """Path equality that survives Windows, where two spellings mean one directory.
+
+    NTFS is case-insensitive, so ``C:\\\\Repo`` and ``c:\\\\repo`` are the same
+    checkout; ``os.path.normcase`` is the one comparison that knows that and is
+    a no-op on POSIX. Getting this wrong makes *our own* worktree read as a
+    sibling — see ``_classify_git_state_change`` for why that cannot excuse a
+    real violation, and ``_other_worktree_branches`` for what it would still
+    cost.
+    """
+    import os
+    return os.path.normcase(str(a)) == os.path.normcase(str(b))
+
+
 def _parse_worktree_list(porcelain, root):
     """Split ``git worktree list --porcelain`` into (sibling branches, any siblings).
 
     ``root`` is this checkout; every other block is a sibling that shares our
     common dir and can move refs under our feet.
+
+    ``splitlines`` rather than ``split("\\n")`` is load-bearing: git emits CRLF
+    on Windows, and a trailing ``\\r`` would make every branch name miss by one
+    invisible byte. It is pinned by a test that runs on every OS.
     """
     branches = set()
     has_siblings = False
     is_sibling = False
     for line in porcelain.splitlines():
         if line.startswith("worktree "):
-            is_sibling = Path(line[len("worktree "):]).resolve() != root
+            is_sibling = not _same_path(Path(line[len("worktree "):]).resolve(), root)
             has_siblings = has_siblings or is_sibling
         elif is_sibling and line.startswith("branch refs/heads/"):
             branches.add(line[len("branch refs/heads/"):])
