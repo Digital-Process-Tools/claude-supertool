@@ -460,3 +460,69 @@ def test_dispatch_grep_around_custom_n(tmp_path: Path) -> None:
     # Beyond context not shown
     assert "  1-a" not in out
     assert "  5-e" not in out
+
+
+# ---------------------------------------------------------------------------
+# Scanned-file count on zero results (#407)
+# ---------------------------------------------------------------------------
+
+def test_grep_zero_results_reports_scanned_count(tmp_path: Path) -> None:
+    """0 results over 3 real files must say 3 were scanned, not read like an
+    empty/wrong-path search."""
+    (tmp_path / "a.py").write_text("nothing here\n")
+    (tmp_path / "b.py").write_text("still nothing\n")
+    (tmp_path / "c.py").write_text("more nothing\n")
+    out = supertool.op_grep("NOTHINGMATCHES_XYZZY", str(tmp_path))
+    assert "(0 results in 0 files, scanned 3 files, limit 10)\n" in out
+    assert "nothing matched the path/glob" not in out
+
+
+def test_grep_zero_results_on_empty_dir_flags_nothing_scanned(tmp_path: Path) -> None:
+    """0 results over an empty directory must be distinguishable from 0
+    results over a directory that was actually searched."""
+    empty_dir = tmp_path / "empty"
+    empty_dir.mkdir()
+    out = supertool.op_grep("anything", str(empty_dir))
+    assert ("(0 results in 0 files, scanned 0 files "
+            "— nothing matched the path/glob, limit 10)\n") in out
+
+
+def test_grep_nonzero_results_still_reports_scanned_count(tmp_path: Path) -> None:
+    """Existing output format for real matches is not disturbed — the scanned
+    count is appended, not swapped in."""
+    (tmp_path / "a.txt").write_text("MATCH\n")
+    (tmp_path / "b.txt").write_text("no match here\n")
+    out = supertool.op_grep("MATCH", str(tmp_path))
+    assert "(1 results in 1 files, scanned 2 files, limit 10)\n" in out
+    assert "a.txt\n  1:MATCH\n" in out
+
+
+def test_grep_count_only_zero_results_reports_scanned_count(tmp_path: Path) -> None:
+    (tmp_path / "a.py").write_text("nothing here\n")
+    (tmp_path / "b.py").write_text("still nothing\n")
+    out = supertool.op_grep("NOTHINGMATCHES_XYZZY", str(tmp_path), count_only=True)
+    assert "(0 total matches across 0 files, scanned 2 files)\n" in out
+
+
+def test_grep_count_only_empty_dir_flags_nothing_scanned(tmp_path: Path) -> None:
+    empty_dir = tmp_path / "empty"
+    empty_dir.mkdir()
+    out = supertool.op_grep("anything", str(empty_dir), count_only=True)
+    assert ("(0 total matches across 0 files, scanned 0 files "
+            "— nothing matched the path/glob)\n") in out
+
+
+def test_grep_context_zero_results_reports_scanned_count(tmp_path: Path) -> None:
+    (tmp_path / "a.py").write_text("nothing here\n")
+    (tmp_path / "b.py").write_text("still nothing\n")
+    (tmp_path / "c.py").write_text("more nothing\n")
+    out = supertool.op_grep("NOTHINGMATCHES_XYZZY", str(tmp_path), context=1)
+    assert "(0 results in 0 files, scanned 3 files, limit 10, context 1)\n" in out
+
+
+def test_grep_context_empty_dir_flags_nothing_scanned(tmp_path: Path) -> None:
+    empty_dir = tmp_path / "empty"
+    empty_dir.mkdir()
+    out = supertool.op_grep("anything", str(empty_dir), context=1)
+    assert ("(0 results in 0 files, scanned 0 files "
+            "— nothing matched the path/glob, limit 10, context 1)\n") in out
