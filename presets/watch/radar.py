@@ -301,7 +301,8 @@ def render(open_mrs: list[dict], covered: set[str], healed: list[str],
         moved = prev_entries.get(iid) != _snap_entry(m)
         notable = iid in drifted or iid in healed_set or iid in uncovered_set
         if cold or moved or notable or _is_standing_problem(m):
-            shown.append(mrs._row(m, covered, True) + _marks(iid, drifted, healed_set, uncovered_set))
+            marks = _marks(iid, drifted, healed_set, uncovered_set)
+            shown.append(mrs._row(m, covered, True, marks))
 
     gone = len([i for i in prev_entries if i not in {str(m.get("iid")) for m in open_mrs}])
     footer = _footer(open_mrs, covered, healed, drifted, pruned, uncovered, gone)

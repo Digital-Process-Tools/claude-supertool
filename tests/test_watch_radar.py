@@ -34,6 +34,8 @@ def _mr(iid, pipeline="success", pipeline_id="100", title="a title",
     m = {
         "iid": int(iid),
         "title": title,
+        "source_branch": f"max/branch-{iid}",
+        "target_branch": "master",
         "updated_at": updated,
         "_pipeline": pipeline,
         "_pipeline_id": pipeline_id,
@@ -348,13 +350,14 @@ def test_merged_mr_is_counted_as_no_longer_open(env, capsys) -> None:
 # ---------------------------------------------------------------------------
 
 def test_rows_use_the_shared_gl_mrs_row_format(env, capsys) -> None:
-    """radar must not invent a second board layout."""
+    """radar must not invent a second board layout — both lines of it."""
     _live_pid_file(env["dir"], "33161")
     m = _mr(33161, "failed", "154177", failed_jobs=["phpstan2"])
     _set_live(env, [m])
     out = _run(env, capsys)
-    row = next(ln for ln in out.splitlines() if "!33161" in ln)
-    assert row == radar.mrs._row(m, {"33161"}, True)
+    expected = radar.mrs._row(m, {"33161"}, True)
+    assert "\n" in expected, "a row is two lines: status, then the full title"
+    assert expected in out
 
 
 def test_drift_and_gap_marks_are_appended_not_substituted(env, capsys) -> None:
@@ -364,9 +367,72 @@ def test_drift_and_gap_marks_are_appended_not_substituted(env, capsys) -> None:
     m = _mr(33173, "running", "154180")
     _set_live(env, [m])
     out = _run(env, capsys)
-    row = next(ln for ln in out.splitlines() if "!33173" in ln)
-    assert row.startswith(radar.mrs._row(m, {"33173"}, True))
-    assert row.endswith("[drift: 154177→154180] [healed]")
+    marks = "  [drift: 154177→154180] [healed]"
+    assert radar.mrs._row(m, {"33173"}, True, marks) in out
+
+
+def test_drift_and_gap_marks_land_on_the_status_line_not_the_title(env, capsys) -> None:
+    """Marks annotate pipeline state, so they belong beside the status. Trailing
+    the prose title they read as part of the sentence."""
+    _dead_pid_file(env["dir"], "33173")
+    _state_file(env["dir"], "33173", source_pipeline_id="154180",
+                event_pipeline_id="154177")
+    _set_live(env, [_mr(33173, "running", "154180", title="A readable title")])
+    lines = _run(env, capsys).splitlines()
+    idx = next(i for i, ln in enumerate(lines) if "!33173" in ln)
+    assert lines[idx].endswith("[drift: 154177→154180] [healed]")
+    assert lines[idx + 1] == "        A readable title"
+
+
+# ---------------------------------------------------------------------------
+# legibility — a human reads this board (#421)
+# ---------------------------------------------------------------------------
+
+def test_long_title_is_rendered_in_full_not_truncated(env, capsys) -> None:
+    """The reported bug: titles were cut at 42 chars, mid-word, exactly where
+    the disambiguating detail lives ('...loadable and cov')."""
+    title = "Make the Generator module loadable and coverable"
+    assert len(title) > 42, "fixture must exceed the old truncation budget"
+    _live_pid_file(env["dir"], "33173")
+    _set_live(env, [_mr(33173, "failed", "154177", title=title)])
+    out = _run(env, capsys)
+    assert title in out
+    assert "loadable and cov\n" not in out
+
+
+def test_row_shows_source_and_target_branch(env, capsys) -> None:
+    """The branch is what a human acts on. Without it every actionable row cost
+    a follow-up gl-mr:<iid>:status round-trip just to locate the code."""
+    _live_pid_file(env["dir"], "33173")
+    _set_live(env, [_mr(33173, "failed", "154177",
+                        source_branch="max/generator-testability-coverage",
+                        target_branch="master")])
+    out = _run(env, capsys)
+    assert "max/generator-testability-coverage -> master" in out
+
+
+def test_branch_shares_the_actionable_status_line_with_the_iid(env, capsys) -> None:
+    _live_pid_file(env["dir"], "33173")
+    _set_live(env, [_mr(33173, "failed", "154177", title="Some prose title",
+                        source_branch="max/foo", target_branch="v18.9")])
+    status = next(ln for ln in _run(env, capsys).splitlines() if "!33173" in ln)
+    assert "max/foo -> v18.9" in status
+    assert "Some prose title" not in status
+
+
+def test_board_costs_no_extra_api_call_for_the_branch(env) -> None:
+    """source_branch/target_branch ship in the single glab mr list response, so
+    legibility must not have bought itself a per-MR round-trip."""
+    calls: list[list[str]] = []
+    payload = ('[{"iid": 33173, "title": "t", '
+               '"source_branch": "max/foo", "target_branch": "master"}]')
+    env["monkeypatch"].setattr(
+        radar.mrs, "_run",
+        lambda cmd, timeout=25: (calls.append(cmd), _completed(0, payload))[1])
+    env["monkeypatch"].setattr(radar.mrs, "_enrich", lambda *a, **k: None)
+    live = radar.live_open_mrs()
+    assert len(calls) == 1
+    assert radar.mrs._branches(live[0]) == "max/foo -> master"
 
 
 # ---------------------------------------------------------------------------
