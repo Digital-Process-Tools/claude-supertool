@@ -63,6 +63,29 @@ Use TOML's **triple-single-quote literal strings** (`'''...'''`) when content ha
 | `"""multi\nline"""` | Multi-line with escapes processed             |
 | `'''multi\nline'''` | Multi-line, literal — **the default for code blocks** |
 
+### When the content itself contains `'''`
+
+A literal block cannot carry its own delimiter, and Python source that inspects
+Python source hits this immediately:
+
+```
+new = '''    if stripped.startswith(("#", "'''", "*")):'''
+```
+
+That closes the block at the inner `'''`, and the parse error points at the
+column where it closed rather than at what closed it. Two ways out, both of
+which have always worked:
+
+| Content contains | Use |
+| ---------------- | --- |
+| `'''`            | a `"""basic"""` block — escapes apply, so backslashes double |
+| `'''` **and** `"""` | the JSON payload form, which needs no delimiter at all |
+
+Since [#394](https://github.com/Digital-Process-Tools/claude-supertool/issues/394)
+the parse error names both, and fires the hint on an odd number of `'''` runs —
+every literal block opens and closes, so a stray one means the content carried
+its own.
+
 Other TOML primitives supported in payloads: integers (`start = 42`), booleans (`replace_all = true`), `# comments`. Arrays, tables, dotted keys, and dates aren't needed — payloads are flat key/value maps.
 
 ### Implementation note
