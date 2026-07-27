@@ -6,6 +6,10 @@ the real repository: every test that shells out to git then operates on *this*
 repo instead of its own tmp_path fixture. Observed once, in one push: two
 fixture commits titled `init` stacked on master, a tree holding a single
 `f.txt`, core.bare flipped to true, index desynced from ref and worktree.
+
+The damage takes one of two routes depending on the form of the leaked path —
+commits on the outer HEAD, or the outer repo flipped bare — so the tests below
+compare a fingerprint of the outer repo rather than its HEAD alone.
 """
 from __future__ import annotations
 
@@ -61,6 +65,16 @@ def _make_outer_repo(path):
     _git(["init", "-q"], path)
     _git(["commit", "-q", "--allow-empty", "-m", "outer base"], path)
     return _git(["rev-parse", "HEAD"], path).stdout.strip()
+
+
+def _outer_state(repo):
+    """Everything a leaking run is known to damage, in one comparable value."""
+    return {
+        "head": _git(["rev-parse", "HEAD"], repo).stdout.strip(),
+        "core.bare": _git(["config", "--get", "core.bare"], repo).stdout.strip(),
+        "refs": _git(["for-each-ref", "--format=%(refname) %(objectname)"], repo).stdout,
+        "status_rc": _git(["status", "--porcelain"], repo).returncode,
+    }
 
 
 def _build_project(root, with_conftest):
@@ -180,6 +194,7 @@ def test_leaked_git_dir_never_reaches_a_fixture_repo(tmp_path):
     """
     outer = tmp_path / "outer"
     head_before = _make_outer_repo(outer)
+    before = _outer_state(outer)
     project = tmp_path / "project"
     target = _build_project(project, with_conftest=True)
 
@@ -187,26 +202,80 @@ def test_leaked_git_dir_never_reaches_a_fixture_repo(tmp_path):
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert "scrubbed inherited git env" in result.stdout
-    assert _git(["rev-parse", "HEAD"], outer).stdout.strip() == head_before
+    assert _outer_state(outer) == before
+    assert before["head"] == head_before
+    assert before["core.bare"] == "false"
     assert "init" not in _git(["log", "--oneline"], outer).stdout
-    assert _git(["config", "--get", "core.bare"], outer).stdout.strip() == "false"
-    assert _git(["status", "--porcelain"], outer).returncode == 0
 
 
 def test_control_the_same_run_without_the_scrub_corrupts_the_outer_repo(tmp_path):
     """Negative control: prove the test above can fail.
 
-    Identical setup minus tests/conftest.py — i.e. the pre-fix world. The
-    fixture's commits land on the outer repo's HEAD. If this ever goes green,
-    the invariant test above has stopped proving anything.
+    Identical setup minus tests/conftest.py — i.e. the pre-fix world. If this
+    ever goes green, the invariant test above has stopped proving anything.
+
+    The leak damages the outer repo by one of two routes, decided by git's
+    ``guess_repository_type``: it looks for the last ``/`` in GIT_DIR and treats
+    the repo as non-bare only when what follows is exactly ``.git``.
+
+    * basename is ``.git`` (POSIX, forward slashes) — the outer repo keeps a
+      work tree, cwd is treated as its top level, and the fixture's commit
+      lands on the outer HEAD.
+    * no ``/`` to find, or a trailing separator — git guesses *bare* and
+      ``git init`` writes ``core.bare = true`` into the outer repo's config.
+      Every later command then dies with "this operation must be run in a work
+      tree", so HEAD never moves but the repo is left bare and unusable. This
+      is the route on Windows, where the path is ``C:\\...\\outer\\.git``, and
+      it is the damage originally reported in #416.
+
+    Both routes mutate the outer repo, so that is what this asserts — plus the
+    exact POSIX route where we can pin it.
     """
     outer = tmp_path / "outer"
     head_before = _make_outer_repo(outer)
+    before = _outer_state(outer)
     project = tmp_path / "project"
     target = _build_project(project, with_conftest=False)
 
     result = _run_pytest_with_leaked_git_dir(project, target, outer / ".git")
+    after = _outer_state(outer)
+    evidence = "\n".join(
+        ["", f"before={before}", f"after={after}", "sub-run:", result.stdout, result.stderr]
+    )
 
-    assert result.returncode != 0, "the fixture repo should not have been created"
-    assert _git(["rev-parse", "HEAD"], outer).stdout.strip() != head_before
-    assert "init" in _git(["log", "--oneline"], outer).stdout
+    assert result.returncode != 0, "the leak should have broken the fixture repo" + evidence
+    assert after != before, "the leak did not reach the outer repo" + evidence
+    assert after["head"] != before["head"] or after["core.bare"] == "true", evidence
+    if sys.platform != "win32":
+        assert after["head"] != before["head"], evidence
+        assert "init" in _git(["log", "--oneline"], outer).stdout
+
+
+def test_the_bare_flip_damage_route_is_real(tmp_path):
+    """Pin the second route the control tolerates — runnable on any platform.
+
+    A GIT_DIR whose basename is not exactly ``.git`` (a trailing separator here;
+    a backslash-only Windows path there) makes ``git init`` guess *bare* and
+    write ``core.bare = true`` into the leaked-at repo. HEAD never moves, so a
+    HEAD-only assertion would call this "no damage" — hence the fingerprint.
+    """
+    outer = tmp_path / "outer"
+    _make_outer_repo(outer)
+    before = _outer_state(outer)
+    fixture = tmp_path / "fixture"
+    fixture.mkdir()
+    (fixture / "f.txt").write_text("x")
+
+    env = dict(os.environ)
+    env["GIT_DIR"] = str(outer / ".git") + os.sep
+    codes = [
+        _git(args, fixture, env).returncode
+        for args in (["init", "-q"], ["add", "f.txt"], ["commit", "-q", "-m", "init"])
+    ]
+    after = _outer_state(outer)
+
+    assert codes[1] != 0 and codes[2] != 0, "expected a bare repo to reject add/commit"
+    assert after["head"] == before["head"], "this route corrupts without moving HEAD"
+    assert before["core.bare"] == "false"
+    assert after["core.bare"] == "true", "git init should have flipped the outer repo bare"
+    assert after != before
