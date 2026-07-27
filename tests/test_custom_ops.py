@@ -143,6 +143,37 @@ class TestResolveCustomOp:
         assert result is not None
         assert "FAIL" in result
 
+    def test_timeout_keeps_partial_output(self, tmp_path: Path) -> None:
+        """A killed op's output is evidence, not noise — it must survive (#399).
+
+        Discarding it left the caller with a bare `FAIL (timeout …)` for an op
+        whose own receipt already said the work had landed.
+        """
+        script = tmp_path / "slow.py"
+        script.write_text(
+            "import sys, time" + chr(10) +
+            "print('Status: pushed')" + chr(10) +
+            "sys.stdout.flush()" + chr(10) +
+            "time.sleep(10)" + chr(10)
+        )
+        supertool._CONFIG = {"ops": {"slow": {
+            "cmd": "{python} " + shlex.quote(script.as_posix()), "timeout": 2}}}
+        result = supertool._resolve_custom_op("slow", ["slow"])
+        assert result is not None
+        lines = result.splitlines()
+        assert lines[0].startswith("FAIL (timeout ")
+        assert lines[1] == "--- partial output before timeout ---"
+        assert lines[2] == "Status: pushed"
+
+    def test_timeout_without_output_adds_no_partial_block(self, tmp_path: Path) -> None:
+        """Nothing printed → no empty 'partial output' header."""
+        supertool._CONFIG = {"ops": {"quiet": {"cmd": "sleep 10", "timeout": 1}}}
+        result = supertool._resolve_custom_op("quiet", ["quiet"])
+        assert result is not None
+        lines = result.splitlines()
+        assert len(lines) == 1
+        assert lines[0].startswith("FAIL (timeout ")
+
     def test_timeout_fallback_to_top_level(self, tmp_path: Path) -> None:
         """When op has no timeout, uses top-level timeout setting."""
         supertool._CONFIG = {

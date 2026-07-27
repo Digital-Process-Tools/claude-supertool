@@ -1014,11 +1014,31 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
                 output += result.stderr
             return f"FAIL ({elapsed:.2f}s)\n{output}"
         return f"PASS ({elapsed:.2f}s)\n{output}{_maybe_restart_mcp(entry)}"
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as e:
         elapsed = time.monotonic() - t0
-        return f"FAIL (timeout {elapsed:.1f}s > {timeout}s)\n"
+        return (f"FAIL (timeout {elapsed:.1f}s > {timeout}s)\n"
+                f"{_timeout_partial_output(e)}")
     except OSError as e:
         return f"FAIL: {e}\n"
+
+
+def _timeout_partial_output(exc: subprocess.TimeoutExpired) -> str:
+    """Whatever the killed command printed before the clock ran out.
+
+    Dropping it costs the caller the only evidence of how far the op got — for
+    an op that mutates remote state (a push), the difference between "retry" and
+    "already landed" was sitting in that discarded buffer (#399).
+    """
+    chunks = []
+    for stream in (exc.stdout, exc.stderr):
+        if not stream:
+            continue
+        text = stream.decode("utf-8", "replace") if isinstance(stream, bytes) else stream
+        if text.strip():
+            chunks.append(text if text.endswith("\n") else text + "\n")
+    if not chunks:
+        return ""
+    return "--- partial output before timeout ---\n" + "".join(chunks)
 
 
 def _maybe_restart_mcp(entry: object) -> str:

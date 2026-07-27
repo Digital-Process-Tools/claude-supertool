@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import subprocess
 from pathlib import Path
 from unittest import mock
 
@@ -677,3 +679,106 @@ def test_main_force_aftermath_lists_discarded(capsys) -> None:
     assert rc == 0
     assert "Force discarded 1 remote commit(s)" in out
     assert "cj.adams: work I just nuked" in out
+
+
+# ── push subprocess timeout — verdict comes from the remote (issue #399) ──
+
+def _timeout_git(remote_sha: str, head: str = "head000aaaa",
+                 heads: object = None):
+    """fake _git where `push` blows its budget; ls-remote answers `remote_sha`."""
+    def fake_git(args, timeout=30):
+        if args[:2] == ["rev-parse", "--git-dir"]:
+            return _proc(".git\n", 0)
+        if args[:2] == ["rev-parse", "--abbrev-ref"] and "@{upstream}" not in args:
+            return _proc("feat\n", 0)
+        if args[0] == "rev-parse" and "@{upstream}" in args:
+            return _proc("origin/feat\n", 0)
+        if args[0] == "rev-parse" and args[1] == "--short":
+            return _proc("aaa1111\n", 0)
+        if args[:2] == ["rev-parse", "HEAD"]:
+            return _proc((next(heads) if heads is not None else head) + "\n", 0)
+        if args[0] == "push":
+            raise subprocess.TimeoutExpired(cmd="git push", timeout=timeout)
+        if args[0] == "ls-remote":
+            return _proc(f"{remote_sha}\trefs/heads/feat\n", 0) if remote_sha else _proc("", 1)
+        return _proc("", 0)
+    return fake_git
+
+
+def test_main_push_timeout_with_remote_at_head_reports_pushed(capsys) -> None:
+    """The push blew its budget but the ref landed — that is a success, not a FAIL.
+
+    A slow pre-push hook (static analysis over every changed file) can outlast
+    the budget after git has already handed the refs to the remote. Reporting
+    failure sends the caller into re-push / force-push recovery for a push that
+    already landed.
+    """
+    with mock.patch.object(push, "_git", side_effect=_timeout_git("head000aaaa")), \
+         mock.patch.object(push, "query_open_mr", return_value=None):
+        rc = push.main()
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Status: pushed ✓ (push timed out locally; remote ref matches HEAD)" in out
+    assert "Remote origin/feat now at head000" in out
+    assert "REJECTED" not in out
+    assert "TIMED OUT ✗" not in out
+
+
+def test_main_push_timeout_after_hook_amend_reports_rewritten_head(capsys) -> None:
+    """Hook amended HEAD then timed out: verify against the NEW head, report it."""
+    heads = iter(["old0000aaaa", "new1111bbbb"])  # before, after-amend
+    with mock.patch.object(push, "_git",
+                           side_effect=_timeout_git("new1111bbbb", heads=heads)), \
+         mock.patch.object(push, "query_open_mr", return_value=None):
+        rc = push.main()
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Status: pushed ✓ (push timed out locally; remote ref matches HEAD)" in out
+    assert "Local HEAD rewritten old0000 → new1111" in out
+    assert "Remote origin/feat now at new1111" in out
+
+
+def test_main_push_timeout_with_remote_behind_reports_timeout_not_pushed(capsys) -> None:
+    """Remote did NOT move → honest 'timed out, unverified', never a clean success."""
+    with mock.patch.object(push, "_git", side_effect=_timeout_git("stale999ccc")), \
+         mock.patch.object(push, "query_open_mr", return_value=None):
+        rc = push.main()
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "Status: PUSH TIMED OUT ✗ — remote ref does NOT match local HEAD" in out
+    assert "local HEAD head000 | remote origin/feat at stale99" in out
+    assert "git fetch" in out
+    assert "Status: pushed ✓" not in out
+
+
+def test_main_push_timeout_unreadable_remote_reports_unknown(capsys) -> None:
+    """ls-remote itself fails → say the remote state is unknown, don't guess."""
+    with mock.patch.object(push, "_git", side_effect=_timeout_git("")), \
+         mock.patch.object(push, "query_open_mr", return_value=None):
+        rc = push.main()
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "Status: PUSH TIMED OUT ✗ — remote ref does NOT match local HEAD" in out
+    assert "remote origin/feat at unknown" in out
+    assert "Status: pushed ✓" not in out
+
+
+def test_live_remote_sha_survives_ls_remote_timeout() -> None:
+    """The verification probe must not turn into the crash it exists to prevent."""
+    def fake_git(args, timeout=30):
+        raise subprocess.TimeoutExpired(cmd="git ls-remote", timeout=timeout)
+
+    with mock.patch.object(push, "_git", side_effect=fake_git):
+        assert push._live_remote_sha("origin", "feat") == ""
+
+
+def test_push_budget_is_strictly_below_the_op_timeout_cap() -> None:
+    """push.py must own its timeout — the op cap killing it first loses the verdict.
+
+    Equal budgets (both 120s) meant supertool's cap always fired first, so the
+    verification path below could never run and every slow push was reported as
+    a bare `FAIL (timeout …)`.
+    """
+    preset = Path(__file__).parent.parent / "presets" / "git.json"
+    op_timeout = json.loads(preset.read_text(encoding="utf-8"))["ops"]["git-push"]["timeout"]
+    assert push._PUSH_TIMEOUT < op_timeout

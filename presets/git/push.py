@@ -31,6 +31,16 @@ corrected commit itself, then exits non-zero so git won't also push the
 stale pre-amend ref. That non-zero exit is *success*, not failure — the
 ref moved. We trust the live remote SHA over the exit code: when the
 remote already matches local HEAD, we report PUSHED, not REJECTED.
+
+The same rule holds for a timeout. A hook running static analysis over
+every changed file can outlast the budget *after* git has already handed
+the refs to the remote, so a clock expiring is not evidence of failure for
+an op that mutates remote state — the remote ref is. On timeout we ask
+ls-remote and report PUSHED when it matches HEAD; only a remote that
+genuinely did not move gets a failing verdict. This is why the push
+budget must stay strictly under the op-level cap in presets/git.json: a
+process killed by the outer cap can't verify anything, and the caller is
+left acting on a bare `FAIL (timeout …)` for a push that landed (#399).
 """
 from __future__ import annotations
 
@@ -46,6 +56,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _git_common import _first_error_line, _git, query_open_mr  # noqa: E402
 
 _KNOWN_FLAGS = ("force-with-lease", "no-verify")
+
+# Budget for a single `git push` invocation. Must stay strictly below the
+# git-push op timeout in presets/git.json so this script — not supertool's
+# outer cap — owns the timeout and can verify the remote before reporting.
+_PUSH_TIMEOUT = 300
 
 
 def _parse_flags(argv: list[str]) -> set[str]:
@@ -85,7 +100,10 @@ def _live_remote_sha(remote: str, ref: str) -> str:
     """
     if not remote or not ref:
         return ""
-    r = _git(["ls-remote", remote, ref], timeout=30)
+    try:
+        r = _git(["ls-remote", remote, ref], timeout=30)
+    except subprocess.TimeoutExpired:
+        return ""
     if r.returncode == 0 and r.stdout.strip():
         return r.stdout.split()[0]
     return ""
@@ -248,6 +266,42 @@ def _report_hook_pushed(head_before: str, head_after: str,
     _post_push_advisories(mr, flags)
 
 
+def _report_push_timeout(branch: str, head_before: str,
+                         remote: str, ref: str, flags: set[str]) -> int:
+    """Verdict for a push that outlasted its budget — decided by the remote ref.
+
+    The clock says nothing about whether the refs landed. ls-remote does: if it
+    already matches our (possibly hook-rewritten) HEAD, the push succeeded and
+    reporting failure would send the caller into a re-push / force-push it must
+    not do. Only a remote that did not move gets a failing verdict, and even
+    then it is reported as *unverified*, not rejected — the push may still be
+    in flight server-side.
+    """
+    head_after = _local_head()
+    live = _live_remote_sha(remote, ref)
+    print(f"Push exceeded its {_PUSH_TIMEOUT}s budget — asking the remote what landed…")
+    if live and head_after and live == head_after:
+        print("Status: pushed ✓ (push timed out locally; remote ref matches HEAD)")
+        if head_after != head_before:
+            print(f"Local HEAD rewritten {head_before[:7]} → {head_after[:7]}")
+        print(f"Remote {remote}/{ref} now at {live[:7]}")
+        print(f"Push outlasted its {_PUSH_TIMEOUT}s budget (slow pre-push hook "
+              "or transfer) — raise ops.git-push.timeout in .supertool.json to "
+              "see the full receipt.")
+        mr = query_open_mr(branch)
+        mr_line = _open_mr_line(mr)
+        if mr_line:
+            print(mr_line)
+        _post_push_advisories(mr, flags)
+        return 0
+    print("Status: PUSH TIMED OUT ✗ — remote ref does NOT match local HEAD")
+    print(f"local HEAD {head_after[:7] or 'unknown'} | "
+          f"remote {remote}/{ref} at {live[:7] or 'unknown'}")
+    print("The push may still be in flight — `git fetch` and re-check before "
+          "retrying; do NOT force-push on a timeout alone.")
+    return 1
+
+
 _INCOMING_CAP = 5
 
 
@@ -342,7 +396,11 @@ def _recover_by_rebase(branch: str, remote_before: str, upstream: str,
         push_args.append("--no-verify")
     if not upstream:
         push_args += ["-u", remote_name, "HEAD"]
-    result = _git(push_args, timeout=120)
+    try:
+        result = _git(push_args, timeout=_PUSH_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return _report_push_timeout(branch, _local_head(),
+                                    remote_name, remote_ref, flags)
     if result.returncode != 0:
         combined = (result.stdout or "") + "\n" + (result.stderr or "")
         print("Status: PUSH REJECTED ✗ (after rebase)")
@@ -390,7 +448,11 @@ def main() -> int:
         push_args.append("--no-verify")
     if not has_upstream:
         push_args += ["-u", "origin", "HEAD"]
-    result = _git(push_args, timeout=120)
+    try:
+        result = _git(push_args, timeout=_PUSH_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return _report_push_timeout(branch, head_before,
+                                    remote_name, remote_ref, flags)
 
     combined = (result.stdout or "") + "\n" + (result.stderr or "")
 
