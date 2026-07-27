@@ -28,6 +28,18 @@ Universal JSON. Every adapter emits this shape. Validator core never parses tool
 | `metrics`     | object           | no       | Tool-specific counters (`tests_total`, `tests_passed`, etc.). Numeric values. Used by renderer for before/after diff on metric keys even when `count` is unchanged. |
 
 | `diff`        | string           | no       | Unified diff produced by the tool (e.g. rector). Rendered as a fenced block below all errors in verbose mode. Ignored in default mode. |
+| `skipped`     | string           | no       | Reason the validator declined to analyse the file (scope allowlist, tool absent, ...). Its presence — not its value — marks the result as a third state. |
+
+### Skipped: the third state
+
+`ok` alone has two values and the world has three: clean, broken, and **never looked at**. A validator that refused to run has produced no information about the file, so folding that into either `ok` value is a lie in one direction or the other.
+
+An adapter reports it by emitting `"skipped": "<reason>"` alongside `ok: true`, `count: 0`, `errors: []` — clean-shaped so a consumer that ignores the key cannot read a refusal as a failure, with the key as the discriminator for one that does. The core then guarantees:
+
+- the row renders as `skipped (<reason>)`, never `0 → 1 (+1) ✗`;
+- the result is excluded from the before/after delta;
+- the result is **not cached** (a skip is config-derived; the cache key is a content hash);
+- the result **never triggers rollback**, whatever `rollback_on_fail` says.
 
 ### Error object
 

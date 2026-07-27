@@ -9550,6 +9550,11 @@ def _validator_result_is_cacheable(data: Dict[str, Any]) -> bool:
     validators/rector-mcp/rector-mcp.py, which drops those at the source so they
     never reach this cache as a red.
     """
+    if "skipped" in data:
+        # A skip is decided by config (scope allowlists, missing tool), not by
+        # file content — and the key is a content hash. Freezing one here keeps
+        # skipping a file that config later brings into scope (#406).
+        return False
     if data.get("ok"):
         return True
     for err in data.get("errors") or []:
@@ -9707,12 +9712,38 @@ def _validator_render_row(data: Dict[str, Any], verbose: bool = False) -> list:
     return out
 
 
+def _validator_regressed(before: Optional[Dict[str, Any]], after: Dict[str, Any]) -> bool:
+    """Did this op make this validator worse? The single definition of ✗ (#406).
+
+    Both the rendered marker and the rollback decision read from here, so the
+    red the caller sees and the revert it triggers can never disagree.
+
+    Three states, not two: a `skipped` result is an absence of information, not
+    a finding, so it can never regress — and must never roll back an edit.
+    A failure that was already there before the op is not a regression either.
+    """
+    if "skipped" in after:
+        return False
+    if after.get("ok", False):
+        return False
+    b_count = before.get("count", 0) if before else 0
+    a_count = after.get("count", 0)
+    b_ok = before.get("ok", True) if before else True
+    if b_count == a_count and b_ok == after.get("ok", False):
+        return False
+    return a_count - b_count >= 0
+
+
 def _validator_render_diff(before: Optional[Dict[str, Any]], after: Dict[str, Any]) -> list:
     # Skipped path never started a timer, so elapsed_s is absent — `-` rendered in time col.
     elapsed = after.get("elapsed_s")
     time_col = f"{elapsed:.1f}s" if elapsed is not None else "-"
     if "skipped" in after:
-        return [f"{after['tool']:12s}: {'skipped':<10}  {'':<11}  {time_col:>5}"]
+        # Name the reason. "skipped" alone sends the reader back to the config
+        # to work out which of a dozen reasons applied (#406).
+        reason = str(after["skipped"]).strip().replace("\n", " ")[:80]
+        state_col = f"({reason})" if reason else ""
+        return [f"{after['tool']:12s}: {'skipped':<10}  {state_col}  {time_col:>5}"]
     tool = after["tool"]
     b_count = before.get("count", 0) if before else 0
     a_count = after.get("count", 0)
@@ -9767,7 +9798,8 @@ def _validator_render_diff(before: Optional[Dict[str, Any]], after: Dict[str, An
             if len(after.get("errors") or []) > 5:
                 out.append(f"  ... +{len(after['errors']) - 5} more")
         return out
-    marker = mark("✓") if a_ok else (mark("⚠") if delta < 0 else mark("✗"))
+    marker = (mark("✗") if _validator_regressed(before, after)
+              else (mark("✓") if a_ok else mark("⚠")))
     arrow = f"{b_count} → {a_count}"
     sign = f"({'+' if delta >= 0 else ''}{delta})"
     state_col = f"{sign} {marker}"
@@ -10473,19 +10505,24 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
     diff_out = "\n".join(diff_lines) + ("\n" if diff_lines else "")
 
     if needs_rollback and pre_content is not None:
+        # Decided from the result dicts, not from the rendered rows: a scan for
+        # a ✗ on a line starting with the validator's name reverted `phpstan`
+        # whenever `phpstan-mcp` went red, and could not tell a skip from a
+        # finding at all (#406).
         for name, spec in applicable.items():
             if not spec.get("rollback_on_fail"):
                 continue
-            for line in diff_lines:
-                if line.lstrip().startswith(name) and (mark("✗") in line):
-                    try:
-                        with open(path, "wb") as f:
-                            f.write(pre_content)
-                        _retract_write(path)
-                        diff_out += f"\n[rolled back] {name} regressed; file restored\n"
-                    except OSError as e:
-                        diff_out += f"\n[ROLLBACK FAILED] {name}: {e}\n"
-                    break
+            after_data = after_results.get(name)
+            if after_data is None or not _validator_regressed(before.get(name), after_data):
+                continue
+            try:
+                with open(path, "wb") as f:
+                    f.write(pre_content)
+                _retract_write(path)
+                diff_out += f"\n[rolled back] {name} regressed; file restored\n"
+            except OSError as e:
+                diff_out += f"\n[ROLLBACK FAILED] {name}: {e}\n"
+            break
 
     suffix = ""
     if fmt_rows:  # silent when all formatters are no-op

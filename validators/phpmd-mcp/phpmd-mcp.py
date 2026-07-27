@@ -38,6 +38,12 @@ sys.path.insert(0, os.path.join(
 ))
 from _paths import socket_pid_paths as _shared_socket_pid_paths  # noqa: E402
 
+sys.path.insert(0, os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "common"))
+import refusal as _refusal  # noqa: E402
+
+SKIP_PATTERNS_ENV = "PHPMD_MCP_SKIP_PATTERNS"
+
 
 def sock_paths(cwd: str, name: str) -> tuple[str, str]:
     return _shared_socket_pid_paths(cwd, name)
@@ -154,6 +160,11 @@ def format_response(file_path: str, mcp_resp: dict, duration_ms: int) -> dict:
 
     # The tool returns a SecurityError / runtime error as an extra key.
     if structured.get("error"):
+        # A scope refusal is not a runtime error — it is an absence of analysis,
+        # and counting it as one error inflates the delta by +1 (#406).
+        if _refusal.is_refusal(str(structured["error"]), SKIP_PATTERNS_ENV):
+            return _refusal.skipped("phpmd-mcp", file_path,
+                                    str(structured["error"]), duration_ms)
         base["ok"] = False
         base["count"] = 1
         base["errors"] = [{"line": None, "col": None, "severity": "error",
