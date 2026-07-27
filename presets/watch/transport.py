@@ -81,6 +81,20 @@ def read_state(source: str, watcher_id: str) -> dict[str, Any]:
         return {}
 
 
+def clear_state(source: str, watcher_id: str) -> bool:
+    """Delete the status file. True when a file was actually removed.
+
+    Called when a watcher reaches a terminal state. The poller is gone, so the
+    file is not a record of anything live — leaving it behind makes every
+    consumer that globs the state files report long-merged MRs as active.
+    """
+    try:
+        os.unlink(state_path(source, watcher_id))
+    except OSError:
+        return False
+    return True
+
+
 def desktop_notify(title: str, message: str) -> None:
     """Fire-and-forget macOS notification. No-op elsewhere."""
     if sys.platform != "darwin":

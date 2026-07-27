@@ -242,6 +242,7 @@ def _run_poll_loop(source: str, watcher_id: str, only: list[str]) -> None:
     ctx = {"source": source, "id": watcher_id, "only": only}
     interval = int(getattr(poller, "INTERVAL", 30))
     stop_flag = {"stop": False}
+    reached_terminal = False
 
     def _handle_sigterm(*_a):
         stop_flag["stop"] = True
@@ -278,6 +279,7 @@ def _run_poll_loop(source: str, watcher_id: str, only: list[str]) -> None:
             state = new_state
 
             if hasattr(poller, "is_terminal") and poller.is_terminal(new_state):
+                reached_terminal = True
                 break
 
             for _ in range(interval):
@@ -289,6 +291,11 @@ def _run_poll_loop(source: str, watcher_id: str, only: list[str]) -> None:
             os.unlink(pid_file)
         except OSError:
             pass
+        # A terminal watcher leaves no live process, so its state file is not a
+        # record of anything current. Kept, it makes consumers that glob the
+        # state files report merged MRs as active watches.
+        if reached_terminal:
+            transport.clear_state(source, watcher_id)
 
 
 def main(argv: list[str]) -> int:

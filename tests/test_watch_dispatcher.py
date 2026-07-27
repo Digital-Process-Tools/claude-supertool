@@ -104,3 +104,86 @@ def test_list_includes_live_pid(monkeypatch, tmp_path) -> None:
     assert rows[0]["source"] == "test-source"
     assert rows[0]["id"] == "myid"
     assert rows[0]["pid"] == own_pid
+
+
+# ---------------------------------------------------------------------------
+# terminal state cleanup (issue #417 item 4)
+# ---------------------------------------------------------------------------
+
+def test_clear_state_removes_the_file(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(transport, "STATE_DIR", str(tmp_path))
+    path = Path(transport.state_path("gitlab-mr", "33136"))
+    path.write_text("{}")
+    assert transport.clear_state("gitlab-mr", "33136") is True
+    assert not path.exists()
+
+
+def test_clear_state_is_false_when_absent(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(transport, "STATE_DIR", str(tmp_path))
+    assert transport.clear_state("gitlab-mr", "nope") is False
+
+
+class _StubPoller:
+    """Reaches a terminal state on the first tick."""
+    INTERVAL = 1
+
+    @staticmethod
+    def poll(state, ctx):
+        return [], {"mr_state": "merged"}
+
+    @staticmethod
+    def is_terminal(state):
+        return state.get("mr_state") == "merged"
+
+
+class _OpenPoller(_StubPoller):
+    """Never terminal — bails out on the second tick the way a SIGTERM would."""
+    _ticks: list[int] = []
+
+    @staticmethod
+    def poll(state, ctx):
+        _OpenPoller._ticks.append(1)
+        if len(_OpenPoller._ticks) > 1:
+            raise SystemExit(0)
+        return [], {"mr_state": "opened"}
+
+    @staticmethod
+    def is_terminal(state):
+        return False
+
+
+def _run_loop_in_child(monkeypatch, tmp_path, poller) -> None:
+    """Run _run_poll_loop in a forked child.
+
+    The loop redirects fds 0/1/2 to /dev/null, so it must not run in the
+    pytest process. Fork inherits the monkeypatched modules.
+    """
+    monkeypatch.setattr(dispatcher.transport, "STATE_DIR", str(tmp_path))
+    monkeypatch.setattr(dispatcher, "_load_source", lambda name: poller)
+    pid = os.fork()
+    if pid == 0:
+        try:
+            dispatcher._run_poll_loop("gitlab-mr", "33136", [])
+        finally:
+            os._exit(0)
+    _, status = os.waitpid(pid, 0)
+    assert os.WIFEXITED(status)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="requires os.fork")
+def test_terminal_poller_removes_its_state_file(monkeypatch, tmp_path) -> None:
+    state = tmp_path / "supertool-watch-gitlab-mr__33136.state.json"
+    state.write_text('{"source_state": {"mr_state": "opened"}}')
+    _run_loop_in_child(monkeypatch, tmp_path, _StubPoller)
+    assert not state.exists()
+    assert not (tmp_path / "supertool-watch-gitlab-mr__33136.pid").exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="requires os.fork")
+def test_non_terminal_poller_keeps_its_state_file(monkeypatch, tmp_path) -> None:
+    """Only a terminal stop clears the cache — a SIGTERM'd watcher keeps it."""
+    state = tmp_path / "supertool-watch-gitlab-mr__33136.state.json"
+    state.write_text('{"source_state": {"mr_state": "opened"}}')
+    _run_loop_in_child(monkeypatch, tmp_path, _OpenPoller)
+    assert state.exists()
+    assert not (tmp_path / "supertool-watch-gitlab-mr__33136.pid").exists()

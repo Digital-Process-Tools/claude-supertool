@@ -317,7 +317,10 @@ The `watch` preset spawns background pollers that emit events when external stat
 ./supertool 'watch:github-pr:179:only=merged'     # filter event types
 ./supertool 'watches'                             # list active pollers
 ./supertool 'unwatch:github-pr:179'               # stop one
+./supertool 'radar'                               # reconcile + report every open MR
 ```
+
+`watches` tells you which pollers are alive. `radar` tells you what is **true**: it treats live GitLab as authoritative (state files are cache), respawns watchers for open MRs that lost theirs, prunes state files for merged MRs, and flags drift where the last event fired on a pipeline that has since been superseded. Pollers die with the machine and events are fire-and-forget, so at session start an event-driven view knows nothing — and "knows nothing" looks exactly like "all green". Run `radar` on every session start; it is idempotent.
 
 Run `bash notifiers/claude-channel/install.sh` to install the MCP server, register it in `.mcp.json`, and launch Claude with:
 

@@ -18,6 +18,12 @@
       "timeout": 5,
       "description": "List active watch pollers as a table: source, id, started, last_event, pid.",
       "syntax": "watches"
+    },
+    "radar": {
+      "cmd": "{python} {path}watch/radar.py",
+      "timeout": 90,
+      "description": "Reconcile watch coverage against live GitLab, then report. Live MRs are authoritative; state files are cache. Prunes terminal state files, flags pipeline drift (last_event vs source_state), respawns watchers for open MRs with no live poller. Full board on cold start, delta-only after. Idempotent — safe on every session start.",
+      "syntax": "radar"
     }
   }
 }
