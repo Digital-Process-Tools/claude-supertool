@@ -191,13 +191,64 @@ def list_active_pids() -> list[dict[str, Any]]:
     return rows
 
 
+# GetExitCodeProcess reports this for a process that has not exited.
+_WIN_STILL_ACTIVE = 259
+# Read-only access right. Deliberately not PROCESS_ALL_ACCESS: the probe must
+# never hold a handle powerful enough to terminate what it is inspecting.
+_WIN_QUERY_LIMITED_INFORMATION = 0x1000
+
+
+def _kernel32():
+    """Seam so the Windows probe can be exercised from a POSIX test runner."""
+    import ctypes
+    return ctypes.windll.kernel32  # type: ignore[attr-defined]
+
+
+def _pid_alive_windows(pid: int) -> bool:
+    """Non-destructive liveness probe: open for query only, read exit code."""
+    import ctypes
+    kernel32 = _kernel32()
+    handle = kernel32.OpenProcess(_WIN_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return False
+    try:
+        code = ctypes.c_ulong()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return False
+        return code.value == _WIN_STILL_ACTIVE
+    finally:
+        kernel32.CloseHandle(handle)
+
+
 def _pid_alive(pid: int) -> bool:
+    """Is this PID a live process? Always answers — never raises, never kills.
+
+    On Windows `os.kill(pid, 0)` is not a liveness probe. Python documents any
+    signal other than CTRL_C_EVENT/CTRL_BREAK_EVENT as routed to
+    TerminateProcess, so the POSIX idiom would kill the very watcher it was
+    asked about; and for a PID that does not exist OpenProcess fails with
+    WinError 87, an OSError that is neither ProcessLookupError nor
+    PermissionError, so it escaped this function and took `radar` down with
+    it. Windows therefore gets an explicit read-only probe.
+
+    An unanswerable question resolves to "not alive", because that is the
+    safe direction: the caller reacts by respawning or pruning, and a
+    duplicate poller is visible and cheap while a poller everyone believes is
+    running is exactly the silent blindness this subsystem exists to remove.
+    """
     if pid <= 0:
         return False
+    if sys.platform == "win32":
+        try:
+            return _pid_alive_windows(pid)
+        except (OSError, AttributeError, ValueError):
+            return False
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
     except PermissionError:
         return True
+    except OSError:
+        return False
     return True
