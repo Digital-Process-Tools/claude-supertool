@@ -145,23 +145,153 @@ def _repo_git_dirs():
     return result
 
 
-def _git_state_fingerprint(dirs):
-    """Hash the bits a leaking test would mutate: config, HEAD, and every head ref."""
-    import hashlib
+def _read_or_absent(path):
+    try:
+        return path.read_bytes()
+    except OSError:
+        return b"<absent>"
+
+
+def _git_state_snapshot(dirs):
+    """Capture the bits a leaking test would mutate: config, HEAD, and every head ref.
+
+    A mapping rather than a hash, because a hash can only answer "did the repo
+    change". The question the guard actually asks is "did *this test* change
+    it" (#428), and answering that needs to know *which* key moved: the
+    refs/heads/ namespace lives in the common dir, shared with every sibling
+    worktree, so a hash of it reports their commits as ours.
+    """
     common_dir, git_dir = dirs
-    h = hashlib.sha256()
-    for p in (common_dir / "config", git_dir / "HEAD", common_dir / "packed-refs"):
-        try:
-            h.update(p.read_bytes())
-        except OSError:
-            h.update(b"<absent>")
+    snapshot = {
+        "config": _read_or_absent(common_dir / "config"),
+        "HEAD": _read_or_absent(git_dir / "HEAD"),
+        "packed-refs": _read_or_absent(common_dir / "packed-refs"),
+        "refs": {},
+    }
     heads = common_dir / "refs" / "heads"
     if heads.is_dir():
         for ref in sorted(heads.rglob("*")):
             if ref.is_file():
-                h.update(str(ref.relative_to(heads)).encode())
-                h.update(ref.read_bytes())
-    return h.hexdigest()
+                snapshot["refs"][ref.relative_to(heads).as_posix()] = _read_or_absent(ref)
+    return snapshot
+
+
+def _head_branch(head_bytes):
+    """Branch name a HEAD file points at, or None when detached or unreadable."""
+    if not head_bytes:
+        return None
+    text = head_bytes.decode("utf-8", "replace").strip()
+    prefix = "ref: refs/heads/"
+    if not text.startswith(prefix):
+        return None
+    return text[len(prefix):] or None
+
+
+def _same_path(a, b):
+    """Path equality that survives Windows, where two spellings mean one directory.
+
+    NTFS is case-insensitive, so ``C:\\\\Repo`` and ``c:\\\\repo`` are the same
+    checkout; ``os.path.normcase`` is the one comparison that knows that and is
+    a no-op on POSIX. Getting this wrong makes *our own* worktree read as a
+    sibling — see ``_classify_git_state_change`` for why that cannot excuse a
+    real violation, and ``_other_worktree_branches`` for what it would still
+    cost.
+    """
+    import os
+    return os.path.normcase(str(a)) == os.path.normcase(str(b))
+
+
+def _parse_worktree_list(porcelain, root):
+    """Split ``git worktree list --porcelain`` into (sibling branches, any siblings).
+
+    ``root`` is this checkout; every other block is a sibling that shares our
+    common dir and can move refs under our feet.
+
+    ``splitlines`` rather than ``split("\\n")`` is load-bearing: git emits CRLF
+    on Windows, and a trailing ``\\r`` would make every branch name miss by one
+    invisible byte. It is pinned by a test that runs on every OS.
+    """
+    branches = set()
+    has_siblings = False
+    is_sibling = False
+    for line in porcelain.splitlines():
+        if line.startswith("worktree "):
+            is_sibling = not _same_path(Path(line[len("worktree "):]).resolve(), root)
+            has_siblings = has_siblings or is_sibling
+        elif is_sibling and line.startswith("branch refs/heads/"):
+            branches.add(line[len("branch refs/heads/"):])
+    return frozenset(branches), has_siblings
+
+
+def _other_worktree_branches():
+    """Branches checked out elsewhere, and whether any sibling worktree exists.
+
+    Only called once a change has already been detected, so the subprocess is
+    paid on the rare path — never the ~7k times a per-test call would cost.
+    """
+    import subprocess
+    root = Path(__file__).resolve().parent.parent
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "worktree", "list", "--porcelain"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return frozenset(), False
+    if result.returncode != 0:
+        return frozenset(), False
+    return _parse_worktree_list(result.stdout, root)
+
+
+def _classify_git_state_change(before, after, other_branches, has_siblings):
+    """Attribute a git state change to this test, a sibling worktree, or nobody.
+
+    Returns ``(verdict, changed_keys)`` with verdict in ``clean`` / ``mutated``
+    / ``inconclusive``.
+
+    ``config``, this worktree's ``HEAD``, and the branch ``HEAD`` points at are
+    what a test running git against the ambient repo moves (#416) — and what no
+    sibling worktree can touch, since a checked-out branch is exclusive. Any of
+    them moving is this test's doing, siblings present or not, so the #319
+    tripwire keeps its teeth. Refs checked out in other worktrees are theirs by
+    definition. Anything left — a stray branch, a rewritten ``packed-refs`` —
+    is a violation when this is the only checkout (the CI case, where the guard
+    is unchanged) and honestly unattributable when it is not.
+    """
+    changed = {key for key in ("config", "HEAD", "packed-refs") if before[key] != after[key]}
+    changed |= {
+        "refs/heads/" + name
+        for name in set(before["refs"]) | set(after["refs"])
+        if before["refs"].get(name) != after["refs"].get(name)
+    }
+    changed = sorted(changed)
+    if not changed:
+        return "clean", changed
+    ours = {"config", "HEAD"}
+    for snapshot in (before, after):
+        branch = _head_branch(snapshot["HEAD"])
+        if branch:
+            ours.add("refs/heads/" + branch)
+    if ours.intersection(changed):
+        return "mutated", changed
+    if set(changed) <= {"refs/heads/" + name for name in other_branches}:
+        return "clean", changed
+    if has_siblings:
+        return "inconclusive", changed
+    return "mutated", changed
+
+
+GIT_STATE_MUTATED = (
+    "test mutated the suite repo's git state ({changed}) — build git fixtures "
+    "in tmp_path and pass cwd=tmp_path to every git call. "
+    "See conftest._guard_repo_git_state / issue #319."
+)
+
+GIT_STATE_INCONCLUSIVE = (
+    "suite repo git state changed ({changed}) while a sibling worktree was "
+    "active — cannot tell whether this test did it, so not failing it. "
+    "Re-run with no other worktree busy to get a verdict. See issue #428."
+)
 
 
 @pytest.fixture(autouse=True)
@@ -174,18 +304,29 @@ def _guard_repo_git_state():
     — and when the suite runs inside a *worktree* (shared ``.git``), it
     corrupts the main checkout too (``core.bare=true``, junk commits on master).
     A standalone clone hides this; this guard surfaces the culprit by name.
+
+    Sibling worktrees share that common dir, so their commits land in the same
+    snapshot. Rather than blame whichever test was in teardown, the change is
+    attributed first, and only an unexplained one is reported (#428).
     """
     dirs = _repo_git_dirs()
-    before = _git_state_fingerprint(dirs) if dirs else None
+    before = _git_state_snapshot(dirs) if dirs else None
     yield
     if before is None:
         return
-    after = _git_state_fingerprint(dirs)
-    assert before == after, (
-        "test mutated the suite repo's git state (config/HEAD/refs changed) — "
-        "build git fixtures in tmp_path and pass cwd=tmp_path to every git call. "
-        "See conftest._guard_repo_git_state / issue #319."
+    after = _git_state_snapshot(dirs)
+    if after == before:
+        return
+    verdict, changed = _classify_git_state_change(
+        before, after, *_other_worktree_branches()
     )
+    if verdict == "clean":
+        return
+    if verdict == "inconclusive":
+        import warnings
+        warnings.warn(GIT_STATE_INCONCLUSIVE.format(changed=", ".join(changed)))
+        return
+    raise AssertionError(GIT_STATE_MUTATED.format(changed=", ".join(changed)))
 
 
 # Module-level mutable state that must not survive a test (#397). Every entry
