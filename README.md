@@ -185,6 +185,8 @@ Formatters run after every edit, before validators — `edit → format → vali
 
 `prettier` ships as the first bundled formatter. `rollback_on_fail` defaults to `false` — formatters are cosmetic; the validator is the safety net.
 
+A formatter rewrites the **whole file**, so it runs only where the repo shows it wants one: the tool's own config (`.prettierrc`, `phpcs.xml`, `pyproject.toml` with `[tool.black]`, …), searched from the *edited file's* directory up to **its** repo root; a manifest naming the tool; or an `env` entry in the spec carrying the rules. Otherwise the file is validated and left alone, and the receipt says which formatter was skipped. Set `"requires_config": false` on a spec to always run it, or `SUPERTOOL_FORMAT_WITHOUT_CONFIG=1` for a whole invocation. Tools supertool has no marker for are never gated.
+
 Full reference: [docs/formatters.md](docs/formatters.md) — config shape, bundled formatters, adding your own (gofmt, black, rustfmt, phpcbf).
 
 ---
