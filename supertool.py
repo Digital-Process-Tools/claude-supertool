@@ -721,6 +721,141 @@ def _split_exclude_prefixes(
     return tuple(singles), tuple(multis)
 
 
+# Directories git ignores, keyed on (cwd, search root). One entry per walk
+# root per process — a batch call runs many ops and must not re-shell per op.
+_GIT_IGNORED_CACHE: Dict[Tuple[str, str], frozenset] = {}
+_GIT_IGNORE_TIMEOUT = 10
+
+
+def _gitignore_enabled() -> bool:
+    """Whether walks prune gitignored directories. Default: true (#449).
+
+    Off via `"gitignore": false` in .supertool.json, or SUPERTOOL_NO_GITIGNORE=1
+    for one invocation. `no-exclude` on the op turns it off too, since that flag
+    already means "show me everything".
+    """
+    if os.environ.get("SUPERTOOL_NO_GITIGNORE") == "1":
+        return False
+    return bool(_load_config().get("gitignore", True))
+
+
+def _git_ignored_dirs(root: str) -> frozenset:
+    """Directories under `root` that git ignores, as cwd-relative posix paths.
+
+    Asks git rather than parsing `.gitignore` (#449). Negations (`!keep/`),
+    nested ignore files, `.git/info/exclude` and the user's global excludes are
+    all semantics we would otherwise have to reimplement, and getting any of
+    them wrong hides files — the failure direction this repository has spent a
+    week removing. `git ls-files --directory` also collapses an ignored tree to
+    its top directory instead of listing it, so the answer costs one subprocess
+    and never descends into what it is telling us to skip.
+
+    **Only directories are collected.** Ignored *files* are left in the walk:
+    the win here is pruning at the directory boundary, per-file filtering would
+    buy little, and `_DEFAULT_EXCLUDE_PATHS` already covers the secret-file
+    case (#146).
+
+    Returns an empty set — meaning "no opinion", not "nothing to skip" —
+    outside a repo, without git, on timeout, and, deliberately, when `root`
+    itself is ignored. That last case is the whole guarantee: a caller who
+    names `.claude/worktrees/foo` as the search root gets results, because
+    every path under an ignored root is ignored and pruning there would return
+    silence.
+    """
+    if not _gitignore_enabled() or not os.path.isdir(root):
+        return frozenset()
+    cwd = os.getcwd()
+    key = (cwd, os.path.normpath(root))
+    cached = _GIT_IGNORED_CACHE.get(key)
+    if cached is None:
+        cached = _compute_git_ignored_dirs(root, cwd)
+        _GIT_IGNORED_CACHE[key] = cached
+    return cached
+
+
+def _run_git_ignore_query(root: str, args: List[str]) -> Any:
+    """Run one git query under `root`; None when git is absent or misbehaves."""
+    try:
+        return subprocess.run(
+            ["git", "-C", root, *args],
+            capture_output=True, timeout=_GIT_IGNORE_TIMEOUT,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _compute_git_ignored_dirs(root: str, cwd: str) -> frozenset:
+    """Uncached body of `_git_ignored_dirs`."""
+    # check-ignore exits 1 for "not ignored", 0 for "ignored", 128 for "not a
+    # repo" / any other failure. Only 1 authorises pruning: 0 means the caller
+    # deliberately searched inside an ignored tree, 128 means we do not know.
+    probe = _run_git_ignore_query(root, ["check-ignore", "-q", "--", os.path.abspath(root)])
+    if probe is None or probe.returncode != 1:
+        return frozenset()
+    listing = _run_git_ignore_query(root, [
+        "ls-files", "-z", "--others", "--ignored", "--exclude-standard",
+        "--directory", "--no-empty-directory",
+    ])
+    if listing is None or listing.returncode != 0:
+        return frozenset()
+    dirs = set()
+    for entry in listing.stdout.decode("utf-8", "surrogateescape").split("\0"):
+        # Trailing slash is git's marker for "this whole directory is ignored".
+        # Entries without one are individual files, which we leave alone.
+        if not entry.endswith("/"):
+            continue
+        rel = _strip_dot_slash(
+            _safe_relpath(os.path.normpath(os.path.join(root, entry)), cwd)
+        )
+        if rel and rel != "." and not rel.startswith(".."):
+            dirs.add(rel)
+    return frozenset(dirs)
+
+
+def _strip_dot_slash(path: str) -> str:
+    """Normalise a relative path to forward slashes with no leading './'."""
+    rel = path.replace(os.sep, "/")
+    while rel.startswith("./"):
+        rel = rel[2:]
+    return rel
+
+
+def _is_git_ignored(rel_root: str, name: str, ignored: frozenset) -> bool:
+    """Whether `rel_root/name` is one of the directories git told us to skip."""
+    if not ignored:
+        return False
+    return _strip_dot_slash(os.path.join(rel_root, name)) in ignored
+
+
+def _under_git_ignored(rel_path: str, ignored: frozenset) -> bool:
+    """Whether a file path sits inside any ignored directory.
+
+    Used on the post-filter glob path, which has no walk boundary to prune at.
+    """
+    if not ignored:
+        return False
+    rel = _strip_dot_slash(rel_path)
+    return any(rel == d or rel.startswith(d + "/") for d in ignored)
+
+
+def _gitignore_residual(path: str, exclude_paths: Tuple[str, ...]) -> bool:
+    """Whether git ignores a directory the built-in excludes would still walk.
+
+    Gates rtk delegation (#449). rtk shells out to the system grep, whose
+    `--exclude-dir` takes bare names and cannot express a nested path like
+    `.claude/worktrees/`, so a delegated grep would return the very copies the
+    native walker prunes — and which backend ran must never change the answer.
+    The test is *residual*, not "is anything ignored": a repo whose ignore set
+    is `node_modules/` alone is already fully covered by
+    `_DEFAULT_EXCLUDE_PATHS`, and nobody should lose delegation over it.
+    """
+    if not exclude_paths:
+        return False
+    return any(
+        not _is_excluded(rel, exclude_paths) for rel in _git_ignored_dirs(path)
+    )
+
+
 def _rtk_enabled() -> bool:
     """Check if RTK delegation is enabled in .supertool.json. Default: true."""
     return bool(_load_config().get("rtk", True))
@@ -1437,8 +1572,10 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
     # expressed as --exclude-dir; fall through to the native walker in that case.
     if not count_only and context == 0 and _rtk_enabled() and _has_rtk():
         single, multi = _split_exclude_prefixes(excl)
-        if not multi:
-            rtk_args = ["grep", "-rn", "-m", str(limit)]
+        if not multi and not _gitignore_residual(path, excl):
+            # limit + 1 so the report can tell "exactly N" from "stopped at N"
+            # (#448). The extra line is trimmed off before output.
+            rtk_args = ["grep", "-rn", "-m", str(limit + 1)]
             for d in single:
                 rtk_args.append(f"--exclude-dir={d}")
             rtk_args.extend([pattern, path])
@@ -1476,21 +1613,21 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
         return "".join(out)
 
     if context > 0:
-        groups = _grep_recursive_context(pattern, path, limit, context, excl, candidates=candidates)
-        literal_note = ""
+        groups = _grep_recursive_context(
+            pattern, path, limit + 1, context, excl, candidates=candidates)
+        literal = False
         if not groups and _is_regexy(pattern):
             groups = _grep_recursive_context(
-                re.escape(pattern), path, limit, context, excl, candidates=candidates)
-            if groups:
-                hit_count = sum(
-                    1 for g in groups for line in g if line[2] == "match")
-                literal_note = _literal_note(pattern, hit_count)
+                re.escape(pattern), path, limit + 1, context, excl, candidates=candidates)
+            literal = bool(groups)
+        groups, truncated = _trim_context_groups(groups, limit)
         count = sum(
             1 for g in groups for line in g if line[2] == "match"
         )
+        literal_note = _literal_note(pattern, count) if literal else ""
         file_count = len({g[0][0] for g in groups if g})
         out = [literal_note, f"({count} results in {file_count} files{_scanned_suffix(scanned)}, "
-               f"limit {limit}, context {context})\n"]
+               f"limit {limit}, context {context}{_truncation_suffix(truncated)})\n"]
         current_file: str = ""
         first_group = True
         for group in groups:
@@ -1511,17 +1648,25 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
         out.append("\n")
         return _cap_context_window("".join(out), "grep_around")
 
-    hits = _grep_recursive(pattern, path, limit, excl, candidates=candidates)
-    literal_note = ""
+    # limit + 1 (#448): a count that equals the limit is ambiguous between
+    # "exactly N matches" and "stopped at N", and only looking one past the cap
+    # settles it. The walk itself is already paid for — `candidates` above
+    # traversed the whole tree to produce `scanned` — so the extra cost is
+    # reading file *contents* until one more match turns up, not another walk.
+    hits = _grep_recursive(pattern, path, limit + 1, excl, candidates=candidates)
+    literal = False
     if not hits and _is_regexy(pattern):
-        hits = _grep_recursive(re.escape(pattern), path, limit, excl, candidates=candidates)
-        if hits:
-            literal_note = _literal_note(pattern, len(hits))
+        hits = _grep_recursive(re.escape(pattern), path, limit + 1, excl, candidates=candidates)
+        literal = bool(hits)
+    truncated = len(hits) > limit
+    hits = hits[:limit]
     count = len(hits)
+    literal_note = _literal_note(pattern, count) if literal else ""
     file_count = len({fp for fp, _, _ in hits})
 
     out = [literal_note,
-           f"({count} results in {file_count} files{_scanned_suffix(scanned)}, limit {limit})\n"]
+           f"({count} results in {file_count} files{_scanned_suffix(scanned)}, "
+           f"limit {limit}{_truncation_suffix(truncated)})\n"]
     current_file = ""
     for fp, lineno, content in hits:
         if fp != current_file:
@@ -1848,7 +1993,11 @@ def op_glob(pattern: str, no_exclude: bool = False, no_auto_read: bool = False) 
                 + render_file(pattern, 0, _get_op_int("read", "max_lines", MAX_READ_LINES)))
 
     excl = _get_exclude_paths("glob", no_exclude)
-    files = _glob_files(pattern, excl)
+    # over_fetch=1 (#448): `(N files)` implies completeness the same way grep's
+    # header did, and one file past the cap is what distinguishes "N matched"
+    # from "N shown".
+    cap = _get_op_int("glob", "max_results", MAX_GLOB_RESULTS)
+    files = _glob_files(pattern, excl, over_fetch=1)
     # glob is repo-root relative, so a pattern naming a mid-path segment
     # (`SiBrief/**/*.php` for a dir nested under Dvsi/src2/) returns 0 while the
     # same segment works fine in grep. Retry once with a `**/` prefix so both
@@ -1857,10 +2006,12 @@ def op_glob(pattern: str, no_exclude: bool = False, no_auto_read: bool = False) 
     if (not files and "/" in pattern
             and not pattern.startswith(("/", "~", "**", "./", "../"))):
         retry = "**/" + pattern
-        files = _glob_files(retry, excl)
+        files = _glob_files(retry, excl, over_fetch=1)
         if files:
             midpath_note = (f"[mid-path retry: no match at repo root for "
                             f"{pattern!r} — matched {retry!r}]\n")
+    glob_truncated = len(files) > cap
+    files = files[:cap]
     # Strip common directory prefix when 2+ files share one
     prefix = ""
     if len(files) >= 2:
@@ -1870,7 +2021,8 @@ def op_glob(pattern: str, no_exclude: bool = False, no_auto_read: bool = False) 
         # Only strip if it saves something meaningful (> 10 chars)
         if len(prefix) <= 10:
             prefix = ""
-    out = [midpath_note, f"({len(files)} files)\n"]
+    truncation = " — TRUNCATED, more files match" if glob_truncated else ""
+    out = [midpath_note, f"({len(files)} files{truncation})\n"]
     if prefix:
         fwd_prefix = _fwd(prefix)
         out.append(f"{fwd_prefix}\n")
@@ -2809,8 +2961,16 @@ def _rtk_grep_report(rtk_out: str, limit: int) -> str:
     The body is passed through verbatim: re-rendering it into supertool's
     grouped layout would mean re-parsing content that may itself contain
     colons, for a cosmetic gain.
+
+    op_grep asks rtk for `limit + 1` matches, so this sees one line past the
+    cap whenever more exist (#448). The extra line is dropped and the report
+    says so, which keeps the delegated path's completeness disclosure identical
+    to the native walker's — the same reason the `?` denominator is printed
+    rather than omitted.
     """
     lines = [ln for ln in rtk_out.splitlines() if ln.strip()]
+    truncated = len(lines) > limit
+    lines = lines[:limit]
     files = set()
     for ln in lines:
         m = re.match(r"^(.+?):\d+:", ln)
@@ -2818,8 +2978,52 @@ def _rtk_grep_report(rtk_out: str, limit: int) -> str:
             files.add(m.group(1))
     header = (f"({len(lines)} results in {len(files)} files"
               ", scanned ? files — delegated to rtk"
-              f", limit {limit})\n")
-    return header + rtk_out + "\n"
+              f", limit {limit}{_truncation_suffix(truncated)})\n")
+    return header + "".join(ln + "\n" for ln in lines) + "\n"
+
+
+def _truncation_suffix(truncated: bool) -> str:
+    """Report format's truncation disclosure (#448).
+
+    `(1 results in 1 files, scanned 118353 files, limit 1)` reads as an
+    exhaustive answer and is not one, which is how a coverage audit concluded a
+    class had no test when the test was sitting one match past the cap. The
+    marker is only ever emitted when a match past the limit was actually seen,
+    so its absence is a positive statement: this count is exact.
+    """
+    return " — TRUNCATED, more matches exist" if truncated else ""
+
+
+def _trim_context_groups(
+    groups: List[List[Tuple[str, int, str, str]]], limit: int
+) -> Tuple[List[List[Tuple[str, int, str, str]]], bool]:
+    """Cut context-mode groups back to `limit` matches; report whether any were cut.
+
+    The over-fetched match may share a group with the last kept one (matches
+    within 2*context+1 lines merge into a single window), so the cut has to
+    happen inside the group rather than by dropping whole groups — dropping the
+    group would take the limit-th match with it. A group left holding only
+    context lines is dropped: context without its match is noise.
+    """
+    kept: List[List[Tuple[str, int, str, str]]] = []
+    seen = 0
+    truncated = False
+    for group in groups:
+        lines: List[Tuple[str, int, str, str]] = []
+        stopped = False
+        for entry in group:
+            if entry[2] == "match":
+                if seen >= limit:
+                    stopped = True
+                    break
+                seen += 1
+            lines.append(entry)
+        if any(e[2] == "match" for e in lines):
+            kept.append(lines)
+        if stopped:
+            truncated = True
+            break
+    return kept, truncated
 
 
 def _scanned_suffix(scanned: int) -> str:
@@ -2873,7 +3077,11 @@ def _grep_candidates(
 
     When exclude_paths is provided, directories whose path-relative-to-cwd
     starts with one of the prefixes are pruned at the walk boundary (dirs[:]
-    mutation) so their subtrees are never opened.
+    mutation) so their subtrees are never opened. Gitignored directories are
+    pruned at the same boundary (#449) — and because the pruning happens
+    before the files are collected, the returned length is what op_grep reports
+    as `scanned N`, so #407's denominator shrinks with the walk instead of
+    counting agent worktrees six times over.
     """
     candidates: List[str] = []
     if os.path.isfile(path):
@@ -2881,12 +3089,14 @@ def _grep_candidates(
     elif os.path.isdir(path):
         exts = _grep_file_includes()  # None = all files
         cwd = os.getcwd()
+        ignored = _git_ignored_dirs(path) if exclude_paths else frozenset()
         for root, dirs, files in os.walk(path):
             if exclude_paths:
                 rel_root = _safe_relpath(root, cwd)
                 dirs[:] = [
                     d for d in dirs
                     if not _is_excluded(os.path.join(rel_root, d), exclude_paths)
+                    and not _is_git_ignored(rel_root, d, ignored)
                 ]
             for name in files:
                 if exts is None or any(name.endswith(ext.lstrip("*")) for ext in exts):
@@ -3010,16 +3220,20 @@ def _grep_recursive_context(
 
 
 def _glob_files(
-    pattern: str, exclude_paths: Tuple[str, ...] = ()
+    pattern: str, exclude_paths: Tuple[str, ...] = (), over_fetch: int = 0
 ) -> List[str]:
     """Glob matching files, supports ** recursive. Returns up to MAX_GLOB_RESULTS.
+
+    `over_fetch` raises the internal cap by that many files without changing
+    the cap callers are told about. op_glob passes 1 so it can tell a list that
+    happens to be cap-length from one that was cut short (#448).
 
     When exclude_paths is provided and the pattern contains '**', uses an
     os.walk-based implementation that prunes excluded directories at the walk
     boundary (never opens them).  For non-recursive patterns, falls back to
     glob.glob and filters results post-hoc (no subtree to prune anyway).
     """
-    max_results = _get_op_int("glob", "max_results", MAX_GLOB_RESULTS)
+    max_results = _get_op_int("glob", "max_results", MAX_GLOB_RESULTS) + over_fetch
 
     # Brace expansion: `*.{json,xml}` → fan out + dedupe. Shell/fd semantics.
     expanded = _expand_braces(pattern)
@@ -3027,7 +3241,7 @@ def _glob_files(
         seen: set = set()
         results: List[str] = []
         for sub_pattern in expanded:
-            for f in _glob_files(sub_pattern, exclude_paths):
+            for f in _glob_files(sub_pattern, exclude_paths, over_fetch):
                 if f not in seen:
                     seen.add(f)
                     results.append(f)
@@ -3050,12 +3264,14 @@ def _glob_files(
             tail = pattern.lstrip("/").lstrip(os.sep)
 
         cwd = os.getcwd()
+        ignored = _git_ignored_dirs(root_part)
         files: List[str] = []
         for root, dirs, filenames in os.walk(root_part):
             rel_root = _safe_relpath(root, cwd)
             dirs[:] = sorted(
                 d for d in dirs
                 if not _is_excluded(os.path.join(rel_root, d), exclude_paths)
+                and not _is_git_ignored(rel_root, d, ignored)
             )
             for name in sorted(filenames):
                 full = os.path.join(root, name)
@@ -3080,11 +3296,28 @@ def _glob_files(
     files_out = [m for m in matches if os.path.isfile(m)]
     if exclude_paths:
         cwd = os.getcwd()
+        # No walk boundary to prune at on this path, so gitignored hits are
+        # filtered out of the result instead (#449).
+        ignored = _git_ignored_dirs(_glob_ignore_root(pattern))
         files_out = [
             m for m in files_out
             if not _is_excluded(_safe_relpath(m, cwd), exclude_paths)
+            and not _under_git_ignored(_safe_relpath(m, cwd), ignored)
         ]
     return files_out[:max_results]
+
+
+def _glob_ignore_root(pattern: str) -> str:
+    """Directory a glob pattern starts from, for the gitignore lookup (#449).
+
+    The literal head of the pattern — everything before the first wildcard —
+    is what decides whether the caller deliberately entered an ignored tree.
+    `glob:.claude/worktrees/foo/*.php` must keep working; `glob:**/*.php` must
+    not drag six worktrees in.
+    """
+    head = re.split(r"[*?\[]", pattern, maxsplit=1)[0]
+    directory = head if head.endswith(("/", os.sep)) else os.path.dirname(head)
+    return directory if directory and os.path.isdir(directory) else "."
 
 
 # ---------------------------------------------------------------------------

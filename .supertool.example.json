@@ -1,6 +1,7 @@
 {
   "compact": false,
   "rtk": false,
+  "gitignore": true,
   "parallel": 0,
   "_comment_advice": "Non-blocking [advice] lines emitted after a mutating op. Each rule: hooks_into (ops, default all mutating), match (path glob), when (new-file|existing-file|always), contains (regex over ADDED content), resolve/resolveFromValidator (subprocess emitting a would-be target via exit 3 + stderr), message ({target}/{path}/{op} interpolate). See docs/validators.md#advice.",
   "advice": {
