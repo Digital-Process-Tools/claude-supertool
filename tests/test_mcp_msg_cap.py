@@ -69,13 +69,13 @@ def test_phpunit_cap_default_is_2000(phpunit_mod) -> None:
 # ---------------------------------------------------------------------------
 
 def test_phpstan_mcp_has_msg_cap_in_source() -> None:
-    src = (ROOT / "validators/phpstan-mcp/phpstan-mcp.py").read_text()
+    src = (ROOT / "validators/phpstan-mcp/phpstan-mcp.py").read_text(encoding="utf-8")
     assert "PHPSTAN_MCP_MSG_MAX_CHARS" in src
     assert "TRUNCATED" in src
 
 
 def test_rector_mcp_has_msg_cap_in_source() -> None:
-    src = (ROOT / "validators/rector-mcp/rector-mcp.py").read_text()
+    src = (ROOT / "validators/rector-mcp/rector-mcp.py").read_text(encoding="utf-8")
     assert "RECTOR_MCP_MSG_MAX_CHARS" in src
     assert "TRUNCATED" in src
 
@@ -86,9 +86,9 @@ def test_rector_mcp_has_msg_cap_in_source() -> None:
 
 def test_default_cap_is_consistent_across_mcps() -> None:
     """All three MCPs default to 2000 chars (env can override per-tool)."""
-    phpunit_src = (ROOT / "validators/phpunit-mcp/phpunit-mcp.py").read_text()
-    phpstan_src = (ROOT / "validators/phpstan-mcp/phpstan-mcp.py").read_text()
-    rector_src = (ROOT / "validators/rector-mcp/rector-mcp.py").read_text()
+    phpunit_src = (ROOT / "validators/phpunit-mcp/phpunit-mcp.py").read_text(encoding="utf-8")
+    phpstan_src = (ROOT / "validators/phpstan-mcp/phpstan-mcp.py").read_text(encoding="utf-8")
+    rector_src = (ROOT / "validators/rector-mcp/rector-mcp.py").read_text(encoding="utf-8")
     assert '"2000"' in phpunit_src
     assert '"2000"' in phpstan_src
     assert '"2000"' in rector_src

@@ -12,7 +12,7 @@ def _run(tmp_path: Path, initial: str, script: str) -> str:
     f.write_text(initial)
     out = supertool.op_vim(str(f), script)
     assert not out.startswith("ERROR"), out
-    return f.read_text()
+    return f.read_text(encoding="utf-8")
 
 
 # --- iw on punctuation (2707-2712) ---

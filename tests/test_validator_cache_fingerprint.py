@@ -23,7 +23,7 @@ def _fresh(monkeypatch, config=None):
 
 def _bump_mtime(path: Path) -> None:
     """Change the file so its stat signature differs."""
-    path.write_text(path.read_text() + "# changed\n")
+    path.write_text(path.read_text(encoding="utf-8") + "# changed\n")
     st = os.stat(path)
     os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
 

@@ -141,7 +141,7 @@ class TestCheckoutUncommittedChanges:
         ), f"Expected refusal message, got: {out!r}"
 
         # Verify the local content is intact
-        content = (repo / "README.md").read_text()
+        content = (repo / "README.md").read_text(encoding="utf-8")
         assert content == "local unsaved work\n", (
             f"SILENT DATA LOSS: local content was clobbered. Got: {content!r}"
         )
@@ -180,7 +180,7 @@ class TestCheckoutUntrackedFileOverwrite:
 
         # SAFE behavior: git itself refuses; op must surface that
         assert rc != 0, "SILENT DATA LOSS: untracked file was silently overwritten"
-        content = (repo / "new-file.txt").read_text()
+        content = (repo / "new-file.txt").read_text(encoding="utf-8")
         assert content == "local untracked content\n", (
             f"SILENT DATA LOSS: untracked file was clobbered. Got: {content!r}"
         )
@@ -315,7 +315,7 @@ class TestCheckoutRemoteOnlyBranch:
         branch = _git(clone, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
         assert branch == "feature/remote-only", f"On wrong branch: {branch!r}"
         # Local tracking branch must now exist with the remote's content.
-        assert (clone / "feature.txt").read_text() == "remote work\n"
+        assert (clone / "feature.txt").read_text(encoding="utf-8") == "remote work\n"
 
     def test_dwim_disabled_still_resolves(self, tmp_path, monkeypatch, capsys):
         """checkout.guess=false disables git's DWIM — op must still resolve."""
@@ -377,7 +377,7 @@ class TestResolveSilentlyWipesOtherSide:
         rc, out = _run_resolve(repo, "ours", "conflict.txt", monkeypatch, capsys)
 
         assert rc == 0, f"Unexpected failure: {out}"
-        content = (repo / "conflict.txt").read_text()
+        content = (repo / "conflict.txt").read_text(encoding="utf-8")
         # "ours" in a merge means HEAD = master's version = "theirs\n"
         # (the branch being merged INTO is HEAD = master)
         assert "<<<<<<" not in content, "Conflict markers still present after resolve"
@@ -396,7 +396,7 @@ class TestResolveSilentlyWipesOtherSide:
         rc, out = _run_resolve(repo, "theirs", "conflict.txt", monkeypatch, capsys)
 
         assert rc == 0, f"Unexpected failure: {out}"
-        content = (repo / "conflict.txt").read_text()
+        content = (repo / "conflict.txt").read_text(encoding="utf-8")
         assert "<<<<<<" not in content
         # branch-a had "ours\n" — picking theirs from branch-a gives "ours\n"
         assert "ours" in content
@@ -450,7 +450,7 @@ class TestResolveMultiplePathsPartiallyConflicted:
         )
 
         # conflict.txt must NOT have been resolved — atomic = all-or-nothing
-        conflict_content = (repo / "conflict.txt").read_text()
+        conflict_content = (repo / "conflict.txt").read_text(encoding="utf-8")
         assert "<<<<<<<" in conflict_content, (
             "SILENT PARTIAL DATA LOSS: conflict.txt was resolved despite atomic "
             "validation failing. Non-conflicted file in batch should block all resolves."

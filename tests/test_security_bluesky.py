@@ -311,7 +311,7 @@ class TestAppPasswordLeakage:
                 publish_mod.main("Hello world")
 
         if session_file.exists():
-            content = session_file.read_text()
+            content = session_file.read_text(encoding="utf-8")
             assert APP_PASSWORD not in content, (
                 f"SECURITY BUG: app password stored in session file: {content!r}"
             )

@@ -16,7 +16,7 @@ def test_x27_decodes_to_single_quote(tmp_path: Path) -> None:
     f = tmp_path / "x.txt"
     f.write_text("end\n")
     supertool.op_vim(str(f), "iIt\\x27s done. ")
-    assert f.read_text() == "It's done. end\n"
+    assert f.read_text(encoding="utf-8") == "It's done. end\n"
 
 
 def test_x22_decodes_to_double_quote(tmp_path: Path) -> None:
@@ -24,7 +24,7 @@ def test_x22_decodes_to_double_quote(tmp_path: Path) -> None:
     f = tmp_path / "x.txt"
     f.write_text("end\n")
     supertool.op_vim(str(f), "i\\x22hello\\x22 ")
-    assert f.read_text() == '"hello" end\n'
+    assert f.read_text(encoding="utf-8") == '"hello" end\n'
 
 
 def test_x60_decodes_to_backtick(tmp_path: Path) -> None:
@@ -32,7 +32,7 @@ def test_x60_decodes_to_backtick(tmp_path: Path) -> None:
     f = tmp_path / "x.md"
     f.write_text("end\n")
     supertool.op_vim(str(f), "i\\x60code\\x60 ")
-    assert f.read_text() == "`code` end\n"
+    assert f.read_text(encoding="utf-8") == "`code` end\n"
 
 
 def test_x_in_normal_text_stays_literal(tmp_path: Path) -> None:
@@ -41,7 +41,7 @@ def test_x_in_normal_text_stays_literal(tmp_path: Path) -> None:
     f.write_text("end\n")
     supertool.op_vim(str(f), "i\\xzz ")
     # \xzz not a valid hex escape — stays as-is
-    assert f.read_text() == "\\xzz end\n"
+    assert f.read_text(encoding="utf-8") == "\\xzz end\n"
 
 
 def test_uppercase_hex_digits_work(tmp_path: Path) -> None:
@@ -49,7 +49,7 @@ def test_uppercase_hex_digits_work(tmp_path: Path) -> None:
     f = tmp_path / "x.txt"
     f.write_text("\n")
     supertool.op_vim(str(f), "i\\x41\\x42\\x43")  # ABC
-    assert f.read_text() == "ABC\n"
+    assert f.read_text(encoding="utf-8") == "ABC\n"
 
 
 def test_double_backslash_x_stays_literal(tmp_path: Path) -> None:
@@ -58,4 +58,4 @@ def test_double_backslash_x_stays_literal(tmp_path: Path) -> None:
     f.write_text("end\n")
     supertool.op_vim(str(f), "i\\\\x27 ")
     # `\\\\` → `\\` (literal backslash), then `x27` stays literal text
-    assert f.read_text() == "\\x27 end\n"
+    assert f.read_text(encoding="utf-8") == "\\x27 end\n"

@@ -48,7 +48,7 @@ def test_the_feed_op_is_built_from_the_shared_filter() -> None:
     assert defaults.DEFAULT_FILTER == "author=@me,state=opened"
     assert defaults.DEFAULT_FEED == f"gl-mrs:{defaults.DEFAULT_FILTER},iids"
 
-    source = (WATCH_DIR / "defaults.py").read_text()
+    source = (WATCH_DIR / "defaults.py").read_text(encoding="utf-8")
     assert 'DEFAULT_FEED = f"gl-mrs:{DEFAULT_FILTER},iids"' in source
 
 
@@ -126,7 +126,7 @@ def _run_watch_mine(tmp_path: Path, *args: str) -> list[str]:
         capture_output=True, text=True, timeout=60, env=env,
     )
     assert r.returncode == 0, r.stderr
-    return log.read_text().splitlines()
+    return log.read_text(encoding="utf-8").splitlines()
 
 
 def test_watch_mine_emits_exact_default_invocations(tmp_path) -> None:
@@ -163,7 +163,7 @@ def test_watch_mine_defaults_match_radar_heal_filter() -> None:
     Both read defaults.py, so this asserts the shell script really consumes it
     rather than carrying its own copy of the literal.
     """
-    text = SCRIPT.read_text()
+    text = SCRIPT.read_text(encoding="utf-8")
     assert "defaults.py" in text
     assert EXPECTED_ONLY not in text
     assert EXPECTED_FEED not in text

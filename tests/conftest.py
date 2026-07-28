@@ -531,7 +531,7 @@ def read_when_ready(path, parse=None, *, timeout: float = 2.0, interval: float =
     last_error = None
     while True:
         try:
-            raw = path.read_text()
+            raw = path.read_text(encoding="utf-8")
         except (FileNotFoundError, NotADirectoryError):
             pass
         else:

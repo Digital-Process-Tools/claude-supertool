@@ -40,9 +40,9 @@ def _wait_for(marker: Path, timeout: float = 5.0) -> str:
     assert marker.exists(), "notifier never fired"
     # The writer may be mid-write when the file first appears.
     deadline = time.time() + timeout
-    while time.time() < deadline and not marker.read_text().strip():
+    while time.time() < deadline and not marker.read_text(encoding="utf-8").strip():
         time.sleep(0.05)
-    return marker.read_text()
+    return marker.read_text(encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------

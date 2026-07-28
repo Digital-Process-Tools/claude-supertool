@@ -53,7 +53,7 @@ def test_search_literal_fallback_with_special_regex_chars(tmp_path: Path) -> Non
     f.write_text("a(b)c(d)\n")
     out = supertool.op_vim(str(f), "gg␞/(b)␞iX")
     # /(b) is invalid as regex (unbalanced) — autocorrect tries literal.
-    assert "X" in f.read_text()
+    assert "X" in f.read_text(encoding="utf-8")
 
 
 def test_question_search_literal_fallback_inline(tmp_path: Path) -> None:
@@ -61,4 +61,4 @@ def test_question_search_literal_fallback_inline(tmp_path: Path) -> None:
     f = tmp_path / "x.txt"
     f.write_text("a(b)c(d)\n")
     out = supertool.op_vim(str(f), "G␞$␞?(b)␞iX")
-    assert "X" in f.read_text()
+    assert "X" in f.read_text(encoding="utf-8")

@@ -193,7 +193,7 @@ def test_nested_batch_still_reports_the_branch(tmp_path: Path, monkeypatch) -> N
     outer = tmp_path / "outer.json"
     outer.write_text(json.dumps([{"op": "batch", "path": f"@{inner}"}]))
     out = supertool.dispatch(f"batch:@{outer}")
-    assert f.read_text() == "a = 2\\n"
+    assert f.read_text(encoding="utf-8") == "a = 2\\n"
     assert out.count("[branch: my-feature]") == 1
 
 

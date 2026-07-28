@@ -26,7 +26,7 @@ def test_ascii_x1e_acts_as_separator(tmp_path: Path) -> None:
     f.write_text("a\nb\nc\n")
     out = supertool.op_vim(str(f), "G\x1edd")
     assert "ERROR" not in out, out
-    assert f.read_text() == "a\nb\n"
+    assert f.read_text(encoding="utf-8") == "a\nb\n"
 
 
 def test_mixed_x1e_and_glyph_separators(tmp_path: Path) -> None:
@@ -35,7 +35,7 @@ def test_mixed_x1e_and_glyph_separators(tmp_path: Path) -> None:
     f.write_text("a\nb\nc\nd\n")
     out = supertool.op_vim(str(f), "G\x1edd␞gg\x1edd")
     assert "ERROR" not in out, out
-    assert f.read_text() == "b\nc\n"
+    assert f.read_text(encoding="utf-8") == "b\nc\n"
 
 
 # ---------------------------------------------------------------------------
@@ -49,7 +49,7 @@ def test_O_consumes_text_natively_no_separator_needed(tmp_path: Path) -> None:
     f.write_text("<?php\nclass Foo {\n}\n")
     out = supertool.op_vim(str(f), "GOuse Bar;")
     assert "ERROR" not in out, out
-    assert "use Bar;" in f.read_text()
+    assert "use Bar;" in f.read_text(encoding="utf-8")
 
 
 def test_i_consumes_text_natively_no_separator_needed(tmp_path: Path) -> None:
@@ -58,7 +58,7 @@ def test_i_consumes_text_natively_no_separator_needed(tmp_path: Path) -> None:
     f.write_text("end\n")
     out = supertool.op_vim(str(f), "ifoo bar")
     assert "ERROR" not in out, out
-    assert f.read_text() == "foo barend\n"
+    assert f.read_text(encoding="utf-8") == "foo barend\n"
 
 
 def test_text_verb_with_payload_does_not_merge(tmp_path: Path) -> None:
@@ -70,7 +70,7 @@ def test_text_verb_with_payload_does_not_merge(tmp_path: Path) -> None:
     assert "ERROR" not in out, out
     # i inserts "hello" before cursor (at start) → "helloX\n"
     # A appends " world" before trailing \n → "helloX world\n"
-    assert f.read_text() == "helloX world\n"
+    assert f.read_text(encoding="utf-8") == "helloX world\n"
 
 
 def test_bare_o_followed_by_valid_verb_does_not_merge(tmp_path: Path) -> None:
@@ -99,7 +99,7 @@ def test_r_at_eof_with_closing_brace_inserts_before(tmp_path: Path) -> None:
     out = supertool.op_vim(str(f), f"G␞:r {snippet}")
     assert "ERROR" not in out, out
     # snippet lands INSIDE the class, before `}`
-    assert f.read_text() == (
+    assert f.read_text(encoding="utf-8") == (
         "<?php\nclass Foo {\n"
         "    public function foo(): void {}\n"
         "}\n"
@@ -115,7 +115,7 @@ def test_r_at_eof_with_non_brace_last_line_inserts_after(tmp_path: Path) -> None
     f.write_text("# heading\nbody\n")
     out = supertool.op_vim(str(f), f"G␞:r {snippet}")
     assert "ERROR" not in out, out
-    assert f.read_text() == "# heading\nbody\nappended\n"
+    assert f.read_text(encoding="utf-8") == "# heading\nbody\nappended\n"
 
 
 def test_r_dash_stdin_at_eof_with_brace_inserts_before(tmp_path: Path, monkeypatch) -> None:
@@ -125,7 +125,7 @@ def test_r_dash_stdin_at_eof_with_brace_inserts_before(tmp_path: Path, monkeypat
     f.write_text("<?php\nclass Foo {\n}\n")
     out = supertool.op_vim(str(f), "G␞:r -")
     assert "ERROR" not in out, out
-    assert f.read_text() == (
+    assert f.read_text(encoding="utf-8") == (
         "<?php\nclass Foo {\n"
         "    public function bar(): void {}\n"
         "}\n"
@@ -141,7 +141,7 @@ def test_r_explicit_before_brace_still_works(tmp_path: Path) -> None:
     f.write_text("<?php\nclass Foo {\n}\n")
     out = supertool.op_vim(str(f), f"G␞?^}}␞:r {snippet}")
     assert "ERROR" not in out, out
-    assert f.read_text() == (
+    assert f.read_text(encoding="utf-8") == (
         "<?php\nclass Foo {\n"
         "    public function foo(): void {}\n"
         "}\n"

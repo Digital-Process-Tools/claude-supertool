@@ -77,7 +77,7 @@ class TestGitcliFlagSmuggling:
     def test_blame_uses_dash_separator(self):
         """The git invocation must include `--` so a path starting with
         `-` is treated as a path, not a flag. Inspect the source."""
-        src = (PRESETS_GIT / "blame.py").read_text()
+        src = (PRESETS_GIT / "blame.py").read_text(encoding="utf-8")
         assert '"--",' in src or '"--"' in src, "blame.py must include `--` separator"
 
 
@@ -123,7 +123,7 @@ class TestStagedSymlinkRejected:
 class TestXmllintFlags:
     def test_xmllint_uses_nonet_noent(self):
         adapter = Path(__file__).parent.parent / "validators" / "xmllint" / "xmllint.py"
-        src = adapter.read_text()
+        src = adapter.read_text(encoding="utf-8")
         assert '"--nonet"' in src
         assert '"--noent"' in src
 
@@ -149,7 +149,7 @@ class TestValidatorCacheHmac:
         supertool._validator_cache_write("k2", data)
         cache_path = supertool._validator_cache_path("k2")
         # Tamper: flip ok=False to ok=True while keeping old mac.
-        wrapped = json.loads(cache_path.read_text())
+        wrapped = json.loads(cache_path.read_text(encoding="utf-8"))
         wrapped["data"]["ok"] = True
         cache_path.write_text(json.dumps(wrapped))
         # Read must reject — mac no longer matches.

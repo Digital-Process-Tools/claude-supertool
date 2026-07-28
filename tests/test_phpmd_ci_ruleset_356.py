@@ -85,7 +85,7 @@ def test_autodetect_uses_project_rulesets(tmp_path: Path) -> None:
     stub, sentinel = _echo_ruleset_stub(tmp_path)
     r = _run(php, stub)
     assert r.returncode == 0, r.stderr
-    ruleset = sentinel.read_text()
+    ruleset = sentinel.read_text(encoding="utf-8")
     # Project XML files must be referenced by absolute path.
     for name in ("cleancode.xml", "design.xml", "naming.xml"):
         assert name in ruleset, f"{name} missing from ruleset: {ruleset}"
@@ -116,7 +116,7 @@ def test_no_project_rulesets_falls_back_to_default(tmp_path: Path) -> None:
     stub, sentinel = _echo_ruleset_stub(tmp_path)
     r = _run(php, stub)
     assert r.returncode == 0, r.stderr
-    ruleset = sentinel.read_text()
+    ruleset = sentinel.read_text(encoding="utf-8")
     # Default behavior: plain built-in category names, no .xml paths.
     assert ".xml" not in ruleset
     assert ruleset == "cleancode,codesize,controversial,design,naming,unusedcode"
@@ -130,7 +130,7 @@ def test_explicit_env_ruleset_disables_autodetect(tmp_path: Path) -> None:
     stub, sentinel = _echo_ruleset_stub(tmp_path)
     r = _run(php, stub, extra_env={"PHPMD_RULESETS": "codesize"})
     assert r.returncode == 0, r.stderr
-    ruleset = sentinel.read_text()
+    ruleset = sentinel.read_text(encoding="utf-8")
     assert ruleset == "codesize"
     data = json.loads(r.stdout.strip())
     assert data["ruleset_source"] == "env"

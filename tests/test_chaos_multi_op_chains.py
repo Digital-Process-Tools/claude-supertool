@@ -68,7 +68,7 @@ class TestConcurrentEditsOnSameFile:
         # Both edits should succeed
         assert "edited" in out
         # Final state: baz (second edit applied after first)
-        assert f.read_text() == "baz\n"
+        assert f.read_text(encoding="utf-8") == "baz\n"
 
     def test_second_edit_sees_first_result(self, tmp_path: Path) -> None:
         """Second edit target string must match what first edit produced,
@@ -88,7 +88,7 @@ class TestConcurrentEditsOnSameFile:
         # Second edit fails — original string gone
         assert "not found" in out.lower() or "ERROR" in out
         # File must be in post-first-edit state (beta), not reverted
-        assert f.read_text() == "beta\n"
+        assert f.read_text(encoding="utf-8") == "beta\n"
 
 
 # ---------------------------------------------------------------------------
@@ -202,7 +202,7 @@ class TestEditValidateRollback:
         # Rollback triggered on regression
         assert "rolled back" in out or "regressed" in out or "restored" in out
         # File must be back to original
-        assert f.read_text() == original
+        assert f.read_text(encoding="utf-8") == original
 
     def test_no_rollback_without_flag(self, tmp_path: Path, monkeypatch) -> None:
         """Without rollback_on_fail the file stays mutated even if validator fails."""
@@ -219,7 +219,7 @@ class TestEditValidateRollback:
 
         supertool.op_edit("before", "after", str(f))
         # No rollback — file stays mutated
-        assert f.read_text() == "after\n"
+        assert f.read_text(encoding="utf-8") == "after\n"
 
     def test_rollback_not_triggered_on_passing_validator(self, tmp_path: Path) -> None:
         """When validator passes no rollback fires even if flag is set."""
@@ -236,7 +236,7 @@ class TestEditValidateRollback:
 
         out = supertool.op_edit("good", "better", str(f))
         assert "rolled back" not in out
-        assert f.read_text() == "better\n"
+        assert f.read_text(encoding="utf-8") == "better\n"
 
 
 # ---------------------------------------------------------------------------
@@ -255,11 +255,11 @@ class TestVimCursorStateAcrossBatchOps:
 
         # Op1: jump to MARKER, append X at end of line
         out1 = supertool.op_vim(str(f), "/MARKER␞A_X")
-        assert "MARKER_X" in f.read_text()
+        assert "MARKER_X" in f.read_text(encoding="utf-8")
 
         # Op2: cursor should be at MARKER_X line; append _Y
         out2 = supertool.op_vim(str(f), "A_Y")
-        final = f.read_text()
+        final = f.read_text(encoding="utf-8")
         # Cursor persisted from op1 — _Y appended on same MARKER line
         assert "MARKER_X_Y" in final, f"Expected cursor persistence, got: {final!r}"
 
@@ -273,7 +273,7 @@ class TestVimCursorStateAcrossBatchOps:
         ]
         spec = _write_batch(tmp_path, "ops.json", ops)
         out = supertool.dispatch(f"batch:@{spec}")
-        content = f.read_text()
+        content = f.read_text(encoding="utf-8")
         assert "aaa_MODIFIED" in content
         assert "bbb_MODIFIED" in content
 
@@ -406,7 +406,7 @@ class TestConcurrentReadEditAtomicity:
         def reader():
             for _ in range(20):
                 try:
-                    content = f.read_text()
+                    content = f.read_text(encoding="utf-8")
                     results.append(content)
                 except Exception as e:
                     errors.append(str(e))
@@ -458,7 +458,7 @@ class TestResolveEditChain:
         # Edit the resolved path
         edit_out = supertool.op_edit("placeholder", "real_function", resolved_path)
         assert "edited" in edit_out
-        assert "real_function" in f.read_text()
+        assert "real_function" in f.read_text(encoding="utf-8")
 
     def test_resolve_nonexistent_then_edit_graceful(self, tmp_path: Path) -> None:
         """Resolving a non-existent file then editing → proper error, no crash."""
@@ -504,7 +504,7 @@ class TestLongFiveOpChain:
         # Final read (op5) shows new content
         assert "new_function" in out
         # File state is correct
-        assert f.read_text() == (
+        assert f.read_text(encoding="utf-8") == (
             "# START\n"
             "def new_function():\n"
             "    return 'original'\n"
@@ -584,7 +584,7 @@ class TestAtomicSemanticsUnderFailure:
             out = supertool.op_edit("precious content", "destroyed", str(f))
 
         assert "ERROR" in out
-        assert f.read_text() == original
+        assert f.read_text(encoding="utf-8") == original
 
     def test_paste_atomic_write_throws_no_partial_file(self, tmp_path: Path) -> None:
         """If _atomic_write raises during paste, no partial content written."""
@@ -599,7 +599,7 @@ class TestAtomicSemanticsUnderFailure:
             out = supertool.op_paste(str(f), "new content")
 
         assert "ERROR" in out
-        assert f.read_text() == original
+        assert f.read_text(encoding="utf-8") == original
 
     def test_replace_lines_atomic_write_throws_preserves_original(self, tmp_path: Path) -> None:
         """If _atomic_write raises during replace_lines, original content preserved."""
@@ -614,7 +614,7 @@ class TestAtomicSemanticsUnderFailure:
             out = supertool.op_replace_lines(str(f), 2, 2, "REPLACEMENT")
 
         assert "ERROR" in out
-        assert f.read_text() == original
+        assert f.read_text(encoding="utf-8") == original
 
     def test_no_temp_files_left_when_atomic_write_fails(self, tmp_path: Path) -> None:
         """Even when _atomic_write itself fails, no .supertool-*.tmp left behind.
@@ -656,7 +656,7 @@ class TestRegexMetaCharInjection:
         dangerous = "$(rm -rf /)"
         out = supertool.op_edit("foo", dangerous, str(f))
         assert "edited" in out
-        content = f.read_text()
+        content = f.read_text(encoding="utf-8")
         assert dangerous in content
         # The shell expansion was NOT executed — dir still exists
         assert tmp_path.exists()
@@ -669,7 +669,7 @@ class TestRegexMetaCharInjection:
         out = supertool.op_replace("(foo|bar)", "(baz|qux)", str(f))
         # If pattern was treated as regex, (foo|bar) would match "foo" or "bar" anywhere
         # As literal: exact string match
-        content = f.read_text()
+        content = f.read_text(encoding="utf-8")
         assert "(baz|qux)" in content or "baz" in content  # either literal or regex replacement
 
     def test_edit_to_dangerous_value_then_grep_for_it(self, tmp_path: Path) -> None:
@@ -706,7 +706,7 @@ class TestRegexMetaCharInjection:
         out = supertool.dispatch(f"batch:@{spec}")
         assert "edited" in out
         # File content holds literal shell-meta string
-        assert f.read_text().strip() == payload
+        assert f.read_text(encoding="utf-8").strip() == payload
         # Canary file must NOT exist — if it did, the shell ran the payload.
         assert not canary.exists(), "shell expansion executed — RCE!"
 
@@ -717,4 +717,4 @@ class TestRegexMetaCharInjection:
         # $ and . are regex meta-chars; edit must treat old as literal
         out = supertool.op_edit("$100.00", "$200.00", str(f))
         assert "edited" in out
-        assert "$200.00" in f.read_text()
+        assert "$200.00" in f.read_text(encoding="utf-8")

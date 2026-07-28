@@ -445,7 +445,7 @@ class TestGithubIssueCreate:
         def fake_gh(args, timeout=20):
             for i, a in enumerate(args):
                 if a == "--body-file" and i + 1 < len(args):
-                    written_bodies.append(Path(args[i + 1]).read_text())
+                    written_bodies.append(Path(args[i + 1]).read_text(encoding="utf-8"))
             return _ok(GH_URL)
 
         monkeypatch.setattr(gh, "_gh", fake_gh)

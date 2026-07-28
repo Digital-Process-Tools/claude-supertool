@@ -51,7 +51,7 @@ def test_existence_poll_reads_the_empty_file_read_when_ready_waits_out(tmp_path:
         time.sleep(0.05)
     assert naive_marker.exists(), "notifier did not fire"
     with pytest.raises(json.JSONDecodeError) as excinfo:
-        json.loads(naive_marker.read_text())
+        json.loads(naive_marker.read_text(encoding="utf-8"))
     # The precise CI traceback line — this is what an empty read looks like.
     assert "Expecting value: line 1 column 1 (char 0)" in str(excinfo.value)
     writer.join(5)
@@ -61,7 +61,7 @@ def test_existence_poll_reads_the_empty_file_read_when_ready_waits_out(tmp_path:
     created = threading.Event()
     writer = _empty_then_filled(ready_marker, created)
     assert created.wait(2), "writer never created the marker"
-    assert ready_marker.read_text() == "", "fixture did not reproduce the empty window"
+    assert ready_marker.read_text(encoding="utf-8") == "", "fixture did not reproduce the empty window"
 
     started = time.monotonic()
     assert read_when_ready(ready_marker, json.loads) == ["edit", "x.php", "", "", ""]

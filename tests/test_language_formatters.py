@@ -81,7 +81,7 @@ def test_black_graceful_skip_missing_binary(tmp_path: Path) -> None:
     f.write_text("x=1\n")
     _set_formatter("black", "black-that-does-not-exist --quiet {file}", "*.py")
     out = _edit(f)
-    assert f.read_text() == "new\n"
+    assert f.read_text(encoding="utf-8") == "new\n"
     assert "edited" in out
 
 
@@ -112,7 +112,7 @@ def test_gofmt_graceful_skip_missing_binary(tmp_path: Path) -> None:
     f.write_text("package main\n")
     _set_formatter("gofmt", "gofmt-that-does-not-exist -w {file}", "*.go")
     out = _edit(f)
-    assert f.read_text() == "new\n"
+    assert f.read_text(encoding="utf-8") == "new\n"
     assert "edited" in out
 
 
@@ -144,7 +144,7 @@ def test_rustfmt_graceful_skip_missing_binary(tmp_path: Path) -> None:
     f.write_text("fn main(){}\n")
     _set_formatter("rustfmt", "rustfmt-that-does-not-exist {file}", "*.rs")
     out = _edit(f)
-    assert f.read_text() == "new\n"
+    assert f.read_text(encoding="utf-8") == "new\n"
     assert "edited" in out
 
 
@@ -176,7 +176,7 @@ def test_phpcbf_graceful_skip_missing_binary(tmp_path: Path) -> None:
     f.write_text("<?php\n")
     _set_formatter("phpcbf", "phpcbf-that-does-not-exist --standard=PSR12 {file}", "*.php")
     out = _edit(f)
-    assert f.read_text() == "new\n"
+    assert f.read_text(encoding="utf-8") == "new\n"
     assert "edited" in out
 
 
@@ -207,7 +207,7 @@ def test_shfmt_graceful_skip_missing_binary(tmp_path: Path) -> None:
     f.write_text("#!/bin/bash\necho hi\n")
     _set_formatter("shfmt", "shfmt-that-does-not-exist -w {file}", "*.sh")
     out = _edit(f)
-    assert f.read_text() == "new\n"
+    assert f.read_text(encoding="utf-8") == "new\n"
     assert "edited" in out
 
 
@@ -238,7 +238,7 @@ def test_terraform_fmt_graceful_skip_missing_binary(tmp_path: Path) -> None:
     f.write_text('resource "aws_s3_bucket" "b" {}\n')
     _set_formatter("terraform-fmt", "terraform-that-does-not-exist fmt -write=true {file}", "*.tf")
     out = _edit(f)
-    assert f.read_text() == "new\n"
+    assert f.read_text(encoding="utf-8") == "new\n"
     assert "edited" in out
 
 
@@ -269,5 +269,5 @@ def test_rubocop_graceful_skip_missing_binary(tmp_path: Path) -> None:
     f.write_text("puts 'hello'\n")
     _set_formatter("rubocop", "rubocop-that-does-not-exist -a --no-color --format quiet {file}", "*.rb")
     out = _edit(f)
-    assert f.read_text() == "new\n"
+    assert f.read_text(encoding="utf-8") == "new\n"
     assert "edited" in out

@@ -198,7 +198,7 @@ def test_cache_hit_skips_adapter(tmp_path: Path, monkeypatch) -> None:
     out2 = supertool._validator_run_one("t", spec, str(f))
     assert out2["ok"] is True
     # Counter only incremented once (first call); cache hit prevented second run
-    assert state.read_text().strip() == "1"
+    assert state.read_text(encoding="utf-8").strip() == "1"
 
 
 def test_cache_invalidates_on_file_change(tmp_path: Path, monkeypatch) -> None:
@@ -218,7 +218,7 @@ def test_cache_invalidates_on_file_change(tmp_path: Path, monkeypatch) -> None:
     ok = json.dumps(payload).replace("'", "'\\''")
     spec2 = {"cmd": _counter_cmd(state, ok), "timeout": 5}
     supertool._validator_run_one("t", spec2, str(f))
-    assert state.read_text().strip() == "1"  # adapter ran
+    assert state.read_text(encoding="utf-8").strip() == "1"  # adapter ran
 
 
 def test_env_var_disables_cache(tmp_path: Path, monkeypatch) -> None:
@@ -235,7 +235,7 @@ def test_env_var_disables_cache(tmp_path: Path, monkeypatch) -> None:
     supertool._validator_run_one("t", spec, str(f))
     # Cache disabled → second call re-runs adapter → counter increments
     out2 = supertool._validator_run_one("t", spec, str(f))
-    assert state.read_text().strip() == "2"
+    assert state.read_text(encoding="utf-8").strip() == "2"
     # Second call hits the BROKEN branch → no output → schema error
     assert out2["ok"] is False
 
@@ -401,7 +401,7 @@ def test_run_with_validators_rollback_on_regression(tmp_path: Path) -> None:
 
     out = supertool._run_with_validators("edit", ["edit", "", "", str(f)], do_edit)
     assert "rolled back" in out
-    assert f.read_text() == original
+    assert f.read_text(encoding="utf-8") == original
 
 
 def test_run_with_validators_skips_when_op_returns_error(tmp_path: Path) -> None:

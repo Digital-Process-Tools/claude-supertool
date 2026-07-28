@@ -34,12 +34,16 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 SUPERTOOL = ROOT / "supertool.py"
 
-# Shipped code — what a user runs. `tests/` is deliberately excluded: it holds
-# ~2300 `write_text()` calls emitting ASCII fixtures, and enforcing the rule
-# there would be noise around the handful that matter. The two scans that read
-# preset *source as data* are the ones that get bitten (they were, on all four
-# Windows legs of #431) and they carry their own pin in test_proc.py.
+# Shipped code — what a user runs. Held to both halves of the rule, reads and
+# writes.
 SHIPPED = ("supertool.py", "presets", "hooks", "validators", "formatters", "notifiers")
+
+# `tests/` is scanned too, but for **reads only** (#461). The ~1670 `write_text()`
+# fixture calls are the noise that made #418's blanket exclusion correct; the
+# reads are not noise, because a test reading a real repo file as data decodes
+# the project's accumulated non-ASCII with the locale codec — twice escaped to a
+# Windows runner in one day. See test_no_test_file_decodes_a_read_by_locale.
+TESTS_DIR = Path(__file__).resolve().parent
 
 # Text-mode readers/writers that fall back to the locale when `encoding=` is
 # omitted. `os.open` takes no encoding (raw fd) and is excluded by name below.
@@ -58,42 +62,57 @@ def _literal_mode(node: ast.Call, positional_index: int) -> str:
     return ""
 
 
-def encoding_violations(path: Path) -> List[Tuple[int, str]]:
+def _call_kind(node: ast.Call) -> Tuple[str, str]:
+    """``(kind, name)`` for a text-mode file call that names no codec.
+
+    ``kind`` is ``"read"``, ``"write"`` or ``""`` — the last meaning "not one of
+    these calls, or already carrying ``encoding=``". Binary modes are exempt (no
+    decoding happens) and so is ``os.open``, which returns a raw fd. A
+    non-literal mode counts as a read, because the answer is unknown and the
+    unknown answer that keeps a guard honest is the one that flags.
+    """
+    func = node.func
+    is_attr = isinstance(func, ast.Attribute)
+    if is_attr:
+        name = func.attr
+    elif isinstance(func, ast.Name):
+        name = func.id
+    else:
+        return "", ""
+    if any(kw.arg == "encoding" for kw in node.keywords):
+        return "", ""
+    if name in _PATH_TEXT_METHODS:
+        return ("read" if name == "read_text" else "write"), name
+    if name not in ("open", "fdopen"):
+        return "", ""
+    # os.open(path, flags) — a raw fd, no codec involved.
+    if (is_attr and isinstance(func.value, ast.Name)
+            and func.value.id == "os" and name == "open"):
+        return "", ""
+    # `Path.open(mode)` puts mode first; `open(path, mode)` puts it second.
+    mode = _literal_mode(node, 0 if (is_attr and name == "open") else 1)
+    if "b" in mode:
+        return "", ""
+    return ("write" if any(c in mode for c in "wax") else "read"), name
+
+
+def encoding_violations(
+    path: Path, kinds: Tuple[str, ...] = ("read", "write"),
+) -> List[Tuple[int, str]]:
     """Every text-mode file call in `path` that leaves the codec to the locale.
 
-    Binary modes are exempt (no decoding happens), and so is ``os.open``, which
-    returns a raw fd. Parsed rather than grepped so prose about the defect does
-    not count as an instance of it — same reasoning as ``_null_signal_kills``.
+    Parsed rather than grepped so prose about the defect does not count as an
+    instance of it — same reasoning as ``_null_signal_kills``. ``kinds`` narrows
+    the scan: shipped code is held to both halves, ``tests/`` to reads only.
     """
     tree = ast.parse(path.read_text(encoding="utf-8"))
     found: List[Tuple[int, str]] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
-        func = node.func
-        is_attr = isinstance(func, ast.Attribute)
-        if is_attr:
-            name = func.attr
-        elif isinstance(func, ast.Name):
-            name = func.id
-        else:
-            continue
-        if any(kw.arg == "encoding" for kw in node.keywords):
-            continue
-        if name in _PATH_TEXT_METHODS:
+        kind, name = _call_kind(node)
+        if kind in kinds:
             found.append((node.lineno, name))
-            continue
-        if name not in ("open", "fdopen"):
-            continue
-        # os.open(path, flags) — a raw fd, no codec involved.
-        if is_attr and isinstance(func.value, ast.Name) and func.value.id == "os" \
-                and name == "open":
-            continue
-        # `Path.open(mode)` puts mode first; `open(path, mode)` puts it second.
-        mode = _literal_mode(node, 0 if (is_attr and name == "open") else 1)
-        if "b" in mode:
-            continue
-        found.append((node.lineno, name))
     return found
 
 
@@ -126,6 +145,70 @@ def test_no_shipped_file_decodes_by_locale() -> None:
         "(or open in binary mode if no text is involved):\n  "
         + "\n  ".join(offenders)
     )
+
+
+def test_no_test_file_decodes_a_read_by_locale() -> None:
+    """The same rule inside ``tests/``, narrowed to reads. #461.
+
+    #418 excluded ``tests/`` wholesale and the reason was sound: the suite
+    holds ~1670 ``write_text()`` fixture calls emitting ASCII, and enforcing
+    there would bury the signal. It does not hold for **reads**, because a test
+    that reads a real repository file as data — source, docs, a manifest —
+    decodes whatever non-ASCII the project has accumulated with the locale
+    codec. That escaped to a Windows runner twice in one day (#431 scanning
+    preset source, #460 reading ``docs/presets/watch.md``), both times in tests
+    written after #418 landed.
+
+    **No path analysis.** The obvious narrowing — flag only reads whose target
+    resolves inside the repo, exempt ``tmp_path`` fixtures — is the version
+    that would have missed #431: its read was ``path.read_text()`` on a
+    *function parameter*, fed from ``PRESETS_DIR.rglob()`` at a call site in
+    another function. Any target-based test is interprocedural or it is wrong,
+    and a scan with silent false negatives that looks complete is worse than a
+    blunt one. So every bare read in ``tests/`` is a violation, full stop,
+    which is also the rule ``docs/contributing.md`` already states.
+
+    Writes stay out of scope deliberately: that is where the ~1670 live, and a
+    bare write of an ASCII fixture cannot fail. The one fixture in the suite
+    that writes non-ASCII names its codec.
+    """
+    offenders = []
+    for path in sorted(TESTS_DIR.rglob("*.py")):
+        for lineno, call in encoding_violations(path, kinds=("read",)):
+            offenders.append(
+                f"{path.relative_to(ROOT)}:{lineno}: {call}() without encoding=")
+    assert not offenders, (
+        "a test reading a file without encoding= decodes with "
+        "locale.getpreferredencoding() — cp1252 on Windows, ASCII under a C "
+        "locale — so it passes here and dies on the Windows leg the moment the "
+        "file it reads acquires an em dash. Pass encoding=\"utf-8\":\n  "
+        + "\n  ".join(offenders)
+    )
+
+
+def test_the_tests_scan_catches_a_read_and_spares_the_rest(tmp_path: Path) -> None:
+    """Guards the scan above from passing because it stopped scanning.
+
+    Pins both directions on one fixture file: the two bare reads are reported
+    with their line numbers, and the codec-naming read, the binary read and the
+    bare write are not — the last of those is what keeps the ~1670 fixture
+    writes out of the enumeration.
+    """
+    fixture = tmp_path / "test_fake_repo_read.py"
+    fixture.write_text(
+        "from pathlib import Path\n"
+        "ROOT = Path(__file__).resolve().parent.parent\n"
+        "def test_reads_a_repo_file(tmp_path):\n"
+        "    a = (ROOT / 'README.md').read_text()\n"
+        "    b = open(ROOT / 'README.md').read()\n"
+        "    c = (ROOT / 'README.md').read_text(encoding='utf-8')\n"
+        "    d = open(ROOT / 'x.bin', 'rb').read()\n"
+        "    (tmp_path / 'out.txt').write_text('ascii')\n",
+        encoding="utf-8",
+    )
+    assert encoding_violations(fixture, kinds=("read",)) == [
+        (4, "read_text"), (5, "open"),
+    ]
 
 
 GIT_PRESETS = sorted(

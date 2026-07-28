@@ -87,7 +87,7 @@ def test_embedded_esc_in_insert_text_does_not_corrupt_cursor(tmp_path: Path) -> 
     assert isinstance(out, str)
     # Should succeed — no ERROR expected (HELLO inserted, one char deleted)
     assert not out.startswith("ERROR"), f"Unexpected ERROR: {out}"
-    content = f.read_text()
+    content = f.read_text(encoding="utf-8")
     # HELL (first char of HELLO deleted by x) should be in the file
     assert "HELL" in content
 
@@ -147,7 +147,7 @@ def test_global_substitute_large_file_completes_in_time(tmp_path: Path) -> None:
     elapsed = time.monotonic() - t0
     assert not out.startswith("ERROR"), f"Unexpected ERROR on large file: {out}"
     assert elapsed < 10.0, f"Large file substitution took {elapsed:.2f}s"
-    result = f.read_text()
+    result = f.read_text(encoding="utf-8")
     # File must end with newline (no spurious trailing char) — this was the bug.
     assert result.endswith("\n")
     assert not result.endswith("\nx"), "trailing empty-match must not produce extra char"
@@ -173,7 +173,7 @@ def test_ex_delete_out_of_range_line_returns_error(tmp_path: Path) -> None:
     assert out.startswith("ERROR"), f"Expected ERROR for out-of-range delete, got: {out!r}"
     assert "file unchanged" in out, "Atomic guarantee: file unchanged message expected"
     # File content must be unmodified
-    assert f.read_text() == original
+    assert f.read_text(encoding="utf-8") == original
 
 
 def test_ex_delete_range_overflow_returns_error(tmp_path: Path) -> None:
@@ -182,7 +182,7 @@ def test_ex_delete_range_overflow_returns_error(tmp_path: Path) -> None:
     f = _write(tmp_path, "f.txt", original)
     out = _vim(f, ":1,99999d")
     assert out.startswith("ERROR"), f"Expected ERROR for overflow range delete, got: {out!r}"
-    assert f.read_text() == original, "File must be unchanged after ERROR"
+    assert f.read_text(encoding="utf-8") == original, "File must be unchanged after ERROR"
 
 
 # ---------------------------------------------------------------------------
@@ -203,7 +203,7 @@ def test_very_long_insert_token_completes(tmp_path: Path) -> None:
     elapsed = time.monotonic() - t0
     assert not out.startswith("ERROR"), f"Unexpected ERROR on large insert: {out}"
     assert elapsed < 5.0, f"Large insert took {elapsed:.2f}s"
-    content = f.read_text()
+    content = f.read_text(encoding="utf-8")
     assert big_text in content, "100k chars must appear in file"
 
 
@@ -231,8 +231,8 @@ def test_symlink_path_edits_target_and_preserves_symlink(tmp_path: Path) -> None
     assert os.path.islink(str(link)), "Symlink was clobbered — os.replace hit link instead of target"
 
     # Both paths must show the updated content
-    via_link = link.read_text()
-    via_target = target.read_text()
+    via_link = link.read_text(encoding="utf-8")
+    via_target = target.read_text(encoding="utf-8")
     assert via_link == via_target, "Link and target must have same content after edit"
     assert "INSERTED:" in via_target, "Edit must have reached the real file"
 

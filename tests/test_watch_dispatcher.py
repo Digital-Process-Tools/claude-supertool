@@ -231,7 +231,7 @@ def test_a_poller_publishes_its_event_filter(monkeypatch, tmp_path) -> None:
     state = tmp_path / "supertool-watch-gitlab-mr__33136.state.json"
     _run_loop_in_child(monkeypatch, tmp_path, _OpenPoller,
                        only=["pipeline_failed", "merged"])
-    assert json.loads(state.read_text())["only"] == ["pipeline_failed", "merged"]
+    assert json.loads(state.read_text(encoding="utf-8"))["only"] == ["pipeline_failed", "merged"]
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="requires os.fork")
@@ -240,7 +240,7 @@ def test_an_unfiltered_poller_publishes_an_empty_filter(monkeypatch, tmp_path) -
     distinguishable from the key being absent, which means "we do not know"."""
     state = tmp_path / "supertool-watch-gitlab-mr__33136.state.json"
     _run_loop_in_child(monkeypatch, tmp_path, _OpenPoller)
-    assert json.loads(state.read_text())["only"] == []
+    assert json.loads(state.read_text(encoding="utf-8"))["only"] == []
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="requires os.fork")
@@ -250,7 +250,7 @@ def test_the_filter_survives_the_polls_that_rewrite_the_state(monkeypatch, tmp_p
     state = tmp_path / "supertool-watch-gitlab-mr__33136.state.json"
     _OpenPoller._ticks.clear()
     _run_loop_in_child(monkeypatch, tmp_path, _OpenPoller, only=["merged"])
-    body = json.loads(state.read_text())
+    body = json.loads(state.read_text(encoding="utf-8"))
     assert body["only"] == ["merged"]
     assert body["source_state"] == {"mr_state": "opened"}
 
@@ -330,4 +330,4 @@ def test_a_successful_poll_clears_a_previous_error(monkeypatch, tmp_path) -> Non
         "last_error": {"ts": "2026-07-27T16:00:00Z", "message": "401 Unauthorized"},
     }))
     _run_loop_in_child(monkeypatch, tmp_path, _OpenPoller)
-    assert "last_error" not in json.loads(state.read_text())
+    assert "last_error" not in json.loads(state.read_text(encoding="utf-8"))

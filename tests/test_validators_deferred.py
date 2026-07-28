@@ -52,7 +52,7 @@ def test_slow_validator_does_not_run_per_op_runs_once_at_end(tmp_path, monkeypat
         f"edit:::$x = 2:::$x = 3:::{target}",
     ])
     assert rc == 0
-    runs = counter.read_text().count("run\n")
+    runs = counter.read_text(encoding="utf-8").count("run\n")
     assert runs == 1, f"expected 1 deferred run, got {runs}"
 
 
@@ -68,7 +68,7 @@ def test_fast_validator_runs_per_op(tmp_path, monkeypatch) -> None:
         f"edit:::$x = 1:::$x = 2:::{target}",
         f"edit:::$x = 2:::$x = 3:::{target}",
     ])
-    runs = counter.read_text().count("run\n")
+    runs = counter.read_text(encoding="utf-8").count("run\n")
     # before + after per op = 4 total for 2 ops (before-op1, after-op1, before-op2, after-op2)
     assert runs == 4, f"fast validator runs before+after per op (4 for 2 ops), got {runs}"
 
@@ -85,7 +85,7 @@ def test_default_tier_behaves_as_fast(tmp_path, monkeypatch) -> None:
         f"edit:::$x = 1:::$x = 2:::{target}",
         f"edit:::$x = 2:::$x = 3:::{target}",
     ])
-    runs = counter.read_text().count("run\n")
+    runs = counter.read_text(encoding="utf-8").count("run\n")
     assert runs == 4, f"default tier must match fast behavior (4 runs for 2 ops), got {runs}"
 
 
@@ -102,7 +102,7 @@ def test_dedup_three_edits_same_file_runs_slow_once(tmp_path, monkeypatch) -> No
         f"edit:::$x = 2:::$x = 3:::{target}",
         f"edit:::$x = 3:::$x = 4:::{target}",
     ])
-    runs = counter.read_text().count("run\n")
+    runs = counter.read_text(encoding="utf-8").count("run\n")
     assert runs == 1, f"3 edits on same file → 1 slow run (dedup), got {runs}"
 
 
@@ -121,7 +121,7 @@ def test_multi_file_slow_validator_runs_per_file(tmp_path, monkeypatch) -> None:
         f"edit:::$y = 1:::$y = 2:::{b}",
         f"edit:::$x = 2:::$x = 3:::{a}",
     ])
-    runs = counter.read_text().count("run\n")
+    runs = counter.read_text(encoding="utf-8").count("run\n")
     assert runs == 2, f"two distinct files → 2 slow runs (one per file), got {runs}"
 
 
@@ -169,8 +169,8 @@ def test_mixed_fast_and_slow_on_same_op(tmp_path, monkeypatch) -> None:
         f"edit:::$x = 2:::$x = 3:::{target}",
     ])
 
-    fast_runs = fast_counter.read_text().count("run\n")
-    slow_runs = slow_counter.read_text().count("run\n")
+    fast_runs = fast_counter.read_text(encoding="utf-8").count("run\n")
+    slow_runs = slow_counter.read_text(encoding="utf-8").count("run\n")
     # fast: before+after per op = 4 for 2 ops
     assert fast_runs == 4, f"fast validator runs before+after per op (4), got {fast_runs}"
     assert slow_runs == 1, f"slow validator deferred+deduped = 1 run, got {slow_runs}"
@@ -190,9 +190,9 @@ def test_deferred_failure_does_not_rollback_prior_fast_passed_ops(tmp_path, monk
         f"edit:::$x = 2:::$x = 3:::{target}",
     ])
     # Edits landed — no rollback
-    assert target.read_text() == "<?php $x = 3;\n"
+    assert target.read_text(encoding="utf-8") == "<?php $x = 3;\n"
     # Deferred validator ran once
-    assert counter.read_text().count("run\n") == 1
+    assert counter.read_text(encoding="utf-8").count("run\n") == 1
     # Output contains the deferred block
     captured = capsys.readouterr()
     assert "[validators-deferred]" in captured.out
@@ -238,6 +238,6 @@ def test_single_op_slow_validator_runs_inline(tmp_path, monkeypatch) -> None:
 
     monkeypatch.chdir(tmp_path)
     supertool.main([f"edit:::$x = 1:::$x = 2:::{target}"])
-    runs = counter.read_text().count("run\n")
+    runs = counter.read_text(encoding="utf-8").count("run\n")
     # Single op = no defer mode, slow treated as fast: before + after = 2 runs
     assert runs == 2, f"single-op: slow runs inline (before+after = 2), got {runs}"

@@ -61,7 +61,7 @@ class TestVimShellGate:
         target.write_text("hello\n")
         out = supertool.dispatch(f"vim:::{target}:::G\\e:!echo opted-in")
         assert "ERROR" not in out
-        assert "opted-in" in target.read_text()
+        assert "opted-in" in target.read_text(encoding="utf-8")
 
     def test_dot_repeat_bang_rejected_by_default(self, vim_shell_on, tmp_path, monkeypatch):
         """Dot-repeat replays `:!cmd`. Must return ERROR, not silently log-and-skip,
@@ -96,7 +96,7 @@ class TestVimReadFileContainment:
         assert "ERROR" in out
         assert "escapes cwd" in out
         # Original file untouched.
-        assert "hi\n" in target.read_text()
+        assert "hi\n" in target.read_text(encoding="utf-8")
 
     def test_r_file_inside_cwd_ok(self, monkeypatch, tmp_path):
         monkeypatch.delenv("SUPERTOOL_ALLOW_OUTSIDE_CWD", raising=False)
@@ -107,7 +107,7 @@ class TestVimReadFileContainment:
         monkeypatch.chdir(tmp_path)
         out = supertool.dispatch(f"vim:::foo.txt:::G\\e:r src.txt")
         assert "ERROR" not in out, out
-        assert "INSERTED" in target.read_text()
+        assert "INSERTED" in target.read_text(encoding="utf-8")
 
 
 class TestEditorVerbsStillWork:
@@ -118,14 +118,14 @@ class TestEditorVerbsStillWork:
         target.write_text("original\n")
         out = supertool.dispatch(f"vim:::{target}:::iprepend ")
         assert "ERROR" not in out, out
-        assert "prepend original" in target.read_text()
+        assert "prepend original" in target.read_text(encoding="utf-8")
 
     def test_substitute_works(self, vim_shell_off, tmp_path):
         target = tmp_path / "foo.txt"
         target.write_text("foo bar\n")
         out = supertool.dispatch(f"vim:::{target}:::%s/foo/baz/g")
         assert "ERROR" not in out, out
-        assert "baz bar" in target.read_text()
+        assert "baz bar" in target.read_text(encoding="utf-8")
 
 
 class TestVimShellJsonOptIn:

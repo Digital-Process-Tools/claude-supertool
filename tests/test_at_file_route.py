@@ -30,7 +30,7 @@ class TestAtFileEdit:
         spec = _write_json(tmp_path, "e.json", {"old": "a = 1", "new": "a = 99", "path": str(target)})
         out = supertool.dispatch(f"edit:@{spec}")
         assert "edited" in out
-        assert "a = 99" in target.read_text()
+        assert "a = 99" in target.read_text(encoding="utf-8")
 
     def test_missing_field_returns_error(self, tmp_path: Path) -> None:
         target = tmp_path / "x.py"
@@ -95,8 +95,8 @@ class TestAtFileReplace:
         spec = _write_json(tmp_path, "r.json", {"old": "foo", "new": "baz", "path": str(target)})
         out = supertool.dispatch(f"replace:@{spec}")
         assert "ERROR" not in out
-        assert "foo" not in target.read_text()
-        assert "baz" in target.read_text()
+        assert "foo" not in target.read_text(encoding="utf-8")
+        assert "baz" in target.read_text(encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -112,7 +112,7 @@ class TestAtFileReplaceLines:
         })
         out = supertool.dispatch(f"replace_lines:@{spec}")
         assert "replaced" in out
-        assert target.read_text() == "line1\nREPLACED\nline3\n"
+        assert target.read_text(encoding="utf-8") == "line1\nREPLACED\nline3\n"
 
     def test_missing_start_field_returns_error(self, tmp_path: Path) -> None:
         target = tmp_path / "x.py"
@@ -134,7 +134,7 @@ class TestAtFilePaste:
         spec = _write_json(tmp_path, "p.json", {"path": str(target), "content": "new content"})
         out = supertool.dispatch(f"paste:@{spec}")
         assert "rewrote" in out
-        assert "new content" in target.read_text()
+        assert "new content" in target.read_text(encoding="utf-8")
 
     def test_paste_creates_new_file(self, tmp_path: Path) -> None:
         target = tmp_path / "new_file.py"
@@ -157,7 +157,7 @@ class TestAtFileStdin:
         monkeypatch.setattr(supertool.sys, "stdin", io.StringIO(payload))
         out = supertool.dispatch("edit:@-")
         assert "edited" in out
-        assert "beta" in target.read_text()
+        assert "beta" in target.read_text(encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -240,7 +240,7 @@ class TestAtFileCaseInsensitiveKeys:
         spec = _write_json(tmp_path, "e.json", {"OLD": "hello", "NEW": "hi", "PATH": str(target)})
         out = supertool.dispatch(f"edit:@{spec}")
         assert "edited" in out
-        assert "hi world" in target.read_text()
+        assert "hi world" in target.read_text(encoding="utf-8")
 
     def test_mixed_case_keys_accepted(self, tmp_path: Path) -> None:
         target = tmp_path / "x.py"
@@ -248,7 +248,7 @@ class TestAtFileCaseInsensitiveKeys:
         spec = _write_json(tmp_path, "e.json", {"Old": "foo", "New": "bar", "Path": str(target)})
         out = supertool.dispatch(f"edit:@{spec}")
         assert "edited" in out
-        assert "bar" in target.read_text()
+        assert "bar" in target.read_text(encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -265,7 +265,7 @@ class TestAtFileReplaceAll:
         })
         out = supertool.dispatch(f"edit:@{spec}")
         assert "ERROR" not in out
-        text = target.read_text()
+        text = target.read_text(encoding="utf-8")
         assert "foo" not in text
         assert text.count("qux") == 3
 
@@ -297,7 +297,7 @@ class TestAtFileReplaceAll:
         })
         out = supertool.dispatch(f"edit:@{spec}")
         assert "ERROR" not in out
-        assert "replaced" in target.read_text()
+        assert "replaced" in target.read_text(encoding="utf-8")
 
     def test_replace_all_via_batch_op(self, tmp_path: Path) -> None:
         """replace_all:true inside a batch payload should also replace all occurrences."""
@@ -309,7 +309,7 @@ class TestAtFileReplaceAll:
         ]))
         out = supertool.dispatch(f"batch:@{ops_file}")
         assert "ERROR" not in out
-        assert target.read_text().strip() == "b b b"
+        assert target.read_text(encoding="utf-8").strip() == "b b b"
 
 
 # ---------------------------------------------------------------------------
@@ -332,7 +332,7 @@ class TestTomlPayload:
         assert "ERROR" not in out
         # The trailing backslash + newline survives the round-trip — that's
         # the whole point of the TOML route over JSON.
-        body = target.read_text()
+        body = target.read_text(encoding="utf-8")
         assert "bypass \\\n" in body
         assert "--disallowedTools" in body
 
@@ -347,7 +347,7 @@ class TestTomlPayload:
         )
         out = supertool.dispatch(f"edit:@{spec}")
         assert "ERROR" not in out
-        assert target.read_text() == "DEBUG = True\n"
+        assert target.read_text(encoding="utf-8") == "DEBUG = True\n"
 
     def test_replace_lines_with_integers_and_triple_literal(self, tmp_path: Path) -> None:
         target = tmp_path / "x.py"
@@ -361,7 +361,7 @@ class TestTomlPayload:
         )
         out = supertool.dispatch(f"replace_lines:@{spec}")
         assert "ERROR" not in out
-        assert target.read_text() == "a\nX\nY\nd\n"
+        assert target.read_text(encoding="utf-8") == "a\nX\nY\nd\n"
 
     def test_stdin_toml(self, tmp_path: Path, monkeypatch) -> None:
         target = tmp_path / "out.txt"
@@ -373,7 +373,7 @@ class TestTomlPayload:
         monkeypatch.setattr("sys.stdin", io.StringIO(payload))
         out = supertool.dispatch("paste:@-")
         assert "ERROR" not in out
-        assert target.read_text() == "line1\nline2 with \\ backslash\nline3\n"
+        assert target.read_text(encoding="utf-8") == "line1\nline2 with \\ backslash\nline3\n"
 
     def test_format_auto_detect_brace_routes_to_json(self, tmp_path: Path) -> None:
         target = tmp_path / "x.py"
@@ -383,7 +383,7 @@ class TestTomlPayload:
         spec.write_text(json.dumps({"old": "a = 1", "new": "a = 2", "path": str(target)}))
         out = supertool.dispatch(f"edit:@{spec}")
         assert "ERROR" not in out
-        assert target.read_text() == "a = 2\n"
+        assert target.read_text(encoding="utf-8") == "a = 2\n"
 
     def test_invalid_toml_returns_error(self, tmp_path: Path) -> None:
         spec = tmp_path / "bad.toml"
@@ -450,7 +450,7 @@ class TestBatchSnapshot:
         }))
         out = supertool.dispatch(f"batch:@{ops_file}")
         assert "ERROR" not in out
-        assert target.read_text() == "L1\nTWO\nL3\nL4\nFIVE\nL6\nL7\nEIGHT\nL9\nL10\n"
+        assert target.read_text(encoding="utf-8") == "L1\nTWO\nL3\nL4\nFIVE\nL6\nL7\nEIGHT\nL9\nL10\n"
 
     def test_overlapping_ranges_error_no_writes(self, tmp_path: Path) -> None:
         """Two replace_lines with overlapping ranges should error before any write."""
@@ -467,7 +467,7 @@ class TestBatchSnapshot:
         out = supertool.dispatch(f"batch:@{ops_file}")
         assert "ERROR" in out
         assert "overlapping" in out
-        assert target.read_text() == original  # no write happened
+        assert target.read_text(encoding="utf-8") == original  # no write happened
 
     def test_single_replace_lines_no_reorder_needed(self, tmp_path: Path) -> None:
         """A single replace_lines op should pass through unchanged."""
@@ -479,7 +479,7 @@ class TestBatchSnapshot:
         ]))
         out = supertool.dispatch(f"batch:@{ops_file}")
         assert "ERROR" not in out
-        assert target.read_text() == "a\nB\nc\n"
+        assert target.read_text(encoding="utf-8") == "a\nB\nc\n"
 
     def test_replace_lines_on_different_files_independent(self, tmp_path: Path) -> None:
         """replace_lines on different files should each work without reorder."""
@@ -494,8 +494,8 @@ class TestBatchSnapshot:
         ]))
         out = supertool.dispatch(f"batch:@{ops_file}")
         assert "ERROR" not in out
-        assert a.read_text() == "x\nY\nz\n"
-        assert b.read_text() == "p\nQ\nr\n"
+        assert a.read_text(encoding="utf-8") == "x\nY\nz\n"
+        assert b.read_text(encoding="utf-8") == "p\nQ\nr\n"
 
 
 class TestReorderHelper:

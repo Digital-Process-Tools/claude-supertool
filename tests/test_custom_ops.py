@@ -714,7 +714,7 @@ class TestMainIntegration:
         assert ret == 0
         assert "hello" in captured.out
         # Log should record the custom op
-        log_content = log_file.read_text()
+        log_content = log_file.read_text(encoding="utf-8")
         assert "hi:test" in log_content
 
     def test_main_with_alias(self, capsys, tmp_path: Path, monkeypatch) -> None:
@@ -729,7 +729,7 @@ class TestMainIntegration:
         captured = capsys.readouterr()
         assert ret == 0
         assert "code" in captured.out
-        assert "both:" in log_file.read_text()
+        assert "both:" in log_file.read_text(encoding="utf-8")
 
     def test_main_mixed_builtin_and_custom(self, capsys, tmp_path: Path, monkeypatch) -> None:
         """A single call can mix built-in ops and custom ops."""
@@ -745,7 +745,7 @@ class TestMainIntegration:
         assert ret == 0
         assert "data" in captured.out
         assert "pong" in captured.out
-        assert "ops=2" in log_file.read_text()
+        assert "ops=2" in log_file.read_text(encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -775,7 +775,7 @@ class TestArgPlaceholderColonHandling:
         # With {arg}, only '16' goes through (ratio is NOT a URL — no greedy absorb).
         result = supertool.dispatch("echo:16:9")
         assert "PASS" in result
-        argv = eval(captured.read_text())
+        argv = eval(captured.read_text(encoding="utf-8"))
         assert argv == ["16"], f"expected ['16'], got {argv!r}"
 
     def test_args_placeholder_passes_all_chunks(self, tmp_path: Path) -> None:
@@ -790,7 +790,7 @@ class TestArgPlaceholderColonHandling:
         }
         result = supertool.dispatch("echo:16:9")
         assert "PASS" in result
-        argv = eval(captured.read_text())
+        argv = eval(captured.read_text(encoding="utf-8"))
         # All ':'-tokenized parts arrive as separate argv entries.
         assert argv == ["16", "9"], f"got {argv!r}"
 
@@ -812,7 +812,7 @@ class TestArgPlaceholderColonHandling:
         compound = "16:9:hd"
         result = supertool.dispatch(f"echo:{compound}")
         assert "PASS" in result
-        assert captured.read_text() == compound
+        assert captured.read_text(encoding="utf-8") == compound
 
     def test_args_placeholder_url_arrives_whole(self, tmp_path: Path) -> None:
         """URLs are absorbed by _split_arg (PR #7) so they arrive as a single
@@ -828,7 +828,7 @@ class TestArgPlaceholderColonHandling:
         url = "https://dev.to/marcosomma/the-real-token-economy-3j3e"
         result = supertool.dispatch(f"echo:{url}")
         assert "PASS" in result
-        argv = eval(captured.read_text())
+        argv = eval(captured.read_text(encoding="utf-8"))
         assert argv == [url], f"URL should arrive whole, got {argv!r}"
 
     def test_args_placeholder_with_pipe_separator(self, tmp_path: Path) -> None:
@@ -844,7 +844,7 @@ class TestArgPlaceholderColonHandling:
         }
         result = supertool.dispatch("echo:1234|hello world|99")
         assert "PASS" in result
-        argv = eval(captured.read_text())
+        argv = eval(captured.read_text(encoding="utf-8"))
         assert argv == ["1234|hello world|99"]
 
     def test_args_placeholder_with_iso_timestamp(self, tmp_path: Path) -> None:
@@ -863,7 +863,7 @@ class TestArgPlaceholderColonHandling:
         ts = "2026-05-02T15:01:45+00:00"
         result = supertool.dispatch(f"echo:{ts}")
         assert "PASS" in result
-        assert captured.read_text() == ts
+        assert captured.read_text(encoding="utf-8") == ts
 
 
 class TestShellMetacharsNotExecuted:
@@ -941,7 +941,7 @@ class TestShellMetacharsNotExecuted:
         # Three separate args via `:` delimiter → three argv elements
         result = supertool.dispatch("echo:alpha:beta:gamma")
         assert "PASS" in result
-        argv = eval(captured.read_text())
+        argv = eval(captured.read_text(encoding="utf-8"))
         assert argv == ["alpha", "beta", "gamma"], (
             f"{{args}} did not expand to N argv tokens: {argv!r}"
         )
@@ -965,7 +965,7 @@ class TestShellMetacharsNotExecuted:
         # Single arg with embedded space
         result = supertool._resolve_custom_op("echo", ["echo", "hello world"])
         assert result is not None and "PASS" in result
-        argv = eval(captured.read_text())
+        argv = eval(captured.read_text(encoding="utf-8"))
         assert argv == ["hello world"], (
             f"value with space did not survive shlex.split: {argv!r}"
         )
@@ -987,7 +987,7 @@ class TestShellMetacharsNotExecuted:
         }
         result = supertool._resolve_custom_op("x", ["x", "unused.txt"])
         assert result is not None and "PASS" in result
-        argv = eval(captured.read_text())
+        argv = eval(captured.read_text(encoding="utf-8"))
         assert argv == ["$UNDEFINED_VAR_XYZ"], (
             f"undefined var should stay literal, got: {argv!r}"
         )

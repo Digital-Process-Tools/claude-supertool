@@ -38,7 +38,7 @@ class TestBatchColonContent252:
         # The edit must succeed and the full new content (including the ::: run)
         # must land verbatim.
         assert "ERROR" not in out, out
-        assert target.read_text() == '"example": "read:src/Foo.php:::grep=class"\n'
+        assert target.read_text(encoding="utf-8") == '"example": "read:src/Foo.php:::grep=class"\n'
 
     def test_replace_content_with_triple_colon(self, tmp_path: Path) -> None:
         target = tmp_path / "code.php"
@@ -54,7 +54,7 @@ class TestBatchColonContent252:
         spec = _write_json(tmp_path, "ops.json", ops)
         out = supertool.dispatch(f"batch:@{spec}")
         assert "ERROR" not in out, out
-        assert target.read_text() == "$x = c:::d;\n$y = c:::d;\n"
+        assert target.read_text(encoding="utf-8") == "$x = c:::d;\n$y = c:::d;\n"
 
     def test_replace_lines_content_with_triple_colon(self, tmp_path: Path) -> None:
         target = tmp_path / "code.php"
@@ -71,7 +71,7 @@ class TestBatchColonContent252:
         spec = _write_json(tmp_path, "ops.json", ops)
         out = supertool.dispatch(f"batch:@{spec}")
         assert "ERROR" not in out, out
-        assert target.read_text() == "line1\nleft:::right\nline3\n"
+        assert target.read_text(encoding="utf-8") == "line1\nleft:::right\nline3\n"
 
     def test_paste_content_with_triple_colon(self, tmp_path: Path) -> None:
         target = tmp_path / "code.php"
@@ -86,7 +86,7 @@ class TestBatchColonContent252:
         spec = _write_json(tmp_path, "ops.json", ops)
         out = supertool.dispatch(f"batch:@{spec}")
         assert "ERROR" not in out, out
-        assert "a:::b:::c" in target.read_text()
+        assert "a:::b:::c" in target.read_text(encoding="utf-8")
 
     def test_multiline_content_with_triple_colon(self, tmp_path: Path) -> None:
         target = tmp_path / "code.php"
@@ -102,7 +102,7 @@ class TestBatchColonContent252:
         spec = _write_json(tmp_path, "ops.json", ops)
         out = supertool.dispatch(f"batch:@{spec}")
         assert "ERROR" not in out, out
-        assert target.read_text() == "$r = $ok ? a:::b : c:::d;\n$s = 1;\n"
+        assert target.read_text(encoding="utf-8") == "$r = $ok ? a:::b : c:::d;\n$s = 1;\n"
 
     def test_single_colon_still_works(self, tmp_path: Path) -> None:
         target = tmp_path / "code.php"
@@ -118,7 +118,7 @@ class TestBatchColonContent252:
         spec = _write_json(tmp_path, "ops.json", ops)
         out = supertool.dispatch(f"batch:@{spec}")
         assert "ERROR" not in out, out
-        assert target.read_text() == "host = c:d\n"
+        assert target.read_text(encoding="utf-8") == "host = c:d\n"
 
     def test_replace_all_edit_with_triple_colon(self, tmp_path: Path) -> None:
         # replace_all:true promotes edit→replace; content with ::: must still
@@ -137,7 +137,7 @@ class TestBatchColonContent252:
         spec = _write_json(tmp_path, "ops.json", ops)
         out = supertool.dispatch(f"batch:@{spec}")
         assert "ERROR" not in out, out
-        assert target.read_text() == "x:::y\nx:::y\n"
+        assert target.read_text(encoding="utf-8") == "x:::y\nx:::y\n"
 
     def test_mixed_batch_read_and_colon_edit(self, tmp_path: Path) -> None:
         f = tmp_path / "code.php"
@@ -153,4 +153,4 @@ class TestBatchColonContent252:
         spec = _write_json(tmp_path, "ops.json", payload)
         out = supertool.dispatch(f"batch:@{spec}")
         assert "ERROR" not in out, out
-        assert f.read_text() == "x:::y\n"
+        assert f.read_text(encoding="utf-8") == "x:::y\n"

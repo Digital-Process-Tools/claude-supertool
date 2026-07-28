@@ -21,7 +21,7 @@ def test_single_line_substitute(tmp_path: Path) -> None:
     out = supertool.op_vim(str(f), ":3s/foo/X/g")
     assert "ERROR" not in out, out
     # Only line 3 changed
-    assert f.read_text() == "foo\nfoo\nX\nfoo\n"
+    assert f.read_text(encoding="utf-8") == "foo\nfoo\nX\nfoo\n"
 
 
 def test_line_range_substitute(tmp_path: Path) -> None:
@@ -30,7 +30,7 @@ def test_line_range_substitute(tmp_path: Path) -> None:
     f.write_text("foo\nfoo\nfoo\nfoo\n")
     out = supertool.op_vim(str(f), ":2,3s/foo/X/g")
     assert "ERROR" not in out, out
-    assert f.read_text() == "foo\nX\nX\nfoo\n"
+    assert f.read_text(encoding="utf-8") == "foo\nX\nX\nfoo\n"
 
 
 def test_line_range_substitute_first_only(tmp_path: Path) -> None:
@@ -39,7 +39,7 @@ def test_line_range_substitute_first_only(tmp_path: Path) -> None:
     f.write_text("foo foo\nfoo foo\nfoo foo\nfoo foo\n")
     out = supertool.op_vim(str(f), ":2,3s/foo/X/")
     assert "ERROR" not in out, out
-    assert f.read_text() == "foo foo\nX foo\nX foo\nfoo foo\n"
+    assert f.read_text(encoding="utf-8") == "foo foo\nX foo\nX foo\nfoo foo\n"
 
 
 def test_dollar_means_last_line(tmp_path: Path) -> None:
@@ -48,7 +48,7 @@ def test_dollar_means_last_line(tmp_path: Path) -> None:
     f.write_text("foo\nfoo\nfoo\n")
     out = supertool.op_vim(str(f), ":$s/foo/X/g")
     assert "ERROR" not in out, out
-    assert f.read_text() == "foo\nfoo\nX\n"
+    assert f.read_text(encoding="utf-8") == "foo\nfoo\nX\n"
 
 
 def test_dot_means_current_line(tmp_path: Path) -> None:
@@ -58,7 +58,7 @@ def test_dot_means_current_line(tmp_path: Path) -> None:
     out = supertool.op_vim(str(f), "2G␞:.s/foo/X/g")
     assert "ERROR" not in out, out
     # Cursor on line 2, only that line changes
-    assert f.read_text() == "foo\nX\nfoo\n"
+    assert f.read_text(encoding="utf-8") == "foo\nX\nfoo\n"
 
 
 def test_dot_to_dollar_range(tmp_path: Path) -> None:
@@ -68,7 +68,7 @@ def test_dot_to_dollar_range(tmp_path: Path) -> None:
     out = supertool.op_vim(str(f), "3G␞:.,$s/foo/X/g")
     assert "ERROR" not in out, out
     # Lines 3 and 4 changed
-    assert f.read_text() == "foo\nfoo\nX\nX\n"
+    assert f.read_text(encoding="utf-8") == "foo\nfoo\nX\nX\n"
 
 
 def test_line_range_out_of_bounds_errors_clearly(tmp_path: Path) -> None:
@@ -93,7 +93,7 @@ def test_whole_file_alias_still_works(tmp_path: Path) -> None:
     f.write_text("foo\nfoo\nfoo\n")
     out = supertool.op_vim(str(f), ":%s/foo/X/g")
     assert "ERROR" not in out, out
-    assert f.read_text() == "X\nX\nX\n"
+    assert f.read_text(encoding="utf-8") == "X\nX\nX\n"
 
 
 def test_bare_s_still_means_whole_file(tmp_path: Path) -> None:
@@ -104,4 +104,4 @@ def test_bare_s_still_means_whole_file(tmp_path: Path) -> None:
     f.write_text("foo\nfoo\nfoo\n")
     out = supertool.op_vim(str(f), ":s/foo/X/g")
     assert "ERROR" not in out, out
-    assert f.read_text() == "X\nX\nX\n"
+    assert f.read_text(encoding="utf-8") == "X\nX\nX\n"

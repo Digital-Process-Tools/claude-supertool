@@ -81,7 +81,7 @@ def test_wrap_empty_passthrough() -> None:
 
 def test_presets_have_identical_sanitize() -> None:
     """All three presets must ship the same helper to avoid drift."""
-    bluesky_text = (PRESETS / "bluesky" / "_sanitize.py").read_text()
-    hashnode_text = (PRESETS / "hashnode" / "_sanitize.py").read_text()
-    devto_text = (PRESETS / "devto" / "_sanitize.py").read_text()
+    bluesky_text = (PRESETS / "bluesky" / "_sanitize.py").read_text(encoding="utf-8")
+    hashnode_text = (PRESETS / "hashnode" / "_sanitize.py").read_text(encoding="utf-8")
+    devto_text = (PRESETS / "devto" / "_sanitize.py").read_text(encoding="utf-8")
     assert bluesky_text == hashnode_text == devto_text, "_sanitize.py drift between presets — keep them in sync"

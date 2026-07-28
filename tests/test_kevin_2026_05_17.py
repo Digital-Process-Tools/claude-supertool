@@ -29,7 +29,7 @@ def test_issue4_bare_colon_N_jumps_to_line():
     try:
         # Goto line 5 then append-EOL " HIT"
         r = st.op_vim(p, f":5{ESC}A HIT{ESC}")
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         assert "line 5 HIT" in new, f"got: {new!r}; receipt: {r}"
         assert "ERROR" not in r, f"unexpected error: {r}"
     finally:
@@ -41,7 +41,7 @@ def test_issue4_bare_colon_dollar_jumps_to_last_line():
     p = _tmp("a\nb\nc\nd\n")
     try:
         r = st.op_vim(p, f":${ESC}A!{ESC}")
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         assert "d!" in new, f"got: {new!r}; receipt: {r}"
         assert "ERROR" not in r
     finally:
@@ -55,7 +55,7 @@ def test_issue6_subst_assertEquals_unescaped_paren():
     p = _tmp("        $this->assertEquals(1, 2);\n        $this->assertEquals(3, 4);\n")
     try:
         r = st.op_vim(p, ":%s/assertEquals(/assertSame(/g")
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         assert "assertSame(1, 2)" in new, f"got: {new!r}; receipt: {r}"
         assert "assertSame(3, 4)" in new, f"got: {new!r}; receipt: {r}"
         assert "ERROR" not in r, f"unexpected error: {r}"
@@ -77,7 +77,7 @@ def test_issue1_oi_indent_text_strips_redundant_i():
     p = _tmp("\n".join(lines) + "\n")
     try:
         r = st.op_vim(p, f"3Goi        new_line();{ESC}")
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         assert "\ni        new_line()" not in new, (
             f"`i` bled into insert (Kevin's muscle memory): {new!r}; receipt: {r}"
         )
@@ -95,7 +95,7 @@ def test_issue7_double_backslash_paren_overescape():
     try:
         # In Python source `\\\\(` = 4 chars on disk = what Kevin's shell sent
         r = st.op_vim(p, r":%s/assertEquals\\(/assertSame\\(/g")
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         assert "assertSame(1, 2)" in new, f"got: {new!r}; receipt: {r}"
         assert "ERROR" not in r
     finally:
@@ -116,7 +116,7 @@ def test_issue8_quad_backslash_namespace_insert():
     try:
         # Kevin's actual single-quoted shell input → arg has 4 literal backslashes
         r = st.op_vim(p, "1Gouse SiSearch\\\\SiSearchModule;\x1b")
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         # Document current: insert lands literally (no autocorrect on insert yet)
         # If we later add autocorrect, change this test to expect single `\`
         assert "use SiSearch" in new, f"insert lost: {new!r}; receipt: {r}"
@@ -133,7 +133,7 @@ def test_log_pattern_double_percent_d_typo():
     p = _tmp("a\nb\nc\n")
     try:
         r = st.op_vim(p, ":%%d")
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         assert new == "" or new == "\n", f"buffer should be empty: {new!r}; receipt: {r}"
         assert "ERROR" not in r
     finally:
@@ -146,7 +146,7 @@ def test_log_pattern_line_pattern_range_delete():
     p = _tmp("a\nb\nstart\nmid1\nmid2\n    }\nafter\n")
     try:
         r = st.op_vim(p, "/start\x1b:.,/^    }$/d")
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         # Lines from `start` through `    }` should be gone
         assert "start" not in new, f"start still present: {new!r}; receipt: {r}"
         assert "    }" not in new, f"}} still present: {new!r}; receipt: {r}"
@@ -161,7 +161,7 @@ def test_log_pattern_relative_offset_range_works():
     p = _tmp("a\nb\nc\nd\ne\n")
     try:
         r = st.op_vim(p, "2G:.,+1d")
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         assert new == "a\nd\ne\n", f"got: {new!r}; receipt: {r}"
         assert "ERROR" not in r
     finally:
@@ -176,7 +176,7 @@ def test_log_pattern_V_count_G_d():
     p = _tmp("\n".join(lines) + "\n")
     try:
         r = st.op_vim(p, "5GV10Gd")
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         # Lines 5-10 (inclusive) should be gone
         assert "line 4\nline 11" in new, f"lines 5-10 should be deleted: {new[:100]!r}; receipt: {r}"
         assert "ERROR" not in r
@@ -208,7 +208,7 @@ def test_log_pattern_V_motion_single_op():
     p = _tmp("a\nb\nc\nd\ne\nf\n")
     try:
         r = st.op_vim(p, "V3jd")
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         # V + 3j = select 4 lines (current + 3 down), d = delete
         assert new == "e\nf\n", f"expected 4 lines deleted: {new!r}; receipt: {r}"
         assert "ERROR" not in r
@@ -222,7 +222,7 @@ def test_w_variants_all_noop():
         p = _tmp("a\nb\n")
         try:
             r = st.op_vim(p, cmd)
-            assert open(p).read() == "a\nb\n", f"{cmd}: buffer modified: {r}"
+            assert open(p, encoding="utf-8").read() == "a\nb\n", f"{cmd}: buffer modified: {r}"
             assert "ERROR" not in r, f"{cmd}: error: {r}"
         finally:
             os.unlink(p)
@@ -244,7 +244,7 @@ def test_Nr_missing_file_errors_cleanly():
     try:
         r = st.op_vim(p, ":2r /nonexistent/xyz_kevin_test.txt")
         assert "ERROR" in r and ("failed to read" in r or "No such" in r)
-        assert open(p).read() == "a\nb\nc\n", "buffer should be unchanged"
+        assert open(p, encoding="utf-8").read() == "a\nb\nc\n", "buffer should be unchanged"
     finally:
         os.unlink(p)
 
@@ -255,7 +255,7 @@ def test_line_pattern_range_no_match_errors_cleanly():
     try:
         r = st.op_vim(p, ":.,/zzz_nope/d")
         assert "ERROR" in r and "pattern not found" in r
-        assert open(p).read() == "a\nb\nc\n"
+        assert open(p, encoding="utf-8").read() == "a\nb\nc\n"
     finally:
         os.unlink(p)
 
@@ -268,7 +268,7 @@ def test_o_insert_auto_indent_matches_current_line():
     try:
         # Cursor at line 5 ("        $x = 1;"), `o` opens below at same indent
         r = st.op_vim(p, f"5Goself::doThing();{ESC}")
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         # Should be: line 5 stays, new line "        self::doThing();" follows
         assert "        $x = 1;\n        self::doThing();\n" in new, (
             f"auto-indent missing: {new!r}; receipt: {r}"
@@ -282,7 +282,7 @@ def test_O_insert_auto_indent_matches_current_line():
     p = _tmp("a\nb\n        $x = 1;\nc\n")
     try:
         r = st.op_vim(p, f"3GOself::doThing();{ESC}")
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         assert "b\n        self::doThing();\n        $x = 1;\n" in new, (
             f"auto-indent missing: {new!r}; receipt: {r}"
         )
@@ -295,7 +295,7 @@ def test_o_insert_does_not_double_indent_when_text_starts_with_ws():
     p = _tmp("    indented_line\n")
     try:
         r = st.op_vim(p, f"1Go        explicit_indent{ESC}")
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         # First inserted char is space — Kevin already provided indent
         # Auto-indent should NOT prepend 4 more spaces on top of his 8
         assert new == "    indented_line\n        explicit_indent\n", (
@@ -311,7 +311,7 @@ def test_log_pattern_w_is_noop():
     p = _tmp("a\nb\n")
     try:
         r = st.op_vim(p, ":w")
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         assert new == "a\nb\n", f"buffer should be unchanged: {new!r}"
         assert "ERROR" not in r, f"expected no error: {r}"
     finally:
@@ -340,7 +340,7 @@ def test_log_pattern_Nr_read_file_after_line():
     p = _tmp("a\nb\nc\nd\ne\n")
     try:
         r = st.op_vim(p, f":2r {src_path}")
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         # After line 2 ("b"), file content should appear before "c"
         assert "b\nINSERTED1\nINSERTED2\nc" in new, f"got: {new!r}; receipt: {r}"
         assert "ERROR" not in r
@@ -356,7 +356,7 @@ def test_issue12_bare_g_pattern_d_autocorrects_to_ex():
     p = _tmp("keep1\nremove this assertIsArray here\nkeep2\nassertIsArray again\nkeep3\n")
     try:
         r = st.op_vim(p, "g/assertIsArray/d")
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         assert "assertIsArray" not in new, f"lines should be gone: {new!r}; receipt: {r}"
         assert "keep1\nkeep2\nkeep3\n" == new, f"got: {new!r}"
         assert "ERROR" not in r
@@ -370,7 +370,7 @@ def test_issue12_bare_percent_g_pattern_d_autocorrects_to_ex():
     p = _tmp("a\nfoo\nb\nfoo\nc\n")
     try:
         r = st.op_vim(p, "%g/foo/d")
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         assert "foo" not in new, f"got: {new!r}; receipt: {r}"
         assert "ERROR" not in r
     finally:
@@ -384,7 +384,7 @@ def test_issue14_ex_append_Na_with_dot_terminator():
     try:
         # Append after line 2
         r = st.op_vim(p, ":2a\nAPPENDED1\nAPPENDED2\n.")
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         assert "line1\nline2\nAPPENDED1\nAPPENDED2\nline3\nline4\n" == new, (
             f"got: {new!r}; receipt: {r}"
         )
@@ -400,7 +400,7 @@ def test_issue16_trailing_comma_after_digits_is_noop():
     p = _tmp("a\nb\nc\n")
     try:
         r = st.op_vim(p, "64,")
-        assert open(p).read() == "a\nb\nc\n", f"buffer modified: {r}"
+        assert open(p, encoding="utf-8").read() == "a\nb\nc\n", f"buffer modified: {r}"
         # Find-repeat error must NOT show — was the misleading bit.
         assert "f/F/t/T" not in r, f"misleading find-repeat error: {r}"
     finally:
@@ -413,7 +413,7 @@ def test_issue16_chained_abandoned_range_does_not_break_followups():
     p = _tmp("a\nb\nc\n")
     try:
         r = st.op_vim(p, "64,\x1bdd")
-        assert open(p).read() == "b\nc\n", f"dd should run: {open(p).read()!r}; receipt: {r}"
+        assert open(p, encoding="utf-8").read() == "b\nc\n", f"dd should run: {open(p, encoding='utf-8').read()!r}; receipt: {r}"
         assert "ERROR" not in r
     finally:
         os.unlink(p)
@@ -426,8 +426,8 @@ def test_paste_op_full_file_rewrite():
     try:
         new_content = "<?php\n\ndeclare(strict_types=1);\n\nclass Foo\n{\n    public function bar(): void {}\n}\n"
         r = st.op_paste(p, new_content)
-        assert open(p).read() == new_content, f"got: {open(p).read()!r}; receipt: {r}"
-        assert "<?php" in open(p).read(), "<?php eaten!"
+        assert open(p, encoding="utf-8").read() == new_content, f"got: {open(p, encoding='utf-8').read()!r}; receipt: {r}"
+        assert "<?php" in open(p, encoding="utf-8").read(), "<?php eaten!"
         assert "rewrote" in r
     finally:
         os.unlink(p)
@@ -439,7 +439,7 @@ def test_paste_op_creates_missing_file_and_parent():
     p = os.path.join(d, "new", "nested", "file.txt")
     try:
         r = st.op_paste(p, "hello\nworld\n")
-        assert open(p).read() == "hello\nworld\n", f"got: {open(p).read()!r}; receipt: {r}"
+        assert open(p, encoding="utf-8").read() == "hello\nworld\n", f"got: {open(p, encoding='utf-8').read()!r}; receipt: {r}"
         assert "created" in r
     finally:
         import shutil
@@ -451,7 +451,7 @@ def test_paste_op_appends_trailing_newline():
     p = _tmp("old\n")
     try:
         r = st.op_paste(p, "no trailing nl")
-        assert open(p).read() == "no trailing nl\n", f"got: {open(p).read()!r}"
+        assert open(p, encoding="utf-8").read() == "no trailing nl\n", f"got: {open(p, encoding='utf-8').read()!r}"
     finally:
         os.unlink(p)
 
@@ -462,7 +462,7 @@ def test_issue18_replace_lines_end_off_by_one_clamps_to_eof():
     p = _tmp("\n".join(f"line{n}" for n in range(1, 57)) + "\n")  # 56 lines
     try:
         r = st.op_replace_lines(p, 49, 57, "REPLACED\n")
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         assert new.endswith("REPLACED\n"), f"got tail: {new[-50:]!r}; receipt: {r}"
         # Lines 49 onwards gone, replaced by REPLACED
         assert "line48\nREPLACED\n" == new[-len("line48\nREPLACED\n"):], (
@@ -479,7 +479,7 @@ def test_issue18_replace_lines_end_two_over_still_errors():
     try:
         r = st.op_replace_lines(p, 2, 5, "X\n")  # 5 > 3+1
         assert "ERROR" in r, f"should error: {r}"
-        assert open(p).read() == "a\nb\nc\n", "buffer should be unchanged"
+        assert open(p, encoding="utf-8").read() == "a\nb\nc\n", "buffer should be unchanged"
     finally:
         os.unlink(p)
 
@@ -493,7 +493,7 @@ def test_issue17_o_question_pattern_autocorrects_to_search_then_open():
     try:
         # Kevin's reflex: G + o?^}\eO<TEXT>\e — wanted: G, search ?^}, O TEXT
         r = st.op_vim(p, "Go?^}\x1bO    function baz(): void {}\x1b")
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         # After autocorrect: cursor goes to closing }, O inserts before it
         assert "    function baz(): void {}\n}" in new, f"insert misplaced: {new!r}; receipt: {r}"
         # `?^}` must NOT be a literal line in the file
@@ -507,7 +507,7 @@ def test_issue17_o_slash_pattern_autocorrects():
     p = _tmp("alpha\nbeta\nGAMMA\ndelta\n")
     try:
         r = st.op_vim(p, "ggo/GAMMA\x1boFOUND\x1b")
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         # `?GAMMA` → cursor on GAMMA line, o opens below
         assert "GAMMA\nFOUND\n" in new, f"got: {new!r}; receipt: {r}"
         assert "/GAMMA" not in new, f"/GAMMA leaked: {new!r}"
@@ -520,7 +520,7 @@ def test_issue17_o_question_with_spaces_does_not_autocorrect():
     p = _tmp("line1\nline2\n")
     try:
         r = st.op_vim(p, "1Go? what is this content\x1b")
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         # Should insert as literal — has space, not a search pattern
         assert "? what is this content" in new, f"autocorrect over-fired: {new!r}"
     finally:
@@ -535,7 +535,7 @@ def test_issue1_oi_no_whitespace_does_not_autocorrect():
     p = _tmp("a\nb\n")
     try:
         r = st.op_vim(p, f"1Goiword{ESC}")
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         # Must contain literal `iword` — autocorrect should NOT fire here
         assert "iword" in new, f"autocorrect over-fired: {new!r}; receipt: {r}"
     finally:

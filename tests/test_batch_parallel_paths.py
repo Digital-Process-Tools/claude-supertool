@@ -30,7 +30,7 @@ def test_batch_with_subop_using_at_file_fields(tmp_path: Path) -> None:
         ],
     }))
     out = supertool.dispatch(f"batch:@{payload_file}")
-    assert target.read_text() == "bar\n", out
+    assert target.read_text(encoding="utf-8") == "bar\n", out
 
 
 def test_batch_missing_op_field_emits_error(tmp_path: Path) -> None:

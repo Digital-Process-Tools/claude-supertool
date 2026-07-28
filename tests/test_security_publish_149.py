@@ -58,7 +58,7 @@ class TestBodyAllowlist:
         body.write_text("hello")
         resolved = _publish_safety.safe_resolve_body_path(str(body))
         assert resolved.is_file()
-        assert resolved.read_text() == "hello"
+        assert resolved.read_text(encoding="utf-8") == "hello"
 
     def test_accepts_drafts_dir(self, strict_publish, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -66,7 +66,7 @@ class TestBodyAllowlist:
         body = tmp_path / "drafts" / "x.md"
         body.write_text("draft")
         resolved = _publish_safety.safe_resolve_body_path(f"file://{body}")
-        assert resolved.read_text() == "draft"
+        assert resolved.read_text(encoding="utf-8") == "draft"
 
     def test_env_extension_adds_to_allowlist(self, strict_publish, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -75,7 +75,7 @@ class TestBodyAllowlist:
         body = tmp_path / "outside" / "x.md"
         body.write_text("body")
         resolved = _publish_safety.safe_resolve_body_path(str(body))
-        assert resolved.read_text() == "body"
+        assert resolved.read_text(encoding="utf-8") == "body"
 
     def test_json_extension_adds_to_allowlist(self, strict_publish, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -88,7 +88,7 @@ class TestBodyAllowlist:
         body = tmp_path / "custom" / "x.md"
         body.write_text("via json")
         resolved = _publish_safety.safe_resolve_body_path(str(body))
-        assert resolved.read_text() == "via json"
+        assert resolved.read_text(encoding="utf-8") == "via json"
 
 
 class TestConfirmGate:

@@ -159,7 +159,7 @@ def test_notifier_debug_log_via_env(tmp_path: Path, monkeypatch) -> None:
     # `_notifier_log` runs in-process: the dispatch line is on disk by the time
     # `_run_notifiers` returns. No sleep, and none needed.
     assert log.exists(), "debug log not written"
-    content = log.read_text()
+    content = log.read_text(encoding="utf-8")
     assert "edit" in content
     assert "x.php" in content
 
@@ -177,7 +177,7 @@ def test_notifier_debug_log_via_config(tmp_path: Path, monkeypatch) -> None:
     })
     supertool._run_notifiers("edit", "y.php")
     assert log.exists()
-    assert "y.php" in log.read_text()
+    assert "y.php" in log.read_text(encoding="utf-8")
 
 
 def test_empty_placeholders_preserve_positional_argv(tmp_path: Path) -> None:

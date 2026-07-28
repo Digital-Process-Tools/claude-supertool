@@ -145,7 +145,7 @@ class TestSamePathEdits:
 
         # Both edits should succeed sequentially
         assert "ERROR" not in out, f"Unexpected error: {out}"
-        final = target.read_text()
+        final = target.read_text(encoding="utf-8")
         assert final == "c\n", (
             f"Expected 'c\\n' after two sequential edits — got {final!r}. "
             "If batch is parallelised, this is a data race."
@@ -167,7 +167,7 @@ class TestSamePathEdits:
         out = supertool.dispatch(f"batch:@{spec}")
 
         # First edit succeeded, second should report not-found (not crash)
-        assert target.read_text() == "b\n"
+        assert target.read_text(encoding="utf-8") == "b\n"
         assert "ERROR" in out or "not found" in out.lower()
 
 
@@ -191,7 +191,7 @@ class TestMixedOps:
 
         assert "before" in out   # first read
         assert "after" in out    # edit receipt or second read
-        assert target.read_text() == "after\n"
+        assert target.read_text(encoding="utf-8") == "after\n"
 
     def test_read_and_wc_together(self, tmp_path: Path) -> None:
         """Two read-only ops in the same batch both execute."""
@@ -466,4 +466,4 @@ class TestNoShellExpansion:
         out = supertool.dispatch(f"batch:@{spec}")
         # The literal string "$(echo gotcha)" was in the file and must be found
         assert "ERROR" not in out, f"Literal $ in old-string was not matched: {out}"
-        assert target.read_text() == "safe\n"
+        assert target.read_text(encoding="utf-8") == "safe\n"
