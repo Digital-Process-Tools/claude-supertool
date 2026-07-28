@@ -147,7 +147,7 @@ def test_the_deliberate_leak_did_not_survive():
 
 
 def test_conftest_and_hook_scrub_the_same_variables():
-    hook = (SUITE_ROOT / ".githooks" / "pre-push").read_text()
+    hook = (SUITE_ROOT / ".githooks" / "pre-push").read_text(encoding="utf-8")
     unset = [line for line in hook.splitlines() if line.startswith("unset ")]
     assert len(unset) == 1, "pre-push should scrub in exactly one unset line"
     assert unset[0].split()[1:] == list(conftest.GIT_ENV_VARS)

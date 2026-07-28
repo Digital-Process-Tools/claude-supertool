@@ -53,9 +53,9 @@ def test_defer_runs_formatter_once_per_file_across_multi_op(tmp_path, monkeypatc
     ]
     rc = supertool.main(argv)
     assert rc == 0
-    assert target.read_text() == "x = 3\n"
+    assert target.read_text(encoding="utf-8") == "x = 3\n"
     # Formatter ran exactly once for the file (deferred to end of batch).
-    runs = counter.read_text().count("run\n")
+    runs = counter.read_text(encoding="utf-8").count("run\n")
     assert runs == 1, f"expected 1 deferred run, got {runs}"
 
 
@@ -68,7 +68,7 @@ def test_single_op_still_runs_formatter_inline(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     rc = supertool.main([f"edit:::x = 1:::x = 2:::{target}"])
     assert rc == 0
-    assert counter.read_text().count("run\n") == 1
+    assert counter.read_text(encoding="utf-8").count("run\n") == 1
 
 
 def test_defer_handles_different_files_independently(tmp_path, monkeypatch) -> None:
@@ -86,7 +86,7 @@ def test_defer_handles_different_files_independently(tmp_path, monkeypatch) -> N
     ])
     assert rc == 0
     # Two distinct files → formatter runs once per file.
-    assert counter.read_text().count("run\n") == 2
+    assert counter.read_text(encoding="utf-8").count("run\n") == 2
 
 
 def test_defer_runs_formatter_on_survivor_when_later_op_rolls_back(tmp_path, monkeypatch) -> None:
@@ -133,10 +133,10 @@ def test_defer_runs_formatter_on_survivor_when_later_op_rolls_back(tmp_path, mon
         f"edit:::y = 1:::y = BAD:::{b}",      # validator fails → rollback
     ])
     # Survivor edited; rolled-back file restored.
-    assert a.read_text() == "x = 2\n"
-    assert b.read_text() == "y = 1\n"
+    assert a.read_text(encoding="utf-8") == "x = 2\n"
+    assert b.read_text(encoding="utf-8") == "y = 1\n"
     # Formatter ran (deferred) at least once — survivor a.py must be in the queue.
-    assert counter.read_text().count("run\n") >= 1
+    assert counter.read_text(encoding="utf-8").count("run\n") >= 1
 
 
 def test_defer_state_reset_between_invocations(tmp_path, monkeypatch) -> None:
@@ -175,8 +175,8 @@ def test_batch_defers_formatter_once_per_file(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     rc = supertool.main([f"batch:@{ops_file}"])
     assert rc == 0
-    assert target.read_text() == "x = 3\n"
-    runs = counter.read_text().count("run\n")
+    assert target.read_text(encoding="utf-8") == "x = 3\n"
+    runs = counter.read_text(encoding="utf-8").count("run\n")
     assert runs == 1, f"expected 1 deferred run inside batch, got {runs}"
 
 

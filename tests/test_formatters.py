@@ -113,7 +113,7 @@ def test_formatter_run_one_substitutes_file_token(tmp_path: Path) -> None:
     # as_posix avoids shlex backslash-escape mangling of Windows paths.
     spec = {"cmd": f"{{python}} {adapter.as_posix()} {{file}}", "timeout": 5}
     supertool._formatter_run_one("fmt", spec, str(f))
-    assert sentinel.read_text() == str(f)
+    assert sentinel.read_text(encoding="utf-8") == str(f)
 
 
 def test_formatter_run_one_timeout(tmp_path: Path) -> None:
@@ -185,7 +185,7 @@ def test_formatter_fail_rollback_false_keeps_file(tmp_path: Path) -> None:
 
     out = supertool._run_with_validators("edit", ["edit", "", "", str(f)], do_edit)
     # Edit succeeded despite formatter failure
-    assert f.read_text() == '{"a":2}\n'
+    assert f.read_text(encoding="utf-8") == '{"a":2}\n'
     assert "edited" in out
     assert "[formatters]" in out  # warning block present
     assert "fail" in out  # row shows failure
@@ -214,7 +214,7 @@ def test_formatter_fail_rollback_true_reverts_file(tmp_path: Path) -> None:
         return "edited\n"
 
     out = supertool._run_with_validators("edit", ["edit", "", "", str(f)], do_edit)
-    assert f.read_text() == original
+    assert f.read_text(encoding="utf-8") == original
     assert "rolled back" in out
 
 
@@ -266,7 +266,7 @@ def test_formatter_graceful_skip_missing_binary(tmp_path: Path) -> None:
 
     out = supertool._run_with_validators("edit", ["edit", "", "", str(f)], do_edit)
     # Edit succeeded despite missing tool
-    assert f.read_text() == '{"a":2}\n'
+    assert f.read_text(encoding="utf-8") == '{"a":2}\n'
     assert "edited" in out
 
 

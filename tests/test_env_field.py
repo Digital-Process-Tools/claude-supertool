@@ -101,7 +101,7 @@ def test_formatter_env_field_passed_to_subprocess(tmp_path: Path) -> None:
     }
     result = supertool._formatter_run_one("fmt", spec, "any.php")
     assert result["ok"] is True
-    assert sentinel.read_text() == "fmt_env_value"
+    assert sentinel.read_text(encoding="utf-8") == "fmt_env_value"
 
 
 def test_formatter_env_field_absent_does_not_break(tmp_path: Path) -> None:

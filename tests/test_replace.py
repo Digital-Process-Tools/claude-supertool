@@ -36,9 +36,9 @@ class TestReplaceDry:
 
     def test_dry_does_not_modify_files(self, tmp_files):
         f1 = tmp_files / "file1.php"
-        original = f1.read_text()
+        original = f1.read_text(encoding="utf-8")
         op_replace("TYPE_CUSTOMER", "TYPE_ENUM_CUSTOMER", str(tmp_files), dry=True)
-        assert f1.read_text() == original
+        assert f1.read_text(encoding="utf-8") == original
 
     def test_dry_shows_correct_count(self, tmp_files):
         result = op_replace("TYPE_CUSTOMER", "TYPE_ENUM_CUSTOMER", str(tmp_files), dry=True)
@@ -77,25 +77,25 @@ class TestReplace:
 
     def test_replace_modifies_files(self, tmp_files):
         op_replace("TYPE_CUSTOMER", "TYPE_ENUM_CUSTOMER", str(tmp_files), dry=False)
-        f1 = (tmp_files / "file1.php").read_text()
+        f1 = (tmp_files / "file1.php").read_text(encoding="utf-8")
         assert "TYPE_ENUM_CUSTOMER" in f1
         assert "TYPE_CUSTOMER" not in f1
 
     def test_replace_does_not_touch_non_matching(self, tmp_files):
-        original = (tmp_files / "no_match.php").read_text()
+        original = (tmp_files / "no_match.php").read_text(encoding="utf-8")
         op_replace("TYPE_CUSTOMER", "TYPE_ENUM_CUSTOMER", str(tmp_files), dry=False)
-        assert (tmp_files / "no_match.php").read_text() == original
+        assert (tmp_files / "no_match.php").read_text(encoding="utf-8") == original
 
     def test_replace_single_file(self, tmp_files):
         f2 = str(tmp_files / "file2.xml")
         result = op_replace("TYPE_CUSTOMER", "TYPE_ENUM_CUSTOMER", f2, dry=False)
         assert "1 replacements in 1 files" in result
-        content = (tmp_files / "file2.xml").read_text()
+        content = (tmp_files / "file2.xml").read_text(encoding="utf-8")
         assert "TYPE_ENUM_CUSTOMER" in content
 
     def test_replace_recursive(self, tmp_files):
         op_replace("TYPE_CUSTOMER", "TYPE_ENUM_CUSTOMER", str(tmp_files), dry=False)
-        deep = (tmp_files / "sub" / "deep.php").read_text()
+        deep = (tmp_files / "sub" / "deep.php").read_text(encoding="utf-8")
         assert "TYPE_ENUM_CUSTOMER" in deep
 
     def test_replace_receipt_shows_per_file_count(self, tmp_files):
@@ -177,23 +177,23 @@ class TestReplaceMultiline:
 
     def test_execute_collapses_duplicate_blocks(self, multiline_files):
         op_replace("[es_all]\n[es_all]", "[es_all]", str(multiline_files), dry=False)
-        assert (multiline_files / "a.ini").read_text() == "[fr_all]\n[es_all]\n"
-        assert (multiline_files / "b.ini").read_text() == "[fr_all]\n[en_all]\n[es_all]\n"
+        assert (multiline_files / "a.ini").read_text(encoding="utf-8") == "[fr_all]\n[es_all]\n"
+        assert (multiline_files / "b.ini").read_text(encoding="utf-8") == "[fr_all]\n[en_all]\n[es_all]\n"
         # File without duplicate stays untouched
-        assert (multiline_files / "c.ini").read_text() == "[fr_all]\n[es_all]\n"
+        assert (multiline_files / "c.ini").read_text(encoding="utf-8") == "[fr_all]\n[es_all]\n"
 
     def test_execute_receipt_counts_files(self, multiline_files):
         result = op_replace("[es_all]\n[es_all]", "[es_all]", str(multiline_files), dry=False)
         assert "2 replacements in 2 files" in result
 
     def test_dry_does_not_modify_multiline(self, multiline_files):
-        original_a = (multiline_files / "a.ini").read_text()
+        original_a = (multiline_files / "a.ini").read_text(encoding="utf-8")
         op_replace("[es_all]\n[es_all]", "[es_all]", str(multiline_files), dry=True)
-        assert (multiline_files / "a.ini").read_text() == original_a
+        assert (multiline_files / "a.ini").read_text(encoding="utf-8") == original_a
 
     def test_replacement_can_be_multiline(self, multiline_files):
         op_replace("[fr_all]\n[es_all]", "[fr_all]\n[de_all]\n[es_all]", str(multiline_files / "c.ini"), dry=False)
-        assert (multiline_files / "c.ini").read_text() == "[fr_all]\n[de_all]\n[es_all]\n"
+        assert (multiline_files / "c.ini").read_text(encoding="utf-8") == "[fr_all]\n[de_all]\n[es_all]\n"
 
 
 class TestReplaceSafety:
@@ -210,7 +210,7 @@ class TestReplaceSafety:
             out = op_replace("findme", "REPLACED", str(tmp_path))
         finally:
             os.chdir(cwd)
-        assert "REPLACED content" in (tmp_path / "src.txt").read_text()
+        assert "REPLACED content" in (tmp_path / "src.txt").read_text(encoding="utf-8")
         # .git/index must be untouched (no string substitution)
         assert (tmp_path / ".git" / "index").read_bytes() == b"DIRC\x00\x00\x00\x02fakeindex"
 
@@ -221,6 +221,6 @@ class TestReplaceSafety:
         text = tmp_path / "src.txt"
         text.write_text("findme here\n")
         out = op_replace("findme", "OK", str(tmp_path))
-        assert "OK here" in text.read_text()
+        assert "OK here" in text.read_text(encoding="utf-8")
         # Binary blob untouched
         assert binary.read_bytes() == b"findme\x00data\x00more findme"

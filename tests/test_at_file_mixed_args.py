@@ -63,7 +63,7 @@ def test_paste_at_file_with_trailing_args_either_errors_or_uses_payload(
     # 2. paste succeeded into the real path (no stray @- file)
     accepted = (
         "ERROR" in combined
-        or (out_path.exists() and out_path.read_text() == "X\n")
+        or (out_path.exists() and out_path.read_text(encoding="utf-8") == "X\n")
     )
     at_dash = REPO / "@-"
     if at_dash.exists():

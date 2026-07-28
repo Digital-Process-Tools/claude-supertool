@@ -13,7 +13,7 @@ ROOT = Path(supertool.__file__).resolve().parent
 
 
 def _load(rel: str) -> dict:
-    return json.loads((ROOT / rel).read_text())
+    return json.loads((ROOT / rel).read_text(encoding="utf-8"))
 
 
 # ---------------------------------------------------------------------------

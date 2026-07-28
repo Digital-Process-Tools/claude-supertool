@@ -153,7 +153,7 @@ class TestSymlinkedAtFile:
         out = _dispatch_reset(f"edit:@{link}")
         # The symlink is followed → edit executes → "edited" in output.
         assert "ERROR" not in out, "Symlink should be followed; edit should succeed"
-        assert "replaced" in target.read_text()
+        assert "replaced" in target.read_text(encoding="utf-8")
 
     def test_symlink_to_secret_file_is_read(self, tmp_path: Path) -> None:
         """Symlink pointing to a non-payload file: read occurs, parse fails, ERROR returned.
@@ -227,7 +227,7 @@ class TestExtraFieldsInPayload:
         out = _dispatch_reset(f"edit:@{spec}")
         # Extra fields silently ignored; edit succeeds.
         assert "ERROR" not in out
-        assert "a = 99" in target.read_text()
+        assert "a = 99" in target.read_text(encoding="utf-8")
 
     def test_extra_fields_with_shell_metacharacters_not_executed(self, tmp_path: Path) -> None:
         """Shell metacharacters in extra fields must not be executed.
@@ -277,7 +277,7 @@ class TestJsonTypeConfusion:
         assert "Traceback" not in out
         # Coercion succeeds and edit runs.
         if "ERROR" not in out:
-            assert "456" in target.read_text()
+            assert "456" in target.read_text(encoding="utf-8")
 
     def test_list_new_is_coerced_to_string(self, tmp_path: Path) -> None:
         """new: ["array"] → str(["array"]) = "['array']" — silent coercion."""
@@ -330,21 +330,21 @@ class TestTomlSpacePrefixedBrace:
         f.write_text(payload_str)
         out = _dispatch_reset(f"edit:@{f}")
         assert "ERROR" not in out
-        assert "new_val" in target.read_text()
+        assert "new_val" in target.read_text(encoding="utf-8")
 
     def test_brace_space_content_is_json_not_toml(self, tmp_path: Path) -> None:
         """'{ ' prefix does NOT flip to TOML — still detected as JSON."""
         f = tmp_path / "p.json"
         f.write_text('{ "old": "x", "new": "y", "path": "/nonexistent" }')
         # Detection: first non-whitespace = '{' → json
-        fmt = supertool._detect_payload_format(f.read_text())
+        fmt = supertool._detect_payload_format(f.read_text(encoding="utf-8"))
         assert fmt == "json"
 
     def test_toml_format_when_starts_with_identifier(self, tmp_path: Path) -> None:
         """Payload starting with 'old = ...' → detected as TOML."""
         f = tmp_path / "p.toml"
         f.write_text('old = "x"\nnew = "y"\npath = "/nonexistent"\n')
-        fmt = supertool._detect_payload_format(f.read_text())
+        fmt = supertool._detect_payload_format(f.read_text(encoding="utf-8"))
         assert fmt == "toml"
 
 
@@ -494,7 +494,7 @@ class TestStdinRoute:
             out = supertool.dispatch("edit:@-")
 
         assert "ERROR" not in out
-        assert "replaced" in target.read_text()
+        assert "replaced" in target.read_text(encoding="utf-8")
 
     def test_stdin_closed_returns_empty_string(self) -> None:
         """When stdin is closed/empty, sys.stdin.read() returns '' → JSON parse error."""

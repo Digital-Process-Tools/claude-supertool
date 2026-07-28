@@ -30,7 +30,7 @@ def test_over_escaped_backslash_autocorrects(tmp_path: Path) -> None:
     # Pattern as it would arrive after bash: 4-4-4 backslashes.
     out = supertool.op_vim(str(f), ":s/\\\\\\\\Http\\\\\\\\Mock/X/g")
     assert "ERROR" not in out, out
-    assert f.read_text() == "use AcmeX;\n", f.read_text()
+    assert f.read_text(encoding="utf-8") == "use AcmeX;\n", f.read_text(encoding="utf-8")
 
 
 def test_correct_two_backslash_form_still_works(tmp_path: Path) -> None:
@@ -39,7 +39,7 @@ def test_correct_two_backslash_form_still_works(tmp_path: Path) -> None:
     f.write_text("use Acme\\Http\\Mock;\n")
     out = supertool.op_vim(str(f), ":s/\\\\Http\\\\Mock/X/g")
     assert "ERROR" not in out, out
-    assert f.read_text() == "use AcmeX;\n", f.read_text()
+    assert f.read_text(encoding="utf-8") == "use AcmeX;\n", f.read_text(encoding="utf-8")
     # No retry hint when the original pattern matched.
     assert "autocorrect" not in out.lower()
 
@@ -62,7 +62,7 @@ def test_no_backslashes_unchanged(tmp_path: Path) -> None:
     f.write_text("foo bar\n")
     out = supertool.op_vim(str(f), ":s/foo/X/")
     assert "ERROR" not in out, out
-    assert f.read_text() == "X bar\n"
+    assert f.read_text(encoding="utf-8") == "X bar\n"
     assert "autocorrect" not in out.lower()
 
 
@@ -83,7 +83,7 @@ def test_legit_four_backslash_pattern_when_no_match(tmp_path: Path) -> None:
     # Regex `\\\\\\\\` (4 chars) matches 2 literal backslashes. So it matches.
     out = supertool.op_vim(str(f), ":s/\\\\\\\\Foo/X/")
     assert "ERROR" not in out, out
-    assert f.read_text() == "X\n", f.read_text()
+    assert f.read_text(encoding="utf-8") == "X\n", f.read_text(encoding="utf-8")
     # No retry because the original pattern matched.
     assert "autocorrect" not in out.lower()
 
@@ -94,5 +94,5 @@ def test_autocorrect_with_range(tmp_path: Path) -> None:
     f.write_text("a = Acme\\Foo;\nb = Acme\\Foo;\n")
     out = supertool.op_vim(str(f), ":%s/Acme\\\\\\\\Foo/X/g")
     assert "ERROR" not in out, out
-    assert f.read_text() == "a = X;\nb = X;\n", f.read_text()
+    assert f.read_text(encoding="utf-8") == "a = X;\nb = X;\n", f.read_text(encoding="utf-8")
     assert "autocorrect" in out.lower()

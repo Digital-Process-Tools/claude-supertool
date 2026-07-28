@@ -75,7 +75,7 @@ def test_vim_preserves_executable_bit(tmp_path: Path) -> None:
     os.chmod(f, 0o755)
     out = supertool.op_vim(str(f), ":s/X/Y/")
     assert "ERROR" not in out, out
-    assert f.read_text() == "echo Y\n", "substitution must apply"
+    assert f.read_text(encoding="utf-8") == "echo Y\n", "substitution must apply"
     assert _mode(f) == 0o755, f"mode lost: {oct(_mode(f))}"
 
 

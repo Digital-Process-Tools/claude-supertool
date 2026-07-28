@@ -169,6 +169,22 @@ path.read_text()                          # no  — decodes with the locale
 
 Without `encoding=`, Python decodes with `locale.getpreferredencoding()`: **cp1252** on a Windows console, **ASCII** under the C/POSIX locale that a great many cron jobs, containers and CI runners default to. Any file holding a `—` or a `✓` — which includes `presets/git.json`, shipped in this repo — then raises `UnicodeDecodeError`. A static AST scan over `supertool.py`, `presets/`, `hooks/`, `validators/`, `formatters/` and `notifiers/` fails the suite on a new one and names the file and line.
 
+**The read half of the rule applies inside `tests/` too** ([#461](https://github.com/Digital-Process-Tools/claude-supertool/issues/461)). A test that reads a real repository file as data — source, docs, a manifest — decodes whatever non-ASCII the project has accumulated, so it passes on your machine and dies on the Windows leg the day that file acquires an em dash. That happened twice in one day ([#431](https://github.com/Digital-Process-Tools/claude-supertool/pull/431) scanning preset source, [#460](https://github.com/Digital-Process-Tools/claude-supertool/pull/460) reading `docs/presets/watch.md`), both in tests written after the rule existed.
+
+The scan makes **no attempt to tell a repository path from a `tmp_path` fixture**, and that is deliberate: #431's read was `path.read_text()` on a *function parameter* fed from `PRESETS_DIR.rglob()` in another function, so any target-based narrowing is interprocedural or it is silently incomplete — and a guard with invisible false negatives is worse than a blunt one. So **every** read in `tests/` names its codec, including reads of files the test itself just wrote:
+
+```python
+assert (tmp_path / "out.txt").read_text(encoding="utf-8") == "x"   # yes
+assert (tmp_path / "out.txt").read_text() == "x"                   # no
+```
+
+Fixture **writes** stay out of scope. That is where the ~1670 bare calls live, and a `write_text()` of an ASCII fixture cannot fail — enforcing there is the noise that made the original `tests/` exclusion correct.
+
+Two things this scan does not catch, both worth knowing:
+
+- **`subprocess.run(..., text=True)` without `encoding=`** decodes the child's output with the same locale codec, and there are ~270 such call sites here. Python only reports it at runtime (`EncodingWarning` from `subprocess._text_encoding`), so it is a separate problem with a separate fix.
+- **A read reached only on a platform you are not on.** The scan is static, so it enumerates every call site rather than every executed one — that is the half that keeps working for code added later, but it says nothing about which branch runs where.
+
 **2. A preset that prints non-ASCII must not depend on the console encoding.**
 
 Presets run as separate processes and inherit none of supertool's stream setup. Supertool pins `PYTHONIOENCODING=utf-8` for every child it spawns, so an op invoked through supertool is covered without the script doing anything. A `presets/git/*.py` script is additionally required to call `use_utf8_stdout()` as the first statement of `main()`, because those are the ones run straight from a shell during conflict work, with no supertool in front of them. It lives in `presets/git/_git_common.py` — one definition, never a copy.
@@ -180,6 +196,11 @@ The failure this prevents is worth naming: printing a `✓` on a cp1252 console 
 ```bash
 # read half — a bare open() becomes a hard error (3.10+)
 python3 -X warn_default_encoding -W error::EncodingWarning supertool.py read:file.py
+
+# note: this does NOT work as a whole-suite mode. `PYTHONWARNDEFAULTENCODING=1
+# pytest -W error::EncodingWarning` errors 4192 of 4224 tests, almost all of
+# them from `subprocess.run(text=True)` in the autouse conftest fixture rather
+# than from any read a test wrote. See #461.
 
 # stdout half — the Windows console default, anywhere
 PYTHONIOENCODING=cp1252 python3 supertool.py git-status

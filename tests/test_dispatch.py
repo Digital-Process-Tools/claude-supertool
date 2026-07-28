@@ -451,7 +451,7 @@ def test_main_batches_multiple_ops(tmp_path: Path, capsys, monkeypatch) -> None:
     header_lines = [ln for ln in captured.out.split("\n") if ln.startswith("--- ")]
     assert len(header_lines) == 2
     # Log should have one line with both ops
-    log_content = log_file.read_text()
+    log_content = log_file.read_text(encoding="utf-8")
     assert str(f1) in log_content
     assert str(f2) in log_content
 
@@ -561,7 +561,7 @@ def test_main_logs_call(tmp_path: Path, monkeypatch) -> None:
     f = tmp_path / "x.py"
     f.write_text("hi\n")
     supertool.main([f"read:{f}"])
-    log_content = log_file.read_text()
+    log_content = log_file.read_text(encoding="utf-8")
     assert "read:" in log_content
     # Format: "timestamp | caller_tag | meta | ops"
     parts = log_content.strip().split(" | ")
@@ -588,7 +588,7 @@ def test_main_logs_batch_op_count(tmp_path: Path, monkeypatch) -> None:
     f3 = tmp_path / "c.py"
     f3.write_text("c\n")
     supertool.main([f"read:{f1}", f"read:{f2}", f"read:{f3}"])
-    log_content = log_file.read_text()
+    log_content = log_file.read_text(encoding="utf-8")
     assert "ops=3" in log_content
 
 

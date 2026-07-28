@@ -245,7 +245,7 @@ def test_skipped_validator_does_not_roll_back_the_edit(tmp_path: Path) -> None:
     out, f = _run_edit(tmp_path, {"tool": "phpstan-mcp", "ok": True, "count": 0,
                                   "errors": [], "duration_ms": 1,
                                   "skipped": "path outside --paths allowlist"})
-    assert f.read_text() == _EDITED
+    assert f.read_text(encoding="utf-8") == _EDITED
     assert "rolled back" not in out
     assert "skipped" in out
     assert "path outside --paths allowlist" in out
@@ -262,7 +262,7 @@ def test_skipped_result_claiming_failure_still_does_not_roll_back(tmp_path: Path
                                               "msg": ALLOWLIST_MSG}],
                                   "duration_ms": 1,
                                   "skipped": "path outside --paths allowlist"})
-    assert f.read_text() == _EDITED
+    assert f.read_text(encoding="utf-8") == _EDITED
     assert "rolled back" not in out
 
 
@@ -274,7 +274,7 @@ def test_real_new_error_still_rolls_back_and_reports_plus_one(tmp_path: Path) ->
                                               "code": "return.type",
                                               "msg": "bad return"}],
                                   "duration_ms": 1})
-    assert f.read_text() == _ORIGINAL
+    assert f.read_text(encoding="utf-8") == _ORIGINAL
     assert "rolled back" in out
     assert "(+1)" in out
     assert supertool.mark("✗") in out
@@ -312,4 +312,4 @@ def test_rollback_is_not_triggered_by_a_name_prefix_neighbour(tmp_path: Path) ->
 
     out = supertool._run_with_validators("edit", ["edit", "", "", str(f)], do_edit)
     assert "rolled back" not in out
-    assert f.read_text() == _EDITED
+    assert f.read_text(encoding="utf-8") == _EDITED

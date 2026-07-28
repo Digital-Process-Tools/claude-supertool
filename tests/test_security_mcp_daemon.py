@@ -384,7 +384,7 @@ class TestSymlinkAttackOnSocketPath:
 
         assert not link.exists(), "symlink was removed"
         assert target.exists(), "target file untouched — no data destruction"
-        assert target.read_text() == "sensitive content"
+        assert target.read_text(encoding="utf-8") == "sensitive content"
 
     @pytest.mark.skip(reason="test scaffolding needs mock-path cleanup (open→builtins.open, daemon.is_alive→adapter.is_alive). Pass-through pending follow-up.")
     def test_serve_calls_unlink_before_bind(self, tmp_path):
@@ -932,7 +932,7 @@ class TestConcurrentSocketConnections:
     def test_serve_loop_is_sequential_not_parallel(self):
         """bridge_client is called synchronously in the accept loop — no thread per client."""
         import inspect
-        source = DAEMON_PY.read_text()
+        source = DAEMON_PY.read_text(encoding="utf-8")
         # The accept loop calls bridge_client directly, not via threading.Thread
         # Verify bridge_client is NOT spawned in a new thread in the main loop
         # (the bridge_client itself uses threads internally for the two directions,
@@ -981,13 +981,13 @@ class TestSocketRecvUnboundedAccumulation:
             f"{adapter_name}: unexpectedly found a buf size cap — update this test"
 
     def test_phpunit_no_recv_buf_cap(self):
-        self._check_no_buf_cap(PHPUNIT_PY.read_text(), "phpunit-mcp")
+        self._check_no_buf_cap(PHPUNIT_PY.read_text(encoding="utf-8"), "phpunit-mcp")
 
     def test_phpstan_no_recv_buf_cap(self):
-        self._check_no_buf_cap(PHPSTAN_PY.read_text(), "phpstan-mcp")
+        self._check_no_buf_cap(PHPSTAN_PY.read_text(encoding="utf-8"), "phpstan-mcp")
 
     def test_rector_no_recv_buf_cap(self):
-        self._check_no_buf_cap(RECTOR_PY.read_text(), "rector-mcp")
+        self._check_no_buf_cap(RECTOR_PY.read_text(encoding="utf-8"), "rector-mcp")
 
     def test_large_response_accumulates_in_memory(self, monkeypatch):
         """Simulate a large MCP response: verify buf grows to full size before

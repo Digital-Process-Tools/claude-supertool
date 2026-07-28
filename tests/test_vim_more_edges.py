@@ -13,7 +13,7 @@ def _run(tmp_path: Path, initial: str, script: str) -> str:
     f.write_text(initial)
     out = supertool.op_vim(str(f), script)
     assert not out.startswith("ERROR"), out
-    return f.read_text()
+    return f.read_text(encoding="utf-8")
 
 
 # --- regex error → literal fallback in n/N (around 5315) ---
@@ -50,7 +50,7 @@ def test_batch_subop_with_replace_all_true_promotes_edit(tmp_path: Path) -> None
     ]))
     out = supertool.dispatch(f"batch:@{payload_file}")
     # replace_all should turn it into a replace and change all 3.
-    assert target.read_text() == "bar bar bar\n", out
+    assert target.read_text(encoding="utf-8") == "bar bar bar\n", out
 
 
 # --- config registry: ops with no syntax (around 8275) ---

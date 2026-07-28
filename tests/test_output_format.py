@@ -15,7 +15,7 @@ def test_output_format_from_config(tmp_path: Path, monkeypatch) -> None:
     config = tmp_path / ".supertool.json"
     config.write_text(json.dumps({
         "output-format": "--- read:foo ---\n     1→hello"
-    }))
+    }), encoding="utf-8")
     monkeypatch.chdir(tmp_path)
     supertool._CONFIG = None
     supertool._CONFIG_CHECKED = False

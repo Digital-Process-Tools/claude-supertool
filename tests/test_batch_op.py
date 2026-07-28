@@ -92,7 +92,7 @@ class TestBatchMutatingOps:
         spec = _write_json(tmp_path, "ops.json", ops)
         out = supertool.dispatch(f"batch:@{spec}")
         assert "edited" in out
-        assert "FOO" in target.read_text()
+        assert "FOO" in target.read_text(encoding="utf-8")
 
     def test_replace_lines_in_batch(self, tmp_path: Path) -> None:
         target = tmp_path / "x.py"
@@ -101,7 +101,7 @@ class TestBatchMutatingOps:
         spec = _write_json(tmp_path, "ops.json", ops)
         out = supertool.dispatch(f"batch:@{spec}")
         assert "replaced" in out
-        assert target.read_text() == "line1\nLINE2\nline3\n"
+        assert target.read_text(encoding="utf-8") == "line1\nLINE2\nline3\n"
 
     def test_paste_in_batch(self, tmp_path: Path) -> None:
         target = tmp_path / "x.py"
@@ -110,7 +110,7 @@ class TestBatchMutatingOps:
         spec = _write_json(tmp_path, "ops.json", ops)
         out = supertool.dispatch(f"batch:@{spec}")
         assert "rewrote" in out
-        assert "new" in target.read_text()
+        assert "new" in target.read_text(encoding="utf-8")
 
     def test_validators_called_for_mutating_op_in_batch(self, tmp_path: Path, monkeypatch) -> None:
         called = []
@@ -146,7 +146,7 @@ class TestBatchMixed:
         out = supertool.dispatch(f"batch:@{spec}")
         assert "before" in out   # first read
         assert "after" in out    # edit receipt or second read
-        assert f.read_text() == "after\n"
+        assert f.read_text(encoding="utf-8") == "after\n"
 
 
 # ---------------------------------------------------------------------------

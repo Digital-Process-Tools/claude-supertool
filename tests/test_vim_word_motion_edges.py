@@ -11,7 +11,7 @@ def _run(tmp_path: Path, initial: str, script: str) -> str:
     f.write_text(initial)
     out = supertool.op_vim(str(f), script)
     assert not out.startswith("ERROR"), out
-    return f.read_text()
+    return f.read_text(encoding="utf-8")
 
 
 # --- w motion across punctuation (4937-4942) ---

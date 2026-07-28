@@ -14,7 +14,7 @@ def test_gg_jumps_to_bof(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("a\nb\nc\n")
     out = supertool.op_vim(str(f), "G␞gg␞ifirst ")
-    assert f.read_text() == "first a\nb\nc\n"
+    assert f.read_text(encoding="utf-8") == "first a\nb\nc\n"
 
 
 def test_G_lands_on_bol_of_last_line(tmp_path: Path) -> None:
@@ -22,7 +22,7 @@ def test_G_lands_on_bol_of_last_line(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("a\nb\nc\n")
     out = supertool.op_vim(str(f), "G␞iEND")
-    assert f.read_text() == "a\nb\nENDc\n"
+    assert f.read_text(encoding="utf-8") == "a\nb\nENDc\n"
 
 
 def test_G_then_O_opens_above_last_line(tmp_path: Path) -> None:
@@ -31,7 +31,7 @@ def test_G_then_O_opens_above_last_line(tmp_path: Path) -> None:
     f.write_text("<?php\nclass Foo {\n}\n")
     supertool.op_vim(str(f), "G␞O    public function bar(): void {}")
     assert (
-        f.read_text()
+        f.read_text(encoding="utf-8")
         == "<?php\nclass Foo {\n    public function bar(): void {}\n}\n"
     )
 
@@ -40,7 +40,7 @@ def test_nG_goto_line(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("a\nb\nc\nd\n")
     out = supertool.op_vim(str(f), "3G␞i*")
-    assert f.read_text() == "a\nb\n*c\nd\n"
+    assert f.read_text(encoding="utf-8") == "a\nb\n*c\nd\n"
 
 
 def test_dollar_lands_on_last_char(tmp_path: Path) -> None:
@@ -49,7 +49,7 @@ def test_dollar_lands_on_last_char(tmp_path: Path) -> None:
     f.write_text("hello\n")
     out = supertool.op_vim(str(f), "$␞i!")
     # cursor on 'o', insert '!' before → "hell!o\n"
-    assert f.read_text() == "hell!o\n"
+    assert f.read_text(encoding="utf-8") == "hell!o\n"
 
 
 def test_A_appends_at_eol(tmp_path: Path) -> None:
@@ -57,28 +57,28 @@ def test_A_appends_at_eol(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("hello\n")
     out = supertool.op_vim(str(f), "A!")
-    assert f.read_text() == "hello!\n"
+    assert f.read_text(encoding="utf-8") == "hello!\n"
 
 
 def test_zero_to_bol(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("hello\n")
     out = supertool.op_vim(str(f), "$␞0␞i>")
-    assert f.read_text() == ">hello\n"
+    assert f.read_text(encoding="utf-8") == ">hello\n"
 
 
 def test_search_forward(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("foo bar baz\n")
     out = supertool.op_vim(str(f), "/bar␞i!")
-    assert f.read_text() == "foo !bar baz\n"
+    assert f.read_text(encoding="utf-8") == "foo !bar baz\n"
 
 
 def test_search_backward(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("foo bar foo bar\n")
     out = supertool.op_vim(str(f), "G␞$␞?foo␞i!")
-    assert f.read_text() == "foo bar !foo bar\n"
+    assert f.read_text(encoding="utf-8") == "foo bar !foo bar\n"
 
 
 def test_search_forward_not_found(tmp_path: Path) -> None:
@@ -86,28 +86,28 @@ def test_search_forward_not_found(tmp_path: Path) -> None:
     f.write_text("foo\n")
     out = supertool.op_vim(str(f), "/missing␞i!")
     assert "ERROR" in out and "not found" in out
-    assert f.read_text() == "foo\n"
+    assert f.read_text(encoding="utf-8") == "foo\n"
 
 
 def test_l_count_move_right(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("abcdef\n")
     out = supertool.op_vim(str(f), "3l␞i!")
-    assert f.read_text() == "abc!def\n"
+    assert f.read_text(encoding="utf-8") == "abc!def\n"
 
 
 def test_h_clamps_to_zero(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("abc\n")
     out = supertool.op_vim(str(f), "$␞99h␞i!")
-    assert f.read_text() == "!abc\n"
+    assert f.read_text(encoding="utf-8") == "!abc\n"
 
 
 def test_j_moves_down(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("aa\nbb\ncc\n")
     out = supertool.op_vim(str(f), "2j␞i!")
-    assert f.read_text() == "aa\nbb\n!cc\n"
+    assert f.read_text(encoding="utf-8") == "aa\nbb\n!cc\n"
 
 
 # ---------------------------------------------------------------------------
@@ -118,42 +118,42 @@ def test_insert_before_cursor(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("world\n")
     out = supertool.op_vim(str(f), "ihello ")
-    assert f.read_text() == "hello world\n"
+    assert f.read_text(encoding="utf-8") == "hello world\n"
 
 
 def test_append_after_cursor(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("ab\n")
     out = supertool.op_vim(str(f), "ax")
-    assert f.read_text() == "axb\n"
+    assert f.read_text(encoding="utf-8") == "axb\n"
 
 
 def test_insert_at_bol(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("middle\n")
     out = supertool.op_vim(str(f), "$␞I> ")
-    assert f.read_text() == "> middle\n"
+    assert f.read_text(encoding="utf-8") == "> middle\n"
 
 
 def test_append_at_eol(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("middle\n")
     out = supertool.op_vim(str(f), "0␞A <")
-    assert f.read_text() == "middle <\n"
+    assert f.read_text(encoding="utf-8") == "middle <\n"
 
 
 def test_open_below(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("title\n")
     out = supertool.op_vim(str(f), "/title␞obody")
-    assert f.read_text() == "title\nbody\n"
+    assert f.read_text(encoding="utf-8") == "title\nbody\n"
 
 
 def test_open_above(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("body\n")
     out = supertool.op_vim(str(f), "/body␞Ohead")
-    assert f.read_text() == "head\nbody\n"
+    assert f.read_text(encoding="utf-8") == "head\nbody\n"
 
 
 def test_open_chain_block_before_marker(tmp_path: Path) -> None:
@@ -163,14 +163,14 @@ def test_open_chain_block_before_marker(tmp_path: Path) -> None:
     out = supertool.op_vim(
         str(f), "/## Process␞O## Task list␞o1. Foo␞o2. Bar"
     )
-    assert f.read_text() == "## Task list\n1. Foo\n2. Bar\n## Process\n"
+    assert f.read_text(encoding="utf-8") == "## Task list\n1. Foo\n2. Bar\n## Process\n"
 
 
 def test_insert_with_newline_escape(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("ab\n")
     out = supertool.op_vim(str(f), "ix\\ny\\nz")
-    assert f.read_text() == "x\ny\nzab\n"
+    assert f.read_text(encoding="utf-8") == "x\ny\nzab\n"
 
 
 def test_insert_with_count_repeats(tmp_path: Path) -> None:
@@ -178,7 +178,7 @@ def test_insert_with_count_repeats(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("ok\n")
     out = supertool.op_vim(str(f), "5i-")
-    assert f.read_text() == "-----ok\n"
+    assert f.read_text(encoding="utf-8") == "-----ok\n"
 
 
 # ---------------------------------------------------------------------------
@@ -189,35 +189,35 @@ def test_x_delete_one_char(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("abc\n")
     out = supertool.op_vim(str(f), "x")
-    assert f.read_text() == "bc\n"
+    assert f.read_text(encoding="utf-8") == "bc\n"
 
 
 def test_nx_delete_n_chars(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("abcdef\n")
     out = supertool.op_vim(str(f), "3x")
-    assert f.read_text() == "def\n"
+    assert f.read_text(encoding="utf-8") == "def\n"
 
 
 def test_dd_delete_one_line(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("a\nb\nc\n")
     out = supertool.op_vim(str(f), "2G␞dd")
-    assert f.read_text() == "a\nc\n"
+    assert f.read_text(encoding="utf-8") == "a\nc\n"
 
 
 def test_ndd_delete_n_lines(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("a\nb\nc\nd\ne\n")
     out = supertool.op_vim(str(f), "2G␞3dd")
-    assert f.read_text() == "a\ne\n"
+    assert f.read_text(encoding="utf-8") == "a\ne\n"
 
 
 def test_D_delete_to_eol(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("keep|drop\nnext\n")
     out = supertool.op_vim(str(f), "/|␞D")
-    assert f.read_text() == "keep\nnext\n"
+    assert f.read_text(encoding="utf-8") == "keep\nnext\n"
 
 
 # ---------------------------------------------------------------------------
@@ -228,14 +228,14 @@ def test_replace_first_char(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("hello\n")
     out = supertool.op_vim(str(f), "rH")
-    assert f.read_text() == "Hello\n"
+    assert f.read_text(encoding="utf-8") == "Hello\n"
 
 
 def test_replace_after_search(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("x = 1\n")
     out = supertool.op_vim(str(f), "/1␞r9")
-    assert f.read_text() == "x = 9\n"
+    assert f.read_text(encoding="utf-8") == "x = 9\n"
 
 
 def test_replace_at_eof_errors(tmp_path: Path) -> None:
@@ -253,7 +253,7 @@ def test_ciw_replaces_word(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("foo bar baz\n")
     supertool.op_vim(str(f), "/bar␞ciwQUUX")
-    assert f.read_text() == "foo QUUX baz\n"
+    assert f.read_text(encoding="utf-8") == "foo QUUX baz\n"
 
 
 def test_ciw_on_non_word_errors(tmp_path: Path) -> None:
@@ -267,56 +267,56 @@ def test_cw_changes_word_from_cursor(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("foo bar baz\n")
     supertool.op_vim(str(f), "/bar␞l␞cwAR")
-    assert f.read_text() == "foo bAR baz\n"
+    assert f.read_text(encoding="utf-8") == "foo bAR baz\n"
 
 
 def test_cc_replaces_line(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("line one\nline two\nline three\n")
     supertool.op_vim(str(f), "/two␞ccLINE TWO")
-    assert f.read_text() == "line one\nLINE TWO\nline three\n"
+    assert f.read_text(encoding="utf-8") == "line one\nLINE TWO\nline three\n"
 
 
 def test_cc_count_replaces_n_lines(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("a\nb\nc\nd\n")
     supertool.op_vim(str(f), "gg␞2ccXY")
-    assert f.read_text() == "XY\nc\nd\n"
+    assert f.read_text(encoding="utf-8") == "XY\nc\nd\n"
 
 
 def test_ci_double_quote(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text('label = "old text"\n')
     supertool.op_vim(str(f), '/"␞ci"new text')
-    assert f.read_text() == 'label = "new text"\n'
+    assert f.read_text(encoding="utf-8") == 'label = "new text"\n'
 
 
 def test_ci_single_quote(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("name = 'alice'\n")
     supertool.op_vim(str(f), "/'␞ci'bob")
-    assert f.read_text() == "name = 'bob'\n"
+    assert f.read_text(encoding="utf-8") == "name = 'bob'\n"
 
 
 def test_ci_paren_nested(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("foo(bar(x), y)\n")
     supertool.op_vim(str(f), "/foo(␞ci(NEW")
-    assert f.read_text() == "foo(NEW)\n"
+    assert f.read_text(encoding="utf-8") == "foo(NEW)\n"
 
 
 def test_ci_bracket(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("a = [1, 2, 3]\n")
     supertool.op_vim(str(f), "/[␞ci[9, 9, 9")
-    assert f.read_text() == "a = [9, 9, 9]\n"
+    assert f.read_text(encoding="utf-8") == "a = [9, 9, 9]\n"
 
 
 def test_ci_brace(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("d = {a: 1}\n")
     supertool.op_vim(str(f), "/{␞ci{b: 2")
-    assert f.read_text() == "d = {b: 2}\n"
+    assert f.read_text(encoding="utf-8") == "d = {b: 2}\n"
 
 
 def test_ci_no_opener_errors(tmp_path: Path) -> None:
@@ -334,21 +334,21 @@ def test_J_joins_two_lines(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("foo\nbar\nbaz\n")
     supertool.op_vim(str(f), "gg␞J")
-    assert f.read_text() == "foo bar\nbaz\n"
+    assert f.read_text(encoding="utf-8") == "foo bar\nbaz\n"
 
 
 def test_J_count_joins_n_lines(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("a\nb\nc\nd\n")
     supertool.op_vim(str(f), "gg␞3J")
-    assert f.read_text() == "a b c d\n"
+    assert f.read_text(encoding="utf-8") == "a b c d\n"
 
 
 def test_J_strips_leading_whitespace(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("foo\n    bar\n")
     supertool.op_vim(str(f), "gg␞J")
-    assert f.read_text() == "foo bar\n"
+    assert f.read_text(encoding="utf-8") == "foo bar\n"
 
 
 # ---------------------------------------------------------------------------
@@ -359,21 +359,21 @@ def test_semicolon_escape_in_insert(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("x = 1\n")
     supertool.op_vim(str(f), "$␞a; y = 2")
-    assert f.read_text() == "x = 1; y = 2\n"
+    assert f.read_text(encoding="utf-8") == "x = 1; y = 2\n"
 
 
 def test_semicolon_escape_in_ciw(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("FOO bar\n")
     supertool.op_vim(str(f), "/FOO␞ciwa;b;c")
-    assert f.read_text() == "a;b;c bar\n"
+    assert f.read_text(encoding="utf-8") == "a;b;c bar\n"
 
 
 def test_backslash_escape_in_insert(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("\n")
     supertool.op_vim(str(f), "ipath\\\\to\\\\file")
-    assert f.read_text() == "path\\to\\file\n"
+    assert f.read_text(encoding="utf-8") == "path\\to\\file\n"
 
 
 def test_bang_history_escape_is_flattened(tmp_path: Path) -> None:
@@ -381,7 +381,7 @@ def test_bang_history_escape_is_flattened(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("\n")
     supertool.op_vim(str(f), "iif (\\!$x->isOk()) {}")
-    assert f.read_text() == "if (!$x->isOk()) {}\n"
+    assert f.read_text(encoding="utf-8") == "if (!$x->isOk()) {}\n"
 
 
 
@@ -393,21 +393,21 @@ def test_regex_search_char_class(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("count = 42\n")
     supertool.op_vim(str(f), "/[0-9]+␞ciw99")
-    assert f.read_text() == "count = 99\n"
+    assert f.read_text(encoding="utf-8") == "count = 99\n"
 
 
 def test_regex_search_anchor(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("first line\nsecond line\nthird line\n")
     supertool.op_vim(str(f), "/^second␞cw2ND")
-    assert f.read_text() == "first line\n2ND line\nthird line\n"
+    assert f.read_text(encoding="utf-8") == "first line\n2ND line\nthird line\n"
 
 
 def test_regex_search_alternation(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("apple banana cherry\n")
     supertool.op_vim(str(f), "/banana|cherry␞ciwPEAR")
-    assert f.read_text() == "apple PEAR cherry\n"
+    assert f.read_text(encoding="utf-8") == "apple PEAR cherry\n"
 
 
 def test_regex_multiline_match(tmp_path: Path) -> None:
@@ -415,14 +415,14 @@ def test_regex_multiline_match(tmp_path: Path) -> None:
     f.write_text("start\nmiddle\nend\n")
     supertool.op_vim(str(f), "/middle\\nend␞D")
     # cursor lands on 'm' of middle, D deletes to EOL of cursor line only
-    assert f.read_text() == "start\n\nend\n"
+    assert f.read_text(encoding="utf-8") == "start\n\nend\n"
 
 
 def test_regex_backward(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("foo1 foo2 foo3\n")
     supertool.op_vim(str(f), "G␞$␞?foo[0-9]␞ciwLAST")
-    assert f.read_text() == "foo1 foo2 LAST\n"
+    assert f.read_text(encoding="utf-8") == "foo1 foo2 LAST\n"
 
 
 def test_sed_style_pat_cmd_auto_splits_on_miss(tmp_path: Path) -> None:
@@ -431,7 +431,7 @@ def test_sed_style_pat_cmd_auto_splits_on_miss(tmp_path: Path) -> None:
     f = tmp_path / "x.php"
     f.write_text("<?php\n/**\n * @coverage 85%\n */\nclass Foo {}\n")
     supertool.op_vim(str(f), '/ \\* @coverage/O * @coverageAuditWarn "x"')
-    assert "@coverageAuditWarn" in f.read_text().splitlines()[2]
+    assert "@coverageAuditWarn" in f.read_text(encoding="utf-8").splitlines()[2]
 
 
 def test_sed_style_auto_split_does_not_hijack_legit_slash(tmp_path: Path) -> None:
@@ -441,7 +441,7 @@ def test_sed_style_auto_split_does_not_hijack_legit_slash(tmp_path: Path) -> Non
     # Auto-split shouldn't fire because strict search finds 'usr/Op' literally
     # in the file. Cursor lands at the 'u' (start of match), `i!` inserts there.
     supertool.op_vim(str(f), "/usr/Op␞i!")
-    assert f.read_text() == "/!usr/Open at top\n"
+    assert f.read_text(encoding="utf-8") == "/!usr/Open at top\n"
 
 
 def test_regex_special_char_literal_fallback(tmp_path: Path) -> None:
@@ -449,7 +449,7 @@ def test_regex_special_char_literal_fallback(tmp_path: Path) -> None:
     f.write_text("a = foo(bar)\n")
     # `foo(` is invalid regex (unbalanced paren) → falls back to literal find
     supertool.op_vim(str(f), "/foo(␞ci(NEW")
-    assert f.read_text() == "a = foo(NEW)\n"
+    assert f.read_text(encoding="utf-8") == "a = foo(NEW)\n"
 
 
 # ---------------------------------------------------------------------------
@@ -460,14 +460,14 @@ def test_f_finds_char_forward(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("abc=def\n")
     supertool.op_vim(str(f), "fd␞i!")
-    assert f.read_text() == "abc=!def\n"
+    assert f.read_text(encoding="utf-8") == "abc=!def\n"
 
 
 def test_F_finds_char_backward(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("abc=def\n")
     supertool.op_vim(str(f), "$␞Fa␞i!")
-    assert f.read_text() == "!abc=def\n"
+    assert f.read_text(encoding="utf-8") == "!abc=def\n"
 
 
 def test_t_stops_before_char(tmp_path: Path) -> None:
@@ -475,7 +475,7 @@ def test_t_stops_before_char(tmp_path: Path) -> None:
     f.write_text("abcd\n")
     # `tc` lands cursor on `b` (1 char before target `c`); `i!` inserts before
     supertool.op_vim(str(f), "tc␞i!")
-    assert f.read_text() == "a!bcd\n"
+    assert f.read_text(encoding="utf-8") == "a!bcd\n"
 
 
 def test_T_stops_after_char_backward(tmp_path: Path) -> None:
@@ -483,7 +483,7 @@ def test_T_stops_after_char_backward(tmp_path: Path) -> None:
     f.write_text("abcd\n")
     # `$` lands on `d`; `Ta` lands on `b` (1 char after target `a`); `i!` inserts before
     supertool.op_vim(str(f), "$␞Ta␞i!")
-    assert f.read_text() == "a!bcd\n"
+    assert f.read_text(encoding="utf-8") == "a!bcd\n"
 
 
 # ---------------------------------------------------------------------------
@@ -494,7 +494,7 @@ def test_n_repeats_forward_search(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("foo foo foo\n")
     supertool.op_vim(str(f), "/foo␞n␞ciwBAR")
-    assert f.read_text() == "foo BAR foo\n"
+    assert f.read_text(encoding="utf-8") == "foo BAR foo\n"
 
 
 def test_N_reverses_last_search(tmp_path: Path) -> None:
@@ -505,7 +505,7 @@ def test_N_reverses_last_search(tmp_path: Path) -> None:
     # actually only 2 foos; backward to 2nd, N forward → no further match → error
     out = supertool.op_vim(str(f), "/foo␞n␞N␞ciwFIRST")
     # /foo → 1st, n → 2nd, N → 1st again. ciwFIRST replaces 1st foo
-    assert f.read_text() == "FIRST bar foo bar\n"
+    assert f.read_text(encoding="utf-8") == "FIRST bar foo bar\n"
 
 
 # ---------------------------------------------------------------------------
@@ -516,14 +516,14 @@ def test_c_dollar_changes_to_eol(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("keep|drop this\nnext\n")
     supertool.op_vim(str(f), "/|␞c$STOP")
-    assert f.read_text() == "keepSTOP\nnext\n"
+    assert f.read_text(encoding="utf-8") == "keepSTOP\nnext\n"
 
 
 def test_c_zero_changes_to_bol(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("drop this|keep\n")
     supertool.op_vim(str(f), "/|␞c0KEEP")
-    assert f.read_text() == "KEEP|keep\n"
+    assert f.read_text(encoding="utf-8") == "KEEP|keep\n"
 
 
 # ---------------------------------------------------------------------------
@@ -534,21 +534,21 @@ def test_d_dollar_deletes_to_eol(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("keep|drop this\nnext\n")
     supertool.op_vim(str(f), "/|␞d$")
-    assert f.read_text() == "keep\nnext\n"
+    assert f.read_text(encoding="utf-8") == "keep\nnext\n"
 
 
 def test_d_zero_deletes_to_bol(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("drop|keep\n")
     supertool.op_vim(str(f), "/|␞d0")
-    assert f.read_text() == "|keep\n"
+    assert f.read_text(encoding="utf-8") == "|keep\n"
 
 
 def test_dw_deletes_word_and_trailing_space(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("foo bar baz\n")
     supertool.op_vim(str(f), "dw")
-    assert f.read_text() == "bar baz\n"
+    assert f.read_text(encoding="utf-8") == "bar baz\n"
 
 
 # ---------------------------------------------------------------------------
@@ -560,28 +560,28 @@ def test_cf_changes_through_target(tmp_path: Path) -> None:
     f.write_text('label = "old text"\n')
     supertool.op_vim(str(f), '/"␞l␞cf"new text"')
     # Cursor at first ", `l` moves to `o`, cf" deletes up-to-and-incl next " → inserts "new text"
-    assert f.read_text() == 'label = "new text"\n'
+    assert f.read_text(encoding="utf-8") == 'label = "new text"\n'
 
 
 def test_ct_changes_up_to_target(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("foo, bar, baz\n")
     supertool.op_vim(str(f), "ct,XXX")
-    assert f.read_text() == "XXX, bar, baz\n"
+    assert f.read_text(encoding="utf-8") == "XXX, bar, baz\n"
 
 
 def test_df_deletes_through_target(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("aaXbbXcc\n")
     supertool.op_vim(str(f), "dfX")
-    assert f.read_text() == "bbXcc\n"
+    assert f.read_text(encoding="utf-8") == "bbXcc\n"
 
 
 def test_dt_deletes_up_to_target(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("aaXbb\n")
     supertool.op_vim(str(f), "dtX")
-    assert f.read_text() == "Xbb\n"
+    assert f.read_text(encoding="utf-8") == "Xbb\n"
 
 
 # ---------------------------------------------------------------------------
@@ -592,21 +592,21 @@ def test_yy_then_p_duplicates_line(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("hello\nworld\n")
     supertool.op_vim(str(f), "yy␞p")
-    assert f.read_text() == "hello\nhello\nworld\n"
+    assert f.read_text(encoding="utf-8") == "hello\nhello\nworld\n"
 
 
 def test_yw_then_p_pastes_word(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("foo bar\n")
     supertool.op_vim(str(f), "yw␞$␞p")
-    assert f.read_text() == "foo barfoo\n"
+    assert f.read_text(encoding="utf-8") == "foo barfoo\n"
 
 
 def test_y_dollar_then_P_pastes_before(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("abcdef\n")
     supertool.op_vim(str(f), "3l␞y$␞0␞P")
-    assert f.read_text() == "defabcdef\n"
+    assert f.read_text(encoding="utf-8") == "defabcdef\n"
 
 
 # ---------------------------------------------------------------------------
@@ -617,14 +617,14 @@ def test_substitute_first_match(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("foo foo foo\n")
     supertool.op_vim(str(f), ":s/foo/BAR/")
-    assert f.read_text() == "BAR foo foo\n"
+    assert f.read_text(encoding="utf-8") == "BAR foo foo\n"
 
 
 def test_substitute_global(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("foo foo foo\n")
     supertool.op_vim(str(f), ":s/foo/BAR/g")
-    assert f.read_text() == "BAR BAR BAR\n"
+    assert f.read_text(encoding="utf-8") == "BAR BAR BAR\n"
 
 
 def test_substitute_pct_s_alias_with_colon(tmp_path: Path) -> None:
@@ -632,7 +632,7 @@ def test_substitute_pct_s_alias_with_colon(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("foo bar foo\n")
     supertool.op_vim(str(f), ":%s/foo/X/g")
-    assert f.read_text() == "X bar X\n"
+    assert f.read_text(encoding="utf-8") == "X bar X\n"
 
 
 def test_substitute_pct_s_alias_without_colon(tmp_path: Path) -> None:
@@ -640,21 +640,21 @@ def test_substitute_pct_s_alias_without_colon(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("foo bar foo\n")
     supertool.op_vim(str(f), "%s/foo/X/g")
-    assert f.read_text() == "X bar X\n"
+    assert f.read_text(encoding="utf-8") == "X bar X\n"
 
 
 def test_substitute_case_insensitive(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("Foo FOO foo\n")
     supertool.op_vim(str(f), ":s/foo/x/gi")
-    assert f.read_text() == "x x x\n"
+    assert f.read_text(encoding="utf-8") == "x x x\n"
 
 
 def test_substitute_backref(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("a=1\nb=2\n")
     supertool.op_vim(str(f), ":s/(\\w+)=(\\d+)/\\2:\\1/g")
-    assert f.read_text() == "1:a\n2:b\n"
+    assert f.read_text(encoding="utf-8") == "1:a\n2:b\n"
 
 
 def test_substitute_dry_run_does_not_modify(tmp_path: Path) -> None:
@@ -663,7 +663,7 @@ def test_substitute_dry_run_does_not_modify(tmp_path: Path) -> None:
     original = "foo bar foo\n"
     f.write_text(original)
     out = supertool.op_vim(str(f), ":s/foo/X/gd")
-    assert f.read_text() == original  # untouched
+    assert f.read_text(encoding="utf-8") == original  # untouched
     assert "DRY" in out
     assert "would replace 2" in out
 
@@ -673,7 +673,7 @@ def test_substitute_dry_run_no_match_errors(tmp_path: Path) -> None:
     f.write_text("hello\n")
     out = supertool.op_vim(str(f), ":s/missing/x/d")
     assert "ERROR" in out
-    assert f.read_text() == "hello\n"
+    assert f.read_text(encoding="utf-8") == "hello\n"
 
 
 # ---------------------------------------------------------------------------
@@ -690,7 +690,7 @@ def test_cursor_persists_between_calls(tmp_path: Path, monkeypatch) -> None:
     supertool.op_vim(str(f), "2G")
     # Second call: insert before cursor — should land on 'beta' line, not pos 0
     supertool.op_vim(str(f), "iZ")
-    assert f.read_text() == "alpha\nZbeta\ngamma\n"
+    assert f.read_text(encoding="utf-8") == "alpha\nZbeta\ngamma\n"
 
 
 def test_cursor_no_persist_with_env_flag(tmp_path: Path, monkeypatch) -> None:
@@ -702,7 +702,7 @@ def test_cursor_no_persist_with_env_flag(tmp_path: Path, monkeypatch) -> None:
     supertool.op_vim(str(f), "2G")
     supertool.op_vim(str(f), "iZ")
     # Cursor reset to 0, insert at BOF
-    assert f.read_text() == "Zalpha\nbeta\ngamma\n"
+    assert f.read_text(encoding="utf-8") == "Zalpha\nbeta\ngamma\n"
 
 
 def test_substitute_no_match_errors(tmp_path: Path) -> None:
@@ -724,7 +724,7 @@ def test_read_inserts_file_after_current_line(tmp_path: Path) -> None:
     snippet.write_text("    public function bar(): void {}\n")
     supertool.op_vim(str(target), f"G␞k␞:r {snippet}")
     assert (
-        target.read_text()
+        target.read_text(encoding="utf-8")
         == "<?php\nclass Foo {\n    public function bar(): void {}\n}\n"
     )
 
@@ -742,7 +742,7 @@ def test_read_adds_trailing_newline(tmp_path: Path) -> None:
     snippet = tmp_path / "snip.txt"
     snippet.write_text("no trailing newline")
     supertool.op_vim(str(target), f":r {snippet}")
-    assert target.read_text() == "line1\nno trailing newline\n"
+    assert target.read_text(encoding="utf-8") == "line1\nno trailing newline\n"
 
 
 def test_substitute_strips_defensive_backslash_before_punct(tmp_path: Path) -> None:
@@ -750,7 +750,7 @@ def test_substitute_strips_defensive_backslash_before_punct(tmp_path: Path) -> N
     f = tmp_path / "x.php"
     f.write_text("foo(1)\n")
     supertool.op_vim(str(f), ":s/\\)$/\\)\\;/")
-    assert f.read_text() == "foo(1);\n"
+    assert f.read_text(encoding="utf-8") == "foo(1);\n"
 
 
 def test_substitute_with_literal_semicolon_in_pattern(tmp_path: Path) -> None:
@@ -758,7 +758,7 @@ def test_substitute_with_literal_semicolon_in_pattern(tmp_path: Path) -> None:
     f = tmp_path / "x.php"
     f.write_text("$x = 1; // debug\nkeep\n")
     supertool.op_vim(str(f), ":s/.*= 1; .*\\n//")
-    assert f.read_text() == "keep\n"
+    assert f.read_text(encoding="utf-8") == "keep\n"
 
 
 def test_substitute_then_chained_action_after_flags(tmp_path: Path) -> None:
@@ -766,7 +766,7 @@ def test_substitute_then_chained_action_after_flags(tmp_path: Path) -> None:
     f = tmp_path / "x.php"
     f.write_text("foo bar\n")
     supertool.op_vim(str(f), ":s/foo/X/␞A!")
-    assert f.read_text() == "X bar!\n"
+    assert f.read_text(encoding="utf-8") == "X bar!\n"
 
 
 def test_substitute_with_g_flag_then_chained_action(tmp_path: Path) -> None:
@@ -774,7 +774,7 @@ def test_substitute_with_g_flag_then_chained_action(tmp_path: Path) -> None:
     f = tmp_path / "x.txt"
     f.write_text("a a a\n")
     supertool.op_vim(str(f), ":s/a/X/g␞A!")
-    assert f.read_text() == "X X X!\n"
+    assert f.read_text(encoding="utf-8") == "X X X!\n"
 
 
 def test_substitute_mid_chain_after_prior_action(tmp_path: Path) -> None:
@@ -782,7 +782,7 @@ def test_substitute_mid_chain_after_prior_action(tmp_path: Path) -> None:
     f = tmp_path / "x.txt"
     f.write_text("foo\n")
     supertool.op_vim(str(f), "A!␞:s/foo!/bar/")
-    assert f.read_text() == "bar\n"
+    assert f.read_text(encoding="utf-8") == "bar\n"
 
 
 def test_substitute_repl_with_php_namespace_backslashes(tmp_path: Path) -> None:
@@ -794,7 +794,7 @@ def test_substitute_repl_with_php_namespace_backslashes(tmp_path: Path) -> None:
         str(f),
         ":s/OLD/Shared\\BusinessEntities\\ReviewSessionHasEntity/",
     )
-    assert f.read_text() == "use Shared\\BusinessEntities\\ReviewSessionHasEntity;\n"
+    assert f.read_text(encoding="utf-8") == "use Shared\\BusinessEntities\\ReviewSessionHasEntity;\n"
 
 
 # ---------------------------------------------------------------------------
@@ -818,7 +818,7 @@ def test_unknown_verb(tmp_path: Path) -> None:
     f.write_text("a\n")
     out = supertool.op_vim(str(f), "Zbogus")
     assert "ERROR" in out and "unknown verb" in out
-    assert f.read_text() == "a\n"
+    assert f.read_text(encoding="utf-8") == "a\n"
 
 
 def test_goto_beyond_eof(tmp_path: Path) -> None:
@@ -837,7 +837,7 @@ def test_dispatch_triple_colon(tmp_path: Path) -> None:
     f.write_text("foo\n")
     out = supertool.dispatch(f"vim:::{f}:::A end")
     assert "vim " in out
-    assert f.read_text() == "foo end\n"
+    assert f.read_text(encoding="utf-8") == "foo end\n"
 
 
 def test_dispatch_missing_script(tmp_path: Path) -> None:
@@ -875,4 +875,4 @@ def test_insert_regex_meta_chars(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("x\n")
     out = supertool.op_vim(str(f), "i.*+?[]()$^")
-    assert f.read_text() == ".*+?[]()$^x\n"
+    assert f.read_text(encoding="utf-8") == ".*+?[]()$^x\n"

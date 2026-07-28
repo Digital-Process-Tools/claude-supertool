@@ -34,8 +34,8 @@ def test_O_followed_by_r_ex_command_does_not_merge(tmp_path: Path, monkeypatch) 
     out = supertool.op_vim(str(f), f"G␞O␞:r {snippet}")
     assert "ERROR" not in out, out
     # The literal text ":r {snippet}" must NOT appear in the file.
-    assert ":r " not in f.read_text(), f.read_text()
-    assert "inserted" in f.read_text()
+    assert ":r " not in f.read_text(encoding="utf-8"), f.read_text(encoding="utf-8")
+    assert "inserted" in f.read_text(encoding="utf-8")
 
 
 def test_O_followed_by_s_substitute_does_not_merge(tmp_path: Path, monkeypatch) -> None:
@@ -46,8 +46,8 @@ def test_O_followed_by_s_substitute_does_not_merge(tmp_path: Path, monkeypatch) 
     out = supertool.op_vim(str(f), "G␞O␞:s/foo/X/g")
     assert "ERROR" not in out, out
     # Substitute should have run; `O` with empty TEXT opened a blank line above
-    assert "X" in f.read_text()
-    assert ":s/" not in f.read_text()
+    assert "X" in f.read_text(encoding="utf-8")
+    assert ":s/" not in f.read_text(encoding="utf-8")
 
 
 def test_O_followed_by_search_does_not_merge(tmp_path: Path, monkeypatch) -> None:
@@ -58,7 +58,7 @@ def test_O_followed_by_search_does_not_merge(tmp_path: Path, monkeypatch) -> Non
     out = supertool.op_vim(str(f), "gg␞o␞/bar")
     assert "ERROR" not in out, out
     # `/bar` should NOT have been inserted as text
-    assert "/bar" not in f.read_text(), f.read_text()
+    assert "/bar" not in f.read_text(encoding="utf-8"), f.read_text(encoding="utf-8")
 
 
 def test_O_consumes_text_natively_under_stateful_parser(tmp_path: Path, monkeypatch) -> None:
@@ -70,7 +70,7 @@ def test_O_consumes_text_natively_under_stateful_parser(tmp_path: Path, monkeypa
     f.write_text("<?php\nclass Foo {\n}\n")
     out = supertool.op_vim(str(f), "GOuse Bar;")
     assert "ERROR" not in out, out
-    assert "use Bar;" in f.read_text()
+    assert "use Bar;" in f.read_text(encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -85,7 +85,7 @@ def test_count_gg_autocorrects_to_G(tmp_path: Path, monkeypatch) -> None:
     out = supertool.op_vim(str(f), "5gg␞dd")
     assert "ERROR" not in out, out
     # Cursor jumped to line 5 ("e"), dd removed it
-    assert f.read_text() == "a\nb\nc\nd\nf\n"
+    assert f.read_text(encoding="utf-8") == "a\nb\nc\nd\nf\n"
 
 
 def test_bare_gg_still_goes_to_bof(tmp_path: Path, monkeypatch) -> None:
@@ -96,7 +96,7 @@ def test_bare_gg_still_goes_to_bof(tmp_path: Path, monkeypatch) -> None:
     out = supertool.op_vim(str(f), "G␞gg␞iX")
     assert "ERROR" not in out, out
     # G → last line, gg → BOF, iX → insert X before 'a'
-    assert f.read_text() == "Xa\nb\nc\n"
+    assert f.read_text(encoding="utf-8") == "Xa\nb\nc\n"
 
 
 # ---------------------------------------------------------------------------
@@ -121,7 +121,7 @@ def test_search_miss_retries_from_bof(tmp_path: Path) -> None:
     # but autocorrect retries from BOF and finds it.
     out2 = supertool.op_vim(str(f), "/foo␞iX")
     assert "ERROR" not in out2, out2
-    assert f.read_text() == "Xfoo\nbar\nbaz\nquux\n"
+    assert f.read_text(encoding="utf-8") == "Xfoo\nbar\nbaz\nquux\n"
 
     os.environ.pop("SUPERTOOL_VIM_PERSIST_DIR", None)
 

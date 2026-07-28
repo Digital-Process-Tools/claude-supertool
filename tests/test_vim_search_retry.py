@@ -117,7 +117,7 @@ def test_backward_search_miss_from_bof_retries_from_eof(tmp_path: Path, monkeypa
     # nothing earlier). EOF retry finds 'target' on line 3.
     out = supertool.op_vim(str(f), "?target␞iX")
     assert "ERROR" not in out, out
-    assert f.read_text() == "foo\nbar\nXtarget\nquux\n"
+    assert f.read_text(encoding="utf-8") == "foo\nbar\nXtarget\nquux\n"
 
 
 def test_backward_search_miss_logs_eof_retry_note(tmp_path: Path, monkeypatch) -> None:
@@ -191,6 +191,6 @@ def test_combined_persist_then_search_autocorrect(tmp_path: Path) -> None:
         out2 = supertool.op_vim(str(f), "/alpha␞iX")
         assert "ERROR" not in out2, out2
         assert "retried from BOF" in out2
-        assert f.read_text() == "Xalpha\nbeta\ngamma\ndelta\nepsilon\n"
+        assert f.read_text(encoding="utf-8") == "Xalpha\nbeta\ngamma\ndelta\nepsilon\n"
     finally:
         os.environ.pop("SUPERTOOL_VIM_PERSIST_DIR", None)

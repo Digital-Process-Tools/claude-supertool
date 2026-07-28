@@ -127,7 +127,7 @@ def test_kevin_real_escape_double_dollar_in_subst():
     try:
         r = st.op_vim(p, r":%s/\\$this->assertTrue(\\$result);/REPLACED/")
         # After autocorrect: should successfully replace
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         assert "REPLACED" in new, f"got: {new!r}; receipt: {r}"
         # And receipt should mention the autocorrect
         assert "autocorrect" in r.lower()
@@ -181,7 +181,7 @@ def test_kevin_real_chained_marker_search_then_subst_works():
             r"/MessageHelper::createRandom\e"
             r":s/MessageHelper::createRandom(\[\], true);/createRandom([], true);\n        $this->assertGreaterThan(0, $message->getId());/\e",
         )
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         assert "assertGreaterThan" in new
         assert "ERROR" not in r
     finally:
@@ -206,7 +206,7 @@ def test_kevin_real_subst_g_flag_multiline_repl():
             p,
             r":%s/\\$this->assertTrue(\\$result);/$this->assertSame(true, $result);\n            $this->assertSame('existing_board_id', ApplicationApi::getInstance()->getOptionAsString(SiTrelloProjectsOptions::TRELLO_PROJECTS_BOARD_UID));/g",
         )
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         # Both occurrences replaced
         assert new.count("assertSame(true,") == 2, f"got: {new!r}; receipt: {r}"
         assert "existing_board_id" in new
@@ -228,7 +228,7 @@ def test_kevin_real_chain_search_change_text_object():
     )
     try:
         r = st.op_vim(p, r"/assertIsBool\eciwassertTrue\e")
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         assert "assertTrue" in new
         assert "assertIsBool" not in new
         assert "ERROR" not in r
@@ -249,7 +249,7 @@ def test_kevin_real_escape_doubling_in_subst_paren():
             p,
             r":%s/assertTrue\\(true\\)/assertSame(true, $foo->isReady())/",
         )
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         assert "assertSame(true, $foo->isReady())" in new
         assert "autocorrect" in r.lower()
     finally:
@@ -327,7 +327,7 @@ def test_kevin_real_Vcc_alias_to_cc():
     p = _tmp("old line\nkeep me\n")
     try:
         r = st.op_vim(p, r"Vccnew line\e")
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         assert new == "new line\nkeep me\n", f"got: {new!r}; receipt: {r}"
         assert "ERROR" not in r
     finally:
@@ -341,7 +341,7 @@ def test_kevin_real_Vjcc_alias_two_line_change():
     p = _tmp("a\nb\nc\n")
     try:
         r = st.op_vim(p, r"Vjccnew\e")
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         # Both 'a' and 'b' lines replaced by single "new" line
         assert new == "new\nc\n", f"got: {new!r}; receipt: {r}"
         assert "ERROR" not in r
@@ -353,7 +353,7 @@ def test_kevin_real_Vdd_alias_to_dd():
     p = _tmp("delete me\nkeep\n")
     try:
         r = st.op_vim(p, "Vdd")
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         assert new == "keep\n", f"got: {new!r}; receipt: {r}"
     finally:
         os.unlink(p)
@@ -364,7 +364,7 @@ def test_kevin_real_Vyy_alias_to_yy():
     p = _tmp("source\ntarget\n")
     try:
         r = st.op_vim(p, "Vyyjp")
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         # Yank 'source' line, move down to 'target', paste below
         assert new.count("source") == 2, f"got: {new!r}; receipt: {r}"
     finally:
@@ -379,7 +379,7 @@ def test_kevin_real_VGd_deletes_to_end():
     p = _tmp("a\nb\nc\nd\n")
     try:
         r = st.op_vim(p, "ggVGd")
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         # All lines deleted
         assert new == "" or new == "\n", f"got: {new!r}; receipt: {r}"
         assert "ERROR" not in r
@@ -410,7 +410,7 @@ def test_kevin_real_paste_11_05_three_chain_Vcc_Vjcc_Vcc():
             r"/assertTrue(true)\e"
             r"Vcc            $this->assertSame(0, ConcreteEntityTalkModule::$relatedEntityCallCount);\e",
         )
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         assert "assertSame(Project::getSharedInstance()" in new, f"step1 failed: {r}"
         assert "READ_TAB" in new, f"step2 failed: {r}"
         assert "relatedEntityCallCount" in new, f"step3 failed: {r}"
@@ -432,7 +432,7 @@ def test_kevin_real_paste_11_08_ggVGd_then_r_stdin():
     _sys.stdin = io.StringIO(block)
     try:
         r = st.op_vim(p, "ggVGd:r -")
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         assert "new content here" in new, f"got: {new!r}; receipt: {r}"
         assert "old" not in new and "nuke" not in new
     finally:
@@ -447,7 +447,7 @@ def test_kevin_real_V_in_insert_text_not_rewritten():
     p = _tmp("X\n")
     try:
         r = st.op_vim(p, r"iVcc\e")
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         assert new == "VccX\n", f"got: {new!r}; receipt: {r}"
     finally:
         os.unlink(p)
@@ -462,7 +462,7 @@ def test_kevin_real_ex_relative_offset_range():
     try:
         # Cursor on line 2 (`b`), delete current + next line = lines 2-3
         r = st.op_vim(p, "2G:.,+1d")
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         assert new == "a\nd\ne\n", f"got: {new!r}; receipt: {r}"
     finally:
         os.unlink(p)
@@ -476,7 +476,7 @@ def test_kevin_real_ggVG_with_explicit_percent_ex():
     p = _tmp("line a\nline b\nline c\n")
     try:
         r = st.op_vim(p, "ggVG:%d")
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         assert new == "" or new == "\n", f"got: {new!r}; receipt: {r}"
         assert "ERROR" not in r
     finally:
@@ -502,7 +502,7 @@ def test_kevin_log_anchored_pattern_literal_fallback():
             p,
             r":%s/^\$this->assertGreaterThan(0, \$entity->getId());$/        $this->assertGreaterThan(0, $entity->getId());/g",
         )
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         # Indentation now fixed: leading spaces added
         assert "        $this->assertGreaterThan(0, $entity->getId());" in new, f"got: {new!r}; receipt: {r}"
         # And the unindented version no longer present at start of line
@@ -565,7 +565,7 @@ def test_kevin_log_unescaped_paren_assertTrue_true():
             p,
             r":s/assertTrue(true);/assertFalse(SiTalkModule::hasUsedDependency());/",
         )
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         assert "assertFalse(SiTalkModule::hasUsedDependency());" in new, f"got: {new!r}; receipt: {r}"
         assert "ERROR" not in r
     finally:
@@ -585,7 +585,7 @@ def test_kevin_log_HasTagChecker_overescape_dollar():
             p,
             r":s/HasTagChecker::class, \$checkerClass/$checkerClass, HasTagChecker::class/",
         )
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         # Should succeed (either by regex direct match or literal fallback).
         assert "$checkerClass = $this->api->get($checkerClass, HasTagChecker::class)" in new, f"got: {new!r}; receipt: {r}"
         assert "ERROR" not in r
@@ -605,7 +605,7 @@ def test_kevin_log_createRandom_overescape_brackets():
             p,
             r":s/MessageHelper::createRandom(\[\], true);/REPLACED/",
         )
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         assert "REPLACED" in new, f"got: {new!r}; receipt: {r}"
         assert "autocorrect" in r.lower()
     finally:
@@ -624,7 +624,7 @@ def test_kevin_log_quad_backslash_iterative_strip():
             p,
             r":%s/\\\\$this->assertTrue(true);/REPLACED/",
         )
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         assert "REPLACED" in new, f"got: {new!r}; receipt: {r}"
     finally:
         os.unlink(p)
@@ -638,7 +638,7 @@ def test_kevin_real_ggVG_with_ex_substitute():
     p = _tmp("foo bar\nfoo baz\nfoo qux\n")
     try:
         r = st.op_vim(p, r"ggVG:s/foo/REPL/g")
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         assert new.count("REPL") == 3, f"got: {new!r}; receipt: {r}"
         assert "foo" not in new
         assert "ERROR" not in r
@@ -656,7 +656,7 @@ def test_kevin_real_cciw_autocorrect_to_ciw():
     p = _tmp("    $this->assertEquals(1, 2);\n")
     try:
         r = st.op_vim(p, r"/assertEquals\ecciwassertSame\e")
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         # Word `assertEquals` replaced by `assertSame`, rest preserved
         assert "$this->assertSame(1, 2);" in new, f"got: {new!r}; receipt: {r}"
         assert "assertEquals" not in new
@@ -669,7 +669,7 @@ def test_kevin_real_ccaw_autocorrect_to_caw():
     p = _tmp("foo bar baz\n")
     try:
         r = st.op_vim(p, r"/bar\eccawZZZ\e")
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         # `aw` includes trailing whitespace; result varies but `bar ` gone
         assert "bar" not in new
         assert "ZZZ" in new
@@ -700,7 +700,7 @@ def test_kevin_real_near_hint_labels_in_memory_state():
             r"/UNIQUE_MARKER(NOPE)",
         )
         # File on disk unchanged
-        assert open(p).read() == original, f"file mutated: {open(p).read()!r}"
+        assert open(p, encoding="utf-8").read() == original, f"file mutated: {open(p, encoding="utf-8").read()!r}"
         # Receipt mentions atomicity / unchanged
         low = r.lower()
         assert "unchanged" in low or "atomic" in low, f"missing atomicity hint: {r!r}"
@@ -727,7 +727,7 @@ def test_kevin_real_chain_error_reports_atomicity():
         # Action 1 succeeds (search), action 2 fails (V is unknown).
         r = st.op_vim(p, r"/line 2\eV")
         # File on disk unchanged
-        assert open(p).read() == original
+        assert open(p, encoding="utf-8").read() == original
         # Error receipt explicitly says so
         assert "unchanged" in r.lower() or "atomic" in r.lower() or "preserved" in r.lower()
     finally:
@@ -752,7 +752,7 @@ def test_kevin_real_hex_escape_x27_in_subst_pat():
             p,
             r":%s/assertArrayHasKey(\x27name\x27, \$options);/REPLACED/",
         )
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         assert "REPLACED" in new, f"failed: {r!r}"
         # Other line untouched
         assert "assertArrayHasKey('monitor_name'" in new
@@ -766,7 +766,7 @@ def test_kevin_real_hex_escape_x27_in_subst_repl():
     p = _tmp("placeholder\n")
     try:
         r = st.op_vim(p, r":%s/placeholder/\x27quoted\x27/")
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         assert new == "'quoted'\n", f"got: {new!r}"
     finally:
         os.unlink(p)
@@ -787,7 +787,7 @@ def test_kevin_real_paste1_cciw_chain():
             p,
             r"/assertIsBool\eciwassertTrue\e",
         )
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         assert "assertTrue($x)" in new
         assert "assertIsBool" not in new
         assert "ERROR" not in r
@@ -820,7 +820,7 @@ def test_kevin_real_paste4_r_stdin_pipe_block():
             p,
             r"/\$this->assertTrue\edd:r -",
         )
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         assert "assertGreaterThan(0, $user->getId())" in new, f"got: {new!r}; receipt: {r}"
         # The original assertTrue line was dd'd
         assert "$this->assertTrue(true)" not in new
@@ -853,7 +853,7 @@ def test_kevin_real_paste5_three_step_subst_chain():
             r":%s/\$this->assertTrue(true);/$this->assertTrue($user->getMetadataByKey(SiTrelloProjectsOptions::TRELLO_PROJECTS_BOARD_UID)->isNew());/\e"
             r":%s/createRandom(\[\], true);/createRandom([], true);\n\n        $this->assertGreaterThan(0, $user->getId());/\e",
         )
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         assert "use SiTrelloProjects\\SiTrelloProjectsOptions;" in new, f"step1 failed: {r}"
         assert "TRELLO_PROJECTS_BOARD_UID" in new, f"step2 failed: {r}"
         assert "assertGreaterThan(0, $user->getId())" in new, f"step3 failed: {r}"
@@ -884,7 +884,7 @@ def test_kevin_real_paste7_multiline_subst_with_newline_pattern():
             p,
             r":%s/$this->assertNull($result);\n    }\n\n    public function testWithProjectThatShouldNotBeOnTrelloProjects/REPLACED/",
         )
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         # Either succeeds via literal mode or fails with helpful hint
         if "REPLACED" in new:
             assert "ERROR" not in r
@@ -918,7 +918,7 @@ def test_kevin_real_paste8_four_action_search_sub_open_chain():
             r"/\$this->assertSame(\$project, \$result);\e"
             r"o            $this->assertNull($result->getTrelloCardUid());\e",
         )
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         assert "assertGreaterThan(0, $message->getId())" in new, f"sub failed: {r}"
         assert "assertNull($result->getTrelloCardUid())" in new, f"open failed: {r}"
         assert "ERROR" not in r
@@ -943,7 +943,7 @@ def test_kevin_real_o_insert_after_chained_search():
             p,
             r"/use Shared\\ApplicationApi;\eouse SiTrelloProjects\SiTrelloProjectsOptions;\e",
         )
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         assert "use SiTrelloProjects\\SiTrelloProjectsOptions;" in new
         assert "ERROR" not in r
     finally:
@@ -960,7 +960,7 @@ def test_indent_motion_gt2j():
     p = _tmp("a\nb\nc\nd\n")
     try:
         r = st.op_vim(p, ">2j")
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         assert new == "    a\n    b\n    c\nd\n", repr(new)
         assert "ERROR" not in r
     finally:
@@ -973,7 +973,7 @@ def test_indent_motion_gtG():
     try:
         # move to line 2 first with j, then >G
         r = st.op_vim(p, "j>G")
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         assert new == "a\n    b\n    c\n", repr(new)
         assert "ERROR" not in r
     finally:
@@ -985,7 +985,7 @@ def test_dedent_motion_ltG():
     p = _tmp("    a\n    b\n    c\n")
     try:
         r = st.op_vim(p, "<G")
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         assert new == "a\nb\nc\n", repr(new)
         assert "ERROR" not in r
     finally:
@@ -997,7 +997,7 @@ def test_indent_motion_paragraph():
     p = _tmp("a\nb\n\nc\nd\n")
     try:
         r = st.op_vim(p, ">}")
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         # lines 1-2 indented, blank line skipped, lines 4-5 untouched
         assert new == "    a\n    b\n\nc\nd\n", repr(new)
         assert "ERROR" not in r
@@ -1014,7 +1014,7 @@ def test_reindent_motion_eq2j():
     p = _tmp("    hello\n        world\n            deep\nd\n")
     try:
         r = st.op_vim(p, "=2j")
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         lines = new.split("\n")
         # line 1: no preceding non-blank → stripped to no indent
         assert lines[0] == "hello", repr(lines[0])
@@ -1035,7 +1035,7 @@ def test_reindent_motion_eqeq_current_line():
     try:
         # cursor starts on line 1; move to line 2 with j, then ==
         r = st.op_vim(p, "j==")
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         lines = new.split("\n")
         assert lines[0] == "    base", repr(lines[0])
         assert lines[1] == "    over", repr(lines[1])  # matched line 1's 4-space indent
@@ -1049,7 +1049,7 @@ def test_regression_gtgt_still_works():
     p = _tmp("hello\nworld\n")
     try:
         r = st.op_vim(p, ">>")
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         assert new == "    hello\nworld\n", repr(new)
         assert "ERROR" not in r
     finally:
@@ -1061,7 +1061,7 @@ def test_regression_ltlt_still_works():
     p = _tmp("    hello\nworld\n")
     try:
         r = st.op_vim(p, "<<")
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         assert new == "hello\nworld\n", repr(new)
         assert "ERROR" not in r
     finally:
@@ -1077,7 +1077,7 @@ def test_v_char_vwd_deletes_word():
     p = _tmp("hello world\n")
     try:
         r = st.op_vim(p, "vwd")
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         assert new == "world\n", f"got: {new!r}; receipt: {r}"
         assert "ERROR" not in r
     finally:
@@ -1089,7 +1089,7 @@ def test_v_char_v_dollar_y_yanks_to_eol():
     p = _tmp("abc\ndef\n")
     try:
         r = st.op_vim(p, "v$yjp")
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         # 'abc' yanked (to EOL), pasted below line 1 → abc appears twice
         assert new.count("abc") == 2, f"got: {new!r}; receipt: {r}"
         assert "ERROR" not in r
@@ -1102,7 +1102,7 @@ def test_v_char_vi_quote_change_greedy():
     p = _tmp('say "hello" now\n')
     try:
         r = st.op_vim(p, r'vi"cgoodbye\e')
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         assert new == 'say "goodbye" now\n', f"got: {new!r}; receipt: {r}"
         assert "ERROR" not in r
     finally:
@@ -1114,7 +1114,7 @@ def test_v_char_vGd_deletes_to_eof():
     p = _tmp("a\nb\nc\n")
     try:
         r = st.op_vim(p, "vGd")
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         assert new == "" or new == "\n", f"got: {new!r}; receipt: {r}"
         assert "ERROR" not in r
     finally:
@@ -1130,7 +1130,7 @@ def test_v_char_vggd_deletes_to_bof():
         # Move to last line then vggd — should delete everything up to and
         # including the cursor line.
         r = st.op_vim(p, "Gvggd")
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         assert new == "" or new == "\n", f"got: {new!r}; receipt: {r}"
         assert "ERROR" not in r
     finally:
@@ -1145,7 +1145,7 @@ def test_v_char_in_insert_text_not_rewritten():
     p = _tmp("X\n")
     try:
         r = st.op_vim(p, r"ivwd\e")
-        new = open(p).read()
+        new = open(p, encoding="utf-8").read()
         assert new == "vwdX\n", f"got: {new!r}; receipt: {r}"
         assert "ERROR" not in r
     finally:
@@ -1162,7 +1162,7 @@ def test_undo_after_insert():
     try:
         os.environ["SUPERTOOL_VIM_NO_PERSIST"] = "1"
         r = st.op_vim(p, "iFOO\\eu")
-        content = open(p).read()
+        content = open(p, encoding="utf-8").read()
         assert content == "", f"expected empty after undo, got: {content!r}"
         assert "ERROR" not in r
     finally:
@@ -1176,7 +1176,7 @@ def test_undo_after_delete_line():
     try:
         os.environ["SUPERTOOL_VIM_NO_PERSIST"] = "1"
         r = st.op_vim(p, "dduuu")
-        content = open(p).read()
+        content = open(p, encoding="utf-8").read()
         assert content == "hello\n", f"expected restored, got: {content!r}"
         assert "ERROR" not in r
     finally:
@@ -1190,7 +1190,7 @@ def test_undo_then_redo():
     try:
         os.environ["SUPERTOOL_VIM_NO_PERSIST"] = "1"
         r = st.op_vim(p, "iFOO\\eu\x12")
-        content = open(p).read()
+        content = open(p, encoding="utf-8").read()
         assert content == "FOO", f"expected FOO after redo, got: {content!r}"
         assert "ERROR" not in r
     finally:
@@ -1209,10 +1209,10 @@ def test_undo_cross_call():
     try:
         # Call 1: insert FOO
         r1 = st.op_vim(p, "iFOO")
-        assert open(p).read() == "FOO", f"call1 failed: {r1}"
+        assert open(p, encoding="utf-8").read() == "FOO", f"call1 failed: {r1}"
         # Call 2: undo (no within-script edits → falls through to cross-call snapshot)
         r2 = st.op_vim(p, "u")
-        content = open(p).read()
+        content = open(p, encoding="utf-8").read()
         assert content == "", f"expected empty after cross-call undo, got: {content!r}"
         assert "cross-call undo" in r2, f"expected cross-call undo note in receipt, got: {r2}"
     finally:
@@ -1235,7 +1235,7 @@ def test_macro_record_and_replay_once():
     try:
         os.environ["SUPERTOOL_VIM_NO_PERSIST"] = "1"
         r = st.op_vim(p, "qaiFOO\\eq@a")
-        result = open(p).read()
+        result = open(p, encoding="utf-8").read()
         assert result.count("FOO") == 2, f"expected 2x FOO, got: {result!r}"
         assert "macro recorded" in r
         assert "@a" in r
@@ -1255,7 +1255,7 @@ def test_macro_record_and_replay_3x():
     try:
         os.environ["SUPERTOOL_VIM_NO_PERSIST"] = "1"
         r = st.op_vim(p, "ggqajdd q3@a")
-        result = open(p).read()
+        result = open(p, encoding="utf-8").read()
         lines = [l for l in result.split("\n") if l]
         # record deletes 1, replay 3x deletes 2 more (3rd j clamps at EOF) -> 4 left
         assert len(lines) == 4, f"expected 4 lines, got {len(lines)}: {result!r}"
@@ -1273,7 +1273,7 @@ def test_macro_replay_last_with_atat():
     try:
         os.environ["SUPERTOOL_VIM_NO_PERSIST"] = "1"
         r = st.op_vim(p, "qaiFOO\\eq@a@@")
-        result = open(p).read()
+        result = open(p, encoding="utf-8").read()
         assert result.count("FOO") == 3, f"expected 3x FOO, got: {result!r}"
         assert "@a" in r
     finally:
@@ -1312,7 +1312,7 @@ def test_dot_repeat_insert_same_call():
     p, cache_dir = _tmp_persist("")
     try:
         r = st.op_vim(p, "iFOO\\e.")
-        result = open(p).read()
+        result = open(p, encoding="utf-8").read()
         assert result.count("FOO") == 2, f"expected two FOO, got: {result!r}\nreceipt: {r}"
         assert "ERROR" not in r
     finally:
@@ -1326,7 +1326,7 @@ def test_dot_repeat_insert_cross_call():
         r1 = st.op_vim(p, "iFOO\\e")
         assert "ERROR" not in r1, f"call1 failed: {r1}"
         r2 = st.op_vim(p, "G.")
-        result = open(p).read()
+        result = open(p, encoding="utf-8").read()
         assert result.count("FOO") == 2, f"expected two FOO after cross-call repeat, got: {result!r}\nreceipt2: {r2}"
         assert "ERROR" not in r2
     finally:
@@ -1338,7 +1338,7 @@ def test_dot_repeat_dd_same_call():
     p, cache_dir = _tmp_persist("alpha\nbeta\ngamma\n")
     try:
         r = st.op_vim(p, "gg\u241e""dd\u241e""j.")
-        result = open(p).read()
+        result = open(p, encoding="utf-8").read()
         lines = [l for l in result.split("\n") if l]
         assert len(lines) <= 1, f"expected at most 1 line left, got: {result!r}\nreceipt: {r}"
         assert "ERROR" not in r
@@ -1364,7 +1364,7 @@ def test_dot_repeat_x_deletes_char():
     p, cache_dir = _tmp_persist("abcde\n")
     try:
         r = st.op_vim(p, "gg\u241e""x.")
-        result = open(p).read()
+        result = open(p, encoding="utf-8").read()
         assert result == "cde\n", f"got: {result!r}\nreceipt: {r}"
         assert "ERROR" not in r
     finally:
@@ -1376,7 +1376,7 @@ def test_dot_repeat_ciw_replaces_word():
     p, cache_dir = _tmp_persist("foo bar\n")
     try:
         r = st.op_vim(p, "gg\u241e""ciwNEW\\e\u241e""w.")
-        result = open(p).read()
+        result = open(p, encoding="utf-8").read()
         assert result.count("NEW") == 2, f"expected two NEW, got: {result!r}\nreceipt: {r}"
         assert "ERROR" not in r
     finally:
@@ -1392,12 +1392,12 @@ def test_shell_filter_sort_and_dot_repeat():
     p, cache_dir = _tmp_persist("b\na\n")
     try:
         r = st.op_vim(p, ":%!sort")
-        result = open(p).read()
+        result = open(p, encoding="utf-8").read()
         assert result == "a\nb\n", f"sort failed: {result!r}\nreceipt: {r}"
         assert "ERROR" not in r
 
         r2 = st.op_vim(p, ".")
-        result2 = open(p).read()
+        result2 = open(p, encoding="utf-8").read()
         assert result2 == "a\nb\n", f"dot repeat changed sorted result: {result2!r}\nreceipt: {r2}"
         assert "ERROR" not in r2
     finally:
@@ -1409,7 +1409,7 @@ def test_shell_filter_sort_undo():
     p, cache_dir = _tmp_persist("b\na\n")
     try:
         r = st.op_vim(p, ":%!sort␞u")
-        result = open(p).read()
+        result = open(p, encoding="utf-8").read()
         assert result == "b\na\n", f"undo after sort failed: {result!r}\nreceipt: {r}"
         assert "ERROR" not in r
     finally:
@@ -1421,7 +1421,7 @@ def test_shell_insert_echo_undo():
     p, cache_dir = _tmp_persist("")
     try:
         r = st.op_vim(p, ":!echo hi␞u")
-        result = open(p).read()
+        result = open(p, encoding="utf-8").read()
         assert result == "", f"undo after :!echo failed: {result!r}\nreceipt: {r}"
         assert "ERROR" not in r
     finally:
@@ -1439,7 +1439,7 @@ def test_m5_eq_eq_tab_file_aligns_with_tabs():
     p = _tmp(content)
     try:
         r = st.op_vim(p, "2G==")
-        result = open(p).read()
+        result = open(p, encoding="utf-8").read()
         lines = result.splitlines()
         assert lines[1] == "\t\tpass", (
             f"Expected '\\t\\tpass' (2 tabs), got: {lines[1]!r}\nreceipt: {r}"
@@ -1456,7 +1456,7 @@ def test_m5_eq_eq_space_file_aligns_with_spaces():
     p = _tmp(content)
     try:
         r = st.op_vim(p, "2G==")
-        result = open(p).read()
+        result = open(p, encoding="utf-8").read()
         lines = result.splitlines()
         assert lines[1] == "        pass", (
             f"Expected 8-space indent, got: {lines[1]!r}\nreceipt: {r}"
@@ -1473,7 +1473,7 @@ def test_m5_eq_eq_already_correct_noop():
     p = _tmp(content)
     try:
         r = st.op_vim(p, "2G==")
-        result = open(p).read()
+        result = open(p, encoding="utf-8").read()
         assert result == content, (
             f"Content changed when it shouldn't have:\nbefore: {content!r}\nafter:  {result!r}\nreceipt: {r}"
         )
@@ -1489,7 +1489,7 @@ def test_m5_eq_eq_no_preceding_nonblank_uses_depth_zero():
     p = _tmp(content)
     try:
         r = st.op_vim(p, "3G==")
-        result = open(p).read()
+        result = open(p, encoding="utf-8").read()
         lines = result.splitlines()
         target = [ln for ln in lines if ln.strip() == "indented_start"][0]
         assert target == "indented_start", (
@@ -1511,7 +1511,7 @@ def test_m1_macro_close_q_not_inside_insert_text():
     try:
         r = st.op_vim(p, r"qaiquery\eq @a")
         assert "ERROR" not in r, f"Unexpected error: {r}"
-        result = open(p).read()
+        result = open(p, encoding="utf-8").read()
         assert result.count("query") == 2, (
             f"Expected 'query' x2, got {result.count('query')} in {result!r}; receipt: {r}"
         )
@@ -1525,7 +1525,7 @@ def test_m1_macro_body_full_word_not_truncated():
     try:
         r = st.op_vim(p, r"qaiquery\eq @a")
         assert "ERROR" not in r, f"Unexpected error: {r}"
-        result = open(p).read()
+        result = open(p, encoding="utf-8").read()
         assert "query" in result, f"'query' not in {result!r}; receipt: {r}"
     finally:
         os.unlink(p)
@@ -1548,7 +1548,7 @@ def test_m1_bare_q_after_escape_closes_recording():
     try:
         r = st.op_vim(p, r"qaiX\eq @a")
         assert "ERROR" not in r, f"Unexpected error: {r}"
-        result = open(p).read()
+        result = open(p, encoding="utf-8").read()
         assert "X" in result, f"'X' not found in {result!r}; receipt: {r}"
     finally:
         os.unlink(p)
@@ -1566,7 +1566,7 @@ def test_m4_self_replaying_macro_errors_with_depth_limit():
             f"Expected 'recursion depth limit' in error, got: {r_replay!r}"
         )
         assert "100" in r_replay, f"Expected '100' in error, got: {r_replay!r}"
-        result = open(p).read()
+        result = open(p, encoding="utf-8").read()
         assert result == initial, f"File modified despite recursion error: {result!r}"
     finally:
         os.unlink(p)
@@ -1578,7 +1578,7 @@ def test_m4_normal_macro_replay_not_blocked():
     try:
         r = st.op_vim(p, r"qaoX\eq 5@a")
         assert "ERROR" not in r, f"Unexpected error: {r}"
-        result = open(p).read()
+        result = open(p, encoding="utf-8").read()
         assert result.count("X") >= 5, (
             f"Expected at least 5 'X' insertions, got {result.count('X')} in {result!r}"
         )
@@ -1597,7 +1597,7 @@ def test_bang_bare_inserts_stdout_after_cursor(tmp_path):
     f.write_text("a\nb\nc\n")
     out = st.op_vim(str(f), ":!echo hi")
     assert "ERROR" not in out, out
-    assert f.read_text() == "a\nhi\nb\nc\n"
+    assert f.read_text(encoding="utf-8") == "a\nhi\nb\nc\n"
 
 
 def test_bang_percent_pipes_whole_buffer(tmp_path):
@@ -1606,7 +1606,7 @@ def test_bang_percent_pipes_whole_buffer(tmp_path):
     f.write_text("abc\ndef\n")
     out = st.op_vim(str(f), ":%!tr a-z A-Z")
     assert "ERROR" not in out, out
-    assert f.read_text() == "ABC\nDEF\n"
+    assert f.read_text(encoding="utf-8") == "ABC\nDEF\n"
 
 
 def test_bang_range_pipes_selected_lines(tmp_path):
@@ -1615,7 +1615,7 @@ def test_bang_range_pipes_selected_lines(tmp_path):
     f.write_text("aaa\nbbb\nccc\nddd\n")
     out = st.op_vim(str(f), ":2,3!tr a-z A-Z")
     assert "ERROR" not in out, out
-    assert f.read_text() == "aaa\nBBB\nCCC\nddd\n"
+    assert f.read_text(encoding="utf-8") == "aaa\nBBB\nCCC\nddd\n"
 
 
 # ---------------------------------------------------------------------------
@@ -1628,7 +1628,7 @@ def test_indent_outer_count_repeats_levels():
     p = _tmp("a\nb\nc\n")
     try:
         r = st.op_vim(p, "3>j")
-        result = open(p).read()
+        result = open(p, encoding="utf-8").read()
         lines = result.splitlines()
         # 3 repetitions of indent = 3 * 4 spaces = 12 spaces
         assert lines[0] == "            a", f"line 0: {lines[0]!r}\nreceipt: {r}"
@@ -1644,7 +1644,7 @@ def test_indent_motion_count_sets_range():
     p = _tmp("a\nb\nc\nd\n")
     try:
         r = st.op_vim(p, ">2j")
-        result = open(p).read()
+        result = open(p, encoding="utf-8").read()
         lines = result.splitlines()
         assert lines[0] == "    a", f"line 0: {lines[0]!r}"
         assert lines[1] == "    b", f"line 1: {lines[1]!r}"
@@ -1660,7 +1660,7 @@ def test_indent_outer_and_motion_count_combined():
     p = _tmp("a\nb\nc\nd\n")
     try:
         r = st.op_vim(p, "3>2j")
-        result = open(p).read()
+        result = open(p, encoding="utf-8").read()
         lines = result.splitlines()
         # 3 levels of indent = 12 spaces each
         assert lines[0] == "            a", f"line 0: {lines[0]!r}"

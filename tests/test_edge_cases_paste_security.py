@@ -105,7 +105,7 @@ def test_paste_path_traversal_writes_relative_to_given_path(tmp_path: Path) -> N
     # already proves the write landed where it was told.
     if sys.platform != "win32":
         assert os.path.exists("/etc/passwd"), "/etc/passwd vanished — something went very wrong"
-        with open("/etc/passwd") as f:
+        with open("/etc/passwd", encoding="utf-8") as f:
             first = f.read(5)
         assert first != "trave", "/etc/passwd was overwritten — CRITICAL"
 

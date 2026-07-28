@@ -15,8 +15,8 @@ def test_edit_replaces_unique_match(tmp_path: Path) -> None:
     f.write_text("a = 1\nb = 2\nc = 3\n")
     out = supertool.op_edit("b = 2", "b = 99", str(f))
     assert "edited" in out
-    assert "b = 99" in f.read_text()
-    assert "b = 2" not in f.read_text()
+    assert "b = 99" in f.read_text(encoding="utf-8")
+    assert "b = 2" not in f.read_text(encoding="utf-8")
 
 
 def test_edit_zero_matches_returns_error(tmp_path: Path) -> None:
@@ -35,7 +35,7 @@ def test_edit_multiple_matches_returns_error(tmp_path: Path) -> None:
     assert "3 times" in out
     assert "ambiguous" in out
     # File untouched
-    assert f.read_text() == "x = 1\nx = 2\nx = 3\n"
+    assert f.read_text(encoding="utf-8") == "x = 1\nx = 2\nx = 3\n"
 
 
 def test_edit_missing_file_returns_error(tmp_path: Path) -> None:
@@ -71,7 +71,7 @@ def test_edit_multiline_replacement(tmp_path: Path) -> None:
     f.write_text("a\nMARKER\nz\n")
     out = supertool.op_edit("MARKER", "x1\nx2\nx3", str(f))
     assert "edited" in out
-    assert f.read_text() == "a\nx1\nx2\nx3\nz\n"
+    assert f.read_text(encoding="utf-8") == "a\nx1\nx2\nx3\nz\n"
 
 
 # ---------------------------------------------------------------------------
@@ -88,7 +88,7 @@ def test_replace_lines_swaps_range(tmp_path: Path) -> None:
     f = _write(tmp_path, 10)
     out = supertool.op_replace_lines(str(f), 3, 5, "X\nY")
     assert "replaced lines 3-5" in out
-    text = f.read_text()
+    text = f.read_text(encoding="utf-8")
     assert text == "line1\nline2\nX\nY\nline6\nline7\nline8\nline9\nline10\n"
 
 
@@ -97,14 +97,14 @@ def test_replace_lines_insert_only(tmp_path: Path) -> None:
     f = _write(tmp_path, 5)
     out = supertool.op_replace_lines(str(f), 3, 2, "NEW")
     assert "inserted 1 lines before line 3" in out
-    assert f.read_text() == "line1\nline2\nNEW\nline3\nline4\nline5\n"
+    assert f.read_text(encoding="utf-8") == "line1\nline2\nNEW\nline3\nline4\nline5\n"
 
 
 def test_replace_lines_delete(tmp_path: Path) -> None:
     f = _write(tmp_path, 5)
     out = supertool.op_replace_lines(str(f), 2, 4, "")
     assert "deleted lines 2-4" in out
-    assert f.read_text() == "line1\nline5\n"
+    assert f.read_text(encoding="utf-8") == "line1\nline5\n"
 
 
 def test_replace_lines_end_beyond_total_errors(tmp_path: Path) -> None:
@@ -125,7 +125,7 @@ def test_replace_lines_append_at_end(tmp_path: Path) -> None:
     f = _write(tmp_path, 3)
     out = supertool.op_replace_lines(str(f), 4, 3, "tail")
     assert "inserted 1 lines before line 4" in out
-    assert f.read_text() == "line1\nline2\nline3\ntail\n"
+    assert f.read_text(encoding="utf-8") == "line1\nline2\nline3\ntail\n"
 
 
 def test_replace_lines_invalid_start_errors(tmp_path: Path) -> None:
@@ -157,7 +157,7 @@ def test_dispatch_edit(tmp_path: Path) -> None:
     f.write_text("foo\nbar\n")
     out = supertool.dispatch(f"edit:foo:FOO:{f}")
     assert "edited" in out
-    assert f.read_text() == "FOO\nbar\n"
+    assert f.read_text(encoding="utf-8") == "FOO\nbar\n"
 
 
 def test_dispatch_replace_lines(tmp_path: Path) -> None:
@@ -165,7 +165,7 @@ def test_dispatch_replace_lines(tmp_path: Path) -> None:
     f.write_text("a\nb\nc\n")
     out = supertool.dispatch(f"replace_lines:{f}:2:2:B")
     assert "replaced lines 2-2" in out
-    assert f.read_text() == "a\nB\nc\n"
+    assert f.read_text(encoding="utf-8") == "a\nB\nc\n"
 
 
 def test_dispatch_replace_lines_content_with_colons(tmp_path: Path) -> None:
@@ -174,7 +174,7 @@ def test_dispatch_replace_lines_content_with_colons(tmp_path: Path) -> None:
     f.write_text("a\nb\nc\n")
     out = supertool.dispatch(f"replace_lines:{f}:2:2:url:http://x")
     assert "replaced" in out
-    assert f.read_text() == "a\nurl:http://x\nc\n"
+    assert f.read_text(encoding="utf-8") == "a\nurl:http://x\nc\n"
 
 
 # ---------------------------------------------------------------------------
@@ -187,7 +187,7 @@ def test_dispatch_edit_triple_colon(tmp_path: Path) -> None:
     f.write_text("Foo::bar();\necho 'hi';\n")
     out = supertool.dispatch(f"edit:::Foo::bar();:::Bar::baz();:::{f}")
     assert "edited" in out
-    assert f.read_text() == "Bar::baz();\necho 'hi';\n"
+    assert f.read_text(encoding="utf-8") == "Bar::baz();\necho 'hi';\n"
 
 
 def test_dispatch_replace_lines_triple_colon_with_colons(tmp_path: Path) -> None:
@@ -197,7 +197,7 @@ def test_dispatch_replace_lines_triple_colon_with_colons(tmp_path: Path) -> None
         f"replace_lines:::{f}:::2:::2:::Class::method('http://x'):"
     )
     assert "replaced" in out
-    assert "Class::method" in f.read_text()
+    assert "Class::method" in f.read_text(encoding="utf-8")
 
 
 def test_dispatch_edit_triple_colon_multiline(tmp_path: Path) -> None:
@@ -206,7 +206,7 @@ def test_dispatch_edit_triple_colon_multiline(tmp_path: Path) -> None:
     f.write_text("start\nold1\nold2\nend\n")
     out = supertool.dispatch(f"edit:::old1\nold2:::new1\nnew2\nnew3:::{f}")
     assert "edited" in out
-    assert f.read_text() == "start\nnew1\nnew2\nnew3\nend\n"
+    assert f.read_text(encoding="utf-8") == "start\nnew1\nnew2\nnew3\nend\n"
 
 
 def test_dispatch_single_colon_still_works_for_simple_content(tmp_path: Path) -> None:
@@ -215,7 +215,7 @@ def test_dispatch_single_colon_still_works_for_simple_content(tmp_path: Path) ->
     f.write_text("foo\nbar\n")
     out = supertool.dispatch(f"edit:foo:FOO:{f}")
     assert "edited" in out
-    assert f.read_text() == "FOO\nbar\n"
+    assert f.read_text(encoding="utf-8") == "FOO\nbar\n"
 
 
 def test_dispatch_read_no_exclude_suffix_unaffected(tmp_path: Path) -> None:
@@ -268,7 +268,7 @@ def test_edit_failed_write_preserves_original(tmp_path: Path, monkeypatch) -> No
     out = supertool.op_edit("original", "NEW", str(f))
     assert "ERROR" in out
     # File still has original content — atomic write means no partial state
-    assert f.read_text() == "original\n"
+    assert f.read_text(encoding="utf-8") == "original\n"
     # Temp file cleaned up
     assert list(tmp_path.glob(".supertool-*")) == []
 
@@ -283,7 +283,7 @@ def test_replace_atomic_write_no_temp_files_left(tmp_path: Path) -> None:
     supertool.op_replace("foo", "FOO", str(f))
     leftovers = list(tmp_path.glob(".supertool-*"))
     assert leftovers == []
-    assert "FOO" in f.read_text()
+    assert "FOO" in f.read_text(encoding="utf-8")
 
 
 def test_replace_lines_negative_end_rejected(tmp_path: Path) -> None:
@@ -292,7 +292,7 @@ def test_replace_lines_negative_end_rejected(tmp_path: Path) -> None:
     assert "ERROR" in out
     assert "end (-1)" in out
     # File untouched
-    assert f.read_text() == "line1\nline2\nline3\nline4\nline5\n"
+    assert f.read_text(encoding="utf-8") == "line1\nline2\nline3\nline4\nline5\n"
 
 
 # ---------------------------------------------------------------------------
@@ -320,15 +320,15 @@ def test_dispatch_edit_decodes_newline_in_new(tmp_path: Path) -> None:
     f.write_text("MARKER\n")
     out = supertool.dispatch(f"edit:::MARKER:::a\\nb:::{f}")
     assert "edited" in out
-    assert f.read_text() == "a\nb\n"
+    assert f.read_text(encoding="utf-8") == "a\nb\n"
 
 
 def test_dispatch_replace_decodes_newline_in_new(tmp_path: Path) -> None:
     f = tmp_path / "x.txt"
     f.write_text("foo\n")
     out = supertool.dispatch(f"replace:::foo:::line1\\nline2:::{f}")
-    assert "foo" not in f.read_text()
-    assert f.read_text() == "line1\nline2\n"
+    assert "foo" not in f.read_text(encoding="utf-8")
+    assert f.read_text(encoding="utf-8") == "line1\nline2\n"
 
 
 def test_dispatch_edit_decodes_tab(tmp_path: Path) -> None:
@@ -336,7 +336,7 @@ def test_dispatch_edit_decodes_tab(tmp_path: Path) -> None:
     f = tmp_path / "x.txt"
     f.write_text("MARKER\n")
     supertool.dispatch(f"edit:::MARKER:::col1\\tcol2:::{f}")
-    assert f.read_text() == "col1\tcol2\n"
+    assert f.read_text(encoding="utf-8") == "col1\tcol2\n"
 
 
 def test_dispatch_replace_lines_decodes_newline(tmp_path: Path) -> None:
@@ -345,7 +345,7 @@ def test_dispatch_replace_lines_decodes_newline(tmp_path: Path) -> None:
     f.write_text("a\nb\nc\n")
     # Replace line 2 (1-indexed) with two lines via \n
     supertool.dispatch(f"replace_lines:::{f}:::2:::2:::x1\\nx2")
-    assert f.read_text() == "a\nx1\nx2\nc\n"
+    assert f.read_text(encoding="utf-8") == "a\nx1\nx2\nc\n"
 
 
 def test_dispatch_edit_double_backslash_stays_literal(tmp_path: Path) -> None:
@@ -354,4 +354,4 @@ def test_dispatch_edit_double_backslash_stays_literal(tmp_path: Path) -> None:
     f.write_text("MARKER\n")
     # Pass 4 chars `\\n` → expected output: 2 chars `\n` (literal)
     supertool.dispatch(f"edit:::MARKER:::a\\\\nb:::{f}")
-    assert f.read_text() == "a\\nb\n"
+    assert f.read_text(encoding="utf-8") == "a\\nb\n"

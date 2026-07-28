@@ -38,7 +38,7 @@ def test_start_greater_than_end_treated_as_insert(tmp_path: Path) -> None:
     out = supertool.op_replace_lines(str(f), 4, 2, "INSERTED\n")
     # Must NOT be an error
     assert "ERROR" not in out, f"Unexpected error: {out}"
-    lines = f.read_text().splitlines()
+    lines = f.read_text(encoding="utf-8").splitlines()
     # Inserted before original line 4 ("delta")
     assert "INSERTED" in lines
     insert_pos = lines.index("INSERTED")
@@ -62,7 +62,7 @@ def test_end_far_beyond_total_errors(tmp_path: Path) -> None:
     f.write_text(FIVE_LINES)
     out = supertool.op_replace_lines(str(f), 1, 99999, "NEW\n")
     assert "ERROR" in out
-    assert f.read_text() == FIVE_LINES, "File must be unchanged after error"
+    assert f.read_text(encoding="utf-8") == FIVE_LINES, "File must be unchanged after error"
 
 
 def test_end_equals_total_plus_one_autoclamped(tmp_path: Path) -> None:
@@ -74,7 +74,7 @@ def test_end_equals_total_plus_one_autoclamped(tmp_path: Path) -> None:
     assert "autocorrect" in out or "clamped" in out, (
         "Receipt should mention the autocorrect that happened"
     )
-    lines = f.read_text().splitlines()
+    lines = f.read_text(encoding="utf-8").splitlines()
     assert lines[2] == "NEW"
     assert len(lines) == 3  # lines 1-2 + NEW
 
@@ -89,7 +89,7 @@ def test_start_zero_is_error(tmp_path: Path) -> None:
     f.write_text(FIVE_LINES)
     out = supertool.op_replace_lines(str(f), 0, 3, "NEW\n")
     assert "ERROR" in out
-    assert f.read_text() == FIVE_LINES, "File must be unchanged"
+    assert f.read_text(encoding="utf-8") == FIVE_LINES, "File must be unchanged"
 
 
 # ---------------------------------------------------------------------------
@@ -102,7 +102,7 @@ def test_negative_start_is_error(tmp_path: Path) -> None:
     f.write_text(FIVE_LINES)
     out = supertool.op_replace_lines(str(f), -1, 3, "NEW\n")
     assert "ERROR" in out
-    assert f.read_text() == FIVE_LINES, "File must be unchanged"
+    assert f.read_text(encoding="utf-8") == FIVE_LINES, "File must be unchanged"
 
 
 def test_negative_start_and_end_both_error(tmp_path: Path) -> None:
@@ -111,7 +111,7 @@ def test_negative_start_and_end_both_error(tmp_path: Path) -> None:
     f.write_text(FIVE_LINES)
     out = supertool.op_replace_lines(str(f), -5, -2, "NEW\n")
     assert "ERROR" in out
-    assert f.read_text() == FIVE_LINES
+    assert f.read_text(encoding="utf-8") == FIVE_LINES
 
 
 # ---------------------------------------------------------------------------
@@ -151,10 +151,10 @@ def test_insert_empty_content_noop(tmp_path: Path) -> None:
     """
     f = tmp_path / "f.txt"
     f.write_text(FIVE_LINES)
-    original = f.read_text()
+    original = f.read_text(encoding="utf-8")
     out = supertool.op_replace_lines(str(f), 3, 2, "")
     assert "ERROR" not in out
-    assert f.read_text() == original, (
+    assert f.read_text(encoding="utf-8") == original, (
         "Inserting empty string should leave file unchanged"
     )
 
@@ -182,11 +182,11 @@ def test_replace_lines_on_symlink(tmp_path: Path) -> None:
     # Symlink must still be a symlink
     assert link.is_symlink(), "Symlink must survive the atomic write"
     # Both paths should read the new content
-    assert "REPLACED" in link.read_text()
-    assert "REPLACED" in real.read_text()
+    assert "REPLACED" in link.read_text(encoding="utf-8")
+    assert "REPLACED" in real.read_text(encoding="utf-8")
     # Other lines intact
-    assert "alpha" in real.read_text()
-    assert "delta" in real.read_text()
+    assert "alpha" in real.read_text(encoding="utf-8")
+    assert "delta" in real.read_text(encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -258,4 +258,4 @@ def test_replace_all_lines_with_empty_makes_empty_file(tmp_path: Path) -> None:
 
     # File must still exist
     assert f.exists(), "File must not be deleted"
-    assert f.read_text() == "", f"File should be empty, got: {f.read_text()!r}"
+    assert f.read_text(encoding="utf-8") == "", f"File should be empty, got: {f.read_text(encoding="utf-8")!r}"

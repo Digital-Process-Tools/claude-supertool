@@ -69,9 +69,9 @@ def test_edit_on_symlink_clobbers_link_with_regular_file(tmp_path: Path) -> None
     out = supertool.op_edit("hello", "world", str(link))
     assert "ERROR" not in out
 
-    real_after = real.read_text()
+    real_after = real.read_text(encoding="utf-8")
     link_is_symlink = link.is_symlink()
-    link_content = link.read_text()
+    link_content = link.read_text(encoding="utf-8")
 
     # Pin observed behavior. If link is replaced by a regular file holding
     # "world\n" and real.txt is unchanged → that's the silent clobber bug.
@@ -169,7 +169,7 @@ def test_op_replace_skips_unreadable_binary_peek(tmp_path: Path) -> None:
     os.chmod(f2, 0o000)
     try:
         out = supertool.op_replace("findme", "GOT", str(tmp_path))
-        assert "GOT here" in f1.read_text()
+        assert "GOT here" in f1.read_text(encoding="utf-8")
         # locked file silently skipped, not raised
         assert "ERROR" not in out
     finally:

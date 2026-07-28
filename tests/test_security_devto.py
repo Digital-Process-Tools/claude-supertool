@@ -489,7 +489,7 @@ class TestResponseInjection:
         assert not evil_ledger.exists()
 
         # Content is raw JSON — the evil string is stored as data, not interpreted
-        content = safe_ledger.read_text()
+        content = safe_ledger.read_text(encoding="utf-8")
         record = json.loads(content.strip())
         assert record["comment_id"] == "../../etc/passwd"  # stored literally
 
@@ -741,7 +741,7 @@ class TestOutboundLedgerPath:
                 "parent_id": None,
                 "posted_at": "2024-01-01T00:00:00Z",
             })
-        line = safe_ledger.read_text().strip()
+        line = safe_ledger.read_text(encoding="utf-8").strip()
         record = json.loads(line)  # must be valid JSON
         assert record["article_id"] == 99
         assert record["comment_id"] == "xyz"

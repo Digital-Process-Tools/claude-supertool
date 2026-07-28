@@ -175,7 +175,7 @@ def test_vim_lint_fail_receipt_warns_no_rollback(tmp_path):
         f"receipt should warn the file was modified despite lint fail, got:\n{out}"
     )
     # Documents current no-rollback behavior — file IS modified.
-    assert f.read_text() != original
+    assert f.read_text(encoding="utf-8") != original
 
 
 def test_vim_lint_fail_on_json_warns_no_rollback(tmp_path):
@@ -186,4 +186,4 @@ def test_vim_lint_fail_on_json_warns_no_rollback(tmp_path):
     out = supertool.op_vim(str(f), "G$xx")
     assert "POST-EDIT LINT FAILED" in out
     assert "file modified despite syntax fail" in out
-    assert f.read_text() != original
+    assert f.read_text(encoding="utf-8") != original

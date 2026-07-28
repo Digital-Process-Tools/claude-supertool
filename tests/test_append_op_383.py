@@ -27,7 +27,7 @@ def test_append_adds_block_at_end(tmp_path: Path) -> None:
     _write(f, "line1\nline2\n")
     out = supertool.op_append(str(f), "## New section\n")
     assert "ERROR" not in out
-    assert f.read_text() == "line1\nline2\n## New section\n"
+    assert f.read_text(encoding="utf-8") == "line1\nline2\n## New section\n"
     assert "appended to" in out
     assert "1 lines at 3-3" in out
 
@@ -36,14 +36,14 @@ def test_append_multi_line_block(tmp_path: Path) -> None:
     f = tmp_path / "notes.md"
     _write(f, "a\n")
     supertool.op_append(str(f), "b\nc\nd\n")
-    assert f.read_text() == "a\nb\nc\nd\n"
+    assert f.read_text(encoding="utf-8") == "a\nb\nc\nd\n"
 
 
 def test_append_supplies_missing_trailing_newline_on_content(tmp_path: Path) -> None:
     f = tmp_path / "notes.md"
     _write(f, "a\n")
     supertool.op_append(str(f), "b")
-    assert f.read_text() == "a\nb\n"
+    assert f.read_text(encoding="utf-8") == "a\nb\n"
 
 
 def test_append_fixes_missing_trailing_newline_on_target(tmp_path: Path) -> None:
@@ -51,7 +51,7 @@ def test_append_fixes_missing_trailing_newline_on_target(tmp_path: Path) -> None
     f = tmp_path / "notes.md"
     _write(f, "a\nb")
     out = supertool.op_append(str(f), "c\n")
-    assert f.read_text() == "a\nb\nc\n"
+    assert f.read_text(encoding="utf-8") == "a\nb\nc\n"
     assert "added the missing trailing newline first" in out
 
 
@@ -59,14 +59,14 @@ def test_append_creates_missing_file(tmp_path: Path) -> None:
     f = tmp_path / "new.md"
     out = supertool.op_append(str(f), "hello\n")
     assert "created" in out
-    assert f.read_text() == "hello\n"
+    assert f.read_text(encoding="utf-8") == "hello\n"
 
 
 def test_append_creates_parent_dirs(tmp_path: Path) -> None:
     f = tmp_path / "deep" / "nested" / "new.md"
     out = supertool.op_append(str(f), "hello\n")
     assert "ERROR" not in out
-    assert f.read_text() == "hello\n"
+    assert f.read_text(encoding="utf-8") == "hello\n"
 
 
 def test_append_preserves_existing_bytes(tmp_path: Path) -> None:
@@ -104,7 +104,7 @@ def test_append_through_symlink_writes_to_the_target(tmp_path: Path) -> None:
 
     assert "ERROR" not in out
     assert link.is_symlink(), "symlink was clobbered"
-    assert real.read_text() == "original\nadded\n"
+    assert real.read_text(encoding="utf-8") == "original\nadded\n"
 
 
 # ---------------------------------------------------------------------------
@@ -146,7 +146,7 @@ def test_append_empty_content_errors(tmp_path: Path) -> None:
     _write(f, "a\n")
     out = supertool.op_append(str(f), "")
     assert "ERROR: empty content" in out
-    assert f.read_text() == "a\n"
+    assert f.read_text(encoding="utf-8") == "a\n"
 
 
 def test_append_to_directory_errors(tmp_path: Path) -> None:
@@ -182,14 +182,14 @@ def test_dispatch_colon_cli(tmp_path: Path) -> None:
     _write(f, "a\n")
     out = supertool.dispatch(f"append:::{f}:::b")
     assert "ERROR" not in out
-    assert f.read_text() == "a\nb\n"
+    assert f.read_text(encoding="utf-8") == "a\nb\n"
 
 
 def test_dispatch_content_may_contain_colons(tmp_path: Path) -> None:
     f = tmp_path / "notes.md"
     _write(f, "a\n")
     supertool.dispatch(f"append:::{f}:::key: value: more")
-    assert f.read_text() == "a\nkey: value: more\n"
+    assert f.read_text(encoding="utf-8") == "a\nkey: value: more\n"
 
 
 def test_dispatch_payload_route(tmp_path: Path) -> None:
@@ -202,7 +202,7 @@ def test_dispatch_payload_route(tmp_path: Path) -> None:
     )
     out = supertool.dispatch(f"append:@{payload}")
     assert "ERROR" not in out
-    assert f.read_text() == 'a\ndef foo():\n    return {"a": 1}\n'
+    assert f.read_text(encoding="utf-8") == 'a\ndef foo():\n    return {"a": 1}\n'
 
 
 def test_append_is_a_builtin_op() -> None:

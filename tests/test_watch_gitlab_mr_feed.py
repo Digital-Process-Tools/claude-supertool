@@ -362,14 +362,14 @@ def test_the_feed_polls_on_human_timescales_not_ci_timescales() -> None:
 
 def test_declared_events_match_what_poll_can_emit() -> None:
     declared = {e["key"] for e in
-                json.loads((SOURCE_DIR / "events.json").read_text())["events"]}
+                json.loads((SOURCE_DIR / "events.json").read_text(encoding="utf-8"))["events"]}
     assert declared == {"mr_opened", "mr_merged", "mr_closed", "mr_left_feed"}
 
 
 def test_every_default_filtered_event_is_declared_by_this_source() -> None:
     """An only= entry no source emits is a filter that silences everything."""
     declared = {e["key"] for e in
-                json.loads((SOURCE_DIR / "events.json").read_text())["events"]}
+                json.loads((SOURCE_DIR / "events.json").read_text(encoding="utf-8"))["events"]}
     assert set(feed.defaults.DEFAULT_FEED_ONLY.split(",")) <= declared
 
 

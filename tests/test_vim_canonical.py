@@ -102,5 +102,5 @@ def test_canonical_vim_behavior(
     f = tmp_path / "x.txt"
     f.write_text(initial)
     out = supertool.op_vim(str(f), script)
-    actual = f.read_text()
+    actual = f.read_text(encoding="utf-8")
     assert actual == expected, f"{name}\n  script: {script!r}\n  out: {out}\n  got: {actual!r}\n  want: {expected!r}"
