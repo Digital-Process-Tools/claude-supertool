@@ -25,10 +25,30 @@ def _long(tag: str, n: int = 20) -> str:
 # header stays verbatim when it is already cheap
 # ---------------------------------------------------------------------------
 
-def test_short_edit_keeps_its_verbatim_header(tmp_path: Path) -> None:
-    f = tmp_path / "x.py"
-    f.write_text("a = 1\n")
-    arg = f"edit:::a = 1:::a = 2:::{f}"
+def test_short_edit_keeps_its_verbatim_header(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The arg has to be short because of what it *says*, not because of where
+    pytest happened to put tmp_path (#437).
+
+    Interpolating the absolute path made the length of an unrelated string the
+    thing under test. On macOS that path is ~130 chars, which put the arg at
+    exactly `_HEADER_ARG_MAX` — passing by one byte, and only for a username of
+    this length. Under xdist the `popen-gwN/` segment pushed it over, so the
+    test failed in parallel and passed serially on unmodified master. Running
+    from inside tmp_path makes the arg a fixed 27-char literal, and the
+    precondition below turns a reintroduced path interpolation into a
+    named failure instead of a mystifying one.
+    """
+    monkeypatch.chdir(tmp_path)
+    Path("x.py").write_text("a = 1\n")
+    arg = "edit:::a = 1:::a = 2:::x.py"
+    assert len(arg) <= supertool._HEADER_ARG_MAX, (
+        f"precondition: this test is about an arg cheap enough to echo "
+        f"verbatim, but it is {len(arg)} chars against a "
+        f"{supertool._HEADER_ARG_MAX} threshold — it would be asserting the "
+        f"opposite of its name. Keep the arg's length independent of tmp_path."
+    )
     out = supertool.dispatch(arg)
     assert out.startswith(f"--- {arg} ---\n")
 

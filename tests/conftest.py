@@ -308,6 +308,15 @@ def _guard_repo_git_state():
     Sibling worktrees share that common dir, so their commits land in the same
     snapshot. Rather than blame whichever test was in teardown, the change is
     attributed first, and only an unexplained one is reported (#428).
+
+    Under ``-n auto`` every worker fingerprints the same repo, so one violating
+    test makes its concurrent neighbours in other workers see the change too and
+    report it as theirs. That is left as-is deliberately (#433): the fan-out only
+    happens when a real violation exists, the run is red either way, and every
+    message names this guard — whereas the fixes for it (skip on any worker but
+    ``gw0``, or fingerprint once per session) both hand back the per-test
+    attribution #428/#432 was written to buy. Seeing N copies of this failure
+    means one test is the culprit; ``-n0`` names which.
     """
     dirs = _repo_git_dirs()
     before = _git_state_snapshot(dirs) if dirs else None

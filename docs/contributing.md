@@ -196,9 +196,33 @@ LC_ALL=C PYTHONCOERCECLOCALE=0 PYTHONUTF8=0 python3 supertool.py git-status
 python3 -m pytest tests/
 ```
 
-293 tests, 80% minimum coverage (enforced by pytest-cov). Current: 94%.
+~4000 tests, 86% minimum coverage (enforced by pytest-cov). Current: 88%.
 
-Enable the pre-push hook (runs pytest + enforces 80% coverage before every push):
+**The suite runs in parallel by default** — `addopts` carries `-n auto`, which
+takes it from ~4m22s to ~1m08s on an 11-core machine. Two consequences worth
+knowing before you read a red run:
+
+- **Output from different tests interleaves.** A `print` or a captured traceback
+  is still attributed correctly, but the lines around it may belong to another
+  worker. `--tb=long` on a single failing test id is the reliable read.
+- **`--pdb`, `-s` and breakpoints do not work under xdist.** Pass `-n0` to run
+  serially:
+
+  ```bash
+  python3 -m pytest tests/test_foo.py -n0 --pdb
+  ```
+
+If a test passes with `-n0` and fails under `-n auto`, that is a real bug in the
+test, not a parallelism problem — it means the test depends on state some other
+test leaves behind, or on something about the environment that xdist happens to
+change (worker id in the `tmp_path`, for instance — see
+[#437](https://github.com/Digital-Process-Tools/claude-supertool/issues/437)).
+Fix the dependency. Pinning the test to a worker, adding an `xdist_group`, or
+forcing `--dist loadfile` hides it and leaves a test that is not testing what
+its name claims.
+
+Enable the pre-push hook (runs the full suite — slow tests included, coverage
+not gated — exactly as CI does, before every push):
 
 ```bash
 git config core.hooksPath .githooks
