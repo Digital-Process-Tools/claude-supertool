@@ -137,11 +137,28 @@ The ID is a **scope**: `@me` and `@reviewer` are aliases for `gl-mrs` filters, a
 | first poll | Records the baseline **silently**. Announcing every MR that was already open is not discovery, it is a notification storm. Watchers are still spawned. |
 | new iid | `watch:gitlab-mr:<iid>` with the shared `DEFAULT_ONLY` filter, plus an `mr_opened` event and a desktop ping — nothing else can report it. |
 | known iid with a dead watcher | Respawned. Coverage is continuous for the same reason discovery is. |
-| vanished iid | One `glab api` lookup, then `mr_merged` / `mr_closed` / `mr_left_feed`. |
+| vanished iid | One `glab api` lookup, then `mr_merged` / `mr_closed` / `mr_left_feed` — the terminal two only when no per-MR poller announces that transition itself. |
 | `is_terminal` | Never. A population has no final state. |
 | fetch failure | No events, state kept. An unreachable GitLab must never read as "everything vanished". |
 
 **Vanished is not merged.** An iid leaving `author=@me,state=opened` could have merged, closed, been reassigned, or the filter could have changed. Guessing `mr_merged` is right most of the time and confidently wrong the rest, so the feed spends one lookup on the truth — departures are rare, so the call is too. Only a confirmed `merged`/`closed` stops the watcher and, since the per-MR watcher reaches the same conclusion within 30s and owns the desktop ping, `mr_merged`/`mr_closed` are emitted on the wire **without** a notification so a merge never pings twice. A still-open MR gets `mr_left_feed` and **keeps its watcher** — following an MR the feed no longer returns is legitimate, the same distinction `radar`'s prune already makes.
+
+### One transition, one line
+
+The feed and the per-MR pollers are two independent layers over the same fact, so a single merge used to arrive twice — `merged` from the poller, `mr_merged` from the feed, seconds apart under different event keys. The board renders one line per event, and duplicates train the reader to skim, which is the failure mode that makes a real red get missed.
+
+**The feed emits `mr_merged` / `mr_closed` only when no per-MR poller announces that transition itself.** Everything else about the feed is unchanged: `mr_opened` and `mr_left_feed` have no per-MR twin and are never suppressed, and suppression is keyed strictly per iid.
+
+*Liveness at the moment of the departure cannot decide this*, in either direction, which is why the answer is recorded earlier:
+
+- Reporting `merged` is exactly what makes a per-MR poller terminal and ends it, so by the time an iid leaves the population its reporter is usually **already gone** — along with its state file. "Reported and exited" and "never existed" look identical from there.
+- A poller that *is* still alive is precisely the one that has **not** spoken yet. And its `only=` filter may exclude `merged` entirely, in which case it is alive, healthy, and will never say a word about the merge.
+
+So each poll records, per iid still in the population, which terminal events a per-MR poller for it will announce — taken from the `only` filter that poller now **publishes into its state file** (`{"only": ["pipeline_failed", "merged", …]}`). An empty list means "emits everything"; the key being **absent** means nobody could tell us, which is a different answer and must not resolve the same way.
+
+**Every unanswerable case resolves to *not covered*, so the feed reports.** A duplicate is visible and cheap; a terminal transition nobody reports is a radar that stopped reporting without anyone noticing. This is the same bias `presets/_proc.py` encodes when an unanswerable liveness question resolves to *not alive* — it lands here as "fall back to a second line", never "fall back to silence". Concretely, the feed remains the sole and unsuppressed reporter when it runs without per-MR pollers behind it (a spawn that failed, a poller filtered away from `merged`, an unreadable state file, or a `known` entry written by a feed that predates this behaviour).
+
+A live poller that owes us the event is also **no longer stopped** on the terminal path. `stop_watcher` SIGTERMs then SIGKILLs, and killing the canonical reporter before it has reported is how one suppressed duplicate becomes no report at all; the unwatch stays on the branch where the feed does the reporting, which is the stale-PID cleanup it was always meant to be.
 
 `radar` ensures exactly one feed poller is alive on every run (a live PID short-circuits the spawn — N radar runs, one feed), and reports it in the footer as `feed ok` / `feed respawned` / `feed DOWN`. A feed that is down, or alive but erroring every tick, gets an explicit `WARNING` line that survives delta suppression — a feed that stopped discovering looks exactly like a day on which nothing happened.
 
@@ -152,7 +169,7 @@ Pollers emit through three channels (all best-effort, none can crash the poller)
 | Transport | Path | Purpose |
 |---|---|---|
 | UDS socket (NDJSON) | `/tmp/supertool-watch.sock` | Live event stream — consumers read this |
-| Status file (JSON) | `/tmp/supertool-watch-{source}__{id}.state.json` | Last-known state for `watches` op + offline inspection |
+| Status file (JSON) | `/tmp/supertool-watch-{source}__{id}.state.json` | Last-known state for `watches` op + offline inspection, plus the poller's own `only` filter so another tier can tell what it will ever emit |
 | macOS osascript | system notification center | Desktop ping on terminal status / error |
 
 Override the socket path with `SUPERTOOL_WATCH_SOCK` env var (must be set on both pollers and the consumer).
@@ -173,6 +190,10 @@ Override the socket path with `SUPERTOOL_WATCH_SOCK` env var (must be set on bot
 ```
 
 Consumers can rely on `ts/source/id/event/payload` always being present. Extra fields inside `payload` vary by source — see each source's `events.json` and `poller.py`.
+
+**The wire record itself has not moved.** What changed with [#434](https://github.com/Digital-Process-Tools/claude-supertool/issues/434) is *which* records get emitted, not their shape: no field was added, removed or retyped, and every event key in every `events.json` still means what it did. The contract that moved is the one **between the two GitLab tiers** — `gitlab-mr-feed` no longer emits `mr_merged`/`mr_closed` for an iid whose per-MR poller announces `merged`/`closed` itself, so a consumer that counted on receiving both keys for one merge now receives exactly one. Consumers wanting every terminal transition should keep treating `merged`/`mr_merged` (and `closed`/`mr_closed`) as the same fact under two keys — which is what they always were.
+
+The status file gained one field, `only`: the event filter its poller was spawned with, as a list. `[]` means unfiltered (every event). Absent means the file was written by a poller that predates the field, and is not evidence that the poller emits everything.
 
 ## Lifecycle
 
