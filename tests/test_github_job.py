@@ -15,7 +15,7 @@ job = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(job)
 
 
-def _make_fake_run(trace_lines: list[str]):
+def _make_fake_run(trace_lines: list[str], conclusion: str = "failure"):
     """Fake subprocess.run handling gh metadata + log endpoints.
 
     gh CLI calls in github/job.py:
@@ -28,7 +28,7 @@ def _make_fake_run(trace_lines: list[str]):
     meta = json.dumps({
         "name": "test-job",
         "status": "completed",
-        "conclusion": "failure",
+        "conclusion": conclusion,
         "run_id": 42,
         "run_url": "https://github.com/x/y/actions/runs/42",
     })
@@ -52,10 +52,29 @@ def _make_fake_run(trace_lines: list[str]):
     return fake_run
 
 
-def _run_main(monkeypatch, argv: list[str], trace_lines: list[str]) -> int:
+def _run_main(
+    monkeypatch, argv: list[str], trace_lines: list[str], conclusion: str = "failure"
+) -> int:
     monkeypatch.setattr(sys, "argv", argv)
-    monkeypatch.setattr(job.subprocess, "run", _make_fake_run(trace_lines))
+    monkeypatch.setattr(job.subprocess, "run", _make_fake_run(trace_lines, conclusion))
     return job.main()
+
+
+# Trimmed, timestamp-stripped excerpt of a real failed Actions run in this repo
+# (job 90097563482, run 30302191794, `pytest (windows-latest, 3.9)`) — a CRLF
+# assertion failure with no build/setup errors around it. Used to pin the
+# unmatched-failure banner against a real log shape rather than a synthetic
+# four-liner.
+REAL_FAILED_JOB_EXCERPT = [
+    "........................................................................ [ 88%]",
+    "sss.......ssss....s                                                      [100%]",
+    "=========================== short test summary info ===========================",
+    "FAILED tests/test_git_state_guard.py::test_snapshot_names_nested_refs_by_their_branch_name"
+    " - AssertionError: assert b'eeeeeeeeeee...eeeeeeeee\\r\\n' == b'eeeeeeeeeee...eeeeeeeeeee\\n'",
+    "  At index 40 diff: b'\\r' != b'\\n'",
+    "1 failed, 3866 passed, 227 skipped in 93.77s (0:01:33)",
+    "##[error]Process completed with exit code 1.",
+]
 
 
 def test_raw_dumps_full_trace(monkeypatch, capsys) -> None:
@@ -139,12 +158,19 @@ def test_fail_mode_shows_all_matched_blocks(monkeypatch, capsys) -> None:
 
 
 def test_fail_mode_no_matches(monkeypatch, capsys) -> None:
-    """`:fail` prints a clear message when nothing matched."""
+    """`:fail` on a failed job with zero matches is a tool gap, and must read as one.
+
+    This fixture's conclusion is "failure" (the `_run_main` default) — the old
+    `## No error patterns matched` wording was pinning the exact lie #453 files
+    against: a crashed job rendering as green.
+    """
     lines = ["build started", "all good", "build done"]
     rc = _run_main(monkeypatch, ["job.py", "123", "fail"], lines)
     out = capsys.readouterr().out
     assert rc == 0
-    assert "No error patterns matched" in out
+    assert "## FAILED — no error pattern matched" in out
+    assert "not that the log is clean" in out
+    assert "No error patterns matched" not in out
 
 
 def test_fail_is_alias_of_errors(monkeypatch, capsys) -> None:
@@ -158,6 +184,56 @@ def test_fail_is_alias_of_errors(monkeypatch, capsys) -> None:
     fail_out = capsys.readouterr().out
     assert fail_out == errors_out
     assert "All error blocks" in fail_out
+
+
+def test_default_mode_unmatched_failure_shows_banner(monkeypatch, capsys) -> None:
+    """A failed job the configured patterns can't classify gets the banner, not silence.
+
+    Real log excerpt (see REAL_FAILED_JOB_EXCERPT) from a genuinely failed
+    Actions run in this repo, with error_patterns narrowed to something absent
+    from it — the realistic shape of a job_patterns table tuned for a
+    different job. Zero matches on a job GitHub calls `failure` must never
+    read as "nothing wrong" (#453, mirrors #445/#452 on the GitLab side).
+    """
+    monkeypatch.setenv("SUPERTOOL_ERROR_PATTERNS", "ZZZ_NEVER_APPEARS_IN_THIS_LOG")
+    rc = _run_main(monkeypatch, ["job.py", "123"], REAL_FAILED_JOB_EXCERPT)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "## FAILED — no error pattern matched" in out
+    assert "Job status is `failure`" in out
+    assert "not that the log is clean" in out
+    assert "Patterns tried: ZZZ_NEVER_APPEARS_IN_THIS_LOG" in out
+    assert "Log tail (last" in out
+    assert "AssertionError" in out  # the actual evidence still reaches the reader
+    assert "gh-job:123:raw" in out
+    assert "No error patterns matched" not in out
+
+
+def test_default_mode_unmatched_non_failure_keeps_old_behavior(monkeypatch, capsys) -> None:
+    """A job that did not fail and matches nothing keeps the old, honest silent tail.
+
+    The default view never printed a textual banner here (only `:errors`/`:fail`
+    did) — mirrors gl-job's own default-view contract. The banner is false to
+    print when nothing actually went wrong, so it must not appear.
+    """
+    lines = ["build started", "all good", "build done"]
+    rc = _run_main(monkeypatch, ["job.py", "123"], lines, conclusion="success")
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "FAILED — no error pattern matched" not in out
+    assert "No error patterns matched" not in out
+    assert "build started" in out
+    assert "all good" in out
+
+
+def test_errors_mode_unmatched_non_failure_keeps_old_wording(monkeypatch, capsys) -> None:
+    """Same invariant under `:errors`/`:fail` — only a real failure gets the banner."""
+    lines = ["build started", "all good", "build done"]
+    rc = _run_main(monkeypatch, ["job.py", "123", "errors"], lines, conclusion="success")
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "No error patterns matched" in out
+    assert "FAILED — no error pattern matched" not in out
 
 
 def test_grep_matches_with_context(monkeypatch, capsys) -> None:
