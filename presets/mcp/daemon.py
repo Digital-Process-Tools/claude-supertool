@@ -37,6 +37,7 @@ from typing import Optional, Tuple
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import _proc  # noqa: E402  (the one liveness probe — never os.kill(pid, 0), #429)
+import _spawn  # noqa: E402  (#451: one daemon per (kind, config fingerprint))
 from _paths import socket_pid_paths  # noqa: E402
 
 IDLE_TIMEOUT_SEC = 600  # shutdown after 10min idle
@@ -203,11 +204,61 @@ def bridge_client(client_sock: socket.socket, proc: subprocess.Popen, last_activ
     t1.join(timeout=2); t2.join(timeout=2)
 
 
+def claim_pidfile(pid_path: str) -> bool:
+    """Take exclusive ownership of this (cwd, name) slot, or report it taken.
+
+    `O_CREAT|O_EXCL` is the atomic part: exactly one process can create the
+    file, so exactly one process is the daemon. A pidfile whose owner is dead
+    is removed and the claim retried once — the opposite failure (a crashed
+    daemon leftover pidfile wedging every future start) is worse than a
+    duplicate, since it leaves the project with no daemon at all.
+    """
+    for _ in range(2):
+        try:
+            fd = os.open(pid_path,
+                         os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                         0o600)
+        except FileExistsError:
+            existing = _spawn.read_pid(pid_path)
+            if existing and _proc.pid_alive(existing):
+                return False
+            try:
+                os.unlink(pid_path)
+            except FileNotFoundError:
+                pass
+            continue
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(str(os.getpid()))
+        return True
+    return False
+
+
 def serve(name: str, spec: dict) -> int:
     cwd = os.path.abspath(os.getcwd())
     sock_path, pid_path = socket_pid_paths(cwd, name)
 
-    # Bind socket first (before fork-after-spawn races)
+    # #451: claim the pidfile BEFORE any side effect. The claim used to happen
+    # after the socket rebind and after the MCP server subprocess had been
+    # launched, so a daemon that lost the race had already unlinked the
+    # incumbent socket path (making the incumbent unreachable) and already
+    # spawned a heavy PHP child (which outlived its exiting parent). Claiming
+    # first makes losing the race free: notice, say so, touch nothing.
+    if not claim_pidfile(pid_path):
+        sys.stderr.write(
+            f"daemon: {name} already running (pidfile {pid_path}) — "
+            "not starting a second\n")
+        return 0
+    # Record the config this daemon boots with, so a client can tell whether
+    # the warm state still matches what is on disk (#451).
+    _spawn.write_fingerprint(sock_path, _spawn.config_fingerprint(spec, cwd))
+    try:
+        return _serve_owned(spec, sock_path, pid_path)
+    finally:
+        _spawn.cleanup(sock_path, pid_path)
+
+
+def _serve_owned(spec: dict, sock_path: str, pid_path: str) -> int:
+    """Run the daemon. Only ever reached by the process holding the pidfile."""
     try:
         os.unlink(sock_path)
     except FileNotFoundError:
@@ -258,16 +309,8 @@ def serve(name: str, spec: dict) -> int:
     def dbg(msg: str) -> None:
         dbg_log.write(f"[{time.strftime('%H:%M:%S')}] {msg}\n".encode())
 
-    # Write pidfile via O_CREAT|O_EXCL|O_NOFOLLOW (#148) — refuses to overwrite
-    # an existing pidfile (race window between main()'s liveness check and here).
-    try:
-        pid_fd = os.open(pid_path,
-                         os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                         0o600)
-    except FileExistsError:
-        sys.exit(f"daemon: pidfile {pid_path} already exists — race with another start?")
-    with os.fdopen(pid_fd, "w", encoding="utf-8") as f:
-        f.write(str(os.getpid()))
+    # Pidfile: already claimed in serve(), atomically, before this process
+    # bound a socket or spawned anything (#148 O_EXCL semantics, #451 ordering).
 
     # Signal-driven shutdown
     shutting_down = [False]
@@ -346,8 +389,8 @@ def main(argv: list) -> int:
         if existing_pid and _proc.pid_alive(existing_pid):
             sys.stderr.write(f"daemon: already running pid={existing_pid} sock={sock_path}\n")
             return 0
-        try: os.unlink(pid_path)
-        except FileNotFoundError: pass
+        # A stale pidfile is cleared by claim_pidfile() under O_EXCL — clearing
+        # it here too would race with a daemon that claimed it in between (#451).
 
     if do_detach:
         detach()
