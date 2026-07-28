@@ -31,7 +31,13 @@ Changelog = "https://github.com/Digital-Process-Tools/claude-supertool/blob/main
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--cov=supertool --cov-report=term-missing --cov-fail-under=86 -m 'not slow'"
+# `-n auto` — the suite is ~50% kernel time (269 subprocess call sites, ~4000
+# tests), so it parallelises well: 262s serial to 68s on 11 cores, and it still
+# wins on a 2-core runner because the workers overlap CPU with process spawning.
+# pytest-cov combines the per-worker data files, so --cov-fail-under still
+# measures the whole suite. Use `-n0` to run serially when debugging — xdist
+# interleaves output and disables --pdb.
+addopts = "-n auto --cov=supertool --cov-report=term-missing --cov-fail-under=86 -m 'not slow'"
 markers = [
     "slow: opt-in heavy tests (>5s). Run with `pytest -m slow` or `pytest -m ''` to include.",
 ]
