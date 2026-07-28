@@ -24,6 +24,18 @@ Watchers are still spawned on that first poll, and on every poll after it, for
 any id lacking a live poller — coverage is continuous for the same reason
 discovery is.
 
+Two tiers over one fact means one merge arrived twice — `merged` from the
+per-MR poller, `mr_merged` from here, seconds apart under different event keys
+(#434). So `mr_merged`/`mr_closed` are emitted only when no per-MR poller
+announces that transition itself. What "announces it itself" means is recorded
+per iid while the MR is still in the population, from the `only` filter each
+poller publishes into its state file, because at departure time the reporter
+is usually already gone: reporting the terminal state is what ends it. Every
+unanswerable case resolves to *not covered*, so the feed reports rather than
+stays silent — the feed running with no per-MR pollers behind it is a
+supported configuration, and turning this into a coverage hole would be a
+worse defect than the duplicate it fixes.
+
 Source plugin contract:
 - INTERVAL: int seconds between polls
 - poll(state, ctx) -> (events, new_state)
@@ -62,6 +74,11 @@ def _load(name: str, path: Path) -> ModuleType:
 mrs = _load("feed_gitlab_mrs", _PRESETS_DIR / "gitlab" / "mrs.py")
 mr_op = _load("feed_gitlab_mr", _PRESETS_DIR / "gitlab" / "mr.py")
 defaults = _load("feed_watch_defaults", _WATCH_DIR / "defaults.py")
+transport = _load("feed_watch_transport", _WATCH_DIR / "transport.py")
+
+# The two transitions the per-MR source announces under its own event keys.
+# The strings double as MR states, which is why one tuple serves both readings.
+TERMINAL_EVENTS = ("merged", "closed")
 
 _dispatcher_module: ModuleType | None = None
 
@@ -147,6 +164,47 @@ def live_watchers() -> set[str]:
     return mrs._watched_iids()
 
 
+def watcher_only(iid: str) -> list[str] | None:
+    """The event filter of the per-MR poller for iid — None when unrecorded.
+
+    None is deliberately not `[]`: an empty filter means "emits everything",
+    while None means nothing could tell us what this poller will emit. Only one
+    of those two answers is ever allowed to buy the feed's silence.
+    """
+    only = transport.read_state(defaults.DEFAULT_SOURCE, iid).get("only")
+    if isinstance(only, list):
+        return [str(e) for e in only]
+    return None
+
+
+def terminal_coverage(iid: str, watched: set[str], spawned: bool = False) -> list[str]:
+    """Which of merged/closed a per-MR poller for iid announces by itself.
+
+    Liveness at the moment of the departure cannot answer this in either
+    direction. Reporting `merged` is exactly what makes a per-MR poller
+    terminal and end it, so by the time an iid leaves the population its
+    reporter is already gone — and one that IS still alive is precisely the one
+    that has not spoken yet, whose filter may exclude the event outright. So
+    coverage is recorded while the MR is still in the population, from the
+    filter the poller publishes into its state file, and every unanswerable
+    case resolves to no coverage: the fallback is then a duplicate, which is
+    visible and cheap, rather than an ending nobody reports at all.
+    """
+    if spawned:
+        # Spawned here, so the filter is known without waiting a tick for the
+        # new poller to publish it.
+        only: list[str] | None = [e for e in defaults.DEFAULT_ONLY.split(",") if e]
+    elif iid in watched:
+        only = watcher_only(iid)
+    else:
+        only = None
+    if only is None:
+        return []
+    if not only:
+        return list(TERMINAL_EVENTS)
+    return [e for e in TERMINAL_EVENTS if e in only]
+
+
 def spawn_watcher(iid: str) -> bool:
     only = [e for e in defaults.DEFAULT_ONLY.split(",") if e]
     try:
@@ -162,16 +220,26 @@ def stop_watcher(iid: str) -> None:
         return
 
 
-def _departure(iid: str, meta: dict[str, str]) -> dict[str, Any]:
+def _departure(iid: str, meta: dict[str, Any]) -> dict[str, Any] | None:
+    """The event for an iid that left the population — None when suppressed."""
     title = meta.get("title") or f"MR !{iid}"
     url = meta.get("web_url") or ""
     payload = {"iid": iid, "url": url, "title": title}
     state = lookup_mr_state(iid)
-    if state in ("merged", "closed"):
-        # The per-MR watcher reaches the same conclusion within 30s, emits its
-        # own merged/closed and exits. This unwatch is cleanup for the case
-        # where it is already dead; the desktop ping is deliberately left to
-        # it, so a merge does not notify twice.
+    if state in TERMINAL_EVENTS:
+        covers = meta.get("covers") or []
+        if state in covers:
+            # The per-MR watcher announces this transition under its own event
+            # key, so the feed saying it again is one fact rendered as two
+            # lines. It is deliberately not stopped here either: it has either
+            # already ended (reporting the terminal state is what ends it) or
+            # is alive and still owes us the event, and killing it in that
+            # second case turns the suppressed duplicate into silence.
+            return None
+        # Nobody else is going to report this one, so the feed does — and the
+        # unwatch stays on this path, where it is the stale-PID cleanup it was
+        # always meant to be. The desktop ping is still left to the per-MR
+        # tier: a merge should ping once or not at all, never twice.
         stop_watcher(iid)
         return {"event": f"mr_{state}", "payload": payload}
     # Still open, or unreadable: the MR left *this filter*, which is not the
@@ -195,13 +263,18 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
 
     raw_known = state.get("known")
     baseline = not isinstance(raw_known, dict)
-    known: dict[str, dict[str, str]] = raw_known if isinstance(raw_known, dict) else {}
+    known: dict[str, dict[str, Any]] = raw_known if isinstance(raw_known, dict) else {}
 
     events: list[dict] = []
     watched = live_watchers()
     for iid, meta in current.items():
+        spawned = False
         if iid not in watched:
-            spawn_watcher(iid)
+            spawned = bool(spawn_watcher(iid))
+        # Recorded now, while the MR is still here to be observed. At departure
+        # the per-MR poller is typically already gone, and a state file that no
+        # longer exists cannot be told apart from one that never did.
+        meta["covers"] = terminal_coverage(iid, watched, spawned=spawned)
         if baseline or iid in known:
             continue
         events.append({
@@ -213,7 +286,9 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
 
     for iid, meta in known.items():
         if iid not in current:
-            events.append(_departure(iid, meta))
+            departure = _departure(iid, meta)
+            if departure is not None:
+                events.append(departure)
 
     return events, {"scope": scope, "known": current}
 

@@ -42,12 +42,21 @@ def _by_key(events: list[dict], key: str) -> dict:
 
 @pytest.fixture
 def rig(monkeypatch):
-    """Stub every outward call; record spawns, stops and lookups."""
-    calls: dict = {"spawned": [], "stopped": [], "looked_up": [], "watched": set()}
+    """Stub every outward call; record spawns, stops and lookups.
+
+    `spawn_ok` and `only` model the per-MR tier the feed now reasons about:
+    whether a poller could be started at all, and — for one already running —
+    which events it is filtered to. Both decide whether a terminal transition
+    already has a reporter, so both have to be settable per test.
+    """
+    calls: dict = {"spawned": [], "stopped": [], "looked_up": [], "watched": set(),
+                   "spawn_ok": True, "only": {}}
     monkeypatch.setattr(feed, "live_watchers", lambda: set(calls["watched"]))
     monkeypatch.setattr(feed, "spawn_watcher",
-                        lambda iid: (calls["spawned"].append(iid), True)[1])
+                        lambda iid: (calls["spawned"].append(iid), calls["spawn_ok"])[1])
     monkeypatch.setattr(feed, "stop_watcher", lambda iid: calls["stopped"].append(iid))
+    monkeypatch.setattr(feed, "watcher_only", lambda iid: calls["only"].get(iid),
+                        raising=False)
     return {"calls": calls, "monkeypatch": monkeypatch}
 
 
@@ -164,6 +173,9 @@ def test_a_known_mr_whose_watcher_died_is_recovered(rig) -> None:
 # ---------------------------------------------------------------------------
 
 def test_a_vanished_iid_that_merged_reports_merged_and_stops_its_watcher(rig) -> None:
+    """No per-MR poller could be started for it, so the feed is the only tier
+    that can report the merge — and the only tier that has to clean up."""
+    rig["calls"]["spawn_ok"] = False
     _population(rig, _pop(33175, 33176), _pop(33175))
     _lookup(rig, {"33176": "merged"})
     _, state = feed.poll({}, CTX)
@@ -174,6 +186,7 @@ def test_a_vanished_iid_that_merged_reports_merged_and_stops_its_watcher(rig) ->
 
 def test_a_vanished_iid_that_closed_is_not_reported_as_merged(rig) -> None:
     """Inventing mr_merged for a closed MR is the confident-wrong class."""
+    rig["calls"]["spawn_ok"] = False
     _population(rig, _pop(33175, 33176), _pop(33175))
     _lookup(rig, {"33176": "closed"})
     _, state = feed.poll({}, CTX)
@@ -204,7 +217,9 @@ def test_a_vanished_iid_that_cannot_be_looked_up_says_unknown(rig) -> None:
 
 
 def test_merged_and_closed_do_not_fire_a_desktop_notification(rig) -> None:
-    """The per-MR watcher owns that ping; two pings for one merge is noise."""
+    """Even when the feed is the sole reporter it stays off the notification
+    centre: the terminal ping belongs to the per-MR tier wherever it exists."""
+    rig["calls"]["spawn_ok"] = False
     _population(rig, _pop(33175, 33176), _pop(33175))
     _lookup(rig, {"33176": "merged"})
     _, state = feed.poll({}, CTX)
@@ -409,3 +424,178 @@ def test_one_failing_query_fails_the_whole_poll(monkeypatch) -> None:
     have returned reads as a departure and fires an event saying so."""
     _glab(monkeypatch, {"@me": [1]}, fail_for=("modular.system",))
     assert feed.fetch_population("author=@me,author=modular.system,state=opened") is None
+
+
+# ---------------------------------------------------------------------------
+# double-reporting (issue #434)
+#
+# The feed and the per-MR pollers are two independent layers over one fact, so
+# a merge arrived twice — `merged` from the poller, `mr_merged` from the feed,
+# seconds apart under different event keys. Duplicates train the reader to skim
+# the board, which is how a real red gets missed.
+#
+# The feed suppresses its own terminal event only when a per-MR poller for that
+# iid *announces that transition itself*. Liveness at emit time cannot answer
+# that: reporting `merged` is precisely what makes a per-MR poller terminal and
+# kill itself, so by the time the feed notices the departure the reporter is
+# already gone — and when one IS still alive, it is the one that has not spoken
+# yet. So the feed records coverage per iid while the MR is still open, and
+# every unanswerable question resolves to "not covered", i.e. to a duplicate
+# rather than to silence.
+# ---------------------------------------------------------------------------
+
+def test_a_merge_its_own_poller_reports_is_not_announced_twice(rig) -> None:
+    """The defect. !33180 merged once and the board showed two lines for it."""
+    _population(rig, _pop(33175, 33180), _pop(33175))
+    _lookup(rig, {"33180": "merged"})
+    _, state = feed.poll({}, CTX)          # spawns the per-MR poller for 33180
+    events, _ = feed.poll(state, CTX)
+    assert _keys(events) == []
+
+
+def test_a_close_its_own_poller_reports_is_not_announced_twice(rig) -> None:
+    _population(rig, _pop(33175, 33180), _pop(33175))
+    _lookup(rig, {"33180": "closed"})
+    _, state = feed.poll({}, CTX)
+    events, _ = feed.poll(state, CTX)
+    assert _keys(events) == []
+
+
+def test_the_feed_still_reports_a_merge_nothing_else_covers(rig) -> None:
+    """The pin that stops this fix becoming a coverage hole. With no per-MR
+    poller behind it the feed is the only tier that can say the MR ended, and
+    a suppressed event here is not one clean line — it is silence."""
+    rig["calls"]["spawn_ok"] = False
+    _population(rig, _pop(33175, 33180), _pop(33175))
+    _lookup(rig, {"33180": "merged"})
+    _, state = feed.poll({}, CTX)
+    events, _ = feed.poll(state, CTX)
+    assert _keys(events) == ["mr_merged"]
+    assert _by_key(events, "mr_merged")["payload"]["iid"] == "33180"
+
+
+def test_a_live_poller_filtered_away_from_merged_does_not_buy_silence(rig) -> None:
+    """The case that sinks suppressing on liveness alone: this poller is alive
+    and healthy and will never say a word about the merge, because `merged` is
+    not in its filter. Trusting its existence loses the event outright."""
+    rig["calls"]["watched"] = {"33175", "33180"}
+    rig["calls"]["only"] = {"33180": ["pipeline_failed", "pipeline_succeeded"]}
+    _population(rig, _pop(33175, 33180), _pop(33175))
+    _lookup(rig, {"33180": "merged"})
+    _, state = feed.poll({}, CTX)
+    events, _ = feed.poll(state, CTX)
+    assert rig["calls"]["spawned"] == []
+    assert _keys(events) == ["mr_merged"]
+
+
+def test_an_unreadable_watcher_filter_reports_rather_than_stays_silent(rig) -> None:
+    """Unknown resolves to not-covered. The fallback is a duplicate, which is
+    visible and cheap; the other direction is a radar that stops reporting."""
+    rig["calls"]["watched"] = {"33175", "33180"}
+    rig["calls"]["only"] = {}              # nothing recorded what it will emit
+    _population(rig, _pop(33175, 33180), _pop(33175))
+    _lookup(rig, {"33180": "merged"})
+    _, state = feed.poll({}, CTX)
+    events, _ = feed.poll(state, CTX)
+    assert _keys(events) == ["mr_merged"]
+
+
+def test_a_covered_iid_never_suppresses_another_iids_event(rig) -> None:
+    """Two MRs in one merge wave, one covered and one not. Suppression keyed on
+    anything coarser than the iid silences the MR nobody else is reporting."""
+    rig["calls"]["watched"] = {"33180", "33181"}
+    rig["calls"]["only"] = {"33180": ["merged", "closed"],
+                            "33181": ["pipeline_failed"]}
+    _population(rig, _pop(33175, 33180, 33181), _pop(33175))
+    _lookup(rig, {"33180": "merged", "33181": "merged"})
+    _, state = feed.poll({}, CTX)
+    events, _ = feed.poll(state, CTX)
+    assert _keys(events) == ["mr_merged"]
+    assert _by_key(events, "mr_merged")["payload"]["iid"] == "33181"
+
+
+def test_the_reporting_poller_is_not_killed_before_it_reports(rig) -> None:
+    """`stop_watcher` SIGTERMs then SIGKILLs. Suppressing the feed event while
+    killing the poller that owed us the event is how one duplicate becomes no
+    report at all — the exact hole this fix must not open."""
+    rig["calls"]["watched"] = {"33175", "33180"}
+    rig["calls"]["only"] = {"33180": ["merged", "closed"]}
+    _population(rig, _pop(33175, 33180), _pop(33175))
+    _lookup(rig, {"33180": "merged"})
+    _, state = feed.poll({}, CTX)
+    events, _ = feed.poll(state, CTX)
+    assert _keys(events) == []
+    assert rig["calls"]["stopped"] == []
+
+
+def test_an_uncovered_departure_still_cleans_up_its_watcher(rig) -> None:
+    """The stale-PID sweep the unwatch was there for stays on the path where
+    nothing else is going to run."""
+    rig["calls"]["spawn_ok"] = False
+    _population(rig, _pop(33175, 33180), _pop(33175))
+    _lookup(rig, {"33180": "merged"})
+    _, state = feed.poll({}, CTX)
+    feed.poll(state, CTX)
+    assert rig["calls"]["stopped"] == ["33180"]
+
+
+def test_a_still_open_departure_is_untouched_by_the_dedup(rig) -> None:
+    """mr_left_feed has no per-MR twin — no source emits it but this one."""
+    rig["calls"]["watched"] = {"33175", "33180"}
+    rig["calls"]["only"] = {"33180": ["merged", "closed"]}
+    _population(rig, _pop(33175, 33180), _pop(33175))
+    _lookup(rig, {"33180": "opened"})
+    _, state = feed.poll({}, CTX)
+    events, _ = feed.poll(state, CTX)
+    assert _keys(events) == ["mr_left_feed"]
+
+
+def test_a_state_file_written_before_this_fix_reports_rather_than_silences(rig) -> None:
+    """An in-flight feed upgraded mid-session has `known` entries with no
+    coverage recorded. Missing must read as not-covered."""
+    _lookup(rig, {"33180": "merged"})
+    _population(rig, _pop(33175))
+    legacy = {"scope": "@me", "known": {
+        "33175": {"title": "t", "web_url": "u"},
+        "33180": {"title": "t", "web_url": "u"},
+    }}
+    events, _ = feed.poll(legacy, CTX)
+    assert _keys(events) == ["mr_merged"]
+
+
+# --- the coverage probe itself ---------------------------------------------
+
+def test_watcher_only_reads_the_filter_off_the_state_file(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(feed.transport, "STATE_DIR", str(tmp_path))
+    Path(feed.transport.state_path("gitlab-mr", "33180")).write_text(
+        json.dumps({"only": ["merged", "closed"]}), encoding="utf-8")
+    assert feed.watcher_only("33180") == ["merged", "closed"]
+
+
+def test_watcher_only_is_none_when_nothing_recorded_a_filter(monkeypatch, tmp_path) -> None:
+    """None and [] are different answers: [] is "emits everything", None is
+    "nobody could tell us", and only one of them may buy silence."""
+    monkeypatch.setattr(feed.transport, "STATE_DIR", str(tmp_path))
+    assert feed.watcher_only("33180") is None
+    Path(feed.transport.state_path("gitlab-mr", "33181")).write_text(
+        json.dumps({"source_state": {}}), encoding="utf-8")
+    assert feed.watcher_only("33181") is None
+
+
+def test_an_unfiltered_poller_covers_every_terminal_event(rig) -> None:
+    rig["calls"]["only"] = {"33180": []}
+    assert feed.terminal_coverage("33180", {"33180"}) == ["merged", "closed"]
+
+
+def test_an_iid_with_no_live_poller_has_no_coverage(rig) -> None:
+    rig["calls"]["only"] = {"33180": ["merged", "closed"]}
+    assert feed.terminal_coverage("33180", set()) == []
+
+
+def test_a_freshly_spawned_poller_covers_the_shared_default_filter(rig) -> None:
+    """The feed spawns with DEFAULT_ONLY, so it knows the answer without
+    waiting a tick for the new poller to write its state file."""
+    covered = feed.terminal_coverage("33180", set(), spawned=True)
+    assert covered == [e for e in ("merged", "closed")
+                       if e in feed.defaults.DEFAULT_ONLY.split(",")]
+    assert covered == ["merged", "closed"]

@@ -161,7 +161,7 @@ class _OpenPoller(_StubPoller):
         return False
 
 
-def _run_loop_in_child(monkeypatch, tmp_path, poller) -> None:
+def _run_loop_in_child(monkeypatch, tmp_path, poller, only=None) -> None:
     """Run _run_poll_loop in a forked child.
 
     The loop redirects fds 0/1/2 to /dev/null, so it must not run in the
@@ -172,7 +172,7 @@ def _run_loop_in_child(monkeypatch, tmp_path, poller) -> None:
     pid = os.fork()
     if pid == 0:
         try:
-            dispatcher._run_poll_loop("gitlab-mr", "33136", [])
+            dispatcher._run_poll_loop("gitlab-mr", "33136", only or [])
         finally:
             os._exit(0)
     _, status = os.waitpid(pid, 0)
@@ -196,6 +196,45 @@ def test_non_terminal_poller_keeps_its_state_file(monkeypatch, tmp_path) -> None
     _run_loop_in_child(monkeypatch, tmp_path, _OpenPoller)
     assert state.exists()
     assert not (tmp_path / "supertool-watch-gitlab-mr__33136.pid").exists()
+
+
+# ---------------------------------------------------------------------------
+# the watcher's own filter is part of its published state (issue #434)
+#
+# `only=` decides which events a poller will ever emit, and it lived only in
+# the process's memory. Another tier asking "will anyone report this merge?"
+# could see the poller was alive and had no way to learn it was filtered away
+# from saying so — so the answer had to be a guess, in a place where guessing
+# wrong means an event nobody reports.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(sys.platform == "win32", reason="requires os.fork")
+def test_a_poller_publishes_its_event_filter(monkeypatch, tmp_path) -> None:
+    state = tmp_path / "supertool-watch-gitlab-mr__33136.state.json"
+    _run_loop_in_child(monkeypatch, tmp_path, _OpenPoller,
+                       only=["pipeline_failed", "merged"])
+    assert json.loads(state.read_text())["only"] == ["pipeline_failed", "merged"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="requires os.fork")
+def test_an_unfiltered_poller_publishes_an_empty_filter(monkeypatch, tmp_path) -> None:
+    """`[]` is the recorded answer "emits everything", and it has to be
+    distinguishable from the key being absent, which means "we do not know"."""
+    state = tmp_path / "supertool-watch-gitlab-mr__33136.state.json"
+    _run_loop_in_child(monkeypatch, tmp_path, _OpenPoller)
+    assert json.loads(state.read_text())["only"] == []
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="requires os.fork")
+def test_the_filter_survives_the_polls_that_rewrite_the_state(monkeypatch, tmp_path) -> None:
+    """The loop read-modify-writes the state every tick. A filter clobbered on
+    tick two is a filter that answers correctly exactly once."""
+    state = tmp_path / "supertool-watch-gitlab-mr__33136.state.json"
+    _OpenPoller._ticks.clear()
+    _run_loop_in_child(monkeypatch, tmp_path, _OpenPoller, only=["merged"])
+    body = json.loads(state.read_text())
+    assert body["only"] == ["merged"]
+    assert body["source_state"] == {"mr_state": "opened"}
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="requires os.fork")

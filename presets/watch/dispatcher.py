@@ -242,6 +242,16 @@ def _run_poll_loop(source: str, watcher_id: str, only: list[str]) -> None:
             pass
         return
 
+    # Publish the event filter next to the state. `only` decides which of the
+    # source's events this poller will ever emit, and it otherwise lived only
+    # in this process's memory — so another tier could see the poller was alive
+    # and still have no way to tell one that will announce a merge from one
+    # filtered away from saying so. `gitlab-mr-feed` asks exactly that (#434),
+    # in a place where guessing wrong means a transition nobody reports.
+    published = transport.read_state(source, watcher_id)
+    published["only"] = list(only)
+    transport.write_state(source, watcher_id, published)
+
     state: dict[str, Any] = transport.read_state(source, watcher_id).get("source_state", {}) or {}
     ctx = {"source": source, "id": watcher_id, "only": only}
     interval = int(getattr(poller, "INTERVAL", 30))
