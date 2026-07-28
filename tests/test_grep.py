@@ -526,3 +526,171 @@ def test_grep_context_empty_dir_flags_nothing_scanned(tmp_path: Path) -> None:
     out = supertool.op_grep("anything", str(empty_dir), context=1)
     assert ("(0 results in 0 files, scanned 0 files "
             "— nothing matched the path/glob, limit 10, context 1)\n") in out
+
+
+# ---------------------------------------------------------------------------
+# The rtk-delegated path: report line and scanned denominator (#414)
+# ---------------------------------------------------------------------------
+
+
+class _RtkStub:
+    """Stand-in for ``_rtk_run`` that records the argv it was handed."""
+
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+        self.output: str | None = ""
+
+    def __call__(self, args, timeout: int = 30) -> str | None:
+        self.calls.append(list(args))
+        return self.output
+
+
+@pytest.fixture
+def rtk(monkeypatch: pytest.MonkeyPatch) -> _RtkStub:
+    """Drive `op_grep`'s rtk-delegated branch — which nothing else in the suite can.
+
+    conftest's autouse `_disable_rtk_and_config` pins `_RTK_PATH = None` and
+    `_CONFIG = {}` for the whole run, so before #414 no test reached the
+    delegated branch at all. That is one of the three independent reasons the
+    divergence stayed invisible (the others: a project config carrying
+    multi-segment exclude prefixes always falls through to the native walker,
+    and this repo's own `.supertool.json` sets `rtk: false`).
+
+    Stubbing `_rtk_run` rather than requiring the real binary is deliberate:
+    CI runners have no rtk, and a `skipif`-on-missing test is green everywhere
+    and pins nothing. Every test using this fixture asserts `rtk.calls` so it
+    cannot pass while the branch it exists to cover is skipped.
+    """
+    stub = _RtkStub()
+    monkeypatch.setattr(supertool, "_CONFIG", {"rtk": True})
+    monkeypatch.setattr(supertool, "_CONFIG_CHECKED", True)
+    monkeypatch.setattr(supertool, "_RTK_CHECKED", True)
+    monkeypatch.setattr(supertool, "_RTK_PATH", "/fake/bin/rtk")
+    monkeypatch.setattr(supertool, "_rtk_run", stub)
+    return stub
+
+
+def test_rtk_fixture_reaches_the_delegated_branch(tmp_path: Path, rtk: _RtkStub) -> None:
+    """Guard on every other test in this block: if delegation is never
+    attempted they silently pin the native walker instead."""
+    a = tmp_path / "a.txt"
+    a.write_text("alpha\n")
+    rtk.output = f"{a}:1:alpha\n"
+    supertool.op_grep("alpha", str(tmp_path))
+    assert rtk.calls, "op_grep never called _rtk_run — delegated branch skipped"
+    assert rtk.calls[0][:4] == ["grep", "-rn", "-m", "10"]
+    assert rtk.calls[0][-2:] == ["alpha", str(tmp_path)]
+
+
+def test_grep_delegated_emits_report_line_with_scanned_denominator(
+    tmp_path: Path, rtk: _RtkStub
+) -> None:
+    """rtk returns bare `path:lineno:content` and no report line at all, so a
+    delegated grep dropped the result count, the limit disclosure and #407's
+    denominator together."""
+    a = tmp_path / "a.txt"
+    b = tmp_path / "b.txt"
+    a.write_text("alpha\nalpha again\n")
+    b.write_text("alpha too\n")
+    rtk.output = f"{a}:1:alpha\n{a}:2:alpha again\n{b}:1:alpha too\n"
+    out = supertool.op_grep("alpha", str(tmp_path))
+    assert rtk.calls, "delegated branch not taken — this test pins nothing"
+    assert ("(3 results in 2 files, scanned ? files — delegated to rtk, "
+            "limit 10)\n") in out
+    assert f"{a}:1:alpha\n" in out
+    assert f"{b}:1:alpha too\n" in out
+
+
+def test_grep_delegated_zero_result_falls_back_to_a_real_scanned_count(
+    tmp_path: Path, rtk: _RtkStub
+) -> None:
+    """A zero result is the case #407 exists for, so it must never carry the
+    `?` denominator. rtk exiting 0 with empty stdout used to return a bare
+    newline — no count, no denominator, nothing."""
+    (tmp_path / "a.py").write_text("nothing here\n")
+    (tmp_path / "b.py").write_text("still nothing\n")
+    (tmp_path / "c.py").write_text("more nothing\n")
+    rtk.output = ""
+    out = supertool.op_grep("NOTHINGMATCHES_XYZZY", str(tmp_path))
+    assert rtk.calls, "delegated branch not taken — this test pins nothing"
+    assert "(0 results in 0 files, scanned 3 files, limit 10)\n" in out
+    assert "?" not in out
+    assert "nothing matched the path/glob" not in out
+
+
+def test_grep_delegated_zero_result_on_empty_dir_flags_nothing_scanned(
+    tmp_path: Path, rtk: _RtkStub
+) -> None:
+    """The two zero cases stay distinguishable through the delegated path:
+    searched three files and found nothing vs searched nothing at all."""
+    empty_dir = tmp_path / "empty"
+    empty_dir.mkdir()
+    rtk.output = ""
+    out = supertool.op_grep("NOTHINGMATCHES_XYZZY", str(empty_dir))
+    assert rtk.calls, "delegated branch not taken — this test pins nothing"
+    assert ("(0 results in 0 files, scanned 0 files "
+            "— nothing matched the path/glob, limit 10)\n") in out
+
+
+def test_grep_delegated_rtk_failure_falls_back_to_native(
+    tmp_path: Path, rtk: _RtkStub
+) -> None:
+    """rtk unavailable mid-flight (non-zero exit → `_rtk_run` returns None)
+    still produces a full native report rather than an empty one."""
+    (tmp_path / "a.txt").write_text("alpha\n")
+    rtk.output = None
+    out = supertool.op_grep("alpha", str(tmp_path))
+    assert rtk.calls, "delegated branch not taken — this test pins nothing"
+    assert "(1 results in 1 files, scanned 1 files, limit 10)\n" in out
+
+
+def test_grep_delegated_threads_single_segment_excludes(
+    tmp_path: Path, rtk: _RtkStub
+) -> None:
+    """Excludes reach rtk as --exclude-dir; the report line does not disturb it."""
+    (tmp_path / "a.txt").write_text("alpha\n")
+    supertool._CONFIG = {"rtk": True, "exclude_paths": ["node_modules/", ".git/"]}
+    rtk.output = f"{tmp_path / 'a.txt'}:1:alpha\n"
+    out = supertool.op_grep("alpha", str(tmp_path))
+    assert rtk.calls, "delegated branch not taken — this test pins nothing"
+    assert "--exclude-dir=node_modules" in rtk.calls[0]
+    assert "scanned ? files — delegated to rtk" in out
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="shebang stub is POSIX-only; the in-process delegated tests above "
+           "cover the same branch on every OS",
+)
+def test_grep_delegated_end_to_end_with_rtk_on_path(tmp_path: Path) -> None:
+    """The whole wiring with a real executable named `rtk` on PATH: config
+    lookup, `which`, subprocess, report line. The in-process tests stub
+    `_rtk_run`, so nothing else proves the branch survives a real spawn."""
+    import subprocess
+
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    stub = bindir / "rtk"
+    stub.write_text(
+        "#!" + sys.executable + "\n"
+        "import sys\n"
+        "sys.stdout.write('src/a.txt:1:alpha\\nsrc/a.txt:3:alpha again\\n')\n"
+    )
+    stub.chmod(0o755)
+
+    proj = tmp_path / "proj"
+    (proj / "src").mkdir(parents=True)
+    (proj / "src" / "a.txt").write_text("alpha\nbeta\nalpha again\n")
+    (proj / ".supertool.json").write_text('{"rtk": true}\n')
+
+    env = dict(os.environ)
+    env.pop("SUPERTOOL_NO_RTK", None)
+    env["PATH"] = str(bindir) + os.pathsep + env["PATH"]
+    result = subprocess.run(
+        [sys.executable, str(Path(supertool.__file__)), "grep:alpha:src:10"],
+        capture_output=True, text=True, cwd=str(proj), env=env, timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    assert ("(2 results in 1 files, scanned ? files — delegated to rtk, "
+            "limit 10)") in result.stdout
+    assert "src/a.txt:1:alpha" in result.stdout

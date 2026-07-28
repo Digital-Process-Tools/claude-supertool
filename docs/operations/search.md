@@ -24,6 +24,24 @@ A single pathological line — a minified bundle, a 7KB one-line `@extends Foo<a
 
 `grep:` with an explicit `CONTEXT` argument (`grep:PATTERN:PATH:LIMIT:CONTEXT`) shares the `grep_around:` code path, so it is capped under the same `grep_around.max_bytes` budget. Plain `grep:` (no context) is unaffected — it has its own `LIMIT`/`max_results` bound.
 
+## Delegated to rtk
+
+When [rtk](https://github.com/wilpel/rtk) is installed and `rtk` is not set to `false` in `.supertool.json`, a plain `grep:PATTERN:PATH` (no `CONTEXT`, no `count`, and no multi-segment exclude prefix such as `src/vendor/libs/`) is handed to `rtk grep` instead of the native walker. Nothing else about the op changes, but the **output shape does**, in two visible ways:
+
+- The body is rtk's own compact `path:lineno:content`, one line per match, **not** grouped under a filename header and not subject to the per-line cap above.
+- The report line reads `scanned ? files — delegated to rtk` in place of a number:
+
+```
+(3 results in 2 files, scanned ? files — delegated to rtk, limit 10)
+./sub/c.txt:1:alpha in sub
+./a.txt:1:alpha beta
+./a.txt:3:alpha again
+```
+
+rtk shells out to the system `grep` and reports no scanned-file count, and re-walking the tree to compute one is the traversal delegation exists to avoid — so the denominator is stated as unknown rather than quietly omitted. **A `?` never appears next to a zero result.** rtk exits non-zero when it matches nothing, and an empty result falls through to the native walker, so every zero-result grep — the case the denominator was added for — comes back with a real count and the `— nothing matched the path/glob` marker where it applies. A `?` therefore always sits beside at least one result, which is itself proof that files were searched.
+
+Set `"rtk": false` in `.supertool.json` to keep every grep on the native walker and its exact scanned count; `SUPERTOOL_NO_RTK=1` does the same for one invocation.
+
 ## Common patterns
 
 Find all usages of a function across a codebase, with 2 lines of context:
