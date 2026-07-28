@@ -212,6 +212,11 @@
       "description": "Run registered validators matching PATH (by extension). Pass a comma-separated PATH list to validate many files in one call (config loaded once for the batch; each path security-checked at dispatch). Optional tool_filter limits to named validators; the special filter `@syntax` selects only parser/compiler validators (those with `\"syntax\": true`). Same validators that fire after every mutating op. Append `verbose` for uncapped errors + source context + raw stdout/stderr.",
       "example": "validate:src/app/Module.py"
     },
+    "gc": {
+      "syntax": "gc[:dry|:run][:KIND]",
+      "description": "Prune supertool's own caches (~/.cache/supertool). Bare `gc` and `gc:dry` PREVIEW — per-kind counts and bytes, nothing deleted. `gc:run` deletes. Optional KIND scopes to one of vim-cursor, vim-undo, vi-cursor, validators. Retention per kind (7d vim, 30d validators) via the `gc` block in .supertool.json. Entries whose age can't be determined are never removed. Runs automatically at most once an hour.",
+      "example": "gc:dry"
+    },
     "format": {
       "syntax": "format:PATH[:tool1,tool2][:verbose]",
       "description": "Run registered formatters matching PATH (writes file in place). Optional tool_filter limits to named formatters. Same formatters that fire after every mutating op. Append `verbose` for uncapped errors + source context + raw stdout/stderr.",
@@ -358,6 +363,16 @@
     }
   },
   "validator_cache": true,
+  "gc": {
+    "enabled": true,
+    "interval_seconds": 3600,
+    "retention_days": {
+      "vim-cursor": 7,
+      "vim-undo": 7,
+      "vi-cursor": 7,
+      "validators": 30
+    }
+  },
   "validators": {
     "phplint": {
       "cmd": "{python} {supertool_dir}/validators/phplint/phplint.py {file}",

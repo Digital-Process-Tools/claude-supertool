@@ -35,6 +35,11 @@ def pytest_configure(config):
     # Tests that explicitly exercise persistence (test_vim_persist*) unset
     # this via monkeypatch.delenv("SUPERTOOL_VIM_NO_PERSIST").
     os.environ.setdefault("SUPERTOOL_VIM_NO_PERSIST", "1")
+    # #474: the opportunistic cache GC is armed on every invocation and fires
+    # at most once an hour. A test run must not reap the developer's real
+    # ~/.cache/supertool as a side effect. test_gc_474.py opts back in with
+    # monkeypatch.delenv after redirecting XDG_CACHE_HOME at a tmp_path.
+    os.environ.setdefault("SUPERTOOL_GC_DISABLE", "1")
     # #149: publish-body allowlist + confirm gate. Existing publish tests use
     # `tmp_path` for body files (outside the production .max/ / drafts/ /
     # posts/ / blog/ allowlist) and don't `|force`, so opt the suite in.
@@ -371,6 +376,7 @@ RESET_GLOBALS = (
 #    They are read, never written. Resetting them would be harmless but says
 #    something untrue about their lifetime.
 RESET_EXEMPT_GLOBALS = (
+    "_GC_DEFAULT_RETENTION_DAYS",
     "_MCP_SERVERS",
     "_CONFIG",
     "_AT_FILE_REGISTRY",

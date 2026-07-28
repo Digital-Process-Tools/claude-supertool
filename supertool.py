@@ -4209,12 +4209,7 @@ def _vim_cursor_state_path(file_path: str) -> str:
     """Return the sidecar path that persists vim cursor for `file_path`."""
     abs_path = os.path.abspath(file_path)
     digest = hashlib.sha1(abs_path.encode("utf-8")).hexdigest()
-    cache_dir = os.path.join(
-        os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"),
-        "supertool",
-        "vim-cursor",
-    )
-    return os.path.join(cache_dir, digest)
+    return os.path.join(str(_cache_root() / "vim-cursor"), digest)
 
 
 def _vim_load_state(file_path: str, content_len: int) -> dict:
@@ -4330,12 +4325,7 @@ def _vim_undo_state_path(file_path: str) -> str:
     """Return the sidecar path for cross-call undo snapshot for `file_path`."""
     abs_path = os.path.abspath(file_path)
     digest = hashlib.sha1(abs_path.encode("utf-8")).hexdigest()
-    cache_dir = os.path.join(
-        os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"),
-        "supertool",
-        "vim-undo",
-    )
-    return os.path.join(cache_dir, digest + ".last")
+    return os.path.join(str(_cache_root() / "vim-undo"), digest + ".last")
 
 
 def _vim_load_undo_snapshot(file_path: str) -> "Optional[dict]":
@@ -9521,6 +9511,222 @@ _sweep_old_notifier_temp_files()
 atexit.register(_sweep_old_notifier_temp_files)
 
 
+# ---------------------------------------------------------------------------
+# Cache GC (#474)
+#
+# ~/.cache/supertool grew to 1.0 GB / 242k files in two weeks with no reaper
+# anywhere in the tree. Every writer here is supertool's, so the retention
+# policy is too.
+#
+# Two rules the implementation is built around, both learned the hard way:
+#   * The unlink happens in Python. BSD `find -delete` and `find -exec rm {} +`
+#     silently no-opped on macOS while listing the same files as matching —
+#     269 files left untouched, no error, zero exit. A deletion tool that
+#     reports success without deleting is the worst possible shape here.
+#   * An entry whose age cannot be determined is never removed. Not knowing
+#     how old something is is not evidence that it is stale.
+# ---------------------------------------------------------------------------
+
+# Per-kind, because the measurement per kind differs. `vim-cursor` and
+# `vim-undo` were 99% older than 7 days — that is where the gigabyte lives.
+# `validators` was *entirely* hot (zero entries older than 7 days) and is
+# keyed by content hash rather than by time, so its window only has to bound
+# unbounded growth, not reclaim anything today: 30 days is a no-op against
+# the measured population by design. `vi-cursor` is a legacy directory no
+# code still writes to.
+_GC_DEFAULT_RETENTION_DAYS: Dict[str, float] = {
+    "vim-cursor": 7,
+    "vim-undo": 7,
+    "vi-cursor": 7,
+    "validators": 30,
+}
+
+_GC_DEFAULT_INTERVAL_SECONDS = 3600.0
+_GC_STAMP_NAME = ".gc-stamp"
+
+
+def _cache_root() -> Path:
+    """The one place ~/.cache/supertool is spelled. Honours XDG_CACHE_HOME."""
+    xdg = os.environ.get("XDG_CACHE_HOME")
+    base = Path(xdg) if xdg else (Path.home() / ".cache")
+    return base / "supertool"
+
+
+def _gc_config() -> Dict[str, Any]:
+    block = _load_config().get("gc")
+    return block if isinstance(block, dict) else {}
+
+
+def _gc_retention_seconds(kind: str) -> float:
+    """Retention window for `kind`, in seconds. 0 or negative means never."""
+    overrides = _gc_config().get("retention_days")
+    raw: Any = None
+    if isinstance(overrides, dict):
+        raw = overrides.get(kind)
+    if raw is None:
+        raw = _GC_DEFAULT_RETENTION_DAYS.get(kind, 7)
+    try:
+        days = float(raw)
+    except (TypeError, ValueError):
+        days = float(_GC_DEFAULT_RETENTION_DAYS.get(kind, 7))
+    if days <= 0:
+        return float("inf")
+    return days * 86400.0
+
+
+def _gc_sweep_kind(kind: str, retention_seconds: float, dry: bool = True,
+                   now: "Optional[float]" = None) -> Dict[str, Any]:
+    """Prune one cache-kind directory. Non-recursive, `os.unlink` only.
+
+    Deletes strictly on `age > retention` — an entry exactly at the boundary
+    is kept. Anything that is not a plain regular file, whose `stat` fails,
+    or whose mtime is in the future is counted in `skipped` and left alone.
+    """
+    ts = time.time() if now is None else now
+    result: Dict[str, Any] = {
+        "kind": kind, "removed": 0, "bytes": 0, "kept": 0, "skipped": 0,
+        "missing": False, "retention_seconds": retention_seconds,
+    }
+    try:
+        scanner = os.scandir(_cache_root() / kind)
+    except OSError:
+        result["missing"] = True
+        return result
+    with scanner:
+        for entry in scanner:
+            try:
+                if not entry.is_file(follow_symlinks=False):
+                    result["skipped"] += 1
+                    continue
+                st = entry.stat(follow_symlinks=False)
+            except OSError:
+                result["skipped"] += 1
+                continue
+            age = ts - st.st_mtime
+            if age < 0:
+                result["skipped"] += 1
+                continue
+            if age <= retention_seconds:
+                result["kept"] += 1
+                continue
+            if not dry:
+                try:
+                    os.unlink(entry.path)
+                except OSError:
+                    result["skipped"] += 1
+                    continue
+            result["removed"] += 1
+            result["bytes"] += st.st_size
+    return result
+
+
+def _gc_sweep_all(kinds: "Optional[List[str]]" = None, dry: bool = True,
+                  now: "Optional[float]" = None) -> List[Dict[str, Any]]:
+    names = list(kinds) if kinds else list(_GC_DEFAULT_RETENTION_DAYS)
+    return [_gc_sweep_kind(k, _gc_retention_seconds(k), dry=dry, now=now)
+            for k in names]
+
+
+def _gc_fmt_bytes(n: float) -> str:
+    if n < 1024:
+        return f"{int(n)} B"
+    for unit in ("KB", "MB", "GB"):
+        n /= 1024.0
+        if n < 1024 or unit == "GB":
+            return f"{n:.1f} {unit}"
+    return f"{n:.1f} GB"
+
+
+def _gc_fmt_window(seconds: float) -> str:
+    return "never" if seconds == float("inf") else f"{seconds / 86400:g}d"
+
+
+def op_gc(mode: str = "", kind: str = "") -> str:
+    """`gc` / `gc:dry` preview, `gc:run` delete. Optional third arg: one kind."""
+    known = list(_GC_DEFAULT_RETENTION_DAYS)
+    mode = (mode or "dry").strip().lower()
+    kind = (kind or "").strip()
+    if mode in known and not kind:
+        mode, kind = "dry", mode
+    if mode not in ("dry", "run"):
+        return (f"ERROR: unknown gc mode '{mode}' — expected 'dry' (preview, "
+                f"the default) or 'run' (delete)\n")
+    if kind and kind not in known:
+        return (f"ERROR: unknown cache kind '{kind}' — known kinds: "
+                f"{', '.join(known)}\n")
+
+    dry = mode == "dry"
+    results = _gc_sweep_all([kind] if kind else None, dry=dry)
+    verb = "stale" if dry else "removed"
+
+    lines = ["gc — dry run, nothing deleted" if dry else "gc — deleted"]
+    total_n = 0
+    total_b = 0
+    for r in results:
+        total_n += int(r["removed"])
+        total_b += int(r["bytes"])
+        note = "  (no such directory)" if r["missing"] else ""
+        lines.append(
+            f"  {r['kind']:<12} {r['removed']} {verb} / "
+            f"{_gc_fmt_bytes(r['bytes'])}   (kept {r['kept']}, "
+            f"skipped {r['skipped']}, retention "
+            f"{_gc_fmt_window(r['retention_seconds'])}){note}"
+        )
+    lines.append(f"  {'total':<12} {total_n} {verb} / {_gc_fmt_bytes(total_b)}")
+    if any(r["skipped"] for r in results):
+        lines.append("  skipped = not a regular file, stat failed, or mtime in "
+                     "the future — age unknown, so never deleted")
+    if dry:
+        suffix = f":{kind}" if kind else ""
+        lines.append(f"  run `gc:run{suffix}` to delete")
+    return "\n".join(lines) + "\n"
+
+
+def _maybe_auto_gc() -> None:
+    """Sweep at most once per `interval_seconds`, gated on a stamp file.
+
+    Deterministic rather than probabilistic on purpose: a stamp mtime is one
+    `stat` per invocation, it is testable without monkeypatching `random`,
+    and it gives a bounded, explainable answer to "why did that call take
+    400ms?" — at most one call an hour pays, and the user can name which.
+
+    Never raises. A cache prune that dies during someone's edit is a worse
+    bug than the disk usage it was cleaning up.
+    """
+    try:
+        if os.environ.get("SUPERTOOL_GC_DISABLE"):
+            return
+        cfg = _gc_config()
+        if cfg.get("enabled") is False:
+            return
+        try:
+            interval = float(cfg.get("interval_seconds", _GC_DEFAULT_INTERVAL_SECONDS))
+        except (TypeError, ValueError):
+            interval = _GC_DEFAULT_INTERVAL_SECONDS
+        root = _cache_root()
+        stamp = root / _GC_STAMP_NAME
+        now = time.time()
+        try:
+            if now - stamp.stat().st_mtime < interval:
+                return
+        except OSError:
+            pass
+        # Stamp BEFORE sweeping. A sweep that dies must not re-arm itself on
+        # every subsequent invocation for the rest of the day.
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+            with open(stamp, "w", encoding="utf-8") as fh:
+                fh.write(str(int(now)))
+        except OSError:
+            return
+        _gc_sweep_all(dry=False)
+    except Exception:
+        pass
+
+
+atexit.register(_maybe_auto_gc)
+
+
 def _first_changed_line(pre: bytes, post_path: str) -> Optional[int]:
     """Return the 1-indexed line of the first difference between pre bytes
     and the current contents of post_path. None if the file is unreadable
@@ -9747,7 +9953,7 @@ def _validator_cache_key(file_path: str, name: str, cmd: str,
 
 
 def _validator_cache_path(key: str) -> Path:
-    return Path.home() / ".cache" / "supertool" / "validators" / f"{key}.json"
+    return _cache_root() / "validators" / f"{key}.json"
 
 
 def _validator_cache_secret() -> bytes:
@@ -9758,7 +9964,7 @@ def _validator_cache_secret() -> bytes:
     malicious npm postinstall) cannot forge a passing `ok: true` entry
     without also reading the secret.
     """
-    secret_path = Path.home() / ".cache" / "supertool" / ".cache_key"
+    secret_path = _cache_root() / ".cache_key"
     try:
         if secret_path.is_file():
             data = secret_path.read_bytes()
@@ -12679,6 +12885,10 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
             preset = parts[1] if len(parts) > 1 else ""
             path = parts[2] if len(parts) > 2 and parts[2] else ""
             body = op_check(preset, path)
+        elif op == "gc":
+            mode = parts[1] if len(parts) > 1 else ""
+            kind = parts[2] if len(parts) > 2 else ""
+            body = op_gc(mode, kind)
         elif op == "around":
             pattern, path, n = _parse_around_args(parts)
             body = op_around(pattern, path, n)
