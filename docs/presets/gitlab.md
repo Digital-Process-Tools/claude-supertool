@@ -14,7 +14,7 @@ GitLab ops via the `glab` CLI. Replaces the 3-5 separate `glab` calls needed to 
 | `gl-mr` | `gl-mr:NUMBER_OR_BRANCH[:status\|:full]` | MR dashboard: branch, pipeline, reviewer/approval state, linked issue, diff stat, per-file name-status (`A`/`D`/`R`/`M`) list, comments. The file list is the high-signal "what got removed?" scan; capped at 50 files by default with a `… +N more` marker. `:status` returns slim merge-state plus the `source -> target` branch line only; `:full` uncaps the file list (paginating up to 500) and the comments |
 | `gl-mrs` | `gl-mrs[:filters,flags]` | MR triage board, sorted failing-first then stalest. Per MR (enriched in parallel): pipeline status (a failure shows the failed **job name** = the failure class), approval state, age, diff size, watch-state cross-reference, and `conflict`/`draft`/`threads` flags — plus an actionable footer. Filters (comma-sep): `author`/`reviewer`/`assignee`/`label`/`milestone`/`state`/`per`. Flags: `nopipe` (skip enrichment), `iids` (bare id list), `failed` (only failing) |
 | `gl-pipeline` | `gl-pipeline:NUMBER[:active\|:failed]` | Pipeline job list grouped by stage with pass/fail status and failed job IDs. The default board collapses the `manual`/`created`/`skipped` bulk to a one-line count so the running/done/failed jobs aren't buried. `:active` shows only running/pending jobs ("what's still going"); `:failed` shows only failed jobs plus their job IDs/URLs ("what broke") |
-| `gl-job` | `gl-job:NUMBER[:raw[:START[:END]]\|:grep:PATTERN]` | Job failure detail: MR context + error pattern search + log tail. `:raw` dumps the full trace; `:raw:START:END` slices lines (1-indexed, inclusive); `:grep:PATTERN` runs an ad-hoc regex over the trace (literal fallback on bad regex, ±context, names the pattern + tail on no-match — never silent-empty) |
+| `gl-job` | `gl-job:NUMBER[:raw[:START[:END]]\|:grep:PATTERN]` | Job failure detail: MR context + error pattern search + log tail. `:raw` dumps the full trace; `:raw:START:END` slices lines (1-indexed, inclusive); `:grep:PATTERN` runs an ad-hoc regex over the trace (literal fallback on bad regex, ±context, names the pattern + tail on no-match — never silent-empty). Cause markers are always matched on top of the configured patterns, and a *failed* job that matches nothing is reported as unclassified with a log tail rather than as "no errors" |
 
 ## Common workflows
 
@@ -61,6 +61,46 @@ the flat `error_patterns`. When a matched entry has a `resolution`, `gl-job` pri
 `Resolve: ./supertool '<op>'` with `{id}` replaced by the job id — e.g. a failed
 `rector` job ends with `Resolve: ./supertool 'rector_ci_apply:67890'`. Project config
 deep-merges into the preset op, so adding `job_patterns` keeps the built-in `cmd`.
+
+### The cause, not just the wreckage
+
+A stack trace is the *consequence* of a failure; the line that says why sits above
+it. So alongside `error_patterns`, `gl-job` always matches a built-in set of **cause
+markers** — lines that state a reason rather than show its fallout:
+
+`Caused by` · an FQCN-shaped `…Exception: ` / `…Error: ` message · `SQLSTATE[` ·
+`In <File>.php line N:` · `Exit Code: N` · `Fatal error:` · `Segmentation
+fault/violation` · `Allowed memory size … exhausted` · `…CrashedException`
+
+Their window leans downward — 2 lines above, `error_context` below — because a cause
+is followed by its message body. Cause markers are matched **in addition to** the
+patterns in play, including a per-job `job_patterns` entry: a table tuned for one
+tool's output goes on narrowing that tool's noise, but it cannot suppress the reason
+a job died. Set `GL_JOB_CAUSE_MARKERS=0` to disable them, `GL_JOB_CAUSE_CONTEXT_BEFORE`
+to change the leading context.
+
+### A failed job never reports nothing
+
+`## No error patterns matched` is printed **only for jobs that did not fail**. When
+GitLab says a job `failed` and nothing matched, the output says so instead:
+
+```
+## FAILED — no error pattern matched
+Job status is `failed`: something did go wrong. supertool could not classify it,
+which means a pattern is missing here — not that the log is clean. …
+Patterns tried: ERROR, FAILURES!, Fatal, … (+ built-in cause markers)
+Last step entered: build_assets
+
+## Log tail (last 40 lines of 1612)
+  …
+Next:  ./supertool 'gl-job:6929217:raw'  or  'gl-job:6929217:grep:PATTERN'
+```
+
+A failed job always has a reason; not finding it is a gap in this tool, and the
+output has to read that way rather than as silence — a crashed job reporting no
+errors reads as green, which is the worst output a failure tool can produce. The
+tail length is `GL_JOB_UNMATCHED_TAIL_LINES` (default 40). This applies to `:fail`
+and to the default view alike.
 
 ### PHPUnit failures are kept whole
 

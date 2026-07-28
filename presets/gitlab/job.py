@@ -108,6 +108,81 @@ def _select_job_patterns(
     return default_patterns, None
 
 
+# Lines that state a *reason* for the failure. A stack trace is the consequence;
+# the line saying why sits above it (#444), and some failures never produce a
+# trace at all (#445). These are matched in addition to — and independently of —
+# the configured error_patterns, so a tighter per-job pattern table can narrow
+# the surrounding noise without being able to hide the cause.
+# Set GL_JOB_CAUSE_MARKERS=0 to disable.
+_CAUSE_MARKERS = [
+    re.compile(r"^\s*Caused by\b"),
+    re.compile(r"[\w\\]+(?:Exception|Error):\s"),
+    re.compile(r"SQLSTATE\["),
+    re.compile(r"^\s*In \S+\.php line \d+:"),
+    re.compile(r"Exit Code:\s*\d+"),
+    re.compile(r"Fatal error:"),
+    re.compile(r"Segmentation (?:fault|violation)"),
+    re.compile(r"Allowed memory size of \d+ bytes exhausted"),
+    re.compile(r"\w*CrashedException"),
+]
+
+_SECTION_START = re.compile(r"^section_start:\d+:(\S+)")
+
+
+def _cause_lines(lines: list[str]) -> list[int]:
+    """Indices of lines that state a reason for the failure."""
+    if os.environ.get("GL_JOB_CAUSE_MARKERS", "1") == "0":
+        return []
+    return [
+        i for i, line in enumerate(lines)
+        if any(rx.search(line) for rx in _CAUSE_MARKERS)
+    ]
+
+
+def _last_section(lines: list[str]) -> str | None:
+    """Name of the last CI section the runner entered — i.e. the failing step."""
+    for line in reversed(lines):
+        match = _SECTION_START.match(line)
+        if match:
+            return match.group(1)
+    return None
+
+
+def _print_unmatched_failure(
+    job_id: str, job_status: str, patterns: list[str], lines: list[str], total: int
+) -> None:
+    """Report a failed job the patterns could not classify — never as silence.
+
+    `## No error patterns matched` on a job GitLab calls *failed* reads as green
+    (#445), which is the worst output a failure tool can produce. A failed job
+    always has a reason; not finding it is a gap in this tool, so the output
+    says exactly that and hands back the raw evidence.
+    """
+    tail_n = int(os.environ.get("GL_JOB_UNMATCHED_TAIL_LINES", "40"))
+    print("\n## FAILED — no error pattern matched")
+    print(
+        f"Job status is `{job_status}`: something did go wrong. supertool "
+        "could not classify it, which means a pattern is missing here — "
+        "not that the log is clean. Read the tail below before concluding "
+        "anything."
+    )
+    shown = ", ".join(p.strip() for p in patterns if p.strip())
+    if shown:
+        print(f"Patterns tried: {shown} (+ built-in cause markers)")
+    section = _last_section(lines)
+    if section:
+        print(f"Last step entered: {section}")
+    tail = lines[-tail_n:] if len(lines) > tail_n else lines
+    print(f"\n## Log tail (last {len(tail)} lines of {total})")
+    start = total - len(tail) + 1
+    for i, line in enumerate(tail):
+        print(f"  {start + i:>5} | {line}")
+    print(
+        f"\nNext:  ./supertool 'gl-job:{job_id}:raw'  or  "
+        f"'gl-job:{job_id}:grep:PATTERN'  — the whole trace is still there."
+    )
+
+
 _PHPUNIT_BLOCK_START = re.compile(r'^\s*\d+\)\s+\S+::\S+')
 _PHPUNIT_BLOCK_SUMMARY = re.compile(
     r'^\s*(FAILURES!|ERRORS!|WARNINGS!|OK \(|OK, but|There (was|were) \d+)'
@@ -193,6 +268,15 @@ def _find_error_sections(lines: list[str], patterns: list[str], context: int) ->
                 for j in range(max(0, i - context), min(len(lines), i + context + 1)):
                     matches.add(j)
                 break
+
+    # Cause markers anchor on the line that states *why*, not on the wreckage it
+    # produced. They run whatever the configured patterns are, and get their
+    # context asymmetrically: a cause is followed by its message body (the
+    # indented exception text, the `Exit Code:` line), so the window leans down.
+    cause_before = int(os.environ.get("GL_JOB_CAUSE_CONTEXT_BEFORE", "2"))
+    for i in _cause_lines(lines):
+        for j in range(max(0, i - cause_before), min(len(lines), i + context + 1)):
+            matches.add(j)
 
     if not matches:
         return []
@@ -448,7 +532,10 @@ def main() -> int:
     # errors mode — dump ALL matched blocks, no tail cap
     if errors_mode:
         if not error_sections:
-            print("\n## No error patterns matched")
+            if job_status == "failed":
+                _print_unmatched_failure(job_id, job_status, patterns, lines, total)
+            else:
+                print("\n## No error patterns matched")
             return 0
         matched_count = len([e for e in error_sections if e[0] > 0])
         print(f"\n## All error blocks ({matched_count} lines matched, no tail truncation)")
@@ -478,8 +565,12 @@ def main() -> int:
         start = total - len(shown) + 1
         for i, line in enumerate(shown):
             print(f"  {start + i:>5} | {line}")
+    elif job_status == "failed":
+        # Nothing matched on a job that failed — say so, do not just print a tail
+        # and let the reader infer the log was clean (#445).
+        _print_unmatched_failure(job_id, job_status, patterns, lines, total)
     else:
-        # No error patterns found or job didn't fail — just show tail
+        # Job didn't fail — just show tail
         shown = lines[-tail_lines:] if len(lines) > tail_lines else lines
         skipped = total - len(shown)
         if skipped > 0:

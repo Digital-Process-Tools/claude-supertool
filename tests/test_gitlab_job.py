@@ -16,12 +16,12 @@ job = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(job)
 
 
-def _make_fake_run(trace_lines: list[str]):
+def _make_fake_run(trace_lines: list[str], status: str = "failed"):
     """Return a fake subprocess.run that handles glab metadata + trace calls."""
     trace = "\n".join(trace_lines) + "\n"
     meta = json.dumps({
         "name": "test-job",
-        "status": "failed",
+        "status": status,
         "stage": "test",
         "duration": 12.0,
         "web_url": "https://gitlab.example/job/1",
@@ -42,9 +42,11 @@ def _make_fake_run(trace_lines: list[str]):
     return fake_run
 
 
-def _run_main(monkeypatch, argv: list[str], trace_lines: list[str]) -> int:
+def _run_main(
+    monkeypatch, argv: list[str], trace_lines: list[str], status: str = "failed"
+) -> int:
     monkeypatch.setattr(sys, "argv", argv)
-    monkeypatch.setattr(job.subprocess, "run", _make_fake_run(trace_lines))
+    monkeypatch.setattr(job.subprocess, "run", _make_fake_run(trace_lines, status))
     return job.main()
 
 
@@ -138,12 +140,13 @@ def test_errors_mode_shows_all_matched_blocks(monkeypatch, capsys) -> None:
 
 
 def test_errors_mode_no_matches(monkeypatch, capsys) -> None:
-    """errors mode prints clear message when nothing matched."""
+    """Nothing matched on a *failed* job is a tool gap, and must read as one."""
     lines = ["build started", "all good", "build done"]
     rc = _run_main(monkeypatch, ["job.py", "123", "errors"], lines)
     out = capsys.readouterr().out
     assert rc == 0
-    assert "No error patterns matched" in out
+    assert "## FAILED — no error pattern matched" in out
+    assert "not that the log is clean" in out
 
 
 def test_fail_is_alias_of_errors(monkeypatch, capsys) -> None:
@@ -486,3 +489,155 @@ def test_job_patterns_shows_resolution_with_interpolated_id(monkeypatch, capsys)
     assert rc == 0
     assert "BOOM goes the build" in out
     assert "Resolve:  ./supertool 'rector_ci_apply:777'" in out
+
+
+def _cause_above_trace_log() -> list[str]:
+    """Issue #444: job 6931305 — the reason sits above the frames it caused.
+
+    A stack trace is the consequence; the line that states why precedes it. The
+    PHPUnit-listed variant of this shape is already held whole by the block
+    expansion from #404, so the fixture uses the shape that is not: a bare
+    exception dump followed by frames, anchored only by the runner's trailing
+    `ERROR:` line, with the cause ~23 lines above it.
+    """
+    frames = [
+        f"/builds/dvsi/src2/SiCore/BusinessEntityCommands/Frame{i}.class.php:{100 + i}"
+        for i in range(18)
+    ]
+    return (
+        [
+            "Running with gitlab-runner 16.11.0 (~/dvsi)",
+            "$ php scripts.php script=ScriptRunMigration",
+        ]
+        + [f"Migrating V17/V9/V0/V17615623{i:02d} ... done" for i in range(60)]
+        + [
+            "",
+            "Fwk\\Foundations\\Exceptions\\FwkException: Unable to persist entity Lead",
+            "",
+            "Caused by",
+            "PDOException: SQLSTATE[23000]: Integrity constraint violation: 1452 "
+            "Cannot add or update a child row: a foreign key constraint fails "
+            "(`dvsi_2`.`lead`, CONSTRAINT `lead_location_fk1` FOREIGN KEY "
+            "(`location_id`) REFERENCES `location` (`id`))",
+            "",
+        ]
+        + frames
+        + [
+            "/builds/dvsi/src2/SiCore/BusinessEntityCommands/CommandAbstractParseCSV.class.php:99",
+            "/builds/dvsi/tests/unit/SiBrief/CommandImportBriefsCSVTest.php:114",
+            "",
+            "Cleaning up project directory and file based variables",
+            "ERROR: Job failed: exit code 255",
+        ]
+    )
+
+
+def _worker_crash_log() -> list[str]:
+    """Issue #445: job 6929217 — a paratest worker segfaulted around line 1616."""
+    return (
+        ["Running with gitlab-runner 16.11.0 (~/dvsi)"]
+        + [f"Processing test suite chunk {i} ..." for i in range(1600)]
+        + [
+            "",
+            "In WorkerCrashedException.php line 41:",
+            "",
+            """  The test "PARATEST='1' TEST_TOKEN='2' UNIQUE_TEST_TOKEN='2_6a688660c3fab'""",
+            '  Dvsi/dvsi-private/tests/unit/SiUser/Components/UserModularForm02Test.php" failed.',
+            "",
+            "  Exit Code: 139(Segmentation violation)",
+            "",
+            "paratest [--processes PROCESSES] [--path PATH]",
+            "",
+            "Cleaning up project directory and file based variables",
+        ]
+    )
+
+
+def _unclassifiable_failure_log() -> list[str]:
+    """A genuinely failed job whose log matches no pattern the tool knows."""
+    return (
+        [
+            "Running with gitlab-runner 16.11.0 (~/dvsi)",
+            "section_start:1753600000:prepare_executor",
+            'Preparing the "docker" executor',
+            "section_end:1753600002:prepare_executor",
+            "section_start:1753600003:build_assets",
+            "$ make assets",
+        ]
+        + [f"Compiling module {i} ..." for i in range(60)]
+        + [
+            "make: *** [Makefile:12: assets] Error 2",
+            "section_end:1753600200:build_assets",
+            "Cleaning up project directory and file based variables",
+        ]
+    )
+
+
+def test_fail_surfaces_the_cause_line_above_the_stack_trace(monkeypatch, capsys) -> None:
+    """Issue #444: the line that says *why* must be shown, not just the frames."""
+    lines = _cause_above_trace_log()
+    rc = _run_main(monkeypatch, ["job.py", "6931305", "fail"], lines)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Caused by" in out
+    assert "SQLSTATE[23000]: Integrity constraint violation: 1452" in out
+    assert "lead_location_fk1" in out
+    assert "Fwk\\Foundations\\Exceptions\\FwkException: Unable to persist entity Lead" in out
+
+
+def test_fail_surfaces_the_cause_even_with_tight_job_patterns(monkeypatch, capsys) -> None:
+    """A per-job pattern table tightens the noise; it must not hide the reason."""
+    monkeypatch.setenv("SUPERTOOL_JOB_PATTERNS", json.dumps([
+        {"job": "test-job", "patterns": ["Job failed"]}
+    ]))
+    lines = _cause_above_trace_log()
+    rc = _run_main(monkeypatch, ["job.py", "6931305", "fail"], lines)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "SQLSTATE[23000]: Integrity constraint violation: 1452" in out
+
+
+def test_fail_surfaces_a_crashed_paratest_worker(monkeypatch, capsys) -> None:
+    """Issue #445: the segfaulted worker is the reason and must be reported as one."""
+    lines = _worker_crash_log()
+    rc = _run_main(monkeypatch, ["job.py", "6929217", "fail"], lines)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "No error patterns matched" not in out
+    assert "In WorkerCrashedException.php line 41:" in out
+    assert "Exit Code: 139(Segmentation violation)" in out
+    assert "UserModularForm02Test.php" in out
+
+
+def test_fail_on_unmatched_failed_job_cannot_be_read_as_success(monkeypatch, capsys) -> None:
+    """Issue #445: zero matches on a failed job states the tool gap and shows the tail."""
+    lines = _unclassifiable_failure_log()
+    rc = _run_main(monkeypatch, ["job.py", "6929217", "fail"], lines)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "## FAILED — no error pattern matched" in out
+    assert "could not classify" in out
+    assert "not that the log is clean" in out
+    assert "make: *** [Makefile:12: assets] Error 2" in out
+    assert "Log tail" in out
+    assert "gl-job:6929217:raw" in out
+
+
+def test_default_mode_on_unmatched_failed_job_states_the_gap(monkeypatch, capsys) -> None:
+    """The same honesty in the default view, which used to print a bare tail."""
+    lines = _unclassifiable_failure_log()
+    rc = _run_main(monkeypatch, ["job.py", "6929217"], lines)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "## FAILED — no error pattern matched" in out
+    assert "make: *** [Makefile:12: assets] Error 2" in out
+
+
+def test_unmatched_job_that_did_not_fail_gets_no_failure_banner(monkeypatch, capsys) -> None:
+    """A green job with no matches is genuinely clean — do not cry wolf."""
+    lines = ["build started", "all good", "build done"]
+    rc = _run_main(monkeypatch, ["job.py", "123", "fail"], lines, status="success")
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "FAILED" not in out
+    assert "No error patterns matched" in out
