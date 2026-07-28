@@ -833,7 +833,7 @@ def test_goto_beyond_eof(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 def test_dispatch_triple_colon(tmp_path: Path) -> None:
-    f = tmp_path / "x.py"
+    f = tmp_path / "x.txt"
     f.write_text("foo\n")
     out = supertool.dispatch(f"vim:::{f}:::A end")
     assert "vim " in out

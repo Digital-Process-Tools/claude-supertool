@@ -125,7 +125,7 @@ def test_long_paste_header_drops_the_content(tmp_path: Path) -> None:
 
 
 def test_long_replace_lines_header_keeps_the_range(tmp_path: Path) -> None:
-    f = tmp_path / "x.py"
+    f = tmp_path / "x.txt"
     f.write_text("a\nb\nc\n")
     out = supertool.dispatch(f"replace_lines:::{f}:::2:::2:::{_long('new')}")
     head = out.splitlines()[0]

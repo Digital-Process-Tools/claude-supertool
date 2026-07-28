@@ -6,6 +6,24 @@ Validators are squiggle-on-save for the LLM. After every mutating op — `edit`,
 
 The model retries with real information instead of hallucinating a fix.
 
+## The built-in syntax backstop
+
+That paragraph used to be true only of repos that had configured the right validator, and the gap was invisible: this repository itself wired `lsp-diag` — a *semantic* diagnostics pass served by a warm language-server daemon, with `rollback_on_fail: false` — as its only Python validator. Nothing in the chain ever asked whether the file parsed, so an edit that wrote an unterminated string literal into a `.py` file was reported as `lsp-diag : ok (no new errors)` and left on disk. Twice in one evening, both times on payloads with tricky escaping, which is exactly the case the check exists for ([#477](https://github.com/Digital-Process-Tools/claude-supertool/issues/477)).
+
+So `py-syntax` is not a configured validator — it is built into supertool and it always applies:
+
+| | |
+|---|---|
+| Runs on | `*.py`, for `edit`, `replace`, `replace_lines`, `paste`, `append`, `vim` |
+| How | `compile()` in supertool's own process — no subprocess, no daemon, no cache, microseconds |
+| Rolls back | Yes, when the file parsed *before* the op and does not parse after |
+| Config needed | None. It runs in a repo with no `.supertool.json` at all |
+| Deferred to | A configured validator matching the same file that declares `"syntax": true` |
+
+It reverts **regressions only**. A file that was already unparseable can still be edited, a broken file can be repaired, and a new file created broken is reported red but not deleted — there is no pre-edit state to restore. Anything it cannot answer (unreadable file, unknown builtin) comes back as `skipped`, never as ok.
+
+**It is Python-only, and that is a real limit, not an oversight.** The interpreter running supertool can parse Python for free; it cannot parse PHP, TypeScript or Go without a toolchain that may not be installed. For those, declare a parse check in `.supertool.json` with `rollback_on_fail: true` (see the bundled list below) — and add `"syntax": true` to it so the backstop stands down where you have your own.
+
 ## How they hook in
 
 Each validator entry declares a `hooks_into` array listing the mutating ops it should run after:

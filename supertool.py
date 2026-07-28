@@ -9446,12 +9446,96 @@ _OP_TARGETS: Dict[str, Any] = {
 }
 
 
+# Built-in syntax backstop (#477). The mutating routes advertise "validators run
+# post-edit and roll back on a syntax failure" — a guarantee the tool makes, so
+# the tool has to keep it whether or not a repo configured anything. Before this,
+# a repo whose only Python validator was `lsp-diag` (a *semantic* diagnostics
+# pass, served from a warm daemon cache, rollback_on_fail: false) got
+# "ok (no new errors)" on a file that did not parse; a repo with no config at all
+# got no check whatsoever. The check is in-process (`compile()`), so it costs
+# microseconds and cannot itself be stale.
+#
+# Deliberately narrow: the interpreter running supertool can parse Python for
+# free and nothing else. Other languages need a configured validator — see
+# .supertool.example.json, whose parse checks now carry "syntax": true.
+_BUILTIN_SYNTAX_VALIDATORS: Dict[str, Dict[str, Any]] = {
+    "py-syntax": {
+        "builtin": "python",
+        "match": "*.py",
+        "syntax": True,
+        "rollback_on_fail": True,
+    },
+}
+
+
+def _builtin_syntax_run(name: str, kind: str, file: str) -> Dict[str, Any]:
+    """In-process parse check. SCHEMA.md-shaped, same as a subprocess adapter.
+
+    Anything that is not a verdict — unknown kind, unreadable file — comes back
+    as `skipped`, never as ok. A checker that cannot answer must say so, or the
+    caller reads its silence as a clean bill (#454, #469).
+    """
+    import time
+    _t0 = time.monotonic()
+    if kind != "python":
+        return {"tool": name, "file": file, "skipped": f"unknown builtin {kind!r}"}
+    try:
+        with open(file, "rb") as f:
+            src = f.read()
+    except OSError as e:
+        return {"tool": name, "file": file, "skipped": f"unreadable: {e}"}
+    try:
+        compile(src, file, "exec", dont_inherit=True)
+    except SyntaxError as e:
+        err: Dict[str, Any] = {
+            "line": getattr(e, "lineno", None),
+            "col": getattr(e, "offset", None),
+            "severity": "error",
+            "code": "syntax",
+            "msg": (getattr(e, "msg", None) or str(e)).strip()[:300],
+        }
+        return {"tool": name, "file": file, "ok": False, "count": 1,
+                "errors": [err], "elapsed_s": time.monotonic() - _t0}
+    except (ValueError, MemoryError, RecursionError) as e:
+        # Null bytes, absurd nesting: the source is rejected by the compiler but
+        # not with a line number. Still a hard "does not compile".
+        return {"tool": name, "file": file, "ok": False, "count": 1,
+                "errors": [{"line": None, "col": None, "severity": "error",
+                            "code": "syntax", "msg": str(e)[:300]}],
+                "elapsed_s": time.monotonic() - _t0}
+    return {"tool": name, "file": file, "ok": True, "count": 0, "errors": [],
+            "elapsed_s": time.monotonic() - _t0}
+
+
+def _builtin_syntax_backstop(op: str, path: str,
+                             configured: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """Backstop validators for `path`, minus any the repo already covers.
+
+    Defers to a configured validator that declares `"syntax": true` and matches
+    the same path — the repo's own parse check is authoritative, and running two
+    would double every syntax row.
+    """
+    if op not in _OP_TARGETS or not path:
+        return {}
+    out: Dict[str, Dict[str, Any]] = {}
+    for name, spec in _BUILTIN_SYNTAX_VALIDATORS.items():
+        if not _match_glob(path, spec["match"]):
+            continue
+        if name in configured:
+            continue
+        if any(s.get("syntax") and _match_glob(path, s.get("match", "*"))
+               for s in configured.values()):
+            continue
+        out[name] = spec
+    return out
+
+
 def _applicable_validators(op: str, path: str) -> Dict[str, Dict[str, Any]]:
     """Return validators that should wrap this op call. Skips opt_in."""
     cfg = _load_config()
     validators = cfg.get("validators") or {}
     if not validators:
-        return {}
+        return dict(_builtin_syntax_backstop(op, path, {}))
     import fnmatch
     out: Dict[str, Dict[str, Any]] = {}
     for name, spec in validators.items():
@@ -9467,6 +9551,7 @@ def _applicable_validators(op: str, path: str) -> Dict[str, Dict[str, Any]]:
         if path and _matches_any_glob(path, spec.get("exclude")):
             continue
         out[name] = spec
+    out.update(_builtin_syntax_backstop(op, path, out))
     return out
 
 
@@ -9905,6 +9990,10 @@ def _validator_run_one(name: str, spec: Dict[str, Any], file: str) -> Optional[D
     target = _validator_resolve(spec, file)
     if target is None:
         return {"tool": name, "skipped": "no target resolved"}
+    # Built-in validators (#477) have no adapter and no `cmd`: they run in this
+    # process. Handled before the cmd substitution below, which would KeyError.
+    if spec.get("builtin"):
+        return _builtin_syntax_run(name, str(spec["builtin"]), target)
     # argv-form (shell=False) downstream: shell metachars in spec["cmd"] are
     # literal tokens. {file} stays shlex.quote'd so values with spaces survive
     # shlex.split. {supertool_dir} is a known constant.
