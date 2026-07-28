@@ -8,6 +8,7 @@ Consumers like the Cursor witness extension listen on that channel.
 """
 from __future__ import annotations
 
+import json
 import os
 import time
 from pathlib import Path
@@ -15,6 +16,7 @@ from pathlib import Path
 import pytest
 
 import supertool
+from conftest import read_when_ready
 
 
 def _set_config(d: dict) -> None:
@@ -59,12 +61,9 @@ def test_notifier_fires_on_edit(tmp_path: Path) -> None:
         }
     })
     supertool._run_notifiers("edit", str(tmp_path / "target.php"))
-    # fire-and-forget — give the worker a moment
-    deadline = time.time() + 2
-    while time.time() < deadline and not marker.exists():
-        time.sleep(0.05)
-    assert marker.exists()
-    content = marker.read_text().strip()
+    # Fire-and-forget: wait for content, never for existence — the fixture's
+    # write_text creates the marker empty first (see conftest.read_when_ready).
+    content = read_when_ready(marker).strip()
     assert content.startswith("edit ")
     assert "target.php" in content
 
@@ -86,11 +85,7 @@ def test_notifier_fires_on_read(tmp_path: Path) -> None:
         }
     })
     supertool._run_notifiers("read", str(tmp_path / "x.php"))
-    deadline = time.time() + 2
-    while time.time() < deadline and not marker.exists():
-        time.sleep(0.05)
-    assert marker.exists()
-    assert "read" in marker.read_text()
+    assert "read" in read_when_ready(marker)
 
 
 def test_notifier_does_not_block_caller(tmp_path: Path) -> None:
@@ -144,7 +139,9 @@ def test_notifier_debug_log_off_by_default(tmp_path: Path, monkeypatch) -> None:
         }
     })
     supertool._run_notifiers("edit", "x.php")
-    time.sleep(0.2)
+    # No sleep on purpose: `_notifier_log` writes in-process, before
+    # `_run_notifiers` returns, so absence is already decidable here. Sleeping
+    # would only hide a regression that made the log write asynchronous.
     assert not log.exists(), "debug log written despite being off"
 
 
@@ -159,7 +156,8 @@ def test_notifier_debug_log_via_env(tmp_path: Path, monkeypatch) -> None:
         }
     })
     supertool._run_notifiers("edit", "x.php")
-    time.sleep(0.2)
+    # `_notifier_log` runs in-process: the dispatch line is on disk by the time
+    # `_run_notifiers` returns. No sleep, and none needed.
     assert log.exists(), "debug log not written"
     content = log.read_text()
     assert "edit" in content
@@ -178,7 +176,6 @@ def test_notifier_debug_log_via_config(tmp_path: Path, monkeypatch) -> None:
         }
     })
     supertool._run_notifiers("edit", "y.php")
-    time.sleep(0.2)
     assert log.exists()
     assert "y.php" in log.read_text()
 
@@ -210,12 +207,10 @@ def test_empty_placeholders_preserve_positional_argv(tmp_path: Path) -> None:
     # Fire with no line/line_end and no pre_content — three empties in the middle
     supertool._run_notifiers("edit", "x.php")
 
-    deadline = time.time() + 2
-    while time.time() < deadline and not marker.exists():
-        time.sleep(0.05)
-    assert marker.exists(), "notifier did not fire"
-    import json as _json
-    args = _json.loads(marker.read_text())
+    # The fixture writes with `open(..., "w").write(...)`, which creates the
+    # marker empty and fills it a moment later. Polling for existence read that
+    # empty file on a loaded CI runner and blew up in `json.loads` (#443).
+    args = read_when_ready(marker, json.loads)
     # Expected 5 positional args: edit, x.php, "", "", ""
     assert args == ["edit", "x.php", "", "", ""], \
         f"positional argv corrupted: {args!r}"

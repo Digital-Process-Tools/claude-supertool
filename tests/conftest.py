@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -483,6 +484,74 @@ def enable_tree_sitter():
     supertool._TS_CHECKED = True
     supertool._TS_AVAILABLE = False
     supertool._TS_PACKAGE = ""
+
+
+def _require_non_empty(raw: str) -> str:
+    """Default `read_when_ready` parser: any non-empty text is complete."""
+    if not raw:
+        raise ValueError("file is still empty")
+    return raw
+
+
+def read_when_ready(path, parse=None, *, timeout: float = 2.0, interval: float = 0.01):
+    """Wait until ``path`` holds *complete, parseable* content, and return it.
+
+    **Waiting for existence is not waiting for content.** `open(p, "w")` — and
+    everything built on it, including `Path.write_text` — creates the file
+    empty and fills it a moment later. Two syscalls, and a reader is entitled
+    to land between them: a poll that stops at the first `p.exists()` and reads
+    immediately can legally observe `""`. The window is normally sub-
+    millisecond, so this bug class ships green and only fails where the writer
+    gets descheduled between create and write — a loaded, low-core CI runner
+    with the suite running `-n auto`. `json.loads("")` raising `Expecting
+    value: line 1 column 1 (char 0)` is what that looks like from the reader's
+    side, and is how #443 was found.
+
+    So poll for content the reader can actually use, never for existence.
+    ``parse`` is the definition of "usable": it must raise ``ValueError`` for a
+    read that is not yet complete — ``json.loads`` already does — and return
+    the parsed value otherwise. The default accepts any non-empty text.
+
+    This helper is also the reason the fixtures it reads are left writing
+    non-atomically: a reader that survives a half-written file is what real
+    notifier consumers need, since supertool spawns notifiers and never
+    controls how they write.
+
+    On timeout the two failures are reported apart, because they are different
+    bugs with different suspects: the file never appeared (the writer never
+    ran) versus it appeared and never became parseable (the writer ran, and its
+    write never landed).
+    """
+    path = Path(path)
+    parse = _require_non_empty if parse is None else parse
+    deadline = time.monotonic() + timeout
+    appeared = False
+    last_raw = None
+    last_error = None
+    while True:
+        try:
+            raw = path.read_text()
+        except (FileNotFoundError, NotADirectoryError):
+            pass
+        else:
+            appeared = True
+            last_raw = raw
+            try:
+                return parse(raw)
+            except ValueError as exc:
+                last_error = exc
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(interval)
+    if not appeared:
+        raise AssertionError(
+            f"{path} never appeared within {timeout}s — the writer never ran"
+        )
+    raise AssertionError(
+        f"{path} appeared but never held parseable content within {timeout}s "
+        f"— the writer ran and its write never landed. "
+        f"last read: {last_raw!r}, last parse error: {last_error!r}"
+    )
 
 
 def _has_any_tree_sitter() -> bool:
