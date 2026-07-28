@@ -56,6 +56,7 @@ def _import_module(path: Path, module_name: str):
 
 
 daemon = _import_module(DAEMON_PY, "mcp_daemon")
+spawn = _import_module(SUPERTOOL_ROOT / "presets" / "mcp" / "_spawn.py", "mcp_spawn")
 phpunit_adapter = _import_module(PHPUNIT_PY, "phpunit_mcp")
 phpstan_adapter = _import_module(PHPSTAN_PY, "phpstan_mcp")
 rector_adapter = _import_module(RECTOR_PY, "rector_mcp")
@@ -243,52 +244,50 @@ class TestPidFileToctouRace:
     """Severity: LOW — PID reuse is OS-level, not exploitable by an adversary in
     typical single-user dev environments.
 
-    is_alive() reads the pid file, then sends signal 0.  Between these two
-    operations the original process may have exited and its PID been reused by
-    an unrelated process.  is_alive() would then return True for a process that
-    is not the daemon.
+    The probe reads the pid file, then asks the OS whether that pid is alive.
+    Between those two operations the original process may have exited and its
+    PID been reused by something unrelated, and the probe would answer True for
+    a process that is not the daemon.
 
-    Practical consequence: ensure_daemon() skips spawning when the daemon is
-    actually dead.  The subsequent connect() to the socket will fail, and the
-    adapter surfaces a RuntimeError.  No silent data corruption occurs.
+    Practical consequence: the spawn path skips spawning when the daemon is
+    actually dead. The subsequent connect() fails and the adapter surfaces a
+    RuntimeError. No silent data corruption occurs.
 
-    Note: is_alive() is defined in each adapter module (not in daemon.py).
-    All three adapters share identical implementations; phpunit_adapter is used
-    as the representative.
+    The probe used to be a per-adapter copy of `os.kill(pid, 0)` — four of them,
+    the wave of duplication #429/#431 consolidated everywhere except here. Since
+    #451 there is one: `_spawn.daemon_pid()`, reading the pidfile and deferring
+    to `presets/_proc.pid_alive`.
     """
 
-    def test_is_alive_returns_true_for_reused_pid(self, tmp_path):
-        """Demonstrates the TOCTOU: pid file exists, process with that PID exists,
-        but it is NOT the daemon — is_alive() still returns True."""
+    def test_daemon_pid_returns_the_pid_for_a_reused_pid(self, tmp_path):
+        """Demonstrates the TOCTOU: pidfile exists, that PID is alive, but it is
+        NOT the daemon — the probe still reports it."""
         pid_path = str(tmp_path / "test.pid")
-        # Write a PID that is definitely alive: os.getpid() (our own process)
         Path(pid_path).write_text(str(os.getpid()))
-        # is_alive returns True — but this process is the test runner, not a daemon
-        assert phpunit_adapter.is_alive(pid_path) is True, \
-            "is_alive() cannot distinguish daemon PID from a reused PID"
+        assert spawn.daemon_pid(pid_path) == os.getpid(), \
+            "the probe cannot distinguish a daemon PID from a reused PID"
 
-    def test_is_alive_returns_false_for_dead_pid(self, tmp_path):
+    def test_daemon_pid_returns_zero_for_dead_pid(self, tmp_path):
         pid_path = str(tmp_path / "test.pid")
-        # Use a PID that cannot possibly be alive (max+1 wraps, use 0 which is reserved)
         Path(pid_path).write_text("999999999")
-        assert phpunit_adapter.is_alive(pid_path) is False
+        assert spawn.daemon_pid(pid_path) == 0
 
-    def test_is_alive_returns_false_for_missing_pid_file(self, tmp_path):
+    def test_daemon_pid_returns_zero_for_missing_pid_file(self, tmp_path):
         pid_path = str(tmp_path / "nonexistent.pid")
-        assert phpunit_adapter.is_alive(pid_path) is False
+        assert spawn.daemon_pid(pid_path) == 0
 
-    def test_is_alive_returns_false_for_corrupt_pid_file(self, tmp_path):
+    def test_daemon_pid_returns_zero_for_corrupt_pid_file(self, tmp_path):
         pid_path = str(tmp_path / "test.pid")
         Path(pid_path).write_text("not-a-number")
-        assert phpunit_adapter.is_alive(pid_path) is False
+        assert spawn.daemon_pid(pid_path) == 0
 
-    def test_all_adapters_share_identical_is_alive_logic(self, tmp_path):
-        """Document: all three adapters define is_alive() independently but identically."""
-        pid_path = str(tmp_path / "test.pid")
-        Path(pid_path).write_text(str(os.getpid()))
-        assert phpunit_adapter.is_alive(pid_path) is True
-        assert phpstan_adapter.is_alive(pid_path) is True
-        assert rector_adapter.is_alive(pid_path) is True
+    def test_no_adapter_defines_its_own_liveness_probe(self):
+        """#451: one probe. Four private copies is how the spawner ended up
+        answering "I cannot tell" with "start another one"."""
+        for adapter in (phpunit_adapter, phpstan_adapter, rector_adapter):
+            assert not hasattr(adapter, "is_alive"), (
+                f"{adapter.__name__} defines its own liveness probe again — "
+                "use _spawn.daemon_pid / presets/_proc.pid_alive (#429, #451)")
 
 
 # ===========================================================================

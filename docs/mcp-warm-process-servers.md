@@ -20,9 +20,54 @@ Each adapter:
 
 1. Reads `MCP_<TOOL>_BIN`, `MCP_<TOOL>_WORKING_DIR`, `MCP_<TOOL>_CONFIG` env vars
 2. Computes UDS socket path (sha1 of `cwd::daemon-name`)
-3. Connects, or auto-spawns daemon via `presets/mcp/daemon.py`
+3. Connects, or auto-spawns daemon via `presets/mcp/_spawn.py` → `presets/mcp/daemon.py`
 4. Sends MCP `initialize` + `tools/call`
 5. Formats response as SCHEMA.md validator JSON
+
+## Daemon lifecycle contract
+
+**At most one live daemon per (kind, config fingerprint), and a request is never
+served by a daemon whose config has since changed.** Both halves are load-bearing:
+one daemon still holding stale config just makes the wrong answer consistent.
+
+Per daemon, in the runtime dir (`$XDG_RUNTIME_DIR/supertool/mcp/` or
+`~/Library/Caches/supertool/mcp/`), all named `supertool-mcp-<sha1[:12]>`:
+
+| File      | Written by | Meaning                                     |
+| --------- | ---------- | ------------------------------------------- |
+| `.sock`   | daemon     | UDS the adapter talks to                    |
+| `.pid`    | daemon     | ownership claim — `O_CREAT\|O_EXCL`, atomic |
+| `.fp`     | daemon     | fingerprint of the config it booted with    |
+| `.lock`   | adapter    | `flock` serialising check-and-spawn         |
+
+- **A daemon is usable only if all three of** socket exists, pid is alive (via the
+  shared `presets/_proc.py` probe), and the on-disk fingerprint equals the current
+  one. Socket without pid is a stale file with no listener; pid without socket is a
+  daemon still booting or dead mid-publish.
+- **Spawning is serialised** by an exclusive `flock` on `.lock`, with the usability
+  check re-run *after* the lock is taken. Concurrent callers arriving inside the
+  startup window — the seconds between `Popen` and the socket being bound — wait
+  for the winner instead of each starting their own (#451).
+- **`daemon.py` claims the pidfile before any side effect.** A daemon that finds
+  the slot taken exits without unlinking the socket and without spawning its MCP
+  server child, so losing the race costs one short-lived Python process.
+- **A live daemon whose fingerprint no longer matches is reaped (`SIGTERM`, then
+  `SIGKILL`) and respawned.** `SIGTERM` is what lets it tear down its own MCP
+  server child; skipping it orphans a heavy PHP process.
+- **Fingerprint = content, not mtime**: the resolved mcp spec (json, key-sorted)
+  plus sha256 of every existing file named in its `cmd`/`args`/`env` — the config
+  file, and the `mcp-*-warm` binary when the spec names it by path (absolute or
+  project-relative, as `.supertool.json` normally does), so a server upgrade
+  retires the daemon running the old one. Re-saving a file unchanged keeps the
+  daemon warm, and a spec edit that changes only whitespace is not a change.
+  Two limits worth knowing: a bare `$PATH` name (`"cmd": "mcp-phpmd-warm"`) is
+  not resolved and so not hashed, and only files named **directly** in the spec
+  are hashed — a `phpstan.neon` with `includes:` re-fingerprints when the
+  top-level file changes, not when the include does.
+- **A stale pidfile never wedges a spawn.** A dead owner's pidfile is cleared under
+  `O_EXCL` — no daemon at all is a worse outcome than a duplicate.
+
+`mcp_status` lists what is running; `mcp_stop:NAME` / `mcp_stop_all` retire them.
 
 ## Example wiring (.supertool.json)
 

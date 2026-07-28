@@ -16,7 +16,6 @@ import hashlib
 import json
 import os
 import socket
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -75,18 +74,18 @@ import sys as _sys
 from pathlib import Path as _Path
 _sys.path.insert(0, str(_Path(__file__).resolve().parent.parent.parent / "presets" / "mcp"))
 from _paths import socket_pid_paths as _shared_socket_pid_paths  # noqa: E402
+import _spawn  # noqa: E402  (#451: one daemon per (kind, config fingerprint))
 
 
 def sock_paths(cwd: str, name: str) -> tuple[str, str]:
     return _shared_socket_pid_paths(cwd, name)
 
 
-def ensure_daemon(cwd: str) -> str:
-    sock, pid = sock_paths(cwd, DAEMON_NAME)
-    if os.path.exists(sock) and is_alive(pid):
-        return sock
+def resolve_bin(cwd: str) -> str:
+    """Resolve mcp-rector-warm: env override > $PATH > absolute path in env.
 
-    # Resolve mcp-rector-warm binary: env override > $PATH > absolute path in env.
+    Spawn-path only — a good error beats a daemon that starts and dies.
+    """
     bin_path = DAEMON_PROC
     if not os.path.isabs(bin_path):
         if "/" in bin_path or os.sep in bin_path:
@@ -105,40 +104,22 @@ def ensure_daemon(cwd: str) -> str:
                     f"Or set MCP_RECTOR_BIN to a path (abs, or relative to the project root)."
                 )
             bin_path = resolved
+    return bin_path
 
-    # daemon.py lives in supertool's presets/mcp/. Find it relative to this adapter file.
-    # adapter = .../claude-supertool/validators/rector-mcp/rector-mcp.py → 3 levels up = supertool root.
-    supertool_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    daemon_script = os.path.join(supertool_root, "presets/mcp/daemon.py")
-    if not os.path.isfile(daemon_script):
-        raise RuntimeError(f"daemon.py not found: {daemon_script}")
 
-    # Write spec into a temp .supertool.json override? Simpler: assume caller's
-    # .supertool.json has mcp.<DAEMON_NAME> entry. daemon.py reads it from cwd.
-    proc = subprocess.Popen(
-        ["python3", daemon_script, DAEMON_NAME, "--detach"],
-        cwd=cwd,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+def ensure_daemon(cwd: str) -> str:
+    """The socket of *the* warm rector daemon — started, reused, or replaced.
+
+    Delegates to presets/mcp/_spawn (#451): the check-and-spawn runs under an
+    exclusive lock, and a daemon holding a config that no longer matches disk
+    is retired rather than asked for an answer. The daemon still reads its own
+    cmd from the caller .supertool.json mcp.<DAEMON_NAME> entry.
+    """
+    return _spawn.ensure_daemon(
+        cwd, DAEMON_NAME,
+        preflight=lambda: resolve_bin(cwd),
+        spawn_timeout=SPAWN_TIMEOUT_SEC,
     )
-    proc.wait(timeout=5)
-
-    deadline = time.monotonic() + SPAWN_TIMEOUT_SEC
-    while time.monotonic() < deadline:
-        if os.path.exists(sock):
-            return sock
-        time.sleep(0.1)
-    raise RuntimeError(f"daemon failed to bind {sock} within {SPAWN_TIMEOUT_SEC}s")
-
-
-def is_alive(pid_path: str) -> bool:
-    try:
-        with open(pid_path, encoding="utf-8") as f:
-            pid = int(f.read().strip())
-        os.kill(pid, 0)
-        return True
-    except (OSError, ValueError):
-        return False
 
 
 def ndjson_call(sock_path: str, file_path: str) -> dict:
