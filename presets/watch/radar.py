@@ -63,9 +63,46 @@ conflicts are re-printed even when unchanged — an unfixed red is a current
 fact, not history. When nothing moved radar still prints one summary line
 rather than nothing at all: total silence is indistinguishable from a radar
 that failed to run.
+
+Standing exclusions
+-------------------
+
+Some MRs are red for a reason nobody intends to fix soon, and re-printing
+that row every run is how a reader learns to skim a board — which is how a
+real red gets missed. `ops.radar.radar_exclusions` in `.supertool.json` moves
+that suppression out of the reader's memory and into the tool.
+
+An exclusion is the one thing in this op that can hide a failure, so it is
+built to be the *opposite* of a silent omission at four points:
+
+  accounted   the row goes, the MR does not. The footer carries an
+              `N excluded` token and one line names each suppressed MR, its
+              current status and the configured reason. Tallies describe the
+              board that was printed, so `1 failing` is never a count with no
+              row behind it.
+  reasoned    an exclusion with no reason is refused and the row renders. The
+              field that makes it auditable is the field that makes it work.
+  self-expiring
+              an exclusion only ever suppresses a *standing problem*. The
+              moment the MR goes green and unconflicted the suppression lifts
+              by itself and the board says the reason is spent — so an
+              exclusion cannot outlive what it was written for. An optional
+              `until` date expires it on a schedule as well.
+  board-only  an exclusion is a statement about one row, not a change of
+              population. The watcher fleet, the feed and the event filter are
+              untouched, deliberately breaking the one-filter symmetry: the
+              filter says what radar is responsible for, and radar does not
+              stop being responsible for an MR because its row is noisy. The
+              watcher is also the only thing that can still report a push
+              while the row is suppressed, which is exactly when an exclusion
+              is most likely to have gone stale.
+
+Every unanswerable case — unparseable config, unknown key shape, an iid that
+is not in the population — resolves to *show the row*.
 """
 from __future__ import annotations
 
+import datetime
 import glob
 import hashlib
 import importlib.util
@@ -97,6 +134,12 @@ SOURCE = defaults.DEFAULT_SOURCE
 FEED_SOURCE = defaults.DEFAULT_FEED_SOURCE
 FEED_SCOPE = defaults.DEFAULT_FEED_SCOPE
 SNAPSHOT_PREFIX = "supertool-radar"
+
+# ops.radar.radar_exclusions in .supertool.json, JSON-encoded into the env by
+# the op runner — the same route ops.gl-job.job_patterns takes.
+EXCLUSIONS_ENV = "SUPERTOOL_RADAR_EXCLUSIONS"
+
+_FIX_HINT = "remove it from ops.radar.radar_exclusions in .supertool.json"
 
 FEED_LABEL = {"alive": "feed ok", "spawned": "feed respawned", "failed": "feed DOWN"}
 
@@ -414,14 +457,140 @@ def _marks(iid: str, drifted: dict[str, tuple[str, str]],
 
 def _is_standing_problem(m: dict) -> bool:
     """Unresolved red or conflict — a current fact, so never delta-suppressed."""
+    return bool(_problem_label(m))
+
+
+def _problem_label(m: dict) -> str:
+    """"failed", "conflict", "failed+conflict", or "" when the MR is fine.
+
+    Printed on the exclusion line, so a suppressed MR that picks up a second
+    problem changes what the board says about it without un-suppressing it.
+    """
+    bits = []
     if str(m.get("_pipeline") or "") == "failed":
-        return True
-    return bool(m.get("has_conflicts") or m.get("detailed_merge_status") == "conflict")
+        bits.append("failed")
+    if bool(m.get("has_conflicts") or m.get("detailed_merge_status") == "conflict"):
+        bits.append("conflict")
+    return "+".join(bits)
+
+
+# ---------------------------------------------------------------------------
+# standing exclusions
+# ---------------------------------------------------------------------------
+
+def _refused(iid: str, why: str) -> str:
+    return (f"radar: exclusion !{iid} REFUSED — {why}. The row is shown; "
+            f"fix ops.radar.radar_exclusions in .supertool.json")
+
+
+def _not_applied(iid: str, why: str) -> str:
+    return f"radar: exclusion !{iid} NOT applied — {why}; {_FIX_HINT}"
+
+
+def read_exclusions(raw: str | None = None) -> tuple[dict[str, dict[str, str]], list[str]]:
+    """({iid: {"reason", "until"}}, complaints) from the configured JSON.
+
+    Shapes accepted, both keyed by iid: a bare reason string, or an object
+    with `reason` and optional `until` (ISO date). A reason is mandatory —
+    an exclusion nobody had to justify is the one that becomes a permanent
+    blind spot, and refusing it costs a line of output instead of a red.
+
+    Nothing here raises and nothing here defaults to suppression: a config
+    this function cannot understand yields no exclusions plus a complaint,
+    which renders as the ordinary board it was trying to trim.
+    """
+    raw = os.environ.get(EXCLUSIONS_ENV, "") if raw is None else raw
+    raw = raw.strip()
+    if not raw:
+        return {}, []
+    try:
+        loaded = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        return {}, [f"radar: WARNING — radar_exclusions is not valid JSON ({exc.msg}). "
+                    f"No exclusions applied."]
+    if not isinstance(loaded, dict):
+        return {}, ["radar: WARNING — radar_exclusions must be an object keyed by MR "
+                    "iid. No exclusions applied."]
+
+    out: dict[str, dict[str, str]] = {}
+    problems: list[str] = []
+    for key, spec in loaded.items():
+        iid = str(key).strip().lstrip("!")
+        if isinstance(spec, str):
+            spec = {"reason": spec}
+        if not isinstance(spec, dict):
+            problems.append(_refused(iid, "it is neither a reason string nor an object"))
+            continue
+        if not iid.isdigit():
+            problems.append(_refused(iid, "the key is not an MR iid"))
+            continue
+        reason = str(spec.get("reason") or "").strip()
+        if not reason:
+            problems.append(_refused(iid, "it carries no reason"))
+            continue
+        out[iid] = {"reason": reason, "until": str(spec.get("until") or "").strip()}
+    return out, problems
+
+
+def resolve_exclusions(open_mrs: list[dict], exclusions: dict[str, dict[str, str]],
+                       covered: set[str], today: str = "") -> tuple[set[str], list[str]]:
+    """(suppressed iids, one accounting line per configured exclusion).
+
+    Matching is an exact iid lookup, never a prefix: excluding 1950 must not
+    swallow 19509.
+
+    An exclusion is honoured only while it is still true — the MR is in the
+    population, not past its `until`, and actually carrying a standing
+    problem. Each of the three failures prints the reason it did not apply
+    rather than silently doing nothing, because a standing exclusion that
+    stopped suppressing anything is dead config that will suppress something
+    the day that iid comes back.
+    """
+    if not exclusions:
+        return set(), []
+    today = today or datetime.date.today().isoformat()
+    by_iid = {str(m.get("iid")): m for m in open_mrs if m.get("iid") is not None}
+
+    suppressed: set[str] = set()
+    lines: list[str] = []
+    for iid in sorted(exclusions):
+        spec = exclusions[iid]
+        m = by_iid.get(iid)
+        if m is None:
+            lines.append(_not_applied(iid, "no open MR with that iid in this population"))
+            continue
+        until = spec["until"]
+        if until and until < today:
+            lines.append(_not_applied(iid, f"expired {until}"))
+            continue
+        label = _problem_label(m)
+        if not label:
+            pipe = str(m.get("_pipeline") or "none")
+            lines.append(_not_applied(
+                iid, f"pipeline is '{pipe}' and there is no conflict, so the "
+                     f"reason is spent"))
+            continue
+        suppressed.add(iid)
+        cover = "still watched" if iid in covered else "UNWATCHED"
+        lines.append(f"radar: excluded !{iid} {label}, {cover} — {spec['reason']}")
+    return suppressed, lines
 
 
 def _footer(open_mrs: list[dict], covered: set[str], healed: list[str],
             drifted: dict[str, tuple[str, str]], pruned: list[str],
-            uncovered: list[str], gone: int, feed: str, label: str = "") -> str:
+            uncovered: list[str], gone: int, feed: str, label: str = "",
+            excluded: int = 0) -> str:
+    """Tallies over the board that was printed, plus what was kept off it.
+
+    `open_mrs` here is the *shown* population. A footer counting the full one
+    would report a failure with no row behind it, which sends the reader
+    hunting for something that was deliberately removed — the exclusion
+    restores the total as its own token instead.
+
+    `healed` / `unwatched` / `pruned` / `drift` stay over the whole
+    population: they report what radar did, and radar acts on excluded MRs
+    exactly as it acts on any other.
+    """
     counts: dict[str, int] = {}
     for m in open_mrs:
         counts[str(m.get("_pipeline") or "none")] = counts.get(str(m.get("_pipeline") or "none"), 0) + 1
@@ -444,6 +613,8 @@ def _footer(open_mrs: list[dict], covered: set[str], healed: list[str],
         parts.append(f"{len(pruned)} pruned")
     if gone:
         parts.append(f"{gone} no longer open")
+    if excluded:
+        parts.append(f"{excluded} excluded")
     parts.append(FEED_LABEL.get(feed, feed))
     return " | ".join(parts)
 
@@ -463,19 +634,30 @@ def _feed_warnings(feed: str, feed_err: str) -> list[str]:
 def render(open_mrs: list[dict], covered: set[str], healed: list[str],
            drifted: dict[str, tuple[str, str]], pruned: list[str],
            uncovered: list[str], previous: dict[str, Any] | None,
-           feed: str = "alive", feed_err: str = "", label: str = "") -> str:
+           feed: str = "alive", feed_err: str = "", label: str = "",
+           excluded: set[str] | None = None, notes: list[str] | None = None) -> str:
     """Full board on cold start; changed + standing-problem rows afterwards.
 
     `label` names the population when it is not the default, because two
     radars over different filters in one window otherwise print two boards
     that are indistinguishable from one board printed twice.
+
+    `excluded` removes rows; `notes` says so. They are two arguments rather
+    than one because the notes outlive the suppression — an exclusion that
+    did *not* apply prints a line and no row is removed, and that is the case
+    that stops a spent reason becoming a permanent blind spot. Notes are
+    printed on every run, including a delta-suppressed one: the repetition is
+    what the exclusion was removing, and making the suppression itself
+    invisible would rebuild the problem one level up.
     """
     cold = previous is None
     prev_entries: dict[str, Any] = (previous or {}).get("mrs", {}) or {}
     healed_set, uncovered_set = set(healed), set(uncovered)
+    excluded = excluded or set()
+    board_mrs = [m for m in open_mrs if str(m.get("iid", "?")) not in excluded]
 
     shown = []
-    for m in sorted(open_mrs, key=mrs._sort_key):
+    for m in sorted(board_mrs, key=mrs._sort_key):
         iid = str(m.get("iid", "?"))
         moved = prev_entries.get(iid) != _snap_entry(m)
         notable = iid in drifted or iid in healed_set or iid in uncovered_set
@@ -484,8 +666,8 @@ def render(open_mrs: list[dict], covered: set[str], healed: list[str],
             shown.append(mrs._row(m, covered, True, marks))
 
     gone = len([i for i in prev_entries if i not in {str(m.get("iid")) for m in open_mrs}])
-    footer = _footer(open_mrs, covered, healed, drifted, pruned, uncovered, gone,
-                     feed, label)
+    footer = _footer(board_mrs, covered, healed, drifted, pruned, uncovered, gone,
+                     feed, label, len(excluded))
 
     lines = _feed_warnings(feed, feed_err)
     if cold:
@@ -495,11 +677,16 @@ def render(open_mrs: list[dict], covered: set[str], healed: list[str],
         lines.append("")
         lines.append(footer)
     elif cold:
-        lines.append("No open MRs.")
+        # "No open MRs" would be false when the population is non-empty and
+        # every row of it was excluded — the exact silent omission the
+        # accounting lines below exist to prevent.
+        lines.append("All open MRs in this population are excluded."
+                     if excluded else "No open MRs.")
         lines.append("")
         lines.append(footer)
     else:
         lines.append(f"radar: no change | {footer}")
+    lines.extend(notes or [])
     return "\n".join(lines)
 
 
@@ -525,10 +712,16 @@ def main(argv: list[str] | None = None) -> int:
     feed = ensure_feed(scope)
     feed_err = feed_error(scope) if feed == "alive" else ""
 
+    exclusions, excl_problems = read_exclusions()
+    excluded, excl_lines = resolve_exclusions(open_mrs, exclusions, covered)
+
     label = "" if multi == default_filter() else filter_string(multi)
     previous = read_snapshot(multi)
     print(render(open_mrs, covered, healed, drifted, pruned, uncovered, previous,
-                 feed, feed_err, label))
+                 feed, feed_err, label, excluded, excl_problems + excl_lines))
+    # The snapshot records the whole population, excluded rows included:
+    # keyed on what is true, not on what was printed. Otherwise the run after
+    # an exclusion is lifted reports a months-old MR as new.
     write_snapshot(
         {str(m.get("iid")): _snap_entry(m) for m in open_mrs if m.get("iid") is not None},
         multi,

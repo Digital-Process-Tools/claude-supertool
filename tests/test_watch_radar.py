@@ -847,11 +847,256 @@ def test_a_filtered_run_writes_only_its_own_snapshot(env, capsys) -> None:
 
 
 # ---------------------------------------------------------------------------
+# standing exclusions — suppressing a row must never suppress the accounting
+#
+# An exclusion is the one feature in this op that can hide a red, so every
+# test here asks the same question from a different side: what does the board
+# still say about the MR it stopped showing? A suppression that leaves no
+# trace is the `## No error patterns matched` defect with a config file.
+# ---------------------------------------------------------------------------
+
+BLOG_TITLE = "the max blog, permanently conflicted"
+BLOG_REASON = "MySQL service TLS failure + standing conflict, not this MR"
+
+
+def _exclude(env, mapping) -> None:
+    env["monkeypatch"].setenv(radar.EXCLUSIONS_ENV, json.dumps(mapping))
+
+
+def test_a_configured_exclusion_keeps_that_mr_off_the_board(env, capsys) -> None:
+    """The row, not the MR: the whole point is that a permanently-red row
+    stops training the reader to skim."""
+    _exclude(env, {"19509": {"reason": BLOG_REASON}})
+    _set_live(env, [_mr(19509, "failed", "154177", title=BLOG_TITLE),
+                    _mr(19510, "failed", "154200", title="a real red")])
+    out = _run(env, capsys)
+
+    assert BLOG_TITLE not in out
+    assert "a real red" in out
+
+
+def test_an_excluded_mr_is_still_accounted_for_in_the_output(env, capsys) -> None:
+    """The pin that stops this feature becoming a silent-omission bug.
+
+    Asserted on the emitted text, not on an internal count: a footer that
+    knows about the exclusion while the board says nothing is exactly the
+    blind spot the exclusion was supposed to be an honest alternative to.
+    """
+    _exclude(env, {"19509": {"reason": BLOG_REASON}})
+    _set_live(env, [_mr(19509, "failed", "154177", title=BLOG_TITLE),
+                    _mr(19510, "success", "154200", title="a real green")])
+    out = _run(env, capsys)
+
+    assert "1 excluded" in out
+    assert "!19509" in out
+    assert BLOG_REASON in out
+    assert "failed" in out
+
+
+def test_the_footer_counts_describe_the_board_that_was_printed(env, capsys) -> None:
+    """`3 open | 1 failing` with only two rows and no red among them is a
+    dangling reference — the reader hunts for a row that was never printed.
+    The tallies cover the shown board; `N excluded` restores the total."""
+    _exclude(env, {"19509": {"reason": BLOG_REASON}})
+    _set_live(env, [_mr(19509, "failed", "154177", title=BLOG_TITLE),
+                    _mr(19510, "success", "154200", title="a real green")])
+    out = _run(env, capsys)
+    footer = [ln for ln in out.splitlines() if " open" in ln][0]
+
+    assert "1 open" in footer
+    assert "failing" not in footer
+    assert "1 green" in footer
+    assert "1 excluded" in footer
+
+
+def test_an_exclusion_does_not_match_a_longer_iid(env, capsys) -> None:
+    """Exact iid, never a prefix: excluding 1950 must not swallow 19509."""
+    _exclude(env, {"1950": {"reason": "some other branch"}})
+    _set_live(env, [_mr(19509, "failed", "154177", title=BLOG_TITLE)])
+    out = _run(env, capsys)
+
+    assert BLOG_TITLE in out
+    assert "excluded !19509" not in out
+
+
+def test_an_excluded_mr_is_still_watched_healed_and_fully_notified(env, capsys) -> None:
+    """Scope decision, pinned: an exclusion is a statement about one row, not
+    a change of population. Dropping it from the fleet would stop the watcher
+    that reports the moment the exclusion stops being true — and the event is
+    the only thing that can report a push while the row is suppressed."""
+    _exclude(env, {"19509": {"reason": BLOG_REASON}})
+    _set_live(env, [_mr(19509, "failed", "154177", title=BLOG_TITLE)])
+    out = _run(env, capsys)
+
+    assert _mr_spawns(env) == ["19509"]
+    only = [o for src, iid, o in env["spawned"] if iid == "19509"][0]
+    assert only == [e for e in radar.defaults.DEFAULT_ONLY.split(",") if e]
+    assert "still watched" in out
+
+
+def test_an_exclusion_never_narrows_the_feed(env, capsys) -> None:
+    """The feed is the discovery tier for a *population*. An excluded MR is
+    still in the population, so the feed scope is untouched."""
+    _exclude(env, {"19509": {"reason": BLOG_REASON}})
+    _set_live(env, [_mr(19509, "failed", "154177", title=BLOG_TITLE)])
+    _run(env, capsys)
+
+    assert [scope for _s, scope, _o in _feed_spawns(env)] == [radar.FEED_SCOPE]
+
+
+def test_an_excluded_mr_is_still_recorded_in_the_snapshot(env, capsys) -> None:
+    """Otherwise removing the exclusion reports a four-month-old MR as new."""
+    _exclude(env, {"19509": {"reason": BLOG_REASON}})
+    _set_live(env, [_mr(19509, "failed", "154177", title=BLOG_TITLE)])
+    _run(env, capsys)
+
+    assert "19509" in radar.read_snapshot()["mrs"]
+
+
+def test_an_exclusion_stops_applying_once_the_mr_is_no_longer_red(env, capsys) -> None:
+    """Self-expiry. An exclusion suppresses a *standing problem*; it can never
+    hide an MR that is fine, so the reason cannot outlive itself unnoticed."""
+    _exclude(env, {"19509": {"reason": BLOG_REASON}})
+    _set_live(env, [_mr(19509, "success", "154177", title=BLOG_TITLE)])
+    out = _run(env, capsys)
+
+    assert BLOG_TITLE in out
+    assert "NOT applied" in out
+    assert "1 excluded" not in out
+
+
+def test_an_expired_exclusion_is_not_applied(env, capsys) -> None:
+    _exclude(env, {"19509": {"reason": BLOG_REASON, "until": "2020-01-01"}})
+    _set_live(env, [_mr(19509, "failed", "154177", title=BLOG_TITLE)])
+    out = _run(env, capsys)
+
+    assert BLOG_TITLE in out
+    assert "NOT applied" in out
+    assert "2020-01-01" in out
+
+
+def test_an_unexpired_exclusion_is_applied(env, capsys) -> None:
+    _exclude(env, {"19509": {"reason": BLOG_REASON, "until": "2999-01-01"}})
+    _set_live(env, [_mr(19509, "failed", "154177", title=BLOG_TITLE)])
+    out = _run(env, capsys)
+
+    assert BLOG_TITLE not in out
+    assert "1 excluded" in out
+
+
+def test_an_exclusion_for_an_mr_outside_the_population_says_so(env, capsys) -> None:
+    """Dead config is the quiet half of staleness: it suppresses nothing today
+    and everything on the day that iid is reused or reopened."""
+    _exclude(env, {"19509": {"reason": BLOG_REASON}})
+    _set_live(env, [_mr(19510, "success", "154200", title="a real green")])
+    out = _run(env, capsys)
+
+    assert "NOT applied" in out
+    assert "!19509" in out
+
+
+def test_an_exclusion_without_a_reason_is_refused(env, capsys) -> None:
+    """Fail open, loudly. An unreasoned exclusion is the thing that becomes a
+    permanent blind spot, so it is not honoured and the row renders."""
+    _exclude(env, {"19509": {}})
+    _set_live(env, [_mr(19509, "failed", "154177", title=BLOG_TITLE)])
+    out = _run(env, capsys)
+
+    assert BLOG_TITLE in out
+    assert "no reason" in out
+
+
+def test_a_malformed_exclusions_config_fails_open(env, capsys) -> None:
+    """Every unanswerable case resolves to *show the row*."""
+    env["monkeypatch"].setenv(radar.EXCLUSIONS_ENV, "{not json")
+    _set_live(env, [_mr(19509, "failed", "154177", title=BLOG_TITLE)])
+    out = _run(env, capsys)
+
+    assert BLOG_TITLE in out
+
+
+def test_the_exclusion_note_survives_a_no_change_run(env, capsys) -> None:
+    """The delta is what made the row repetitive; it must not also be what
+    makes the suppression invisible. A board whose only red is excluded still
+    says so on every run."""
+    _exclude(env, {"19509": {"reason": BLOG_REASON}})
+    _set_live(env, [_mr(19509, "failed", "154177", title=BLOG_TITLE)])
+    _run(env, capsys)
+    out = _run(env, capsys)
+
+    assert "radar: no change" in out
+    assert "!19509" in out
+    assert BLOG_REASON in out
+
+
+def test_an_excluded_mr_that_lost_its_watcher_is_reported_as_unwatched(env, capsys) -> None:
+    """The exclusion claims coverage. When there is none, it says so rather
+    than repeating a comfort it cannot back up."""
+    _exclude(env, {"19509": {"reason": BLOG_REASON}})
+    _set_live(env, [_mr(19509, "failed", "154177", title=BLOG_TITLE)])
+    env["monkeypatch"].setattr(radar.dispatcher, "_spawn_poller",
+                               lambda source, wid, only: 0)
+    out = _run(env, capsys)
+
+    assert "unwatched" in out
+    assert "still watched" not in out
+
+
+def test_a_conflict_only_red_is_excludable(env, capsys) -> None:
+    """!19509's conflict is not a pipeline failure, and the standing-problem
+    rule is what re-prints it every run."""
+    _exclude(env, {"19509": {"reason": BLOG_REASON}})
+    _set_live(env, [_mr(19509, "success", "154177", title=BLOG_TITLE,
+                        has_conflicts=True)])
+    out = _run(env, capsys)
+
+    assert BLOG_TITLE not in out
+    assert "conflict" in out
+
+
+def test_an_exclusion_may_be_written_as_a_bare_reason_string(env, capsys) -> None:
+    _exclude(env, {"19509": BLOG_REASON})
+    _set_live(env, [_mr(19509, "failed", "154177", title=BLOG_TITLE)])
+    out = _run(env, capsys)
+
+    assert BLOG_TITLE not in out
+    assert BLOG_REASON in out
+
+
+# ---------------------------------------------------------------------------
 # the op wiring — without {args} the whole feature is unreachable
 # ---------------------------------------------------------------------------
 
+def test_the_exclusions_env_var_matches_the_documented_config_key() -> None:
+    """`ops.radar.radar_exclusions` reaches the preset as
+    SUPERTOOL_RADAR_EXCLUSIONS — the op runner uppercases the key and prefixes
+    it. A rename on either side is a config key that silently does nothing,
+    which is the one failure mode a suppression feature cannot afford."""
+    key = "radar_exclusions"
+    assert radar.EXCLUSIONS_ENV == f"SUPERTOOL_{key.upper()}"
+
+    # encoding= is not optional here (#418): this reads a doc as *data*, and
+    # watch.md contains non-ASCII (⚠, em-dashes). Without it, Python decodes
+    # with the locale codec — cp1252 on the Windows runners — and dies with
+    # `charmap codec can't decode byte 0x81`. #418's static scan covers shipped
+    # code only, deliberately, so tests that read source or docs as data are
+    # the one place this class can still reappear.
+    docs = (Path(__file__).parent.parent / "docs" / "presets" / "watch.md").read_text(
+        encoding="utf-8"
+    )
+    assert f'"{key}"' in docs
+    assert radar.EXCLUSIONS_ENV in docs
+
+    manifest = json.loads(
+        (Path(__file__).parent.parent / "presets" / "watch.json").read_text(encoding="utf-8")
+    )
+    assert key in manifest["ops"]["radar"]["description"]
+
+
 def test_the_radar_op_forwards_its_args() -> None:
-    manifest = json.loads((Path(__file__).parent.parent / "presets" / "watch.json").read_text())
+    manifest = json.loads(
+        (Path(__file__).parent.parent / "presets" / "watch.json").read_text(encoding="utf-8")
+    )
     op = manifest["ops"]["radar"]
     assert op["cmd"].endswith("{args}")
     assert "author=" in op["syntax"]
