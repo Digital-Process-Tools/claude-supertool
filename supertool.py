@@ -1443,10 +1443,14 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
                 rtk_args.append(f"--exclude-dir={d}")
             rtk_args.extend([pattern, path])
             rtk_out = _rtk_run(rtk_args)
-            if rtk_out is not None and (rtk_out.strip() or not _is_regexy(pattern)):
-                return rtk_out + "\n"
-            # Empty RTK result + regexy pattern: fall through to the native
-            # walker so the zero-hit literal fallback below can run.
+            if rtk_out is not None and rtk_out.strip():
+                return _rtk_grep_report(rtk_out, limit)
+            # No RTK output — rtk failed, or it ran and matched nothing. Fall
+            # through to the native walker either way (#414). A zero result is
+            # the ambiguous case #407 exists for, so it must reach the walker
+            # and come back with a real scanned count rather than the `?` the
+            # delegated report carries. This also lets the zero-hit literal
+            # fallback below run.
 
     # Resolved once and threaded through so a zero-result report can state how
     # many files were actually scanned (#407) — without it, "0 results" is
@@ -2782,6 +2786,41 @@ def op_map(path: str, no_exclude: bool = False) -> str:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _rtk_grep_report(rtk_out: str, limit: int) -> str:
+    """Wrap rtk's delegated grep output in supertool's report line (#414).
+
+    rtk emits bare ``path:lineno:content`` lines and no report line at all, so
+    a delegated grep — `grep:PATTERN:PATH`, the plainest invocation there is —
+    silently dropped the result count, the limit disclosure, and #407's
+    scanned-file denominator together.
+
+    The denominator is reported as ``?`` rather than computed. rtk (0.35) shells
+    out to the system grep and exposes no scanned-file count, and walking the
+    tree to produce one is exactly the traversal delegation exists to avoid.
+    Per #407's own principle, a gap the caller can see beats one they cannot.
+
+    The ``?`` is never load-bearing. rtk exits non-zero when it matches nothing,
+    and op_grep now falls through on empty output too, so a delegated report
+    always carries at least one result — which is itself proof that files were
+    scanned. The ambiguous case, zero results, always reaches the native walker
+    and a real count.
+
+    The body is passed through verbatim: re-rendering it into supertool's
+    grouped layout would mean re-parsing content that may itself contain
+    colons, for a cosmetic gain.
+    """
+    lines = [ln for ln in rtk_out.splitlines() if ln.strip()]
+    files = set()
+    for ln in lines:
+        m = re.match(r"^(.+?):\d+:", ln)
+        if m:
+            files.add(m.group(1))
+    header = (f"({len(lines)} results in {len(files)} files"
+              ", scanned ? files — delegated to rtk"
+              f", limit {limit})\n")
+    return header + rtk_out + "\n"
+
 
 def _scanned_suffix(scanned: int) -> str:
     """Report format's ", scanned N files" clause (#407).
