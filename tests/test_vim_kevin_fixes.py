@@ -700,7 +700,7 @@ def test_kevin_real_near_hint_labels_in_memory_state():
             r"/UNIQUE_MARKER(NOPE)",
         )
         # File on disk unchanged
-        assert open(p, encoding="utf-8").read() == original, f"file mutated: {open(p, encoding="utf-8").read()!r}"
+        assert open(p, encoding="utf-8").read() == original, f"file mutated: {open(p, encoding='utf-8').read()!r}"
         # Receipt mentions atomicity / unchanged
         low = r.lower()
         assert "unchanged" in low or "atomic" in low, f"missing atomicity hint: {r!r}"

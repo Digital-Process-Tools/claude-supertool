@@ -413,7 +413,7 @@ def test_issue16_chained_abandoned_range_does_not_break_followups():
     p = _tmp("a\nb\nc\n")
     try:
         r = st.op_vim(p, "64,\x1bdd")
-        assert open(p, encoding="utf-8").read() == "b\nc\n", f"dd should run: {open(p, encoding="utf-8").read()!r}; receipt: {r}"
+        assert open(p, encoding="utf-8").read() == "b\nc\n", f"dd should run: {open(p, encoding='utf-8').read()!r}; receipt: {r}"
         assert "ERROR" not in r
     finally:
         os.unlink(p)
@@ -426,7 +426,7 @@ def test_paste_op_full_file_rewrite():
     try:
         new_content = "<?php\n\ndeclare(strict_types=1);\n\nclass Foo\n{\n    public function bar(): void {}\n}\n"
         r = st.op_paste(p, new_content)
-        assert open(p, encoding="utf-8").read() == new_content, f"got: {open(p, encoding="utf-8").read()!r}; receipt: {r}"
+        assert open(p, encoding="utf-8").read() == new_content, f"got: {open(p, encoding='utf-8').read()!r}; receipt: {r}"
         assert "<?php" in open(p, encoding="utf-8").read(), "<?php eaten!"
         assert "rewrote" in r
     finally:
@@ -439,7 +439,7 @@ def test_paste_op_creates_missing_file_and_parent():
     p = os.path.join(d, "new", "nested", "file.txt")
     try:
         r = st.op_paste(p, "hello\nworld\n")
-        assert open(p, encoding="utf-8").read() == "hello\nworld\n", f"got: {open(p, encoding="utf-8").read()!r}; receipt: {r}"
+        assert open(p, encoding="utf-8").read() == "hello\nworld\n", f"got: {open(p, encoding='utf-8').read()!r}; receipt: {r}"
         assert "created" in r
     finally:
         import shutil
@@ -451,7 +451,7 @@ def test_paste_op_appends_trailing_newline():
     p = _tmp("old\n")
     try:
         r = st.op_paste(p, "no trailing nl")
-        assert open(p, encoding="utf-8").read() == "no trailing nl\n", f"got: {open(p, encoding="utf-8").read()!r}"
+        assert open(p, encoding="utf-8").read() == "no trailing nl\n", f"got: {open(p, encoding='utf-8').read()!r}"
     finally:
         os.unlink(p)
 

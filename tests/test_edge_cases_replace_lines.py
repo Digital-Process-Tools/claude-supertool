@@ -258,4 +258,4 @@ def test_replace_all_lines_with_empty_makes_empty_file(tmp_path: Path) -> None:
 
     # File must still exist
     assert f.exists(), "File must not be deleted"
-    assert f.read_text(encoding="utf-8") == "", f"File should be empty, got: {f.read_text(encoding="utf-8")!r}"
+    assert f.read_text(encoding="utf-8") == "", f"File should be empty, got: {f.read_text(encoding='utf-8')!r}"
