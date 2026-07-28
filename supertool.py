@@ -12381,6 +12381,13 @@ def _at_file_to_parts(op: str, payload: Any) -> Tuple[List[str], bool]:
     replace_all is extracted from the payload and returned separately so the
     dispatch handler can act on it without polluting the parts list.
     """
+    if isinstance(payload, list) or (
+        isinstance(payload, dict) and isinstance(payload.get("ops"), list)
+    ):
+        raise ValueError(
+            f"this payload is an ops array — use 'batch:@file' instead of "
+            f"'{op}:@file' (e.g. batch:@payload.toml)"
+        )
     if not isinstance(payload, dict):
         raise ValueError(
             f"@file payload for op '{op}' must be a JSON object, "
@@ -12778,8 +12785,23 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                         batch_ops = raw_payload
                         continue_on_error = True
                     elif isinstance(raw_payload, dict):
-                        batch_ops = raw_payload.get("ops", [])
-                        continue_on_error = bool(raw_payload.get("continue_on_error", True))
+                        if "ops" not in raw_payload and [
+                            k for k in raw_payload if k != "continue_on_error"
+                        ]:
+                            # Mirror of the single-op-route misroute (#468): this
+                            # looks like one op's own fields (e.g. old/new/path),
+                            # not a batch wrapper — say so instead of silently
+                            # running zero ops.
+                            batch_ops = None  # signal: already set body
+                            body = (
+                                "ERROR: this payload has no 'ops' array — it looks "
+                                "like a single op's fields. Use 'OP:@file' (e.g. "
+                                "'edit:@file') for a single op, or wrap it as "
+                                '{"ops": [...]} for batch.\n'
+                            )
+                        else:
+                            batch_ops = raw_payload.get("ops", [])
+                            continue_on_error = bool(raw_payload.get("continue_on_error", True))
                     else:
                         batch_ops = []
                         continue_on_error = True

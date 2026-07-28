@@ -34,6 +34,8 @@ GitHub ops via the `gh` CLI. Replaces the 4-6 separate `gh` calls needed to revi
 
 Read the two lines together. `Checks:` is CI; `Mergeable:` is GitHub's *merge conflict* state and nothing else, so it now says `Mergeable: yes (no merge conflicts)` and appends `— checks ⚠ NOT ALL GREEN, see Checks above` when the run is not unanimously green. `Mergeable: yes` beside a cancelled run was how a failed run got read as ready to merge.
 
+**Casing:** the full dashboard prints `Title Case:` labels throughout (`State:`, `Checks:`, `Mergeable:`, `Merge commit:`); `:status` prints `lowercase:` labels throughout (`state:`, `checks:`, `mergeable:`, `merge_commit:`) as part of its terser, ~250-byte machine-oriented format. Each mode is internally consistent but the two never match each other, so grep the casing for the mode you're reading, not both — `grep 'Checks:'` finds nothing in `:status` output, and that silence means "wrong case", not "no checks".
+
 **Debug a failed Actions job:**
 ```bash
 ./supertool 'gh-run:12345'
