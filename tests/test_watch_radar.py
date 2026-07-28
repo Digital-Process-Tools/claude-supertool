@@ -1075,16 +1075,28 @@ def test_the_exclusions_env_var_matches_the_documented_config_key() -> None:
     key = "radar_exclusions"
     assert radar.EXCLUSIONS_ENV == f"SUPERTOOL_{key.upper()}"
 
-    docs = (Path(__file__).parent.parent / "docs" / "presets" / "watch.md").read_text()
+    # encoding= is not optional here (#418): this reads a doc as *data*, and
+    # watch.md contains non-ASCII (⚠, em-dashes). Without it, Python decodes
+    # with the locale codec — cp1252 on the Windows runners — and dies with
+    # `charmap codec can't decode byte 0x81`. #418's static scan covers shipped
+    # code only, deliberately, so tests that read source or docs as data are
+    # the one place this class can still reappear.
+    docs = (Path(__file__).parent.parent / "docs" / "presets" / "watch.md").read_text(
+        encoding="utf-8"
+    )
     assert f'"{key}"' in docs
     assert radar.EXCLUSIONS_ENV in docs
 
-    manifest = json.loads((Path(__file__).parent.parent / "presets" / "watch.json").read_text())
+    manifest = json.loads(
+        (Path(__file__).parent.parent / "presets" / "watch.json").read_text(encoding="utf-8")
+    )
     assert key in manifest["ops"]["radar"]["description"]
 
 
 def test_the_radar_op_forwards_its_args() -> None:
-    manifest = json.loads((Path(__file__).parent.parent / "presets" / "watch.json").read_text())
+    manifest = json.loads(
+        (Path(__file__).parent.parent / "presets" / "watch.json").read_text(encoding="utf-8")
+    )
     op = manifest["ops"]["radar"]
     assert op["cmd"].endswith("{args}")
     assert "author=" in op["syntax"]
