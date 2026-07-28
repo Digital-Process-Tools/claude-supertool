@@ -16,6 +16,8 @@ GitLab ops via the `glab` CLI. Replaces the 3-5 separate `glab` calls needed to 
 | `gl-pipeline` | `gl-pipeline:NUMBER[:active\|:failed]` | Pipeline job list grouped by stage with pass/fail status and failed job IDs. The default board collapses the `manual`/`created`/`skipped` bulk to a one-line count so the running/done/failed jobs aren't buried. `:active` shows only running/pending jobs ("what's still going"); `:failed` shows only failed jobs plus their job IDs/URLs ("what broke") |
 | `gl-job` | `gl-job:NUMBER[:raw[:START[:END]]\|:grep:PATTERN]` | Job failure detail: MR context + error pattern search + log tail. `:raw` dumps the full trace; `:raw:START:END` slices lines (1-indexed, inclusive); `:grep:PATTERN` runs an ad-hoc regex over the trace (literal fallback on bad regex, ±context, names the pattern + tail on no-match — never silent-empty). Cause markers are always matched on top of the configured patterns, and a *failed* job that matches nothing is reported as unclassified with a log tail rather than as "no errors" |
 
+**Casing:** `gl-mr`'s full dashboard prints `Title Case:` labels throughout (`State:`, `Pipeline:`, `Merge status:`, `Merge commit:`); `:status` prints `lowercase:` labels throughout (`state:`, `pipeline:`, `merge_status:`, `merge_commit:`) as part of its terser, slim-dashboard format. Each mode is internally consistent but the two never match each other, so grep the casing for the mode you're reading, not both — the same split as `gh-pr`, see `github.md`.
+
 ## Common workflows
 
 **Review an MR before merging:**

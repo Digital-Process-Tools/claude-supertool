@@ -614,3 +614,41 @@ class TestAtFileOptionalVariadic:
         self._patch(monkeypatch)
         with pytest.raises(ValueError, match="missing required field 'message'"):
             supertool._at_file_to_parts("git-commit", {"paths": ["a.txt"]})
+
+
+# ---------------------------------------------------------------------------
+# 468 — an [[ops]] array handed to a single-op route (edit:@file) must name
+# the batch route, not report a spuriously "missing" field.
+# ---------------------------------------------------------------------------
+
+class TestOpsArrayMisroutedToSingleOp:
+    def test_dict_with_ops_list_names_batch_route(self) -> None:
+        payload = {
+            "ops": [
+                {"op": "edit", "path": "x.py", "old": "a", "new": "b"},
+            ]
+        }
+        with pytest.raises(ValueError, match="batch:@file"):
+            supertool._at_file_to_parts("edit", payload)
+
+    def test_bare_ops_array_names_batch_route(self) -> None:
+        payload = [{"op": "edit", "path": "x.py", "old": "a", "new": "b"}]
+        with pytest.raises(ValueError, match="batch:@file"):
+            supertool._at_file_to_parts("edit", payload)
+
+    def test_dispatch_edit_at_file_with_ops_toml_names_batch_route(self, tmp_path: Path) -> None:
+        """End-to-end: a real [[ops]] TOML payload handed to edit:@file."""
+        target = tmp_path / "x.py"
+        target.write_text("a = 1\n")
+        spec = tmp_path / "payload.toml"
+        spec.write_text(
+            "[[ops]]\n"
+            'op = "edit"\n'
+            f'path = "{target.as_posix()}"\n'
+            'old = \'\'\'a = 1\'\'\'\n'
+            'new = \'\'\'a = 99\'\'\'\n'
+        )
+        out = supertool.dispatch(f"edit:@{spec}")
+        assert "ERROR" in out
+        assert "batch:@file" in out
+        assert "missing required field" not in out

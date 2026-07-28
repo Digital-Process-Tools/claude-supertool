@@ -32,6 +32,15 @@ def test_batch_at_file_with_dict_missing_ops_key(tmp_path: Path) -> None:
     assert isinstance(out, str)
 
 
+def test_batch_at_file_with_flat_single_op_document_names_single_op_route(tmp_path: Path) -> None:
+    """469's mirror case: a flat single-op document (old/new/path, no 'ops'
+    wrapper) handed to batch:@file must say so, not silently no-op."""
+    f = _write(tmp_path, {"old": "a", "new": "b", "path": str(tmp_path / "x.py")})
+    out = supertool.dispatch(f"batch:@{f}")
+    assert "ERROR" in out
+    assert "ops" in out.lower()
+
+
 def test_batch_at_file_with_explicit_continue_false(tmp_path: Path) -> None:
     payload = {
         "continue_on_error": False,
