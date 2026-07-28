@@ -21,6 +21,14 @@ INTERVAL = 30
 
 TERMINAL_MR_STATES = {"merged", "closed"}
 
+# GitLab computes mergeability asynchronously. `has_conflicts` is only an
+# answer once the check has settled — in `unchecked`, `checking` and
+# `cannot_be_merged_recheck` the field reads False on an MR whose conflict was
+# never touched. Every push to the target branch puts every open MR back into
+# recheck, so believing False there drops the conflict latch and re-arms the
+# rising edge: one standing conflict, one "appeared" per push to master (#463).
+SETTLED_MERGE_STATUSES = {"can_be_merged", "cannot_be_merged"}
+
 # Import the existing _glab_api CLI wrapper from the gl-mr op so we share
 # one source of truth for glab invocation, error handling, and timeouts.
 _MR_MODULE_PATH = Path(__file__).parents[3] / "gitlab" / "mr.py"
@@ -59,7 +67,8 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
         return [], state  # transient — try again next tick
 
     mr_state = str(data.get("state") or "")
-    has_conflicts = bool(data.get("has_conflicts"))
+    raw_conflicts = bool(data.get("has_conflicts"))
+    merge_status = str(data.get("merge_status") or "")
     pipeline = data.get("head_pipeline") or data.get("pipeline") or {}
     pipeline_status = str(pipeline.get("status") or "") if isinstance(pipeline, dict) else ""
     pipeline_id = str(pipeline.get("id") or "") if isinstance(pipeline, dict) else ""
@@ -79,6 +88,13 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
     prev_state = state.get("mr_state", "")
     prev_conflicts = bool(state.get("has_conflicts", False))
     prev_notes_count = state.get("notes_count")  # None on first poll
+
+    # An unsettled check means "not computed yet", not "clean", so the last
+    # known answer is carried forward and nothing is emitted. A response with
+    # no `merge_status` at all is a different case: it is not evidence of an
+    # unsettled check, so `has_conflicts` is taken at face value.
+    conflicts_settled = merge_status in SETTLED_MERGE_STATUSES or not merge_status
+    has_conflicts = raw_conflicts if conflicts_settled else prev_conflicts
 
     # Pipeline transitions
     if pipeline_status and pipeline_status != prev_pipeline:
@@ -119,7 +135,10 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
                 "notify_message": title,
             })
 
-    # Conflict transitions (rising edge only — appeared, not resolved)
+    # Conflict rising edge — appeared, not resolved. The latch is only ever
+    # released by a *settled* clean check, which is what keeps this re-armable:
+    # a conflict that is genuinely resolved and later returns fires again,
+    # while one that merely goes un-recomputed does not.
     if has_conflicts and not prev_conflicts:
         events.append({
             "event": "conflicts_appeared",
@@ -154,6 +173,7 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
         "pipeline_status": pipeline_status,
         "pipeline_id": pipeline_id,
         "has_conflicts": has_conflicts,
+        "merge_status": merge_status,
         "notes_count": notes_count,
         "title": title,
         "web_url": web_url,

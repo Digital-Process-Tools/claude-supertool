@@ -163,6 +163,20 @@ That last part is a considered rejection of the obvious symmetry. A `pipeline_fa
 
 Each source declares its event vocabulary in `presets/watch/sources/<NAME>/events.json` for introspection.
 
+### `conflicts_appeared` is edge-triggered, and stays re-armable ([#463](https://github.com/Digital-Process-Tools/claude-supertool/issues/463))
+
+`gitlab-mr` announced a standing conflict roughly once an hour with nothing resolved and nothing re-pushed — while `pipeline_failed` in the same poller fired once per pipeline. Both were written as rising edges. The difference is that GitLab computes mergeability **asynchronously**:
+
+| `merge_status` | `has_conflicts` on a conflicted MR | |
+|---|---|---|
+| `cannot_be_merged` | `true` | settled — the answer |
+| `can_be_merged` | `false` | settled — the answer |
+| `unchecked` / `checking` / `cannot_be_merged_recheck` | `false` | **not computed yet** — not an answer |
+
+Every push to the target branch puts every open MR back into `cannot_be_merged_recheck`, so the poller read "no conflicts", dropped its latch, and re-armed the edge for the next settled poll. Four pushes to `master`, four `conflicts_appeared` for one untouched conflict.
+
+**The poller now only believes `has_conflicts` on a settled `merge_status`**, and carries the last known answer forward otherwise. Suppressing repeats outright would have been the opposite defect — a conflict that is genuinely resolved and later returns *must* fire again, and only a settled *clean* check releases the latch, so it does. A response with no `merge_status` field at all is not evidence of an unsettled check, so `has_conflicts` is still taken at face value there.
+
 ## Discovery — `gitlab-mr-feed`
 
 Every source above polls **one known id**, so nothing in a running watch session can discover an MR that did not exist when the poller was spawned. Observed: !33176 opened between two `radar` runs, and only the second run found it. In between, the board was not visibly wrong — it was confidently complete and missing an MR, which renders identically to all-green.
@@ -231,11 +245,29 @@ Override the socket path with `SUPERTOOL_WATCH_SOCK` env var (must be set on bot
   "payload": {
     "url": "https://github.com/.../pull/179",
     "title": "feat: do the thing"
-  }
+  },
+  "first_tick": false
 }
 ```
 
-Consumers can rely on `ts/source/id/event/payload` always being present. Extra fields inside `payload` vary by source — see each source's `events.json` and `poller.py`.
+Consumers can rely on `ts/source/id/event/payload/first_tick` always being present. Extra fields inside `payload` vary by source — see each source's `events.json` and `poller.py`.
+
+### `first_tick` — the contract moved once, deliberately ([#464](https://github.com/Digital-Process-Tools/claude-supertool/issues/464))
+
+**`first_tick: true` means the watcher emitted this on its first poll: the state it *found*, not a change it *observed*.** The state may be days old. `false` means a transition this watcher actually watched happen.
+
+Pollers emit on first tick on purpose — it is how a new watcher announces an already-red MR, and it is what [#430](https://github.com/Digital-Process-Tools/claude-supertool/issues/430)/[#434](https://github.com/Digital-Process-Tools/claude-supertool/issues/434) are built on. The defect was only that a bootstrap emission and a live one arrived in the same shape, so a filter change that respawned watchers reported week-old pipelines as news. The fix makes the difference visible; it does not remove the emission.
+
+It is keyed on **state, not process age**: a poller restarted with its state file intact is resuming, not bootstrapping, and marks nothing. Only a watcher with no prior knowledge — first spawn, cleared `/tmp`, a `radar` heal — has a first tick.
+
+**What a consumer must tolerate.** The record gained one key. A consumer that ignores it receives exactly what it received before — same `event`, same `payload`, same `ts` — and is uninformed rather than wrong, which is the bar any addition here has to clear. Concretely:
+
+| Guarantee | |
+|---|---|
+| **The locked `payload` did not move** | `first_tick` sits beside `ts`/`source`/`id`/`event`, because it describes the *emission* the way `ts` does, not the thing that happened. No source's payload gained, lost or retyped a field, and every key in every `events.json` still means what it did — the same claim [#439](https://github.com/Digital-Process-Tools/claude-supertool/issues/439) made, kept honest by keeping the change out of `payload`. |
+| **No event key changed meaning** | The alternative — a separate key for bootstrap state — would have silently withheld first-tick emissions from every consumer whose `only=` filter names the real keys, turning a cosmetic gap into the omission class. `pipeline_succeeded` on first tick is still `pipeline_succeeded`. |
+| **Always present, never inferred** | Emitted as `true`/`false` on every record, so a consumer never has to decide what an absent key meant. On the `claude-channel` bridge the attribute *is* omitted when the poller did not send one — an old poller has not told us the event was live, and that is unknown, not false. |
+| **Not a suppression** | Nothing is dropped, delayed or deduplicated. A consumer that wants the old firehose keeps it verbatim by ignoring the field. |
 
 **The wire record itself has not moved.** What changed with [#434](https://github.com/Digital-Process-Tools/claude-supertool/issues/434) is *which* records get emitted, not their shape: no field was added, removed or retyped, and every event key in every `events.json` still means what it did. The contract that moved is the one **between the two GitLab tiers** — `gitlab-mr-feed` no longer emits `mr_merged`/`mr_closed` for an iid whose per-MR poller announces `merged`/`closed` itself, so a consumer that counted on receiving both keys for one merge now receives exactly one. Consumers wanting every terminal transition should keep treating `merged`/`mr_merged` (and `closed`/`mr_closed`) as the same fact under two keys — which is what they always were.
 
