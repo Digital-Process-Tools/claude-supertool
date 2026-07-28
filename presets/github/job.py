@@ -108,6 +108,45 @@ def _select_job_patterns(
     return default_patterns, None
 
 
+def _print_unmatched_failure(
+    job_id: str, status_label: str, patterns: list[str], lines: list[str], total: int
+) -> None:
+    """Report a failed job the patterns could not classify — never as silence.
+
+    `## No error patterns matched` on a job GitHub calls *failure* reads as
+    green (#453, mirrors #445/#452 on the GitLab side), which is the worst
+    output a failure tool can produce. A failed job always has a reason; not
+    finding it is a gap in this tool, so the output says exactly that and
+    hands back the raw evidence.
+
+    Unlike gl-job, this does not port a "last section entered" hint: GitHub
+    Actions always runs its `if: always()` steps (the junit-summary step,
+    "Post job cleanup") after a failure, so the last `##[group]` in the log is
+    routinely a step that has nothing to do with the failure — naming it would
+    mislead rather than help.
+    """
+    tail_n = int(os.environ.get("GH_JOB_UNMATCHED_TAIL_LINES", "40"))
+    print("\n## FAILED — no error pattern matched")
+    print(
+        f"Job status is `{status_label}`: something did go wrong. supertool "
+        "could not classify it, which means a pattern is missing here — "
+        "not that the log is clean. Read the tail below before concluding "
+        "anything."
+    )
+    shown = ", ".join(p.strip() for p in patterns if p.strip())
+    if shown:
+        print(f"Patterns tried: {shown}")
+    tail = lines[-tail_n:] if len(lines) > tail_n else lines
+    print(f"\n## Log tail (last {len(tail)} lines of {total})")
+    start = total - len(tail) + 1
+    for i, line in enumerate(tail):
+        print(f"  {start + i:>5} | {line}")
+    print(
+        f"\nNext:  ./supertool 'gh-job:{job_id}:raw'  or  "
+        f"'gh-job:{job_id}:grep:PATTERN'  — the whole trace is still there."
+    )
+
+
 def _find_error_sections(lines: list[str], patterns: list[str], context: int) -> list[tuple[int, str]]:
     """Find lines matching error patterns and return them with context."""
     matches: set[int] = set()
@@ -326,7 +365,10 @@ def main() -> int:
     # fail/errors mode — dump ALL matched blocks, no tail cap
     if errors_mode:
         if not error_sections:
-            print("\n## No error patterns matched")
+            if display_status == "failure":
+                _print_unmatched_failure(job_id, display_status, patterns, lines, total)
+            else:
+                print("\n## No error patterns matched")
             return 0
         matched_count = len([e for e in error_sections if e[0] > 0])
         print(f"\n## All error blocks ({matched_count} lines matched, no tail truncation)")
@@ -355,7 +397,12 @@ def main() -> int:
         start = total - len(shown) + 1
         for i, line in enumerate(shown):
             print(f"  {start + i:>5} | {line}")
+    elif display_status == "failure":
+        # Nothing matched on a job that failed — say so, do not just print a
+        # tail and let the reader infer the log was clean (#453/#445).
+        _print_unmatched_failure(job_id, display_status, patterns, lines, total)
     else:
+        # Job didn't fail — just show tail
         shown = lines[-tail_lines:] if len(lines) > tail_lines else lines
         skipped = total - len(shown)
         if skipped > 0:
