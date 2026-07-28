@@ -161,6 +161,24 @@ class _OpenPoller(_StubPoller):
         return False
 
 
+class _EmittingPoller(_StubPoller):
+    """Emits one event per tick, then bails out the way a SIGTERM would."""
+    _ticks: list[int] = []
+
+    @staticmethod
+    def poll(state, ctx):
+        _EmittingPoller._ticks.append(1)
+        n = len(_EmittingPoller._ticks)
+        if n > 2:
+            raise SystemExit(0)
+        return ([{"event": "pipeline_succeeded", "payload": {"tick": n}}],
+                {"mr_state": "opened", "tick": n})
+
+    @staticmethod
+    def is_terminal(state):
+        return False
+
+
 def _run_loop_in_child(monkeypatch, tmp_path, poller, only=None) -> None:
     """Run _run_poll_loop in a forked child.
 
@@ -235,6 +253,71 @@ def test_the_filter_survives_the_polls_that_rewrite_the_state(monkeypatch, tmp_p
     body = json.loads(state.read_text())
     assert body["only"] == ["merged"]
     assert body["source_state"] == {"mr_state": "opened"}
+
+
+# ---------------------------------------------------------------------------
+# #464 — spawning watchers for MRs whose state had not moved in a week emitted
+# `pipeline_succeeded` for week-old pipelines, shaped exactly like news. The
+# emission is wanted (it is how a new watcher reports what it found); what was
+# missing is any way for the consumer to tell the two apart.
+# ---------------------------------------------------------------------------
+
+def _capture_emissions(monkeypatch, tmp_path):
+    """Log every record the real emit_event builds. The loop runs in a forked
+    child, so the log has to be a file rather than a list."""
+    log = tmp_path / "emitted.jsonl"
+
+    def _capture(record):
+        with open(log, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+
+    monkeypatch.setattr(dispatcher.transport, "emit_socket", _capture)
+    return log
+
+
+def _read_emissions(log):
+    if not log.exists():
+        return []
+    return [json.loads(line) for line in
+            log.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="requires os.fork")
+def test_the_first_polls_events_are_marked_first_tick(monkeypatch, tmp_path) -> None:
+    _EmittingPoller._ticks.clear()
+    log = _capture_emissions(monkeypatch, tmp_path)
+    _run_loop_in_child(monkeypatch, tmp_path, _EmittingPoller)
+    records = _read_emissions(log)
+    assert records, "the stub emits on every tick — an empty log means the loop never ran"
+    assert records[0]["first_tick"] is True
+    assert records[0]["payload"]["tick"] == 1
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="requires os.fork")
+def test_a_later_polls_events_are_not_marked_first_tick(monkeypatch, tmp_path) -> None:
+    """The false-positive direction. A marker that never turns off is decoration."""
+    _EmittingPoller._ticks.clear()
+    log = _capture_emissions(monkeypatch, tmp_path)
+    _run_loop_in_child(monkeypatch, tmp_path, _EmittingPoller)
+    records = _read_emissions(log)
+    assert len(records) == 2
+    assert records[1]["first_tick"] is False
+    assert records[1]["payload"]["tick"] == 2
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="requires os.fork")
+def test_a_watcher_resuming_from_saved_state_has_no_first_tick(monkeypatch, tmp_path) -> None:
+    """First tick means "this watcher knew nothing", not "this process is
+    young" — a restarted poller carrying its state forward is not bootstrapping."""
+    _EmittingPoller._ticks.clear()
+    state = tmp_path / "supertool-watch-gitlab-mr__33136.state.json"
+    state.write_text(json.dumps({"source_state": {"mr_state": "opened", "tick": 0}}),
+                     encoding="utf-8")
+    log = _capture_emissions(monkeypatch, tmp_path)
+    _run_loop_in_child(monkeypatch, tmp_path, _EmittingPoller)
+    records = _read_emissions(log)
+    assert records
+    assert all(r["first_tick"] is False for r in records)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="requires os.fork")

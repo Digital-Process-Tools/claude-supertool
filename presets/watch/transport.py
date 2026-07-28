@@ -125,12 +125,20 @@ def emit_event(
     *,
     notify_title: str | None = None,
     notify_message: str | None = None,
+    first_tick: bool = False,
 ) -> None:
     """All transports in one call.
 
     Writes the event to the UDS socket (if any listener), refreshes the
     status file with the latest event, and optionally fires a desktop
     notification when title+message are provided.
+
+    `first_tick` marks an event emitted on a watcher's very first poll: a
+    report of the state it *found*, not of a change it *observed*. Both are
+    worth emitting — a new watcher announcing an already-red MR is the point —
+    but week-old outcomes arriving shaped like news is not (#464). It sits
+    beside the envelope keys rather than inside `payload`, which is
+    source-defined and locked; see docs/presets/watch.md.
     """
     record = {
         "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -138,6 +146,7 @@ def emit_event(
         "id": watcher_id,
         "event": event_key,
         "payload": payload,
+        "first_tick": bool(first_tick),
     }
     emit_socket(record)
     current = read_state(source, watcher_id)

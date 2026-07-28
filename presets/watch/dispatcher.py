@@ -253,6 +253,13 @@ def _run_poll_loop(source: str, watcher_id: str, only: list[str]) -> None:
     transport.write_state(source, watcher_id, published)
 
     state: dict[str, Any] = transport.read_state(source, watcher_id).get("source_state", {}) or {}
+    # No prior state means this watcher knows nothing yet, so whatever its
+    # first poll emits describes what it found rather than what changed. That
+    # emission is deliberate — it is how a fresh watcher reports an already-red
+    # MR, and gitlab-mr-feed leans on it — but the consumer has to be able to
+    # tell it apart from a live transition (#464). Keyed on state, not on
+    # process age: a poller restarted with its state intact is not bootstrapping.
+    first_tick = not state
     ctx = {"source": source, "id": watcher_id, "only": only}
     interval = int(getattr(poller, "INTERVAL", 30))
     stop_flag = {"stop": False}
@@ -285,6 +292,7 @@ def _run_poll_loop(source: str, watcher_id: str, only: list[str]) -> None:
                     ev.get("payload", {}),
                     notify_title=ev.get("notify_title"),
                     notify_message=ev.get("notify_message"),
+                    first_tick=first_tick,
                 )
 
             full = transport.read_state(source, watcher_id)
@@ -292,6 +300,7 @@ def _run_poll_loop(source: str, watcher_id: str, only: list[str]) -> None:
             full.pop("last_error", None)
             transport.write_state(source, watcher_id, full)
             state = new_state
+            first_tick = False
 
             if hasattr(poller, "is_terminal") and poller.is_terminal(new_state):
                 reached_terminal = True

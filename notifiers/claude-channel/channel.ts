@@ -34,6 +34,10 @@ interface WatchEvent {
   id: string;
   event: string;
   payload: Record<string, unknown>;
+  /** True when the watcher emitted this on its first poll — the state it
+   *  found, not a change it observed. Absent on records from a poller that
+   *  predates the field, which is "unknown" and not "false". */
+  first_tick?: boolean;
 }
 
 // Identifier keys (letters/digits/underscores) become <channel> tag attributes.
@@ -52,6 +56,10 @@ function buildMeta(ev: WatchEvent): Record<string, string> {
     event: ev.event,
     ts: ev.ts,
   };
+  // Absent stays absent: a poller too old to send the flag has not told us the
+  // event was live, and claiming `first_tick="false"` on its behalf would be a
+  // confident wrong answer rather than a missing one.
+  if (typeof ev.first_tick === "boolean") meta.first_tick = String(ev.first_tick);
   for (const [k, v] of Object.entries(ev.payload || {})) {
     if (!ATTR_KEY_RE.test(k)) continue;
     if (k === "source") continue;  // never let payload overwrite the auto-injected key
@@ -66,7 +74,8 @@ function buildContent(ev: WatchEvent): string {
   // Keep it short and route-oriented; payload details live in attributes.
   const url = (ev.payload as Record<string, unknown>)?.url;
   const title = (ev.payload as Record<string, unknown>)?.title;
-  const lines: string[] = [`${ev.source} ${ev.id}: ${ev.event}`];
+  const suffix = ev.first_tick === true ? "  (state at watcher start)" : "";
+  const lines: string[] = [`${ev.source} ${ev.id}: ${ev.event}${suffix}`];
   if (typeof title === "string" && title) lines.push(title);
   if (typeof url === "string" && url) lines.push(url);
   return lines.join("\n");
@@ -85,7 +94,11 @@ const mcp = new Server(
       "They are one-way (no reply expected). Investigate via the matching supertool op " +
       "(e.g. ./supertool 'gl-mr:<id>'), post a summary, or notify the human. " +
       "Status-change is the signal; consecutive events for the same watcher_source/id " +
-      "supersede each other.",
+      "supersede each other. " +
+      "`first_tick=\"true\"` means the watcher emitted this on its first poll: it is the " +
+      "current state it found on startup, which may be days old, not something that just " +
+      "changed. Report it as context, not as news. The attribute being absent means the " +
+      "poller predates the field — unknown, not false.",
   },
 );
 

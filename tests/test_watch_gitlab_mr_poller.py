@@ -14,16 +14,47 @@ _spec.loader.exec_module(poller)
 
 
 def _mr(state="opened", pipeline_status="running", pipeline_id="9", conflicts=False,
-        user_notes_count=0, **kw):
-    return {
+        user_notes_count=0, merge_status=None, **kw):
+    """A settled MR by default: `merge_status` agrees with `has_conflicts`.
+
+    Pass `merge_status` explicitly to model GitLab mid-check, where
+    `has_conflicts` is False because nothing has been computed yet.
+    """
+    if merge_status is None:
+        merge_status = "cannot_be_merged" if conflicts else "can_be_merged"
+    body = {
         "iid": 21803,
         "title": kw.get("title", "feat: do the thing"),
         "state": state,
         "has_conflicts": conflicts,
+        "merge_status": merge_status,
         "head_pipeline": {"id": pipeline_id, "status": pipeline_status},
         "web_url": "https://example.com/mr/21803",
         "user_notes_count": user_notes_count,
     }
+    if merge_status == "":
+        del body["merge_status"]
+    return body
+
+
+def _rechecking():
+    """GitLab re-running its mergeability check after a push to the target branch.
+
+    Observed live: `cannot_be_merged_recheck` / `has_conflicts: false` on an MR
+    whose conflict was never resolved. The False is "not computed", not "clean".
+    """
+    return _mr(conflicts=False, merge_status="cannot_be_merged_recheck")
+
+
+def _drive(sequence):
+    """Poll once per MR body in `sequence`, threading state. Returns all events."""
+    state = {}
+    emitted = []
+    for body in sequence:
+        with mock.patch.object(poller, "_fetch", return_value=body):
+            events, state = poller.poll(state, {"id": "21803"})
+        emitted.extend(events)
+    return emitted, state
 
 
 def test_no_change_emits_nothing() -> None:
@@ -74,6 +105,84 @@ def test_conflict_rising_edge_emits_once() -> None:
     with mock.patch.object(poller, "_fetch", return_value=_mr(conflicts=True)):
         events2, _ = poller.poll(new_state, {"id": "21803"})
     assert all(e["event"] != "conflicts_appeared" for e in events2)
+
+
+# ---------------------------------------------------------------------------
+# #463 — `conflicts_appeared` announced a standing conflict once per hour.
+#
+# The rising-edge guard was already there. What was not there is the knowledge
+# that `has_conflicts` is only *computed* when GitLab's mergeability check has
+# settled. Every push to the target branch flips the MR to
+# `cannot_be_merged_recheck` with `has_conflicts: false` — the latch drops, and
+# the next settled poll re-arms it. Four pushes to master, four "appeared".
+# ---------------------------------------------------------------------------
+
+def test_a_standing_conflict_is_announced_once_across_recheck_cycles() -> None:
+    """The #463 repro: nothing was resolved, nothing was re-pushed to the MR."""
+    events, _ = _drive([
+        _mr(conflicts=True),
+        _rechecking(),
+        _mr(conflicts=True),
+        _rechecking(),
+        _mr(conflicts=True),
+    ])
+    assert [e["event"] for e in events].count("conflicts_appeared") == 1
+
+
+def test_a_resolved_conflict_that_returns_is_announced_again() -> None:
+    """The re-arm. Suppressing forever would trade a noisy report for a silent
+    omission, which is the strictly worse defect."""
+    events, _ = _drive([
+        _mr(conflicts=True),                        # appears
+        _mr(conflicts=False),                       # settled clean — resolved
+        _rechecking(),                              # someone pushes to master
+        _mr(conflicts=True),                        # genuinely conflicted again
+    ])
+    assert [e["event"] for e in events].count("conflicts_appeared") == 2
+
+
+def test_an_unsettled_check_carries_the_known_conflict_forward() -> None:
+    """State, not just emission: a poller that records "clean" mid-recheck has
+    already forgotten the conflict, whatever it did or did not emit."""
+    _, state = _drive([_mr(conflicts=True), _rechecking()])
+    assert state["has_conflicts"] is True
+
+
+def test_an_unsettled_check_does_not_invent_a_conflict() -> None:
+    """The other direction: `unchecked` on a clean MR stays clean."""
+    _, state = _drive([_mr(conflicts=False), _mr(conflicts=False, merge_status="unchecked")])
+    assert state["has_conflicts"] is False
+
+
+def test_a_missing_merge_status_still_trusts_has_conflicts() -> None:
+    """An API response without the field is not evidence of an unsettled check.
+    Absent means we have no reason to distrust `has_conflicts`, so it is used."""
+    events, state = _drive([_mr(conflicts=True, merge_status="")])
+    assert any(e["event"] == "conflicts_appeared" for e in events)
+    assert state["has_conflicts"] is True
+
+
+# ---------------------------------------------------------------------------
+# #463 control — `pipeline_failed` is the edge-triggered sibling conflicts are
+# being made to match. These pin that it was not disturbed on the way past.
+# ---------------------------------------------------------------------------
+
+def test_a_pipeline_that_stays_failed_is_announced_once() -> None:
+    events, _ = _drive([
+        _mr(pipeline_status="failed"),
+        _mr(pipeline_status="failed"),
+        _mr(pipeline_status="failed"),
+    ])
+    assert [e["event"] for e in events].count("pipeline_failed") == 1
+
+
+def test_a_pipeline_that_fails_again_after_going_green_is_announced_again() -> None:
+    events, _ = _drive([
+        _mr(pipeline_status="failed"),
+        _mr(pipeline_status="success"),
+        _mr(pipeline_status="failed"),
+    ])
+    assert [e["event"] for e in events].count("pipeline_failed") == 2
 
 
 def test_is_terminal_when_merged() -> None:

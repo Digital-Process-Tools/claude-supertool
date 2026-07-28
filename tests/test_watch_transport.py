@@ -80,6 +80,60 @@ def test_emit_event_preserves_existing_state_keys(monkeypatch, tmp_path) -> None
     assert state["last_event"]["event"] == "merged"
 
 
+# ---------------------------------------------------------------------------
+# #464 — a first-tick emission is a report of the state a watcher *found*, not
+# of a change it *observed*. Both are worth emitting; they must not look alike.
+# ---------------------------------------------------------------------------
+
+def test_the_emitted_record_carries_first_tick(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(transport, "STATE_DIR", str(tmp_path))
+    monkeypatch.setattr(transport, "SOCK_PATH", str(tmp_path / "nonexistent.sock"))
+    seen: list[dict] = []
+    monkeypatch.setattr(transport, "emit_socket", seen.append)
+    transport.emit_event("gitlab-mr", "32912", "pipeline_succeeded", {}, first_tick=True)
+    assert seen[0]["first_tick"] is True
+
+
+def test_a_live_transition_is_not_marked_first_tick(monkeypatch, tmp_path) -> None:
+    """The false-positive direction — a marker that is always on says nothing."""
+    monkeypatch.setattr(transport, "STATE_DIR", str(tmp_path))
+    monkeypatch.setattr(transport, "SOCK_PATH", str(tmp_path / "nonexistent.sock"))
+    seen: list[dict] = []
+    monkeypatch.setattr(transport, "emit_socket", seen.append)
+    transport.emit_event("gitlab-mr", "32912", "pipeline_succeeded", {})
+    assert seen[0]["first_tick"] is False
+
+
+def test_first_tick_is_always_present_on_the_record(monkeypatch, tmp_path) -> None:
+    """Present-and-false, never absent: a consumer reading the key must not
+    have to decide what a missing key meant."""
+    monkeypatch.setattr(transport, "STATE_DIR", str(tmp_path))
+    monkeypatch.setattr(transport, "SOCK_PATH", str(tmp_path / "nonexistent.sock"))
+    transport.emit_event("gitlab-mr", "32912", "merged", {})
+    assert transport.read_state("gitlab-mr", "32912")["last_event"]["first_tick"] is False
+
+
+def test_the_locked_payload_did_not_move(monkeypatch, tmp_path) -> None:
+    """`first_tick` is a property of the emission, like `ts` — it belongs
+    beside the envelope keys and not inside the source-defined payload, which
+    docs/presets/watch.md locks."""
+    monkeypatch.setattr(transport, "STATE_DIR", str(tmp_path))
+    monkeypatch.setattr(transport, "SOCK_PATH", str(tmp_path / "nonexistent.sock"))
+    seen: list[dict] = []
+    monkeypatch.setattr(transport, "emit_socket", seen.append)
+    transport.emit_event("gitlab-mr", "32912", "merged", {"url": "u", "title": "t"},
+                         first_tick=True)
+    assert seen[0]["payload"] == {"url": "u", "title": "t"}
+
+
+def test_the_channel_consumer_surfaces_first_tick() -> None:
+    """The bridge to Claude is where #464 was actually paid for — a marker the
+    consumer drops is a marker that does not exist."""
+    channel = Path(__file__).parent.parent / "notifiers" / "claude-channel" / "channel.ts"
+    body = channel.read_text(encoding="utf-8")
+    assert "first_tick" in body
+
+
 def test_desktop_notify_noop_off_macos(monkeypatch) -> None:
     monkeypatch.setattr(transport.sys, "platform", "linux")
     # Should not raise even though osascript wouldn't work
