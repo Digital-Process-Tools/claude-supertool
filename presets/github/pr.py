@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import _checks  # noqa: E402  (the one check tally, shared with gh-prs / git-status)
 
 DESCRIPTION_MAX = 2000
 COMMENT_MAX = 500
@@ -179,16 +184,13 @@ def main() -> int:
         state = d.get("state", "?")
         mergeable = d.get("mergeable", "?")
         review_decision = d.get("reviewDecision") or "none"
-        checks = d.get("statusCheckRollup", [])
-        passed = sum(1 for c in checks if c.get("conclusion") == "SUCCESS")
-        failed = sum(1 for c in checks if c.get("conclusion") == "FAILURE")
-        pending = sum(1 for c in checks if c.get("status") == "IN_PROGRESS" or c.get("conclusion") is None)
+        check_states = _checks.github_states(d.get("statusCheckRollup"))
         merge_commit = (d.get("mergeCommit") or {}).get("oid", "")
         web_url = d.get("url", "")
         conflicts = "yes" if mergeable == "CONFLICTING" else "no"
         print(f"#{iid} | state: {state} | mergeable: {mergeable} | conflicts: {conflicts}")
         print(f"branch: {d.get('headRefName') or '?'} -> {d.get('baseRefName') or '?'}")
-        print(f"checks: {passed} passed, {failed} failed, {pending} pending")
+        print(f"checks: {_checks.summarize(check_states)}")
         print(f"review: {review_decision}")
         if merge_commit:
             print(f"merge_commit: {merge_commit[:12]}")
@@ -258,26 +260,29 @@ def main() -> int:
         print("Reviews: none")
     print(f"Review decision: {review_decision}")
 
-    # Checks (CI status)
-    checks = d.get("statusCheckRollup", [])
-    if checks:
-        passed = sum(1 for c in checks if c.get("conclusion") == "SUCCESS")
-        failed = sum(1 for c in checks if c.get("conclusion") == "FAILURE")
-        pending = sum(1 for c in checks if c.get("status") == "IN_PROGRESS" or c.get("conclusion") is None)
-        print(f"Checks: {passed} passed, {failed} failed, {pending} pending")
-    else:
-        print("Checks: none")
+    # Checks (CI status) — the tally accounts for every entry it was handed;
+    # see presets/_checks.py for why the sum matters more than the labels.
+    check_states = _checks.github_states(d.get("statusCheckRollup"))
+    print(f"Checks: {_checks.summarize(check_states)}")
 
     # Changes
     print(f"Changes: {changed_files} files, +{additions} -{deletions}")
 
-    # Mergeable
+    # Mergeable — GitHub's *merge conflict* state, not a CI verdict. Printed
+    # bare underneath a check tally it reads as one, which is half of what made
+    # #454 dangerous, so it names what it measures and carries the CI caveat.
+    if not check_states:
+        merge_note = " — no checks reported"
+    elif _checks.all_green(check_states):
+        merge_note = ""
+    else:
+        merge_note = f" — checks {_checks.NOT_GREEN}, see Checks above"
     if mergeable == "CONFLICTING":
         print("Conflicts: YES — cannot merge")
     elif mergeable == "MERGEABLE":
-        print("Mergeable: yes")
+        print(f"Mergeable: yes (no merge conflicts){merge_note}")
     else:
-        print(f"Mergeable: {mergeable}")
+        print(f"Mergeable: {mergeable}{merge_note}")
 
     # Merge commit
     if merge_commit:

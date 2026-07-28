@@ -36,6 +36,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pr import _gh, _fetch_review_threads  # noqa: E402  (reuse the gh-pr helpers)
 import _board  # noqa: E402  (the board layout shared with gl-mrs / radar)
+import _checks  # noqa: E402  (the one check classifier, shared with gh-pr / gl-mrs)
 import _proc  # noqa: E402  (the one liveness probe, shared with watch / gl-mrs)
 
 WATCH_SOURCE = "github-pr"
@@ -134,10 +135,17 @@ def _build_list_cmd(filters: dict[str, str], per_page: int) -> list[str]:
 
 
 def _check_failed(c: dict) -> bool:
-    """A single rollup entry is red — handles CheckRun and StatusContext shapes."""
+    """A single rollup entry is red — handles CheckRun and StatusContext shapes.
+
+    Delegates to the shared classifier so the board and the `gh-pr` tally
+    cannot disagree about what CANCELLED means (#454). Unrecognised states
+    count as red there, which is the safe default for a failing-first board.
+    """
     concl = str(c.get("conclusion") or "").upper()
     state = str(c.get("state") or "").upper()
-    return concl in _FAIL_CONCLUSIONS or state in _FAIL_STATES
+    if concl in _FAIL_CONCLUSIONS or state in _FAIL_STATES:
+        return True
+    return _checks.is_red(_checks.github_state(c))
 
 
 def _check_pending(c: dict) -> bool:

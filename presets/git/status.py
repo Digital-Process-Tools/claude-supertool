@@ -20,7 +20,9 @@ import sys
 # Sibling import: runtime puts this dir on sys.path[0]; the test harness
 # loads scripts via importlib (no dir on path), so add it explicitly.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import _checks  # noqa: E402  (the one check tally, shared with gh-pr / gh-prs)
 from _git_common import use_utf8_stdout  # noqa: E402
 
 
@@ -253,12 +255,9 @@ def main() -> int:
                 pr_title = pr.get("title", "?")
                 pr_state = pr.get("state", "?")
                 pr_target = pr.get("baseRefName", "?")
-                checks = pr.get("statusCheckRollup", [])
-                check_summary = "none"
-                if checks:
-                    passed = sum(1 for c in checks if c.get("conclusion") == "SUCCESS")
-                    failed = sum(1 for c in checks if c.get("conclusion") == "FAILURE")
-                    check_summary = f"{passed} passed, {failed} failed"
+                check_summary = _checks.summarize_github(
+                    pr.get("statusCheckRollup")
+                )
 
                 print(f"\n## PR #{pr_num} — {pr_title}")
                 print(f"State: {pr_state} | Target: {pr_target} | Checks: {check_summary}")
