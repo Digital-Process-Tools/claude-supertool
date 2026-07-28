@@ -73,7 +73,7 @@ def test_main_slim_status_mode_outputs_minimal_dashboard(monkeypatch, capsys) ->
     assert "state: MERGED" in out
     assert "mergeable: MERGEABLE" in out
     assert "conflicts: no" in out
-    assert "checks: 2 passed, 0 failed, 0 pending" in out
+    assert "checks: 2 total: 2 passed, 0 failed, 0 pending" in out
     assert "review: APPROVED" in out
     assert "merge_commit: abc123def456" in out
     assert "url: https://github.com/foo/bar/pull/12" in out
@@ -133,7 +133,7 @@ def test_main_slim_status_with_conflicts(monkeypatch, capsys) -> None:
     assert rc == 0
     assert "state: OPEN" in out
     assert "conflicts: yes" in out
-    assert "checks: 0 passed, 1 failed, 1 pending" in out
+    assert "checks: 2 total: 0 passed, 1 failed, 1 pending" in out
     assert "merge_commit:" not in out
 
 

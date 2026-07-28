@@ -11,7 +11,7 @@ GitHub ops via the `gh` CLI. Replaces the 4-6 separate `gh` calls needed to revi
 | Op | Syntax | What it returns |
 |----|--------|-----------------|
 | `gh-issue` | `gh-issue:NUMBER[:full]` | Issue metadata, description, all comments (truncated by default), linked PRs, image download. `:full` disables truncation |
-| `gh-pr` | `gh-pr:NUMBER_OR_BRANCH[:status]` | Full PR dashboard: branch, checks, reviews/approval state, linked issue, diff stat, comments. `:status` returns slim merge-state plus the `head -> base` branch line only (~250 bytes) |
+| `gh-pr` | `gh-pr:NUMBER_OR_BRANCH[:status]` | Full PR dashboard: branch, checks, reviews/approval state, linked issue, diff stat, comments. `:status` returns slim merge-state plus the `head -> base` branch line only (~250 bytes). The check line opens with `N total:` and every count after it sums back to N, so a state the tally does not recognise is named (`2 cancelled`) instead of dropped; anything short of every-check-passed carries `⚠ NOT ALL GREEN`, and a PR with no CI says `none reported — no check runs on this commit` rather than counting to zero |
 | `gh-prs` | `gh-prs[:author=@me,reviewer=@me,state=open,failed,nopipe,iids]` | PR triage board: your open PRs sorted failing-first then stalest. Per PR: check rollup (a failure shows the failing **check name**), approval state, age, diff size, watch-state, `draft`/`conflict`/`threads` flags + footer pointing at the first failing-and-unwatched PR. The gl-mrs twin. `iids` emits a bare number list for `watch-mine.sh` |
 | `gh-run` | `gh-run:NUMBER` | Workflow run job list with statuses and failed step names |
 | `gh-job` | `gh-job:NUMBER[:raw[:START[:END]]\|:grep:PATTERN]` | Job failure detail: PR context + error pattern search + log tail. `:raw` dumps the full trace; `:raw:START:END` slices lines (1-indexed, inclusive); `:grep:PATTERN` runs an ad-hoc regex over the log (literal fallback on bad regex, ±context, names the pattern + tail on no-match — never silent-empty). Optional per-job `job_patterns` table in `.supertool.json` (see gitlab preset doc) maps job names to tighter patterns + a `resolution` op |
@@ -31,6 +31,8 @@ GitHub ops via the `gh` CLI. Replaces the 4-6 separate `gh` calls needed to revi
 ./supertool 'gh-pr:42' 'gh-run:NUMBER'
 ```
 `gh-pr` gives you the full dashboard (approval, diff stat, comments); `gh-run` confirms all checks passed. Replace `NUMBER` with the run ID shown in `gh-pr` output.
+
+Read the two lines together. `Checks:` is CI; `Mergeable:` is GitHub's *merge conflict* state and nothing else, so it now says `Mergeable: yes (no merge conflicts)` and appends `— checks ⚠ NOT ALL GREEN, see Checks above` when the run is not unanimously green. `Mergeable: yes` beside a cancelled run was how a failed run got read as ready to merge.
 
 **Debug a failed Actions job:**
 ```bash

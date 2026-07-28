@@ -29,6 +29,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))  # for _board, _proc
 
 import _board  # noqa: E402
+import _checks  # noqa: E402  (the one check classifier, shared with gh-pr / gh-prs)
 import _proc  # noqa: E402  (the one liveness probe, shared with watch / gh-prs)
 
 WATCH_SOURCE = "gitlab-mr"
@@ -335,9 +336,20 @@ def _age(iso: str) -> str:
     return f"{secs // 86400}d"
 
 
+def _is_failing(m: dict) -> bool:
+    """True when this MR's pipeline should be treated as red.
+
+    `canceled`, `timed out` and anything GitLab adds later are red here, not
+    just the literal `failed` — a board that sorts failing-first cannot
+    surface a run whose state its own classifier threw away (#454).
+    """
+    status = str(m.get("_pipeline") or "")
+    return bool(status) and _checks.is_red(status)
+
+
 def _sort_key(m: dict) -> tuple[int, str]:
     """Failing MRs first, then stalest (oldest updated_at) within each group."""
-    failed = 0 if m.get("_pipeline") == "failed" else 1
+    failed = 0 if _is_failing(m) else 1
     return (failed, str(m.get("updated_at", "")))
 
 
@@ -401,7 +413,7 @@ def _footer(mrs: list[dict], watched: set[str], show_pipe: bool) -> str:
     """Actionable summary: failing, unapproved, and the watch command."""
     if not show_pipe:
         return ""
-    failing = [str(m.get("iid")) for m in mrs if m.get("_pipeline") == "failed"]
+    failing = [str(m.get("iid")) for m in mrs if _is_failing(m)]
     unwatched_fail = [i for i in failing if i not in watched]
     unapproved = [m for m in mrs if m.get("_approved") is False]
     parts = [f"{len(mrs)} MR(s)"]
@@ -453,7 +465,7 @@ def main() -> int:
     if show_pipe:
         _enrich(mrs, cfg["enrich_cap"], cfg["enrich_workers"])
     if failed_only:
-        mrs = [m for m in mrs if m.get("_pipeline") == "failed"]
+        mrs = [m for m in mrs if _is_failing(m)]
 
     # Bare iid list — for piping into the watch supervisor.
     if iids_only:
