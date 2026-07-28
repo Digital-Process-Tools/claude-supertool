@@ -107,6 +107,52 @@ radar: no change | 7 open | 7 watched
 
 Total silence would be indistinguishable from a radar that failed to run, which is the failure this op exists to remove. For the same reason an unreachable GitLab is a hard error (exit 1, no board, nothing pruned or healed) rather than an empty green board. Standing failures and conflicts are re-printed even when unchanged — an unfixed red is a current fact, not history.
 
+### Standing exclusions
+
+That last rule has a cost. An MR that is red for a reason nobody intends to fix soon — a long-lived branch, an infra-only pipeline failure, an experiment — reprints on every render and every session start. Suppressing it by *remembering* to ignore it is the worst available option: a permanently-red row that must be mentally filtered is what trains a reader to skim the board, and skimming is how a real red gets missed.
+
+`ops.radar.radar_exclusions` in `.supertool.json` moves that rule into the tool. The key merges into the `radar` op the same way `ops.gl-job.job_patterns` does, and reaches the preset as `SUPERTOOL_RADAR_EXCLUSIONS`:
+
+```json
+{
+  "ops": {
+    "radar": {
+      "radar_exclusions": {
+        "19509": {
+          "reason": "MySQL service TLS failure + standing conflict, not this MR",
+          "until": "2026-09-01"
+        },
+        "20144": "spike branch, red on purpose"
+      }
+    }
+  }
+}
+```
+
+Keys are MR iids, matched exactly — excluding `1950` does not touch `19509`. The value is either a bare reason string or an object with `reason` and an optional ISO `until`. **`reason` is mandatory**: an exclusion nobody had to justify is exactly the one that becomes a permanent blind spot, so an unreasoned entry is refused and its row renders.
+
+```
+  ✓ ok    ✓  39m   1Δ  !33172  docs(vocab): CKEditor
+
+1 open | 1 green | 1 watched | 1 excluded | feed ok
+radar: excluded !19509 failed+conflict, still watched — MySQL service TLS failure, not this MR
+```
+
+**An exclusion hides a row; it must never hide the fact.** This is the one feature in `radar` that can conceal a failure, so it is built to be the opposite of a silent omission:
+
+| Guarantee | How |
+|---|---|
+| **Accounted for** | the footer carries an `N excluded` token and one line names each suppressed MR, its *current* status (`failed`, `conflict`, `failed+conflict`) and its configured reason — on every run, including a delta-suppressed one |
+| **Tallies match the board** | `open` / `failing` / `green` / `watched` count the rows that were printed, so `1 failing` is never a count with no row behind it; `N excluded` restores the total |
+| **Self-expiring** | an exclusion only ever suppresses a *standing problem*. The moment the MR is green and unconflicted the suppression lifts by itself and the board prints `NOT applied — the reason is spent`. Same for an expired `until`, and for an iid that is no longer in the population |
+| **Fails open** | unparseable JSON, a non-iid key, a missing reason, an unknown value shape — every unanswerable case resolves to *show the row*, and says why |
+
+**An exclusion does not narrow the population.** This deliberately breaks the one-filter symmetry [above](#radar--reconcile-dont-just-report): the filter says what radar is *responsible for*, and radar does not stop being responsible for an MR because its row is noisy. So an excluded MR is still healed into the watcher fleet, still covered by the feed, still recorded in the snapshot, and its watcher still emits the full `DEFAULT_ONLY` event set with desktop notifications intact.
+
+That last part is a considered rejection of the obvious symmetry. A `pipeline_failed` event on an excluded MR means somebody pushed and a *new* pipeline ran — it is the one signal that can tell you the exclusion has gone stale while the row is suppressed, and it only fires on a transition, so a genuinely dormant branch emits nothing anyway. Dropping those events would buy no quiet and cost the staleness check. If the noise is unwanted, `unwatch:gitlab-mr:19509` is the existing, separate, visible way to say so — and the next `radar` will report the MR as `UNWATCHED` on its exclusion line rather than claiming a coverage it does not have.
+
+**Why not classify infra failures automatically?** Because a classifier that decides "this red is not your fault" is wrong in the confident direction, silently, for every MR, with no audit trail — the [#445](https://github.com/Digital-Process-Tools/claude-supertool/issues/445) defect with more reach. An exclusion is at least *declared*: it names an iid, carries a reason, sits in a file under review, and prints itself on every board. And half of !19509's red is a merge conflict against `master` that no trace-scanner can classify — it is a genuine problem the operator has chosen not to fix, which is a decision, not a detection.
+
 ## Bundled sources
 
 | Source | Polls | Events |
