@@ -163,6 +163,127 @@ def test_a_missing_merge_status_still_trusts_has_conflicts() -> None:
 
 
 # ---------------------------------------------------------------------------
+# #465 — `conflicts_appeared` on an MR with no diff, where nothing can conflict.
+#
+# `has_conflicts` is not a conflict field. GitLab's own API entity exposes it as
+# an alias for `cannot_be_merged?` and documents the three things that sets:
+#
+#     # #cannot_be_merged? is generally indicative of conflicts, and is set via
+#     #   MergeRequests::MergeabilityCheckService. However, it can also indicate
+#     #   that either #has_no_commits? or #branch_missing? are true.
+#     expose :cannot_be_merged?, as: :has_conflicts
+#
+# So the false-positive class is exactly "no diff", and the discriminator is the
+# diff, not the block reason. `detailed_merge_status` cannot serve as the gate:
+# it reports only the *first* failing check, and conflict is dead last in
+# `MergeRequest.all_mergeability_checks` (draft is second), so a conflicted
+# draft reports `draft_status`. Gating on it would drop real conflicts.
+# ---------------------------------------------------------------------------
+
+def _empty_draft_mr():
+    """!33223 as observed in #465: opened seconds earlier, zero commits.
+
+    `sha: None` and a `diff_refs` with no base/head — there is no diff at all.
+    GitLab still reports `has_conflicts: True` because `merge_status` is
+    `cannot_be_merged`, and names the block `draft_status`.
+    """
+    body = _mr(conflicts=True, merge_status="cannot_be_merged")
+    body["draft"] = True
+    body["detailed_merge_status"] = "draft_status"
+    body["sha"] = None
+    body["diff_refs"] = {"base_sha": None, "head_sha": None, "start_sha": "e6f0bbcc"}
+    return body
+
+
+def _empty_nondraft_mr():
+    """!33194, live: *not* a draft, zero commits, zero changes.
+
+    The source branch is the merge base, so `base_sha == head_sha`. GitLab names
+    this one `commits_status` — "source branch exists and contains commits" —
+    and still sets `has_conflicts: True`. Proof the false positive is not a
+    draft-only phenomenon, which is what rules out an allow-list keyed on
+    `draft_status`.
+    """
+    sha = "5cd635d275ec51592809a5442b56dd73492a024b"
+    body = _mr(conflicts=True, merge_status="cannot_be_merged")
+    body["detailed_merge_status"] = "commits_status"
+    body["sha"] = sha
+    body["diff_refs"] = {"base_sha": sha, "head_sha": sha, "start_sha": sha}
+    return body
+
+
+def _really_conflicted_mr(detailed="conflict", draft=False):
+    """!19509, live: 20 commits, 603+ changed files, genuinely conflicted."""
+    body = _mr(conflicts=True, merge_status="cannot_be_merged")
+    body["draft"] = draft
+    body["detailed_merge_status"] = detailed
+    body["sha"] = "288f40e19482f216c3adc9dc3a83fb5a1935fb11"
+    body["diff_refs"] = {
+        "base_sha": "863f7d48c32e1969c4b19a8edcb6836623b34fdc",
+        "head_sha": "288f40e19482f216c3adc9dc3a83fb5a1935fb11",
+        "start_sha": "9e3198b443765e161726319d41b9ab6e2c19236d",
+    }
+    return body
+
+
+def test_an_empty_mr_does_not_announce_a_conflict() -> None:
+    """The #465 repro: no commits, no diff, nothing that can conflict."""
+    events, _ = _drive([_empty_draft_mr()])
+    assert all(e["event"] != "conflicts_appeared" for e in events)
+
+
+def test_an_empty_mr_does_not_latch_a_conflict_into_state() -> None:
+    """Emission is half of it. A poller that records True has already decided
+    the MR is conflicted, and the next real signal reads as "no change"."""
+    _, state = _drive([_empty_draft_mr()])
+    assert state["has_conflicts"] is False
+
+
+def test_an_empty_non_draft_mr_does_not_announce_a_conflict() -> None:
+    """`base_sha == head_sha`: the source branch is the merge base. Not a draft,
+    so no allow-list of draft-ish block reasons would have caught it."""
+    events, _ = _drive([_empty_nondraft_mr()])
+    assert all(e["event"] != "conflicts_appeared" for e in events)
+
+
+def test_an_empty_mr_that_gets_commits_and_conflicts_is_announced() -> None:
+    """The path that matters: suppressing the empty state must not consume the
+    rising edge the real conflict arrives on."""
+    events, _ = _drive([_empty_draft_mr(), _really_conflicted_mr()])
+    assert [e["event"] for e in events].count("conflicts_appeared") == 1
+
+
+# ---- mirror direction: real conflicts must still be reported ---------------
+
+def test_a_genuine_conflict_on_a_settled_mr_is_still_announced() -> None:
+    events, state = _drive([_really_conflicted_mr()])
+    assert any(e["event"] == "conflicts_appeared" for e in events)
+    assert state["has_conflicts"] is True
+
+
+def test_a_conflicted_draft_is_announced_though_gitlab_names_the_block_draft() -> None:
+    """`detailed_merge_status` reports the first failing check and draft is
+    checked before conflict, so a conflicted draft reads `draft_status`. This is
+    the test that a `detailed_merge_status == "conflict"` gate would fail."""
+    events, _ = _drive([_really_conflicted_mr(detailed="draft_status", draft=True)])
+    assert any(e["event"] == "conflicts_appeared" for e in events)
+
+
+def test_a_conflicted_mr_blocked_on_discussions_is_still_announced() -> None:
+    """Same shape, different masking check: threads are resolved before the
+    conflict check runs, so the reason field says `discussions_not_resolved`."""
+    events, _ = _drive([_really_conflicted_mr(detailed="discussions_not_resolved")])
+    assert any(e["event"] == "conflicts_appeared" for e in events)
+
+
+def test_a_conflict_is_announced_when_the_payload_carries_no_diff_fields() -> None:
+    """Absence of `sha`/`diff_refs` is not evidence of an empty MR. Only
+    positive evidence of no diff suppresses; otherwise `has_conflicts` stands."""
+    events, _ = _drive([_mr(conflicts=True)])
+    assert any(e["event"] == "conflicts_appeared" for e in events)
+
+
+# ---------------------------------------------------------------------------
 # #463 control — `pipeline_failed` is the edge-triggered sibling conflicts are
 # being made to match. These pin that it was not disturbed on the way past.
 # ---------------------------------------------------------------------------

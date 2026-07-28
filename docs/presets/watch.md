@@ -177,6 +177,36 @@ Every push to the target branch puts every open MR back into `cannot_be_merged_r
 
 **The poller now only believes `has_conflicts` on a settled `merge_status`**, and carries the last known answer forward otherwise. Suppressing repeats outright would have been the opposite defect — a conflict that is genuinely resolved and later returns *must* fire again, and only a settled *clean* check releases the latch, so it does. A response with no `merge_status` field at all is not evidence of an unsettled check, so `has_conflicts` is still taken at face value there.
 
+### `conflicts_appeared` requires a diff ([#465](https://github.com/Digital-Process-Tools/claude-supertool/issues/465))
+
+**`conflicts_appeared` is never emitted for an MR with no diff.** !33223 fired one second after being opened, with zero commits, `changes: 0` and `sha: null` — and the event was reported onward as a real conflict, with a false explanation built on top of it. A false `conflicts_appeared` does not read as noise, it reads as a fact.
+
+`has_conflicts` is not a conflict field. GitLab's API entity exposes it as an alias for `cannot_be_merged?`, with this comment:
+
+> `#cannot_be_merged?` is generally indicative of conflicts, and is set via `MergeRequests::MergeabilityCheckService`. However, it can also indicate that either `#has_no_commits?` or `#branch_missing?` are true.
+
+So it over-reports in exactly one situation — an MR with no diff — and a conflict, which is two sets of changes overlapping, cannot exist without one. The poller clears it on **positive evidence of an empty diff**:
+
+| Signal | Observed |
+|---|---|
+| `detailed_merge_status: commits_status` | !33194 — GitLab's own identifier for "source branch exists and contains commits" |
+| `sha` present and null | !33223, the MR in the report |
+| `diff_refs.head_sha` null, or `== base_sha` | source branch tip *is* the merge base — it carries nothing the target lacks |
+
+**Absent fields are not evidence.** A payload with no `sha`/`diff_refs` leaves `has_conflicts` trusted, so the guard cannot argue itself into staying quiet about a conflict it merely failed to observe.
+
+**`detailed_merge_status == "conflict"` is deliberately *not* the gate**, though it looks like the obvious one. It reports only the first failing mergeability check, and in `MergeRequest.all_mergeability_checks` the draft check runs second while the conflict check runs last:
+
+| Blocked by | `detailed_merge_status` | Genuinely conflicted? |
+|---|---|---|
+| draft | `draft_status` | **possibly — the conflict check never ran** |
+| unresolved threads | `discussions_not_resolved` | **possibly** |
+| conflict, nothing else | `conflict` | yes |
+
+Requiring `conflict` would silently stop reporting conflicts on every draft and every MR with open threads — the silent-omission class, strictly worse than the false positive. An allow-list of not-a-conflict reasons fails the same way, since it would need `draft_status` in it and `draft_status` precludes nothing. And the false positive is not draft-specific in the first place: !33194 was not a draft.
+
+`radar` and `gl-mrs` render a `[conflict]` flag from the same field and carry the same false positive on a lower-stakes surface (a table column beside the row's other facts, not a lone event).
+
 ## Discovery — `gitlab-mr-feed`
 
 Every source above polls **one known id**, so nothing in a running watch session can discover an MR that did not exist when the poller was spawned. Observed: !33176 opened between two `radar` runs, and only the second run found it. In between, the board was not visibly wrong — it was confidently complete and missing an MR, which renders identically to all-green.
