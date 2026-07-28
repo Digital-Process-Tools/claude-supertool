@@ -29,6 +29,27 @@ TERMINAL_MR_STATES = {"merged", "closed"}
 # rising edge: one standing conflict, one "appeared" per push to master (#463).
 SETTLED_MERGE_STATUSES = {"can_be_merged", "cannot_be_merged"}
 
+# ...and even settled, `has_conflicts` is not a conflict field. GitLab's API
+# entity exposes it as an alias for `cannot_be_merged?` and says so directly:
+#
+#     # #cannot_be_merged? is generally indicative of conflicts, and is set via
+#     #   MergeRequests::MergeabilityCheckService. However, it can also indicate
+#     #   that either #has_no_commits? or #branch_missing? are true.
+#     expose :cannot_be_merged?, as: :has_conflicts
+#
+# So it lies in exactly one direction — an MR with no diff — and the
+# discriminator is the diff, not the reason the merge is blocked (#465).
+#
+# `detailed_merge_status` deliberately is *not* the gate. It reports only the
+# first failing check, and conflict is dead last in
+# `MergeRequest.all_mergeability_checks` while draft is second, so a conflicted
+# draft reports `draft_status`. Requiring `== "conflict"` would silently stop
+# reporting real conflicts on drafts, blocked threads and unrebased branches —
+# strictly worse than the false positive being fixed. It is used here only in
+# the one place it is unambiguous: `commits_status` is GitLab's own identifier
+# for "source branch exists and contains commits", i.e. no diff.
+NO_DIFF_DETAILED_STATUS = "commits_status"
+
 # Import the existing _glab_api CLI wrapper from the gl-mr op so we share
 # one source of truth for glab invocation, error handling, and timeouts.
 _MR_MODULE_PATH = Path(__file__).parents[3] / "gitlab" / "mr.py"
@@ -58,6 +79,33 @@ def _fetch(iid: str) -> dict[str, Any] | None:
     if not isinstance(data, dict):
         return None
     return data
+
+
+def _has_no_diff(data: dict[str, Any]) -> bool:
+    """True only on positive evidence that the MR contains no diff.
+
+    Absent fields are not evidence: a payload without `sha`/`diff_refs` leaves
+    `has_conflicts` trusted, so the guard can never invent a reason to stay
+    quiet about a conflict it simply could not see.
+
+    Three signals, all observed live:
+    - `detailed_merge_status: commits_status` — !33194, zero commits.
+    - `sha: null` — !33223 as reported in #465, MR opened before any push.
+    - `diff_refs.head_sha` null, or equal to `base_sha` — the source branch tip
+      *is* the merge base, so it carries nothing the target does not have.
+    """
+    if data.get("detailed_merge_status") == NO_DIFF_DETAILED_STATUS:
+        return True
+    if "sha" in data and not data.get("sha"):
+        return True
+    refs = data.get("diff_refs")
+    if isinstance(refs, dict) and "head_sha" in refs:
+        head = refs.get("head_sha")
+        if not head:
+            return True
+        if head == refs.get("base_sha"):
+            return True
+    return False
 
 
 def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
@@ -95,6 +143,10 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
     # unsettled check, so `has_conflicts` is taken at face value.
     conflicts_settled = merge_status in SETTLED_MERGE_STATUSES or not merge_status
     has_conflicts = raw_conflicts if conflicts_settled else prev_conflicts
+    # No diff, nothing to conflict — whatever `has_conflicts` claims, and
+    # whatever was latched before a force-push emptied the source branch.
+    if has_conflicts and _has_no_diff(data):
+        has_conflicts = False
 
     # Pipeline transitions
     if pipeline_status and pipeline_status != prev_pipeline:
