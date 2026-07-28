@@ -517,7 +517,14 @@ class TestDispatchEndToEnd:
     """
 
     def _supertool(self) -> Path:
-        return Path(__file__).parent.parent / "supertool"
+        # supertool.py is tracked (unlike the "supertool" symlink/entry point,
+        # which is install- or clone-specific), so it exists in every clone
+        # and every git worktree with no setup step. The dispatch path under
+        # test is identical either way: both invocations are
+        # `[sys.executable, str(path)]`, run through the module, never through
+        # an exec-bit or console-script shim, so the executable-bit business
+        # in the old CI staging step was never load-bearing for this test.
+        return Path(__file__).parent.parent / "supertool.py"
 
     def test_dispatch_xml_attr_triple_colon(self) -> None:
         """xml_attr via dispatch with ::: form returns uncovered line numbers."""

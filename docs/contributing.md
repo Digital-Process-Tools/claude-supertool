@@ -221,6 +221,15 @@ Fix the dependency. Pinning the test to a worker, adding an `xdist_group`, or
 forcing `--dist loadfile` hides it and leaves a test that is not testing what
 its name claims.
 
+**No install step is required to get a fully green suite**, including in a
+fresh `git worktree add` checkout. `TestDispatchEndToEnd` in `tests/test_xml.py`
+exercises real subprocess dispatch against `supertool.py` directly rather than
+against the `supertool` file — that name is `.gitignore`d (it's either a local
+symlink or an install-time artifact) and is absent from every worktree, since
+`git worktree add` does not materialize ignored files. If you see those three
+tests fail, you're on a stale checkout of this doc's advice, not a real
+regression — check out master and re-run before assuming your change broke it.
+
 Enable the pre-push hook (runs the full suite — slow tests included, coverage
 not gated — exactly as CI does, before every push):
 
