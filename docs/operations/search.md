@@ -24,6 +24,53 @@ A single pathological line — a minified bundle, a 7KB one-line `@extends Foo<a
 
 `grep:` with an explicit `CONTEXT` argument (`grep:PATTERN:PATH:LIMIT:CONTEXT`) shares the `grep_around:` code path, so it is capped under the same `grep_around.max_bytes` budget. Plain `grep:` (no context) is unaffected — it has its own `LIMIT`/`max_results` bound.
 
+## Truncation is stated, not implied
+
+`(1 results in 1 files, scanned 118353 files, limit 1)` reads as a complete answer. It was not one — the second match was sitting just past the cap, and nothing in that line said so. A result that stopped at its limit now says which:
+
+```
+(1 results in 1 files, scanned 118353 files, limit 1 — TRUNCATED, more matches exist)
+```
+
+**The marker's absence is a claim, not a silence.** `grep` fetches one match *past* the limit and discards it, so `limit N` with no marker means the walk looked for an N+1th match and did not find one — the count is exact. Stopping *at* N is not by itself evidence that an N+1th exists, and a marker that fired on `count == limit` would be a lie in the other direction: smaller, but still a lie, and still unusable, since every result would carry it.
+
+The extra match costs no extra traversal. The whole tree is already walked to produce the `scanned N` denominator, so the over-fetch only reads file *contents* until one more match turns up. On an exact result that means reading to the end of the candidate list — which is what proving exactness means.
+
+`glob` carries the same disclosure on its own cap (`glob.max_results`):
+
+```
+(200 files — TRUNCATED, more files match)
+```
+
+`grep:…:count` has no marker because it has no cap — it counts every match in every file, and its header (`N total matches across M files`) never claims a limit.
+
+## Gitignored directories are skipped
+
+`glob` and `grep` prune directories git ignores, at the walk boundary — the subtree is never opened. Without this, one `glob:**/Foo.php` in a repo with six agent worktrees under a gitignored `.claude/worktrees/` returned seven hits, six of them stale copies of other branches that sorted *first*; and `scanned 118353 files` was largely the same tree counted repeatedly.
+
+**Supertool asks git rather than parsing `.gitignore`.** One `git ls-files --others --ignored --exclude-standard --directory` per search root answers with full ignore semantics — negations (`!keep/`), nested `.gitignore` files, `.git/info/exclude`, your global excludes — and `--directory` collapses an ignored tree to its top directory instead of descending into it. Reimplementing that pattern language would mean hiding files whenever we got a rule wrong, which is the failure direction this op exists to avoid.
+
+**An ignored path you name explicitly is still searched.** The prune is switched off entirely when the search root is itself ignored, so all of these work:
+
+```bash
+./supertool 'grep:needle:.claude/worktrees/agent-a29f'
+./supertool 'glob:.claude/worktrees/agent-a29f/**/*.php'
+```
+
+Only a walk that would have *descended into* an ignored tree is pruned. Deliberately entering one is not.
+
+**Scope, deliberately narrow:** only ignored **directories** are pruned. Ignored *files* elsewhere in the tree are still searched — the win is at the directory boundary, and `exclude-paths` already covers the secret-file case. And the prune is not a filter on results: it shrinks the walk, so `scanned N` drops with it and stays an honest denominator.
+
+Three ways out, in descending scope:
+
+| Escape hatch | Reach |
+|---|---|
+| `"gitignore": false` in `.supertool.json` | every op, every call in the project |
+| `SUPERTOOL_NO_GITIGNORE=1` | one invocation |
+| `:no-exclude` on the op | one call — also drops `.git/`, `node_modules/` and the rest of `exclude-paths` |
+
+Outside a git repo, without `git` on `PATH`, or when the query times out, nothing is pruned — an unanswerable question yields "no opinion", never "skip it".
+
 ## Delegated to rtk
 
 When [rtk](https://github.com/wilpel/rtk) is installed and `rtk` is not set to `false` in `.supertool.json`, a plain `grep:PATTERN:PATH` (no `CONTEXT`, no `count`, and no multi-segment exclude prefix such as `src/vendor/libs/`) is handed to `rtk grep` instead of the native walker. Nothing else about the op changes, but the **output shape does**, in two visible ways:
@@ -39,6 +86,10 @@ When [rtk](https://github.com/wilpel/rtk) is installed and `rtk` is not set to `
 ```
 
 rtk shells out to the system `grep` and reports no scanned-file count, and re-walking the tree to compute one is the traversal delegation exists to avoid — so the denominator is stated as unknown rather than quietly omitted. **A `?` never appears next to a zero result.** rtk exits non-zero when it matches nothing, and an empty result falls through to the native walker, so every zero-result grep — the case the denominator was added for — comes back with a real count and the `— nothing matched the path/glob` marker where it applies. A `?` therefore always sits beside at least one result, which is itself proof that files were searched.
+
+The report line carries the same `— TRUNCATED, more matches exist` disclosure as the native walker: rtk is asked for `limit + 1` matches and the extra one is trimmed before output.
+
+**Delegation is skipped when git ignores a directory the exclude list would still walk.** rtk shells out to the system `grep`, whose `--exclude-dir` takes bare directory names and cannot express a nested path like `.claude/worktrees/` — a delegated grep would return exactly the copies the native walker prunes, and which backend ran must never change the answer. The test is *residual*: an ignore set already covered by `exclude-paths` (a lone `node_modules/`, say) costs you nothing.
 
 Set `"rtk": false` in `.supertool.json` to keep every grep on the native walker and its exact scanned count; `SUPERTOOL_NO_RTK=1` does the same for one invocation.
 

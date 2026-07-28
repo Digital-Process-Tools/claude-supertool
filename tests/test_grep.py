@@ -578,7 +578,9 @@ def test_rtk_fixture_reaches_the_delegated_branch(tmp_path: Path, rtk: _RtkStub)
     rtk.output = f"{a}:1:alpha\n"
     supertool.op_grep("alpha", str(tmp_path))
     assert rtk.calls, "op_grep never called _rtk_run — delegated branch skipped"
-    assert rtk.calls[0][:4] == ["grep", "-rn", "-m", "10"]
+    # limit + 1 — the over-fetch #448 uses to tell "exactly N" from "stopped
+    # at N". rtk is asked for 11 and the 11th is trimmed before output.
+    assert rtk.calls[0][:4] == ["grep", "-rn", "-m", "11"]
     assert rtk.calls[0][-2:] == ["alpha", str(tmp_path)]
 
 
@@ -694,3 +696,119 @@ def test_grep_delegated_end_to_end_with_rtk_on_path(tmp_path: Path) -> None:
     assert ("(2 results in 1 files, scanned ? files — delegated to rtk, "
             "limit 10)") in result.stdout
     assert "src/a.txt:1:alpha" in result.stdout
+
+# ---------------------------------------------------------------------------
+# Truncation is disclosed rather than implied (#448)
+# ---------------------------------------------------------------------------
+#
+# `(1 results in 1 files, scanned 118353 files, limit 1)` reads as a complete
+# answer. It is a truncated one. The distinction is made by fetching one match
+# past the limit and discarding it, so a result that says nothing about
+# truncation is provably exact — the false-positive direction is a smaller lie
+# but still a lie, which is what the "exact" pins below exist for.
+
+
+def test_grep_marks_a_result_that_stopped_at_the_limit(tmp_path: Path) -> None:
+    d = tmp_path / "t"
+    d.mkdir()
+    (d / "a.py").write_text("needle\nneedle\nneedle\n")
+    out = supertool.op_grep("needle", str(d), limit=2, no_auto_read=True)
+    assert "limit 2 — TRUNCATED, more matches exist)" in out
+    assert out.startswith("(2 results in 1 files")
+
+
+def test_grep_does_not_mark_an_exact_count_as_truncated(tmp_path: Path) -> None:
+    """The false-positive direction: stopping *at* N is not proof of an N+1th
+    match, so a count that happens to equal the limit must stay unmarked."""
+    d = tmp_path / "t"
+    d.mkdir()
+    (d / "a.py").write_text("needle\nneedle\n")
+    out = supertool.op_grep("needle", str(d), limit=2, no_auto_read=True)
+    assert "(2 results in 1 files, scanned 1 files, limit 2)\n" in out
+    assert "TRUNCATED" not in out
+
+
+def test_grep_truncation_marker_spans_files(tmp_path: Path) -> None:
+    """The extra match may live in a later file — the probe has to keep walking,
+    not stop at the end of the file that filled the limit."""
+    d = tmp_path / "t"
+    d.mkdir()
+    (d / "a.py").write_text("needle\n")
+    (d / "b.py").write_text("needle\n")
+    out = supertool.op_grep("needle", str(d), limit=1, no_auto_read=True)
+    assert "TRUNCATED" in out
+    assert out.startswith("(1 results in 1 files")
+
+
+def test_grep_context_mode_marks_truncation(tmp_path: Path) -> None:
+    d = tmp_path / "t"
+    d.mkdir()
+    (d / "a.py").write_text("needle\nx\ny\nneedle\nz\nw\nneedle\n")
+    out = supertool.op_grep("needle", str(d), limit=2, context=1)
+    assert "TRUNCATED, more matches exist)" in out
+    assert out.count(":needle") == 2, "trimmed to the limit, not limit+1"
+
+
+def test_grep_context_mode_exact_count_is_not_marked(tmp_path: Path) -> None:
+    d = tmp_path / "t"
+    d.mkdir()
+    (d / "a.py").write_text("needle\nx\ny\nneedle\n")
+    out = supertool.op_grep("needle", str(d), limit=2, context=1)
+    assert "TRUNCATED" not in out
+    assert out.count(":needle") == 2
+
+
+def test_glob_marks_a_file_list_that_stopped_at_the_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`(N files)` carries the same implied completeness as grep's header, and
+    glob has a cap of its own (builtin-ops.glob.max_results)."""
+    monkeypatch.setattr(supertool, "_CONFIG", {"builtin-ops": {"glob": {"max_results": 2}}})
+    monkeypatch.setattr(supertool, "_CONFIG_CHECKED", True)
+    d = tmp_path / "t"
+    d.mkdir()
+    for name in ("a.py", "b.py", "c.py"):
+        (d / name).write_text("x\n")
+    monkeypatch.chdir(tmp_path)
+    out = supertool.op_glob("t/**/*.py", no_auto_read=True)
+    assert "(2 files — TRUNCATED, more files match)" in out
+
+
+def test_glob_exact_file_count_is_not_marked_truncated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(supertool, "_CONFIG", {"builtin-ops": {"glob": {"max_results": 2}}})
+    monkeypatch.setattr(supertool, "_CONFIG_CHECKED", True)
+    d = tmp_path / "t"
+    d.mkdir()
+    for name in ("a.py", "b.py"):
+        (d / name).write_text("x\n")
+    monkeypatch.chdir(tmp_path)
+    out = supertool.op_glob("t/**/*.py", no_auto_read=True)
+    assert "(2 files)" in out
+    assert "TRUNCATED" not in out
+
+
+def test_grep_delegated_marks_truncation(tmp_path: Path, rtk: _RtkStub) -> None:
+    """The delegated path asks rtk for limit+1 and trims, so #414's report line
+    carries the same disclosure the native walker does."""
+    a = tmp_path / "a.txt"
+    a.write_text("alpha\n")
+    rtk.output = "".join(f"{a}:{i}:alpha\n" for i in range(1, 5))
+    out = supertool.op_grep("alpha", str(tmp_path), limit=3)
+    assert rtk.calls, "delegated branch not taken — this test pins nothing"
+    assert rtk.calls[0][:4] == ["grep", "-rn", "-m", "4"], "no over-fetch requested"
+    assert ("(3 results in 1 files, scanned ? files — delegated to rtk, "
+            "limit 3 — TRUNCATED, more matches exist)\n") in out
+    assert out.count(":alpha") == 3, "body trimmed to the limit"
+
+
+def test_grep_delegated_exact_count_is_not_marked(tmp_path: Path, rtk: _RtkStub) -> None:
+    a = tmp_path / "a.txt"
+    a.write_text("alpha\n")
+    rtk.output = "".join(f"{a}:{i}:alpha\n" for i in range(1, 4))
+    out = supertool.op_grep("alpha", str(tmp_path), limit=3)
+    assert rtk.calls, "delegated branch not taken — this test pins nothing"
+    assert ("(3 results in 1 files, scanned ? files — delegated to rtk, "
+            "limit 3)\n") in out
+    assert "TRUNCATED" not in out
