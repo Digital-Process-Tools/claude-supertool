@@ -13861,5 +13861,9 @@ def _body_indicates_failure(body: str) -> bool:
     return _FAIL_MARKER.search(body) is not None
 
 
+def _cli() -> int:
+    return main(sys.argv[1:])
+
+
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
