@@ -61,7 +61,9 @@ def test_applicable_filters_by_match_glob() -> None:
         "py":  {"cmd": "x", "hooks_into": ["edit"], "match": "*.py"},
     })
     assert set(supertool._applicable_validators("edit", "a.php")) == {"php"}
-    assert set(supertool._applicable_validators("edit", "a.py")) == {"py"}
+    # py-syntax is the built-in parse backstop (#477): it joins any *.py
+    # mutating op unless the repo configures its own "syntax": true validator.
+    assert set(supertool._applicable_validators("edit", "a.py")) == {"py", "py-syntax"}
 
 
 def test_applicable_skips_opt_in() -> None:

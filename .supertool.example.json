@@ -401,6 +401,7 @@
     "py-compile": {
       "cmd": "{python} {supertool_dir}/validators/py-compile/py-compile.py {file}",
       "match": "*.py",
+      "syntax": true,
       "hooks_into": [
         "edit",
         "replace",

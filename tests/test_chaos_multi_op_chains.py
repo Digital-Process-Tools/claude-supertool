@@ -689,7 +689,7 @@ class TestRegexMetaCharInjection:
         actually executed. Side-effect file check (not output substring) —
         the edit receipt + read both echo the new value, so substring match
         for 'pwned' would false-positive on legitimate output."""
-        f = tmp_path / "chain_meta.py"
+        f = tmp_path / "chain_meta.txt"
         # write_bytes preserves LF — write_text translates to CRLF on Windows,
         # which then drifts the read_text() assertion below.
         f.write_bytes(b"safe\n")

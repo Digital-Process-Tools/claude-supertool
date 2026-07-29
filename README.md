@@ -169,6 +169,8 @@ Three ways to pass arguments. Full reference: [docs/input-forms.md](docs/input-f
 
 Every mutating op (`edit`, `replace`, `replace_lines`, `paste`, `append`, `vim`) runs matching validators on the result. Syntax fail → atomic rollback. The model gets an immediate error receipt and retries cleanly.
 
+**What that guarantee actually covers.** Python is unconditional: a built-in in-process parse check (`py-syntax`) runs on every mutating op against a `.py` file and reverts an edit that made it unparseable, with no configuration and no toolchain. **Every other language is opt-in.** A `.php`, `.ts` or `.json` file rolls back only if `.supertool.json` declares a validator that matches it *and* sets `rollback_on_fail: true` — with no such entry the file is not syntax-checked at all, and a receipt with no red in it means only that nothing ran. Before quoting the guarantee in an agent brief, check which half you are in.
+
 Example: edit a `.json` file with a missing comma → `jsonlint` catches it → file reverts → receipt shows the parse error with line/col.
 
 18 validators bundled out of the box (PHP, XML, JSON, YAML, INI, Python syntax + types, Bash, JS, TS, SCSS, Markdown, Ruby, Dockerfile, Go, Terraform, Rust, TOML). Graceful skip when toolchain missing.

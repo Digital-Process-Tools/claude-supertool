@@ -170,7 +170,7 @@ def test_dispatch_replace_lines(tmp_path: Path) -> None:
 
 def test_dispatch_replace_lines_content_with_colons(tmp_path: Path) -> None:
     """CONTENT may contain colons — dispatch must rejoin parts past the index args."""
-    f = tmp_path / "x.py"
+    f = tmp_path / "x.txt"
     f.write_text("a\nb\nc\n")
     out = supertool.dispatch(f"replace_lines:{f}:2:2:url:http://x")
     assert "replaced" in out
