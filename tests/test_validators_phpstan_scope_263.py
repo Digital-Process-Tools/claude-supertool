@@ -27,6 +27,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -64,7 +65,7 @@ def _run_adapter(tmp_path: Path, *, stdout: str = "", stderr: str = "",
     env = {**os.environ,
            "PATH": str(bindir) + os.pathsep + os.environ.get("PATH", ""),
            "PHPSTAN_BIN": str(dummy_bin)}
-    r = subprocess.run(["python3", str(PHPSTAN_PY), str(target)],
+    r = subprocess.run([sys.executable, str(PHPSTAN_PY), str(target)],
                        capture_output=True, text=True, timeout=30, env=env)
     assert r.returncode == 0, r.stderr
     return json.loads(r.stdout.strip())
@@ -174,7 +175,7 @@ def _phpstan_ready() -> bool:
         f = Path(d) / "probe.php"
         f.write_text("<?php\n$x = 1;\n")
         try:
-            r = subprocess.run(["python3", str(PHPSTAN_PY), str(f)],
+            r = subprocess.run([sys.executable, str(PHPSTAN_PY), str(f)],
                                capture_output=True, text=True, timeout=60)
         except (OSError, subprocess.SubprocessError):
             return False
@@ -202,7 +203,7 @@ def test_real_phpstan_sees_the_parent_in_single_file_scope(tmp_path: Path) -> No
     (tmp_path / "phpstan.neon").write_text(
         "parameters:\n    level: 8\n    paths:\n        - src\n")
     r = subprocess.run(
-        ["python3", str(PHPSTAN_PY), "src/ChildC.php"],
+        [sys.executable, str(PHPSTAN_PY), "src/ChildC.php"],
         capture_output=True, text=True, timeout=120, cwd=str(tmp_path),
     )
     data = json.loads(r.stdout.strip())

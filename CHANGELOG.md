@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Test suite spawns validator/preset adapters via `sys.executable` instead of the literal `"python3"`.** On Windows, PATH resolution of `"python3"` can hit the App Execution Alias stub, which blocks rather than errors, surfacing as an unrelated `subprocess.TimeoutExpired` flake (observed on PR #527's Windows/3.10 leg). 27 genuine `subprocess.run` spawn sites across 9 test files converted; fixture argv data describing fake process-table rows (`test_watch_pid_set_511.py`, `test_watch_death_supervision_513.py`) deliberately left untouched. Guarded by `tests/test_no_bare_python3_spawn.py`, an AST-scoped check over real `subprocess.*` call sites. Closes [#529](https://github.com/Digital-Process-Tools/claude-supertool/issues/529).
+
 ## [0.22.0] - 2026-07-29
 
 ### Added

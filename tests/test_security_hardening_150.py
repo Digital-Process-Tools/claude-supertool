@@ -27,7 +27,7 @@ def _run_git_preset(
     script: str, *args: str, cwd: str | os.PathLike | None = None
 ) -> subprocess.CompletedProcess:
     return subprocess.run(
-        ["python3", str(PRESETS_GIT / script), *args],
+        [sys.executable, str(PRESETS_GIT / script), *args],
         capture_output=True, text=True, timeout=10, cwd=cwd,
     )
 
