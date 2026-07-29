@@ -13,6 +13,18 @@ poller = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(poller)
 
 
+
+def _ok(data):
+    """The `(payload, "")` pair `_fetch` returns on a successful lookup (#541)."""
+    return (data, "")
+
+
+def _unreachable(msg="ERROR: could not look"):
+    """The `(None, why)` pair `_fetch` returns when it could not look (#541)."""
+    return (None, msg)
+
+
+
 def _pr(
     state="OPEN", mergeable="MERGEABLE", review="", checks=None, title="some PR",
     comments=None,
@@ -81,7 +93,7 @@ def test_rollup_neutral_skipped_treated_as_success() -> None:
 
 def test_no_change_emits_nothing() -> None:
     state = {"pr_state": "OPEN", "checks_state": "SUCCESS", "review_decision": "", "mergeable": "MERGEABLE"}
-    with mock.patch.object(poller, "_fetch", return_value=_pr(checks=[{"status": "COMPLETED", "conclusion": "SUCCESS"}])):
+    with mock.patch.object(poller, "_fetch", return_value=_ok(_pr(checks=[{"status": "COMPLETED", "conclusion": "SUCCESS"}]))):
         events, _ = poller.poll(state, {"id": "42"})
     assert events == []
 
@@ -89,7 +101,7 @@ def test_no_change_emits_nothing() -> None:
 def test_checks_failed_emits_failed() -> None:
     state = {"checks_state": "PENDING"}
     rollup = [{"status": "COMPLETED", "conclusion": "FAILURE"}]
-    with mock.patch.object(poller, "_fetch", return_value=_pr(checks=rollup)):
+    with mock.patch.object(poller, "_fetch", return_value=_ok(_pr(checks=rollup))):
         events, _ = poller.poll(state, {"id": "42"})
     assert any(e["event"] == "checks_failed" for e in events)
 
@@ -97,14 +109,14 @@ def test_checks_failed_emits_failed() -> None:
 def test_checks_succeeded_emits_succeeded() -> None:
     state = {"checks_state": "PENDING"}
     rollup = [{"status": "COMPLETED", "conclusion": "SUCCESS"}]
-    with mock.patch.object(poller, "_fetch", return_value=_pr(checks=rollup)):
+    with mock.patch.object(poller, "_fetch", return_value=_ok(_pr(checks=rollup))):
         events, _ = poller.poll(state, {"id": "42"})
     assert any(e["event"] == "checks_succeeded" for e in events)
 
 
 def test_merged_emits_merged_and_is_terminal() -> None:
     state = {"pr_state": "OPEN"}
-    with mock.patch.object(poller, "_fetch", return_value=_pr(state="MERGED")):
+    with mock.patch.object(poller, "_fetch", return_value=_ok(_pr(state="MERGED"))):
         events, new_state = poller.poll(state, {"id": "42"})
     assert any(e["event"] == "merged" for e in events)
     assert poller.is_terminal(new_state) is True
@@ -112,7 +124,7 @@ def test_merged_emits_merged_and_is_terminal() -> None:
 
 def test_closed_emits_closed_and_is_terminal() -> None:
     state = {"pr_state": "OPEN"}
-    with mock.patch.object(poller, "_fetch", return_value=_pr(state="CLOSED")):
+    with mock.patch.object(poller, "_fetch", return_value=_ok(_pr(state="CLOSED"))):
         events, new_state = poller.poll(state, {"id": "42"})
     assert any(e["event"] == "closed" for e in events)
     assert poller.is_terminal(new_state) is True
@@ -120,35 +132,40 @@ def test_closed_emits_closed_and_is_terminal() -> None:
 
 def test_review_approved_emits_event() -> None:
     state = {"review_decision": "REVIEW_REQUIRED"}
-    with mock.patch.object(poller, "_fetch", return_value=_pr(review="APPROVED")):
+    with mock.patch.object(poller, "_fetch", return_value=_ok(_pr(review="APPROVED"))):
         events, _ = poller.poll(state, {"id": "42"})
     assert any(e["event"] == "review_approved" for e in events)
 
 
 def test_changes_requested_emits_event() -> None:
     state = {"review_decision": ""}
-    with mock.patch.object(poller, "_fetch", return_value=_pr(review="CHANGES_REQUESTED")):
+    with mock.patch.object(poller, "_fetch", return_value=_ok(_pr(review="CHANGES_REQUESTED"))):
         events, _ = poller.poll(state, {"id": "42"})
     assert any(e["event"] == "review_changes_requested" for e in events)
 
 
 def test_conflict_rising_edge_emits_once() -> None:
     state = {"mergeable": "MERGEABLE"}
-    with mock.patch.object(poller, "_fetch", return_value=_pr(mergeable="CONFLICTING")):
+    with mock.patch.object(poller, "_fetch", return_value=_ok(_pr(mergeable="CONFLICTING"))):
         events1, new_state = poller.poll(state, {"id": "42"})
     assert any(e["event"] == "conflicts_appeared" for e in events1)
     # Same state again — must not re-fire
-    with mock.patch.object(poller, "_fetch", return_value=_pr(mergeable="CONFLICTING")):
+    with mock.patch.object(poller, "_fetch", return_value=_ok(_pr(mergeable="CONFLICTING"))):
         events2, _ = poller.poll(new_state, {"id": "42"})
     assert all(e["event"] != "conflicts_appeared" for e in events2)
 
 
-def test_fetch_failure_preserves_state() -> None:
+def test_fetch_failure_reports_and_preserves_state() -> None:
+    """`events == []` was this test's assertion until #541 — the defect written
+    down as a requirement. What survives is the state guarantee: every field the
+    next poll compares against is carried through the outage untouched."""
     state = {"checks_state": "PENDING", "marker": "keep"}
-    with mock.patch.object(poller, "_fetch", return_value=None):
+    with mock.patch.object(poller, "_fetch", return_value=_unreachable()):
         events, new_state = poller.poll(state, {"id": "42"})
-    assert events == []
-    assert new_state == state
+    assert [e["event"] for e in events] == ["pr_unreachable"]
+    assert new_state["checks_state"] == "PENDING"
+    assert new_state["marker"] == "keep"
+    assert new_state["lookup"] == "unavailable"
 
 
 def test_is_terminal_open_returns_false() -> None:
@@ -158,7 +175,7 @@ def test_is_terminal_open_returns_false() -> None:
 def test_first_poll_records_comment_count_without_event() -> None:
     """First poll on empty state must NOT fire comment_added — just baseline."""
     comments = [{"author": {"login": "alice"}, "body": "hi"}]
-    with mock.patch.object(poller, "_fetch", return_value=_pr(comments=comments)):
+    with mock.patch.object(poller, "_fetch", return_value=_ok(_pr(comments=comments))):
         events, new_state = poller.poll({}, {"id": "42"})
     assert all(e["event"] != "comment_added" for e in events)
     assert new_state["comments_count"] == 1
@@ -170,7 +187,7 @@ def test_comment_count_increase_emits_comment_added() -> None:
         {"author": {"login": "alice"}, "body": "hi"},
         {"author": {"login": "bob"}, "body": "second"},
     ]
-    with mock.patch.object(poller, "_fetch", return_value=_pr(comments=comments)):
+    with mock.patch.object(poller, "_fetch", return_value=_ok(_pr(comments=comments))):
         events, _ = poller.poll(state, {"id": "42"})
     matches = [e for e in events if e["event"] == "comment_added"]
     assert len(matches) == 1
@@ -184,7 +201,7 @@ def test_comment_count_unchanged_no_event() -> None:
         {"author": {"login": "alice"}, "body": "hi"},
         {"author": {"login": "bob"}, "body": "second"},
     ]
-    with mock.patch.object(poller, "_fetch", return_value=_pr(comments=comments)):
+    with mock.patch.object(poller, "_fetch", return_value=_ok(_pr(comments=comments))):
         events, _ = poller.poll(state, {"id": "42"})
     assert all(e["event"] != "comment_added" for e in events)
 

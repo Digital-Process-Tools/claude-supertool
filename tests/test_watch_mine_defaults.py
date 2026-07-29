@@ -33,8 +33,16 @@ EXPECTED_FEED = "gl-mrs:author=@me,state=opened,iids"
 # "user_notes_count counts system notes" — was checked against the live API and
 # turned out to be false. See tests/test_watch_gitlab_mr_poller.py for the
 # twelve-MR derivation.
+# mr_unreachable joined in #541. It is the one event about the watcher rather
+# than the MR, and a default filter that drops it keeps the defect in the
+# default configuration: every "watch everything of mine" flow spawns with this
+# string, so a board of live-looking rows observing nothing is what you get out
+# of the box. Edge-triggered, so it costs one line per outage.
+#
+# It is appended, never inserted: `only=` strings live in user config and the
+# #439/#464 invariant is that no existing name moves.
 EXPECTED_ONLY = ("pipeline_failed,pipeline_succeeded,comment_added,"
-                 "merged,closed,conflicts_appeared")
+                 "merged,closed,conflicts_appeared,mr_unreachable")
 
 
 # ---------------------------------------------------------------------------

@@ -21,6 +21,17 @@ _spec.loader.exec_module(poller)
 _REAL_GLAB_API = poller._glab_api
 
 
+def _ok(data):
+    """The `(payload, "")` pair `_fetch` returns on a successful lookup (#541)."""
+    return (data, "")
+
+
+def _unreachable(msg="ERROR: could not look"):
+    """The `(None, why)` pair `_fetch` returns when it could not look (#541)."""
+    return (None, msg)
+
+
+
 @pytest.fixture(autouse=True)
 def _no_real_glab():
     """Keep the suite hermetic now that a failure transition makes a second call.
@@ -30,7 +41,7 @@ def _no_real_glab():
     a real `glab` on every `pipeline_failed` test. Stubbed to an empty job
     list — tests that care about the lookup patch over this with their own.
     """
-    with mock.patch.object(poller, "_glab_api", return_value=[]):
+    with mock.patch.object(poller, "_glab_api", return_value=([], "")):
         yield
 
 
@@ -72,7 +83,7 @@ def _drive(sequence):
     state = {}
     emitted = []
     for body in sequence:
-        with mock.patch.object(poller, "_fetch", return_value=body):
+        with mock.patch.object(poller, "_fetch", return_value=_ok(body)):
             events, state = poller.poll(state, {"id": "21803"})
         emitted.extend(events)
     return emitted, state
@@ -80,7 +91,7 @@ def _drive(sequence):
 
 def test_no_change_emits_nothing() -> None:
     state = {"mr_state": "opened", "pipeline_status": "running", "has_conflicts": False}
-    with mock.patch.object(poller, "_fetch", return_value=_mr()):
+    with mock.patch.object(poller, "_fetch", return_value=_ok(_mr())):
         events, new_state = poller.poll(state, {"id": "21803"})
     assert events == []
     assert new_state["mr_state"] == "opened"
@@ -88,7 +99,7 @@ def test_no_change_emits_nothing() -> None:
 
 def test_pipeline_running_to_failed_emits_failed() -> None:
     state = {"mr_state": "opened", "pipeline_status": "running"}
-    with mock.patch.object(poller, "_fetch", return_value=_mr(pipeline_status="failed")):
+    with mock.patch.object(poller, "_fetch", return_value=_ok(_mr(pipeline_status="failed"))):
         events, _ = poller.poll(state, {"id": "21803"})
     assert len(events) == 1
     assert events[0]["event"] == "pipeline_failed"
@@ -98,32 +109,32 @@ def test_pipeline_running_to_failed_emits_failed() -> None:
 
 def test_pipeline_running_to_success_emits_succeeded() -> None:
     state = {"mr_state": "opened", "pipeline_status": "running"}
-    with mock.patch.object(poller, "_fetch", return_value=_mr(pipeline_status="success")):
+    with mock.patch.object(poller, "_fetch", return_value=_ok(_mr(pipeline_status="success"))):
         events, _ = poller.poll(state, {"id": "21803"})
     assert any(e["event"] == "pipeline_succeeded" for e in events)
 
 
 def test_pipeline_pending_to_running_emits_running() -> None:
     state = {"mr_state": "opened", "pipeline_status": "pending"}
-    with mock.patch.object(poller, "_fetch", return_value=_mr(pipeline_status="running")):
+    with mock.patch.object(poller, "_fetch", return_value=_ok(_mr(pipeline_status="running"))):
         events, _ = poller.poll(state, {"id": "21803"})
     assert any(e["event"] == "pipeline_running" for e in events)
 
 
 def test_merge_emits_merged() -> None:
     state = {"mr_state": "opened", "pipeline_status": "success"}
-    with mock.patch.object(poller, "_fetch", return_value=_mr(state="merged", pipeline_status="success")):
+    with mock.patch.object(poller, "_fetch", return_value=_ok(_mr(state="merged", pipeline_status="success"))):
         events, _ = poller.poll(state, {"id": "21803"})
     assert any(e["event"] == "merged" for e in events)
 
 
 def test_conflict_rising_edge_emits_once() -> None:
     state_before = {"has_conflicts": False, "mr_state": "opened", "pipeline_status": "running"}
-    with mock.patch.object(poller, "_fetch", return_value=_mr(conflicts=True)):
+    with mock.patch.object(poller, "_fetch", return_value=_ok(_mr(conflicts=True))):
         events1, new_state = poller.poll(state_before, {"id": "21803"})
     assert any(e["event"] == "conflicts_appeared" for e in events1)
     # Same data again — no new event
-    with mock.patch.object(poller, "_fetch", return_value=_mr(conflicts=True)):
+    with mock.patch.object(poller, "_fetch", return_value=_ok(_mr(conflicts=True))):
         events2, _ = poller.poll(new_state, {"id": "21803"})
     assert all(e["event"] != "conflicts_appeared" for e in events2)
 
@@ -339,16 +350,21 @@ def test_is_not_terminal_when_open() -> None:
     assert poller.is_terminal({"mr_state": "opened"}) is False
 
 
-def test_fetch_failure_returns_no_events() -> None:
-    with mock.patch.object(poller, "_fetch", return_value=None):
+def test_fetch_failure_reports_and_preserves_state() -> None:
+    """This test used to assert `events == []`, which was the #541 defect stated
+    as a requirement: a failed lookup and a quiet MR were the same answer. The
+    state half of it still holds and matters more than ever — every comparison
+    field survives so a change during the outage is announced on recovery."""
+    with mock.patch.object(poller, "_fetch", return_value=_unreachable()):
         events, new_state = poller.poll({"x": 1}, {"id": "21803"})
-    assert events == []
-    assert new_state == {"x": 1}  # state preserved on transient failure
+    assert [e["event"] for e in events] == ["mr_unreachable"]
+    assert new_state["x"] == 1  # state preserved across the outage
+    assert new_state["lookup"] == "unavailable"
 
 
 def test_first_poll_records_notes_count_without_event() -> None:
     """First poll on empty state must NOT fire comment_added — just baseline."""
-    with mock.patch.object(poller, "_fetch", return_value=_mr(user_notes_count=3)):
+    with mock.patch.object(poller, "_fetch", return_value=_ok(_mr(user_notes_count=3))):
         events, new_state = poller.poll({}, {"id": "21803"})
     assert all(e["event"] != "comment_added" for e in events)
     assert new_state["notes_count"] == 3
@@ -356,7 +372,7 @@ def test_first_poll_records_notes_count_without_event() -> None:
 
 def test_notes_count_increase_emits_comment_added() -> None:
     state = {"notes_count": 1, "mr_state": "opened", "pipeline_status": "running"}
-    with mock.patch.object(poller, "_fetch", return_value=_mr(user_notes_count=2)):
+    with mock.patch.object(poller, "_fetch", return_value=_ok(_mr(user_notes_count=2))):
         events, _ = poller.poll(state, {"id": "21803"})
     matches = [e for e in events if e["event"] == "comment_added"]
     assert len(matches) == 1
@@ -365,7 +381,7 @@ def test_notes_count_increase_emits_comment_added() -> None:
 
 def test_notes_count_unchanged_no_event() -> None:
     state = {"notes_count": 2, "mr_state": "opened", "pipeline_status": "running"}
-    with mock.patch.object(poller, "_fetch", return_value=_mr(user_notes_count=2)):
+    with mock.patch.object(poller, "_fetch", return_value=_ok(_mr(user_notes_count=2))):
         events, _ = poller.poll(state, {"id": "21803"})
     assert all(e["event"] != "comment_added" for e in events)
 
@@ -383,7 +399,7 @@ def test_missing_user_notes_count_does_not_lock_baseline_at_zero() -> None:
         "web_url": "https://example.com/mr/21803",
         # user_notes_count intentionally absent
     }
-    with mock.patch.object(poller, "_fetch", return_value=mr_no_field):
+    with mock.patch.object(poller, "_fetch", return_value=_ok(mr_no_field)):
         events, new_state = poller.poll({}, {"id": "21803"})
     assert all(e["event"] != "comment_added" for e in events)
     assert new_state["notes_count"] is None
@@ -397,7 +413,7 @@ def test_notes_count_field_disappearing_skips_event() -> None:
         "head_pipeline": {"id": "9", "status": "running"},
         "web_url": "https://example.com/mr/21803",
     }
-    with mock.patch.object(poller, "_fetch", return_value=mr_no_field):
+    with mock.patch.object(poller, "_fetch", return_value=_ok(mr_no_field)):
         events, _ = poller.poll(state, {"id": "21803"})
     assert all(e["event"] != "comment_added" for e in events)
 
@@ -446,7 +462,7 @@ def test_every_event_carries_the_snapshot_that_produced_it() -> None:
     """One fetch, one snapshot, on every event key the tick emits."""
     state = {"mr_state": "opened", "pipeline_status": "running", "notes_count": 0}
     body = _branched(pipeline_status="failed", state="closed", user_notes_count=3)
-    with mock.patch.object(poller, "_fetch", return_value=body):
+    with mock.patch.object(poller, "_fetch", return_value=_ok(body)):
         events, _ = poller.poll(state, {"id": "21803"})
     assert {e["event"] for e in events} >= {"pipeline_failed", "closed", "comment_added"}
     for ev in events:
@@ -462,7 +478,7 @@ def test_the_snapshot_says_when_it_was_read() -> None:
     prevent. The consumer subtracts.
     """
     before = datetime.now(timezone.utc).replace(microsecond=0)
-    with mock.patch.object(poller, "_fetch", return_value=_branched(pipeline_status="failed")):
+    with mock.patch.object(poller, "_fetch", return_value=_ok(_branched(pipeline_status="failed"))):
         events, _ = poller.poll({"pipeline_status": "running"}, {"id": "21803"})
     after = datetime.now(timezone.utc)
     observed_at = events[0]["payload"]["observed_at"]
@@ -476,7 +492,7 @@ def test_a_merge_is_tied_to_the_pipeline_that_permitted_it() -> None:
     could not be attributed to the pipeline that let it through."""
     state = {"mr_state": "opened", "pipeline_status": "success"}
     body = _branched(state="merged", pipeline_status="success", pipeline_id="154253")
-    with mock.patch.object(poller, "_fetch", return_value=body):
+    with mock.patch.object(poller, "_fetch", return_value=_ok(body)):
         events, _ = poller.poll(state, {"id": "21803"})
     merged = next(e for e in events if e["event"] == "merged")
     assert merged["payload"]["observed_pipeline_id"] == "154253"
@@ -486,7 +502,7 @@ def test_the_branch_pair_rides_along_though_it_is_not_in_state() -> None:
     """`source_branch`/`target_branch` are in the fetched body and retained
     nowhere, so before #435 the only way to learn a branch name was a second
     call for data the poller had just thrown away."""
-    with mock.patch.object(poller, "_fetch", return_value=_branched(pipeline_status="failed")):
+    with mock.patch.object(poller, "_fetch", return_value=_ok(_branched(pipeline_status="failed"))):
         events, new_state = poller.poll({"pipeline_status": "running"}, {"id": "21803"})
     payload = events[0]["payload"]
     assert payload["observed_source_branch"] == "feat/435-event-payload"
@@ -499,7 +515,7 @@ def test_the_snapshot_reports_the_corrected_conflict_flag_not_the_raw_field() ->
     """`has_conflicts` is an alias for `cannot_be_merged?` and over-reports on an
     MR with no diff (#465). The poller already knows better; shipping the raw
     field would re-export a false positive the poller had just suppressed."""
-    with mock.patch.object(poller, "_fetch", return_value=_empty_nondraft_mr()):
+    with mock.patch.object(poller, "_fetch", return_value=_ok(_empty_nondraft_mr())):
         events, _ = poller.poll({"pipeline_status": "pending"}, {"id": "21803"})
     assert events, "expected at least the pipeline transition"
     assert all(e["payload"]["observed_has_conflicts"] is False for e in events)
@@ -511,7 +527,7 @@ def test_an_unsettled_check_ships_the_carried_forward_answer() -> None:
     state = {"has_conflicts": True, "mr_state": "opened", "pipeline_status": "running"}
     body = _rechecking()
     body["state"] = "merged"
-    with mock.patch.object(poller, "_fetch", return_value=body):
+    with mock.patch.object(poller, "_fetch", return_value=_ok(body)):
         events, _ = poller.poll(state, {"id": "21803"})
     merged = next(e for e in events if e["event"] == "merged")
     assert merged["payload"]["observed_has_conflicts"] is True
@@ -525,7 +541,7 @@ def test_the_snapshot_does_not_ship_the_whole_mr() -> None:
     body["description"] = "x" * 5000
     body["author"] = {"username": "fdavid"}
     body["labels"] = ["a", "b"]
-    with mock.patch.object(poller, "_fetch", return_value=body):
+    with mock.patch.object(poller, "_fetch", return_value=_ok(body)):
         events, _ = poller.poll({"pipeline_status": "running"}, {"id": "21803"})
     payload = events[0]["payload"]
     # The three `observed_failed_job*` keys are the deliberate #509 addition to
@@ -541,7 +557,7 @@ def test_the_snapshot_is_flat_so_a_string_attribute_bridge_can_render_it() -> No
     """`notifiers/claude-channel` turns each payload key into a string XML
     attribute via `String(v)`. A nested object renders `[object Object]` — the
     snapshot would be invisible on the one surface #435 was reported from."""
-    with mock.patch.object(poller, "_fetch", return_value=_branched(pipeline_status="failed")):
+    with mock.patch.object(poller, "_fetch", return_value=_ok(_branched(pipeline_status="failed"))):
         events, _ = poller.poll({"pipeline_status": "running"}, {"id": "21803"})
     payload = events[0]["payload"]
     assert SNAPSHOT_KEYS <= set(payload)
@@ -557,9 +573,9 @@ def test_the_existing_top_level_payload_keys_did_not_move() -> None:
     joining that comparison would change the board for a fact nobody reported.
     """
     state = {"mr_state": "opened", "pipeline_status": "running"}
-    with mock.patch.object(poller, "_fetch", return_value=_branched(pipeline_status="failed")):
+    with mock.patch.object(poller, "_fetch", return_value=_ok(_branched(pipeline_status="failed"))):
         failed, _ = poller.poll(dict(state), {"id": "21803"})
-    with mock.patch.object(poller, "_fetch", return_value=_branched(state="merged")):
+    with mock.patch.object(poller, "_fetch", return_value=_ok(_branched(state="merged"))):
         merged, _ = poller.poll(dict(state), {"id": "21803"})
     fp = failed[0]["payload"]
     assert (fp["pipeline_id"], fp["url"], fp["title"]) == (
@@ -611,11 +627,11 @@ def _drive_failed(jobs_response, body=None, state=None):
     state = state if state is not None else {"mr_state": "opened", "pipeline_status": "running"}
     calls = []
 
-    def _api(endpoint):
+    def _api(endpoint, *_a):
         calls.append(endpoint)
-        return jobs_response
+        return (jobs_response, "")
 
-    with mock.patch.object(poller, "_fetch", return_value=body), \
+    with mock.patch.object(poller, "_fetch", return_value=_ok(body)), \
             mock.patch.object(poller, "_glab_api", side_effect=_api):
         events, new_state = poller.poll(state, {"id": "21803"})
     return events, new_state, calls
@@ -698,7 +714,7 @@ def test_a_timed_out_lookup_does_not_kill_the_tick() -> None:
     def _boom(_endpoint, timeout=10):
         raise _sp.TimeoutExpired(cmd="glab", timeout=timeout)
 
-    with mock.patch.object(poller, "_fetch", return_value=_branched(pipeline_status="failed")), \
+    with mock.patch.object(poller, "_fetch", return_value=_ok(_branched(pipeline_status="failed"))), \
             mock.patch.object(poller, "_glab_api", _REAL_GLAB_API), \
             mock.patch.object(poller, "_glab_api_cli", side_effect=_boom):
         events, _ = poller.poll({"mr_state": "opened", "pipeline_status": "running"},
@@ -796,14 +812,14 @@ def test_the_failing_job_lookup_happens_once_per_red_streak_not_once_per_tick() 
     state = {"mr_state": "opened", "pipeline_status": "running"}
     calls = []
 
-    def _api(endpoint):
+    def _api(endpoint, *_a):
         calls.append(endpoint)
-        return [_job("rector", 1, "2026-07-29T05:10:00.000Z")]
+        return ([_job("rector", 1, "2026-07-29T05:10:00.000Z")], "")
 
     with mock.patch.object(poller, "_glab_api", side_effect=_api):
         for _ in range(3):
             with mock.patch.object(poller, "_fetch",
-                                   return_value=_branched(pipeline_status="failed")):
+                                   return_value=_ok(_branched(pipeline_status="failed"))):
                 _, state = poller.poll(state, {"id": "21803"})
     assert len(calls) == 1, calls
     assert "scope" in calls[0] and "failed" in calls[0]
@@ -902,7 +918,7 @@ def test_comment_added_costs_no_extra_request() -> None:
     by the fetch the poller already makes."""
     state = {"notes_count": 1, "mr_state": "opened", "pipeline_status": "running"}
     calls = []
-    with mock.patch.object(poller, "_fetch", return_value=_mr(user_notes_count=5)), \
+    with mock.patch.object(poller, "_fetch", return_value=_ok(_mr(user_notes_count=5))), \
             mock.patch.object(poller, "_glab_api", side_effect=lambda e: calls.append(e)):
         events, _ = poller.poll(state, {"id": "21803"})
     assert any(e["event"] == "comment_added" for e in events)
@@ -987,15 +1003,15 @@ def test_the_second_failure_looks_up_its_own_pipelines_failing_jobs() -> None:
     state: dict = {}
     calls: list[str] = []
 
-    def _api(endpoint):
+    def _api(endpoint, *_a):
         calls.append(endpoint)
-        return [_job("rector", 1, "2026-07-29T05:10:00.000Z")]
+        return ([_job("rector", 1, "2026-07-29T05:10:00.000Z")], "")
 
     with mock.patch.object(poller, "_glab_api", side_effect=_api):
         for pid in ("154628", "154636"):
             with mock.patch.object(
                 poller, "_fetch",
-                return_value=_mr(pipeline_status="failed", pipeline_id=pid),
+                return_value=_ok(_mr(pipeline_status="failed", pipeline_id=pid)),
             ):
                 _, state = poller.poll(state, {"id": "21803"})
     assert len(calls) == 2, calls
@@ -1036,7 +1052,7 @@ def test_the_snapshot_says_whether_this_is_the_pipeline_the_last_poll_saw() -> N
     events, state = _drive([_mr(pipeline_status="failed", pipeline_id="154628")])
     assert events[0]["payload"]["observed_pipeline_identity"] == "new"
     with mock.patch.object(
-        poller, "_fetch", return_value=_mr(pipeline_status="running", pipeline_id="154628"),
+        poller, "_fetch", return_value=_ok(_mr(pipeline_status="running", pipeline_id="154628")),
     ):
         events, _ = poller.poll(state, {"id": "21803"})
     assert events[0]["payload"]["observed_pipeline_identity"] == "same"
@@ -1053,13 +1069,13 @@ def test_an_undeterminable_identity_does_not_silently_become_no_transition() -> 
     that was positively identified."""
     state = {"mr_state": "opened", "pipeline_status": "failed"}  # no pipeline_id
     body = _mr(pipeline_status="failed", pipeline_id="154636")
-    with mock.patch.object(poller, "_fetch", return_value=body):
+    with mock.patch.object(poller, "_fetch", return_value=_ok(body)):
         events, state = poller.poll(state, {"id": "21803"})
     failed = [e for e in events if e["event"] == "pipeline_failed"]
     assert len(failed) == 1
     assert failed[0]["payload"]["observed_pipeline_identity"] == "unknown"
     # And the poll after it *can* tell, so it goes quiet again.
-    with mock.patch.object(poller, "_fetch", return_value=body):
+    with mock.patch.object(poller, "_fetch", return_value=_ok(body)):
         events, _ = poller.poll(state, {"id": "21803"})
     assert events == []
 

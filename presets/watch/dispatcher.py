@@ -52,6 +52,23 @@ def _load_source(name: str):
     return module
 
 
+# Keys a poller writes when it could not look at all (#541). A state made only
+# of these is bookkeeping about a failed lookup, not an observation of anything.
+LOOKUP_ONLY_STATE_KEYS = {"lookup", "error"}
+
+
+def _is_bootstrap_state(state: dict) -> bool:
+    """True when this watcher has never successfully observed the world.
+
+    #464 keys "this emission describes what I found, not what changed" on state
+    being empty. Once a failed poll writes `{lookup, error}`, empty is no longer
+    the right test: a watcher whose *first* poll 401s has non-empty state and
+    has still seen nothing, so the first successful poll after the outage would
+    report an already-red MR as a live transition.
+    """
+    return not state or set(state) <= LOOKUP_ONLY_STATE_KEYS
+
+
 def _parse_args(parts: list[str]) -> tuple[str, str, list[str]]:
     """Parse SOURCE ID [only=ev1,ev2 ...] from positional argv segments.
 
@@ -476,7 +493,7 @@ def _run_poll_loop(source: str, watcher_id: str, only: list[str]) -> None:
     # MR, and gitlab-mr-feed leans on it — but the consumer has to be able to
     # tell it apart from a live transition (#464). Keyed on state, not on
     # process age: a poller restarted with its state intact is not bootstrapping.
-    first_tick = not state
+    first_tick = _is_bootstrap_state(state)
     ctx = {"source": source, "id": watcher_id, "only": only}
     interval = int(getattr(poller, "INTERVAL", 30))
     stop_flag = {"stop": False}
@@ -517,7 +534,10 @@ def _run_poll_loop(source: str, watcher_id: str, only: list[str]) -> None:
             full.pop("last_error", None)
             transport.write_state(source, watcher_id, full)
             state = new_state
-            first_tick = False
+            # Not an unconditional False: a cold start whose polls keep failing
+            # has produced state but no observation, so it is still bootstrapping
+            # and the first poll that succeeds is still describing what it found.
+            first_tick = _is_bootstrap_state(new_state)
 
             if hasattr(poller, "is_terminal") and poller.is_terminal(new_state):
                 reached_terminal = True

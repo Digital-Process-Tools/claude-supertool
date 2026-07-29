@@ -14,19 +14,35 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 from pathlib import Path
 from typing import Any
 
 INTERVAL = 30
 
-# Import the existing _gh CLI wrapper from the gh-pr op so we share one source
-# of truth for gh invocation, error handling, and timeouts.
-_PR_MODULE_PATH = Path(__file__).parents[3] / "github" / "pr.py"
-_spec = importlib.util.spec_from_file_location("github_pr_op", _PR_MODULE_PATH)
-assert _spec is not None and _spec.loader is not None
-_pr_op = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_pr_op)
-_gh = _pr_op._gh  # type: ignore[attr-defined]
+# Two imports from presets/github, two jobs — the split `gh-run` already made:
+#   `_gh`           — the shared gh invoker (timeout, encoding, capture).
+#   `_format_error` — the classifier that turns gh stderr into "gh CLI not
+#                     authenticated. Run: gh auth login" or "not found". It
+#                     lives in run.py rather than pr.py, and it is generic over
+#                     (resource, identifier), so the PR watcher borrows it
+#                     rather than growing a third copy of the same if-ladder.
+_GITHUB_DIR = Path(__file__).parents[3] / "github"
+
+
+def _load(name: str, filename: str):
+    spec = importlib.util.spec_from_file_location(name, _GITHUB_DIR / filename)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_gh = _load("github_pr_op", "pr.py")._gh  # type: ignore[attr-defined]
+_format_error = _load("github_run_op", "run.py")._format_error  # type: ignore[attr-defined]
+
+LOOKUP_OK = "ok"
+LOOKUP_UNAVAILABLE = "unavailable"
 
 # Fields we ask gh for on each poll. Cheap (single API call) and covers every
 # event in events.json. `comments` returns the issue-comments array; we just
@@ -73,22 +89,74 @@ def _rollup_state(rollup: list | None) -> str:
     return ""
 
 
-def _fetch(number: str) -> dict[str, Any] | None:
-    r = _gh(["pr", "view", number, "--json", _VIEW_FIELDS])
+def _fetch(number: str) -> tuple[dict[str, Any] | None, str]:
+    """`(pr, "")` when GitHub answered, `(None, why)` when we could not look.
+
+    Every failure path carries a reason. Collapsing them to `None` was the #541
+    defect — a renamed repo, an expired token and a healthy PR with nothing new
+    all produced the same answer, forever.
+
+    The exception arms are new rather than moved: `_gh` was called bare here, so
+    `gh` missing from PATH raised `FileNotFoundError` straight out of `poll()`.
+    The dispatcher caught it, wrote `last_error` into the state file and slept —
+    which is not silence in the strictest sense, but it is silence on every
+    surface a person actually looks at.
+    """
+    try:
+        r = _gh(["pr", "view", number, "--json", _VIEW_FIELDS])
+    except FileNotFoundError:
+        return None, "ERROR: gh not found — install from https://cli.github.com"
+    except subprocess.TimeoutExpired:
+        return None, f"ERROR: gh timed out looking up PR #{number}"
+    except (OSError, subprocess.SubprocessError) as e:
+        return None, f"ERROR: gh could not run for PR #{number}: {e}"
     if r.returncode != 0:
-        return None
+        return None, _format_error(r.stderr or "", "Pull request", number)
     try:
         data = json.loads(r.stdout)
     except json.JSONDecodeError:
-        return None
-    return data if isinstance(data, dict) else None
+        return None, f"ERROR: invalid JSON from gh for PR #{number}"
+    if not isinstance(data, dict):
+        return None, f"ERROR: unexpected payload shape from gh for PR #{number}"
+    return data, ""
 
 
 def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
     number = ctx["id"]
-    data = _fetch(number)
+    data, error = _fetch(number)
     if data is None:
-        return [], state  # transient — try again next tick
+        # Three answers, not two: ok, a finding, and *cannot tell*. Said once
+        # per outage, edge-triggered on the lookup flag — an alert that repeats
+        # every 30s is one people mute, and a muted alert is the original
+        # silence by a longer route.
+        #
+        # `{**state, ...}` is the recovery guarantee. This source carries five
+        # comparison fields (pr_state, checks_state, review_decision, mergeable,
+        # comments_count) and every one of them has to survive the outage
+        # untouched, or the transition that happened while we were blind is
+        # either lost or re-announced. `comments_count` is the sharp one: it is
+        # `None` only on a genuine first poll, and resetting it here would make
+        # the next successful poll re-baseline and drop every comment left
+        # during the outage.
+        new_state = {**state, "lookup": LOOKUP_UNAVAILABLE, "error": error}
+        if state.get("lookup") == LOOKUP_UNAVAILABLE:
+            return [], new_state
+        return [{
+            "event": "pr_unreachable",
+            "payload": {
+                "number": str(number),
+                "error": error,
+                # `last_known_`, not the bare field name: what we could see the
+                # last time we could see, not what the PR is doing now. The two
+                # having become the same word is the whole bug.
+                "last_known_state": str(state.get("pr_state") or ""),
+                "last_known_checks": str(state.get("checks_state") or ""),
+                "title": str(state.get("title") or ""),
+                "url": str(state.get("url") or ""),
+            },
+            "notify_title": f"#{number} — cannot tell",
+            "notify_message": error,
+        }], new_state
 
     pr_state = str(data.get("state") or "").upper()
     mergeable = str(data.get("mergeable") or "").upper()
@@ -199,6 +267,7 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
         "comments_count": comments_count,
         "title": title,
         "url": url,
+        "lookup": LOOKUP_OK,
     }
     return events, new_state
 

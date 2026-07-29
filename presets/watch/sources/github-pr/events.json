@@ -9,6 +9,7 @@
     {"key": "comment_added",            "label": "New comment on the PR"},
     {"key": "merged",                   "label": "PR merged"},
     {"key": "closed",                   "label": "PR closed without merge"},
-    {"key": "conflicts_appeared",       "label": "PR became unmergeable"}
+    {"key": "conflicts_appeared",       "label": "PR became unmergeable"},
+    {"key": "pr_unreachable",           "label": "Could not look up the PR — a lookup that failed, not a PR that is quiet. Fires once per outage, not once per poll"}
   ]
 }

@@ -4,6 +4,7 @@
     {"key": "pipeline_succeeded",   "label": "Pipeline succeeded"},
     {"key": "pipeline_failed",      "label": "Pipeline failed"},
     {"key": "pipeline_canceled",    "label": "Pipeline canceled"},
-    {"key": "pipeline_running",     "label": "Pipeline started running"}
+    {"key": "pipeline_running",     "label": "Pipeline started running"},
+    {"key": "pipeline_unreachable", "label": "Could not look up the pipeline — a lookup that failed, not a pipeline that is quiet. Fires once per outage, not once per poll"}
   ]
 }
