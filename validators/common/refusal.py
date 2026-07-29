@@ -12,6 +12,7 @@ Adapters route such exits through `skipped()` instead. See validators/SCHEMA.md,
 from __future__ import annotations
 
 import os
+import socket
 
 # Case-insensitive substrings by which an analyser announces it declined to run,
 # as opposed to a finding about the file. Deliberately narrow: an exit we cannot
@@ -45,6 +46,52 @@ class DaemonUnavailable(RuntimeError):
     loud. Guessing towards silence there is how a broken validator starts
     looking clean.
     """
+
+
+def daemon_transport_reason(has_uds: bool | None = None) -> str | None:
+    """Why no warm daemon is reachable on this build, or None if one is (#544).
+
+    The warm analysers are spoken to over a Unix domain socket. GH-hosted
+    Windows Python builds do not expose `socket.AF_UNIX` even though the OS
+    supports it — `supertool.py`'s MCP client has carried that note since it
+    was written, and `tests/test_security_mcp_daemon_148.py` skips its whole
+    module for it. So on those builds there is no transport, and every warm
+    validator is unreachable before any question of installation arises.
+
+    Until this existed the adapters walked in anyway and published the crash
+    as a finding about the file: `_spawn.ensure_daemon` computes
+    `socket_pid_paths` before running its preflight, that reaches
+    `_paths.runtime_dir`, and `runtime_dir` calls `os.geteuid()` — which
+    Windows also lacks. The blanket `except Exception` in `main` turned the
+    `AttributeError` into an `adapter` error about a file nothing had opened.
+
+    **Where the check goes matters more than what it says.** It belongs in the
+    body of each adapter's `ensure_daemon`, never at the top of `main`. Three
+    suites stub the daemon layer by replacing that whole function
+    (`monkeypatch.setattr(mod, "ensure_daemon", ...)`), which is why they never
+    needed a real socket and passed on Windows all along. A platform check
+    placed ahead of that assignment fires before the stub can take effect, and
+    those suites keep reporting green while exercising nothing — including the
+    one asserting that a real daemon failure stays loud, which the first
+    attempt at this fix silenced with the very guard meant to protect it.
+
+    The binary lookup runs first, before this. Both outcomes are `skipped`, so
+    neither fabricates anything, and of the two reasons only one is the
+    reader's next action: "install it" beats "this Python cannot reach a
+    daemon" when it is not installed either way. Once it *is* installed, this
+    reason is what they get.
+
+    `has_uds` is injectable so the contract can be asserted by removing the
+    attribute on every platform, rather than only on the runners that happen to
+    lack it — the absence of exactly such a test is why this shipped unnoticed.
+    """
+    if has_uds is None:
+        has_uds = hasattr(socket, "AF_UNIX")
+    if has_uds:
+        return None
+    return ("warm daemon needs socket.AF_UNIX, which this Python build does not "
+            "expose (Windows) — warm validators cannot run here; cold "
+            "validators such as phplint are unaffected")
 
 
 def is_refusal(msg: str, env_var: str = "") -> bool:

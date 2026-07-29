@@ -23,46 +23,30 @@ A single `except` that swallowed everything would fail the second half; an
 implementation that changed nothing would fail the first.
 
 Windows: these tests were the first thing in the suite to reach this code path
-on a Windows runner, and they found a separate live bug there (#544) — the
-adapters publish a fabricated `adapter` finding for a reason that has nothing
-to do with the binary. Two tests are scoped away from it below, narrowly; see
-the marker for why the scoping is about a false premise and not convenience.
+on a Windows runner, and they found a separate live bug there — the adapters
+published a fabricated `adapter` finding for a reason that had nothing to do
+with the binary. Two tests were scoped away from it with a `skipif`, because on
+such a platform there was no "missing binary" outcome left to assert: the
+adapter raised in `runtime_dir()` before it ever looked for the binary.
+
+#544 removed both skipifs along with the reason for them. The adapters now
+decline where there is no transport, and the binary lookup runs *first* — both
+outcomes are skips, and "install it" is the more actionable of the two — so
+every test in this file runs on every platform and asserts the same thing on
+each. `tests/test_windows_warm_validators_544.py` pins that ordering, and pins
+that the decline sits behind the injection seam so the stub in
+`test_a_daemon_that_exists_and_fails_is_still_an_error` still wins.
 """
 from __future__ import annotations
 
 import importlib.util
 import json
-import os
 from pathlib import Path
 
 import pytest
 
 _ROOT = Path(__file__).parent.parent
 _REFUSAL = _ROOT / "validators" / "common" / "refusal.py"
-
-# Two of the tests below drive `main()` all the way to `ensure_daemon`, and they
-# presuppose that the binary lookup is the first thing on that path that can
-# fail. On Windows it is not, for a reason that is a separate live bug (#544):
-# `_spawn.ensure_daemon` calls `socket_pid_paths` (line 334) before `preflight`
-# (line 358), and `socket_pid_paths` -> `runtime_dir` calls `os.geteuid()`,
-# which does not exist there. So the adapter raises before it ever looks for the
-# binary, and publishes a fabricated `adapter` finding — the very defect this
-# file is about, arriving one layer earlier.
-#
-# Skipped because the premise is untrue there, not because it is inconvenient:
-# on such a platform there is no "missing binary" outcome to assert. The two
-# tests that DO hold on Windows are deliberately left running — the must-stay-
-# loud guard (which stubs `ensure_daemon` and so never reaches `runtime_dir`)
-# and the `resolve_bin` raise-site test (which calls it directly). Those are the
-# assertions that matter most, and #544 must not silence them either.
-#
-# When #544 lands, delete this marker and both usages.
-reaches_the_binary_lookup_first = pytest.mark.skipif(
-    not hasattr(os, "geteuid"),
-    reason="#544: runtime_dir() raises on os.geteuid before the binary lookup "
-           "is reached on this platform, so 'missing binary' is not the "
-           "outcome under test here",
-)
 
 # (tool name, adapter path, bin env var, working-dir env var)
 ADAPTERS = [
@@ -116,7 +100,6 @@ def _run(mod, target: Path) -> dict:
 # the third state
 # ---------------------------------------------------------------------------
 
-@reaches_the_binary_lookup_first
 @pytest.mark.parametrize("tool,rel,bin_env,cwd_env,bin_name", ADAPTERS)
 def test_missing_daemon_binary_at_a_path_skips(
     monkeypatch, tmp_path, tool, rel, bin_env, cwd_env, bin_name
@@ -138,7 +121,6 @@ def test_missing_daemon_binary_at_a_path_skips(
         assert key not in result, f"{tool} padded {key} onto a skip"
 
 
-@reaches_the_binary_lookup_first
 @pytest.mark.parametrize("tool,rel,bin_env,cwd_env,bin_name", ADAPTERS)
 def test_missing_daemon_binary_on_path_skips(
     monkeypatch, tmp_path, tool, rel, bin_env, cwd_env, bin_name
