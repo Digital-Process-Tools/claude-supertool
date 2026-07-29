@@ -314,6 +314,31 @@ Each `watch` invocation forks a detached poller process. The process IS the subs
 
 `SOURCE` and `ID` must not contain `__` (reserved as the filename separator) or `/` (both are interpolated into a `/tmp` path).
 
+### One poller per slot ([#476](https://github.com/Digital-Process-Tools/claude-supertool/issues/476))
+
+`(SOURCE, ID)` is the slot, and it is a singleton. The PID file *is* the claim: it is created with `O_CREAT|O_EXCL` **before** the fork, by the process asking for the poller, so exactly one caller can win. Losing costs nothing — the loser has not bound anything, spawned anything or unlinked anything, so it just says so and stops. Both tiers come through the same door (`dispatcher.start_poller()`): the `watch` op and `radar`'s feed.
+
+The claim, not a `os.path.exists()` test, is what makes this work. The poller publishes its own PID only after a fork, an interpreter start and a detach, so anything that *reads* the PID file to decide whether to spawn is looking through a window several hundred milliseconds wide — which is how nine pollers over one filter accumulated in same-second groups.
+
+A refused start prints what it found and which live process holds the slot:
+
+```
+$ ./supertool 'watch:gitlab-mr:33223'
+Already watching gitlab-mr:33223 (PID 71163) — not starting a second. Use ./supertool 'unwatch:gitlab-mr:33223' to stop it.
+```
+
+It is never silent, and never rendered like a clean start. Exit status stays `0` — a refusal is the op working, not failing. A spawn that genuinely fails prints `ERROR: could not spawn a poller for …` and exits `1`.
+
+Three rules follow from "a missing watcher is worse than a duplicate one":
+
+- **A slot whose owner is dead is reclaimed**, after one retry. A crashed poller must not wedge its id shut forever; an unwatched population renders exactly like a quiet one.
+- **A failed spawn releases the slot.** A claim left by a poller that never started would refuse every future start for that id.
+- **A poller releases its PID file only if it still owns it.** One shutting down slowly, whose slot was meanwhile reclaimed, must not unlink its successor's claim on the way out.
+
+For the feed tier the id is a *filter string*, so it is canonicalised (sorted keys, sorted deduped values) before it becomes a filename: `author=a,author=b` and `author=b,author=a` are one population and must be one poller. That merges only filters that are already the same set, so it can never refuse a filter that would have selected something different. Board labels still print the filter as you typed it.
+
+This prevents duplicates from being created. It does **not** reap detached pollers left over from before — those are `PPID 1` and nothing will reap them; `unwatch` (or `kill`) is still the way out.
+
 ## Writing a new source
 
 Drop a folder under `presets/watch/sources/<NAME>/`:

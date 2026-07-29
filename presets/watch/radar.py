@@ -174,6 +174,24 @@ def filter_string(multi: dict[str, list[str]]) -> str:
     return ",".join(f"{k}={v}" for k, vals in multi.items() for v in vals)
 
 
+def canonical_filter_string(multi: dict[str, list[str]]) -> str:
+    """The filter in one fixed spelling — sorted keys, sorted values, deduped.
+
+    Used where the filter string is an *identity*, not a display: the feed
+    watcher id is the pid filename, so `author=a,author=b` and
+    `author=b,author=a` would otherwise be two pollers over one population,
+    i.e. two copies of every mr_opened (#476).
+
+    Safe as an identity key in the direction that matters. It only merges
+    filters that are already the same set, so it can never refuse to start a
+    poller for a filter that would have selected something different — the
+    failure that would show up as a watcher silently not existing.
+    """
+    return ",".join(f"{k}={v}"
+                    for k, vals in sorted(multi.items())
+                    for v in sorted(set(vals)))
+
+
 def filter_key(multi: dict[str, list[str]]) -> str:
     """Stable short hash of the filter, insensitive to key and value order.
 
@@ -339,7 +357,8 @@ def feed_scope(multi: dict[str, list[str]] | None = None) -> str:
     unchanged. An alias is preferred when it expands to the same filter: the
     id is the pid filename, so `@me` and `author=@me,state=opened` would
     otherwise be two pollers over one population, i.e. two copies of every
-    mr_opened.
+    mr_opened. For the same reason the fallback is the canonical spelling of
+    the filter rather than the caller's: key order is not identity (#476).
     """
     multi = default_filter() if multi is None else multi
     poller = dispatcher._load_source(FEED_SOURCE)
@@ -347,19 +366,12 @@ def feed_scope(multi: dict[str, list[str]] | None = None) -> str:
     for alias, expansion in aliases.items():
         if mrs._parse_multi(expansion)[0] == multi:
             return alias
-    return filter_string(multi)
+    return canonical_filter_string(multi)
 
 
 def feed_pid(scope: str = FEED_SCOPE) -> int:
     """PID recorded for the feed poller, or 0 when there is no readable file."""
-    try:
-        raw = Path(transport.pid_path(FEED_SOURCE, scope)).read_text(encoding="utf-8")
-    except OSError:
-        return 0
-    try:
-        return int(raw.strip())
-    except ValueError:
-        return 0
+    return transport.read_pid(FEED_SOURCE, scope)
 
 
 def ensure_feed(scope: str = FEED_SCOPE) -> str:
@@ -369,18 +381,20 @@ def ensure_feed(scope: str = FEED_SCOPE) -> str:
     short-circuits before any spawn. Without that check every radar run would
     stack another feed poller, and n pollers over one filter means n copies of
     every mr_opened.
+
+    Reading the PID and then spawning was not that check — the poller publishes
+    its PID after a fork and a detach, and radar runs on a 5-minute loop from
+    more than one place, so two runs landing in that window both saw an empty
+    slot and both spawned. That is where the same-second groups of identical
+    `radar.py` processes in #476 came from: a feed poller is forked from radar,
+    so it wears radar's argv. `start_poller` closes the window by claiming the
+    slot atomically before the fork.
     """
-    pid = feed_pid(scope)
-    if pid and transport._pid_alive(pid):
-        return "alive"
     if dispatcher._load_source(FEED_SOURCE) is None:
         return "failed"
     only = [e for e in defaults.DEFAULT_FEED_ONLY.split(",") if e]
-    try:
-        spawned = dispatcher._spawn_poller(FEED_SOURCE, scope, only)
-    except OSError:
-        spawned = 0
-    return "spawned" if spawned else "failed"
+    status, _pid = dispatcher.start_poller(FEED_SOURCE, scope, only)
+    return status
 
 
 def feed_error(scope: str = FEED_SCOPE) -> str:

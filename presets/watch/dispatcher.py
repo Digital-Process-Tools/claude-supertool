@@ -92,26 +92,20 @@ def cmd_watch(parts: list[str]) -> int:
         avail = ", ".join(sorted(p.name for p in SOURCES_DIR.iterdir() if p.is_dir())) or "(none)"
         print(f"ERROR: unknown source {source!r}. Available: {avail}")
         return 1
-    pid_file = transport.pid_path(source, watcher_id)
-    if os.path.exists(pid_file):
-        try:
-            existing = int(Path(pid_file).read_text(encoding="utf-8").strip())
-            if transport._pid_alive(existing):
-                print(f"Already watching {source}:{watcher_id} (PID {existing}). "
-                      f"Use ./supertool 'unwatch:{source}:{watcher_id}' to stop.")
-                return 0
-        except (OSError, ValueError):
-            pass
-        try:
-            os.unlink(pid_file)
-        except OSError:
-            pass
-
-    child_pid = _spawn_poller(source, watcher_id, only)
-    if child_pid == 0:
-        # Child never returns here; _run_poll_loop exits.
+    status, pid = start_poller(source, watcher_id, only)
+    if status == "alive":
+        # Never silent, and never rendered like a clean start: an operator who
+        # cannot tell "started" from "refused" learns nothing from running the
+        # op twice, which is how the duplicates in #476 went unnoticed for a
+        # day. Say what was found, and which live process holds the slot.
+        print(f"Already watching {source}:{watcher_id} (PID {pid}) — "
+              f"not starting a second. "
+              f"Use ./supertool 'unwatch:{source}:{watcher_id}' to stop it.")
         return 0
-    print(f"Watching {source}:{watcher_id} (PID {child_pid})")
+    if status == "failed":
+        print(f"ERROR: could not spawn a poller for {source}:{watcher_id}")
+        return 1
+    print(f"Watching {source}:{watcher_id} (PID {pid})")
     if only:
         print(f"Filter: {','.join(only)}")
     print(f"State: {transport.state_path(source, watcher_id)}")
@@ -186,6 +180,37 @@ def cmd_list() -> int:
     return 0
 
 
+def start_poller(source: str, watcher_id: str, only: list[str]) -> tuple[str, int]:
+    """Claim the (source, id) slot, then spawn its poller. ("alive"|"spawned"|"failed", pid).
+
+    The one door to a new poller, for every tier — `watch` and radar's feed
+    both come through here, because two spawn sites with two copies of the
+    "is one already running?" question is how they came to disagree (#476).
+
+    Ordering is #451's and is load-bearing: the slot is claimed *before* the
+    fork, so losing the race costs nothing — no detached child to reap, no
+    pidfile to unwind, nothing to clean up. The claim is written with this
+    process's PID and only repointed at the grandchild once that PID is known,
+    so the slot is never momentarily ownerless.
+
+    A spawn that fails gives the slot back. A claim left behind by a poller
+    that never started would refuse every future start for that id, and a
+    refusal nobody asked for renders as a watcher quietly not existing.
+    """
+    owner = transport.claim_pidfile(source, watcher_id)
+    if owner:
+        return "alive", owner
+    try:
+        pid = _spawn_poller(source, watcher_id, only)
+    except OSError:
+        pid = 0
+    if not pid:
+        transport.release_pidfile(source, watcher_id, os.getpid())
+        return "failed", 0
+    transport.record_pid(source, watcher_id, pid)
+    return "spawned", pid
+
+
 def _spawn_poller(source: str, watcher_id: str, only: list[str]) -> int:
     """Detach a poller child (double-fork) and return its PID to the parent."""
     r, w = os.pipe()
@@ -228,18 +253,13 @@ def _run_poll_loop(source: str, watcher_id: str, only: list[str]) -> None:
     except OSError:
         pass
 
-    pid_file = transport.pid_path(source, watcher_id)
-    try:
-        Path(pid_file).write_text(f"{os.getpid()}\n", encoding="utf-8")
-    except OSError:
-        return
+    # The slot was already claimed by the caller in start_poller(); this only
+    # repoints it at the PID that is actually going to poll.
+    transport.record_pid(source, watcher_id, os.getpid())
 
     poller = _load_source(source)
     if poller is None:
-        try:
-            os.unlink(pid_file)
-        except OSError:
-            pass
+        transport.release_pidfile(source, watcher_id, os.getpid())
         return
 
     # Publish the event filter next to the state. `only` decides which of the
@@ -311,10 +331,10 @@ def _run_poll_loop(source: str, watcher_id: str, only: list[str]) -> None:
                     break
                 time.sleep(1)
     finally:
-        try:
-            os.unlink(pid_file)
-        except OSError:
-            pass
+        # Only if this process still owns the slot. A poller shutting down
+        # slowly, whose slot was meanwhile reclaimed, must not unlink its
+        # successor's claim on the way out (#476).
+        transport.release_pidfile(source, watcher_id, os.getpid())
         # A terminal watcher leaves no live process, so its state file is not a
         # record of anything current. Kept, it makes consumers that glob the
         # state files report merged MRs as active watches.

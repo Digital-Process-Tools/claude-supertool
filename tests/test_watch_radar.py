@@ -93,7 +93,10 @@ def env(tmp_path, monkeypatch):
         spawned.append((source, watcher_id, list(only)))
         path = tmp_path / f"supertool-watch-{source}__{watcher_id}.pid"
         path.write_text(f"{os.getpid()}\n")
-        return 4242
+        # A *live* PID: since #476 the caller records what the spawn returns,
+        # and a slot pointing at a PID that never existed is indistinguishable
+        # from a crashed poller — the fixture would fake its own respawn.
+        return os.getpid()
 
     monkeypatch.setattr(radar.dispatcher, "_spawn_poller", _fake_spawn)
     return {"dir": tmp_path, "spawned": spawned, "monkeypatch": monkeypatch}
