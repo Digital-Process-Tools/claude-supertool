@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import re
 import sys
 import time
 from pathlib import Path
@@ -249,20 +250,99 @@ def _other_worktree_branches():
     return _parse_worktree_list(result.stdout, root)
 
 
+# The dotted legacy form `[branch.feat/x]` puts the branch name inside the
+# header, so the head cannot be restricted to identifier characters.
+_CONFIG_SECTION_RE = re.compile(r'^\[([^]\s"]+)(?:\s+"(.*)")?\]$')
+
+
+def _parse_git_config(blob):
+    """Split a git config file into ``{(section, subsection, key): value}``.
+
+    Returns ``None`` for anything it cannot read in full — an absent file, a
+    line it does not recognise, bytes that are not UTF-8. The caller treats
+    ``None`` as "this test's problem", so a parser that guessed would be worse
+    than one that declines.
+
+    The key is a tuple rather than a dotted string because branch names contain
+    dots: ``branch.feat.x.remote`` cannot be split back into a subsection and a
+    key, and guessing wrong is how ``branch.<ours>`` would read as somebody
+    else's. Section and key fold to lower case (git compares them that way); a
+    subsection stays verbatim (git does not).
+    """
+    if blob == b"<absent>":
+        return None
+    try:
+        text = blob.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    entries = {}
+    section = subsection = None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line[0] in "#;":
+            continue
+        if line.startswith("["):
+            match = _CONFIG_SECTION_RE.match(line)
+            if not match:
+                return None
+            head, subsection = match.group(1), match.group(2)
+            if subsection is None and "." in head:
+                head, subsection = head.split(".", 1)
+            section = head.lower()
+            continue
+        if section is None or "=" not in line:
+            return None
+        name, _, value = line.partition("=")
+        entries[(section, subsection, name.strip().lower())] = value.strip()
+    return entries
+
+
+def _config_change_owner(before, after, other_branches, our_branches):
+    """Who moved the shared config: ``ours``, ``them``, or ``unknown``.
+
+    ``config`` lives in the *common* git dir, so the claim that no sibling can
+    touch it was simply false: ``git worktree add -b x <path> origin/main``
+    sets up tracking, and ``[branch "x"] remote/merge`` lands in the config
+    every worker is fingerprinting. A second agent opening a workspace was
+    therefore reported as a repo-corrupting test — six of them at once under
+    ``-n auto``, whichever happened to be in teardown (#505).
+
+    Rather than stop watching the file, attribute it by key, which is the same
+    move #428 made for refs: tracking config for a branch checked out elsewhere
+    is that worktree's, exactly as its ref is. Everything else — ``core.bare``,
+    ``user.*``, ``remote.*``, tracking config for the branch *we* hold — is
+    still ours, beside a sibling or not, so #319 keeps its teeth.
+    """
+    old, new = _parse_git_config(before), _parse_git_config(after)
+    if old is None or new is None:
+        return "ours"
+    changed = {key for key in set(old) | set(new) if old.get(key) != new.get(key)}
+    if not changed:
+        return "ours"
+    owner = "them"
+    for section, subsection, _key in changed:
+        if section != "branch" or subsection is None or subsection in our_branches:
+            return "ours"
+        if subsection not in other_branches:
+            owner = "unknown"
+    return owner
+
+
 def _classify_git_state_change(before, after, other_branches, has_siblings):
     """Attribute a git state change to this test, a sibling worktree, or nobody.
 
     Returns ``(verdict, changed_keys)`` with verdict in ``clean`` / ``mutated``
     / ``inconclusive``.
 
-    ``config``, this worktree's ``HEAD``, and the branch ``HEAD`` points at are
-    what a test running git against the ambient repo moves (#416) — and what no
-    sibling worktree can touch, since a checked-out branch is exclusive. Any of
-    them moving is this test's doing, siblings present or not, so the #319
-    tripwire keeps its teeth. Refs checked out in other worktrees are theirs by
-    definition. Anything left — a stray branch, a rewritten ``packed-refs`` —
-    is a violation when this is the only checkout (the CI case, where the guard
-    is unchanged) and honestly unattributable when it is not.
+    This worktree's ``HEAD`` and the branch ``HEAD`` points at are what a test
+    running git against the ambient repo moves (#416) — and what no sibling
+    worktree can touch, since a checked-out branch is exclusive. Either moving
+    is this test's doing, siblings present or not, so the #319 tripwire keeps
+    its teeth. Refs checked out in other worktrees are theirs by definition, and
+    ``config`` is split per key by ``_config_change_owner`` because it is shared
+    (#505). Anything left — a stray branch, a rewritten ``packed-refs`` — is a
+    violation when this is the only checkout (the CI case, where the guard is
+    unchanged) and honestly unattributable when it is not.
     """
     changed = {key for key in ("config", "HEAD", "packed-refs") if before[key] != after[key]}
     changed |= {
@@ -273,14 +353,23 @@ def _classify_git_state_change(before, after, other_branches, has_siblings):
     changed = sorted(changed)
     if not changed:
         return "clean", changed
-    ours = {"config", "HEAD"}
-    for snapshot in (before, after):
-        branch = _head_branch(snapshot["HEAD"])
-        if branch:
-            ours.add("refs/heads/" + branch)
+    our_branches = {
+        branch for branch in (_head_branch(snapshot["HEAD"]) for snapshot in (before, after))
+        if branch
+    }
+    ours = {"HEAD"} | {"refs/heads/" + name for name in our_branches}
+    theirs = {"refs/heads/" + name for name in other_branches}
+    if "config" in changed:
+        owner = _config_change_owner(
+            before["config"], after["config"], other_branches, our_branches
+        )
+        if owner == "ours":
+            ours.add("config")
+        elif owner == "them":
+            theirs.add("config")
     if ours.intersection(changed):
         return "mutated", changed
-    if set(changed) <= {"refs/heads/" + name for name in other_branches}:
+    if set(changed) <= theirs:
         return "clean", changed
     if has_siblings:
         return "inconclusive", changed

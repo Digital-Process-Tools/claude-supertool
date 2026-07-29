@@ -243,6 +243,144 @@ def test_classify_blames_this_test_for_a_config_flip_even_beside_siblings() -> N
     assert changed == ["config"]
 
 
+_CONFIG_BASE = (
+    b'[core]\n\tbare = false\n'
+    b'[remote "origin"]\n\turl = git@example.invalid:x.git\n'
+)
+
+
+def _config(*branches: str) -> bytes:
+    """The shared config with a tracking block per branch, as git writes it."""
+    blob = _CONFIG_BASE
+    for name in branches:
+        blob += (
+            b'[branch "' + name.encode() + b'"]\n'
+            b'\tremote = origin\n\tmerge = refs/heads/master\n'
+        )
+    return blob
+
+
+def test_parse_git_config_keys_a_subsection_verbatim() -> None:
+    """Branch names carry dots and slashes, so the key is a tuple, not a string."""
+    parsed = conftest._parse_git_config(_config("feat/4.2"))
+    assert parsed[("branch", "feat/4.2", "remote")] == "origin"
+    assert parsed[("core", None, "bare")] == "false"
+
+
+def test_parse_git_config_reads_the_legacy_dotted_section_form() -> None:
+    """``[branch.feat/x]`` is the same section as ``[branch "feat/x"]``."""
+    assert conftest._parse_git_config(b"[branch.feat/x]\n\tremote = origin\n") == {
+        ("branch", "feat/x", "remote"): "origin"
+    }
+
+
+def test_parse_git_config_declines_what_it_cannot_read() -> None:
+    """An absent or unparseable config yields None — never a confident empty dict."""
+    assert conftest._parse_git_config(b"<absent>") is None
+    assert conftest._parse_git_config(b"not a config at all\n") is None
+
+
+def test_classify_clears_this_test_when_a_sibling_worktree_add_writes_branch_config() -> None:
+    """The #505 misattribution: ``git worktree add -b`` writes the *shared* config.
+
+    ``[branch "feat/424"] remote/merge`` lands in the common ``.git/config`` the
+    moment a sibling worktree is created off a remote-tracking ref — and every
+    worker whose test happened to be in teardown then saw ``config`` move and was
+    told it had corrupted the repo. Branch config for a branch checked out
+    elsewhere is that worktree's, exactly as its ref is.
+    """
+    before = _snapshot("master", master="a" * 40)
+    after = _snapshot("master", master="a" * 40)
+    before["config"] = _config()
+    after["config"] = _config("feat/424")
+    verdict, changed = conftest._classify_git_state_change(
+        before, after, frozenset({"feat/424"}), True
+    )
+    assert verdict == "clean"
+    assert changed == ["config"]
+
+
+def test_classify_is_inconclusive_for_branch_config_no_worktree_owns() -> None:
+    """A tracking block for a branch nobody has checked out is unattributable.
+
+    ``git worktree add`` writes the config before it registers the worktree, so
+    the sibling can be real and simply not listed yet. Same bucket as a stray
+    ref: declined beside a sibling, still a violation in a lone checkout.
+    """
+    before = _snapshot("master", master="a" * 40)
+    after = _snapshot("master", master="a" * 40)
+    before["config"] = _config()
+    after["config"] = _config("feat/999")
+    verdict, changed = conftest._classify_git_state_change(
+        before, after, frozenset({"feat/424"}), True
+    )
+    assert verdict == "inconclusive"
+    assert changed == ["config"]
+
+
+def test_classify_fails_a_branch_config_write_when_this_is_the_only_checkout() -> None:
+    """CI has no siblings, so nothing can excuse it — the guard is unchanged there."""
+    before = _snapshot("master", master="a" * 40)
+    after = _snapshot("master", master="a" * 40)
+    before["config"] = _config()
+    after["config"] = _config("feat/424")
+    verdict, changed = conftest._classify_git_state_change(
+        before, after, frozenset(), False
+    )
+    assert verdict == "mutated"
+    assert changed == ["config"]
+
+
+def test_classify_blames_us_for_config_on_the_branch_we_have_checked_out() -> None:
+    """No sibling can write tracking config for a branch this worktree holds."""
+    before = _snapshot("master", master="a" * 40)
+    after = _snapshot("master", master="a" * 40)
+    before["config"] = _config()
+    after["config"] = _config("master")
+    verdict, changed = conftest._classify_git_state_change(
+        before, after, frozenset({"feat/424"}), True
+    )
+    assert verdict == "mutated"
+    assert changed == ["config"]
+
+
+def test_classify_blames_us_when_core_moves_beside_a_siblings_branch_key() -> None:
+    """A ``core.bare`` flip is not laundered by arriving with sibling churn."""
+    before = _snapshot("master", master="a" * 40)
+    after = _snapshot("master", master="a" * 40)
+    before["config"] = _config()
+    after["config"] = _config("feat/424").replace(b"bare = false", b"bare = true")
+    verdict, changed = conftest._classify_git_state_change(
+        before, after, frozenset({"feat/424"}), True
+    )
+    assert verdict == "mutated"
+    assert changed == ["config"]
+
+
+def test_classify_blames_us_for_a_config_it_cannot_parse() -> None:
+    """Undecidable is not innocent: an unreadable config stays this test's problem."""
+    before = _snapshot("master", master="a" * 40)
+    after = _snapshot("master", master="a" * 40)
+    before["config"] = _config()
+    after["config"] = b"\x00\xff not a config\n"
+    verdict, _ = conftest._classify_git_state_change(
+        before, after, frozenset({"feat/424"}), True
+    )
+    assert verdict == "mutated"
+
+
+def test_classify_blames_us_for_a_reformat_that_moves_no_key() -> None:
+    """Bytes moved, meaning did not — nothing here says a sibling did it."""
+    before = _snapshot("master", master="a" * 40)
+    after = _snapshot("master", master="a" * 40)
+    before["config"] = _config("feat/424")
+    after["config"] = _config("feat/424").replace(b"\t", b"    ") + b"# rewritten\n"
+    verdict, _ = conftest._classify_git_state_change(
+        before, after, frozenset({"feat/424"}), True
+    )
+    assert verdict == "mutated"
+
+
 def test_classify_blames_this_test_for_a_head_move_even_beside_siblings() -> None:
     verdict, changed = conftest._classify_git_state_change(
         _snapshot("master", master="a" * 40),
@@ -438,6 +576,22 @@ def test_a_test_leaves_a_branch_nobody_owns():
 """
 
 
+SIBLING_ADDS_A_WORKTREE = """
+import subprocess
+
+SIBLING = r"{sibling}"
+
+
+def test_an_innocent_test_while_a_sibling_agent_opens_a_worktree(tmp_path):
+    r = subprocess.run(
+        ["git", "-C", SIBLING, "worktree", "add", "-q", "-b", "third-branch",
+         str(tmp_path / "third"), "origin/main"],
+        capture_output=True, text=True,
+    )
+    assert r.returncode == 0, r.stderr
+"""
+
+
 def _git(args, cwd):
     return subprocess.run(
         ["git", *_ID, *args], cwd=str(cwd), capture_output=True, text=True
@@ -458,6 +612,15 @@ def _guarded_project(tmp_path: Path, body: str) -> tuple[Path, Path, Path]:
     sibling = tmp_path / "sibling"
     added = _git(["worktree", "add", "-q", "-b", "sibling-branch", str(sibling)], repo)
     assert added.returncode == 0, added.stderr
+
+    # A remote, so a sibling can branch off a remote-tracking ref — the case
+    # that writes `[branch "x"]` into the *shared* config (#505). Set up before
+    # the guarded run, so only the sibling's own write is in the snapshot.
+    origin = tmp_path / "origin.git"
+    assert _git(["init", "-q", "--bare", str(origin)], tmp_path).returncode == 0
+    assert _git(["remote", "add", "origin", str(origin)], repo).returncode == 0
+    assert _git(["push", "-q", "origin", "main"], repo).returncode == 0
+    assert _git(["fetch", "-q", "origin"], repo).returncode == 0
 
     link = repo / "supertool.py"
     try:
@@ -520,3 +683,26 @@ def test_an_unattributable_change_beside_a_sibling_warns_instead_of_failing(
     assert result.returncode == 0, result.stdout + result.stderr
     assert "cannot tell whether this test did it" in result.stdout
     assert "refs/heads/stray" in result.stdout
+
+
+def test_a_sibling_opening_a_worktree_does_not_fail_an_innocent_test(
+    tmp_path: Path,
+) -> None:
+    """The #505 teardown storm, reproduced: six innocent tests, one `worktree add`.
+
+    `git worktree add -b x <path> origin/main` sets up tracking, and tracking
+    config lives in the *common* `.git/config` — so a second agent opening a
+    workspace moved a file every xdist worker was fingerprinting. The tests that
+    failed were whichever ones happened to be in teardown.
+    """
+    repo, _, target = _guarded_project(tmp_path, SIBLING_ADDS_A_WORKTREE)
+    before = _git(["config", "--get", "branch.third-branch.remote"], repo).stdout.strip()
+    assert before == "", "third-branch tracking config existed before the run"
+
+    result = _run_guarded(repo, target)
+
+    assert _git(["config", "--get", "branch.third-branch.remote"], repo).stdout.strip() == "origin", (
+        "the sibling never wrote shared config — the scenario did not happen"
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "mutated the suite repo" not in result.stdout

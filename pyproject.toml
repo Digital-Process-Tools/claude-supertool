@@ -57,9 +57,24 @@ markers = [
     # this: "did it come back at all" has one bit of signal wall-clock can
     # give that nothing else can, and moving them to `benchmark` would delete
     # real infinite-loop coverage to fix a flakiness problem they don't have.
-    # Before marking a new timing assertion `benchmark`, ask whether it
-    # measures "how fast" (benchmark) or "did it come back at all"
-    # (hang-guard — stays in the default run).
+    #
+    # The mechanical test, because "reads a clock" catches both and decides
+    # nothing (#505): multiply the threshold by ten. If the assertion still
+    # catches the bug it was written for, it is a hang-guard — keep it in the
+    # default run and, if it is flaky, widen it rather than move it. If a 10x
+    # threshold makes it vacuous, the number *is* the assertion and it is a
+    # benchmark. Equivalently: ask what a failure would tell you. "The machine
+    # was busy" is a benchmark; "something did not terminate" is a hang-guard.
+    #
+    # Whole families sit on one side. Every timing assertion in the security
+    # suites — `test_security_tree_sitter.py`, `test_security_config.py`,
+    # `test_edge_cases_batch_security.py`, `test_security_mcp_daemon.py` —
+    # bounds a *defect*: ReDoS, a symlink loop, unguarded recursion, a DoS cap
+    # that must reject before it executes. The threshold there is 100x the real
+    # cost and exists so the test fails instead of hanging the suite. The #505
+    # audit classified 16 hang-guards across six files and marked none of them.
+    # `test_xml.py`'s parse-scaling assertions are the other side: they name a
+    # budget the code is meant to meet, and all four are marked.
     "benchmark: wall-clock timing assertions measuring performance, not liveness. Run deliberately and serially: `pytest -m benchmark -n0`.",
 ]
 
