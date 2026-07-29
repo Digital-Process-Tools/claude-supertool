@@ -222,6 +222,70 @@ def test_ensure_feed_releases_the_slot_when_the_spawn_fails(monkeypatch) -> None
     assert not os.path.exists(transport.pid_path(radar.FEED_SOURCE, "@me"))
 
 
+# ---------------------------------------------------------------------------
+# radar.heal — the per-MR tier (#417 item 1 made this the tier with the
+# multiplier: the population went from "the few that are red" to "every open
+# MR", so a race here duplicates ~7 pollers, not one)
+# ---------------------------------------------------------------------------
+
+def test_heal_does_not_stack_a_second_watcher(monkeypatch) -> None:
+    """The third spawn tier must come through the same door as the other two.
+
+    `heal` derives its gaps from a `watched` set computed by its caller, which
+    is the same test-then-fork shape #476 was filed about — and the pidfile it
+    is derived from is published by the grandchild, after a fork and a detach.
+    Two radars in that window both see the gap and both spawn.
+    """
+    spawns = _Spawns()
+    monkeypatch.setattr(radar.dispatcher, "_spawn_poller", spawns)
+    assert radar.heal(["33161"], set()) == (["33161"], [])
+    radar.heal(["33161"], set())
+    assert len(spawns.calls) == 1
+
+
+def test_heal_claims_the_slot_before_forking(monkeypatch) -> None:
+    """#451's ordering, in the tier that never got it."""
+    seen: dict[str, int] = {}
+
+    def _spawn(source: str, watcher_id: str, only: list[str]) -> int:
+        seen["claimed"] = transport.read_pid(source, watcher_id)
+        return os.getpid()
+
+    monkeypatch.setattr(radar.dispatcher, "_spawn_poller", _spawn)
+    radar.heal(["33161"], set())
+    assert seen["claimed"] == os.getpid()
+
+
+def test_an_mr_watched_by_another_radar_is_neither_healed_nor_uncovered(
+    monkeypatch,
+) -> None:
+    """Losing the race is not a failure, and it is not an achievement either.
+
+    Reported healed, radar claims an action it did not take. Reported
+    uncovered, radar warns that an MR with a live watcher is unwatched — and
+    that warning is the one thing on this board a reader must be able to
+    trust, because it is the whole point of the op.
+    """
+    monkeypatch.setattr(radar.dispatcher, "_spawn_poller", _Spawns())
+    radar.heal(["33161"], set())
+    healed, uncovered = radar.heal(["33161"], set())
+    assert healed == []
+    assert uncovered == []
+
+
+def test_heal_releases_the_slot_when_the_spawn_fails(monkeypatch) -> None:
+    """A claim left behind by a poller that never started refuses every future
+    heal for that iid — and an MR quietly dropped from the fleet is the exact
+    failure #417 exists to remove."""
+    monkeypatch.setattr(radar.dispatcher, "_spawn_poller", _Spawns(pid=0))
+    assert radar.heal(["33161"], set()) == ([], ["33161"])
+    assert not os.path.exists(transport.pid_path(radar.SOURCE, "33161"))
+
+    spawns = _Spawns()
+    monkeypatch.setattr(radar.dispatcher, "_spawn_poller", spawns)
+    assert radar.heal(["33161"], set()) == (["33161"], [])
+
+
 def test_feed_scope_is_insensitive_to_filter_order() -> None:
     """The feed id *is* the pid filename, so two spellings are two pollers.
 
