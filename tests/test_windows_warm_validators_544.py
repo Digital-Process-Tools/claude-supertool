@@ -181,7 +181,8 @@ def test_a_missing_binary_outranks_the_missing_transport(
     reason = _run(mod, target)["skipped"]
 
     assert bin_name in reason, reason
-    assert "libs/bin" in reason, "the reason must name the path looked at"
+    looked_at = os.path.abspath(os.path.join(str(tmp_path), "libs", "bin", bin_name))
+    assert looked_at in reason, "the reason must name the path looked at"
 
 
 # ---------------------------------------------------------------------------
@@ -298,15 +299,70 @@ def test_runtime_dir_refuses_where_ownership_cannot_be_verified(
     assert "SUPERTOOL_RUNTIME_DIR" in str(exited.value)
 
 
+@pytest.mark.skipif(not hasattr(os, "geteuid"),
+                    reason="ownership is not checkable here — the refusal above "
+                           "is what this platform asserts instead")
 def test_runtime_dir_is_unchanged_where_ownership_can_be_verified(
     monkeypatch, tmp_path
 ) -> None:
-    """Characterization: the platforms that can answer the question still do."""
+    """Characterization: the platforms that can answer the question still do.
+
+    Scoped rather than deleted. On a build without `os.geteuid` the question is
+    unanswerable, so a test named *where ownership can be verified* has no
+    business asserting there — it was failing with the very `SystemExit` the
+    test above pins as correct. The other branch keeps its coverage on every
+    platform including this one: `test_runtime_dir_refuses_where_ownership_
+    cannot_be_verified` removes the attribute itself, so both outcomes are
+    still asserted on all twelve legs.
+    """
     sys.path.insert(0, str(_ROOT / "presets" / "mcp"))
     paths = importlib.import_module("_paths")
     target = tmp_path / "rt"
     monkeypatch.setenv("SUPERTOOL_RUNTIME_DIR", str(target))
     assert paths.runtime_dir() == str(target)
+
+
+@pytest.mark.parametrize("tool,rel,bin_env,cwd_env,bin_name", ADAPTERS)
+def test_an_adapter_without_a_transport_never_resolves_a_runtime_dir(
+    monkeypatch, tmp_path, tool, rel, bin_env, cwd_env, bin_name
+) -> None:
+    """The decline must sit *above* `runtime_dir`, because `runtime_dir` exits.
+
+    The refusal two tests up is a `SystemExit`, and an ordinary `edit:` cannot
+    survive one — `main`'s blanket `except Exception` does not catch it, and
+    neither does `_mcp_ensure_server`. That is only correct while no editing
+    path reaches it, which is a claim about call order, not about the message.
+    So assert the call order: with no transport, an adapter run must produce a
+    skip *without* the runtime dir ever being resolved.
+
+    Deleting `os.geteuid` alone would already make a reached `runtime_dir`
+    exit, but the tripwire is what says which line moved when it does. Move the
+    decline below `_spawn.ensure_daemon`'s `socket_pid_paths` call and this
+    fails; that is the regression that turns a skipped validator back into an
+    aborted edit.
+    """
+    sys.path.insert(0, str(_ROOT / "presets" / "mcp"))
+    paths = importlib.import_module("_paths")
+
+    target = tmp_path / "Foo.php"
+    target.write_text("<?php\\n")
+    mod = _load_adapter(monkeypatch, tmp_path, rel, bin_env, cwd_env,
+                        _installed_bin(tmp_path, bin_name))
+
+    resolved: list = []
+    real = paths.runtime_dir
+    monkeypatch.setattr(
+        paths, "runtime_dir",
+        lambda: (resolved.append(tool), real())[1])
+    _no_windows_daemon_facilities(monkeypatch)
+
+    result = _run(mod, target)
+
+    assert not resolved, (
+        f"{tool} resolved the runtime dir on a build with no transport — that "
+        "call exits the process, so an ordinary edit would abort instead of "
+        "getting a skip")
+    assert "skipped" in result
 
 
 # ---------------------------------------------------------------------------

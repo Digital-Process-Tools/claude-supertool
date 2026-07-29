@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -86,6 +87,20 @@ def _load_adapter(monkeypatch, tmp_path, rel: str, bin_env: str, cwd_env: str,
     return _load(_ROOT / rel, f"adapter_531_{Path(rel).stem}_{bin_value.replace('/', '_')}")
 
 
+def _looked_at(tmp_path: Path, bin_name: str) -> str:
+    """The absolute path `resolve_bin` builds for a relative `libs/bin/NAME`.
+
+    Asserting the literal substring `libs/bin` pinned a POSIX separator, so the
+    eight parametrisations of this and of `test_windows_warm_validators_544`
+    failed on Windows against a *correct* message — `resolve_bin` joins against
+    the working dir and `abspath` normalises to backslashes there. Rebuilding
+    the path the same way the adapter does keeps the assertion separator-
+    agnostic and pins more than it did before: the whole path looked at, not
+    two of its segments.
+    """
+    return os.path.abspath(os.path.join(str(tmp_path), "libs", "bin", bin_name))
+
+
 def _run(mod, target: Path) -> dict:
     import io
     import contextlib
@@ -114,7 +129,8 @@ def test_missing_daemon_binary_at_a_path_skips(
 
     assert "skipped" in result, f"{tool} reported instead of declining: {result}"
     assert bin_name in result["skipped"]
-    assert "libs/bin" in result["skipped"], "the reason must name the path looked at"
+    assert _looked_at(tmp_path, bin_name) in result["skipped"], (
+        "the reason must name the path looked at")
     assert result["tool"] == tool
     # #515: the verdict keys are omitted on a skip, never padded.
     for key in ("ok", "count", "errors"):
