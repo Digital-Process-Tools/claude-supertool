@@ -23,14 +23,14 @@ import _remote_default as _rd  # noqa: E402
 def _glab(args: list[str], timeout: int = 20) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["glab"] + args,
-        capture_output=True, text=True, timeout=timeout,
+        capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace",
     )
 
 
 def _glab_api(method: str, endpoint: str, *extra: str, timeout: int = 15) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["glab", "api", "--method", method, endpoint] + list(extra),
-        capture_output=True, text=True, timeout=timeout,
+        capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace",
     )
 
 

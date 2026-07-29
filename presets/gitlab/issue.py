@@ -22,7 +22,7 @@ def _glab(args: list[str], timeout: int = 10) -> subprocess.CompletedProcess[str
     """Run a glab command and return the result."""
     return subprocess.run(
         ["glab"] + args,
-        capture_output=True, text=True, timeout=timeout,
+        capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace",
     )
 
 
@@ -42,7 +42,7 @@ def _glab_api(endpoint: str, timeout: int = 10) -> subprocess.CompletedProcess[s
     """Run a glab api call."""
     return subprocess.run(
         ["glab", "api", endpoint],
-        capture_output=True, text=True, timeout=timeout,
+        capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace",
     )
 
 

@@ -30,7 +30,7 @@ def _local_branch_check(source: str) -> str:
     try:
         r = subprocess.run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            capture_output=True, text=True, timeout=3,
+            capture_output=True, text=True, timeout=3, encoding="utf-8", errors="replace",
         )
         if r.returncode != 0:
             return ""
@@ -363,7 +363,7 @@ def main() -> int:
     try:
         meta_result = subprocess.run(
             ["glab", "api", f"projects/:id/jobs/{job_id}"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, timeout=10, encoding="utf-8", errors="replace",
         )
     except FileNotFoundError:
         print("ERROR: glab not found — install from https://gitlab.com/gitlab-org/cli")
@@ -396,7 +396,7 @@ def main() -> int:
     try:
         result = subprocess.run(
             ["glab", "api", f"projects/:id/jobs/{job_id}/trace"],
-            capture_output=True, text=True, timeout=20,
+            capture_output=True, text=True, timeout=20, encoding="utf-8", errors="replace",
         )
     except subprocess.TimeoutExpired:
         print("ERROR: glab timed out (trace)")
@@ -428,7 +428,7 @@ def main() -> int:
             try:
                 mr_result = subprocess.run(
                     ["glab", "api", f"projects/:id/merge_requests/{mr_iid}"],
-                    capture_output=True, text=True, timeout=5,
+                    capture_output=True, text=True, timeout=5, encoding="utf-8", errors="replace",
                 )
                 if mr_result.returncode == 0:
                     mr_data = json.loads(mr_result.stdout)

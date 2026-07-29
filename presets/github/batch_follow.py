@@ -17,7 +17,7 @@ from pathlib import Path
 def follow(user: str) -> tuple[bool, str]:
     result = subprocess.run(
         ["gh", "api", f"user/following/{user}", "-X", "PUT"],
-        capture_output=True, text=True, timeout=10,
+        capture_output=True, text=True, timeout=10, encoding="utf-8", errors="replace",
     )
     if result.returncode == 0:
         return True, "ok"

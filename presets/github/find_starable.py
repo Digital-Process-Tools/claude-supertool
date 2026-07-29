@@ -40,7 +40,7 @@ def main(arg: str) -> int:
     endpoint = f"search/repositories?q={urllib.parse.quote(query)}&sort=stars&order=desc&per_page={n}"
     result = subprocess.run(
         ["gh", "api", endpoint],
-        capture_output=True, text=True, timeout=30,
+        capture_output=True, text=True, timeout=30, encoding="utf-8", errors="replace",
     )
     if result.returncode != 0:
         sys.stderr.write(f"ERROR: gh search failed: {result.stderr.strip()[:200]}\n")

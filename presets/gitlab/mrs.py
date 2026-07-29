@@ -144,7 +144,7 @@ def _build_list_cmd(filters: dict[str, str], per_page: int) -> list[str]:
 
 
 def _run(cmd: list[str], timeout: int = 25) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace")
 
 
 def _api_json(endpoint: str, timeout: int = 10):

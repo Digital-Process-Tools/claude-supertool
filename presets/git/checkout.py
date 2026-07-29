@@ -21,7 +21,7 @@ from _git_common import use_utf8_stdout  # noqa: E402
 def _git(args: list[str], timeout: int = 10) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["git"] + args,
-        capture_output=True, text=True, timeout=timeout,
+        capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace",
     )
 
 

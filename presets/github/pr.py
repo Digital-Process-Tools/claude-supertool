@@ -41,7 +41,7 @@ def _gh(args: list[str], timeout: int = 10) -> subprocess.CompletedProcess[str]:
     """Run a gh command and return the result."""
     return subprocess.run(
         ["gh"] + args,
-        capture_output=True, text=True, timeout=timeout,
+        capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace",
     )
 
 
@@ -55,7 +55,7 @@ def _local_branch_check(source: str) -> str:
     try:
         r = subprocess.run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            capture_output=True, text=True, timeout=3,
+            capture_output=True, text=True, timeout=3, encoding="utf-8", errors="replace",
         )
         if r.returncode != 0:
             return ""

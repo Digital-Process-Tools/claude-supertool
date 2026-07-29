@@ -38,7 +38,7 @@ def main() -> None:
         # libxml2 will do with attacker-influenced XML during validation.
         r = subprocess.run(
             ["xmllint", "--noout", "--nonet", "--noent", file],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, timeout=30, encoding="utf-8", errors="replace",
         )
     except FileNotFoundError:
         emit({"tool": "xmllint", "file": file, "ok": False, "count": 1,

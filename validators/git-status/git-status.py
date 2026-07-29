@@ -92,7 +92,7 @@ def main() -> None:
             r = subprocess.run(
                 [git_bin, *args],
                 capture_output=True, text=True, timeout=5,
-                cwd=file_dir,
+                cwd=file_dir, encoding="utf-8", errors="replace",
             )
             return r.stdout
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError):

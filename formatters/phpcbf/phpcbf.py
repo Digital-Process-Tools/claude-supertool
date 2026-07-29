@@ -91,7 +91,7 @@ def main() -> None:
     start = time.time()
     try:
         # phpcbf exits 1 when it makes fixes, 0 when nothing to fix, 2+ on error
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=60, encoding="utf-8", errors="replace")
     except subprocess.TimeoutExpired:
         emit({
             "tool": "phpcbf", "file": file, "ok": False, "count": 1,

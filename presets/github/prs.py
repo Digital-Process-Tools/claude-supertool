@@ -398,7 +398,7 @@ def main() -> int:
     try:
         result = subprocess.run(
             _build_list_cmd(filters, per_page),
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, timeout=30, encoding="utf-8", errors="replace",
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
         print(f"ERROR: gh pr list failed: {exc}", file=sys.stderr)

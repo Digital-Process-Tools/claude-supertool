@@ -30,7 +30,7 @@ _STATE_TO_REF = {
 def _git(args: list[str], timeout: int = 10) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["git"] + args,
-        capture_output=True, text=True, timeout=timeout,
+        capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace",
     )
 
 
@@ -101,7 +101,7 @@ def _incoming_mr(branch: str) -> str:
         try:
             res = subprocess.run(
                 ["glab", "mr", "list", "--source-branch", branch, "--state", "opened", "--output", "json"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True, text=True, timeout=5, encoding="utf-8", errors="replace",
             )
             if res.returncode == 0 and res.stdout.strip().startswith("["):
                 mrs = json.loads(res.stdout)
@@ -115,7 +115,7 @@ def _incoming_mr(branch: str) -> str:
             res = subprocess.run(
                 ["gh", "pr", "list", "--head", branch, "--state", "open",
                  "--json", "number,title", "--limit", "1"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True, text=True, timeout=5, encoding="utf-8", errors="replace",
             )
             if res.returncode == 0 and res.stdout.strip().startswith("["):
                 prs = json.loads(res.stdout)

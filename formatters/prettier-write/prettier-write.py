@@ -97,7 +97,7 @@ def main() -> None:
 
     start = time.time()
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30, encoding="utf-8", errors="replace")
     except subprocess.TimeoutExpired:
         emit({
             "tool": "prettier-write", "file": file, "ok": False, "count": 1,

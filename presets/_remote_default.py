@@ -27,7 +27,7 @@ def _run_git(args: list[str], timeout: int = 5) -> str | None:
     try:
         result = subprocess.run(
             ["git"] + args,
-            capture_output=True, text=True, timeout=timeout,
+            capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace",
         )
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return None

@@ -414,7 +414,7 @@ def test_footer_counts_unapproved() -> None:
 # ---------------------------------------------------------------------------
 
 def _fake_list(stdout: str, returncode: int = 0):
-    def _run(cmd, capture_output=True, text=True, timeout=30):
+    def _run(cmd, capture_output=True, text=True, timeout=30, **kwargs):
         return subprocess.CompletedProcess(cmd, returncode, stdout, "")
     return _run
 
@@ -457,7 +457,7 @@ def test_board_costs_no_extra_api_call_for_the_branch(monkeypatch, capsys) -> No
     so the branch column adds no request."""
     calls = []
 
-    def _run(cmd, capture_output=True, text=True, timeout=30):
+    def _run(cmd, capture_output=True, text=True, timeout=30, **kwargs):
         calls.append(cmd)
         payload = (
             '[{"number": 423, "title": "give each board row its branch",'

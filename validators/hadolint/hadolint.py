@@ -45,7 +45,7 @@ def main() -> None:
             ["hadolint", "--format", "tty", file],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=30, encoding="utf-8", errors="replace",
         )
     except FileNotFoundError:
         print("hadolint: hadolint not found on PATH, skipping", file=sys.stderr)

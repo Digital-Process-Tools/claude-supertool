@@ -81,7 +81,7 @@ DEFAULT_RED_FLAGS = [
 
 
 def _git(args: list[str], timeout: int = 10) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(["git"] + args, capture_output=True, text=True, timeout=timeout)
+    return subprocess.run(["git"] + args, capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace")
 
 
 def _json_env(key: str) -> list:

@@ -41,7 +41,7 @@ def main() -> None:
     try:
         r = subprocess.run(
             ["php", "-l", file],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, timeout=30, encoding="utf-8", errors="replace",
         )
     except FileNotFoundError:
         emit({

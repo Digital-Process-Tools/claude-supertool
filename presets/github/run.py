@@ -17,7 +17,7 @@ def _local_branch_check(source: str) -> str:
     try:
         r = subprocess.run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            capture_output=True, text=True, timeout=3,
+            capture_output=True, text=True, timeout=3, encoding="utf-8", errors="replace",
         )
         if r.returncode != 0:
             return ""
@@ -60,7 +60,7 @@ def main() -> int:
             ["gh", "run", "view", run_id, "--json",
              "databaseId,name,status,conclusion,event,headBranch,"
              "createdAt,updatedAt,url,jobs"],
-            capture_output=True, text=True, timeout=15,
+            capture_output=True, text=True, timeout=15, encoding="utf-8", errors="replace",
         )
     except FileNotFoundError:
         print("ERROR: gh not found — install from https://cli.github.com")

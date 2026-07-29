@@ -37,7 +37,7 @@ def main() -> None:
 
     try:
         r = subprocess.run(["gofmt", "-l", file],
-                           capture_output=True, text=True, timeout=30)
+                           capture_output=True, text=True, timeout=30, encoding="utf-8", errors="replace")
     except FileNotFoundError:
         print("gofmt-check: gofmt not found on PATH, skipping", file=sys.stderr)
         emit({"tool": "gofmt-check", "file": file, "ok": True, "count": 0,

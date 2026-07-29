@@ -57,7 +57,7 @@ def main() -> None:
             ["pyright", "--outputjson", file],
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=60, encoding="utf-8", errors="replace",
         )
     except FileNotFoundError:
         _skip(file, start, "pyright not found on PATH, skipping")

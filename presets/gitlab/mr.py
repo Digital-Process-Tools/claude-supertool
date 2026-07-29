@@ -56,7 +56,7 @@ def _glab_api(endpoint: str, timeout: int = 10) -> subprocess.CompletedProcess[s
     """Run a glab api call."""
     return subprocess.run(
         ["glab", "api", endpoint],
-        capture_output=True, text=True, timeout=timeout,
+        capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace",
     )
 
 
@@ -69,7 +69,7 @@ def _local_branch_check(source: str) -> str:
     try:
         r = subprocess.run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            capture_output=True, text=True, timeout=3,
+            capture_output=True, text=True, timeout=3, encoding="utf-8", errors="replace",
         )
         if r.returncode != 0:
             return ""
@@ -174,7 +174,7 @@ def _get_conflict_hunks(source: str, target: str) -> dict[str, str]:
     try:
         base_result = subprocess.run(
             ["git", "merge-base", f"origin/{target}", f"origin/{source}"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, timeout=5, encoding="utf-8", errors="replace",
         )
     except (subprocess.TimeoutExpired, FileNotFoundError):
         return {}
@@ -402,7 +402,7 @@ def main() -> int:
     try:
         result = subprocess.run(
             ["glab", "mr", "view", arg, "--output", "json"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, timeout=10, encoding="utf-8", errors="replace",
         )
     except FileNotFoundError:
         print("ERROR: glab not found — install from https://gitlab.com/gitlab-org/cli")

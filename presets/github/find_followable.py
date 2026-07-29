@@ -24,7 +24,7 @@ def fetch(endpoint: str) -> list[dict]:
     # Caller paginates explicitly via per_page parameter on the endpoint.
     result = subprocess.run(
         ["gh", "api", endpoint],
-        capture_output=True, text=True, timeout=30,
+        capture_output=True, text=True, timeout=30, encoding="utf-8", errors="replace",
     )
     if result.returncode != 0:
         sys.stderr.write(f"WARN: gh api {endpoint} failed: {result.stderr.strip()[:200]}\n")

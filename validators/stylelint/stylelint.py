@@ -50,7 +50,7 @@ def main() -> None:
         return
     try:
         r = subprocess.run(base + ["--formatter", "json", file],
-                           capture_output=True, text=True, timeout=60)
+                           capture_output=True, text=True, timeout=60, encoding="utf-8", errors="replace")
     except FileNotFoundError:
         emit({"tool": "stylelint", "file": file, "ok": False, "count": 1,
               "errors": [{"line": None, "col": None, "severity": "error",

@@ -25,7 +25,7 @@ import _remote_default as _rd  # noqa: E402
 def _gh(args: list[str], timeout: int = 20) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["gh"] + args,
-        capture_output=True, text=True, timeout=timeout,
+        capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace",
     )
 
 
