@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-07-29
+
 ### Added
 
 - **A syntax floor guard that runs a real old interpreter, because no amount of AST reasoning on a new one can do it.** `_syntax_floor_check(paths)` compiles every given `.py` under an interpreter older than the one running the suite, and `tests/test_syntax_floor_478.py` runs it over the repo. Closes [#478](https://github.com/Digital-Process-Tools/claude-supertool/issues/478).
