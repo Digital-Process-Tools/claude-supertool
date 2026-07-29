@@ -327,6 +327,19 @@ def heal(open_iids: list[str], watched: set[str]) -> tuple[list[str], list[str]]
 
     Returns (healed, still_uncovered). The event filter comes from defaults.py
     so a healed watcher is identical to one watch-mine.sh would have spawned.
+
+    Spawning goes through `dispatcher.start_poller`, the one door, for the
+    reason #476 gives: `watched` is derived from pidfiles a grandchild
+    publishes after a fork, an import and a detach, so a caller that reads it
+    and then forks is testing a slot it cannot see being filled. Radar runs on
+    a loop from more than one place, and item 1 of #417 widened this tier from
+    "the MRs that are already red" to "every open MR" — so this is the tier
+    where losing that race duplicates the whole fleet rather than one poller.
+
+    A slot already held is neither healed nor uncovered: radar did not spawn
+    it, so claiming the action would be false, but the MR *is* covered, and a
+    spurious "unwatched" warning corrodes the only signal on the board that
+    has to be trusted absolutely.
     """
     gaps = [iid for iid in open_iids if iid not in watched]
     if not gaps:
@@ -337,11 +350,11 @@ def heal(open_iids: list[str], watched: set[str]) -> tuple[list[str], list[str]]
     healed: list[str] = []
     failed: list[str] = []
     for iid in gaps:
-        try:
-            pid = dispatcher._spawn_poller(SOURCE, iid, only)
-        except OSError:
-            pid = 0
-        (healed if pid else failed).append(iid)
+        status, _pid = dispatcher.start_poller(SOURCE, iid, only)
+        if status == "spawned":
+            healed.append(iid)
+        elif status == "failed":
+            failed.append(iid)
     return healed, failed
 
 
