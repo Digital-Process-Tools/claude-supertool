@@ -19,14 +19,14 @@ DOCS_DIR = Path(__file__).parent.parent / "docs" / "presets"
 
 
 def test_github_docs_state_the_casing_convention() -> None:
-    text = (DOCS_DIR / "github.md").read_text()
+    text = (DOCS_DIR / "github.md").read_text(encoding="utf-8")
     assert "Casing:" in text
     assert "Title Case" in text
     assert "lowercase" in text
 
 
 def test_gitlab_docs_state_the_casing_convention() -> None:
-    text = (DOCS_DIR / "gitlab.md").read_text()
+    text = (DOCS_DIR / "gitlab.md").read_text(encoding="utf-8")
     assert "Casing:" in text
     assert "Title Case" in text
     assert "lowercase" in text
