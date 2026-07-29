@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`PHPSTAN_MCP_PATHS` — skip an out-of-scope file without the 9.2s daemon round trip.** Set it to the analysis roots (`os.pathsep`- or comma-separated) and `phpstan-mcp` answers `skipped` locally for a target outside every root, never opening the socket to `mcp-phpstan-warm`. Measured in the session that produced [#406](https://github.com/Digital-Process-Tools/claude-supertool/issues/406): 9.2s per edited file, spent to be told phpstan would not look at it. In a multi-file batch that is 9.2s per unique path. Closes [#412](https://github.com/Digital-Process-Tools/claude-supertool/issues/412).
+
+  **Re-measured before building, against the real daemon**, since the filed figure predated a lot of work: an out-of-scope DVSI test file on an already-warm `mcp-phpstan-warm` cost **4.8s** (`duration_ms: 4804`), returning the refusal verbatim — `analyse: path is outside the configured --paths allowlist.`, still thrown by `PhpstanRunner::assertPathAllowed()`. So 9.2s is a cold/loaded reading and 4.8s a warm one; the same run with `PHPSTAN_MCP_PATHS` set returns `duration_ms: 0`.
+
+  **Opt-in, and the daemon stays authoritative when unset — because the two failure directions are not symmetric.** Skipping a file that IS in scope loses the analysis silently: the file looks handled and is not. Analysing a file that is NOT in scope wastes a round trip and still returns the right answer. So the scope is never inferred, never read out of `phpstan.neon`, and never defaulted on; unset, behaviour is byte-identical to before, and a blank or whitespace-only value is treated as unset rather than as an empty allowlist that would skip the entire repo. The var is the repo stating that it knows the scope.
+
+  **The skip reason names the env var, not phpstan** — `path outside PHPSTAN_MCP_PATHS allowlist`, not `path outside --paths allowlist`. A wrong skip is caused by this configuration; pointing at a tool that never saw the file sends the reader to the wrong file to fix it. The receipt is the ordinary third state (`validators/common/refusal.py`, `docs/validators.md`), so the core's existing no-rollback / no-delta / no-cache handling applies with no second code path.
+
+  **Matching is `os.path.abspath` with an `os.sep` boundary**, not a prefix compare — `/srcbad/Foo.php` is not inside `/src`. Empty entries between separators are dropped rather than `abspath()`ed into the working directory, where one stray separator would silently widen the allowlist to everything; relative roots resolve against the working directory, like every other path in a committed `.supertool.json`.
+
+  **The helper is generic; the second env var is not shipped.** `refusal.outside_roots(file_path, env_var)` takes the variable name as an argument, so `phpmd-mcp` or any future MCP adapter is one call away — but nothing declares `PHPMD_MCP_PATHS` until a second adapter actually asks for it. An opt-in nobody requested is an opt-in nobody can be surprised by.
+
+  Red first: 10 of 15 new tests failed against the unmodified adapter, and the load-bearing one failed by *reporting that the daemon had been contacted*. Both directions are pinned by monkeypatching `ensure_daemon`/`ndjson_call` — to raise, so an out-of-scope path that still dials the daemon fails; and to record, so an in-scope path that silently stops reaching it fails too. A third test pins the unset case against the same recorder.
+
 ### Fixed
 
 - **`gl-mr`'s conflict hunk preview vanished with no note when `git merge-tree` timed out.** `_get_conflict_hunks` returned a bare `{}` on `TimeoutExpired`, and the caller rendered the `## Conflicts` section with the file list and nothing else — output indistinguishable from a conflict whose hunks were genuinely empty. Twelfth filing of the same class in this repo: an absence produced by the tool, read as an absence in the world. Closes [#507](https://github.com/Digital-Process-Tools/claude-supertool/issues/507).
