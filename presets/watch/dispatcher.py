@@ -112,51 +112,144 @@ def cmd_watch(parts: list[str]) -> int:
     return 0
 
 
+def _stop_pid(pid: int) -> str:
+    """SIGTERM, then SIGKILL. Empty string on success, else why not.
+
+    Never raises. One PID this process may not signal must not abort a set, and
+    an OSError escaping from a process that had already exited on its own would
+    end the op with survivors still running — which is #511 with extra steps.
+    """
+    hard = getattr(signal, "SIGKILL", signal.SIGTERM)
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return ""
+    except OSError as e:
+        return str(e)
+    for _ in range(10):
+        if not transport._pid_alive(pid):
+            return ""
+        time.sleep(0.05)
+    try:
+        os.kill(pid, hard)
+    except ProcessLookupError:
+        return ""
+    except OSError as e:
+        return str(e)
+    time.sleep(0.05)
+    return "" if not transport._pid_alive(pid) else "still running after SIGKILL"
+
+
+def _report_nothing_stopped(source: str, watcher_id: str, info: dict[str, Any]) -> None:
+    """Say which kind of nothing this is. There are three, and they differ."""
+    if info["tracked"] and not info["tracked_alive"]:
+        print(f"Tracked PID {info['tracked']} for {source}:{watcher_id} is not "
+              f"running — the watcher died without anything reporting it, and "
+              f"this id has been unwatched since. Stale PID file removed.")
+        return
+    if not info["scan_ok"]:
+        print(f"No PID file for {source}:{watcher_id}, and the process scan was "
+              f"unavailable — a poller that is running untracked could not be "
+              f"ruled out. Nothing was stopped.")
+        return
+    print(f"No active watcher for {source}:{watcher_id} "
+          f"(no PID file, and no matching process).")
+
+
 def cmd_unwatch(parts: list[str]) -> int:
+    """Stop every live poller for SOURCE:ID and name each one.
+
+    A multi-kill, deliberately. The one-PID model failed the other way in #511:
+    `unwatch` stopped the tracked poller, the untracked ones kept emitting into
+    a context window, and the next `unwatch` answered "No active watcher" while
+    the state file was still being rewritten every tick. The only recovery was
+    `pkill`. A survivor nobody can reach is worse than a stop that is broader
+    than one process, *provided* the operator can see what it did.
+
+    So the breadth is bounded by evidence, not by a guess: every PID here comes
+    from a process whose own argv names this exact source and id as whole
+    tokens (see `transport.poller_argv`), each is printed with its provenance
+    before any signal is sent, one that will not die is named rather than
+    swallowed, and an absence is only reported as an absence when the scan that
+    would have found a survivor actually ran.
+
+    Not reached, and it matters: a poller spawned before the labelling landed
+    still wears its parent's argv, so it cannot be told apart from the process
+    that forked it. `pkill -f presets/watch/` remains the only way to clear
+    those, once. See docs/presets/watch.md.
+    """
     try:
         source, watcher_id, _ = _parse_args(parts)
     except ValueError as e:
         print(f"ERROR: {e}")
         return 1
-    pid_file = transport.pid_path(source, watcher_id)
-    if not os.path.exists(pid_file):
-        print(f"No active watcher for {source}:{watcher_id}.")
+    info = transport.watcher_pids(source, watcher_id)
+    pids = [pid for pid in info["pids"] if pid > 1 and pid != os.getpid()]
+    skipped = [pid for pid in info["pids"] if pid not in pids]
+    if skipped:
+        print("Not signalling " + ", ".join(str(p) for p in skipped)
+              + " — a watcher is never PID 1 nor this process.")
+    if not pids:
+        _report_nothing_stopped(source, watcher_id, info)
+        transport.release_pidfile(source, watcher_id)
         return 0
-    try:
-        pid = int(Path(pid_file).read_text(encoding="utf-8").strip())
-    except (OSError, ValueError):
-        try:
-            os.unlink(pid_file)
-        except OSError:
-            pass
-        print(f"Stale PID file removed for {source}:{watcher_id}.")
-        return 0
-    if transport._pid_alive(pid):
-        try:
-            os.kill(pid, signal.SIGTERM)
-            time.sleep(0.2)
-            if transport._pid_alive(pid):
-                os.kill(pid, signal.SIGKILL)
-        except OSError as e:
-            print(f"ERROR: could not stop PID {pid}: {e}")
-            return 1
-    try:
-        os.unlink(pid_file)
-    except OSError:
-        pass
-    print(f"Stopped watcher for {source}:{watcher_id} (PID {pid}).")
-    return 0
+    print(f"Stopping {len(pids)} poller(s) for {source}:{watcher_id}: "
+          + ", ".join(
+              f"{pid} ({'tracked' if pid == info['tracked'] else 'untracked'})"
+              for pid in pids))
+    failures = 0
+    for pid in pids:
+        why = _stop_pid(pid)
+        if why:
+            failures += 1
+            print(f"ERROR: could not stop PID {pid}: {why}")
+        else:
+            print(f"Stopped PID {pid}.")
+    if not info["scan_ok"]:
+        print("Process scan unavailable — only the tracked PID was considered, "
+              "so an untracked poller for this id would not have been found.")
+    transport.release_pidfile(source, watcher_id)
+    return 1 if failures else 0
+
+
+def _row_note(row: dict[str, Any]) -> str:
+    notes = []
+    if row.get("orphan"):
+        notes.append("no pidfile")
+    if row.get("extra"):
+        notes.append(f"{len(row['pids'])} live pollers: "
+                     + ", ".join(str(p) for p in row["pids"]))
+    return "; ".join(notes)
 
 
 def cmd_list() -> int:
-    rows = transport.list_active_pids()
+    """The authoritative view of the watcher fleet.
+
+    Authoritative because `ps` is not: a poller that predates the argv
+    labelling shows its parent's command line, so two watchers on different MRs
+    can render as byte-identical rows. In #511 that read as duplicates and cost
+    two wrong kills. This table is built from PID files *and* a scan for
+    labelled pollers, so it also shows the two things the PID files alone
+    cannot: an id with more than one live poller, and a poller whose PID file
+    was deleted out from under it.
+    """
+    rows, scan_ok = transport.list_watchers()
     if not rows:
+        if not scan_ok:
+            print("No watchers by PID file — and the process scan was "
+                  "unavailable, so an untracked poller could not be ruled out.")
+            return 0
         print("No active watchers.")
         return 0
+    for r in rows:
+        r["_pid"] = str(r["pid"]) + (f" (+{len(r['extra'])})" if r["extra"] else "")
+        r["_note"] = _row_note(r)
+        r["_started"] = r["started"] or "-"
+    noted = any(r["_note"] for r in rows)
     widths = {
         "source": max(6, max(len(r["source"]) for r in rows)),
         "id": max(2, max(len(r["id"]) for r in rows)),
-        "pid": max(5, max(len(str(r["pid"])) for r in rows)),
+        "pid": max(5, max(len(r["_pid"]) for r in rows)),
         "started": 20,
         "last_event": max(10, max(len(r["last_event"] or "-") for r in rows)),
     }
@@ -167,16 +260,31 @@ def cmd_list() -> int:
         f"{'STARTED':<{widths['started']}}  "
         f"{'LAST_EVENT':<{widths['last_event']}}"
     )
+    if noted:
+        header += "  NOTE"
     print(header)
     print("-" * len(header))
     for r in rows:
-        print(
+        line = (
             f"{r['source']:<{widths['source']}}  "
             f"{r['id']:<{widths['id']}}  "
-            f"{r['pid']:<{widths['pid']}}  "
-            f"{r['started']:<{widths['started']}}  "
+            f"{r['_pid']:<{widths['pid']}}  "
+            f"{r['_started']:<{widths['started']}}  "
             f"{(r['last_event'] or '-'):<{widths['last_event']}}"
         )
+        if noted:
+            line += f"  {r['_note']}"
+        print(line.rstrip())
+    if noted:
+        print()
+        print("An id above has more than one live poller, or a poller with no "
+              "PID file. `unwatch:SOURCE:ID` stops all of them and names each "
+              "one. Do not identify a watcher from `ps` — see "
+              "docs/presets/watch.md.")
+    if not scan_ok:
+        print()
+        print("Process scan unavailable — only pidfile-tracked pollers are "
+              "listed here; untracked ones were not checked.")
     return 0
 
 
@@ -233,16 +341,49 @@ def _spawn_poller(source: str, watcher_id: str, only: list[str]) -> int:
         os.write(w, str(pid2).encode())
         os.close(w)
         os._exit(0)
-    # Grandchild: close inherited fd, run the loop.
+    # Grandchild: close inherited fd, take an argv that names this watcher, run.
     os.close(w)
+    _silence_stdio()
+    _exec_labelled(source, watcher_id, only)
     _run_poll_loop(source, watcher_id, only)
     os._exit(0)
     return 0  # unreachable
 
 
-def _run_poll_loop(source: str, watcher_id: str, only: list[str]) -> None:
-    """Grandchild's poll loop. Writes PID file, runs until terminal or signal."""
-    # Redirect stdio to /dev/null so the poller can't pollute the parent's terminal.
+def _exec_labelled(source: str, watcher_id: str, only: list[str]) -> None:
+    """Replace this process image with one whose argv names this watcher.
+
+    A poller is forked, so until this call it wears the argv of whatever
+    spawned it — radar's, or the feed's. #511 is the bill for that: three `ps`
+    rows with byte-identical arguments were read as duplicate feed pollers and
+    two were killed, and they were the watchers for two different MRs, one of
+    them the MR that most needed watching.
+
+    exec, not `setproctitle`: no new dependency, and the command line it
+    produces is not a label *describing* the process, it **is** the process —
+    the same argv `transport.poller_argv` matches on, so what `ps` shows and
+    what `watches` shows cannot drift apart. The PID is unchanged by exec, so
+    the slot claimed before the fork and the PID already reported up the pipe
+    both stay correct, and #484's claim-before-fork ordering is untouched.
+
+    STATE_DIR travels in the environment because a fork inherits it and an exec
+    does not.
+
+    Returns on failure rather than raising: an unlabelled poller is a working
+    poller that is hard to see, which beats no poller at all.
+    """
+    if not sys.executable:
+        return
+    try:
+        os.execve(sys.executable,
+                  transport.poller_argv(source, watcher_id, only),
+                  transport.poller_env())
+    except OSError:
+        return
+
+
+def _silence_stdio() -> None:
+    """Point stdio at /dev/null so a poller cannot write to its parent's terminal."""
     try:
         devnull = os.open(os.devnull, os.O_RDWR)
         os.dup2(devnull, 0)
@@ -252,6 +393,17 @@ def _run_poll_loop(source: str, watcher_id: str, only: list[str]) -> None:
             os.close(devnull)
     except OSError:
         pass
+
+
+def _run_poll_loop(source: str, watcher_id: str, only: list[str]) -> None:
+    """The poll loop. Writes PID file, runs until terminal or signal.
+
+    Two entry points, both the same process: the grandchild falls through to it
+    when the labelling exec could not run, and the exec'd image reaches it via
+    the `poll` sub-op in `main`. Nothing here may assume anything inherited
+    through the fork, because after an exec nothing was.
+    """
+    _silence_stdio()
 
     # The slot was already claimed by the caller in start_poller(); this only
     # repoints it at the PID that is actually going to poll.
@@ -344,10 +496,23 @@ def _run_poll_loop(source: str, watcher_id: str, only: list[str]) -> None:
 
 def main(argv: list[str]) -> int:
     if len(argv) < 2:
-        print("ERROR: usage: dispatcher.py {watch|unwatch|list} [ARG]")
+        print("ERROR: usage: dispatcher.py {watch|unwatch|list|poll} [ARG]")
         return 1
     sub = argv[1]
     rest = argv[2:]
+    if sub == transport.POLL_SUBOP:
+        # The poller itself, running under the argv `_exec_labelled` gave it.
+        # Not an operator-facing sub-op: `watch` spawns, this *is* the spawn.
+        # It has to exist and has to keep working — an argv naming a sub-op the
+        # dispatcher does not implement would exit every watcher on start, and
+        # the fleet would render as a quiet afternoon.
+        try:
+            source, watcher_id, only = _parse_args(rest)
+        except ValueError as e:
+            print(f"ERROR: {e}")
+            return 1
+        _run_poll_loop(source, watcher_id, only)
+        return 0
     if sub == "watch":
         return cmd_watch(rest)
     if sub == "unwatch":
