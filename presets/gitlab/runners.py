@@ -464,6 +464,50 @@ def radar_report(options: dict | None = None) -> tuple[list[str], bool]:
     return (lines, False)
 
 
+def done_zero_unreadable(runners: list[dict],
+                         running_by_runner: dict[int, int]) -> list[str]:
+    """Rows whose `DONE 0` an operator would act on but the op cannot support.
+
+    `DONE/30m 0` means "wedged" only for a runner that has been up the whole
+    window. GitLab publishes no uptime and no first heartbeat to check that
+    against — `created_at` is registration, `contacted_at` is last seen, and
+    `runner_managers[].createdAt` (GraphQL only; absent from REST on 18.11.7)
+    is the manager's first registration. All three are years old on a live
+    fleet. So a host that rebooted inside the window produces the same reading
+    as one that is stuck, and #531 records that misread happening twice in one
+    session, in opposite directions.
+
+    The issue's preferred fix — relabel the counter `DONE/22m` by scoping it to
+    `min(window, uptime)` — is not buildable on top of that, and inferring the
+    bound from job history fails in the one direction that matters: a runner up
+    for hours and wedged has no activity to infer from, so it would carry the
+    shortest label on the board and its `0` would read as "we only just started
+    looking". That silences the wedge. Hence a stated confound rather than an
+    invented number.
+
+    Restricted to rows a reader would act on, because a caveat printed against
+    every quiet runner on an idle fleet is wallpaper, and wallpaper is not
+    read. Two exclusions do that work. A runner with completed jobs has
+    answered the question outright. A runner GitLab itself calls `paused`,
+    `offline`, `stale` or `never_contacted` has a `0` its own STATUS column
+    already explains, and uptime is not the thing to go and check. What is
+    left is the shape the op exists for: a runner GitLab is still advertising
+    as healthy that has finished nothing — either executing work it is not
+    completing, or quiet past the heartbeat threshold.
+    """
+    named = []
+    for runner in runners:
+        if runner.get("_recent_jobs"):
+            continue
+        if runner.get("paused") or not runner.get("active", True):
+            continue
+        if runner.get("status") in {"offline", "stale", "never_contacted"}:
+            continue
+        if running_by_runner.get(runner["id"], 0) > 0 or not _is_responsive(runner):
+            named.append(runner.get("description") or f"#{runner['id']}")
+    return named
+
+
 def _runner_type(runner: dict) -> str:
     raw = runner.get("runner_type") or ""
     return {"instance_type": "shared", "group_type": "group", "project_type": "project"}.get(raw, raw or "?")
@@ -516,6 +560,15 @@ def _print_fleet(runners: list[dict], pending: list[dict], running: list[dict]) 
             f"{running_by_runner.get(rid, 0):<4} {runner.get('_recent_jobs', 0):<9} "
             f"{waiting:<5} {tags[:34]}{marker}"
         )
+
+    unreadable = done_zero_unreadable(runners, running_by_runner)
+    if unreadable:
+        print(f"\nNOTE: DONE/{window_minutes}m 0 reads as a wedge only for a runner "
+              f"that has been up the whole {window_minutes}m. GitLab publishes no "
+              f"runner uptime (created_at is registration, contacted_at is last "
+              f"seen), so a host that rebooted inside the window looks identical "
+              f"here. Check host uptime before calling a wedge: "
+              f"{', '.join(unreadable)}")
 
 
 def _print_diagnosis(runners: list[dict], pending: list[dict]) -> None:
