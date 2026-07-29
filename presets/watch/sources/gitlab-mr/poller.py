@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -79,6 +80,48 @@ def _fetch(iid: str) -> dict[str, Any] | None:
     if not isinstance(data, dict):
         return None
     return data
+
+
+# The whole MR is already in memory every tick, and a consumer that has to call
+# back for `mr_state` or a branch name is paying a round-trip for something the
+# poller threw away ~20s earlier (#435). What rides along is fixed and small:
+# eight fields, ~200 bytes, none of which grows with the size of the MR.
+#
+# It is a *snapshot*, and this repository's recurring defect is a value that
+# reads as authoritative while being an artefact of when the tool happened to
+# look. Two properties keep that from happening here:
+#
+# 1. Every key is `observed_`-prefixed, so the tense is present at the read
+#    site and no amount of destructuring can turn one into a bare `mr_state`.
+# 2. `observed_at` is always emitted beside them — an absolute instant, not an
+#    age. An age is correct for one second and quietly wrong afterwards, which
+#    is the exact failure the field exists to prevent. The consumer subtracts.
+#
+# Flat, not nested, because `notifiers/claude-channel` renders each payload key
+# as an XML string attribute via `String(v)` — a nested object would arrive as
+# `[object Object]`, i.e. invisible on the one surface #435 was reported from.
+SNAPSHOT_PREFIX = "observed_"
+
+
+def _snapshot(data: dict[str, Any], *, mr_state: str, pipeline_status: str,
+              pipeline_id: str, has_conflicts: bool) -> dict[str, Any]:
+    """The fetched state, labelled with the instant it was read.
+
+    `has_conflicts` is passed in rather than read off `data` on purpose: it is
+    the poller's *corrected* answer, after the unsettled-check carry-forward
+    (#463) and the empty-diff guard (#465). Re-reading the raw field here would
+    re-export a false positive the poller had just finished suppressing.
+    """
+    return {
+        "observed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "observed_mr_state": mr_state,
+        "observed_pipeline_status": pipeline_status,
+        "observed_pipeline_id": pipeline_id,
+        "observed_has_conflicts": bool(has_conflicts),
+        "observed_source_branch": str(data.get("source_branch") or ""),
+        "observed_target_branch": str(data.get("target_branch") or ""),
+        "observed_head_sha": str(data.get("sha") or ""),
+    }
 
 
 def _has_no_diff(data: dict[str, Any]) -> bool:
@@ -148,41 +191,62 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
     if has_conflicts and _has_no_diff(data):
         has_conflicts = False
 
+    # One fetch, one snapshot, shared by every event this tick emits. Built
+    # once so two events from the same poll can never disagree about what was
+    # observed — the #435 session saw a single tick emit both
+    # `pipeline_succeeded` and `merged`, and they describe the same read.
+    snap = _snapshot(
+        data,
+        mr_state=mr_state,
+        pipeline_status=pipeline_status,
+        pipeline_id=pipeline_id,
+        has_conflicts=has_conflicts,
+    )
+
     # Pipeline transitions
     if pipeline_status and pipeline_status != prev_pipeline:
         if pipeline_status == "failed":
             events.append({
                 "event": "pipeline_failed",
-                "payload": {"pipeline_id": pipeline_id, "url": web_url, "title": title},
+                "payload": {"pipeline_id": pipeline_id, "url": web_url, "title": title, **snap},
                 "notify_title": f"!{iid} pipeline failed",
                 "notify_message": title,
             })
         elif pipeline_status == "success":
             events.append({
                 "event": "pipeline_succeeded",
-                "payload": {"pipeline_id": pipeline_id, "url": web_url, "title": title},
+                "payload": {"pipeline_id": pipeline_id, "url": web_url, "title": title, **snap},
                 "notify_title": f"!{iid} pipeline ok",
                 "notify_message": title,
             })
         elif pipeline_status == "running" and prev_pipeline not in ("running", ""):
             events.append({
                 "event": "pipeline_running",
-                "payload": {"pipeline_id": pipeline_id, "url": web_url, "title": title},
+                "payload": {"pipeline_id": pipeline_id, "url": web_url, "title": title, **snap},
             })
 
-    # MR state transitions
+    # MR state transitions.
+    #
+    # #435 asked for a top-level `pipeline_id` here so a merge could be tied to
+    # the pipeline that permitted it. The gap is real; a top-level field is the
+    # wrong fix. `payload.pipeline_id` is read by `radar.drift()` to decide an
+    # event is stale history superseded by a newer pipeline — a merge joining
+    # that comparison would put `[drift: A→B]` on the board for a fact nobody
+    # reported. And its meaning would then differ per event key: "the pipeline
+    # this event is about" on `pipeline_*`, "the head pipeline at the time" here.
+    # `observed_pipeline_id` says the second thing, uniformly, on every event.
     if mr_state and mr_state != prev_state:
         if mr_state == "merged":
             events.append({
                 "event": "merged",
-                "payload": {"url": web_url, "title": title},
+                "payload": {"url": web_url, "title": title, **snap},
                 "notify_title": f"!{iid} merged",
                 "notify_message": title,
             })
         elif mr_state == "closed":
             events.append({
                 "event": "closed",
-                "payload": {"url": web_url, "title": title},
+                "payload": {"url": web_url, "title": title, **snap},
                 "notify_title": f"!{iid} closed",
                 "notify_message": title,
             })
@@ -194,7 +258,7 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
     if has_conflicts and not prev_conflicts:
         events.append({
             "event": "conflicts_appeared",
-            "payload": {"url": web_url, "title": title},
+            "payload": {"url": web_url, "title": title, **snap},
             "notify_title": f"!{iid} conflicts",
             "notify_message": title,
         })
@@ -215,6 +279,7 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
                 "url": web_url,
                 "title": title,
                 "new_count": delta,
+                **snap,
             },
             "notify_title": f"!{iid} new comment{'s' if delta > 1 else ''}",
             "notify_message": title,
