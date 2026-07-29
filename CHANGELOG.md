@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`gl-runners` — runner fleet health, and a radar tier registry** ([#527](https://github.com/Digital-Process-Tools/claude-supertool/pull/527)). GitLab reports a wedged runner as `status: online, job_execution_status: idle` — byte-identical to a healthy runner between jobs. Work pinned to its exclusive tag queues behind it, no other runner may take it, and nothing turns red. The first run found one: **14 jobs stuck behind a runner GitLab had advertised as online for an hour.**
+
+  The op prints a fleet table sorted worst-health first (type, status, heartbeat age, live/queued/completed counts); `:full` adds project scope and versions, `:queue` groups pending jobs by the runners permitted to take them. A `gl-runners` watch source emits `runner_silent`, `runner_starved`, `runner_recovered`, `queue_cleared`, `runner_paused`, `runner_added`, `runner_vanished`. Radar's tiers move into a registry (`ops.radar.radar_tiers`) instead of being hardcoded, and the [#513](https://github.com/Digital-Process-Tools/claude-supertool/issues/513) respawn cap now applies to every spawner rather than only the per-MR heal.
+
+  **Liveness is judged on evidence in descending strength, and the order is load-bearing:** jobs completed inside the throughput window, then `job_execution_status == "active"`, then `contacted_at` age — last, at 30 minutes. Step 3 is last because GitLab throttles that write. Measured on a live fleet: `contacted_at` frozen at the same millisecond across 7 samples spanning 2 minutes, drifting to ~10 minutes of apparent staleness while the fleet completed jobs throughout; healthy runners routinely read 11–27m stale. An earlier version keyed on it alone at 300s and fired `runner_silent` on **6 of 6 online runners** within the hour — a signal that fires on the whole healthy fleet does not merely fail to inform, it buries the one event that was real. So silence is also gated on consequence: a quiet runner with an empty queue has nothing to do, which is not a fault. Job history filters on `finished_at`, never `created_at`, because ids order by creation and the two are not monotonic.
+
 ### Fixed
 
 - **Test suite spawns validator/preset adapters via `sys.executable` instead of the literal `"python3"`.** On Windows, PATH resolution of `"python3"` can hit the App Execution Alias stub, which blocks rather than errors, surfacing as an unrelated `subprocess.TimeoutExpired` flake (observed on PR #527's Windows/3.10 leg). 27 genuine `subprocess.run` spawn sites across 9 test files converted; fixture argv data describing fake process-table rows (`test_watch_pid_set_511.py`, `test_watch_death_supervision_513.py`) deliberately left untouched. Guarded by `tests/test_no_bare_python3_spawn.py`, an AST-scoped check over real `subprocess.*` call sites. Closes [#529](https://github.com/Digital-Process-Tools/claude-supertool/issues/529).
