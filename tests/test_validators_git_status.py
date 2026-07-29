@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -12,7 +13,7 @@ GIT_STATUS_PY = Path(__file__).parent.parent / "validators" / "git-status" / "gi
 
 
 def _run(file: str = "", env: dict | None = None) -> dict:
-    args = ["python3", str(GIT_STATUS_PY)]
+    args = [sys.executable, str(GIT_STATUS_PY)]
     if file:
         args.append(file)
     r = subprocess.run(args, capture_output=True, text=True, timeout=10, env=env or os.environ)

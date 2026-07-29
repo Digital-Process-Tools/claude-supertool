@@ -22,13 +22,13 @@ CARGO_CHECK = VALIDATORS / "cargo-check" / "cargo-check.py"
 # ---------------------------------------------------------------------------
 
 def run_adapter(adapter: Path, file: str, timeout: int = 15) -> dict:
-    r = subprocess.run(["python3", str(adapter), file],
+    r = subprocess.run([sys.executable, str(adapter), file],
                        capture_output=True, text=True, timeout=timeout)
     return json.loads(r.stdout.strip())
 
 
 def run_adapter_proc(adapter: Path, file: str, timeout: int = 15) -> subprocess.CompletedProcess:
-    return subprocess.run(["python3", str(adapter), file],
+    return subprocess.run([sys.executable, str(adapter), file],
                           capture_output=True, text=True, timeout=timeout)
 
 
@@ -37,7 +37,7 @@ def run_adapter_proc(adapter: Path, file: str, timeout: int = 15) -> subprocess.
 # ---------------------------------------------------------------------------
 
 def test_gofmt_check_no_arg_returns_schema_error() -> None:
-    r = subprocess.run(["python3", str(GOFMT_CHECK)],
+    r = subprocess.run([sys.executable, str(GOFMT_CHECK)],
                        capture_output=True, text=True, timeout=5)
     data = json.loads(r.stdout.strip())
     assert data["tool"] == "gofmt-check"
@@ -89,7 +89,7 @@ def test_gofmt_check_graceful_skip_when_tool_missing(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 def test_terraform_check_no_arg_returns_schema_error() -> None:
-    r = subprocess.run(["python3", str(TERRAFORM_CHECK)],
+    r = subprocess.run([sys.executable, str(TERRAFORM_CHECK)],
                        capture_output=True, text=True, timeout=5)
     data = json.loads(r.stdout.strip())
     assert data["tool"] == "terraform-check"
@@ -138,7 +138,7 @@ def test_terraform_check_graceful_skip_when_tool_missing(tmp_path: Path) -> None
 # ---------------------------------------------------------------------------
 
 def test_cargo_check_no_arg_returns_schema_error() -> None:
-    r = subprocess.run(["python3", str(CARGO_CHECK)],
+    r = subprocess.run([sys.executable, str(CARGO_CHECK)],
                        capture_output=True, text=True, timeout=5)
     data = json.loads(r.stdout.strip())
     assert data["tool"] == "cargo-check"
@@ -166,7 +166,7 @@ def test_cargo_check_graceful_skip_when_no_cargo_toml(tmp_path: Path) -> None:
     f = tmp_path / "orphan.rs"
     f.write_text("fn main() {}\n")
     # No Cargo.toml anywhere in tmp_path parents (tmp_path is ephemeral)
-    r = subprocess.run(["python3", str(CARGO_CHECK), str(f)],
+    r = subprocess.run([sys.executable, str(CARGO_CHECK), str(f)],
                        capture_output=True, text=True, timeout=10)
     data = json.loads(r.stdout.strip())
     # If cargo is on PATH: skip because no Cargo.toml. If cargo missing: also skip.

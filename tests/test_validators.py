@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -718,7 +719,7 @@ PHPLINT = Path(__file__).parent.parent / "validators" / "phplint" / "phplint.py"
 def test_phplint_adapter_valid_php(tmp_path: Path) -> None:
     f = tmp_path / "ok.php"
     f.write_text("<?php\n$x = 1;\n")
-    r = subprocess.run(["python3", str(PHPLINT), str(f)],
+    r = subprocess.run([sys.executable, str(PHPLINT), str(f)],
                        capture_output=True, text=True, timeout=10)
     data = json.loads(r.stdout.strip())
     assert data["tool"] == "phplint"
@@ -730,7 +731,7 @@ def test_phplint_adapter_valid_php(tmp_path: Path) -> None:
 def test_phplint_adapter_broken_php_reports_line(tmp_path: Path) -> None:
     f = tmp_path / "bad.php"
     f.write_text("<?php\nfunction broken( {\n")
-    r = subprocess.run(["python3", str(PHPLINT), str(f)],
+    r = subprocess.run([sys.executable, str(PHPLINT), str(f)],
                        capture_output=True, text=True, timeout=10)
     data = json.loads(r.stdout.strip())
     assert data["ok"] is False
@@ -739,7 +740,7 @@ def test_phplint_adapter_broken_php_reports_line(tmp_path: Path) -> None:
 
 
 def test_phplint_adapter_no_arg_returns_schema_error() -> None:
-    r = subprocess.run(["python3", str(PHPLINT)],
+    r = subprocess.run([sys.executable, str(PHPLINT)],
                        capture_output=True, text=True, timeout=5)
     data = json.loads(r.stdout.strip())
     assert data["tool"] == "phplint"

@@ -55,7 +55,7 @@ def _run(php_file: Path, stub: Path, extra_env: dict | None = None) -> subproces
     if extra_env:
         env.update(extra_env)
     return subprocess.run(
-        ["python3", str(PHPMD_PY), str(php_file)],
+        [sys.executable, str(PHPMD_PY), str(php_file)],
         capture_output=True, text=True, timeout=15, env=env,
     )
 
