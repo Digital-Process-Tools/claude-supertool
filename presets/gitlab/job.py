@@ -19,11 +19,26 @@ import subprocess
 import sys
 
 
-def _local_branch_check(source: str) -> str:
+def _local_branch_check(source: str, actionable: bool = True) -> str:
     """Return a one-line local-branch-vs-source check for output.
 
     Empty string when not in a git repo, detached HEAD, or source is empty.
     Used after the 'Branch:' line to flag editing on the wrong branch.
+
+    `actionable=False` keeps the mismatch and drops the `git-checkout`
+    suggestion (#531). The read-only sub-ops — `raw`, `fail`/`errors`, `grep` —
+    are what a radar session runs, and moving HEAD is the one action such a
+    session must never take: fixes go to a worktree so the checkout stays put.
+    Suggesting it on every call is not noise, it is wrong advice at volume.
+
+    Only the imperative is withheld, never the state. The line is printed
+    either way and always says which of ✓ / MISMATCH it is, so a missing
+    checkout command can never be misread as "you are on the right branch" —
+    which is the failure mode a blanket suppression would have introduced.
+
+    Defaults to True: a caller that has not thought about it gets the hint,
+    because the cost of an unwanted suggestion is smaller than the cost of a
+    silently missing one.
     """
     if not source:
         return ""
@@ -39,6 +54,9 @@ def _local_branch_check(source: str) -> str:
             return ""
         if local == source:
             return f"You are on: {local} ✓"
+        if not actionable:
+            return (f"You are on: {local} ⚠ MISMATCH — this is {source}; "
+                    f"read-only op, HEAD left alone")
         return f"You are on: {local} ⚠ MISMATCH — switch with: ./supertool 'git-checkout:{source}'"
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return ""
@@ -320,6 +338,9 @@ def main() -> int:
     errors_mode = len(sys.argv) > 2 and sys.argv[2] in ("errors", "fail")
     grep_mode = len(sys.argv) > 2 and sys.argv[2] == "grep"
     grep_pattern = sys.argv[3] if grep_mode and len(sys.argv) > 3 else None
+    # Read-only sub-ops: you are inspecting a job, not preparing to work on its
+    # branch. The branch check still prints; only the checkout advice does not.
+    branch_actionable = not (raw_mode or errors_mode or grep_mode)
     if grep_mode and not grep_pattern:
         print("ERROR: usage: gl-job:JOB_ID:grep:PATTERN")
         return 1
@@ -454,7 +475,7 @@ def main() -> int:
             print(f"\n## MR !{mr_iid} — {mr_title}")
             print(f"State: {mr_state} | Author: {mr_author}")
             print(f"Branch: {mr_branch} -> {mr_target}")
-            local_check = _local_branch_check(mr_branch)
+            local_check = _local_branch_check(mr_branch, branch_actionable)
             if local_check:
                 print(local_check)
             if mr_labels:
@@ -465,7 +486,7 @@ def main() -> int:
             print(f"Pipeline: #{pipeline_id}")
         else:
             print(f"Branch: {ref} | Pipeline: #{pipeline_id}")
-            local_check = _local_branch_check(ref)
+            local_check = _local_branch_check(ref, branch_actionable)
             if local_check:
                 print(local_check)
 

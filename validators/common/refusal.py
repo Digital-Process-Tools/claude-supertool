@@ -26,6 +26,27 @@ REFUSAL_PATTERNS = (
 )
 
 
+class DaemonUnavailable(RuntimeError):
+    """The analyser's own binary is not installed for this working directory.
+
+    A distinct type rather than a message-substring guess, because the two
+    exits an adapter has to tell apart look identical from the outside: a
+    daemon that could not be started, and a daemon that started and said the
+    file is broken. Only the raise site knows which one happened, so only the
+    raise site gets to label it (#531).
+
+    Subclasses `RuntimeError` so every `except RuntimeError` already written
+    around `resolve_bin` keeps catching it — the type narrows the handling
+    that wants to narrow, and changes nothing for the handling that does not.
+
+    The rule for raising it: the binary is *absent*. Anything that happens
+    after a real binary is found — a spawn that dies, a handshake that times
+    out, a daemon that answers badly — is a validator failure and must stay
+    loud. Guessing towards silence there is how a broken validator starts
+    looking clean.
+    """
+
+
 def is_refusal(msg: str, env_var: str = "") -> bool:
     """Does `msg` read as the tool declining to run rather than a finding?
 

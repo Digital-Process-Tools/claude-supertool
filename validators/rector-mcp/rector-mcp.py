@@ -76,6 +76,9 @@ _sys.path.insert(0, str(_Path(__file__).resolve().parent.parent.parent / "preset
 from _paths import socket_pid_paths as _shared_socket_pid_paths  # noqa: E402
 import _spawn  # noqa: E402  (#451: one daemon per (kind, config fingerprint))
 
+_sys.path.insert(0, str(_Path(__file__).resolve().parent.parent / "common"))
+import refusal as _refusal  # noqa: E402
+
 
 def sock_paths(cwd: str, name: str) -> tuple[str, str]:
     return _shared_socket_pid_paths(cwd, name)
@@ -93,15 +96,17 @@ def resolve_bin(cwd: str) -> str:
             # Keeps a committed/shared .supertool.json portable across machines.
             candidate = os.path.abspath(os.path.join(cwd, bin_path))
             if not os.path.isfile(candidate):
-                raise RuntimeError(f"mcp-rector-warm not found at: {candidate}")
+                raise _refusal.DaemonUnavailable(
+                    f"mcp-rector-warm not found at: {candidate}")
             bin_path = candidate
         else:
             from shutil import which
             resolved = which(bin_path)
             if resolved is None:
-                raise RuntimeError(
-                    f"mcp-rector-warm not found on $PATH. Install via: composer global require dpt/mcp-rector-warm\n"
-                    f"Or set MCP_RECTOR_BIN to a path (abs, or relative to the project root)."
+                raise _refusal.DaemonUnavailable(
+                    "mcp-rector-warm not found on $PATH — install via: "
+                    "composer global require dpt/mcp-rector-warm, or set "
+                    "MCP_RECTOR_BIN (abs, or relative to the project root)."
                 )
             bin_path = resolved
     return bin_path
@@ -257,6 +262,13 @@ def main(argv: list[str]) -> int:
     try:
         sock = ensure_daemon(WORKING_DIR)
         resp = ndjson_call(sock, os.path.abspath(file_path))
+    except _refusal.DaemonUnavailable as e:
+        # Not installed for this working directory — every `cwd:` into a git
+        # worktree lands here. Nothing was analysed, so nothing is reported.
+        print(json.dumps(_refusal.skipped(
+            "rector-mcp", file_path, str(e),
+            int((time.monotonic() - t0) * 1000))))
+        return 0
     except Exception as e:
         import traceback
         tb = traceback.format_exc().splitlines()[-3:]

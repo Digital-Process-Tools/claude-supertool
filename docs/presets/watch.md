@@ -432,6 +432,29 @@ Refusing is the only answer that is not a lie in one direction or the other. Jud
 
 The radar tier is the one caller that legitimately declines to gather the evidence — with an empty queue there is no starvation question, so the five-page history scan answers nothing and is skipped. It therefore no longer prints a live count in that case: `fleet ok — 10 runners, 0 pending, none blocked`, not a ratio inferred from the throttled field.
 
+**`DONE/30m 0` is not a verdict on its own, and the table now says so** ([#531](https://github.com/Digital-Process-Tools/claude-supertool/issues/531)). The column is the strongest signal in the op and it is ambiguous: `0` means "wedged" only for a runner that has been up the whole window. Otherwise it means nothing at all. In one session the same reading was misread in both directions — a runner called wedged 22 minutes after its host rebooted, where zero completions was the expected reading, and then a genuine wedge sixteen minutes later, on a claim the earlier over-call had already discredited.
+
+**GitLab publishes no runner uptime**, checked against a live 18.11.7 instance rather than the docs:
+
+| field | what it actually is |
+|---|---|
+| `runners/:id.created_at` | registration. Years old on a live fleet |
+| `runners/:id.contacted_at` | last seen. Says nothing about continuity |
+| `runner_managers[].createdAt` | GraphQL only — absent from the REST detail response — and also the manager's *first* registration, years old |
+
+So the fix the issue preferred — relabel the counter `DONE/22m` by scoping it to `min(window, uptime)` — has nothing to scope against. Inferring the bound from job history was rejected because it fails in the one direction that matters: a runner up for hours **and wedged** has no activity to infer from, so it would carry the shortest label on the board and its `0` would read as *"we only just started looking"*. That silences precisely the event the op exists to find.
+
+The op therefore states the confound instead of inventing a number for it, and states it only on rows where a reader would act on the `0`. A caveat printed against every quiet runner is wallpaper, and wallpaper is not read, so two exclusions keep it rare: a runner with completed jobs has answered the question outright, and a runner GitLab itself calls `paused`/`offline`/`stale`/`never_contacted` has a `0` its own STATUS column already explains — uptime is not the thing to go and check there. What is left is the shape the op exists for: a runner GitLab is still advertising as healthy that has finished nothing, either executing work it is not completing or quiet past the heartbeat threshold. On a healthy live fleet the note does not print at all.
+
+```
+NOTE: DONE/30m 0 reads as a wedge only for a runner that has been up the whole 30m.
+      GitLab publishes no runner uptime (created_at is registration, contacted_at is
+      last seen), so a host that rebooted inside the window looks identical here.
+      Check host uptime before calling a wedge: dptools-runner-2
+```
+
+The evidence ladder, the 30-minute heartbeat threshold and the throughput window are untouched — those were measured against a live fleet and getting their order wrong is what produced the fleet-wide false alarm above. This is a rendering change only.
+
 ### `conflicts_appeared` is edge-triggered, and stays re-armable ([#463](https://github.com/Digital-Process-Tools/claude-supertool/issues/463))
 
 `gitlab-mr` announced a standing conflict roughly once an hour with nothing resolved and nothing re-pushed — while `pipeline_failed` in the same poller fired once per pipeline. Both were written as rising edges. The difference is that GitLab computes mergeability **asynchronously**:
