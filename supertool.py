@@ -14020,6 +14020,18 @@ class MCPClient:
             self._sock_path = socket_path
             self._auto_spawn = False
         else:
+            if not hasattr(socket, "AF_UNIX"):
+                # Same knowledge as spawn() below, one step earlier (#544).
+                # Resolving the socket path goes through _paths.runtime_dir(),
+                # which cannot verify ownership without os.geteuid and refuses
+                # rather than defaulting — so without this the constructor
+                # raised before reaching the sentence that explains the
+                # platform. _mcp_ensure_server catches MCPServerError and falls
+                # back to the non-MCP heuristic path; it catches neither
+                # AttributeError nor SystemExit.
+                raise MCPServerError(
+                    "MCP daemon requires socket.AF_UNIX — not available on this platform"
+                )
             cwd = os.path.abspath(os.getcwd())
             self._sock_path, _ = _mcp_socket_pid_paths(cwd, name)
             self._auto_spawn = True

@@ -91,6 +91,16 @@ def ensure_daemon(cwd: str) -> str:
     exclusive lock, and a daemon holding a config that no longer matches disk
     is retired rather than asked for an answer.
     """
+    no_transport = _refusal.daemon_transport_reason()
+    if no_transport:
+        # Checked in this body and not at the top of `main`: the suites that
+        # stub the daemon layer replace this whole function, and a check any
+        # earlier short-circuits before the stub takes effect. The binary
+        # lookup runs first because both outcomes are skips and "install it" is
+        # the more actionable of the two. See refusal.daemon_transport_reason
+        # for the full argument (#544).
+        resolve_bin(cwd)
+        raise _refusal.DaemonUnavailable(no_transport)
     return _spawn.ensure_daemon(
         cwd, DAEMON_NAME,
         preflight=lambda: resolve_bin(cwd),
