@@ -303,6 +303,12 @@ So `runner_silent` gates on consequence: not taking work **and** work queued for
 
 Job history is filtered by `finished_at`, never `created_at`. Ids order by creation and the two are **not monotonic**: a test job created hours ago finishes after jobs created since, so scanning by creation drops exactly the long jobs whose completion is the best evidence.
 
+**Steps 1 and 2 are evidence somebody has to go and gather, so the judgement refuses to run without it** ([#533](https://github.com/Digital-Process-Tools/claude-supertool/issues/533)). `annotate_recent_work` and `annotate_live_jobs` fold the throughput and running-jobs reads onto the runner records; a caller that skips them leaves `_is_responsive` holding step 3 alone — which is the version that fired on 6 of 6. So each annotator now leaves a mark, and an un-annotated record raises `UnannotatedFleetError` rather than receiving a verdict. Zero completed jobs is an observation; a missing `_recent_jobs` key is the absence of one, and the two must not read alike.
+
+Refusing is the only answer that is not a lie in one direction or the other. Judging anyway re-ships the fleet-wide false alarm; defaulting to responsive reports an empty starvation list for a fleet nobody looked at, which is a **false all-clear in a tool whose whole job is to notice a wedge GitLab denies**. The layers above already carry a refusal correctly: the dispatcher records a failed poll as `last_error` and emits no events, and radar renders a raised tier as `WARNING — tier failed` with the board not green. Health UNKNOWN, said out loud.
+
+The radar tier is the one caller that legitimately declines to gather the evidence — with an empty queue there is no starvation question, so the five-page history scan answers nothing and is skipped. It therefore no longer prints a live count in that case: `fleet ok — 10 runners, 0 pending, none blocked`, not a ratio inferred from the throttled field.
+
 ### `conflicts_appeared` is edge-triggered, and stays re-armable ([#463](https://github.com/Digital-Process-Tools/claude-supertool/issues/463))
 
 `gitlab-mr` announced a standing conflict roughly once an hour with nothing resolved and nothing re-pushed — while `pipeline_failed` in the same poller fired once per pipeline. Both were written as rising edges. The difference is that GitLab computes mergeability **asynchronously**:

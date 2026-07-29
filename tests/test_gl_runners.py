@@ -27,10 +27,18 @@ def _iso(seconds_ago: float) -> str:
 
 
 def _runner(rid: int = 1, **over) -> dict:
+    """A runner record as the judgement sees it — after both annotators ran.
+
+    The two `_`-prefixed keys are what `annotate_recent_work` /
+    `annotate_live_jobs` leave behind. They are in the baseline because
+    liveness is only defined on an annotated record; a fixture without them
+    would be asking the questions below of evidence nobody gathered.
+    """
     base = {
         "id": rid, "description": f"runner-{rid}", "tag_list": ["docker"],
         "run_untagged": False, "status": "online", "active": True,
         "paused": False, "contacted_at": _iso(10), "job_execution_status": "idle",
+        "_recent_jobs": 0, "_live_jobs_checked": True,
     }
     base.update(over)
     return base
@@ -298,3 +306,98 @@ def test_the_tier_declares_the_options_it_understands() -> None:
     """radar validates against this set, so an option added here without being
     read, or read without being declared, is a silent no-op."""
     assert runners_op.RADAR_OPTIONS == {"window", "quiet_when_healthy"}
+
+
+# ---------------------------------------------------------------------------
+# the annotation precondition (#533)
+# ---------------------------------------------------------------------------
+
+def _unannotated(rid: int = 1, **over) -> dict:
+    """A runner exactly as GitLab hands it over — before either annotator ran."""
+    raw = _runner(rid, **over)
+    raw.pop("_recent_jobs", None)
+    raw.pop("_live_jobs_checked", None)
+    return raw
+
+
+def test_a_caller_that_skipped_annotation_is_refused_not_told_six_of_six_are_silent() -> None:
+    """The failure this guard exists for.
+
+    Without the annotators, the evidence ladder has only its weakest rung left
+    — contacted_at, the field GitLab throttles — and a fleet that is working
+    normally reads as wholly silent. That is not a degraded answer, it is a
+    confident wrong one, and it buries the single runner that is really wedged.
+    """
+    fleet = [_unannotated(rid, contacted_at=_iso(2700)) for rid in range(1, 7)]
+    for runner in fleet:
+        with pytest.raises(runners_op.UnannotatedFleetError):
+            runners_op._is_responsive(runner)
+
+
+def test_the_refusal_names_the_annotation_step_that_was_missed() -> None:
+    """A guard that only says 'no' costs the next caller a debugging session."""
+    with pytest.raises(runners_op.UnannotatedFleetError) as excinfo:
+        runners_op._is_responsive(_unannotated())
+    message = str(excinfo.value)
+    assert "annotate_recent_work" in message
+    assert "annotate_live_jobs" in message
+
+
+def test_half_annotated_is_refused_as_firmly_as_not_annotated_at_all() -> None:
+    fleet = [_unannotated(1)]
+    runners_op.annotate_live_jobs(fleet, [])
+    with pytest.raises(runners_op.UnannotatedFleetError) as excinfo:
+        runners_op._is_responsive(fleet[0])
+    assert "annotate_recent_work" in str(excinfo.value)
+    assert "annotate_live_jobs" not in str(excinfo.value)
+
+
+def test_a_disqualified_runner_is_refused_too_rather_than_answered_by_luck() -> None:
+    """Paused and offline are decided before any annotation is consulted, so an
+    un-annotated caller with a mostly-paused fleet would get plausible answers
+    and ship. The refusal has to be unconditional or it teaches the wrong
+    lesson at exactly the moment someone is learning it.
+    """
+    with pytest.raises(runners_op.UnannotatedFleetError):
+        runners_op._is_responsive(_unannotated(1, paused=True))
+
+
+def test_the_refusal_is_never_downgraded_into_an_all_clear() -> None:
+    """The opposite mistake, and the worse one: answering 'nothing is starved'
+    for a fleet nobody looked at turns a false alarm into a false all-clear.
+    starved_tags must decline to answer, not answer empty.
+    """
+    dead = _unannotated(1, tag_list=["runner-2"], contacted_at=_iso(7200))
+    pending = [{"tag_list": ["runner-2"], "created_at": _iso(1800)}]
+    with pytest.raises(runners_op.UnannotatedFleetError):
+        runners_op.starved_tags([dead], pending)
+
+
+def test_the_annotators_leave_a_mark_that_says_they_ran() -> None:
+    """'Annotated, found nothing' and 'never annotated' must not be the same
+    record. Zero completed jobs is a real observation; a missing key is not.
+    """
+    fleet = [_unannotated(1)]
+    runners_op.annotate_recent_work(fleet, [])
+    runners_op.annotate_live_jobs(fleet, [])
+    assert fleet[0]["_recent_jobs"] == 0
+    assert runners_op._is_responsive(fleet[0]) is True
+
+
+def test_the_tier_does_not_report_a_live_count_it_declined_to_measure() -> None:
+    """radar skips the history scan when nothing is queued — deliberately, to
+    keep a registered tier cheap. That leaves it holding un-annotated records,
+    so it must stop counting liveness rather than count it wrong.
+    """
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        monkeypatch.setattr(runners_op, "_api", _api_stub(
+            runners=[_runner(1, contacted_at=_iso(10))]))
+        monkeypatch.setattr(runners_op, "_fetch_details", lambda listed: {})
+        lines, ok = runners_op.radar_report({})
+    finally:
+        monkeypatch.undo()
+
+    joined = "\n".join(lines)
+    assert ok is True
+    assert "runners live" not in joined

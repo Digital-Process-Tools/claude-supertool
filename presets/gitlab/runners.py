@@ -190,6 +190,43 @@ def _can_serve(runner: dict, job_tags: list[str]) -> bool:
     return set(job_tags).issubset(runner_tags)
 
 
+# Each annotator leaves a mark, so "annotated, found nothing" and "never
+# annotated" are different records rather than the same falsy zero.
+_LIVE_JOBS_MARK = "_live_jobs_checked"
+
+
+class UnannotatedFleetError(RuntimeError):
+    """A liveness question asked about records nobody gathered evidence for.
+
+    Raised rather than answered, because the two wrong answers available here
+    are both worse. Judging anyway means judging on `contacted_at` alone — the
+    throttled field — which reported `runner_silent` on 6 of 6 healthy runners
+    the one time it shipped. Defaulting to responsive means reporting an empty
+    starvation list for a fleet nobody looked at, which is a false all-clear in
+    a tool whose entire job is to notice a wedge GitLab denies.
+
+    The callers already know how to carry a refusal: the watch dispatcher
+    records a failed poll as `last_error` and emits no events, and radar turns
+    a raised tier into `WARNING — tier failed` with the board not green. Both
+    are the honest outcome — health UNKNOWN, said out loud.
+    """
+
+
+def _missing_annotations(runner: dict) -> list[str]:
+    """Which evidence-gathering steps never ran for this record.
+
+    "Annotated, found nothing" and "never annotated" have to be distinguishable,
+    so each annotator leaves a mark: zero completed jobs is an observation, an
+    absent `_recent_jobs` key is the absence of one.
+    """
+    missing = []
+    if "_recent_jobs" not in runner:
+        missing.append("annotate_recent_work")
+    if not runner.get(_LIVE_JOBS_MARK):
+        missing.append("annotate_live_jobs")
+    return missing
+
+
 def _is_responsive(runner: dict) -> bool:
     """Able to pick up queued work right now.
 
@@ -207,7 +244,24 @@ def _is_responsive(runner: dict) -> bool:
 
     1 and 2 require `annotate_recent_work` / `annotate_live_jobs` to have run;
     without them this degrades to 3 alone, which is exactly the broken version.
+    So it refuses: an un-annotated record raises `UnannotatedFleetError` instead
+    of getting a verdict. A liveness check that cannot see the throughput
+    evidence has not observed a quiet runner, it has failed to look, and the
+    caller that skipped the step is the only party able to fix it.
+
+    The refusal is unconditional, checked ahead of the paused/offline
+    disqualifiers. Those would answer correctly without annotation, and a guard
+    that lets some un-annotated calls through is a guard a new caller can pass
+    in review and in tests and still ship the fleet-wide alarm.
     """
+    missing = _missing_annotations(runner)
+    if missing:
+        raise UnannotatedFleetError(
+            f"liveness asked about runner {runner.get('id')} before "
+            f"{' and '.join(missing)} ran. Annotate the fleet first — without "
+            f"it the judgement falls back to contacted_at alone, the field "
+            f"GitLab throttles, and a working fleet reads as wholly silent."
+        )
     if runner.get("paused") or not runner.get("active", True):
         return False
     if runner.get("status") in {"offline", "stale", "never_contacted"}:
@@ -278,6 +332,7 @@ def annotate_live_jobs(runners: list[dict], running: list[dict]) -> list[dict]:
     """
     busy = {(job.get("runner") or {}).get("id") for job in running}
     for runner in runners:
+        runner[_LIVE_JOBS_MARK] = True
         if runner.get("id") in busy:
             runner["job_execution_status"] = "active"
     return runners
@@ -359,8 +414,16 @@ def radar_report(options: dict | None = None) -> tuple[list[str], bool]:
         annotate_recent_work(runners, fetch_recent_finished(window)[0])
 
     blocked = starved_tags(runners, pending)
-    live = [r for r in runners if _is_responsive(r)]
 
+    if not blocked and not pending:
+        # The history scan was skipped just above, so these records carry no
+        # throughput evidence and their liveness is not knowable from here.
+        # Printing a count anyway would be #533 in miniature: a number that
+        # reads as measured and was inferred from the throttled field.
+        return ([f"radar: fleet ok — {len(runners)} runners, "
+                 f"0 pending, none blocked"], True)
+
+    live = [r for r in runners if _is_responsive(r)]
     if not blocked:
         return ([f"radar: fleet ok — {len(live)}/{len(runners)} runners live, "
                  f"{len(pending)} pending, none blocked"], True)
