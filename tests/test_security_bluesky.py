@@ -23,6 +23,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from _preset_loader import load_preset_module
+
 PRESET_DIR = Path(__file__).parent.parent / "presets" / "bluesky"
 
 
@@ -31,17 +33,12 @@ PRESET_DIR = Path(__file__).parent.parent / "presets" / "bluesky"
 # ---------------------------------------------------------------------------
 
 def _load(name: str):
-    for k in ("_auth", "_atproto", "_me", "_outbound", "_session", "_rest", "_graphql"):
-        sys.modules.pop(k, None)
-    sys.path[:] = [p for p in sys.path
-                   if "presets/devto" not in p and "presets/hashnode" not in p]
-    if str(PRESET_DIR) not in sys.path:
-        sys.path.insert(0, str(PRESET_DIR))
-    spec = importlib.util.spec_from_file_location(f"bsky_sec_{name}", PRESET_DIR / f"{name}.py")
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    """Load a bluesky op with devto's and hashnode's shims kept out of the way.
+
+    Mirrors `test_bluesky.py`; the isolation and its restore live in
+    `tests/_preset_loader.py` (#555).
+    """
+    return load_preset_module("bluesky", name, "bsky_sec_")
 
 
 publish_mod = _load("publish")

@@ -14,7 +14,6 @@ Covers:
 """
 from __future__ import annotations
 
-import importlib.util
 import io
 import json
 import sys
@@ -27,6 +26,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from _preset_loader import load_preset_module
+
 PRESET_DIR = Path(__file__).parent.parent / "presets" / "devto"
 
 # ---------------------------------------------------------------------------
@@ -34,16 +35,12 @@ PRESET_DIR = Path(__file__).parent.parent / "presets" / "devto"
 # ---------------------------------------------------------------------------
 
 def _load(name: str):
-    for k in ("_auth", "_rest", "_me", "_outbound", "_session", "_resolve", "_sanitize"):
-        sys.modules.pop(k, None)
-    sys.path[:] = [p for p in sys.path if "presets/hashnode" not in p]
-    if str(PRESET_DIR) not in sys.path:
-        sys.path.insert(0, str(PRESET_DIR))
-    spec = importlib.util.spec_from_file_location(f"dt_sec_{name}", PRESET_DIR / f"{name}.py")
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    """Load a devto op with hashnode's same-named shims kept out of the way.
+
+    Mirrors `test_devto.py`; the isolation and its restore live in
+    `tests/_preset_loader.py` (#555).
+    """
+    return load_preset_module("devto", name, "dt_sec_")
 
 
 # Load modules once at collection time.

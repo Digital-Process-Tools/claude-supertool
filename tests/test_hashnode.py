@@ -5,27 +5,24 @@ real tokens). Tests cover the pure-function surface of each op.
 """
 from __future__ import annotations
 
-import importlib.util
 import sys
 from pathlib import Path
 
 import pytest
 
+from _preset_loader import load_preset_module
+
 PRESET_DIR = Path(__file__).parent.parent / "presets" / "hashnode"
 
 
 def _load(name: str):
-    # Clear cached helper modules from any prior preset (devto) and prepend our dir.
-    for k in ("_auth", "_graphql", "_rest", "_me", "_outbound", "_session", "_resolve"):
-        sys.modules.pop(k, None)
-    sys.path[:] = [p for p in sys.path if "presets/devto" not in p]
-    if str(PRESET_DIR) not in sys.path:
-        sys.path.insert(0, str(PRESET_DIR))
-    spec = importlib.util.spec_from_file_location(f"hn_{name}", PRESET_DIR / f"{name}.py")
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    """Load a hashnode op with devto's same-named shims kept out of the way.
+
+    This used to strip every `presets/devto` entry from `sys.path` permanently
+    and process-wide (#555). The isolation now lives in
+    `tests/_preset_loader.py`, scoped to the exec and undone afterwards.
+    """
+    return load_preset_module("hashnode", name, "hn_")
 
 
 publish_op = _load("publish")
