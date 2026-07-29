@@ -51,6 +51,7 @@ def _load(name: str, path: Path):
 
 dispatcher = _load("watch_dispatcher_513", WATCH_DIR / "dispatcher.py")
 radar = _load("watch_radar_513", WATCH_DIR / "radar.py")
+mr_tier = _load("watch_radar_513_gl_mrs", WATCH_DIR / "tiers" / "gl_mrs.py")
 
 DEAD = 4252000  # a PID the fixture never marks alive
 
@@ -303,16 +304,20 @@ def radar_env(state_dir, monkeypatch, machine):
 
     monkeypatch.setattr(radar.dispatcher, "_spawn_poller", _fake_spawn)
     monkeypatch.setattr(radar.transport, "_pid_alive", machine.pid_alive)
+    # The MR board is a registered tier since #528; a bare radar refuses.
+    monkeypatch.setenv(radar.TIERS_ENV, json.dumps({"gl-mrs": {}}))
+    monkeypatch.setattr(radar, "_tier_module",
+                        lambda n: mr_tier if n == "gl-mrs" else None)
     return {"dir": state_dir, "spawned": spawned, "monkeypatch": monkeypatch,
             "machine": machine}
 
 
 def test_radar_heals_a_watcher_that_died_and_names_the_loss(radar_env) -> None:
-    _pidfile(radar_env["dir"], radar.SOURCE, "33161", DEAD)
-    healed, uncovered, refused = radar.heal(["33161"], set())
+    _pidfile(radar_env["dir"], mr_tier.SOURCE, "33161", DEAD)
+    healed, uncovered, refused = mr_tier.heal(["33161"], set())
     assert healed == ["33161"]
     assert uncovered == [] and refused == []
-    assert [d["pid"] for d in transport.deaths(radar.SOURCE, "33161")] == [DEAD]
+    assert [d["pid"] for d in transport.deaths(mr_tier.SOURCE, "33161")] == [DEAD]
 
 
 def test_a_repeatedly_dying_watcher_stops_being_respawned(radar_env) -> None:
@@ -320,28 +325,28 @@ def test_a_repeatedly_dying_watcher_stops_being_respawned(radar_env) -> None:
     loop — this bug wearing a different hat."""
     limit = transport.DEATH_RESPAWN_LIMIT
     for n in range(limit):
-        _pidfile(radar_env["dir"], radar.SOURCE, "33161", DEAD + n)
-        healed, uncovered, refused = radar.heal(["33161"], set())
+        _pidfile(radar_env["dir"], mr_tier.SOURCE, "33161", DEAD + n)
+        healed, uncovered, refused = mr_tier.heal(["33161"], set())
         if n < limit - 1:
             assert healed == ["33161"], f"death {n + 1} should still heal"
-            transport.release_pidfile(radar.SOURCE, "33161")
+            transport.release_pidfile(mr_tier.SOURCE, "33161")
     assert healed == []
     assert refused == ["33161"]
     assert uncovered == ["33161"], "a refused slot is uncovered, not quietly fine"
     assert [s for s in radar_env["spawned"] if s[1] == "33161"] == [
-        (radar.SOURCE, "33161", s[2]) for s in radar_env["spawned"] if s[1] == "33161"
+        (mr_tier.SOURCE, "33161", s[2]) for s in radar_env["spawned"] if s[1] == "33161"
     ]
     assert len([s for s in radar_env["spawned"] if s[1] == "33161"]) == limit - 1
 
 
 def test_the_board_says_why_it_stopped_respawning(radar_env, capsys) -> None:
     """A cap that stops quietly is the same silence one level up."""
-    _statefile(radar_env["dir"], radar.SOURCE, "33161", {
+    _statefile(radar_env["dir"], mr_tier.SOURCE, "33161", {
         "deaths": [{"pid": DEAD + n, "ts": "2026-07-29T09:0%d:00Z" % n}
                    for n in range(transport.DEATH_RESPAWN_LIMIT)],
     })
     radar_env["monkeypatch"].setattr(
-        radar, "live_open_mrs",
+        mr_tier, "live_open_mrs",
         lambda multi=None: [{"iid": 33161, "title": "t", "_pipeline": "failed",
                              "web_url": "", "source_branch": "b", "author": {},
                              "_pipeline_id": "1"}],
@@ -355,24 +360,24 @@ def test_the_board_says_why_it_stopped_respawning(radar_env, capsys) -> None:
 
 def test_re_arming_by_hand_clears_the_refusal(radar_env, capsys, monkeypatch) -> None:
     """The cap has to have a door out, and it is an explicit operator action."""
-    _statefile(radar_env["dir"], radar.SOURCE, "33161", {
+    _statefile(radar_env["dir"], mr_tier.SOURCE, "33161", {
         "deaths": [{"pid": DEAD + n, "ts": "x"}
                    for n in range(transport.DEATH_RESPAWN_LIMIT)],
     })
-    assert radar.heal(["33161"], set())[2] == ["33161"]
+    assert mr_tier.heal(["33161"], set())[2] == ["33161"]
     monkeypatch.setattr(dispatcher, "_spawn_poller",
                         lambda s, i, o: radar_env["machine"].alive.add(999) or 999)
     assert dispatcher.cmd_watch(["gitlab-mr", "33161"]) == 0
     capsys.readouterr()
-    assert transport.deaths(radar.SOURCE, "33161") == []
+    assert transport.deaths(mr_tier.SOURCE, "33161") == []
 
 
 def test_a_slot_healed_once_does_not_stay_red_forever(radar_env, capsys) -> None:
     """One death that healed cleanly is reported on the run that healed it and
     then goes quiet. A permanent warning on a covered slot is what trains a
     reader to skim the board."""
-    _pidfile(radar_env["dir"], radar.SOURCE, "33161", DEAD)
-    radar.heal(["33161"], set())
+    _pidfile(radar_env["dir"], mr_tier.SOURCE, "33161", DEAD)
+    mr_tier.heal(["33161"], set())
     dispatcher.cmd_list()
     out = capsys.readouterr().out
     assert "33161" in out

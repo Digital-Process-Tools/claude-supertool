@@ -54,6 +54,8 @@ The separation is deliberate — the list op owns *what's mine* (a platform conc
 
 ## `radar` — reconcile, don't just report
 
+> **Since [#528](https://github.com/Digital-Process-Tools/claude-supertool/issues/528) the MR board is a registered tier, not a default.** A bare `radar` with no `ops.radar.radar_tiers` refuses and tells you what to add — see [Radar tiers](#radar-tiers--everything-is-a-tier-nothing-is-a-default-528). Everything in this section describes the `gl-mrs` tier.
+
 `watches` reports that pollers are alive. It cannot report what is *true*, and the two diverge routinely:
 
 ```
@@ -203,15 +205,20 @@ That last part is a considered rejection of the obvious symmetry. A `pipeline_fa
 
 **Why not classify infra failures automatically?** Because a classifier that decides "this red is not your fault" is wrong in the confident direction, silently, for every MR, with no audit trail — the [#445](https://github.com/Digital-Process-Tools/claude-supertool/issues/445) defect with more reach. An exclusion is at least *declared*: it names an iid, carries a reason, sits in a file under review, and prints itself on every board. And half of !19509's red is a merge conflict against `master` that no trace-scanner can classify — it is a genuine problem the operator has chosen not to fix, which is a decision, not a detection.
 
-## Radar tiers — registered, never default
+## Radar tiers — everything is a tier, nothing is a default ([#528](https://github.com/Digital-Process-Tools/claude-supertool/issues/528))
 
-Radar's core is the MR board and the discovery feed. Anything beyond that is a **tier**, and a tier only runs when it is registered:
+Radar's core is one sentence, and merge requests are not in it:
+
+> Reconcile registered tiers against live truth, heal their watchers, report, stay idempotent, and never render an unknown as green.
+
+The GitLab MR board is simply the first tier anyone wrote. Since [#528](https://github.com/Digital-Process-Tools/claude-supertool/issues/528) it is registered by name like any other, and radar with nothing registered does nothing:
 
 ```json
 {
   "ops": {
     "radar": {
       "radar_tiers": {
+        "gl-mrs": {},
         "gl-runners": { "window": 1800, "quiet_when_healthy": true }
       }
     }
@@ -219,28 +226,71 @@ Radar's core is the MR board and the discovery feed. Anything beyond that is a *
 }
 ```
 
-**The empty default is the design, not laziness.** Radar is an MR reconcile tool for most of the people who install this. Plenty of them sit below Maintainer, or on shared runners, where reading `projects/:id/runners` is a 403 — and a tier shipped on by default would hand every one of them a standing WARNING about infrastructure they neither own nor can read. That is a regression delivered as a feature.
+The key merges into the `radar` op the same way `ops.gl-job.job_patterns` does, and reaches the preset as `SUPERTOOL_RADAR_TIERS`. Registration order is render order — put `gl-runners` first if you want the fleet verdict above the board.
 
-A tier is just an op that exposes `radar_report(options) -> (lines, healthy)`:
+### ⚠ Breaking change: `radar` now refuses until you configure it
+
+Upgrading with no `radar_tiers` gets you this, on stderr, exit 1:
+
+```
+radar: no tiers configured. Add ops.radar.radar_tiers to .supertool.json —
+       e.g. {"gl-mrs": {}} for the GitLab MR board.
+```
+
+**Migration is one line:** add `"radar_tiers": { "gl-mrs": {} }` to the `radar` op block above. Everything then behaves exactly as before — same board, same filters, same exclusions, same feed, same snapshots.
+
+The break is deliberate, and so is the shape of it:
+
+- **Not a silent no-op.** Silence is the failure this whole preset is built against. An unconfigured radar that prints nothing is byte-identical to a healthy one, which is [#486](https://github.com/Digital-Process-Tools/claude-supertool/issues/486) with the failure moved one level up.
+- **Not a `gl-mrs` default.** That is an opinion imposed on strangers: it points GitLab API calls at people who may be on GitHub, and hides from them that radar is configurable at all.
+- **The message is the documentation.** It teaches the config at the moment someone needs it — a loud break carrying its own fix, rather than a quiet one.
+
+`radar_tiers: {}` is treated the same as absent. A config that watches nothing is not a board worth printing.
+
+### The tier contract
+
+A tier is a Python module reachable by name, exposing:
 
 ```python
 RADAR_OPTIONS = {"window", "quiet_when_healthy"}   # validated; a typo is reported
+RADAR_QUIET_DEFAULT = True                         # optional, default True
 
 def radar_report(options=None):
     ...
     return ["radar: FLEET — 14 pending job(s) cannot start"], False
 ```
 
-Names resolve through the preset that declares the op, so there is no second table to drift when a file moves. Registering an op with no `radar_report`, or passing an option it does not declare, is **reported on the board** rather than silently ignored — a dropped option is how someone comes to believe they configured a threshold they did not.
+| Member | Meaning |
+|---|---|
+| `RADAR_OPTIONS` | config keys this tier understands. Anything else in its block is **named on the board**, never silently ignored — a dropped option is how someone comes to believe they configured a threshold they did not |
+| `RADAR_QUIET_DEFAULT` | is a healthy tier silent? `True` for a side concern like the runner fleet. `False` for a tier whose report *is* the board — an MR reconcile that prints nothing on a quiet day is indistinguishable from one that failed to run. Overridable per-tier with `quiet_when_healthy` |
+| `radar_report(options)` | `(lines, healthy)`. **`healthy` means "this tier could tell you the truth"**, not "the world is fine". A board full of red MRs is a healthy report; a board that could not be built is not |
 
-Silence rules, and they are deliberate:
+Radar injects two reserved keys into `options` before the call. Config cannot set them — any key starting with `_` is refused and reported — so a tier can trust them:
 
-- a **healthy** tier says nothing (`quiet_when_healthy`, default `true`) — a green line per tier per run is what trains people to skim past the red one
+| Key | Meaning |
+|---|---|
+| `_arg` | the raw invocation argument. `radar:author=@me` arrives as `"author=@me"`; a bare `radar` as `""` |
+| `_watch` | `callable(source, scope, only=None) -> "alive" \| "spawned" \| "failed" \| "capped"`. Radar's bounded spawner: idempotent slot claim before the fork ([#476](https://github.com/Digital-Process-Tools/claude-supertool/issues/476)) and the [#513](https://github.com/Digital-Process-Tools/claude-supertool/issues/513) death cap. Every slot a tier asks for is recorded, and radar itself emits the cap warning when one is refused |
+
+**Why `_watch` is a callable and not a `radar_watchers()` list.** A declared slot has to be spawned *before* the report runs, and the MR tier must **not** spawn its discovery feed when live GitLab was unreachable — nothing should be spawned, pruned, healed or snapshotted on a population we could not read. Only the tier knows whether spawning is safe, and it needs the spawn result *inside* its own report, because the feed's status is a token in the board footer. Two mechanisms for one job is the drift this codebase keeps filing bugs about, so there is one: **radar owns the bound, the tier owns the timing.**
+
+### Where a tier lives
+
+Names resolve in two places, in order, and neither is a table that can drift when a file moves:
+
+1. **`presets/watch/tiers/<name>.py`** (dashes as underscores). For a tier that needs radar's own internals — the transport, the dispatcher, the shared watch defaults. `gl-mrs` is here: `presets/gitlab/mrs.py` is a GitLab preset and the watch preset already depends on it, so putting reconcile machinery there would make the dependency mutual.
+2. **the script the preset's op declares.** Any op joins by exposing `radar_report`. `gl-runners` is here — its report needs nothing but its own API helpers.
+
+### Silence rules, and the third state
+
+- a **healthy** tier says nothing unless its `RADAR_QUIET_DEFAULT` says otherwise — a green line per tier per run is what trains people to skim past the red one
 - an **unhealthy** tier speaks on **every** run, never delta-suppressed, because it is a current fact rather than a transition
 - a **misconfigured** tier always speaks, since that output is the only route to getting it fixed
-- a tier that **raises** is caught and named; the MR board is what radar exists for and an optional tier must never be able to cost the reader their board
+- a tier that **raises**, or that cannot be resolved, is caught and named **on stderr, with exit 1** — never folded into the board. One broken tier must not be able to cost another its board, and it must not be able to leave radar exiting 0 either
 
-A tier may also declare a background watcher, spawned only when the tier is registered — so an unregistered tier costs no poller and no API call.
+That last rule is the house discipline made explicit: **three states, not two** — `ok`, a finding, and *cannot tell*. A tier that failed to load, a watcher that never spawned, a feed that is down — each renders as **unknown**, never as green. Catching an exception to keep radar rendering is right; catching it and rendering green is the same defect the fix was for.
+
 
 ## Bundled sources
 

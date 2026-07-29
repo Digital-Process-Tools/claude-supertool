@@ -314,7 +314,15 @@ The `watch` preset spawns background pollers that emit events when external stat
 1. **`watch` preset** — `watch:SOURCE:ID` spawns a detached poller. Events emit to a UDS socket, a status file, and macOS Notification Center. Bundled sources: `github-pr`, `gitlab-mr`, `gitlab-mr-feed` for discovery, and `gl-runners` for CI runner health. Write your own source in ~50 lines. [What is worth watching, and what is not](docs/presets/watch.md#what-can-be-watched-and-what-cannot).
 2. **`claude-channel` MCP server** — TypeScript / Bun. Binds the UDS socket and pushes events into a running Claude Code session via the [Channels feature](https://code.claude.com/docs/en/channels.md) (research preview, v2.1.80+). Optional — the watch preset is useful even without it.
 
-Events are fire-and-forget and pollers die with the machine, so at session start an event-driven view knows nothing — and "knows nothing" looks exactly like "all green". That is what `./supertool 'radar'` is for: one idempotent op that treats live GitLab as authoritative, respawns watchers for open MRs that lost theirs, keeps a feed poller alive so MRs opened mid-session are still discovered, and prints the board. Run it on every session start.
+Events are fire-and-forget and pollers die with the machine, so at session start an event-driven view knows nothing — and "knows nothing" looks exactly like "all green". That is what `./supertool 'radar'` is for: one idempotent op that reconciles registered tiers against live truth, heals their watchers under a respawn cap, and never renders an unknown as green. Run it on every session start.
+
+**Radar has no default tier — you register what you watch.** With `ops.radar.radar_tiers` unset it refuses and names the fix, because an unconfigured radar that prints nothing is byte-identical to a healthy one:
+
+```json
+{ "ops": { "radar": { "radar_tiers": { "gl-mrs": {}, "gl-runners": {} } } } }
+```
+
+`gl-mrs` is the GitLab MR board — live MRs are authoritative, watchers are respawned for open MRs that lost theirs, and a feed poller keeps discovering MRs opened mid-session. `gl-runners` adds CI runner health. Any op joins by exposing `radar_report(options)`.
 
 - Preset deep-dive (ops, `radar`, sources, discovery feed, event contract, lifecycle, writing a source): [docs/presets/watch.md](docs/presets/watch.md)
 - MCP server (install, security, event format): [notifiers/claude-channel/README.md](notifiers/claude-channel/README.md)
