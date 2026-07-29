@@ -421,6 +421,11 @@ SNAPSHOT_KEYS = {
     "observed_mr_state",
     "observed_pipeline_status",
     "observed_pipeline_id",
+    # #537. Not an MR fact but a fact about the *read*: whether this poll could
+    # tell the head pipeline apart from the one the previous poll saw. It rides
+    # on every event for the reason `observed_pipeline_id` does — one meaning,
+    # uniformly — and its third value, `unknown`, is the whole point.
+    "observed_pipeline_identity",
     "observed_has_conflicts",
     "observed_source_branch",
     "observed_target_branch",
@@ -924,3 +929,182 @@ def test_the_poller_no_longer_asserts_that_user_notes_count_includes_system_note
     lowered = src.lower()
     assert "counts system notes" not in lowered
     assert "counts *all* notes including system notes" not in lowered
+
+
+# ---------------------------------------------------------------------------
+# #537 — the pipeline edge was computed from the status string alone.
+#
+# `pipeline_failed` fired on `pipeline_status != prev_pipeline_status`, and no
+# pipeline identity was carried into that comparison. So a *second* pipeline
+# that also ended `failed`, with no `running` tick observed in between, fired
+# nothing: the previous status was already `"failed"`, the inequality was False,
+# and the MR went red for a new reason in silence. Worse than a wrong value —
+# there was no output at all to be suspicious of.
+#
+# Live on this instance while the fix was written: MR !33194 ran pipeline 154628
+# to `failed`, took a push, and ran 154636 to `failed` as well. Two distinct
+# reds, one status string. The ids below are that pair.
+#
+# **The retry case is the one that must not change, and it was settled against
+# the live API rather than the docs: GitLab does not mint a new pipeline id on a
+# retry.** Pipeline 154635 was caught mid-retry — job `test_unit_pavillon`
+# failed as job 6966698, was retried as job 6967497, and `head_pipeline` went on
+# reporting id 154635 with its status flipped back to `running`. A retry moves
+# the *status* under a stable id, which is the edge the poller already computed
+# correctly, so adding an id comparison cannot double-fire it. The
+# characterization tests below pin that, and passed before the fix as well as
+# after.
+# ---------------------------------------------------------------------------
+
+def test_a_second_failing_pipeline_is_announced_though_the_status_never_changed() -> None:
+    """The defect. Two distinct pipelines, both `failed`, no `running` tick
+    observed between them — and before #537 this emitted exactly one event."""
+    events, _ = _drive([
+        _mr(pipeline_status="failed", pipeline_id="154628"),
+        _mr(pipeline_status="failed", pipeline_id="154636"),
+    ])
+    failed = [e for e in events if e["event"] == "pipeline_failed"]
+    assert len(failed) == 2, [e["event"] for e in events]
+    assert [e["payload"]["pipeline_id"] for e in failed] == ["154628", "154636"]
+
+
+def test_a_second_pipeline_that_succeeds_is_announced_too() -> None:
+    """The edge is the pipeline, not the colour. A green run after a green run
+    is a different push having passed, and `pipeline_succeeded` is the only
+    proof an automated fix worked."""
+    events, _ = _drive([
+        _mr(pipeline_status="success", pipeline_id="154627"),
+        _mr(pipeline_status="success", pipeline_id="154630"),
+    ])
+    assert [e["event"] for e in events].count("pipeline_succeeded") == 2
+
+
+def test_the_second_failure_looks_up_its_own_pipelines_failing_jobs() -> None:
+    """The #536 tie-in, and why this is worth more than the odds suggest: an
+    event that never fires is a set of job names that never arrives, for the
+    pipeline a reader most needs them for — the second failure, where "same
+    breakage or a new one?" is the actual question."""
+    state: dict = {}
+    calls: list[str] = []
+
+    def _api(endpoint):
+        calls.append(endpoint)
+        return [_job("rector", 1, "2026-07-29T05:10:00.000Z")]
+
+    with mock.patch.object(poller, "_glab_api", side_effect=_api):
+        for pid in ("154628", "154636"):
+            with mock.patch.object(
+                poller, "_fetch",
+                return_value=_mr(pipeline_status="failed", pipeline_id=pid),
+            ):
+                _, state = poller.poll(state, {"id": "21803"})
+    assert len(calls) == 2, calls
+    assert "/pipelines/154628/jobs" in calls[0]
+    assert "/pipelines/154636/jobs" in calls[1]
+
+
+def test_a_retried_pipeline_is_not_double_announced() -> None:
+    """Characterization — green before #537 and green after.
+
+    The live shape: one pipeline id, status `failed → running → failed`, with
+    repeat polls at every step. Two red *arrivals*, so two events; the repeats
+    add none and the stable id adds none. Trading a silent miss for a duplicate
+    would not be a win — duplicates are what train a reader to stop reading."""
+    events, _ = _drive([
+        _mr(pipeline_status="failed", pipeline_id="154635"),
+        _mr(pipeline_status="failed", pipeline_id="154635"),
+        _mr(pipeline_status="running", pipeline_id="154635"),
+        _mr(pipeline_status="running", pipeline_id="154635"),
+        _mr(pipeline_status="failed", pipeline_id="154635"),
+        _mr(pipeline_status="failed", pipeline_id="154635"),
+    ])
+    kinds = [e["event"] for e in events]
+    assert kinds.count("pipeline_failed") == 2, kinds
+    assert kinds.count("pipeline_running") == 1, kinds
+
+
+def test_a_pipeline_sitting_red_across_many_polls_is_still_announced_once() -> None:
+    """Characterization — green before #537 and green after. The edge-triggering
+    is deliberate; #537 changes what the edge is computed from, not that there
+    is one. A long-lived radar session must not fill with repeats."""
+    events, _ = _drive([_mr(pipeline_status="failed", pipeline_id="154635")] * 10)
+    assert [e["event"] for e in events].count("pipeline_failed") == 1
+
+
+def test_the_snapshot_says_whether_this_is_the_pipeline_the_last_poll_saw() -> None:
+    """Three states, not two — `same`, `new`, and `unknown`, on the wire."""
+    events, state = _drive([_mr(pipeline_status="failed", pipeline_id="154628")])
+    assert events[0]["payload"]["observed_pipeline_identity"] == "new"
+    with mock.patch.object(
+        poller, "_fetch", return_value=_mr(pipeline_status="running", pipeline_id="154628"),
+    ):
+        events, _ = poller.poll(state, {"id": "21803"})
+    assert events[0]["payload"]["observed_pipeline_identity"] == "same"
+
+
+def test_an_undeterminable_identity_does_not_silently_become_no_transition() -> None:
+    """The house defect, in the one place this fix could reintroduce it.
+
+    A state file written by a pre-#537 supertool carries `pipeline_status` and
+    no `pipeline_id`, so the first poll after an upgrade genuinely cannot say
+    whether this red is the red the last event described. That is *not* an
+    answer of "same pipeline, stay quiet" — it is a third state, and it is
+    announced, marked `unknown` so nobody reads the event as a fresh failure
+    that was positively identified."""
+    state = {"mr_state": "opened", "pipeline_status": "failed"}  # no pipeline_id
+    body = _mr(pipeline_status="failed", pipeline_id="154636")
+    with mock.patch.object(poller, "_fetch", return_value=body):
+        events, state = poller.poll(state, {"id": "21803"})
+    failed = [e for e in events if e["event"] == "pipeline_failed"]
+    assert len(failed) == 1
+    assert failed[0]["payload"]["observed_pipeline_identity"] == "unknown"
+    # And the poll after it *can* tell, so it goes quiet again.
+    with mock.patch.object(poller, "_fetch", return_value=body):
+        events, _ = poller.poll(state, {"id": "21803"})
+    assert events == []
+
+
+def test_an_unidentifiable_pipeline_is_announced_once_not_on_every_poll() -> None:
+    """The other half of that guard, and the reason `unknown` is persisted
+    rather than recomputed as "fire". A payload that reports a status with no id
+    is anomalous, and it must be said out loud — once. Saying it every 30
+    seconds forever would be the loud failure traded for a flood, which reads
+    as noise and gets muted, which is the silence again by another route."""
+    events, _ = _drive([
+        _mr(pipeline_status="failed", pipeline_id="154636"),
+        _mr(pipeline_status="failed", pipeline_id=None),
+        _mr(pipeline_status="failed", pipeline_id=None),
+        _mr(pipeline_status="failed", pipeline_id=None),
+    ])
+    assert [(e["event"], e["payload"]["observed_pipeline_identity"]) for e in events] == [
+        ("pipeline_failed", "new"),
+        ("pipeline_failed", "unknown"),
+    ]
+
+
+def test_a_pipeline_id_that_comes_back_is_a_transition_again() -> None:
+    """Re-armable, like the conflict latch, and for the same reason: the last
+    *known* id is carried forward across polls that could not read one, so an
+    unknown streak ends the moment the id is readable again and a genuinely new
+    pipeline is still announced. The poller does not latch into silence because
+    it once could not look."""
+    events, _ = _drive([
+        _mr(pipeline_status="failed", pipeline_id="154628"),
+        _mr(pipeline_status="failed", pipeline_id=None),
+        _mr(pipeline_status="failed", pipeline_id=None),
+        _mr(pipeline_status="failed", pipeline_id="154636"),
+    ])
+    assert [(e["event"], e["payload"]["observed_pipeline_identity"]) for e in events] == [
+        ("pipeline_failed", "new"),
+        ("pipeline_failed", "unknown"),
+        ("pipeline_failed", "new"),
+    ]
+    assert [e["payload"]["pipeline_id"] for e in events] == ["154628", "", "154636"]
+
+
+def test_the_pipeline_identity_is_persisted_so_the_next_poll_can_compare() -> None:
+    """`radar.drift()` already reads `source_state.pipeline_id`; #537 makes the
+    poller read it too, and adds the verdict beside it."""
+    _, state = _drive([_mr(pipeline_status="failed", pipeline_id="154628")])
+    assert state["pipeline_id"] == "154628"
+    assert state["pipeline_identity"] == "new"

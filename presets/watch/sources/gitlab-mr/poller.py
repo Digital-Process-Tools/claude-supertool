@@ -112,24 +112,78 @@ SNAPSHOT_PREFIX = "observed_"
 
 
 def _snapshot(data: dict[str, Any], *, mr_state: str, pipeline_status: str,
-              pipeline_id: str, has_conflicts: bool) -> dict[str, Any]:
+              pipeline_id: str, pipeline_identity: str,
+              has_conflicts: bool) -> dict[str, Any]:
     """The fetched state, labelled with the instant it was read.
 
     `has_conflicts` is passed in rather than read off `data` on purpose: it is
     the poller's *corrected* answer, after the unsettled-check carry-forward
     (#463) and the empty-diff guard (#465). Re-reading the raw field here would
     re-export a false positive the poller had just finished suppressing.
+
+    `pipeline_identity` is not an MR fact at all — it is a fact about the
+    *read*: whether this poll could tell the head pipeline apart from the one
+    the previous poll saw (#537). It rides on every event for the reason
+    `observed_pipeline_id` does: one meaning, uniformly, on every key.
     """
     return {
         "observed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "observed_mr_state": mr_state,
         "observed_pipeline_status": pipeline_status,
         "observed_pipeline_id": pipeline_id,
+        "observed_pipeline_identity": pipeline_identity,
         "observed_has_conflicts": bool(has_conflicts),
         "observed_source_branch": str(data.get("source_branch") or ""),
         "observed_target_branch": str(data.get("target_branch") or ""),
         "observed_head_sha": str(data.get("sha") or ""),
     }
+
+
+# Which pipeline is this, compared to the one the last poll saw (#537).
+#
+# The pipeline events used to edge-trigger on the status *string* alone, with no
+# pipeline identity in the comparison. A second pipeline that also ended
+# `failed`, with no `running` tick observed in between, therefore fired nothing:
+# the previous status was already `"failed"`, the inequality was False, and the
+# MR was red for a new reason in silence. Not a wrong value — no output at all
+# to be suspicious of, which is this repository's house defect at its purest.
+#
+# **The retry question, settled against the live API rather than the docs,
+# because getting it wrong would trade a silent miss for a duplicate.** GitLab
+# does **not** mint a new pipeline id when a job is retried. Pipeline 154635 was
+# observed mid-retry: `test_unit_pavillon` failed as job 6966698, was retried as
+# job 6967497, and `head_pipeline` went on reporting id **154635** with its
+# status flipped back to `running`. A retry moves the status under a *stable*
+# id — which is the edge the old code already computed correctly — so adding an
+# id comparison cannot double-fire it. A genuinely new pipeline comes from a new
+# push or trigger and takes a new id (MR !33194: 154628 red, push, 154636 red).
+#
+# Three verdicts, not two. `unknown` exists because the id can be missing from a
+# payload, or absent from a state file written before this field was persisted,
+# and "we could not tell" must not resolve to "same pipeline, stay quiet" —
+# that is the silence the fix is about, reintroduced one level down.
+IDENTITY_SAME = "same"
+IDENTITY_NEW = "new"
+IDENTITY_UNKNOWN = "unknown"
+
+
+def _pipeline_identity(pipeline_id: str, prev_pipeline_id: str,
+                       prev_pipeline_status: str) -> str:
+    """`same`, `new` or `unknown` — never a guess dressed as one of the first two.
+
+    `unknown` is returned whenever either side has no id to compare, and it is
+    an *answer*, not a shrug: the caller announces it once (see `poll`) rather
+    than folding it into "nothing changed".
+
+    The first pipeline ever seen for an MR is `new`, not `unknown` — there is no
+    previous read to be uncertain about, and calling that case unknown would put
+    a permanent caveat on the very first event of every watch.
+    """
+    if not prev_pipeline_id and not prev_pipeline_status:
+        return IDENTITY_NEW
+    if not pipeline_id or not prev_pipeline_id:
+        return IDENTITY_UNKNOWN
+    return IDENTITY_SAME if pipeline_id == prev_pipeline_id else IDENTITY_NEW
 
 
 # The failing job names on `pipeline_failed` (#509, option 3 of #435).
@@ -307,6 +361,13 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
 
     events: list[dict] = []
     prev_pipeline = state.get("pipeline_status", "")
+    # The last id we could actually *read*, not the last poll's raw value. A
+    # poll that reports no id carries the previous one forward, the same shape
+    # the unsettled-conflict check uses below: an unreadable field is not
+    # evidence that the world changed, and overwriting with `""` would make the
+    # next readable id incomparable and so silently un-announceable.
+    prev_pipeline_id = str(state.get("pipeline_id") or "")
+    prev_identity = str(state.get("pipeline_identity") or "")
     prev_state = state.get("mr_state", "")
     prev_conflicts = bool(state.get("has_conflicts", False))
     prev_notes_count = state.get("notes_count")  # None on first poll
@@ -326,16 +387,35 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
     # once so two events from the same poll can never disagree about what was
     # observed — the #435 session saw a single tick emit both
     # `pipeline_succeeded` and `merged`, and they describe the same read.
+    identity = _pipeline_identity(pipeline_id, prev_pipeline_id, prev_pipeline)
+
     snap = _snapshot(
         data,
         mr_state=mr_state,
         pipeline_status=pipeline_status,
         pipeline_id=pipeline_id,
+        pipeline_identity=identity,
         has_conflicts=has_conflicts,
     )
 
-    # Pipeline transitions
-    if pipeline_status and pipeline_status != prev_pipeline:
+    # Pipeline transitions (#537).
+    #
+    # The edge is still an edge — a pipeline sitting red across a hundred polls
+    # is announced once, which is what keeps a long-lived radar session from
+    # filling with repeats. What changed is what the edge is computed *from*:
+    # the pair (status, which pipeline), not the status string alone.
+    #
+    # `unknown` fires once per streak, not once per poll. Announcing it every
+    # tick would trade the silent failure for a flood, and a flood gets muted,
+    # which is the silence again by a longer route. `prev_identity` is what
+    # makes it once — and the id carry-forward above is what makes it re-armable
+    # when the id becomes readable again.
+    is_transition = bool(pipeline_status) and (
+        pipeline_status != prev_pipeline
+        or identity == IDENTITY_NEW
+        or (identity == IDENTITY_UNKNOWN and prev_identity != IDENTITY_UNKNOWN)
+    )
+    if is_transition:
         if pipeline_status == "failed":
             # The one extra request, and it is made here rather than beside the
             # snapshot so that its cost is exactly the shape of this branch:
@@ -357,6 +437,10 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
                 "notify_title": f"!{iid} pipeline ok",
                 "notify_message": title,
             })
+        # Deliberately unchanged by #537: a new pipeline that starts while the
+        # previous one was still running stays quiet. `pipeline_running` is not
+        # in `DEFAULT_ONLY` precisely because you just pushed and it carries no
+        # information; a second one carries no more.
         elif pipeline_status == "running" and prev_pipeline not in ("running", ""):
             events.append({
                 "event": "pipeline_running",
@@ -426,7 +510,8 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
     new_state = {
         "mr_state": mr_state,
         "pipeline_status": pipeline_status,
-        "pipeline_id": pipeline_id,
+        "pipeline_id": pipeline_id or prev_pipeline_id,
+        "pipeline_identity": identity,
         "has_conflicts": has_conflicts,
         "merge_status": merge_status,
         "notes_count": notes_count,
