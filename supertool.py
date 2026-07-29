@@ -10182,6 +10182,74 @@ def _validator_result_is_cacheable(data: Dict[str, Any]) -> bool:
     return True
 
 
+# How much of a target to read when evaluating `warm_unsafe`. The markers this
+# gate looks for (a class-declaration `extends`, a `use` import, an attribute)
+# live in the first few hundred lines of any real source file; reading a whole
+# generated multi-megabyte file to find one would cost more than the validator.
+_WARM_UNSAFE_READ_BYTES = 256 * 1024
+
+
+def _validator_warm_unsafe_reason(spec: Dict[str, Any], target: str) -> Optional[str]:
+    """Why this validator must decline on `target`, or None to run normally.
+
+    WHY THIS EXISTS (#345). `phpunit-mcp` reported two failures on a DVSI test
+    extending `SiControllerTestCase`; the cold `phpunit:` op on the same file,
+    same commit, same `phpunit.xml`, passed 3/3. The reds were *fabricated*, not
+    pre-existing: `mcp-phpunit-warm` runs the project's phpunit.xml bootstrap in
+    the long-lived PARENT and forks a child per call, so whatever that bootstrap
+    opened — a DB handle, a session, a platform singleton — is shared by every
+    child and by the parent. The failure therefore depends on warm-process
+    state, not on the file, which is exactly why a cold run cannot reproduce it.
+    Same family as #265 (phpunit staleness) and #273 (rector ClassReflection).
+
+    Note what this is NOT. It is not "suppress results the runner calls
+    pre-existing": a pre-existing failure is a real failure, and hiding it is
+    how a broken file starts looking clean. Regression-only rollback (#406)
+    already handles genuinely pre-existing reds correctly — it compares against
+    a baseline and refuses to roll back. The problem here is upstream of that:
+    the red is not a fact about the file at all.
+
+    So this follows #482 rather than #406 — a tool that cannot answer must say
+    so rather than guess. `validators.<name>.warm_unsafe` is a regex (or list of
+    regexes) matched against the resolved target's content; a hit turns the run
+    into a `skipped`, which the framework already treats as an absence of
+    information: never a ✗, never a rollback, never cached.
+
+    Deliberately opt-in and vendor-neutral. Supertool cannot work out on its own
+    which of a project's tests touch shared bootstrap state; the project can,
+    and says so in config. Absent config, nothing changes.
+
+    Failure modes are biased towards running: an unreadable target, a pattern
+    that is not a string, and a pattern that does not compile are all ignored,
+    because a config typo must not silently mute a validator. One bad pattern
+    does not disarm the good ones beside it.
+    """
+    patterns = spec.get("warm_unsafe")
+    if isinstance(patterns, str):
+        patterns = [patterns]
+    if not isinstance(patterns, list) or not patterns:
+        return None
+    try:
+        with open(target, "rb") as fh:
+            blob = fh.read(_WARM_UNSAFE_READ_BYTES)
+    except OSError:
+        # Cannot evaluate the gate → leave pre-#345 behaviour in place rather
+        # than mute the validator on every file the gate could not read.
+        return None
+    text = blob.decode("utf-8", errors="replace")
+    for pattern in patterns:
+        if not isinstance(pattern, str) or not pattern.strip():
+            continue
+        try:
+            rx = re.compile(pattern)
+        except re.error:
+            continue
+        if rx.search(text):
+            return (f"warm-unsafe: target matches /{pattern}/ — this validator's "
+                    f"warm process cannot be trusted here; run the tool directly")
+    return None
+
+
 def _validator_run_one(name: str, spec: Dict[str, Any], file: str,
                        doc_maybe_stale: bool = False) -> Optional[Dict[str, Any]]:
     """Run one validator adapter on `file`. Returns SCHEMA.md-compliant dict.
@@ -10203,6 +10271,13 @@ def _validator_run_one(name: str, spec: Dict[str, Any], file: str,
     target = _validator_resolve(spec, file)
     if target is None:
         return {"tool": name, "skipped": "no target resolved"}
+    # #345: some targets this validator's warm process cannot judge — declared
+    # per validator as `warm_unsafe` regexes. Checked here, before the adapter
+    # is spawned at all: the decision is a property of the target, so paying a
+    # daemon round-trip to reach a verdict we would then discard is waste.
+    _warm_unsafe = _validator_warm_unsafe_reason(spec, target)
+    if _warm_unsafe:
+        return {"tool": name, "file": target, "skipped": _warm_unsafe}
     # Built-in validators (#477) have no adapter and no `cmd`: they run in this
     # process. Handled before the cmd substitution below, which would KeyError.
     if spec.get("builtin"):

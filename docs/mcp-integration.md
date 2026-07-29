@@ -370,6 +370,22 @@ Same daemon owns it, same UDS protocol, same auto-spawn behavior.
 - **Slow first call** — LSPs cold-index on first spawn. Free intelephense has no
   persistent disk index, so the daemon's warm-time-after-first-call is your savings.
   Don't kill the daemon between calls unless you want to pay the cold start again.
+- **Warm state can *be* the answer** — a daemon is a process that boots once and is
+  reused, so whatever that boot opened is shared by every call it serves. It is what
+  makes the daemon fast, and it is the source of every "the warm tool disagrees with
+  the cold tool" bug this project has filed: a document cache with no invalidation
+  ([#482](https://github.com/Digital-Process-Tools/claude-supertool/issues/482)), an
+  autoloader that cannot reload an edited class
+  ([#265](https://github.com/Digital-Process-Tools/claude-supertool/issues/265)),
+  engine state corrupted by the previous call
+  ([#273](https://github.com/Digital-Process-Tools/claude-supertool/issues/273)),
+  a test-framework bootstrap whose handles are inherited by every forked child
+  ([#345](https://github.com/Digital-Process-Tools/claude-supertool/issues/345)).
+  Before trusting a warm result, run the cold tool on the same file once and compare;
+  a warm server that silently does *less* work looks exactly like a fast one. Where
+  the disagreement cannot be told from a real finding by reading the output, the
+  validator must **decline** rather than report — see `warm_unsafe` and "Declining
+  instead of guessing" in [`validators.md`](validators.md).
 
 ## Tool name reference (cclsp)
 
