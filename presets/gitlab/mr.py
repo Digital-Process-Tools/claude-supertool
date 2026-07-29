@@ -10,6 +10,13 @@ import json
 import re
 import subprocess
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent))  # for mrs._conflict_label
+
+# Imported by name, not `import mrs` — main() already binds a local `mrs`
+# (the branch-lookup result list), which would shadow a module import.
+from mrs import _conflict_label  # noqa: E402
 
 DESCRIPTION_MAX = 2000
 COMMENT_MAX = 500
@@ -478,7 +485,6 @@ def main() -> int:
     web_url = d.get("web_url", "")
     labels = ", ".join(d.get("labels", [])) or "none"
     milestone = (d.get("milestone") or {}).get("title", "none")
-    has_conflicts = d.get("has_conflicts", False)
     merge_status = d.get("merge_status") or d.get("detailed_merge_status") or "?"
     merge_commit = d.get("merge_commit_sha") or d.get("squash_commit_sha") or ""
     draft = d.get("draft", False) or d.get("work_in_progress", False)
@@ -598,14 +604,22 @@ def main() -> int:
         for line in _render_name_status(_get_name_status(iid, full), changes, full, iid):
             print(line)
 
-    # Conflicts
+    # Conflicts — has_conflicts is a straight alias for cannot_be_merged?, which
+    # GitLab also sets when the source branch has no commits (#494). This view
+    # already fetches the full MR payload (detailed_merge_status, sha,
+    # diff_refs), so _conflict_label can tell a real conflict from an empty
+    # diff without an extra request. _get_conflicting_files only runs once we
+    # know there is a diff to run it on.
     conflict_files: list[str] = []
-    if has_conflicts:
+    conflict_label = _conflict_label({**d, "_diff_refs": d.get("diff_refs")})
+    if conflict_label == "conflict":
         conflict_files = _get_conflicting_files(source, target)
         if conflict_files:
             print(f"Conflicts: YES — cannot merge ({len(conflict_files)} file{'s' if len(conflict_files) != 1 else ''})")
         else:
             print("Conflicts: YES — cannot merge")
+    elif conflict_label == "empty":
+        print("Conflicts: NO — cannot merge: source branch has no commits, so there is nothing to merge")
     else:
         print(f"Merge status: {merge_status}")
 

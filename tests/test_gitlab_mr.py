@@ -328,6 +328,143 @@ def test_main_full_mode_unaffected(monkeypatch, capsys) -> None:
     assert "Pipeline:" in out
 
 
+# ---------------------------------------------------------------------------
+# Conflicts line — has_conflicts aliases cannot_be_merged?, which GitLab also
+# sets on an MR with no commits. #494: the false positive already fixed on
+# the board/radar surfaces (#492) but left on this, the single-MR view.
+# ---------------------------------------------------------------------------
+
+def test_main_full_mode_empty_mr_not_reported_as_conflict(monkeypatch, capsys) -> None:
+    """No commits, no diff — has_conflicts is true but there is nothing to conflict over.
+
+    _get_conflicting_files would come back empty here (no diff to compare),
+    and the old code printed 'Conflicts: YES — cannot merge' anyway.
+    """
+    payload = _mr_json_payload(
+        state="opened", has_conflicts=True, merged_at=None, merge_commit_sha="",
+        detailed_merge_status="commits_status", sha=None,
+    )
+    monkeypatch.setattr(
+        mr.subprocess, "run",
+        lambda *a, **kw: _fake_run(payload, returncode=0),
+    )
+    monkeypatch.setattr(sys, "argv", ["mr.py", "20881"])
+    rc = mr.main()
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Conflicts: YES" not in out
+    assert "no commits" in out
+
+
+def test_main_full_mode_empty_mr_null_sha_not_reported_as_conflict(monkeypatch, capsys) -> None:
+    """Second no-diff signal: a null sha with no detailed_merge_status to lean on."""
+    payload = _mr_json_payload(has_conflicts=True, sha=None)
+    monkeypatch.setattr(
+        mr.subprocess, "run",
+        lambda *a, **kw: _fake_run(payload, returncode=0),
+    )
+    monkeypatch.setattr(sys, "argv", ["mr.py", "20881"])
+    rc = mr.main()
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Conflicts: YES" not in out
+
+
+def test_main_full_mode_matching_diff_refs_not_reported_as_conflict(monkeypatch, capsys) -> None:
+    """Third no-diff signal: head_sha == base_sha — same tree, no diff possible."""
+    payload = _mr_json_payload(
+        has_conflicts=True,
+        diff_refs={"base_sha": "abc123", "head_sha": "abc123"},
+    )
+    monkeypatch.setattr(
+        mr.subprocess, "run",
+        lambda *a, **kw: _fake_run(payload, returncode=0),
+    )
+    monkeypatch.setattr(sys, "argv", ["mr.py", "20881"])
+    rc = mr.main()
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Conflicts: YES" not in out
+
+
+def test_main_full_mode_genuine_conflict_still_reported(monkeypatch, capsys) -> None:
+    """A real conflict — distinct head/base sha, no no-diff signal — must still say YES."""
+    payload = _mr_json_payload(
+        has_conflicts=True,
+        diff_refs={"base_sha": "aaa111", "head_sha": "bbb222"},
+        sha="bbb222",
+    )
+    monkeypatch.setattr(
+        mr.subprocess, "run",
+        lambda *a, **kw: _fake_run(payload, returncode=0),
+    )
+    monkeypatch.setattr(sys, "argv", ["mr.py", "20881"])
+    rc = mr.main()
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Conflicts: YES — cannot merge" in out
+
+
+def test_main_full_mode_genuine_conflict_on_draft_still_reported(monkeypatch, capsys) -> None:
+    """detailed_merge_status reports the FIRST failing check, and draft runs before
+    conflict in GitLab's all_mergeability_checks — a conflicted draft reports
+    draft_status, not conflict. Must not be read as a no-diff signal."""
+    payload = _mr_json_payload(
+        has_conflicts=True,
+        draft=True,
+        detailed_merge_status="draft_status",
+        diff_refs={"base_sha": "aaa111", "head_sha": "bbb222"},
+        sha="bbb222",
+    )
+    monkeypatch.setattr(
+        mr.subprocess, "run",
+        lambda *a, **kw: _fake_run(payload, returncode=0),
+    )
+    monkeypatch.setattr(sys, "argv", ["mr.py", "20881"])
+    rc = mr.main()
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Conflicts: YES — cannot merge" in out
+
+
+def test_main_full_mode_genuine_conflict_with_unresolved_threads_still_reported(
+    monkeypatch, capsys
+) -> None:
+    """Unresolved discussion threads must not mask or suppress a real conflict."""
+    payload = _mr_json_payload(
+        has_conflicts=True,
+        blocking_discussions_resolved=False,
+        diff_refs={"base_sha": "aaa111", "head_sha": "bbb222"},
+        sha="bbb222",
+    )
+    monkeypatch.setattr(
+        mr.subprocess, "run",
+        lambda *a, **kw: _fake_run(payload, returncode=0),
+    )
+    monkeypatch.setattr(sys, "argv", ["mr.py", "20881"])
+    rc = mr.main()
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Conflicts: YES — cannot merge" in out
+
+
+def test_main_full_mode_conflict_with_no_no_diff_evidence_still_reported(
+    monkeypatch, capsys
+) -> None:
+    """Absent fields are never evidence — no diff_refs/sha/detailed_merge_status at
+    all must not be read as an empty MR. has_conflicts alone still means conflict."""
+    payload = _mr_json_payload(has_conflicts=True)
+    monkeypatch.setattr(
+        mr.subprocess, "run",
+        lambda *a, **kw: _fake_run(payload, returncode=0),
+    )
+    monkeypatch.setattr(sys, "argv", ["mr.py", "20881"])
+    rc = mr.main()
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Conflicts: YES — cannot merge" in out
+
+
 def test_main_slim_ignores_unknown_second_arg(monkeypatch, capsys) -> None:
     """Only literal 'status' triggers slim mode — anything else = full dashboard."""
     payload = _mr_json_payload()
