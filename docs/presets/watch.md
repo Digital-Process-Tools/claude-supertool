@@ -7,7 +7,7 @@ Background pollers for external sources that emit events on state-change. The fr
 ```
 watch:SOURCE:ID[:only=event1,event2]   spawn poller (fire-and-forget)
 unwatch:SOURCE:ID                      kill the poller, remove PID file
-watches                                list active pollers
+watches                                list active pollers, and any slot that lost one
 radar                                  reconcile coverage vs live GitLab, then report
 ```
 
@@ -484,6 +484,67 @@ Pollers spawned since #511 fix this at the source: after the fork the grandchild
 `exec` rather than `setproctitle`: no new dependency, and the PID is unchanged, so the claim taken before the fork and the PID reported up the pipe both stay valid. If the `exec` fails the poller runs anyway, unlabelled — a working poller that is hard to see beats no poller.
 
 The limit, stated plainly: **a poller started before this landed still wears its parent's argv**, so neither the scan nor `unwatch` can find it, and nothing can tell it apart from the process that spawned it. Clearing those is a one-time `pkill -f 'presets/watch/'` followed by a fresh `radar`. Every poller started after it is reachable by `unwatch`.
+
+### A watcher that died keeps saying so ([#513](https://github.com/Digital-Process-Tools/claude-supertool/issues/513))
+
+`watches` used to unlink a dead poller's stale PID file and drop the row, so an id that **had** coverage and lost it rendered byte-identically to one that never had any. That is the worst member of this repository's recurring family, because the thing going quiet is the monitoring surface itself: a validator that declines costs one check, a radar that lost a watcher costs *every* event on that MR while the board keeps rendering as though coverage were complete. "Nothing to report" and "not watching any more" are the two states a monitoring surface most needs to keep apart.
+
+`unwatch` had said it since #511 — but only if you happened to run it. The passive surface, the one a session actually reads, said nothing.
+
+#### What tells a death from a deliberate stop
+
+Not a heuristic — the artifact each exit leaves behind:
+
+| exit | PID file | state file |
+| --- | --- | --- |
+| terminal (`merged` / `closed`) | released by the poller | **cleared** |
+| deliberate `unwatch` | released | kept |
+| death (SIGKILL, crash, OOM, reboot) | **left behind, naming a dead PID** | kept |
+
+So **a PID file naming a dead process is a death, and nothing else is.** The poll loop releases the slot on a deliberate stop and on a terminal exit alike, and `unwatch` releases it too; what is left over is a poller that never ran its shutdown path.
+
+The ledger is kept **inside the state file**, and that placement is the design rather than a convenience: a terminal exit deletes the state file, so a legitimate exit cannot leave a record for anything to misread as a loss. The invariant holds by construction, not by a check that could drift out of step with the poll loop.
+
+Deaths are derived from the PID file **only**. The labelled-process scan never contributes evidence of one — a poller spawned before #511's labelling is invisible to the scan while being perfectly alive, and treating scan-invisibility as death would report the entire pre-existing fleet as lost on the first run after this landed.
+
+#### What the board shows
+
+| state | `watches` row | when it clears |
+| --- | --- | --- |
+| healthy | PID, started, last event | — |
+| **lost** | `PID` column is `-`, note `LOST — PID N died, no poller since` | a poller covers the slot again, or `unwatch:SOURCE:ID` acknowledges it |
+| **flapping** | live PID, note `flapping — N deaths recorded, currently respawned` | shown only above one death; a slot that died once and healed cleanly goes quiet |
+| refused | absent from `watches` once re-covered; `radar` prints a standing WARNING | `watch:SOURCE:ID` re-arms it |
+
+A LOST row is a supervision record, not a message that scrolls past once: it is printed on every `watches` until it is resolved or acknowledged.
+
+#### `radar` heals it, but the healing is bounded
+
+`radar.heal` reaps the stale PID file first, so the death is on record before the new claim overwrites the evidence, then respawns. Past **3** recorded deaths (`transport.DEATH_RESPAWN_LIMIT`) the slot is **refused** rather than respawned:
+
+```
+radar: WARNING — !33161 has lost its poller 3 times; NOT respawning. This MR is
+unwatched until the cause is fixed and it is re-armed: ./supertool 'watch:gitlab-mr:33161'.
+```
+
+Respawning forever would keep the board green while a watcher failed over and over — a visible failure converted into an invisible loop, which is this same bug one level up. A refused slot is reported as **uncovered**, because it is: the automation has stopped, and the only thing worse than saying so is not saying so.
+
+A loss that *was* healed prints one line, on the run that healed it, and then goes quiet:
+
+```
+radar: NOTE — !33161 lost its poller (PID 42520 died without being unwatched, 1 recorded); respawned.
+```
+
+The asymmetry is deliberate. A permanent warning on a slot that is now covered is what teaches a reader to skim the board, and skimming is how a real red gets missed — the failure mode [#511](https://github.com/Digital-Process-Tools/claude-supertool/issues/511) opens with. The same reasoning is why a deliberate `unwatch` clears the ledger: withdrawing coverage on purpose is not losing it.
+
+#### Clearing a record
+
+Nothing automatic clears it. Two operator actions do, and both mean "I have seen this":
+
+- `unwatch:SOURCE:ID` — acknowledge and stop. Drops the row.
+- `watch:SOURCE:ID` — acknowledge and re-arm. Clears the deaths, so `radar` will respawn the slot again if it dies.
+
+**Known residual:** a slot that lost its poller and whose MR then merged or closed *without the dead poller ever observing it* keeps its LOST row, because nothing observed the terminal state that would have deleted the file. `radar` will not clear it either — absence from one board's filter is deliberately not treated as proof the MR is gone, for the same reason [`prune_terminal`](#radar--reconcile-dont-just-report) does not treat it that way. One `unwatch:SOURCE:ID` drops the row. The error direction is deliberate: over-reporting on a monitoring surface is recoverable, under-reporting is what this whole section is about.
 
 ## Writing a new source
 

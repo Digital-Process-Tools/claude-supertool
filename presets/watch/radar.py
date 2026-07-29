@@ -335,10 +335,11 @@ def drift(states: dict[str, dict]) -> dict[str, tuple[str, str]]:
 # 3. heal
 # ---------------------------------------------------------------------------
 
-def heal(open_iids: list[str], watched: set[str]) -> tuple[list[str], list[str]]:
+def heal(open_iids: list[str], watched: set[str]) -> tuple[list[str], list[str], list[str]]:
     """Respawn a watcher for every open MR without a live poller.
 
-    Returns (healed, still_uncovered). The event filter comes from defaults.py
+    Returns (healed, still_uncovered, refused); `refused` is a subset of
+    `still_uncovered`. The event filter comes from defaults.py
     so a healed watcher is identical to one watch-mine.sh would have spawned.
 
     Spawning goes through `dispatcher.start_poller`, the one door, for the
@@ -353,22 +354,63 @@ def heal(open_iids: list[str], watched: set[str]) -> tuple[list[str], list[str]]
     it, so claiming the action would be false, but the MR *is* covered, and a
     spurious "unwatched" warning corrodes the only signal on the board that
     has to be trusted absolutely.
+
+    Healing is bounded, and the bound is #513's substance. A gap left by a
+    poller that died is reaped first, so the death is on record before the
+    claim overwrites the evidence; past `transport.DEATH_RESPAWN_LIMIT` deaths
+    the slot is refused rather than respawned. Respawning forever would keep
+    the board green while a watcher failed over and over — a visible failure
+    converted into an invisible loop, which is the same bug one level up. A
+    refused slot is reported as uncovered, because it is: the automation has
+    stopped, and the only thing worse than saying so is not saying so.
     """
     gaps = [iid for iid in open_iids if iid not in watched]
     if not gaps:
-        return [], []
+        return [], [], []
     if dispatcher._load_source(SOURCE) is None:
-        return [], gaps
+        return [], gaps, []
     only = [e for e in defaults.DEFAULT_ONLY.split(",") if e]
     healed: list[str] = []
     failed: list[str] = []
+    refused: list[str] = []
     for iid in gaps:
+        transport.reap_dead_pidfile(SOURCE, iid)
+        if len(transport.deaths(SOURCE, iid)) >= transport.DEATH_RESPAWN_LIMIT:
+            refused.append(iid)
+            continue
         status, _pid = dispatcher.start_poller(SOURCE, iid, only)
         if status == "spawned":
             healed.append(iid)
         elif status == "failed":
             failed.append(iid)
-    return healed, failed
+    return healed, failed + refused, refused
+
+
+def loss_warnings(healed: list[str], refused: list[str]) -> list[str]:
+    """What the board says about watchers it lost, and about ones it gave up on.
+
+    Two lines, two different actions. A healed loss is reported once, on the
+    run that healed it, and then goes quiet — a permanent mark on a slot that
+    is now covered is what trains a reader to skim. A refusal is reported on
+    every run until an operator re-arms or acknowledges it, because the MR is
+    genuinely unwatched for as long as it stands.
+    """
+    out: list[str] = []
+    for iid in refused:
+        n = len(transport.deaths(SOURCE, iid))
+        out.append(f"radar: WARNING — !{iid} has lost its poller {n} times; "
+                   f"NOT respawning. This MR is unwatched until the cause is "
+                   f"fixed and it is re-armed: "
+                   f"./supertool 'watch:{SOURCE}:{iid}'.")
+    for iid in healed:
+        recorded = transport.deaths(SOURCE, iid)
+        if not recorded:
+            continue
+        last = recorded[-1].get("pid", "?")
+        out.append(f"radar: NOTE — !{iid} lost its poller (PID {last} died "
+                   f"without being unwatched, {len(recorded)} recorded); "
+                   f"respawned.")
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -717,7 +759,8 @@ def render(open_mrs: list[dict], covered: set[str], healed: list[str],
            uncovered: list[str], previous: dict[str, Any] | None,
            feed: str = "alive", feed_err: str = "", label: str = "",
            excluded: set[str] | None = None, notes: list[str] | None = None,
-           other_scopes: list[str] | None = None) -> str:
+           other_scopes: list[str] | None = None,
+           losses: list[str] | None = None) -> str:
     """Full board on cold start; changed + standing-problem rows afterwards.
 
     `label` names the population on every board, the default one included
@@ -755,7 +798,7 @@ def render(open_mrs: list[dict], covered: set[str], healed: list[str],
     footer = _footer(board_mrs, covered, healed, drifted, pruned, uncovered, gone,
                      feed, label, len(excluded))
 
-    lines = _feed_warnings(feed, feed_err, other_scopes)
+    lines = _feed_warnings(feed, feed_err, other_scopes) + list(losses or [])
     if cold:
         lines.append("radar: cold start — no prior snapshot, full board")
     if shown:
@@ -791,7 +834,7 @@ def main(argv: list[str] | None = None) -> int:
     pruned = prune_terminal(states, watched)
     drifted = drift({i: s for i, s in states.items() if i not in set(pruned)})
 
-    healed, uncovered = heal(open_iids, watched)
+    healed, uncovered, refused = heal(open_iids, watched)
     covered = watched | set(healed)
 
     scope = feed_scope(multi)
@@ -810,7 +853,7 @@ def main(argv: list[str] | None = None) -> int:
     previous = read_snapshot(multi)
     print(render(open_mrs, covered, healed, drifted, pruned, uncovered, previous,
                  feed, feed_err, label, excluded, excl_problems + excl_lines,
-                 other_feed_scopes(scope)))
+                 other_feed_scopes(scope), loss_warnings(healed, refused)))
     # The snapshot records the whole population, excluded rows included:
     # keyed on what is true, not on what was printed. Otherwise the run after
     # an exclusion is lifted reports a months-old MR as new.

@@ -44,6 +44,14 @@ STATE_DIR_ENV = "SUPERTOOL_WATCH_STATE_DIR"
 POLL_SUBOP = "poll"
 DISPATCHER_TAIL = "watch/dispatcher.py"
 
+# How many recorded deaths a slot may accumulate before `radar.heal` stops
+# respawning it. Healing is right (#417's amendment argues reconcile-and-heal
+# over report), but a watcher respawned forever without anyone being told
+# converts a visible failure into an invisible loop — which is #513 wearing a
+# different hat. The cap is what makes the failure surface instead of looping,
+# and the refusal is loud precisely because it is the end of the automation.
+DEATH_RESPAWN_LIMIT = 3
+
 # Refuse to follow a pre-existing symlink at the pidfile path (#148's guard, in
 # the second place that opens a /tmp path by predictable name). Windows has no
 # such flag, and 0 leaves the open otherwise unchanged.
@@ -98,6 +106,12 @@ def claim_pidfile(source: str, watcher_id: str) -> int:
             existing = read_pid(source, watcher_id)
             if existing and _pid_alive(existing):
                 return existing
+            if existing:
+                # The slot recorded a poller that is gone. Removing the file
+                # here is what let a death vanish without a trace: this is the
+                # path radar's heal takes, so the evidence had to be written
+                # down before the claim erases it (#513).
+                record_death(source, watcher_id, existing)
             try:
                 os.unlink(pid_path(source, watcher_id))
             except FileNotFoundError:
@@ -200,6 +214,80 @@ def clear_state(source: str, watcher_id: str) -> bool:
     return True
 
 
+def deaths(source: str, watcher_id: str) -> list[dict[str, Any]]:
+    """Every unacknowledged death recorded for this slot, oldest first.
+
+    Kept in the state file rather than beside it, and that placement is the
+    design: a poller that reaches a terminal state deletes its state file on
+    the way out, so a legitimate exit cannot leave a ledger behind for anyone
+    to misread as a loss. The invariant holds by construction rather than by a
+    check that could drift out of step with the poll loop.
+    """
+    recorded = read_state(source, watcher_id).get("deaths")
+    return [d for d in recorded if isinstance(d, dict)] if isinstance(recorded, list) else []
+
+
+def record_death(source: str, watcher_id: str, pid: int) -> bool:
+    """Note that `pid` held this slot and is gone. True when newly recorded.
+
+    Idempotent on the PID, because two readers legitimately reap one corpse:
+    `watches` prunes stale pid files while rendering, and `claim_pidfile` does
+    the same immediately before a heal reuses the slot. Counting one death
+    twice would trip the respawn cap early, and a cap that fires without the
+    failure having happened is a false red on the one surface that must not
+    grow them.
+    """
+    if not pid:
+        return False
+    current = read_state(source, watcher_id)
+    recorded = current.get("deaths")
+    ledger = [d for d in recorded if isinstance(d, dict)] if isinstance(recorded, list) else []
+    if any(d.get("pid") == pid for d in ledger):
+        return False
+    ledger.append({"pid": pid, "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
+    current["deaths"] = ledger
+    write_state(source, watcher_id, current)
+    return True
+
+
+def clear_deaths(source: str, watcher_id: str) -> bool:
+    """Acknowledge every death on this slot. True when there was one to clear.
+
+    Only ever called from an explicit operator action — `unwatch` (I have seen
+    it and I am stopping this watcher) or `watch` (I have seen it and I am
+    re-arming it). Nothing automatic clears the ledger, because a respawn that
+    silently wiped it would restore the invisible loop the cap exists to stop.
+    """
+    current = read_state(source, watcher_id)
+    if "deaths" not in current:
+        return False
+    current.pop("deaths", None)
+    write_state(source, watcher_id, current)
+    return True
+
+
+def reap_dead_pidfile(source: str, watcher_id: str) -> int:
+    """Record the death a stale pid file is evidence of, and clear the file.
+
+    Returns the dead PID, or 0 when the slot is empty or its poller is alive.
+
+    A pid file naming a dead process is the *only* evidence of a death, and it
+    is unambiguous: the poll loop releases the slot on a deliberate stop and on
+    a terminal exit alike, and `unwatch` releases it too. What is left is a
+    poller that never ran its shutdown path — SIGKILL, a crash, an OOM kill, a
+    reboot. Deliberately not derived from the process scan: a poller spawned
+    before the argv labelling (#512) is invisible to it while being perfectly
+    alive, and reporting those as losses would flood the board on the first run
+    after this lands.
+    """
+    pid = read_pid(source, watcher_id)
+    if not pid or _pid_alive(pid):
+        return 0
+    record_death(source, watcher_id, pid)
+    release_pidfile(source, watcher_id)
+    return pid
+
+
 def desktop_notify(title: str, message: str) -> None:
     """Fire-and-forget macOS notification. No-op elsewhere."""
     if sys.platform != "darwin":
@@ -285,6 +373,11 @@ def list_active_pids() -> list[dict[str, Any]]:
             continue
         source, watcher_id = stem.split("__", 1)
         if not _pid_alive(pid):
+            # The row is still dropped — radar derives coverage from this
+            # function and a dead PID is not coverage — but the death is
+            # written down on the way past. Unlinking silently is what made a
+            # lost watcher render exactly like one that never existed (#513).
+            record_death(source, watcher_id, pid)
             try:
                 os.unlink(path)
             except OSError:
@@ -463,6 +556,8 @@ def list_watchers() -> tuple[list[dict[str, Any]], bool]:
         row["pids"] = pids
         row["extra"] = [pid for pid in pids if pid != int(row["pid"])]
         row["orphan"] = False
+        row["dead"] = False
+        row["deaths"] = deaths(*key)
     for (source, watcher_id), pids in sorted(found.items()):
         if (source, watcher_id) in seen:
             continue
@@ -477,11 +572,61 @@ def list_watchers() -> tuple[list[dict[str, Any]], bool]:
             "pids": live,
             "extra": live[1:],
             "orphan": True,
+            "dead": False,
+            "deaths": deaths(source, watcher_id),
             "started": "",
             "last_event": (state.get("last_event") or {}).get("event", ""),
             "last_event_ts": (state.get("last_event") or {}).get("ts", ""),
         })
+    rows.extend(_lost_rows(seen | set(found)))
     return rows, scan_ok
+
+
+def _lost_rows(covered: set[tuple[str, str]]) -> list[dict[str, Any]]:
+    """A row for every slot that had a poller, lost it, and has no other.
+
+    The whole of #513 in one function. `list_active_pids` prunes the stale pid
+    file and omits the id, so the board rendered a lost watcher and a watcher
+    that never existed identically — and "nothing to report" versus "not
+    watching any more" are the two states a monitoring surface most needs to
+    keep apart. The row persists until an operator acknowledges it with
+    `unwatch`, or a poller covers the slot again; it is a supervision record,
+    not a message that scrolls past once.
+    """
+    prefix = "supertool-watch-"
+    suffix = ".state.json"
+    out: list[dict[str, Any]] = []
+    try:
+        names = sorted(os.listdir(STATE_DIR))
+    except OSError:
+        return out
+    for name in names:
+        if not (name.startswith(prefix) and name.endswith(suffix)):
+            continue
+        stem = name[len(prefix):-len(suffix)]
+        if "__" not in stem:
+            continue
+        source, watcher_id = stem.split("__", 1)
+        if (source, watcher_id) in covered:
+            continue
+        recorded = deaths(source, watcher_id)
+        if not recorded:
+            continue
+        state = read_state(source, watcher_id)
+        out.append({
+            "source": source,
+            "id": watcher_id,
+            "pid": 0,
+            "pids": [],
+            "extra": [],
+            "orphan": False,
+            "dead": True,
+            "deaths": recorded,
+            "started": "",
+            "last_event": (state.get("last_event") or {}).get("event", ""),
+            "last_event_ts": (state.get("last_event") or {}).get("ts", ""),
+        })
+    return out
 
 
 # The liveness probe lives in presets/_proc.py so `gl-mrs` and `gh-prs` cannot
