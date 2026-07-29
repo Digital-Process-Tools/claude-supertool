@@ -156,6 +156,38 @@ First call spawns the daemon detached, waits for the socket, then the LSP indexe
 The daemon shuts down automatically after `idle_timeout` (default 600s = 10 minutes).
 Configure per-server via `"idle_timeout": N` in the `mcp` block.
 
+### Who is allowed to create a daemon
+
+`idle_timeout` is measured from the last byte of traffic, not from the caller — a
+detached daemon has no link back to whoever spawned it, so **a caller that dies
+still leaves a daemon running for the full window.** That is the right trade for
+an interactive op (the next call gets a warm LSP) and the wrong one for a caller
+that was never going to survive the cold start: a validator on a 3s budget is
+killed long before the LSP answers, and the daemon it created goes on to index
+the repository to ~1.3 GB and hold it for ten minutes having served nothing
+(#475).
+
+So creating a daemon is gated on provenance, via `SUPERTOOL_MCP_AUTOSPAWN`:
+
+| Value                    | Effect                                                             |
+| ------------------------ | ------------------------------------------------------------------ |
+| unset (default)          | Auto-spawn allowed — the interactive path, unchanged.               |
+| `0` / `false` / `no` / `off` | Connect to a warm daemon if one exists; never start one. A miss fails immediately rather than polling for the connect budget. |
+| anything else            | Auto-spawn allowed.                                                 |
+
+Supertool sets it to `0` in the environment of every validator adapter it runs,
+and normal environment inheritance carries it to the adapter's own children — so
+`lsp-diag.py`, which shells `supertool diag:FILE`, is covered without either
+side knowing about the other. Per-validator opt-in is `"mcp_autospawn": true`
+(see [validators → field reference](validators.md#field-reference)); exporting
+the variable yourself overrides it for any caller.
+
+**Consequence worth stating plainly:** a short-budget validator no longer warms
+the LSP as a side effect. It reports LSP diagnostics when a daemon is already
+warm and skips cleanly when one is not. Warm the daemon from an op that can
+afford to wait — `./supertool 'mcp_daemon:NAME --detach'`, or any interactive
+`diag:` / `refs:` / `resolve:` call.
+
 When `MCPClient` can't connect, it spawns the daemon detached via:
 
 ```python

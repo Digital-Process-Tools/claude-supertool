@@ -651,8 +651,16 @@ class TestEnvBinaryOverride:
     def test_no_spec_env_means_no_extra_env_passed(
         self, tmp_path: Path, monkeypatch
     ) -> None:
-        """When spec has no 'env' key, subprocess inherits os.environ unchanged
-        (run_env is None, so subprocess inherits the parent env by default)."""
+        """When spec has no 'env' key, the child sees os.environ plus nothing
+        the config could have chosen.
+
+        #475 made the child env explicit so supertool can stamp
+        SUPERTOOL_MCP_AUTOSPAWN (a validator may use a warm MCP daemon but not
+        create one). The security property this test guards is unchanged and is
+        now asserted directly rather than via `env is None`: the delta against
+        the ambient environment is exactly the one supertool-owned key, so a
+        validator spec still cannot smuggle anything into its own child.
+        """
         real_file = tmp_path / "test.php"
         real_file.write_text("<?php\n")
 
@@ -674,8 +682,20 @@ class TestEnvBinaryOverride:
             supertool.op_validate(str(real_file))
 
         assert len(captured_envs) == 1
-        # No spec.env → run_env is None → subprocess inherits parent env
-        assert captured_envs[0] is None
+        child_env = captured_envs[0]
+        assert child_env is not None, "child env is explicit since #475"
+        delta = {
+            k: v for k, v in child_env.items()
+            if os.environ.get(k) != v
+        }
+        assert set(delta) == {"SUPERTOOL_MCP_AUTOSPAWN"}, (
+            f"a spec without 'env' must add nothing beyond supertool's own "
+            f"provenance flag — got {sorted(delta)}"
+        )
+        assert delta["SUPERTOOL_MCP_AUTOSPAWN"] == "0"
+        assert not (set(os.environ) - set(child_env)), (
+            "child must still inherit the whole ambient environment"
+        )
 
 
 # ---------------------------------------------------------------------------
