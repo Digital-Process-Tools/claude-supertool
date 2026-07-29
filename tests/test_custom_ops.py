@@ -216,7 +216,7 @@ class TestResolveCustomOp:
     def test_restart_mcp_true_stops_all_configured(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """restartMcp: true stops every server in the mcp block after a successful cmd."""
         stopped: list[str] = []
-        monkeypatch.setattr(supertool, "_mcp_stop_server", lambda name: stopped.append(name))
+        monkeypatch.setattr(supertool, "_mcp_stop_server", lambda name: (stopped.append(name), supertool._StopOutcome(True, "stopped", ""))[1])
         monkeypatch.setattr(supertool, "_mcp_specs", {"phpstan-warm": {}, "rector-warm": {}})
         supertool._CONFIG = {"ops": {"clean": {"cmd": "echo ok", "restartMcp": True}}}
         result = supertool._resolve_custom_op("clean", ["clean", "x"])
@@ -228,7 +228,7 @@ class TestResolveCustomOp:
     def test_restart_mcp_list_stops_only_named(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """restartMcp: [names] stops only the listed servers."""
         stopped: list[str] = []
-        monkeypatch.setattr(supertool, "_mcp_stop_server", lambda name: stopped.append(name))
+        monkeypatch.setattr(supertool, "_mcp_stop_server", lambda name: (stopped.append(name), supertool._StopOutcome(True, "stopped", ""))[1])
         monkeypatch.setattr(supertool, "_mcp_specs", {"phpstan-warm": {}, "rector-warm": {}})
         supertool._CONFIG = {"ops": {"clean": {"cmd": "echo ok", "restartMcp": ["rector-warm"]}}}
         result = supertool._resolve_custom_op("clean", ["clean", "x"])
@@ -239,7 +239,7 @@ class TestResolveCustomOp:
     def test_restart_mcp_single_string(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """restartMcp: "name" (a single string) stops just that server."""
         stopped: list[str] = []
-        monkeypatch.setattr(supertool, "_mcp_stop_server", lambda name: stopped.append(name))
+        monkeypatch.setattr(supertool, "_mcp_stop_server", lambda name: (stopped.append(name), supertool._StopOutcome(True, "stopped", ""))[1])
         monkeypatch.setattr(supertool, "_mcp_specs", {"phpstan-warm": {}, "rector-warm": {}})
         supertool._CONFIG = {"ops": {"clean": {"cmd": "echo ok", "restartMcp": "phpstan-warm"}}}
         result = supertool._resolve_custom_op("clean", ["clean", "x"])
@@ -250,7 +250,7 @@ class TestResolveCustomOp:
     def test_restart_mcp_unknown_name_not_counted(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A name absent from the mcp block is reported as ignored, not restarted."""
         stopped: list[str] = []
-        monkeypatch.setattr(supertool, "_mcp_stop_server", lambda name: stopped.append(name))
+        monkeypatch.setattr(supertool, "_mcp_stop_server", lambda name: (stopped.append(name), supertool._StopOutcome(True, "stopped", ""))[1])
         monkeypatch.setattr(supertool, "_mcp_specs", {"phpstan-warm": {}})
         supertool._CONFIG = {"ops": {"clean": {"cmd": "echo ok", "restartMcp": ["phpstan-warm", "typo-warm"]}}}
         result = supertool._resolve_custom_op("clean", ["clean", "x"])
@@ -262,7 +262,7 @@ class TestResolveCustomOp:
     def test_restart_mcp_skipped_on_cmd_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A failed cmd must not restart any daemon."""
         stopped: list[str] = []
-        monkeypatch.setattr(supertool, "_mcp_stop_server", lambda name: stopped.append(name))
+        monkeypatch.setattr(supertool, "_mcp_stop_server", lambda name: (stopped.append(name), supertool._StopOutcome(True, "stopped", ""))[1])
         monkeypatch.setattr(supertool, "_mcp_specs", {"phpstan-warm": {}})
         supertool._CONFIG = {"ops": {"clean": {"cmd": "false", "restartMcp": True}}}
         result = supertool._resolve_custom_op("clean", ["clean", "x"])
@@ -273,7 +273,7 @@ class TestResolveCustomOp:
     def test_no_restart_mcp_leaves_daemons(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """An op without restartMcp never touches the daemons."""
         stopped: list[str] = []
-        monkeypatch.setattr(supertool, "_mcp_stop_server", lambda name: stopped.append(name))
+        monkeypatch.setattr(supertool, "_mcp_stop_server", lambda name: (stopped.append(name), supertool._StopOutcome(True, "stopped", ""))[1])
         monkeypatch.setattr(supertool, "_mcp_specs", {"phpstan-warm": {}})
         supertool._CONFIG = {"ops": {"plain": {"cmd": "echo ok"}}}
         result = supertool._resolve_custom_op("plain", ["plain", "x"])
