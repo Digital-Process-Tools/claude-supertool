@@ -169,7 +169,9 @@ class TestSymlinkInvocation:
 
 class TestListPidfiles:
     def test_empty_when_no_daemons(self, tmp_runtime):
-        assert _paths.list_pidfiles() == []
+        # The reason is the load-bearing half (#551): empty means "none" only
+        # when the listing succeeded, so the pair is asserted, not just the list.
+        assert _paths.list_pidfiles() == ([], "")
 
     def test_lists_only_matching_files(self, tmp_runtime):
         tmp_runtime.mkdir(parents=True, exist_ok=True)
@@ -178,6 +180,7 @@ class TestListPidfiles:
         # Decoy files that should NOT match
         (tmp_runtime / "supertool-mcp-abc123.sock").write_text("")
         (tmp_runtime / "other.pid").write_text("999")
-        result = _paths.list_pidfiles()
+        result, reason = _paths.list_pidfiles()
+        assert reason == ""
         names = sorted(os.path.basename(p) for p in result)
         assert names == ["supertool-mcp-abc123.pid", "supertool-mcp-def456.pid"]

@@ -37,7 +37,7 @@ EXIT_OK = 0            # the daemon was running and is now gone
 EXIT_NO_DAEMON = 1     # nothing was running — benign, nothing to invalidate
 EXIT_USAGE = 2         # bad arguments
 EXIT_STOP_FAILED = 3   # a daemon was found and it is still there (or unknowable)
-EXIT_REFUSED = 4       # declined before looking — e.g. an unverifiable runtime dir
+EXIT_REFUSED = 4       # no claim established — an unverifiable or unlistable runtime dir
 
 
 def stop_pid(pid: int) -> bool:
@@ -96,9 +96,24 @@ def main(argv: list) -> int:
         return EXIT_USAGE
     if argv[1] == "--all":
         try:
-            pidfiles = list_pidfiles()
+            pidfiles, reason = list_pidfiles()
         except SystemExit as exc:
             return _refused(exc)
+        if reason:
+            # NOT EXIT_OK (#551). `--all` deliberately reports 0 when nothing is
+            # running, because that is benign — nothing stale can come from
+            # nothing. A runtime dir we failed to enumerate is not that state:
+            # we stopped nothing and we cannot say whether anything is left. It
+            # joins runtime_dir()'s stated refusals under EXIT_REFUSED, which
+            # already maps to ok=False for the caller, rather than earning a new
+            # code for a distinction nothing downstream would act on.
+            sys.stderr.write(
+                f"{reason}\n"
+                f"Refusing to report on daemons we could not enumerate: "
+                f"nothing was stopped, and this is not a statement that "
+                f"nothing was running.\n"
+            )
+            return EXIT_REFUSED
         if not pidfiles:
             print("No daemons running.")
             return EXIT_OK

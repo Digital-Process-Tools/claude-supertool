@@ -214,7 +214,14 @@ automatic caller has:
 | `1` | no daemon was running | success — nothing stale can come from nothing |
 | `2` | bad arguments | failure |
 | `3` | a daemon was found and is still there, or its pidfile was unreadable | failure |
-| `4` | declined before looking — e.g. a runtime dir whose ownership cannot be verified (#544) | failure |
+| `4` | no claim established — a runtime dir whose ownership cannot be verified (#544), or one `--all` could not enumerate (#551) | failure |
+
+`4` covers both ways of not knowing, because nothing downstream would act on the
+difference. `--all` still exits `0` when the runtime dir is readable and empty —
+that is #547's deliberate choice, so `mcp_stop_all` does not read as FAIL on an
+ordinary day. What changed is that "readable and empty" and "unreadable" stopped
+sharing that code: the first means nothing stale can come from nothing, and the
+second means we stopped nothing and cannot say what is left.
 
 Only the failures are reported, and only on stderr behind
 `SUPERTOOL_DEBUG=1`, never in the op's own output:
@@ -274,6 +281,20 @@ cheap, a daemon everyone believes is gone is not.
 `mcp_status` still exits `0` in every case. It is a report read by a human, not
 a check consumed by a caller; a non-zero exit would make an unreadable pidfile
 look like a failure of the op itself.
+
+When the *runtime dir itself* cannot be listed there is no table at all, and no
+row that could carry `unknown` — so the op says so and prints nothing else
+(#551):
+
+```
+$ ./supertool 'mcp_status'
+Cannot list supertool MCP daemons: cannot list runtime dir /…/supertool/mcp: Input/output error
+  The runtime dir could not be read, so this is NOT a report that none are running.
+```
+
+That line is on **stdout**, not stderr, and deliberately: the exit stays `0`,
+and a zero-status custom op only ever surfaces stdout. A stderr-only message
+here would have reproduced the bug it replaces.
 
 ## Adding a new MCP server
 
