@@ -5153,6 +5153,7 @@ def _op_vim_impl(path: str, script: str) -> str:
         \\n \\t \\r  → newline / tab / CR
         \\;          → literal `;` (otherwise `;` ends the action)
         \\\\         → literal backslash
+        \\\\e        → literal `\\e` (escapes ESC; needed for Windows paths, e.g. `\\emit.py`)
 
     Examples:
         # Annotate function signature
@@ -5215,7 +5216,23 @@ def _op_vim_impl(path: str, script: str) -> str:
     # ASCII RS `\x1e` (legacy from the `␞` era — Kevin still types
     # `$'\x1e'`) and `␞` itself into actual ESC. Real `\x1b` passes
     # through.
-    normalized = script.replace("\\e", ESC).replace("\x1e", ESC).replace("␞", ESC)
+    #
+    # #501: this was a blind, mode-blind text substitution over the WHOLE
+    # raw script, including content that ends up inside a greedy capture
+    # (insert TEXT, ex `:!cmd`) rather than being an intentional ESC
+    # marker. A literal backslash immediately followed by 'e' is
+    # unremarkable in real content — most commonly a Windows path segment
+    # (`\emit.py`, `\explorer.exe`, `\env`) — and previously had no way
+    # to survive: `\e` always became ESC, silently truncating whatever
+    # greedy capture it landed inside (e.g. a `:!` shell command cut off
+    # mid-string). Mirror the `\\` -> literal `\` two-pass sentinel
+    # convention `_decode_escapes` already uses: an escaped-backslash
+    # form `\\e` (backslash, backslash, e) now survives as a literal
+    # `\e` instead of colliding with the ESC marker.
+    _esc_literal_sentinel = "\x00ESCLIT\x00"
+    normalized = script.replace("\\\\e", _esc_literal_sentinel)
+    normalized = normalized.replace("\\e", ESC).replace("\x1e", ESC).replace("␞", ESC)
+    normalized = normalized.replace(_esc_literal_sentinel, "\\e")
     # Decode Ctrl-A / Ctrl-X escapes (`\C-a` / `\C-x`) to their real bytes so
     # the tokenizer sees single-char verbs. Real \x01 / \x18 pass through.
     normalized = normalized.replace("\\C-a", "\x01").replace("\\C-x", "\x18")

@@ -48,7 +48,20 @@ def _emitter(tmp_path: Path, payload: bytes) -> str:
     script.write_bytes(
         b"import sys\nsys.stdout.buffer.write(" + repr(payload).encode("ascii") + b")\n"
     )
-    return f'"{sys.executable}" "{script}"'
+    # as_posix(), not str(): this string is interpolated into a vim
+    # mini-language SCRIPT (`:!` ex-command text), which has its own `\e`
+    # -> ESC escape convention (see _op_vim_impl). A raw Windows path is
+    # riddled with backslashes, and any segment starting with a lowercase
+    # 'e' right after one (`\emit.py`, as this fixture always produces)
+    # collides with that convention and truncates the shell command
+    # mid-string. Same shape of bug as #472's TOML-basic-string collision,
+    # same fix: normalize to forward slashes before interpolating. Windows
+    # accepts '/' in paths passed to CreateProcess, so this is not merely
+    # a test-portability dodge -- it is the safe way to build a `:!`
+    # command from a Windows path at all.
+    posix_python = Path(sys.executable).as_posix()
+    posix_script = script.as_posix()
+    return f'"{posix_python}" "{posix_script}"'
 
 
 BAD = b"caf\xe9 \x89 latin1\n"
