@@ -147,6 +147,8 @@ claude -p "..." --permission-mode bypassPermissions \
 
 ~40 ops across reads, search, edits, symbol mapping, and meta. The full reference lives in [docs/operations/index.md](docs/operations/index.md) with per-category pages and a dedicated [`map`](docs/operations/map.md) deep-dive.
 
+Supertool prunes its own caches: a `gc` sweep runs by itself at most once an hour, and `./supertool 'gc'` previews it without deleting — [docs/operations/meta.md](docs/operations/meta.md#gc--cache-retention), retention keys in [docs/configuration.md](docs/configuration.md#gc--cache-retention).
+
 Quick examples:
 
 ```bash
@@ -198,23 +200,6 @@ Full reference: [docs/formatters.md](docs/formatters.md) — config shape, bundl
 Supertool works with no configuration. The `.supertool.json` is optional — it enables self-documenting ops for LLM onboarding via `./supertool 'introduction' 'ops'`. Create one in your project root; supertool walks up from cwd to find it. A starter template ships as `.supertool.example.json`.
 
 Full reference (sections, `builtin-ops` overrides, custom ops, aliases, dispatch order, placeholders, env vars): [docs/configuration.md](docs/configuration.md).
-
----
-
-## `gc` — supertool prunes its own caches
-
-Supertool writes four caches under `~/.cache/supertool` — vim cursor state, the cross-call undo snapshot, validator results, and a legacy cursor dir. Nothing used to reap them: on a daily-driver machine the tree reached **1.0 GB across 242,000 files in about two weeks**, and both `vim-*` directories exceeded the 65535-dirent listing cap, which is enough to make an ordinary `ls` visibly slow.
-
-```bash
-./supertool 'gc'          # preview: per-kind counts and bytes, deletes nothing
-./supertool 'gc:run'      # delete
-```
-
-**Preview is the default** — bare `gc` and `gc:dry` only report. Retention is per cache kind (7 days for the vim caches, 30 for `validators`, which is content-hash-keyed and was measured entirely hot) and configurable in `.supertool.json`. An entry whose age can't be determined — stat failure, mtime in the future — is counted as `skipped` and never removed.
-
-A sweep also runs by itself, at most once an hour, gated on a stamp file rather than on a dice roll: no daemon, no cron, and a bounded answer to "why did that call take 400ms?". Failures are swallowed — a cache prune must never break the op that triggered it.
-
-Full reference: [docs/operations/meta.md](docs/operations/meta.md#gc--cache-retention). Config keys: [docs/configuration.md](docs/configuration.md#gc--cache-retention).
 
 ---
 
@@ -326,38 +311,12 @@ The `watch` preset spawns background pollers that emit events when external stat
 
 ### Two layers
 
-1. **`watch` preset** — `watch:SOURCE:ID` spawns a detached poller. Events emit to a UDS socket, a status file, and macOS Notification Center. Bundled sources: `github-pr`, `gitlab-mr`. Write your own source in ~50 lines.
+1. **`watch` preset** — `watch:SOURCE:ID` spawns a detached poller. Events emit to a UDS socket, a status file, and macOS Notification Center. Bundled sources: `github-pr`, `gitlab-mr`, and `gitlab-mr-feed` for discovery. Write your own source in ~50 lines.
 2. **`claude-channel` MCP server** — TypeScript / Bun. Binds the UDS socket and pushes events into a running Claude Code session via the [Channels feature](https://code.claude.com/docs/en/channels.md) (research preview, v2.1.80+). Optional — the watch preset is useful even without it.
 
-### Quickstart
+Events are fire-and-forget and pollers die with the machine, so at session start an event-driven view knows nothing — and "knows nothing" looks exactly like "all green". That is what `./supertool 'radar'` is for: one idempotent op that treats live GitLab as authoritative, respawns watchers for open MRs that lost theirs, keeps a feed poller alive so MRs opened mid-session are still discovered, and prints the board. Run it on every session start.
 
-```bash
-./supertool 'watch:github-pr:179'                 # start watching
-./supertool 'watch:github-pr:179:only=merged'     # filter event types
-./supertool 'watches'                             # list active pollers
-./supertool 'unwatch:github-pr:179'               # stop one
-./supertool 'radar'                               # reconcile + report every open MR
-./supertool 'radar:author=modular.system'         # someone else's MRs — same board
-./supertool 'radar:author=@me,author=modular.system'   # both, one board
-```
-
-`watches` tells you which pollers are alive. `radar` tells you what is **true**: it treats live GitLab as authoritative (state files are cache), respawns watchers for open MRs that lost theirs, prunes state files for merged MRs, and flags drift where the last event fired on a pipeline that has since been superseded. Pollers die with the machine and events are fire-and-forget, so at session start an event-driven view knows nothing — and "knows nothing" looks exactly like "all green". Run `radar` on every session start; it is idempotent.
-
-`radar` takes the same filter vocabulary as `gl-mrs`, and **one filter drives the whole op**: the board, the watcher fleet it heals, and the `gitlab-mr-feed` poller it keeps alive are three views of one query, never derived separately. Repeat a key to cover more than one author — GitLab's list endpoint takes a single `author_username`, so `author=@me,author=modular.system` fans out into two calls unioned by iid. Each filter keeps its own snapshot, so two radars over different populations in the same window both report honest deltas instead of reading each other's rows as new and gone. A non-default board prints its filter in the footer.
-
-`radar` also keeps a `gitlab-mr-feed` poller alive. Per-MR pollers only ever poll one known iid, so without it nothing in a running session could discover an MR opened after that session started — the board would stay confidently complete and quietly missing a row until someone typed `radar` again. The feed polls the whole filter every 5 minutes, watches and announces new MRs itself, and radar reports loudly when it is down.
-
-Run `bash notifiers/claude-channel/install.sh` to install the MCP server, register it in `.mcp.json`, and launch Claude with:
-
-```bash
-claude --dangerously-load-development-channels server:claude-channel
-```
-
-Each event lands in Claude as `<channel source="claude-channel" watcher_source="github-pr" id="179" event="merged" ...>`.
-
-### Reference
-
-- Preset deep-dive (ops, sources, lifecycle, plugin contract): [docs/presets/watch.md](docs/presets/watch.md)
+- Preset deep-dive (ops, `radar`, sources, discovery feed, event contract, lifecycle, writing a source): [docs/presets/watch.md](docs/presets/watch.md)
 - MCP server (install, security, event format): [notifiers/claude-channel/README.md](notifiers/claude-channel/README.md)
 
 ---
