@@ -10232,7 +10232,17 @@ def _validator_run_one(name: str, spec: Dict[str, Any], file: str) -> Optional[D
                 return cached
 
     # Use _merged_env (built above) so the prefix env-vars reach the child too.
-    run_env = _merged_env if _spec_env_dict else None
+    # #475: the env is now always explicit, because provenance is stamped into
+    # it. A validator runs on a budget measured in seconds; a cold MCP daemon
+    # takes 30-60s just to index (docs/mcp-integration.md), so an adapter that
+    # auto-spawns one is guaranteed to be killed before it gets an answer while
+    # the orphaned daemon holds its index for the full 600s idle window. The
+    # flag says "use a warm daemon, do not create one" and is inherited by the
+    # adapter's own children (lsp-diag.py shells `supertool diag:FILE`).
+    # Opt back in per validator with `"mcp_autospawn": true` when the budget
+    # genuinely covers a cold start.
+    run_env = dict(_merged_env)
+    run_env[_MCP_AUTOSPAWN_ENV] = "1" if spec.get("mcp_autospawn") else "0"
 
     import time
     _t0 = time.monotonic()
@@ -13540,6 +13550,26 @@ def _mcp_route(path: str, op: str) -> Optional[Tuple[str, str]]:
 _MCP_DAEMON_SCRIPT = os.path.join(os.path.dirname(os.path.realpath(__file__)), "presets", "mcp", "daemon.py")
 _MCP_STOP_SCRIPT = os.path.join(os.path.dirname(_MCP_DAEMON_SCRIPT), "stop.py")
 
+# #475: creating a warm daemon is an interactive affordance, not a universal one.
+# The daemon double-forks and lives for IDLE_TIMEOUT_SEC (600s) with no tie to the
+# caller, so a caller that will be killed long before a cold LSP can answer buys
+# nothing and leaves ~1.3 GB of intelephense index resident for ten minutes. The
+# validator runner stamps SUPERTOOL_MCP_AUTOSPAWN=0 into its adapters' env; it is
+# inherited by the grandchild `supertool diag:` and read here.
+#
+# Suppression removes *creation*, never *use* — a daemon that is already warm is
+# still connected to, which is the whole point of running the validator.
+_MCP_AUTOSPAWN_ENV = "SUPERTOOL_MCP_AUTOSPAWN"
+_MCP_AUTOSPAWN_FALSEY = frozenset({"0", "false", "no", "off"})
+
+
+def _mcp_autospawn_allowed() -> bool:
+    """False when the caller declared it cannot wait for a cold daemon (#475)."""
+    raw = os.environ.get(_MCP_AUTOSPAWN_ENV)
+    if raw is None:
+        return True
+    return raw.strip().lower() not in _MCP_AUTOSPAWN_FALSEY
+
 # #148: socket/pid paths live under the per-user runtime dir, NOT /tmp. The
 # daemon/status/stop helpers all compute them via _paths.socket_pid_paths — the
 # client MUST use the same helper or it polls a path the daemon never binds.
@@ -13656,7 +13686,12 @@ class MCPClient:
             # Explicit socket_path (tests, externally managed daemons) → no one
             # else will spawn it. Single-shot connect, fail fast on miss.
             # Polling the same dead path burns the full 60s budget for nothing.
-            if not self._auto_spawn:
+            #
+            # #475 takes the same exit: when auto-spawn is suppressed by
+            # provenance, nobody is going to bind this path either, so polling
+            # it is the same wasted budget — and the caller (a validator with a
+            # seconds-long timeout) has less of it to waste.
+            if not self._auto_spawn or not _mcp_autospawn_allowed():
                 try:
                     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
                     s.settimeout(self.timeout)

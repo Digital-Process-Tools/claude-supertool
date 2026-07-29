@@ -54,6 +54,15 @@ Per daemon, in the runtime dir (`$XDG_RUNTIME_DIR/supertool/mcp/` or
 - **A live daemon whose fingerprint no longer matches is reaped (`SIGTERM`, then
   `SIGKILL`) and respawned.** `SIGTERM` is what lets it tear down its own MCP
   server child; skipping it orphans a heavy PHP process.
+- **Only a caller that can wait may create a daemon.** Nothing reaps a daemon
+  whose client died — the double-fork severs the link, and `idle_timeout` counts
+  from the last bridged byte, not from the caller's liveness. A validator killed
+  at its 3s budget therefore leaves a fully-indexed MCP server resident for the
+  whole idle window having answered nothing. Supertool stamps
+  `SUPERTOOL_MCP_AUTOSPAWN=0` into every validator adapter's environment, which
+  the adapter's children inherit: use a warm daemon, never start one, and fail
+  fast on a miss instead of polling. Opt a validator back in with
+  `"mcp_autospawn": true` when its timeout genuinely covers a cold start (#475).
 - **Fingerprint = content, not mtime**: the resolved mcp spec (json, key-sorted)
   plus sha256 of every existing file named in its `cmd`/`args`/`env` — the config
   file, and the `mcp-*-warm` binary when the spec names it by path (absolute or
