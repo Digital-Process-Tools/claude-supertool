@@ -14,6 +14,35 @@ Three ways to extend supertool: add a custom op for this project, bundle ops int
 
 ---
 
+## Checking syntax against the supported floor
+
+supertool supports Python 3.9–3.12. The interpreter you develop on is almost certainly newer than the floor, and **you cannot verify floor compatibility from it.**
+
+**Never use `ast.parse(src, feature_version=(3, 9))` for this.** `feature_version` gates *grammar productions* — walrus, `match`, `except*`. It does not touch the tokenizer, so PEP 701 nested same-type quotes inside an f-string replacement field:
+
+```python
+f"File should be empty, got: {f.read_text(encoding="utf-8")!r}"
+```
+
+parse clean under `feature_version=(3, 9)` on any 3.12+ host, and raise `SyntaxError: f-string: unmatched '('` on 3.9/3.10/3.11. This is not hypothetical: it shipped in #473 and took nine of twelve CI legs red after every local check called it fine (#478).
+
+**Run an older interpreter instead.**
+
+```bash
+pytest tests/test_syntax_floor_478.py -m ''     # uses the ladder below
+PYTHON39=/path/to/python3.9 pytest tests/test_syntax_floor_478.py -m ''
+```
+
+`supertool._syntax_floor_check(paths)` resolves an interpreter in this order:
+
+1. `$PYTHON39` — explicit escape hatch, **verified rather than trusted**: if it reports a version no older than the interpreter running the suite, it is rejected outright rather than quietly ignored. A declaration that buys nothing is worse than none, because it restores the false clean.
+2. The running interpreter, when it is itself at or below the floor — the CI floor leg, where the check runs for real with nothing extra installed.
+3. The lowest `pythonX.Y` on `PATH` between the floor and the running version. The binary is asked for its version; the filename is not believed.
+
+**What it does not cover.** With nothing older than the host, the check returns a `skipped` result naming the escape hatch and does **not** report a pass — read the reason, do not read the absence. With an interpreter above the floor (a 3.11 lying around), the result carries a `partial` note: it catches PEP 701 and anything else newer than that interpreter, but not syntax legal on 3.11 and illegal on 3.9. Full floor fidelity comes from the 3.9 CI leg, and `test_ci_matrix_covers_the_syntax_floor` fails if that leg ever leaves the matrix — otherwise the check would skip everywhere and render as a pass.
+
+---
+
 ## Custom ops
 
 Declare ops in `.supertool.json` under `"ops"`:

@@ -9568,6 +9568,163 @@ def _builtin_syntax_run(name: str, kind: str, file: str) -> Dict[str, Any]:
             "elapsed_s": time.monotonic() - _t0}
 
 
+# --- The syntax floor (#478) ------------------------------------------------
+#
+# This repo supports 3.9-3.12 and, until now, only the CI matrix knew it. PR
+# #473 shipped PEP 701 nested quotes inside an f-string — legal on 3.12+, a
+# SyntaxError on 3.9/3.10/3.11 — and nine of twelve legs went red on a change
+# every local check called clean, because the prescribed check was
+# `ast.parse(src, feature_version=(3, 9))`. `feature_version` gates *grammar
+# productions* (walrus, `match`, `except*`); it does not touch the tokenizer
+# change PEP 701 made, so on a modern host it returns clean both before and
+# after the bug. Nothing computed from the running interpreter's AST closes
+# that gap — you have to run an older interpreter.
+#
+# So the ladder below sources a real one, and when it cannot it says so in the
+# `skipped` shape (#515) rather than reporting a pass. What it does NOT cover:
+#   - a host whose only Python is the one running the suite -> the check does
+#     not run at all. The CI floor leg is the backstop, and
+#     `test_ci_matrix_covers_the_syntax_floor` fails if that leg disappears.
+#   - an interpreter above the floor (`partial`) -> catches PEP 701 and every
+#     other syntax newer than it, but not syntax legal on it and illegal on
+#     3.9. Better than nothing, honestly labelled, never silent.
+SYNTAX_FLOOR: Tuple[int, int] = (3, 9)
+SYNTAX_FLOOR_ENV = "PYTHON39"
+
+_SYNTAX_FLOOR_PROBE = "import sys;print('%d.%d' % sys.version_info[:2])"
+
+# Runs under the OLD interpreter, so: no f-strings, no walrus, nothing newer
+# than the floor. Reads a JSON path list on stdin, writes a JSON failure list.
+_SYNTAX_FLOOR_COMPILE = """
+import json, sys
+out = []
+for p in json.load(sys.stdin):
+    try:
+        f = open(p, 'rb')
+        src = f.read()
+        f.close()
+        compile(src, p, 'exec', dont_inherit=True)
+    except SyntaxError as e:
+        out.append({'file': p, 'line': getattr(e, 'lineno', None),
+                    'col': getattr(e, 'offset', None),
+                    'msg': (getattr(e, 'msg', None) or str(e))[:300]})
+    except (OSError, ValueError) as e:
+        out.append({'file': p, 'line': None, 'col': None,
+                    'msg': 'unreadable: ' + str(e)[:200]})
+json.dump(out, sys.stdout)
+"""
+
+
+def _interpreter_version(path: str) -> Optional[Tuple[int, int]]:
+    """`(major, minor)` reported by the interpreter at `path`, or None.
+
+    Asked of the binary itself rather than inferred from its name: a
+    `python3.9` on PATH that is really a 3.12 shim would otherwise hand back a
+    false clean, which is the whole defect this section is about.
+    """
+    try:
+        proc = subprocess.run([path, "-c", _SYNTAX_FLOOR_PROBE],
+                              capture_output=True, text=True, timeout=30,
+                              encoding="utf-8", errors="replace")
+    except (OSError, subprocess.SubprocessError):
+        return None
+    parts = (proc.stdout or "").strip().split(".")
+    if len(parts) != 2:
+        return None
+    try:
+        return (int(parts[0]), int(parts[1]))
+    except ValueError:
+        return None
+
+
+def _syntax_floor_interpreter(env: Optional[Dict[str, str]] = None) -> Optional[str]:
+    """An interpreter old enough to be worth compiling under, or None.
+
+    Ladder, lowest useful first:
+
+    1. ``$PYTHON39`` — the explicit escape hatch. **Verified, not trusted**: if
+       it points at something no older than the running interpreter it is
+       rejected outright rather than falling through, because a declaration
+       that silently buys nothing is worse than no declaration at all — it
+       restores exactly the false clean this exists to prevent.
+    2. The running interpreter, when it *is* at or below the floor. That is the
+       CI floor leg, where the check runs for real with nothing extra installed.
+    3. The lowest ``pythonX.Y`` on PATH between the floor and the running
+       version. Someone with a 3.11 lying around gets a real check locally; the
+       result is labelled `partial` so nobody mistakes it for floor fidelity.
+    """
+    environ = os.environ if env is None else env
+    current = sys.version_info[:2]
+
+    declared = (environ.get(SYNTAX_FLOOR_ENV) or "").strip()
+    if declared:
+        ver = _interpreter_version(declared)
+        if ver is None or ver >= current:
+            return None
+        return declared
+
+    if current <= SYNTAX_FLOOR:
+        return sys.executable
+
+    for minor in range(SYNTAX_FLOOR[1], current[1]):
+        cand = shutil.which("python%d.%d" % (SYNTAX_FLOOR[0], minor))
+        if cand and (_interpreter_version(cand) or current) < current:
+            return cand
+    return None
+
+
+def _syntax_floor_check(paths: Iterable[str],
+                        env: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+    """Compile every path under an older interpreter. Three states, never two.
+
+    Returns a `skipped` result — verdict keys omitted, per SCHEMA.md and #515 —
+    whenever no older interpreter could be sourced or the child cannot be
+    trusted to have answered. A check that cannot run must say so; rendering an
+    absence as a pass is the failure this repo has now filed a dozen times.
+    """
+    floor = "%d.%d" % SYNTAX_FLOOR
+    interp = _syntax_floor_interpreter(env)
+    if interp is None:
+        return {"tool": "syntax-floor", "skipped": (
+            "no interpreter older than this one to compile with (want Python %s): "
+            "set $%s to one, or install python%s. This check did NOT run."
+            % (floor, SYNTAX_FLOOR_ENV, floor))}
+    targets = [str(p) for p in paths]
+    t0 = time.monotonic()
+    try:
+        proc = subprocess.run([interp, "-c", _SYNTAX_FLOOR_COMPILE],
+                              input=json.dumps(targets),
+                              capture_output=True, text=True, timeout=600,
+                              encoding="utf-8", errors="replace")
+    except (OSError, subprocess.SubprocessError) as e:
+        return {"tool": "syntax-floor",
+                "skipped": "floor interpreter %s did not run: %s" % (interp, e)}
+    try:
+        found = json.loads(proc.stdout or "[]")
+    except ValueError:
+        return {"tool": "syntax-floor", "skipped": (
+            "unparseable output from %s — treating as no answer, not as clean: %s"
+            % (interp, (proc.stderr or proc.stdout or "").strip()[:200]))}
+    errors = [{"file": f.get("file"), "line": f.get("line"), "col": f.get("col"),
+               "severity": "error", "code": "syntax",
+               "msg": str(f.get("msg", ""))[:300]} for f in found]
+    result: Dict[str, Any] = {
+        "tool": "syntax-floor", "ok": not errors, "count": len(errors),
+        "errors": errors, "duration_ms": int((time.monotonic() - t0) * 1000),
+        "interpreter": interp, "checked": len(targets),
+    }
+    ver = _interpreter_version(interp)
+    if ver is not None:
+        result["interpreter_version"] = "%d.%d" % ver
+        if ver > SYNTAX_FLOOR:
+            result["partial"] = (
+                "compiled under %d.%d, not the supported floor %s — syntax legal "
+                "on %d.%d but illegal on %s is NOT covered here. Full floor "
+                "fidelity comes from the %s CI leg."
+                % (ver[0], ver[1], floor, ver[0], ver[1], floor, floor))
+    return result
+
+
 def _builtin_syntax_backstop(op: str, path: str,
                              configured: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     """Backstop validators for `path`, minus any the repo already covers.

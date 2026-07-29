@@ -57,8 +57,9 @@ def test_allowlist_refusal_reports_skipped_not_an_error() -> None:
     )
     assert out.get("skipped"), f"expected a skipped state, got {out!r}"
     assert "--paths" in out["skipped"] or "allowlist" in out["skipped"]
-    assert out["count"] == 0
-    assert out["errors"] == []
+    # #515: a skip omits the verdict keys. It reports no errors by carrying no
+    # verdict at all, rather than by carrying a clean one.
+    assert "count" not in out and "errors" not in out and "ok" not in out
 
 
 def test_no_files_found_reports_skipped() -> None:
@@ -69,7 +70,7 @@ def test_no_files_found_reports_skipped() -> None:
         10,
     )
     assert out.get("skipped")
-    assert out["count"] == 0
+    assert "count" not in out and "ok" not in out  # #515
 
 
 def test_extra_skip_patterns_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -81,7 +82,7 @@ def test_extra_skip_patterns_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
         10,
     )
     assert out.get("skipped")
-    assert out["count"] == 0
+    assert "count" not in out and "ok" not in out  # #515
 
 
 def test_real_findings_still_reported_as_errors() -> None:
@@ -151,8 +152,7 @@ def _phpmd(structured: dict) -> dict:
 def test_phpmd_refusal_reports_skipped() -> None:
     out = _phpmd({"error": "analyse: path is outside the configured --paths allowlist."})
     assert out.get("skipped")
-    assert out["count"] == 0
-    assert out["errors"] == []
+    assert "count" not in out and "errors" not in out and "ok" not in out  # #515
 
 
 def test_phpmd_runtime_error_still_reported_as_error() -> None:
