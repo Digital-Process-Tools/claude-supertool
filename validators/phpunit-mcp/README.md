@@ -57,6 +57,25 @@ That puts `mcp-phpunit-warm` on `$PATH` (or `vendor/bin/`).
 | `MCP_PHPUNIT_WORKING_DIR` | `cwd` | Project root |
 | `MCP_PHPUNIT_DAEMON_NAME` | `phpunit-warm` | Must match the key in `.supertool.json` mcp block |
 
+## What this validator does not guarantee
+
+The daemon prewarms by running your `phpunit.xml` bootstrap in its **long-lived parent** process, then forks a child per call so your test and source classes are parsed fresh from disk (that fork is what fixes staleness — see `mcp-phpunit-warm` 0.4.0). The consequence: anything the bootstrap opened — a database handle, a session, a framework singleton — is shared by the parent and by every child forked from it. A test that touches that shared state can fail here and pass under a cold `vendor/bin/phpunit` run of the same file at the same commit ([#345](https://github.com/Digital-Process-Tools/claude-supertool/issues/345)).
+
+Nothing in the output distinguishes such a result from a real failure, so the adapter cannot filter it. Declare those tests in the validator spec instead and supertool will decline rather than guess:
+
+```json
+{
+  "validators": {
+    "phpunit": {
+      "cmd": "... phpunit-mcp.py {file}",
+      "warm_unsafe": ["extends\\s+SiControllerTestCase"]
+    }
+  }
+}
+```
+
+Matching targets report `skipped` — never a ✗, never a rollback, never cached — and are neither passed nor failed by this validator. Run them with the cold runner or in CI. See `docs/validators.md`, "Declining instead of guessing".
+
 ## Output
 
 Returns SCHEMA.md-compliant JSON with:
