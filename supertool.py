@@ -108,7 +108,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Tuple
 
 VERSION = "0.22.0"
 
@@ -1242,6 +1242,13 @@ def _maybe_restart_mcp(entry: object) -> str:
     stopped a daemon that was never configured. Returns a one-line status suffix
     (empty when nothing to restart). Best-effort like the new-file path — a stop
     failure never fails the op.
+
+    A stop that failed is reported as failed rather than counted as a restart
+    (#547). This is the one caller that already asserts an outcome out loud, so
+    the honest version costs no new noise — only the false claim goes away. A
+    daemon that would not die keeps answering from the index it captured before
+    the op cleared the state, which is exactly what `restartMcp` exists to
+    prevent, so the reader needs to know it did not happen.
     """
     if not isinstance(entry, dict):
         return ""
@@ -1256,11 +1263,17 @@ def _maybe_restart_mcp(entry: object) -> str:
         names = [str(spec)]
     known = [n for n in names if n in _mcp_specs]
     unknown = [n for n in names if n not in _mcp_specs]
+    restarted, failed = [], []
     for name in known:
-        _mcp_stop_server(name)
+        outcome = _mcp_stop_server(name)
+        (restarted if outcome.ok else failed).append(name)
     note = ""
-    if known:
-        note += f"mcp: restarted {len(known)} daemon(s) ({', '.join(known)})\n"
+    if restarted:
+        note += f"mcp: restarted {len(restarted)} daemon(s) ({', '.join(restarted)})\n"
+    if failed:
+        note += (f"mcp: FAILED to stop {len(failed)} daemon(s) ({', '.join(failed)})"
+                 f" — they may still answer from a stale index"
+                 f" (SUPERTOOL_DEBUG=1 for the reason)\n")
     if unknown:
         note += f"mcp: unknown server(s) ignored ({', '.join(unknown)})\n"
     return note
@@ -13956,24 +13969,88 @@ def _mcp_socket_pid_paths(cwd: str, name: str) -> Tuple[str, str]:
     return _MCP_SOCKET_PID_PATHS_FN(cwd, name)
 
 
-def _mcp_stop_server(name: str) -> None:
+class _StopOutcome(NamedTuple):
+    """What actually happened when we asked stop.py to kill a warm daemon.
+
+    `ok` answers the only question the invalidation path cares about: is there
+    still a daemon that might answer the next validator from a stale index?
+    "No daemon was running" is `ok` — nothing stale can come from nothing.
+    `code` and `detail` carry the why, for the debug line.
+    """
+
+    ok: bool
+    code: str
+    detail: str
+
+
+# stop.py's exit codes. Anything else came from a crashing interpreter, not
+# from stop.py's own reporting, and must not be guessed into a known bucket.
+_MCP_STOP_CODES = {
+    0: ("stopped", True),
+    1: ("no-daemon", True),
+    2: ("usage", False),
+    3: ("failed", False),
+    4: ("refused", False),
+}
+
+_MCP_STOP_DETAIL_CAP = 500
+
+
+def _mcp_stop_report(name: str, outcome: _StopOutcome) -> _StopOutcome:
+    """Log a failed invalidation once, on stderr, only under SUPERTOOL_DEBUG.
+
+    Deliberately not in the op's output. Invalidation runs behind every `edit:`
+    that creates a file; a line there would turn a background optimization into
+    user-facing noise on the overwhelmingly common path where nothing is wrong,
+    which is a worse trade than the silence this replaces. stderr keeps it out
+    of the op body even when the gate is open. This is the same channel the
+    tree-sitter fallbacks already use for "something degraded, carry on".
+
+    A successful stop, and the no-daemon case, say nothing at all.
+    """
+    if not outcome.ok and os.environ.get("SUPERTOOL_DEBUG"):
+        suffix = f" — {outcome.detail}" if outcome.detail else ""
+        print(f"[supertool debug] mcp stop {name}: {outcome.code}{suffix}",
+              file=sys.stderr)
+    return outcome
+
+
+def _mcp_stop_server(name: str) -> _StopOutcome:
     """Best-effort SIGTERM the warm daemon for `name` via stop.py.
 
     The next op that touches this server cold-starts a fresh daemon, so its LSP
     re-indexes the workspace. Used by the new-file auto-invalidation path (#239):
     a just-created class isn't in the warm reflection cache, so a stale daemon
-    reports phantom errors. Silent on any failure — invalidation is an
-    optimization, never blocks the op.
+    reports phantom errors.
+
+    Still non-blocking on every failure — invalidation is an optimization and
+    must never fail the op. What it no longer does is discard the *outcome*
+    along with the *blocking*, which are separable (#547). Stopped, refused,
+    crashed and binary-missing used to share one observable — nothing — so the
+    path whose whole job is to prevent a stale daemon could not report that it
+    had failed to prevent one. It returns what happened and logs a single
+    debug-gated line when the stop did not succeed.
+
+    stdout stays on DEVNULL: stop.py's human-facing chatter has no business in
+    an op's output. stderr is captured, capped, and only ever surfaces behind
+    the debug gate.
     """
     import subprocess
     try:
-        subprocess.run(
+        proc = subprocess.run(
             [sys.executable, _MCP_STOP_SCRIPT, name],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL, timeout=30, check=False,
+            stderr=subprocess.PIPE, timeout=30, check=False,
         )
-    except (OSError, subprocess.SubprocessError):
-        pass
+    except subprocess.TimeoutExpired:
+        return _mcp_stop_report(
+            name, _StopOutcome(False, "timeout", "stop.py did not return within 30s"))
+    except (OSError, subprocess.SubprocessError) as exc:
+        return _mcp_stop_report(
+            name, _StopOutcome(False, "unavailable", f"{type(exc).__name__}: {exc}"))
+    code, ok = _MCP_STOP_CODES.get(proc.returncode, ("crashed", False))
+    detail = (proc.stderr or b"").decode("utf-8", "replace").strip()
+    return _mcp_stop_report(name, _StopOutcome(ok, code, detail[-_MCP_STOP_DETAIL_CAP:]))
 
 
 def _mcp_servers_to_stop_on_new_file(path: str) -> List[str]:

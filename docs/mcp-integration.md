@@ -50,7 +50,7 @@ Components:
 | `MCPClient` | `supertool.py` | UDS client; connects to daemon, auto-spawns one on first call |
 | `presets/mcp/daemon.py` | preset | Daemon: owns MCP subprocess + bridges UDS↔stdio |
 | `presets/mcp/status.py` | preset | List running daemons |
-| `presets/mcp/stop.py` | preset | Graceful stop (SIGTERM, SIGKILL fallback) |
+| `presets/mcp/stop.py` | preset | Graceful stop (SIGTERM, SIGKILL fallback); exit status carries the outcome |
 | `presets/mcp.json` | preset | Declares `mcp_daemon` / `mcp_status` / `mcp_stop` / `mcp_stop_all` ops |
 
 Socket path: `/tmp/supertool-mcp-<sha1(cwd+name)[:12]>.sock` — per-repo + per-server isolation.
@@ -198,6 +198,42 @@ and retries the connect for ~7.5s before giving up. For ops with a heuristic fal
 (`resolve`, `refs`, `workspace`), giveup is silent — supertool runs the heuristic and
 the call succeeds (slower, less accurate). For LSP-only ops (`diag`, `hover`, `rename`),
 giveup surfaces a clear error message so the caller knows the LSP is the bottleneck.
+
+### When the stop fails
+
+Invalidation is an optimization and never blocks the op — a `stop.py` that
+refuses, crashes or cannot be spawned leaves your `edit:` untouched and
+unreported. It does not, however, leave it *unknowable* (#547).
+
+`stop.py` reports through its exit status, which is the only channel the
+automatic caller has:
+
+| Code | Meaning | Treated as |
+|---|---|---|
+| `0` | the daemon was running and is now gone | success |
+| `1` | no daemon was running | success — nothing stale can come from nothing |
+| `2` | bad arguments | failure |
+| `3` | a daemon was found and is still there, or its pidfile was unreadable | failure |
+| `4` | declined before looking — e.g. a runtime dir whose ownership cannot be verified (#544) | failure |
+
+Only the failures are reported, and only on stderr behind
+`SUPERTOOL_DEBUG=1`, never in the op's own output:
+
+```
+$ SUPERTOOL_DEBUG=1 ./supertool 'paste:::src/New.php:::<?php …'
+[supertool debug] mcp stop php-lsp: failed —   failed to stop pid=4242 (…)
+```
+
+That gate is the point of the design. Invalidation runs behind every op that
+creates a file, so a line in the op body would be user-facing noise on the
+overwhelmingly common path where nothing is wrong — a worse trade than the
+silence it replaces. Turn the gate on when a warm daemon is reporting phantom
+errors on a file you just created; that is #239, and this line is how you find
+out whether the safety net for it ran.
+
+Custom ops using `restartMcp` are the exception, and only because they already
+print a claim: a daemon that would not die is now listed as `FAILED to stop`
+rather than counted in `restarted N daemon(s)`.
 
 ## Adding a new MCP server
 
