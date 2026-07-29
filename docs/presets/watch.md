@@ -385,6 +385,7 @@ Every `gitlab-mr` event now carries eight extra payload fields. `_fetch` already
 | `observed_mr_state` | `opened` / `merged` / `closed` |
 | `observed_pipeline_status` | `running` / `failed` / `success` / … |
 | `observed_pipeline_id` | head pipeline at the moment of the read — present on **every** event, including `merged` |
+| `observed_pipeline_identity` | `same` / `new` / `unknown` — whether this poll could tell the head pipeline apart from the one the previous poll saw ([#537](https://github.com/Digital-Process-Tools/claude-supertool/issues/537), [below](#the-pipeline-edge-is-the-pipeline-not-the-status-string-537)). Not an MR fact: a fact about the read. |
 | `observed_has_conflicts` | the poller's *corrected* flag, after the [#463](https://github.com/Digital-Process-Tools/claude-supertool/issues/463) carry-forward and the [#465](https://github.com/Digital-Process-Tools/claude-supertool/issues/465) empty-diff guard — **not** the raw `has_conflicts` |
 | `observed_source_branch` | |
 | `observed_target_branch` | |
@@ -484,6 +485,45 @@ Two filters, both from live data:
 Retried jobs keep their name and take a new id, so both attempts come back failed; names are de-duplicated, because the reader wants the set of broken things and not a tally of attempts at one of them.
 
 **On cost:** the request is `?scope[]=failed`, not the full job list. Real pipelines here run 114–139 jobs — two paginated pages of mostly `created`/`manual` bulk — against one short page for the scoped query. And it is issued from *inside* the `pipeline_status == "failed"` transition branch, which is edge-triggered, so a pipeline that sits red for an hour is looked up once rather than 120 times.
+
+### The pipeline edge is the pipeline, not the status string ([#537](https://github.com/Digital-Process-Tools/claude-supertool/issues/537))
+
+The pipeline events edge-trigger, and that is deliberate — a pipeline sitting red for an hour is announced once, which is what keeps a long-lived radar session from filling with repeats. But the edge used to be computed from the status **string** alone, with no pipeline identity in the comparison.
+
+So a **second pipeline that also ended `failed`, with no `running` tick observed in between, fired nothing.** The previous status was already `failed`, the inequality was False, and the MR was red for a new reason in silence. The window is narrow at a 30-second poll — the whole run has to land between two polls — but a lint or conformity stage failing fast, or any poller restart that skips the intervening `running`, is enough. Observed live: MR !33194 ran pipeline 154628 to `failed`, took a push, and ran 154636 to `failed` as well.
+
+And it undercut [#509](https://github.com/Digital-Process-Tools/claude-supertool/issues/509) exactly where that feature is worth most: an event that never fires is a set of failing job names that never arrives, for the second failure — the one where *"same breakage or a new one?"* is the actual question.
+
+The edge is now the pair **(status, which pipeline)**. A change in either is a transition; a repeat of both is not.
+
+#### Why this cannot double-fire a retry
+
+The obvious risk is trading a silent miss for a duplicate, and duplicates are what train a reader to stop reading events. It does not happen, and the reason was settled against the live API rather than the docs:
+
+**GitLab does not mint a new pipeline id when a job is retried.** Pipeline 154635 was caught mid-retry — `test_unit_pavillon` failed as job 6966698, was retried as job 6967497, and `head_pipeline` went on reporting id **154635** with its status flipped back to `running`.
+
+| | pipeline id | status | |
+|---|---|---|---|
+| retry of a job | **unchanged** | `failed → running → failed` | already a status edge; the id comparison adds nothing |
+| new push / trigger | **new** | may be `failed → failed` | the case that used to be silent |
+
+So a retry moves the status under a stable id, which is the edge the old code already computed correctly. `test_a_retried_pipeline_is_not_double_announced` drives `failed → running → failed` under one id with repeat polls at every step and pins two events, and it passed before this change as well as after.
+
+`pipeline_running` is deliberately left alone: a new pipeline starting while the previous one was still running stays quiet. It is not in `DEFAULT_ONLY` because you just pushed and it carries no information, and a second one carries no more.
+
+#### Three states, because the identity can be unreadable
+
+`unknown` is the third value, and it exists for the same reason `observed_failed_jobs_lookup` has an `unavailable`: **a failure to determine the identity must not resolve to "same pipeline, stay quiet"** — that is the silence this fix is about, reintroduced one level down.
+
+| Situation | `observed_pipeline_identity` | |
+|---|---|---|
+| id matches the last one read | `same` | edge falls back to the status, as before |
+| id differs, or it is the first pipeline seen for this MR | `new` | transition |
+| no id in the payload, or a state file written before this field existed | `unknown` | **announced once**, marked, not folded into silence |
+
+`unknown` fires **once per streak**, not once per poll — announcing it every tick would trade the silent failure for a flood, and a flood gets muted, which is the silence again by a longer route. It is re-armable: the poller carries the last id it could actually *read* forward across polls that reported none, the same shape the [#463](https://github.com/Digital-Process-Tools/claude-supertool/issues/463) unsettled-conflict check uses, so a readable id later is still comparable and a genuinely new pipeline is still announced.
+
+**Cost: zero extra requests.** The id was already fetched, already in the snapshot, and already persisted in the state file that `radar.drift()` reads. The transition test simply did not consult it.
 
 ### `comment_added` is in the default set ([#519](https://github.com/Digital-Process-Tools/claude-supertool/issues/519))
 
