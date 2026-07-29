@@ -17,20 +17,68 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 def _load(preset: str, name: str):
     """Load a preset module fresh, isolating sys.path so other presets'
-    `_auth` / `_outbound` shims don't bleed into the test module."""
+    `_auth` / `_outbound` shims don't bleed into the test module.
+
+    **The isolation is scoped to the exec and then undone.** It used to be a
+    permanent, process-global `sys.path[:] = ...` that dropped *every* entry
+    containing `presets/` — a filter far wider than the shim collision it
+    guards against, and one this file has no standing to impose on the rest of
+    the session. `presets/mcp` was collateral.
+
+    That broke a neighbour rather than this file. `test_mcp_stop_outcome_547.py`
+    and `test_mcp_status_unknown_549.py` both put `presets/mcp` on the path at
+    import time and then `import stop` / `import status` *lazily, inside a
+    fixture* — so the entry has to survive until the test runs, not merely
+    until collection ends. Any worker that ran this file first left them with
+    `ModuleNotFoundError: No module named 'stop'`. Fully deterministic given
+    the order (`pytest tests/test_comment_file.py
+    tests/test_mcp_stop_outcome_547.py -p no:randomly -n0` reproduces it), and
+    invisible without it, because xdist only sometimes puts that pair on one
+    worker — which is why it surfaced on one leg of one PR and had been latent
+    on master since #548.
+
+    Restoring is safe because the shim collision only exists while
+    `exec_module` runs: by the time the path goes back, the module has bound
+    the shims it imported.
+    """
     preset_dir = REPO_ROOT / "presets" / preset
+    saved_path = sys.path[:]
     for shim in ("_auth", "_outbound", "_resolve", "_session", "_rest",
                  "_graphql", "_atproto", "_me"):
         sys.modules.pop(shim, None)
     sys.path[:] = [p for p in sys.path
                    if "presets/" not in p.replace("\\", "/")]
     sys.path.insert(0, str(preset_dir))
-    spec = importlib.util.spec_from_file_location(
-        f"{preset}_{name}", preset_dir / f"{name}.py")
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    try:
+        spec = importlib.util.spec_from_file_location(
+            f"{preset}_{name}", preset_dir / f"{name}.py")
+        assert spec is not None and spec.loader is not None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+    finally:
+        sys.path[:] = saved_path
     return mod
+
+
+def test_load_leaves_sys_path_as_it_found_it() -> None:
+    """`_load`'s isolation must not outlive `_load`.
+
+    The regression this pins is not in this file: a permanent global filter
+    here removed `presets/mcp` from the path and broke the lazy `import stop`
+    in `test_mcp_stop_outcome_547.py` whenever a worker ran the two together.
+    Asserted on the real entry that was collateral, not only on equality, so a
+    narrower-but-still-permanent filter cannot pass this either.
+    """
+    marker = str(REPO_ROOT / "presets" / "mcp")
+    sys.path.insert(0, marker)
+    try:
+        before = sys.path[:]
+        _load("devto", "comment")
+        assert sys.path == before, "sys.path escaped _load"
+        assert marker in sys.path, "_load stripped another module's preset dir"
+    finally:
+        if marker in sys.path:
+            sys.path.remove(marker)
 
 
 # ---------- devto/comment.py ------------------------------------------------
