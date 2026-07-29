@@ -750,3 +750,107 @@ def test_render_name_status_full_mode_cap_message() -> None:
     body = [ln for ln in lines if ln.startswith(" M")]
     assert len(body) == mr.NAMESTATUS_FETCH_CAP  # full = uncapped display
     assert lines[-1] == f" … +{1200 - mr.NAMESTATUS_FETCH_CAP} more (output capped at {mr.NAMESTATUS_FETCH_CAP} files)"
+
+
+# ---------------------------------------------------------------------------
+# #498 — a conflicted binary file puts non-UTF-8 bytes on merge-tree stdout.
+# The stub below hands those bytes to a REAL subprocess with the production
+# kwargs, so the decode under test is the one subprocess actually performs.
+# ---------------------------------------------------------------------------
+
+import base64
+
+_REAL_RUN = subprocess.run
+
+_LF = bytes([10])
+_PNG_MAGIC = bytes.fromhex("89504e470d0a1a0a")
+_BINARY_BLOB = _PNG_MAGIC + bytes(range(0x80, 0x100))
+
+
+def _emit_bytes(payload: bytes, **kwargs: Any) -> Any:
+    """Run a real subprocess that writes PAYLOAD verbatim to stdout."""
+    return _REAL_RUN(
+        [sys.executable, "-c",
+         "import sys,base64;sys.stdout.buffer.write(base64.b64decode(sys.argv[1]))",
+         base64.b64encode(payload).decode()],
+        **kwargs,
+    )
+
+
+def _merge_tree_bytes() -> bytes:
+    """Old-syntax merge-tree output: one text conflict, one binary conflict."""
+    parts = [
+        b"changed in both",
+        b"  base   100644 aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111 .gitlab-ci.yml",
+        b"  our    100644 bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222 .gitlab-ci.yml",
+        b"  their  100644 cccc3333cccc3333cccc3333cccc3333cccc3333 .gitlab-ci.yml",
+        b"@@ -1 +1 @@",
+        b"<<<<<<< .our",
+        b"image: php:8.3",
+        b"=======",
+        b"image: php:8.2",
+        b">>>>>>> .their",
+        b"changed in both",
+        b"  base   100644 dddd4444dddd4444dddd4444dddd4444dddd4444 docs/logo.png",
+        b"  our    100644 eeee5555eeee5555eeee5555eeee5555eeee5555 docs/logo.png",
+        b"  their  100644 ffff6666ffff6666ffff6666ffff6666ffff6666 docs/logo.png",
+        b"@@ -1 +1 @@",
+        b"<<<<<<< .our",
+        _BINARY_BLOB,
+        b"=======",
+        _BINARY_BLOB,
+        b">>>>>>> .their",
+    ]
+    return _LF.join(parts) + _LF
+
+
+def test_get_conflict_hunks_survives_binary_blob(monkeypatch) -> None:
+    """A PNG in the conflict set must not take the whole helper down."""
+    tree_bytes = _merge_tree_bytes()
+
+    def fake_run(args, **kwargs):  # type: ignore[no-untyped-def]
+        if args[1] == "merge-base":
+            return _fake_run("deadbeef1234567890abcdef1234567890abcdef" + chr(10), returncode=0)
+        return _emit_bytes(tree_bytes, **kwargs)
+
+    monkeypatch.setattr(mr.subprocess, "run", fake_run)
+    hunks = mr._get_conflict_hunks("source", "master")
+    assert "image: php:8.3" in hunks[".gitlab-ci.yml"]
+    assert "docs/logo.png" in hunks
+
+
+def test_main_full_mode_binary_conflict_does_not_crash(monkeypatch, capsys) -> None:
+    """End to end: the binary file stays listed, is labelled, and the sections
+    after ## Conflicts still print instead of being replaced by a traceback."""
+    payload = _mr_json_payload(
+        has_conflicts=True,
+        diff_refs={"base_sha": "aaa111", "head_sha": "bbb222"},
+        sha="bbb222",
+    )
+    name_only = _LF.join([
+        b"abc123def456abc123def456abc123def456abcd",
+        b".gitlab-ci.yml",
+        b"docs/logo.png",
+    ]).decode() + chr(10)
+    tree_bytes = _merge_tree_bytes()
+
+    def fake_run(args, **kwargs):  # type: ignore[no-untyped-def]
+        if args and args[0] == "git":
+            if args[1] == "merge-base":
+                return _fake_run("deadbeef1234567890abcdef1234567890abcdef" + chr(10), returncode=0)
+            if args[1] == "merge-tree" and "--name-only" in args:
+                return _fake_run(name_only, returncode=1)
+            if args[1] == "merge-tree":
+                return _emit_bytes(tree_bytes, **kwargs)
+            return _fake_run("", returncode=0)
+        return _fake_run(payload, returncode=0)
+
+    monkeypatch.setattr(mr.subprocess, "run", fake_run)
+    monkeypatch.setattr(sys, "argv", ["mr.py", "19509"])
+    rc = mr.main()
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "docs/logo.png" in out
+    assert "image: php:8.3" in out
+    assert "binary" in out.lower()
+    assert "To resolve:" in out

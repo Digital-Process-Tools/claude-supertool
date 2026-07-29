@@ -105,7 +105,7 @@ def _get_conflicting_files(source: str, target: str) -> list[str]:
         result = subprocess.run(
             ["git", "merge-tree", "--name-only", "--write-tree",
              f"origin/{target}", f"origin/{source}"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, encoding="utf-8", errors="replace", timeout=10,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError):
         return []
@@ -136,6 +136,21 @@ _MERGE_TREE_PATH_RE = re.compile(
     r"^  (?:base|our|their)\s+\d+\s+[0-9a-f]+\s+(.+)$"
 )
 HUNK_LINES_PER_FILE = 40
+BINARY_HUNK_NOTE = "(binary file — conflict hunks not shown; resolve by picking a version)"
+
+
+def _is_binary_hunk(block: str) -> bool:
+    """True when a hunk block came from a non-text blob.
+
+    `git merge-tree` writes conflicting blob *content* to stdout, so a
+    conflicted image/PDF/font lands here as raw bytes. Those are decoded
+    with errors="replace" (see `_get_conflict_hunks`), which turns every
+    undecodable byte into U+FFFD — the marker this checks for, alongside a
+    literal NUL for blobs that happen to decode. Printing 40 lines of
+    mojibake helps nobody; the caller prints BINARY_HUNK_NOTE instead, so
+    the file is still named rather than silently skipped.
+    """
+    return "\x00" in block or "�" in block
 
 
 def _get_conflict_hunks(source: str, target: str) -> dict[str, str]:
@@ -146,6 +161,15 @@ def _get_conflict_hunks(source: str, target: str) -> dict[str, str]:
     conflict markers. Each per-file block is split off the section
     headers ("changed in both", "added in local", etc.). Returns dict
     mapping file path -> diff text. Empty dict on any failure.
+
+    stdout here is blob content, not porcelain, so it is not text: one
+    conflicted PNG puts a 0x89 on the stream and a strict UTF-8 decode
+    takes the whole op down mid-render (#498). Decoding is therefore
+    explicitly utf-8 with errors="replace" — the parser needs line
+    structure, not exact bytes, and the caller labels the mangled blocks
+    via `_is_binary_hunk` rather than printing them. errors= alone would
+    still leave the codec at the locale default, so the encoding is
+    pinned too: git writes UTF-8 regardless of what LANG says.
     """
     try:
         base_result = subprocess.run(
@@ -162,7 +186,7 @@ def _get_conflict_hunks(source: str, target: str) -> dict[str, str]:
         result = subprocess.run(
             ["git", "merge-tree", base,
              f"origin/{target}", f"origin/{source}"],
-            capture_output=True, text=True, timeout=15,
+            capture_output=True, encoding="utf-8", errors="replace", timeout=15,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError):
         return {}
@@ -641,6 +665,10 @@ def main() -> int:
         for path in conflict_files:
             block = hunks.get(path, "")
             if not block:
+                continue
+            if _is_binary_hunk(block):
+                print(f"\n### {path}")
+                print(f"  {BINARY_HUNK_NOTE}")
                 continue
             lines = block.splitlines()
             truncated = ""
