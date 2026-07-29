@@ -7,6 +7,7 @@
     {"key": "comment_added",        "label": "New comment on the MR"},
     {"key": "merged",               "label": "MR merged"},
     {"key": "closed",               "label": "MR closed"},
-    {"key": "conflicts_appeared",   "label": "Conflicts appeared"}
+    {"key": "conflicts_appeared",   "label": "Conflicts appeared"},
+    {"key": "mr_unreachable",       "label": "Could not look up the MR — a lookup that failed, not an MR that is quiet. Fires once per outage, not once per poll"}
   ]
 }

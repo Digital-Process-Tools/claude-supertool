@@ -38,8 +38,16 @@ DEFAULT_SOURCE = "gitlab-mr"
 # — so the one stated reason for the exclusion did not survive checking. A
 # comment on your MR is actionable and otherwise silent, which is the same
 # argument that puts conflicts_appeared here.
+# mr_unreachable is IN as of #541. It is the one event that reports the watcher
+# itself rather than the MR, and leaving it out of the default filter would keep
+# the defect exactly where it hurts: every "watch everything of mine" flow
+# spawns with DEFAULT_ONLY, so a radar board full of live-looking rows observing
+# nothing is the default configuration. It is edge-triggered — once per outage,
+# not once per poll — so the cost is one line when your token expires, and the
+# argument is the same one that carries conflicts_appeared and comment_added:
+# actionable, and otherwise entirely silent.
 DEFAULT_ONLY = ("pipeline_failed,pipeline_succeeded,comment_added,"
-                "merged,closed,conflicts_appeared")
+                "merged,closed,conflicts_appeared,mr_unreachable")
 
 # The discovery tier. DEFAULT_FEED above is a one-shot query a caller runs and
 # pipes; this is the poller that runs the same query forever, so a session

@@ -32,6 +32,18 @@ _d_spec.loader.exec_module(dispatcher)
 POLLER = WATCH_DIR / "sources" / "gl-pipeline" / "poller.py"
 
 
+
+def _ok(data):
+    """The `(payload, "")` pair `_fetch` returns on a successful lookup (#541)."""
+    return (data, "")
+
+
+def _unreachable(msg="ERROR: could not look"):
+    """The `(None, why)` pair `_fetch` returns when it could not look (#541)."""
+    return (None, msg)
+
+
+
 def _load_poller():
     spec = importlib.util.spec_from_file_location("gl_pipeline_poller", POLLER)
     assert spec is not None and spec.loader is not None
@@ -60,7 +72,7 @@ def _pipe(status="running", pipeline_id="151111", web_url="https://ex/p/151111")
 
 def test_first_poll_baselines_without_event() -> None:
     poller = _load_poller()
-    with mock.patch.object(poller, "_fetch", return_value=_pipe(status="running")):
+    with mock.patch.object(poller, "_fetch", return_value=_ok(_pipe(status="running"))):
         events, new_state = poller.poll({}, {"id": "151111"})
     assert events == []
     assert new_state["status"] == "running"
@@ -69,7 +81,7 @@ def test_first_poll_baselines_without_event() -> None:
 def test_running_to_success_emits_succeeded() -> None:
     poller = _load_poller()
     state = {"status": "running"}
-    with mock.patch.object(poller, "_fetch", return_value=_pipe(status="success")):
+    with mock.patch.object(poller, "_fetch", return_value=_ok(_pipe(status="success"))):
         events, _ = poller.poll(state, {"id": "151111"})
     assert len(events) == 1
     assert events[0]["event"] == "pipeline_succeeded"
@@ -80,7 +92,7 @@ def test_running_to_success_emits_succeeded() -> None:
 def test_running_to_failed_emits_failed() -> None:
     poller = _load_poller()
     state = {"status": "running"}
-    with mock.patch.object(poller, "_fetch", return_value=_pipe(status="failed")):
+    with mock.patch.object(poller, "_fetch", return_value=_ok(_pipe(status="failed"))):
         events, _ = poller.poll(state, {"id": "151111"})
     assert any(e["event"] == "pipeline_failed" for e in events)
 
@@ -88,7 +100,7 @@ def test_running_to_failed_emits_failed() -> None:
 def test_running_to_canceled_emits_canceled() -> None:
     poller = _load_poller()
     state = {"status": "running"}
-    with mock.patch.object(poller, "_fetch", return_value=_pipe(status="canceled")):
+    with mock.patch.object(poller, "_fetch", return_value=_ok(_pipe(status="canceled"))):
         events, _ = poller.poll(state, {"id": "151111"})
     assert any(e["event"] == "pipeline_canceled" for e in events)
 
@@ -96,17 +108,22 @@ def test_running_to_canceled_emits_canceled() -> None:
 def test_no_change_emits_nothing() -> None:
     poller = _load_poller()
     state = {"status": "running"}
-    with mock.patch.object(poller, "_fetch", return_value=_pipe(status="running")):
+    with mock.patch.object(poller, "_fetch", return_value=_ok(_pipe(status="running"))):
         events, _ = poller.poll(state, {"id": "151111"})
     assert events == []
 
 
-def test_fetch_failure_preserves_state_no_events() -> None:
+def test_fetch_failure_reports_and_preserves_state() -> None:
+    """Was `assert events == []` — the #541 defect asserted as intended
+    behaviour. The state half stands: `status` survives the outage, so a
+    pipeline that went red while we were blind is still a transition on the
+    first poll that succeeds."""
     poller = _load_poller()
-    with mock.patch.object(poller, "_fetch", return_value=None):
+    with mock.patch.object(poller, "_fetch", return_value=_unreachable()):
         events, new_state = poller.poll({"status": "running"}, {"id": "151111"})
-    assert events == []
-    assert new_state == {"status": "running"}
+    assert [e["event"] for e in events] == ["pipeline_unreachable"]
+    assert new_state["status"] == "running"
+    assert new_state["lookup"] == "unavailable"
 
 
 def test_is_terminal_for_terminal_states() -> None:

@@ -60,34 +60,50 @@ assert _spec is not None and _spec.loader is not None
 _mr_op = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_mr_op)
 _glab_api_cli = _mr_op._glab_api  # type: ignore[attr-defined]
+# The `gl-mr` op's own stderr classifier, borrowed rather than re-written, so a
+# watcher that cannot look says "glab not authenticated. Run: glab auth login"
+# in the same words the op would. One vocabulary for GitLab failures across the
+# read-only op and the watcher — the shape `gh-run` established by borrowing
+# `presets/github/run.py`'s.
+_format_error = _mr_op._format_error  # type: ignore[attr-defined]
 
 
-def _glab_api(endpoint: str) -> dict | list | None:
-    """JSON-decode an _glab_api CLI call. None on any failure.
+def _glab_api(endpoint: str, what: str = "MR", identifier: str = "") -> tuple[dict | list | None, str]:
+    """`(payload, "")` when glab answered, `(None, why)` when we could not look.
+
+    The reason survives instead of collapsing to `None` (#541). A 404 on a
+    deleted MR, an expired token and a missing binary used to be one answer, and
+    that answer was also what a healthy poll with nothing new returned.
 
     `TimeoutExpired` is caught with the rest: it is a `SubprocessError`, not an
     `OSError`, so it used to propagate out of `poll()` and kill the tick. That
     was survivable while `_fetch` was the only call; it stops being survivable
-    once a failure transition makes a second one. None is not swallowing the
-    failure — every caller here turns it into a reported "could not tell".
+    once a failure transition makes a second one.
     """
+    label = f"#{identifier}" if identifier else what
     try:
         r = _glab_api_cli(endpoint)
-    except (FileNotFoundError, OSError, subprocess.SubprocessError):
-        return None
+    except FileNotFoundError:
+        return None, "ERROR: glab not found — install from https://gitlab.com/gitlab-org/cli"
+    except subprocess.TimeoutExpired:
+        return None, f"ERROR: glab timed out looking up {what} {label}"
+    except (OSError, subprocess.SubprocessError) as e:
+        return None, f"ERROR: glab could not run for {what} {label}: {e}"
     if r.returncode != 0:
-        return None
+        return None, _format_error(r.stderr or "", what, identifier)
     try:
-        return json.loads(r.stdout)
+        return json.loads(r.stdout), ""
     except json.JSONDecodeError:
-        return None
+        return None, f"ERROR: invalid JSON from glab for {what} {label}"
 
 
-def _fetch(iid: str) -> dict[str, Any] | None:
-    data = _glab_api(f"projects/:id/merge_requests/{iid}")
+def _fetch(iid: str) -> tuple[dict[str, Any] | None, str]:
+    data, error = _glab_api(f"projects/:id/merge_requests/{iid}", "MR", str(iid))
+    if error:
+        return None, error
     if not isinstance(data, dict):
-        return None
-    return data
+        return None, f"ERROR: unexpected payload shape from glab for MR #{iid}"
+    return data, ""
 
 
 # The whole MR is already in memory every tick, and a consumer that has to call
@@ -249,9 +265,15 @@ def _failed_job_names(pipeline_id: str) -> list[str] | None:
     """
     if not pipeline_id:
         return None
-    data = _glab_api(
-        f"projects/:id/pipelines/{pipeline_id}/jobs?scope[]=failed&per_page=100")
-    if not isinstance(data, list):
+    data, error = _glab_api(
+        f"projects/:id/pipelines/{pipeline_id}/jobs?scope[]=failed&per_page=100",
+        "Pipeline", str(pipeline_id))
+    if error or not isinstance(data, list):
+        # This lookup keeps answering `None`, deliberately. It is a *field* on
+        # an event that is already being emitted — `observed_failed_jobs_lookup`
+        # already says "we could not look" in one word, so the reason has a
+        # place to go and nothing here is being silently dropped. The #541 fix
+        # is about the poll that produces no event at all.
         return None
     jobs = [j for j in data if isinstance(j, dict)
             and j.get("status") == "failed" and not j.get("allow_failure")]
@@ -326,9 +348,53 @@ def _has_no_diff(data: dict[str, Any]) -> bool:
 
 def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
     iid = ctx["id"]
-    data = _fetch(iid)
+    data, error = _fetch(iid)
     if data is None:
-        return [], state  # transient — try again next tick
+        # Three answers, not two: ok, a finding, and *cannot tell*. Edge-
+        # triggered on the lookup flag so it is said once per outage — an alert
+        # repeating every 30s for six hours is one people mute, which is the
+        # quiet failure again by a longer route.
+        #
+        # `{**state, ...}` is doing more work here than in any other source, and
+        # it is the part a naive port breaks. This poller compares against six
+        # carried values, and each fails differently if the outage resets it:
+        #
+        #   mr_state          — reset, and a merge that landed while we were
+        #                       blind is announced correctly; but so is one that
+        #                       was already announced before the outage.
+        #   has_conflicts     — the latch. Reset it and the standing conflict
+        #                       re-fires on recovery, which is #463 again.
+        #   notes_count       — `None` means "first poll, take a baseline".
+        #                       Reset it and every comment left during the
+        #                       outage is silently baselined away.
+        #   pipeline_id /
+        #   pipeline_identity — reset, and the recovery poll reads a familiar
+        #                       pipeline as IDENTITY_NEW and re-announces a red
+        #                       that was already reported (#537).
+        #   merge_status      — feeds the settled/unsettled gate above.
+        #
+        # Carrying the whole dict forward is the only variant where "changed
+        # during the outage" and "already reported before it" stay distinct.
+        new_state = {**state, "lookup": LOOKUP_UNAVAILABLE, "error": error}
+        if state.get("lookup") == LOOKUP_UNAVAILABLE:
+            return [], new_state
+        return [{
+            "event": "mr_unreachable",
+            "payload": {
+                "iid": str(iid),
+                "error": error,
+                # `last_known_`, not the `observed_` snapshot prefix the other
+                # events use. `observed_` means "read this tick" and this tick
+                # read nothing — reusing it would make the one event about not
+                # having looked claim to be an observation.
+                "last_known_mr_state": str(state.get("mr_state") or ""),
+                "last_known_pipeline_status": str(state.get("pipeline_status") or ""),
+                "title": str(state.get("title") or ""),
+                "url": str(state.get("web_url") or ""),
+            },
+            "notify_title": f"!{iid} — cannot tell",
+            "notify_message": error,
+        }], new_state
 
     mr_state = str(data.get("state") or "")
     raw_conflicts = bool(data.get("has_conflicts"))
@@ -517,6 +583,7 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
         "notes_count": notes_count,
         "title": title,
         "web_url": web_url,
+        "lookup": LOOKUP_OK,
     }
     return events, new_state
 

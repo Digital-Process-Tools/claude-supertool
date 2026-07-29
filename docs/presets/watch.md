@@ -48,7 +48,7 @@ Args: `$1` feed op, `$2` watch source, `$3` notify events. The defaults live in 
 |---|---|---|
 | feed | `gl-mrs:author=@me,state=opened,iids` | Every open MR, not just the failing ones. A watcher can only report an MR *going* red if it was already watching while the MR was green. |
 | source | `gitlab-mr` | |
-| only | `pipeline_failed,pipeline_succeeded,comment_added,merged,closed,conflicts_appeared` | `pipeline_succeeded` closes the red → fix → push → *?* loop, and is the only proof an automated fix worked. `pipeline_running` is excluded — you just pushed, so it carries no information. `comment_added` joined the set in [#519](https://github.com/Digital-Process-Tools/claude-supertool/issues/519); it was held out on a belief about `user_notes_count` that turned out to be false ([below](#comment_added-is-in-the-default-set-519)). |
+| only | `pipeline_failed,pipeline_succeeded,comment_added,merged,closed,conflicts_appeared,mr_unreachable` | `pipeline_succeeded` closes the red → fix → push → *?* loop, and is the only proof an automated fix worked. `pipeline_running` is excluded — you just pushed, so it carries no information. `comment_added` joined the set in [#519](https://github.com/Digital-Process-Tools/claude-supertool/issues/519); it was held out on a belief about `user_notes_count` that turned out to be false ([below](#comment_added-is-in-the-default-set-519)). |
 
 The separation is deliberate — the list op owns *what's mine* (a platform concern), the watch preset stays generic. The feed op just has to emit bare ids (the `iids` flow); both `gl-mrs` (GitLab) and `gh-prs` (GitHub) ship today.
 
@@ -296,8 +296,9 @@ That last rule is the house discipline made explicit: **three states, not two** 
 
 | Source | Polls | Events |
 |---|---|---|
-| `github-pr` | `gh pr view <N> --json state,mergeable,reviewDecision,statusCheckRollup,comments,...` | `checks_failed`, `checks_succeeded`, `checks_pending`, `review_approved`, `review_changes_requested`, `comment_added`, `merged`, `closed`, `conflicts_appeared` |
-| `gitlab-mr` | `glab api projects/:id/merge_requests/<iid>` | `pipeline_failed`, `pipeline_succeeded`, `pipeline_running`, `merged`, `closed`, `conflicts_appeared` |
+| `github-pr` | `gh pr view <N> --json state,mergeable,reviewDecision,statusCheckRollup,comments,...` | `checks_failed`, `checks_succeeded`, `checks_pending`, `review_approved`, `review_changes_requested`, `comment_added`, `merged`, `closed`, `conflicts_appeared`, `pr_unreachable` |
+| `gitlab-mr` | `glab api projects/:id/merge_requests/<iid>` | `pipeline_failed`, `pipeline_succeeded`, `pipeline_running`, `comment_added`, `merged`, `closed`, `conflicts_appeared`, `mr_unreachable` |
+| `gl-pipeline` | `glab api projects/:id/pipelines/<id>` | `pipeline_succeeded`, `pipeline_failed`, `pipeline_canceled`, `pipeline_running`, `pipeline_unreachable` |
 | `gitlab-mr-feed` | `glab mr list` for a whole filter | `mr_opened`, `mr_merged`, `mr_closed`, `mr_left_feed` |
 | `gl-runners` | `glab api projects/:id/runners` + the pending/running job queue | `runner_silent`, `runner_recovered`, `runner_starved`, `queue_cleared`, `runner_paused`, `runner_added`, `runner_vanished` |
 | `gh-run` | `gh run view <id> --json status,conclusion,workflowName,url,...` | `run_succeeded`, `run_failed`, `run_cancelled`, `run_action_required`, `run_started`, `run_inconclusive`, `run_unreachable` |
@@ -345,6 +346,35 @@ The last row is the load-bearing one. A conclusion GitHub adds after this table 
 Three states, not two, in the `docs/validators.md` vocabulary. `_fetch` returns `(run, "")` or `(None, why)`; a 401, a 404, a timeout, a missing `gh` binary and unparseable JSON all take the second branch and surface as a **`run_unreachable` event**, never as an empty tick. The message is produced by the `gh-run` op's own `_format_error`, so it reads `gh CLI not authenticated. Run: gh auth login` rather than a raw stderr dump.
 
 It is edge-triggered on a `lookup` flag: **loud once per outage, not every 30 seconds.** A signal that repeats forever is one people mute, and a muted alarm is the loud failure traded for a quiet one by a longer route. Last-known `status` is carried forward and the watcher stays non-terminal, so a network blip cannot retire a run that nobody is then watching — and a completion that landed *during* the outage is still reported on the poll that recovers.
+
+### The same guarantee, on every source: `*_unreachable` ([#541](https://github.com/Digital-Process-Tools/claude-supertool/issues/541))
+
+`gh-run` shipped the shape above first. `gl-pipeline`, `github-pr` and `gitlab-mr` did not have it: each `_fetch` returned `None` for every failure mode and each `poll` ended on the same line —
+
+```python
+return [], state  # transient — try again next tick
+```
+
+For a genuine blip that comment is right, and this is not a change to it. The bug is the *class*: a permanent failure was byte-identical to a transient one, forever. The token expires, the repo is renamed, `glab` leaves `PATH` — the watcher stays alive, `watches` lists it as running, and a reader sees a live watcher producing nothing and concludes **"nothing has happened on my MR"** when the truth is **"nothing has been observed for six hours"**.
+
+Each source now has its own key:
+
+| Source | Event | Message comes from |
+|---|---|---|
+| `gl-pipeline` | `pipeline_unreachable` | `presets/gitlab/mr.py::_format_error` |
+| `gitlab-mr` | `mr_unreachable` | `presets/gitlab/mr.py::_format_error` |
+| `github-pr` | `pr_unreachable` | `presets/github/run.py::_format_error` |
+| `gh-run` | `run_unreachable` | `presets/github/run.py::_format_error` |
+
+The text is classified, not a stderr dump: `glab not authenticated. Run: glab auth login`, `MR #21803 not found in this repo`, `gh not found — install from https://cli.github.com`. GitLab and GitHub each have exactly one classifier and both watchers borrow it, so the watcher and the read-only op describe the same failure in the same words.
+
+**Edge-triggered, on all four.** Ten failing polls produce one event; the flag is re-armed by a successful poll, so a *second* outage after a recovery is announced again. Payload carries `last_known_*` fields — `last_known_status`, `last_known_mr_state`, `last_known_pipeline_status`, `last_known_checks` — deliberately not `gitlab-mr`'s `observed_` prefix, which means "read this tick" and this tick read nothing.
+
+**Recovery is the half that is easy to get wrong.** State is carried forward whole (`{**state, "lookup": ..., "error": ...}`), never rebuilt, because these three compare against much richer state than a single run status. In `gitlab-mr` alone: resetting `has_conflicts` would re-fire a standing conflict on recovery ([#463](https://github.com/Digital-Process-Tools/claude-supertool/issues/463) again), resetting `notes_count` would silently re-baseline away every comment left during the outage, and resetting `pipeline_id` would make a familiar pipeline read as `IDENTITY_NEW` and re-announce a red already reported ([#537](https://github.com/Digital-Process-Tools/claude-supertool/issues/537)). Carrying the dict forward is the only variant where *"changed while we were blind"* and *"already reported before it"* stay distinct — and a merge that lands mid-outage is still announced on the poll that recovers.
+
+`mr_unreachable` **is in `DEFAULT_ONLY`**, and the others are not — not an inconsistency: `DEFAULT_ONLY` is the `gitlab-mr` filter every "watch everything of mine" flow spawns with, and listing an event beside a source that cannot emit it would be a claim that is untrue. A watcher that cannot see is actionable, otherwise entirely silent, and costs one line per outage; leaving it out would keep the defect exactly where it hurts most, in the default configuration. No existing event name moved — the key is appended ([#439](https://github.com/Digital-Process-Tools/claude-supertool/issues/439)/[#464](https://github.com/Digital-Process-Tools/claude-supertool/issues/464) invariant).
+
+Two crashes were found under the same rock and fixed with it. `github-pr` called `_gh` bare, so `gh` missing from `PATH` raised `FileNotFoundError` out of `poll()`; `gl-pipeline` caught `OSError` but not `subprocess.TimeoutExpired`, which is a `SubprocessError`. Both landed in the dispatcher's catch-all, which writes `last_error` to the state file and sleeps — not silence in the strictest sense, but silence on every surface anyone looks at. Both are now classified reasons.
 
 ## What can be watched, and what cannot
 
