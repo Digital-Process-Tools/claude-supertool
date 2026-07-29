@@ -149,7 +149,7 @@ First call spawns the daemon detached, waits for the socket, then the LSP indexe
 | Op | Effect |
 |---|---|
 | `mcp_daemon:NAME` | Start daemon for `NAME` (blocking; append `--detach` to background) |
-| `mcp_status` | List running daemons: name, hash, pid, status, uptime, idle, socket |
+| `mcp_status` | List running daemons: name, hash, pid, status (`alive` / `dead` / `unknown`), uptime, idle, socket |
 | `mcp_stop:NAME` | Graceful stop (SIGTERM, SIGKILL after 3s) |
 | `mcp_stop_all` | Stop every supertool MCP daemon |
 
@@ -234,6 +234,46 @@ out whether the safety net for it ran.
 Custom ops using `restartMcp` are the exception, and only because they already
 print a claim: a daemon that would not die is now listed as `FAILED to stop`
 rather than counted in `restarted N daemon(s)`.
+
+### When status cannot tell
+
+`mcp_status` reads each daemon's pidfile and probes the pid it finds. STATUS has
+three values, not two (#549):
+
+| STATUS | Meaning |
+|---|---|
+| `alive` | the pid was read and the process exists |
+| `dead` | the pid was read and no such process exists — a stale pidfile |
+| `unknown` | the pidfile could not be read, so nothing is known about the daemon |
+
+`unknown` is not a softer `dead`. It means the question was never answered:
+the file was unreadable, empty, held something that is not a number, or held a
+number that is not a process id. The row prints `?` in the PID column rather
+than a pid it does not have, and the reason follows on its own line:
+
+```
+NAME             HASH           PID      STATUS   UPTIME     IDLE       SOCKET
+php-lsp          6b1c9f0a2d31   4242     alive    812s       3s         /…/supertool-mcp-6b1c9f0a2d31.sock
+?                9ad0c7e41b58   ?        unknown  4s         -          /…/supertool-mcp-9ad0c7e41b58.sock
+                                ↳ unparsable pidfile: 'garbag'
+```
+
+The distinction matters most in the case this op exists for. Before, an
+unreadable pidfile printed `dead`, so a **running** daemon holding a stale index
+looked like one that had already exited — you would not restart it, and it would
+go on answering from the file tree it captured before your edit ([#239](https://github.com/Digital-Process-Tools/claude-supertool/issues/239)),
+reached through the tool built to prevent it. It also agrees with `stop.py`,
+which already treats an unreadable pidfile as a failure rather than a success
+(exit `3`, above): if `restartMcp` reports `FAILED to stop`, this is where you
+come to confirm, and it must not contradict the report.
+
+Reading an `unknown` row: the daemon may or may not be running. `ps` the socket's
+hash, or `mcp_stop_all` and start again — a duplicate daemon is visible and
+cheap, a daemon everyone believes is gone is not.
+
+`mcp_status` still exits `0` in every case. It is a report read by a human, not
+a check consumed by a caller; a non-zero exit would make an unreadable pidfile
+look like a failure of the op itself.
 
 ## Adding a new MCP server
 
