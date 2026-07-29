@@ -300,8 +300,51 @@ That last rule is the house discipline made explicit: **three states, not two** 
 | `gitlab-mr` | `glab api projects/:id/merge_requests/<iid>` | `pipeline_failed`, `pipeline_succeeded`, `pipeline_running`, `merged`, `closed`, `conflicts_appeared` |
 | `gitlab-mr-feed` | `glab mr list` for a whole filter | `mr_opened`, `mr_merged`, `mr_closed`, `mr_left_feed` |
 | `gl-runners` | `glab api projects/:id/runners` + the pending/running job queue | `runner_silent`, `runner_recovered`, `runner_starved`, `queue_cleared`, `runner_paused`, `runner_added`, `runner_vanished` |
+| `gh-run` | `gh run view <id> --json status,conclusion,workflowName,url,...` | `run_succeeded`, `run_failed`, `run_cancelled`, `run_action_required`, `run_started`, `run_inconclusive`, `run_unreachable` |
 
 Each source declares its event vocabulary in `presets/watch/sources/<NAME>/events.json` for introspection.
+
+### `github-pr` or `gh-run`? A PR's checks, or a run id
+
+Both watch GitHub CI, and the overlap is deliberate rather than an oversight, so the rule is short:
+
+| You have | Watch | You get |
+|---|---|---|
+| a **PR number** | `watch:github-pr:<N>` | that PR's whole story — checks, reviews, comments, conflicts, merge — with CI as one strand of it |
+| a **run id** | `watch:gh-run:<ID>` | that one workflow run, to completion, and nothing else |
+
+`github-pr` aggregates every check on the PR head into one rollup, so it answers *is this PR green*. `gh-run` follows a single run, so it answers *did this run finish, and how*. **Watching both for the same run means two notifications** — one from each source, on their own schedules. That is not a bug to route around; it is what asking two different questions about one run looks like. Pick the question you actually have.
+
+The reason `gh-run` exists at all is the runs `github-pr` structurally cannot see, because they are attached to no pull request:
+
+- a **`master` run after a merge** — the case that bit this repository, where master sat red from a merge-order race with nothing watching it
+- a **manual `workflow_dispatch`**
+- a **`gh run rerun`**, which mints a new run id that nothing is following
+
+`gl-pipeline` watches a pipeline id directly, independent of any MR; `gh-run` is that twin on the GitHub side.
+
+**`status` is read before `conclusion`.** `conclusion` is null for the whole life of a run and fills in only at `completed`, so a poller that branched on it first would read every healthy in-flight tick as an unknown outcome. Terminal is `status == "completed"` — the watcher stops itself.
+
+#### Every conclusion lands somewhere
+
+GitHub concludes runs with more than success/failure/cancelled, and a conclusion the map does not name must not silently become nothing — this repository filed [#445](https://github.com/Digital-Process-Tools/claude-supertool/issues/445) and [#454](https://github.com/Digital-Process-Tools/claude-supertool/issues/454) over exactly that, a tally that counted `CANCELLED` as neither pass nor pending and a run concluding `failure` read as still waiting. So the map is total:
+
+| `conclusion` | Event | Why |
+|---|---|---|
+| `success` | `run_succeeded` | |
+| `failure`, `timed_out`, `startup_failure` | `run_failed` | all three are red in the GitHub UI; the exact string rides in `payload.conclusion` so the reader still knows which |
+| `cancelled` | `run_cancelled` | |
+| `action_required` | `run_action_required` | the one tail conclusion with something for a human to do — it is waiting, not finished |
+| `neutral`, `skipped`, `stale` | `run_inconclusive`, `recognised: yes` | ended without a verdict, which is still an ending |
+| anything else, incl. `completed` with an empty conclusion | `run_inconclusive`, `recognised: no` | the raw string is carried into the notification |
+
+The last row is the load-bearing one. A conclusion GitHub adds after this table was written still reaches you, flagged as unrecognised, because the watcher **stops** at `completed` — silence there is not "we will catch it next tick", it is the run never being reported at all.
+
+#### A lookup that failed is not a run that is quiet
+
+Three states, not two, in the `docs/validators.md` vocabulary. `_fetch` returns `(run, "")` or `(None, why)`; a 401, a 404, a timeout, a missing `gh` binary and unparseable JSON all take the second branch and surface as a **`run_unreachable` event**, never as an empty tick. The message is produced by the `gh-run` op's own `_format_error`, so it reads `gh CLI not authenticated. Run: gh auth login` rather than a raw stderr dump.
+
+It is edge-triggered on a `lookup` flag: **loud once per outage, not every 30 seconds.** A signal that repeats forever is one people mute, and a muted alarm is the loud failure traded for a quiet one by a longer route. Last-known `status` is carried forward and the watcher stays non-terminal, so a network blip cannot retire a run that nobody is then watching — and a completion that landed *during* the outage is still reported on the poll that recovers.
 
 ## What can be watched, and what cannot
 
@@ -321,7 +364,7 @@ An op qualifies when all four hold:
 | `gl-mrs` (population) | MRs open after your session started | shipped as `gitlab-mr-feed` |
 | `gl-runners` | a runner stops taking work; GitLab keeps calling it `online` | shipped |
 | `gl-issue` / `gh-issue` | labels, assignment and comments change; agent workflows key off labels | not yet |
-| `gh-run` | the GitHub-side mirror of `gl-pipeline` | not yet |
+| `gh-run` | the GitHub-side mirror of `gl-pipeline` — a run id, watchable with no PR attached | shipped |
 | `devto_comments` / `bluesky` | replies and reactions arrive from strangers | not yet |
 
 | Not watchable | Why |

@@ -20,6 +20,7 @@ Example:
 ./supertool 'watch:gitlab-mr:21803'                 # all events
 ./supertool 'watch:gitlab-mr:21803:only=pipeline_failed,merged'
 ./supertool 'watch:gl-pipeline:151111'              # poll a CI pipeline to completion
+./supertool 'watch:gh-run:18234567890'              # poll a GitHub Actions run to completion
 ./supertool 'watches'
 ./supertool 'unwatch:gitlab-mr:21803'
 ./supertool 'radar'                                 # prune, heal, report
@@ -41,6 +42,7 @@ on every session start. Details in [docs/presets/watch.md](../../docs/presets/wa
 | `gitlab-mr`       | GitLab MR iid                  | MR merged or closed                            |
 | `github-pr`       | GitHub PR number               | PR merged or closed                            |
 | `gl-pipeline`     | GitLab CI pipeline id          | pipeline success / failed / canceled / skipped |
+| `gh-run`          | GitHub Actions run id          | run `status` reaches `completed`               |
 | `gitlab-mr-feed`  | scope (`@me`, `@reviewer`, …)  | never — discovery has no end state             |
 | `gl-runners`      | scope (`fleet`)                | never — a fleet has no end state               |
 
