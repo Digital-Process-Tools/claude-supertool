@@ -251,3 +251,36 @@ __pycache__/  .venv/  venv/  dist/  build/
 Ops that take explicit paths and don't traverse (`ls`, `read`, `head`, `tail`, `wc`, `stat`, `around`, `around_line`, `between`, `diff`, `blame`) are not affected — they always work on exactly the path you give them.
 
 See [issue #4](https://github.com/Digital-Process-Tools/claude-supertool/issues/4) for the full design rationale.
+
+---
+
+## `gc` — cache retention
+
+Controls the cache pruning described in [operations/meta.md](operations/meta.md#gc--cache-retention). Every key is optional; the block below is the default.
+
+```json
+{
+  "gc": {
+    "enabled": true,
+    "interval_seconds": 3600,
+    "retention_days": {
+      "vim-cursor": 7,
+      "vim-undo": 7,
+      "vi-cursor": 7,
+      "validators": 30
+    }
+  }
+}
+```
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `enabled` | `true` | `false` disables the **automatic** sweep. The explicit `gc` op still works — this is not a way to make `gc:run` a no-op. |
+| `interval_seconds` | `3600` | Minimum seconds between automatic sweeps, measured from the mtime of `~/.cache/supertool/.gc-stamp`. |
+| `retention_days.<kind>` | see table | Age, in days, beyond which an entry of that kind is stale. Fractional values are allowed. **`0` or negative means never prune this kind** — a window of zero would delete a cache wholesale, which is never what someone typing `0` means. An unparseable value falls back to the default rather than to zero. |
+
+Recognised kinds are `vim-cursor`, `vim-undo`, `vi-cursor` and `validators`. Unknown keys under `retention_days` are ignored; `gc` only ever touches directories it owns by name.
+
+**The per-kind split is load-bearing, not decoration.** The vim caches hold per-file state whose value decays with the file's last edit, and 99% of the measured population was older than a week. `validators` is keyed by a content hash plus a tool fingerprint — it is invalidated by change, not by time, and was measured with *zero* entries older than 7 days. Giving all four the same window would evict a hot, correctly-sized cache to reclaim nothing. If you set them all to one number, set it to the largest one you are comfortable with, not the smallest.
+
+`SUPERTOOL_GC_DISABLE=1` in the environment disables the automatic sweep for a single invocation, without touching config — that is what the test suite uses so a test run never reaps a developer's real cache.

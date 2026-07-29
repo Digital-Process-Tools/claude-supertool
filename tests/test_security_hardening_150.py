@@ -134,6 +134,7 @@ class TestValidatorCacheHmac:
         """Point cache to tmp_path so tests don't pollute real ~/.cache."""
         # Patch Path.home() to return tmp_path so all cache paths land there.
         original_home = Path.home
+        monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
         yield tmp_path / ".cache" / "supertool" / "validators"
         monkeypatch.setattr(Path, "home", original_home)
@@ -194,6 +195,7 @@ class TestValidatorCacheTtl:
     @pytest.fixture
     def cache_dir(self, tmp_path, monkeypatch):
         original_home = Path.home
+        monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
         yield tmp_path / ".cache" / "supertool" / "validators"
         monkeypatch.setattr(Path, "home", original_home)

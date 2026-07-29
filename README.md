@@ -201,6 +201,23 @@ Full reference (sections, `builtin-ops` overrides, custom ops, aliases, dispatch
 
 ---
 
+## `gc` — supertool prunes its own caches
+
+Supertool writes four caches under `~/.cache/supertool` — vim cursor state, the cross-call undo snapshot, validator results, and a legacy cursor dir. Nothing used to reap them: on a daily-driver machine the tree reached **1.0 GB across 242,000 files in about two weeks**, and both `vim-*` directories exceeded the 65535-dirent listing cap, which is enough to make an ordinary `ls` visibly slow.
+
+```bash
+./supertool 'gc'          # preview: per-kind counts and bytes, deletes nothing
+./supertool 'gc:run'      # delete
+```
+
+**Preview is the default** — bare `gc` and `gc:dry` only report. Retention is per cache kind (7 days for the vim caches, 30 for `validators`, which is content-hash-keyed and was measured entirely hot) and configurable in `.supertool.json`. An entry whose age can't be determined — stat failure, mtime in the future — is counted as `skipped` and never removed.
+
+A sweep also runs by itself, at most once an hour, gated on a stamp file rather than on a dice roll: no daemon, no cron, and a bounded answer to "why did that call take 400ms?". Failures are swallowed — a cache prune must never break the op that triggered it.
+
+Full reference: [docs/operations/meta.md](docs/operations/meta.md#gc--cache-retention). Config keys: [docs/configuration.md](docs/configuration.md#gc--cache-retention).
+
+---
+
 ## Presets — reusable op packs
 
 8 presets ship out of the box (`git`, `github`, `gitlab`, `claude-log`, `hashnode`, `devto`, `bluesky`, `xml`). Each has a dedicated reference page in [`docs/presets/`](docs/presets/index.md) covering ops, common workflows, env vars, and authoring notes.
