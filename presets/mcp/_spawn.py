@@ -323,12 +323,22 @@ def ensure_daemon(
     preflight: Optional[Callable[[], None]] = None,
     spawn_timeout: float = SPAWN_TIMEOUT_SEC,
     lock_timeout: float = LOCK_WAIT_SEC,
-    python: str = "python3",
+    python: str = sys.executable,
 ) -> str:
     """Return the socket of *the* warm daemon for `name`, starting it if needed.
 
     `preflight` runs only on the spawn path — adapters use it to resolve their
     MCP server binary and raise a good error before a daemon is launched.
+
+    `python` defaults to `sys.executable`, never the name `"python3"` (#564).
+    All four adapters pass no `python=` at all, so the default *was* the
+    interpreter every warm daemon ran under: a PATH lookup that resolves to
+    the App Execution Alias stub on Windows — which blocks rather than errors
+    (#529) — and, on POSIX, to whatever interpreter PATH names, which is not
+    necessarily the virtualenv the adapter itself is running in. A daemon
+    holding loaded config under a different set of installed packages than
+    its caller is the same class of silent wrong answer as the stale
+    fingerprint this module exists to prevent.
     """
     cwd = os.path.abspath(cwd)
     sock_path, pid_path = socket_pid_paths(cwd, name)
