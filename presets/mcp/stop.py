@@ -24,13 +24,12 @@ import os
 import signal
 import sys
 import time
-from pathlib import Path
 
 # Shared path helpers (#148): per-user runtime dir, NOT /tmp.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import _proc  # noqa: E402  (the one liveness probe — never os.kill(pid, 0), #429)
-from _paths import list_pidfiles, socket_pid_paths  # noqa: E402
+from _paths import list_pidfiles, read_pid, socket_pid_paths  # noqa: E402
 
 
 EXIT_OK = 0            # the daemon was running and is now gone
@@ -41,7 +40,30 @@ EXIT_REFUSED = 4       # no claim established — an unverifiable or unlistable 
 
 
 def stop_pid(pid: int) -> bool:
-    """SIGTERM, wait, SIGKILL on hang. Returns True if process is gone after."""
+    """SIGTERM, wait, SIGKILL on hang. Returns True if process is gone after.
+
+    Refuses any non-positive `pid` without signalling anything (#569).
+    `os.kill` is a selector, not an identity: `0` is the caller's own process
+    group, `-1` is every process the caller may signal, and `-N` is process
+    group `N` — see `_paths.read_pid` for the full rule. A pidfile records one
+    daemon, so only a positive value can be one, and passing anything else
+    here broadcasts rather than mistargets.
+
+    `False` rather than an exception: the callers of this function are already
+    built to report a stop that did not happen, and a traceback out of
+    `main()` would exit `1` — which `supertool.py`'s `_MCP_STOP_CODES` reads
+    as `no-daemon`, i.e. success. Refusing has to land on a failing code, not
+    on the most benign one there is.
+
+    The guard is here as well as in `stop_by_pidfile` because this function is
+    module-level and reachable from any caller; a check that lived only at
+    today's single call site would protect only today's single call site. It
+    is also not covered by the wait loop below: `_proc.pid_alive` rejects
+    `pid <= 0` (#429), so for these values the loop would return on its first
+    iteration — the SIGTERM goes out, the SIGKILL never does, and the function
+    reports the process gone.
+    """
+    if pid <= 0: return False
     try: os.kill(pid, signal.SIGTERM)
     except ProcessLookupError: return True
     except PermissionError: return False
@@ -61,11 +83,27 @@ def stop_by_pidfile(pid_path: str) -> tuple:
     An unreadable pidfile is `ok=False`: we did not stop anything and we
     cannot say whether anything is still running, which is the same
     unanswered question as a failed kill, not a success.
+
+    The read goes through `_paths.read_pid` (#569). This used to be a bare
+    `int(...)` under `except (OSError, ValueError)`, which let `0`, `+0` and
+    `-1` through — `int()` parses all three — into `os.kill`, where they are
+    process-group selectors rather than pids. It also collapsed four different
+    causes into one message, `invalid pidfile`: permission denied, a mid-write
+    empty file, `EIO`, and genuine garbage have different fixes, and this is
+    the surface `docs/mcp-integration.md` sends the reader *from*.
+
+    The corrupt pidfile is deliberately **not** unlinked. It is the only
+    evidence of whatever wrote it, and deleting it would manufacture exactly
+    the reading refused here: the next `mcp_stop` would find no file, report
+    `EXIT_NO_DAEMON` and be counted as `ok` for a daemon whose fate is still
+    unknown. `mcp_status` also needs the file to render the `unknown` row the
+    docs send the reader to. It stays until a human looks at it, and it keeps
+    failing loudly until then, which is the correct amount of noise for a
+    state nobody has explained.
     """
-    try:
-        pid = int(Path(pid_path).read_text(encoding="utf-8").strip())
-    except (OSError, ValueError):
-        return False, f"  {pid_path}: invalid pidfile"
+    pid, reason = read_pid(pid_path)
+    if reason:
+        return False, f"  {pid_path}: {reason}"
     if stop_pid(pid):
         # Daemon cleanup unlinks pidfile, but force-unlink in case SIGKILL was needed
         try: os.unlink(pid_path)
