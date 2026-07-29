@@ -169,7 +169,8 @@ EXCLUSIONS_ENV = "SUPERTOOL_RADAR_EXCLUSIONS"
 
 _FIX_HINT = "remove it from ops.radar.radar_exclusions in .supertool.json"
 
-FEED_LABEL = {"alive": "feed ok", "spawned": "feed respawned", "failed": "feed DOWN"}
+FEED_LABEL = {"alive": "feed ok", "spawned": "feed respawned", "failed": "feed DOWN",
+              "capped": "feed DOWN (respawn capped)"}
 
 
 class RadarError(RuntimeError):
@@ -476,8 +477,7 @@ def ensure_feed(scope: str = FEED_SCOPE) -> str:
     if dispatcher._load_source(FEED_SOURCE) is None:
         return "failed"
     only = [e for e in defaults.DEFAULT_FEED_ONLY.split(",") if e]
-    status, _pid = dispatcher.start_poller(FEED_SOURCE, scope, only)
-    return status
+    return ensure_watcher(FEED_SOURCE, scope, only)
 
 
 def other_feed_scopes(scope: str = FEED_SCOPE) -> list[str]:
@@ -517,21 +517,43 @@ def feed_error(scope: str = FEED_SCOPE) -> str:
 # 3c. fleet — the tier that says whether the board is even the right question
 # ---------------------------------------------------------------------------
 
-def ensure_watcher(source: str, scope: str) -> str:
-    """Guarantee exactly one live poller for a tier. "alive"|"spawned"|"failed".
+def ensure_watcher(source: str, scope: str, only: list[str] | None = None) -> str:
+    """One live poller for a slot. "alive"|"spawned"|"failed"|"capped".
 
-    Same idempotence contract as `ensure_feed`, for the same reason: radar runs
-    on a loop, and n pollers over one source means n copies of every event.
+    Same idempotence contract as the per-MR heal, for the same reason: radar
+    runs on a loop, and n pollers over one slot means n copies of every event.
     `start_poller` claims the slot before the fork.
+
+    The death cap from #513 is applied here rather than only in `heal`. That
+    bound lived on the per-MR path alone, so every other spawner — the feed,
+    and any tier watcher — would respawn a poller that dies on every tick,
+    forever, silently. Reproducing a fixed defect in a new tier is how it comes
+    back, so the cap belongs at the one place that spawns.
     """
     if dispatcher._load_source(source) is None:
         return "failed"
-    return dispatcher.start_poller(source, scope, [])[0]
+    if len(transport.deaths(source, scope)) >= transport.DEATH_RESPAWN_LIMIT:
+        return "capped"
+    return dispatcher.start_poller(source, scope, only or [])[0]
 
 
 def ensure_fleet() -> str:
     """Back-compat alias for the fleet tier's watcher."""
     return ensure_watcher(FLEET_SOURCE, FLEET_SCOPE)
+
+
+def watcher_cap_warnings(statuses: dict[str, str]) -> list[str]:
+    """Name every slot radar has stopped respawning. Never silent about it.
+
+    A capped slot is not being watched, and the whole lesson of #513 is that a
+    monitoring surface going quiet reads exactly like nothing being wrong.
+    """
+    return [
+        f"radar: WARNING — stopped respawning {name}: it has died "
+        f"{transport.DEATH_RESPAWN_LIMIT}+ times and nothing is polling it. "
+        f"Fix it, then re-arm with `watch:{name}`."
+        for name, status in sorted(statuses.items()) if status == "capped"
+    ]
 
 
 def read_tiers(raw: str | None = None) -> tuple[dict[str, dict], list[str]]:
@@ -636,73 +658,6 @@ def tier_reports() -> tuple[list[str], bool]:
         lines.extend(tier_lines)
 
     return lines, all_ok
-
-
-def fleet_report() -> tuple[list[str], bool]:
-    """(lines, healthy) describing runner capacity, read from live GitLab.
-
-    Deliberately not read from the poller's state file. Silent runners are a
-    standing condition rather than a transition, and a poller radar just
-    respawned re-baselines on its first tick — so every runner that went quiet
-    while nothing was watching is recorded as history and announced to nobody.
-    Reading live is the same authority split radar already applies to MRs:
-    GitLab is the truth, the state file is a cache.
-
-    Unreadable is reported as unknown, never as healthy. A board that answers
-    "is the infrastructure fine?" with silence when it could not check is the
-    one failure mode this whole tier exists to remove.
-    """
-    listed, err = runners_op._api("projects/:id/runners?per_page=100", paginate=True)
-    if err or not listed:
-        return ([f"radar: WARNING — runner fleet unreadable ({err or 'no runners listed'}). "
-                 f"Runner health is UNKNOWN, not green."], False)
-
-    details = runners_op._fetch_details(listed)
-    runners = [{**r, **details.get(r["id"], {})} for r in listed]
-
-    pending, err_pending = runners_op._api(
-        "projects/:id/jobs?scope[]=pending&per_page=100", paginate=True)
-    if err_pending:
-        return ([f"radar: WARNING — runner queue unreadable ({err_pending}). "
-                 f"{len(runners)} runners listed; starvation is UNKNOWN."], False)
-    pending = pending or []
-
-    running, err_running = runners_op._api(
-        "projects/:id/jobs?scope[]=running&per_page=100", paginate=True)
-    # A runner executing a job right now is alive whatever contacted_at says —
-    # that field is throttled, and trusting it alone reported healthy runners
-    # as wedged. Folded in before anything is judged.
-    runners_op.annotate_live_jobs(runners, [] if err_running else (running or []))
-    runners_op.annotate_recent_work(runners, runners_op.fetch_recent_finished()[0])
-
-    blocked = runners_op.starved_tags(runners, pending)
-
-    live = [r for r in runners if runners_op._is_responsive(r)]
-    paused = [r for r in runners if r.get("paused")]
-
-    if not blocked:
-        summary = (f"radar: fleet ok — {len(live)}/{len(runners)} runners live"
-                   f"{f', {len(paused)} paused' if paused else ''}"
-                   f", {len(pending)} pending, none blocked")
-        return ([summary], True)
-
-    total = sum(blocked.values())
-    lines = [f"radar: FLEET — {total} pending job(s) cannot start "
-             f"({len(live)}/{len(runners)} runners live)"]
-    for tags, count in sorted(blocked.items(), key=lambda kv: -kv[1]):
-        owners = [r for r in runners if runners_op._can_serve(
-            r, [] if tags == "(untagged)" else tags.split(","))]
-        if owners:
-            who = ", ".join(
-                f"{r.get('description')} (seen "
-                f"{runners_op._human_age(runners_op._age_seconds(r.get('contacted_at')))} ago)"
-                for r in owners)
-        else:
-            who = "NO runner carries these tags"
-        lines.append(f"  [{tags}] {count} job(s) -> {who}")
-    lines.append("  Pinned to an exclusive tag: no other runner may take them. "
-                 "A red board below may be this, not your code.")
-    return (lines, False)
 
 
 # ---------------------------------------------------------------------------
@@ -1059,10 +1014,13 @@ def main(argv: list[str] | None = None) -> int:
     feed_err = feed_error(scope) if feed == "alive" else ""
 
     registered, _tier_problems = read_tiers()
+    watcher_statuses: dict[str, str] = {}
     for tier_name, (watch_source, watch_scope) in _TIER_WATCH_SOURCES.items():
         if tier_name in registered:
-            ensure_watcher(watch_source, watch_scope)
+            watcher_statuses[f"{watch_source}:{watch_scope}"] = ensure_watcher(
+                watch_source, watch_scope)
     fleet_lines, fleet_ok = tier_reports()
+    fleet_lines = watcher_cap_warnings(watcher_statuses) + fleet_lines
 
     exclusions, excl_problems = read_exclusions()
     excluded, excl_lines = resolve_exclusions(open_mrs, exclusions, covered)

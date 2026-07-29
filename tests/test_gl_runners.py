@@ -202,3 +202,99 @@ def test_waiting_for_counts_only_what_this_runner_may_take() -> None:
     runner = _runner(tag_list=["docker"])
     pending = [{"tag_list": ["docker"]}, {"tag_list": ["docker"]}, {"tag_list": ["other"]}]
     assert runners_op.waiting_for(runner, pending) == 2
+
+
+# ---------------------------------------------------------------------------
+# radar tier contract
+# ---------------------------------------------------------------------------
+
+def _api_stub(runners=None, pending=None, running=None, history=None, errors=None):
+    """Route the op's endpoints to canned payloads."""
+    errors = errors or {}
+
+    def fake_api(endpoint, paginate=False, timeout=20):
+        for key, err in errors.items():
+            if key in endpoint:
+                return (None, err)
+        if "runners?" in endpoint:
+            return (runners or [], None)
+        if "scope[]=pending" in endpoint:
+            return (pending or [], None)
+        if "scope[]=running" in endpoint:
+            return (running or [], None)
+        return (history or [], None)
+
+    return fake_api
+
+
+def test_the_tier_names_the_runner_holding_the_queue(monkeypatch) -> None:
+    dead = _runner(1, description="dptools-runner-2", tag_list=["runner-2"],
+                   contacted_at=_iso(7200))
+    monkeypatch.setattr(runners_op, "_api", _api_stub(
+        runners=[dead], pending=[{"tag_list": ["runner-2"], "created_at": _iso(1800)}]))
+    monkeypatch.setattr(runners_op, "_fetch_details", lambda listed: {})
+
+    lines, ok = runners_op.radar_report({})
+    joined = "\n".join(lines)
+    assert ok is False
+    assert "1 pending job(s) cannot start" in joined
+    assert "dptools-runner-2" in joined
+    assert "may be this, not your code" in joined
+
+
+def test_the_tier_is_healthy_when_a_live_runner_covers_the_queue(monkeypatch) -> None:
+    alive = _runner(1, tag_list=["docker"], contacted_at=_iso(10))
+    monkeypatch.setattr(runners_op, "_api", _api_stub(
+        runners=[alive], pending=[{"tag_list": ["docker"], "created_at": _iso(1800)}]))
+    monkeypatch.setattr(runners_op, "_fetch_details", lambda listed: {})
+
+    lines, ok = runners_op.radar_report({})
+    assert ok is True
+    assert "fleet ok" in "\n".join(lines)
+
+
+def test_a_403_tells_the_operator_what_to_do_about_it(monkeypatch) -> None:
+    """Most people who install this are not Maintainers on the project. A tier
+    they registered and cannot use must say so actionably, not cry wolf."""
+    monkeypatch.setattr(runners_op, "_api", _api_stub(
+        errors={"runners?": "ERROR: permission denied reading runners (403)"}))
+    lines, ok = runners_op.radar_report({})
+    joined = "\n".join(lines)
+    assert ok is False
+    assert "Maintainer" in joined
+    assert "radar_tiers" in joined
+
+
+def test_an_empty_queue_skips_the_history_scan(monkeypatch) -> None:
+    """With nothing queued there is no starvation question, so five pages of
+    job history answer nothing. A registered tier should stay cheap."""
+    calls: list[str] = []
+
+    def counting_api(endpoint, paginate=False, timeout=20):
+        calls.append(endpoint)
+        return _api_stub(runners=[_runner(1, contacted_at=_iso(10))])(endpoint, paginate, timeout)
+
+    monkeypatch.setattr(runners_op, "_api", counting_api)
+    monkeypatch.setattr(runners_op, "_fetch_details", lambda listed: {})
+    _lines, ok = runners_op.radar_report({})
+
+    assert ok is True
+    assert not any("&page=" in call for call in calls)
+
+
+def test_the_window_option_reaches_the_history_scan(monkeypatch) -> None:
+    seen: dict[str, int] = {}
+    monkeypatch.setattr(runners_op, "_api", _api_stub(
+        runners=[_runner(1, tag_list=["docker"], contacted_at=_iso(10))],
+        pending=[{"tag_list": ["docker"], "created_at": _iso(1800)}]))
+    monkeypatch.setattr(runners_op, "_fetch_details", lambda listed: {})
+    monkeypatch.setattr(runners_op, "fetch_recent_finished",
+                        lambda window=None: (seen.setdefault("window", window), [])[1:] or ([], False))
+    runners_op.radar_report({"window": 60})
+    assert seen["window"] == 60
+
+
+def test_the_tier_declares_the_options_it_understands() -> None:
+    """radar validates against this set, so an option added here without being
+    read, or read without being declared, is a silent no-op."""
+    assert runners_op.RADAR_OPTIONS == {"window", "quiet_when_healthy"}
