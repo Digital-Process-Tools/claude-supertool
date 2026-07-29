@@ -182,7 +182,7 @@ class TestEditValidateRollback:
         call_count = [0]
         original_run_batch = supertool._validators_run_batch
 
-        def mock_run_batch(applicable, path):
+        def mock_run_batch(applicable, path, doc_maybe_stale=False):
             call_count[0] += 1
             if call_count[0] == 1:
                 # Before edit: validator passes

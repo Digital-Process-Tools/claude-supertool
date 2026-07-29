@@ -111,12 +111,42 @@ def main() -> None:
     # Strip supertool's "--- diag:FILE ---" header line
     text = r.stdout
     text = re.sub(r"^---\s*diag:[^\n]*---\s*\n", "", text, count=1)
+    ms = int((time.time() - start) * 1000)
 
-    # Daemon not ready or LSP not configured → skip rather than fail
-    if "no LSP configured" in text or "MCP server" in text and "unavailable" in text:
-        emit({"tool": "lsp-diag", "file": file, "ok": True, "count": 0,
-              "errors": [], "duration_ms": int((time.time() - start) * 1000),
-              "skipped": "LSP not configured or daemon down"})
+    # supertool prefixes its own messages with the op name (#346) so adapters
+    # drop them instead of counting them as findings: "no LSP configured",
+    # "MCP server 'X' unavailable" (routine since #488 stopped short-budget
+    # validators spawning daemons), "MCP error: ...", "no result from ...",
+    # "orchestrator timeout after Ns". None of them is a verdict.
+    #
+    # This used to emit ok/count/errors ALONGSIDE the skip, and only for two of
+    # those phrasings; the rest fell through to the parser, which dropped them
+    # by the same op_name guard and left `{"ok": true, "count": 0}` — an
+    # infrastructure failure rendered as a pass (#482). The receipt is now a
+    # pure skip: nothing for a consumer keying off `ok` to misread.
+    infra = next((ln.strip() for ln in text.splitlines()
+                  if ln.strip().startswith("diag:")), None)
+    if infra:
+        emit({"tool": "lsp-diag", "file": file, "duration_ms": ms,
+              "skipped": infra[len("diag:"):].strip() or "no answer from LSP"})
+        return
+
+    # Staleness (#482). cclsp serves get_diagnostics from a per-URI cache that
+    # publishDiagnostics fills and nothing ever invalidates, and its
+    # ensureFileOpen returns early when the file is already open — so the
+    # daemon never re-reads from disk for the rest of its life. The framework's
+    # own pre-edit baseline pass is what opens the document, which makes the
+    # after-check stale on exactly the file just edited: clean when the edit
+    # broke the file, or the previous version's errors at the previous
+    # version's line/col. Neither describes the bytes on disk, so neither is
+    # reported. SUPERTOOL_LSP_RESYNC_ON_QUERY=1 opts a server back in — set it
+    # via the validator spec's `env` block when the LSP behind `diag:` re-reads
+    # the file on every query rather than caching it forever.
+    if (os.environ.get("SUPERTOOL_LSP_DOC_MAYBE_STALE") == "1"
+            and os.environ.get("SUPERTOOL_LSP_RESYNC_ON_QUERY") != "1"):
+        emit({"tool": "lsp-diag", "file": file, "duration_ms": ms,
+              "skipped": "stale document — warm LSP daemon answers from its "
+                         "pre-edit copy, not from disk"})
         return
 
     errors = parse_cclsp_diagnostics(text, file)

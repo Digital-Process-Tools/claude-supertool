@@ -18,7 +18,8 @@ def test_validators_run_batch_parallel_branch(tmp_path: Path, monkeypatch) -> No
     monkeypatch.setattr(supertool, "_parallel_workers", lambda: 2)
     monkeypatch.setattr(
         supertool, "_validator_run_one",
-        lambda name, spec, path: {"name": name, "tool": name, "ok": True, "count": 0},
+        lambda name, spec, path, stale=False: {"name": name, "tool": name,
+                                               "ok": True, "count": 0},
     )
     out = supertool._validators_run_batch(applicable, str(f))
     assert "v1" in out and "v2" in out
@@ -49,7 +50,8 @@ def test_validators_run_batch_sequential_single_validator(tmp_path: Path, monkey
     monkeypatch.setattr(supertool, "_parallel_workers", lambda: 4)
     monkeypatch.setattr(
         supertool, "_validator_run_one",
-        lambda name, spec, path: {"name": name, "tool": name, "ok": True, "count": 0},
+        lambda name, spec, path, stale=False: {"name": name, "tool": name,
+                                               "ok": True, "count": 0},
     )
     out = supertool._validators_run_batch({"only": {"cmd": "true"}}, str(f))
     assert "only" in out
