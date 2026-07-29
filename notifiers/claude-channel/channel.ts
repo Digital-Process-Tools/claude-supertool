@@ -20,6 +20,12 @@
  *   the same user can connect. Multi-user machines should use a per-user
  *   override path (set SUPERTOOL_WATCH_SOCK env var on both producers and
  *   this server).
+ *
+ * Socket ownership:
+ *   One server owns the socket. A second refuses to start (exit 3) rather than
+ *   unlink a live incumbent, which would leave it listening on an unnamed
+ *   inode — alive, healthy-looking and unreachable (#550). Use
+ *   SUPERTOOL_WATCH_SOCK to give a second session a channel of its own.
  */
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -160,8 +166,6 @@ const mcp = new Server(
   },
 );
 
-await mcp.connect(new StdioServerTransport());
-
 // Ensure the socket's parent dir exists so non-default SUPERTOOL_WATCH_SOCK
 // paths (e.g. ~/.claude/supertool-watch.sock) don't fail with a cryptic ENOENT.
 try {
@@ -171,11 +175,170 @@ try {
   process.stderr.write(`claude-channel: could not ensure parent dir: ${String(err)}\n`);
 }
 
-// Bind the UDS socket. Unlink stale file from a previous crash first.
-try {
-  fs.unlinkSync(SOCK_PATH);
-} catch {
-  // ENOENT — fine, nothing to clean
+/**
+ * Exit code for "someone else owns the watch socket". Distinct from the
+ * launcher shim's 1 (channel.ts not found / no runtime) so `claude mcp list`
+ * tells the two apart.
+ */
+const EXIT_SOCKET_CONFLICT = 3;
+
+/**
+ * True once this process has bound SOCK_PATH. Nothing here may unlink a path
+ * it did not bind — that single missing condition is the whole of #550.
+ */
+let bound = false;
+
+function refuse(reason: string): never {
+  process.stderr.write(
+    `claude-channel: refusing to start — ${reason}\n` +
+      `  Watch socket: ${SOCK_PATH}\n` +
+      `  Taking it would leave the other server listening on an unnamed inode:\n` +
+      `  alive, watchers all green, and unreachable — a dead radar that reads as\n` +
+      `  a healthy one (#550). One session with a channel beats two half-blind.\n` +
+      `  To give this session its own: set SUPERTOOL_WATCH_SOCK to an unused path,\n` +
+      `  here and on every poller that feeds it. Or stop the other session.\n`,
+  );
+  process.exit(EXIT_SOCKET_CONFLICT);
+}
+
+type Probe = "live" | "vacant" | { code: string };
+
+/**
+ * Whether anything is listening on `path`.
+ *
+ * A UDS `connect()` is completed by the kernel from the listen backlog, so it
+ * succeeds even against a server too wedged to `accept()`. That is the answer
+ * we want: an inode with a listener is not ours to unlink, however unhealthy
+ * it looks from outside.
+ *
+ * "Vacant" is deliberately *not* decided on a single errno. Against the same
+ * stale socket file, node reports `ECONNREFUSED` and bun reports `ENOENT`, and
+ * `claude-channel.sh` will launch us under either. Both mean the same thing —
+ * nobody answered — so both map to `vacant`, and whether a file is sitting
+ * there is then settled by `lstat`, not by guessing which runtime we are.
+ * Anything else (`EACCES`, a timeout, someone else's 0600 socket) is not
+ * evidence of vacancy and stays an error: "I could not tell" must never be
+ * rounded down to "nobody is home".
+ */
+function probe(path: string): Promise<Probe> {
+  return new Promise((resolve) => {
+    const sock = net.connect(path);
+    let settled = false;
+    const done = (result: Probe): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      sock.destroy();
+      resolve(result);
+    };
+    // A connect that neither completes nor refuses tells us nothing, and
+    // "nothing" must not be read as "vacant".
+    const timer = setTimeout(() => done({ code: "ETIMEDOUT" }), 2000);
+    timer.unref?.();
+    sock.on("connect", () => done("live"));
+    sock.on("error", (err) => {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "ECONNREFUSED" || code === "ENOENT") return done("vacant");
+      done({ code: code || String(err) });
+    });
+  });
+}
+
+/**
+ * `probe`, repeated, because one refused connect is not proof of vacancy.
+ *
+ * On BSD/macOS a `connect()` to a listener whose backlog is full is refused
+ * with `ECONNREFUSED` — the same answer as a socket with no listener at all.
+ * So a live-but-saturated server can read as vacant on a single ask, and the
+ * consequence of believing that is #550 all over again, just rarer.
+ *
+ * A healthy `net.createServer` accepts immediately and never holds a full
+ * backlog, so a real incumbent answers "live" on the first or second try. Only
+ * a unanimous set of refusals counts as vacant. Any single "live" wins.
+ */
+async function probeRepeatedly(path: string, tries = 3): Promise<Probe> {
+  let last: Probe = "vacant";
+  for (let attempt = 0; attempt < tries; attempt++) {
+    if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 100));
+    last = await probe(path);
+    if (last !== "vacant") return last;
+  }
+  return last;
+}
+
+/** One `listen()` attempt: null when bound, otherwise the bind error. */
+function tryListen(srv: net.Server): Promise<NodeJS.ErrnoException | null> {
+  return new Promise((resolve) => {
+    const onError = (err: NodeJS.ErrnoException): void => {
+      srv.removeListener("listening", onListening);
+      resolve(err);
+    };
+    const onListening = (): void => {
+      srv.removeListener("error", onError);
+      resolve(null);
+    };
+    srv.once("error", onError);
+    srv.once("listening", onListening);
+    srv.listen(SOCK_PATH);
+  });
+}
+
+/**
+ * Bind SOCK_PATH, or exit non-zero saying why not.
+ *
+ * Bind first, ask questions second. Unlinking up front could never fail, which
+ * is precisely how it evicted live servers in silence: `bind()` never saw
+ * `EADDRINUSE` because the caller had just freed the name itself. Here the
+ * path is removed only after `bind(2)` has refused it *and* a `connect()` has
+ * proved nothing is listening — so recovery from a crashed server, the case
+ * the original unlink existed for, still works.
+ */
+async function bindOrRefuse(srv: net.Server): Promise<void> {
+  const first = await tryListen(srv);
+  if (first === null) {
+    bound = true;
+    return;
+  }
+  if (first.code !== "EADDRINUSE") refuse(`bind failed: ${first.code || String(first)}`);
+
+  const state = await probeRepeatedly(SOCK_PATH);
+  if (state === "live") refuse("another claude-channel server is listening there");
+  if (typeof state !== "string") {
+    refuse(`cannot tell whether the socket is live (connect: ${state.code})`);
+  }
+
+  // Nobody answered. If something is still at the path it is the leftover of a
+  // crashed server — the case the original unconditional unlink existed for,
+  // and the one this must not break.
+  let leftover: fs.Stats | null = null;
+  try {
+    leftover = fs.lstatSync(SOCK_PATH);
+  } catch {
+    // Vanished between probe and stat; the retry below just binds.
+  }
+  if (leftover !== null) {
+    // Only ever delete a socket. A misconfigured SUPERTOOL_WATCH_SOCK pointing
+    // at a real file should cost a start-up error, not the file.
+    if (!leftover.isSocket()) {
+      refuse(`${SOCK_PATH} exists and is not a socket — refusing to delete it`);
+    }
+    try {
+      fs.unlinkSync(SOCK_PATH);
+    } catch (err) {
+      refuse(`stale socket could not be removed: ${String(err)}`);
+    }
+    process.stderr.write(
+      `claude-channel: cleared a stale watch socket at ${SOCK_PATH} — nothing was listening\n`,
+    );
+  }
+
+  // Losing this second race means someone bound between our probe and here.
+  // They are live and we are not, so the same rule applies: step aside.
+  const second = await tryListen(srv);
+  if (second !== null) {
+    refuse(`lost the socket to another server while clearing it: ${second.code || String(second)}`);
+  }
+  bound = true;
 }
 
 const server = net.createServer((conn) => {
@@ -227,28 +390,47 @@ const server = net.createServer((conn) => {
   });
 });
 
-server.listen(SOCK_PATH, () => {
-  try {
-    fs.chmodSync(SOCK_PATH, 0o600);
-  } catch {
-    // Permission tightening is advisory; UDS is already localhost-only.
-  }
-});
+await bindOrRefuse(server);
+
+try {
+  fs.chmodSync(SOCK_PATH, 0o600);
+} catch {
+  // Permission tightening is advisory; UDS is already localhost-only.
+}
+
+// The socket is settled before the MCP handshake, so a server that refuses
+// never registers as a healthy channel: Claude Code sees it die during
+// start-up and `claude mcp list` reports a failure, instead of a green entry
+// that would never deliver anything.
+await mcp.connect(new StdioServerTransport());
 
 server.on("error", (err) => {
   // Surface bind errors via stderr so `claude --debug` can show them.
   process.stderr.write(`claude-channel: socket error: ${String(err)}\n`);
 });
 
-// Clean shutdown — remove the socket file on SIGINT/SIGTERM.
-const cleanup = () => {
+// Clean shutdown — release the socket on SIGINT/SIGTERM, or when the session
+// that launched us goes away.
+const cleanup = (): void => {
   try {
     server.close();
   } catch {}
-  try {
-    fs.unlinkSync(SOCK_PATH);
-  } catch {}
+  // Only ever remove a path this process bound. A refusing server exits before
+  // `bound` is set and leaves the incumbent's socket exactly where it found it.
+  if (bound) {
+    try {
+      fs.unlinkSync(SOCK_PATH);
+    } catch {}
+  }
   process.exit(0);
 };
 process.on("SIGINT", cleanup);
 process.on("SIGTERM", cleanup);
+
+// Stdio EOF means Claude Code is gone: there is nobody left to deliver to, and
+// holding the watch socket would deny it to every future session. #550 found
+// two such orphans, parent sessions long dead, still owning the path — which
+// is what would turn "refuse when someone is listening" from a safeguard into
+// a permanent outage. Let go instead.
+process.stdin.on("end", cleanup);
+process.stdin.on("close", cleanup);
