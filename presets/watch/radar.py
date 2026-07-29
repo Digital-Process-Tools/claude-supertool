@@ -48,6 +48,19 @@ different ones — a board that omits MRs it is actively receiving events for
 renders exactly like a board where those MRs are fine, which is the same
 silent incompleteness this op exists to remove.
 
+That filter lives for one invocation and is not persisted, so a session that
+widened the board and then runs a bare `radar` silently gets the default
+population back (#486). The footer therefore names the scope on every board,
+the default one included: "no label" used to spell both "this is the default"
+and "nobody said". A feed poller still live on another scope is named too —
+changing the filter respawns the feed without retiring the old one, so
+effective scope splits between what this call passed and what a still-running
+watcher was started with. It is reported, not killed: two populations at once
+is legitimate (see `prune_terminal`), and only the reader can say which one
+they meant. What this deliberately does not give is continuity — re-widening
+still means re-typing the filter, because a population read from a file
+nobody in the session chose is the hidden state that caused the split.
+
 The snapshot is keyed by that filter for the same reason. Two populations
 sharing one snapshot file would report every MR of the first as new and every
 MR of the second as gone; a lying delta is worse than no delta.
@@ -410,6 +423,27 @@ def ensure_feed(scope: str = FEED_SCOPE) -> str:
     return status
 
 
+def other_feed_scopes(scope: str = FEED_SCOPE) -> list[str]:
+    """Live feed pollers covering a population other than this board's.
+
+    Changing the filter respawns the feed; the previous one is not retired, so
+    a machine can carry a feed started with `author=@me,author=x` while the
+    current invocation resolved plain `author=@me`. Effective scope is then
+    split between what this call passed and what a still-running watcher was
+    started with, and neither half is the whole — a board that reports its own
+    half as the answer is narrower than the reader believes it is.
+
+    Read-only: pid files only, nothing is spawned and nothing is killed. Two
+    scopes are a legitimate arrangement (`prune_terminal` says as much about
+    per-MR watchers), so this reports the split rather than resolving it.
+    """
+    return sorted({
+        str(row.get("id") or "")
+        for row in transport.list_active_pids()
+        if row.get("source") == FEED_SOURCE and str(row.get("id") or "") != scope
+    } - {""})
+
+
 def feed_error(scope: str = FEED_SCOPE) -> str:
     """Last error the feed poller recorded, or "" when it is polling cleanly.
 
@@ -654,28 +688,45 @@ def _footer(open_mrs: list[dict], covered: set[str], healed: list[str],
     return " | ".join(parts)
 
 
-def _feed_warnings(feed: str, feed_err: str) -> list[str]:
+def _feed_warnings(feed: str, feed_err: str,
+                   others: list[str] | None = None) -> list[str]:
     """A blind radar must say so. A dead or erroring feed discovers nothing,
     and the symptom of that is a board that simply stops gaining rows — which
-    is exactly what an all-quiet day looks like."""
+    is exactly what an all-quiet day looks like.
+
+    `others` is the same failure from the opposite side (#486): a feed left
+    running by an earlier, wider filter is still receiving MRs that this
+    board does not list, and the board looks healthy while omitting them.
+    Named, not killed — a second population can be deliberate.
+    """
+    out: list[str] = []
     if feed == "failed":
-        return ["radar: WARNING — MR feed poller is down. New MRs will not be "
-                "discovered until the next radar run."]
-    if feed_err:
-        return [f"radar: WARNING — MR feed poller is failing to poll: {feed_err}"]
-    return []
+        out.append("radar: WARNING — MR feed poller is down. New MRs will not be "
+                   "discovered until the next radar run.")
+    elif feed_err:
+        out.append(f"radar: WARNING — MR feed poller is failing to poll: {feed_err}")
+    for other in others or []:
+        out.append(f"radar: NOTE — a feed poller is also live on scope '{other}', "
+                   f"which this board does not cover. Its MRs are not on this "
+                   f"board; re-run as radar:{other} to see them.")
+    return out
 
 
 def render(open_mrs: list[dict], covered: set[str], healed: list[str],
            drifted: dict[str, tuple[str, str]], pruned: list[str],
            uncovered: list[str], previous: dict[str, Any] | None,
            feed: str = "alive", feed_err: str = "", label: str = "",
-           excluded: set[str] | None = None, notes: list[str] | None = None) -> str:
+           excluded: set[str] | None = None, notes: list[str] | None = None,
+           other_scopes: list[str] | None = None) -> str:
     """Full board on cold start; changed + standing-problem rows afterwards.
 
-    `label` names the population when it is not the default, because two
-    radars over different filters in one window otherwise print two boards
-    that are indistinguishable from one board printed twice.
+    `label` names the population on every board, the default one included
+    (#486). Two radars over different filters in one window otherwise print
+    two boards indistinguishable from one board printed twice — and, worse,
+    a session that widened the filter and then ran a bare `radar` got the
+    narrow board back with nothing on it saying so. An omission the tool
+    produced renders exactly like an absence in the world, so the scope the
+    board was actually built from is stated rather than implied.
 
     `excluded` removes rows; `notes` says so. They are two arguments rather
     than one because the notes outlive the suppression — an exclusion that
@@ -704,7 +755,7 @@ def render(open_mrs: list[dict], covered: set[str], healed: list[str],
     footer = _footer(board_mrs, covered, healed, drifted, pruned, uncovered, gone,
                      feed, label, len(excluded))
 
-    lines = _feed_warnings(feed, feed_err)
+    lines = _feed_warnings(feed, feed_err, other_scopes)
     if cold:
         lines.append("radar: cold start — no prior snapshot, full board")
     if shown:
@@ -750,10 +801,16 @@ def main(argv: list[str] | None = None) -> int:
     exclusions, excl_problems = read_exclusions()
     excluded, excl_lines = resolve_exclusions(open_mrs, exclusions, covered)
 
-    label = "" if multi == default_filter() else filter_string(multi)
+    # Stated on every board, default included: "no label" used to spell both
+    # "this is the default population" and "nobody said which population this
+    # is", and the filter does not survive an invocation (#486).
+    label = f"scope {filter_string(multi)}"
+    if multi == default_filter():
+        label += " (default)"
     previous = read_snapshot(multi)
     print(render(open_mrs, covered, healed, drifted, pruned, uncovered, previous,
-                 feed, feed_err, label, excluded, excl_problems + excl_lines))
+                 feed, feed_err, label, excluded, excl_problems + excl_lines,
+                 other_feed_scopes(scope)))
     # The snapshot records the whole population, excluded rows included:
     # keyed on what is true, not on what was printed. Otherwise the run after
     # an exclusion is lifted reports a months-old MR as new.

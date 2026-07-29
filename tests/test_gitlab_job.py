@@ -86,12 +86,112 @@ def test_raw_slice_with_start_only_runs_to_end(monkeypatch, capsys) -> None:
     assert "line6" not in out
 
 
-def test_raw_start_beyond_total_returns_nothing(monkeypatch, capsys) -> None:
-    lines = [f"line{i}" for i in range(1, 6)]
-    rc = _run_main(monkeypatch, ["job.py", "123", "raw", "100"], lines)
+# ---------------------------------------------------------------------------
+# out-of-range START and the tail form (#487)
+#
+# `raw` is reached as a fallback when `:fail` was unhelpful, so START is a
+# guess and the guess is nearly always aimed at the tail. Declining an
+# overshoot costs a whole round-trip to learn a bound the same response has
+# already printed. Returning the tail instead is only safe while the response
+# says, in the same breath, that it is not the range that was asked for —
+# silently handing back different lines is the same disease one level down.
+# ---------------------------------------------------------------------------
+
+def test_raw_start_beyond_total_returns_the_tail_of_the_requested_width(
+    monkeypatch, capsys
+) -> None:
+    lines = [f"line{i}" for i in range(1, 21)]
+    rc = _run_main(monkeypatch, ["job.py", "123", "raw", "100", "104"], lines)
     out = capsys.readouterr().out
     assert rc == 0
-    assert "start (100) > total (5)" in out
+    assert "## Raw lines 16-20 of 20" in out
+    assert "   20 | line20" in out
+    assert "   15 | line15" not in out
+
+
+def test_raw_start_beyond_total_says_it_did_not_return_what_was_asked_for(
+    monkeypatch, capsys
+) -> None:
+    """A clamp nobody is told about hands back different data than requested."""
+    lines = [f"line{i}" for i in range(1, 21)]
+    rc = _run_main(monkeypatch, ["job.py", "123", "raw", "100", "104"], lines)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "requested 100-104" in out
+    assert "past end of log" in out
+    assert "20 lines" in out
+
+
+def test_raw_start_beyond_total_without_an_end_returns_the_default_tail(
+    monkeypatch, capsys
+) -> None:
+    lines = [f"line{i}" for i in range(1, 201)]
+    rc = _run_main(monkeypatch, ["job.py", "123", "raw", "500"], lines)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "## Raw lines 121-200 of 200" in out
+    assert "requested 500-200" in out
+
+
+def test_raw_tail_form_returns_the_last_n_lines(monkeypatch, capsys) -> None:
+    """The bound no longer has to be known before the tail can be asked for."""
+    lines = [f"line{i}" for i in range(1, 21)]
+    rc = _run_main(monkeypatch, ["job.py", "123", "raw", "-5"], lines)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "## Raw lines 16-20 of 20" in out
+    assert "   16 | line16" in out
+    assert "line15" not in out
+
+
+def test_raw_tail_form_longer_than_the_log_returns_the_whole_log(
+    monkeypatch, capsys
+) -> None:
+    lines = [f"line{i}" for i in range(1, 6)]
+    rc = _run_main(monkeypatch, ["job.py", "123", "raw", "-100"], lines)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "## Raw lines 1-5 of 5" in out
+
+
+def test_raw_tail_form_refuses_an_end(monkeypatch, capsys) -> None:
+    """-N:END has two contradictory anchors; guessing which one wins is how a
+    caller gets lines it never asked for."""
+    lines = [f"line{i}" for i in range(1, 21)]
+    rc = _run_main(monkeypatch, ["job.py", "123", "raw", "-5", "9"], lines)
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "tail form" in out
+
+
+def test_raw_refuses_an_inverted_range(monkeypatch, capsys) -> None:
+    """It used to print `## Raw lines 10-9 of 20` and no lines at all — a
+    garbled header over an empty body, which reads as "that part of the log is
+    empty" rather than "that range is backwards"."""
+    lines = [f"line{i}" for i in range(1, 21)]
+    rc = _run_main(monkeypatch, ["job.py", "123", "raw", "10", "5"], lines)
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "END (5) is before START (10)" in out
+
+
+def test_raw_on_an_empty_log_says_the_log_is_empty(monkeypatch, capsys) -> None:
+    """"Nothing to show" must mean the log is empty, never that the tool
+    declined — the two are the absence this repo keeps confusing."""
+    fake = _make_fake_run(["placeholder"])
+
+    def empty_trace(args, **kw):
+        result = fake(args, **kw)
+        if len(args) > 2 and args[2].endswith("/trace"):
+            result.stdout = ""
+        return result
+
+    monkeypatch.setattr(sys, "argv", ["job.py", "123", "raw", "100"])
+    monkeypatch.setattr(job.subprocess, "run", empty_trace)
+    rc = job.main()
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "log is empty" in out
 
 
 def test_raw_end_clamped_to_total(monkeypatch, capsys) -> None:
