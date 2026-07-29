@@ -432,7 +432,10 @@ def _snap_entry(m: dict) -> dict[str, Any]:
         "pipeline": str(m.get("_pipeline") or ""),
         "pipeline_id": str(m.get("_pipeline_id") or ""),
         "draft": bool(m.get("draft")),
-        "conflict": bool(m.get("has_conflicts") or m.get("detailed_merge_status") == "conflict"),
+        # "conflict" | "empty" | "" — see mrs._conflict_label. This key held a
+        # bool before #471, so the first run after upgrading reads every row
+        # with a stored `false` as moved and prints a full board once.
+        "conflict": mrs._conflict_label(m),
     }
 
 
@@ -488,16 +491,21 @@ def _is_standing_problem(m: dict) -> bool:
 
 
 def _problem_label(m: dict) -> str:
-    """"failed", "conflict", "failed+conflict", or "" when the MR is fine.
+    """"failed", "conflict", "empty", "failed+conflict", … or "" when fine.
 
     Printed on the exclusion line, so a suppressed MR that picks up a second
     problem changes what the board says about it without un-suppressing it.
+
+    An empty MR stays a standing problem, only under its own name: it is still
+    unmergeable, and dropping it out of the set would trade #471's mislabel
+    for a silent omission — the worse of the two (#445/#454/#414).
     """
     bits = []
     if str(m.get("_pipeline") or "") == "failed":
         bits.append("failed")
-    if bool(m.get("has_conflicts") or m.get("detailed_merge_status") == "conflict"):
-        bits.append("conflict")
+    blocked = mrs._conflict_label(m)
+    if blocked:
+        bits.append(blocked)
     return "+".join(bits)
 
 

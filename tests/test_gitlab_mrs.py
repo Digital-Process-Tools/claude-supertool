@@ -7,6 +7,7 @@ without hitting the live glab CLI.
 from __future__ import annotations
 
 import importlib.util
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -556,3 +557,101 @@ def test_expand_filters_leaves_a_scalar_filter_exactly_as_parse_args_saw_it() ->
 
 def test_expand_filters_of_an_empty_filter_is_one_unfiltered_query() -> None:
     assert mrs._expand_filters({}) == [{}]
+
+# ---------------------------------------------------------------------------
+# [conflict] vs [empty] — has_conflicts is not a conflict field (#471)
+#
+# Driven end to end over the payloads the API actually returns: the `glab mr
+# list` JSON on stdout, and the per-MR detail `_enrich` already fetches. A test
+# against `_flags` alone would pass on a half-implementation that never wires
+# the detail signal through enrichment.
+# ---------------------------------------------------------------------------
+
+def _list_row(iid=1, **kw) -> dict:
+    """One row as `glab mr list -F json` returns it: `detailed_merge_status`
+    and `sha` on every row, never `diff_refs`."""
+    row = {
+        "iid": iid,
+        "title": "t",
+        "draft": False,
+        "source_branch": f"b{iid}",
+        "target_branch": "master",
+        "updated_at": "2026-07-27T10:00:00Z",
+        "has_conflicts": True,
+        "detailed_merge_status": "cannot_be_merged",
+        "sha": "a" * 40,
+        "blocking_discussions_resolved": True,
+    }
+    row.update(kw)
+    return row
+
+
+def _detail_payload(**kw) -> dict:
+    d = {"head_pipeline": {"status": "success", "id": "9"}, "changes_count": "3"}
+    d.update(kw)
+    return d
+
+
+def _drive(monkeypatch, capsys, rows, details=None) -> str:
+    """Run `gl-mrs` over stubbed API payloads and return the rendered board."""
+    details = details or {}
+    monkeypatch.setattr(sys, "argv", ["mrs.py", ""])
+    monkeypatch.setattr(
+        mrs, "_run",
+        lambda cmd, timeout=25: subprocess.CompletedProcess(cmd, 0, json.dumps(rows), ""),
+    )
+
+    def _api(endpoint, timeout=10):
+        if endpoint.endswith("/approvals"):
+            return {}
+        iid = endpoint.rsplit("/", 1)[-1]
+        return details.get(iid, _detail_payload())
+
+    monkeypatch.setattr(mrs, "_api_json", _api)
+    monkeypatch.setattr(mrs, "_watched_iids", lambda *a, **k: set())
+    assert mrs.main() == 0
+    return capsys.readouterr().out
+
+
+def test_an_mr_with_no_commits_is_not_rendered_as_conflicted(monkeypatch, capsys) -> None:
+    """`commits_status` is GitLab's identifier for a source branch with no
+    commits. There is no diff, so there is nothing that can conflict."""
+    out = _drive(monkeypatch, capsys, [_list_row(detailed_merge_status="commits_status")])
+    assert "conflict" not in out
+    assert "empty" in out
+
+
+def test_an_mr_with_a_null_sha_is_not_rendered_as_conflicted(monkeypatch, capsys) -> None:
+    """!33223 in #465: opened before any push, `sha: null`, `has_conflicts: true`."""
+    out = _drive(monkeypatch, capsys, [_list_row(sha=None)])
+    assert "conflict" not in out
+    assert "empty" in out
+
+
+def test_an_empty_diff_is_detected_from_the_enriched_detail_payload(monkeypatch, capsys) -> None:
+    """The signal the list endpoint omits. `diff_refs` never ships in the list
+    row, but `_enrich` already fetches the detail endpoint for every MR on the
+    board, so the poller's strongest signal costs no extra call here."""
+    rows = [_list_row(iid=7)]
+    details = {"7": _detail_payload(diff_refs={"base_sha": "b" * 40, "head_sha": "b" * 40})}
+    out = _drive(monkeypatch, capsys, rows, details)
+    assert "conflict" not in out
+    assert "empty" in out
+
+
+def test_a_genuine_conflict_is_still_flagged(monkeypatch, capsys) -> None:
+    """A settled MR with a real diff that really conflicts must still say so."""
+    rows = [_list_row(iid=8)]
+    details = {"8": _detail_payload(diff_refs={"base_sha": "b" * 40, "head_sha": "c" * 40})}
+    out = _drive(monkeypatch, capsys, rows, details)
+    assert "conflict" in out
+    assert "empty" not in out
+
+
+def test_a_conflict_is_still_flagged_when_the_detail_payload_is_absent(monkeypatch, capsys) -> None:
+    """Absent fields are never evidence. A detail fetch that failed leaves
+    `has_conflicts` trusted, so the guard cannot argue itself into silence
+    about a conflict it merely failed to observe."""
+    out = _drive(monkeypatch, capsys, [_list_row(iid=9)], {"9": {}})
+    assert "conflict" in out
+    assert "empty" not in out

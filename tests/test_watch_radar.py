@@ -1103,3 +1103,38 @@ def test_the_radar_op_forwards_its_args() -> None:
     op = manifest["ops"]["radar"]
     assert op["cmd"].endswith("{args}")
     assert "author=" in op["syntax"]
+
+# ---------------------------------------------------------------------------
+# radar reads the same flag, so it inherits the same false positive (#471)
+#
+# The snapshot entry is what the delta is computed over and `_problem_label`
+# is what re-prints a standing problem, so a wrong conflict verdict here does
+# not just mislabel a row — it invents a change and a standing red.
+# ---------------------------------------------------------------------------
+
+def test_an_mr_with_no_commits_is_not_snapshotted_as_conflicted() -> None:
+    entry = radar._snap_entry(_mr(1, has_conflicts=True, detailed_merge_status="commits_status"))
+    assert entry["conflict"] == "empty"
+
+
+def test_an_mr_with_a_null_sha_is_not_snapshotted_as_conflicted() -> None:
+    entry = radar._snap_entry(_mr(2, has_conflicts=True, sha=None))
+    assert entry["conflict"] == "empty"
+
+
+def test_a_genuine_conflict_is_still_snapshotted_as_conflicted() -> None:
+    entry = radar._snap_entry(_mr(3, has_conflicts=True, sha="a" * 40))
+    assert entry["conflict"] == "conflict"
+
+
+def test_an_empty_mr_is_still_a_standing_problem_under_its_own_name() -> None:
+    """It is unmergeable and the reader has to act on it, so it must not fall
+    out of the standing-problem set — it is only named honestly."""
+    assert radar._problem_label(_mr(4, has_conflicts=True, detailed_merge_status="commits_status")) == "empty"
+    assert radar._problem_label(
+        _mr(5, pipeline="failed", has_conflicts=True, detailed_merge_status="commits_status")
+    ) == "failed+empty"
+
+
+def test_a_genuine_conflict_keeps_its_problem_label() -> None:
+    assert radar._problem_label(_mr(6, has_conflicts=True, sha="a" * 40)) == "conflict"

@@ -234,6 +234,11 @@ def _enrich(
             m["_changes"] = int(raw_changes) if raw_changes is not None else None
         except (ValueError, TypeError):
             m["_changes"] = None
+        # The list row never carries diff_refs; the detail response does, and
+        # it is the strongest empty-diff signal (#471). Kept only when it is
+        # the shape the guard reads — a junk value must not read as evidence.
+        refs = detail.get("diff_refs")
+        m["_diff_refs"] = refs if isinstance(refs, dict) else None
         m["_approved"] = appr.get("approved")
         m["_approved_by"] = appr.get("approved_by") or []
         m["_failed_jobs"] = []
@@ -353,12 +358,70 @@ def _sort_key(m: dict) -> tuple[int, str]:
     return (failed, str(m.get("updated_at", "")))
 
 
+# GitLab's detailed_merge_status identifier for "source branch exists and
+# contains commits" — i.e. the check failed, so there are no commits, so there
+# is no diff. Same constant as the gitlab-mr poller (#465).
+NO_DIFF_DETAILED_STATUS = "commits_status"
+
+
+def _has_no_diff(m: dict) -> bool:
+    """True only on positive evidence that this MR contains no diff.
+
+    Absent fields are never evidence. A row that carries none of these signals
+    leaves `has_conflicts` trusted, so the guard can never invent a reason to
+    downgrade a conflict it simply could not see — the same bias as the poller.
+
+    Two of the three signals ship on every `glab mr list` row. The third,
+    `diff_refs`, never does — but both surfaces that call this already fetch
+    the per-MR detail endpoint through `_enrich`, which stashes it as
+    `_diff_refs`, so the poller's strongest signal costs no extra request.
+    Beyond `enrich_cap`, or with `nopipe`, `_diff_refs` is simply absent and
+    the check degrades to the two list-row signals — never to a false negative.
+    """
+    if m.get("detailed_merge_status") == NO_DIFF_DETAILED_STATUS:
+        return True
+    if "sha" in m and not m.get("sha"):
+        return True
+    refs = m.get("_diff_refs")
+    if isinstance(refs, dict) and "head_sha" in refs:
+        head = refs.get("head_sha")
+        if not head:
+            return True
+        if head == refs.get("base_sha"):
+            return True
+    return False
+
+
+def _conflict_label(m: dict) -> str:
+    """"conflict", "empty", or "" — what blocks this MR from merging.
+
+    `has_conflicts` is not a conflict field. It is a straight alias for
+    `cannot_be_merged?`, and GitLab annotates the exposure itself: it "is
+    generally indicative of conflicts … However, it can also indicate that
+    either #has_no_commits? or #branch_missing? are true". Rendering it as
+    `[conflict]` reports a merge conflict on an MR that has no diff at all
+    (#471, the same false positive #465 fixed in the event stream).
+
+    So a blocked MR with positive evidence of an empty diff is reported as
+    `[empty]` rather than suppressed. Suppression would be the other defect:
+    the MR really is unmergeable, and a triage board that prints nothing for
+    an unmergeable MR is a silent omission, which this repo rates as strictly
+    worse than a mislabel.
+    """
+    if m.get("detailed_merge_status") == "conflict":
+        return "conflict"
+    if not m.get("has_conflicts"):
+        return ""
+    return "empty" if _has_no_diff(m) else "conflict"
+
+
 def _flags(m: dict) -> str:
     flags = []
     if m.get("draft"):
         flags.append("draft")
-    if m.get("has_conflicts") or m.get("detailed_merge_status") == "conflict":
-        flags.append("conflict")
+    blocked = _conflict_label(m)
+    if blocked:
+        flags.append(blocked)
     if m.get("blocking_discussions_resolved") is False:
         flags.append("threads")
     return f" [{','.join(flags)}]" if flags else ""

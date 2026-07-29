@@ -99,6 +99,25 @@ Rows use the same format as `gl-mrs`, plus two marks radar alone can report:
 | `[healed]` | this open MR had no live poller; radar respawned one |
 | `[unwatched]` | radar could not respawn a poller — a real coverage gap |
 
+### `[conflict]` vs `[empty]` ([#471](https://github.com/Digital-Process-Tools/claude-supertool/issues/471))
+
+`has_conflicts` is **not** a conflict field — it is an alias for `cannot_be_merged?`, which GitLab annotates as also covering `has_no_commits?` and `branch_missing?`. Rendering it as `[conflict]` claimed a merge conflict on MRs that have no diff at all, which is [#465](https://github.com/Digital-Process-Tools/claude-supertool/issues/465)'s false positive on a second surface.
+
+A blocked MR is now labelled by *what* blocks it:
+
+| Flag | Meaning |
+|---|---|
+| `[conflict]` | blocked, and there is a diff that can conflict — unchanged meaning, it just fires less often now |
+| `[empty]` | blocked with **positive evidence of an empty diff**: `detailed_merge_status: commits_status`, a null `sha`, or `diff_refs.head_sha` null or equal to `base_sha`. Nothing to conflict with — the source branch carries no commits the target lacks |
+
+**`[empty]` is a new flag value; `[conflict]` is not renamed.** Anything grepping `[conflict]` keeps working and now gets fewer false hits. Renaming the column to `[blocked]` was considered and rejected: it is honest about the field but merges "you have a real conflict to resolve" and "you forgot to push" into one word, discarding the severity difference a triage board exists to show — and it breaks every existing grep to do it.
+
+**The empty MR is still reported, not suppressed.** It is genuinely unmergeable, so it stays in the standing-problem set (re-printed even when unchanged, and named `empty` / `failed+empty` on the exclusion line). Suppressing it would trade a mislabel for a silent omission, which is the worse of the two here ([#445](https://github.com/Digital-Process-Tools/claude-supertool/issues/445)/[#454](https://github.com/Digital-Process-Tools/claude-supertool/issues/454)/[#414](https://github.com/Digital-Process-Tools/claude-supertool/issues/414)).
+
+**`detailed_merge_status == "conflict"` is not used as a gate**, only as a widener. It reports the *first* failing mergeability check, and in `MergeRequest.all_mergeability_checks` the draft check runs second while conflict runs dead last — so a genuinely conflicted draft reports `draft_status`. Gating on it would silently stop reporting real conflicts on drafts and on MRs with unresolved threads.
+
+**The snapshot key changed shape.** `conflict` in the radar snapshot was a bool and is now `"conflict"` / `"empty"` / `""`. The first run after upgrading reads every row with a stored `false` as moved and prints one full board. That is a one-time cost, not a defect.
+
 **"Nothing moved"** means the set of open MRs is unchanged, no MR changed pipeline status / pipeline id / draft / conflict flag, and radar took no action. Then radar prints one summary line — not nothing:
 
 ```
