@@ -260,6 +260,7 @@ def main(argv: list[str]) -> int:
     file_path = argv[1]
     t0 = time.monotonic()
     try:
+        _refusal.require_daemon_transport()
         sock = ensure_daemon(WORKING_DIR)
         resp = ndjson_call(sock, os.path.abspath(file_path))
     except _refusal.DaemonUnavailable as e:

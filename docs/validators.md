@@ -307,6 +307,16 @@ phpstan-mcp : skipped     (mcp-phpstan-warm not found at: /tmp/.../wt-foo)
 
 The skip reason keeps the install command (`composer require --dev dpt/mcp-phpstan-warm`, …) on one line, so a validator that is off because nothing is installed is still discoverable from the row that says so. `phplint` is unaffected and still runs in worktrees — it is what actually catches syntax problems there.
 
+**No transport is the same absence, one layer earlier.** The warm analysers are spoken to over a Unix domain socket, and GH-hosted Windows Python builds do not expose `socket.AF_UNIX` even though the OS supports it — the MCP client in `supertool.py` has said so in a comment since it was written, and `tests/test_security_mcp_daemon_148.py` skips its whole module for it. On those builds no warm validator was ever reachable, and each one reported an `adapter` error instead. They now decline through the same `DaemonUnavailable` marker:
+
+```
+phpstan-mcp : skipped     (warm daemon needs socket.AF_UNIX, which this Python build does not expose (Windows) …)
+```
+
+The check is made before the binary lookup, because without a transport the binary is irrelevant and the platform is the reason a reader can act on. It is not a `getattr` shim over `os.geteuid`: `presets/mcp/_paths.py` is merely the *first* thing that breaks on the way down, and patching only that would have moved the crash three lines later into `socket.socket(socket.AF_UNIX, …)`, producing the same wrong output from a less legible place.
+
+**The ownership check that crashed there now refuses rather than passing.** `runtime_dir()` verifies that the per-user runtime directory belongs to us. Where `os.geteuid` does not exist that comparison is not merely unavailable, it is unanswerable — `st_uid` is a constant `0` on Windows and carries no information. Defaulting it to "ours" would trade a loud failure for a quiet one on the single check whose whole job is to be suspicious, so it exits with a stated reason instead. Nothing reaches it on such a platform today (the adapters decline earlier), but `stop.py` and `status.py` call it too, and the next caller meets a sentence rather than an `AttributeError`.
+
 **`warm_unsafe` — targets a warm process cannot judge.** Warm-process validators (`phpstan-mcp`, `rector-mcp`, `phpunit-mcp`) keep a long-lived daemon so each edit does not re-pay a cold boot. That daemon carries state, and for some targets the state is the answer. The case that produced this field (#345): `mcp-phpunit-warm` runs the project's `phpunit.xml` bootstrap in its long-lived **parent** and forks a child per test call, so every resource that bootstrap opened — a DB handle, a session, a framework singleton — is shared across the parent and all children. A test that touches one of them can fail under the daemon and pass under a cold `phpunit` run of the same file at the same commit. That red is not a fact about the file, and there is no way to tell it apart from a real one by reading the output.
 
 So the project declares which targets are out of the warm runner's reach:
