@@ -86,9 +86,23 @@ def outside_roots(file_path: str, env_var: str) -> str | None:
 def skipped(tool: str, file_path: str, reason: str, dur_ms: int) -> dict:
     """A SCHEMA.md result in the third state: not clean, not broken, not looked at.
 
-    ok/count/errors stay clean-shaped so a consumer that ignores `skipped` cannot
-    read a refusal as a failure; the `skipped` key is the discriminator for one
-    that does, and keeps it from being read as a pass either.
+    The verdict keys `ok`, `count` and `errors` are **omitted**, not padded (#515).
+    This helper padded them for a year while `docs/validators.md` told adapter
+    authors to omit them, so a hand-rolled adapter and every helper caller
+    published different shapes and nothing caught it.
+
+    Omitting won because the argument for padding — "consumers can read
+    `result['ok']` without a branch" — is not true of this codebase. Every core
+    consumer tests `"skipped" in result` before touching a verdict key
+    (`_validator_regressed`, `_validator_result_is_cacheable`,
+    `_validator_render_row`, `_validator_render_diff`), and has to: the reason
+    string exists only on a skip. The core's own built-in skips already omitted
+    the keys, so padding here made the shared helper the odd one out. And an
+    `ok: true` on a receipt that means "never looked at" is precisely the
+    absence-read-as-a-pass failure the third state was introduced to end.
+
+    `tool`, `file` and `duration_ms` stay: they describe the attempt, not a
+    verdict about the file.
     """
-    return {"tool": tool, "file": file_path, "ok": True, "count": 0,
-            "errors": [], "duration_ms": dur_ms, "skipped": reason}
+    return {"tool": tool, "file": file_path, "duration_ms": dur_ms,
+            "skipped": reason}

@@ -120,8 +120,9 @@ def test_out_of_scope_path_never_opens_the_socket(
     assert not any(e.get("code") == "adapter" for e in data.get("errors") or []), (
         "the adapter reached the daemon and turned the refusal into an error: "
         + json.dumps(data))
-    assert data["count"] == 0
-    assert data["errors"] == []
+    # #515: no verdict keys at all — the refusal reports nothing about the file
+    # rather than reporting nothing wrong with it.
+    assert "count" not in data and "errors" not in data
 
 
 def test_in_scope_path_still_reaches_the_daemon(
@@ -185,7 +186,9 @@ def test_skip_is_reported_through_the_shared_third_state(
     target = _php(tmp_path, "tests", "FooTest.php")
     data = _run_main_exploding(monkeypatch, target)
     assert data["tool"] == "phpstan-mcp"
-    assert data["ok"] is True and data["count"] == 0 and data["errors"] == []
+    # #515: the shared shape is the OMITTING one — `ok: true` on a receipt that
+    # means "never looked at" is the pass this state exists not to be.
+    assert not ({"ok", "count", "errors"} & set(data)), data
     assert isinstance(data["duration_ms"], int)
 
 

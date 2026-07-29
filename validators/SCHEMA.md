@@ -21,9 +21,9 @@ Universal JSON. Every adapter emits this shape. Validator core never parses tool
 |---------------|------------------|----------|-----------------------------------------------------------------------|
 | `tool`        | string           | yes      | Adapter id (`phplint`, `phpstan`, `phpunit`, `prettier`, ...)         |
 | `file`        | string           | yes      | Path validated. Repo-relative.                                        |
-| `ok`          | bool             | yes      | Pass/fail. Validator rolls back on `false` if op marked rollback.     |
-| `count`       | int              | yes      | Issue count. Used for before/after diff arithmetic.                   |
-| `errors`      | array of objects | yes      | `[]` when ok. Each: `{line, col, severity, code, msg}`.               |
+| `ok`          | bool             | yes*     | Pass/fail. Validator rolls back on `false` if op marked rollback. *Absent on a `skipped` result. |
+| `count`       | int              | yes*     | Issue count. Used for before/after diff arithmetic. *Absent on a `skipped` result. |
+| `errors`      | array of objects | yes*     | `[]` when ok. Each: `{line, col, severity, code, msg}`. *Absent on a `skipped` result. |
 | `duration_ms` | int              | yes      | Wall time. For perf tuning.                                           |
 | `metrics`     | object           | no       | Tool-specific counters (`tests_total`, `tests_passed`, etc.). Numeric values. Used by renderer for before/after diff on metric keys even when `count` is unchanged. |
 
@@ -34,7 +34,9 @@ Universal JSON. Every adapter emits this shape. Validator core never parses tool
 
 `ok` alone has two values and the world has three: clean, broken, and **never looked at**. A validator that refused to run has produced no information about the file, so folding that into either `ok` value is a lie in one direction or the other.
 
-An adapter reports it by emitting `"skipped": "<reason>"` alongside `ok: true`, `count: 0`, `errors: []` — clean-shaped so a consumer that ignores the key cannot read a refusal as a failure, with the key as the discriminator for one that does. The core then guarantees:
+An adapter reports it by emitting `"skipped": "<reason>"` and **omitting `ok`, `count` and `errors` entirely** (#515). A receipt carrying `ok: true` reads as a pass to anything keying off `ok`, which is the mistake the third state exists to end; leaving the verdict keys out makes a skip structurally impossible to misread as one. `tool`, `file` and `duration_ms` stay — they describe the attempt, not a verdict.
+
+Consumers must branch on the presence of `skipped` before reading any verdict key. Every core consumer already does, and has to: the reason string exists only on a skip. Use `validators/common/refusal.py:skipped()` rather than building the dict by hand. The core then guarantees:
 
 - the row renders as `skipped (<reason>)`, never `0 → 1 (+1) ✗`;
 - the result is excluded from the before/after delta;
