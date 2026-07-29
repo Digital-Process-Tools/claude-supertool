@@ -72,6 +72,25 @@ claude --dangerously-load-development-channels server:claude-channel
 5. Claude decides what to do based on the server's `instructions` string
    (investigate, notify, fix)
 
+## Event contract
+
+An event line is NDJSON with `source`, `id` and `event` (routing), plus
+optional `ts`, `first_tick` and a flat `payload` object.
+
+Scalars are coerced, not type-checked: `"ts": 1785362036.7` and `"id": 21803`
+are well-formed, because poller JSON carries epoch numbers and integer ids
+naturally and `_meta` wanting strings is this server's mismatch to absorb.
+Every value that reaches Claude is a string.
+
+What is *not* coerced is structure. A payload value that is an object or an
+array has no honest string form — `String({})` is `"[object Object]"` — so the
+attribute is omitted and the rest of the event still goes through. A missing or
+structured `source`/`id`/`event` drops the whole event, since it cannot be
+routed. Every drop writes one line to stderr, visible under `claude --debug`.
+
+A malformed event costs one event. It never affects the connection
+([#554](https://github.com/Digital-Process-Tools/claude-supertool/issues/554)).
+
 ## Configuration
 
 | Env var                  | Default                          | Purpose                                              |
@@ -85,8 +104,9 @@ claude --dangerously-load-development-channels server:claude-channel
 - No sender allowlist beyond filesystem permissions — multi-user machines
   should set `SUPERTOOL_WATCH_SOCK` to a path under `~/.claude/` for
   per-user isolation
-- The MCP server validates event shape (source/id/event are strings) before
-  emitting to Claude — malformed lines are silently dropped
+- The MCP server checks event shape before emitting to Claude, and drops what
+  it cannot route (see "Event contract" above) — rejected lines are reported on
+  stderr, never sent on
 
 ## Out of scope (future)
 

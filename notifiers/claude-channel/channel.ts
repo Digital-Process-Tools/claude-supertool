@@ -28,6 +28,13 @@ import * as net from "node:net";
 
 const SOCK_PATH = process.env.SUPERTOOL_WATCH_SOCK || "/tmp/supertool-watch.sock";
 
+/**
+ * The shape a Phase 1 poller is *meant* to send. Nothing enforces it: lines
+ * arrive as JSON from another process, so this is documentation, not a
+ * guarantee. Reading a parsed line as a `WatchEvent` is what let a float `ts`
+ * reach the wire with the compiler satisfied (#554) — every function that
+ * handles a parsed line therefore takes `unknown` and narrows for itself.
+ */
 interface WatchEvent {
   ts: string;
   source: string;
@@ -45,17 +52,63 @@ interface WatchEvent {
 // notification protocol, so we sanitize keys here too.
 const ATTR_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
-function buildMeta(ev: WatchEvent): Record<string, string> {
+/**
+ * The string form of a value, or null when it has none worth sending.
+ *
+ * `_meta` is a string map on the receiving end, and the receiver enforces that
+ * with a schema — a number reaching it is not a cosmetic mismatch, it throws
+ * in the receiver's notification handler (see #554). So nothing leaves this
+ * file uncoerced.
+ *
+ * Scalars coerce honestly. Structure does not: `String({})` is
+ * "[object Object]" and `String([1, 2])` is "1,2", and both read downstream as
+ * though they were data a poller meant to send. Those are dropped instead.
+ */
+function asAttr(value: unknown): string | null {
+  if (typeof value === "string") return value;
+  if (typeof value === "boolean") return String(value);
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return null;
+}
+
+function drop(line: string, reason: string): void {
+  // Loud on stderr, which `claude --debug` surfaces. Silence here is what made
+  // the delivery gap in #554 invisible from inside a session: a dropped event
+  // and a delivered one looked identical from every angle available.
+  const shown = line.length > 300 ? `${line.slice(0, 300)}…` : line;
+  process.stderr.write(`claude-channel: dropped event (${reason}): ${shown}\n`);
+}
+
+/**
+ * The `_meta` string map for an event, or null when it cannot be routed.
+ *
+ * Routing keys (`source`, `id`, `event`) are coerced rather than type-checked:
+ * poller JSON carries integer ids and epoch timestamps naturally, and a GitLab
+ * MR iid arriving as a number is a well-formed event, not a broken one. Being
+ * strict there did not protect anything — it dropped the event in silence.
+ *
+ * What stays strict is presence and shape: a missing routing key, or an object
+ * where a scalar belongs, is genuinely malformed and returns null so the caller
+ * can drop it with a reason. Coercing that far would turn a broken event into a
+ * plausible-looking one, which is worse than losing it.
+ */
+function buildMeta(raw: unknown): Record<string, string> | null {
+  if (!raw || typeof raw !== "object") return null;
+  const ev = raw as Partial<WatchEvent>;
   // Claude Code auto-injects `source` from the MCP server name on every event,
   // so we use `watcher_source` for the per-event source (e.g. "gitlab-mr") to
   // avoid the collision. The instructions string tells Claude to route by
   // `watcher_source`.
-  const meta: Record<string, string> = {
-    watcher_source: ev.source,
-    id: ev.id,
-    event: ev.event,
-    ts: ev.ts,
-  };
+  const watcherSource = asAttr(ev.source);
+  const id = asAttr(ev.id);
+  const event = asAttr(ev.event);
+  if (watcherSource === null || id === null || event === null) return null;
+
+  const meta: Record<string, string> = { watcher_source: watcherSource, id, event };
+  // A `ts` we cannot render is dropped on its own rather than sinking the
+  // event: it is context, not routing, and the event is still actionable.
+  const ts = asAttr(ev.ts);
+  if (ts !== null) meta.ts = ts;
   // Absent stays absent: a poller too old to send the flag has not told us the
   // event was live, and claiming `first_tick="false"` on its behalf would be a
   // confident wrong answer rather than a missing one.
@@ -63,19 +116,24 @@ function buildMeta(ev: WatchEvent): Record<string, string> {
   for (const [k, v] of Object.entries(ev.payload || {})) {
     if (!ATTR_KEY_RE.test(k)) continue;
     if (k === "source") continue;  // never let payload overwrite the auto-injected key
-    if (v === null || v === undefined) continue;
-    meta[k] = String(v);
+    const attr = asAttr(v);
+    if (attr === null) continue;
+    meta[k] = attr;
   }
   return meta;
 }
 
-function buildContent(ev: WatchEvent): string {
+function buildContent(raw: unknown, meta: Record<string, string>): string {
+  const ev = raw as Partial<WatchEvent>;
   // The <channel> tag body — Claude reads this as the event's narrative.
   // Keep it short and route-oriented; payload details live in attributes.
-  const url = (ev.payload as Record<string, unknown>)?.url;
-  const title = (ev.payload as Record<string, unknown>)?.title;
+  // Routing values come from `meta` so the body and the attributes cannot
+  // disagree about what this event is.
+  const payload = (ev.payload ?? {}) as Record<string, unknown>;
+  const url = payload.url;
+  const title = payload.title;
   const suffix = ev.first_tick === true ? "  (state at watcher start)" : "";
-  const lines: string[] = [`${ev.source} ${ev.id}: ${ev.event}${suffix}`];
+  const lines: string[] = [`${meta.watcher_source} ${meta.id}: ${meta.event}${suffix}`];
   if (typeof title === "string" && title) lines.push(title);
   if (typeof url === "string" && url) lines.push(url);
   return lines.join("\n");
@@ -131,25 +189,37 @@ const server = net.createServer((conn) => {
       buf = buf.slice(nl + 1);
       nl = buf.indexOf("\n");
       if (!line) continue;
-      let ev: WatchEvent;
+      let ev: unknown;
       try {
-        ev = JSON.parse(line) as WatchEvent;
+        ev = JSON.parse(line);
       } catch {
+        drop(line, "not valid JSON");
         continue;
       }
-      if (!ev || typeof ev.source !== "string" || typeof ev.id !== "string" || typeof ev.event !== "string") {
-        continue;
+      // Everything between here and the send is synchronous, and a synchronous
+      // throw inside a Node `data` handler is not a lost event — it is an
+      // uncaught exception that takes this whole process down, socket and all.
+      // The `.catch()` below covers only the async send, which is a different
+      // failure. One malformed event must cost one event.
+      try {
+        const meta = buildMeta(ev);
+        if (meta === null) {
+          drop(line, "missing or non-scalar source/id/event");
+          continue;
+        }
+        mcp
+          .notification({
+            method: "notifications/claude/channel",
+            params: { content: buildContent(ev, meta), meta },
+          })
+          .catch((err) => {
+            // Surface to stderr so `claude --debug` picks it up. Common causes:
+            // Claude Code transport closed, channel not registered, JSON-RPC busy.
+            process.stderr.write(`claude-channel: notify failed: ${String(err)}\n`);
+          });
+      } catch (err) {
+        drop(line, `handler threw: ${String(err)}`);
       }
-      mcp
-        .notification({
-          method: "notifications/claude/channel",
-          params: { content: buildContent(ev), meta: buildMeta(ev) },
-        })
-        .catch((err) => {
-          // Surface to stderr so `claude --debug` picks it up. Common causes:
-          // Claude Code transport closed, channel not registered, JSON-RPC busy.
-          process.stderr.write(`claude-channel: notify failed: ${String(err)}\n`);
-        });
     }
   });
   conn.on("error", () => {
