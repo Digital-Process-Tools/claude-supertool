@@ -42,6 +42,7 @@ on every session start. Details in [docs/presets/watch.md](../../docs/presets/wa
 | `github-pr`       | GitHub PR number               | PR merged or closed                            |
 | `gl-pipeline`     | GitLab CI pipeline id          | pipeline success / failed / canceled / skipped |
 | `gitlab-mr-feed`  | scope (`@me`, `@reviewer`, …)  | never — discovery has no end state             |
+| `gl-runners`      | scope (`fleet`)                | never — a fleet has no end state               |
 
 Every source but the last polls **one known id**, so none of them can discover
 an MR that did not exist when they were spawned. `gitlab-mr-feed` polls the

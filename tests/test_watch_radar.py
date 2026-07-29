@@ -8,6 +8,7 @@ believing `last_event` is the bug the op exists to prevent.
 """
 from __future__ import annotations
 
+import datetime
 import importlib.util
 import json
 import os
@@ -99,7 +100,16 @@ def env(tmp_path, monkeypatch):
         return os.getpid()
 
     monkeypatch.setattr(radar.dispatcher, "_spawn_poller", _fake_spawn)
-    return {"dir": tmp_path, "spawned": spawned, "monkeypatch": monkeypatch}
+    # The fleet tier reads live GitLab. Left unstubbed every test in this file
+    # would report the runner fleet as unreadable, which is correct behaviour
+    # and pure noise here — the fleet has its own tests at the bottom.
+    real_fleet_report = radar.fleet_report
+    monkeypatch.setattr(radar, "fleet_report", lambda: ([], True))
+    return {"dir": tmp_path, "spawned": spawned, "monkeypatch": monkeypatch,
+            # The unpatched function, for the tests that are about it. Calling
+            # radar.fleet_report() from one of those would reach the stub above
+            # and assert against the fixture instead of the code.
+            "fleet_report": real_fleet_report}
 
 
 def _mr_spawns(env) -> list[str]:
@@ -109,6 +119,10 @@ def _mr_spawns(env) -> list[str]:
 
 def _feed_spawns(env) -> list[tuple[str, str, list[str]]]:
     return [row for row in env["spawned"] if row[0] == radar.FEED_SOURCE]
+
+
+def _fleet_spawns(env) -> list[tuple[str, str, list[str]]]:
+    return [row for row in env["spawned"] if row[0] == radar.FLEET_SOURCE]
 
 
 def _live_feed(tmp_path: Path, scope: str = "") -> Path:
@@ -182,7 +196,11 @@ def test_open_mr_with_live_poller_is_not_respawned(env, capsys) -> None:
     _live_feed(env["dir"])
     _set_live(env, [_mr(33161, "running")])
     out = _run(env, capsys)
-    assert env["spawned"] == []
+    # Named per source rather than "nothing at all": radar legitimately spawns
+    # a fleet poller on every run, and an assertion that cannot tell the two
+    # apart would fail for the wrong reason the next time a tier is added.
+    assert _mr_spawns(env) == []
+    assert _feed_spawns(env) == []
     assert "[healed]" not in out
     assert "👁" in out
 
@@ -1194,3 +1212,151 @@ def test_an_empty_mr_is_still_a_standing_problem_under_its_own_name() -> None:
 
 def test_a_genuine_conflict_keeps_its_problem_label() -> None:
     assert radar._problem_label(_mr(6, has_conflicts=True, sha="a" * 40)) == "conflict"
+
+
+# ---------------------------------------------------------------------------
+# fleet tier
+# ---------------------------------------------------------------------------
+
+def _runner(rid: int, description: str, tags: list[str], contacted_at: str,
+            **over) -> dict:
+    base = {
+        "id": rid, "description": description, "tag_list": tags,
+        "run_untagged": False, "status": "online", "active": True,
+        "paused": False, "contacted_at": contacted_at,
+    }
+    base.update(over)
+    return base
+
+
+def _now_iso() -> str:
+    """The contacted_at of a runner that is heartbeating right now.
+
+    Computed rather than hardcoded: a fixed timestamp would age past the
+    responsiveness threshold and turn these into tests that pass until they
+    silently stop meaning anything.
+    """
+    return datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _stub_fleet(env, runners: list[dict], pending: list[dict]) -> None:
+    def fake_api(endpoint, paginate=False, timeout=20):
+        return (runners, None) if "runners" in endpoint else (pending, None)
+
+    env["monkeypatch"].setattr(radar.runners_op, "_api", fake_api)
+    env["monkeypatch"].setattr(radar.runners_op, "_fetch_details",
+                               lambda listed: {r["id"]: {} for r in listed})
+
+
+def test_a_silent_runner_holding_the_queue_is_named_with_its_last_contact(env) -> None:
+    """The whole point of the tier: GitLab reports this runner online and idle,
+    so nothing else in radar can explain why the jobs are not moving."""
+    _stub_fleet(
+        env,
+        [_runner(18, "dptools-runner-2", ["dptools-runner-2"], "2020-01-01T00:00:00Z")],
+        [{"tag_list": ["dptools-runner-2"]} for _ in range(3)],
+    )
+    lines, ok = env["fleet_report"]()
+    joined = "\n".join(lines)
+    assert ok is False
+    assert "3 pending job(s) cannot start" in joined
+    assert "dptools-runner-2" in joined
+    assert "seen" in joined
+
+
+def test_jobs_no_runner_carries_the_tags_for_are_reported_as_such(env) -> None:
+    """A typo'd tag in .gitlab-ci.yml queues forever behind a runner that does
+    not exist, which reads identically to a dead one until it is named."""
+    _stub_fleet(
+        env,
+        [_runner(26, "dptools-runner-4", ["docker"], _now_iso())],
+        [{"tag_list": ["dptols-runner-4"]}],
+    )
+    lines, ok = env["fleet_report"]()
+    assert ok is False
+    assert "NO runner carries these tags" in "\n".join(lines)
+
+
+def test_a_live_runner_covering_the_queue_is_healthy(env) -> None:
+    _stub_fleet(
+        env,
+        [_runner(26, "dptools-runner-4", ["docker"], _now_iso())],
+        [{"tag_list": ["docker"]}],
+    )
+    lines, ok = env["fleet_report"]()
+    assert ok is True
+    assert "fleet ok" in "\n".join(lines)
+    assert "none blocked" in "\n".join(lines)
+
+
+def test_a_silent_runner_with_nothing_queued_is_not_an_alarm(env) -> None:
+    """Five silent runners is the normal resting state of this fleet — retired,
+    paused, replaced. Silence only matters when work is stuck behind it."""
+    _stub_fleet(
+        env,
+        [_runner(23, "dptools-runner-3", ["old"], "2020-01-01T00:00:00Z", status="stale"),
+         _runner(26, "dptools-runner-4", ["docker"], _now_iso())],
+        [],
+    )
+    lines, ok = env["fleet_report"]()
+    assert ok is True
+    assert "1/2 runners live" in "\n".join(lines)
+
+
+def test_an_unreadable_fleet_is_unknown_never_green(env) -> None:
+    """The failure this tier exists to remove: answering "is the infrastructure
+    fine?" with silence when the question could not be asked."""
+    env["monkeypatch"].setattr(
+        radar.runners_op, "_api",
+        lambda endpoint, paginate=False, timeout=20: (None, "ERROR: glab not authenticated"))
+    lines, ok = env["fleet_report"]()
+    assert ok is False
+    assert "UNKNOWN, not green" in "\n".join(lines)
+
+
+def test_an_unreadable_queue_does_not_read_as_no_starvation(env) -> None:
+    def fake_api(endpoint, paginate=False, timeout=20):
+        if "runners" in endpoint:
+            return ([_runner(26, "dptools-runner-4", ["docker"], _now_iso())], None)
+        return (None, "ERROR: 500")
+
+    env["monkeypatch"].setattr(radar.runners_op, "_api", fake_api)
+    env["monkeypatch"].setattr(radar.runners_op, "_fetch_details", lambda listed: {})
+    lines, ok = env["fleet_report"]()
+    assert ok is False
+    assert "starvation is UNKNOWN" in "\n".join(lines)
+
+
+def test_a_blocked_fleet_is_reported_on_every_run_not_only_cold(env, capsys) -> None:
+    """Delta suppression is for transitions. Stuck jobs are a current fact, and
+    the second run is the one where a reader has stopped expecting bad news."""
+    _live_pid_file(env["dir"], "33172")
+    _live_feed(env["dir"])
+    _set_live(env, [_mr(33172, "success", "100")])
+    env["monkeypatch"].setattr(
+        radar, "fleet_report",
+        lambda: (["radar: FLEET — 14 pending job(s) cannot start"], False))
+    _run(env, capsys)
+    out = _run(env, capsys)
+    assert "FLEET — 14 pending job(s) cannot start" in out
+    assert "no change" in out
+
+
+def test_a_healthy_fleet_costs_one_line_per_session_not_per_run(env, capsys) -> None:
+    _live_pid_file(env["dir"], "33172")
+    _live_feed(env["dir"])
+    _set_live(env, [_mr(33172, "success", "100")])
+    env["monkeypatch"].setattr(
+        radar, "fleet_report", lambda: (["radar: fleet ok — 9/10 runners live"], True))
+    first = _run(env, capsys)
+    second = _run(env, capsys)
+    assert "fleet ok" in first
+    assert "fleet ok" not in second
+
+
+def test_radar_keeps_exactly_one_fleet_poller(env) -> None:
+    """Radar runs on a loop; n pollers over one fleet means n copies of every
+    runner_silent — the same defect ensure_feed was hardened against in #476."""
+    assert radar.ensure_fleet() == "spawned"
+    assert radar.ensure_fleet() == "alive"
+    assert len(_fleet_spawns(env)) == 1
