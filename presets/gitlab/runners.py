@@ -372,6 +372,19 @@ def waiting_for(runner: dict, pending: list[dict]) -> int:
 # someone ends up believing they configured a threshold they did not.
 RADAR_OPTIONS = {"window", "quiet_when_healthy"}
 
+# A healthy fleet is silent. This is a side concern next to whatever board the
+# reader came for, and a green line per run is the noise that trains someone to
+# skim past the red one.
+RADAR_QUIET_DEFAULT = True
+
+# The background watcher this tier keeps alive. Scope-free, unlike an MR feed:
+# there is one runner fleet behind every board, so it is not keyed by anyone's
+# population. Named here rather than in radar (#528) — radar hardcoded this
+# watcher while calling gl-runners a pure tier, which leaked the tier contract
+# in the direction nobody was looking.
+WATCH_SOURCE = "gl-runners"
+WATCH_SCOPE = "fleet"
+
 
 def radar_report(options: dict | None = None) -> tuple[list[str], bool]:
     """(lines, healthy) — this op's contribution to radar. Registered, not default.
@@ -381,9 +394,17 @@ def radar_report(options: dict | None = None) -> tuple[list[str], bool]:
     403. Turning that into a standing WARNING on every run for people who never
     asked about runners would be a regression shipped as a feature, so this only
     runs when explicitly registered in ops.radar.radar_tiers.
+
+    The fleet watcher is claimed first, before any API call, so a token that
+    cannot read runners still gets the poller it would have got before #528 —
+    the spawn is not conditional on the report succeeding, and making it so
+    would have been a behaviour change smuggled inside a refactor.
     """
     options = options or {}
     window = options.get("window", _THROUGHPUT_WINDOW_SECONDS)
+    watch = options.get("_watch")
+    if watch is not None:
+        watch(WATCH_SOURCE, WATCH_SCOPE)
 
     listed, err = _api("projects/:id/runners?per_page=100", paginate=True)
     if err and ("403" in err or "permission denied" in err.lower()):
@@ -439,7 +460,7 @@ def radar_report(options: dict | None = None) -> tuple[list[str], bool]:
             for r in owners) or "NO runner carries these tags"
         lines.append(f"  [{tags}] {count} job(s) -> {who}")
     lines.append("  Pinned to an exclusive tag: no other runner may take them. "
-                 "A red board below may be this, not your code.")
+                 "A red board in this run may be this, not your code.")
     return (lines, False)
 
 

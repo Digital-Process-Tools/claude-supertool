@@ -20,10 +20,19 @@ import pytest
 
 WATCH_DIR = Path(__file__).parent.parent / "presets" / "watch"
 
-_spec = importlib.util.spec_from_file_location("watch_radar", WATCH_DIR / "radar.py")
-assert _spec is not None and _spec.loader is not None
-radar = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(radar)
+def _module(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+radar = _module("watch_radar", WATCH_DIR / "radar.py")
+# The GitLab MR board, which was radar itself until #528. Loaded once here and
+# handed to radar through `_tier_module`, so a test that patches its internals
+# is patching the same object radar will call.
+mr_tier = _module("watch_radar_gl_mrs", WATCH_DIR / "tiers" / "gl_mrs.py")
 
 
 # ---------------------------------------------------------------------------
@@ -100,35 +109,40 @@ def env(tmp_path, monkeypatch):
         return os.getpid()
 
     monkeypatch.setattr(radar.dispatcher, "_spawn_poller", _fake_spawn)
-    # No tiers unless a test registers them. Left to the ambient environment,
-    # a shell that exported SUPERTOOL_RADAR_TIERS would make every test in this
-    # file reach live GitLab.
-    monkeypatch.delenv(radar.TIERS_ENV, raising=False)
-    return {"dir": tmp_path, "spawned": spawned, "monkeypatch": monkeypatch}
+    # The MR board is a registered tier since #528, so every board test has to
+    # register it — a bare radar refuses. Resolution is pinned to the module
+    # loaded above rather than left to `_tier_module`, which would exec a fresh
+    # copy per call and quietly discard every patch a test applied.
+    monkeypatch.setenv(radar.TIERS_ENV, json.dumps({"gl-mrs": {}}))
+    resolve = radar._tier_module
+    monkeypatch.setattr(radar, "_tier_module",
+                        lambda n: mr_tier if n == "gl-mrs" else None)
+    return {"dir": tmp_path, "spawned": spawned, "monkeypatch": monkeypatch,
+            "resolve": resolve}
 
 
 def _mr_spawns(env) -> list[str]:
     """iids of per-MR watchers radar spawned — the feed is a separate source."""
-    return [iid for src, iid, _o in env["spawned"] if src == radar.SOURCE]
+    return [iid for src, iid, _o in env["spawned"] if src == mr_tier.SOURCE]
 
 
 def _feed_spawns(env) -> list[tuple[str, str, list[str]]]:
-    return [row for row in env["spawned"] if row[0] == radar.FEED_SOURCE]
+    return [row for row in env["spawned"] if row[0] == mr_tier.FEED_SOURCE]
 
 
 def _fleet_spawns(env) -> list[tuple[str, str, list[str]]]:
-    return [row for row in env["spawned"] if row[0] == radar.FLEET_SOURCE]
+    return [row for row in env["spawned"] if row[0] == "gl-runners"]
 
 
 def _live_feed(tmp_path: Path, scope: str = "") -> Path:
-    scope = scope or radar.FEED_SCOPE
-    path = tmp_path / f"supertool-watch-{radar.FEED_SOURCE}__{scope}.pid"
+    scope = scope or mr_tier.FEED_SCOPE
+    path = tmp_path / f"supertool-watch-{mr_tier.FEED_SOURCE}__{scope}.pid"
     path.write_text(f"{os.getpid()}\n")
     return path
 
 
 def _set_live(env, mrs_list):
-    env["monkeypatch"].setattr(radar, "live_open_mrs", lambda multi=None: mrs_list)
+    env["monkeypatch"].setattr(mr_tier, "live_open_mrs", lambda multi=None: mrs_list)
 
 
 def _run(env, capsys) -> str:
@@ -392,7 +406,7 @@ def test_rows_use_the_shared_gl_mrs_row_format(env, capsys) -> None:
     m = _mr(33161, "failed", "154177", failed_jobs=["phpstan2"])
     _set_live(env, [m])
     out = _run(env, capsys)
-    expected = radar.mrs._row(m, {"33161"}, True)
+    expected = mr_tier.mrs._row(m, {"33161"}, True)
     assert "\n" in expected, "a row is two lines: status, then the full title"
     assert expected in out
 
@@ -405,7 +419,7 @@ def test_drift_and_gap_marks_are_appended_not_substituted(env, capsys) -> None:
     _set_live(env, [m])
     out = _run(env, capsys)
     marks = "  [drift: 154177→154180] [healed]"
-    assert radar.mrs._row(m, {"33173"}, True, marks) in out
+    assert mr_tier.mrs._row(m, {"33173"}, True, marks) in out
 
 
 def test_drift_and_gap_marks_land_on_the_status_line_not_the_title(env, capsys) -> None:
@@ -467,12 +481,12 @@ def test_board_costs_no_extra_api_call_for_the_branch(env) -> None:
     payload = ('[{"iid": 33173, "title": "t", '
                '"source_branch": "max/foo", "target_branch": "master"}]')
     env["monkeypatch"].setattr(
-        radar.mrs, "_run",
+        mr_tier.mrs, "_run",
         lambda cmd, timeout=25: (calls.append(cmd), _completed(0, payload))[1])
-    env["monkeypatch"].setattr(radar.mrs, "_enrich", lambda *a, **k: None)
-    live = radar.live_open_mrs()
+    env["monkeypatch"].setattr(mr_tier.mrs, "_enrich", lambda *a, **k: None)
+    live = mr_tier.live_open_mrs()
     assert len(calls) == 1
-    assert radar.mrs._branches(live[0]) == "max/foo -> master"
+    assert mr_tier.mrs._branches(live[0]) == "max/foo -> master"
 
 
 # ---------------------------------------------------------------------------
@@ -481,9 +495,9 @@ def test_board_costs_no_extra_api_call_for_the_branch(env) -> None:
 
 def test_glab_failure_exits_nonzero_and_prints_no_board(env, capsys) -> None:
     def _boom(multi=None):
-        raise radar.RadarError("glab not authenticated. Run: glab auth login")
+        raise mr_tier.RadarError("glab not authenticated. Run: glab auth login")
 
-    env["monkeypatch"].setattr(radar, "live_open_mrs", _boom)
+    env["monkeypatch"].setattr(mr_tier, "live_open_mrs", _boom)
     assert radar.main([]) == 1
     captured = capsys.readouterr()
     assert captured.out == ""
@@ -494,13 +508,13 @@ def test_glab_failure_does_not_prune_heal_or_snapshot(env, capsys) -> None:
     merged = _state_file(env["dir"], "33136", mr_state="merged")
 
     def _boom(multi=None):
-        raise radar.RadarError("boom")
+        raise mr_tier.RadarError("boom")
 
-    env["monkeypatch"].setattr(radar, "live_open_mrs", _boom)
+    env["monkeypatch"].setattr(mr_tier, "live_open_mrs", _boom)
     radar.main([])
     assert merged.exists()
     assert env["spawned"] == []
-    assert radar.read_snapshot() is None
+    assert mr_tier.read_snapshot() is None
 
 
 def _completed(returncode=0, stdout="", stderr=""):
@@ -508,16 +522,16 @@ def _completed(returncode=0, stdout="", stderr=""):
 
 
 def test_live_open_mrs_raises_on_glab_error(env) -> None:
-    env["monkeypatch"].setattr(radar.mrs, "_run",
+    env["monkeypatch"].setattr(mr_tier.mrs, "_run",
                                lambda *a, **k: _completed(1, "", "401 Unauthorized"))
-    with pytest.raises(radar.RadarError, match="not authenticated"):
-        radar.live_open_mrs()
+    with pytest.raises(mr_tier.RadarError, match="not authenticated"):
+        mr_tier.live_open_mrs()
 
 
 def test_live_open_mrs_raises_on_bad_json(env) -> None:
-    env["monkeypatch"].setattr(radar.mrs, "_run", lambda *a, **k: _completed(0, "not json"))
-    with pytest.raises(radar.RadarError, match="parse"):
-        radar.live_open_mrs()
+    env["monkeypatch"].setattr(mr_tier.mrs, "_run", lambda *a, **k: _completed(0, "not json"))
+    with pytest.raises(mr_tier.RadarError, match="parse"):
+        mr_tier.live_open_mrs()
 
 
 def test_live_open_mrs_queries_open_mrs_authored_by_me(env) -> None:
@@ -527,9 +541,9 @@ def test_live_open_mrs_queries_open_mrs_authored_by_me(env) -> None:
         seen.append(cmd)
         return _completed(0, "[]")
 
-    env["monkeypatch"].setattr(radar.mrs, "_run", _capture)
-    env["monkeypatch"].setattr(radar.mrs, "_enrich", lambda *a, **k: None)
-    assert radar.live_open_mrs() == []
+    env["monkeypatch"].setattr(mr_tier.mrs, "_run", _capture)
+    env["monkeypatch"].setattr(mr_tier.mrs, "_enrich", lambda *a, **k: None)
+    assert mr_tier.live_open_mrs() == []
     assert seen[0][:4] == ["glab", "mr", "list", "-F"]
     assert "--author" in seen[0] and "@me" in seen[0]
     assert "--merged" not in seen[0] and "--all" not in seen[0]
@@ -537,10 +551,10 @@ def test_live_open_mrs_queries_open_mrs_authored_by_me(env) -> None:
 
 def test_live_truth_is_one_gl_mrs_query(env) -> None:
     calls: list[list[str]] = []
-    env["monkeypatch"].setattr(radar.mrs, "_run",
+    env["monkeypatch"].setattr(mr_tier.mrs, "_run",
                                lambda cmd, timeout=25: (calls.append(cmd), _completed(0, "[]"))[1])
-    env["monkeypatch"].setattr(radar.mrs, "_enrich", lambda *a, **k: None)
-    radar.live_open_mrs()
+    env["monkeypatch"].setattr(mr_tier.mrs, "_enrich", lambda *a, **k: None)
+    mr_tier.live_open_mrs()
     assert len(calls) == 1
 
 
@@ -549,7 +563,7 @@ def test_live_truth_is_one_gl_mrs_query(env) -> None:
 # ---------------------------------------------------------------------------
 
 def test_corrupt_snapshot_is_treated_as_cold_start(env, capsys) -> None:
-    Path(radar._snapshot_path(radar.default_filter())).write_text("{ not json")
+    Path(mr_tier._snapshot_path(mr_tier.default_filter())).write_text("{ not json")
     _live_pid_file(env["dir"], "33172")
     _set_live(env, [_mr(33172, "success")])
     assert "cold start" in _run(env, capsys)
@@ -561,7 +575,7 @@ def test_corrupt_snapshot_is_treated_as_cold_start(env, capsys) -> None:
 
 def _feed_state(tmp_path: Path, body: dict) -> Path:
     path = (tmp_path /
-            f"supertool-watch-{radar.FEED_SOURCE}__{radar.FEED_SCOPE}.state.json")
+            f"supertool-watch-{mr_tier.FEED_SOURCE}__{mr_tier.FEED_SCOPE}.state.json")
     path.write_text(json.dumps(body))
     return path
 
@@ -594,7 +608,7 @@ def test_a_feed_poller_already_alive_is_left_alone(env, capsys) -> None:
 
 def test_a_dead_feed_poller_is_respawned_and_the_respawn_is_reported(env, capsys) -> None:
     (env["dir"] /
-     f"supertool-watch-{radar.FEED_SOURCE}__{radar.FEED_SCOPE}.pid").write_text("9999999\n")
+     f"supertool-watch-{mr_tier.FEED_SOURCE}__{mr_tier.FEED_SCOPE}.pid").write_text("9999999\n")
     _set_live(env, [_mr(33161)])
     out = _run(env, capsys)
     assert len(_feed_spawns(env)) == 1
@@ -606,7 +620,7 @@ def test_a_feed_that_cannot_be_started_is_reported_not_silently_absent(env, caps
     real = radar.dispatcher._spawn_poller
     env["monkeypatch"].setattr(
         radar.dispatcher, "_spawn_poller",
-        lambda source, wid, only: 0 if source == radar.FEED_SOURCE else real(source, wid, only))
+        lambda source, wid, only: 0 if source == mr_tier.FEED_SOURCE else real(source, wid, only))
     _set_live(env, [_mr(33161)])
     out = _run(env, capsys)
     assert "WARNING" in out
@@ -619,7 +633,7 @@ def test_a_down_feed_still_warns_on_a_run_where_nothing_moved(env, capsys) -> No
     real = radar.dispatcher._spawn_poller
     env["monkeypatch"].setattr(
         radar.dispatcher, "_spawn_poller",
-        lambda source, wid, only: 0 if source == radar.FEED_SOURCE else real(source, wid, only))
+        lambda source, wid, only: 0 if source == mr_tier.FEED_SOURCE else real(source, wid, only))
     _live_pid_file(env["dir"], "33172")
     _set_live(env, [_mr(33172, "success", "100")])
     _run(env, capsys)
@@ -650,9 +664,9 @@ def test_a_healthy_feed_produces_no_warning(env, capsys) -> None:
 def test_unreachable_gitlab_does_not_start_a_feed_poller(env, capsys) -> None:
     """The hard-error path takes no action at all, feed included."""
     def _boom(multi=None):
-        raise radar.RadarError("boom")
+        raise mr_tier.RadarError("boom")
 
-    env["monkeypatch"].setattr(radar, "live_open_mrs", _boom)
+    env["monkeypatch"].setattr(mr_tier, "live_open_mrs", _boom)
     assert radar.main([]) == 1
     assert _feed_spawns(env) == []
 
@@ -661,7 +675,7 @@ def test_snapshot_records_the_reported_facts(env, capsys) -> None:
     _live_pid_file(env["dir"], "33161")
     _set_live(env, [_mr(33161, "failed", "154177")])
     _run(env, capsys)
-    snap = radar.read_snapshot()
+    snap = mr_tier.read_snapshot()
     assert snap is not None
     assert snap["mrs"]["33161"]["pipeline"] == "failed"
     assert snap["mrs"]["33161"]["pipeline_id"] == "154177"
@@ -692,8 +706,8 @@ def _glab(env, by_author: dict[str, list[dict]]) -> list[list[str]]:
         author = cmd[cmd.index("--author") + 1] if "--author" in cmd else ""
         return _Result(json.dumps(by_author.get(author, [])))
 
-    env["monkeypatch"].setattr(radar.mrs, "_run", _run_cmd)
-    env["monkeypatch"].setattr(radar.mrs, "_enrich", lambda data, cap, workers: None)
+    env["monkeypatch"].setattr(mr_tier.mrs, "_run", _run_cmd)
+    env["monkeypatch"].setattr(mr_tier.mrs, "_enrich", lambda data, cap, workers: None)
     return calls
 
 
@@ -755,14 +769,14 @@ def test_an_arg_carrying_only_flags_is_still_the_default_population(env, capsys)
     out = capsys.readouterr().out
     assert "!33161" in out
     assert _feed_ids(env) == ["@me"]
-    assert radar.resolve_filter(["radar", "nopipe"]) == radar.default_filter()
+    assert mr_tier.resolve_filter("nopipe") == mr_tier.default_filter()
 
 
 def test_editing_the_shared_default_moves_radar_too(env, capsys) -> None:
     """The drift hole this issue names: `DEFAULT_FEED` used to move only the
     shell supervisor, leaving radar on its own hardcoded author."""
     calls = _glab(env, {"someone.else": [_mr(77)]})
-    env["monkeypatch"].setattr(radar.defaults, "DEFAULT_FILTER",
+    env["monkeypatch"].setattr(mr_tier.defaults, "DEFAULT_FILTER",
                                "author=someone.else,state=opened")
     assert radar.main([]) == 0
     assert "!77" in capsys.readouterr().out
@@ -802,7 +816,7 @@ def test_a_failing_query_in_the_fanout_fails_the_whole_board(env, capsys) -> Non
             return _Result("", returncode=1)
         return _Result(json.dumps([_mr(33161)]))
 
-    env["monkeypatch"].setattr(radar.mrs, "_run", _run_cmd)
+    env["monkeypatch"].setattr(mr_tier.mrs, "_run", _run_cmd)
     assert radar.main(["radar", "author=@me,author=modular.system"]) == 1
     assert capsys.readouterr().out == ""
 
@@ -868,7 +882,7 @@ def test_other_feed_scopes_lists_only_live_pollers_for_other_scopes(env) -> None
     _live_feed(env["dir"], other)
     _live_feed(env["dir"])
     _live_pid_file(env["dir"], "33161")
-    assert radar.other_feed_scopes(radar.FEED_SCOPE) == [other]
+    assert mr_tier.other_feed_scopes(mr_tier.FEED_SCOPE) == [other]
 
 
 # ---------------------------------------------------------------------------
@@ -876,16 +890,16 @@ def test_other_feed_scopes_lists_only_live_pollers_for_other_scopes(env) -> None
 # ---------------------------------------------------------------------------
 
 def test_each_filter_gets_its_own_snapshot_file() -> None:
-    mine = radar._snapshot_path(radar.default_filter())
-    kevin = radar._snapshot_path(radar.resolve_filter(["radar", "author=modular.system"]))
+    mine = mr_tier._snapshot_path(mr_tier.default_filter())
+    kevin = mr_tier._snapshot_path(mr_tier.resolve_filter("author=modular.system"))
     assert mine != kevin
 
 
 def test_filter_key_ignores_order_but_not_identity() -> None:
-    both_ways = [radar.filter_key(radar.resolve_filter(["radar", arg]))
+    both_ways = [mr_tier.filter_key(mr_tier.resolve_filter(arg))
                  for arg in ("author=a,author=b", "author=b,author=a")]
     assert both_ways[0] == both_ways[1]
-    assert radar.filter_key(radar.resolve_filter(["radar", "author=a"])) != both_ways[0]
+    assert mr_tier.filter_key(mr_tier.resolve_filter("author=a")) != both_ways[0]
 
 
 def test_a_second_population_does_not_read_as_everything_new_and_everything_gone(
@@ -910,13 +924,13 @@ def test_a_second_population_does_not_read_as_everything_new_and_everything_gone
 
 def test_a_filtered_run_writes_only_its_own_snapshot(env, capsys) -> None:
     _glab(env, {"@me": [_mr(33161)], "modular.system": [_mr(991)]})
-    kevin_filter = radar.resolve_filter(["radar", "author=modular.system"])
+    kevin_filter = mr_tier.resolve_filter("author=modular.system")
 
     assert radar.main(["radar", "author=modular.system"]) == 0
     capsys.readouterr()
 
-    assert radar.read_snapshot() is None
-    assert set(radar.read_snapshot(kevin_filter)["mrs"]) == {"991"}
+    assert mr_tier.read_snapshot() is None
+    assert set(mr_tier.read_snapshot(kevin_filter)["mrs"]) == {"991"}
 
 
 # ---------------------------------------------------------------------------
@@ -933,7 +947,7 @@ BLOG_REASON = "MySQL service TLS failure + standing conflict, not this MR"
 
 
 def _exclude(env, mapping) -> None:
-    env["monkeypatch"].setenv(radar.EXCLUSIONS_ENV, json.dumps(mapping))
+    env["monkeypatch"].setenv(mr_tier.EXCLUSIONS_ENV, json.dumps(mapping))
 
 
 def test_a_configured_exclusion_keeps_that_mr_off_the_board(env, capsys) -> None:
@@ -1003,7 +1017,7 @@ def test_an_excluded_mr_is_still_watched_healed_and_fully_notified(env, capsys) 
 
     assert _mr_spawns(env) == ["19509"]
     only = [o for src, iid, o in env["spawned"] if iid == "19509"][0]
-    assert only == [e for e in radar.defaults.DEFAULT_ONLY.split(",") if e]
+    assert only == [e for e in mr_tier.defaults.DEFAULT_ONLY.split(",") if e]
     assert "still watched" in out
 
 
@@ -1014,7 +1028,7 @@ def test_an_exclusion_never_narrows_the_feed(env, capsys) -> None:
     _set_live(env, [_mr(19509, "failed", "154177", title=BLOG_TITLE)])
     _run(env, capsys)
 
-    assert [scope for _s, scope, _o in _feed_spawns(env)] == [radar.FEED_SCOPE]
+    assert [scope for _s, scope, _o in _feed_spawns(env)] == [mr_tier.FEED_SCOPE]
 
 
 def test_an_excluded_mr_is_still_recorded_in_the_snapshot(env, capsys) -> None:
@@ -1023,7 +1037,7 @@ def test_an_excluded_mr_is_still_recorded_in_the_snapshot(env, capsys) -> None:
     _set_live(env, [_mr(19509, "failed", "154177", title=BLOG_TITLE)])
     _run(env, capsys)
 
-    assert "19509" in radar.read_snapshot()["mrs"]
+    assert "19509" in mr_tier.read_snapshot()["mrs"]
 
 
 def test_an_exclusion_stops_applying_once_the_mr_is_no_longer_red(env, capsys) -> None:
@@ -1081,7 +1095,7 @@ def test_an_exclusion_without_a_reason_is_refused(env, capsys) -> None:
 
 def test_a_malformed_exclusions_config_fails_open(env, capsys) -> None:
     """Every unanswerable case resolves to *show the row*."""
-    env["monkeypatch"].setenv(radar.EXCLUSIONS_ENV, "{not json")
+    env["monkeypatch"].setenv(mr_tier.EXCLUSIONS_ENV, "{not json")
     _set_live(env, [_mr(19509, "failed", "154177", title=BLOG_TITLE)])
     out = _run(env, capsys)
 
@@ -1146,7 +1160,7 @@ def test_the_exclusions_env_var_matches_the_documented_config_key() -> None:
     it. A rename on either side is a config key that silently does nothing,
     which is the one failure mode a suppression feature cannot afford."""
     key = "radar_exclusions"
-    assert radar.EXCLUSIONS_ENV == f"SUPERTOOL_{key.upper()}"
+    assert mr_tier.EXCLUSIONS_ENV == f"SUPERTOOL_{key.upper()}"
 
     # encoding= is not optional here (#418): this reads a doc as *data*, and
     # watch.md contains non-ASCII (⚠, em-dashes). Without it, Python decodes
@@ -1158,12 +1172,41 @@ def test_the_exclusions_env_var_matches_the_documented_config_key() -> None:
         encoding="utf-8"
     )
     assert f'"{key}"' in docs
-    assert radar.EXCLUSIONS_ENV in docs
+    assert mr_tier.EXCLUSIONS_ENV in docs
 
     manifest = json.loads(
         (Path(__file__).parent.parent / "presets" / "watch.json").read_text(encoding="utf-8")
     )
     assert key in manifest["ops"]["radar"]["description"]
+
+
+def test_the_tiers_env_var_matches_the_documented_config_key() -> None:
+    """`ops.radar.radar_tiers` reaches the preset as SUPERTOOL_RADAR_TIERS. A
+    rename on either side is a config key that silently does nothing — and
+    since #528 that key is the difference between a board and a refusal."""
+    key = "radar_tiers"
+    assert radar.TIERS_ENV == f"SUPERTOOL_{key.upper()}"
+
+    docs = (Path(__file__).parent.parent / "docs" / "presets" / "watch.md").read_text(
+        encoding="utf-8"
+    )
+    assert f'"{key}"' in docs
+    assert radar.TIERS_ENV in docs
+    # The refusal is also the documentation, so the two must not drift.
+    assert "no tiers configured" in docs
+
+    manifest = json.loads(
+        (Path(__file__).parent.parent / "presets" / "watch.json").read_text(encoding="utf-8")
+    )
+    assert key in manifest["ops"]["radar"]["description"]
+
+
+def test_the_example_config_shows_how_to_register_the_board() -> None:
+    """A stranger who hits the refusal reaches for the example file next."""
+    example = json.loads(
+        (Path(__file__).parent.parent / ".supertool.example.json").read_text(encoding="utf-8")
+    )
+    assert "gl-mrs" in example["ops"]["radar"]["radar_tiers"]
 
 
 def test_the_radar_op_forwards_its_args() -> None:
@@ -1183,37 +1226,35 @@ def test_the_radar_op_forwards_its_args() -> None:
 # ---------------------------------------------------------------------------
 
 def test_an_mr_with_no_commits_is_not_snapshotted_as_conflicted() -> None:
-    entry = radar._snap_entry(_mr(1, has_conflicts=True, detailed_merge_status="commits_status"))
+    entry = mr_tier._snap_entry(_mr(1, has_conflicts=True, detailed_merge_status="commits_status"))
     assert entry["conflict"] == "empty"
 
 
 def test_an_mr_with_a_null_sha_is_not_snapshotted_as_conflicted() -> None:
-    entry = radar._snap_entry(_mr(2, has_conflicts=True, sha=None))
+    entry = mr_tier._snap_entry(_mr(2, has_conflicts=True, sha=None))
     assert entry["conflict"] == "empty"
 
 
 def test_a_genuine_conflict_is_still_snapshotted_as_conflicted() -> None:
-    entry = radar._snap_entry(_mr(3, has_conflicts=True, sha="a" * 40))
+    entry = mr_tier._snap_entry(_mr(3, has_conflicts=True, sha="a" * 40))
     assert entry["conflict"] == "conflict"
 
 
 def test_an_empty_mr_is_still_a_standing_problem_under_its_own_name() -> None:
     """It is unmergeable and the reader has to act on it, so it must not fall
     out of the standing-problem set — it is only named honestly."""
-    assert radar._problem_label(_mr(4, has_conflicts=True, detailed_merge_status="commits_status")) == "empty"
-    assert radar._problem_label(
+    assert mr_tier._problem_label(_mr(4, has_conflicts=True, detailed_merge_status="commits_status")) == "empty"
+    assert mr_tier._problem_label(
         _mr(5, pipeline="failed", has_conflicts=True, detailed_merge_status="commits_status")
     ) == "failed+empty"
 
 
 def test_a_genuine_conflict_keeps_its_problem_label() -> None:
-    assert radar._problem_label(_mr(6, has_conflicts=True, sha="a" * 40)) == "conflict"
-
-
+    assert mr_tier._problem_label(_mr(6, has_conflicts=True, sha="a" * 40)) == "conflict"
 
 
 # ---------------------------------------------------------------------------
-# tier registry
+# tier registry — the contract #528 grew
 # ---------------------------------------------------------------------------
 
 class _FakeTier:
@@ -1235,17 +1276,15 @@ def _register(env, name, tier):
     env["monkeypatch"].setattr(radar, "_tier_module", lambda n: tier if n == name else None)
 
 
-def test_no_registered_tiers_means_no_tier_output_at_all(env) -> None:
-    """The default every stranger who installs this gets. Radar stays an MR
-    reconcile tool until someone asks for more."""
-    assert radar.read_tiers("") == ({}, [])
-    assert radar.tier_reports() == ([], True)
+def _config_options(seen: dict) -> dict:
+    """A tier's options with radar's injected context stripped back off."""
+    return {k: v for k, v in (seen or {}).items() if not k.startswith("_")}
 
 
 def test_a_healthy_tier_is_silent_by_default(env) -> None:
     tier = _FakeTier(["all good"], True)
     _register(env, "gl-runners", tier)
-    assert radar.tier_reports() == ([], True)
+    assert radar.tier_reports() == ([], True, [])
 
 
 def test_a_healthy_tier_speaks_when_asked_to(env) -> None:
@@ -1253,15 +1292,28 @@ def test_a_healthy_tier_speaks_when_asked_to(env) -> None:
     env["monkeypatch"].setenv(radar.TIERS_ENV,
                               json.dumps({"gl-runners": {"quiet_when_healthy": False}}))
     env["monkeypatch"].setattr(radar, "_tier_module", lambda n: tier)
-    assert radar.tier_reports() == (["all good"], True)
+    assert radar.tier_reports() == (["all good"], True, [])
 
 
 def test_an_unhealthy_tier_always_speaks(env) -> None:
     tier = _FakeTier(["FLEET — 14 stuck"], False)
     _register(env, "gl-runners", tier)
-    lines, ok = radar.tier_reports()
+    lines, ok, failures = radar.tier_reports()
     assert lines == ["FLEET — 14 stuck"]
     assert ok is False
+    assert failures == []
+
+
+def test_a_tier_whose_quiet_default_is_false_speaks_while_healthy(env) -> None:
+    """The MR board's case. A tier whose report *is* the board cannot go quiet
+    on a good day: a board that prints nothing is byte-identical to a radar
+    that failed to run, which is the failure this preset exists to remove."""
+    tier = _FakeTier(["1 open | 1 watched"], True)
+    tier.RADAR_QUIET_DEFAULT = False
+    _register(env, "gl-mrs", tier)
+    lines, ok, failures = radar.tier_reports()
+    assert lines == ["1 open | 1 watched"]
+    assert ok is True and failures == []
 
 
 def test_tier_options_reach_the_tier(env) -> None:
@@ -1269,7 +1321,46 @@ def test_tier_options_reach_the_tier(env) -> None:
     env["monkeypatch"].setenv(radar.TIERS_ENV, json.dumps({"gl-runners": {"window": 60}}))
     env["monkeypatch"].setattr(radar, "_tier_module", lambda n: tier)
     radar.tier_reports()
-    assert tier.seen_options == {"window": 60}
+    assert _config_options(tier.seen_options) == {"window": 60}
+
+
+def test_the_invocation_argument_reaches_the_tier(env) -> None:
+    """The population is an argument, and a tier that cannot see it would
+    silently report the default one — #486 rebuilt behind the tier boundary."""
+    tier = _FakeTier([], True)
+    _register(env, "gl-runners", tier)
+    radar.tier_reports("author=modular.system")
+    assert tier.seen_options["_arg"] == "author=modular.system"
+
+
+def test_a_tier_is_handed_a_bounded_spawner(env) -> None:
+    """Radar owns the bound, the tier owns the timing. A tier that had to
+    spawn for itself would rebuild #513's unbounded respawn one tier over."""
+    tier = _FakeTier([], True)
+    _register(env, "gl-runners", tier)
+    radar.tier_reports()
+    watch = tier.seen_options["_watch"]
+    assert callable(watch)
+    assert watch("gitlab-mr-feed", "@me", []) == "spawned"
+    assert [row[:2] for row in env["spawned"]] == [("gitlab-mr-feed", "@me")]
+
+
+def test_a_slot_the_tier_asked_for_and_radar_capped_is_named(env) -> None:
+    """The tier asked; radar refused; the reader hears about it on the same
+    run. A capped slot that says nothing is exactly #513."""
+    env["monkeypatch"].setattr(
+        radar.transport, "deaths",
+        lambda source, scope: [{}] * radar.transport.DEATH_RESPAWN_LIMIT)
+
+    class _Spawns(_FakeTier):
+        def radar_report(self, options=None):
+            options["_watch"]("gl-runners", "fleet")
+            return [], True
+
+    _register(env, "gl-runners", _Spawns([], True))
+    lines, _ok, failures = radar.tier_reports()
+    assert any("stopped respawning gl-runners:fleet" in line for line in lines)
+    assert failures == []
 
 
 def test_an_unknown_option_is_named_not_silently_ignored(env) -> None:
@@ -1278,25 +1369,56 @@ def test_an_unknown_option_is_named_not_silently_ignored(env) -> None:
     tier = _FakeTier([], True)
     env["monkeypatch"].setenv(radar.TIERS_ENV, json.dumps({"gl-runners": {"windoww": 60}}))
     env["monkeypatch"].setattr(radar, "_tier_module", lambda n: tier)
-    lines, _ok = radar.tier_reports()
+    lines, _ok, _failures = radar.tier_reports()
     assert any("unknown option" in line and "windoww" in line for line in lines)
+
+
+def test_radars_own_context_keys_are_not_reported_as_unknown_options(env) -> None:
+    tier = _FakeTier([], True)
+    _register(env, "gl-runners", tier)
+    lines, _ok, _failures = radar.tier_reports()
+    assert not any("unknown option" in line for line in lines)
 
 
 def test_an_unresolvable_tier_name_is_reported(env) -> None:
     env["monkeypatch"].setenv(radar.TIERS_ENV, json.dumps({"gl-runnerz": {}}))
     env["monkeypatch"].setattr(radar, "_tier_module", lambda n: None)
-    lines, ok = radar.tier_reports()
-    assert any("gl-runnerz" in line and "radar_report" in line for line in lines)
+    lines, ok, failures = radar.tier_reports()
+    assert any("gl-runnerz" in line and "radar_report" in line for line in failures)
     assert ok is False
+    assert lines == []
 
 
 def test_a_tier_that_raises_cannot_take_the_board_down(env) -> None:
-    """The MR board is the thing radar exists for; an optional tier must never
-    be able to cost the reader their board."""
-    _register(env, "gl-runners", _FakeTier([], True, boom=True))
-    lines, ok = radar.tier_reports()
-    assert any("tier exploded" in line for line in lines)
+    """A board is what radar exists to produce; one broken tier must never be
+    able to cost the reader another tier's board."""
+    tier = _FakeTier(["1 open | 1 watched"], True)
+    tier.RADAR_QUIET_DEFAULT = False
+    modules = {"gl-runners": _FakeTier([], True, boom=True), "gl-mrs": tier}
+    env["monkeypatch"].setenv(radar.TIERS_ENV,
+                              json.dumps({"gl-runners": {}, "gl-mrs": {}}))
+    env["monkeypatch"].setattr(radar, "_tier_module", modules.get)
+    lines, ok, failures = radar.tier_reports()
+    assert lines == ["1 open | 1 watched"]
+    assert any("tier exploded" in line for line in failures)
     assert ok is False
+
+
+def test_a_broken_tier_never_renders_as_green(env, capsys) -> None:
+    """Three states, not two. A tier that raised did not report health — it
+    reported nothing, and radar must not let 'nothing' read as 'fine'."""
+    _register(env, "gl-runners", _FakeTier([], True, boom=True))
+    assert radar.main([]) == 1
+    captured = capsys.readouterr()
+    assert "tier exploded" in captured.err
+    assert captured.out == ""
+
+
+def test_a_tier_that_cannot_be_resolved_exits_nonzero(env, capsys) -> None:
+    env["monkeypatch"].setenv(radar.TIERS_ENV, json.dumps({"gl-runnerz": {}}))
+    env["monkeypatch"].setattr(radar, "_tier_module", lambda n: None)
+    assert radar.main([]) == 1
+    assert "gl-runnerz" in capsys.readouterr().err
 
 
 def test_unparseable_tier_config_yields_the_ordinary_board_plus_a_complaint() -> None:
@@ -1315,6 +1437,127 @@ def test_a_tier_with_null_options_is_accepted_as_defaults() -> None:
     tiers, complaints = radar.read_tiers(json.dumps({"gl-runners": None}))
     assert tiers == {"gl-runners": {}}
     assert complaints == []
+
+
+def test_config_cannot_forge_radars_own_context_keys() -> None:
+    """`_arg` and `_watch` are how a tier knows what radar asked for. A config
+    that could set them could lie to a tier about its own invocation."""
+    tiers, complaints = radar.read_tiers(
+        json.dumps({"gl-mrs": {"_arg": "author=someone.else"}}))
+    assert tiers == {"gl-mrs": {}}
+    assert complaints and "_arg" in complaints[0] and "reserve" in complaints[0]
+
+
+# ---------------------------------------------------------------------------
+# the refusal — radar with nothing registered says so (#528)
+# ---------------------------------------------------------------------------
+
+def test_no_tiers_configured_refuses_and_teaches(env, capsys) -> None:
+    """Not a silent no-op. An unconfigured radar that prints nothing is
+    byte-identical to a healthy one, which is the failure this preset exists
+    to prevent — so the refusal is loud and carries its own fix."""
+    env["monkeypatch"].delenv(radar.TIERS_ENV, raising=False)
+    assert radar.main([]) == 1
+    err = capsys.readouterr().err
+    assert "no tiers configured" in err
+    assert "ops.radar.radar_tiers" in err
+    assert '"gl-mrs": {}' in err
+
+
+def test_no_tiers_configured_is_not_quietly_gl_mrs(env, capsys) -> None:
+    """A gl-mrs default points GitLab API calls at people who may be on
+    GitHub, and hides that radar is configurable at all."""
+    env["monkeypatch"].delenv(radar.TIERS_ENV, raising=False)
+
+    def _boom(multi=None):
+        raise AssertionError("radar queried GitLab with no tier registered")
+
+    env["monkeypatch"].setattr(mr_tier, "live_open_mrs", _boom)
+    assert radar.main([]) == 1
+    assert capsys.readouterr().out == ""
+    assert env["spawned"] == []
+
+
+def test_an_empty_tier_object_is_still_a_refusal(env, capsys) -> None:
+    """`radar_tiers: {}` is a config that watches nothing. Printing an empty
+    board for it would be the same silence, one indirection further away."""
+    env["monkeypatch"].setenv(radar.TIERS_ENV, "{}")
+    assert radar.main([]) == 1
+    assert "no tiers configured" in capsys.readouterr().err
+
+
+def test_a_malformed_tier_config_says_why_before_it_refuses(env, capsys) -> None:
+    env["monkeypatch"].setenv(radar.TIERS_ENV, "{not json")
+    assert radar.main([]) == 1
+    err = capsys.readouterr().err
+    assert "not valid JSON" in err
+    assert "no tiers configured" in err
+
+
+# ---------------------------------------------------------------------------
+# the MR board joins on the same terms as any other tier (#528)
+# ---------------------------------------------------------------------------
+
+def test_the_mr_board_resolves_as_a_tier_named_gl_mrs() -> None:
+    module = radar._tier_module("gl-mrs")
+    assert module is not None
+    assert callable(getattr(module, "radar_report", None))
+    assert module.RADAR_QUIET_DEFAULT is False
+
+
+def test_the_runner_fleet_still_resolves_through_its_op() -> None:
+    """Route 2 of `_tier_module`: an op joins by exposing radar_report, with
+    no entry in any table radar keeps."""
+    module = radar._tier_module("gl-runners")
+    assert module is not None
+    assert callable(getattr(module, "radar_report", None))
+
+
+def test_the_fleet_watcher_is_the_fleet_tiers_business_not_radars(env) -> None:
+    """#528: radar hardcoded the gl-runners *watcher* while calling gl-runners
+    a pure tier. Registering the MR board alone must spawn no fleet poller."""
+    _set_live(env, [_mr(33161)])
+    radar.main([])
+    assert _fleet_spawns(env) == []
+
+
+def test_registering_the_fleet_tier_is_what_spawns_its_watcher(env) -> None:
+    runners = env["resolve"]("gl-runners")
+    env["monkeypatch"].setenv(radar.TIERS_ENV, json.dumps({"gl-runners": {}}))
+    env["monkeypatch"].setattr(radar, "_tier_module",
+                               lambda n: runners if n == "gl-runners" else None)
+    env["monkeypatch"].setattr(runners, "_api", lambda *a, **k: ([], "403 Forbidden"))
+    radar.main([])
+    assert [row[:2] for row in _fleet_spawns(env)] == [("gl-runners", "fleet")]
+
+
+def test_the_mr_tier_reports_unhealthy_when_its_feed_is_down(env, capsys) -> None:
+    """`healthy` means 'this tier could tell you the truth'. A board with no
+    discovery feed cannot promise it is complete, so it must not claim to be."""
+    _set_live(env, [_mr(33161)])
+    lines, healthy = mr_tier.radar_report({"_arg": "", "_watch": lambda *a, **k: "failed"})
+    assert healthy is False
+    assert any("feed poller is down" in line for line in lines)
+
+
+def test_a_red_mr_is_a_healthy_report_of_an_unhealthy_world(env) -> None:
+    """A board full of failing pipelines is not a broken board. Conflating the
+    two would make every red MR read as 'radar cannot tell', which is how a
+    genuine blind spot gets lost in the noise."""
+    _set_live(env, [_mr(33161, "failed", "154177")])
+    _live_feed(env["dir"])
+    _live_pid_file(env["dir"], "33161")
+    _lines, healthy = mr_tier.radar_report({"_arg": "", "_watch": lambda *a, **k: "alive"})
+    assert healthy is True
+
+
+def test_the_mr_tier_without_a_spawner_reports_the_feed_down_not_fine(env) -> None:
+    """The house defect in miniature: an absence the tool produced must never
+    render as an absence in the world."""
+    _set_live(env, [_mr(33161)])
+    lines, healthy = mr_tier.radar_report({"_arg": ""})
+    assert healthy is False
+    assert any("feed poller is down" in line for line in lines)
 
 
 # ---------------------------------------------------------------------------
@@ -1339,3 +1582,13 @@ def test_a_capped_slot_is_named_loudly_rather_than_going_quiet(env) -> None:
 
 def test_a_healthy_slot_produces_no_cap_warning() -> None:
     assert radar.watcher_cap_warnings({"gl-runners:fleet": "spawned"}) == []
+
+
+def test_a_capped_feed_is_reported_as_a_discovery_gap(env) -> None:
+    """The feed is the discovery guarantee. Capped is not 'fine', and the
+    footer token must not read like a live feed either."""
+    _set_live(env, [_mr(33161)])
+    lines, healthy = mr_tier.radar_report({"_arg": "", "_watch": lambda *a, **k: "capped"})
+    assert healthy is False
+    assert any("no longer being respawned" in line for line in lines)
+    assert any("feed DOWN (respawn capped)" in line for line in lines)

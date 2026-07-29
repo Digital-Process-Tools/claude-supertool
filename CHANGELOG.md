@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **⚠ BREAKING — `radar` is a reconcile engine, not an MR tool: the GitLab MR board is now a registered tier, and there is no default tier** ([#528](https://github.com/Digital-Process-Tools/claude-supertool/issues/528)). [#527](https://github.com/Digital-Process-Tools/claude-supertool/pull/527) introduced `ops.radar.radar_tiers` and stopped half way — the board stayed hardcoded in `main()`, rationalised as "core vs tier". That reasoning does not survive contact. Radar's core is *reconcile registered tiers against live truth, heal their watchers, report, stay idempotent, and never render an unknown as green*, and merge requests appear nowhere in that sentence. GitLab MRs were simply the first tier anyone wrote.
+
+  **Migration is one line.** Add the tier you were already getting for free:
+
+  ```json
+  { "ops": { "radar": { "radar_tiers": { "gl-mrs": {}, "gl-runners": {} } } } }
+  ```
+
+  Everything then behaves exactly as before: same board, same filter vocabulary, same standing exclusions, same per-filter snapshots, same discovery feed, same respawn cap. The MR machinery moved from `presets/watch/radar.py` to `presets/watch/tiers/gl_mrs.py` unchanged in behaviour — 96 existing radar tests pass untouched on both sides of the move, plus 36 in the [#476](https://github.com/Digital-Process-Tools/claude-supertool/issues/476) and [#513](https://github.com/Digital-Process-Tools/claude-supertool/issues/513) suites.
+
+  **With no tiers configured, radar refuses and teaches:**
+
+  ```
+  radar: no tiers configured. Add ops.radar.radar_tiers to .supertool.json —
+         e.g. {"gl-mrs": {}} for the GitLab MR board.
+  ```
+
+  stderr, exit 1. Not a silent no-op — silence is the failure this whole preset is built against, and an unconfigured radar that prints nothing is byte-identical to a healthy one ([#486](https://github.com/Digital-Process-Tools/claude-supertool/issues/486) one level up). Not a `{"gl-mrs": {}}` default either — that points GitLab API calls at people who may be on GitHub and hides that radar is configurable at all. A loud break carrying its own fix.
+
+  **The tier contract grew, and one part of the issue's proposal did not survive review.** `radar_report(options) -> (lines, healthy)` is unchanged; `RADAR_QUIET_DEFAULT` is new (`False` for a tier whose report *is* the board, so the MR board still prints its one summary line on a quiet day); and radar injects two reserved keys — `_arg`, the raw invocation argument, and `_watch`, its bounded spawner. Config cannot forge them: any key starting with `_` is refused and named. The proposed declarative `radar_watchers(options) -> [(source, scope, only)]` was **not** implemented, because a declared slot must be spawned before the report runs and the MR tier must *not* spawn its discovery feed when live GitLab was unreachable — nothing may be spawned, pruned, healed or snapshotted on a population that could not be read. Only the tier knows when spawning is safe, and it needs the spawn result inside its own report, since the feed's status is a token in the board footer. Two mechanisms for one job is the drift this repo keeps filing bugs about, so there is one: radar owns the bound, the tier owns the timing.
+
+  **The tier contract was leaking in both directions, not just one.** `radar.py` hardcoded `FLEET_SOURCE` / `ensure_fleet` / `_TIER_WATCH_SOURCES` — the `gl-runners` *watcher* — while calling `gl-runners` a pure tier. That table is gone; `gl-runners` now declares `WATCH_SOURCE` / `WATCH_SCOPE` and claims its own slot through `_watch`, before any API call, so a token that cannot read runners still gets the poller it got before.
+
+  **A tier that cannot tell you the truth never renders as green.** A tier that raises, or that cannot be resolved to a module, is caught and named **on stderr with exit 1** — returned on a channel separate from the board, so one broken tier cannot cost another its board and cannot leave radar exiting 0 either. Three states, not two: `ok`, a finding, and *cannot tell* (`docs/validators.md`). `healthy` in the contract means "this tier could tell you the truth", not "the world is fine" — a board full of red MRs is a healthy report; a board that lost its discovery feed is not.
+
 ### Added
 
 - **`pipeline_failed` names the jobs that broke, and the failing-job lookup is the only request either change adds** ([#509](https://github.com/Digital-Process-Tools/claude-supertool/issues/509), [#519](https://github.com/Digital-Process-Tools/claude-supertool/issues/519)). The event said "pipeline 154253 failed" and nothing more, so identifying the actual failure cost the consumer `gl-mr` → `gl-pipeline:<id>:failed` → `gl-job` — three round-trips for one string, at the one moment a radar session is doing work and can least afford the context. Three flat keys now ride on `pipeline_failed` and no other event: `observed_failed_jobs`, `observed_failed_job_count`, `observed_failed_jobs_lookup`.

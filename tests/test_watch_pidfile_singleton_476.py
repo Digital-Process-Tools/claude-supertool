@@ -12,7 +12,7 @@ a race, not a missing check.
 Both spawn sites already had a check. Neither was atomic:
 
   - `cmd_watch`      : `os.path.exists(pid_file)` and `_pid_alive(...)`
-  - `radar.ensure_feed`: `feed_pid()` and `_pid_alive(...)`
+  - the feed watcher (`radar.ensure_watcher`): `feed_pid()` and `_pid_alive(...)`
 
 and the pidfile they test is written by the *grandchild*, after a fork, an
 import and a detach. Every caller that looks inside that window sees an empty
@@ -58,6 +58,7 @@ def _load(name: str, path: Path):
 
 dispatcher = _load("watch_dispatcher_476", WATCH_DIR / "dispatcher.py")
 radar = _load("watch_radar_476", WATCH_DIR / "radar.py")
+mr_tier = _load("watch_radar_476_gl_mrs", WATCH_DIR / "tiers" / "gl_mrs.py")
 
 
 def _dead_pid() -> int:
@@ -197,33 +198,33 @@ def test_the_claim_precedes_the_spawn(monkeypatch) -> None:
 
 
 # ---------------------------------------------------------------------------
-# radar.ensure_feed — the discovery tier, and the source of the observed nine
+# the feed watcher — the discovery guarantee, and the source of the observed nine
 # ---------------------------------------------------------------------------
 
-def test_ensure_feed_does_not_stack_a_second_feed(monkeypatch) -> None:
+def test_the_feed_watcher_does_not_stack_a_second_feed(monkeypatch) -> None:
     spawns = _Spawns()
     monkeypatch.setattr(radar.dispatcher, "_spawn_poller", spawns)
-    assert radar.ensure_feed("@me") == "spawned"
-    assert radar.ensure_feed("@me") == "alive"
+    assert radar.ensure_watcher(mr_tier.FEED_SOURCE, "@me", mr_tier.feed_only()) == "spawned"
+    assert radar.ensure_watcher(mr_tier.FEED_SOURCE, "@me", mr_tier.feed_only()) == "alive"
     assert len(spawns.calls) == 1
 
 
-def test_ensure_feed_respawns_over_a_dead_feed(monkeypatch) -> None:
-    transport.record_pid(radar.FEED_SOURCE, "@me", _dead_pid())
+def test_the_feed_watcher_respawns_over_a_dead_feed(monkeypatch) -> None:
+    transport.record_pid(mr_tier.FEED_SOURCE, "@me", _dead_pid())
     spawns = _Spawns()
     monkeypatch.setattr(radar.dispatcher, "_spawn_poller", spawns)
-    assert radar.ensure_feed("@me") == "spawned"
+    assert radar.ensure_watcher(mr_tier.FEED_SOURCE, "@me", mr_tier.feed_only()) == "spawned"
     assert len(spawns.calls) == 1
 
 
-def test_ensure_feed_releases_the_slot_when_the_spawn_fails(monkeypatch) -> None:
+def test_the_feed_watcher_releases_the_slot_when_the_spawn_fails(monkeypatch) -> None:
     monkeypatch.setattr(radar.dispatcher, "_spawn_poller", _Spawns(pid=0))
-    assert radar.ensure_feed("@me") == "failed"
-    assert not os.path.exists(transport.pid_path(radar.FEED_SOURCE, "@me"))
+    assert radar.ensure_watcher(mr_tier.FEED_SOURCE, "@me", mr_tier.feed_only()) == "failed"
+    assert not os.path.exists(transport.pid_path(mr_tier.FEED_SOURCE, "@me"))
 
 
 # ---------------------------------------------------------------------------
-# radar.heal — the per-MR tier (#417 item 1 made this the tier with the
+# mr_tier.heal — the per-MR tier (#417 item 1 made this the tier with the
 # multiplier: the population went from "the few that are red" to "every open
 # MR", so a race here duplicates ~7 pollers, not one)
 # ---------------------------------------------------------------------------
@@ -238,8 +239,8 @@ def test_heal_does_not_stack_a_second_watcher(monkeypatch) -> None:
     """
     spawns = _Spawns()
     monkeypatch.setattr(radar.dispatcher, "_spawn_poller", spawns)
-    assert radar.heal(["33161"], set())[:2] == (["33161"], [])
-    radar.heal(["33161"], set())
+    assert mr_tier.heal(["33161"], set())[:2] == (["33161"], [])
+    mr_tier.heal(["33161"], set())
     assert len(spawns.calls) == 1
 
 
@@ -252,7 +253,7 @@ def test_heal_claims_the_slot_before_forking(monkeypatch) -> None:
         return os.getpid()
 
     monkeypatch.setattr(radar.dispatcher, "_spawn_poller", _spawn)
-    radar.heal(["33161"], set())
+    mr_tier.heal(["33161"], set())
     assert seen["claimed"] == os.getpid()
 
 
@@ -267,8 +268,8 @@ def test_an_mr_watched_by_another_radar_is_neither_healed_nor_uncovered(
     trust, because it is the whole point of the op.
     """
     monkeypatch.setattr(radar.dispatcher, "_spawn_poller", _Spawns())
-    radar.heal(["33161"], set())
-    healed, uncovered, refused = radar.heal(["33161"], set())
+    mr_tier.heal(["33161"], set())
+    healed, uncovered, refused = mr_tier.heal(["33161"], set())
     assert healed == []
     assert uncovered == []
     assert refused == []
@@ -279,12 +280,12 @@ def test_heal_releases_the_slot_when_the_spawn_fails(monkeypatch) -> None:
     heal for that iid — and an MR quietly dropped from the fleet is the exact
     failure #417 exists to remove."""
     monkeypatch.setattr(radar.dispatcher, "_spawn_poller", _Spawns(pid=0))
-    assert radar.heal(["33161"], set())[:2] == ([], ["33161"])
-    assert not os.path.exists(transport.pid_path(radar.SOURCE, "33161"))
+    assert mr_tier.heal(["33161"], set())[:2] == ([], ["33161"])
+    assert not os.path.exists(transport.pid_path(mr_tier.SOURCE, "33161"))
 
     spawns = _Spawns()
     monkeypatch.setattr(radar.dispatcher, "_spawn_poller", spawns)
-    assert radar.heal(["33161"], set())[:2] == (["33161"], [])
+    assert mr_tier.heal(["33161"], set())[:2] == (["33161"], [])
 
 
 def test_feed_scope_is_insensitive_to_filter_order() -> None:
@@ -293,6 +294,6 @@ def test_feed_scope_is_insensitive_to_filter_order() -> None:
     Safe to canonicalise because it only merges filters that are already the
     same set — it can never refuse a filter that selects something different.
     """
-    one = radar.mrs._parse_multi("author=@me,author=modular.system,state=opened")[0]
-    other = radar.mrs._parse_multi("state=opened,author=modular.system,author=@me")[0]
-    assert radar.feed_scope(one) == radar.feed_scope(other)
+    one = mr_tier.mrs._parse_multi("author=@me,author=modular.system,state=opened")[0]
+    other = mr_tier.mrs._parse_multi("state=opened,author=modular.system,author=@me")[0]
+    assert mr_tier.feed_scope(one) == mr_tier.feed_scope(other)

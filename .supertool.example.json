@@ -324,6 +324,19 @@
       "enrich_cap": 40,
       "per_page": 50
     },
+    "radar": {
+      "_doc": "Radar reconciles registered tiers against live truth. There is NO default tier: with radar_tiers absent or empty, radar refuses and names the fix, because an unconfigured radar that prints nothing is byte-identical to a healthy one. 'gl-mrs' is the GitLab MR board (the whole of radar before #528); 'gl-runners' adds the runner fleet and needs Maintainer to read project runners. Registration order is render order. Both keys pass through as SUPERTOOL_RADAR_TIERS / SUPERTOOL_RADAR_EXCLUSIONS.",
+      "radar_tiers": {
+        "gl-mrs": {},
+        "gl-runners": { "window": 1800 }
+      },
+      "radar_exclusions": {
+        "19509": {
+          "reason": "MySQL service TLS failure + standing conflict, not this MR",
+          "until": "2026-09-01"
+        }
+      }
+    },
     "git-commit": {
       "coauthor": "Max <noreply>",
       "_doc": "Overrides the git preset's git-commit op. 'coauthor' passes through as SUPERTOOL_COAUTHOR — the Co-Authored-By trailer auto-appended when the commit message lacks one (default 'Max <noreply>'). Set to '' / 'none' / 'off' / 'false' to disable."
