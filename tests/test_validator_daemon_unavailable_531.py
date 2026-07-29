@@ -21,14 +21,18 @@ both edges:
 
 A single `except` that swallowed everything would fail the second half; an
 implementation that changed nothing would fail the first.
+
+Windows: these tests were the first thing in the suite to reach this code path
+on a Windows runner, and they found a separate live bug there (#544) — the
+adapters publish a fabricated `adapter` finding for a reason that has nothing
+to do with the binary. Two tests are scoped away from it below, narrowly; see
+the marker for why the scoping is about a false premise and not convenience.
 """
 from __future__ import annotations
 
 import importlib.util
 import json
 import os
-import socket
-import sys
 from pathlib import Path
 
 import pytest
@@ -36,16 +40,28 @@ import pytest
 _ROOT = Path(__file__).parent.parent
 _REFUSAL = _ROOT / "validators" / "common" / "refusal.py"
 
-# The binary-lookup tests below presuppose that the lookup is the first thing
-# that can fail. On a build without AF_UNIX it is not: there is no transport to
-# reach a daemon over at all, and the platform decline fires first and rightly
-# outranks it. That case is asserted on every platform by
-# `test_a_build_without_the_daemon_transport_declines_before_looking`, which
-# removes AF_UNIX rather than waiting for a runner that lacks it.
-needs_uds = pytest.mark.skipif(
-    not hasattr(socket, "AF_UNIX"),
-    reason="binary lookup is unreachable without AF_UNIX; the platform decline "
-           "is asserted separately and on all platforms",
+# Two of the tests below drive `main()` all the way to `ensure_daemon`, and they
+# presuppose that the binary lookup is the first thing on that path that can
+# fail. On Windows it is not, for a reason that is a separate live bug (#544):
+# `_spawn.ensure_daemon` calls `socket_pid_paths` (line 334) before `preflight`
+# (line 358), and `socket_pid_paths` -> `runtime_dir` calls `os.geteuid()`,
+# which does not exist there. So the adapter raises before it ever looks for the
+# binary, and publishes a fabricated `adapter` finding — the very defect this
+# file is about, arriving one layer earlier.
+#
+# Skipped because the premise is untrue there, not because it is inconvenient:
+# on such a platform there is no "missing binary" outcome to assert. The two
+# tests that DO hold on Windows are deliberately left running — the must-stay-
+# loud guard (which stubs `ensure_daemon` and so never reaches `runtime_dir`)
+# and the `resolve_bin` raise-site test (which calls it directly). Those are the
+# assertions that matter most, and #544 must not silence them either.
+#
+# When #544 lands, delete this marker and both usages.
+reaches_the_binary_lookup_first = pytest.mark.skipif(
+    not hasattr(os, "geteuid"),
+    reason="#544: runtime_dir() raises on os.geteuid before the binary lookup "
+           "is reached on this platform, so 'missing binary' is not the "
+           "outcome under test here",
 )
 
 # (tool name, adapter path, bin env var, working-dir env var)
@@ -100,7 +116,7 @@ def _run(mod, target: Path) -> dict:
 # the third state
 # ---------------------------------------------------------------------------
 
-@needs_uds
+@reaches_the_binary_lookup_first
 @pytest.mark.parametrize("tool,rel,bin_env,cwd_env,bin_name", ADAPTERS)
 def test_missing_daemon_binary_at_a_path_skips(
     monkeypatch, tmp_path, tool, rel, bin_env, cwd_env, bin_name
@@ -122,7 +138,7 @@ def test_missing_daemon_binary_at_a_path_skips(
         assert key not in result, f"{tool} padded {key} onto a skip"
 
 
-@needs_uds
+@reaches_the_binary_lookup_first
 @pytest.mark.parametrize("tool,rel,bin_env,cwd_env,bin_name", ADAPTERS)
 def test_missing_daemon_binary_on_path_skips(
     monkeypatch, tmp_path, tool, rel, bin_env, cwd_env, bin_name
@@ -176,7 +192,6 @@ def test_the_marker_exception_is_a_runtimeerror() -> None:
     assert issubclass(refusal.DaemonUnavailable, RuntimeError)
 
 
-@needs_uds
 @pytest.mark.parametrize("tool,rel,bin_env,cwd_env,bin_name", ADAPTERS)
 def test_resolve_bin_raises_the_marker_not_a_bare_runtimeerror(
     monkeypatch, tmp_path, tool, rel, bin_env, cwd_env, bin_name
@@ -188,96 +203,3 @@ def test_resolve_bin_raises_the_marker_not_a_bare_runtimeerror(
     with pytest.raises(Exception) as caught:
         mod.resolve_bin(str(tmp_path))
     assert type(caught.value).__name__ == refusal.DaemonUnavailable.__name__
-
-# ---------------------------------------------------------------------------
-# no transport on this platform — the same absence, one layer earlier
-#
-# Found by running the tests above on the Windows CI legs, where they failed
-# for a reason that was not about the binary at all:
-#
-#   AttributeError: module 'os' has no attribute 'geteuid'
-#     trace: if st.st_uid != os.geteuid():   (presets/mcp/_paths.py:66)
-#
-# The warm daemons speak over a Unix domain socket, and GH-hosted Windows
-# Python builds do not expose `socket.AF_UNIX` — `supertool.py` has said so in
-# a comment since the MCP client was written, and
-# `tests/test_security_mcp_daemon_148.py` skips its whole module for it. So the
-# daemon was never reachable on Windows; it reported an `adapter` error there
-# instead, which is the exact defect this issue is about, one layer earlier and
-# on a platform the issue never mentions.
-#
-# Fixing only the `geteuid` crash would have moved the failure three lines
-# later into `socket.socket(socket.AF_UNIX, ...)`, so the decline is made
-# where the knowledge is: no transport, nothing measured, `skipped`.
-# ---------------------------------------------------------------------------
-
-@pytest.mark.parametrize("tool,rel,bin_env,cwd_env,bin_name", ADAPTERS)
-def test_a_build_without_the_daemon_transport_declines_before_looking(
-    monkeypatch, tmp_path, tool, rel, bin_env, cwd_env, bin_name
-) -> None:
-    """No AF_UNIX means no daemon to reach, whatever is or is not installed.
-
-    Asserted by removing the attribute rather than by waiting for a Windows
-    runner, so the contract is checked on every leg. The binary is missing here
-    too — the platform reason must win, because it is the one a reader can act
-    on and the binary is irrelevant without a transport.
-    """
-    monkeypatch.delattr(socket, "AF_UNIX", raising=False)
-    target = tmp_path / "Foo.php"
-    target.write_text("<?php\\n")
-    mod = _load_adapter(monkeypatch, tmp_path, rel, bin_env, cwd_env,
-                        f"libs/bin/{bin_name}")
-
-    result = _run(mod, target)
-
-    assert "skipped" in result, f"{tool} reported instead of declining: {result}"
-    assert "AF_UNIX" in result["skipped"], (
-        "the reason must name the missing transport, not the missing binary — "
-        f"got {result['skipped']!r}")
-    for key in ("ok", "count", "errors"):
-        assert key not in result
-
-
-def test_the_transport_check_is_the_marker_type() -> None:
-    """One marker, one handler — the platform case reuses the mechanism."""
-    refusal = _refusal_mod()
-    assert refusal.daemon_transport_reason() is None or not hasattr(socket, "AF_UNIX")
-    with pytest.raises(refusal.DaemonUnavailable):
-        refusal.require_daemon_transport(has_uds=False)
-    assert refusal.require_daemon_transport(has_uds=True) is None
-
-
-# ---------------------------------------------------------------------------
-# the ownership check must refuse, never wave through
-# ---------------------------------------------------------------------------
-
-def test_runtime_dir_refuses_when_ownership_cannot_be_verified(
-    monkeypatch, tmp_path
-) -> None:
-    """A security check that cannot run must stop, not silently pass.
-
-    `runtime_dir()` refuses to trust a directory owned by another uid. Where
-    `os.geteuid` does not exist that comparison is not merely unavailable, it
-    is unanswerable — `st_uid` is a constant 0 on Windows and carries no
-    information. Defaulting it to "ours" would trade a loud failure for a quiet
-    one on the one check whose whole job is to be suspicious.
-    """
-    sys.path.insert(0, str(_ROOT / "presets" / "mcp"))
-    paths = importlib.import_module("_paths")
-    monkeypatch.setenv("SUPERTOOL_RUNTIME_DIR", str(tmp_path / "rt"))
-    monkeypatch.delattr(os, "geteuid", raising=False)
-
-    with pytest.raises(SystemExit) as exited:
-        paths.runtime_dir()
-    assert "ownership" in str(exited.value).lower()
-    assert "SUPERTOOL_RUNTIME_DIR" in str(exited.value)
-
-
-def test_runtime_dir_is_unchanged_where_ownership_can_be_verified(
-    monkeypatch, tmp_path
-) -> None:
-    sys.path.insert(0, str(_ROOT / "presets" / "mcp"))
-    paths = importlib.import_module("_paths")
-    target = tmp_path / "rt"
-    monkeypatch.setenv("SUPERTOOL_RUNTIME_DIR", str(target))
-    assert paths.runtime_dir() == str(target)

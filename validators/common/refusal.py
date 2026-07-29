@@ -12,7 +12,6 @@ Adapters route such exits through `skipped()` instead. See validators/SCHEMA.md,
 from __future__ import annotations
 
 import os
-import socket
 
 # Case-insensitive substrings by which an analyser announces it declined to run,
 # as opposed to a finding about the file. Deliberately narrow: an exit we cannot
@@ -46,47 +45,6 @@ class DaemonUnavailable(RuntimeError):
     loud. Guessing towards silence there is how a broken validator starts
     looking clean.
     """
-
-
-def daemon_transport_reason(has_uds: bool | None = None) -> str | None:
-    """Why no warm daemon is reachable on this build, or None if one is.
-
-    The warm analysers are spoken to over a Unix domain socket. GH-hosted
-    Windows Python builds do not expose `socket.AF_UNIX` even though the OS
-    supports it — `supertool.py` has carried that note since the MCP client was
-    written, and `tests/test_security_mcp_daemon_148.py` skips its whole module
-    for it. So on those builds there is no transport, and every warm validator
-    is unreachable before any question of installation arises.
-
-    Checked here rather than left to fail deeper, because the first thing that
-    breaks on the way down is not the socket: `presets/mcp/_paths.py` calls
-    `os.geteuid()`, which Windows also lacks, and the adapter published the
-    resulting `AttributeError` as a finding about the file (#531). Patching
-    only that would have moved the crash three lines later into
-    `socket.socket(socket.AF_UNIX, ...)` and produced the same wrong output
-    from a less legible place.
-
-    `has_uds` is injectable so the contract can be asserted on every platform
-    instead of only on the runners that happen to lack the attribute.
-    """
-    if has_uds is None:
-        has_uds = hasattr(socket, "AF_UNIX")
-    if has_uds:
-        return None
-    return ("warm daemon needs socket.AF_UNIX, which this Python build does "
-            "not expose (Windows) — no daemon is reachable, so nothing was "
-            "analysed. Run this analyser in CI, WSL, or via its cold op.")
-
-
-def require_daemon_transport(has_uds: bool | None = None) -> None:
-    """Raise `DaemonUnavailable` when no warm daemon can be reached at all.
-
-    Same marker type as a missing binary, because it is the same kind of fact:
-    the analyser did not look at the file. One type, one handler, one row.
-    """
-    reason = daemon_transport_reason(has_uds)
-    if reason:
-        raise DaemonUnavailable(reason)
 
 
 def is_refusal(msg: str, env_var: str = "") -> bool:

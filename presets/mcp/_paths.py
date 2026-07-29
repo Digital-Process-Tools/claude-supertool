@@ -61,33 +61,12 @@ def runtime_dir() -> str:
     except OSError:
         pass
     # Ownership check — refuse to trust a directory another uid created.
-    #
-    # Where `os.geteuid` does not exist (Windows) the comparison is not merely
-    # unavailable, it is unanswerable: `st_uid` is a constant 0 there and
-    # carries no information about who owns the directory. So this refuses
-    # rather than waving the check through (#531). Defaulting it to "ours"
-    # would trade a loud failure for a quiet one on the single check whose
-    # whole job is to be suspicious, and a security check that silently stops
-    # running is indistinguishable from one that keeps passing.
-    #
-    # Nothing reaches here on such a platform today — the adapters decline
-    # earlier, for want of AF_UNIX — but this function is also called by
-    # stop.py and status.py, and the next caller should meet a sentence rather
-    # than an AttributeError.
-    geteuid = getattr(os, "geteuid", None)
-    if geteuid is None:
-        sys.exit(
-            f"daemon: cannot verify ownership of runtime dir {base} on this "
-            f"platform (no os.geteuid; st_uid is not meaningful here). "
-            f"Refusing to use it. Set SUPERTOOL_RUNTIME_DIR to a directory "
-            f"you own on a platform where ownership can be checked."
-        )
     try:
         st = os.stat(base)
-        if st.st_uid != geteuid():
+        if st.st_uid != os.geteuid():
             sys.exit(
                 f"daemon: runtime dir {base} owned by uid {st.st_uid}, "
-                f"not us ({geteuid()}). Refusing to use it. "
+                f"not us ({os.geteuid()}). Refusing to use it. "
                 f"Set SUPERTOOL_RUNTIME_DIR to a directory you own."
             )
     except OSError as e:

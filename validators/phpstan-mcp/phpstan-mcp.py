@@ -211,7 +211,6 @@ def main(argv: list[str]) -> int:
                                  int((time.monotonic() - t0) * 1000))))
         return 0
     try:
-        _refusal.require_daemon_transport()
         sock = ensure_daemon(WORKING_DIR)
         resp = ndjson_call(sock, os.path.abspath(file_path))
     except _refusal.DaemonUnavailable as e:
