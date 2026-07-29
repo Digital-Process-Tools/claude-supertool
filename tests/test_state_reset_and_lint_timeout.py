@@ -70,6 +70,17 @@ def test_bad_lint_timeout_env_falls_back_to_the_default(
     assert seen["timeout"] == supertool._LINT_TIMEOUT_DEFAULT
 
 
+def test_the_suite_budget_does_not_move_the_product_default(monkeypatch) -> None:
+    """#553 — conftest raises SUPERTOOL_LINT_TIMEOUT for this suite because a
+    CI runner occasionally needs the room. That is a fact about the runner. The
+    budget supertool ships with is unchanged, and reading the suite's value as
+    the product's would be reading a workaround as a decision.
+    """
+    monkeypatch.delenv("SUPERTOOL_LINT_TIMEOUT", raising=False)
+    assert supertool._LINT_TIMEOUT_DEFAULT == 5
+    assert supertool._lint_timeout() == 5
+
+
 def test_a_missing_binary_still_lints_silently(tmp_path: Path, monkeypatch) -> None:
     """No lint ran because none applies — that is the one silence we keep."""
     f = tmp_path / "x.py"

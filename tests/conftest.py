@@ -41,6 +41,18 @@ def pytest_configure(config):
     # ~/.cache/supertool as a side effect. test_gc_474.py opts back in with
     # monkeypatch.delenv after redirecting XDG_CACHE_HOME at a tmp_path.
     os.environ.setdefault("SUPERTOOL_GC_DISABLE", "1")
+    # #553: the post-edit lint budget is a guard against a linter that stalled,
+    # not a stopwatch on the runner. `xmllint --noout` on a two-line file is a
+    # ~7ms operation; the 5s default is three orders of magnitude of headroom,
+    # and a GH Windows runner under `-n auto` xdist (Defender scanning every
+    # freshly written temp file, two cores, ~4000 tests) has still blown it
+    # twice on master. The decline that correctly follows then reads as a red
+    # leg. The suite asserts verdicts, so give it room to obtain one. This is a
+    # property of the runner, never of supertool: the shipped default stays 5s
+    # (pinned by test_the_suite_budget_does_not_move_the_product_default), a
+    # real env still wins via setdefault, and tests that pin the timeout itself
+    # monkeypatch.setenv over this.
+    os.environ.setdefault("SUPERTOOL_LINT_TIMEOUT", "30")
     # #149: publish-body allowlist + confirm gate. Existing publish tests use
     # `tmp_path` for body files (outside the production .max/ / drafts/ /
     # posts/ / blog/ allowlist) and don't `|force`, so opt the suite in.
