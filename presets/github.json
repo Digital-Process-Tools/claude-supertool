@@ -39,8 +39,8 @@
     "gh-job": {
       "cmd": "{python} {path}github/job.py {args}",
       "timeout": 30,
-      "description": "Why did this job fail? PR context + error pattern search + log tail. :fail (alias :errors) = matched failure blocks only, no tail — the tight triage view, per-job patterns; :raw dumps full trace; :raw:START[:END] slices lines (1-indexed, inclusive); :grep:PATTERN ad-hoc regex over the log (literal fallback, context, tail on no-match)",
-      "syntax": "gh-job:NUMBER[:fail|:raw[:START[:END]]|:grep:PATTERN]",
+      "description": "Why did this job fail? PR context + error pattern search + log tail. :fail (alias :errors) = matched failure blocks only, no tail — the tight triage view, per-job patterns; :raw dumps full trace; :raw:START[:END] slices lines (1-indexed, inclusive); :raw:-N is the last N lines; a START past the end returns the tail of the width requested and says so rather than declining; :grep:PATTERN ad-hoc regex over the log (literal fallback, context, tail on no-match)",
+      "syntax": "gh-job:NUMBER[:fail|:raw[:-N|:START[:END]]|:grep:PATTERN]",
       "lines": 80,
       "error_patterns": "ERROR,FAILED,Error:,Failed,fatal:,##[error]",
       "error_context": 5

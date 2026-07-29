@@ -14,7 +14,7 @@ GitHub ops via the `gh` CLI. Replaces the 4-6 separate `gh` calls needed to revi
 | `gh-pr` | `gh-pr:NUMBER_OR_BRANCH[:status]` | Full PR dashboard: branch, checks, reviews/approval state, linked issue, diff stat, comments. `:status` returns slim merge-state plus the `head -> base` branch line only (~250 bytes). The check line opens with `N total:` and every count after it sums back to N, so a state the tally does not recognise is named (`2 cancelled`) instead of dropped; anything short of every-check-passed carries `⚠ NOT ALL GREEN`, and a PR with no CI says `none reported — no check runs on this commit` rather than counting to zero |
 | `gh-prs` | `gh-prs[:author=@me,reviewer=@me,state=open,failed,nopipe,iids]` | PR triage board: your open PRs sorted failing-first then stalest. Per PR: check rollup (a failure shows the failing **check name**), approval state, age, diff size, watch-state, `draft`/`conflict`/`threads` flags + footer pointing at the first failing-and-unwatched PR. The gl-mrs twin. `iids` emits a bare number list for `watch-mine.sh` |
 | `gh-run` | `gh-run:NUMBER` | Workflow run job list with statuses and failed step names |
-| `gh-job` | `gh-job:NUMBER[:raw[:START[:END]]\|:grep:PATTERN]` | Job failure detail: PR context + error pattern search + log tail. `:raw` dumps the full trace; `:raw:START:END` slices lines (1-indexed, inclusive); `:grep:PATTERN` runs an ad-hoc regex over the log (literal fallback on bad regex, ±context, names the pattern + tail on no-match — never silent-empty). Optional per-job `job_patterns` table in `.supertool.json` (see gitlab preset doc) maps job names to tighter patterns + a `resolution` op. Zero matches on a job GitHub calls `failure` prints `## FAILED — no error pattern matched` — patterns tried + a log tail, never silence. `## No error patterns matched` survives only for jobs that did not fail |
+| `gh-job` | `gh-job:NUMBER[:raw[:-N\|:START[:END]]\|:grep:PATTERN]` | Job failure detail: PR context + error pattern search + log tail. `:raw` dumps the full trace; `:raw:START:END` slices lines (1-indexed, inclusive); `:raw:-N` returns the **last N lines**, and a START past the end returns the tail of the width requested with a line saying so rather than declining — see [Reading a range](gitlab.md#reading-a-range) ([#487](https://github.com/Digital-Process-Tools/claude-supertool/issues/487)); `:grep:PATTERN` runs an ad-hoc regex over the log (literal fallback on bad regex, ±context, names the pattern + tail on no-match — never silent-empty). Optional per-job `job_patterns` table in `.supertool.json` (see gitlab preset doc) maps job names to tighter patterns + a `resolution` op. Zero matches on a job GitHub calls `failure` prints `## FAILED — no error pattern matched` — patterns tried + a log tail, never silence. `## No error patterns matched` survives only for jobs that did not fail |
 | `gh-follow` | `gh-follow:USERNAME` | Follow a GitHub user via the authenticated session |
 | `gh-following` | `gh-following[:N]` | List users you follow (default 30) |
 | `gh-batch-follow` | `gh-batch-follow:FILE` | Follow each username from a file (one per line, `#` comments). 1s delay between calls |
@@ -43,6 +43,8 @@ Read the two lines together. `Checks:` is CI; `Mergeable:` is GitHub's *merge co
 ./supertool 'gh-job:67890'
 # if you need the full log:
 ./supertool 'gh-job:67890:raw:1:100'
+# or just the tail, without knowing how long the log is:
+./supertool 'gh-job:67890:raw:-40'
 ```
 
 **Build a follow list from a repo's community:**

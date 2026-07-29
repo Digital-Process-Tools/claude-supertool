@@ -112,12 +112,24 @@ def test_raw_slice_with_start_only_runs_to_end(monkeypatch, capsys) -> None:
     assert "line6" not in out
 
 
-def test_raw_start_beyond_total_returns_nothing(monkeypatch, capsys) -> None:
+def test_raw_start_beyond_total_returns_the_tail_and_says_so(monkeypatch, capsys) -> None:
+    """Same trade as gl-job (#487): the tail, plus a line saying these are not
+    the lines that were requested."""
     lines = [f"line{i}" for i in range(1, 6)]
     rc = _run_main(monkeypatch, ["job.py", "123", "raw", "100"], lines)
     out = capsys.readouterr().out
     assert rc == 0
-    assert "start (100) > total (5)" in out
+    assert "requested 100-5 is past end of log (5 lines)" in out
+    assert "## Raw lines 1-5 of 5" in out
+
+
+def test_raw_tail_form_returns_the_last_n_lines(monkeypatch, capsys) -> None:
+    lines = [f"line{i}" for i in range(1, 21)]
+    rc = _run_main(monkeypatch, ["job.py", "123", "raw", "-5"], lines)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "## Raw lines 16-20 of 20" in out
+    assert "line15" not in out
 
 
 def test_raw_end_clamped_to_total(monkeypatch, capsys) -> None:

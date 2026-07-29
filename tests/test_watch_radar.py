@@ -111,8 +111,9 @@ def _feed_spawns(env) -> list[tuple[str, str, list[str]]]:
     return [row for row in env["spawned"] if row[0] == radar.FEED_SOURCE]
 
 
-def _live_feed(tmp_path: Path) -> Path:
-    path = tmp_path / f"supertool-watch-{radar.FEED_SOURCE}__{radar.FEED_SCOPE}.pid"
+def _live_feed(tmp_path: Path, scope: str = "") -> Path:
+    scope = scope or radar.FEED_SCOPE
+    path = tmp_path / f"supertool-watch-{radar.FEED_SOURCE}__{scope}.pid"
     path.write_text(f"{os.getpid()}\n")
     return path
 
@@ -301,7 +302,8 @@ def test_second_run_with_nothing_moved_is_one_summary_line(env, capsys) -> None:
     _set_live(env, [_mr(33172, "success", "100")])
     _run(env, capsys)
     out = _run(env, capsys)
-    assert out == "radar: no change | 1 open | 1 green | 1 watched | feed ok\n"
+    assert out == ("radar: no change | scope author=@me,state=opened (default) | "
+                   "1 open | 1 green | 1 watched | feed ok\n")
 
 
 def test_nothing_moved_still_reports_coverage_rather_than_silence(env, capsys) -> None:
@@ -795,10 +797,61 @@ def test_a_non_default_board_names_its_population(env, capsys) -> None:
     assert "author=modular.system" in capsys.readouterr().out
 
 
-def test_the_default_board_is_not_labelled(env, capsys) -> None:
+# ---------------------------------------------------------------------------
+# effective scope (#486)
+#
+# The filter lives for one invocation. A session that deliberately widened the
+# board reverts to the default on the next bare `radar`, and a narrowed board
+# renders exactly like a board with nothing to report. The footer names the
+# population on every run — including the default one — because "no label"
+# was the spelling of both "this is the default" and "nobody said".
+# ---------------------------------------------------------------------------
+
+def test_the_default_board_names_its_scope_too(env, capsys) -> None:
+    """An unlabelled board is indistinguishable from one that silently
+    narrowed back to the default."""
     _glab(env, {"@me": [_mr(33161)]})
     assert radar.main([]) == 0
-    assert "author=@me" not in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "scope author=@me,state=opened" in out
+    assert "(default)" in out
+
+
+def test_a_non_default_scope_is_not_marked_default(env, capsys) -> None:
+    _glab(env, {"modular.system": [_mr(991)]})
+    assert radar.main(["radar", "author=modular.system"]) == 0
+    out = capsys.readouterr().out
+    assert "scope author=modular.system" in out
+    assert "(default)" not in out
+
+
+def test_a_live_feed_on_another_scope_is_named_on_the_board(env, capsys) -> None:
+    """Scope is split between what this call passed and what a still-running
+    watcher was started with. Neither half is authoritative, so the board says
+    both rather than reporting its own half as the whole."""
+    _glab(env, {"@me": [_mr(33161)]})
+    other = "author=@me,author=modular.system,state=opened"
+    _live_feed(env["dir"], other)
+    assert radar.main([]) == 0
+    out = capsys.readouterr().out
+    assert other in out
+    assert "not on this board" in out
+
+
+def test_no_other_scope_note_when_the_only_live_feed_is_this_one(env, capsys) -> None:
+    """A warning that fires when nothing is wrong is a warning readers skim."""
+    _glab(env, {"@me": [_mr(33161)]})
+    _live_feed(env["dir"])
+    assert radar.main([]) == 0
+    assert "not on this board" not in capsys.readouterr().out
+
+
+def test_other_feed_scopes_lists_only_live_pollers_for_other_scopes(env) -> None:
+    other = "author=modular.system,state=opened"
+    _live_feed(env["dir"], other)
+    _live_feed(env["dir"])
+    _live_pid_file(env["dir"], "33161")
+    assert radar.other_feed_scopes(radar.FEED_SCOPE) == [other]
 
 
 # ---------------------------------------------------------------------------

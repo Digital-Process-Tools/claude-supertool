@@ -88,7 +88,7 @@ radar: cold start — no prior snapshot, full board
 👁 ● running            ✓   5m    3Δ  !33173  Generator loadable + coverage   [drift: 154177→154180]
   ✓ ok                  ✓  39m    1Δ  !33172  docs(vocab): CKEditor          [healed]
 
-3 open | 1 failing | 1 running | 1 green | 3 watched | 1 healed | 1 drift | 2 pruned
+scope author=@me,state=opened (default) | 3 open | 1 failing | 1 running | 1 green | 3 watched | 1 healed | 1 drift | 2 pruned
 ```
 
 Rows use the same format as `gl-mrs`, plus two marks radar alone can report:
@@ -98,6 +98,37 @@ Rows use the same format as `gl-mrs`, plus two marks radar alone can report:
 | `[drift: A→B]` | the last event fired on pipeline A, but pipeline B is current — the event is stale history |
 | `[healed]` | this open MR had no live poller; radar respawned one |
 | `[unwatched]` | radar could not respawn a poller — a real coverage gap |
+
+### Effective scope is stated, never implied ([#486](https://github.com/Digital-Process-Tools/claude-supertool/issues/486))
+
+The filter is an argument in the `gl-mrs` vocabulary, and it lives for **one invocation only**:
+
+```bash
+./supertool 'radar'                                              # defaults.DEFAULT_FILTER
+./supertool 'radar:author=modular.system'                        # what the agent opened
+./supertool 'radar:author=@me,author=modular.system,state=opened' # two queries, unioned by iid
+```
+
+Nothing is persisted. A session that deliberately widened the board and then runs a bare `radar` gets the **default population back**, and the narrowed board renders exactly like a board with nothing to report — the omission is produced by the tool and reads as an absence in the world. So every board names the scope it was built from, the default one included:
+
+```
+scope author=@me,state=opened (default) | 7 open | 7 watched | feed ok
+scope author=modular.system | 2 open | 1 failing | 2 watched | feed ok
+```
+
+The `(default)` token is the distinction that was missing: an unlabelled board used to spell both "this is the default population" and "nobody said which population this is".
+
+**A live feed poller on another scope is named too.** Changing the filter respawns the feed watcher and does not retire the old one, so effective scope ends up split between what the last invocation passed and what a still-running watcher was started with:
+
+```
+radar: NOTE — a feed poller is also live on scope 'author=@me,author=modular.system,state=opened',
+which this board does not cover. Its MRs are not on this board; re-run as
+radar:author=@me,author=modular.system,state=opened to see them.
+```
+
+Named, **not killed**. Two populations at once is a legitimate arrangement — the same reason `prune_terminal` refuses to prune a per-MR watcher merely for being outside this filter — so radar reports the split rather than resolving it. `./supertool 'watches'` lists the same pid files directly and spawns nothing.
+
+**What this does not do.** It gives visibility, not continuity: a bare `radar` after a wide one still covers the default, and re-widening still means re-typing the filter. That is deliberate. Persisting the filter would mean a board whose population comes from a file nobody in the session chose, which is the same hidden state that produced the split scope in the first place.
 
 ### `[conflict]` vs `[empty]` ([#471](https://github.com/Digital-Process-Tools/claude-supertool/issues/471))
 
@@ -121,7 +152,7 @@ A blocked MR is now labelled by *what* blocks it:
 **"Nothing moved"** means the set of open MRs is unchanged, no MR changed pipeline status / pipeline id / draft / conflict flag, and radar took no action. Then radar prints one summary line — not nothing:
 
 ```
-radar: no change | 7 open | 7 watched
+radar: no change | scope author=@me,state=opened (default) | 7 open | 7 watched
 ```
 
 Total silence would be indistinguishable from a radar that failed to run, which is the failure this op exists to remove. For the same reason an unreachable GitLab is a hard error (exit 1, no board, nothing pruned or healed) rather than an empty green board. Standing failures and conflicts are re-printed even when unchanged — an unfixed red is a current fact, not history.

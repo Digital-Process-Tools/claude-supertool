@@ -190,14 +190,32 @@ def main() -> int:
         return 1
     raw_start: int | None = None
     raw_end: int | None = None
+    raw_tail: int | None = None
     if raw_mode:
         try:
             if len(sys.argv) > 3 and sys.argv[3]:
-                raw_start = max(1, int(sys.argv[3]))
+                first = int(sys.argv[3])
+                # Tail form — see the gl-job twin of this block (#487).
+                if first < 0:
+                    raw_tail = -first
+                else:
+                    raw_start = max(1, first)
             if len(sys.argv) > 4 and sys.argv[4]:
                 raw_end = int(sys.argv[4])
         except ValueError:
             print("ERROR: raw START/END must be integers")
+            return 1
+        if raw_start is not None and raw_end is not None and raw_end < raw_start:
+            # An inverted range used to slice to nothing under a header reading
+            # "Raw lines 10-9 of 20" — an empty body that reads as an empty
+            # stretch of log rather than as a range the op could not serve.
+            print(f"ERROR: raw END ({raw_end}) is before START ({raw_start}); "
+                  f"ranges are 1-indexed and inclusive")
+            return 1
+        if raw_tail is not None and raw_end is not None:
+            print("ERROR: the raw tail form takes no END — "
+                  f"use raw:-{raw_tail} for the last {raw_tail} lines, "
+                  "or raw:START:END for an absolute range")
             return 1
     config = _get_config()
     tail_lines = config["lines"]
@@ -305,12 +323,24 @@ def main() -> int:
 
     # 3. Raw mode — dump (sliced) trace, skip filters
     if raw_mode:
-        start = raw_start if raw_start is not None else 1
-        end = raw_end if raw_end is not None else total
-        end = min(end, total)
-        if start > total:
-            print(f"\n## Raw — start ({start}) > total ({total}); nothing to show")
+        if total == 0:
+            print("\n## Raw — the log is empty (0 lines)")
             return 0
+        if raw_tail is not None:
+            width = min(raw_tail, total)
+            start, end = total - width + 1, total
+        else:
+            start = raw_start if raw_start is not None else 1
+            end = raw_end if raw_end is not None else total
+            if start > total:
+                # Same trade as gl-job (#487): return the tail of the width
+                # asked for, and say it is not the range that was requested.
+                width = (end - start + 1) if raw_end is not None else tail_lines
+                width = max(1, min(width, total))
+                print(f"\n## Raw — requested {start}-{end} is past end of log "
+                      f"({total} lines); showing the last {width} lines instead")
+                start, end = total - width + 1, total
+            end = min(end, total)
         shown = lines[start - 1:end]
         print(f"\n## Raw lines {start}-{start + len(shown) - 1} of {total}")
         for i, line in enumerate(shown):

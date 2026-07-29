@@ -39,8 +39,8 @@
     "gl-job": {
       "cmd": "{python} {path}gitlab/job.py {args}",
       "timeout": 30,
-      "description": "Why job failed: MR ctx + error patterns + log tail. :fail (alias :errors) = matched failure blocks only, no tail — the tight triage view, per-job patterns; :raw dumps full trace; :raw:START[:END] slices lines (1-indexed, inclusive); :grep:PATTERN ad-hoc regex over the trace (literal fallback, context, tail on no-match). Cause markers (Caused by / Exception: / SQLSTATE / Exit Code / crash) are always matched on top of the patterns, and a failed job matching nothing is reported as unclassified with a log tail — never as 'no errors'",
-      "syntax": "gl-job:NUMBER[:fail|:raw[:START[:END]]|:grep:PATTERN]",
+      "description": "Why job failed: MR ctx + error patterns + log tail. :fail (alias :errors) = matched failure blocks only, no tail — the tight triage view, per-job patterns; :raw dumps full trace; :raw:START[:END] slices lines (1-indexed, inclusive); :raw:-N is the last N lines, so the tail can be asked for without knowing the total; a START past the end returns the tail of the width requested and says so rather than declining; :grep:PATTERN ad-hoc regex over the trace (literal fallback, context, tail on no-match). Cause markers (Caused by / Exception: / SQLSTATE / Exit Code / crash) are always matched on top of the patterns, and a failed job matching nothing is reported as unclassified with a log tail — never as 'no errors'",
+      "syntax": "gl-job:NUMBER[:fail|:raw[:-N|:START[:END]]|:grep:PATTERN]",
       "lines": 80,
       "error_patterns": "ERROR,FAILURES!,Fatal,Failed asserting,PHP Warning,PHP Notice,PHP Deprecated",
       "error_context": 5
