@@ -227,6 +227,55 @@ Every push to the target branch puts every open MR back into `cannot_be_merged_r
 
 **The poller now only believes `has_conflicts` on a settled `merge_status`**, and carries the last known answer forward otherwise. Suppressing repeats outright would have been the opposite defect — a conflict that is genuinely resolved and later returns *must* fire again, and only a settled *clean* check releases the latch, so it does. A response with no `merge_status` field at all is not evidence of an unsettled check, so `has_conflicts` is still taken at face value there.
 
+### `gitlab-mr` events carry the state that produced them ([#435](https://github.com/Digital-Process-Tools/claude-supertool/issues/435))
+
+An event used to be unreadable on its own. `pipeline_succeeded` said which pipeline and gave you a URL, so answering "which branch, and is this MR still open?" cost a `gl-mr:<iid>:status` round-trip — for data the poller had fetched ~20s earlier and thrown away. Over one live radar session, four of six events triggered that confirm and not one of them changed a decision.
+
+Every `gitlab-mr` event now carries eight extra payload fields. `_fetch` already returns the whole MR, so **this costs no additional API call**:
+
+| Field | |
+|---|---|
+| `observed_at` | ISO-8601 `Z` — **when the API was read**. Always present. |
+| `observed_mr_state` | `opened` / `merged` / `closed` |
+| `observed_pipeline_status` | `running` / `failed` / `success` / … |
+| `observed_pipeline_id` | head pipeline at the moment of the read — present on **every** event, including `merged` |
+| `observed_has_conflicts` | the poller's *corrected* flag, after the [#463](https://github.com/Digital-Process-Tools/claude-supertool/issues/463) carry-forward and the [#465](https://github.com/Digital-Process-Tools/claude-supertool/issues/465) empty-diff guard — **not** the raw `has_conflicts` |
+| `observed_source_branch` | |
+| `observed_target_branch` | |
+| `observed_head_sha` | `""` on an MR with no commits |
+
+#### What their staleness means, and how to read it
+
+**These fields are a snapshot, never a live read.** They describe the state at `observed_at`, and the world may have moved since. That is the whole hazard: a value that reads as authoritative while being an artefact of when the tool happened to look is this repository's most-filed defect class, and a payload field holding a 20-second-old `mr_state` is exactly its shape. The fields ship only because their age is legible in the payload itself, by two deliberate choices:
+
+- **The `observed_` prefix is on every field rather than on a wrapper object**, so the tense survives to the read site. There is no bare `payload["mr_state"]` to pluck, and no destructuring or logging helper can produce one. (Flat also because `notifiers/claude-channel` stringifies each payload key into an XML attribute — a nested `observed: {...}` would arrive as `[object Object]`.)
+- **`observed_at` is an instant, not an age.** An `age_s` field is right for one second and quietly wrong from the next, which is the failure being designed against. A timestamp cannot go stale; subtract it yourself.
+
+Note `observed_at` is **not** the record's envelope `ts`: `ts` is when the event was *emitted*, `observed_at` is when the data was *read*. Within a tick they differ by milliseconds, but only one is a claim about the data.
+
+**How old can it be?** At most one poll interval, since the event is emitted by the tick that did the read — `INTERVAL = 30` for `gitlab-mr`. Which gives the practical rule: **an event less than `INTERVAL` old cannot be improved on by a confirm**, because the poller has not looked again either. Past that, decide by stakes — the snapshot is enough to render a board row or route a decision; confirm live before *advising* on a red, where being confidently wrong is expensive.
+
+**The snapshot is consistent within a tick.** All events from one poll share one snapshot object, so a tick that emits both `pipeline_succeeded` and `merged` (observed live — the merge landed 20s before the poll ran) cannot have the two disagree about what was seen. This closes the divergence that made the confirm rule necessary: it was between the event *key* and the full state, not between read time and emit time.
+
+#### What is not in the payload, on purpose
+
+A fat payload that grows without bound is the real cost of this feature, so the set is fixed at eight fields (~200 bytes) and none of them scale with the MR.
+
+| Excluded | Why |
+|---|---|
+| failing-job ids on `pipeline_failed` | needs a second API call per failure tick — a real cost trade, scoped as a follow-up |
+| the job trace | kilobytes on every event, wanted only when someone actually classifies |
+| `title`, `url` | already top-level in `payload` — duplication, not information |
+| `user_notes_count` | counts system notes (see below), so publishing it invites a wrong "N comments" render |
+| `merge_status`, `detailed_merge_status` | inputs to the conflict guard; its *output* is `observed_has_conflicts` |
+| `description`, `labels`, `author`, `diff_refs` | grow with the MR |
+
+#### Compatibility
+
+No existing field was added, removed or retyped, and no event key changed meaning — the [#439](https://github.com/Digital-Process-Tools/claude-supertool/issues/439)/[#464](https://github.com/Digital-Process-Tools/claude-supertool/issues/464) invariant. `only=` filters name event keys and `events.json` is untouched, so no consumer's coverage moved. A consumer ignoring the new keys receives exactly what it received before, and is uninformed rather than wrong.
+
+**`merged` deliberately gains no top-level `pipeline_id`**, though the tie-a-merge-to-its-pipeline gap it closes is real. `radar.drift()` reads `payload.pipeline_id` to decide an event is stale history superseded by a newer pipeline; a merge event joining that comparison would put `[drift: A→B]` on the board for something nobody reported. And the key's meaning would then depend on the event: "the pipeline this event is about" on `pipeline_*`, "the head pipeline at the time" on `merged`. `observed_pipeline_id` says the second thing, uniformly, everywhere.
+
 ### `conflicts_appeared` requires a diff ([#465](https://github.com/Digital-Process-Tools/claude-supertool/issues/465))
 
 **`conflicts_appeared` is never emitted for an MR with no diff.** !33223 fired one second after being opened, with zero commits, `changes: 0` and `sha: null` — and the event was reported onward as a real conflict, with a false explanation built on top of it. A false `conflicts_appeared` does not read as noise, it reads as a fact.
@@ -330,7 +379,7 @@ Override the socket path with `SUPERTOOL_WATCH_SOCK` env var (must be set on bot
 }
 ```
 
-Consumers can rely on `ts/source/id/event/payload/first_tick` always being present. Extra fields inside `payload` vary by source — see each source's `events.json` and `poller.py`.
+Consumers can rely on `ts/source/id/event/payload/first_tick` always being present. Extra fields inside `payload` vary by source — see each source's `events.json` and `poller.py`. `gitlab-mr` payloads additionally carry an [`observed_*` snapshot](#gitlab-mr-events-carry-the-state-that-produced-them-435) of the state that produced the event, timestamped so its age is readable without a call back.
 
 ### `first_tick` — the contract moved once, deliberately ([#464](https://github.com/Digital-Process-Tools/claude-supertool/issues/464))
 

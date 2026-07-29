@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -379,3 +380,163 @@ def test_notes_count_field_disappearing_skips_event() -> None:
     with mock.patch.object(poller, "_fetch", return_value=mr_no_field):
         events, _ = poller.poll(state, {"id": "21803"})
     assert all(e["event"] != "comment_added" for e in events)
+
+
+# ---------------------------------------------------------------------------
+# #435 — an event could not be understood without a call back.
+#
+# Four of six events in a live radar session triggered a `gl-mr:<iid>:status`
+# confirm purely to learn the branch and the current MR state, and every one of
+# those confirms returned data the poller had held in memory ~20s earlier. The
+# poller already fetches the whole MR; the snapshot rides along.
+#
+# The hazard the fields are shaped against is this repository's house defect: a
+# value that looks authoritative while being an artefact of when the tool
+# happened to look. So the snapshot is `observed_`-prefixed at every read site
+# and always carries `observed_at`, the moment the API was read.
+# ---------------------------------------------------------------------------
+
+SNAPSHOT_KEYS = {
+    "observed_at",
+    "observed_mr_state",
+    "observed_pipeline_status",
+    "observed_pipeline_id",
+    "observed_has_conflicts",
+    "observed_source_branch",
+    "observed_target_branch",
+    "observed_head_sha",
+}
+
+
+def _branched(**kw):
+    """An MR body carrying the branch pair and head sha a real API returns."""
+    body = _mr(**kw)
+    body["source_branch"] = "feat/435-event-payload"
+    body["target_branch"] = "master"
+    body["sha"] = "288f40e19482f216c3adc9dc3a83fb5a1935fb11"
+    return body
+
+
+def test_every_event_carries_the_snapshot_that_produced_it() -> None:
+    """One fetch, one snapshot, on every event key the tick emits."""
+    state = {"mr_state": "opened", "pipeline_status": "running", "notes_count": 0}
+    body = _branched(pipeline_status="failed", state="closed", user_notes_count=3)
+    with mock.patch.object(poller, "_fetch", return_value=body):
+        events, _ = poller.poll(state, {"id": "21803"})
+    assert {e["event"] for e in events} >= {"pipeline_failed", "closed", "comment_added"}
+    for ev in events:
+        missing = SNAPSHOT_KEYS - set(ev["payload"])
+        assert not missing, f"{ev['event']} is missing {sorted(missing)}"
+
+
+def test_the_snapshot_says_when_it_was_read() -> None:
+    """`observed_at` is the whole reason the snapshot is safe to ship.
+
+    An absolute instant, not an age: an age is computed once and is wrong from
+    the next second onward, which is the exact defect this field exists to
+    prevent. The consumer subtracts.
+    """
+    before = datetime.now(timezone.utc).replace(microsecond=0)
+    with mock.patch.object(poller, "_fetch", return_value=_branched(pipeline_status="failed")):
+        events, _ = poller.poll({"pipeline_status": "running"}, {"id": "21803"})
+    after = datetime.now(timezone.utc)
+    observed_at = events[0]["payload"]["observed_at"]
+    assert observed_at.endswith("Z"), observed_at
+    parsed = datetime.strptime(observed_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    assert before <= parsed <= after, f"{observed_at} not within [{before}, {after}]"
+
+
+def test_a_merge_is_tied_to_the_pipeline_that_permitted_it() -> None:
+    """The gap named in #435: `merged` carried no pipeline id at all, so a merge
+    could not be attributed to the pipeline that let it through."""
+    state = {"mr_state": "opened", "pipeline_status": "success"}
+    body = _branched(state="merged", pipeline_status="success", pipeline_id="154253")
+    with mock.patch.object(poller, "_fetch", return_value=body):
+        events, _ = poller.poll(state, {"id": "21803"})
+    merged = next(e for e in events if e["event"] == "merged")
+    assert merged["payload"]["observed_pipeline_id"] == "154253"
+
+
+def test_the_branch_pair_rides_along_though_it_is_not_in_state() -> None:
+    """`source_branch`/`target_branch` are in the fetched body and retained
+    nowhere, so before #435 the only way to learn a branch name was a second
+    call for data the poller had just thrown away."""
+    with mock.patch.object(poller, "_fetch", return_value=_branched(pipeline_status="failed")):
+        events, new_state = poller.poll({"pipeline_status": "running"}, {"id": "21803"})
+    payload = events[0]["payload"]
+    assert payload["observed_source_branch"] == "feat/435-event-payload"
+    assert payload["observed_target_branch"] == "master"
+    assert payload["observed_head_sha"] == "288f40e19482f216c3adc9dc3a83fb5a1935fb11"
+    assert "source_branch" not in new_state, "the snapshot is built from the fetch, not from state"
+
+
+def test_the_snapshot_reports_the_corrected_conflict_flag_not_the_raw_field() -> None:
+    """`has_conflicts` is an alias for `cannot_be_merged?` and over-reports on an
+    MR with no diff (#465). The poller already knows better; shipping the raw
+    field would re-export a false positive the poller had just suppressed."""
+    with mock.patch.object(poller, "_fetch", return_value=_empty_nondraft_mr()):
+        events, _ = poller.poll({"pipeline_status": "pending"}, {"id": "21803"})
+    assert events, "expected at least the pipeline transition"
+    assert all(e["payload"]["observed_has_conflicts"] is False for e in events)
+
+
+def test_an_unsettled_check_ships_the_carried_forward_answer() -> None:
+    """Mid-recheck `has_conflicts` reads False on a conflicted MR (#463). The
+    snapshot must carry the last settled answer, not the not-yet-computed one."""
+    state = {"has_conflicts": True, "mr_state": "opened", "pipeline_status": "running"}
+    body = _rechecking()
+    body["state"] = "merged"
+    with mock.patch.object(poller, "_fetch", return_value=body):
+        events, _ = poller.poll(state, {"id": "21803"})
+    merged = next(e for e in events if e["event"] == "merged")
+    assert merged["payload"]["observed_has_conflicts"] is True
+
+
+def test_the_snapshot_does_not_ship_the_whole_mr() -> None:
+    """Bounded on purpose. The fetched body is kilobytes; what rides along is
+    the eight fields that answered the confirms, and nothing that would grow
+    with the MR."""
+    body = _branched(pipeline_status="failed", user_notes_count=17)
+    body["description"] = "x" * 5000
+    body["author"] = {"username": "fdavid"}
+    body["labels"] = ["a", "b"]
+    with mock.patch.object(poller, "_fetch", return_value=body):
+        events, _ = poller.poll({"pipeline_status": "running"}, {"id": "21803"})
+    payload = events[0]["payload"]
+    assert set(payload) == SNAPSHOT_KEYS | {"pipeline_id", "url", "title"}
+    for banned in ("description", "author", "labels", "notes_count", "merge_status",
+                   "detailed_merge_status", "diff_refs", "observed_notes_count",
+                   "observed_merge_status", "jobs", "failed_jobs", "trace"):
+        assert banned not in payload
+
+
+def test_the_snapshot_is_flat_so_a_string_attribute_bridge_can_render_it() -> None:
+    """`notifiers/claude-channel` turns each payload key into a string XML
+    attribute via `String(v)`. A nested object renders `[object Object]` — the
+    snapshot would be invisible on the one surface #435 was reported from."""
+    with mock.patch.object(poller, "_fetch", return_value=_branched(pipeline_status="failed")):
+        events, _ = poller.poll({"pipeline_status": "running"}, {"id": "21803"})
+    payload = events[0]["payload"]
+    assert SNAPSHOT_KEYS <= set(payload)
+    for k in SNAPSHOT_KEYS:
+        assert not isinstance(payload[k], (dict, list)), f"{k} is not a scalar"
+
+
+def test_the_existing_top_level_payload_keys_did_not_move() -> None:
+    """The #439/#464 invariant: no existing field added, removed or retyped.
+
+    `merged` in particular gains no *top-level* `pipeline_id` — `radar.drift()`
+    reads exactly that key to decide an event is stale history, and a merge event
+    joining that comparison would change the board for a fact nobody reported.
+    """
+    state = {"mr_state": "opened", "pipeline_status": "running"}
+    with mock.patch.object(poller, "_fetch", return_value=_branched(pipeline_status="failed")):
+        failed, _ = poller.poll(dict(state), {"id": "21803"})
+    with mock.patch.object(poller, "_fetch", return_value=_branched(state="merged")):
+        merged, _ = poller.poll(dict(state), {"id": "21803"})
+    fp = failed[0]["payload"]
+    assert (fp["pipeline_id"], fp["url"], fp["title"]) == (
+        "9", "https://example.com/mr/21803", "feat: do the thing")
+    mp = next(e for e in merged if e["event"] == "merged")["payload"]
+    assert mp["url"] == "https://example.com/mr/21803"
+    assert "pipeline_id" not in mp
