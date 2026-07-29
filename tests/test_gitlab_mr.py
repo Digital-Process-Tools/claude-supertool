@@ -140,7 +140,8 @@ def test_get_conflict_hunks_parses_real_output(monkeypatch) -> None:
         return _fake_run(tree_out, returncode=1)
 
     monkeypatch.setattr(mr.subprocess, "run", fake_run)
-    hunks = mr._get_conflict_hunks("source", "master")
+    hunks, skipped = mr._get_conflict_hunks("source", "master")
+    assert skipped is None
     assert "path/to/file.md" in hunks
     body = hunks["path/to/file.md"]
     assert "<<<<<<< .our" in body
@@ -171,7 +172,8 @@ def test_get_conflict_hunks_multiple_files(monkeypatch) -> None:
         if args[1] == "merge-base"
         else _fake_run(tree_out, returncode=1),
     )
-    hunks = mr._get_conflict_hunks("source", "master")
+    hunks, skipped = mr._get_conflict_hunks("source", "master")
+    assert skipped is None
     assert set(hunks.keys()) == {"file_a.txt", "file_b.txt"}
     assert "diff for A" in hunks["file_a.txt"]
     assert "diff for B" in hunks["file_b.txt"]
@@ -181,12 +183,14 @@ def test_get_conflict_hunks_multiple_files(monkeypatch) -> None:
 
 
 def test_get_conflict_hunks_merge_base_failure(monkeypatch) -> None:
-    """If merge-base fails (refs not fetched) we cannot compute hunks."""
+    """If merge-base fails (refs not fetched) we cannot compute hunks — and say so."""
     monkeypatch.setattr(
         mr.subprocess, "run",
         lambda *a, **kw: _fake_run("", returncode=128),
     )
-    assert mr._get_conflict_hunks("source", "master") == {}
+    hunks, skipped = mr._get_conflict_hunks("source", "master")
+    assert hunks == {}
+    assert skipped is not None and "merge-base" in skipped
 
 
 def test_get_conflict_hunks_empty_merge_tree_output(monkeypatch) -> None:
@@ -197,14 +201,89 @@ def test_get_conflict_hunks_empty_merge_tree_output(monkeypatch) -> None:
         if args[1] == "merge-base"
         else _fake_run("", returncode=0),
     )
-    assert mr._get_conflict_hunks("source", "master") == {}
+    hunks, skipped = mr._get_conflict_hunks("source", "master")
+    # Empty stdout on a clean exit is a real answer: no hunks, nothing skipped.
+    assert hunks == {}
+    assert skipped is None
 
 
 def test_get_conflict_hunks_handles_subprocess_error(monkeypatch) -> None:
     def boom(*a: Any, **kw: Any) -> Any:
         raise FileNotFoundError("git: not found")
     monkeypatch.setattr(mr.subprocess, "run", boom)
-    assert mr._get_conflict_hunks("source", "master") == {}
+    hunks, skipped = mr._get_conflict_hunks("source", "master")
+    assert hunks == {}
+    assert skipped is not None and "git" in skipped
+
+
+def test_get_conflict_hunks_timeout_reports_reason(monkeypatch) -> None:
+    """#507: a merge-tree timeout is not 'no hunks' — it is 'we do not know'."""
+    base_out = "deadbeef1234567890abcdef1234567890abcdef\n"
+
+    def fake_run(args, **kwargs):  # type: ignore[no-untyped-def]
+        if args[1] == "merge-base":
+            return _fake_run(base_out, returncode=0)
+        raise subprocess.TimeoutExpired(cmd=args, timeout=kwargs.get("timeout", 15))
+
+    monkeypatch.setattr(mr.subprocess, "run", fake_run)
+    hunks, skipped = mr._get_conflict_hunks("source", "master")
+    assert hunks == {}
+    assert skipped is not None
+    assert "timed out" in skipped
+    assert "merge-tree" in skipped
+
+
+def test_get_conflict_hunks_nonzero_exit_reports_reason(monkeypatch) -> None:
+    """A failed merge-tree (bad object, old git) is a skip, not an empty answer."""
+    base_out = "deadbeef1234567890abcdef1234567890abcdef\n"
+
+    def fake_run(args, **kwargs):  # type: ignore[no-untyped-def]
+        if args[1] == "merge-base":
+            return _fake_run(base_out, returncode=0)
+        r = _fake_run("", returncode=128)
+        r.stderr = "fatal: not a valid object name"
+        return r
+
+    monkeypatch.setattr(mr.subprocess, "run", fake_run)
+    hunks, skipped = mr._get_conflict_hunks("source", "master")
+    assert hunks == {}
+    assert skipped is not None
+    assert "not a valid object name" in skipped
+
+
+def test_get_conflict_hunks_oserror_reports_reason(monkeypatch) -> None:
+    """OSError gets the same treatment as TimeoutExpired — same absence, same note."""
+    def boom(*a: Any, **kw: Any) -> Any:
+        raise OSError("cannot fork")
+    monkeypatch.setattr(mr.subprocess, "run", boom)
+    hunks, skipped = mr._get_conflict_hunks("source", "master")
+    assert hunks == {}
+    assert skipped is not None and "cannot fork" in skipped
+
+
+def test_hunk_timeout_scales_with_conflicted_file_count() -> None:
+    """15s is the floor, not the whole story: merge-tree cost tracks file count."""
+    assert mr._hunk_timeout(0) == mr.HUNK_TIMEOUT_BASE
+    assert mr._hunk_timeout(1) == mr.HUNK_TIMEOUT_BASE
+    assert mr._hunk_timeout(2) == mr.HUNK_TIMEOUT_BASE
+    assert mr._hunk_timeout(10) > mr.HUNK_TIMEOUT_BASE
+    assert mr._hunk_timeout(10_000) == mr.HUNK_TIMEOUT_MAX
+
+
+def test_get_conflict_hunks_passes_scaled_timeout(monkeypatch) -> None:
+    """The scaled timeout has to reach subprocess.run, not just exist as a helper."""
+    base_out = "deadbeef1234567890abcdef1234567890abcdef\n"
+    seen: list[int] = []
+
+    def fake_run(args, **kwargs):  # type: ignore[no-untyped-def]
+        if args[1] == "merge-base":
+            return _fake_run(base_out, returncode=0)
+        seen.append(kwargs["timeout"])
+        return _fake_run("", returncode=0)
+
+    monkeypatch.setattr(mr.subprocess, "run", fake_run)
+    mr._get_conflict_hunks("source", "master", file_count=12)
+    assert seen == [mr._hunk_timeout(12)]
 
 
 # ---------------------------------------------------------------------------
@@ -814,7 +893,8 @@ def test_get_conflict_hunks_survives_binary_blob(monkeypatch) -> None:
         return _emit_bytes(tree_bytes, **kwargs)
 
     monkeypatch.setattr(mr.subprocess, "run", fake_run)
-    hunks = mr._get_conflict_hunks("source", "master")
+    hunks, skipped = mr._get_conflict_hunks("source", "master")
+    assert skipped is None
     assert "image: php:8.3" in hunks[".gitlab-ci.yml"]
     assert "docs/logo.png" in hunks
 
@@ -854,3 +934,157 @@ def test_main_full_mode_binary_conflict_does_not_crash(monkeypatch, capsys) -> N
     assert "image: php:8.3" in out
     assert "binary" in out.lower()
     assert "To resolve:" in out
+
+# ---------------------------------------------------------------------------
+# #507 — the conflicts section must distinguish three outcomes, not one:
+# hunks computed and present / computed and genuinely none / not computed.
+# These drive main() end to end so a fix to the helper that never reaches the
+# rendering still fails.
+# ---------------------------------------------------------------------------
+
+_TREE_HASH = "a" * 40
+_MERGE_BASE = "deadbeef1234567890abcdef1234567890abcdef\n"
+
+_REAL_HUNK_OUTPUT = (
+    "changed in both\n"
+    "  base   100644 e600561691646ac9d7c6eeab55de8388c8c136a0 src/foo.py\n"
+    "  our    100644 3dbb3a53711179b78dbe9ac20c77be6d361e32a0 src/foo.py\n"
+    "  their  100644 a6140bbda7525d73eb5f2fe5e87e2065ca505de0 src/foo.py\n"
+    "@@ -1,3 +1,3 @@\n"
+    "<<<<<<< .our\n"
+    "ours line\n"
+    "=======\n"
+    "theirs line\n"
+    ">>>>>>> .their\n"
+)
+
+
+def _conflict_run(hunk_behavior, files=("src/foo.py",)):
+    """subprocess.run stub for a genuinely conflicted MR.
+
+    Routes the four calls main() makes: glab (MR payload), git rev-parse
+    (local branch check), git merge-tree --name-only --write-tree (the
+    authoritative file list) and git merge-tree BASE (the hunks). Only the
+    last is under test; hunk_behavior decides what it does.
+    """
+    payload = _mr_json_payload(
+        state="opened", has_conflicts=True, merged_at=None, merge_commit_sha="",
+        diff_refs={"base_sha": "aaa111", "head_sha": "bbb222"}, sha="bbb222",
+    )
+    name_only = _TREE_HASH + "\n" + "\n".join(files) + "\n"
+
+    def run(args, **kwargs):  # type: ignore[no-untyped-def]
+        argv = list(args)
+        if argv[0] != "git":
+            return _fake_run(payload, returncode=0)
+        if argv[1] == "rev-parse":
+            return _fake_run("", returncode=1)
+        if argv[1] == "merge-tree" and "--name-only" in argv:
+            return _fake_run(name_only, returncode=1)
+        if argv[1] == "merge-base":
+            return _fake_run(_MERGE_BASE, returncode=0)
+        return hunk_behavior(argv, kwargs)
+
+    return run
+
+
+def _run_conflict_view(monkeypatch, capsys, hunk_behavior, files=("src/foo.py",)):
+    monkeypatch.setattr(mr.subprocess, "run", _conflict_run(hunk_behavior, files))
+    monkeypatch.setattr(sys, "argv", ["mr.py", "20881"])
+    rc = mr.main()
+    return rc, capsys.readouterr().out
+
+
+def test_conflicts_section_hunks_present(monkeypatch, capsys) -> None:
+    """Outcome 1 — hunks computed and present. No note of any kind."""
+    rc, out = _run_conflict_view(
+        monkeypatch, capsys,
+        lambda argv, kw: _fake_run(_REAL_HUNK_OUTPUT, returncode=1),
+    )
+    assert rc == 0
+    assert "## Conflicts (1 file)" in out
+    assert "  src/foo.py" in out
+    assert "### src/foo.py" in out
+    assert "<<<<<<< .our" in out
+    assert "Hunk preview unavailable" not in out
+    assert "No hunk preview for" not in out
+
+
+def test_conflicts_section_hunks_genuinely_empty_says_so(monkeypatch, capsys) -> None:
+    """Outcome 2 — merge-tree answered, and the answer was 'nothing to show'.
+
+    That is a fact about the merge, so it gets its own wording and must not
+    be dressed up as a failure.
+    """
+    rc, out = _run_conflict_view(
+        monkeypatch, capsys,
+        lambda argv, kw: _fake_run("", returncode=0),
+    )
+    assert rc == 0
+    assert "## Conflicts (1 file)" in out
+    assert "  src/foo.py" in out
+    assert "No hunk preview for" in out
+    assert "src/foo.py" in out.split("No hunk preview for", 1)[1]
+    assert "Hunk preview unavailable" not in out
+
+
+def test_conflicts_section_hunk_timeout_says_so(monkeypatch, capsys) -> None:
+    """Outcome 3 — the tool gave up. Say that, and say the file list survives it."""
+    def timeout(argv, kw):
+        raise subprocess.TimeoutExpired(cmd=argv, timeout=kw.get("timeout", 15))
+
+    rc, out = _run_conflict_view(monkeypatch, capsys, timeout)
+    assert rc == 0
+    # The file list comes from a different call and is still authoritative.
+    assert "## Conflicts (1 file)" in out
+    assert "  src/foo.py" in out
+    assert "Hunk preview unavailable" in out
+    assert "timed out" in out
+    assert "still accurate" in out
+    assert "--write-tree" in out
+    # Not the same thing as an empty answer.
+    assert "No hunk preview for" not in out
+    # The resolve recipe is unaffected — it never needed hunks.
+    assert "git add src/foo.py" in out
+
+
+def test_conflicts_section_hunk_command_failure_says_so(monkeypatch, capsys) -> None:
+    """A non-zero merge-tree exit is the same absence as a timeout (#507 judgment 3)."""
+    def failed(argv, kw):
+        r = _fake_run("", returncode=128)
+        r.stderr = "fatal: not a valid object name"
+        return r
+
+    rc, out = _run_conflict_view(monkeypatch, capsys, failed)
+    assert rc == 0
+    assert "Hunk preview unavailable" in out
+    assert "not a valid object name" in out
+    assert "still accurate" in out
+    assert "No hunk preview for" not in out
+
+
+def test_conflicts_section_hunk_oserror_says_so(monkeypatch, capsys) -> None:
+    """An OSError from the fork gets the note too, not silence."""
+    def boom(argv, kw):
+        raise OSError("cannot fork")
+
+    rc, out = _run_conflict_view(monkeypatch, capsys, boom)
+    assert rc == 0
+    assert "Hunk preview unavailable" in out
+    assert "cannot fork" in out
+
+
+def test_conflicts_section_partial_hunks_names_the_gap(monkeypatch, capsys) -> None:
+    """Two conflicted files, one hunk block: the file without one is named."""
+    rc, out = _run_conflict_view(
+        monkeypatch, capsys,
+        lambda argv, kw: _fake_run(_REAL_HUNK_OUTPUT, returncode=1),
+        files=("src/foo.py", "src/bar.py"),
+    )
+    assert rc == 0
+    assert "## Conflicts (2 files)" in out
+    assert "### src/foo.py" in out
+    assert "No hunk preview for" in out
+    tail = out.split("No hunk preview for", 1)[1]
+    assert "src/bar.py" in tail
+    assert "src/foo.py" not in tail.split("\n")[0]

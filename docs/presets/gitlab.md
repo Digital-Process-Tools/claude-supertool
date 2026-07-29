@@ -11,7 +11,7 @@ GitLab ops via the `glab` CLI. Replaces the 3-5 separate `glab` calls needed to 
 | Op | Syntax | What it returns |
 |----|--------|-----------------|
 | `gl-issue` | `gl-issue:NUMBER[:full]` | Issue metadata, description, comments (truncated by default), related MRs. `:full` disables truncation |
-| `gl-mr` | `gl-mr:NUMBER_OR_BRANCH[:status\|:full]` | MR dashboard: branch, pipeline, reviewer/approval state, linked issue, diff stat, per-file name-status (`A`/`D`/`R`/`M`) list, comments. The file list is the high-signal "what got removed?" scan; capped at 50 files by default with a `… +N more` marker. `:status` returns slim merge-state plus the `source -> target` branch line only; `:full` uncaps the file list (paginating up to 500) and the comments. The `Conflicts:` line only says `YES` on positive evidence of an actual diff conflict; an MR blocked because its source branch has no commits prints `Conflicts: NO — cannot merge: source branch has no commits, so there is nothing to merge` instead (same `conflict`/`empty` distinction as `gl-mrs`, #494). A real conflict adds a `## Conflicts` section: the conflicting paths, then a per-file hunk preview (capped at 40 lines each) and the resolve commands. A conflicted **binary** file (image, PDF, font) is still listed and still gets its `###` heading, but the hunks are replaced by `(binary file — conflict hunks not shown; resolve by picking a version)` — `git merge-tree` streams raw blob content, and rendering 40 lines of mojibake helps nobody (#498) |
+| `gl-mr` | `gl-mr:NUMBER_OR_BRANCH[:status\|:full]` | MR dashboard: branch, pipeline, reviewer/approval state, linked issue, diff stat, per-file name-status (`A`/`D`/`R`/`M`) list, comments. The file list is the high-signal "what got removed?" scan; capped at 50 files by default with a `… +N more` marker. `:status` returns slim merge-state plus the `source -> target` branch line only; `:full` uncaps the file list (paginating up to 500) and the comments. The `Conflicts:` line only says `YES` on positive evidence of an actual diff conflict; an MR blocked because its source branch has no commits prints `Conflicts: NO — cannot merge: source branch has no commits, so there is nothing to merge` instead (same `conflict`/`empty` distinction as `gl-mrs`, #494). A real conflict adds a `## Conflicts` section: the conflicting paths, then a per-file hunk preview (capped at 40 lines each) and the resolve commands. A conflicted **binary** file (image, PDF, font) is still listed and still gets its `###` heading, but the hunks are replaced by `(binary file — conflict hunks not shown; resolve by picking a version)` — `git merge-tree` streams raw blob content, and rendering 40 lines of mojibake helps nobody (#498). When the preview cannot be computed at all — the `git merge-tree` that produces the hunks timed out, exited non-zero, or could not be run — the section says so and names the cause, instead of rendering as a conflict that happens to have no hunks (#507); see [The conflicts section](#the-conflicts-section) |
 | `gl-mrs` | `gl-mrs[:filters,flags]` | MR triage board, sorted failing-first then stalest. Per MR (enriched in parallel): pipeline status (a failure shows the failed **job name** = the failure class), approval state, age, diff size, watch-state cross-reference, and `conflict`/`empty`/`draft`/`threads` flags — plus an actionable footer. "Failing" here means red, not the literal string `failed`: `canceled`, and any pipeline state GitLab adds later, sort first and are matched by the `failed` flag and the footer count. `skipped`/`neutral`/`manual` are the only non-success states treated as benign. Filters (comma-sep): `author`/`reviewer`/`assignee`/`label`/`milestone`/`state`/`per`. Flags: `nopipe` (skip enrichment), `iids` (bare id list), `failed` (only failing) |
 | `gl-pipeline` | `gl-pipeline:NUMBER[:active\|:failed]` | Pipeline job list grouped by stage with pass/fail status and failed job IDs. The default board collapses the `manual`/`created`/`skipped` bulk to a one-line count so the running/done/failed jobs aren't buried. `:active` shows only running/pending jobs ("what's still going"); `:failed` shows only failed jobs plus their job IDs/URLs ("what broke") |
 | `gl-job` | `gl-job:NUMBER[:raw[:-N\|:START[:END]]\|:grep:PATTERN]` | Job failure detail: MR context + error pattern search + log tail. `:raw` dumps the full trace; `:raw:START:END` slices lines (1-indexed, inclusive); `:raw:-N` returns the **last N lines**; a START past the end of the log returns the tail of the width requested and says so, rather than declining (see [Reading a range](#reading-a-range)); `:grep:PATTERN` runs an ad-hoc regex over the trace (literal fallback on bad regex, ±context, names the pattern + tail on no-match — never silent-empty). Cause markers are always matched on top of the configured patterns, and a *failed* job that matches nothing is reported as unclassified with a log tail rather than as "no errors" |
@@ -25,6 +25,43 @@ GitLab ops via the `glab` CLI. Replaces the 3-5 separate `glab` calls needed to 
 ./supertool 'gl-mr:42'
 ```
 Returns approval state, pipeline status, diff stat, and all comments in one call.
+
+### The conflicts section
+
+A conflicted MR gets a `## Conflicts` block: the conflicting paths, a per-file hunk preview, and the resolve commands. Two `git merge-tree` calls feed it, and the distinction matters when reading the output:
+
+| Call | Produces | Carries blob content |
+|------|----------|----------------------|
+| `git merge-tree --write-tree --name-only` | the conflicted **file list** | no |
+| `git merge-tree BASE TARGET SOURCE` | the per-file **hunks** | yes |
+
+Only the second can be slow or blow up, because only it streams the conflicting blobs — one conflicted PNG is 230KB+ of stdout ([#498](https://github.com/Digital-Process-Tools/claude-supertool/issues/498)). So a hunk failure never means the file list is wrong.
+
+The section therefore distinguishes three outcomes, which used to render identically ([#507](https://github.com/Digital-Process-Tools/claude-supertool/issues/507)):
+
+**Hunks computed and present** — a `###` heading per file with the `<<<<<<<` markers, capped at 40 lines each. No note.
+
+**Hunks computed, and there genuinely are none** — add/add, delete/modify and rename conflicts have no inline hunks to show:
+
+```
+  No hunk preview for 1 file: src/foo.py
+  — git merge-tree returned no conflict content there (add/add,
+  delete/modify and rename conflicts have no inline hunks).
+```
+
+**Hunks not computed** — timeout, non-zero exit, or git could not be run at all. The cause is named, and the note is explicit that the file list above survives it:
+
+```
+  Hunk preview unavailable: git merge-tree timed out after 20s.
+  The conflicted file list above is still accurate — it comes from a
+  separate `git merge-tree --write-tree --name-only` call that carries
+  no blob content, so it cannot fail this way.
+  To see the hunks, run the merge locally with the commands below.
+```
+
+The resolve commands print in all three cases; they never needed the hunks.
+
+**The hunk timeout scales with the conflicted file count** — `max(15s, 5s × files)`, capped at 60s. Wall time here is git's merge computation, not the pipe write, so it tracks how many files git has to merge. 15s is a floor that is generous for one conflicted text file and thin for a dozen files or a cold object cache — which is where the preview is worth the most.
 
 **Debug a failed pipeline:**
 ```bash
