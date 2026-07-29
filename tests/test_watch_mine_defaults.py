@@ -29,7 +29,12 @@ pytestmark = pytest.mark.skipif(
 )
 
 EXPECTED_FEED = "gl-mrs:author=@me,state=opened,iids"
-EXPECTED_ONLY = "pipeline_failed,pipeline_succeeded,merged,closed,conflicts_appeared"
+# comment_added joined the set in #519, after the reason it was excluded —
+# "user_notes_count counts system notes" — was checked against the live API and
+# turned out to be false. See tests/test_watch_gitlab_mr_poller.py for the
+# twelve-MR derivation.
+EXPECTED_ONLY = ("pipeline_failed,pipeline_succeeded,comment_added,"
+                 "merged,closed,conflicts_appeared")
 
 
 # ---------------------------------------------------------------------------
@@ -65,7 +70,15 @@ def test_default_only_includes_success_and_terminal_events() -> None:
 def test_default_only_excludes_noise_events() -> None:
     events = set(defaults.DEFAULT_ONLY.split(","))
     assert "pipeline_running" not in events
-    assert "comment_added" not in events
+
+
+def test_default_only_carries_comment_added() -> None:
+    """This assertion used to run the other way. `comment_added` was excluded
+    on the grounds that `user_notes_count` counts system notes, so enabling it
+    would double-fire on every pipeline transition. It does not — GitLab scopes
+    that counter over `where(system: false)` — so the exclusion was resting on
+    an unchecked source comment rather than on observed behaviour (#519)."""
+    assert "comment_added" in set(defaults.DEFAULT_ONLY.split(","))
 
 
 def _run_defaults(key: str) -> subprocess.CompletedProcess[str]:

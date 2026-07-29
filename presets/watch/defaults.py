@@ -29,9 +29,17 @@ DEFAULT_FEED = f"gl-mrs:{DEFAULT_FILTER},iids"
 DEFAULT_SOURCE = "gitlab-mr"
 
 # pipeline_succeeded closes the red -> fix -> push -> ? loop. pipeline_running
-# is excluded (the user just pushed; it carries no information) and
-# comment_added is excluded because user_notes_count counts system notes.
-DEFAULT_ONLY = "pipeline_failed,pipeline_succeeded,merged,closed,conflicts_appeared"
+# is excluded: the user just pushed, so it carries no information.
+#
+# comment_added is IN as of #519. It was held out on the belief that
+# `user_notes_count` counts system notes, which would have double-fired it on
+# every pipeline transition. That belief was wrong — GitLab scopes the count
+# over `where(system: false)`, verified across twelve MRs on the live instance
+# — so the one stated reason for the exclusion did not survive checking. A
+# comment on your MR is actionable and otherwise silent, which is the same
+# argument that puts conflicts_appeared here.
+DEFAULT_ONLY = ("pipeline_failed,pipeline_succeeded,comment_added,"
+                "merged,closed,conflicts_appeared")
 
 # The discovery tier. DEFAULT_FEED above is a one-shot query a caller runs and
 # pipes; this is the poller that runs the same query forever, so a session

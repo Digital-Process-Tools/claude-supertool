@@ -48,7 +48,7 @@ Args: `$1` feed op, `$2` watch source, `$3` notify events. The defaults live in 
 |---|---|---|
 | feed | `gl-mrs:author=@me,state=opened,iids` | Every open MR, not just the failing ones. A watcher can only report an MR *going* red if it was already watching while the MR was green. |
 | source | `gitlab-mr` | |
-| only | `pipeline_failed,pipeline_succeeded,merged,closed,conflicts_appeared` | `pipeline_succeeded` closes the red → fix → push → *?* loop, and is the only proof an automated fix worked. `pipeline_running` is excluded (you just pushed; no information) and `comment_added` is excluded because `user_notes_count` counts system notes. |
+| only | `pipeline_failed,pipeline_succeeded,comment_added,merged,closed,conflicts_appeared` | `pipeline_succeeded` closes the red → fix → push → *?* loop, and is the only proof an automated fix worked. `pipeline_running` is excluded — you just pushed, so it carries no information. `comment_added` joined the set in [#519](https://github.com/Digital-Process-Tools/claude-supertool/issues/519); it was held out on a belief about `user_notes_count` that turned out to be false ([below](#comment_added-is-in-the-default-set-519)). |
 
 The separation is deliberate — the list op owns *what's mine* (a platform concern), the watch preset stays generic. The feed op just has to emit bare ids (the `iids` flow); both `gl-mrs` (GitLab) and `gh-prs` (GitHub) ship today.
 
@@ -359,10 +359,10 @@ A fat payload that grows without bound is the real cost of this feature, so the 
 
 | Excluded | Why |
 |---|---|
-| failing-job ids on `pipeline_failed` | needs a second API call per failure tick — a real cost trade, scoped as a follow-up |
+| ~~failing-job ids on `pipeline_failed`~~ | **shipped in [#509](https://github.com/Digital-Process-Tools/claude-supertool/issues/509)** — see [below](#pipeline_failed-names-the-jobs-that-broke-509). The names, not the ids, and on a transition rather than per tick. |
 | the job trace | kilobytes on every event, wanted only when someone actually classifies |
 | `title`, `url` | already top-level in `payload` — duplication, not information |
-| `user_notes_count` | counts system notes (see below), so publishing it invites a wrong "N comments" render |
+| `user_notes_count` | a raw running total, so publishing it invites a "N comments" render of a number that is not the number of new ones. `comment_added` ships the **delta** as `new_count` instead. (This row used to say the field counts system notes. It does not — see [#519](https://github.com/Digital-Process-Tools/claude-supertool/issues/519) below.) |
 | `merge_status`, `detailed_merge_status` | inputs to the conflict guard; its *output* is `observed_has_conflicts` |
 | `description`, `labels`, `author`, `diff_refs` | grow with the MR |
 
@@ -371,6 +371,90 @@ A fat payload that grows without bound is the real cost of this feature, so the 
 No existing field was added, removed or retyped, and no event key changed meaning — the [#439](https://github.com/Digital-Process-Tools/claude-supertool/issues/439)/[#464](https://github.com/Digital-Process-Tools/claude-supertool/issues/464) invariant. `only=` filters name event keys and `events.json` is untouched, so no consumer's coverage moved. A consumer ignoring the new keys receives exactly what it received before, and is uninformed rather than wrong.
 
 **`merged` deliberately gains no top-level `pipeline_id`**, though the tie-a-merge-to-its-pipeline gap it closes is real. `radar.drift()` reads `payload.pipeline_id` to decide an event is stale history superseded by a newer pipeline; a merge event joining that comparison would put `[drift: A→B]` on the board for something nobody reported. And the key's meaning would then depend on the event: "the pipeline this event is about" on `pipeline_*`, "the head pipeline at the time" on `merged`. `observed_pipeline_id` says the second thing, uniformly, everywhere.
+
+### The request budget: what costs a call, and when
+
+Two changes bought event self-sufficiency, and they were priced together on purpose because the whole question is *where* a call lands, not how many exist.
+
+| | Extra GitLab requests | When |
+|---|---|---|
+| every `gitlab-mr` poll | **0** | the snapshot ([#435](https://github.com/Digital-Process-Tools/claude-supertool/issues/435)) and `comment_added` ([#519](https://github.com/Digital-Process-Tools/claude-supertool/issues/519)) are both answered by the one `_fetch` the poller already makes |
+| transition **into** `pipeline_failed` | **1** | the failing-job lookup ([#509](https://github.com/Digital-Process-Tools/claude-supertool/issues/509)) |
+| every other transition — `pipeline_succeeded`, `pipeline_running`, `merged`, `closed`, `conflicts_appeared`, `comment_added` | **0** | |
+
+**Nothing was added to the per-poll path.** That was the design constraint: a watcher fleet is one process per open MR polling every 30s forever, so a request added there is multiplied by every MR you have open, all day. A request added to a failure transition is paid once per pipeline going red.
+
+`comment_added` was expected to cost the per-poll kind — [#519](https://github.com/Digital-Process-Tools/claude-supertool/issues/519) proposed a `/notes?system=false` call on every poll of every watched MR — and on inspection it needed no call at all. See below.
+
+### `pipeline_failed` names the jobs that broke ([#509](https://github.com/Digital-Process-Tools/claude-supertool/issues/509))
+
+`pipeline_failed` used to say "pipeline 154253 failed" and stop there. Turning that into the name of the job that actually broke cost the consumer three round-trips — `gl-mr` → `gl-pipeline:<id>:failed` → `gl-job` — for one string, at the one moment a radar session is doing work and can least afford to spend context on it. And the job name *is* the failure class: `test_unit_dpt` versus `phpstan` versus `rector` is what tells a reader whether this is theirs to fix.
+
+Three extra keys, on `pipeline_failed` **and no other event**:
+
+| Field | |
+|---|---|
+| `observed_failed_jobs` | comma-joined job names, earliest-started first, capped at 5. `""` when there are none *or* when the lookup failed — read `observed_failed_jobs_lookup` to tell which. Over the cap, the string ends `,+N more`. |
+| `observed_failed_job_count` | the true total as a string, e.g. `"8"` even when only 5 are named. **`""`, never `"0"`, when the lookup failed.** |
+| `observed_failed_jobs_lookup` | `ok` — GitLab answered, the other two fields are its answer. `unavailable` — the request failed, timed out, returned something unparseable, or was never made (no pipeline id). |
+
+They are absent, not blank, on `merged` / `comment_added` / the rest: a `merged` event has no failing-job concept, and three empty attributes riding on every event is wire noise that also invites a blank to be read as a fact.
+
+#### Three states, because the lookup can fail
+
+**A failed request must never render as "no jobs failed."** An absence produced by the tool read as an absence in the world is this repository's most-filed defect, and a red pipeline reporting zero failing jobs because a request fell over is its exact shape. So the answer is three-valued in the [#406](https://github.com/Digital-Process-Tools/claude-supertool/issues/406) / `docs/validators.md` vocabulary — `ok`, a finding, **cannot tell**:
+
+| Situation | `lookup` | `count` | `jobs` |
+|---|---|---|---|
+| two jobs failed | `ok` | `"2"` | `"rector,test_unit_dpt"` |
+| GitLab answered, recorded nothing pipeline-failing | `ok` | `"0"` | `""` |
+| request failed / timed out / no pipeline id | `unavailable` | `""` | `""` |
+
+The empty-string count is deliberate redundancy: a consumer that reads only `observed_failed_job_count` and never branches on `lookup` still cannot mistake "could not look" for "nothing broke". `subprocess.TimeoutExpired` is caught alongside `OSError` in the poller's `_glab_api` for the same reason — it is a `SubprocessError`, not an `OSError`, so it used to propagate out of `poll()` and kill the tick outright.
+
+#### Why a list, and in that order
+
+**No single job is elected "the" failure.** The tempting design is to name the first one, but the live data does not support it: on one observed pipeline eight `test_unit_*` jobs failed within **2.4 seconds** of each other. Picking one of eight parallel fan-out failures is arbitrary *and* reads as authoritative — the house defect again, in a field that looks like a fact. So a bounded list ships, and the truncation marker lives **inside** the joined string rather than only in the count, because a surface rendering that one attribute would otherwise read five names as the whole story.
+
+The ordering is **ascending `started_at`**, jobs that never started last. The two alternatives were tested against the live API rather than reasoned about:
+
+| Candidate | Verdict |
+|---|---|
+| GitLab's own response order | **Rejected.** It is descending job id — the API hands back the *last* failure first. Pipeline 154599 returns `test_unit_dpt` (started `:18.595`) ahead of `test_unit_modular` (`:15.216`). |
+| ascending job id, as a proxy for stage order | **Rejected.** Job ids are not allocated in the order stages run. Pipeline 154527 gives `conformity_basic` the *lower* id (6953208) than the `unit` jobs (6953222+) while running it six minutes *later*. |
+| ascending `started_at` | **Chosen.** Total over failed jobs, deterministic, and means what a reader assumes. |
+
+Start order is chronology, **not causality** — jobs that fail in parallel are not a cascade, and the list makes no claim about which broke which.
+
+Two filters, both from live data:
+
+- **`allow_failure: true` jobs are dropped.** They fail without making the pipeline red, so naming one sends the reader to the wrong log. On pipeline 154527 the allow-failure job sorts *first* by every candidate ordering, so it is exactly the name that would have gone on the wire.
+- **`status == "failed"` is re-checked** even though the query asks for it. `?scope[]=failed` is a request, not a guarantee, and an unfiltered response would otherwise turn every green job into a reported failure.
+
+Retried jobs keep their name and take a new id, so both attempts come back failed; names are de-duplicated, because the reader wants the set of broken things and not a tally of attempts at one of them.
+
+**On cost:** the request is `?scope[]=failed`, not the full job list. Real pipelines here run 114–139 jobs — two paginated pages of mostly `created`/`manual` bulk — against one short page for the scoped query. And it is issued from *inside* the `pipeline_status == "failed"` transition branch, which is edge-triggered, so a pipeline that sits red for an hour is looked up once rather than 120 times.
+
+### `comment_added` is in the default set ([#519](https://github.com/Digital-Process-Tools/claude-supertool/issues/519))
+
+**`user_notes_count` counts human comments only. It does not count system notes.** This is the correction of a claim that lived in a source comment, was never checked, was copied into the docs and into [#417](https://github.com/Digital-Process-Tools/claude-supertool/issues/417) item 3, and from there into [#519](https://github.com/Digital-Process-Tools/claude-supertool/issues/519) — which proposed one `/notes?system=false` request per poll per watched MR to fix a defect that does not exist.
+
+GitLab scopes that counter over `Note.user`, which is `where(system: false)`. Re-derived against a live instance (GitLab 18.11.7) across twelve merge requests, where `user_notes_count` equalled the number of `system: false` notes every time:
+
+| MR | system notes | human notes | `user_notes_count` |
+|---|---|---|---|
+| !19509 | 75 | 0 | **0** |
+| !22026 | 20 | 2 | **2** |
+| !33244 | 26 | 16 | **16** |
+| !33265 | 3 | 0 | **0** |
+
+!19509 is the decisive one: seventy-five system notes — pipeline activity, approvals, label and assignee edits, time tracking — and a count of zero. The predicted double-fire on every pipeline transition cannot happen.
+
+So `comment_added` was excluded for one stated reason, that reason was not true, and it is now in `DEFAULT_ONLY`. A comment on your MR is actionable and otherwise silent, which is the same argument that puts `conflicts_appeared` there. **This costs no API call**: the count is already on the MR body the poller fetches every tick.
+
+**What the count genuinely cannot do is say who commented**, so `comment_added` also fires on your own comments. That is a real limitation and it is not the one the event was held back for; it is cheap to live with and expensive to fix, since distinguishing authors *would* need the per-poll `/notes` call [#519](https://github.com/Digital-Process-Tools/claude-supertool/issues/519) costed. If it bothers you, drop `comment_added` from `only=`.
+
+`new_count` is the **delta** since the previous poll, not the running total. A count that goes *down* (a deleted comment) fires nothing — the guard is a rising edge — and the first poll of an MR records a baseline without firing, so joining a conversation already in progress does not announce every comment in it.
 
 ### `conflicts_appeared` requires a diff ([#465](https://github.com/Digital-Process-Tools/claude-supertool/issues/465))
 

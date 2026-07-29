@@ -162,7 +162,8 @@ def test_healed_watchers_use_the_shared_default_event_filter(env, capsys) -> Non
     assert source == "gitlab-mr"
     assert iid == "33161"
     assert only == [
-        "pipeline_failed", "pipeline_succeeded", "merged", "closed", "conflicts_appeared",
+        "pipeline_failed", "pipeline_succeeded", "comment_added",
+        "merged", "closed", "conflicts_appeared",
     ]
 
 
