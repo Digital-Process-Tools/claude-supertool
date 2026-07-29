@@ -105,6 +105,12 @@ def cmd_watch(parts: list[str]) -> int:
     if status == "failed":
         print(f"ERROR: could not spawn a poller for {source}:{watcher_id}")
         return 1
+    # An explicit re-arm is the operator saying they have seen the deaths and
+    # are starting over — the one door out of the respawn cap in
+    # `transport.DEATH_RESPAWN_LIMIT`. Nothing automatic clears the ledger.
+    if transport.clear_deaths(source, watcher_id):
+        print(f"Cleared the recorded deaths for {source}:{watcher_id} — "
+              f"radar will respawn it again if it dies.")
     print(f"Watching {source}:{watcher_id} (PID {pid})")
     if only:
         print(f"Filter: {','.join(only)}")
@@ -146,6 +152,7 @@ def _report_nothing_stopped(source: str, watcher_id: str, info: dict[str, Any]) 
         print(f"Tracked PID {info['tracked']} for {source}:{watcher_id} is not "
               f"running — the watcher died without anything reporting it, and "
               f"this id has been unwatched since. Stale PID file removed.")
+        transport.record_death(source, watcher_id, info["tracked"])
         return
     if not info["scan_ok"]:
         print(f"No PID file for {source}:{watcher_id}, and the process scan was "
@@ -192,6 +199,7 @@ def cmd_unwatch(parts: list[str]) -> int:
     if not pids:
         _report_nothing_stopped(source, watcher_id, info)
         transport.release_pidfile(source, watcher_id)
+        _acknowledge_deaths(source, watcher_id)
         return 0
     print(f"Stopping {len(pids)} poller(s) for {source}:{watcher_id}: "
           + ", ".join(
@@ -209,11 +217,35 @@ def cmd_unwatch(parts: list[str]) -> int:
         print("Process scan unavailable — only the tracked PID was considered, "
               "so an untracked poller for this id would not have been found.")
     transport.release_pidfile(source, watcher_id)
+    _acknowledge_deaths(source, watcher_id)
     return 1 if failures else 0
+
+
+def _acknowledge_deaths(source: str, watcher_id: str) -> None:
+    """`unwatch` is the operator saying "seen". Clear the supervision record.
+
+    Without this every deliberate stop would leave a permanent warning row on
+    the board, readers would learn to skim it, and skimming is how a real red
+    gets missed — the failure #511 opens with. A deliberate stop is not a loss
+    of coverage, it is coverage being withdrawn on purpose.
+    """
+    if transport.clear_deaths(source, watcher_id):
+        print(f"Acknowledged the recorded death(s) for {source}:{watcher_id}.")
 
 
 def _row_note(row: dict[str, Any]) -> str:
     notes = []
+    if row.get("dead"):
+        recorded = row.get("deaths") or []
+        last = recorded[-1].get("pid") if recorded else "?"
+        notes.append(f"LOST — PID {last} died, no poller since"
+                     + (f" ({len(recorded)} deaths recorded)" if len(recorded) > 1 else ""))
+    elif len(row.get("deaths") or []) > 1:
+        # A slot that died once and healed cleanly says so on the radar run
+        # that healed it and then goes quiet. Only a *flapping* one keeps a
+        # note here — a permanent mark on a covered slot is what teaches a
+        # reader to skim the board, and the board has exactly one job.
+        notes.append(f"flapping — {len(row['deaths'])} deaths recorded, currently respawned")
     if row.get("orphan"):
         notes.append("no pidfile")
     if row.get("extra"):
@@ -239,10 +271,11 @@ def cmd_list() -> int:
             print("No watchers by PID file — and the process scan was "
                   "unavailable, so an untracked poller could not be ruled out.")
             return 0
-        print("No active watchers.")
+        print("No active watchers. None recorded as lost either.")
         return 0
     for r in rows:
-        r["_pid"] = str(r["pid"]) + (f" (+{len(r['extra'])})" if r["extra"] else "")
+        r["_pid"] = ("-" if r.get("dead") else
+                     str(r["pid"]) + (f" (+{len(r['extra'])})" if r["extra"] else ""))
         r["_note"] = _row_note(r)
         r["_started"] = r["started"] or "-"
     noted = any(r["_note"] for r in rows)
@@ -275,7 +308,19 @@ def cmd_list() -> int:
         if noted:
             line += f"  {r['_note']}"
         print(line.rstrip())
-    if noted:
+    lost = [r for r in rows if r.get("dead")]
+    if lost:
+        print()
+        print(f"{len(lost)} id(s) above are marked LOST: they had a watcher, it "
+              f"died without being unwatched, and nothing is polling them now. "
+              f"Events on those ids are not being seen. Re-arm with "
+              f"`watch:SOURCE:ID` (radar heals them automatically up to "
+              f"{transport.DEATH_RESPAWN_LIMIT} deaths), or acknowledge with "
+              f"`unwatch:SOURCE:ID` to drop the row.")
+    # Gated on the multi-poller notes specifically, not on the NOTE column: a
+    # board whose only note is a LOST row would otherwise be told to go looking
+    # for a duplicate poller that is not there.
+    if any(r.get("orphan") or r.get("extra") for r in rows):
         print()
         print("An id above has more than one live poller, or a poller with no "
               "PID file. `unwatch:SOURCE:ID` stops all of them and names each "

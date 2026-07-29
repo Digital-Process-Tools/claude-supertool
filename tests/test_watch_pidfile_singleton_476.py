@@ -238,7 +238,7 @@ def test_heal_does_not_stack_a_second_watcher(monkeypatch) -> None:
     """
     spawns = _Spawns()
     monkeypatch.setattr(radar.dispatcher, "_spawn_poller", spawns)
-    assert radar.heal(["33161"], set()) == (["33161"], [])
+    assert radar.heal(["33161"], set())[:2] == (["33161"], [])
     radar.heal(["33161"], set())
     assert len(spawns.calls) == 1
 
@@ -268,9 +268,10 @@ def test_an_mr_watched_by_another_radar_is_neither_healed_nor_uncovered(
     """
     monkeypatch.setattr(radar.dispatcher, "_spawn_poller", _Spawns())
     radar.heal(["33161"], set())
-    healed, uncovered = radar.heal(["33161"], set())
+    healed, uncovered, refused = radar.heal(["33161"], set())
     assert healed == []
     assert uncovered == []
+    assert refused == []
 
 
 def test_heal_releases_the_slot_when_the_spawn_fails(monkeypatch) -> None:
@@ -278,12 +279,12 @@ def test_heal_releases_the_slot_when_the_spawn_fails(monkeypatch) -> None:
     heal for that iid — and an MR quietly dropped from the fleet is the exact
     failure #417 exists to remove."""
     monkeypatch.setattr(radar.dispatcher, "_spawn_poller", _Spawns(pid=0))
-    assert radar.heal(["33161"], set()) == ([], ["33161"])
+    assert radar.heal(["33161"], set())[:2] == ([], ["33161"])
     assert not os.path.exists(transport.pid_path(radar.SOURCE, "33161"))
 
     spawns = _Spawns()
     monkeypatch.setattr(radar.dispatcher, "_spawn_poller", spawns)
-    assert radar.heal(["33161"], set()) == (["33161"], [])
+    assert radar.heal(["33161"], set())[:2] == (["33161"], [])
 
 
 def test_feed_scope_is_insensitive_to_filter_order() -> None:

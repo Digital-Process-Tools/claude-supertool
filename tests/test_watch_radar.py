@@ -402,7 +402,10 @@ def test_drift_and_gap_marks_land_on_the_status_line_not_the_title(env, capsys) 
                 event_pipeline_id="154177")
     _set_live(env, [_mr(33173, "running", "154180", title="A readable title")])
     lines = _run(env, capsys).splitlines()
-    idx = next(i for i, ln in enumerate(lines) if "!33173" in ln)
+    # Not merely the first line naming the MR: radar's own warning lines name
+    # it too (the dead pid file above is a death, and #513 reports those).
+    idx = next(i for i, ln in enumerate(lines)
+               if "!33173" in ln and not ln.startswith("radar:"))
     assert lines[idx].endswith("[drift: 154177→154180] [healed]")
     assert lines[idx + 1] == "        A readable title"
 
