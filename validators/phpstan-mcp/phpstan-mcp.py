@@ -29,6 +29,11 @@ CALL_TIMEOUT_SEC = 180
 # Extra refusal substrings (comma-separated), opt-in per repo.
 SKIP_PATTERNS_ENV = "PHPSTAN_MCP_SKIP_PATTERNS"
 
+# Analysis roots, opt-in per repo (#412). Set, a target outside every root is
+# skipped here instead of costing a ~9s daemon round trip to be told the same.
+# Unset, the daemon stays the only authority on scope — see refusal.outside_roots.
+PATHS_ENV = "PHPSTAN_MCP_PATHS"
+
 
 # #148: use the shared presets/mcp/_paths helper so client + daemon agree on
 # the runtime dir (was /tmp/, now $XDG_RUNTIME_DIR/supertool/mcp/ etc.).
@@ -198,6 +203,11 @@ def main(argv: list[str]) -> int:
         return 2
     file_path = argv[1]
     t0 = time.monotonic()
+    out_of_scope = _refusal.outside_roots(file_path, PATHS_ENV)
+    if out_of_scope:
+        print(json.dumps(skipped(file_path, out_of_scope,
+                                 int((time.monotonic() - t0) * 1000))))
+        return 0
     try:
         sock = ensure_daemon(WORKING_DIR)
         resp = ndjson_call(sock, os.path.abspath(file_path))
