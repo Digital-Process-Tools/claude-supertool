@@ -138,6 +138,24 @@ _MERGE_TREE_PATH_RE = re.compile(
 HUNK_LINES_PER_FILE = 40
 BINARY_HUNK_NOTE = "(binary file — conflict hunks not shown; resolve by picking a version)"
 
+HUNK_TIMEOUT_BASE = 15
+HUNK_TIMEOUT_PER_FILE = 5
+HUNK_TIMEOUT_MAX = 60
+
+
+def _hunk_timeout(file_count: int) -> int:
+    """Seconds to allow `git merge-tree` for a hunk preview.
+
+    Wall time is git's merge computation, and that scales with how many
+    files it has to merge, so a flat 15s is a floor rather than a budget:
+    generous for the one-conflicted-text-file case, thin for a branch with
+    a dozen conflicted files or a cold object cache — which is exactly
+    where the preview is worth most (#507). Grows 5s per conflicted file,
+    capped at 60s so a pathological repo still returns a dashboard in
+    bounded time rather than hanging the op.
+    """
+    return min(HUNK_TIMEOUT_MAX, max(HUNK_TIMEOUT_BASE, HUNK_TIMEOUT_PER_FILE * file_count))
+
 
 def _is_binary_hunk(block: str) -> bool:
     """True when a hunk block came from a non-text blob.
@@ -153,14 +171,28 @@ def _is_binary_hunk(block: str) -> bool:
     return "\x00" in block or "�" in block
 
 
-def _get_conflict_hunks(source: str, target: str) -> dict[str, str]:
-    """Return per-file conflict diff for hunk preview.
+def _get_conflict_hunks(
+    source: str, target: str, file_count: int = 0,
+) -> tuple[dict[str, str], str | None]:
+    """Return per-file conflict diff for hunk preview, plus why it is missing.
 
     Uses the older `git merge-tree BASE TARGET SOURCE` syntax which
     produces unified-diff-style output with `<<<<<<< / ======= / >>>>>>>`
     conflict markers. Each per-file block is split off the section
-    headers ("changed in both", "added in local", etc.). Returns dict
-    mapping file path -> diff text. Empty dict on any failure.
+    headers ("changed in both", "added in local", etc.).
+
+    Returns `(hunks, skip_reason)`. `skip_reason` is None when git
+    answered — including when the honest answer was "no hunks" — and a
+    short human-readable cause when it did not: a timeout, a non-zero
+    exit, or an OS-level failure to run git at all. The two absences are
+    not the same fact, and collapsing them into a bare `{}` is what made
+    a timed-out preview render identically to a genuinely empty one
+    (#507). The caller renders them differently.
+
+    A skip never means the conflicted *file list* is wrong: that comes
+    from `_get_conflicting_files`, a separate `--write-tree --name-only`
+    call which carries no blob content and so cannot hit this timeout
+    (#501).
 
     stdout here is blob content, not porcelain, so it is not text: one
     conflicted PNG puts a 0x89 on the stream and a strict UTF-8 decode
@@ -176,22 +208,34 @@ def _get_conflict_hunks(source: str, target: str) -> dict[str, str]:
             ["git", "merge-base", f"origin/{target}", f"origin/{source}"],
             capture_output=True, text=True, timeout=5, encoding="utf-8", errors="replace",
         )
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        return {}
+    except subprocess.TimeoutExpired:
+        return {}, "git merge-base timed out after 5s"
+    except OSError as exc:
+        return {}, f"could not run git: {exc}"
     if base_result.returncode != 0 or not base_result.stdout.strip():
-        return {}
+        return {}, (
+            "git merge-base found no common ancestor "
+            f"(origin/{target} and origin/{source} may not be fetched — try: git fetch origin)"
+        )
     base = base_result.stdout.strip()
 
+    timeout = _hunk_timeout(file_count)
     try:
         result = subprocess.run(
             ["git", "merge-tree", base,
              f"origin/{target}", f"origin/{source}"],
-            capture_output=True, encoding="utf-8", errors="replace", timeout=15,
+            capture_output=True, encoding="utf-8", errors="replace", timeout=timeout,
         )
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        return {}
+    except subprocess.TimeoutExpired:
+        return {}, f"git merge-tree timed out after {timeout}s"
+    except OSError as exc:
+        return {}, f"could not run git: {exc}"
+    if result.returncode != 0 and not result.stdout:
+        detail = (result.stderr or "").strip().splitlines()
+        suffix = f": {detail[0]}" if detail else ""
+        return {}, f"git merge-tree failed (exit {result.returncode}){suffix}"
     if not result.stdout:
-        return {}
+        return {}, None
 
     blocks: dict[str, list[str]] = {}
     current_path: str | None = None
@@ -217,7 +261,10 @@ def _get_conflict_hunks(source: str, target: str) -> dict[str, str]:
             current_lines.append(line)
     _flush()
 
-    return {p: "\n".join(lines).strip() for p, lines in blocks.items() if any(lines)}
+    return (
+        {p: "\n".join(lines).strip() for p, lines in blocks.items() if any(lines)},
+        None,
+    )
 
 
 def _format_error(stderr: str, resource: str, identifier: str) -> str:
@@ -661,10 +708,12 @@ def main() -> int:
         for path in conflict_files:
             print(f"  {path}")
 
-        hunks = _get_conflict_hunks(source, target)
+        hunks, hunks_skipped = _get_conflict_hunks(source, target, len(conflict_files))
+        no_preview: list[str] = []
         for path in conflict_files:
             block = hunks.get(path, "")
             if not block:
+                no_preview.append(path)
                 continue
             if _is_binary_hunk(block):
                 print(f"\n### {path}")
@@ -681,6 +730,24 @@ def main() -> int:
                 print(f"  {line}")
             if truncated:
                 print(truncated)
+
+        if hunks_skipped:
+            # The tool failed to answer — say so rather than letting the
+            # missing hunks read as "this conflict has none" (#507). The file
+            # list above came from a different call and is untouched by this.
+            print(f"\n  Hunk preview unavailable: {hunks_skipped}.")
+            print("  The conflicted file list above is still accurate — it comes from a")
+            print("  separate `git merge-tree --write-tree --name-only` call that carries")
+            print("  no blob content, so it cannot fail this way.")
+            print("  To see the hunks, run the merge locally with the commands below.")
+        elif no_preview:
+            plural_np = "s" if len(no_preview) != 1 else ""
+            print(
+                f"\n  No hunk preview for {len(no_preview)} file{plural_np}: "
+                f"{', '.join(no_preview)}"
+            )
+            print("  — git merge-tree returned no conflict content there (add/add,")
+            print("  delete/modify and rename conflicts have no inline hunks).")
 
         print("\nTo resolve:")
         print(f"  git checkout {source} && git fetch origin && git merge origin/{target}")
