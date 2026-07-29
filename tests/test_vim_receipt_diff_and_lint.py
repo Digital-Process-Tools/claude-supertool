@@ -8,6 +8,7 @@ two additions put verification in-band:
 from __future__ import annotations
 
 import shutil
+import subprocess
 from pathlib import Path
 
 import supertool
@@ -112,10 +113,62 @@ def test_xml_lint(tmp_path: Path) -> None:
     # Break it
     out = supertool.op_vim(str(f), "/<\\/root>␞x")
     if shutil.which("xmllint"):
+        # A decline is a third state, not a lenient pass: this test still
+        # demands a verdict, and says which of the two it did not get (#553).
+        assert "POST-EDIT LINT TIMED OUT" not in out, (
+            "xmllint declined instead of reaching a verdict — the runner blew "
+            "the lint budget, not the code. Raise SUPERTOOL_LINT_TIMEOUT "
+            "(conftest sets it for the suite). The decline itself is pinned by "
+            "test_vim_receipt_reports_a_lint_decline_not_a_verdict, not here.\\n"
+            + out
+        )
         assert "POST-EDIT LINT FAILED" in out
         assert "xmllint" in out
     else:
         assert "xmllint" not in out
+
+
+def test_vim_receipt_reports_a_lint_decline_not_a_verdict(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """#553 — the third state has to survive all the way into the receipt.
+
+    `_vim_render_lint` is already pinned at unit level (#396), but nothing
+    pinned the decline where the caller actually reads it. An op_vim receipt
+    whose lint section is empty reads as a file that linted clean, so a lint
+    that never finished must name itself, the tool, and the knob.
+
+    The timeout is forced here rather than waited for: pinning this by letting
+    a slow runner produce one by accident is what made master red.
+    """
+    real_which = shutil.which
+    real_run = subprocess.run
+
+    def fake_which(name: str, *a, **kw):
+        # xmllint is absent from some runners; the decline is not about that.
+        return "/usr/bin/xmllint" if name == "xmllint" else real_which(name, *a, **kw)
+
+    def timing_out_xmllint(*a, **k):
+        cmd = a[0] if a else k.get("args")
+        if cmd and "xmllint" in cmd[0]:
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=k.get("timeout", 5))
+        return real_run(*a, **k)
+
+    monkeypatch.setattr(supertool.shutil, "which", fake_which)
+    monkeypatch.setattr(subprocess, "run", timing_out_xmllint)
+
+    f = tmp_path / "x.xml"
+    f.write_text("<root><a/></root>\\n")
+    out = supertool.op_vim(str(f), "/<\\/root>␞x")
+
+    assert "POST-EDIT LINT TIMED OUT" in out
+    assert "xmllint" in out
+    assert "was NOT checked" in out
+    assert "SUPERTOOL_LINT_TIMEOUT" in out, "the decline must name the knob to raise"
+    # Neither verdict may be implied. "FAILED" would blame the file for the
+    # runner; a bare "--- lint: xmllint ---" would claim a check that never ran.
+    assert "POST-EDIT LINT FAILED" not in out
+    assert "--- lint: xmllint ---" not in out
 
 
 def test_py_lint_failure(tmp_path: Path) -> None:
