@@ -44,6 +44,11 @@ on every session start. Details in [docs/presets/watch.md](../../docs/presets/wa
 | `gitlab-mr-feed`  | scope (`@me`, `@reviewer`, …)  | never — discovery has no end state             |
 | `gl-runners`      | scope (`fleet`)                | never — a fleet has no end state               |
 
+`gl-runners` is a **registered radar tier**, not a default one: radar only spawns it
+when `ops.radar.radar_tiers` names it. See
+[docs/presets/watch.md](../../docs/presets/watch.md) for the tier contract and for
+which ops are worth watching at all.
+
 Every source but the last polls **one known id**, so none of them can discover
 an MR that did not exist when they were spawned. `gitlab-mr-feed` polls the
 whole population instead: new iids get a `gitlab-mr` watcher and an

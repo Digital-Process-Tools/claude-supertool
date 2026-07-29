@@ -203,6 +203,45 @@ That last part is a considered rejection of the obvious symmetry. A `pipeline_fa
 
 **Why not classify infra failures automatically?** Because a classifier that decides "this red is not your fault" is wrong in the confident direction, silently, for every MR, with no audit trail — the [#445](https://github.com/Digital-Process-Tools/claude-supertool/issues/445) defect with more reach. An exclusion is at least *declared*: it names an iid, carries a reason, sits in a file under review, and prints itself on every board. And half of !19509's red is a merge conflict against `master` that no trace-scanner can classify — it is a genuine problem the operator has chosen not to fix, which is a decision, not a detection.
 
+## Radar tiers — registered, never default
+
+Radar's core is the MR board and the discovery feed. Anything beyond that is a **tier**, and a tier only runs when it is registered:
+
+```json
+{
+  "ops": {
+    "radar": {
+      "radar_tiers": {
+        "gl-runners": { "window": 1800, "quiet_when_healthy": true }
+      }
+    }
+  }
+}
+```
+
+**The empty default is the design, not laziness.** Radar is an MR reconcile tool for most of the people who install this. Plenty of them sit below Maintainer, or on shared runners, where reading `projects/:id/runners` is a 403 — and a tier shipped on by default would hand every one of them a standing WARNING about infrastructure they neither own nor can read. That is a regression delivered as a feature.
+
+A tier is just an op that exposes `radar_report(options) -> (lines, healthy)`:
+
+```python
+RADAR_OPTIONS = {"window", "quiet_when_healthy"}   # validated; a typo is reported
+
+def radar_report(options=None):
+    ...
+    return ["radar: FLEET — 14 pending job(s) cannot start"], False
+```
+
+Names resolve through the preset that declares the op, so there is no second table to drift when a file moves. Registering an op with no `radar_report`, or passing an option it does not declare, is **reported on the board** rather than silently ignored — a dropped option is how someone comes to believe they configured a threshold they did not.
+
+Silence rules, and they are deliberate:
+
+- a **healthy** tier says nothing (`quiet_when_healthy`, default `true`) — a green line per tier per run is what trains people to skim past the red one
+- an **unhealthy** tier speaks on **every** run, never delta-suppressed, because it is a current fact rather than a transition
+- a **misconfigured** tier always speaks, since that output is the only route to getting it fixed
+- a tier that **raises** is caught and named; the MR board is what radar exists for and an optional tier must never be able to cost the reader their board
+
+A tier may also declare a background watcher, spawned only when the tier is registered — so an unregistered tier costs no poller and no API call.
+
 ## Bundled sources
 
 | Source | Polls | Events |
@@ -210,8 +249,59 @@ That last part is a considered rejection of the obvious symmetry. A `pipeline_fa
 | `github-pr` | `gh pr view <N> --json state,mergeable,reviewDecision,statusCheckRollup,comments,...` | `checks_failed`, `checks_succeeded`, `checks_pending`, `review_approved`, `review_changes_requested`, `comment_added`, `merged`, `closed`, `conflicts_appeared` |
 | `gitlab-mr` | `glab api projects/:id/merge_requests/<iid>` | `pipeline_failed`, `pipeline_succeeded`, `pipeline_running`, `merged`, `closed`, `conflicts_appeared` |
 | `gitlab-mr-feed` | `glab mr list` for a whole filter | `mr_opened`, `mr_merged`, `mr_closed`, `mr_left_feed` |
+| `gl-runners` | `glab api projects/:id/runners` + the pending/running job queue | `runner_silent`, `runner_recovered`, `runner_starved`, `queue_cleared`, `runner_paused`, `runner_added`, `runner_vanished` |
 
 Each source declares its event vocabulary in `presets/watch/sources/<NAME>/events.json` for introspection.
+
+## What can be watched, and what cannot
+
+A watcher is worth writing when **state changes without you, and finding out late costs something**. That is the whole test, and it is narrower than "the op returns data".
+
+An op qualifies when all four hold:
+
+1. **The state lives somewhere else.** A remote service, another machine, another person's action.
+2. **It changes on its own timeline.** Nothing you type causes the transition.
+3. **The change has a moment.** There is a before and an after worth naming, not a continuously drifting number.
+4. **Learning late has a cost.** A pipeline that failed 40 minutes ago, an MR that picked up a conflict, a runner that stopped taking work.
+
+| Watchable | Why | Status |
+|---|---|---|
+| `gl-pipeline` | a run transitions to success/failed while you do something else | shipped |
+| `gitlab-mr` / `github-pr` | pipelines, reviews, conflicts, merges — all moved by other people | shipped |
+| `gl-mrs` (population) | MRs open after your session started | shipped as `gitlab-mr-feed` |
+| `gl-runners` | a runner stops taking work; GitLab keeps calling it `online` | shipped |
+| `gl-issue` / `gh-issue` | labels, assignment and comments change; agent workflows key off labels | not yet |
+| `gh-run` | the GitHub-side mirror of `gl-pipeline` | not yet |
+| `devto_comments` / `bluesky` | replies and reactions arrive from strangers | not yet |
+
+| Not watchable | Why |
+|---|---|
+| `read`, `grep`, `glob`, `ls`, `tail`, `map`, `between`, `tree` | pure functions of local files — the answer only changes when you change the file |
+| `edit`, `replace`, `paste`, `vim`, `replace_lines` | synchronous mutations you initiated; the result is already in the return value |
+| `phpstan`, `phpunit`, `rector`, `validate`, `format` | local analysis. Nothing transitions while you wait; just run it again |
+| `git-status`, `git-diff`, `git-blame` | local repo state, moved by you |
+| `mysql_read` | technically remote, but there is no transition worth naming — polling a table is a cron job, not a watcher |
+| `mr`, `gl-issue-create` | one-shot actions. What they create may be watchable; the act is not |
+
+The trap is criterion 3. Plenty of remote state changes constantly without producing an *event* — a row count, a queue depth, a token balance. Watching those yields a stream with no edges, and a signal that fires continuously is one people learn to ignore. If you cannot name the before and the after in a sentence, it is a metric, not an event.
+
+Criterion 4 has its own trap, learned the expensive way: see `gl-runners` below, where a first version keyed on a field that looked like a transition and fired on the entire healthy fleet.
+
+### `gl-runners` — silence is only news when work is stuck behind it
+
+The op exists because GitLab reports a wedged runner as `status: online, job_execution_status: idle`, which is byte-identical to a healthy runner between jobs. Work pinned to that runner's exclusive tag queues behind it, no other runner is permitted to take it, and nothing turns red.
+
+Liveness is judged on evidence in **descending strength**, and the order is load-bearing:
+
+1. **jobs completed in the throughput window** — the runner demonstrably took work and returned results
+2. **`job_execution_status == "active"`**, or the runner owning a job in `scope[]=running`
+3. **`contacted_at` age**, last, at 30 minutes
+
+Step 3 is last because **GitLab throttles `contacted_at` writes**. Measured on a live fleet: one runner's `contacted_at` stayed frozen at the same millisecond across 7 samples spanning 2 minutes, drifting to ~10 minutes of apparent staleness while the fleet completed jobs throughout. A first version keyed on it alone, at 5 minutes, and fired `runner_silent` on **6 of 6 online runners within the hour**. A signal that fires on the whole healthy fleet does not merely fail to inform — it buries the one event that was real.
+
+So `runner_silent` gates on consequence: not taking work **and** work queued for it. A quiet runner with an empty queue has nothing to do, which is not a fault. `runner_starved` is the same correlation at the queue level, and it is the signal that earned its keep — it found 14 jobs pinned behind a runner GitLab had advertised as online for an hour.
+
+Job history is filtered by `finished_at`, never `created_at`. Ids order by creation and the two are **not monotonic**: a test job created hours ago finishes after jobs created since, so scanning by creation drops exactly the long jobs whose completion is the best evidence.
 
 ### `conflicts_appeared` is edge-triggered, and stays re-armable ([#463](https://github.com/Digital-Process-Tools/claude-supertool/issues/463))
 
