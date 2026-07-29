@@ -33,6 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   Red first: 10 of 15 new tests failed against the unmodified adapter, and the load-bearing one failed by *reporting that the daemon had been contacted*. Both directions are pinned by monkeypatching `ensure_daemon`/`ndjson_call` — to raise, so an out-of-scope path that still dials the daemon fails; and to record, so an in-scope path that silently stops reaching it fails too. A third test pins the unset case against the same recorder.
 
+### Changed
+
+- **README: `gc` section removed, `Watch` cut to framing plus links (docs-only).** `gc` runs itself hourly on a stamp file and nobody needs to learn it to use supertool, so it is now one line under `## Operations` pointing at [docs/operations/meta.md](docs/operations/meta.md#gc--cache-retention) and [docs/configuration.md](docs/configuration.md#gc--cache-retention) — 17 lines to 1, with no fact lost (all of them were already in those two pages). `## Watch` dropped its `### Quickstart` and `### Reference` subsections, which restated `docs/presets/watch.md` — 627 lines and substantially extended since — keeping what a reader needs to decide whether to click: what it is, the two-layers framing, and why `radar` exists. 42 lines to 14. README 506 → 465 lines.
+
 ### Fixed
 
 - **The skipped-result contract had two published definitions; a skip now omits `ok`/`count`/`errors` everywhere.** `docs/validators.md` told adapter authors to omit the verdict keys, `validators/common/refusal.py:skipped()` padded them and argued for padding in its own docstring, and `validators/SCHEMA.md` — the normative document — was a third statement siding with the helper. An author following the prose produced results that differed from every `refusal.skipped()` caller, and nothing caught it: the tests pinned the implementation, which is why the drift went unnoticed. Closes [#515](https://github.com/Digital-Process-Tools/claude-supertool/issues/515).
