@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import time
 from pathlib import Path
 from typing import Any
@@ -62,10 +63,17 @@ _glab_api_cli = _mr_op._glab_api  # type: ignore[attr-defined]
 
 
 def _glab_api(endpoint: str) -> dict | list | None:
-    """JSON-decode an _glab_api CLI call. None on any failure."""
+    """JSON-decode an _glab_api CLI call. None on any failure.
+
+    `TimeoutExpired` is caught with the rest: it is a `SubprocessError`, not an
+    `OSError`, so it used to propagate out of `poll()` and kill the tick. That
+    was survivable while `_fetch` was the only call; it stops being survivable
+    once a failure transition makes a second one. None is not swallowing the
+    failure — every caller here turns it into a reported "could not tell".
+    """
     try:
         r = _glab_api_cli(endpoint)
-    except (FileNotFoundError, OSError):
+    except (FileNotFoundError, OSError, subprocess.SubprocessError):
         return None
     if r.returncode != 0:
         return None
@@ -124,6 +132,117 @@ def _snapshot(data: dict[str, Any], *, mr_state: str, pipeline_status: str,
     }
 
 
+# The failing job names on `pipeline_failed` (#509, option 3 of #435).
+#
+# This is the ONLY thing in the payload that is not free. Everything #508 added
+# was already in memory; this costs one `?scope[]=failed` request. Two choices
+# keep that bounded, and both are load-bearing:
+#
+# 1. **The call lives inside the `pipeline_status == "failed"` transition
+#    branch**, which is edge-triggered — so a pipeline that sits red for an hour
+#    is looked up once, not 120 times. Nothing on the common path pays.
+# 2. **`?scope[]=failed`** rather than the full job list. Real pipelines here run
+#    114-139 jobs, which is two paginated pages of mostly `created`/`manual`
+#    bulk; the scoped query is one page and usually a handful of rows.
+#
+# What comes back is a *set of parallel failures* far more often than a single
+# cause — one observed pipeline had eight `test_unit_*` jobs fail within 2.4
+# seconds of each other. So no single job is elected "the" failure: naming one
+# of eight would be arbitrary and yet read as authoritative, which is this
+# repository's house defect wearing a new hat. A bounded, ordered list ships
+# instead, flat-encoded as a joined string because `notifiers/claude-channel`
+# stringifies each payload key into an XML attribute.
+FAILED_JOBS_MAX = 5
+LOOKUP_OK = "ok"
+LOOKUP_UNAVAILABLE = "unavailable"
+
+
+def _failed_job_names(pipeline_id: str) -> list[str] | None:
+    """Names of the jobs that made the pipeline red. `None` when we could not look.
+
+    **`None` and `[]` are different answers and callers must not merge them.**
+    `[]` means GitLab answered and recorded no pipeline-failing job; `None`
+    means the request failed, timed out, returned junk, or was never sent. An
+    absence produced by the tool is not an absence in the world, and a red
+    pipeline reporting "0 jobs failed" because a request fell over is exactly
+    the defect this repository keeps filing.
+
+    Two filters, both from live data:
+
+    - `allow_failure: true` jobs are dropped. They fail without making the
+      pipeline red, so naming one sends the reader to the wrong log. Observed
+      on pipeline 154527, where the allow-failure job sorts *first* by every
+      candidate ordering and would therefore have been the name on the wire.
+    - `status == "failed"` is re-checked even though the query asked for it.
+      The scope filter is a request, not a guarantee, and an unfiltered
+      response would otherwise turn every green job into a reported failure.
+
+    Ordering is **ascending `started_at`**, jobs that never started last, job id
+    as a deterministic tiebreak. The two alternatives were checked and rejected
+    against the live API rather than by taste:
+
+    - *GitLab's own order* is descending id — it hands back the **last** failure
+      first (pipeline 154599: `test_unit_dpt` at :18.595 ahead of
+      `test_unit_modular` at :15.216). Wrong end.
+    - *Ascending job id* is not stage order. Pipeline 154527 allocates
+      `conformity_basic` a **lower** id (6953208) than the `unit` jobs
+      (6953222+) while running it six minutes **later**, so sorting by id would
+      claim a stage ran first that demonstrably ran second.
+
+    Start order is still chronology, not causality — parallel jobs that fail
+    together are not a cascade, and the list is not a claim about which broke
+    which.
+    """
+    if not pipeline_id:
+        return None
+    data = _glab_api(
+        f"projects/:id/pipelines/{pipeline_id}/jobs?scope[]=failed&per_page=100")
+    if not isinstance(data, list):
+        return None
+    jobs = [j for j in data if isinstance(j, dict)
+            and j.get("status") == "failed" and not j.get("allow_failure")]
+    jobs.sort(key=lambda j: (j.get("started_at") is None,
+                             str(j.get("started_at") or ""),
+                             str(j.get("id") or "")))
+    names: list[str] = []
+    for job in jobs:
+        name = str(job.get("name") or "")
+        # A retried job keeps its name and takes a new id, so both attempts come
+        # back failed. The reader wants the set of broken things, not a tally of
+        # attempts at the same one.
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def _failed_jobs_fields(pipeline_id: str) -> dict[str, str]:
+    """The three flat `observed_failed_job*` keys, in all three states.
+
+    `observed_failed_job_count` is `""` — never `"0"` — when the lookup failed,
+    so a consumer that reads only the count still cannot mistake "we could not
+    look" for "nothing failed". `observed_failed_jobs_lookup` says which of the
+    two it was in one word, for a consumer that would rather branch than guess.
+    """
+    names = _failed_job_names(pipeline_id)
+    if names is None:
+        return {
+            "observed_failed_jobs": "",
+            "observed_failed_job_count": "",
+            "observed_failed_jobs_lookup": LOOKUP_UNAVAILABLE,
+        }
+    shown = names[:FAILED_JOBS_MAX]
+    if len(names) > FAILED_JOBS_MAX:
+        # The overflow marker goes *inside* the joined string, not only in the
+        # count: a surface rendering this single attribute would otherwise read
+        # five names as the whole story.
+        shown = [*shown, f"+{len(names) - FAILED_JOBS_MAX} more"]
+    return {
+        "observed_failed_jobs": ",".join(shown),
+        "observed_failed_job_count": str(len(names)),
+        "observed_failed_jobs_lookup": LOOKUP_OK,
+    }
+
+
 def _has_no_diff(data: dict[str, Any]) -> bool:
     """True only on positive evidence that the MR contains no diff.
 
@@ -165,12 +284,24 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
     pipeline_id = str(pipeline.get("id") or "") if isinstance(pipeline, dict) else ""
     title = str(data.get("title") or f"MR !{iid}")
     web_url = str(data.get("web_url") or "")
-    # GitLab's `user_notes_count` counts *all* notes including system notes
-    # (pipeline status changes, label edits, assignee changes). `comment_added`
-    # will therefore fire on some non-human events — accepted limitation for v1
-    # to avoid a second API call to /notes per poll. If the field is absent,
-    # keep it None so the rising-edge guard treats the next poll as a baseline
-    # rather than locking the count at 0 forever.
+    # `user_notes_count` counts **human** notes only — GitLab scopes it over
+    # `Note.user`, which is `where(system: false)`, so label edits, assignee
+    # changes, approvals and time-tracking entries do not move it.
+    #
+    # This comment used to claim the opposite, and nobody checked. That claim
+    # kept `comment_added` out of the default event set and produced two filed
+    # issues (#417 item 3, #519), the second proposing a `/notes?system=false`
+    # call on every poll of every watched MR to fix a defect that did not
+    # exist. Re-derived against the live instance (GitLab 18.11.7) over twelve
+    # merge requests; `user_notes_count` equalled the number of `system: false`
+    # notes on all twelve, including !19509 — 75 system notes, count 0.
+    #
+    # What the count still cannot do is say *who* commented, so `comment_added`
+    # fires on your own comments too. That is a real limit, documented in
+    # docs/presets/watch.md, and it is not what the event was held back for.
+    #
+    # If the field is absent, keep it None so the rising-edge guard treats the
+    # next poll as a baseline rather than locking the count at 0 forever.
     raw_notes = data.get("user_notes_count")
     notes_count = int(raw_notes) if isinstance(raw_notes, int) else None
 
@@ -206,9 +337,16 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
     # Pipeline transitions
     if pipeline_status and pipeline_status != prev_pipeline:
         if pipeline_status == "failed":
+            # The one extra request, and it is made here rather than beside the
+            # snapshot so that its cost is exactly the shape of this branch:
+            # once per transition into red, never on a green or idle tick. The
+            # three keys ride on `pipeline_failed` alone — `merged` has no
+            # failing-job concept, and three blank attributes on every event
+            # would be wire noise that invites a blank to be read as a fact.
             events.append({
                 "event": "pipeline_failed",
-                "payload": {"pipeline_id": pipeline_id, "url": web_url, "title": title, **snap},
+                "payload": {"pipeline_id": pipeline_id, "url": web_url, "title": title,
+                            **snap, **_failed_jobs_fields(pipeline_id)},
                 "notify_title": f"!{iid} pipeline failed",
                 "notify_message": title,
             })
