@@ -7,10 +7,6 @@ path while exercising the full NDJSON wire protocol.
 from __future__ import annotations
 
 import os
-import subprocess
-import sys
-import time
-import uuid
 from pathlib import Path
 
 import pytest
@@ -29,7 +25,7 @@ from supertool import (
     op_resolve,
 )
 
-MOCK_SERVER = str(Path(__file__).parent / "fixtures" / "mock_mcp_server.py")
+import _mcp_mock
 
 
 def _set_mcp_specs(specs: dict) -> None:
@@ -45,26 +41,12 @@ def mock_uds():
     Sockets live in /tmp/ (macOS AF_UNIX path limit ~104 chars; pytest tmp_path is too deep).
     Skips on platforms without AF_UNIX (e.g. some Windows Python builds).
     """
-    if not hasattr(_socket, "AF_UNIX"):
-        pytest.skip("MCP daemon uses AF_UNIX sockets — not available on this platform")
-    sock_path = f"/tmp/st-mock-{uuid.uuid4().hex[:8]}.sock"
-    proc = subprocess.Popen([sys.executable, MOCK_SERVER, sock_path])
-    # Wait for the server to bind the socket
-    deadline = time.time() + 5
-    while time.time() < deadline and not os.path.exists(sock_path):
-        time.sleep(0.05)
-    if not os.path.exists(sock_path):
-        proc.terminate()
-        raise RuntimeError(f"mock MCP server did not bind {sock_path}")
+    _mcp_mock.skip_without_af_unix()
+    proc, sock_path = _mcp_mock.spawn()
     try:
         yield sock_path
     finally:
-        proc.terminate()
-        try: proc.wait(timeout=3)
-        except subprocess.TimeoutExpired: proc.kill()
-        if os.path.exists(sock_path):
-            try: os.unlink(sock_path)
-            except OSError: pass
+        _mcp_mock.terminate(proc, sock_path)
 
 
 def test_route_matches_by_extension_glob(mock_uds: str) -> None:
@@ -201,12 +183,8 @@ def test_op_hover_anchors_to_word_boundary(tmp_path: Path) -> None:
     src_line = "public function handle(self $handle): void\n"
     php_file.write_text(src_line)
 
-    sock_path = f"/tmp/st-mock-{uuid.uuid4().hex[:8]}.sock"
     env = os.environ.copy(); env["MOCK_HOVER_FILE"] = str(php_file)
-    proc = subprocess.Popen([sys.executable, MOCK_SERVER, sock_path], env=env)
-    deadline = time.time() + 5
-    while time.time() < deadline and not os.path.exists(sock_path):
-        time.sleep(0.05)
+    proc, sock_path = _mcp_mock.spawn(env=env)
     try:
         _set_mcp_specs({
             "php-lsp": {"match": "*.php", "socket_path": sock_path,
@@ -221,9 +199,7 @@ def test_op_hover_anchors_to_word_boundary(tmp_path: Path) -> None:
             srv = _MCP_SERVERS.pop("php-lsp", None)
         if srv: srv.shutdown()
         supertool._mcp_specs.clear()
-        proc.terminate()
-        try: proc.wait(timeout=3)
-        except subprocess.TimeoutExpired: proc.kill()
+        _mcp_mock.terminate(proc, sock_path)
 
 
 @_REQUIRES_AF_UNIX
@@ -241,12 +217,8 @@ def test_op_hover_word_boundary_skips_substring_match(tmp_path: Path) -> None:
     src_line = "// readd this comment | public function add(): void {}\n"
     php_file.write_text(src_line)
 
-    sock_path = f"/tmp/st-mock-{uuid.uuid4().hex[:8]}.sock"
     env = os.environ.copy(); env["MOCK_HOVER_FILE"] = str(php_file)
-    proc = subprocess.Popen([sys.executable, MOCK_SERVER, sock_path], env=env)
-    deadline = time.time() + 5
-    while time.time() < deadline and not os.path.exists(sock_path):
-        time.sleep(0.05)
+    proc, sock_path = _mcp_mock.spawn(env=env)
     try:
         _set_mcp_specs({
             "php-lsp": {"match": "*.php", "socket_path": sock_path,
@@ -260,9 +232,7 @@ def test_op_hover_word_boundary_skips_substring_match(tmp_path: Path) -> None:
             srv = _MCP_SERVERS.pop("php-lsp", None)
         if srv: srv.shutdown()
         supertool._mcp_specs.clear()
-        proc.terminate()
-        try: proc.wait(timeout=3)
-        except subprocess.TimeoutExpired: proc.kill()
+        _mcp_mock.terminate(proc, sock_path)
 
 
 def test_cli_resolve_forwards_from_file_to_mcp(

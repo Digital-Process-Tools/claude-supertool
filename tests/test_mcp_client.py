@@ -6,8 +6,6 @@ and speaks NDJSON JSON-RPC 2.0 — same wire format MCPClient uses against the d
 from __future__ import annotations
 
 import os
-import subprocess
-import sys
 import threading
 import time
 import uuid
@@ -16,6 +14,8 @@ from pathlib import Path
 import pytest
 
 import socket as _socket
+
+import _mcp_mock
 
 _REQUIRES_AF_UNIX = pytest.mark.skipif(
     not hasattr(_socket, "AF_UNIX"),
@@ -28,29 +28,16 @@ from supertool import (
     _mcp_call, _mcp_get_server, _mcp_register, _MCP_SERVERS, _MCP_LOCK,
 )
 
-MOCK_SERVER = str(Path(__file__).parent / "fixtures" / "mock_mcp_server.py")
-
 
 @pytest.fixture
 def mock_uds():
-    """Spawn the UDS mock MCP server (sockets in /tmp/ — AF_UNIX path limit on macOS)."""
-    if not hasattr(_socket, "AF_UNIX"):
-        import pytest as _pytest
-        _pytest.skip("MCP daemon uses AF_UNIX sockets — not available on this platform")
-    sock_path = f"/tmp/st-mock-{uuid.uuid4().hex[:8]}.sock"
-    proc = subprocess.Popen([sys.executable, MOCK_SERVER, sock_path])
-    deadline = time.time() + 5
-    while time.time() < deadline and not os.path.exists(sock_path):
-        time.sleep(0.05)
-    if not os.path.exists(sock_path):
-        proc.terminate()
-        raise RuntimeError(f"mock did not bind {sock_path}")
+    """Spawn the UDS mock MCP server, ready to accept (sockets in /tmp/, #491)."""
+    _mcp_mock.skip_without_af_unix()
+    proc, sock_path = _mcp_mock.spawn()
     try:
         yield sock_path
     finally:
-        proc.terminate()
-        try: proc.wait(timeout=3)
-        except subprocess.TimeoutExpired: proc.kill()
+        _mcp_mock.terminate(proc, sock_path)
 
 
 def _make_client(sock_path: str, timeout: int = 5) -> MCPClient:
@@ -67,6 +54,34 @@ def test_spawn_connects_to_daemon(mock_uds: str) -> None:
     c.spawn()
     assert c.is_alive()
     c.shutdown()
+
+
+def test_fixture_hands_over_a_socket_that_accepts_immediately() -> None:
+    """The fixture's readiness rule must outlast the bind→listen window (#491).
+
+    `MCPClient` with an explicit `socket_path` connects **once** and fails —
+    deliberately, since nobody else is going to bind a test path (#475/#488).
+    So the fixture owes it a socket that is already accepting, and "the file
+    exists" does not establish that: `bind()` publishes the path, `listen()` is
+    what makes a connect succeed, and in between every connect gets
+    ECONNREFUSED against a file that demonstrably exists.
+
+    `MOCK_MCP_LISTEN_DELAY` holds that window open for a second so the race is
+    a fact rather than a coin flip. A readiness probe that waits on the file
+    hands over at ~0ms and this test fails with the exact error seen on CI; a
+    probe that waits on a connect cannot.
+    """
+    _mcp_mock.skip_without_af_unix()
+    env = os.environ.copy()
+    env["MOCK_MCP_LISTEN_DELAY"] = "1.0"
+    proc, sock_path = _mcp_mock.spawn(env=env, timeout=10.0)
+    try:
+        c = _make_client(sock_path)
+        c.spawn()
+        assert c.is_alive()
+        c.shutdown()
+    finally:
+        _mcp_mock.terminate(proc, sock_path)
 
 
 def test_spawn_is_idempotent(mock_uds: str) -> None:
@@ -130,13 +145,11 @@ def test_call_tool_roundtrips_args(mock_uds: str) -> None:
 @_REQUIRES_AF_UNIX
 def test_call_tool_raises_mcp_server_error() -> None:
     """Mock with MOCK_MCP_TOOL_ERROR=1 returns JSON-RPC error → client raises."""
-    sock_path = f"/tmp/st-err-{uuid.uuid4().hex[:8]}.sock"
     env = os.environ.copy()
     env["MOCK_MCP_TOOL_ERROR"] = "1"
-    proc = subprocess.Popen([sys.executable, MOCK_SERVER, sock_path], env=env)
-    deadline = time.time() + 5
-    while time.time() < deadline and not os.path.exists(sock_path):
-        time.sleep(0.05)
+    # #491: readiness is a connect, and a miss raises here — where it names the
+    # fixture — rather than falling through to a bare ECONNREFUSED from spawn().
+    proc, sock_path = _mcp_mock.spawn(prefix="st-err", env=env)
     try:
         c = _make_client(sock_path)
         c.spawn()
@@ -147,9 +160,7 @@ def test_call_tool_raises_mcp_server_error() -> None:
         assert "tool execution failed" in str(exc_info.value)
         c.shutdown()
     finally:
-        proc.terminate()
-        try: proc.wait(timeout=3)
-        except subprocess.TimeoutExpired: proc.kill()
+        _mcp_mock.terminate(proc, sock_path)
 
 
 # ---------------------------------------------------------------------------

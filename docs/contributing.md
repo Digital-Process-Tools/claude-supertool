@@ -252,13 +252,46 @@ tests fail, you're on a stale checkout of this doc's advice, not a real
 regression — check out master and re-run before assuming your change broke it.
 
 Enable the pre-push hook (runs the full suite — slow tests included, coverage
-not gated — exactly as CI does, before every push):
+not gated — as CI does, before every push):
 
 ```bash
 git config core.hooksPath .githooks
 ```
 
 The hook is in `.githooks/pre-push`, committed to the repo. Bypass with `git push --no-verify` (discouraged).
+
+### `slow` vs `benchmark`
+
+Two markers, and the difference is not how long the test takes.
+
+| Marker | Default run | Pre-push hook | CI |
+| --- | --- | --- | --- |
+| *(none)* | yes | yes | yes |
+| `slow` | no | **yes** | yes |
+| `benchmark` | no | **no** | no |
+
+A `slow` test is heavy and still deterministic: it costs time and buys a real
+answer, so the hook runs it. A `benchmark` asserts on **elapsed wall-clock**,
+which on a parallel or loaded machine measures the box at least as much as the
+code — `assert 5.02 < 5.0` is a busy scheduler, not a regression ([#485]).
+Landing that as a push refusal costs ~110s and a diagnostic detour on a diff
+that could not have caused it, and it spends the credibility of every failure
+that *does* mean "this diff is wrong".
+
+So put a wall-clock assertion behind `@pytest.mark.benchmark` and run it when
+you want the number, on a machine whose load you control:
+
+```bash
+pytest -m benchmark -n0     # -n0: serially, so the timings mean something
+```
+
+If you want a performance property *gated* rather than reported, assert on
+work done instead of on time — peak allocation, node counts, or a ratio
+between two input sizes measured in the same process, where machine speed
+cancels out. `TestParseScaling` in `tests/test_xml.py` is the worked example,
+including what each metric does and does not catch.
+
+[#485]: https://github.com/Digital-Process-Tools/claude-supertool/issues/485
 
 ## Submitting upstream
 

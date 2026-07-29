@@ -1,17 +1,10 @@
 """Tests for MCP routing in op_workspace — References, Symbols, and Imports (sub-PR 3)."""
 from __future__ import annotations
 
-import os
-import subprocess
-import sys
-import time
-import uuid
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-
-import socket as _socket
 
 import supertool
 from supertool import (
@@ -21,29 +14,18 @@ from supertool import (
     op_workspace, op_resolve,
 )
 
-MOCK_SERVER = str(Path(__file__).parent / "fixtures" / "mock_mcp_server.py")
+import _mcp_mock
 
 
 @pytest.fixture
 def mock_uds():
     """Spawn the UDS mock MCP server (sockets in /tmp/ — AF_UNIX path limit on macOS)."""
-    if not hasattr(_socket, "AF_UNIX"):
-        import pytest as _pytest
-        _pytest.skip("MCP daemon uses AF_UNIX sockets — not available on this platform")
-    sock_path = f"/tmp/st-mock-{uuid.uuid4().hex[:8]}.sock"
-    proc = subprocess.Popen([sys.executable, MOCK_SERVER, sock_path])
-    deadline = time.time() + 5
-    while time.time() < deadline and not os.path.exists(sock_path):
-        time.sleep(0.05)
-    if not os.path.exists(sock_path):
-        proc.terminate()
-        raise RuntimeError(f"mock did not bind {sock_path}")
+    _mcp_mock.skip_without_af_unix()
+    proc, sock_path = _mcp_mock.spawn()
     try:
         yield sock_path
     finally:
-        proc.terminate()
-        try: proc.wait(timeout=3)
-        except subprocess.TimeoutExpired: proc.kill()
+        _mcp_mock.terminate(proc, sock_path)
 
 
 def _set_mcp_specs(specs: dict) -> None:
