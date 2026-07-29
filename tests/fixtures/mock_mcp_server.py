@@ -143,6 +143,15 @@ def main(argv: list) -> int:
     except FileNotFoundError: pass
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(sock_path)
+    # MOCK_MCP_LISTEN_DELAY widens the bind→listen window on demand (#491).
+    # bind() publishes the socket path; only listen() makes a connect succeed,
+    # so between the two the file exists and every connect gets ECONNREFUSED.
+    # That window is what a readiness probe based on os.path.exists misses —
+    # normally sub-millisecond, arbitrarily long on a loaded runner. Widening
+    # it deliberately turns an intermittent race into a deterministic test.
+    delay = float(os.environ.get("MOCK_MCP_LISTEN_DELAY", "0") or 0)
+    if delay > 0:
+        time.sleep(delay)
     server.listen(8)
     try:
         while True:

@@ -27,12 +27,21 @@ fi
 PYTHON="${PYTHON:-python3}"
 
 echo "── pre-push: running full test suite (mirrors CI) ──"
-# Mirror the CI gate exactly (.github/workflows/tests.yml): run ALL tests
-# including slow ones (-m '' overrides the addopts 'not slow' filter), and do
+# Mirror the CI gate (.github/workflows/tests.yml): run slow tests too, and do
 # NOT gate coverage (--no-cov). CI is the authority on what's mergeable; gating
 # coverage here — which CI doesn't — only produces local-only false aborts, and
 # the default 'not slow' filter would let a slow test that CI runs slip through.
-if ! "$PYTHON" -m pytest -m '' --no-cov --tb=short; then
+#
+# `benchmark` is the one marker excluded rather than included (#485). Those
+# tests assert on elapsed wall-clock, so they can fail because the laptop was
+# busy — which here means refusing a push, ~110s in, for a reason the author
+# cannot act on and on a diff that could not have caused it. Three aborts in
+# one night across two work streams, none of them touching the code timed.
+# Excluding them costs nothing against CI either: the only wall-clock
+# benchmarks in the suite read an absolute path in one maintainer's home
+# directory and skip everywhere else, so CI has never run them. Ask for them
+# deliberately, on a machine whose load you control: `pytest -m benchmark -n0`.
+if ! "$PYTHON" -m pytest -m 'not benchmark' --no-cov --tb=short; then
     echo ""
     echo "✗ Tests failed. Push aborted."
     echo "  Fix failures or run: git push --no-verify  (to bypass, discouraged)"

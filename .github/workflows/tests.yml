@@ -26,15 +26,18 @@ jobs:
       - name: Install supertool (pip entry point — cross-platform, no symlink)
         run: pip install -e .
       - name: Run tests (full suite — slow tests included)
-        # Override pyproject addopts default of `-m 'not slow'` so CI exercises
-        # the slow MCP-fallback and batch-stress paths the dev inner loop skips.
+        # Override pyproject addopts default so CI exercises the slow
+        # MCP-fallback and batch-stress paths the dev inner loop skips —
+        # everything except `benchmark`, whose wall-clock assertions on a
+        # shared runner report on the runner (#485). A red CI row has to mean
+        # "this diff is wrong" or it stops being read.
         # bash shell forced so `|| true` works on Windows (PowerShell default
         # exits on pytest's non-zero status, skipping the junit-xml parser).
         # The Python step parses junit-xml and re-emits `FAILED <id>` lines for
         # the test summary — survives the GH 64KB log truncation that would
         # otherwise eat the pytest summary block.
         shell: bash
-        run: pytest -m '' --tb=no --no-cov --junit-xml=junit.xml -q
+        run: pytest -m 'not benchmark' --tb=no --no-cov --junit-xml=junit.xml -q
       - name: Show FAILED test IDs (always runs)
         if: always()
         shell: bash

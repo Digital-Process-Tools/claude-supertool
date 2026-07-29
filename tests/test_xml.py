@@ -1,6 +1,7 @@
 """Tests for presets/xml/*.py — xml, xml_attr, xml_count ops."""
 from __future__ import annotations
 
+import gc
 import importlib.util
 import sys
 import time
@@ -444,6 +445,130 @@ class TestPerformance:
         assert elapsed < 2.0, f"Parsing took {elapsed:.2f}s — expected < 2s"
 
 
+class TestParseScaling:
+    """Did `xml_count` stay linear in the size of the document? (#485)
+
+    This is the guard the real-clover wall-clock benchmark was standing in for,
+    asked as a question about the code instead of about the machine. An
+    absolute budget over a 25 MB file answers "was this box, right now, fast
+    enough"; on a shared runner or a laptop running the suite under `-n auto`
+    that is mostly a question about the scheduler, which is how `5.02 < 5.0`
+    became a push refusal on a diff that touched none of this.
+
+    **Two metrics, because neither one covers the other.** Peak allocation
+    catches a parse that goes quadratic in *space*; it is exact, repeating to
+    within 0.1% across runs, but it is blind to a regression that re-walks a
+    tree it has already built, since that churns memory without ever holding
+    more of it. Elapsed time catches that one, and cannot be exact. Both are
+    here, and the timing one is built so that what it measures is the parser.
+
+    **Every number below was measured, not guessed.** Naively timing this at a
+    4x step produced ratios between 5x and 8.7x on an *idle* machine against a
+    quadratic expectation of 16x — no threshold fits in that gap. Three changes
+    open it up. Disabling the GC around each sample removes the generational
+    collector, whose cost tracks total heap rather than this document and which
+    was most of that spread. Stepping the input 8x instead of 4x doubles the
+    exponent's leverage. A warmup pass removes the cold-process penalty, which
+    is not noise but a one-time cost landing unevenly on the two sizes.
+
+    Measured in the suite, in-process, after all three: **8.4-8.5x across six
+    consecutive runs on an idle machine** (1% spread) and **7.7x, 10.8x, 13.7x
+    with twelve CPU hogs saturating it** — load inflates both measurements and
+    a ratio divides it back out. The same 8x step against a deliberately
+    quadratic `safe_xpath` lands near 55x. The gate at 24 therefore sits 1.75x
+    above the worst loaded observation and ~2.3x below the regression it is
+    looking for, where the threshold #485 reported on had 0.4% of margin.
+
+    Minimum-of-three, interleaved, after a warmup pass: a minimum is the sample
+    least contaminated by whatever else the box was doing, and interleaving
+    puts any slow patch of wall-clock across both sizes rather than on one.
+    """
+
+    SMALL = 2000
+    LARGE = 16000
+    REPEATS = 3
+    MAX_TIME_RATIO = 24.0
+    MAX_MEMORY_RATIO = 16.0
+
+    @staticmethod
+    def _write_n_files(tmp_path: Path, n: int, name: str) -> str:
+        body = "\n".join(
+            f'  <file name="/builds/test/File{i}.php">'
+            f'<line num="1" type="stmt" count="{i % 2}"/>'
+            f'</file>'
+            for i in range(n)
+        )
+        doc = f'<?xml version="1.0"?>\n<coverage>\n{body}\n</coverage>'
+        return _write_xml(tmp_path, doc, name)
+
+    @staticmethod
+    def _sample(path: str, n: int, capsys) -> float:
+        """One timed parse, with the GC held off so it measures this document."""
+        gc.disable()
+        try:
+            start = time.perf_counter()
+            count_mod.main(f"{path}:.//file")
+            elapsed = time.perf_counter() - start
+        finally:
+            gc.enable()
+        assert capsys.readouterr().out.strip() == str(n)
+        return elapsed
+
+    def test_xml_count_time_scales_linearly_with_input(self, tmp_path: Path, capsys) -> None:
+        small = self._write_n_files(tmp_path, self.SMALL, "scale-small.xml")
+        large = self._write_n_files(tmp_path, self.LARGE, "scale-large.xml")
+
+        # One untimed pass over each file first. The very first parse in a
+        # fresh process pays for the ElementTree accelerator import, the
+        # `_common` regex compiles and a cold page cache, and it pays most of
+        # it on whichever file it touches first — measured once at 24.6x
+        # against 8.4x for every subsequent process. On CI *every* run is that
+        # first run, so the warmup is not an optimisation, it is what makes the
+        # first run and the tenth measure the same thing.
+        self._sample(small, self.SMALL, capsys)
+        self._sample(large, self.LARGE, capsys)
+
+        small_times = []
+        large_times = []
+        for _ in range(self.REPEATS):
+            small_times.append(self._sample(small, self.SMALL, capsys))
+            large_times.append(self._sample(large, self.LARGE, capsys))
+
+        t_small = min(small_times)
+        t_large = min(large_times)
+        assert t_small > 0, "timer resolution too coarse to measure the small parse"
+
+        size_ratio = self.LARGE / self.SMALL
+        time_ratio = t_large / t_small
+        assert time_ratio < self.MAX_TIME_RATIO, (
+            f"xml_count scaled {time_ratio:.1f}x for a {size_ratio:.0f}x larger input "
+            f"({t_small * 1000:.1f}ms -> {t_large * 1000:.1f}ms). Linear is ~{size_ratio:.0f}x, "
+            f"quadratic ~{size_ratio ** 2:.0f}x — this is a shape change, not a slow machine"
+        )
+
+    def test_xml_count_allocation_scales_linearly_with_input(self, tmp_path: Path, capsys) -> None:
+        import tracemalloc
+
+        peaks = []
+        for n, name in ((self.SMALL, "mem-small.xml"), (self.LARGE, "mem-large.xml")):
+            path = self._write_n_files(tmp_path, n, name)
+            tracemalloc.start()
+            try:
+                count_mod.main(f"{path}:.//file")
+                _, peak = tracemalloc.get_traced_memory()
+            finally:
+                tracemalloc.stop()
+            assert capsys.readouterr().out.strip() == str(n)
+            peaks.append(peak)
+
+        size_ratio = self.LARGE / self.SMALL
+        mem_ratio = peaks[1] / peaks[0]
+        assert mem_ratio < self.MAX_MEMORY_RATIO, (
+            f"peak memory scaled {mem_ratio:.1f}x for a {size_ratio:.0f}x larger input "
+            f"({peaks[0] / 1024:.0f} KB -> {peaks[1] / 1024:.0f} KB)"
+        )
+
+
 # ===========================================================================
 # 6. Real-world benchmarks against the 25 MB DVSI clover.xml
 # ===========================================================================
@@ -455,14 +580,28 @@ class TestRealCloverBenchmarks:
     """Benchmarks against the real 25 MB / 353K-line DVSI clover.xml.
 
     Skipped automatically if the file isn't present locally (CI / other devs).
+
+    `REAL_CLOVER` is an absolute path in one maintainer's home directory, so
+    these never ran on CI at all — the two wall-clock members ran on exactly
+    one machine, the same machine whose pre-push hook they were aborting
+    (#485). The `benchmark` marker takes them out of the default run and out
+    of the hook; `pytest -m benchmark -n0` runs them deliberately, serially,
+    when the number is the thing you actually want to know.
     """
 
     def _skip_if_missing(self) -> None:
         if not Path(REAL_CLOVER).is_file():
             pytest.skip("real clover not available")
 
+    @pytest.mark.benchmark
     def test_xml_count_real_clover_fast(self, capsys) -> None:
-        """xml_count over //file on the real 25 MB clover finishes < 5s wall-clock."""
+        """xml_count over //file on the real 25 MB clover finishes < 5s wall-clock.
+
+        A loaded-runner ceiling, not an expected time: observed misses were
+        5.02s and 5.72s against a ~3s idle cost. Kept as a benchmark you opt
+        into rather than a gate, because the failures it produced were reports
+        about the scheduler (#485).
+        """
         self._skip_if_missing()
         start = time.perf_counter()
         count_mod.main(f"{REAL_CLOVER}:.//file")
@@ -471,6 +610,7 @@ class TestRealCloverBenchmarks:
         assert out.isdigit() and int(out) > 1000, f"unexpected count: {out!r}"
         assert elapsed < 5.0, f"xml_count took {elapsed:.2f}s — expected < 5s"
 
+    @pytest.mark.benchmark
     def test_xml_attr_real_clover_uncovered_lines(self, capsys) -> None:
         """xml_attr extracts uncovered line numbers from UserBusinessIncomeRenderer in < 8s."""
         self._skip_if_missing()
@@ -490,7 +630,12 @@ class TestRealCloverBenchmarks:
         assert elapsed < 8.0, f"xml_attr took {elapsed:.2f}s — expected < 8s"
 
     def test_xml_real_clover_memory_bounded(self, capsys) -> None:
-        """Peak memory for xml_count over the real clover stays under 400 MB."""
+        """Peak memory for xml_count over the real clover stays under 400 MB.
+
+        Deliberately *not* marked `benchmark`: `tracemalloc` measures the
+        process, not the machine, so this one is as deterministic on a loaded
+        runner as on an idle one and has no business being opt-in.
+        """
         self._skip_if_missing()
         import tracemalloc
         tracemalloc.start()
