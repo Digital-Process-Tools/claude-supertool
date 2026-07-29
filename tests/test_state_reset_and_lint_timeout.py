@@ -4,7 +4,9 @@
 Both are the same bug in two places: an absence of output standing in for a
 result that was never produced.
 """
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import supertool
@@ -82,12 +84,54 @@ def test_the_suite_budget_does_not_move_the_product_default(monkeypatch) -> None
 
 
 def test_a_missing_binary_still_lints_silently(tmp_path: Path, monkeypatch) -> None:
-    """No lint ran because none applies — that is the one silence we keep."""
+    """No lint ran because none applies — that is the one silence we keep.
+
+    Rewritten for #559. It used to reach this state by making the *spawn*
+    fail, which is a different fact: there the binary was found and the file
+    still went unchecked, and that now declines rather than falling silent
+    (pinned below). The silence being defended here is the real one — nothing
+    on this machine was ever going to check this file.
+    """
+    real_which = shutil.which
+    monkeypatch.setattr(
+        supertool.shutil, "which",
+        lambda name, *a, **k: None if name == "php" else real_which(name, *a, **k),
+    )
+    f = tmp_path / "x.php"
+    f.write_text("<?php\necho 'hi';\n")
+    assert supertool._vim_render_lint(str(f)) == ""
+
+
+def test_a_checker_that_cannot_be_started_declines(tmp_path: Path, monkeypatch) -> None:
+    """#559 — the binary resolved, the file was not checked, and silence there
+    would say "clean". Names the tool so the reader knows what did not run.
+    """
     f = tmp_path / "x.py"
     f.write_text("a = 1\n")
     monkeypatch.setattr(subprocess, "run",
                         lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError()))
-    assert supertool._vim_render_lint(str(f)) == ""
+    out = supertool._vim_render_lint(str(f))
+    assert "POST-EDIT LINT DECLINED" in out
+    assert "py_compile" in out
+    assert "NOT checked" in out
+    assert "POST-EDIT LINT FAILED" not in out
+
+
+def test_the_python_lint_never_bets_on_a_path_lookup(tmp_path: Path, monkeypatch) -> None:
+    """#559/#529 — the literal "python3" is the name Windows resolves to the
+    App Execution Alias stub (blocks instead of erroring) or to nothing.
+    """
+    seen: dict = {}
+
+    def capture(*a, **k):
+        seen["cmd"] = list(a[0] if a else k.get("args"))
+        raise subprocess.TimeoutExpired(cmd="x", timeout=1)
+
+    monkeypatch.setattr(subprocess, "run", capture)
+    f = tmp_path / "x.py"
+    f.write_text("a = 1\n")
+    supertool._vim_render_lint(str(f))
+    assert seen["cmd"][0] == sys.executable
 
 
 def test_a_clean_lint_still_says_so(tmp_path: Path) -> None:

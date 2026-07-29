@@ -4722,6 +4722,11 @@ def _vim_render_diff(before: str, after: str) -> str:
 
 _LINT_TIMEOUT_DEFAULT = 5
 
+_LINT_DECLINE_PREFIXES = (
+    "--- POST-EDIT LINT TIMED OUT",
+    "--- POST-EDIT LINT DECLINED",
+)
+
 
 def _lint_timeout() -> int:
     """Post-edit lint subprocess timeout, overridable per environment (#396).
@@ -4736,15 +4741,42 @@ def _lint_timeout() -> int:
     return val if val > 0 else _LINT_TIMEOUT_DEFAULT
 
 
+def _lint_declined(tool: str, reason: str) -> str:
+    """The checker applies to this file and could not be run (#559).
+
+    Distinct from silence, which says no checker applies, and from FAILED,
+    which says one ran and found something. Naming the tool and the reason is
+    what makes it actionable; saying the file was NOT checked is what stops it
+    being read as a pass.
+    """
+    return (
+        f"--- POST-EDIT LINT DECLINED — {tool} ---\n"
+        f"{reason}; the file was NOT checked.\n"
+    )
+
+
 def _vim_render_lint(path: str) -> str:
     """Post-edit syntax lint based on file extension.
 
-    Returns "" when no lint applies (unknown ext or missing binary) — silence
-    means clean, and only that.
+    Returns "" when no lint applies — an unknown extension, or a binary absent
+    from PATH so nothing was ever going to check this file. That is the one
+    silence: it means clean, and only that.
+
     On success: '--- lint: <tool> ---\\n<output>\\n'.
     On timeout: '--- POST-EDIT LINT TIMED OUT — <tool> (<N>s) ---' (#396) —
     never "", which would read as a file that linted clean.
     On failure: '--- POST-EDIT LINT FAILED — <tool> ---\\n<output>\\n'.
+    On a checker that applies but could not be run: '--- POST-EDIT LINT
+    DECLINED — <tool> ---' (#559). A file whose linter exists and did not run
+    is not the same as a file with no linter, and must not render the same.
+
+    The Python interpreter is `sys.executable`, never a PATH lookup of
+    "python3" (#529/#559): on Windows that name resolves to the App Execution
+    Alias stub — which blocks rather than errors — or to nothing at all, and
+    either way a valid file gets a verdict nobody computed. The running
+    interpreter is present by construction, is Python 3 by construction, and
+    is never a stray Python 2 or the wrong venv.
+
     Never raises; never rolls back the edit.
     """
     ext = os.path.splitext(path)[1].lower()
@@ -4766,10 +4798,13 @@ def _vim_render_lint(path: str) -> str:
         tool = "xmllint"
         cmd = ["xmllint", "--noout", path]
     elif ext == ".py":
-        if not shutil.which("python3"):
-            return ""
         tool = "py_compile"
-        cmd = ["python3", "-m", "py_compile", path]
+        if not sys.executable:
+            return _lint_declined(
+                tool,
+                "no Python interpreter to run it with (sys.executable is empty)",
+            )
+        cmd = [sys.executable, "-m", "py_compile", path]
     else:
         return ""
 
@@ -4796,8 +4831,9 @@ def _vim_render_lint(path: str) -> str:
             "lint did not run to completion; the file was NOT checked. "
             "Raise SUPERTOOL_LINT_TIMEOUT if this recurs.\n"
         )
-    except (FileNotFoundError, OSError):
-        return ""
+    except OSError as e:
+        detail = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+        return _lint_declined(tool, f"could not start the checker ({detail})")
 
     output = (proc.stdout + proc.stderr).strip()
     if proc.returncode == 0:
@@ -9317,6 +9353,13 @@ def _op_vim_impl(path: str, script: str) -> str:
         # for true atomicity. Make this explicit in the receipt so the caller
         # doesn't assume the broken edit was reverted.
         lint_out += "[note] file modified despite syntax fail — review or restore manually. Configure a validator with rollback_on_fail for auto-rollback.\n"
+    elif lint_out.startswith(_LINT_DECLINE_PREFIXES):
+        # #560: a decline means the file was written and nothing checked it.
+        # Everywhere else the absence of this note means the edit came out
+        # clean, so the least-verified state must not be the quietest one.
+        # Worded for that state — modified and NOT checked, not modified
+        # despite a failure; nothing failed here, nothing ran.
+        lint_out += "[note] file modified and NOT checked — the syntax check never returned a verdict; review or restore manually. Configure a validator with rollback_on_fail for auto-rollback.\n"
     out.append(lint_out)
     return "".join(out)
 
