@@ -8,6 +8,7 @@ believing `last_event` is the bug the op exists to prevent.
 """
 from __future__ import annotations
 
+import datetime
 import importlib.util
 import json
 import os
@@ -99,6 +100,10 @@ def env(tmp_path, monkeypatch):
         return os.getpid()
 
     monkeypatch.setattr(radar.dispatcher, "_spawn_poller", _fake_spawn)
+    # No tiers unless a test registers them. Left to the ambient environment,
+    # a shell that exported SUPERTOOL_RADAR_TIERS would make every test in this
+    # file reach live GitLab.
+    monkeypatch.delenv(radar.TIERS_ENV, raising=False)
     return {"dir": tmp_path, "spawned": spawned, "monkeypatch": monkeypatch}
 
 
@@ -109,6 +114,10 @@ def _mr_spawns(env) -> list[str]:
 
 def _feed_spawns(env) -> list[tuple[str, str, list[str]]]:
     return [row for row in env["spawned"] if row[0] == radar.FEED_SOURCE]
+
+
+def _fleet_spawns(env) -> list[tuple[str, str, list[str]]]:
+    return [row for row in env["spawned"] if row[0] == radar.FLEET_SOURCE]
 
 
 def _live_feed(tmp_path: Path, scope: str = "") -> Path:
@@ -182,7 +191,11 @@ def test_open_mr_with_live_poller_is_not_respawned(env, capsys) -> None:
     _live_feed(env["dir"])
     _set_live(env, [_mr(33161, "running")])
     out = _run(env, capsys)
-    assert env["spawned"] == []
+    # Named per source rather than "nothing at all": radar legitimately spawns
+    # a fleet poller on every run, and an assertion that cannot tell the two
+    # apart would fail for the wrong reason the next time a tier is added.
+    assert _mr_spawns(env) == []
+    assert _feed_spawns(env) == []
     assert "[healed]" not in out
     assert "👁" in out
 
@@ -1194,3 +1207,134 @@ def test_an_empty_mr_is_still_a_standing_problem_under_its_own_name() -> None:
 
 def test_a_genuine_conflict_keeps_its_problem_label() -> None:
     assert radar._problem_label(_mr(6, has_conflicts=True, sha="a" * 40)) == "conflict"
+
+
+
+
+# ---------------------------------------------------------------------------
+# tier registry
+# ---------------------------------------------------------------------------
+
+class _FakeTier:
+    RADAR_OPTIONS = {"window", "quiet_when_healthy"}
+
+    def __init__(self, lines, ok, boom=False):
+        self._lines, self._ok, self._boom = lines, ok, boom
+        self.seen_options = None
+
+    def radar_report(self, options=None):
+        self.seen_options = options
+        if self._boom:
+            raise RuntimeError("tier exploded")
+        return list(self._lines), self._ok
+
+
+def _register(env, name, tier):
+    env["monkeypatch"].setenv(radar.TIERS_ENV, json.dumps({name: {}}))
+    env["monkeypatch"].setattr(radar, "_tier_module", lambda n: tier if n == name else None)
+
+
+def test_no_registered_tiers_means_no_tier_output_at_all(env) -> None:
+    """The default every stranger who installs this gets. Radar stays an MR
+    reconcile tool until someone asks for more."""
+    assert radar.read_tiers("") == ({}, [])
+    assert radar.tier_reports() == ([], True)
+
+
+def test_a_healthy_tier_is_silent_by_default(env) -> None:
+    tier = _FakeTier(["all good"], True)
+    _register(env, "gl-runners", tier)
+    assert radar.tier_reports() == ([], True)
+
+
+def test_a_healthy_tier_speaks_when_asked_to(env) -> None:
+    tier = _FakeTier(["all good"], True)
+    env["monkeypatch"].setenv(radar.TIERS_ENV,
+                              json.dumps({"gl-runners": {"quiet_when_healthy": False}}))
+    env["monkeypatch"].setattr(radar, "_tier_module", lambda n: tier)
+    assert radar.tier_reports() == (["all good"], True)
+
+
+def test_an_unhealthy_tier_always_speaks(env) -> None:
+    tier = _FakeTier(["FLEET — 14 stuck"], False)
+    _register(env, "gl-runners", tier)
+    lines, ok = radar.tier_reports()
+    assert lines == ["FLEET — 14 stuck"]
+    assert ok is False
+
+
+def test_tier_options_reach_the_tier(env) -> None:
+    tier = _FakeTier([], True)
+    env["monkeypatch"].setenv(radar.TIERS_ENV, json.dumps({"gl-runners": {"window": 60}}))
+    env["monkeypatch"].setattr(radar, "_tier_module", lambda n: tier)
+    radar.tier_reports()
+    assert tier.seen_options == {"window": 60}
+
+
+def test_an_unknown_option_is_named_not_silently_ignored(env) -> None:
+    """A silently-dropped option is how someone believes they configured a
+    threshold they did not."""
+    tier = _FakeTier([], True)
+    env["monkeypatch"].setenv(radar.TIERS_ENV, json.dumps({"gl-runners": {"windoww": 60}}))
+    env["monkeypatch"].setattr(radar, "_tier_module", lambda n: tier)
+    lines, _ok = radar.tier_reports()
+    assert any("unknown option" in line and "windoww" in line for line in lines)
+
+
+def test_an_unresolvable_tier_name_is_reported(env) -> None:
+    env["monkeypatch"].setenv(radar.TIERS_ENV, json.dumps({"gl-runnerz": {}}))
+    env["monkeypatch"].setattr(radar, "_tier_module", lambda n: None)
+    lines, ok = radar.tier_reports()
+    assert any("gl-runnerz" in line and "radar_report" in line for line in lines)
+    assert ok is False
+
+
+def test_a_tier_that_raises_cannot_take_the_board_down(env) -> None:
+    """The MR board is the thing radar exists for; an optional tier must never
+    be able to cost the reader their board."""
+    _register(env, "gl-runners", _FakeTier([], True, boom=True))
+    lines, ok = radar.tier_reports()
+    assert any("tier exploded" in line for line in lines)
+    assert ok is False
+
+
+def test_unparseable_tier_config_yields_the_ordinary_board_plus_a_complaint() -> None:
+    tiers, complaints = radar.read_tiers("{not json")
+    assert tiers == {}
+    assert complaints and "not valid JSON" in complaints[0]
+
+
+def test_tier_options_that_are_not_an_object_are_skipped_loudly() -> None:
+    tiers, complaints = radar.read_tiers(json.dumps({"gl-runners": "yes"}))
+    assert tiers == {}
+    assert complaints and "must be an object" in complaints[0]
+
+
+def test_a_tier_with_null_options_is_accepted_as_defaults() -> None:
+    tiers, complaints = radar.read_tiers(json.dumps({"gl-runners": None}))
+    assert tiers == {"gl-runners": {}}
+    assert complaints == []
+
+
+# ---------------------------------------------------------------------------
+# respawn cap (#513) applies to every spawner, not only the per-MR heal
+# ---------------------------------------------------------------------------
+
+def test_a_slot_past_the_death_cap_is_not_respawned(env) -> None:
+    env["monkeypatch"].setattr(
+        radar.transport, "deaths",
+        lambda source, scope: [{}] * radar.transport.DEATH_RESPAWN_LIMIT)
+    assert radar.ensure_watcher("gitlab-mr-feed", "@me") == "capped"
+    assert env["spawned"] == []
+
+
+def test_a_capped_slot_is_named_loudly_rather_than_going_quiet(env) -> None:
+    """A capped slot is unwatched, and an unwatched slot that says nothing is
+    the exact failure #513 was about."""
+    warnings = radar.watcher_cap_warnings({"gl-runners:fleet": "capped"})
+    assert warnings and "stopped respawning gl-runners:fleet" in warnings[0]
+    assert "re-arm" in warnings[0]
+
+
+def test_a_healthy_slot_produces_no_cap_warning() -> None:
+    assert radar.watcher_cap_warnings({"gl-runners:fleet": "spawned"}) == []

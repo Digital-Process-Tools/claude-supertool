@@ -141,6 +141,7 @@ def _load(name: str, path: Path):
 
 
 mrs = _load("radar_gitlab_mrs", _HERE.parents[1] / "presets" / "gitlab" / "mrs.py")
+runners_op = _load("radar_gitlab_runners", _HERE.parents[1] / "presets" / "gitlab" / "runners.py")
 dispatcher = _load("radar_watch_dispatcher", _HERE / "dispatcher.py")
 
 SOURCE = defaults.DEFAULT_SOURCE
@@ -148,13 +149,28 @@ FEED_SOURCE = defaults.DEFAULT_FEED_SOURCE
 FEED_SCOPE = defaults.DEFAULT_FEED_SCOPE
 SNAPSHOT_PREFIX = "supertool-radar"
 
+# The fleet tier. Scope-free, unlike the feed: there is one runner fleet behind
+# every filter, so this is not keyed by the board's population.
+FLEET_SOURCE = "gl-runners"
+FLEET_SCOPE = "fleet"
+
+# ops.radar.radar_tiers, JSON-encoded into the env by the op runner — the same
+# route ops.radar.radar_exclusions takes.
+TIERS_ENV = "SUPERTOOL_RADAR_TIERS"
+
+# A registered tier that also wants a background watcher names it here. Only
+# consulted for tiers actually registered, so an unregistered tier costs no
+# poller and no API call.
+_TIER_WATCH_SOURCES = {"gl-runners": (FLEET_SOURCE, FLEET_SCOPE)}
+
 # ops.radar.radar_exclusions in .supertool.json, JSON-encoded into the env by
 # the op runner — the same route ops.gl-job.job_patterns takes.
 EXCLUSIONS_ENV = "SUPERTOOL_RADAR_EXCLUSIONS"
 
 _FIX_HINT = "remove it from ops.radar.radar_exclusions in .supertool.json"
 
-FEED_LABEL = {"alive": "feed ok", "spawned": "feed respawned", "failed": "feed DOWN"}
+FEED_LABEL = {"alive": "feed ok", "spawned": "feed respawned", "failed": "feed DOWN",
+              "capped": "feed DOWN (respawn capped)"}
 
 
 class RadarError(RuntimeError):
@@ -461,8 +477,7 @@ def ensure_feed(scope: str = FEED_SCOPE) -> str:
     if dispatcher._load_source(FEED_SOURCE) is None:
         return "failed"
     only = [e for e in defaults.DEFAULT_FEED_ONLY.split(",") if e]
-    status, _pid = dispatcher.start_poller(FEED_SOURCE, scope, only)
-    return status
+    return ensure_watcher(FEED_SOURCE, scope, only)
 
 
 def other_feed_scopes(scope: str = FEED_SCOPE) -> list[str]:
@@ -496,6 +511,153 @@ def feed_error(scope: str = FEED_SCOPE) -> str:
     """
     state = transport.read_state(FEED_SOURCE, scope)
     return str((state.get("last_error") or {}).get("message") or "")
+
+
+# ---------------------------------------------------------------------------
+# 3c. fleet — the tier that says whether the board is even the right question
+# ---------------------------------------------------------------------------
+
+def ensure_watcher(source: str, scope: str, only: list[str] | None = None) -> str:
+    """One live poller for a slot. "alive"|"spawned"|"failed"|"capped".
+
+    Same idempotence contract as the per-MR heal, for the same reason: radar
+    runs on a loop, and n pollers over one slot means n copies of every event.
+    `start_poller` claims the slot before the fork.
+
+    The death cap from #513 is applied here rather than only in `heal`. That
+    bound lived on the per-MR path alone, so every other spawner — the feed,
+    and any tier watcher — would respawn a poller that dies on every tick,
+    forever, silently. Reproducing a fixed defect in a new tier is how it comes
+    back, so the cap belongs at the one place that spawns.
+    """
+    if dispatcher._load_source(source) is None:
+        return "failed"
+    if len(transport.deaths(source, scope)) >= transport.DEATH_RESPAWN_LIMIT:
+        return "capped"
+    return dispatcher.start_poller(source, scope, only or [])[0]
+
+
+def ensure_fleet() -> str:
+    """Back-compat alias for the fleet tier's watcher."""
+    return ensure_watcher(FLEET_SOURCE, FLEET_SCOPE)
+
+
+def watcher_cap_warnings(statuses: dict[str, str]) -> list[str]:
+    """Name every slot radar has stopped respawning. Never silent about it.
+
+    A capped slot is not being watched, and the whole lesson of #513 is that a
+    monitoring surface going quiet reads exactly like nothing being wrong.
+    """
+    return [
+        f"radar: WARNING — stopped respawning {name}: it has died "
+        f"{transport.DEATH_RESPAWN_LIMIT}+ times and nothing is polling it. "
+        f"Fix it, then re-arm with `watch:{name}`."
+        for name, status in sorted(statuses.items()) if status == "capped"
+    ]
+
+
+def read_tiers(raw: str | None = None) -> tuple[dict[str, dict], list[str]]:
+    """({op_name: options}, complaints) from ops.radar.radar_tiers.
+
+    Empty by default, and that default is the point. Radar is an MR reconcile
+    tool for most of the people who install it; a tier that reaches for runners,
+    or any other privileged resource, must be asked for. Shipping one on by
+    default would hand every stranger a standing WARNING about infrastructure
+    they do not own and cannot read.
+
+    Nothing here raises. A config this cannot parse yields no tiers plus a
+    complaint, which renders as the ordinary board it was trying to extend.
+    """
+    raw = os.environ.get(TIERS_ENV, "") if raw is None else raw
+    raw = raw.strip()
+    if not raw:
+        return {}, []
+    try:
+        loaded = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        return {}, [f"radar: WARNING — radar_tiers is not valid JSON ({exc.msg}). "
+                    f"No tiers loaded."]
+    if not isinstance(loaded, dict):
+        return {}, ["radar: WARNING — radar_tiers must be an object keyed by op name, "
+                    "e.g. {'gl-runners': {}}. No tiers loaded."]
+
+    out: dict[str, dict] = {}
+    problems: list[str] = []
+    for name, opts in loaded.items():
+        if opts is None:
+            opts = {}
+        if not isinstance(opts, dict):
+            problems.append(f"radar: WARNING — tier '{name}' options must be an object; "
+                            f"got {type(opts).__name__}. Tier skipped.")
+            continue
+        out[str(name)] = opts
+    return out, problems
+
+
+def _tier_module(name: str):
+    """Resolve a registered op name to the module implementing it, or None.
+
+    Read out of the preset that declares the op rather than from a second
+    hardcoded table: the op's `cmd` already names its script, and a mapping
+    kept alongside it is one that drifts the first time a file moves.
+    """
+    presets_dir = _HERE.parent
+    for preset in sorted(presets_dir.glob("*.json")):
+        try:
+            with open(preset, encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            continue
+        entry = (data.get("ops") or {}).get(name)
+        if not isinstance(entry, dict):
+            continue
+        for token in str(entry.get("cmd") or "").split():
+            if token.endswith(".py"):
+                script = presets_dir / token.replace("{path}", "")
+                if script.is_file():
+                    return _load(f"radar_tier_{name.replace('-', '_')}", script)
+    return None
+
+
+def tier_reports() -> tuple[list[str], bool]:
+    """(lines, all_healthy) from every registered tier, in registration order.
+
+    A healthy tier is silent by default (`quiet_when_healthy`): the reader of a
+    board wants to know what is wrong, and a green line per tier per run is the
+    noise that trains people to skim past the red one. An unhealthy tier always
+    speaks, on every run, because it is a current fact rather than a transition.
+    """
+    tiers, lines = read_tiers()
+    all_ok = True
+
+    for name, opts in tiers.items():
+        module = _tier_module(name)
+        report = getattr(module, "radar_report", None) if module else None
+        if report is None:
+            lines.append(f"radar: WARNING — tier '{name}' is registered but exposes no "
+                         f"radar_report(); it contributes nothing. Check the name.")
+            all_ok = False
+            continue
+
+        unknown = set(opts) - set(getattr(module, "RADAR_OPTIONS", set()))
+        if unknown:
+            lines.append(f"radar: WARNING — tier '{name}' has unknown option(s) "
+                         f"{sorted(unknown)}; ignored. Check for a typo.")
+
+        try:
+            tier_lines, ok = report(opts)
+        except Exception as exc:  # noqa: BLE001 — a broken tier must not take radar down
+            lines.append(f"radar: WARNING — tier '{name}' failed: "
+                         f"{exc.__class__.__name__}: {exc}")
+            all_ok = False
+            continue
+
+        all_ok = all_ok and ok
+        if ok and opts.get("quiet_when_healthy", True):
+            continue
+        lines.extend(tier_lines)
+
+    return lines, all_ok
 
 
 # ---------------------------------------------------------------------------
@@ -760,7 +922,9 @@ def render(open_mrs: list[dict], covered: set[str], healed: list[str],
            feed: str = "alive", feed_err: str = "", label: str = "",
            excluded: set[str] | None = None, notes: list[str] | None = None,
            other_scopes: list[str] | None = None,
-           losses: list[str] | None = None) -> str:
+           losses: list[str] | None = None,
+           fleet_lines: list[str] | None = None,
+           fleet_ok: bool = True) -> str:
     """Full board on cold start; changed + standing-problem rows afterwards.
 
     `label` names the population on every board, the default one included
@@ -799,6 +963,14 @@ def render(open_mrs: list[dict], covered: set[str], healed: list[str],
                      feed, label, len(excluded))
 
     lines = _feed_warnings(feed, feed_err, other_scopes) + list(losses or [])
+    # Printed as given. Tiers decide their own silence in `tier_reports` — a
+    # healthy tier already returned nothing unless it was asked to speak — so
+    # re-gating here swallowed two things that must never be swallowed: a tier
+    # explicitly configured to report when healthy, and the WARNING lines about
+    # a misconfigured tier, which are exactly the output a misconfiguration
+    # needs in order to get fixed.
+    if fleet_lines:
+        lines.extend(fleet_lines)
     if cold:
         lines.append("radar: cold start — no prior snapshot, full board")
     if shown:
@@ -841,6 +1013,15 @@ def main(argv: list[str] | None = None) -> int:
     feed = ensure_feed(scope)
     feed_err = feed_error(scope) if feed == "alive" else ""
 
+    registered, _tier_problems = read_tiers()
+    watcher_statuses: dict[str, str] = {}
+    for tier_name, (watch_source, watch_scope) in _TIER_WATCH_SOURCES.items():
+        if tier_name in registered:
+            watcher_statuses[f"{watch_source}:{watch_scope}"] = ensure_watcher(
+                watch_source, watch_scope)
+    fleet_lines, fleet_ok = tier_reports()
+    fleet_lines = watcher_cap_warnings(watcher_statuses) + fleet_lines
+
     exclusions, excl_problems = read_exclusions()
     excluded, excl_lines = resolve_exclusions(open_mrs, exclusions, covered)
 
@@ -853,7 +1034,8 @@ def main(argv: list[str] | None = None) -> int:
     previous = read_snapshot(multi)
     print(render(open_mrs, covered, healed, drifted, pruned, uncovered, previous,
                  feed, feed_err, label, excluded, excl_problems + excl_lines,
-                 other_feed_scopes(scope), loss_warnings(healed, refused)))
+                 other_feed_scopes(scope), loss_warnings(healed, refused),
+                 fleet_lines, fleet_ok))
     # The snapshot records the whole population, excluded rows included:
     # keyed on what is true, not on what was printed. Otherwise the run after
     # an exclusion is lifted reports a months-old MR as new.

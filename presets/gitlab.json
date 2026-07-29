@@ -36,6 +36,15 @@
       "description": "Pipeline jobs by stage with statuses + failed job IDs. Default collapses manual/created/skipped bulk to a count. :active = running/pending only; :failed = failed jobs + IDs/URLs",
       "syntax": "gl-pipeline:NUMBER[:active|:failed]"
     },
+    "gl-runners": {
+      "cmd": "{python} {path}gitlab/runners.py {args}",
+      "timeout": 45,
+      "description": "Runner fleet health: one row per runner with type, status, heartbeat age, live job count and queue depth, sorted worst-health first. Joins the runner list with per-runner detail (tags, run_untagged, contacted_at) and the pending/running job queue to derive STARVED — pending jobs whose tags match only runners that stopped heartbeating, which GitLab still reports as online+idle. :full adds project scope, timeouts, versions; :queue groups pending/running jobs by the runners allowed to take them. Per-runner detail calls run in parallel.",
+      "syntax": "gl-runners[:full|:queue]",
+      "example": "gl-runners",
+      "heartbeat_warn_seconds": 300,
+      "detail_workers": 8
+    },
     "gl-job": {
       "cmd": "{python} {path}gitlab/job.py {args}",
       "timeout": 30,
