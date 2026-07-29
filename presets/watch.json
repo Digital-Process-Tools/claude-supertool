@@ -9,14 +9,14 @@
     },
     "unwatch": {
       "cmd": "{python} {path}watch/dispatcher.py unwatch {args}",
-      "timeout": 10,
-      "description": "Kill the poller for SOURCE:ID and remove its PID file.",
+      "timeout": 20,
+      "description": "Stop every live poller for SOURCE:ID and remove its PID file. A slot can hold more than one poller, so this is a multi-kill: the tracked PID plus any poller whose own argv names this exact source and id. Every PID is printed with its provenance (tracked/untracked) before anything is signalled, one that cannot be stopped is named rather than swallowed (exit 1), and an absence is only reported as an absence when the process scan actually ran — 'no PID file', 'tracked PID is dead', and 'could not check' are three different answers. A poller spawned before the argv labelling landed wears its parent's command line and cannot be reached; those need `pkill -f presets/watch/` once.",
       "syntax": "unwatch:SOURCE:ID"
     },
     "watches": {
       "cmd": "{python} {path}watch/dispatcher.py list",
-      "timeout": 5,
-      "description": "List active watch pollers as a table: source, id, started, last_event, pid.",
+      "timeout": 15,
+      "description": "List active watch pollers as a table: source, id, pid, started, last_event. Built from PID files AND a scan for labelled poller processes, so it also shows what the PID files alone cannot: an id running more than one poller (count plus every PID), and a poller whose PID file was deleted ('no pidfile'). This is the authoritative view of the fleet — `ps` output cannot identify a watcher, because a poller spawned before the argv labelling wears the argv of whatever forked it.",
       "syntax": "watches"
     },
     "radar": {

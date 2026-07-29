@@ -407,7 +407,7 @@ The status file gained one field, `only`: the event filter its poller was spawne
 Each `watch` invocation forks a detached poller process. The process IS the subscription — no central config:
 
 - PID file per active watcher: `/tmp/supertool-watch-{source}__{id}.pid`
-- `unwatch` reads the PID file, SIGTERM (then SIGKILL after 200ms), removes the file
+- `unwatch` stops **every** live poller for that slot — the tracked one and any untracked ones — SIGTERM then SIGKILL, and removes the file
 - Stale PIDs swept by the `watches` op automatically
 - Pollers auto-stop when the source declares the target terminal (`is_terminal(state) -> bool`)
 
@@ -439,6 +439,51 @@ Three rules follow from "a missing watcher is worse than a duplicate one":
 For the feed tier the id is a *filter string*, so it is canonicalised (sorted keys, sorted deduped values) before it becomes a filename: `author=a,author=b` and `author=b,author=a` are one population and must be one poller. That merges only filters that are already the same set, so it can never refuse a filter that would have selected something different. Board labels still print the filter as you typed it.
 
 This prevents duplicates from being created. It does **not** reap detached pollers left over from before — those are `PPID 1` and nothing will reap them; `unwatch` (or `kill`) is still the way out.
+
+### A slot tracks a set of PIDs, not one ([#511](https://github.com/Digital-Process-Tools/claude-supertool/issues/511))
+
+The claim above stops duplicates being *created*. It does nothing about the ones already running, and until #511 the tool could not even see them: the state model was one `{id → pid}` mapping, so a second poller on a slot was not merely untracked, it was **unreachable**. Observed over a five-hour session: `watches` showed one watcher while several emitted, one `mr_opened` arrived 3×, then 9×, then 13× in four seconds, `unwatch` reported `Stopped watcher … (PID 92379)` and the events continued, and the next `unwatch` said `No active watcher` while the state file was still being rewritten every tick.
+
+So a slot is now read as a **set**, from two independent sources:
+
+| source of truth | what it knows | what it misses |
+| --- | --- | --- |
+| the PID file | which poller *claimed* the slot | anything that did not claim it; whether the claimant is still alive |
+| a `ps` scan for labelled pollers | every live poller that names this slot in its own argv | a poller spawned before the labelling landed (see below) |
+
+`watches` renders the union. An id with more than one live poller shows its count and every PID; a poller whose PID file was deleted is listed as `no pidfile` instead of vanishing. `unwatch` acts on the union: it prints every PID with its provenance (`tracked` / `untracked`) **before** signalling anything, stops each one, names any it could not stop rather than aborting the rest, and exits `1` if any refused.
+
+It is a multi-kill, and that is a deliberate trade. The failure it replaces is a survivor nobody can reach whose only recovery was `pkill`; the failure it risks is stopping a process someone wanted. The breadth is bounded by evidence rather than by a pattern: every PID it acts on belongs to a process whose own argv names this exact source and id **as whole tokens**, so `33248` cannot match `332480` and an id appearing inside some other command's arguments cannot be mistaken for a poller. What it can still over-reach on is a poller started from a *different checkout* of supertool — which shares the same `/tmp` slot, and so genuinely is the same watcher.
+
+Three absences are now three different sentences, because they call for different actions:
+
+- `No active watcher for … (no PID file, and no matching process)` — nothing is running, verified both ways.
+- `Tracked PID N … is not running` — the slot recorded a poller that died with nothing reporting it, so this id has been **unwatched** since. #511 caught two of those, and the board was silently blind on both MRs.
+- `… the process scan was unavailable` — `ps` could not be read, so an untracked poller could not be ruled out. Never rendered as "no watcher".
+
+### `ps` cannot be used to identify a watcher
+
+**Do not read `ps` output to decide which watcher a process is. Use `watches`.** When the two disagree, `watches` is right.
+
+A poller is forked, so it inherits the argv of whatever spawned it. Every per-MR watcher therefore displayed the *feed's* command line:
+
+```
+19156 radar.py author=@me,author=modular.system,state=opened   <- actually the watcher for MR !33249
+19158 radar.py author=@me,author=modular.system,state=opened   <- actually the watcher for MR !33248
+```
+
+In #511 those rows were read as duplicate feed pollers and two were killed. They were the watchers for two different MRs, one of them the MR that most needed watching.
+
+Pollers spawned since #511 fix this at the source: after the fork the grandchild `exec`s into an argv that names itself, so the command line is not a label describing the process — it *is* the process, and it is the same argv the scan matches on, which is why `ps` and `watches` cannot drift apart:
+
+```
+26951 /usr/bin/python3 …/presets/watch/dispatcher.py poll gitlab-mr 19509
+26968 /usr/bin/python3 …/presets/watch/dispatcher.py poll gitlab-mr-feed author=@me,state=opened
+```
+
+`exec` rather than `setproctitle`: no new dependency, and the PID is unchanged, so the claim taken before the fork and the PID reported up the pipe both stay valid. If the `exec` fails the poller runs anyway, unlabelled — a working poller that is hard to see beats no poller.
+
+The limit, stated plainly: **a poller started before this landed still wears its parent's argv**, so neither the scan nor `unwatch` can find it, and nothing can tell it apart from the process that spawned it. Clearing those is a one-time `pkill -f 'presets/watch/'` followed by a fresh `radar`. Every poller started after it is reachable by `unwatch`.
 
 ## Writing a new source
 

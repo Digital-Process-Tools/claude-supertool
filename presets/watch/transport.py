@@ -28,7 +28,21 @@ sys.path.insert(0, str(Path(__file__).parent.parent))  # for _proc
 import _proc  # noqa: E402  (the one liveness probe, shared with gl-mrs / gh-prs)
 
 SOCK_PATH = "/tmp/supertool-watch.sock"
-STATE_DIR = "/tmp"
+# Overridable so a poller re-exec'd under its own argv (see `poller_argv`) keeps
+# writing where its parent was writing. Without it, exec would move a test's
+# poller from the test's tmp dir to the real /tmp — a fork inherits monkeypatched
+# module state, an exec does not.
+STATE_DIR = os.environ.get("SUPERTOOL_WATCH_STATE_DIR") or "/tmp"
+STATE_DIR_ENV = "SUPERTOOL_WATCH_STATE_DIR"
+
+# The sub-op a poller runs under, and the path that identifies it in `ps`. A
+# poller is forked, so without an exec it wears *its parent's* argv: every
+# per-MR watcher displays the feed's command line, which in #511 was read as
+# three duplicate feed pollers and cost two wrong kills. These two constants are
+# the whole of the labelling — everything that identifies a poller from outside
+# reads them back.
+POLL_SUBOP = "poll"
+DISPATCHER_TAIL = "watch/dispatcher.py"
 
 # Refuse to follow a pre-existing symlink at the pidfile path (#148's guard, in
 # the second place that opens a /tmp path by predictable name). Windows has no
@@ -289,6 +303,185 @@ def list_active_pids() -> list[dict[str, Any]]:
             "last_event_ts": (state.get("last_event") or {}).get("ts", ""),
         })
     return rows
+
+
+def poller_argv(source: str, watcher_id: str, only: list[str] | None = None) -> list[str]:
+    """The exact command a labelled poller runs under.
+
+    Two jobs, and they are the same job: it is what the grandchild execs into,
+    and it is the signature every reader matches against. Keeping both sides on
+    one function is deliberate — a label nobody can parse back and a matcher
+    that looks for a label nobody writes fail identically and silently.
+
+    The id is a whole argv element, never interpolated into one, so matching is
+    token equality rather than a substring test: `33248` cannot match `332480`,
+    and an id that happens to appear inside another process's arguments cannot
+    be mistaken for a poller.
+    """
+    argv = [
+        sys.executable or "python3",
+        str(Path(__file__).parent.resolve() / "dispatcher.py"),
+        POLL_SUBOP,
+        source,
+        watcher_id,
+    ]
+    if only:
+        argv.append("only=" + ",".join(only))
+    return argv
+
+
+def poller_env() -> dict[str, str]:
+    """Environment for an exec'd poller: the caller's, plus where state lives."""
+    env = dict(os.environ)
+    env[STATE_DIR_ENV] = STATE_DIR
+    return env
+
+
+def _ps_rows() -> list[tuple[int, list[str]]] | None:
+    """[(pid, argv tokens)] for every process, or None when `ps` cannot be read.
+
+    None and [] are different answers and must stay that way: [] means nothing
+    is running, None means nobody looked. #511 is a catalogue of what happens
+    when a tool renders the second as the first.
+    """
+    try:
+        proc = subprocess.run(
+            ["ps", "-axww", "-o", "pid=,args="],
+            capture_output=True, timeout=5, check=False,
+            encoding="utf-8", errors="replace",
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    rows: list[tuple[int, list[str]]] = []
+    for line in (proc.stdout or "").splitlines():
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        try:
+            pid = int(parts[0])
+        except ValueError:
+            continue
+        rows.append((pid, parts[1:]))
+    return rows
+
+
+def _labelled(tokens: list[str]) -> tuple[str, str] | None:
+    """The (source, id) an argv announces, or None when it announces nothing.
+
+    Requires the four tokens in sequence — `.../watch/dispatcher.py`, `poll`,
+    SOURCE, ID — so the parent `dispatcher.py watch ...` invocation, `radar.py`,
+    and a grep for any of them are all excluded.
+    """
+    for i, tok in enumerate(tokens):
+        if not tok.replace("\\", "/").endswith(DISPATCHER_TAIL):
+            continue
+        if i + 3 < len(tokens) and tokens[i + 1] == POLL_SUBOP:
+            return tokens[i + 2], tokens[i + 3]
+    return None
+
+
+def scan_poller_pids() -> tuple[dict[tuple[str, str], list[int]], bool]:
+    """Every labelled poller on this machine, grouped by slot. Read-only.
+
+    Returns ({(source, id): [pid, ...]}, scanned). One `ps` per call, not one
+    per watcher: `watches` renders fifteen rows on this machine.
+
+    Spawns nothing, signals nothing.
+    """
+    rows = _ps_rows()
+    if rows is None:
+        return {}, False
+    found: dict[tuple[str, str], list[int]] = {}
+    for pid, tokens in rows:
+        key = _labelled(tokens)
+        if key is None:
+            continue
+        found.setdefault(key, []).append(pid)
+    for pids in found.values():
+        pids.sort()
+    return found, True
+
+
+def watcher_pids(
+    source: str,
+    watcher_id: str,
+    scan: tuple[dict[tuple[str, str], list[int]], bool] | None = None,
+) -> dict[str, Any]:
+    """Every live poller for one slot — the tracked one and any others.
+
+    Keys: `tracked` (the pidfile's PID, 0 when there is none), `tracked_alive`,
+    `pids` (all live pollers, sorted), `untracked` (those the pidfile does not
+    name), `scan_ok`.
+
+    `tracked` surviving as its own key is what lets a caller distinguish the
+    three cases the old one-PID model collapsed into one: a slot with nothing
+    in it, a slot whose recorded poller died without anyone noticing (#511 saw
+    two of those, and the board was blind on both MRs), and a slot with pollers
+    nobody recorded.
+    """
+    found, scan_ok = scan_poller_pids() if scan is None else scan
+    tracked = read_pid(source, watcher_id)
+    tracked_alive = bool(tracked and _pid_alive(tracked))
+    live = [pid for pid in found.get((source, watcher_id), []) if _pid_alive(pid)]
+    pids = sorted(set(live) | ({tracked} if tracked_alive else set()))
+    return {
+        "tracked": tracked,
+        "tracked_alive": tracked_alive,
+        "pids": pids,
+        "untracked": [pid for pid in pids if pid != tracked],
+        "scan_ok": scan_ok,
+    }
+
+
+def live_poller_pids(source: str, watcher_id: str) -> tuple[list[int], bool]:
+    """(live labelled pollers for this slot, scanned). Ignores the pidfile."""
+    found, scan_ok = scan_poller_pids()
+    return [pid for pid in found.get((source, watcher_id), []) if _pid_alive(pid)], scan_ok
+
+
+def list_watchers() -> tuple[list[dict[str, Any]], bool]:
+    """`list_active_pids` widened by the process scan. ([row, ...], scanned).
+
+    Adds to each row: `pids` (every live poller for that slot), `extra` (the
+    ones the pidfile does not name) and `orphan` (True when there is no pidfile
+    at all — the #511 case where deleting it left the process unreachable).
+
+    Deliberately a second function rather than a change to `list_active_pids`:
+    radar derives coverage from that one, and a row appearing there that no
+    pidfile backs would change which MRs it believes are watched. This one only
+    renders.
+    """
+    rows = list_active_pids()
+    found, scan_ok = scan_poller_pids()
+    seen: set[tuple[str, str]] = set()
+    for row in rows:
+        key = (str(row["source"]), str(row["id"]))
+        seen.add(key)
+        pids = sorted(set(found.get(key, [])) | {int(row["pid"])})
+        row["pids"] = pids
+        row["extra"] = [pid for pid in pids if pid != int(row["pid"])]
+        row["orphan"] = False
+    for (source, watcher_id), pids in sorted(found.items()):
+        if (source, watcher_id) in seen:
+            continue
+        live = sorted(pid for pid in pids if _pid_alive(pid))
+        if not live:
+            continue
+        state = read_state(source, watcher_id)
+        rows.append({
+            "source": source,
+            "id": watcher_id,
+            "pid": live[0],
+            "pids": live,
+            "extra": live[1:],
+            "orphan": True,
+            "started": "",
+            "last_event": (state.get("last_event") or {}).get("event", ""),
+            "last_event_ts": (state.get("last_event") or {}).get("ts", ""),
+        })
+    return rows, scan_ok
 
 
 # The liveness probe lives in presets/_proc.py so `gl-mrs` and `gh-prs` cannot
