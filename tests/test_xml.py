@@ -425,8 +425,16 @@ class TestCommon:
 
 class TestPerformance:
 
+    @pytest.mark.benchmark
     def test_parse_1000_file_elements_under_2s(self, tmp_path: Path, capsys) -> None:
-        """1000 synthetic <file> elements parse in under 2 seconds."""
+        """1000 synthetic <file> elements parse in under 2 seconds.
+
+        Absolute wall-clock threshold, zero ratio protection — a clearer
+        violation of the `benchmark` marker's own definition (pyproject.toml)
+        than #485's original offender. `TestParseScaling` below is this
+        test's spiritual replacement; kept for its distinct fixed-size shape
+        but gated the same way (#503).
+        """
         lines_xml = "\n".join(
             f'  <file name="/builds/test/File{i}.php">'
             f'<line num="1" type="stmt" count="{i % 2}"/>'
@@ -514,6 +522,7 @@ class TestParseScaling:
         assert capsys.readouterr().out.strip() == str(n)
         return elapsed
 
+    @pytest.mark.benchmark
     def test_xml_count_time_scales_linearly_with_input(self, tmp_path: Path, capsys) -> None:
         small = self._write_n_files(tmp_path, self.SMALL, "scale-small.xml")
         large = self._write_n_files(tmp_path, self.LARGE, "scale-large.xml")
