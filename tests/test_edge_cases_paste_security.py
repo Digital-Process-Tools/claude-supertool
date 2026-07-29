@@ -232,7 +232,8 @@ def test_paste_validator_rollback_on_fail(tmp_path: Path) -> None:
 
     call_count = [0]
 
-    def fake_validator_run_one(name: str, spec: dict, path: str) -> dict:
+    def fake_validator_run_one(name: str, spec: dict, path: str,
+                               doc_maybe_stale: bool = False) -> dict:
         call_count[0] += 1
         # First call (before snapshot) = pass; second call (after write) = fail
         if call_count[0] <= 1:

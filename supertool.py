@@ -10182,7 +10182,8 @@ def _validator_result_is_cacheable(data: Dict[str, Any]) -> bool:
     return True
 
 
-def _validator_run_one(name: str, spec: Dict[str, Any], file: str) -> Optional[Dict[str, Any]]:
+def _validator_run_one(name: str, spec: Dict[str, Any], file: str,
+                       doc_maybe_stale: bool = False) -> Optional[Dict[str, Any]]:
     """Run one validator adapter on `file`. Returns SCHEMA.md-compliant dict.
 
     Adapter contract: prints one JSON object on last stdout line. Exit 0 unless
@@ -10190,6 +10191,12 @@ def _validator_run_one(name: str, spec: Dict[str, Any], file: str) -> Optional[D
     renders. Cached by (file content hash, name, cmd, tool fingerprint) at
     ~/.cache/supertool/validators/<sha256>.json — see _validator_fingerprint for
     why the tools themselves are part of the key.
+
+    `doc_maybe_stale` reaches the adapter as SUPERTOOL_LSP_DOC_MAYBE_STALE=1.
+    Only this process knows the fact it carries — that a pre-edit baseline pass
+    already queried a warm LSP daemon about this path, so the daemon is holding
+    the pre-edit document (#482). An adapter that reads a warm cache cannot
+    work that out on its own, and must skip rather than answer from it.
     """
     import subprocess
     import json
@@ -10243,6 +10250,10 @@ def _validator_run_one(name: str, spec: Dict[str, Any], file: str) -> Optional[D
     # genuinely covers a cold start.
     run_env = dict(_merged_env)
     run_env[_MCP_AUTOSPAWN_ENV] = "1" if spec.get("mcp_autospawn") else "0"
+    # #482: the doc the daemon holds may predate this edit, and it has no
+    # invalidation of its own. The adapter declines rather than guessing.
+    if doc_maybe_stale:
+        run_env["SUPERTOOL_LSP_DOC_MAYBE_STALE"] = "1"
 
     import time
     _t0 = time.monotonic()
@@ -10449,21 +10460,29 @@ def _validator_render_diff(before: Optional[Dict[str, Any]], after: Dict[str, An
 
 
 def _validators_run_batch(
-    applicable: Dict[str, Dict[str, Any]], path: str
+    applicable: Dict[str, Dict[str, Any]], path: str,
+    doc_maybe_stale: bool = False,
 ) -> Dict[str, Dict[str, Any]]:
-    """Run all validators on path. Parallel if `parallel >= 2` in config."""
+    """Run all validators on path. Parallel if `parallel >= 2` in config.
+
+    `doc_maybe_stale` is forwarded to every adapter — see _validator_run_one.
+    The baseline pass passes False (it is the pass that causes the staleness);
+    the post-edit pass passes True whenever a warm daemon could still be
+    holding the pre-edit document (#482).
+    """
     workers = _parallel_workers()
     if workers >= 2 and len(applicable) > 1:
         from concurrent.futures import ThreadPoolExecutor
         max_workers = min(workers, len(applicable))
         with ThreadPoolExecutor(max_workers=max_workers) as ex:
-            futures = {name: ex.submit(_validator_run_one, name, spec, path)
+            futures = {name: ex.submit(_validator_run_one, name, spec, path,
+                                       doc_maybe_stale)
                        for name, spec in applicable.items()}
             return {name: f.result() for name, f in futures.items()
                     if f.result() is not None}
     out: Dict[str, Dict[str, Any]] = {}
     for name, spec in applicable.items():
-        data = _validator_run_one(name, spec, path)
+        data = _validator_run_one(name, spec, path, doc_maybe_stale)
         if data is not None:
             out[name] = data
     return out
@@ -11127,7 +11146,15 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
     for _srv in _new_file_servers:
         _mcp_stop_server(_srv)
 
-    after_results = _validators_run_batch(applicable, path) if applicable else {}
+    # The baseline pass above is what opened this file in any warm LSP daemon,
+    # and cclsp's diagnostics cache is never invalidated for the daemon's life
+    # — so a validator querying it now is being answered about the pre-edit
+    # bytes (#482). Two conditions clear the flag: a file that did not exist
+    # pre-op was never opened by the baseline, and a daemon just SIGTERM'd for
+    # a new file (#239) comes back cold with the current bytes indexed.
+    _doc_maybe_stale = _pre_existed and not _new_file_servers
+    after_results = (_validators_run_batch(applicable, path, _doc_maybe_stale)
+                     if applicable else {})
     diff_lines: list = []
     for name in applicable:  # stable order from config
         if name in after_results:
