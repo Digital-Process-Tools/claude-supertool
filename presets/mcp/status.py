@@ -11,6 +11,11 @@ nothing about the process behind it, so it reports `unknown` with the reason,
 never `dead` — `dead` is reserved for a pid we actually read and actually
 probed. This is the one op a human runs to find out whether a daemon is alive;
 of all the surfaces that could afford to guess, this is not one of them.
+
+The same rule applies to the table itself (#551). A runtime dir that could not
+be enumerated is not a runtime dir with nothing in it, so it is reported as
+such rather than as `No supertool MCP daemons running.` — that line is a claim,
+and it is only available to us once the listing succeeded.
 """
 from __future__ import annotations
 
@@ -94,8 +99,20 @@ def main() -> int:
     hash_to_name = {hash_for(name): name for name in declared}
 
     base = runtime_dir()
+    pidfiles, listing_error = list_pidfiles()
+    if listing_error:
+        # Not a row — no row was enumerated, so there is nothing to carry a
+        # verdict. On stdout deliberately: `mcp_status` exits 0 in every case,
+        # and the custom-op runner only folds stderr into the output on a
+        # non-zero status. A stderr-only line here would be #551 again, wearing
+        # a different coat.
+        print(f"Cannot list supertool MCP daemons: {listing_error}")
+        print("  The runtime dir could not be read, so this is NOT a report "
+              "that none are running.")
+        return 0
+
     rows = []
-    for pid_path in list_pidfiles():
+    for pid_path in pidfiles:
         h = Path(pid_path).stem.replace("supertool-mcp-", "")
         name = hash_to_name.get(h, "?")
         sock_path = os.path.join(base, f"supertool-mcp-{h}.sock")

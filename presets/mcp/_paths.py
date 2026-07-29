@@ -107,17 +107,37 @@ def socket_pid_paths(cwd: str, name: str) -> Tuple[str, str]:
     return f"{base}.sock", f"{base}.pid"
 
 
-def list_pidfiles() -> list:
-    """Return all `supertool-mcp-*.pid` paths in the runtime dir.
+def list_pidfiles() -> Tuple[list, str]:
+    """Return `(pidfiles, reason)`; a non-empty reason means we could not look.
 
-    Used by status.py / stop.py to enumerate daemons.
+    `reason` is empty exactly when `os.listdir` succeeded, and only then does an
+    empty list mean *there are no daemons*. Any other outcome returns `[]` *and*
+    a reason, and the caller must state that instead of reporting an absence it
+    never established.
+
+    This used to swallow the `OSError` and return `[]` alone (#551). Both
+    callers read that as proof of absence: `status.py` printed `No supertool MCP
+    daemons running.` and `stop.py --all` printed `No daemons running.` and
+    exited `EXIT_OK` — the code #547 documents as "nothing stale can come from
+    nothing", which is only true once we have looked. Same shape as `read_pid`
+    in `status.py` (#549), one layer up: a directory we could not enumerate is
+    the whole table unavailable, not a row carrying a verdict.
+
+    Reachability is low by construction, and worth stating rather than
+    inflating. `runtime_dir()` runs first, chmods the directory back to `0700`
+    (so a `chmod 000` heals instead of raising) and exits outright on foreign
+    ownership, which leaves an `ENOENT` race against its own `mkdir`, `EIO` on a
+    failing volume, and `EMFILE` under fd pressure. Fixed anyway because the
+    failure is silent by construction — before this, nothing on either surface
+    could ever report that it had happened.
     """
     base = runtime_dir()
     try:
-        return sorted(
-            os.path.join(base, name)
-            for name in os.listdir(base)
-            if name.startswith("supertool-mcp-") and name.endswith(".pid")
-        )
-    except OSError:
-        return []
+        names = os.listdir(base)
+    except OSError as exc:
+        return [], f"cannot list runtime dir {base}: {exc.strerror or exc}"
+    return sorted(
+        os.path.join(base, name)
+        for name in names
+        if name.startswith("supertool-mcp-") and name.endswith(".pid")
+    ), ""
