@@ -45,8 +45,22 @@ markers = [
     # benchmark asserts on elapsed wall-clock, which on a parallel or shared
     # runner measures the machine as much as the code — it can only fail for a
     # reason its author cannot act on, so it is excluded from the default run
-    # AND from the pre-push hook, which `slow` is not (#485).
-    "benchmark: wall-clock timing assertions. Run deliberately and serially: `pytest -m benchmark -n0`.",
+    # AND from the pre-push hook, which `slow` is not (#485). This applies
+    # equally to a *ratio* of two elapsed measurements (#503) — dividing one
+    # noisy sample by another does not make either sample deterministic.
+    #
+    # NOT the same thing: a hang-guard also reads a clock, but its margin is
+    # generous enough (2-10x the slowest sane run, not a tight regression
+    # gate) that it only ever fires for the failure it exists to catch — a
+    # loop that never terminates, a call that never returns — not for
+    # scheduler noise. `test_edge_cases_vim.py`'s subprocess timeouts are
+    # this: "did it come back at all" has one bit of signal wall-clock can
+    # give that nothing else can, and moving them to `benchmark` would delete
+    # real infinite-loop coverage to fix a flakiness problem they don't have.
+    # Before marking a new timing assertion `benchmark`, ask whether it
+    # measures "how fast" (benchmark) or "did it come back at all"
+    # (hang-guard — stays in the default run).
+    "benchmark: wall-clock timing assertions measuring performance, not liveness. Run deliberately and serially: `pytest -m benchmark -n0`.",
 ]
 
 [project.optional-dependencies]
