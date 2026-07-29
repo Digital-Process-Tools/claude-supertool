@@ -43,7 +43,7 @@ def main() -> int:
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--git-dir"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, timeout=5, encoding="utf-8", errors="replace",
         )
         if result.returncode != 0:
             print("ERROR: not inside a git repository.")
@@ -59,7 +59,7 @@ def main() -> int:
             # #150: `--` separator so a PATH starting with `-` (e.g. literal
             # file named `-foo`) is treated as a path, not a CLI flag.
             ["git", "blame", "-L", f"{start},{end}", "--date=short", "--", path],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, timeout=10, encoding="utf-8", errors="replace",
         )
     except subprocess.TimeoutExpired:
         print(f"ERROR: git blame timed out for {path}")

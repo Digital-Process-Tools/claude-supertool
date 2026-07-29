@@ -13,7 +13,7 @@ def main(arg: str) -> int:
         return 2
     result = subprocess.run(
         ["gh", "api", f"user/starred/{repo}", "-X", "PUT", "-H", "Content-Length: 0"],
-        capture_output=True, text=True, timeout=10,
+        capture_output=True, text=True, timeout=10, encoding="utf-8", errors="replace",
     )
     if result.returncode == 0:
         print(f"(starred {repo})")

@@ -45,7 +45,7 @@ def main() -> None:
             ["markdownlint", file],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=30, encoding="utf-8", errors="replace",
         )
     except FileNotFoundError:
         print("markdownlint: markdownlint not found on PATH, skipping", file=sys.stderr)

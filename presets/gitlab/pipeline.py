@@ -114,7 +114,7 @@ def main() -> int:
         result = subprocess.run(
             ["glab", "api", f"projects/:id/pipelines/{pipeline_id}/jobs",
              "--paginate"],
-            capture_output=True, text=True, timeout=15,
+            capture_output=True, text=True, timeout=15, encoding="utf-8", errors="replace",
         )
     except FileNotFoundError:
         print("ERROR: glab not found — install from https://gitlab.com/gitlab-org/cli")

@@ -12,7 +12,7 @@ def main(arg: str) -> int:
     n = int(arg) if arg.strip().isdigit() else int(os.environ.get("SUPERTOOL_DEFAULT_LIMIT", "30"))
     result = subprocess.run(
         ["gh", "api", f"user/starred?per_page={min(n, 100)}"],
-        capture_output=True, text=True, timeout=15,
+        capture_output=True, text=True, timeout=15, encoding="utf-8", errors="replace",
     )
     if result.returncode != 0:
         err = result.stderr.lower()

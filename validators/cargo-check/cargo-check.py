@@ -95,7 +95,7 @@ def main() -> None:
         r = subprocess.run(
             ["cargo", "check", "--message-format=short", "--quiet"],
             capture_output=True, text=True, timeout=120,
-            cwd=str(crate_root),
+            cwd=str(crate_root), encoding="utf-8", errors="replace",
         )
     except FileNotFoundError:
         print("cargo-check: cargo not found on PATH, skipping", file=sys.stderr)

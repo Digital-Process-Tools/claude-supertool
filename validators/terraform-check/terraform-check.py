@@ -37,7 +37,7 @@ def main() -> None:
 
     try:
         r = subprocess.run(["terraform", "fmt", "-check", "-diff", file],
-                           capture_output=True, text=True, timeout=30)
+                           capture_output=True, text=True, timeout=30, encoding="utf-8", errors="replace")
     except FileNotFoundError:
         print("terraform-check: terraform not found on PATH, skipping", file=sys.stderr)
         emit({"tool": "terraform-check", "file": file, "ok": True, "count": 0,

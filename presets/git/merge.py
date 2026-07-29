@@ -24,7 +24,7 @@ DEFAULT_PREVIEW_LINES = 12
 def _git(args: list[str], timeout: int = 30) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["git"] + args,
-        capture_output=True, text=True, timeout=timeout,
+        capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace",
     )
 
 

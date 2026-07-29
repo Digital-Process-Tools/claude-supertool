@@ -93,7 +93,7 @@ def main() -> None:
         r = subprocess.run(
             [sys.executable, supertool_bin, f"diag:{file}"] if supertool_bin.endswith(".py")
             else [supertool_bin, f"diag:{file}"],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, timeout=30, encoding="utf-8", errors="replace",
         )
     except FileNotFoundError:
         emit({"tool": "lsp-diag", "file": file, "ok": False, "count": 1,

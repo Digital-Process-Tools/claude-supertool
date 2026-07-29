@@ -31,7 +31,7 @@ _MARKER_RE = re.compile(r"^(<{7,}|>{7,})(\s|$)")
 def _git(args: list[str], timeout: int = 10) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["git"] + args,
-        capture_output=True, text=True, timeout=timeout,
+        capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace",
     )
 
 
@@ -287,7 +287,7 @@ def _validate_paths(paths: list[str]) -> dict[str, Optional[str]]:
         try:
             res = subprocess.run(
                 [sys.executable, str(st), f"validate:{','.join(files)}:{tool_filter}"],
-                capture_output=True, text=True, timeout=90,
+                capture_output=True, text=True, timeout=90, encoding="utf-8", errors="replace",
             )
         except (subprocess.TimeoutExpired, OSError):
             return digests

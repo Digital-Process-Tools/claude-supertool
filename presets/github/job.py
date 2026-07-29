@@ -29,7 +29,7 @@ def _local_branch_check(source: str) -> str:
     try:
         r = subprocess.run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            capture_output=True, text=True, timeout=3,
+            capture_output=True, text=True, timeout=3, encoding="utf-8", errors="replace",
         )
         if r.returncode != 0:
             return ""
@@ -236,7 +236,7 @@ def main() -> int:
         # gh api to get job details
         meta_result = subprocess.run(
             ["gh", "api", f"repos/{{owner}}/{{repo}}/actions/jobs/{job_id}"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, timeout=10, encoding="utf-8", errors="replace",
         )
         if meta_result.returncode == 0:
             meta = json.loads(meta_result.stdout)
@@ -251,7 +251,7 @@ def main() -> int:
                 run_result = subprocess.run(
                     ["gh", "run", "view", run_id, "--json",
                      "headBranch,event,pullRequests"],
-                    capture_output=True, text=True, timeout=5,
+                    capture_output=True, text=True, timeout=5, encoding="utf-8", errors="replace",
                 )
                 if run_result.returncode == 0:
                     run_data = json.loads(run_result.stdout)
@@ -264,7 +264,7 @@ def main() -> int:
                             pr_result = subprocess.run(
                                 ["gh", "pr", "view", pr_number, "--json",
                                  "title,author,headRefName,baseRefName,labels"],
-                                capture_output=True, text=True, timeout=5,
+                                capture_output=True, text=True, timeout=5, encoding="utf-8", errors="replace",
                             )
                             if pr_result.returncode == 0:
                                 pr_data = json.loads(pr_result.stdout)
@@ -279,7 +279,7 @@ def main() -> int:
         log_result = subprocess.run(
             ["gh", "api",
              f"repos/{{owner}}/{{repo}}/actions/jobs/{job_id}/logs"],
-            capture_output=True, text=True, timeout=20,
+            capture_output=True, text=True, timeout=20, encoding="utf-8", errors="replace",
         )
     except FileNotFoundError:
         print("ERROR: gh not found — install from https://cli.github.com")

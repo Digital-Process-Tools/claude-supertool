@@ -30,7 +30,7 @@ def _git(args: list[str], timeout: int = 5) -> subprocess.CompletedProcess[str]:
     """Run a git command."""
     return subprocess.run(
         ["git"] + args,
-        capture_output=True, text=True, timeout=timeout,
+        capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace",
     )
 
 
@@ -195,7 +195,7 @@ def main() -> int:
     try:
         glab_result = subprocess.run(
             ["glab", "mr", "view", branch_name, "--output", "json"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, timeout=5, encoding="utf-8", errors="replace",
         )
         if glab_result.returncode == 0:
             mr = _json.loads(glab_result.stdout)
@@ -247,7 +247,7 @@ def main() -> int:
                 ["gh", "pr", "view", branch_name, "--json",
                  "number,title,state,baseRefName,statusCheckRollup,body,"
                  "additions,deletions,changedFiles"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True, text=True, timeout=5, encoding="utf-8", errors="replace",
             )
             if gh_result.returncode == 0:
                 pr = _json.loads(gh_result.stdout)

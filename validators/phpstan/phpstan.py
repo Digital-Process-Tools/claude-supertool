@@ -90,7 +90,7 @@ def main() -> None:
 
     start = time.time()
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=120, encoding="utf-8", errors="replace")
     except FileNotFoundError:
         dur = int((time.time() - start) * 1000)
         emit({

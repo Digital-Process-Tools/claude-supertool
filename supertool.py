@@ -552,6 +552,29 @@ def _reconfigure_stdout_utf8() -> None:
             pass
 
 
+# `errors="replace"` (#501) leaves U+FFFD wherever a child process's output was
+# not valid UTF-8. Where supertool only *displays* that output, mojibake is the
+# right trade against a traceback that lands after half the answer is already
+# on screen — that is #498's lesson and it is why the sweep is otherwise
+# uniform. Where the decoded text becomes something else, it is not: bytes
+# written back into the user's file, or a path handed to the filesystem, turn a
+# crash into a wrong answer, which this repository has rated the worse failure
+# every time it has come up (#414, #445, #454, #459, #477, #482, #345, #487,
+# #263). Those seams call this and name what happened instead of proceeding.
+_REPLACEMENT_CHAR = "\ufffd"
+
+
+def _undecodable_at(text: str) -> int:
+    """Offset of the first U+FFFD in ``text``, or ``-1`` when it decoded clean.
+
+    A command whose output genuinely contains U+FFFD is indistinguishable from
+    one whose output was mangled, and is refused too. That direction is the
+    safe one: the caller declines and says why, rather than writing bytes it
+    cannot vouch for.
+    """
+    return text.find(_REPLACEMENT_CHAR)
+
+
 def _notifier_log(msg: str) -> None:
     """Append a timestamped line to the notifier debug log when enabled. Silent otherwise."""
     if not _notifier_debug_enabled():
@@ -891,7 +914,7 @@ def _rtk_run(args: List[str], timeout: int = 30) -> str | None:
         return None
     try:
         result = subprocess.run(
-            [rtk] + args, capture_output=True, text=True, timeout=timeout
+            [rtk] + args, capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace"
         )
         if result.returncode == 0:
             return result.stdout
@@ -2261,7 +2284,7 @@ def _path_meta_suffix(path: str, sample: bytes = b"") -> str:
         r = subprocess.run(
             ["git", "status", "--porcelain", "--ignored=matching", "--", path],
             capture_output=True, text=True, timeout=2,
-            cwd=os.path.dirname(os.path.abspath(path)) or ".",
+            cwd=os.path.dirname(os.path.abspath(path)) or ".", encoding="utf-8", errors="replace",
         )
         if r.returncode == 0 and r.stdout:
             code = r.stdout[:2]
@@ -2653,7 +2676,7 @@ def _ctags_extract(path: str) -> List[Tuple[str, str, int, str]]:
     try:
         result = subprocess.run(
             [ctags, "--output-format=json", "--fields=+nKS", "-f", "-", path],
-            capture_output=True, text=True, timeout=15
+            capture_output=True, text=True, timeout=15, encoding="utf-8", errors="replace"
         )
     except (subprocess.TimeoutExpired, OSError):
         return []
@@ -3708,14 +3731,14 @@ def _current_branch() -> str:
             # HEAD, which is the one case worth a second call.
             r = subprocess.run(
                 ["git", "symbolic-ref", "--short", "-q", "HEAD"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True, text=True, timeout=5, encoding="utf-8", errors="replace",
             )
             if r.returncode == 0:
                 branch = r.stdout.strip()
             else:
                 d = subprocess.run(
                     ["git", "rev-parse", "--short", "HEAD"],
-                    capture_output=True, text=True, timeout=5,
+                    capture_output=True, text=True, timeout=5, encoding="utf-8", errors="replace",
                 )
                 if d.returncode == 0 and d.stdout.strip():
                     branch = f"detached HEAD at {d.stdout.strip()}"
@@ -4752,7 +4775,7 @@ def _vim_render_lint(path: str) -> str:
             cmd,
             capture_output=True,
             text=True,
-            timeout=timeout,
+            timeout=timeout, encoding="utf-8", errors="replace",
         )
     except subprocess.TimeoutExpired:
         return (
@@ -5130,6 +5153,7 @@ def _op_vim_impl(path: str, script: str) -> str:
         \\n \\t \\r  → newline / tab / CR
         \\;          → literal `;` (otherwise `;` ends the action)
         \\\\         → literal backslash
+        \\\\e        → literal `\\e` (escapes ESC; needed for Windows paths, e.g. `\\emit.py`)
 
     Examples:
         # Annotate function signature
@@ -5192,7 +5216,23 @@ def _op_vim_impl(path: str, script: str) -> str:
     # ASCII RS `\x1e` (legacy from the `␞` era — Kevin still types
     # `$'\x1e'`) and `␞` itself into actual ESC. Real `\x1b` passes
     # through.
-    normalized = script.replace("\\e", ESC).replace("\x1e", ESC).replace("␞", ESC)
+    #
+    # #501: this was a blind, mode-blind text substitution over the WHOLE
+    # raw script, including content that ends up inside a greedy capture
+    # (insert TEXT, ex `:!cmd`) rather than being an intentional ESC
+    # marker. A literal backslash immediately followed by 'e' is
+    # unremarkable in real content — most commonly a Windows path segment
+    # (`\emit.py`, `\explorer.exe`, `\env`) — and previously had no way
+    # to survive: `\e` always became ESC, silently truncating whatever
+    # greedy capture it landed inside (e.g. a `:!` shell command cut off
+    # mid-string). Mirror the `\\` -> literal `\` two-pass sentinel
+    # convention `_decode_escapes` already uses: an escaped-backslash
+    # form `\\e` (backslash, backslash, e) now survives as a literal
+    # `\e` instead of colliding with the ESC marker.
+    _esc_literal_sentinel = "\x00ESCLIT\x00"
+    normalized = script.replace("\\\\e", _esc_literal_sentinel)
+    normalized = normalized.replace("\\e", ESC).replace("\x1e", ESC).replace("␞", ESC)
+    normalized = normalized.replace(_esc_literal_sentinel, "\\e")
     # Decode Ctrl-A / Ctrl-X escapes (`\C-a` / `\C-x`) to their real bytes so
     # the tokenizer sees single-char verbs. Real \x01 / \x18 pass through.
     normalized = normalized.replace("\\C-a", "\x01").replace("\\C-x", "\x18")
@@ -7361,7 +7401,7 @@ def _op_vim_impl(path: str, script: str) -> str:
                 import subprocess as _sp
                 try:
                     proc = _sp.run(
-                        cmd, shell=True, capture_output=True, text=True, timeout=30
+                        cmd, shell=True, capture_output=True, text=True, timeout=30, encoding="utf-8", errors="replace"
                     )
                 except (OSError, _sp.TimeoutExpired) as e:
                     return f"ERROR: action {i} '{action}': :r !{cmd}: {e}\n"
@@ -7369,6 +7409,13 @@ def _op_vim_impl(path: str, script: str) -> str:
                     return (
                         f"ERROR: action {i} '{action}': :r !{cmd}: exit "
                         f"{proc.returncode}: {proc.stderr.strip()}\n"
+                    )
+                _bad = _undecodable_at(proc.stdout)
+                if _bad >= 0:
+                    return (
+                        f"ERROR: action {i} '{action}': :r !{cmd}: output is not "
+                        f"valid UTF-8 (first undecodable byte near offset {_bad}); "
+                        "refusing to read mojibake in as file content\n"
                     )
                 file_text = proc.stdout
             elif path_arg == "-":
@@ -7440,7 +7487,7 @@ def _op_vim_impl(path: str, script: str) -> str:
                 # bare :!cmd — run command, insert stdout after cursor line
                 try:
                     proc = subprocess.run(
-                        cmd, shell=True, capture_output=True, text=True, timeout=30
+                        cmd, shell=True, capture_output=True, text=True, timeout=30, encoding="utf-8", errors="replace"
                     )
                 except (OSError, subprocess.TimeoutExpired) as e:
                     return f"ERROR: action {i} '{action}': :!{cmd}: {e}\n"
@@ -7448,6 +7495,13 @@ def _op_vim_impl(path: str, script: str) -> str:
                     return (
                         f"ERROR: action {i} '{action}': :!{cmd}: exit "
                         f"{proc.returncode}: {proc.stderr.strip()}\n"
+                    )
+                _bad = _undecodable_at(proc.stdout)
+                if _bad >= 0:
+                    return (
+                        f"ERROR: action {i} '{action}': :!{cmd}: output is not "
+                        f"valid UTF-8 (first undecodable byte near offset {_bad}); "
+                        "file NOT modified\n"
                     )
                 out = proc.stdout
                 if out and not out.endswith("\n"):
@@ -7502,7 +7556,7 @@ def _op_vim_impl(path: str, script: str) -> str:
                 try:
                     proc = subprocess.run(
                         cmd, shell=True, input=region,
-                        capture_output=True, text=True, timeout=30
+                        capture_output=True, text=True, timeout=30, encoding="utf-8", errors="replace"
                     )
                 except (OSError, subprocess.TimeoutExpired) as e:
                     return f"ERROR: action {i} '{action}': :!{cmd}: {e}\n"
@@ -7510,6 +7564,13 @@ def _op_vim_impl(path: str, script: str) -> str:
                     return (
                         f"ERROR: action {i} '{action}': :!{cmd}: exit "
                         f"{proc.returncode}: {proc.stderr.strip()}\n"
+                    )
+                _bad = _undecodable_at(proc.stdout)
+                if _bad >= 0:
+                    return (
+                        f"ERROR: action {i} '{action}': :!{cmd}: output is not "
+                        f"valid UTF-8 (first undecodable byte near offset {_bad}); "
+                        "the filtered lines were NOT replaced\n"
                     )
                 out = proc.stdout
                 if out and not out.endswith("\n"):
@@ -8961,7 +9022,7 @@ def _op_vim_impl(path: str, script: str) -> str:
                                     try:
                                         _dot_proc = subprocess.run(
                                             _dot_cmd, shell=True, capture_output=True,
-                                            text=True, timeout=30
+                                            text=True, timeout=30, encoding="utf-8", errors="replace"
                                         )
                                     except (OSError, subprocess.TimeoutExpired) as _dot_e:
                                         log.append(f"  {i}. .(:!{_dot_cmd}) ERROR: {_dot_e}")
@@ -8970,6 +9031,11 @@ def _op_vim_impl(path: str, script: str) -> str:
                                             log.append(
                                                 f"  {i}. .(:!{_dot_cmd}) ERROR exit "
                                                 f"{_dot_proc.returncode}: {_dot_proc.stderr.strip()}"
+                                            )
+                                        elif _undecodable_at(_dot_proc.stdout) >= 0:
+                                            log.append(
+                                                f"  {i}. .(:!{_dot_cmd}) ERROR: output is "
+                                                "not valid UTF-8 — file NOT modified"
                                             )
                                         else:
                                             _dot_out = _dot_proc.stdout
@@ -9017,7 +9083,7 @@ def _op_vim_impl(path: str, script: str) -> str:
                                         try:
                                             _dot_proc = subprocess.run(
                                                 _dot_cmd, shell=True, input=_dot_region,
-                                                capture_output=True, text=True, timeout=30
+                                                capture_output=True, text=True, timeout=30, encoding="utf-8", errors="replace"
                                             )
                                         except (OSError, subprocess.TimeoutExpired) as _dot_e:
                                             log.append(f"  {i}. .(:!{_dot_cmd}) ERROR: {_dot_e}")
@@ -9026,6 +9092,11 @@ def _op_vim_impl(path: str, script: str) -> str:
                                                 log.append(
                                                     f"  {i}. .(:!{_dot_cmd}) ERROR exit "
                                                     f"{_dot_proc.returncode}: {_dot_proc.stderr.strip()}"
+                                                )
+                                            elif _undecodable_at(_dot_proc.stdout) >= 0:
+                                                log.append(
+                                                    f"  {i}. .(:!{_dot_cmd}) ERROR: output is "
+                                                    "not valid UTF-8 — lines NOT replaced"
                                                 )
                                             else:
                                                 _dot_out = _dot_proc.stdout
@@ -9925,7 +9996,7 @@ def _validator_resolve(spec: Dict[str, Any], file: str) -> Optional[str]:
     _run_env = _merged_env if _prefix_env else None
     try:
         r = subprocess.run(shlex.split(cmd), shell=False, capture_output=True, text=True, timeout=30,
-                           env=_run_env)
+                           env=_run_env, encoding="utf-8", errors="replace")
         resolved = r.stdout.strip().splitlines()[0] if r.stdout.strip() else ""
         return resolved if resolved else None
     except (subprocess.TimeoutExpired, OSError):
@@ -10334,7 +10405,7 @@ def _validator_run_one(name: str, spec: Dict[str, Any], file: str,
     _t0 = time.monotonic()
     try:
         r = subprocess.run(shlex.split(cmd), shell=False, capture_output=True, text=True, timeout=timeout,
-                           env=run_env)
+                           env=run_env, encoding="utf-8", errors="replace")
         _elapsed = time.monotonic() - _t0
         out = r.stdout.strip()
         if not out:
@@ -10764,7 +10835,7 @@ def _formatter_run_one(name: str, spec: Dict[str, Any], file: str) -> Dict[str, 
     run_env = _merged_env if _spec_env_dict else None
     try:
         r = subprocess.run(shlex.split(cmd), shell=False, capture_output=True, text=True, timeout=timeout,
-                           env=run_env)
+                           env=run_env, encoding="utf-8", errors="replace")
         stdout = r.stdout.strip()
         # Try to parse SCHEMA.md JSON from stdout.
         if stdout:
@@ -10966,7 +11037,7 @@ def _advice_resolve(resolve_cmd: str, path: str) -> Optional[str]:
     try:
         r = subprocess.run(shlex.split(cmd), shell=False, capture_output=True,
                            text=True, timeout=30,
-                           env=(_merged_env if _prefix_env else None))
+                           env=(_merged_env if _prefix_env else None), encoding="utf-8", errors="replace")
     except (subprocess.TimeoutExpired, OSError):
         return None
     if r.returncode != 3:
@@ -11939,7 +12010,7 @@ def op_workspace(path: str) -> str:
     try:
         git_check = subprocess.run(
             ["git", "rev-parse", "--is-inside-work-tree"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, timeout=5, encoding="utf-8", errors="replace",
         )
         in_git = git_check.returncode == 0
     except (subprocess.TimeoutExpired, OSError):
@@ -11952,13 +12023,13 @@ def op_workspace(path: str) -> str:
         try:
             branch_r = subprocess.run(
                 ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True, text=True, timeout=5, encoding="utf-8", errors="replace",
             )
             branch = branch_r.stdout.strip() if branch_r.returncode == 0 else "?"
             # ahead/behind
             ab_r = subprocess.run(
                 ["git", "rev-list", "--left-right", "--count", f"{branch}...@{{u}}"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True, text=True, timeout=5, encoding="utf-8", errors="replace",
             )
             if ab_r.returncode == 0 and ab_r.stdout.strip():
                 parts_ab = ab_r.stdout.strip().split()
@@ -11973,7 +12044,7 @@ def op_workspace(path: str) -> str:
         try:
             status_r = subprocess.run(
                 ["git", "status", "--porcelain", path],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True, text=True, timeout=5, encoding="utf-8", errors="replace",
             )
             if status_r.returncode == 0:
                 status_line = status_r.stdout.strip()
@@ -11995,7 +12066,7 @@ def op_workspace(path: str) -> str:
         try:
             log_r = subprocess.run(
                 ["git", "log", "--oneline", "-5", "--", path],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True, text=True, timeout=5, encoding="utf-8", errors="replace",
             )
             if log_r.returncode == 0 and log_r.stdout.strip():
                 out.append("recent commits:\n")
@@ -12012,7 +12083,7 @@ def op_workspace(path: str) -> str:
         try:
             blame_r = subprocess.run(
                 ["git", "blame", "--line-porcelain", path],
-                capture_output=True, text=True, timeout=15,
+                capture_output=True, text=True, timeout=15, encoding="utf-8", errors="replace",
             )
             if blame_r.returncode == 0 and blame_r.stdout:
                 author_counts: Dict[str, int] = {}
@@ -12210,6 +12281,26 @@ def op_format(path: str, tool_filter: Optional[list] = None, verbose: bool = Fal
     return "\n".join(out) + "\n"
 
 
+def _undecodable_staged_paths(raw: str) -> str:
+    """A warning line naming staged paths that are not valid UTF-8, or ``""``.
+
+    ``git diff -z`` emits raw path bytes — ``-z`` turns off the octal quoting
+    that would otherwise keep porcelain ASCII — so a filename in latin-1 comes
+    back holding U+FFFD after ``errors="replace"``. That name no longer refers
+    to a file, ``os.path.isfile`` says no, and the entry drops out of the list
+    with nothing said: a pre-commit gate that silently declines to check one of
+    the files being committed. Naming it is the only honest outcome, because
+    the mangled name cannot be reopened to check it either.
+    """
+    bad = [p for p in raw.split("\x00") if p and _undecodable_at(p) >= 0]
+    if not bad:
+        return ""
+    return (
+        f"WARNING: {len(bad)} staged path(s) are not valid UTF-8 and were NOT "
+        f"checked — rename them or check them by hand: {', '.join(bad)}\n"
+    )
+
+
 def op_validate_staged(tool_filter: Optional[list] = None, verbose: bool = False) -> str:
     """Run validators on every currently staged file.
 
@@ -12224,7 +12315,7 @@ def op_validate_staged(tool_filter: Optional[list] = None, verbose: bool = False
     try:
         r = subprocess.run(
             ["git", "diff", "--cached", "-z", "--name-only", "--diff-filter=ACMR"],
-            capture_output=True, text=True, timeout=15,
+            capture_output=True, text=True, timeout=15, encoding="utf-8", errors="replace",
         )
         if r.returncode != 0:
             msg = (r.stderr.strip() or "git diff failed")
@@ -12234,8 +12325,11 @@ def op_validate_staged(tool_filter: Optional[list] = None, verbose: bool = False
 
     # Split on NUL (git diff -z), reject empty + symlinks + paths outside cwd.
     staged = []
+    unreadable = _undecodable_staged_paths(r.stdout)
     for p in r.stdout.split("\x00"):
-        if not p or os.path.islink(p) or not os.path.isfile(p):
+        if not p or _undecodable_at(p) >= 0:
+            continue
+        if os.path.islink(p) or not os.path.isfile(p):
             continue
         # Reject paths that resolve outside cwd (symlink-following could leak).
         real = os.path.realpath(p)
@@ -12244,9 +12338,11 @@ def op_validate_staged(tool_filter: Optional[list] = None, verbose: bool = False
             continue
         staged.append(p)
     if not staged:
-        return "no staged files\n"
+        return (unreadable or "") + "no staged files\n"
 
     parts = []
+    if unreadable:
+        parts.append(unreadable.rstrip("\n"))
     for fpath in staged:
         parts.append(f"validate_staged: {fpath}")
         block = op_validate(fpath, tool_filter, verbose=verbose)
@@ -12270,7 +12366,7 @@ def op_format_staged(tool_filter: Optional[list] = None, verbose: bool = False) 
     try:
         r = subprocess.run(
             ["git", "diff", "--cached", "-z", "--name-only", "--diff-filter=ACMR"],
-            capture_output=True, text=True, timeout=15,
+            capture_output=True, text=True, timeout=15, encoding="utf-8", errors="replace",
         )
         if r.returncode != 0:
             msg = (r.stderr.strip() or "git diff failed")
@@ -12279,8 +12375,11 @@ def op_format_staged(tool_filter: Optional[list] = None, verbose: bool = False) 
         return f"ERROR: git unavailable: {e}\n"
 
     staged = []
+    unreadable = _undecodable_staged_paths(r.stdout)
     for p in r.stdout.split("\x00"):
-        if not p or os.path.islink(p) or not os.path.isfile(p):
+        if not p or _undecodable_at(p) >= 0:
+            continue
+        if os.path.islink(p) or not os.path.isfile(p):
             continue
         real = os.path.realpath(p)
         root = os.path.realpath(os.getcwd())
@@ -12288,9 +12387,11 @@ def op_format_staged(tool_filter: Optional[list] = None, verbose: bool = False) 
             continue
         staged.append(p)
     if not staged:
-        return "no staged files\n"
+        return (unreadable or "") + "no staged files\n"
 
     parts = []
+    if unreadable:
+        parts.append(unreadable.rstrip("\n"))
     for fpath in staged:
         parts.append(f"format_staged: {fpath}")
         block = op_format(fpath, tool_filter, verbose=verbose, gated=True)

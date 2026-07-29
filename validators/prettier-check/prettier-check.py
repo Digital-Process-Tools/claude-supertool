@@ -58,7 +58,7 @@ def main() -> None:
         cmd += ["--ignore-path", prettier_ignore_path]
 
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=15, encoding="utf-8", errors="replace")
     except FileNotFoundError:
         dur = int((time.time() - start) * 1000)
         emit({

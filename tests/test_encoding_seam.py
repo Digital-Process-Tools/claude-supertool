@@ -211,6 +211,208 @@ def test_the_tests_scan_catches_a_read_and_spares_the_rest(tmp_path: Path) -> No
     ]
 
 
+# ── the subprocess half (#501) ────────────────────────────────────────────
+#
+# `subprocess.run(..., text=True)` decodes the child's stdout/stderr with
+# `subprocess._text_encoding()` — the locale codec — and the **strict** error
+# handler. Two defects in one call, and the same edit cures both:
+#
+# * strict decode kills the op on the first byte that is not valid UTF-8.
+#   #498 was the live one: `git merge-tree` writes conflicting blob content to
+#   stdout, a conflicted PNG put an 0x89 on the stream, and `gl-mr` died after
+#   having already printed half its answer.
+# * no `encoding=` means the codec comes from the locale, so a C-locale runner
+#   mangles accented paths, branch names and commit messages even when nothing
+#   crashes. That is #418's defect at a seam #418's scan never covered.
+#
+# #461 listed this class as "~270 sites, runtime-only detection" and that
+# framing is what kept it unfixed: `text=True` with no `errors=` is a purely
+# syntactic property of the call site, and the AST already parsed for the read
+# half enumerates every one of them without executing anything.
+
+_SUBPROCESS_RUNNERS = frozenset({"run", "Popen", "check_output", "check_call", "call"})
+
+# Kwargs whose *value* the rule reads. A non-literal for any of them makes the
+# call unjudgeable rather than clean — see `subprocess_encoding_violations`.
+_DECODE_KWARGS = ("text", "universal_newlines", "encoding", "errors")
+
+
+def _kwarg(node: ast.Call, name: str):
+    """The kwarg's AST value node, or ``None`` when the call does not pass it.
+
+    ``x=None`` is reported as absent on purpose: ``encoding=None`` is exactly
+    what the default does, so a call spelling it out is not pinning anything.
+    """
+    for kw in node.keywords:
+        if kw.arg == name and not (isinstance(kw.value, ast.Constant)
+                                   and kw.value.value is None):
+            return kw.value
+    return None
+
+
+def _runner_name(node: ast.Call) -> str:
+    func = node.func
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    if isinstance(func, ast.Name):
+        return func.id
+    return ""
+
+
+def subprocess_encoding_violations(
+    path: Path,
+) -> Tuple[List[Tuple[int, str, str]], List[Tuple[int, str, str]]]:
+    """``(violations, undecidable)`` for the subprocess calls in ``path``.
+
+    Three states, not two — the pattern ``docs/validators.md`` settles under
+    "Declining instead of guessing". A call is a **violation** when it provably
+    decodes (``text=True``, ``universal_newlines=True`` or any ``encoding=``)
+    and leaves ``encoding=`` or ``errors=`` to the default. It is **clean**
+    when it provably does not decode, or pins both. And it is **undecidable**
+    when the kwargs are not literals the parser can read — ``**kwargs``
+    forwarding, or ``text=some_flag``. Those are returned separately and
+    asserted on separately, because a scan that silently counted them as clean
+    would be a scan whose green means less than it looks like it means.
+
+    What it still cannot see, stated so the green is read correctly:
+
+    * an aliased import (``from subprocess import run as _r``) — the rule keys
+      on the called name, so ``_r(...)`` is invisible. No occurrences today.
+    * a call built through ``getattr(subprocess, name)``. Same, none today.
+    * ``tests/``. 125 further violations live there and are deliberately out of
+      this scan's scope: a test decoding its own fixture output under a hostile
+      locale fails loudly, on a runner, as a red test — not silently, in a
+      user's hands, which is the failure this rule exists to stop. Worth its
+      own issue, not worth doubling this diff.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    violations: List[Tuple[int, str, str]] = []
+    undecidable: List[Tuple[int, str, str]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = _runner_name(node)
+        if name not in _SUBPROCESS_RUNNERS:
+            continue
+        if any(kw.arg is None for kw in node.keywords):
+            undecidable.append(
+                (node.lineno, name, "**kwargs may carry text=/encoding=/errors="))
+            continue
+        values = {key: _kwarg(node, key) for key in _DECODE_KWARGS}
+        opaque = [key for key in _DECODE_KWARGS
+                  if values[key] is not None
+                  and not isinstance(values[key], ast.Constant)]
+        if opaque:
+            undecidable.append(
+                (node.lineno, name, f"{'/'.join(opaque)}= is not a literal"))
+            continue
+        decodes = (
+            any(isinstance(values[k], ast.Constant) and values[k].value is True
+                for k in ("text", "universal_newlines"))
+            or values["encoding"] is not None
+        )
+        if not decodes:
+            continue
+        missing = [k for k in ("encoding", "errors") if values[k] is None]
+        if missing:
+            violations.append((node.lineno, name, " and ".join(missing)))
+    return violations, undecidable
+
+
+def test_the_subprocess_scan_catches_a_bare_text_call_and_spares_the_rest(
+    tmp_path: Path,
+) -> None:
+    """Guards the two enumerators below from passing because they stopped looking.
+
+    One fixture pins all three states at once, with line numbers, so a rule
+    that returned ``([], [])`` — or that flagged everything — fails here.
+    Note the two half-fixes: ``errors=`` alone is still a violation, because
+    the codec is still the locale's, and ``encoding=`` alone is still a
+    violation, because the handler is still strict. Both halves or neither.
+    """
+    fixture = tmp_path / "sample.py"
+    fixture.write_text(
+        "import subprocess\n"
+        "def go(cmd, flag, opts):\n"
+        "    subprocess.run(cmd, text=True)\n"
+        "    subprocess.run(cmd, universal_newlines=True)\n"
+        "    subprocess.check_output(cmd, encoding='utf-8')\n"
+        "    subprocess.run(cmd, text=True, errors='replace')\n"
+        "    subprocess.run(cmd, encoding='utf-8', errors='replace')\n"
+        "    subprocess.run(cmd, capture_output=True)\n"
+        "    subprocess.run(cmd, text=True, encoding=None)\n"
+        "    subprocess.run(cmd, **opts)\n"
+        "    subprocess.run(cmd, text=flag)\n"
+        "    print(cmd)\n",
+        encoding="utf-8",
+    )
+    violations, undecidable = subprocess_encoding_violations(fixture)
+    assert violations == [
+        (3, "run", "encoding and errors"),
+        (4, "run", "encoding and errors"),
+        (5, "check_output", "errors"),
+        (6, "run", "encoding"),
+        (9, "run", "encoding and errors"),
+    ]
+    assert undecidable == [
+        (10, "run", "**kwargs may carry text=/encoding=/errors="),
+        (11, "run", "text= is not a literal"),
+    ]
+
+
+def test_no_shipped_subprocess_decodes_by_locale() -> None:
+    """The enumerator. Every decoding subprocess call in shipped code is pinned.
+
+    ``encoding="utf-8", errors="replace"`` is the default answer: git, gh and
+    glab write UTF-8 regardless of ``LANG``, and where the payload is somebody
+    else's bytes — a blob, a CI log, a commit message — mojibake beats a
+    traceback that lands after half the answer is already on screen.
+
+    It is not the answer everywhere, and the exceptions are the substance of
+    #501: where the decoded text is *written back to disk* or *turned into a
+    filesystem path*, ``errors="replace"`` converts a crash into a wrong
+    answer, so those sites decode with ``replace`` and then refuse on U+FFFD
+    instead of proceeding — the shape #498 settled on with ``_is_binary_hunk``.
+    """
+    offenders = []
+    for path in _shipped_files():
+        violations, _ = subprocess_encoding_violations(path)
+        for lineno, call, missing in violations:
+            offenders.append(
+                f"{path.relative_to(ROOT)}:{lineno}: subprocess {call}() decodes "
+                f"text but leaves {missing} to the default")
+    assert not offenders, (
+        "these calls decode the child's output with the locale codec and the "
+        "strict error handler — so they mangle accented paths under a C locale "
+        "and die outright on the first byte of a binary blob (#498). Pass "
+        'encoding="utf-8", errors="replace", or drop text=/encoding= and '
+        "handle bytes:\n  " + "\n  ".join(offenders)
+    )
+
+
+def test_the_subprocess_scan_declines_rather_than_guessing() -> None:
+    """The honesty half. A call the rule cannot read is not a call that passed.
+
+    ``subprocess.run(cmd, **opts)`` and ``text=some_flag`` are invisible to a
+    syntactic rule, and the tempting move — treat unreadable as clean — is how
+    a scan ends up looking exhaustive while a whole style of call site walks
+    through it. So they are enumerated here instead, and the list is empty
+    today: a new one turns this red and has to be answered, either by pinning
+    the kwargs at the call site or by arguing in review why it cannot be.
+    """
+    unreadable = []
+    for path in _shipped_files():
+        _, undecidable = subprocess_encoding_violations(path)
+        for lineno, call, why in undecidable:
+            unreadable.append(f"{path.relative_to(ROOT)}:{lineno}: {call}() — {why}")
+    assert not unreadable, (
+        "the encoding rule cannot judge these calls, so it declines rather "
+        "than passing them. Spell encoding=/errors= out literally at the call "
+        "site — a forwarded **kwargs hides the one property this rule "
+        "exists to enforce:\n  " + "\n  ".join(unreadable)
+    )
+
+
 GIT_PRESETS = sorted(
     p for p in (ROOT / "presets" / "git").glob("*.py")
     if not p.name.startswith("_")

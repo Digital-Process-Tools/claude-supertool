@@ -156,7 +156,7 @@ Validators are post-write hooks — they run after a file is written and report 
 
 ## Text encoding
 
-Two rules, both enforced by `tests/test_encoding_seam.py`. They exist because four separate defects came out of this seam one at a time ([#400](https://github.com/Digital-Process-Tools/claude-supertool/issues/400), [#415](https://github.com/Digital-Process-Tools/claude-supertool/pull/415), [#418](https://github.com/Digital-Process-Tools/claude-supertool/issues/418), [#431](https://github.com/Digital-Process-Tools/claude-supertool/pull/431)) — each found only once the previous one was fixed, and every one of them on a platform the author was not sitting on.
+Three rules, all enforced by `tests/test_encoding_seam.py`. They exist because four separate defects came out of this seam one at a time ([#400](https://github.com/Digital-Process-Tools/claude-supertool/issues/400), [#415](https://github.com/Digital-Process-Tools/claude-supertool/pull/415), [#418](https://github.com/Digital-Process-Tools/claude-supertool/issues/418), [#431](https://github.com/Digital-Process-Tools/claude-supertool/pull/431)) — each found only once the previous one was fixed, and every one of them on a platform the author was not sitting on.
 
 **1. Every text read and write names its codec.**
 
@@ -180,12 +180,28 @@ assert (tmp_path / "out.txt").read_text() == "x"                   # no
 
 Fixture **writes** stay out of scope. That is where the ~1670 bare calls live, and a `write_text()` of an ASCII fixture cannot fail — enforcing there is the noise that made the original `tests/` exclusion correct.
 
-Two things this scan does not catch, both worth knowing:
+One thing this scan does not catch, worth knowing: **a read reached only on a platform you are not on.** The scan is static, so it enumerates every call site rather than every executed one — that is the half that keeps working for code added later, but it says nothing about which branch runs where.
 
-- **`subprocess.run(..., text=True)` without `encoding=`** decodes the child's output with the same locale codec, and there are ~270 such call sites here. Python only reports it at runtime (`EncodingWarning` from `subprocess._text_encoding`), so it is a separate problem with a separate fix.
-- **A read reached only on a platform you are not on.** The scan is static, so it enumerates every call site rather than every executed one — that is the half that keeps working for code added later, but it says nothing about which branch runs where.
+**2. Every decoding `subprocess` call names its codec *and* its error handler.**
 
-**2. A preset that prints non-ASCII must not depend on the console encoding.**
+```python
+subprocess.run(cmd, capture_output=True)                                        # yes — bytes, nothing decoded
+subprocess.run(cmd, capture_output=True, text=True,
+               encoding="utf-8", errors="replace")                              # yes
+subprocess.run(cmd, capture_output=True, text=True)                             # no  — locale codec, strict handler
+subprocess.run(cmd, capture_output=True, text=True, errors="replace")           # no  — codec still comes from the locale
+subprocess.run(cmd, capture_output=True, encoding="utf-8")                      # no  — handler still strict
+```
+
+Both halves or neither, because they are two different bugs sharing one line ([#501](https://github.com/Digital-Process-Tools/claude-supertool/issues/501)). The **strict handler** kills the op outright on the first byte that is not valid UTF-8: `git merge-tree` writes conflicting blob content to stdout, so one conflicted PNG took `gl-mr` down mid-render ([#498](https://github.com/Digital-Process-Tools/claude-supertool/issues/498)). The **missing codec** is rule 1's bug at a seam rule 1 never covered — `subprocess._text_encoding()` reads the locale, so a `C`-locale runner mangles accented paths, branch names and commit messages without anything crashing at all.
+
+There is no "this one only reads git porcelain, so it is ASCII" exemption. `status`, `diff --name-status`, `diff --stat` and `log --format` all embed paths, branch names, author names and commit messages, and latin-1 commit messages are ordinary in older repositories. Only hashes, counts and `--version` are genuinely safe, and pinning them costs nothing.
+
+**`errors="replace"` is the default answer, not the universal one.** It makes a decode failure *silent* — mojibake rendered as though it were content. Where supertool merely displays the output that is the right trade, because the alternative is a traceback landing after half the answer is already on screen. Where the decoded text becomes **something else** — bytes written back into a user's file, a path handed to the filesystem — it is the wrong trade, because it converts a crash into a wrong answer. Those seams decode with `replace` and then check `_undecodable_at()` for U+FFFD, refusing and naming what happened rather than proceeding. The vim shell verbs (`:!`, `:%!`, `:r !`) and the `git diff --cached -z` path lists in `validate_staged` / `format_staged` are the current members of that set; if you add a call whose output ends up on disk or in an `os.path` call, it belongs there too.
+
+**The scan declines rather than guessing.** `subprocess.run(cmd, **opts)` and `text=some_flag` cannot be judged syntactically, so they are reported as unreadable instead of being counted clean — see `test_the_subprocess_scan_declines_rather_than_guessing`. Spell the kwargs out literally at the call site. Known blind spots, stated so the green reads correctly: an aliased import (`from subprocess import run as _r`), a call built through `getattr`, and `tests/` — which holds 125 further violations and is out of scope, because a test that mis-decodes its own fixture output fails loudly on a runner rather than silently in a user's hands.
+
+**3. A preset that prints non-ASCII must not depend on the console encoding.**
 
 Presets run as separate processes and inherit none of supertool's stream setup. Supertool pins `PYTHONIOENCODING=utf-8` for every child it spawns, so an op invoked through supertool is covered without the script doing anything. A `presets/git/*.py` script is additionally required to call `use_utf8_stdout()` as the first statement of `main()`, because those are the ones run straight from a shell during conflict work, with no supertool in front of them. It lives in `presets/git/_git_common.py` — one definition, never a copy.
 

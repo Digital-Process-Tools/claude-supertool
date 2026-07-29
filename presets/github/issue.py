@@ -18,7 +18,7 @@ def _gh(args: list[str], timeout: int = 10) -> subprocess.CompletedProcess[str]:
     """Run a gh command and return the result."""
     return subprocess.run(
         ["gh"] + args,
-        capture_output=True, text=True, timeout=timeout,
+        capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace",
     )
 
 

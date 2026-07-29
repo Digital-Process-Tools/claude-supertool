@@ -33,7 +33,7 @@ def main() -> None:
     start = time.time()
     try:
         r = subprocess.run(["node", "--check", file],
-                           capture_output=True, text=True, timeout=30)
+                           capture_output=True, text=True, timeout=30, encoding="utf-8", errors="replace")
     except FileNotFoundError:
         emit({"tool": "node-check", "file": file, "ok": False, "count": 1,
               "errors": [{"line": None, "col": None, "severity": "error",

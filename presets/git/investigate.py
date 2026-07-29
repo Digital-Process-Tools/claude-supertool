@@ -27,7 +27,7 @@ def _git(args: list[str], timeout: int = 10) -> subprocess.CompletedProcess[str]
     """Run a git command."""
     return subprocess.run(
         ["git"] + args,
-        capture_output=True, text=True, timeout=timeout,
+        capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace",
     )
 
 
