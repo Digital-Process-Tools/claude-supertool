@@ -8,20 +8,19 @@ from typing import Any
 
 import pytest
 
+from _preset_loader import load_preset_module
+
 PRESET_DIR = Path(__file__).parent.parent / "presets" / "devto"
 
 
 def _load(name: str):
-    for k in ("_auth", "_graphql", "_rest", "_me", "_outbound", "_session", "_resolve"):
-        sys.modules.pop(k, None)
-    sys.path[:] = [p for p in sys.path if "presets/hashnode" not in p]
-    if str(PRESET_DIR) not in sys.path:
-        sys.path.insert(0, str(PRESET_DIR))
-    spec = importlib.util.spec_from_file_location(f"dt_{name}", PRESET_DIR / f"{name}.py")
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    """Load a devto op with hashnode's same-named shims kept out of the way.
+
+    This used to strip every `presets/hashnode` entry from `sys.path`
+    permanently and process-wide (#555). The isolation now lives in
+    `tests/_preset_loader.py`, scoped to the exec and undone afterwards.
+    """
+    return load_preset_module("devto", name, "dt_")
 
 
 publish = _load("publish")
