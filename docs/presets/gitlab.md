@@ -20,6 +20,16 @@ GitLab ops via the `glab` CLI. Replaces the 3-5 separate `glab` calls needed to 
 
 **Casing:** `gl-mr`'s full dashboard prints `Title Case:` labels throughout (`State:`, `Pipeline:`, `Merge status:`, `Merge commit:`); `:status` prints `lowercase:` labels throughout (`state:`, `pipeline:`, `merge_status:`, `merge_commit:`) as part of its terser, slim-dashboard format. Each mode is internally consistent but the two never match each other, so grep the casing for the mode you're reading, not both — the same split as `gh-pr`, see `github.md`.
 
+**`:status` names its non-passing jobs, the same gap `gh-pr:N:status` had ([#619](https://github.com/Digital-Process-Tools/claude-supertool/issues/619)).** Before this, `gl-mr:N:status` printed one word — `pipeline: failed (#5001)` — with no way to tell which job, on a platform whose per-leg data was already one `glab api` call away (`gl-pipeline:ID:failed` proves it). The full dashboard's own failed-job list only fired when the *overall* pipeline status was exactly `failed`, so a job that had already failed mid-run, or one sitting `canceled`/`skipped`, was invisible in the one view actually read in a poll loop. `:status` now fetches the pipeline's jobs — **only** when `pipeline:` is not `success`/empty/not-yet-started, so a green or unstarted pipeline costs nothing extra — and groups every job that is neither passing nor still moving (`running`/`pending`/`created`/`scheduled` resolve on their own) under its own GitLab-spelled label:
+
+```
+pipeline: failed (#5001)
+  failed: pytest (3.10) (job #2)
+  canceled: deploy (job #3)
+```
+
+Same shape as `gh-pr`'s named legs (bounded at 5 per group, `+N more` past that) but not routed through the same `_checks` classifier — GitLab's job vocabulary (`canceled`, one L; `success`/`failed`/`skipped`/`manual`) and GitHub's rollup vocabulary (`CANCELLED`, two Ls, split across `conclusion`/`status`) don't share a mapping anyone has verified, so `gl-mr` names GitLab's own states rather than translating them into GitHub's.
+
 ## Common workflows
 
 **Review an MR before merging:**

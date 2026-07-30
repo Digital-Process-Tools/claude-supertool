@@ -260,6 +260,10 @@ def main() -> int:
         else:
             checks_text, _ = _absence_lines(d, iid)
         print(f"checks: {checks_text}")
+        for line in _checks.named_disclosure(
+            _checks.github_named_states(d.get("statusCheckRollup"))
+        ):
+            print(line)
         print(f"review: {review_decision}")
         if merge_commit:
             print(f"merge_commit: {merge_commit[:12]}")
@@ -343,6 +347,10 @@ def main() -> int:
     else:
         checks_text, merge_note = _absence_lines(d, iid)
     print(f"Checks: {checks_text}")
+    for line in _checks.named_disclosure(
+        _checks.github_named_states(d.get("statusCheckRollup"))
+    ):
+        print(line)
 
     # Changes
     print(f"Changes: {changed_files} files, +{additions} -{deletions}")
