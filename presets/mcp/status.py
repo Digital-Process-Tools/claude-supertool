@@ -30,22 +30,50 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import _proc  # noqa: E402  (the one liveness probe — never os.kill(pid, 0), #429)
-from _paths import list_pidfiles, runtime_dir  # noqa: E402
+from _paths import list_pidfiles, read_pid, runtime_dir  # noqa: E402
 
 
-def find_supertool_json() -> dict:
+def find_supertool_json() -> tuple:
+    """Return `(config, reason)`; a non-empty reason means we found one and could
+    not read it.
+
+    `reason` is empty exactly when the walk answered the question: either a
+    config was read, or there is genuinely none between here and the
+    filesystem root. This used to return a bare `{}` from both (#569), and
+    those two mean opposite things to the reader. An empty config yields an
+    empty `hash_to_name`, so **every** row prints `?` in the NAME column —
+    which is the honest rendering for an orphan daemon and the misleading one
+    for a config that would not parse. "Not declared in your config" sends you
+    hunting a stray process; "your config is malformed" sends you to your
+    JSON.
+
+    Same shape as `list_pidfiles` (#551) and `_paths.read_pid` (#549): the
+    reason travels with the value rather than being flattened into it. Unlike
+    those two it is not a verdict about anything — `main()` keeps exiting `0`
+    (#552) and prints this as a note above a table it still shows.
+
+    A config that parses but is not an object gets the same treatment. It is
+    not the absence this function reports, and it used to reach
+    `cfg.get("mcp")` and raise `AttributeError` out of `mcp_status`.
+    """
     d = os.path.abspath(os.getcwd())
     while True:
         p = os.path.join(d, ".supertool.json")
         if os.path.isfile(p):
             try:
                 with open(p, encoding="utf-8") as f:
-                    return json.load(f)
-            except (OSError, json.JSONDecodeError):
-                return {}
+                    cfg = json.load(f)
+            except OSError as exc:
+                return {}, f"{p}: could not be read: {exc.strerror or exc}"
+            except json.JSONDecodeError as exc:
+                return {}, f"{p}: could not be parsed: {exc}"
+            if not isinstance(cfg, dict):
+                return {}, (f"{p}: could not be used: top level is "
+                            f"{type(cfg).__name__}, not a JSON object")
+            return cfg, ""
         parent = os.path.dirname(d)
         if parent == d:
-            return {}
+            return {}, ""
         d = parent
 
 
@@ -61,40 +89,24 @@ STATUS_DEAD = "dead"
 STATUS_UNKNOWN = "unknown"
 
 
-def read_pid(pid_path: str) -> tuple:
-    """Return `(pid, reason)`; a non-empty reason means the pid is unknowable.
-
-    `reason` is empty exactly when `pid` is a number we actually read off disk.
-    Every other outcome — unreadable file, unparsable contents, a value that is
-    not a process id — returns `0` *and* a reason, and the caller must render
-    `STATUS_UNKNOWN` rather than probe a pid it does not have.
-
-    This used to return `0` alone (#549). Zero is falsy, the probe was skipped,
-    and the row printed `dead` — not a cautious reading of an unreadable file
-    but one of the two possible answers, asserted. `stop.py` already calls the
-    same pidfile a failure rather than a success (#547); a `status` that
-    disagreed with it would mislead the reader sent there to confirm.
-
-    An empty file gets its own reason because it has a specific cause worth
-    naming: a daemon caught between `open` and `write`.
-    """
-    try:
-        raw = Path(pid_path).read_text(encoding="utf-8").strip()
-    except OSError as exc:
-        return 0, f"unreadable pidfile: {exc.strerror or exc}"
-    if not raw:
-        return 0, "empty pidfile — a daemon may be mid-write"
-    try:
-        pid = int(raw)
-    except ValueError:
-        return 0, f"unparsable pidfile: {raw[:40]!r}"
-    if pid <= 0:
-        return 0, f"pidfile holds {pid}, which is not a process id"
-    return pid, ""
+# `read_pid` used to live here (#549) and now comes from `_paths`, imported
+# above so `status.read_pid` still resolves. It moved because `stop.py` needed
+# the same discrimination and had none (#569): the guard against non-positive
+# pids existed only on the surface that reports, not on the one that signals.
 
 
 def main() -> int:
-    cfg = find_supertool_json()
+    cfg, config_error = find_supertool_json()
+    if config_error:
+        # Above the table, on stdout, and not in place of it (#569). The rows
+        # are still worth showing — what the reader loses is only the NAME
+        # column, and this line is what stops `?` being read as "undeclared".
+        # stdout for the same reason as the listing note below: `mcp_status`
+        # exits 0 in every case, and the custom-op runner folds stderr into the
+        # output only on a non-zero status.
+        print(f"Cannot read config: {config_error}")
+        print("  Daemon names cannot be resolved, so NAME shows `?` on every "
+              "row — this is NOT a report that they are undeclared.")
     declared = (cfg.get("mcp") or {}).keys()
     hash_to_name = {hash_for(name): name for name in declared}
 

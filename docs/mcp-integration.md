@@ -213,7 +213,7 @@ automatic caller has:
 | `0` | the daemon was running and is now gone | success |
 | `1` | no daemon was running | success — nothing stale can come from nothing |
 | `2` | bad arguments | failure |
-| `3` | a daemon was found and is still there, or its pidfile was unreadable | failure |
+| `3` | a daemon was found and is still there, or its pidfile could not be read as one pid | failure |
 | `4` | no claim established — a runtime dir whose ownership cannot be verified (#544), or one `--all` could not enumerate (#551) | failure |
 
 `4` covers both ways of not knowing, because nothing downstream would act on the
@@ -277,6 +277,49 @@ come to confirm, and it must not contradict the report.
 Reading an `unknown` row: the daemon may or may not be running. `ps` the socket's
 hash, or `mcp_stop_all` and start again — a duplicate daemon is visible and
 cheap, a daemon everyone believes is gone is not.
+
+`stop.py` reads pidfiles through the same helper and names the same four causes
+([#569](https://github.com/Digital-Process-Tools/claude-supertool/issues/569)),
+so the two surfaces cannot drift. It parsed the file with a bare `int()` before
+that, which said `invalid pidfile` for all four — and, worse, accepted values
+that are not process ids at all. `os.kill` is a selector, not an identity:
+
+| value | what `os.kill` does with it |
+|---|---|
+| `> 0` | signals that one process — the only thing a pidfile can record |
+| `0` | signals **every process in the caller's own process group** |
+| `-1` | signals every process the caller is permitted to signal |
+| `< -1` | signals every process in process group `-pid` |
+
+`int()` accepts `0`, `+0` and `-1`, so a pidfile truncated or zeroed by a failed
+write turned `mcp_stop` into a SIGTERM of everything sharing the caller's
+process group — in a Claude Code session, plausibly the session. `stop.py` now
+refuses every non-positive value without signalling anything and exits `3`:
+nothing was stopped and the daemon's fate is unknown, which is the same
+unanswered question a failed kill leaves.
+
+The corrupt pidfile is **not** deleted. It is the only evidence of whatever
+wrote it, and unlinking it would report `1` ("no daemon was running", a success)
+on the next call for a daemon nobody has accounted for. It keeps failing until a
+human reads it and removes it — `mcp_status` shows it as `unknown` with the
+reason.
+
+A `.supertool.json` that exists and cannot be parsed is reported the same way,
+as a note above the table rather than as an empty config (#569). An empty config
+resolves no names, so every row shows `?` — which reads as "these daemons are
+not declared" when the truth is "your JSON is malformed", and those point at
+opposite next actions:
+
+```
+$ ./supertool 'mcp_status'
+Cannot read config: /…/.supertool.json: could not be parsed: Expecting ',' delimiter: line 4 column 3 (char 61)
+  Daemon names cannot be resolved, so NAME shows `?` on every row — this is NOT a report that they are undeclared.
+NAME             HASH           PID      STATUS   UPTIME     IDLE       SOCKET
+?                6b1c9f0a2d31   4242     alive    812s       3s         /…/supertool-mcp-6b1c9f0a2d31.sock
+```
+
+The exit stays `0` — this is a note, not a verdict — and a config that is absent
+all the way to the filesystem root prints nothing, because that is an answer.
 
 `mcp_status` still exits `0` in every case. It is a report read by a human, not
 a check consumed by a caller; a non-zero exit would make an unreadable pidfile

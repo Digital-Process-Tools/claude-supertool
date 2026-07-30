@@ -141,3 +141,53 @@ def list_pidfiles() -> Tuple[list, str]:
         for name in names
         if name.startswith("supertool-mcp-") and name.endswith(".pid")
     ), ""
+
+def read_pid(pid_path: str) -> Tuple[int, str]:
+    """Return `(pid, reason)`; a non-empty reason means the pid is unknowable.
+
+    `reason` is empty exactly when `pid` is a number we actually read off disk
+    *and* that number can only mean one process. Every other outcome —
+    unreadable file, empty file, unparsable contents, a value that is not a
+    process id — returns `0` *and* a reason, and no caller may probe or signal
+    a pid it does not have.
+
+    The last of those four is the one worth stating as a rule rather than as a
+    comparison, because `os.kill` does not treat its first argument as an
+    identity throughout its range. It is a *selector*, and only one part of
+    the range selects a single process:
+
+        pid  > 0    that one process — the only thing a pidfile can record
+        pid == 0    every process in the *caller's own* process group
+        pid == -1   every process the caller is permitted to signal
+        pid  < -1   every process in process group `-pid`
+
+    A pidfile names one daemon. Only a positive value can express that, so
+    every non-positive value read out of one is not a pid we disagree with —
+    it is a value from a different namespace, and handing it to `os.kill` is a
+    broadcast, not a mistargeted kill. `int()` accepts `"0"`, `"+0"` and
+    `"-1"` without complaint, so nothing upstream of this rejects them.
+
+    Empty gets its own reason because it has a specific cause worth naming: a
+    daemon caught between `open` and `write`.
+
+    This lived in `status.py` (#549), which is the surface that only *reads*.
+    `stop.py`, the surface that actually sends signals, had no equivalent and
+    called `int(...)` directly — so the guard existed in the one place where
+    getting it wrong cost a wrong row, and was missing from the one place
+    where it cost a SIGTERM to the caller's process group (#569). It lives
+    here now so there is one reader and the two surfaces cannot drift, which
+    is what `docs/mcp-integration.md` already promises they will not do.
+    """
+    try:
+        raw = Path(pid_path).read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        return 0, f"unreadable pidfile: {exc.strerror or exc}"
+    if not raw:
+        return 0, "empty pidfile — a daemon may be mid-write"
+    try:
+        pid = int(raw)
+    except ValueError:
+        return 0, f"unparsable pidfile: {raw[:40]!r}"
+    if pid <= 0:
+        return 0, f"pidfile holds {pid}, which is not a process id"
+    return pid, ""
