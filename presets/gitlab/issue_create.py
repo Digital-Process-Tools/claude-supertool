@@ -61,19 +61,29 @@ def _validate(payload: dict) -> str | None:
 
 
 def main() -> int:
-    if len(sys.argv) < 2:
-        print("ERROR: usage: issue_create.py PAYLOAD_FILE (or - for stdin)")
+    raw_arg = sys.argv[1] if len(sys.argv) > 1 else ""
+    path = raw_arg[1:] if raw_arg.startswith("@") else raw_arg
+    if not path:
+        # supertool's {arg} substitution never omits the placeholder — a
+        # missing @FILE arrives here as an empty string, not a missing
+        # argv slot, so this must be checked explicitly rather than relying
+        # on len(sys.argv). See #620.
+        print(
+            "ERROR: gl-issue-create needs a payload — "
+            "gl-issue-create:@FILE (JSON or TOML with title/description)."
+        )
         return 1
 
-    path = sys.argv[1]
-
     try:
-        payload = _load_payload(path)
+        payload = _load_payload(raw_arg)
     except FileNotFoundError:
         print(f"ERROR: payload file not found: {path}")
         return 1
+    except IsADirectoryError:
+        print(f"ERROR: payload path is a directory, not a file: {path}")
+        return 1
     except (json.JSONDecodeError, ValueError) as e:
-        print(f"ERROR: failed to parse payload: {e}")
+        print(f"ERROR: failed to parse payload: {e} (expected JSON or TOML with title/description)")
         return 1
 
     if not payload.get("project"):
