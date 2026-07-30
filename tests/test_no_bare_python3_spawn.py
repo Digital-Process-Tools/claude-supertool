@@ -22,6 +22,14 @@ green the whole time. A check that cannot see the interesting half produces
 a signal indistinguishable from clean — the house defect, applied to the
 house's own guard. The walk now starts at the repository root.
 
+#575 — that widened walk then read machine state as source. A `build/`
+left by `pip install .` holds a snapshot of `supertool.py` from whenever it
+was last built, so the guard reported a violation in a file that is not
+source, is not shipped, and had been fixed hours earlier — invisible on CI,
+red on every machine that has ever built. Scope is now asked of git rather
+than spelled out as names; `scanned_files` below carries that reasoning and
+why the two obvious alternatives lost.
+
 ## What counts as a violation
 
 The literal is a violation where it *is* the interpreter: where the value
@@ -103,10 +111,20 @@ for `os.exec*` and `shutil.which`.
 from __future__ import annotations
 
 import ast
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Iterator, NamedTuple
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# Only reached when git cannot answer at all (see `scanned_files`). Named
+# build-system output, which is machine state by the same reasoning as
+# `__pycache__` — never a substitute for git's answer, only a floor under it.
+_ARTIFACT_DIR_NAMES = frozenset({"build", "dist", "htmlcov"})
+_ARTIFACT_DIR_SUFFIXES = (".egg-info",)
 
 _SUBPROCESS_SPAWN_ATTRS = {"run", "Popen", "check_output", "check_call"}
 _OS_EXEC_ATTRS = {"execv", "execve", "execvp", "execvpe",
@@ -245,6 +263,78 @@ def _iter_violations(source: str, filename: str) -> Iterator[tuple[int, str]]:
                     yield default.lineno, "parameter default"
 
 
+def _git_ignored_dirs(root: Path = REPO_ROOT) -> frozenset[str] | None:
+    """Every directory git reports as ignored, repo-root-relative, carrying
+    the trailing slash git writes — or None when git has no answer.
+
+    Asking git is the decision #449 already made for supertool's own walk
+    (`_git_ignored_dirs` in supertool.py): negations, nested ignore files,
+    `.git/info/exclude` and the user's global excludes are semantics that a
+    test has no business reimplementing, and getting any of them wrong hides
+    files. `--directory` collapses an ignored tree to its top entry, so the
+    answer costs one subprocess and never descends into what it is telling
+    us to skip.
+
+    None means "no opinion", never "nothing is ignored". The caller has to
+    fall back rather than read an unanswered question as a clean sheet —
+    that reading is #559's defect, and putting it inside this guard would be
+    the house defect wearing the guard's own uniform.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "ls-files", "-z", "--others", "--ignored",
+             "--exclude-standard", "--directory", "--no-empty-directory"],
+            cwd=str(root), capture_output=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    entries = proc.stdout.decode("utf-8", "surrogateescape").split("\0")
+    return frozenset(entry for entry in entries if entry.endswith("/"))
+
+
+def _is_machine_state(rel: str, ignored: frozenset[str] | None) -> bool:
+    """True when this repo-root-relative posix path is machine state rather
+    than repository source.
+
+    Two rules, in order. The names — dot-anything and `__pycache__` — always
+    apply, because `.git` is never listed by `ls-files` and a developer's
+    `.venv` may sit outside every ignore file. Then the property: git's own
+    answer to "is this ignored?", which is what makes `build/` (#575) exempt
+    without anyone having had to anticipate `build/`.
+    """
+    parts = rel.split("/")
+    if any(part.startswith(".") or part == "__pycache__" for part in parts):
+        return True
+    if ignored is None:
+        return any(name in _ARTIFACT_DIR_NAMES
+                   or name.endswith(_ARTIFACT_DIR_SUFFIXES)
+                   for name in parts[:-1])
+    return any(rel.startswith(prefix) for prefix in ignored)
+
+
+def _scanned_with(ignored: frozenset[str] | None,
+                  root: Path = REPO_ROOT) -> list[Path]:
+    """`scanned_files()` with the ignore answer and the walk root injected.
+
+    Both are parameters so that #575's regression test can stage a real
+    build artifact in a real throwaway git repo instead of in this one. The
+    suite runs under `-n auto`; a test that writes a violating .py into the
+    repository root races every other worker's copy of this very scan, which
+    is a worse bug than the one it would be pinning.
+    """
+    files = [
+        path for path in sorted(root.rglob("*.py"))
+        if not _is_machine_state(path.relative_to(root).as_posix(), ignored)
+    ]
+    assert files, (
+        "the exclusion rule pruned every Python file in the repository. "
+        "That is not a clean repo, it is a guard scanning nothing — the "
+        "failure that let #559 live for eight months under a green check.")
+    return files
+
+
 def scanned_files() -> list[Path]:
     """Every Python source file in the repository.
 
@@ -256,13 +346,44 @@ def scanned_files() -> list[Path]:
     utils.py) that are not pytest modules but are Python that could spawn,
     and nothing about sitting in a fixture directory exempts a file from the
     same PATH-resolution bet.
+
+    #575 added a third exclusion of the same kind, and deliberately not a
+    third *name*. A stale `build/lib/supertool.py` left behind by `pip
+    install .` reported a `shutil.which("python3")` that the real file had
+    not contained for hours: red on every machine that has ever built,
+    invisible on CI, and unfixable by fixing anything. `build/` is the same
+    category the two exclusions above already describe — it was simply not
+    anticipated, which is the argument against writing the category out as
+    names at all. So the category is asked of the thing that already owns
+    it: git. Anything git reports as ignored is machine state; the list
+    maintains itself, and `dist/`, `*.egg-info/`, `htmlcov/` and the next
+    build system's directory are covered before anyone files them.
+
+    Two alternatives lost, both for the same reason.
+
+    `git ls-files` — scanning *tracked* files — is the tempting version of
+    this and is wrong in the direction this repo keeps getting burned by. It
+    exempts every file that is untracked because it is being written right
+    now, which is exactly when this guard earns its keep, and it degrades to
+    scanning *nothing* wherever git is absent: a source tarball, a vendored
+    copy, a Docker build without `.git`. An empty scan and a clean repo are
+    indistinguishable in the output, which is #559's mechanism precisely.
+    The direction here is the opposite by construction: when git cannot
+    answer, the walk is *wider* than it needs to be, never narrower, so the
+    degraded mode can only cost a false alarm someone can read — and
+    `_scanned_with` refuses an empty list outright rather than reporting it
+    clean.
+
+    Extending the exclusion list with `build/`, `dist/`, `*.egg-info/` was
+    the other option, and it is what the fallback below actually is — but
+    only as the fallback. #564 and #555 both concluded that a denylist is
+    where the next instance hides, and that holds for a list that decides
+    what gets scanned. It does not hold nearly as hard for one that can only
+    ever fire when git is unavailable and can only ever produce noise, never
+    silence. Keeping it there costs three names and removes the one case the
+    git route cannot serve.
     """
-    return [
-        path for path in sorted(REPO_ROOT.rglob("*.py"))
-        if not any(part.startswith(".")
-                   for part in path.relative_to(REPO_ROOT).parts)
-        and "__pycache__" not in path.parts
-    ]
+    return _scanned_with(_git_ignored_dirs())
 
 
 def _find_offenders() -> list[str]:
@@ -483,3 +604,114 @@ def test_guard_flags_a_config_value_fallback():
         "    subprocess.run([cfg.python or \"python3\", script])\n"
     )
     assert _linenos(source) == [4]
+
+
+_VIOLATING_SOURCE = """import shutil
+
+
+def probe():
+    return shutil.which("python3")
+"""
+
+
+def _sandbox_repo(root: Path) -> Path | None:
+    """A throwaway git repo with a gitignored `build/`, the stale artifact
+    inside it, and an ordinary *untracked* source file beside it. Returns
+    None when git is unavailable, which is the fallback's territory."""
+    try:
+        init = subprocess.run(["git", "init", "-q", str(root)],
+                              capture_output=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if init.returncode != 0:
+        return None
+    (root / ".gitignore").write_text("build/\n", encoding="utf-8")
+    artifact = root / "build" / "lib" / "_stale_copy.py"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text(_VIOLATING_SOURCE, encoding="utf-8")
+    (root / "still_being_written.py").write_text(_VIOLATING_SOURCE,
+                                                 encoding="utf-8")
+    return artifact
+
+
+def test_a_build_artifact_is_not_scanned_but_untracked_source_still_is(tmp_path):
+    """#575, pinned from both sides in one test on purpose.
+
+    A stale `build/lib/supertool.py` left by `pip install .` reported a
+    violation the real file had not contained for hours — a red the guard's
+    own CI can never see, on a file that is not source, is not shipped, and
+    cannot be fixed by fixing anything. The first person to hit it
+    reasonably concludes the check is noisy, and the next real instance
+    ships underneath a guard nobody reads.
+
+    The second half is the half that matters more, and it is why this is one
+    test and not two. "Ignores build artifacts" is trivially satisfied by a
+    scan that walks nothing at all — the exact defect #564 and #559 are
+    about — so the same literal sits in an ordinary, *untracked* file beside
+    the artifact and must still be reported. Untracked is deliberate: it is
+    the state of a file being written right now, which is when this guard is
+    most worth having, and it is the case that rules out narrowing the walk
+    to `git ls-files`.
+
+    Staged in a real throwaway repo rather than in this one, so that real
+    `git ls-files` runs against a real `.gitignore` and no worker of the
+    `-n auto` suite ever sees a violating .py appear under its feet.
+    """
+    artifact = _sandbox_repo(tmp_path)
+    if artifact is None:
+        pytest.skip("git unavailable; the fallback is pinned separately")
+
+    ignored = _git_ignored_dirs(tmp_path)
+    assert ignored is not None and "build/" in ignored, (
+        f"git did not report build/ as ignored: {ignored}")
+
+    scanned = _scanned_with(ignored, tmp_path)
+    assert artifact not in scanned, (
+        "a gitignored build artifact is being scanned as repository source")
+
+    probe = tmp_path / "still_being_written.py"
+    assert probe in scanned, (
+        "an untracked source file is not scanned — the walk has been "
+        "narrowed to tracked files, which exempts every file still being "
+        "written, and this guard exists for exactly those files")
+    assert _linenos(probe.read_text(encoding="utf-8")) == [5], (
+        "the literal in ordinary source went unreported — excluding build "
+        "artifacts must not be paid for by seeing less real code")
+
+
+def test_the_exclusion_is_a_property_and_not_a_list_of_names():
+    """What #575 actually bought. `build/` is exempt because git says it is
+    ignored, not because anyone wrote "build" down — so `dist/`, an
+    `.egg-info/`, `htmlcov/` and whatever the next packaging tool emits are
+    all covered before they are filed as bugs. Ordinary source under a
+    similarly-named path is untouched."""
+    ignored = frozenset({"build/", "vendor/dist/"})
+    assert _is_machine_state("build/lib/supertool.py", ignored)
+    assert _is_machine_state("vendor/dist/pkg/mod.py", ignored)
+    assert not _is_machine_state("presets/mcp/_spawn.py", ignored)
+    assert not _is_machine_state("tests/fixtures/mock_mcp_server.py", ignored)
+
+
+def test_the_no_git_fallback_is_wider_than_it_needs_to_be_never_narrower():
+    """The degraded path, where git could not answer. It is a denylist,
+    which #564 and #555 are both against — tolerable only here, because it
+    cannot cause the failure those issues are about. Its worst outcome is a
+    false alarm on an unnamed artifact directory, which someone reads and
+    files; a tracked-files scan's worst outcome is silence, which nobody
+    reads at all."""
+    assert _is_machine_state("build/lib/supertool.py", None)
+    assert _is_machine_state("dist/supertool/mod.py", None)
+    assert _is_machine_state("supertool.egg-info/x.py", None)
+    assert not _is_machine_state("presets/mcp/_spawn.py", None)
+    assert not _is_machine_state("supertool.py", None)
+
+
+def test_a_pathological_ignore_answer_fails_loudly_instead_of_reporting_clean():
+    """The one way this guard could inherit the defect it checks for: an
+    exclusion rule broad enough to prune everything would report zero
+    offenders and read exactly like a clean repository. An empty scan is a
+    hard error, never a pass — this is the whole reason `git ls-files`
+    (tracked files only) was not the shape chosen, and it is pinned here so
+    that no future widening of the exclusions can reintroduce it quietly."""
+    with pytest.raises(AssertionError, match="scanning nothing"):
+        _scanned_with(frozenset({""}))
