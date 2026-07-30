@@ -1,6 +1,7 @@
 """Tests for the ruby-check validator adapter."""
 from __future__ import annotations
 
+import importlib.util
 import json
 import shutil
 import subprocess
@@ -12,6 +13,14 @@ import pytest
 from _winenv import empty_path_env
 
 ADAPTER = Path(__file__).parent.parent / "validators" / "ruby-check" / "ruby-check.py"
+
+# In-process import (not via _run's subprocess spawn) so subprocess.run inside
+# the adapter can be monkeypatched, to reproduce a broken/aliased "ruby" on
+# PATH without depending on one actually existing.
+_spec = importlib.util.spec_from_file_location("ruby_check_adapter", ADAPTER)
+assert _spec is not None and _spec.loader is not None
+ruby_check = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(ruby_check)
 
 
 def _run(file_path: str) -> dict:
@@ -156,3 +165,41 @@ def test_source_context_present_on_error(tmp_path: Path) -> None:
     assert "source_context" in err
     assert isinstance(err["source_context"], list)
     assert len(err["source_context"]) > 0
+
+
+# ---------------------------------------------------------------------------
+# "ruby" resolved but did not execute usefully — the checker-cannot-run class
+# ---------------------------------------------------------------------------
+
+def test_unexplained_nonzero_exit_with_empty_stderr_is_a_named_error(monkeypatch, tmp_path, capsys) -> None:
+    """`shutil.which('ruby')` succeeding is not proof the spawned process runs
+    like ruby -c. On a machine where the resolved name is a shim/alias that
+    exits non-zero without printing anything (the class this repo has hit
+    repeatedly for `python3` on Windows: #529/#559/#564/#572), the adapter
+    must not fold that into `ok: False, count: 0, errors: []` — a "finding"
+    that names nothing is the same defect `validators/phpstan/phpstan.py`
+    (#263) and `validators/common/refusal.py` already exist to prevent one
+    layer over: a checker that could not run must say so, never emit a
+    finding-shaped receipt with no finding in it.
+    """
+    f = tmp_path / "good.rb"
+    f.write_text('def hello\n  puts "hello"\nend\n')
+
+    monkeypatch.setattr(ruby_check.shutil, "which", lambda name: "/usr/bin/ruby")
+    monkeypatch.setattr(
+        ruby_check.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(
+            args=["ruby", "-c", str(f)], returncode=1, stdout="", stderr=""
+        ),
+    )
+    monkeypatch.setattr(sys, "argv", ["ruby-check.py", str(f)])
+
+    ruby_check.main()
+    out = json.loads(capsys.readouterr().out)
+
+    assert out["ok"] is False
+    assert out["count"] >= 1, "an unexplained non-zero exit must be a named error, not a silent finding of nothing"
+    assert out["errors"], "errors must not be empty when ok is False"
+    assert out["errors"][0]["code"] == "adapter"
+    assert "1" in out["errors"][0]["msg"]
