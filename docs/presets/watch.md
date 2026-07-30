@@ -787,7 +787,7 @@ the consumer's reasoning is in
 
 **Payload keys are also name-capped**: `payload` may not carry a key named
 `watcher_source`, `id`, `event`, `ts`, `first_tick`, `source`, `clamped`,
-`collided` or `__proto__`, because the consumer writes those itself
+`collided`, `unsendable` or `__proto__`, because the consumer writes those itself
 ([#609](https://github.com/Digital-Process-Tools/claude-supertool/issues/609)).
 Until #609 the payload was merged *over* them, so a `payload.id` silently
 re-aimed the event — an event announced as `gitlab-mr 33173: pipeline_failed` was
@@ -795,6 +795,25 @@ delivered as `not-gitlab 11111: pipeline_succeeded`, every surface agreeing.
 Such a key is now ignored and disclosed in a `collided` attribute and in the
 body, naming the key and the reserved set. Rename the field at the source
 (`mr_id`, `event_kind`) rather than relying on it arriving.
+
+**A payload value the bridge will not coerce is disclosed too**, in an
+`unsendable` attribute
+([#612](https://github.com/Digital-Process-Tools/claude-supertool/issues/612)).
+`_meta` is a string map the receiver enforces with a schema, so only strings,
+booleans and finite numbers can be sent; an object, array, `null`, `undefined`,
+`NaN` or an infinity is refused rather than stringified — `String({})` is
+`"[object Object]"`, which reads downstream as data somebody meant to send.
+Until #612 that refusal was silent, so a producer whose key was dropped for
+*size* was told, one dropped for *colliding* was told, and one dropped for
+*being an object* was not. The disclosure names the key and the value's
+**shape** (`object`, `array`, `null`, …), never its contents — quoting is
+precisely what the refusal exists to avoid. Send a pre-serialised string
+(`tags: sorted(...)` → `tags: ",".join(...)`) rather than relying on the
+structure arriving.
+
+The three disclosures share one vocabulary and one bound: each names up to five
+keys and then `+N more`, and each is applied *after* the size clamp, so a clamp
+can never withhold the disclosure about itself.
 
 Consumers can rely on `ts/source/id/event/payload/first_tick` always being present. Extra fields inside `payload` vary by source — see each source's `events.json` and `poller.py`. `gitlab-mr` payloads additionally carry an [`observed_*` snapshot](#gitlab-mr-events-carry-the-state-that-produced-them-435) of the state that produced the event, timestamped so its age is readable without a call back.
 
