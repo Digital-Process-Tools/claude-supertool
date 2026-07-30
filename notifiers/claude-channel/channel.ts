@@ -58,6 +58,88 @@ interface WatchEvent {
 // notification protocol, so we sanitize keys here too.
 const ATTR_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
+/** Exit code for a cap override that is not a usable number. */
+const EXIT_BAD_CAP = 4;
+
+/**
+ * A size cap from the environment, or the default.
+ *
+ * An unreadable override exits rather than falling back. Quietly substituting
+ * the default would leave an operator who set `…_ATTR_MAX=2O48` believing a
+ * limit is in force that isn't, which is the failure this whole file is about
+ * wearing an operations hat.
+ */
+function capFromEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1) {
+    process.stderr.write(
+      `claude-channel: refusing to start — ${name}=${raw} is not a positive integer\\n`,
+    );
+    process.exit(EXIT_BAD_CAP);
+  }
+  return n;
+}
+
+/**
+ * How much of the session's context window one event may spend (#605).
+ *
+ * The window is the scarce resource here: a Claude Code session is ~200K
+ * tokens, and at ~4 chars per token that is ~800 KB of text for the whole
+ * conversation. One measured event carrying two 400 KB strings left this
+ * server at 1,600,261 bytes — twice the entire window, in one notification,
+ * for one MR going red.
+ *
+ * The numbers are set from what real pollers actually send, not from what
+ * felt safe. Across ten live watchers the largest complete payload was 488
+ * characters and its longest single value 117 (an MR title); `gitlab-mr`
+ * already bounds its one unbounded field to five job names (`FAILED_JOBS_MAX`).
+ * So:
+ *
+ * - `ATTR_MAX_CHARS` 2048 is ~17x the longest value ever observed. Nothing at
+ *   that size is a title or a URL; it is a log paste or a field somebody
+ *   widened, and it is the shape #605 reported.
+ * - `EVENT_MAX_CHARS` 8192 is ~17x the largest complete payload observed, and
+ *   ~1% of the context window — the budget for one event, chosen so that a
+ *   busy radar day is spent on events rather than on any single one of them.
+ *   It is the *necessary* axis: 2,000 well-formed 200-char attributes measured
+ *   425,123 bytes delivered and no per-attribute limit touches them.
+ *
+ * `LINE_MAX_CHARS` is a different budget and deliberately far larger. It is
+ * what may be *assembled* before a newline arrives, not what may be delivered:
+ * an oversized-but-parseable event has to reach `buildMeta` in order to be
+ * clamped and disclosed, so refusing to parse at the delivery cap would turn
+ * every disclosure into a silent loss. Above 1 MB there is no event anyone
+ * meant to send, and holding the bytes costs real memory (see the read loop).
+ *
+ * All three are overridable for an operator who knows their traffic, matching
+ * `GL_JOB_RAW_MAX_LINES`.
+ */
+const ATTR_MAX_CHARS = capFromEnv("SUPERTOOL_CHANNEL_ATTR_MAX", 2048);
+const EVENT_MAX_CHARS = capFromEnv("SUPERTOOL_CHANNEL_EVENT_MAX", 8192);
+const LINE_MAX_CHARS = capFromEnv("SUPERTOOL_CHANNEL_LINE_MAX", 1_048_576);
+
+/**
+ * Keys that identify the event rather than describe it.
+ *
+ * These are never withheld to save space. They are what makes an event
+ * actionable at all — "gitlab-mr 33173: pipeline_failed" is the entire product
+ * of this bridge — and they are tiny, so they are never the reason an event is
+ * over budget. An event whose *routing* is oversized has nothing worth
+ * delivering and is dropped instead (see `clampMeta`).
+ */
+const ROUTING_KEYS = new Set(["watcher_source", "id", "event", "ts", "first_tick"]);
+
+/** One attribute that did not survive the cap, and how big it really was. */
+interface Withheld {
+  key: string;
+  chars: number;
+}
+
+/** How many withheld attributes are named before the list is summarised. */
+const WITHHELD_NAMED_MAX = 5;
+
 /**
  * The string form of a value, or null when it has none worth sending.
  *
@@ -129,19 +211,121 @@ function buildMeta(raw: unknown): Record<string, string> | null {
   return meta;
 }
 
-function buildContent(raw: unknown, meta: Record<string, string>): string {
+/**
+ * The sentence a clamped event carries about its own clamping.
+ *
+ * It names the attributes and their *real* sizes, because "title was too big"
+ * is actionable and "something was too big" is not. The list is bounded the
+ * way `gitlab-mr`'s `observed_failed_jobs` is bounded — a `+N more` marker
+ * inside the value, so a surface rendering this one attribute cannot read the
+ * first five as the whole story.
+ *
+ * The short form is the fallback for the case where the *key names* are
+ * themselves enormous: a disclosure that broke the cap it is announcing would
+ * be an easy joke and a real bug.
+ */
+function describeWithheld(withheld: Withheld[]): string {
+  const limits =
+    `limits: ${ATTR_MAX_CHARS} chars/attribute, ${EVENT_MAX_CHARS} chars/event`;
+  const noun = withheld.length === 1 ? "attribute" : "attributes";
+  const named = withheld
+    .slice(0, WITHHELD_NAMED_MAX)
+    .map((w) => `${w.key} (${w.chars} chars)`);
+  if (withheld.length > named.length) {
+    named.push(`+${withheld.length - named.length} more`);
+  }
+  const full = `${withheld.length} ${noun} withheld — ${named.join(", ")}; ${limits}`;
+  if (full.length <= ATTR_MAX_CHARS) return full;
+  return `${withheld.length} ${noun} withheld; ${limits}`;
+}
+
+/**
+ * Total characters `meta` costs the session — keys included, since every key
+ * is rendered as an attribute name in the `<channel>` tag.
+ */
+function metaChars(meta: Record<string, string>): number {
+  let total = 0;
+  for (const [k, v] of Object.entries(meta)) total += k.length + v.length;
+  return total;
+}
+
+/**
+ * Bring `meta` inside the size caps, reporting what that cost. `null` means
+ * the event cannot be delivered at all.
+ *
+ * **Attributes are withheld whole, never shortened.** A 400 KB title has no
+ * honest short form, in exactly the sense `asAttr` already uses for structure:
+ * `String({})` is "[object Object]" and reads downstream as data somebody meant
+ * to send, and the first 2,048 characters of a title read downstream as the
+ * title. Truncating converts "your event was too big" into "the tool quietly
+ * showed you something else", so nothing here truncates — the attribute goes,
+ * and `clamped` says it went.
+ *
+ * **The event is not dropped for it.** Dropping would lose the routing signal
+ * — that MR 33173 went red — over bytes that were never the point, and a
+ * silently absent event is the failure #554 was filed about. The one case with
+ * no good half is a *routing* key over the cap: withholding it delivers a
+ * notification that says nothing about what happened, so that returns `null`
+ * and the caller drops it through the existing loud path.
+ *
+ * The per-event pass removes largest-first, which reaches the budget by
+ * withholding the fewest attributes — the reader keeps the most distinct
+ * facts, rather than the most bytes.
+ */
+function clampMeta(meta: Record<string, string>): Withheld[] | null {
+  for (const key of ROUTING_KEYS) {
+    const value = meta[key];
+    if (value !== undefined && value.length > ATTR_MAX_CHARS) return null;
+  }
+
+  const withheld: Withheld[] = [];
+  for (const [k, v] of Object.entries(meta)) {
+    if (ROUTING_KEYS.has(k)) continue;
+    if (v.length > ATTR_MAX_CHARS) {
+      withheld.push({ key: k, chars: v.length });
+      delete meta[k];
+    }
+  }
+
+  let size = metaChars(meta);
+  if (size > EVENT_MAX_CHARS) {
+    const byCost = Object.keys(meta)
+      .filter((k) => !ROUTING_KEYS.has(k))
+      .sort((a, b) => meta[b].length + b.length - (meta[a].length + a.length));
+    for (const k of byCost) {
+      if (size <= EVENT_MAX_CHARS) break;
+      size -= k.length + meta[k].length;
+      withheld.push({ key: k, chars: meta[k].length });
+      delete meta[k];
+    }
+  }
+  // Routing alone can exceed the budget only if several routing values sit
+  // just under the per-attribute cap, and it is still delivered: routing is
+  // the thing the event exists to carry. The alternative is a silent loss.
+  return withheld;
+}
+
+function buildContent(
+  raw: unknown,
+  meta: Record<string, string>,
+  withheld: Withheld[],
+): string {
   const ev = raw as Partial<WatchEvent>;
   // The <channel> tag body — Claude reads this as the event's narrative.
   // Keep it short and route-oriented; payload details live in attributes.
-  // Routing values come from `meta` so the body and the attributes cannot
-  // disagree about what this event is.
-  const payload = (ev.payload ?? {}) as Record<string, unknown>;
-  const url = payload.url;
-  const title = payload.title;
+  // Every value here comes from `meta` so the body and the attributes cannot
+  // disagree about what this event is — or, since #605, about what it still
+  // contains: reading `payload` again below would put the very bytes that were
+  // just withheld straight back into the narrative, which is the whole 1.6 MB.
   const suffix = ev.first_tick === true ? "  (state at watcher start)" : "";
   const lines: string[] = [`${meta.watcher_source} ${meta.id}: ${meta.event}${suffix}`];
-  if (typeof title === "string" && title) lines.push(title);
-  if (typeof url === "string" && url) lines.push(url);
+  if (meta.title) lines.push(meta.title);
+  if (meta.url) lines.push(meta.url);
+  // The disclosure goes in the body as well as in an attribute. The body is
+  // what Claude reads as prose, and an event that was reduced has to be
+  // distinguishable from a complete one *from the event itself* — not by
+  // anyone thinking to go and compare it against the source.
+  if (withheld.length > 0) lines.push(`[claude-channel] ${describeWithheld(withheld)}`);
   return lines.join("\n");
 }
 
@@ -343,8 +527,18 @@ async function bindOrRefuse(srv: net.Server): Promise<void> {
 
 const server = net.createServer((conn) => {
   let buf = "";
+  // True while we are throwing away the tail of a line that was refused for
+  // length. Resuming mid-line would hand `JSON.parse` a fragment, and a
+  // fragment that happens to parse is an event nobody sent.
+  let resyncing = false;
   conn.setEncoding("utf-8");
   conn.on("data", (chunk: string) => {
+    if (resyncing) {
+      const cut = chunk.indexOf("\n");
+      if (cut === -1) return;  // still inside the refused line
+      resyncing = false;
+      chunk = chunk.slice(cut + 1);
+    }
     buf += chunk;
     let nl = buf.indexOf("\n");
     while (nl !== -1) {
@@ -370,10 +564,19 @@ const server = net.createServer((conn) => {
           drop(line, "missing or non-scalar source/id/event");
           continue;
         }
+        const withheld = clampMeta(meta);
+        if (withheld === null) {
+          drop(line, `routing key over ${ATTR_MAX_CHARS} chars — nothing routable to deliver`);
+          continue;
+        }
+        // Added after the clamp, and deliberately not counted against it. An
+        // event that went one line over budget in order to say it was clamped
+        // is correct; one that stayed under by staying quiet is the defect.
+        if (withheld.length > 0) meta.clamped = describeWithheld(withheld);
         mcp
           .notification({
             method: "notifications/claude/channel",
-            params: { content: buildContent(ev, meta), meta },
+            params: { content: buildContent(ev, meta, withheld), meta },
           })
           .catch((err) => {
             // Surface to stderr so `claude --debug` picks it up. Common causes:
@@ -383,6 +586,23 @@ const server = net.createServer((conn) => {
       } catch (err) {
         drop(line, `handler threw: ${String(err)}`);
       }
+    }
+    // Everything above consumed the complete lines; what is left is a partial
+    // one. Nothing bounded it until #605, and an NDJSON stream that never
+    // sends a newline is not hypothetical — a poller killed mid-write does it.
+    // Measured on 4da713f: 50 MB with no newline took this server from 74 MB
+    // to 770 MB RSS, super-linearly (each chunk rescans the whole buffer),
+    // delivering nothing, logging nothing and staying green from every angle
+    // a session can check. That is #554's invisible failure with a memory leak
+    // attached, so it is refused out loud and the connection resyncs.
+    if (buf.length > LINE_MAX_CHARS) {
+      drop(
+        buf,
+        `line exceeded ${LINE_MAX_CHARS} chars with no newline (${buf.length} buffered)` +
+          " — discarding to the next newline",
+      );
+      buf = "";
+      resyncing = true;
     }
   });
   conn.on("error", () => {
