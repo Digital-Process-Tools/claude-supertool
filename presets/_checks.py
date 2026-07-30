@@ -20,6 +20,7 @@ whatever GitHub or GitLab adds next; the sum cannot.
 """
 from __future__ import annotations
 
+import re
 from collections import Counter
 from typing import Iterable, List, Sequence
 
@@ -44,6 +45,20 @@ NO_CHECKS = "none reported — no check runs on this commit"
 # long costs a waiting reader nothing, while erring short would put the word
 # UNKNOWN on a perfectly healthy PR.
 CHECK_CREATION_GRACE_SECS = 900
+
+# Printed instead of a bare `none` when a GitLab MR carries no pipeline (#587).
+# `Pipeline: none` is the GitLab spelling of the sentence #585 removed: it reads
+# as "there is no CI on this ref" — the *never* leg — when it is equally the
+# just-pushed leg. There is deliberately no grace window here: the ~15min above
+# is measured GitHub creation latency, and inventing a GitLab equivalent with no
+# measurement behind it would be guessing in the shape of evidence. So this leg
+# only ever declines, and a measured window can be added later.
+NO_PIPELINE = (
+    "none reported — whether one is still coming is UNKNOWN. GitLab makes a "
+    "pipeline at push time, so a missing one can mean no job matched this ref, "
+    "and it can equally mean the head was just pushed or the MR's pipeline is "
+    "not attached to this payload. Check the MR's Pipelines tab."
+)
 
 PASSED_STATES = frozenset({"SUCCESS"})
 
@@ -253,4 +268,59 @@ def absence(pr_state: object, age_secs: int | None,
         f"{state}, so an event could still fire and whether any workflow covers "
         "this ref is UNKNOWN. Check the PR's Checks tab.",
         " — no checks reported, and whether any are coming is UNKNOWN",
+    )
+
+
+_FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
+
+
+def is_full_sha(value: object) -> bool:
+    """True only for a full 40-hex object name.
+
+    Guards every use of a platform-supplied head SHA as a *local* revision
+    argument. `git log -1 HEAD` and `git log -1 master` both succeed and both
+    date a commit that is not the PR's head, so a `headRefOid` carrying a
+    revision expression has to be refused rather than resolved. Dating the
+    wrong commit and captioning it as the PR head's age is #585's defect one
+    layer along, with more confidence attached.
+    """
+    return bool(_FULL_SHA.match(str(value or "").strip().lower()))
+
+
+def head_relation(local_sha: object, pr_head_sha: object,
+                  number: object = None) -> str:
+    """Which commit the `Checks:` line describes. `''` when it is your HEAD.
+
+    The state `gh-pr` does not have (#587). `gh-pr` is handed a PR number and
+    prints checks for that PR. `git-status` resolves a PR *by branch* while
+    standing in a working tree whose `HEAD` may be ahead of, behind, or
+    unrelated to the PR's head SHA — so its check summary can be a true
+    statement about a commit the reader has already moved past. `Checks: 12
+    total: 12 passed` then reads as "your work is green", which is the opposite
+    of the truth when the two unpushed commits under your cursor are what you
+    were asking about.
+
+    Silence is reserved for the two SHAs being *established equal*. An
+    unestablished relation states UNKNOWN rather than printing nothing, because
+    nothing is read as "same commit" — the absence of a check rendering as a
+    passed one, which is this repository's house defect.
+    """
+    local = str(local_sha or "").strip().lower()
+    remote = str(pr_head_sha or "").strip().lower()
+
+    if is_full_sha(local) and is_full_sha(remote):
+        if local == remote:
+            return ""
+        pointer = f"gh-pr:{number}" if str(number or "").strip() not in ("", "?") else "gh-pr"
+        return (
+            f"Checks commit: PR head {remote[:7]} — NOT your local HEAD "
+            f"{local[:7]}. The Checks line above is about the PR's head commit, "
+            f"not the commit you are standing on. `{pointer}` for that commit."
+        )
+
+    l_disp = local[:7] if is_full_sha(local) else "unestablished"
+    r_disp = remote[:7] if is_full_sha(remote) else "unestablished"
+    return (
+        f"Checks commit: PR head {r_disp}, local HEAD {l_disp} — whether the "
+        "Checks line above is about the commit you are standing on is UNKNOWN."
     )

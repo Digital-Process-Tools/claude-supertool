@@ -126,6 +126,32 @@ Set via the op's JSON config if you want project-wide defaults:
 
 `git-status` and `git-push` try `glab` then `gh` to surface the open MR/PR — skip gracefully if neither is installed.
 
+### What `git-status`'s `Checks:` line is about
+
+The three states of zero check runs are defined once, in [github.md → Zero check runs is three states, not one](github.md#zero-check-runs-is-three-states-not-one) — `none yet` inside the creation window, `none, and none will be created` once the head commit is past it on a merged/closed PR, a stated `UNKNOWN` otherwise. `git-status` renders the same three from the same `_checks.absence()`, so the wording never drifts between the two ops ([#587](https://github.com/Digital-Process-Tools/claude-supertool/issues/587)).
+
+Two things differ here, both because `git-status` resolves the PR **by branch** while standing in a working tree.
+
+**The age is read from the local object store, not the network.** `gh-pr` holds only a PR number and pays one GraphQL call for the head commit's date. `git-status` is in the repo, and the PR's head commit is almost always already here — you pushed it — so the date comes from `git log -1 --format=%ct <headRefOid>`. `headRefOid` rides along in the `gh pr view` call already being made. **Total added cost when nothing is wrong: one local `git rev-parse HEAD`. No network call on any path**, which matters because `git-status` is the most frequently run op in the tool *and* the zero-runs leg is its common case — running it right after a push is the whole point.
+
+**A fourth line appears when the checks are not about your `HEAD`.** Your local `HEAD` can be ahead of, behind, or unrelated to the PR's head SHA, and then every check run fetched for the PR describes a commit you are not looking at — `Checks: 12 total: 12 passed` reads as "your work is green" while your two unpushed commits are untested. So whenever the two SHAs are not established equal:
+
+```
+Checks commit: PR head 1a2b3c4 — NOT your local HEAD 9f8e7d6. The Checks line
+above is about the PR's head commit, not the commit you are standing on.
+`gh-pr:587` for that commit.
+```
+
+Printed for a **passing** tally too, not only for an absent one — a true statement about the wrong commit is the failure mode, and the tally is where it is most convincing.
+
+**Every unestablished lookup lands in `UNKNOWN`, by construction.** A head SHA this clone has never fetched cannot be dated, so `absence()` is handed `None` and cannot reach "none will be created" — the one skew that would make this worse than the sentence it replaced. A `headRefOid` that is not a full 40-hex object name is refused outright rather than resolved: `HEAD` and `master` are valid revision arguments that resolve *locally* to the wrong commit, and dating one of those and captioning it as the PR head's age is the same defect one layer along. Silence is reserved for the two SHAs being established **equal**; an unknown relation says so, because printing nothing reads as "same commit".
+
+### `Pipeline:` on the GitLab arm
+
+`Pipeline: none` was the GitLab spelling of the same ambiguity, and it read as the expensive leg for free — "there is no CI on this ref" — when it equally covers a head that was just pushed. It now declines: `Pipeline: none reported — whether one is still coming is UNKNOWN …`.
+
+There is deliberately **no grace window** on this arm. The ~15min on the GitHub side is measured GitHub creation latency; inventing a GitLab equivalent with no measurement behind it would be guessing in the shape of evidence. So the GitLab leg only ever declines, and a measured window can be added later. `gl-mr` and the `gl-mrs` board still print a bare `none` — filed separately, since a table column cannot hold a sentence and a triage list is not a merge decision.
+
 ### git-diff policy
 
 `git-diff` ships generic red-flag defaults (debug-code and conflict markers) and reads optional **project policy** from its op config, surfaced to the script as `SUPERTOOL_*` env vars — the same mechanism `gl-job` uses for `job_patterns`. All four keys are optional.

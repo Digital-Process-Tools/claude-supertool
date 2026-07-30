@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import time
 
 # Sibling import: runtime puts this dir on sys.path[0]; the test harness
 # loads scripts via importlib (no dir on path), so add it explicitly.
@@ -32,6 +33,45 @@ def _git(args: list[str], timeout: int = 5) -> subprocess.CompletedProcess[str]:
         ["git"] + args,
         capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace",
     )
+
+
+def _head_commit_age_secs(sha: str) -> int | None:
+    """Seconds since `sha` was committed, read from the local object store.
+
+    `None` when it cannot be established, which the caller must render as a
+    decline — never as either verdict (`_checks.absence`).
+
+    **Zero network calls, deliberately.** `gh-pr` pays a GraphQL lookup for this
+    age because it holds only a PR number; `git-status` is standing in the repo,
+    and the PR's head commit is almost always already in this object store —
+    you are the one who pushed it. That matters more here than in `gh-pr`:
+    `git-status` is the most frequently run op in the tool *and* the zero-runs
+    leg is its common case, because running it right after a push is the whole
+    reason you run it. A network call on that path would be the wrong fix.
+
+    When the object is genuinely absent — someone else pushed the head, or this
+    clone never fetched it — the answer is `None`. Substituting the local HEAD's
+    date would date a different commit and caption it as the PR's head, which is
+    the defect being fixed, moved one layer along.
+
+    Only a full 40-hex object name is accepted: `HEAD` and `master` are valid
+    revision arguments that resolve, locally, to the wrong commit.
+
+    Committer date, matching `gh-pr`'s `committedDate` fallback — it can predate
+    the push, which only ever makes the age look *older*, and old-and-empty on
+    an open PR is `UNKNOWN` rather than proof, so the skew cannot manufacture a
+    "none will be created".
+    """
+    if not _checks.is_full_sha(sha):
+        return None
+    r = _git(["log", "-1", "--format=%ct", f"{sha}^{{commit}}"], timeout=3)
+    if r.returncode != 0 or not r.stdout.strip():
+        return None
+    try:
+        committed = int(r.stdout.strip())
+    except ValueError:
+        return None
+    return max(0, int(time.time()) - committed)
 
 
 def main() -> int:
@@ -204,7 +244,12 @@ def main() -> int:
             mr_state = mr.get("state", "?")
             mr_target = mr.get("target_branch", "?")
             pipeline = mr.get("pipeline") or mr.get("head_pipeline") or {}
-            pipe_status = pipeline.get("status", "none")
+            if not isinstance(pipeline, dict):
+                pipeline = {}
+            # A missing pipeline is GitLab's spelling of #585's ambiguity, and
+            # `none` renders it as the "never" reading for free. Decline instead
+            # — see _checks.NO_PIPELINE for why there is no grace leg here.
+            pipe_status = pipeline.get("status") or _checks.NO_PIPELINE
 
             print(f"\n## MR !{mr_iid} — {mr_title}")
             print(f"State: {mr_state} | Target: {mr_target} | Pipeline: {pipe_status}")
@@ -246,7 +291,7 @@ def main() -> int:
             gh_result = subprocess.run(
                 ["gh", "pr", "view", branch_name, "--json",
                  "number,title,state,baseRefName,statusCheckRollup,body,"
-                 "additions,deletions,changedFiles"],
+                 "additions,deletions,changedFiles,headRefOid"],
                 capture_output=True, text=True, timeout=5, encoding="utf-8", errors="replace",
             )
             if gh_result.returncode == 0:
@@ -255,12 +300,34 @@ def main() -> int:
                 pr_title = pr.get("title", "?")
                 pr_state = pr.get("state", "?")
                 pr_target = pr.get("baseRefName", "?")
-                check_summary = _checks.summarize_github(
-                    pr.get("statusCheckRollup")
-                )
+                # `headRefOid` rides along in the single `gh pr view` call
+                # already being made — the field costs nothing extra.
+                pr_head = str(pr.get("headRefOid") or "")
+                local = _git(["rev-parse", "HEAD"], timeout=3)
+                local_head = local.stdout.strip() if local.returncode == 0 else ""
+
+                check_states = _checks.github_states(pr.get("statusCheckRollup"))
+                if check_states:
+                    check_summary = _checks.summarize(check_states)
+                else:
+                    # Zero check runs is three states, not one (#585). The
+                    # evidence is the age of the *PR's* head commit and the PR
+                    # state; the age comes from the local object store, so this
+                    # leg pays no network call either. `absence()` also returns
+                    # a `Mergeable:` suffix so the two lines cannot disagree —
+                    # `git-status` prints no Mergeable line, so it is dropped.
+                    check_summary, _unused_merge_note = _checks.absence(
+                        pr_state, _head_commit_age_secs(pr_head)
+                    )
 
                 print(f"\n## PR #{pr_num} — {pr_title}")
                 print(f"State: {pr_state} | Target: {pr_target} | Checks: {check_summary}")
+                # Whichever of the two the Checks line came from, it is a
+                # statement about the PR's head commit. Say so whenever that is
+                # not the commit the reader is standing on (#587).
+                relation = _checks.head_relation(local_head, pr_head, pr_num)
+                if relation:
+                    print(relation)
 
                 changed_files = pr.get("changedFiles", 0)
                 if changed_files == 0:
