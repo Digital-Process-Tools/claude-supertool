@@ -727,7 +727,25 @@ Pollers emit through three channels (all best-effort, none can crash the poller)
 | Status file (JSON) | `/tmp/supertool-watch-{source}__{id}.state.json` | Last-known state for `watches` op + offline inspection, plus the poller's own `only` filter so another tier can tell what it will ever emit |
 | macOS osascript | system notification center | Desktop ping on terminal status / error |
 
-Override the socket path with `SUPERTOOL_WATCH_SOCK` env var (must be set on both pollers and the consumer).
+Override the socket path with the `SUPERTOOL_WATCH_SOCK` env var — set it to
+the **same** value on every poller and on the Phase 2 `claude-channel`
+consumer (see
+[notifiers/claude-channel/README.md](../../notifiers/claude-channel/README.md#start-up-and-socket-ownership)).
+Setting it on one side only produces a channel that is up, healthy, and
+correctly configured from its own point of view, receiving nothing — the
+side left on the default keeps talking to `/tmp/supertool-watch.sock` while
+the other listens or writes somewhere else entirely. This is the escape
+route `claude-channel` names when it refuses to steal a live socket (#550),
+and the same variable a multi-user machine sets to move the socket under
+`~/.claude/` for per-user isolation.
+
+**A poller spawned before the variable changed keeps writing to the path it
+started with**, because `SOCK_PATH` is fixed for the lifetime of the
+process — there is no live migration. Every watcher publishes the path it is
+actually bound to as `sock_path` in its own state file, next to `only`, so a
+straggler on the old path after an operator changes the variable is
+something a reader can find rather than something inferred from partial
+delivery.
 
 ## Event payload (locked contract)
 

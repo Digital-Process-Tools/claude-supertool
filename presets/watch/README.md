@@ -67,6 +67,23 @@ Pollers emit through three channels (all best-effort, none can crash the poller)
 | Status file (JSON)   | Last-known state for the `watches` op + offline inspection           | `/tmp/supertool-watch-{source}__{id}.state.json`     |
 | macOS osascript      | Desktop notification on terminal status (human-facing)               | system notification center                           |
 
+**The socket path is overridable, and it must match on both ends.** Set
+`SUPERTOOL_WATCH_SOCK` to redirect where a poller writes — it must be set to
+the *same* path on the Phase 2 consumer for anything to arrive there (see
+[notifiers/claude-channel/README.md](../../notifiers/claude-channel/README.md#start-up-and-socket-ownership)).
+This is how a second Claude Code session gets a channel of its own after
+`claude-channel` refuses to steal a live socket (#550), and it is how a
+multi-user machine gives each session's channel a private path instead of the
+world-traversable default.
+
+A watcher spawned before the variable was changed keeps writing to whatever
+`SOCK_PATH` it started with — that value is fixed for the process's
+lifetime, and cannot migrate mid-run. It is recorded as `sock_path` in the
+watcher's own state file (`/tmp/supertool-watch-{source}__{id}.state.json`),
+alongside `only`, precisely so a watcher still bound to a stale path is
+inspectable rather than a silent partial migration where some watchers
+deliver and others don't while the board reads as healthy either way.
+
 ## Event payload (locked — Phase 2 depends on it)
 
 ```json
