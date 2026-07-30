@@ -5,11 +5,12 @@ Accepts a post ID or a Hashnode URL on any publication. The URL→ID lookup
 uses the cross-publication `publication(host:)` GraphQL field so foreign
 posts (e.g. https://author.hashnode.dev/slug) resolve correctly.
 
-PRE-FLIGHT DUPLICATE CHECK: Before liking, the op queries the post's
-myTotalReactions field and aborts if >0 (already reacted). Pass |force as a
-second pipe-separated field to bypass: hashnode_react:POST_ID_OR_URL|force
-If the pre-flight check fails, a warning is printed and the like proceeds
-(graceful degrade — don't block on platform issues).
+PRE-FLIGHT DUPLICATE CHECK: Before liking, the op consults preflight_react,
+which cannot answer — Hashnode's GraphQL exposes no per-user reaction state, so
+it makes no API call and always returns "unknown". The op then ABORTS rather
+than liking unchecked (#603): likePost is additive, so every unchecked call
+adds another reaction. Pass |force as a second pipe-separated field to bypass:
+hashnode_react:POST_ID_OR_URL|force
 
 AUTO-FORCE OPT-IN: Hashnode's GraphQL exposes no per-user reaction state,
 so the pre-flight always returns "unknown" and the op aborts every time

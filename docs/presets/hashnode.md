@@ -63,6 +63,26 @@ No timestamp needed — the script auto-tracks the last call in `~/.config/hashn
 }
 ```
 
+## When the duplicate check cannot run
+
+`hashnode_publish`, `hashnode_comment` and `hashnode_react` each look before they write. The check has three outcomes, not two:
+
+| Outcome | What the op does | stderr |
+|---------|------------------|--------|
+| Nothing found | Writes | — |
+| Duplicate found | Refuses, names what it found | `ABORT — already published with canonical_url='https://…' (slug=…, url=…). Use |force as 6th field to override.` |
+| **The check could not be made** | Refuses, writes nothing | `ABORT — pre-flight lookup failed for canonical_url='https://…' (cannot verify whether already published). Use |force as 6th field to bypass and publish anyway.` |
+
+Hashnode has behaved this way since these ops were written — it is the preset [#599](https://github.com/Digital-Process-Tools/claude-supertool/issues/599) and [#601](https://github.com/Digital-Process-Tools/claude-supertool/issues/601) copied the fail-closed shape *from*. Their module docstrings claimed the opposite (`a warning is printed and publish proceeds`) for the whole life of the files; [#603](https://github.com/Digital-Process-Tools/claude-supertool/issues/603) corrected the prose, not the behaviour. Every refusal is recoverable with `|force`:
+
+```bash
+./supertool 'hashnode_publish:Title|drafts/post.md|https://max.dp.tools/p/x||||force'
+./supertool 'hashnode_comment:POST_ID|Thanks!|force'
+./supertool 'hashnode_react:POST_ID|force'
+```
+
+`hashnode_react` lands on the third row on *every* call — Hashnode's GraphQL exposes no per-user reaction field, so `preflight_react` makes no API call and always returns "unknown". See the `auto_force` opt-in above.
+
 ## Authoring notes
 
 Preset JSON: `presets/hashnode.json`. Helper scripts: `presets/hashnode/` — one Python file per op (`publish.py`, `list.py`, `read.py`, `browse.py`, `comments.py`, `comment.py`, `react.py`, `reply.py`, `search.py`, `status_since.py`). The `{path}` placeholder in `cmd` resolves to `presets/hashnode/` at runtime.
