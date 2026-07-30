@@ -362,6 +362,105 @@ class TestGitlabIssueCreate:
             assert rc == 0
             assert f"iid={expected_iid}" in out
 
+    def test_no_arg_reports_missing_payload(self, monkeypatch, capsys):
+        # supertool never actually omits argv[1] — see test_empty_arg below —
+        # but a direct `python issue_create.py` invocation can.
+        monkeypatch.setattr(sys, "argv", ["issue_create.py"])
+
+        rc = gl.main()
+        out = capsys.readouterr().out
+        assert rc != 0
+        assert "gl-issue-create needs a payload" in out
+        assert "gl-issue-create:@FILE" in out
+
+    def test_empty_arg_reports_missing_payload_not_traceback(self, monkeypatch, capsys):
+        # This is what `gl-issue-create` with no `@FILE` actually produces:
+        # supertool's {arg} substitution always fills in *something*, so an
+        # omitted argument arrives as an empty string, not a missing argv slot.
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", ""])
+
+        rc = gl.main()
+        out = capsys.readouterr().out
+        assert rc != 0
+        assert "gl-issue-create needs a payload" in out
+        assert "gl-issue-create:@FILE" in out
+        assert "Traceback" not in out
+        assert "IsADirectoryError" not in out
+
+    def test_at_only_reports_missing_payload(self, monkeypatch, capsys):
+        # "@" with nothing after it is the same empty-path shape via the
+        # @FILE marker.
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", "@"])
+
+        rc = gl.main()
+        out = capsys.readouterr().out
+        assert rc != 0
+        assert "gl-issue-create needs a payload" in out
+
+    def test_directory_path_reports_directory_not_traceback(self, monkeypatch, capsys, tmp_path):
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", str(tmp_path)])
+
+        rc = gl.main()
+        out = capsys.readouterr().out
+        assert rc != 0
+        assert "is a directory" in out
+        assert str(tmp_path) in out
+        assert "Traceback" not in out
+
+    def test_directory_check_happens_before_any_read_attempt(self, monkeypatch, capsys, tmp_path):
+        # The directory verdict must come from Path.is_dir(), not from
+        # catching whichever OSError subtype a given platform happens to
+        # raise on read (IsADirectoryError on POSIX, PermissionError on
+        # Windows — see #627 review). Proven here by making a read attempt
+        # itself a test failure: if the fix regresses to "try the read,
+        # catch what falls out", this fires instead of silently relying on
+        # exception-type-specific behaviour this suite can't exercise
+        # cross-platform.
+        def _must_not_be_called(path):
+            raise AssertionError("_load_payload was called for a directory path")
+
+        monkeypatch.setattr(gl, "_load_payload", _must_not_be_called)
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", str(tmp_path)])
+
+        rc = gl.main()
+        out = capsys.readouterr().out
+        assert rc != 0
+        assert "is a directory" in out
+
+    def test_permission_error_on_a_file_is_not_reported_as_a_directory(self, monkeypatch, capsys, tmp_path):
+        # A real permission failure (wrong ownership, locked file — also
+        # PermissionError on POSIX, and the *only* thing a directory read
+        # raises on Windows) must never be disclosed as "is a directory".
+        # That would be a confidently wrong statement, worse than the
+        # traceback #620/#627 replaced.
+        payload_file = tmp_path / "locked.json"
+        payload_file.write_text(json.dumps(GL_MINIMAL))
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", str(payload_file)])
+
+        def _raise_permission_error(path):
+            raise PermissionError(13, "Permission denied", path)
+
+        monkeypatch.setattr(gl, "_load_payload", _raise_permission_error)
+
+        rc = gl.main()
+        out = capsys.readouterr().out
+        assert rc != 0
+        assert "permission" in out.lower()
+        assert "is a directory" not in out
+        assert "Traceback" not in out
+
+    def test_unparseable_payload_names_expected_shape(self, monkeypatch, capsys, tmp_path):
+        bad = tmp_path / "notes.md"
+        bad.write_text("# just some markdown\n\nnot a payload")
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", str(bad)])
+
+        rc = gl.main()
+        out = capsys.readouterr().out
+        assert rc != 0
+        assert "failed to parse payload" in out
+        assert "JSON or TOML" in out
+        assert "title" in out
+
 
 # ===========================================================================
 # GitHub tests
@@ -580,3 +679,90 @@ class TestGithubIssueCreate:
         out = capsys.readouterr().out
         assert rc == 0, out
         assert "gh-issue-create OK" in out
+
+    def test_no_arg_reports_missing_payload(self, monkeypatch, capsys):
+        monkeypatch.setattr(sys, "argv", ["issue_create.py"])
+
+        rc = gh.main()
+        out = capsys.readouterr().out
+        assert rc != 0
+        assert "gh-issue-create needs a payload" in out
+        assert "gh-issue-create:@FILE" in out
+
+    def test_empty_arg_reports_missing_payload_not_traceback(self, monkeypatch, capsys):
+        # This is the real defect from #620: `gh-issue-create` invoked with
+        # no `@FILE` reaches main() with argv[1] == "" (supertool's {arg}
+        # substitution always fills in something), and Path("").read_text()
+        # resolves to Path(".") — IsADirectoryError, five-frame traceback.
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", ""])
+
+        rc = gh.main()
+        out = capsys.readouterr().out
+        assert rc != 0
+        assert "gh-issue-create needs a payload" in out
+        assert "gh-issue-create:@FILE" in out
+        assert "Traceback" not in out
+        assert "IsADirectoryError" not in out
+
+    def test_at_only_reports_missing_payload(self, monkeypatch, capsys):
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", "@"])
+
+        rc = gh.main()
+        out = capsys.readouterr().out
+        assert rc != 0
+        assert "gh-issue-create needs a payload" in out
+
+    def test_directory_path_reports_directory_not_traceback(self, monkeypatch, capsys, tmp_path):
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", str(tmp_path)])
+
+        rc = gh.main()
+        out = capsys.readouterr().out
+        assert rc != 0
+        assert "is a directory" in out
+        assert str(tmp_path) in out
+        assert "Traceback" not in out
+
+    def test_directory_check_happens_before_any_read_attempt(self, monkeypatch, capsys, tmp_path):
+        # See the gitlab twin of this test for the full rationale: the
+        # directory verdict must come from Path.is_dir(), not from catching
+        # whichever OSError subtype a given platform raises on read
+        # (IsADirectoryError on POSIX, PermissionError on Windows).
+        def _must_not_be_called(path):
+            raise AssertionError("_load_payload was called for a directory path")
+
+        monkeypatch.setattr(gh, "_load_payload", _must_not_be_called)
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", str(tmp_path)])
+
+        rc = gh.main()
+        out = capsys.readouterr().out
+        assert rc != 0
+        assert "is a directory" in out
+
+    def test_permission_error_on_a_file_is_not_reported_as_a_directory(self, monkeypatch, capsys, tmp_path):
+        payload_file = tmp_path / "locked.json"
+        payload_file.write_text(json.dumps(GH_MINIMAL))
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", str(payload_file)])
+
+        def _raise_permission_error(path):
+            raise PermissionError(13, "Permission denied", path)
+
+        monkeypatch.setattr(gh, "_load_payload", _raise_permission_error)
+
+        rc = gh.main()
+        out = capsys.readouterr().out
+        assert rc != 0
+        assert "permission" in out.lower()
+        assert "is a directory" not in out
+        assert "Traceback" not in out
+
+    def test_unparseable_payload_names_expected_shape(self, monkeypatch, capsys, tmp_path):
+        bad = tmp_path / "notes.md"
+        bad.write_text("# just some markdown\n\nnot a payload")
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", str(bad)])
+
+        rc = gh.main()
+        out = capsys.readouterr().out
+        assert rc != 0
+        assert "failed to parse payload" in out
+        assert "JSON or TOML" in out
+        assert "title" in out

@@ -61,19 +61,50 @@ def _validate(payload: dict) -> str | None:
 
 
 def main() -> int:
-    if len(sys.argv) < 2:
-        print("ERROR: usage: issue_create.py PAYLOAD_FILE (or - for stdin)")
+    raw_arg = sys.argv[1] if len(sys.argv) > 1 else ""
+    path = raw_arg[1:] if raw_arg.startswith("@") else raw_arg
+    if not path:
+        # supertool's {arg} substitution never omits the placeholder — a
+        # missing @FILE arrives here as an empty string, not a missing
+        # argv slot, so this must be checked explicitly rather than relying
+        # on len(sys.argv). See #620.
+        print(
+            "ERROR: gl-issue-create needs a payload — "
+            "gl-issue-create:@FILE (JSON or TOML with title/description)."
+        )
         return 1
 
-    path = sys.argv[1]
+    # Decide *before* reading rather than catching whatever the OS raises:
+    # opening a directory for read raises IsADirectoryError on POSIX but
+    # PermissionError on Windows (CreateFileW succeeds, the subsequent read
+    # fails with ERROR_ACCESS_DENIED). Catching only IsADirectoryError left
+    # #620's traceback alive on Windows — an is_dir() check gives the same
+    # message on every platform without depending on which errno the OS
+    # happens to pick. See #627.
+    if path != "-" and Path(path).is_dir():
+        print(f"ERROR: payload path is a directory, not a file: {path}")
+        return 1
 
     try:
-        payload = _load_payload(path)
+        payload = _load_payload(raw_arg)
     except FileNotFoundError:
         print(f"ERROR: payload file not found: {path}")
         return 1
+    except IsADirectoryError:
+        # Belt-and-suspenders for the TOCTOU window between the is_dir()
+        # check above and this read (path became a directory in between).
+        print(f"ERROR: payload path is a directory, not a file: {path}")
+        return 1
+    except PermissionError as e:
+        # Deliberately a distinct message from "is a directory": a locked
+        # or wrong-ownership file also raises PermissionError, and on
+        # Windows it's the *only* thing a directory read raises. Reporting
+        # it as "is a directory" would be a confidently wrong disclosure,
+        # not just an unhelpful one.
+        print(f"ERROR: permission denied reading payload: {path} — {e}")
+        return 1
     except (json.JSONDecodeError, ValueError) as e:
-        print(f"ERROR: failed to parse payload: {e}")
+        print(f"ERROR: failed to parse payload: {e} (expected JSON or TOML with title/description)")
         return 1
 
     if not payload.get("project"):

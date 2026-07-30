@@ -257,6 +257,8 @@ Otherwise inherits from `glab auth status` — no project-specific tokens needed
 
 Resolution order (most specific wins): explicit `project` in the payload → `defaults.gitlab_project` → the `origin` git remote when its host contains `gitlab`. In a GitLab checkout the remote covers it with zero config; the explicit default is for when `origin` points elsewhere.
 
+**A missing `@FILE` is declined, not crashed on.** `gl-issue-create` invoked with no payload argument at all — `./supertool gl-issue-create` — used to hit `Path("").read_text()`, which resolves to the current directory, and leak a five-frame `IsADirectoryError` traceback, the same defect as `gh-issue-create` ([#620](https://github.com/Digital-Process-Tools/claude-supertool/issues/620)). It now prints `ERROR: gl-issue-create needs a payload — gl-issue-create:@FILE (JSON or TOML with title/description).` and exits 1. An `@FILE` that names an actual directory reports `ERROR: payload path is a directory, not a file: PATH` instead of the same traceback, and a payload that fails to parse names the expected shape rather than only echoing the parser's own message.
+
 ## Authoring notes
 
 Preset JSON: `presets/gitlab.json`. Helper scripts: `presets/gitlab/`. `gl-mr` accepts either an MR number or a branch name — it resolves branches to MRs automatically.
