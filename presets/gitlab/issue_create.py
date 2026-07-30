@@ -128,7 +128,30 @@ def main() -> int:
     links: list[dict] = payload.get("links") or []
 
     if description_file:
-        body = Path(description_file).read_text(encoding="utf-8")
+        # Same is_dir()-before-read shape as the payload guard above: a
+        # directory read raises IsADirectoryError on POSIX but
+        # PermissionError on Windows, so the directory verdict must come
+        # from is_dir(), not from catching whichever OSError subtype the
+        # platform happens to raise. See #620/#627/#630.
+        if Path(description_file).is_dir():
+            print(f"ERROR: description_file is a directory, not a file: {description_file}")
+            return 1
+        try:
+            body = Path(description_file).read_text(encoding="utf-8")
+        except FileNotFoundError:
+            print(f"ERROR: description_file not found: {description_file}")
+            return 1
+        except IsADirectoryError:
+            # Belt-and-suspenders for the TOCTOU window between the
+            # is_dir() check above and this read.
+            print(f"ERROR: description_file is a directory, not a file: {description_file}")
+            return 1
+        except PermissionError as e:
+            # Deliberately distinct from "is a directory": a locked or
+            # wrong-ownership file also raises PermissionError, and it's
+            # the only thing a directory read raises on Windows.
+            print(f"ERROR: permission denied reading description_file: {description_file} — {e}")
+            return 1
     else:
         body = description
 

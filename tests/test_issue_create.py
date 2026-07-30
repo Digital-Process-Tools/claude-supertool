@@ -169,6 +169,67 @@ class TestGitlabIssueCreate:
         assert desc is not None, "--description arg not passed"
         assert "From file" in desc
 
+    def test_description_file_not_found(self, monkeypatch, capsys, tmp_path):
+        payload = {
+            "project": "fdavid/dvsi",
+            "title": "Missing desc file",
+            "description_file": str(tmp_path / "does_not_exist.md"),
+        }
+        payload_file = _write_payload(tmp_path, payload)
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
+
+        rc = gl.main()
+        out = capsys.readouterr().out
+        assert rc != 0
+        assert "description_file not found" in out
+        assert "does_not_exist.md" in out
+        assert "Traceback" not in out
+
+    def test_description_file_is_directory(self, monkeypatch, capsys, tmp_path):
+        desc_dir = tmp_path / "a_directory"
+        desc_dir.mkdir()
+        payload = {
+            "project": "fdavid/dvsi",
+            "title": "Dir desc file",
+            "description_file": str(desc_dir),
+        }
+        payload_file = _write_payload(tmp_path, payload)
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
+
+        rc = gl.main()
+        out = capsys.readouterr().out
+        assert rc != 0
+        assert "description_file is a directory" in out
+        assert str(desc_dir) in out
+        assert "Traceback" not in out
+
+    def test_description_file_permission_error(self, monkeypatch, capsys, tmp_path):
+        desc_file = tmp_path / "locked_body.md"
+        desc_file.write_text("secret")
+        payload = {
+            "project": "fdavid/dvsi",
+            "title": "Locked desc file",
+            "description_file": str(desc_file),
+        }
+        payload_file = _write_payload(tmp_path, payload)
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
+
+        real_read_text = Path.read_text
+
+        def _raiser(self, *a, **kw):
+            if self.name == "locked_body.md":
+                raise PermissionError(13, "Permission denied", str(self))
+            return real_read_text(self, *a, **kw)
+
+        monkeypatch.setattr(Path, "read_text", _raiser)
+
+        rc = gl.main()
+        out = capsys.readouterr().out
+        assert rc != 0
+        assert "permission denied reading description_file" in out.lower()
+        assert "is a directory" not in out
+        assert "Traceback" not in out
+
     def test_estimate_appended_to_description(self, monkeypatch, capsys, tmp_path):
         payload = {
             "project": "fdavid/dvsi",
@@ -553,6 +614,67 @@ class TestGithubIssueCreate:
         assert rc == 0
         assert written_bodies
         assert "From file" in written_bodies[0]
+
+    def test_body_file_not_found(self, monkeypatch, capsys, tmp_path):
+        payload = {
+            "repo": "Digital-Process-Tools/claude-supertool",
+            "title": "Missing body file",
+            "body_file": str(tmp_path / "does_not_exist.md"),
+        }
+        payload_file = _write_payload(tmp_path, payload)
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
+
+        rc = gh.main()
+        out = capsys.readouterr().out
+        assert rc != 0
+        assert "body_file not found" in out
+        assert "does_not_exist.md" in out
+        assert "Traceback" not in out
+
+    def test_body_file_is_directory(self, monkeypatch, capsys, tmp_path):
+        body_dir = tmp_path / "a_directory"
+        body_dir.mkdir()
+        payload = {
+            "repo": "Digital-Process-Tools/claude-supertool",
+            "title": "Dir body file",
+            "body_file": str(body_dir),
+        }
+        payload_file = _write_payload(tmp_path, payload)
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
+
+        rc = gh.main()
+        out = capsys.readouterr().out
+        assert rc != 0
+        assert "body_file is a directory" in out
+        assert str(body_dir) in out
+        assert "Traceback" not in out
+
+    def test_body_file_permission_error(self, monkeypatch, capsys, tmp_path):
+        body_file = tmp_path / "locked_body.md"
+        body_file.write_text("secret")
+        payload = {
+            "repo": "Digital-Process-Tools/claude-supertool",
+            "title": "Locked body file",
+            "body_file": str(body_file),
+        }
+        payload_file = _write_payload(tmp_path, payload)
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
+
+        real_read_text = Path.read_text
+
+        def _raiser(self, *a, **kw):
+            if self.name == "locked_body.md":
+                raise PermissionError(13, "Permission denied", str(self))
+            return real_read_text(self, *a, **kw)
+
+        monkeypatch.setattr(Path, "read_text", _raiser)
+
+        rc = gh.main()
+        out = capsys.readouterr().out
+        assert rc != 0
+        assert "permission denied reading body_file" in out.lower()
+        assert "is a directory" not in out
+        assert "Traceback" not in out
 
     def test_error_path_propagates(self, monkeypatch, capsys, tmp_path):
         payload_file = _write_payload(tmp_path, GH_MINIMAL)
