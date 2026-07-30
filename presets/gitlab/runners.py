@@ -367,6 +367,42 @@ def waiting_for(runner: dict, pending: list[dict]) -> int:
     return sum(1 for job in pending if _can_serve(runner, job.get("tag_list") or []))
 
 
+def stranded_for(runner: dict, pending: list[dict], fleet: list[dict]) -> int:
+    """Pending jobs this runner may take that no responsive runner in `fleet` may.
+
+    What a runner is *permitted* to take and what is *stuck behind it* are two
+    different questions, and `waiting_for` only answers the first. A runner
+    decommissioned in the fleet but left in GitLab beside a same-tag successor
+    is permitted to take every job the successor is happily running — forever.
+    Silence gated on `waiting_for` therefore alarms on that pair on every poll
+    until somebody deletes the record, and an alarm that is always noise
+    teaches its reader to skim the board, which is how the real starvation
+    underneath it gets missed.
+
+    Coverage is judged per job, never per tag, because GitLab routes on "one
+    runner carries *all* of a job's tags". Asking instead whether the silent
+    runner's own tags are covered is wrong in both directions: a tag no queued
+    job asks for would alarm forever, and two live runners splitting `docker`
+    and `gpu` between them would read as coverage for a job needing both that
+    can start on neither.
+
+    Suppression requires positive evidence — a runner that passes
+    `_is_responsive` and may take the job. An unannotated fleet raises rather
+    than answering, on the same terms as `_is_responsive` itself: a coverage
+    check resting on the throttled field would silence real wedges.
+    """
+    live = [r for r in fleet if _is_responsive(r)]
+    stranded = 0
+    for job in pending:
+        tags = job.get("tag_list") or []
+        if not _can_serve(runner, tags):
+            continue
+        if any(_can_serve(candidate, tags) for candidate in live):
+            continue
+        stranded += 1
+    return stranded
+
+
 # Options this tier understands from ops.radar.radar_tiers["gl-runners"].
 # Anything else is a typo or a stale key, and a silently-ignored option is how
 # someone ends up believing they configured a threshold they did not.
