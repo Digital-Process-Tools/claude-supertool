@@ -29,9 +29,17 @@ descriptor for the whole of its validation — `fchmod`/`fstat`, not `chmod`/`st
 — and the path handed back to callers is the resolved, symlink-free one. A
 symlink is still a legitimate thing to point `SUPERTOOL_RUNTIME_DIR` at; it is
 resolved deliberately, once, and the object on the far end is what gets checked
-and named. See `docs/mcp-integration.md` for where that guarantee stops:
-`socket.bind()` takes no `dir_fd`, so the daemon's own final open is still by
-path — a path that no longer traverses a link.
+and named.
+
+That guarantee used to stop at the daemon, which is a separate process handed
+strings and re-resolved every one of them (#598). It no longer does: the daemon
+calls `open_runtime_dir()` itself and holds the descriptor for its whole life,
+so its pidfile, logs, fingerprint and unlinks are `dir_fd`-relative and its
+socket is bound by basename from inside the directory. `socket.bind()` still
+takes no `dir_fd` — there is no descriptor-relative form of it in `socket` — so
+the one place a name is resolved against the process cwd is a two-call window
+under `os.fchdir`, before any thread or subprocess exists to observe it. See
+`docs/mcp-integration.md`.
 """
 from __future__ import annotations
 
@@ -40,7 +48,7 @@ import os
 import stat
 import sys
 from pathlib import Path
-from typing import Tuple
+from typing import Optional, Tuple
 
 
 def _runtime_base() -> Path:
@@ -84,6 +92,54 @@ _DIR_FD_FLAGS = ("O_DIRECTORY", "O_NOFOLLOW")
 # whoever patched last, and would turn a test double into a platform verdict.
 _LISTDIR_TAKES_FD = os.listdir in os.supports_fd
 
+# The second half of the same story (#598). Holding the directory open is only
+# worth anything if the things inside it can be named *relative to* the
+# descriptor; otherwise a validated fd sits beside a path that still gets
+# re-resolved. `os.supports_dir_fd` is a runtime probe of the `*at` syscalls —
+# `openat`, `unlinkat`, `fchmodat`, `renameat` — and Windows has none of them.
+#
+# Probed at import for the same reason as `_LISTDIR_TAKES_FD` above: the sets
+# hold the original function objects, so asking after a test has wrapped one
+# asks whoever patched last and turns a test double into a platform verdict.
+_RELATIVE_OPS = {
+    "os.open(dir_fd=)": os.open in os.supports_dir_fd,
+    "os.unlink(dir_fd=)": os.unlink in os.supports_dir_fd,
+    "os.chmod(dir_fd=)": os.chmod in os.supports_dir_fd,
+    "os.rename(dir_fd=)": os.rename in os.supports_dir_fd,
+    "os.fchdir": hasattr(os, "fchdir"),
+}
+
+
+def require_relative_ops(base: str) -> None:
+    """Refuse where the daemon cannot name files relative to the held fd (#598).
+
+    A *decline*, not a finding, and worded as one: the question "did anything
+    move between validation and use?" is unanswerable without the `*at`
+    syscalls, and #544's rule is that the check which cannot ask its question is
+    the one that has to say so. Falling back to path-based opens here would be
+    the quiet failure — it would look like hardening, behave like the code this
+    replaces, and report `ok`.
+
+    Unreachable on every platform CPython currently ships: the absence of these
+    coincides with the absence of `O_DIRECTORY`/`O_NOFOLLOW`, so `_require_dir_fd`
+    refuses first and `os.geteuid` before that. Written independently anyway,
+    for the same reason that one is — a guard that is correct only because
+    another guard happens to run earlier is a comment pretending to be code.
+    """
+    missing = [name for name, ok in _RELATIVE_OPS.items() if not ok]
+    if not missing:
+        return
+    sys.exit(
+        f"daemon: cannot open files relative to the runtime dir {base} on this "
+        f"platform — {', '.join(missing)} unavailable. The directory can be "
+        f"validated here but not held to, so every file the daemon creates "
+        f"would re-resolve the path and could land in a directory nothing "
+        f"inspected (#598). That question cannot be asked here rather than "
+        f"merely being awkward, so this declines instead of writing to "
+        f"whatever the path currently names. Run the daemon on a platform "
+        f"with POSIX *at syscalls."
+    )
+
 
 def _require_dir_fd(base: Path) -> None:
     """Refuse where the runtime dir cannot be pinned to a descriptor at all."""
@@ -121,6 +177,21 @@ def runtime_dir() -> str:
     fd, path = _open_runtime_dir()
     os.close(fd)
     return path
+
+
+def open_runtime_dir() -> Tuple[int, str]:
+    """The validated runtime dir as `(fd, resolved_path)`; caller closes `fd`.
+
+    The public form of `_open_runtime_dir`, for callers that can work
+    descriptor-relative and therefore should (#598): `list_pidfiles` here, and
+    `daemon.py`, which holds it for the daemon's whole life.
+
+    Prefer this over `runtime_dir()` wherever the answer is going to be used to
+    open something. `runtime_dir()` closes the descriptor and hands back a
+    string, which re-opens the exact gap the descriptor exists to close — it
+    remains only for callers that genuinely need a path to *print*.
+    """
+    return _open_runtime_dir()
 
 
 def _open_runtime_dir() -> Tuple[int, str]:
@@ -306,9 +377,22 @@ def socket_pid_paths(cwd: str, name: str) -> Tuple[str, str]:
     Hash is sha1(cwd::name)[:12] — same as the old /tmp layout for path
     stability across upgrades, just under the trusted runtime dir.
     """
+    sock_name, pid_name = socket_pid_names(cwd, name)
+    base = runtime_dir()
+    return os.path.join(base, sock_name), os.path.join(base, pid_name)
+
+
+def socket_pid_names(cwd: str, name: str) -> Tuple[str, str]:
+    """The same two files, as basenames relative to the runtime dir (#598).
+
+    Deliberately does **not** call `runtime_dir()`: a caller holding the
+    validated descriptor wants a name to resolve against it, and joining a path
+    on first would hand back something that resolves against the filesystem
+    instead. The hash is the only thing the caller cannot compute for itself,
+    so it is the only thing this returns.
+    """
     h = hashlib.sha1(f"{cwd}::{name}".encode()).hexdigest()[:12]
-    base = os.path.join(runtime_dir(), f"supertool-mcp-{h}")
-    return f"{base}.sock", f"{base}.pid"
+    return f"supertool-mcp-{h}.sock", f"supertool-mcp-{h}.pid"
 
 
 def list_pidfiles() -> Tuple[list, str]:
@@ -355,8 +439,14 @@ def list_pidfiles() -> Tuple[list, str]:
         if name.startswith("supertool-mcp-") and name.endswith(".pid")
     ), ""
 
-def read_pid(pid_path: str) -> Tuple[int, str]:
+def read_pid(pid_path: str, *, dir_fd: Optional[int] = None) -> Tuple[int, str]:
     """Return `(pid, reason)`; a non-empty reason means the pid is unknowable.
+
+    With `dir_fd`, `pid_path` is a basename resolved against that descriptor and
+    the open carries `O_NOFOLLOW` — the reader then provably reads the pidfile
+    in the directory that was validated, which is what the daemon and `stop.py`
+    both want (#598). Without it the read is by path, for callers that only
+    have one.
 
     `reason` is empty exactly when `pid` is a number we actually read off disk
     *and* that number can only mean one process. Every other outcome —
@@ -392,7 +482,12 @@ def read_pid(pid_path: str) -> Tuple[int, str]:
     is what `docs/mcp-integration.md` already promises they will not do.
     """
     try:
-        raw = Path(pid_path).read_text(encoding="utf-8").strip()
+        if dir_fd is None:
+            raw = Path(pid_path).read_text(encoding="utf-8").strip()
+        else:
+            fd = os.open(pid_path, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dir_fd)
+            with os.fdopen(fd, encoding="utf-8") as f:
+                raw = f.read().strip()
     except OSError as exc:
         return 0, f"unreadable pidfile: {exc.strerror or exc}"
     if not raw:

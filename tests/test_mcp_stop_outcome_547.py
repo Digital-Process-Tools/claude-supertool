@@ -103,10 +103,16 @@ class TestStopScriptExitCodes:
         below is no longer the only thing between a refusal and an `ok`; it
         still pins that a stated refusal keeps its own name.
         """
-        def _refuse(_cwd, _name):
+        def _refuse():
             raise SystemExit("daemon: runtime dir owned by uid 0, not us (501).")
 
-        monkeypatch.setattr(stop_mod, "socket_pid_paths", _refuse)
+        # Keyed on `open_runtime_dir`, which is where the refusal now comes
+        # from: `main` names the two files first (a pure hash, it touches no
+        # filesystem and cannot refuse) and then opens the runtime dir once for
+        # the read and the unlink (#598). Re-keyed rather than deleted — the
+        # thing being pinned is that a *stated* refusal keeps its own exit code,
+        # and that is as true through a descriptor as through a path.
+        monkeypatch.setattr(stop_mod, "open_runtime_dir", _refuse)
 
         rc = stop_mod.main(["stop.py", "php-lsp"])
 
@@ -117,10 +123,10 @@ class TestStopScriptExitCodes:
     @posix_only
     def test_numeric_systemexit_is_not_relabelled(self, stop_mod, monkeypatch) -> None:
         """Only a stated reason is a refusal; a bare numeric exit propagates."""
-        def _boom(_cwd, _name):
+        def _boom():
             raise SystemExit(7)
 
-        monkeypatch.setattr(stop_mod, "socket_pid_paths", _boom)
+        monkeypatch.setattr(stop_mod, "open_runtime_dir", _boom)
 
         with pytest.raises(SystemExit) as exc:
             stop_mod.main(["stop.py", "php-lsp"])

@@ -178,14 +178,36 @@ def config_fingerprint(spec: Optional[dict], cwd: str) -> str:
     return h.hexdigest()[:16]
 
 
-def write_fingerprint(sock_path: str, fingerprint: str) -> None:
-    """Record the booted config. O_NOFOLLOW like every other file we create (#148)."""
+def write_fingerprint(sock_path: str, fingerprint: str, *,
+                      dir_fd: Optional[int] = None) -> None:
+    """Record the booted config. O_NOFOLLOW like every other file we create (#148).
+
+    With `dir_fd`, `sock_path` is a basename and both the temp write and the
+    rename are resolved against the held runtime-dir descriptor (#598) — the
+    daemon passes it, so the fingerprint lands in the directory that was
+    validated rather than wherever the path resolves to by the time it is used.
+    """
     path = fingerprint_path(sock_path)
     tmp = f"{path}.{os.getpid()}.tmp"
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(fingerprint)
-    os.replace(tmp, path)  # atomic — a reader never sees a half-written fingerprint
+    kw = {} if dir_fd is None else {"dir_fd": dir_fd}
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600, **kw)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(fingerprint)
+        # atomic — a reader never sees a half-written fingerprint
+        if dir_fd is None:
+            os.replace(tmp, path)
+        else:
+            os.replace(tmp, path, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+    except BaseException:
+        # A failed replace used to leave the temp file behind forever. It is
+        # named after our pid, so nothing ever collects it and the runtime dir
+        # accumulates one per crashed boot.
+        try:
+            os.unlink(tmp, **kw)
+        except OSError:
+            pass
+        raise
 
 
 def read_fingerprint(sock_path: str) -> str:
@@ -227,10 +249,12 @@ def usable(sock_path: str, pid_path: str, fingerprint: str) -> bool:
     return read_fingerprint(sock_path) == fingerprint
 
 
-def cleanup(sock_path: str, pid_path: str) -> None:
+def cleanup(sock_path: str, pid_path: str, *, dir_fd: Optional[int] = None) -> None:
+    """Erase a daemon's footprint. With `dir_fd`, the three are basenames (#598)."""
+    kw = {} if dir_fd is None else {"dir_fd": dir_fd}
     for path in (sock_path, pid_path, fingerprint_path(sock_path)):
         try:
-            os.unlink(path)
+            os.unlink(path, **kw)
         except OSError:
             pass
 
