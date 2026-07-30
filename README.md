@@ -449,7 +449,7 @@ See [docs/contributing.md](docs/contributing.md) — custom ops, presets, valida
 
 **Linux/macOS:** works out of the box.
 
-**Windows:** works via Git Bash or WSL (the plugin's `hooks/session-start.sh` + `.githooks/pre-push` are bash scripts; the Python tool itself is cross-platform). Native `cmd.exe` / PowerShell without bash won't fire the hooks.
+**Windows:** works via Git Bash or WSL (the plugin's `hooks/session-start.sh` + `.githooks/pre-push` are bash scripts; the Python tool itself is cross-platform). Native `cmd.exe` / PowerShell without bash won't fire the hooks. The pre-push hook needs a real `pythonX.Y` on `PATH` (or `PYTHON=` pointing at one) — it will not run the bare name `python3`, which on Windows can resolve to the App Execution Alias stub and block forever inside `git push`. See [docs/contributing.md](docs/contributing.md#running-tests).
 
 **Paths with spaces:** fine. Arguments arrive via `sys.argv` pre-tokenized by the shell, so `supertool "'read:/home/jo bob/file.py'"` works unchanged.
 

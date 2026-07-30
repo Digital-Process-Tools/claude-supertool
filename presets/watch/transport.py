@@ -410,9 +410,19 @@ def poller_argv(source: str, watcher_id: str, only: list[str] | None = None) -> 
     token equality rather than a substring test: `33248` cannot match `332480`,
     and an id that happens to appear inside another process's arguments cannot
     be mistaken for a poller.
+
+    argv[0] is a label and nothing else. The program that actually runs is
+    handed to `os.execve` as its own first argument by
+    `dispatcher._exec_labelled`, which returns early on `if not sys.executable`
+    before getting there — so argv[0] is never executed. `_labelled` below
+    scans for the dispatcher path followed by the `poll` sub-op and never reads
+    tokens[0] — so argv[0] is never matched on either. It used to carry an
+    `or "python3"` fallback, which rescued nothing (the branch it fired on
+    cannot reach an exec at all) and cost a real misdiagnosis: #564 read this
+    line as a Windows interpreter-resolution bet. #571.
     """
     argv = [
-        sys.executable or "python3",
+        sys.executable,
         str(Path(__file__).parent.resolve() / "dispatcher.py"),
         POLL_SUBOP,
         source,
