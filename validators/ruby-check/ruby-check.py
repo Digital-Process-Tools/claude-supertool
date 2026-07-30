@@ -83,9 +83,22 @@ def main() -> None:
             err["source_context"] = source_context(file, ln)
             errors.append(err)
 
-    if not errors and output:
-        errors = [{"line": None, "col": None, "severity": "error",
-                   "code": "syntax", "msg": output[:300]}]
+    if not errors:
+        if output:
+            errors = [{"line": None, "col": None, "severity": "error",
+                       "code": "syntax", "msg": output[:300]}]
+        else:
+            # `ruby -c` exited non-zero and said nothing on stderr. That is
+            # not "no syntax errors" (returncode == 0 already handled that
+            # above) — resolving on PATH is not proof the spawned process ran
+            # like ruby (a shim, alias, or broken install can exit non-zero
+            # silently). An unexplained exit must stay a named error rather
+            # than fold into `count: 0`, which reads as a finding about the
+            # file with nothing in it (#263-shaped: a "finding" that names
+            # nothing is indistinguishable from a checker that never ran).
+            errors = [{"line": None, "col": None, "severity": "error",
+                       "code": "adapter",
+                       "msg": f"ruby -c produced no output (exit {result.returncode})"}]
 
     emit({"tool": "ruby-check", "file": file, "ok": False, "count": len(errors),
           "errors": errors, "duration_ms": duration})
