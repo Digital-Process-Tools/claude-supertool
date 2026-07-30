@@ -193,6 +193,41 @@ dropped failure falls back to its ordinary pattern window, so nothing disappears
 and the view ends with `... (3 of 21 PHPUnit failures not shown in full — raise
 GL_JOB_PHPUNIT_TOTAL_MAX_LINES=N)`.
 
+### `:grep:` bounds its own output, and says when it did
+
+`:grep:PATTERN` prints every matching line with `error_context` lines around it —
+and on a CI trace a single match can be a whole assertion failure with rendered
+HTML, so a pattern matching a few dozen lines used to emit hundreds of KB. Nothing
+in the op cut that. The *consumer* did, silently, at whatever cap it has, and the
+surviving head read as the whole list — which is how a four-job pipeline failure
+was triaged as 13 affected components when the real set was far larger
+([#622](https://github.com/Digital-Process-Tools/claude-supertool/issues/622)).
+
+Emission is now budgeted by `GL_JOB_GREP_MAX_BYTES` (default 65536). Three states,
+and they are distinguishable:
+
+- **Everything fit** — nothing extra is printed. That silence is a positive claim:
+  the list is whole.
+- **The budget bit** — the header carries `[CAPPED: 14 shown, output limited to
+  65536 bytes by size — raise GL_JOB_GREP_MAX_BYTES=N]` and the view ends with
+  `... (14 of 61 matching lines shown — output capped at 65536 bytes by size, not
+  by a match count limit; raise GL_JOB_GREP_MAX_BYTES=N or narrow the pattern)`.
+  The warning is in the **head** as well as the tail, because a trailing note is
+  lost to the very truncation it exists to report.
+- **The shortfall is an exact count, not "there was more."** The total is computed
+  over the whole trace before the first byte is printed, so `14 of 61` is a real
+  number on both sides.
+
+The note names **size** as what cut, never a count. This op has no `:LIMIT`, and
+the bound fires far earlier than any line count would suggest precisely because
+the lines are enormous — reporting it as a match limit would be a confidently
+wrong disclosure, which is worse than a silent one. The first match is always
+emitted whole however fat it is: a bound that can return zero matches for a
+pattern that matched would invent an absence, which is the disease itself.
+
+The same budget and the same wording apply to `gh-job:NUMBER:grep:PATTERN` under
+`GH_JOB_GREP_MAX_BYTES` — see [github.md](github.md).
+
 **Check an issue before starting work:**
 ```bash
 ./supertool 'gl-issue:999' 'gl-mr:feature/my-branch:status'
