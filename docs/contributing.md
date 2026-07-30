@@ -254,6 +254,43 @@ PYTHONIOENCODING=cp1252 python3 supertool.py git-status
 LC_ALL=C PYTHONCOERCECLOCALE=0 PYTHONUTF8=0 python3 supertool.py git-status
 ```
 
+**4. CI's own emitters are pinned per process, never through the environment** ([#546](https://github.com/Digital-Process-Tools/claude-supertool/issues/546)).
+
+Rules 1–3 are about supertool. This one is about the workflow that tests it, and it exists because a *readable* Windows failure is the only thing that makes the Windows legs worth having. Pytest's terminal writer renders assertion messages onto a stream whose codec is the runner's console codepage, and an em dash — ordinary in this repo's assertion text — is not in cp437, so it left the process as U+FFFD. Destroyed at emit time; nothing downstream recovers it. Measured on `windows-latest` in runs [30485881190](https://github.com/Digital-Process-Tools/claude-supertool/actions/runs/30485881190) and [30500828589](https://github.com/Digital-Process-Tools/claude-supertool/actions/runs/30500828589), both of which also carry intact em dashes echoed from the workflow's own step names — so the log transport was never the problem.
+
+Two mechanisms, and the choice between them is the point:
+
+```yaml
+run: python -X utf8 -m pytest ...        # yes — one process
+env:
+  PYTHONUTF8: "1"                        # no  — every child, for ever
+```
+
+`-X utf8` is a flag on that interpreter and is **not inherited** by subprocesses. `PYTHONUTF8`/`PYTHONIOENCODING` in a workflow `env:` are inherited by every process the suite spawns — including `tests/test_encoding_seam.py` and `tests/test_git_commit_payload_route.py`, which reproduce Windows encoding defects precisely by *leaving the environment alone*. A fix whose blast radius covers the tests that would catch its own regression is not a fix. `tests/test_ci_encoding_546.py` pins both halves, and it will fail on either variable appearing anywhere in the workflow outside a comment.
+
+The always-run failure summary (`.github/scripts/junit_summary.py`) reconfigures its own stdout in-process for the same reason, and reads the messages out of `junit.xml` rather than off the terminal: pytest writes that file as UTF-8 whatever the console can encode, and it carries the **untruncated** message. `--tb=no` means the one-line summary is all a reader gets, and pytest elides the middle of a long one to fit the terminal width — on one real Windows failure the elided part held the word `timeout`, which was the diagnosis. `errors="backslashreplace"`, never `"replace"`: on a diagnostic the handler must disclose, and `replace` is what produced the U+FFFD in the first place.
+
+---
+
+## What CI runs, and what it does not
+
+The pytest matrix is {ubuntu, macos, windows} × py3.9–3.12. For a long time that was the whole workflow, which meant `notifiers/claude-channel/channel.ts` — TypeScript, started in every radar session — shipped on a 12/12 green that had never executed a line of it ([#557](https://github.com/Digital-Process-Tools/claude-supertool/issues/557)). Its tests existed and were real, but they `skipif` on `shutil.which("bun")`, so they were collected, skipped, and counted as neither a pass nor a failure.
+
+| Code | Where it runs | What is checked |
+| --- | --- | --- |
+| Python | all 12 pytest legs | the suite, 86% coverage floor on `supertool.py` |
+| `notifiers/claude-channel/channel.ts` | `notifiers` job, ubuntu + macOS | `bunx tsc --noEmit` under the channel's own strict tsconfig, plus the two socket-level integration test files, run for real |
+| Shell (`*.sh`, `.githooks/*`) | all 12 pytest legs | `bash -n` — **syntax only**, via `tests/test_ci_non_python_coverage_557.py` |
+| `notifiers/cursor-witness/extension/src/extension.ts` | nowhere | **uncovered, knowingly** — a VS Code extension needs `npm install` of the editor's type packages to compile and an editor host to exercise |
+
+Three things about that table are load-bearing:
+
+- **The `notifiers` job does not run on Windows, and that is a decision.** `channel.ts` binds an AF_UNIX socket, so those tests skip there by platform whatever toolchain is installed. A Windows leg would install bun to report a green it had not earned — [#557](https://github.com/Digital-Process-Tools/claude-supertool/issues/557)'s defect wearing [#557](https://github.com/Digital-Process-Tools/claude-supertool/issues/557)'s fix. macOS is in because this code has already produced a macOS-specific defect: the ~104-byte `sun_path` cap, which is why the #554 harness pins `/tmp` rather than `tmp_path`.
+- **`SUPERTOOL_REQUIRE_JS=1`, set by that job and nowhere else, converts a missing prerequisite into a collection error.** Without it a half-failed `bun install` would skip the tests and leave the job green, which is the whole defect reproduced inside its own fix. See `tests/_toolchain_gate.py`; the promise is deliberately *not* inferred from `CI`, because eleven of the twelve pytest legs are on CI and install no JS runtime.
+- **Shell coverage is syntax, not behaviour.** `bash -n` parses `install.sh`; nothing executes it. Running an installer in CI means writing into `~/.claude`, cloning an MCP SDK and starting a server, for a script whose failure is loud and immediate on the one machine that runs it. Stated here rather than left to be inferred from a green tick.
+
+The `.ts` inventory in `tests/test_ci_non_python_coverage_557.py` is asserted against `git ls-files`, so a new TypeScript file fails the suite until somebody classifies it as executed, uncovered or a fixture. That is the durable half of "accept the gap explicitly": a gap nobody can add to silently.
+
 ---
 
 ## Running tests

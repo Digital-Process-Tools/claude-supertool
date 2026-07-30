@@ -24,10 +24,11 @@ were long dead. Without that second rule, "refuse when someone is listening"
 would mean one leaked process permanently denies every future session a radar
 — trading a silent bug for a loud one, which is not an improvement.
 
-Coverage caveat, same as `test_notifiers_claude_channel_554.py`:
-`.github/workflows/tests.yml` is Python-only and installs no JS runtime, so
-every test in this file **skips on CI**. It runs locally wherever `bun` and the
-channel's `node_modules` are present. See #557.
+Coverage, same as `test_notifiers_claude_channel_554.py`: the `notifiers` job in
+`.github/workflows/tests.yml` installs bun and runs this file for real on ubuntu
+and macOS, under `SUPERTOOL_REQUIRE_JS=1` so a missing prerequisite is a
+collection error rather than a silent skip (#557). The twelve-leg pytest matrix
+installs no JS runtime and still skips it, with the reason printed.
 """
 from __future__ import annotations
 
@@ -44,23 +45,27 @@ from pathlib import Path
 
 import pytest
 
+from _toolchain_gate import js_promised, require_or_skip
+
 REPO = Path(__file__).resolve().parents[1]
 CHANNEL_TS = REPO / "notifiers" / "claude-channel" / "channel.ts"
 NODE_MODULES = REPO / "notifiers" / "claude-channel" / "node_modules"
 
 pytestmark = [
-    pytest.mark.skipif(
-        not hasattr(_socket, "AF_UNIX"),
-        reason="claude-channel binds an AF_UNIX socket — not available on this platform",
+    require_or_skip(
+        hasattr(_socket, "AF_UNIX"),
+        "claude-channel binds an AF_UNIX socket — not available on this platform",
+        promised=js_promised(),
     ),
-    pytest.mark.skipif(
-        shutil.which("bun") is None,
-        reason="claude-channel runs under bun; no bun on PATH (this is the CI case — "
-               "the tests workflow installs Python only, so this file never runs there)",
+    require_or_skip(
+        shutil.which("bun") is not None,
+        "claude-channel runs under bun; no bun on PATH",
+        promised=js_promised(),
     ),
-    pytest.mark.skipif(
-        not NODE_MODULES.exists(),
-        reason="channel deps not installed — run notifiers/claude-channel/install.sh",
+    require_or_skip(
+        NODE_MODULES.exists(),
+        "channel deps not installed — run notifiers/claude-channel/install.sh",
+        promised=js_promised(),
     ),
 ]
 
