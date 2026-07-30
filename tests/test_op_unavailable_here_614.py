@@ -36,6 +36,46 @@ def _no_config(monkeypatch: pytest.MonkeyPatch, cwd: Path) -> None:
     supertool._CONFIG_PATH = None
 
 
+def _probe_cmd(sentinel: str, token: str) -> str:
+    """A custom-op cmd that proves it really executed.
+
+    Two things this has to get right, both learned the hard way on this file.
+
+    **Quoting.** Custom ops run argv-form (``shell=False``) through
+    ``shlex.split(posix=True)``, which strips *unescaped* quotes of any kind.
+    ``{python} -c print('X')`` therefore reaches Python as ``print(X)`` — a
+    NameError, not a print. Wrapping the whole payload in double quotes is what
+    the rest of the suite already does (``test_op_format``, ``test_notifiers``):
+    shlex keeps quotes of the *other* type inside a quoted region, so the inner
+    single quotes survive.
+
+    **A token in the output is not proof of execution.** ``print('MR-OK')``
+    mis-quoted raises ``NameError: name 'MR' is not defined`` — and on Python
+    >= 3.13, whose tracebacks echo the offending ``-c`` source line back, the
+    string ``MR-OK`` appears inside that traceback. The assertion then matched
+    its own malformed input, reflected out of an error message. It passed
+    locally on 3.14 and failed on all five CI legs (3.9-3.12), which is the only
+    reason it was caught. So the probe also touches a sentinel file: a
+    filesystem side effect that no error message can fake.
+    """
+    return (
+        '{python} -c "'
+        f"open('{sentinel}', 'w').close(); print('{token}')"
+        '"'
+    )
+
+
+def _assert_probe_ran(out: str, cwd: Path, sentinel: str, token: str) -> None:
+    """Assert the op ran to completion, not merely that its token appears."""
+    assert "Traceback" not in out, f"the probe itself failed:\\n{out}"
+    assert "FAIL" not in out, f"the probe itself failed:\\n{out}"
+    assert token in out
+    assert (cwd / sentinel).exists(), (
+        "the token was in the output but the process never ran — the assertion "
+        "is matching an error message again"
+    )
+
+
 def _config_at(monkeypatch: pytest.MonkeyPatch, cwd: Path, cfg: dict) -> Path:
     """Simulate a found .supertool.json at `cwd` holding `cfg`."""
     monkeypatch.chdir(cwd)
@@ -56,10 +96,10 @@ class TestAvailable:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _config_at(monkeypatch, tmp_path, {
-            "ops": {"gl-mr": {"cmd": "{python} -c print('MR-OK')"}},
+            "ops": {"gl-mr": {"cmd": _probe_cmd("ran-mr.txt", "MR-OK")}},
         })
         out = supertool.dispatch("gl-mr:1")
-        assert "MR-OK" in out
+        _assert_probe_ran(out, tmp_path, "ran-mr.txt", "MR-OK")
         assert "unknown operation" not in out
         assert "unavailable here" not in out
 
@@ -193,10 +233,10 @@ class TestUnavailableHere:
         """A project defining its own `gl-mr` must run it, not be told it is
         unavailable — the check is a fallthrough, never a pre-emption."""
         _config_at(monkeypatch, tmp_path, {
-            "ops": {"gh-job": {"cmd": "{python} -c print('LOCAL')"}},
+            "ops": {"gh-job": {"cmd": _probe_cmd("ran-local.txt", "LOCAL")}},
         })
         out = supertool.dispatch("gh-job:1")
-        assert "LOCAL" in out
+        _assert_probe_ran(out, tmp_path, "ran-local.txt", "LOCAL")
         assert "unavailable here" not in out
 
 
