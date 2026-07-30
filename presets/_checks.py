@@ -28,10 +28,22 @@ from typing import Iterable, List, Sequence
 # anything other than every-single-check-passed earns it.
 NOT_GREEN = "⚠ NOT ALL GREEN"
 
-# Printed instead of a zeroed tally when there is nothing to count. It must not
-# be confusable with "checks exist but I could not classify them", so it says
-# what is absent rather than counting to zero.
+# Printed instead of a zeroed tally when there is nothing to count *and*
+# nothing has been established about why. It must not be confusable with
+# "checks exist but I could not classify them", so it says what is absent
+# rather than counting to zero. A caller that can reach evidence about the
+# absence renders `absence()` instead — see its docstring for why this line on
+# its own is not an answer.
 NO_CHECKS = "none reported — no check runs on this commit"
+
+# How long a first check run may take to appear before its absence stops being
+# explained by GitHub's creation latency. Measured on this repo in #585: 99s,
+# 165s, ~2min and 4.5min from PR-open to first run created. 15min is ~3x the
+# worst observed, deliberately generous — the window's job is to make "not yet"
+# the only reading while a run could still plausibly be on its way, so erring
+# long costs a waiting reader nothing, while erring short would put the word
+# UNKNOWN on a perfectly healthy PR.
+CHECK_CREATION_GRACE_SECS = 900
 
 PASSED_STATES = frozenset({"SUCCESS"})
 
@@ -157,3 +169,88 @@ def all_green(states: Sequence[str] | Iterable[str]) -> bool:
     """True only when at least one check exists and every one of them passed."""
     tokens = [normalize(s) for s in states]
     return bool(tokens) and all(bucket(t) == "passed" for t in tokens)
+
+
+def _duration(secs: int) -> str:
+    """A bare age — '45s', '2m', '2h', '3d'. No 'ago': the caller supplies it."""
+    secs = max(0, int(secs))
+    if secs < 60:
+        return f"{secs}s"
+    if secs < 3600:
+        return f"{secs // 60}m"
+    if secs < 86400:
+        return f"{secs // 3600}h"
+    return f"{secs // 86400}d"
+
+
+# PR states in which no `pull_request` event can fire for the head ref any
+# more, mapped to what would have to change for one to. A run genuinely still
+# in flight is excluded by the grace window before this map is consulted.
+_TERMINAL_PR_STATES = {
+    "MERGED": "again",
+    "CLOSED": "unless it is reopened",
+}
+
+
+def absence(pr_state: object, age_secs: int | None,
+            grace_secs: int = CHECK_CREATION_GRACE_SECS) -> tuple[str, str]:
+    """Render zero check runs as one of three states (#585).
+
+    Returns `(checks_text, mergeable_note)`. `NO_CHECKS` on its own answered a
+    merge question with one sentence covering two opposite situations — the run
+    has not been created yet (waiting is correct) and the run is never coming
+    (waiting is a deadlock). Both read as "not yet" to somebody waiting to
+    merge, and both were read that way, by two readers ten minutes apart.
+
+    The evidence is timestamps and PR state, not workflow configuration:
+
+    * **not yet** — the head commit is younger than `grace_secs`, so GitHub's
+      own creation latency explains the absence. Nothing else is claimed.
+    * **none will be created** — the head commit is older than the window
+      *and* the PR is merged or closed. This is the empirical leg, and it is
+      why no `on:` block is parsed here: a push event for this ref has already
+      fired and produced no run, and no `pull_request` event can fire again.
+      Inferring the same thing from `.github/workflows/*` would be inferring
+      it from files that need not be the ones on the PR's head ref.
+    * **UNKNOWN** — anything else. An *open* PR sitting well past the window
+      with zero runs is overdue, not decided: an event can still fire for it,
+      so the age is printed and the conclusion is declined. `docs/validators.md`
+      ("Declining instead of guessing"): a checker that cannot answer says so.
+      A failed age lookup lands here too, never in the leg above.
+    """
+    state = normalize(pr_state)
+    window = f"~{max(1, grace_secs // 60)}min"
+
+    if age_secs is None:
+        return (
+            "none reported — no check runs on this commit, and whether one is "
+            "still coming is UNKNOWN: could not establish when the head commit "
+            "landed. Check the PR's Checks tab.",
+            " — no checks reported, and whether any are coming is UNKNOWN",
+        )
+
+    age = _duration(age_secs)
+
+    if age_secs <= grace_secs:
+        return (
+            f"none yet — head commit {age} old, inside the {window} window in "
+            "which a first run has always appeared; a run is still expected",
+            " — no checks yet, a run is still expected",
+        )
+
+    if state in _TERMINAL_PR_STATES:
+        tail = _TERMINAL_PR_STATES[state]
+        return (
+            f"none, and none will be created — head commit {age} old and still "
+            f"zero runs, and the PR is {state}, so no pull_request event will "
+            f"fire for this ref {tail}. Waiting will not change this.",
+            f" — no checks, and none will be created (PR is {state})",
+        )
+
+    return (
+        f"none reported — head commit {age} old and still zero runs, past the "
+        f"{window} window in which a first run normally appears; the PR is "
+        f"{state}, so an event could still fire and whether any workflow covers "
+        "this ref is UNKNOWN. Check the PR's Checks tab.",
+        " — no checks reported, and whether any are coming is UNKNOWN",
+    )
