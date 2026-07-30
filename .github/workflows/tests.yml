@@ -33,13 +33,106 @@ jobs:
         # "this diff is wrong" or it stops being read.
         # bash shell forced so `|| true` works on Windows (PowerShell default
         # exits on pytest's non-zero status, skipping the junit-xml parser).
-        # The Python step parses junit-xml and re-emits `FAILED <id>` lines for
-        # the test summary — survives the GH 64KB log truncation that would
+        # The Python step parses junit-xml and re-emits the failures with their
+        # full messages — survives the GH 64KB log truncation that would
         # otherwise eat the pytest summary block.
+        #
+        # `-X utf8` and NOT `env: PYTHONUTF8` / `PYTHONIOENCODING` (#546). The
+        # emitter that mangles a Windows failure message is pytest's own
+        # terminal writer, attached to a stream whose codec is the runner's
+        # console codepage — an em dash is not in cp437, so it left the process
+        # as U+FFFD, destroyed rather than mangled in transit. UTF-8 mode fixes
+        # that emitter and nothing else: `-X` is a flag on this interpreter and
+        # is not inherited by child processes, whereas either env var is
+        # inherited by every subprocess the suite spawns — including
+        # `tests/test_encoding_seam.py` and
+        # `tests/test_git_commit_payload_route.py`, which reproduce Windows
+        # encoding defects precisely by leaving the environment alone. A fix
+        # whose blast radius includes the tests that would catch its own
+        # regression is not a fix. Pinned by `tests/test_ci_encoding_546.py`.
         shell: bash
-        run: pytest -m 'not benchmark' --tb=no --no-cov --junit-xml=junit.xml -q
-      - name: Show FAILED test IDs (always runs)
+        run: python -X utf8 -m pytest -m 'not benchmark' --tb=no --no-cov --junit-xml=junit.xml -q
+      - name: Show failing tests with full messages (always runs)
+        # `--tb=no` above means the one-line summary is all there is, and pytest
+        # elides the middle of a long one to fit the terminal width — on one real
+        # Windows failure the elided part held the word `timeout`, which was the
+        # diagnosis. junit.xml carries the untruncated message and is written as
+        # UTF-8 whatever the console can encode, so it is the readable channel.
+        # The script pins its own stdout to UTF-8 in-process; no `||` fallback,
+        # because the one it replaced reported "pytest crashed before generating
+        # it" for a reporter that had merely failed to print.
         if: always()
         shell: bash
+        run: python .github/scripts/junit_summary.py junit.xml
+  notifiers:
+    # #557: the matrix above runs pytest and nothing else, so
+    # `notifiers/claude-channel/` — TypeScript, started in every radar session —
+    # shipped on a 12/12 green that had never executed a line of it. Its tests
+    # exist and are real (they spawn the server over a socket and assert on the
+    # emitted JSON-RPC); they were being collected, skipped for want of bun, and
+    # counted as neither a pass nor a failure.
+    #
+    # Not on windows-latest, and that is a decision, not an omission: channel.ts
+    # binds an AF_UNIX socket, which those legs do not have, so no toolchain
+    # install would make these tests run there. A Windows leg here would be
+    # theatre. macOS is in because this exact code has already produced a
+    # macOS-specific defect — the ~104-byte `sun_path` cap, which is why the
+    # #554 harness pins /tmp instead of tmp_path.
+    #
+    # Runs in parallel with the twelve pytest legs and finishes well inside
+    # them (the critical path is windows-latest/3.9 at ~193s), so the board's
+    # wall-clock does not move.
+    name: notifiers (bun + TypeScript)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      # Bun is installed from npm rather than via `oven-sh/setup-bun`, so this
+      # adds no third-party action at all — the runners already ship npm. Pinned,
+      # because `@v2` with `bun-version: latest` pinned neither side: a moving tag
+      # runs whatever code it points at today with this workflow's token, and a
+      # floating runtime turns an upstream release into a red leg nobody caused.
+      #
+      # Bun rather than node, also deliberately: `install.sh` exits non-zero
+      # without bun and registers the server as `"command": "bun"`, so bun is the
+      # runtime the documented install path wires up. node is supported (see the
+      # notifiers README) but the two disagree on the errno for the same dead
+      # socket — node `ECONNREFUSED`, bun `ENOENT` — which is the divergence #550
+      # was about. Testing only node would exercise the runtime users are not
+      # told to install.
+      - name: Install bun
+        run: npm i -g bun@1.3.14
+      - name: Install test deps
         run: |
-          python -c "import xml.etree.ElementTree as ET, sys; t=ET.parse('junit.xml'); [print('FAILED', tc.attrib['classname']+'.'+tc.attrib['name']) for tc in t.getroot().iter('testcase') if any(c.tag in ('failure','error') for c in tc)]" || echo "(no junit.xml — pytest crashed before generating it)"
+          python -m pip install --upgrade pip
+          pip install pytest pytest-cov pytest-xdist pytest-timeout
+      - name: Install supertool (pip entry point — cross-platform, no symlink)
+        run: pip install -e .
+      - name: Install channel deps
+        working-directory: notifiers/claude-channel
+        run: bun install --frozen-lockfile
+      - name: Type-check channel.ts
+        # `tsconfig.json` already declares noEmit; -p . uses the repo's own
+        # strict settings rather than a looser CLI default.
+        working-directory: notifiers/claude-channel
+        run: bunx tsc --noEmit -p .
+      - name: Run the channel integration tests for real
+        # SUPERTOOL_REQUIRE_JS=1 makes a missing prerequisite a collection error
+        # instead of a skip, so this step cannot pass by skipping — which is the
+        # only way it is worth adding. See tests/_toolchain_gate.py.
+        #
+        # -n0 because eleven tests that each spawn a server gain nothing from
+        # xdist and lose determinism to it. --no-cov because pyproject's addopts
+        # carry a whole-suite 86% gate that two files cannot meet.
+        env:
+          SUPERTOOL_REQUIRE_JS: "1"
+        run: >-
+          python -X utf8 -m pytest -n0 --no-cov -q
+          tests/test_notifiers_claude_channel_550.py
+          tests/test_notifiers_claude_channel_554.py

@@ -12,10 +12,12 @@ logged, and stayed alive. So the contract these tests pin is an outbound one:
     every value in `params.meta` that leaves this server is a JSON string,
     or the event is dropped with a line on stderr — never emitted malformed.
 
-Coverage caveat, stated plainly: `.github/workflows/tests.yml` is Python-only
-and installs no JS runtime, so every test in this file **skips on CI**. It
-runs locally wherever `bun` and the channel's `node_modules` are present.
-See the issue thread — adding a bun step is a workflow change and its own PR.
+Coverage: the `notifiers` job in `.github/workflows/tests.yml` installs bun and
+the channel's `node_modules` and runs this file for real on ubuntu and macOS
+(#557). It sets `SUPERTOOL_REQUIRE_JS=1`, which turns a missing prerequisite
+into a collection error instead of a skip — so this file cannot go back to being
+counted green without running. The twelve-leg pytest matrix still installs no JS
+runtime, so it still skips there, with the reason printed.
 """
 from __future__ import annotations
 
@@ -32,23 +34,27 @@ from pathlib import Path
 
 import pytest
 
+from _toolchain_gate import js_promised, require_or_skip
+
 REPO = Path(__file__).resolve().parents[1]
 CHANNEL_TS = REPO / "notifiers" / "claude-channel" / "channel.ts"
 NODE_MODULES = REPO / "notifiers" / "claude-channel" / "node_modules"
 
 pytestmark = [
-    pytest.mark.skipif(
-        not hasattr(_socket, "AF_UNIX"),
-        reason="claude-channel binds an AF_UNIX socket — not available on this platform",
+    require_or_skip(
+        hasattr(_socket, "AF_UNIX"),
+        "claude-channel binds an AF_UNIX socket — not available on this platform",
+        promised=js_promised(),
     ),
-    pytest.mark.skipif(
-        shutil.which("bun") is None,
-        reason="claude-channel runs under bun; no bun on PATH (this is the CI case — "
-               "the tests workflow installs Python only, so this file never runs there)",
+    require_or_skip(
+        shutil.which("bun") is not None,
+        "claude-channel runs under bun; no bun on PATH",
+        promised=js_promised(),
     ),
-    pytest.mark.skipif(
-        not NODE_MODULES.exists(),
-        reason="channel deps not installed — run notifiers/claude-channel/install.sh",
+    require_or_skip(
+        NODE_MODULES.exists(),
+        "channel deps not installed — run notifiers/claude-channel/install.sh",
+        promised=js_promised(),
     ),
 ]
 
