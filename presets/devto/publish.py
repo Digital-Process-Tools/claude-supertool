@@ -8,7 +8,9 @@ Caller-supplied values win.
 PRE-FLIGHT DUPLICATE CHECK: Before publishing, the op fetches /articles/me and
 aborts if an article with the same canonical_url already exists. Pass `force` as
 the 7th pipe-separated field to bypass: TITLE|MD|CANONICAL|||||force
-If the pre-flight API call fails, a warning is printed and the publish proceeds.
+If the pre-flight lookup cannot be made, the op ABORTS rather than publishing
+unchecked — a check that could not run is not "no duplicate" (#601). Re-run with
+`force` to publish anyway.
 """
 from __future__ import annotations
 
@@ -59,20 +61,31 @@ def parse_args(arg: str) -> dict[str, object]:
     }
 
 
-def preflight_publish(canonical: str, api_key: str) -> tuple[bool, str, str]:
+def preflight_publish(canonical: str, api_key: str) -> tuple[bool | None, str, str]:
     """Check if an article with this canonical_url already exists on the account.
 
-    Returns (already_exists, existing_url, existing_slug).
-    On API error returns (False, '', '') so the caller can degrade gracefully.
+    Returns (already_exists, existing_url, existing_slug), or (None, '', '')
+    when the lookup itself could not be made — the caller must fail closed.
+
+    `False` and `None` used to be the same value here (#601, the class of #562).
+    `False` means *we looked and the account has no article with this canonical
+    url*; `None` means *we did not look*. Collapsing them made a failed
+    `/articles/me` call indistinguishable from a clean account, and the only
+    caller reads it to decide whether to publish — so a 500 published a
+    duplicate article. `presets/hashnode/publish.py` has returned `bool | None`
+    since it was written; this is the same contract, not a new one.
+
+    A response that is not a list is `None` too, not `False`: a rate-limit body
+    is an unanswered question, not an empty article list.
     """
     if not canonical:
         return False, "", ""
     try:
         articles = request("GET", "/articles/me", api_key, query={"per_page": 1000})
     except Exception:
-        return False, "", ""
+        return None, "", ""
     if not isinstance(articles, list):
-        return False, "", ""
+        return None, "", ""
     for a in articles:
         if (a.get("canonical_url") or "").rstrip("/") == canonical.rstrip("/"):
             return True, a.get("url", ""), a.get("slug", "")
@@ -99,17 +112,21 @@ def main(arg: str) -> None:
     require_confirm("devto_publish", preview, force=bool(parsed["force"]))
     api_key = get_api_key()
     if not parsed["force"]:
-        try:
-            already, url, slug = preflight_publish(str(parsed["canonical"]), api_key)
-            if already:
-                sys.stderr.write(
-                    f"ABORT — already published with canonical_url={parsed['canonical']!r} "
-                    f"(slug={slug}, url={url}). "
-                    "Use |force as 7th field to override.\n"
-                )
-                sys.exit(1)
-        except Exception as exc:
-            sys.stderr.write(f"WARNING: pre-flight check failed ({exc}) — proceeding anyway.\n")
+        already, url, slug = preflight_publish(str(parsed["canonical"]), api_key)
+        if already is None:
+            sys.stderr.write(
+                f"ABORT — pre-flight lookup failed for canonical_url={parsed['canonical']!r} "
+                "(cannot verify whether already published). "
+                "Use |force as 7th field to bypass and publish anyway.\n"
+            )
+            sys.exit(1)
+        if already:
+            sys.stderr.write(
+                f"ABORT — already published with canonical_url={parsed['canonical']!r} "
+                f"(slug={slug}, url={url}). "
+                "Use |force as 7th field to override.\n"
+            )
+            sys.exit(1)
     data = request("POST", "/articles", api_key, body=build_body(parsed))
     print(f"(published id={data.get('id')} slug={data.get('slug')})")
     print(f"URL:   {data.get('url')}")

@@ -48,6 +48,28 @@ Bluesky publishing, discovery, and engagement via the AT Protocol. Replaces raw 
 ./supertool 'bluesky_publish:Thanks for sharing!|at://did:plc:xyz/app.bsky.feed.post/3kabc'
 ```
 
+## When the duplicate check cannot run
+
+`bluesky_publish` (replies only), `bluesky_like` and `bluesky_follow` each look before they write — for an existing reply to the same thread root, an existing like, an existing follow. Since [#601](https://github.com/Digital-Process-Tools/claude-supertool/issues/601) that check has three outcomes, not two:
+
+| Outcome | What the op does | stderr |
+|---------|------------------|--------|
+| Nothing found | Writes | — |
+| Duplicate found | Refuses, names what it found | `ABORT — already liked at://… Use \|force to override.` |
+| **The check could not be made** | Refuses, writes nothing | `ABORT — pre-flight lookup failed for at://… (cannot verify whether already liked). Use \|force to bypass and like anyway.` |
+
+The third row is the new one. It used to be the first row: a failed `getActorLikes`, `getFollows` or `getAuthorFeed` returned the same `False` as a clean lookup, so a platform hiccup authorised the write it was meant to guard. Every one of these is recoverable in one keystroke — `|force`, already the bypass for a genuine duplicate:
+
+```bash
+./supertool 'bluesky_like:at://did:plc:abc/app.bsky.feed.post/xyz|force'
+./supertool 'bluesky_follow:someone.bsky.social|force'
+./supertool 'bluesky_publish:Thanks!|at://did:plc:abc/app.bsky.feed.post/xyz|force'
+```
+
+"Could not be made" covers an HTTP or network failure (the AT Protocol helper exits rather than raising, which is why these ops name `SystemExit` explicitly) and, for `bluesky_publish`, a reply target whose thread root cannot be resolved — a root that is unknown is not a root nobody replied to.
+
+`bluesky_repost` has no pre-flight at all and is unaffected.
+
 ## Configuration
 
 | Variable | Required | Description |

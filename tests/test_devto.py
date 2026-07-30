@@ -1046,12 +1046,20 @@ def test_publish_preflight_no_dupe(monkeypatch: pytest.MonkeyPatch) -> None:
     assert already is False
 
 
-def test_publish_preflight_api_error_degrades(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_publish_preflight_api_error_is_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A lookup that raised returns None, not False (#601).
+
+    This asserted `already is False` — the same value as
+    `test_publish_preflight_no_dupe` above it — so the pair could not tell a
+    checked account from an unreachable API, and a 500 published a duplicate
+    article. The pair that pins them apart lives in
+    test_preflight_unknown_601.py.
+    """
     monkeypatch.setattr(publish, "request",
                         lambda *a, **kw: (_ for _ in ()).throw(Exception("500")))
     monkeypatch.setattr(publish, "get_api_key", lambda: "fake")
     already, url, slug = publish.preflight_publish("https://x.io", "fake")
-    assert already is False and url == "" and slug == ""
+    assert already is None and url == "" and slug == ""
 
 
 def test_publish_main_aborts_on_dupe(monkeypatch: pytest.MonkeyPatch,
