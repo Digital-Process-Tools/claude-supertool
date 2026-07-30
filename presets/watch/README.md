@@ -131,6 +131,36 @@ the oversized attribute is withheld whole (never truncated), the event is still
 delivered, and it carries a `clamped` attribute naming what went and how big it
 really was. Nothing is silently shortened, and nothing is silently lost.
 
+### Reserved payload keys ([#609](https://github.com/Digital-Process-Tools/claude-supertool/issues/609))
+
+**A `payload` key may not be named after a field the bridge writes itself.** The
+consumer sets the identifying fields — `watcher_source`, `id`, `event`, `ts`,
+`first_tick` — and until #609 the payload was merged *over* them, so a poller
+with a `payload.id` re-aimed the event at whatever that field held. Measured: an
+event announced as `gitlab-mr 33173: pipeline_failed` was delivered as
+`not-gitlab 11111: pipeline_succeeded`, with the body and the attributes in
+perfect agreement and nothing on stderr.
+
+The reserved names are:
+
+| Key | Written by |
+| --- | --- |
+| `watcher_source`, `id`, `event`, `ts`, `first_tick` | the event's own routing fields |
+| `source` | auto-injected by Claude Code from the MCP server name |
+| `clamped`, `collided` | the consumer's disclosures ([#605](https://github.com/Digital-Process-Tools/claude-supertool/issues/605), #609) |
+| `__proto__` | cannot become an attribute at all — assigning it to a JS object is a silent no-op |
+
+A payload key with one of those names is **ignored, and said so**: the event
+carries a `collided` attribute and a body line naming the key, its size and the
+reserved set, so a poller author finds out rather than wondering why their field
+never arrives. The fix on the producer side is to rename the field —
+`mr_id`, `event_kind`, `observed_ts` — not to hope it lands.
+
+Note this also used to lose the *whole* event: a large `payload.id` overwrote the
+routing id, which then failed the per-attribute cap, and the event was refused
+with the stderr reason `routing key over 2048 chars` while the real routing id
+was five digits. That cannot happen now.
+
 ## Lifecycle
 
 Each `watch` invocation forks a detached poller process. The process IS the
