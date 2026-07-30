@@ -101,6 +101,70 @@ def _fetch_review_threads(url: str, number: int | str) -> list[dict]:
         return []
 
 
+def _head_commit_age_secs(url: str, number: int | str) -> int | None:
+    """Seconds since the PR's head commit was made, or None if unestablished.
+
+    Costs one GraphQL call, so it is only ever asked when a commit carries zero
+    check runs — the tally needs no help when runs exist, and `gh-pr` is a hot
+    path.
+
+    GraphQL exposes `pushedDate`, which is the field this wants and which
+    GitHub now returns as `null` for every commit (verified against this repo's
+    own PRs), so the age comes from `committedDate`. That can predate the push
+    — a commit can sit locally for a day — which only ever makes the age look
+    *older* than the wait actually was. `_checks.absence()` treats old-and-empty
+    on an open PR as UNKNOWN rather than as proof, so the skew cannot
+    manufacture a "no runs will be created"; the worst it does is turn a
+    freshly pushed old commit's "not yet" into "go look", which is safe.
+
+    None on every failure — no repo in the URL, gh error, missing node. The
+    caller must render that as a decline, not as either verdict.
+    """
+    if not url:
+        return None
+    m = re.match(r"https?://github\.com/([^/]+)/([^/]+)/pull/\d+", url)
+    if not m:
+        return None
+    owner, repo = m.group(1), m.group(2)
+    query = (
+        "query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r)"
+        "{pullRequest(number:$n){commits(last:1){nodes{commit"
+        "{pushedDate committedDate}}}}}}"
+    )
+    try:
+        r = _gh([
+            "api", "graphql",
+            "-f", f"query={query}",
+            "-F", f"o={owner}", "-F", f"r={repo}", "-F", f"n={number}",
+        ])
+        if r.returncode != 0:
+            return None
+        data = json.loads(r.stdout)
+        repo_node = (data.get("data") or {}).get("repository") or {}
+        pr_node = repo_node.get("pullRequest") or {}
+        nodes = (pr_node.get("commits") or {}).get("nodes") or []
+        if not nodes:
+            return None
+        commit = nodes[-1].get("commit") or {}
+        stamp = commit.get("pushedDate") or commit.get("committedDate") or ""
+        if not stamp:
+            return None
+        from datetime import datetime, timezone
+        dt = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+        return int((datetime.now(timezone.utc) - dt).total_seconds())
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, ValueError,
+            AttributeError, TypeError, ImportError):
+        return None
+
+
+def _absence_lines(d: dict, number: int | str) -> tuple[str, str]:
+    """`(checks_text, mergeable_note)` for a head commit with zero check runs."""
+    return _checks.absence(
+        d.get("state"),
+        _head_commit_age_secs(d.get("url") or "", number),
+    )
+
+
 def _format_error(stderr: str, resource: str, identifier: str) -> str:
     """Classify gh errors into actionable messages for LLMs."""
     s = stderr.lower()
@@ -190,7 +254,11 @@ def main() -> int:
         conflicts = "yes" if mergeable == "CONFLICTING" else "no"
         print(f"#{iid} | state: {state} | mergeable: {mergeable} | conflicts: {conflicts}")
         print(f"branch: {d.get('headRefName') or '?'} -> {d.get('baseRefName') or '?'}")
-        print(f"checks: {_checks.summarize(check_states)}")
+        if check_states:
+            checks_text = _checks.summarize(check_states)
+        else:
+            checks_text, _ = _absence_lines(d, iid)
+        print(f"checks: {checks_text}")
         print(f"review: {review_decision}")
         if merge_commit:
             print(f"merge_commit: {merge_commit[:12]}")
@@ -262,8 +330,18 @@ def main() -> int:
 
     # Checks (CI status) — the tally accounts for every entry it was handed;
     # see presets/_checks.py for why the sum matters more than the labels.
+    # An absent tally is two opposite readings, so the zero case is classified
+    # rather than named — see _checks.absence() (#585). It buys the evidence for
+    # that (one GraphQL call) only here, never when runs exist.
     check_states = _checks.github_states(d.get("statusCheckRollup"))
-    print(f"Checks: {_checks.summarize(check_states)}")
+    if check_states:
+        checks_text = _checks.summarize(check_states)
+        merge_note = "" if _checks.all_green(check_states) else (
+            f" — checks {_checks.NOT_GREEN}, see Checks above"
+        )
+    else:
+        checks_text, merge_note = _absence_lines(d, iid)
+    print(f"Checks: {checks_text}")
 
     # Changes
     print(f"Changes: {changed_files} files, +{additions} -{deletions}")
@@ -271,12 +349,9 @@ def main() -> int:
     # Mergeable — GitHub's *merge conflict* state, not a CI verdict. Printed
     # bare underneath a check tally it reads as one, which is half of what made
     # #454 dangerous, so it names what it measures and carries the CI caveat.
-    if not check_states:
-        merge_note = " — no checks reported"
-    elif _checks.all_green(check_states):
-        merge_note = ""
-    else:
-        merge_note = f" — checks {_checks.NOT_GREEN}, see Checks above"
+    # merge_note was computed with the Checks line above: "unknown because
+    # nothing has run yet" and "unknown because nothing will run" are different
+    # answers to a merge question, and this printed one sentence for both.
     if mergeable == "CONFLICTING":
         print("Conflicts: YES — cannot merge")
     elif mergeable == "MERGEABLE":
