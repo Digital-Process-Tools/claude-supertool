@@ -297,3 +297,122 @@ def _force_mode(path: Path, mode: int) -> None:
     through `os.__dict__`'s original, which we captured at import time.
     """
     _REAL_CHMOD(path, mode)
+
+@posix_only
+class TestTheRefusalDoesNotKillAnOpThatCanDegrade:
+    """A refusal must reach `MCPClient`'s caller as a *recoverable* failure.
+
+    `runtime_dir()` states its refusals with `sys.exit("<reason>")`, and
+    `SystemExit` derives from `BaseException` — so `_mcp_ensure_server`'s
+    `except (OSError, MCPServerError, MCPTimeout, KeyError)` does not catch it,
+    and neither would a bare `except Exception`. That handler returning `None`
+    is the entire mechanism by which `refs`, `resolve` and `workspace` fall back
+    to their heuristic path, so an escaping `SystemExit` does not degrade the
+    op — it kills the invocation.
+
+    The repo already learned this at #544: the `AF_UNIX` check in
+    `MCPClient.__init__` was hoisted one step ahead of `_mcp_socket_pid_paths`
+    *because* `runtime_dir()`'s refusal is a `SystemExit` that
+    "`_mcp_ensure_server` catches neither". #568's mode refusal added a second
+    `SystemExit` through the same constructor, and unlike the ownership
+    mismatch beside it, its cause is ordinary: an exFAT/FAT32/SMB
+    `SUPERTOOL_RUNTIME_DIR`. On such a box every warm-daemon op would die with
+    a runtime-dir message instead of degrading.
+
+    Dying is worse than degrading on security grounds too, not just usability.
+    The cold path binds no socket and writes no pidfile, so there is nothing
+    there for the directory mode to have been protecting. `docs/mcp-integration.md`
+    states the governing principle for the sibling case — *"invalidation is an
+    optimization and never blocks the op"* — and a warm daemon is the same kind
+    of optimization.
+
+    So the refusal is still a refusal for the callers whose job is to report it
+    (`stop.py`, `status.py`, exit `4`), and arrives at the `MCPClient` boundary
+    as `MCPServerError`. The bottom test is the one that would catch a half-fix:
+    asserting only that `runtime_dir()` raises `SystemExit`, or only that the
+    constructor raises *something*, passes on the broken version.
+    """
+
+    @pytest.fixture
+    def unfixable(self, no_chmod):
+        """An existing runtime dir at 0o755 whose mode cannot be changed."""
+        no_chmod.mkdir(parents=True)
+        _force_mode(no_chmod, 0o755)
+        return no_chmod
+
+    @pytest.fixture(autouse=True)
+    def _clean_specs(self):
+        supertool._mcp_specs.clear()
+        yield
+        with supertool._MCP_LOCK:
+            supertool._MCP_SERVERS.clear()
+        supertool._mcp_specs.clear()
+
+    def test_the_client_constructor_raises_mcpservererror_not_systemexit(
+        self, unfixable
+    ):
+        with pytest.raises(supertool.MCPServerError) as exc:
+            supertool.MCPClient(name="php-lsp", timeout=1)
+
+        assert "755" in str(exc.value), f"reason lost in translation: {exc.value}"
+
+    def test_a_bare_numeric_exit_is_not_relabelled_as_a_recoverable_error(
+        self, runtime, monkeypatch
+    ):
+        """Only a *stated* refusal is one — same rule as `stop.py::_refused`.
+
+        A bare `sys.exit(2)` carries no reason and is not a refusal anybody
+        worded, so translating it into `MCPServerError` would invent a
+        recoverable failure out of an exit nobody explained.
+        """
+        monkeypatch.setattr(
+            supertool, "_mcp_socket_pid_paths",
+            lambda cwd, name: (_ for _ in ()).throw(SystemExit(2)),
+        )
+
+        with pytest.raises(SystemExit) as exc:
+            supertool.MCPClient(name="php-lsp", timeout=1)
+
+        assert exc.value.code == 2
+
+    def test_ensure_server_returns_none_rather_than_propagating(self, unfixable):
+        """The handler that makes every fallback work must actually catch it."""
+        supertool._mcp_specs.update(
+            {"php-lsp": {"match": "*.php", "tools": {"refs": "references"}}}
+        )
+
+        assert supertool._mcp_ensure_server("php-lsp") is None
+
+    def test_an_op_with_a_cold_fallback_still_produces_its_result(
+        self, unfixable, tmp_path, monkeypatch, capsys
+    ):
+        """The end-to-end property, and the only one a half-fix fails.
+
+        `resolve` routes to an LSP when one is reachable and falls back to its
+        own heuristic when `_mcp_ensure_server` returns `None`. With an
+        unfixable-mode runtime dir it must still print the definition it found
+        and still exit `0` — the daemon was an optimization, and the cold path
+        binds no socket and writes no pidfile for the mode to protect.
+
+        Asserting the *answer* and not only the exit code matters: `main` handles
+        broadly enough that a `0` alone would also be satisfied by an op that
+        printed an error and gave up. The first draft of this test used `refs`,
+        which is not a dispatched op name — it exited `1` with "unknown
+        operation" and looked exactly like the bug for the wrong reason, which
+        is its own small lesson about end-to-end assertions.
+        """
+        work = tmp_path / "work"
+        work.mkdir()
+        (work / "Foo.php").write_text("<?php class Foo {}\n", encoding="utf-8")
+        (work / "b.php").write_text("<?php new Foo();\n", encoding="utf-8")
+        monkeypatch.chdir(work)
+        monkeypatch.setenv("SUPERTOOL_MCP_AUTOSPAWN", "0")
+        supertool._mcp_specs.update(
+            {"php-lsp": {"match": "*.php", "tools": {"resolve": "definition"}}}
+        )
+
+        rc = supertool.main([f"resolve:Foo:{work / 'b.php'}"])
+        out = capsys.readouterr().out
+
+        assert rc == 0, f"a runtime-dir refusal killed an op that can degrade: {rc}"
+        assert "Foo.php" in out, f"cold fallback produced no result: {out!r}"

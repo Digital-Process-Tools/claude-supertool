@@ -14161,7 +14161,46 @@ class MCPClient:
                     "MCP daemon requires socket.AF_UNIX — not available on this platform"
                 )
             cwd = os.path.abspath(os.getcwd())
-            self._sock_path, _ = _mcp_socket_pid_paths(cwd, name)
+            # A stated runtime-dir refusal reaches this caller as a recoverable
+            # error, not as a dead process (#568).
+            #
+            # `_paths.runtime_dir()` refuses with `sys.exit("<reason>")` — for a
+            # dir owned by another uid, one it cannot create, and now one that
+            # is not owner-only and cannot be made so. `SystemExit` derives from
+            # `BaseException`, so `_mcp_ensure_server`'s
+            # `except (OSError, MCPServerError, MCPTimeout, KeyError)` does not
+            # catch it and neither would a bare `except Exception`. That handler
+            # returning `None` is the whole mechanism by which `refs`, `resolve`
+            # and `workspace` fall back to their heuristic path, so an escaping
+            # `SystemExit` does not degrade the op — it kills the invocation.
+            #
+            # The AF_UNIX hoist above is the same lesson at the same boundary
+            # (#544); it stays, because not calling `runtime_dir()` at all beats
+            # translating what it raises. This covers the refusals whose cause
+            # cannot be known one step earlier: you have to look at the
+            # directory to learn its mode. The mode case is the one that makes
+            # this urgent rather than tidy — a foreign-uid runtime dir is rare,
+            # while an exFAT/FAT32/SMB `SUPERTOOL_RUNTIME_DIR`, where a chmod is
+            # expected to be a no-op, is an ordinary setup.
+            #
+            # Degrading is also the safer answer here, not merely the friendlier
+            # one: the cold path binds no socket and writes no pidfile, so there
+            # is nothing left for the directory mode to protect. `stop.py` and
+            # `status.py` keep the refusal as a refusal, because reporting on the
+            # runtime dir is their job (`EXIT_REFUSED`); for a warm-daemon op it
+            # is an optimization, and `docs/mcp-integration.md` already states
+            # the rule for the sibling case — an optimization never blocks the op.
+            #
+            # A bare numeric exit is left alone, on `stop.py::_refused`'s rule:
+            # it carries no reason, so it is not a refusal anyone worded, and
+            # relabelling it would invent a recoverable failure from an exit
+            # nobody explained.
+            try:
+                self._sock_path, _ = _mcp_socket_pid_paths(cwd, name)
+            except SystemExit as exc:
+                if exc.code is None or isinstance(exc.code, int):
+                    raise
+                raise MCPServerError(str(exc.code)) from exc
             self._auto_spawn = True
 
     # Auto-spawn connect-retry budget. Cold-starting cclsp+intelephense on a

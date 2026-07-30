@@ -231,6 +231,16 @@ filesystem with no POSIX modes (exFAT/FAT32/SMB), remount it with `umask=077` or
 point SUPERTOOL_RUNTIME_DIR at a filesystem that has them.
 ```
 
+**Who refuses and who degrades.** The three sentences above are refusals for the
+surfaces whose job is to report on the runtime dir — `mcp_status`, and `mcp_stop`
+via exit `4`. For an op that merely *wants* a warm daemon they arrive as an
+ordinary "MCP server unavailable" and the op falls back to its cold path with the
+reason surfaced (#568). A daemon is an optimization, the same as the invalidation
+below, and the same rule applies: it never blocks the op. Degrading is also the
+safer half of that trade rather than the more forgiving one — the cold path binds
+no socket and writes no pidfile, so on the path that keeps working there is
+nothing left for the directory mode to have been protecting.
+
 The third is the behaviour change to know about. Pointing
 `SUPERTOOL_RUNTIME_DIR` at an external drive or a network share used to work
 silently and give you a daemon directory with no enforceable mode at all; it now
