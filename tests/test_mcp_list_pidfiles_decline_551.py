@@ -65,11 +65,24 @@ def blind(monkeypatch, runtime):
 
     Patching `os.listdir` wholesale would break unrelated machinery inside the
     same call; the failure has to be as narrow as the real one would be.
+
+    Since #583 the enumerator is handed the validated directory as a descriptor
+    rather than as a path, so the runtime dir is matched by `(st_dev, st_ino)`
+    as well as by name. Matching on the name alone would quietly stop matching
+    anything, and these tests would pass because the listdir succeeded — the
+    opposite of what they assert.
     """
     real = os.listdir
 
+    def _is_runtime(target) -> bool:
+        try:
+            st, want = os.stat(target), os.stat(runtime)
+        except OSError:
+            return False
+        return (st.st_dev, st.st_ino) == (want.st_dev, want.st_ino)
+
     def _fail(path=".", *a, **kw):
-        if str(path) == str(runtime) or str(path) == str(runtime.resolve()):
+        if str(path) in (str(runtime), str(runtime.resolve())) or _is_runtime(path):
             raise OSError(errno.EIO, "Input/output error")
         return real(path, *a, **kw)
 
