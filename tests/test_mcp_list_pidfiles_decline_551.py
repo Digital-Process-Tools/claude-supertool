@@ -231,7 +231,15 @@ class TestRefusedStaysUnsuccessfulToTheCaller:
         assert label == "refused"
 
     def test_no_daemon_is_still_a_success(self):
-        """The distinction the fix rests on: 'none' is fine, 'unknown' is not."""
-        _label, ok = supertool._MCP_STOP_CODES[1]
+        """The distinction the fix rests on: 'none' is fine, 'unknown' is not.
+
+        Keyed on `stop.EXIT_NO_DAEMON` rather than on a literal, because the
+        number moved once already (#574 vacated `1`, which is what CPython
+        exits with on a traceback) and this assertion is about the meaning.
+        """
+        import stop  # noqa: PLC0415
+
+        label, ok = supertool._MCP_STOP_CODES[stop.EXIT_NO_DAEMON]
 
         assert ok is True
+        assert label == "no-daemon"

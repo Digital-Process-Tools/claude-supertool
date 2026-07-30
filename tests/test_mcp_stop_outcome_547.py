@@ -97,8 +97,11 @@ class TestStopScriptExitCodes:
     def test_refusal_is_not_no_daemon(self, stop_mod, monkeypatch, capsys) -> None:
         """runtime_dir's SystemExit(str) must not land on the benign code.
 
-        `sys.exit("...")` exits 1, which is exactly EXIT_NO_DAEMON — a refusal
-        would otherwise be read as "there was nothing to stop".
+        `sys.exit("...")` exits 1, which was exactly EXIT_NO_DAEMON until #574
+        moved it — a refusal would otherwise be read as "there was nothing to
+        stop". `1` is now unassigned and reads as a crash, so the assertion
+        below is no longer the only thing between a refusal and an `ok`; it
+        still pins that a stated refusal keeps its own name.
         """
         def _refuse(_cwd, _name):
             raise SystemExit("daemon: runtime dir owned by uid 0, not us (501).")
@@ -140,8 +143,11 @@ class TestMcpStopServerOutcome:
         assert captured.err == ""
 
     def test_no_daemon_is_ok_and_silent(self, tmp_path, monkeypatch, capsys) -> None:
-        """The common case on every new file: no warm daemon was running."""
-        monkeypatch.setattr(supertool, "_MCP_STOP_SCRIPT", _fake_stop_script(tmp_path, 1))
+        """The common case on every new file: no warm daemon was running.
+
+        `5`, not `1`, since #574 — see `tests/test_mcp_stop_crash_574.py`.
+        """
+        monkeypatch.setattr(supertool, "_MCP_STOP_SCRIPT", _fake_stop_script(tmp_path, 5))
         monkeypatch.setenv("SUPERTOOL_DEBUG", "1")
 
         outcome = supertool._mcp_stop_server("php-lsp")

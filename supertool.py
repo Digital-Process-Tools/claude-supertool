@@ -14028,12 +14028,20 @@ class _StopOutcome(NamedTuple):
 
 # stop.py's exit codes. Anything else came from a crashing interpreter, not
 # from stop.py's own reporting, and must not be guessed into a known bucket.
+#
+# `1` is the missing key and the point of the table (#574). It is what CPython
+# exits with on an uncaught exception, so it is never stop.py reporting; it used
+# to sit here as ("no-daemon", True), which made a traceback out of stop.py
+# indistinguishable from its most reassuring answer and handed the invalidation
+# path an `ok` for a check that never ran — #239 with the safety net claiming it
+# held. It falls to the default below instead, and stop.py's EXIT_NO_DAEMON has
+# moved to `5`. Nothing new may be assigned to `1`.
 _MCP_STOP_CODES = {
     0: ("stopped", True),
-    1: ("no-daemon", True),
     2: ("usage", False),
     3: ("failed", False),
     4: ("refused", False),
+    5: ("no-daemon", True),
 }
 
 _MCP_STOP_DETAIL_CAP = 500

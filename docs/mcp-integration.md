@@ -211,10 +211,18 @@ automatic caller has:
 | Code | Meaning | Treated as |
 |---|---|---|
 | `0` | the daemon was running and is now gone | success |
-| `1` | no daemon was running | success — nothing stale can come from nothing |
+| `1` | *not used* — CPython's status for an uncaught exception (#574) | failure — `stop.py` crashed and checked nothing |
 | `2` | bad arguments | failure |
 | `3` | a daemon was found and is still there, or its pidfile could not be read as one pid | failure |
 | `4` | no claim established — a runtime dir whose ownership cannot be verified (#544), or one `--all` could not enumerate (#551) | failure |
+| `5` | no daemon was running | success — nothing stale can come from nothing |
+
+`1` is reserved rather than assigned, and `5` is where "no daemon was running"
+lives because of it. The interpreter picks `1` on its way out of an unhandled
+exception, so any meaning given to it is also the spelling of *`stop.py` never
+ran*. It held the benign reading until #574, which made a crash arrive at the
+caller as a successful invalidation — the one reading that lets a stale daemon
+survive the path built to stop it. Nothing may be assigned to `1` again.
 
 `4` covers both ways of not knowing, because nothing downstream would act on the
 difference. `--all` still exits `0` when the runtime dir is readable and empty —

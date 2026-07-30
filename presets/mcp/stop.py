@@ -32,11 +32,18 @@ import _proc  # noqa: E402  (the one liveness probe — never os.kill(pid, 0), #
 from _paths import list_pidfiles, read_pid, socket_pid_paths  # noqa: E402
 
 
+# `1` is deliberately not used and must stay that way (#574). It is the status
+# CPython gives an uncaught exception, so it is the one number this file cannot
+# also spend on a meaning of its own: a `stop.py` that died before it looked at
+# anything would be spelled identically to whatever `1` was assigned. It used to
+# be `EXIT_NO_DAEMON`, i.e. the most reassuring answer there is, and
+# `supertool.py` read it as `ok` — a successful invalidation reported by a script
+# that never ran. The gap starting at `5` is that reservation, not an oversight.
 EXIT_OK = 0            # the daemon was running and is now gone
-EXIT_NO_DAEMON = 1     # nothing was running — benign, nothing to invalidate
 EXIT_USAGE = 2         # bad arguments
 EXIT_STOP_FAILED = 3   # a daemon was found and it is still there (or unknowable)
 EXIT_REFUSED = 4       # no claim established — an unverifiable or unlistable runtime dir
+EXIT_NO_DAEMON = 5     # nothing was running — benign, nothing to invalidate
 
 
 def stop_pid(pid: int) -> bool:
@@ -51,9 +58,10 @@ def stop_pid(pid: int) -> bool:
 
     `False` rather than an exception: the callers of this function are already
     built to report a stop that did not happen, and a traceback out of
-    `main()` would exit `1` — which `supertool.py`'s `_MCP_STOP_CODES` reads
-    as `no-daemon`, i.e. success. Refusing has to land on a failing code, not
-    on the most benign one there is.
+    `main()` exits `1`, which is not a code this file gets to choose the
+    meaning of. It read as `no-daemon`, i.e. success, until #574 vacated it;
+    it now reads as `crashed`. Either way a refusal belongs on a code stated
+    deliberately, not on whatever the interpreter exits with on the way out.
 
     The guard is here as well as in `stop_by_pidfile` because this function is
     module-level and reachable from any caller; a check that lived only at
@@ -115,11 +123,14 @@ def stop_by_pidfile(pid_path: str) -> tuple:
 def _refused(exc: SystemExit) -> int:
     """Relabel a stated refusal from the runtime-dir checks as EXIT_REFUSED.
 
-    `runtime_dir()` refuses with `sys.exit("<reason>")`, which exits 1 — the
-    same code as "no daemon found". Left alone, the single check whose job is
-    to be suspicious would be read by the caller as the most benign outcome
-    there is. A bare numeric exit carries no reason and is not a refusal, so
-    it propagates untouched rather than being relabelled on a guess.
+    `runtime_dir()` refuses with `sys.exit("<reason>")`, which exits 1. That
+    used to be "no daemon found" as well, so the single check whose job is to
+    be suspicious was read by the caller as the most benign outcome there is;
+    since #574 vacated `1` it is read as a crash, which at least has the sign
+    right, but it is still the wrong sentence for a refusal that was stated
+    on purpose and printed its reason. A bare numeric exit carries no reason
+    and is not a refusal, so it propagates untouched rather than being
+    relabelled on a guess.
     """
     reason = exc.code
     if reason is None or isinstance(reason, int):
