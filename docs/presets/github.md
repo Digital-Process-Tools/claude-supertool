@@ -138,6 +138,8 @@ Resolution order (most specific wins): explicit `repo` in the payload → `defau
 
 **A missing `@FILE` is declined, not crashed on.** `gh-issue-create` invoked with no payload argument at all — `./supertool gh-issue-create` — used to hit `Path("").read_text()`, which resolves to the current directory, and leak a five-frame `IsADirectoryError` traceback ([#620](https://github.com/Digital-Process-Tools/claude-supertool/issues/620)). It now prints `ERROR: gh-issue-create needs a payload — gh-issue-create:@FILE (JSON or TOML with title/body).` and exits 1. An `@FILE` that names an actual directory reports `ERROR: payload path is a directory, not a file: PATH` instead of the same traceback, and a payload that fails to parse names the expected shape rather than only echoing the parser's own message.
 
+**`body_file` gets the same treatment as the payload itself** ([#630](https://github.com/Digital-Process-Tools/claude-supertool/issues/630)). A missing, directory, or unreadable `body_file` used to leak a raw traceback — the payload load had a guard, the second read ten lines later did not. It now reports `ERROR: body_file not found: PATH`, `ERROR: body_file is a directory, not a file: PATH`, or `ERROR: permission denied reading body_file: PATH — ...`, naming the field so it's never confused with a payload-file error.
+
 ## Authoring notes
 
 Preset JSON: `presets/github.json`. Helper scripts: `presets/github/` — one Python file per op. `gh-find-followable` and `gh-find-starable` are discovery ops: they produce a list for human review, not an immediate action. Always review the file before running `gh-batch-follow` or `gh-batch-star`.
