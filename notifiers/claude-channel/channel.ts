@@ -131,7 +131,44 @@ const LINE_MAX_CHARS = capFromEnv("SUPERTOOL_CHANNEL_LINE_MAX", 1_048_576);
  */
 const ROUTING_KEYS = new Set(["watcher_source", "id", "event", "ts", "first_tick"]);
 
-/** One attribute that did not survive the cap, and how big it really was. */
+/**
+ * Names this bridge writes itself, which a payload key therefore may not claim.
+ *
+ * `ROUTING_KEYS` is spread in rather than re-listed on purpose (#609). The
+ * argument for namespacing the payload instead was that a guard has to be
+ * remembered the next time a routing field is added — and #608 had just added
+ * two, so that was not hypothetical. Deriving the guard from the same constant
+ * `clampMeta` iterates removes the "next time": the edit that adds a routing
+ * field protects it in the same breath.
+ *
+ * The rest are not routing but are still ours to write:
+ * - `source` is auto-injected by Claude Code from the MCP server name.
+ * - `clamped` and `collided` are disclosures. A producer-writable disclosure is
+ *   worse than no disclosure: an event that lost nothing could announce that it
+ *   had, on the one surface that exists to be believed.
+ * - `__proto__` cannot become an attribute at all. `meta["__proto__"] = "x"` on
+ *   an object literal runs the inherited setter and creates no own property, so
+ *   the key would leave no trace anywhere — a silent loss, which is the defect
+ *   class this file keeps refusing rather than a curiosity.
+ */
+const RESERVED_KEYS = new Set([
+  ...ROUTING_KEYS,
+  "source",
+  "clamped",
+  "collided",
+  "__proto__",
+]);
+
+/** The reserved names, for a disclosure a poller author can act on. */
+const RESERVED_LIST = [...RESERVED_KEYS].join(", ");
+
+/**
+ * One attribute that did not survive, and how big it really was.
+ *
+ * Shared by both reductions — over the size cap (#605) and losing a name to a
+ * reserved key (#609) — because they are the same fact to a reader: something
+ * the poller sent is not here, and this is what and how much.
+ */
 interface Withheld {
   key: string;
   chars: number;
@@ -139,6 +176,17 @@ interface Withheld {
 
 /** How many withheld attributes are named before the list is summarised. */
 const WITHHELD_NAMED_MAX = 5;
+
+/**
+ * A routable `_meta` map, plus the payload keys that were refused in building
+ * it. The refusals travel with the map rather than being applied to it here:
+ * the disclosure must survive `clampMeta`, and an attribute added before the
+ * clamp is an attribute the clamp may withhold.
+ */
+interface BuiltMeta {
+  meta: Record<string, string>;
+  collided: Withheld[];
+}
 
 /**
  * The string form of a value, or null when it has none worth sending.
@@ -180,7 +228,7 @@ function drop(line: string, reason: string): void {
  * can drop it with a reason. Coercing that far would turn a broken event into a
  * plausible-looking one, which is worse than losing it.
  */
-function buildMeta(raw: unknown): Record<string, string> | null {
+function buildMeta(raw: unknown): BuiltMeta | null {
   if (!raw || typeof raw !== "object") return null;
   const ev = raw as Partial<WatchEvent>;
   // Claude Code auto-injects `source` from the MCP server name on every event,
@@ -201,14 +249,52 @@ function buildMeta(raw: unknown): Record<string, string> | null {
   // event was live, and claiming `first_tick="false"` on its behalf would be a
   // confident wrong answer rather than a missing one.
   if (typeof ev.first_tick === "boolean") meta.first_tick = String(ev.first_tick);
+  // The merge that follows used to overwrite everything set above, guarding
+  // only `source`. Measured on 235b377: an event announced as
+  // `gitlab-mr 33173: pipeline_failed` was delivered as
+  // `not-gitlab 11111: pipeline_succeeded`, body and attributes agreeing, a red
+  // pipeline reading as a green one, nothing on stderr. The one set of values
+  // the design treats as load-bearing was the one set a producer could replace
+  // by accident.
+  const collided: Withheld[] = [];
   for (const [k, v] of Object.entries(ev.payload || {})) {
     if (!ATTR_KEY_RE.test(k)) continue;
-    if (k === "source") continue;  // never let payload overwrite the auto-injected key
+    // Coerced before the guard so the disclosure can state the real size, and
+    // so a structured value stays `asAttr`'s business rather than being
+    // reported as a name collision it also isn't.
     const attr = asAttr(v);
     if (attr === null) continue;
+    if (RESERVED_KEYS.has(k)) {
+      collided.push({ key: k, chars: attr.length });
+      continue;
+    }
     meta[k] = attr;
   }
-  return meta;
+  return { meta, collided };
+}
+
+/**
+ * The sentence a collided event carries about the keys it did not deliver.
+ *
+ * Built the way `describeWithheld` is built, deliberately: #608 established one
+ * vocabulary for "the poller sent this and you are not seeing it", and a second
+ * one would make a reader learn two. It names the reserved set as well as the
+ * losing keys, because the producer's fix is to rename the field and that is
+ * not guessable from the key alone.
+ */
+function describeCollided(collided: Withheld[]): string {
+  const noun = collided.length === 1 ? "payload key" : "payload keys";
+  const named = collided
+    .slice(0, WITHHELD_NAMED_MAX)
+    .map((c) => `${c.key} (${c.chars} chars)`);
+  if (collided.length > named.length) {
+    named.push(`+${collided.length - named.length} more`);
+  }
+  const full =
+    `${collided.length} ${noun} ignored — ${named.join(", ")}; ` +
+    `reserved: ${RESERVED_LIST}`;
+  if (full.length <= ATTR_MAX_CHARS) return full;
+  return `${collided.length} ${noun} ignored; reserved: ${RESERVED_LIST}`;
 }
 
 /**
@@ -306,18 +392,20 @@ function clampMeta(meta: Record<string, string>): Withheld[] | null {
 }
 
 function buildContent(
-  raw: unknown,
   meta: Record<string, string>,
   withheld: Withheld[],
+  collided: Withheld[],
 ): string {
-  const ev = raw as Partial<WatchEvent>;
   // The <channel> tag body — Claude reads this as the event's narrative.
   // Keep it short and route-oriented; payload details live in attributes.
-  // Every value here comes from `meta` so the body and the attributes cannot
-  // disagree about what this event is — or, since #605, about what it still
-  // contains: reading `payload` again below would put the very bytes that were
-  // just withheld straight back into the narrative, which is the whole 1.6 MB.
-  const suffix = ev.first_tick === true ? "  (state at watcher start)" : "";
+  //
+  // Every value here comes from `meta`, and since #609 there is no raw event in
+  // scope to reach for instead. Reading the event a second time is what made the
+  // two surfaces disagree, twice: before #605 it put the very bytes the
+  // attributes had just withheld back into the narrative, all 1.6 MB of them,
+  // and until #609 it read `first_tick` from the raw event while the attribute
+  // came from `meta` — one event, one fact, two answers.
+  const suffix = meta.first_tick === "true" ? "  (state at watcher start)" : "";
   const lines: string[] = [`${meta.watcher_source} ${meta.id}: ${meta.event}${suffix}`];
   if (meta.title) lines.push(meta.title);
   if (meta.url) lines.push(meta.url);
@@ -326,6 +414,7 @@ function buildContent(
   // distinguishable from a complete one *from the event itself* — not by
   // anyone thinking to go and compare it against the source.
   if (withheld.length > 0) lines.push(`[claude-channel] ${describeWithheld(withheld)}`);
+  if (collided.length > 0) lines.push(`[claude-channel] ${describeCollided(collided)}`);
   return lines.join("\n");
 }
 
@@ -559,11 +648,12 @@ const server = net.createServer((conn) => {
       // The `.catch()` below covers only the async send, which is a different
       // failure. One malformed event must cost one event.
       try {
-        const meta = buildMeta(ev);
-        if (meta === null) {
+        const built = buildMeta(ev);
+        if (built === null) {
           drop(line, "missing or non-scalar source/id/event");
           continue;
         }
+        const { meta, collided } = built;
         const withheld = clampMeta(meta);
         if (withheld === null) {
           drop(line, `routing key over ${ATTR_MAX_CHARS} chars — nothing routable to deliver`);
@@ -573,10 +663,11 @@ const server = net.createServer((conn) => {
         // event that went one line over budget in order to say it was clamped
         // is correct; one that stayed under by staying quiet is the defect.
         if (withheld.length > 0) meta.clamped = describeWithheld(withheld);
+        if (collided.length > 0) meta.collided = describeCollided(collided);
         mcp
           .notification({
             method: "notifications/claude/channel",
-            params: { content: buildContent(ev, meta, withheld), meta },
+            params: { content: buildContent(meta, withheld, collided), meta },
           })
           .catch((err) => {
             // Surface to stderr so `claude --debug` picks it up. Common causes:

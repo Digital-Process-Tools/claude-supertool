@@ -775,6 +775,17 @@ attribute naming what went and its real size. Producer guidance is in
 the consumer's reasoning is in
 [`notifiers/claude-channel/README.md`](../../notifiers/claude-channel/README.md#size-limits-and-how-a-clamped-event-says-so-605).
 
+**Payload keys are also name-capped**: `payload` may not carry a key named
+`watcher_source`, `id`, `event`, `ts`, `first_tick`, `source`, `clamped`,
+`collided` or `__proto__`, because the consumer writes those itself
+([#609](https://github.com/Digital-Process-Tools/claude-supertool/issues/609)).
+Until #609 the payload was merged *over* them, so a `payload.id` silently
+re-aimed the event — an event announced as `gitlab-mr 33173: pipeline_failed` was
+delivered as `not-gitlab 11111: pipeline_succeeded`, every surface agreeing.
+Such a key is now ignored and disclosed in a `collided` attribute and in the
+body, naming the key and the reserved set. Rename the field at the source
+(`mr_id`, `event_kind`) rather than relying on it arriving.
+
 Consumers can rely on `ts/source/id/event/payload/first_tick` always being present. Extra fields inside `payload` vary by source — see each source's `events.json` and `poller.py`. `gitlab-mr` payloads additionally carry an [`observed_*` snapshot](#gitlab-mr-events-carry-the-state-that-produced-them-435) of the state that produced the event, timestamped so its age is readable without a call back.
 
 ### `first_tick` — the contract moved once, deliberately ([#464](https://github.com/Digital-Process-Tools/claude-supertool/issues/464))

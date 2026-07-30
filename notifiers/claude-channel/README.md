@@ -91,6 +91,56 @@ routed. Every drop writes one line to stderr, visible under `claude --debug`.
 A malformed event costs one event. It never affects the connection
 ([#554](https://github.com/Digital-Process-Tools/claude-supertool/issues/554)).
 
+### Reserved names, and how a collided event says so ([#609](https://github.com/Digital-Process-Tools/claude-supertool/issues/609))
+
+`buildMeta` sets the identifying fields and then merges the poller's `payload`
+over the result. Only `source` was guarded, so a payload key named `id`, `event`,
+`ts`, `watcher_source` or `first_tick` replaced the value the bridge had just
+computed. Measured against a real server on `235b377`, an event announced as
+`gitlab-mr 33173: pipeline_failed` was delivered as
+`not-gitlab 11111: pipeline_succeeded` — a red pipeline reading as a green one,
+the body and the attributes agreeing with each other, nothing on stderr. This is
+not a checker reporting a false absence; it is the transport reporting a false
+**identity**, which is `docs/validators.md`'s test met squarely.
+
+The names the bridge writes for itself, and which a payload key therefore cannot
+claim, are `RESERVED_KEYS` in `channel.ts`: the routing set above, plus `source`
+(auto-injected by Claude Code from the MCP server name), the two disclosure
+attributes `clamped` and `collided`, and `__proto__`.
+
+**The guard is derived from `ROUTING_KEYS`, not re-listed beside it.** The case
+for namespacing the payload instead — nesting it under one key so a collision is
+impossible — is that a hand-maintained guard has to be remembered the next time a
+routing field is added, and #608 had just added two. Spreading the same constant
+`clampMeta` iterates removes that: the edit that adds a routing field guards it
+in the same breath. What namespacing would have cost is the product itself — the
+flat `title="…" url="…"` attributes are what a session reads, `buildContent`
+reads `meta.title`, and every consumer and doc names them.
+
+**A disclosure a producer can write is worse than none.** `clamped` was
+settable from the payload, so an event that lost nothing could announce that it
+had, on the one surface built to be believed. Both disclosure attributes are
+reserved.
+
+**A losing key is reported, not swallowed** — same vocabulary as `clamped`,
+because a reader should not have to learn two:
+
+```
+<channel source="claude-channel" watcher_source="gitlab-mr" id="33173"
+         event="pipeline_failed" ts="2026-07-30T00:00:00Z"
+         collided="2 payload keys ignored — id (5 chars), event (18 chars); reserved: watcher_source, id, event, ts, first_tick, source, clamped, collided, __proto__">
+gitlab-mr 33173: pipeline_failed
+[claude-channel] 2 payload keys ignored — id (5 chars), event (18 chars); reserved: watcher_source, id, event, ts, first_tick, source, clamped, collided, __proto__
+</channel>
+```
+
+The reserved set is named in the disclosure because the producer's fix is to
+rename their field, and that is not guessable from the key alone. An event with
+no collision carries no `collided` attribute — the same rule `clamped` follows.
+
+Producer guidance is in
+[presets/watch/README.md](../../presets/watch/README.md#reserved-payload-keys-609).
+
 ### Size limits, and how a clamped event says so ([#605](https://github.com/Digital-Process-Tools/claude-supertool/issues/605))
 
 For a subsystem whose entire product is context injection, the window is the
