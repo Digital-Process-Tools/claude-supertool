@@ -260,20 +260,53 @@ Two consequences worth knowing before you configure one:
   effect — a path with a link in it is a path something else can re-aim.
 - **UDS paths have a length cap** (~104 bytes on macOS, 108 on Linux). Resolving
   can lengthen a path, so a link used to *shorten* a long runtime dir no longer
-  does.
+  does — **fixed in #598**: the daemon binds the socket's *basename* from inside
+  the runtime dir, so the directory costs nothing against the cap and a runtime
+  dir of any depth works.
 
 **Where the guarantee starts and stops.** It starts at the resolve and covers
 everything `_paths.py` asserts: the directory that is tightened, ownership-checked
 and mode-checked is one object, held open, and the path handed to callers
-traverses no symlink, so repointing a link cannot move it afterwards. It stops at
-the daemon: `socket.bind()` takes no `dir_fd`, and the daemon is a separate
-process that receives a path, so its `bind` and its pidfile/log opens are still
-by path. `list_pidfiles` is the one consumer handed the descriptor itself
-(`os.listdir(fd)`). The residual window is the resolved leaf directory being
-replaced between validation and use, which needs write access to a directory
-supertool owns — narrower than the symlink swap it replaces, and stated here
-rather than claimed closed. Closing it means `dir_fd`-relative opens and an
-`fchdir`-relative `bind` inside `daemon.py`; that is tracked separately.
+traverses no symlink, so repointing a link cannot move it afterwards.
+
+It now runs to the end. `daemon.py` calls `_paths.open_runtime_dir()` itself and
+**holds that descriptor for the daemon's whole life** (#598): the pidfile claim,
+the `.stderr` and `.log` opens, the fingerprint write and every `unlink` are
+`dir_fd`-relative, and `stop.py` removes pidfiles through the same descriptor it
+listed them from. `socket.bind()` still takes no `dir_fd` — `socket` offers no
+descriptor-relative form of it — so the socket is bound by basename inside a
+two-call `os.fchdir` window, before the MCP server subprocess is spawned and
+before the log-drain thread exists, so nothing else in the process can observe
+the changed cwd. The subprocess inherits your cwd, unchanged.
+
+What that buys, concretely: replacing the runtime directory *after* it has been
+validated no longer redirects anything. The daemon keeps writing into the inode
+that passed the ownership and mode checks, even if the name now points somewhere
+else.
+
+**One consequence worth knowing:** a held directory descriptor pins the inode. If
+you `rm -rf` the runtime dir while a daemon is running, the names disappear but
+the daemon keeps serving out of the now-nameless directory and the space is only
+reclaimed when it exits. Use `mcp_stop --all` rather than `rm -rf`.
+
+**Not covered, and not claimed to be:** the *ancestors* of the runtime dir are
+never checked. `$XDG_RUNTIME_DIR` is accepted on the evidence that it is a
+directory, and the intermediate `supertool/` that `parents=True` creates stays at
+the umask default (`0o755`). On a correctly-configured system those live inside
+`$HOME` or a `0700` `/run/user/<uid>` and nobody else can write them. If
+`$XDG_RUNTIME_DIR` points somewhere world-writable, someone who pre-creates
+`$XDG_RUNTIME_DIR/supertool` owns the parent of the directory supertool then
+creates and validates — and write + execute on a non-sticky directory permits
+`rename()` of any entry inside it regardless of that entry's own mode. The
+descriptor above is what makes that harmless to the running daemon; it does not
+make the configuration a good one. Tracked separately.
+
+**On the POSIX-only platforms.** `O_DIRECTORY`, `O_NOFOLLOW`, `os.listdir(fd)`
+and the `*at` syscalls behind `dir_fd=` do not exist on Windows. Supertool
+**declines with a sentence** there rather than quietly falling back to opens by
+path: an absence of capability is reported as an absence of capability, never as
+a passing check. In practice `os.geteuid` is missing on the same platforms and
+refuses one step earlier, so the message you would see is the ownership one.
 
 **Who refuses and who degrades.** The sentences above are refusals for the
 surfaces whose job is to report on the runtime dir — `mcp_status`, and `mcp_stop`

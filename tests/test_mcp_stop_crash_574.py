@@ -40,16 +40,18 @@ def _crashing_stop_script(tmp_path: Path) -> str:
 
     Not a fake exiting `1`: the traceback has to come out of `stop.py` itself,
     through CPython's own handler, or the test asserts nothing about the
-    collision it exists to pin. `socket_pid_paths` is the first thing `main`
-    reaches on the named-server path, and `None` is not callable — the same
-    shape as any unanticipated `TypeError`/`AttributeError` in there.
+    collision it exists to pin. `open_runtime_dir` is the first *callable* thing
+    `main` reaches on the named-server path (#598 moved it there; `socket_pid_names`
+    now precedes it but is a pure hash that touches no filesystem and cannot
+    fail), and `None` is not callable — the same shape as any unanticipated
+    `TypeError`/`AttributeError` in there.
     """
     script = tmp_path / "crashing_stop.py"
     script.write_text(
         "import sys\n"
         f"sys.path.insert(0, {str(_MCP_DIR)!r})\n"
         "import stop\n"
-        "stop.socket_pid_paths = None\n"
+        "stop.open_runtime_dir = None\n"
         "sys.exit(stop.main(sys.argv))\n",
         encoding="utf-8",
     )
