@@ -323,11 +323,15 @@ def test_the_scan_reaches_shipping_code_and_not_only_tests():
     # checks was working perfectly. A scope test that reports a narrowed walk
     # when the walk is fine is the same false alarm, pointed the other way.
     scanned = {p.relative_to(REPO_ROOT).as_posix() for p in scanned_files()}
+    # `.github/scripts/junit_summary.py` is #593: the walk excluded every
+    # dot-prefixed component, so the one Python file this repo ships inside a
+    # dot-directory — and runs on all twelve CI legs — was never scanned.
     for required in ("supertool.py",
                      "presets/mcp/_spawn.py",
                      "presets/watch/transport.py",
                      "validators/common/refusal.py",
-                     "tests/test_watch_pid_set_511.py"):
+                     "tests/test_watch_pid_set_511.py",
+                     ".github/scripts/junit_summary.py"):
         assert required in scanned, (
             f"{required} is not scanned — the walk has been narrowed back "
             "towards #564's scope")
@@ -614,3 +618,116 @@ def test_a_pathological_ignore_answer_fails_loudly_instead_of_reporting_clean():
     that no future widening of the exclusions can reintroduce it quietly."""
     with pytest.raises(AssertionError, match="scanning nothing"):
         _scanned_with(frozenset({""}))
+
+
+#: Dot-prefixed paths of both kinds, each holding the banned literal so that a
+#: walk which reaches the wrong one fails loudly rather than subtly. `.githooks`
+#: and `.github` are version-controlled and shipped; `.venv`, `.pytest_cache`
+#: and `.git` are machine state. The distinction is not the leading dot.
+_DOT_SANDBOX = {
+    ".githooks/lint.py": _VIOLATING_SOURCE,
+    ".github/scripts/report.py": _VIOLATING_SOURCE,
+    ".venv/lib/python3.12/site-packages/newpkg.py": _VIOLATING_SOURCE,
+    ".pytest_cache/v/stale.py": _VIOLATING_SOURCE,
+    ".git/hooks/planted.py": _VIOLATING_SOURCE,
+    #: Ordinary source, so a walk that prunes everything fails as a readable
+    #: set difference rather than as `scanned_with`'s empty-scan assertion.
+    "ordinary.py": "x = 1\n",
+}
+
+
+def _dot_dir_sandbox(root: Path) -> bool:
+    """A throwaway git repo carrying both kinds of dot-directory, with no
+    `.gitignore` at all — so git's ignored answer is empty and the name rule is
+    the only thing that can exempt anything. False when git is unavailable.
+    """
+    try:
+        init = subprocess.run(["git", "init", "-q", str(root)],
+                              capture_output=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if init.returncode != 0:
+        return False
+    for rel, body in _DOT_SANDBOX.items():
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
+    return True
+
+
+def test_a_dot_directory_this_repo_ships_is_scanned_and_dot_machine_state_is_not(
+        tmp_path):
+    """#593, pinned from both sides in one test on purpose.
+
+    `is_machine_state` excluded every dot-prefixed *component*, so `.githooks/`
+    and `.github/` — version-controlled, shipped, and asked of every
+    contributor — were invisible to both guards built on this walk. A scanner
+    whose exclusion list quietly contains a directory it ships is
+    indistinguishable, from the outside, from a scanner that found nothing.
+
+    The second half is why this is one test and not two. "Scans dot-directories
+    now" is trivially satisfied by dropping the rule, which is what #577 is
+    about: an in-repo `.venv` is thousands of third-party files deep, named by
+    no ignore file here, and legitimately un-compilable at the 3.9 floor. So
+    the same literal sits in `.venv/`, `.pytest_cache/` and `.git/` and must
+    still be unseen — the predicate was too broad, not wrong.
+
+    Staged in a real throwaway repo with no `.gitignore`, so git's ignored set
+    is genuinely empty and only the name rule is under test, and so no worker of
+    the `-n auto` suite ever sees a violating .py appear under its feet (#576).
+    """
+    if not _dot_dir_sandbox(tmp_path):
+        pytest.skip("git unavailable; the name floor is pinned separately")
+
+    ignored = _git_ignored_dirs(tmp_path)
+    assert ignored is not None and not ignored, (
+        "this fixture is only meaningful while git reports nothing ignored, "
+        "which is what makes it a test of the name rule rather than of git's "
+        f"answer. Got {sorted(ignored) if ignored else ignored}")
+
+    scanned = _scanned_with(ignored, tmp_path)
+    assert sorted(p.relative_to(tmp_path).as_posix() for p in scanned) == [
+        ".githooks/lint.py",
+        ".github/scripts/report.py",
+        "ordinary.py",
+    ], (
+        "the walk either skipped a dot-directory this repo ships or descended "
+        "into dot-prefixed machine state: "
+        f"{sorted(p.relative_to(tmp_path).as_posix() for p in scanned)}")
+
+    offenders = sorted(
+        f"{p.relative_to(tmp_path).as_posix()}:{lineno}"
+        for p in scanned
+        for lineno, _ in _iter_violations(p.read_text(encoding="utf-8"), str(p)))
+    assert offenders == [".githooks/lint.py:5", ".github/scripts/report.py:5"], (
+        "widening the walk must be paid out in violations actually reported — "
+        f"the guard saw the files and said nothing: {offenders}")
+
+
+def test_a_dot_prefix_is_not_by_itself_machine_state():
+    """The rule, directly, on both the answered and the unanswered path.
+
+    A leading dot is a *shape*, and the shape contains source. Machine state is
+    named — the same treatment `venv` and `node_modules` already had — so the
+    next dot-directory of ours starts visible, and the drift lands on the side
+    where the worst outcome is a false alarm somebody reads rather than a
+    silence nobody does. That direction is this walk's stated invariant, and
+    the blanket dot rule was the one line in the file that broke it.
+    """
+    for ignored in (frozenset(), None):
+        for source in (".github/scripts/junit_summary.py",
+                       ".githooks/lint.py",
+                       "presets/.ci/generate.py"):
+            assert not _is_machine_state(source, ignored), (source, ignored)
+        for machine in (".git/hooks/x.py",
+                        ".venv/lib/python3.12/site-packages/x.py",
+                        "venv/lib/python3.12/site-packages/x.py",
+                        ".tox/py39/lib/x.py",
+                        ".nox/py39/lib/x.py",
+                        ".eggs/x.py",
+                        ".pytest_cache/v/x.py",
+                        ".mypy_cache/3.12/x.py",
+                        ".ruff_cache/x.py",
+                        ".hypothesis/x.py",
+                        "presets/.venv/lib/x.py"):
+            assert _is_machine_state(machine, ignored), (machine, ignored)

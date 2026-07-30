@@ -265,17 +265,22 @@ def test_machine_state_is_not_compiled_but_untracked_source_still_is(
 
 
 def test_an_in_repo_virtualenv_is_excluded_by_name_and_not_by_git() -> None:
-    """The rule, directly. `.venv` falls out of the dot-name floor; bare
-    `venv` does not and has to be named — `python -m venv venv` is at least as
-    common a spelling, and neither appears in this repo's `.gitignore`. The
-    empty ignore set stands in for "git had nothing to say about these", which
-    is the true state of an in-repo virtualenv here."""
+    """The rule, directly. Both spellings have to be named: `python -m venv
+    venv` is at least as common as `.venv`, and neither appears in this repo's
+    `.gitignore`. The empty ignore set stands in for "git had nothing to say
+    about these", which is the true state of an in-repo virtualenv here.
+
+    `.venv` is named rather than falling out of a dot-prefix floor since #593 —
+    that floor also swallowed `.github/scripts/junit_summary.py`, which this
+    guard is supposed to compile. The last assertion is that half: a
+    dot-directory this repo ships is source, and the walk must reach it."""
     none_ignored: frozenset[str] = frozenset()
     assert _is_machine_state(".venv/lib/python3.12/site-packages/x.py", none_ignored)
     assert _is_machine_state("venv/lib/python3.12/site-packages/x.py", none_ignored)
     assert _is_machine_state("node_modules/pkg/x.py", none_ignored)
     assert not _is_machine_state("supertool.py", none_ignored)
     assert not _is_machine_state("tests/fixtures/mock_mcp_server.py", none_ignored)
+    assert not _is_machine_state(".github/scripts/junit_summary.py", none_ignored)
 
 
 def test_ci_matrix_covers_the_syntax_floor() -> None:

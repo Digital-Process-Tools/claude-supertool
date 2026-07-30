@@ -41,6 +41,22 @@ PYTHON39=/path/to/python3.9 pytest tests/test_syntax_floor_478.py -m ''
 
 **What it does not cover.** With nothing older than the host, the check returns a `skipped` result naming the escape hatch and does **not** report a pass — read the reason, do not read the absence. With an interpreter above the floor (a 3.11 lying around), the result carries a `partial` note: it catches PEP 701 and anything else newer than that interpreter, but not syntax legal on 3.11 and illegal on 3.9. Full floor fidelity comes from the 3.9 CI leg, and `test_ci_matrix_covers_the_syntax_floor` fails if that leg ever leaves the matrix — otherwise the check would skip everywhere and render as a pass.
 
+### What the repo-wide Python guards scan, and what they skip
+
+Two guards walk the whole tree — the syntax floor above, and `tests/test_no_bare_python3_spawn.py`. Both ask one question through `tests/_repo_walk.py`: **is this path repository source, or machine state that happens to sit in the working tree?** There is no per-caller option, deliberately: a file being source does not depend on which rule is about to be applied to it.
+
+The answer is decided in this order.
+
+1. **Names, unconditionally.** `__pycache__`, `node_modules`, `venv`, `.venv`, `.git`, `.tox`, `.nox`, `.eggs`, `.mypy_cache`, `.pytest_cache`, `.ruff_cache`, `.hypothesis`. Git cannot be relied on for these: `.git` is never reported by `git ls-files --ignored`, and no ignore file in this repo names a virtualenv at all ([#577](https://github.com/Digital-Process-Tools/claude-supertool/issues/577)) — an in-repo `.venv` is untracked, unignored, and thousands of third-party files deep, many legitimately un-compilable at the 3.9 floor.
+2. **Then `git ls-files --others --ignored --exclude-standard --directory`.** Whatever git calls ignored is machine state, which is what makes `build/`, `dist/`, `htmlcov/` and the next packaging tool's output exempt before anyone files them ([#449](https://github.com/Digital-Process-Tools/claude-supertool/issues/449), [#575](https://github.com/Digital-Process-Tools/claude-supertool/issues/575)). Asked of the *ignored* set and never the *tracked* set — a file being written right now is untracked, and that is exactly when a guard earns its keep.
+3. **When git cannot answer at all** — no repo, no git binary, a non-zero exit — the walk falls back to a small denylist of build-output names and keeps going. It never reads an unanswered question as a clean sheet, and it never narrows: with no git answer the walk scans *more*, not less. An empty scan is a hard `AssertionError`, never a pass.
+
+**A leading dot is not one of the names, and that is the point** ([#593](https://github.com/Digital-Process-Tools/claude-supertool/issues/593)). The rule used to exclude every dot-prefixed path component, which quietly took `.github/` and `.githooks/` — version-controlled, shipped, and installed by every contributor — out of both guards. `.venv` is machine state that happens to be dot-prefixed; `.githooks` is source that happens to be dot-prefixed; the dot tells them apart in neither direction.
+
+**If a directory of yours is not being scanned**, it is because a component of its path is in the name list above, or because git reports it as ignored. Both are visible: `git check-ignore -v <path>` answers the second, and the first is a literal in `tests/_repo_walk.py`. If you have added a tool whose cache directory is now being scanned and producing noise, the fix is to gitignore it — that is step 2 doing its job — and naming it in step 1 is reserved for state git provably cannot report. Adding a directory of *ours* requires nothing: it is scanned by default, which is the whole property #593 bought.
+
+Shell files are a separate walk with a separate question ("what does this repository ship that a shell executes"), discovered from `git ls-files` plus a shebang read in `tests/test_ci_non_python_coverage_557.py`. See the CI table below.
+
 ---
 
 ## Custom ops

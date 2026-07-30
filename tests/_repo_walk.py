@@ -35,6 +35,32 @@ is the same category and was the only non-`.git` name the floor walk had.
 Relying on git for these would be relying on every contributor's clone having
 the same ignore file, which is not a property anyone controls.
 
+Names, and never a shape. Until #593 the lower half of that set was spelled as
+"any dot-prefixed path component", which is shorter, needs no maintenance, and
+silently excluded `.github/` and `.githooks/` — version-controlled, shipped,
+and asked of every contributor — from both guards. A dot says a directory is
+conventionally hidden from `ls`. It says nothing about whether the repository
+wrote it, and `.venv` versus `.githooks` is exactly the pair it cannot tell
+apart.
+
+The two routes not taken, because the drift objection is the real one:
+
+- *An allowlist of ours* (`.github`, `.githooks`) inverts nothing. The next
+  dot-directory this repo adds starts invisible, silently, which is the
+  property that produced #593 in the first place.
+- *`git ls-files` — tracked means scanned* fixes the drift and reintroduces
+  the worse defect, for the reasons under "Asked of the ignored set" below: a
+  file being written right now is untracked, and untracked would then mean
+  unscanned.
+
+Naming machine state instead keeps the drift but flips its direction. An
+unnamed `.pixi/` or `.uv-cache/` gets scanned and produces a false alarm on
+somebody's machine, which they read and file; an unnamed source directory of
+ours gets scanned, which is the correct answer with no filing needed. Nothing
+in either failure mode is silence. That is this file's stated invariant —
+"wider than needed, never narrower" — and the blanket dot rule was the one
+line in it that pointed the other way.
+
 **Then the property: git's own answer to "is this ignored?"** This is #449's
 decision for supertool's own walk (`_git_ignored_dirs` in supertool.py) and
 #576's for the spawn guard. It is what makes `build/` (#575) exempt without
@@ -66,9 +92,19 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # Unconditional, because git cannot be relied on to name them: `.git` is never
 # listed by `ls-files --ignored`, and `venv`/`.venv`/`node_modules` are in no
-# ignore file in this repo (#577). Dot-prefixed anything covers `.venv`,
-# `.git`, `.pytest_cache`, `.tox`; the bare spellings need naming.
-_VENDORED_DIR_NAMES = frozenset({"__pycache__", "node_modules", "venv"})
+# ignore file in this repo (#577).
+#
+# Every entry is a *name*. "Dot-prefixed anything" used to stand in for the
+# lower half of this set and is what #593 is: that is a shape, and the shape
+# contains `.github/` and `.githooks/` — version-controlled, shipped, and
+# invisible to both guards for as long as it stood. Machine state gets named
+# here, one spelling per line, so the next dot-directory of ours starts
+# visible.
+_VENDORED_DIR_NAMES = frozenset({
+    "__pycache__", "node_modules", "venv",
+    ".git", ".venv", ".tox", ".nox", ".eggs",
+    ".mypy_cache", ".pytest_cache", ".ruff_cache", ".hypothesis",
+})
 
 # Only reached when git cannot answer at all (see `git_ignored_dirs`). Named
 # build-system output — machine state by the same reasoning as `__pycache__`.
@@ -111,10 +147,14 @@ def is_machine_state(rel: str, ignored: frozenset[str] | None) -> bool:
 
     Names first and unconditionally, then git's property. See the module
     docstring for why that order is load-bearing rather than defensive.
+
+    A leading dot is not one of the names and never was one on its own (#593).
+    `.github/` and `.githooks/` are source that happens to be dot-prefixed;
+    `.venv/` is machine state that happens to be dot-prefixed. The dot tells
+    the two apart in neither direction.
     """
     parts = rel.split("/")
-    if any(part.startswith(".") or part in _VENDORED_DIR_NAMES
-           for part in parts):
+    if any(part in _VENDORED_DIR_NAMES for part in parts):
         return True
     if ignored is None:
         return any(name in _ARTIFACT_DIR_NAMES

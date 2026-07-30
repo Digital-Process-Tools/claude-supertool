@@ -114,10 +114,14 @@ def test_the_shell_population_is_not_empty() -> None:
 def test_the_known_shell_files_are_all_discovered(rel: str) -> None:
     """Named so a discovery regression names the file it stopped seeing.
 
-    `.githooks/` is the reason this does not reuse `_repo_walk.is_machine_state`:
-    that rule treats every dot-prefixed path component as machine state, which
-    is right for `.venv` and `.pytest_cache` and wrong for the two hooks this
-    repository ships and asks contributors to install.
+    Still not `_repo_walk.is_machine_state`, but no longer because that rule
+    excluded `.githooks/` — #593 removed the blanket dot-prefix exclusion, so
+    the two walks now agree about scope. They stay separate because they answer
+    different questions: that one is "which `.py` is source", `rglob`-wide so it
+    can see a file being written right now; this one is "which files does this
+    repository ship that a shell executes", which needs `git ls-files` plus a
+    shebang read and has nothing to do with `.py`. Merging them would be one
+    name wearing two rules, which is what `_repo_walk`'s own docstring refuses.
     """
     assert (REPO / rel) in shell_files(), (
         f"{rel} is no longer being syntax-checked")
