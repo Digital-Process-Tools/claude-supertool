@@ -511,6 +511,13 @@ RESET_EXEMPT_GLOBALS = (
     "_AT_FILE_BUILTIN_DEFAULTS",
     "_BUILTIN_OPS",
     "_BUILTIN_SYNTAX_VALIDATORS",
+    # Constant op-name tables, same lifetime as _BUILTIN_OPS (#614).
+    "_DISPATCH_ONLY_OPS",
+    "_MAIN_LEVEL_OPS",
+    # Index of the presets shipped beside supertool.py. A property of the
+    # install, not of the run — clearing it per test would only re-read the
+    # same ten files and imply a lifetime it does not have.
+    "_SHIPPED_PRESET_OPS",
     "_EXT_FAMILIES",
     "_FORMATTER_CONFIG_MARKERS",
     "_NONDETERMINISTIC_ERROR_CODES",
@@ -553,6 +560,8 @@ def _disable_rtk_and_config():
     old_rtk_path = supertool._RTK_PATH
     old_config_checked = supertool._CONFIG_CHECKED
     old_config = supertool._CONFIG
+    old_config_path = supertool._CONFIG_PATH
+    old_config_path = supertool._CONFIG_PATH
     old_ts_checked = supertool._TS_CHECKED
     old_ts_available = supertool._TS_AVAILABLE
     old_ts_package = supertool._TS_PACKAGE
@@ -562,6 +571,7 @@ def _disable_rtk_and_config():
     supertool._RTK_PATH = None
     supertool._CONFIG_CHECKED = True
     supertool._CONFIG = {}
+    supertool._CONFIG_PATH = None
     supertool._TS_CHECKED = True
     supertool._TS_AVAILABLE = False
     supertool._TS_PACKAGE = ""
@@ -575,6 +585,7 @@ def _disable_rtk_and_config():
     supertool._RTK_PATH = old_rtk_path
     supertool._CONFIG_CHECKED = old_config_checked
     supertool._CONFIG = old_config
+    supertool._CONFIG_PATH = old_config_path
     supertool._TS_CHECKED = old_ts_checked
     supertool._TS_AVAILABLE = old_ts_available
     supertool._TS_PACKAGE = old_ts_package

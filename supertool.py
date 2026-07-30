@@ -299,6 +299,13 @@ _CONFIG_CHECKED = False
 # file, so the reason is kept and surfaced (#418).
 _CONFIG_WARNINGS: List[str] = []
 
+# Absolute path of the .supertool.json the loader actually used, or None when
+# the walk up from cwd found nothing. The loader always knew this and threw it
+# away, which left the dispatcher unable to tell "your config does not enable
+# that" from "you are not in a project at all" — two different problems for the
+# person reading the error (#614).
+_CONFIG_PATH: str | None = None
+
 # MCP server specs parsed from _CONFIG["mcp"] — populated by _load_config()
 _mcp_specs: Dict[str, dict] = {}
 
@@ -308,6 +315,93 @@ _mcp_specs: Dict[str, dict] = {}
 # `{supertool_dir}` is substituted into validator / formatter / notifier cmd
 # templates. Windows accepts forward-slash paths everywhere; POSIX is unaffected.
 _INSTALL_DIR = os.path.dirname(os.path.realpath(__file__)).replace(os.sep, "/")
+
+
+# Shipped presets, indexed op name -> preset name. Populated lazily.
+_SHIPPED_PRESET_OPS: Dict[str, str] | None = None
+
+
+def _shipped_preset_ops() -> Dict[str, str]:
+    """Map every op declared by a shipped preset to the preset that declares it.
+
+    Read from ``presets/*.json`` next to supertool.py, so it describes the
+    *installed build* rather than whatever the cwd happens to enable. That is
+    what makes it usable as evidence: when this index holds ``gl-mr``, the op
+    demonstrably exists in this binary and its absence from the current call is
+    a fact about where the caller is standing, not about the tool (#614).
+
+    Deliberately not a registry of every op that exists anywhere. A custom op in
+    another project's .supertool.json is genuinely unknowable from here and is
+    never guessed at.
+
+    Cached, and only consulted on the unknown-op path and by ``ops`` — a normal
+    call never opens these files.
+    """
+    global _SHIPPED_PRESET_OPS
+    if _SHIPPED_PRESET_OPS is not None:
+        return _SHIPPED_PRESET_OPS
+    index: Dict[str, str] = {}
+    preset_dir = os.path.join(_INSTALL_DIR, "presets")
+    try:
+        entries = sorted(os.listdir(preset_dir))
+    except OSError:
+        entries = []
+    for fname in entries:
+        if not fname.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(preset_dir, fname), encoding="utf-8") as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+            # A preset we cannot read contributes nothing. Same rule as the
+            # config loader: an unreadable file is an absence, never a fatal —
+            # and an index missing one preset still beats no index at all.
+            continue
+        if not isinstance(data, dict):
+            continue
+        preset_ops = data.get("ops")
+        if not isinstance(preset_ops, dict):
+            continue
+        for op_name in preset_ops:
+            if isinstance(op_name, str) and op_name not in _BUILTIN_OPS:
+                index.setdefault(op_name, fname[:-5])
+    _SHIPPED_PRESET_OPS = index
+    return index
+
+
+def _presets_not_loaded_here() -> List[str]:
+    """Shipped preset names the active config does not enable, sorted."""
+    config = _load_config()
+    enabled = {p for p in (config.get("presets") or []) if isinstance(p, str)}
+    return [p for p in sorted(set(_shipped_preset_ops().values()))
+            if p not in enabled]
+
+
+def _preset_disclosure() -> str:
+    """One line naming the presets that are not loaded here — never their ops.
+
+    ``ops`` from a non-project directory listed the file ops and stopped, and a
+    reader takes that as the tool's whole capability (#614 — its filer did).
+    Enumerating the hidden ops would roughly double the listing and get eaten
+    from the tail by the SessionStart cap, so this names presets and a count and
+    leaves ``cwd:`` as the way through. Empty string when nothing is hidden: the
+    absence of the line is itself the signal that the listing is complete.
+    """
+    missing = _presets_not_loaded_here()
+    if not missing:
+        return ""
+    missing_set = set(missing)
+    n_ops = sum(1 for p in _shipped_preset_ops().values() if p in missing_set)
+    names = ", ".join(missing)
+    if _CONFIG_PATH:
+        return (f"> {len(missing)} shipped presets ({names}) — {n_ops} ops — are not "
+                f"loaded here: {_CONFIG_PATH} does not list them under "
+                f'"presets". Add one there, or make the first op '
+                f"'cwd:<project-path>'.")
+    return (f"> Built-in ops only. No .supertool.json was found from {os.getcwd()}, "
+            f"so {len(missing)} shipped presets ({names}) — {n_ops} ops — are not "
+            f"loaded here. Run from a project that enables them, or make the first "
+            f"op 'cwd:<project-path>'.")
 
 
 def _find_preset_file(name: str, project_dir: str) -> str | None:
@@ -429,7 +523,7 @@ def _load_config() -> Dict[str, Any]:
     After loading, merges any preset ops declared in "presets" key and
     parses the optional "mcp" block into the module-level _mcp_specs dict.
     """
-    global _CONFIG, _CONFIG_CHECKED, _mcp_specs
+    global _CONFIG, _CONFIG_CHECKED, _CONFIG_PATH, _mcp_specs
     if _CONFIG_CHECKED:
         return _CONFIG or {}
     _CONFIG_CHECKED = True
@@ -447,6 +541,7 @@ def _load_config() -> Dict[str, Any]:
                     if not isinstance(_CONFIG, dict):
                         _CONFIG = {}
                     project_dir = d
+                    _CONFIG_PATH = candidate
                     _merge_presets(_CONFIG, project_dir)
                     # Parse MCP server specs from the optional "mcp" block.
                     mcp_block = _CONFIG.get("mcp")
@@ -924,6 +1019,78 @@ def _rtk_run(args: List[str], timeout: int = 30) -> str | None:
 
 # Built-in op names — custom ops/aliases with these names are ignored
 _BUILTIN_OPS = {"read", "grep", "grep_around", "glob", "ls", "tail", "head", "wc", "check", "around", "map", "diff", "stat", "around_line", "tree", "replace", "replace_dry", "edit", "replace_lines", "paste", "append", "vi", "validate", "format", "validate_staged", "format_staged", "workspace", "resolve", "diag", "hover", "rename"}
+
+# Ops the dispatcher handles but that are absent from _BUILTIN_OPS, which is a
+# shadowing blocklist ("custom ops with these names are ignored") and not a
+# capability list. Kept separate so the blocklist's semantics are untouched.
+_DISPATCH_ONLY_OPS = {
+    "between", "vim", "batch", "gc", "help", "version",
+    "ops", "ops-compact", "introduction", "output-format",
+}
+
+# Valid from the CLI but never reaching dispatch(): main() honours and strips
+# them before the op loop. They belong in any list a caller reads.
+_MAIN_LEVEL_OPS = {"cwd"}
+
+
+def _valid_op_names() -> List[str]:
+    """Every op name this binary accepts regardless of config, sorted.
+
+    The unknown-op error used to carry a hand-written list of 18 names while the
+    dispatcher accepted 40+ — the tool under-reporting its own capability, which
+    is exactly the defect #614 is about, one layer in. Derived from the sets
+    dispatch really uses so it cannot rot again. ``vi`` is dropped: it lingers in
+    _BUILTIN_OPS from before the op was renamed ``vim`` and no branch handles it.
+    """
+    return sorted((_BUILTIN_OPS | _DISPATCH_ONLY_OPS | _MAIN_LEVEL_OPS) - {"vi"})
+
+
+def _unknown_op_message(op: str) -> str:
+    """Answer "can I do this?" in three states, not two (#614).
+
+    ``docs/validators.md``'s "Declining instead of guessing" one layer out: a
+    checker that cannot act must distinguish *no such thing* from *not from
+    here*, because emitting the first when it means the second is an absence the
+    tool produced being read as an absence in the world. It cost this repo's
+    heaviest user two debugging detours in one evening — ``unknown operation:
+    gh-job`` read as "the installed build predates that op", and several turns
+    went into hand-rolled ``gh api`` calls that worked, so nothing looked broken.
+
+    The only absence namable honestly is a shipped preset op: it ships beside
+    supertool.py, so its existence is a fact about this binary. Everything else —
+    a typo, a custom op from a config we never saw — stays *unknown*, on purpose.
+    Hedging every miss into "maybe you need a project root" would trade a correct
+    message for a guess, which is the same bad trade in the other direction.
+    """
+    preset = _shipped_preset_ops().get(op)
+    if preset is not None:
+        if _CONFIG_PATH:
+            return (
+                f"ERROR: op '{op}' is unavailable here, not unknown — it is provided "
+                f"by the shipped preset '{preset}', which {_CONFIG_PATH} does not "
+                f"enable.\n"
+                f'       Fix: add "{preset}" to that file\'s "presets" list, or make '
+                f"this call's first op 'cwd:<project-path>' pointing at a project "
+                f"that already enables it.\n"
+                f"       'ops' lists what is loaded here.\n"
+            )
+        return (
+            f"ERROR: op '{op}' is unavailable here, not unknown — it is provided by "
+            f"the shipped preset '{preset}'.\n"
+            f"       No .supertool.json was found from {os.getcwd()} or any parent, "
+            f"so no preset ops and no project ops are loaded — only the built-ins.\n"
+            f"       Fix: run it from a project that enables the '{preset}' preset, "
+            f"or make this call's first op 'cwd:<project-path>'.\n"
+            f"       'ops' lists what is loaded here.\n"
+        )
+    msg = (f"ERROR: unknown operation: {op}\n"
+           f"Valid operations: {', '.join(_valid_op_names())}\n")
+    loaded = _load_config().get("ops") or {}
+    if loaded:
+        msg += (f"Plus {len(loaded)} project/preset ops loaded from "
+                f"{_CONFIG_PATH or 'config'} — run 'ops' for the full list.\n")
+    return msg
+
 
 # Read-only built-in ops — safe to run in parallel across a batch.
 # Excludes mutating ops (replace, edit, replace_lines) and custom ops
@@ -9457,7 +9624,11 @@ def op_ops(compact: bool = False) -> str:
         # No config — bare fallback listing built-in names
         lines.append("No descriptions configured in .supertool.json")
         lines.append("")
-        lines.append("Built-in operations: " + ", ".join(sorted(_BUILTIN_OPS)))
+        lines.append("Built-in operations: " + ", ".join(_valid_op_names()))
+        disclosure = _preset_disclosure()
+        if disclosure:
+            lines.append("")
+            lines.append(disclosure)
         lines.append("")
         lines.append("Add a \"builtin-ops\" section to .supertool.json to describe them.")
         return "\n".join(lines) + "\n"
@@ -9484,6 +9655,21 @@ def op_ops(compact: bool = False) -> str:
         if not compact:
             return desc
         return desc if info.get("hint") else ""
+
+    # Where the disclosure goes depends on which absence it is describing.
+    #
+    # No config found: the listing actively misleads — it reads as the tool's
+    # whole capability (#614's filer read it that way) — so it goes on top,
+    # above the SessionStart cap's truncation point, where it is read first.
+    #
+    # Config found: the missing presets are that project's deliberate choice,
+    # not a surprise about where the caller is standing. Same line, but as a
+    # footer — a permanent banner on the most-read output would be noise, and
+    # being cut by the cap costs nothing when nobody was misled.
+    disclosure = _preset_disclosure()
+    if disclosure and not _CONFIG_PATH:
+        lines.append(disclosure)
+        lines.append("")
 
     # Operations section — built-in and custom merged into one flat list
     has_ops = False
@@ -9528,6 +9714,10 @@ def op_ops(compact: bool = False) -> str:
             lines.append(f"- `{syntax}` — {desc}" if desc else f"- `{syntax}`")
             if _emit_example(info):
                 lines.append(f"  Example: `{info['example']}`")
+        lines.append("")
+
+    if disclosure and _CONFIG_PATH:
+        lines.append(disclosure)
         lines.append("")
 
     body = "\n".join(lines) + "\n"
@@ -13715,10 +13905,7 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                 if alias is not None:
                     body = alias
                 else:
-                    body = (f"ERROR: unknown operation: {op}\n"
-                            f"Valid operations: read, grep, glob, ls, tail, "
-                            f"head, around, around_line, between, wc, check, map, diff, stat, tree, "
-                            f"replace, replace_dry\n")
+                    body = _unknown_op_message(op)
     except (ValueError, IndexError) as e:
         body = f"ERROR: argument parsing: {e}\n"
 

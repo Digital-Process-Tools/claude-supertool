@@ -52,8 +52,13 @@ def test_dispatch_triple_colon_with_hyphen_op_name() -> None:
     falling through to single-colon parsing and shredding messages with `:`.
     """
     out = supertool.dispatch("git-commit:::hello world:::path.py")
-    # Op is unknown in the test config but the parser preserves the full name
-    assert "unknown operation: git-commit" in out
+    # The op is not loaded in the test config, so it errors — what this test
+    # watches is that the parser preserved the full hyphenated name in that
+    # error rather than reporting `git`. Since #614 the error says "unavailable
+    # here" (git-commit is a shipped preset op, so its existence is a fact) but
+    # the name it echoes is the thing under test.
+    assert "git-commit" in out
+    assert "unknown operation: git" not in out
 
 
 def test_dispatch_ls(tmp_path: Path) -> None:
