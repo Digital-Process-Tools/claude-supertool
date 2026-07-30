@@ -27,7 +27,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent))  # for _proc
 
 import _proc  # noqa: E402  (the one liveness probe, shared with gl-mrs / gh-prs)
 
-SOCK_PATH = "/tmp/supertool-watch.sock"
+# Overridable (#581): the Phase 2 consumer (channel.ts:35) already reads this
+# variable, and four shipped surfaces — the #550 refusal message and three
+# lines in notifiers/claude-channel/README.md, one of them a security claim
+# about per-user isolation — tell an operator to set it here too. It never
+# worked: this was a plain constant. Matches STATE_DIR's `or` idiom below so
+# an operator exporting an empty string gets the default, not a connect() to "".
+SOCK_PATH = os.environ.get("SUPERTOOL_WATCH_SOCK") or "/tmp/supertool-watch.sock"
 # Overridable so a poller re-exec'd under its own argv (see `poller_argv`) keeps
 # writing where its parent was writing. Without it, exec would move a test's
 # poller from the test's tmp dir to the real /tmp — a fork inherits monkeypatched
@@ -341,6 +347,15 @@ def emit_event(
     current = read_state(source, watcher_id)
     current["last_event"] = record
     current.setdefault("first_seen", record["ts"])
+    # Not part of the wire payload above (that contract is locked, see
+    # docs/presets/watch.md) — this is process-local state, same footing as
+    # the `only` filter a poller already publishes into its own state file.
+    # #581: SOCK_PATH is now overridable, so a watcher spawned before an
+    # operator changed SUPERTOOL_WATCH_SOCK keeps writing to the path it
+    # started with. That is a real state, not a bug, but it must be
+    # inspectable rather than inferred from "some events arrived and some
+    # didn't" — a partial migration reads as a healthy board otherwise.
+    current["sock_path"] = SOCK_PATH
     write_state(source, watcher_id, current)
     if notify_title and notify_message:
         desktop_notify(notify_title, notify_message)
