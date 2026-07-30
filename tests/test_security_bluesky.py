@@ -558,8 +558,13 @@ class TestReplyNonExistent:
             )
         assert result is None
 
-    def test_preflight_exception_returns_false(self, monkeypatch):
-        """preflight_publish on exception returns False (graceful degrade)."""
+    def test_preflight_exception_returns_unknown(self, monkeypatch):
+        """preflight_publish on exception returns None — could not check (#601).
+
+        It returned False, which the caller read as "this thread has no reply of
+        mine" and posted. The security-relevant half is that the failure path is
+        no longer an authorisation.
+        """
         monkeypatch.setenv("BLUESKY_HANDLE", "test.bsky.social")
         monkeypatch.setenv("BLUESKY_APP_PASSWORD", APP_PASSWORD)
 
@@ -569,7 +574,7 @@ class TestReplyNonExistent:
         with patch.object(publish_mod, "xrpc", fake_xrpc):
             result = publish_mod.preflight_publish("at://nonexistent/app.bsky.feed.post/xyz", FAKE_SESSION)
 
-        assert result is False
+        assert result is None
 
     def test_resolve_reply_ref_nonexistent_post_propagates_exit(self, monkeypatch, capsys):
         """resolve_reply_ref with 404 from xrpc → sys.exit(1) from xrpc itself."""

@@ -13,8 +13,9 @@ Optional second arg: AT URI of a post to reply to
 PRE-FLIGHT DUPLICATE CHECK (reply only): When reply_uri is set, the op scans
 own recent posts via app.bsky.feed.getAuthorFeed and aborts if a reply to the
 same root already exists. Pass |force as 3rd pipe-separated field to bypass.
-If the pre-flight check fails, a warning is printed and publish proceeds
-(graceful degrade — don't block on platform issues).
+If the pre-flight check cannot be made, the op ABORTS rather than replying
+unchecked (#601) — a duplicate reply is a public artifact on somebody else's
+thread and this preset cannot undo it, while the decline costs one `|force`.
 """
 from __future__ import annotations
 
@@ -148,16 +149,28 @@ def _get_root_uri(session: dict, reply_to_uri: str) -> str | None:
         return None
 
 
-def preflight_publish(reply_uri: str, session: dict) -> bool:
+def preflight_publish(reply_uri: str, session: dict) -> bool | None:
     """Return True if own feed already has a reply to the same root as reply_uri.
 
-    Scans up to 50 own recent posts. Returns False on any API error (graceful
-    degrade). Catches SystemExit for the same reason as _get_root_uri.
+    Scans up to 50 own recent posts. Returns False when the feed was read and
+    holds no such reply, and **None when the check could not be made** — the
+    caller must fail closed. Both used to be False (#601), which made a 502 on
+    `getAuthorFeed` read as an unreplied thread.
+
+    `_get_root_uri` returning None is one of those unknowns, not an absence: it
+    already swallows `SystemExit` deliberately so a 404 reply target does not
+    kill the whole op, and None is the only way that decision reaches here.
+
+    `SystemExit` stays in the handler because `xrpc` calls `sys.exit(1)` on any
+    HTTP or network error, so a transport failure arrives as `SystemExit` rather
+    than `Exception` and a bare `except Exception` would let it kill the op.
+    That exit is a *transport accident*, not a refusal by a helper — the only
+    deliberate exit in this chain is `_get_root_uri`'s, and it never escapes.
     """
     try:
         root_uri = _get_root_uri(session, reply_uri)
         if not root_uri:
-            return False
+            return None
         resp = xrpc("app.bsky.feed.getAuthorFeed", session,
                     params={"actor": session["did"], "limit": 50})
         for item in resp.get("feed") or []:
@@ -169,7 +182,7 @@ def preflight_publish(reply_uri: str, session: dict) -> bool:
                 return True
         return False
     except (Exception, SystemExit):
-        return False
+        return None
 
 
 def main(arg: str) -> None:
@@ -178,15 +191,20 @@ def main(arg: str) -> None:
     handle = get_handle()
     session = get_session(handle, get_app_password())
     if reply_uri and not force:
-        try:
-            if preflight_publish(reply_uri, session):
-                sys.stderr.write(
-                    f"ABORT — already replied to thread root of {reply_uri}. "
-                    "Use |force to override.\n"
-                )
-                sys.exit(1)
-        except Exception as exc:
-            sys.stderr.write(f"WARNING: pre-flight check failed ({exc}) — proceeding anyway.\n")
+        already = preflight_publish(reply_uri, session)
+        if already is None:
+            sys.stderr.write(
+                f"ABORT — pre-flight lookup failed for {reply_uri} (cannot verify "
+                "whether this thread was already replied to). "
+                "Use |force to bypass and reply anyway.\n"
+            )
+            sys.exit(1)
+        if already:
+            sys.stderr.write(
+                f"ABORT — already replied to thread root of {reply_uri}. "
+                "Use |force to override.\n"
+            )
+            sys.exit(1)
     record: dict = {
         "$type": "app.bsky.feed.post",
         "text": body,

@@ -4,8 +4,9 @@
 PRE-FLIGHT DUPLICATE CHECK: Before liking, the op scans own actor likes via
 app.bsky.feed.getActorLikes and aborts if the target URI is already liked.
 Pass |force as 2nd pipe-separated field to bypass: bluesky_like:URI|force
-If the pre-flight check fails, a warning is printed and the like proceeds
-(graceful degrade — don't block on platform issues).
+If the pre-flight check cannot be made, the op ABORTS and names `|force` (#601).
+A duplicate like is cheap, but an unverifiable check already ended this op — via
+`xrpc`'s own `sys.exit` — so declining costs nothing new and now says why.
 """
 from __future__ import annotations
 
@@ -44,10 +45,18 @@ def to_at_uri(arg: str, session: dict) -> str:
     sys.exit(2)
 
 
-def preflight_like(target_uri: str, session: dict) -> bool:
+def preflight_like(target_uri: str, session: dict) -> bool | None:
     """Return True if own DID has already liked target_uri.
 
-    Scans up to 100 own likes. Returns False on any API error (graceful degrade).
+    Scans up to 100 own likes. Returns False when the likes were read and this
+    post is not among them, and **None when the check could not be made** (#601).
+
+    Both used to be False, which is the narrower half of the defect here: the
+    common failure — an HTTP or network error — reaches this frame as
+    `SystemExit` from `xrpc`, escaped the old `except Exception` and killed the
+    op with a bare `ERROR:` and no hint. Only the odd non-exiting failure
+    degraded into "not liked". Now every unknown is one value, and the caller
+    declines with the `|force` bypass named.
     """
     try:
         resp = xrpc("app.bsky.feed.getActorLikes", session,
@@ -57,8 +66,8 @@ def preflight_like(target_uri: str, session: dict) -> bool:
             if post.get("uri") == target_uri:
                 return True
         return False
-    except Exception:
-        return False
+    except (Exception, SystemExit):
+        return None
 
 
 def main(arg: str) -> None:
@@ -67,14 +76,18 @@ def main(arg: str) -> None:
     session = get_session(handle, get_app_password())
     uri = to_at_uri(raw, session)
     if not force:
-        try:
-            if preflight_like(uri, session):
-                sys.stderr.write(
-                    f"ABORT — already liked {uri}. Use |force to override.\n"
-                )
-                sys.exit(1)
-        except Exception as exc:
-            sys.stderr.write(f"WARNING: pre-flight check failed ({exc}) — proceeding anyway.\n")
+        already = preflight_like(uri, session)
+        if already is None:
+            sys.stderr.write(
+                f"ABORT — pre-flight lookup failed for {uri} (cannot verify whether "
+                "already liked). Use |force to bypass and like anyway.\n"
+            )
+            sys.exit(1)
+        if already:
+            sys.stderr.write(
+                f"ABORT — already liked {uri}. Use |force to override.\n"
+            )
+            sys.exit(1)
     thread = xrpc("app.bsky.feed.getPostThread", session, params={"uri": uri, "depth": 0})
     post = (thread.get("thread") or {}).get("post") or {}
     cid = post.get("cid")

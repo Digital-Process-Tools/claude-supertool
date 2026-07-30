@@ -75,6 +75,22 @@ Until [#562](https://github.com/Digital-Process-Tools/claude-supertool/issues/56
 
 A missing sibling module (`_auth`, `_rest`) is deliberately **not** in the table: it raises `ImportError` naming the module rather than degrading, because a broken checkout has no useful degraded mode and the traceback is the whole diagnosis.
 
+`devto_publish` has the same three outcomes since [#601](https://github.com/Digital-Process-Tools/claude-supertool/issues/601). It checks `/articles/me` for an article carrying the same `canonical_url`:
+
+| Outcome | What the op does | stderr |
+|---------|------------------|--------|
+| No article with that canonical url | Publishes | — |
+| One already exists | Refuses, names the slug and url | `ABORT — already published with canonical_url='https://…' (slug=…, url=…). Use \|force as 7th field to override.` |
+| **The check could not be made** | Refuses, does **not** publish | `ABORT — pre-flight lookup failed for canonical_url='https://…' (cannot verify whether already published). Use \|force as 7th field to bypass and publish anyway.` |
+
+"Could not be made" covers a `/articles/me` call that errored or timed out and a response that is not an article list — a rate-limit body is an unanswered question, not an empty account. Until #601 that case published a second copy of the article, because a failed lookup returned the same `False` as a clean account. The bypass is the 7th pipe-separated field:
+
+```bash
+./supertool 'devto_publish:Title|drafts/post.md|https://max.dp.tools/p/x|||true|force'
+```
+
+`hashnode_publish` has always behaved this way; the two ops now agree.
+
 ## Authoring notes
 
 Preset JSON: `presets/devto.json`. Helper scripts: `presets/devto/` — one Python file per op (`publish.py`, `list.py`, `read.py`, `browse.py`, `comments.py`, `react.py`, `comment.py`, `status_since.py`). The `{path}` placeholder in `cmd` resolves to `presets/devto/` at runtime.

@@ -310,10 +310,15 @@ def test_like_preflight_not_liked(monkeypatch: pytest.MonkeyPatch) -> None:
     assert like_op.preflight_like("at://target/post/x", session) is False
 
 
-def test_like_preflight_api_error_degrades(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_like_preflight_api_error_is_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A check that could not run returns None, not False (#601).
+
+    It asserted `is False` — the same value as `test_like_preflight_not_liked`
+    above it. test_preflight_unknown_601.py pins the two apart.
+    """
     session = {"did": "did:plc:me", "accessJwt": "tok"}
     monkeypatch.setattr(like_op, "xrpc", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("down")))
-    assert like_op.preflight_like("at://x/y/z", session) is False
+    assert like_op.preflight_like("at://x/y/z", session) is None
 
 
 def test_like_main_aborts_on_dupe(monkeypatch: pytest.MonkeyPatch,
@@ -397,10 +402,11 @@ def test_follow_preflight_not_following(monkeypatch: pytest.MonkeyPatch) -> None
     assert follow_op.preflight_follow("did:plc:alice", session) is False
 
 
-def test_follow_preflight_api_error_degrades(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_follow_preflight_api_error_is_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A check that could not run returns None, not False (#601)."""
     session = {"did": "did:plc:me", "accessJwt": "tok"}
     monkeypatch.setattr(follow_op, "xrpc", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("down")))
-    assert follow_op.preflight_follow("did:plc:alice", session) is False
+    assert follow_op.preflight_follow("did:plc:alice", session) is None
 
 
 def test_follow_main_aborts_on_dupe(monkeypatch: pytest.MonkeyPatch,
@@ -497,10 +503,11 @@ def test_publish_preflight_not_replied(monkeypatch: pytest.MonkeyPatch) -> None:
     assert publish.preflight_publish(reply_uri, session) is False
 
 
-def test_publish_preflight_api_error_degrades(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_publish_preflight_api_error_is_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A check that could not run returns None, not False (#601)."""
     session = {"did": "did:plc:me", "accessJwt": "tok"}
     monkeypatch.setattr(publish, "xrpc", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("down")))
-    assert publish.preflight_publish("at://x/y/z", session) is False
+    assert publish.preflight_publish("at://x/y/z", session) is None
 
 
 def test_publish_main_aborts_on_dupe_reply(monkeypatch: pytest.MonkeyPatch,

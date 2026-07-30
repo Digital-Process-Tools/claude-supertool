@@ -763,21 +763,23 @@ def test_react_parse_args_empty_exits(capsys: pytest.CaptureFixture[str]) -> Non
     assert "ERROR" in capsys.readouterr().err
 
 
-def test_react_preflight_already_reacted(monkeypatch: pytest.MonkeyPatch) -> None:
-    # preflight_react always returns (None, 0) — Hashnode exposes no per-user
-    # reaction field, so react.py is fail-closed: caller must use |force.
-    already, count = react_op.preflight_react("post-id", "tok")
-    assert already is None and count == 0
+def test_react_preflight_always_declines_and_asks_nothing(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """Hashnode exposes no per-user reaction field, so this can never answer.
 
+    Replaces three tests — `already_reacted`, `not_reacted` and
+    `api_error_degrades` — which asserted the same hardcoded `(None, 0)` under
+    three names, one of them naming an API error in a function that makes no API
+    call (#601). Three literals are not three cases. What is actually worth
+    holding is the contract: the function declines, and it declines *without
+    asking*, so giving it a real but broken body has to fail here rather than
+    keep passing.
+    """
+    def _must_not_be_called(*_a, **_kw):
+        raise AssertionError("preflight_react queried the API — the contract changed")
 
-def test_react_preflight_not_reacted(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Same: preflight always returns (None, 0) regardless of API state.
-    already, count = react_op.preflight_react("post-id", "tok")
-    assert already is None and count == 0
-
-
-def test_react_preflight_api_error_degrades(monkeypatch: pytest.MonkeyPatch) -> None:
-    # preflight_react never calls gql; always returns (None, 0).
+    monkeypatch.setattr(react_op, "gql", _must_not_be_called)
+    monkeypatch.setattr(react_op, "gql_safe", _must_not_be_called, raising=False)
     already, count = react_op.preflight_react("post-id", "tok")
     assert already is None and count == 0
 
@@ -941,8 +943,9 @@ def test_publish_preflight_no_dupe(monkeypatch: pytest.MonkeyPatch) -> None:
     assert already is False
 
 
-def test_publish_preflight_api_error_degrades(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_publish_preflight_api_error_is_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
     # gql_safe returns None on error → preflight returns (None, '', '') → fail-closed.
+    # Named "degrades" until #601; it does the opposite — it declines.
     monkeypatch.setattr(publish_op, "gql_safe", lambda q, v, t: None)
     already, url, slug = publish_op.preflight_publish("https://x.io", "tok")
     assert already is None
