@@ -348,3 +348,107 @@ def head_relation(local_sha: object, pr_head_sha: object,
         f"Checks commit: PR head {r_disp}, local HEAD {l_disp} — whether the "
         "Checks line above is about the commit you are standing on is UNKNOWN."
     )
+
+
+# Printed instead of an issue number when the body declares no closing
+# reference (#591). The line it replaces made the keyword optional, so the
+# pattern reduced to "the first `#N` anywhere in the body" and `Issue: #263`
+# was printed for a PR that closed #591 — the body had cited #263 as a
+# precedent. A stated wrong number gets acted on; a missing one sends the
+# reader to the body, so the old shape failed in the worse direction. This is
+# the third state in `git-status`' terms, the same discrimination #587 made one
+# line above: an answer, a finding, and *nothing declared* are three things.
+#
+# The claim is scoped to the body, which is all this line reads. "What merging
+# closes is UNKNOWN" was the first wording and it overstates twice: a PR can
+# also be linked through GitHub's Development panel, which closes an issue on
+# merge and appears nowhere in the body, and `UNKNOWN` is the word the check
+# tally reserves for a state it declined to conclude — reusing it here put a
+# second, unrelated UNKNOWN into `git-status` output that reads as a check
+# verdict.
+NO_CLOSING_REF = (
+    "none declared in the body — no closing keyword (Closes/Fixes/Resolves "
+    "#N) bound to an issue number. A bare #N mention is not a closing "
+    "reference to GitHub and is not reported as one here; a link made through "
+    "the PR's Development panel is not in the body and is invisible to this "
+    "line."
+)
+
+# GitHub's own set, verbatim: close/closes/closed, fix/fixes/fixed,
+# resolve/resolves/resolved. Inventing a narrower list is not the safe move it
+# looks like — GitHub's set is what decides whether merging the PR closes the
+# issue, so a shorter one here silently drops issues that really do get closed,
+# and a divergence between what we print and what the merge does is its own
+# trap.
+_CLOSING_KEYWORD = r"(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)"
+
+# The keyword must be bound to *its own* number. The separator is horizontal
+# whitespace and an optional colon — `Closes: #N`, `closes  #N` and `Closes#N`
+# all close the issue on GitHub — and deliberately not `\s*`, which spans
+# newlines: "This fixes" / blank line / "#263 is a precedent" would then
+# extract #263 from a sentence whose keyword never names a number, which is the
+# optional-keyword bug in a thinner disguise.
+#
+# Three reference shapes, because GitHub honours three: `#N`, `GH-N` and
+# `owner/repo#N` — plus the full issue URL, which is `owner/repo#N` spelled
+# long. A cross-repo reference keeps the repo it names: `#5` and `octo/other#5`
+# are different issues, and flattening one into the other would hand a caller a
+# number to resolve against the wrong repository.
+_CLOSING_REF = re.compile(
+    r"\b" + _CLOSING_KEYWORD + r"\b[ \t]*:?[ \t]*(?:"
+    r"https?://github\.com/(?P<u_owner>[\w.\-]+)/(?P<u_repo>[\w.\-]+)/issues/(?P<u_num>\d+)"
+    r"|(?P<x_owner>[\w.\-]+)/(?P<x_repo>[\w.\-]+)#(?P<x_num>\d+)"
+    r"|(?:GH-|#)(?P<num>\d+)"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def closing_issue_refs(body: object) -> List[str]:
+    """Every issue this body declares it closes, in order, deduped.
+
+    `[]` means the body declares none — render `NO_CLOSING_REF`, never the
+    first number that can be found. That fallback is the defect (#591): a PR
+    body routinely cites issues it does *not* close (a precedent, a sibling
+    filed separately, a related discussion), and the well-written body is the
+    one most likely to cite context before naming its own subject.
+
+    Returns display forms, not bare integers: `"#591"` for this repository and
+    `"owner/repo#5"` for another one. The distinction is load-bearing for any
+    caller that goes on to *fetch* the issue — `gh issue view 5` resolves 5
+    against the current repo, so a cross-repo number resolved here would print
+    a different issue's title under this PR's closing reference.
+
+    Every reference is returned, not the first. A PR closing two issues is
+    normal (#584 closed #571 and #572) and picking one is the same defect with
+    a smaller blast radius.
+    """
+    text = str(body or "")
+    if not text:
+        return []
+
+    refs: List[str] = []
+    for m in _CLOSING_REF.finditer(text):
+        if m.group("num"):
+            ref = f"#{m.group('num')}"
+        elif m.group("x_num"):
+            ref = f"{m.group('x_owner')}/{m.group('x_repo')}#{m.group('x_num')}"
+        else:
+            ref = f"{m.group('u_owner')}/{m.group('u_repo')}#{m.group('u_num')}"
+        if ref not in refs:
+            refs.append(ref)
+    return refs
+
+
+def linked_issue_line(refs: Sequence[str]) -> str:
+    """The one `Issue:`/`Issues:` line, so the two renderers cannot drift.
+
+    Plural when there is more than one: `Issue: #571, #572` reads as one issue
+    with a stray number attached. The absence leg is a printed sentence rather
+    than a skipped line, because a missing `Issue:` line is indistinguishable
+    from a renderer that never looked.
+    """
+    if not refs:
+        return f"Issue: {NO_CLOSING_REF}"
+    label = "Issue" if len(refs) == 1 else "Issues"
+    return f"{label}: {', '.join(refs)}"

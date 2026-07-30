@@ -348,11 +348,12 @@ def main() -> int:
                 else:
                     print(f"Diff: {changed_files} files (+{pr.get('additions', 0)} -{pr.get('deletions', 0)})")
 
-                # Extract linked issue
-                body = pr.get("body") or ""
-                issue_match = _re.search(r'(?:closes|fixes|resolves)?\s*#(\d+)', body, _re.IGNORECASE)
-                if issue_match:
-                    print(f"Issue: #{issue_match.group(1)}")
+                # Linked issue — one shared extractor with `gh-pr`, which
+                # carried the identical pattern and the identical defect
+                # (#591). The keyword was optional there too, so both printed
+                # the first `#N` in the body as the issue being closed.
+                print(_checks.linked_issue_line(
+                    _checks.closing_issue_refs(pr.get("body"))))
                 mr_found = True
         except (FileNotFoundError, subprocess.TimeoutExpired, _json.JSONDecodeError):
             pass

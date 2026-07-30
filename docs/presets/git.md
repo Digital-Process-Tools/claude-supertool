@@ -10,7 +10,7 @@ Git investigation and workflow ops. Replaces the 4-6 raw `git` calls you'd norma
 
 | Op | Syntax | What it returns |
 |----|--------|-----------------|
-| `git-status` | `git-status[:full]` | Branch, tracking, ahead/behind, last 5 commits, staged/unstaged/untracked files, stashes, open MR/PR link, suggested next step. The default view caps each list (20 staged/unstaged, 10 untracked/branches, 5 stashes) with a `... (N more)` marker — cheap overview. `:full` (alias `:porcelain`) **uncaps every list** for the full untruncated view, e.g. when you need to drive precise staging (excluding a few pre-existing untracked items from a large commit) and can't from a truncated list |
+| `git-status` | `git-status[:full]` | Branch, tracking, ahead/behind, last 5 commits, staged/unstaged/untracked files, stashes, open MR/PR link, suggested next step. The `Issue:` line reports only issues a GitHub closing keyword binds to (`Issue: #591`, `Issues: #571, #572`, or a stated `none declared`) — never the first `#N` in the body ([#591](https://github.com/Digital-Process-Tools/claude-supertool/issues/591), see [What `git-status`'s `Issue:` line claims](#what-git-statuss-issue-line-claims)). The default view caps each list (20 staged/unstaged, 10 untracked/branches, 5 stashes) with a `... (N more)` marker — cheap overview. `:full` (alias `:porcelain`) **uncaps every list** for the full untruncated view, e.g. when you need to drive precise staging (excluding a few pre-existing untracked items from a large commit) and can't from a truncated list |
 | `git-investigate` | `git-investigate:PATH` | File history: recent commits touching the file, uncommitted changes, blame hotspots (most-recently-changed lines) |
 | `git-trail` | `git-trail:PATTERN:PATH` | Trace a symbol or string through history via pickaxe search — when it was added, modified, or removed, with contextual diff hunks |
 | `git-blame` | `git-blame:PATH:LINE[:N]` | Blame for N lines (default 5) around a specific line number |
@@ -147,6 +147,12 @@ above is about the PR's head commit, not the commit you are standing on.
 Printed for a **passing** tally too, not only for an absent one — a true statement about the wrong commit is the failure mode, and the tally is where it is most convincing.
 
 **Every unestablished lookup lands in `UNKNOWN`, by construction.** A head SHA this clone has never fetched cannot be dated, so `absence()` is handed `None` and cannot reach "none will be created" — the one skew that would make this worse than the sentence it replaced. A `headRefOid` that is not a full 40-hex object name is refused outright rather than resolved: `HEAD` and `master` are valid revision arguments that resolve *locally* to the wrong commit, and dating one of those and captioning it as the PR head's age is the same defect one layer along. Silence is reserved for the two SHAs being established **equal**; an unknown relation says so, because printing nothing reads as "same commit".
+
+### What `git-status`'s `Issue:` line claims
+
+Only a GitHub closing keyword bound to its own number. `Issue: #591` for one reference, `Issues: #571, #572` for several, and a stated `Issue: none declared — …` when the body names no closing keyword at all — never the first `#N` it can find, which is what the shared pattern used to do ([#591](https://github.com/Digital-Process-Tools/claude-supertool/issues/591)). Defined once, with the keyword set, the accepted reference shapes and the cross-repo rule, in [github.md → The linked issue is a declared closing reference](github.md#the-linked-issue-is-a-declared-closing-reference-not-the-first-n). Both ops render it from the same `_checks.closing_issue_refs()`/`_checks.linked_issue_line()` pair, so the wording cannot drift.
+
+The GitLab arm of this op is unchanged and still uses `#(\d{4,})` on the MR description — any four-plus-digit number, no keyword required. Same class of defect on GitLab's numbering, filed separately: it needs GitLab's own closing vocabulary rather than a GitHub-shaped helper.
 
 ### `Pipeline:` on the GitLab arm
 
