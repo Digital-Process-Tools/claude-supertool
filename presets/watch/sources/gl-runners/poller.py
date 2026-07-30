@@ -12,7 +12,7 @@ events are about runners you are not watching yet, including ones added after
 the poller started. Never terminal: a fleet has no end state.
 
     state    {runners: {id: snapshot}, starved: {tagkey: count}}
-    silent   not taking work AND work is waiting for it — a wedge
+    silent   not taking work AND work stranded behind it — a wedge
     starved  pending jobs whose tags match only wedged runners
     fleet    membership and paused-flag changes
 
@@ -23,7 +23,12 @@ its contacted_at writes and a runner taking jobs continuously still reads
 minutes stale. A signal that fires on the entire healthy fleet does not just
 fail to inform, it buries the one event that was real. So liveness is judged
 first on job_execution_status and the running-jobs list — direct proof — and
-silence is only reported when jobs are actually queued behind it.
+silence is only reported when jobs are actually queued behind it *and no live
+runner is allowed to take them*. That last clause is the same lesson a second
+time: a runner decommissioned but left in GitLab beside a same-tag successor
+satisfies both of the earlier halves on every single poll, forever, while the
+work routes to the successor and runs fine. Consequence is per job, not per
+tag — see `runners_op.stranded_for`.
 
 Baseline handling is deliberately asymmetric on the first tick. Membership,
 silence and paused flags are recorded quietly, because announcing a transition
@@ -101,16 +106,22 @@ def _fetch_fleet() -> tuple[list[dict], list[dict] | None, list[dict]] | None:
     return merged, (pending or []), running
 
 
-def _snapshot(runner: dict, pending: list[dict], running: list[dict]) -> dict[str, Any]:
+def _snapshot(runner: dict, pending: list[dict], running: list[dict],
+              fleet: list[dict]) -> dict[str, Any]:
     """The fields whose changes are worth an event.
 
-    `waiting` and `running` ride on every snapshot rather than only the starved
-    one: those two counts are exactly what separates a runner that is idle from
-    one that is wedged, and leaving them off forces whoever reads the event to
-    go and fetch them by hand before they can act on it.
+    `waiting`, `stranded` and `running` ride on every snapshot rather than only
+    the starved one: those counts are exactly what separates a runner that is
+    idle from one that is wedged, and leaving them off forces whoever reads the
+    event to go and fetch them by hand before they can act on it.
+
+    `fleet` is the whole runner list because the interesting question about one
+    runner cannot be answered from that runner alone — whether its queue is
+    stuck depends on who else is up.
     """
     responsive = runners_op._is_responsive(runner)
     waiting = runners_op.waiting_for(runner, pending)
+    stranded = runners_op.stranded_for(runner, pending, fleet)
     return {
         "description": runner.get("description") or f"#{runner.get('id')}",
         "responsive": responsive,
@@ -118,13 +129,21 @@ def _snapshot(runner: dict, pending: list[dict], running: list[dict]) -> dict[st
         "tags": sorted(runner.get("tag_list") or []),
         "contacted_at": runner.get("contacted_at"),
         "waiting": waiting,
+        "stranded": stranded,
         "running": sum(1 for job in running
                        if (job.get("runner") or {}).get("id") == runner.get("id")),
         "recent_jobs": runner.get("_recent_jobs", 0),
         # Silence is only news when work is stuck behind it. A quiet runner with
         # an empty queue is a runner with nothing to do, and alerting on that
-        # fires on the whole fleet every time the pipeline goes idle.
-        "blocked": (not responsive) and waiting > 0,
+        # fires on the whole fleet every time the pipeline goes idle. "Stuck
+        # behind it" is per job and not per matching tag: jobs a live runner may
+        # also take are not stuck, they are routed.
+        "blocked": (not responsive) and stranded > 0,
+        # Quiet, tags fully covered by a live runner: a stale record somebody
+        # can delete, not an incident. Recorded so the state answers "why is
+        # this runner not firing" on demand, and deliberately not an event —
+        # see docs/presets/watch.md.
+        "superseded": (not responsive) and waiting > 0 and stranded == 0,
     }
 
 
@@ -166,8 +185,9 @@ def _fleet_events(
             events.append({
                 "event": "runner_silent",
                 "payload": {"runner_id": rid, "description": name, "last_seen": age,
-                            "tags": now["tags"], **counts},
-                "notify_title": f"runner {name} wedged — {now['waiting']} job(s) waiting",
+                            "tags": now["tags"],
+                            "stranded_for_it": now["stranded"], **counts},
+                "notify_title": f"runner {name} wedged — {now['stranded']} job(s) stuck",
                 "notify_message": f"last contact {age} ago, {now['running']} running "
                                   f"— GitLab still reports it online",
             })
@@ -256,7 +276,7 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
     runners, pending, running = fetched
     first_tick = not state
 
-    current_fleet = {str(r["id"]): _snapshot(r, pending or [], running)
+    current_fleet = {str(r["id"]): _snapshot(r, pending or [], running, runners)
                      for r in runners}
     previous_fleet = state.get("runners") or {}
 
@@ -279,6 +299,8 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
 
     silent = [s["description"] for s in current_fleet.values() if not s["responsive"]]
     new_state["silent"] = silent
+    new_state["superseded"] = [s["description"] for s in current_fleet.values()
+                               if s.get("superseded")]
     new_state["fleet_size"] = len(current_fleet)
 
     return events, new_state

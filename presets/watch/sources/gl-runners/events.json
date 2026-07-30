@@ -1,7 +1,7 @@
 {
   "source": "gl-runners",
   "events": [
-    {"key": "runner_silent",    "label": "A runner stopped taking work while jobs are queued for it, and GitLab still reports it online"},
+    {"key": "runner_silent",    "label": "A runner stopped taking work while jobs no other live runner may take are queued for it, and GitLab still reports it online"},
     {"key": "runner_recovered", "label": "A wedged runner started taking work again"},
     {"key": "runner_starved",   "label": "Pending jobs whose tags match only wedged runners"},
     {"key": "queue_cleared",    "label": "A starved queue drained"},
