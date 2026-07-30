@@ -127,6 +127,15 @@ jobs:
         # instead of a skip, so this step cannot pass by skipping — which is the
         # only way it is worth adding. See tests/_toolchain_gate.py.
         #
+        # Every test_notifiers_claude_channel_*.py file must be named here.
+        # This list is the only place any of them actually runs: the 12-leg
+        # matrix installs no bun, so on every other leg they skip via
+        # `require_or_skip`, silently and by design. #605 and #609 landed
+        # without being added here and their own tests had therefore never
+        # executed in CI since — a green board that meant nothing, caught
+        # while wiring #612's test in (which would have inherited the same
+        # gap). Add the file the moment it exists, not when someone notices.
+        #
         # -n0 because eleven tests that each spawn a server gain nothing from
         # xdist and lose determinism to it. --no-cov because pyproject's addopts
         # carry a whole-suite 86% gate that two files cannot meet.
@@ -136,3 +145,6 @@ jobs:
           python -X utf8 -m pytest -n0 --no-cov -q
           tests/test_notifiers_claude_channel_550.py
           tests/test_notifiers_claude_channel_554.py
+          tests/test_notifiers_claude_channel_605.py
+          tests/test_notifiers_claude_channel_609.py
+          tests/test_notifiers_claude_channel_612.py
