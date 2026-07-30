@@ -25,8 +25,14 @@ PRE-FLIGHT DUPLICATE CHECK: Before posting, the op fetches existing
 comments on the article and aborts if the authenticated user has already
 commented (matched by username from DEVTO_API_KEY lookup). Pass `|force`
 as the 4th pipe-separated field to bypass: devto_comment:slug|MSG||force
-If the pre-flight API call fails, a warning is printed and the comment
-proceeds (graceful degrade — don't block on platform issues).
+
+If the pre-flight cannot run — the user cannot be identified, or the
+comments lookup fails — the op ABORTS rather than posting (#562). It used
+to degrade to "no duplicate", which is the same value as a genuinely clean
+article, so a failed check posted a duplicate and said nothing. Declining
+is recoverable with `|force`; a duplicate comment on someone else's
+article is not. This matches hashnode_comment, which was already
+fail-closed.
 """
 from __future__ import annotations
 
@@ -92,22 +98,35 @@ def parse_args(arg: str) -> tuple[str, str, str | None, bool]:
     return raw, message, parent, force
 
 
-def preflight_comment(aid: int, me: str) -> tuple[bool, list[str], str]:
+def preflight_comment(aid: int, me: str) -> tuple[bool | None, list[str], str]:
     """Check if `me` has already commented on article `aid`.
 
-    Returns (already_commented, existing_ids, last_date).
-    On API error returns (False, [], "") so the caller can degrade gracefully.
+    Returns (already_commented, existing_ids, last_date), or (None, [], "")
+    when the lookup itself could not be made — the caller must fail closed.
+
+    `False` and `None` used to be the same value here (#562). `False` means
+    *we looked and there is no comment of ours*; `None` means *we did not
+    look*. Collapsing them made a failed check indistinguishable from a clean
+    article, and the only caller reads it to decide whether to post.
+
+    The two sibling imports sit **outside** the `try` deliberately. A missing
+    `_auth` or `_rest` is a broken checkout, not a platform hiccup, and it must
+    surface as an `ImportError` naming the module — which sends the reader to
+    `sys.path` — rather than as a plausible tuple, which sends them to an
+    assertion in the wrong file. #555 made that reachable: `sys.path` is now
+    restored after each preset load, so the shim eviction every loader performs
+    is no longer papered over by a leftover path entry.
     """
     if not me:
-        return False, [], ""
+        return None, [], ""
+    from _auth import get_api_key
+    from _rest import request
     try:
-        from _auth import get_api_key
-        from _rest import request
         items = request("GET", "/comments", get_api_key(), query={"a_id": aid, "per_page": 1000})
     except Exception:
-        return False, [], ""
+        return None, [], ""
     if not isinstance(items, list):
-        return False, [], ""
+        return None, [], ""
     flat: list[dict] = []
     for c in items:
         flat.append(c)
@@ -136,16 +155,27 @@ def main(arg: str) -> None:
             from _auth import get_api_key
             from _me import get_username
             me = get_username(get_api_key())
-            already, ids, last = preflight_comment(aid, me)
-            if already:
-                sys.stderr.write(
-                    f"ABORT — already commented {len(ids)}× on article {aid} "
-                    f"(ids: {', '.join(ids)}, last {last}). "
-                    "Use |force as 4th field to override.\n"
-                )
-                sys.exit(1)
         except Exception as exc:
-            sys.stderr.write(f"WARNING: pre-flight check failed ({exc}) — proceeding anyway.\n")
+            sys.stderr.write(
+                f"ABORT — pre-flight failed (cannot identify user: {exc}). "
+                "Use |force as 4th field to bypass and post anyway.\n"
+            )
+            sys.exit(1)
+        already, ids, last = preflight_comment(aid, me)
+        if already is None:
+            sys.stderr.write(
+                f"ABORT — pre-flight lookup failed for article {aid} "
+                "(cannot verify whether already commented). "
+                "Use |force as 4th field to bypass and post anyway.\n"
+            )
+            sys.exit(1)
+        if already:
+            sys.stderr.write(
+                f"ABORT — already commented {len(ids)}× on article {aid} "
+                f"(ids: {', '.join(ids)}, last {last}). "
+                "Use |force as 4th field to override.\n"
+            )
+            sys.exit(1)
     csrf = fetch_csrf_token(cookie)
     body: dict[str, object] = {
         "comment": {

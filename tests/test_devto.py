@@ -977,11 +977,17 @@ def test_comment_preflight_not_commented(monkeypatch: pytest.MonkeyPatch) -> Non
     assert already is False and ids == []
 
 
-def test_comment_preflight_api_error_degrades(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_comment_preflight_api_error_is_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A lookup that raised returns None, not False (#562).
+
+    This test and the one above it asserted the same tuple until #562 — which
+    is why a swallowed ImportError could pass as a clean article. The pair that
+    pins them apart lives in test_devto_preflight_unknown_562.py.
+    """
     def _raise(*a, **kw): raise Exception("timeout")
     _patch_rest_auth(_raise)
     already, ids, last = comment_op.preflight_comment(999, "max-ai-dev")
-    assert already is False and ids == [] and last == ""
+    assert already is None and ids == [] and last == ""
 
 
 def test_comment_main_aborts_on_dupe(monkeypatch: pytest.MonkeyPatch,

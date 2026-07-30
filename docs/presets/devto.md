@@ -53,6 +53,28 @@ Auto-tracks last call in `~/.config/devto/last_check`. Fans out 1 call per recen
 
 `devto_comment` is marked EXPERIMENTAL — Dev.to's public API has no comment-write endpoint. The op uses the session cookie to post via the internal endpoint, which may break on API changes.
 
+## When the duplicate check cannot run
+
+`devto_comment` fetches the article's existing comments first and refuses to post if you already commented there. That check has three outcomes, not two:
+
+| Outcome | What the op does | stderr |
+|---------|------------------|--------|
+| No comment of yours on the article | Posts | — |
+| You already commented | Refuses, lists the comment ids | `ABORT — already commented 2× on article 1234567 (ids: …). Use \|force as 4th field to override.` |
+| **The check could not be made** | Refuses, does **not** post | `ABORT — pre-flight lookup failed for article 1234567 (cannot verify whether already commented). Use \|force as 4th field to bypass and post anyway.` |
+
+The third row is the one to know about. "Could not be made" covers a `/comments` call that errored or timed out, a response that is not a comment list (a rate-limit body, for instance), and a `DEVTO_API_KEY` that cannot be turned into a username — anything that leaves the op with no answer rather than a negative one.
+
+Until [#562](https://github.com/Digital-Process-Tools/claude-supertool/issues/562) that case posted the comment anyway, because a failed lookup returned the same value as a clean article. Declining instead is recoverable — re-run with `|force` as the 4th pipe-separated field:
+
+```bash
+./supertool 'devto_comment:1234567|Thanks for the kind words!||force'
+```
+
+`|force` skips the pre-flight entirely, so use it when you already know the article is clean. `hashnode_comment` has always behaved this way; the two ops now agree.
+
+A missing sibling module (`_auth`, `_rest`) is deliberately **not** in the table: it raises `ImportError` naming the module rather than degrading, because a broken checkout has no useful degraded mode and the traceback is the whole diagnosis.
+
 ## Authoring notes
 
 Preset JSON: `presets/devto.json`. Helper scripts: `presets/devto/` — one Python file per op (`publish.py`, `list.py`, `read.py`, `browse.py`, `comments.py`, `react.py`, `comment.py`, `status_since.py`). The `{path}` placeholder in `cmd` resolves to `presets/devto/` at runtime.
