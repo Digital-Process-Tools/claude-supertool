@@ -82,11 +82,15 @@ are well-formed, because poller JSON carries epoch numbers and integer ids
 naturally and `_meta` wanting strings is this server's mismatch to absorb.
 Every value that reaches Claude is a string.
 
-What is *not* coerced is structure. A payload value that is an object or an
-array has no honest string form — `String({})` is `"[object Object]"` — so the
-attribute is omitted and the rest of the event still goes through. A missing or
-structured `source`/`id`/`event` drops the whole event, since it cannot be
-routed. Every drop writes one line to stderr, visible under `claude --debug`.
+What is *not* coerced is structure. A payload value that is an object, an
+array, `null`, `undefined`, or a non-finite number (`NaN`, `Infinity`) has no
+honest string form — `String({})` is `"[object Object]"` — so the attribute is
+omitted and the rest of the event still goes through, disclosed via
+`unsendable` (below,
+[#612](https://github.com/Digital-Process-Tools/claude-supertool/issues/612)).
+A missing or structured `source`/`id`/`event` drops the whole event, since it
+cannot be routed. Every drop writes one line to stderr, visible under
+`claude --debug`.
 
 A malformed event costs one event. It never affects the connection
 ([#554](https://github.com/Digital-Process-Tools/claude-supertool/issues/554)).
@@ -105,8 +109,8 @@ not a checker reporting a false absence; it is the transport reporting a false
 
 The names the bridge writes for itself, and which a payload key therefore cannot
 claim, are `RESERVED_KEYS` in `channel.ts`: the routing set above, plus `source`
-(auto-injected by Claude Code from the MCP server name), the two disclosure
-attributes `clamped` and `collided`, and `__proto__`.
+(auto-injected by Claude Code from the MCP server name), the three disclosure
+attributes `clamped`, `collided` and `unsendable`, and `__proto__`.
 
 **The guard is derived from `ROUTING_KEYS`, not re-listed beside it.** The case
 for namespacing the payload instead — nesting it under one key so a collision is
@@ -119,8 +123,8 @@ reads `meta.title`, and every consumer and doc names them.
 
 **A disclosure a producer can write is worse than none.** `clamped` was
 settable from the payload, so an event that lost nothing could announce that it
-had, on the one surface built to be believed. Both disclosure attributes are
-reserved.
+had, on the one surface built to be believed. All three disclosure attributes
+are reserved.
 
 **A losing key is reported, not swallowed** — same vocabulary as `clamped`,
 because a reader should not have to learn two:
@@ -128,9 +132,9 @@ because a reader should not have to learn two:
 ```
 <channel source="claude-channel" watcher_source="gitlab-mr" id="33173"
          event="pipeline_failed" ts="2026-07-30T00:00:00Z"
-         collided="2 payload keys ignored — id (5 chars), event (18 chars); reserved: watcher_source, id, event, ts, first_tick, source, clamped, collided, __proto__">
+         collided="2 payload keys ignored — id (5 chars), event (18 chars); reserved: watcher_source, id, event, ts, first_tick, source, clamped, collided, unsendable, __proto__">
 gitlab-mr 33173: pipeline_failed
-[claude-channel] 2 payload keys ignored — id (5 chars), event (18 chars); reserved: watcher_source, id, event, ts, first_tick, source, clamped, collided, __proto__
+[claude-channel] 2 payload keys ignored — id (5 chars), event (18 chars); reserved: watcher_source, id, event, ts, first_tick, source, clamped, collided, unsendable, __proto__
 </channel>
 ```
 
@@ -218,6 +222,53 @@ accident. Past `SUPERTOOL_CHANNEL_LINE_MAX` the line is refused on stderr and th
 connection **resyncs** to the next newline — the following real event still
 arrives, because trading a memory leak for a delivery gap would be #554 again.
 The same 50 MB now costs 122 MB RSS and one loud line.
+
+### Values the bridge will not send, and how it says so ([#612](https://github.com/Digital-Process-Tools/claude-supertool/issues/612))
+
+`asAttr` refuses to coerce an object, an array, `null`, `undefined`, or a
+non-finite number (`NaN`, `Infinity`) — `_meta` is a string map on the
+receiving end, enforced by a schema, and a non-scalar reaching it throws
+inside Claude Code's notification handler ([#554](https://github.com/Digital-Process-Tools/claude-supertool/issues/554)).
+That refusal predates #605 and #609 and was always correct: `String({})` is
+`"[object Object]"`, which reads downstream as data a poller meant to send.
+
+**Refusing was right. Refusing in silence was not.** Until #612 a payload key
+whose value could not be coerced hit the same `continue` as any other
+uninteresting line — not in the attributes, not in the body, not on stderr.
+The producer sent a field and the session never saw it, indistinguishable
+from a poller that never sent it at all.
+
+**Measured before building anything.** Across the six live pollers under
+`presets/watch/sources/`, five build scalar-only payloads. One does not:
+`gl-runners`'s `runner_added` and `runner_silent` events send `payload.tags`
+as `sorted(runner.get("tag_list") or [])` — a `list[str]`. Not a hypothetical.
+
+A refused key is now reported the same way a clamped or collided one is —
+same vocabulary, one more member:
+
+```
+<channel source="claude-channel" watcher_source="gl-runners" id="shared-1"
+         event="runner_added"
+         unsendable="1 payload key refused — tags (array); values must be a string, boolean, or finite number">
+gl-runners shared-1: runner_added
+[claude-channel] 1 payload key refused — tags (array); values must be a string, boolean, or finite number
+</channel>
+```
+
+**The disclosure names the value's shape, never its contents.** Quoting is
+exactly what `asAttr` was built to refuse, so there is nothing to quote —
+`object`, `array`, `null`, `undefined`, `NaN`, or `Infinity` is the most a
+refusal can honestly say. An object and an array are told apart because they
+are a different mistake for a poller author to fix.
+
+**Ordering matches `clamped` and `collided`.** `unsendable` is set after
+`clampMeta` and is not counted against either size cap — a clamp must never be
+able to withhold the disclosure about a value it never touched, since it never
+reached `meta` in the first place.
+
+If a payload legitimately needs to carry a list, join it into a string at the
+source, the way `gitlab-mr`'s `observed_failed_jobs` already does — the bridge
+has no way to render structure honestly, so the fix is upstream.
 
 ## Start-up and socket ownership
 

@@ -147,7 +147,7 @@ The reserved names are:
 | --- | --- |
 | `watcher_source`, `id`, `event`, `ts`, `first_tick` | the event's own routing fields |
 | `source` | auto-injected by Claude Code from the MCP server name |
-| `clamped`, `collided` | the consumer's disclosures ([#605](https://github.com/Digital-Process-Tools/claude-supertool/issues/605), #609) |
+| `clamped`, `collided`, `unsendable` | the consumer's disclosures ([#605](https://github.com/Digital-Process-Tools/claude-supertool/issues/605), #609, [#612](https://github.com/Digital-Process-Tools/claude-supertool/issues/612)) |
 | `__proto__` | cannot become an attribute at all — assigning it to a JS object is a silent no-op |
 
 A payload key with one of those names is **ignored, and said so**: the event
@@ -160,6 +160,27 @@ Note this also used to lose the *whole* event: a large `payload.id` overwrote th
 routing id, which then failed the per-attribute cap, and the event was refused
 with the stderr reason `routing key over 2048 chars` while the real routing id
 was five digits. That cannot happen now.
+
+### Payload values the bridge will not send ([#612](https://github.com/Digital-Process-Tools/claude-supertool/issues/612))
+
+`_meta` is a string map, enforced by a schema on the receiving end — a
+non-scalar reaching it throws inside Claude Code's notification handler
+(#554). So `notifiers/claude-channel` only ever forwards a string, boolean, or
+finite number. An object, array, `null`, `undefined`, `NaN`, or `Infinity`
+payload value is refused: `String({})` is `"[object Object]"`, which reads
+downstream as data a poller meant to send, and there is no honest way to
+shorten or quote a structure instead.
+
+That refusal is correct and stays. What changed is the silence: a refused key
+used to vanish with nothing in the attributes, the body, or stderr. It now
+carries an `unsendable` attribute naming the key and its *shape* (`object`,
+`array`, `null`, ...) — never its contents, since quoting is exactly what was
+refused. `gl-runners`'s `runner_added`/`runner_silent` events are the one live
+instance measured before this was built: `payload.tags` is a `list[str]`.
+
+If a payload legitimately needs to carry a list, join it into a string at the
+source — the same pattern `observed_failed_jobs` already uses for
+`gitlab-mr` — rather than relying on the bridge to render it.
 
 ## Lifecycle
 

@@ -156,6 +156,7 @@ const RESERVED_KEYS = new Set([
   "source",
   "clamped",
   "collided",
+  "unsendable",
   "__proto__",
 ]);
 
@@ -186,6 +187,41 @@ const WITHHELD_NAMED_MAX = 5;
 interface BuiltMeta {
   meta: Record<string, string>;
   collided: Withheld[];
+  unsendable: Unsendable[];
+}
+
+/**
+ * One payload key whose value `asAttr` refused, and the shape that made it
+ * unrenderable (#612).
+ *
+ * Not a `Withheld` — that carries `chars`, a fact about a value that *did*
+ * coerce and got cut for size. A value here never had a size to report: the
+ * useful fact is what it *was*, not how big, since quoting the contents is
+ * exactly what `asAttr` exists to refuse.
+ */
+interface Unsendable {
+  key: string;
+  shape: string;
+}
+
+/**
+ * The word this disclosure uses for a value `asAttr` would not coerce.
+ *
+ * Deliberately wider than "object" and "array": `asAttr` also refuses `null`,
+ * `undefined`, and non-finite numbers (`NaN`, `Infinity`) — anything that is
+ * not a string, boolean, or finite number falls through to its final
+ * `return null`. A disclosure that only named objects and arrays would still
+ * leave those cases silent, which is the same defect one value-shape over.
+ */
+function shapeOf(value: unknown): string {
+  if (value === null) return "null";
+  if (value === undefined) return "undefined";
+  if (Array.isArray(value)) return "array";
+  if (typeof value === "number") {
+    if (Number.isNaN(value)) return "NaN";
+    return value > 0 ? "Infinity" : "-Infinity";
+  }
+  return typeof value;
 }
 
 /**
@@ -257,20 +293,27 @@ function buildMeta(raw: unknown): BuiltMeta | null {
   // the design treats as load-bearing was the one set a producer could replace
   // by accident.
   const collided: Withheld[] = [];
+  const unsendable: Unsendable[] = [];
   for (const [k, v] of Object.entries(ev.payload || {})) {
     if (!ATTR_KEY_RE.test(k)) continue;
     // Coerced before the guard so the disclosure can state the real size, and
     // so a structured value stays `asAttr`'s business rather than being
     // reported as a name collision it also isn't.
     const attr = asAttr(v);
-    if (attr === null) continue;
+    if (attr === null) {
+      // Checked before the reserved-name guard on purpose: a reserved key
+      // whose value is also unsendable would never arrive under any name, so
+      // the shape is the actionable fact, not the collision.
+      unsendable.push({ key: k, shape: shapeOf(v) });
+      continue;
+    }
     if (RESERVED_KEYS.has(k)) {
       collided.push({ key: k, chars: attr.length });
       continue;
     }
     meta[k] = attr;
   }
-  return { meta, collided };
+  return { meta, collided, unsendable };
 }
 
 /**
@@ -310,6 +353,31 @@ function describeCollided(collided: Withheld[]): string {
  * themselves enormous: a disclosure that broke the cap it is announcing would
  * be an easy joke and a real bug.
  */
+/**
+ * The sentence a refused event carries about the keys `asAttr` would not
+ * coerce (#612).
+ *
+ * Built the same way as `describeWithheld` and `describeCollided`: one
+ * vocabulary for "the poller sent this and you are not seeing it" rather
+ * than a third shape for a reader to learn. It names the value's *shape*
+ * (`object`, `array`, `null`, ...), never its contents — quoting is exactly
+ * what `asAttr` exists to refuse, so there is no honest way to say more.
+ */
+function describeUnsendable(unsendable: Unsendable[]): string {
+  const noun = unsendable.length === 1 ? "payload key" : "payload keys";
+  const named = unsendable
+    .slice(0, WITHHELD_NAMED_MAX)
+    .map((u) => `${u.key} (${u.shape})`);
+  if (unsendable.length > named.length) {
+    named.push(`+${unsendable.length - named.length} more`);
+  }
+  const full =
+    `${unsendable.length} ${noun} refused — ${named.join(", ")}; ` +
+    "values must be a string, boolean, or finite number";
+  if (full.length <= ATTR_MAX_CHARS) return full;
+  return `${unsendable.length} ${noun} refused; values must be a string, boolean, or finite number`;
+}
+
 function describeWithheld(withheld: Withheld[]): string {
   const limits =
     `limits: ${ATTR_MAX_CHARS} chars/attribute, ${EVENT_MAX_CHARS} chars/event`;
@@ -395,6 +463,7 @@ function buildContent(
   meta: Record<string, string>,
   withheld: Withheld[],
   collided: Withheld[],
+  unsendable: Unsendable[],
 ): string {
   // The <channel> tag body — Claude reads this as the event's narrative.
   // Keep it short and route-oriented; payload details live in attributes.
@@ -415,6 +484,7 @@ function buildContent(
   // anyone thinking to go and compare it against the source.
   if (withheld.length > 0) lines.push(`[claude-channel] ${describeWithheld(withheld)}`);
   if (collided.length > 0) lines.push(`[claude-channel] ${describeCollided(collided)}`);
+  if (unsendable.length > 0) lines.push(`[claude-channel] ${describeUnsendable(unsendable)}`);
   return lines.join("\n");
 }
 
@@ -653,7 +723,7 @@ const server = net.createServer((conn) => {
           drop(line, "missing or non-scalar source/id/event");
           continue;
         }
-        const { meta, collided } = built;
+        const { meta, collided, unsendable } = built;
         const withheld = clampMeta(meta);
         if (withheld === null) {
           drop(line, `routing key over ${ATTR_MAX_CHARS} chars — nothing routable to deliver`);
@@ -664,10 +734,11 @@ const server = net.createServer((conn) => {
         // is correct; one that stayed under by staying quiet is the defect.
         if (withheld.length > 0) meta.clamped = describeWithheld(withheld);
         if (collided.length > 0) meta.collided = describeCollided(collided);
+        if (unsendable.length > 0) meta.unsendable = describeUnsendable(unsendable);
         mcp
           .notification({
             method: "notifications/claude/channel",
-            params: { content: buildContent(meta, withheld, collided), meta },
+            params: { content: buildContent(meta, withheld, collided, unsendable), meta },
           })
           .catch((err) => {
             // Surface to stderr so `claude --debug` picks it up. Common causes:
