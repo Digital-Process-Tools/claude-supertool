@@ -763,6 +763,18 @@ delivery.
 }
 ```
 
+**Payload values are size-capped by the `claude-channel` consumer** — 2,048 chars
+per attribute, 8,192 per event, 1 MB per NDJSON line
+([#605](https://github.com/Digital-Process-Tools/claude-supertool/issues/605)).
+The largest payload observed on a live fleet was 488 characters, so a poller
+carrying real data never meets them; one embedding a log excerpt will. An
+oversized attribute is **withheld whole rather than truncated**, the event is
+still delivered so the routing signal is never lost, and it carries a `clamped`
+attribute naming what went and its real size. Producer guidance is in
+[`presets/watch/README.md`](../../presets/watch/README.md#size-limits-a-producer-must-know-about-605);
+the consumer's reasoning is in
+[`notifiers/claude-channel/README.md`](../../notifiers/claude-channel/README.md#size-limits-and-how-a-clamped-event-says-so-605).
+
 Consumers can rely on `ts/source/id/event/payload/first_tick` always being present. Extra fields inside `payload` vary by source — see each source's `events.json` and `poller.py`. `gitlab-mr` payloads additionally carry an [`observed_*` snapshot](#gitlab-mr-events-carry-the-state-that-produced-them-435) of the state that produced the event, timestamped so its age is readable without a call back.
 
 ### `first_tick` — the contract moved once, deliberately ([#464](https://github.com/Digital-Process-Tools/claude-supertool/issues/464))

@@ -100,6 +100,37 @@ deliver and others don't while the board reads as healthy either way.
 }
 ```
 
+### Size limits a producer must know about ([#605](https://github.com/Digital-Process-Tools/claude-supertool/issues/605))
+
+The payload above is a contract about *shape*. It is also one about **size**,
+because the Phase 2 consumer now enforces one — and a cap the producer does not
+know about means pollers keep sending what the consumer keeps refusing.
+
+| Limit | Default | Applies to |
+| --- | --- | --- |
+| 2,048 chars | per attribute | one value inside `payload` |
+| 8,192 chars | per event | every attribute of one event, keys included |
+| 1,048,576 chars | per line | one NDJSON line on the socket |
+
+For scale: the largest payload observed across ten live watchers was **488
+characters**, its longest value **117**. A poller that stays anywhere near real
+data will never meet these. One that embeds a CI failure summary, a log excerpt,
+or a field somebody widened later, will.
+
+**Keep open-ended fields bounded at the source, with the bound visible in the
+value.** `gitlab-mr` is the pattern: `observed_failed_jobs` ships at most five job
+names and appends `+N more` *inside* the joined string, so a surface rendering
+that one attribute cannot read five names as the whole story
+(`FAILED_JOBS_MAX`, `sources/gitlab-mr/poller.py`).
+
+The limits are enforced in one place — the consumer — rather than on both sides,
+because two enforcement points that can disagree are worse than one. What the
+consumer does when a poller exceeds them is documented in
+[notifiers/claude-channel/README.md](../../notifiers/claude-channel/README.md#size-limits-and-how-a-clamped-event-says-so-605):
+the oversized attribute is withheld whole (never truncated), the event is still
+delivered, and it carries a `clamped` attribute naming what went and how big it
+really was. Nothing is silently shortened, and nothing is silently lost.
+
 ## Lifecycle
 
 Each `watch` invocation forks a detached poller process. The process IS the
