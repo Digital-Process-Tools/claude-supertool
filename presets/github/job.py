@@ -175,6 +175,84 @@ def _find_error_sections(lines: list[str], patterns: list[str], context: int) ->
     return result
 
 
+def _emit_grep_hits(
+    lines: list[str],
+    hit_indexes: list[int],
+    rx: "re.Pattern[str]",
+    match_count: int,
+    budget: int,
+    knob: str,
+    shown_pattern: str,
+    ctx: int,
+) -> None:
+    """Print grep hits under a byte budget, and say so when the budget bit (#622).
+
+    The op used to print every hit, unbounded. That reads as safe — nothing is
+    dropped — but a `:grep:` over a CI trace where each match is a whole
+    assertion failure with rendered HTML emits hundreds of KB into a consumer
+    that cuts at a few tens, so the tail vanished with no marker anywhere. A
+    pipeline triage read the surviving head as the whole list and judged the
+    blast radius small; it was not. Unbounded-then-cut-downstream is the same
+    silence as a limit that does not announce itself, one layer over.
+
+    So the bound moves here, where the true total is already known, and the
+    three states stay distinguishable:
+
+      - everything fit: nothing extra is printed, and that silence is the
+        positive claim that the list is whole;
+      - the budget bit: the shortfall is stated in exact numbers, because
+        `match_count` was computed over the whole trace before printing began.
+        This is not the streaming case where only "there was more" is knowable
+        — do not weaken it to one;
+      - and the note names *size* as what cut, plus the knob that governs it.
+        Saying "limit N" here would be a confidently wrong disclosure: this op
+        has no match limit, and the cut fires far earlier than any count would
+        suggest precisely because the lines are enormous. Wrong is worse than
+        silent.
+
+    The note is a single bounded line (#605) — one line per dropped match would
+    re-spend the budget the bound just saved.
+    """
+    # Plan first, print second. The note has to go in the HEADER as well as
+    # the footer, and the header is written before the body — so what fits
+    # must be known before the first byte goes out. A footer-only disclosure
+    # is read by nobody in exactly the case it exists for: the reader who is
+    # being cut off is cut off before reaching it.
+    planned: list[str] = []
+    emitted = 0
+    shown_matches = 0
+    prev = -2
+    cut = False
+    for idx in hit_indexes:
+        chunk = "...\n" if idx > prev + 1 else ""
+        chunk += f"  {idx + 1:>5} | {lines[idx]}\n"
+        size = len(chunk.encode("utf-8", "replace"))
+        # The first hit always goes out whole, however fat: a bound that can
+        # return zero matches on a pattern that matched is an absence the op
+        # invented, which is the disease itself.
+        if emitted and emitted + size > budget:
+            cut = True
+            break
+        planned.append(chunk)
+        emitted += size
+        if rx.search(lines[idx]):
+            shown_matches += 1
+        prev = idx
+    header = (f"\n## grep /{shown_pattern}/ — {match_count} matching lines "
+              f"(±{ctx} context)")
+    if cut:
+        header += (f" [CAPPED: {shown_matches} shown, output limited to {budget} "
+                   f"bytes by size — raise {knob}=N]")
+    print(header)
+    sys.stdout.write("".join(planned))
+    if cut:
+        print(
+            f"... ({shown_matches} of {match_count} matching lines shown — output "
+            f"capped at {budget} bytes by size, not by a match count limit; "
+            f"raise {knob}=N or narrow the pattern)"
+        )
+
+
 def main() -> int:
     if len(sys.argv) < 2:
         print("ERROR: usage: job.py JOB_ID [raw [START [END]]]")
@@ -372,13 +450,9 @@ def main() -> int:
                 print(f"  {start + i:>5} | {line}")
             return 0
         match_count = sum(1 for line in lines if rx.search(line))
-        print(f"\n## grep /{shown_pattern}/ — {match_count} matching lines (±{ctx} context)")
-        prev = -2
-        for idx in sorted(hits):
-            if idx > prev + 1:
-                print("...")
-            print(f"  {idx + 1:>5} | {lines[idx]}")
-            prev = idx
+        _emit_grep_hits(lines, sorted(hits), rx, match_count,
+                        int(os.environ.get("GH_JOB_GREP_MAX_BYTES", "65536")),
+                        "GH_JOB_GREP_MAX_BYTES", shown_pattern, ctx)
         return 0
 
     # 4. Error pattern search. Per-job-name table (if configured) picks tighter

@@ -103,6 +103,16 @@ A PR body routinely cites issues it does **not** close: a precedent (`the same s
 
 Both ops call `_checks.closing_issue_refs()` and `_checks.linked_issue_line()`, so the extraction and the wording cannot drift between them. The GitLab arm still uses its own `#(\d{4,})` heuristic with no keyword requirement — same class of defect, different closing vocabulary, filed separately.
 
+### `gh-job:...:grep:` bounds its own output, and says when it did
+
+Identical to `gl-job`'s — see
+[gitlab.md](gitlab.md#grep-bounds-its-own-output-and-says-when-it-did) for the
+incident and the reasoning. The knob here is `GH_JOB_GREP_MAX_BYTES` (default
+65536). A capped view says so in its header *and* its footer, states an exact
+`N of M matching lines shown`, and names **bytes** as what cut — never a match
+limit, which this op does not have
+([#622](https://github.com/Digital-Process-Tools/claude-supertool/issues/622)).
+
 ## Configuration
 
 `gh-job` error pattern search is configurable via JSON:
