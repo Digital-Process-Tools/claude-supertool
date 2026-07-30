@@ -784,8 +784,12 @@ def test_react_preflight_always_declines_and_asks_nothing(
     assert already is None and count == 0
 
 
-def test_react_main_aborts_on_dupe(monkeypatch: pytest.MonkeyPatch,
-                                    capsys: pytest.CaptureFixture[str]) -> None:
+def test_react_main_aborts_when_unverifiable(monkeypatch: pytest.MonkeyPatch,
+                                             capsys: pytest.CaptureFixture[str]) -> None:
+    """preflight_react can never answer, so main aborts on the *unverifiable*
+    branch — never on a found duplicate. Named `aborts_on_dupe` until #603,
+    which is a branch this op has no way to reach.
+    """
     monkeypatch.setattr(react_op, "get_token", lambda: "tok")
     monkeypatch.setattr(react_op, "resolve_post_id", lambda t, r: "post-id")
     monkeypatch.setattr(react_op, "gql",
@@ -807,19 +811,6 @@ def test_react_main_force_bypasses_preflight(monkeypatch: pytest.MonkeyPatch,
     react_op.main("abc123|force")
     assert "liked" in capsys.readouterr().out
     assert len(calls) == 1  # only the like mutation, no preflight query
-
-
-def test_react_main_api_error_degrades(monkeypatch: pytest.MonkeyPatch,
-                                        capsys: pytest.CaptureFixture[str]) -> None:
-    # preflight always returns (None, 0) → main aborts unless |force is passed.
-    # Use |force to exercise the mutation path directly.
-    monkeypatch.setattr(react_op, "get_token", lambda: "tok")
-    monkeypatch.setattr(react_op, "resolve_post_id", lambda t, r: "post-id")
-    monkeypatch.setattr(react_op, "gql",
-                        lambda q, v, t: {"likePost": {"post": {"id": "post-id", "reactionCount": 1}}})
-    react_op.main("abc123|force")
-    out = capsys.readouterr()
-    assert "liked" in out.out
 
 
 # pre-flight: comment -------------------------------------------------------
@@ -858,8 +849,9 @@ def test_comment_preflight_not_commented(monkeypatch: pytest.MonkeyPatch) -> Non
     assert already is False and ids == []
 
 
-def test_comment_preflight_api_error_degrades(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_comment_preflight_api_error_is_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
     # gql_safe returns None on error → preflight returns (None, [], '') → fail-closed.
+    # Named "degrades" until #603; it does the opposite — it declines.
     monkeypatch.setattr(comment_op, "gql_safe", lambda q, v, t: None)
     already, ids, last = comment_op.preflight_comment("post-id", "max-ai-dev", "tok")
     assert already is None
@@ -985,3 +977,52 @@ def test_publish_main_force_bypasses_preflight(monkeypatch: pytest.MonkeyPatch,
                         }}})
     publish_op.main(f"T|{md}|https://x.io|||force")
     assert "published" in capsys.readouterr().out
+
+
+def test_publish_main_aborts_when_preflight_cannot_run(
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        tmp_path: Path) -> None:
+    """#603: an unverifiable pre-flight aborts — it does not publish unchecked.
+
+    The unit test above pins what `preflight_publish` *returns* on a failed
+    lookup. This pins what `main` does with it, which is the sentence the
+    module docstring makes to a reader: publishPost must never run.
+    """
+    md = tmp_path / "p.md"
+    md.write_text("body")
+    monkeypatch.setattr(publish_op, "get_token", lambda: "tok")
+    monkeypatch.setattr(publish_op, "get_publication_id", lambda: "pub-id")
+    monkeypatch.setattr(publish_op, "gql_safe", lambda q, v, t: None)
+
+    def _must_not_write(*_a, **_kw):
+        raise AssertionError("publishPost ran after an unverifiable pre-flight")
+
+    monkeypatch.setattr(publish_op, "gql", _must_not_write)
+    with pytest.raises(SystemExit) as exc:
+        publish_op.main(f"T|{md}|https://x.io")
+    assert exc.value.code == 1
+    assert "ABORT" in capsys.readouterr().err
+
+
+def test_comment_main_aborts_when_preflight_cannot_run(
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str]) -> None:
+    """#603: same contract for comment — addComment must never run."""
+    import sys as _sys
+    import types
+    monkeypatch.setattr(comment_op, "get_token", lambda: "tok")
+    monkeypatch.setattr(comment_op, "resolve_post_id", lambda t, r: "post-id")
+    fake_me = types.ModuleType("_me")
+    fake_me.get_username = lambda token: "max-ai-dev"
+    monkeypatch.setitem(_sys.modules, "_me", fake_me)
+    monkeypatch.setattr(comment_op, "gql_safe", lambda q, v, t: None)
+
+    def _must_not_write(*_a, **_kw):
+        raise AssertionError("addComment ran after an unverifiable pre-flight")
+
+    monkeypatch.setattr(comment_op, "gql", _must_not_write)
+    with pytest.raises(SystemExit) as exc:
+        comment_op.main("abc|Hello")
+    assert exc.value.code == 1
+    assert "ABORT" in capsys.readouterr().err

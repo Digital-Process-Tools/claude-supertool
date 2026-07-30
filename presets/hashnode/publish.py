@@ -9,7 +9,9 @@ PRE-FLIGHT DUPLICATE CHECK: Before publishing, the op queries
 me { posts(first:50) } and aborts if a post with the same canonical URL
 already exists. Pass |force as the 6th pipe-separated field to bypass:
 TITLE|MD|CANONICAL||||force
-If the pre-flight check fails, a warning is printed and publish proceeds.
+If the pre-flight lookup cannot be made, the op ABORTS rather than publishing
+unchecked — a check that could not run is not "no duplicate" (#603). Re-run
+with |force to publish anyway.
 """
 from __future__ import annotations
 

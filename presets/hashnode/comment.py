@@ -9,8 +9,10 @@ PRE-FLIGHT DUPLICATE CHECK: Before posting, the op fetches existing comments
 on the post and aborts if the authenticated user has already commented (matched
 by username from HASHNODE_USERNAME env / me query). Pass |force as the 3rd
 pipe-separated field to bypass: hashnode_comment:POST_ID|MSG|force
-If the pre-flight check fails, a warning is printed and the comment proceeds
-(graceful degrade — don't block on platform issues).
+If the pre-flight cannot run — the user cannot be identified, or the comments
+lookup fails — the op ABORTS rather than posting (#603). A check that could not
+run is not "no duplicate"; declining is recoverable with |force, a duplicate
+comment on someone else's post is not. devto_comment matches since #562.
 """
 from __future__ import annotations
 
