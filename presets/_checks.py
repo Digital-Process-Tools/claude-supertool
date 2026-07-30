@@ -348,3 +348,141 @@ def head_relation(local_sha: object, pr_head_sha: object,
         f"Checks commit: PR head {r_disp}, local HEAD {l_disp} — whether the "
         "Checks line above is about the commit you are standing on is UNKNOWN."
     )
+
+
+# Printed instead of an issue number when the body declares no closing
+# reference (#591). The line it replaces made the keyword optional, so the
+# pattern reduced to "the first `#N` anywhere in the body" and `Issue: #263`
+# was printed for a PR that closed #591 — the body had cited #263 as a
+# precedent. A stated wrong number gets acted on; a missing one sends the
+# reader to the body, so the old shape failed in the worse direction. This is
+# the third state in `git-status`' terms, the same discrimination #587 made one
+# line above: an answer, a finding, and *nothing declared* are three things.
+#
+# The claim is scoped to the body, which is all this line reads. "What merging
+# closes is UNKNOWN" was the first wording and it overstates twice: a PR can
+# also be linked through GitHub's Development panel, which closes an issue on
+# merge and appears nowhere in the body, and `UNKNOWN` is the word the check
+# tally reserves for a state it declined to conclude — reusing it here put a
+# second, unrelated UNKNOWN into `git-status` output that reads as a check
+# verdict.
+NO_CLOSING_REF = (
+    "none declared in the body — no closing keyword (Closes/Fixes/Resolves "
+    "#N) bound to an issue number. A bare #N mention is not a closing "
+    "reference to GitHub and is not reported as one here; a link made through "
+    "the PR's Development panel is not in the body and is invisible to this "
+    "line."
+)
+
+# GitHub's own set, verbatim: close/closes/closed, fix/fixes/fixed,
+# resolve/resolves/resolved. Inventing a narrower list is not the safe move it
+# looks like — GitHub's set is what decides whether merging the PR closes the
+# issue, so a shorter one here silently drops issues that really do get closed,
+# and a divergence between what we print and what the merge does is its own
+# trap.
+_CLOSING_KEYWORD = r"(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)"
+
+# The keyword must be bound to *its own* number. The separator is horizontal
+# whitespace and an optional colon — `Closes: #N`, `closes  #N` and `Closes#N`
+# all close the issue on GitHub — and deliberately not `\s*`, which spans
+# newlines: "This fixes" / blank line / "#263 is a precedent" would then
+# extract #263 from a sentence whose keyword never names a number, which is the
+# optional-keyword bug in a thinner disguise.
+#
+# Three reference shapes, because GitHub honours three: `#N`, `GH-N` and
+# `owner/repo#N` — plus the full issue URL, which is `owner/repo#N` spelled
+# long. A cross-repo reference keeps the repo it names: `#5` and `octo/other#5`
+# are different issues, and flattening one into the other would hand a caller a
+# number to resolve against the wrong repository.
+_CLOSING_REF = re.compile(
+    r"\b" + _CLOSING_KEYWORD + r"\b[ \t]*:?[ \t]*(?:"
+    r"https?://github\.com/(?P<u_owner>[\w.\-]+)/(?P<u_repo>[\w.\-]+)/issues/(?P<u_num>\d+)"
+    r"|(?P<x_owner>[\w.\-]+)/(?P<x_repo>[\w.\-]+)#(?P<x_num>\d+)"
+    r"|(?:GH-|#)(?P<num>\d+)"
+    r")",
+    re.IGNORECASE,
+)
+
+
+# GitHub does not honour a closing reference inside a code span, a fenced block
+# or an HTML comment — established by dogfooding rather than reasoned. PR #600's
+# body cites `Closes #571 and closes #572` inside a code span as an *example* of
+# the rendering, and GitHub's own `closingIssuesReferences` for that PR returned
+# {571, 591}: 571 from a prose sentence elsewhere in the body, 572 from nowhere.
+# One variable, one observation — the span was skipped. Matching it here would
+# claim an issue the merge will not close, which is this whole change's defect
+# pointed at a different input.
+#
+# The regions are removed and replaced by a newline, not skipped over, so text on
+# either side of a removal cannot fuse into a match that neither half contained.
+# An unterminated fence runs to end-of-body, which is what a markdown renderer
+# does with one too.
+#
+# Four-space indented code blocks are deliberately NOT handled: telling one from
+# a nested list continuation needs a real block parser, and guessing wrong would
+# delete body prose and drop a genuine closing reference — the failure direction
+# this change exists to remove. Erring toward matching is the safe side here.
+_HTML_COMMENT = re.compile(r"<!--[\s\S]*?-->")
+_FENCED = re.compile(r"^[ \t]*(```+|~~~+)[\s\S]*?(?:^[ \t]*\1[ \t]*$|\Z)",
+                     re.MULTILINE)
+_CODE_SPAN = re.compile(r"(`+)[\s\S]*?\1")
+
+
+def _strip_unhonoured(text: str) -> str:
+    """Drop the regions GitHub's own reference parser does not read."""
+    for pattern in (_HTML_COMMENT, _FENCED, _CODE_SPAN):
+        text = pattern.sub("\n", text)
+    return text
+
+
+def closing_issue_refs(body: object) -> List[str]:
+    """Every issue this body declares it closes, in order, deduped.
+
+    `[]` means the body declares none — render `NO_CLOSING_REF`, never the
+    first number that can be found. That fallback is the defect (#591): a PR
+    body routinely cites issues it does *not* close (a precedent, a sibling
+    filed separately, a related discussion), and the well-written body is the
+    one most likely to cite context before naming its own subject.
+
+    Returns display forms, not bare integers: `"#591"` for this repository and
+    `"owner/repo#5"` for another one. The distinction is load-bearing for any
+    caller that goes on to *fetch* the issue — `gh issue view 5` resolves 5
+    against the current repo, so a cross-repo number resolved here would print
+    a different issue's title under this PR's closing reference.
+
+    Every reference is returned, not the first. A PR closing two issues is
+    normal (#584 closed #571 and #572) and picking one is the same defect with
+    a smaller blast radius.
+
+    Code spans, fenced blocks and HTML comments are removed before matching,
+    because GitHub does not read them either — see `_strip_unhonoured`.
+    """
+    text = _strip_unhonoured(str(body or ""))
+    if not text:
+        return []
+
+    refs: List[str] = []
+    for m in _CLOSING_REF.finditer(text):
+        if m.group("num"):
+            ref = f"#{m.group('num')}"
+        elif m.group("x_num"):
+            ref = f"{m.group('x_owner')}/{m.group('x_repo')}#{m.group('x_num')}"
+        else:
+            ref = f"{m.group('u_owner')}/{m.group('u_repo')}#{m.group('u_num')}"
+        if ref not in refs:
+            refs.append(ref)
+    return refs
+
+
+def linked_issue_line(refs: Sequence[str]) -> str:
+    """The one `Issue:`/`Issues:` line, so the two renderers cannot drift.
+
+    Plural when there is more than one: `Issue: #571, #572` reads as one issue
+    with a stray number attached. The absence leg is a printed sentence rather
+    than a skipped line, because a missing `Issue:` line is indistinguishable
+    from a renderer that never looked.
+    """
+    if not refs:
+        return f"Issue: {NO_CLOSING_REF}"
+    label = "Issue" if len(refs) == 1 else "Issues"
+    return f"{label}: {', '.join(refs)}"

@@ -367,11 +367,22 @@ def main() -> int:
     if web_url:
         print(f"URL: {web_url}")
 
-    # Linked issue — extract from body (Closes #N, Fixes #N, Resolves #N, or bare #N)
-    body_raw = d.get("body") or ""
-    issue_match = re.search(r'(?:closes|fixes|resolves)?\s*#(\d+)', body_raw, re.IGNORECASE)
-    if issue_match:
-        issue_num = issue_match.group(1)
+    # Linked issue — every issue a GitHub closing keyword actually binds to a
+    # number, not the first `#N` in the body (#591). The pattern this replaces
+    # made the keyword optional, and it lived here *and* in `git-status`
+    # character-for-character; both now go through the one extractor.
+    issue_refs = _checks.closing_issue_refs(d.get("body"))
+    if not issue_refs:
+        print(f"\n{_checks.linked_issue_line(issue_refs)}")
+    for ref in issue_refs:
+        # A cross-repo reference is printed as written and never fetched:
+        # `gh issue view 5` resolves 5 against *this* repository, so fetching it
+        # would print a different issue's title under this PR's closing
+        # reference — #591's defect with more confidence attached.
+        if not ref.startswith("#"):
+            print(f"\nIssue: {ref} — in another repository, not fetched")
+            continue
+        issue_num = ref[1:]
         try:
             issue_result = _gh([
                 "issue", "view", issue_num, "--json",
@@ -391,7 +402,7 @@ def main() -> int:
                     info += f" | Assignees: {i_assignees}"
                 print(info)
         except (subprocess.TimeoutExpired, json.JSONDecodeError):
-            print(f"\nIssue: #{issue_num}")
+            print(f"\nIssue: {ref}")
 
     # Description
     body = (d.get("body") or "")[:DESCRIPTION_MAX]
