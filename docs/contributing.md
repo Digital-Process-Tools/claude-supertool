@@ -305,6 +305,16 @@ git config core.hooksPath .githooks
 
 The hook is in `.githooks/pre-push`, committed to the repo. Bypass with `git push --no-verify` (discouraged).
 
+**Which interpreter the hook runs (#572).** Never the bare name `python3`: on Windows that name can resolve to the App Execution Alias stub, which *blocks* instead of erroring, and inside `git push` a block reads as a slow remote rather than as a broken hook. Resolution order:
+
+1. `$PYTHON` — explicit escape hatch, used **verbatim and never verified**. `PYTHON=/path/to/venv/bin/python3 git push` is how you point the hook at an interpreter it cannot find on its own. A resolution step that could override it, or replace it after a failed probe, would hide which interpreter actually ran the suite.
+2. An activated venv — `$VIRTUAL_ENV/bin/python3` (or `Scripts/python.exe`). Preferred over anything on `PATH`, because a system `python3.13` next to a 3.11 venv is a different set of installed packages, which is the POSIX half of the bug being fixed.
+3. The newest `pythonX.Y` on `PATH`, from `python3.14` down to `python3.9`. Versioned names are not aliased on Windows, which is what makes them safe; the floor is `requires-python`.
+
+Candidates 2 and 3 are **executed** before being committed to (`-c 'import sys'`), not merely looked up: `command -v` is answered by a stale symlink into a deleted venv, and believing the name there swaps a broken interpreter for a working one and reports it as a test failure. Same rule as the syntax-floor ladder above — the binary is asked, the filename is not believed.
+
+If nothing resolves and no `$PYTHON` was set, the hook **refuses the push** and lists every name it tried. It does not fall back to the bare name, since that would restore the hang for exactly the people who have no versioned interpreter.
+
 ### `slow` vs `benchmark`
 
 Two markers, and the difference is not how long the test takes.
