@@ -43,6 +43,7 @@ under `os.fchdir`, before any thread or subprocess exists to observe it. See
 """
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
 import stat
@@ -59,16 +60,43 @@ def _runtime_base() -> Path:
       2. `$XDG_RUNTIME_DIR/supertool/mcp/` (Linux / freedesktop spec)
       3. `~/Library/Caches/supertool/mcp/` (macOS)
       4. `~/.cache/supertool/mcp/` (fallback)
+
+    Both environment variables must be **absolute** (#607). A relative value is
+    resolved against the current working directory, which would put the daemon
+    socket and pidfile inside whichever project supertool happens to be invoked
+    from — a per-cwd runtime dir, with that project's ancestry rather than the
+    user's. The freedesktop spec requires `$XDG_RUNTIME_DIR` to be absolute for
+    exactly this reason. Refused rather than silently rewritten: guessing that
+    `runtime/mcp` meant `$HOME/runtime/mcp` would relocate a daemon location on
+    the operator's behalf, which is the quiet failure this module rejects.
     """
     override = os.environ.get("SUPERTOOL_RUNTIME_DIR")
     if override:
+        _require_absolute(override, "SUPERTOOL_RUNTIME_DIR")
         return Path(override)
     xdg = os.environ.get("XDG_RUNTIME_DIR")
+    if xdg:
+        _require_absolute(xdg, "XDG_RUNTIME_DIR")
     if xdg and Path(xdg).is_dir():
         return Path(xdg) / "supertool" / "mcp"
     if sys.platform == "darwin":
         return Path.home() / "Library" / "Caches" / "supertool" / "mcp"
     return Path.home() / ".cache" / "supertool" / "mcp"
+
+
+def _require_absolute(value: str, var: str) -> None:
+    """Refuse a relative runtime-dir setting rather than resolving it (#607)."""
+    if os.path.isabs(value):
+        return
+    sys.exit(
+        f"daemon: {var} is set to {value!r}, which is not an absolute path. A "
+        f"relative runtime dir is resolved against the current working "
+        f"directory, so the daemon socket and pidfile would land inside "
+        f"whichever project supertool was invoked from — a different directory "
+        f"per invocation, with that project's owners rather than yours. "
+        f"Refusing rather than guessing what it was meant to be relative to. "
+        f"Set {var} to an absolute path."
+    )
 
 
 # The flags that make a directory holdable rather than merely reachable. Both
@@ -101,6 +129,17 @@ _LISTDIR_TAKES_FD = os.listdir in os.supports_fd
 # Probed at import for the same reason as `_LISTDIR_TAKES_FD` above: the sets
 # hold the original function objects, so asking after a test has wrapped one
 # asks whoever patched last and turns a test double into a platform verdict.
+# The ancestry walk (#607) climbs by `os.open("..", dir_fd=<held fd>)` rather
+# than by re-resolving each parent path, so that every component it judges is
+# reached through the descriptor chain that starts at the directory already
+# validated. `os.open` with `dir_fd` is POSIX-only; Windows has no `openat`.
+#
+# Probed at import for the same reason as everything else in this block: the
+# support sets hold the original function objects, so asking after a test has
+# wrapped `os.open` — which one below does, to simulate an unreadable ancestor
+# — would report a test double as a missing syscall.
+_ANCESTRY_DIR_FD = os.open in os.supports_dir_fd
+
 _RELATIVE_OPS = {
     "os.open(dir_fd=)": os.open in os.supports_dir_fd,
     "os.unlink(dir_fd=)": os.unlink in os.supports_dir_fd,
@@ -345,16 +384,167 @@ def _verify_runtime_dir(fd: int, resolved: str, base: Path, geteuid) -> None:
     # terms if it is going to.
     mode = stat.S_IMODE(st.st_mode)
     if mode & 0o077:
-        sys.exit(
-            f"daemon: runtime dir {where} is {oct(mode)}, not owner-only, and "
-            f"the chmod to 0700 did not take. On Linux it is this directory's "
-            f"mode that gates a co-tenant's connect() to the daemon socket and "
-            f"their enumeration of the pidfiles (#148), so this is exposure "
-            f"rather than untidiness. Refusing to use it. Fix it with "
-            f"`chmod 700 {resolved}` — or, if this is a filesystem with no POSIX "
-            f"modes (exFAT/FAT32/SMB), remount it with `umask=077` or point "
-            f"SUPERTOOL_RUNTIME_DIR at a filesystem that has them."
+        _exit_loose_mode(where, mode, resolved)
+    _verify_ancestry(fd, resolved, geteuid)
+
+
+def _exit_loose_mode(where: str, mode: int, resolved: str) -> None:
+    """The #568 refusal, lifted out so `_verify_runtime_dir` stays readable."""
+    sys.exit(
+        f"daemon: runtime dir {where} is {oct(mode)}, not owner-only, and "
+        f"the chmod to 0700 did not take. On Linux it is this directory's "
+        f"mode that gates a co-tenant's connect() to the daemon socket and "
+        f"their enumeration of the pidfiles (#148), so this is exposure "
+        f"rather than untidiness. Refusing to use it. Fix it with "
+        f"`chmod 700 {resolved}` — or, if this is a filesystem with no POSIX "
+        f"modes (exFAT/FAT32/SMB), remount it with `umask=077` or point "
+        f"SUPERTOOL_RUNTIME_DIR at a filesystem that has them."
+    )
+
+
+def _ancestor_finding(st: os.stat_result, geteuid) -> str:
+    """Why this ancestor is a lever, or `""` if it is not (#607).
+
+    Two rules, and they are **independent** rather than alternatives:
+
+    - **Owner must be us or root.** A directory someone else owns is theirs to
+      rearrange. `root` is allowed because `/`, `/run`, `/run/user`, `/Users`
+      and `/home` are all root-owned on every healthy machine — a rule that
+      refused those would refuse every installation there is.
+    - **Not group- or world-writable, unless sticky.** `ssh`'s `StrictModes`
+      checks `& 022` and this is the same question. The sticky exception is
+      what makes `/tmp` (`1777`) usable: with `S_ISVTX` set, only an entry's
+      owner — or the directory's owner, or root — may rename or unlink it.
+
+    The sticky bit does **not** rescue a stranger-owned directory, which is why
+    the ownership rule is checked first and separately: a `1777` directory
+    belonging to someone else still lets its owner remove any entry in it.
+    """
+    mode = stat.S_IMODE(st.st_mode)
+    if st.st_uid not in (geteuid(), 0):
+        return (
+            f"owned by uid {st.st_uid}, not us ({geteuid()}) or root — its "
+            f"owner may rename or remove any entry in it, including ours"
         )
+    if mode & 0o022 and not mode & stat.S_ISVTX:
+        who = "world-writable" if mode & 0o002 else "group-writable"
+        return (
+            f"{oct(mode)} — {who} with no sticky bit, so any user who can "
+            f"write it may rename() our runtime dir out of it and put their "
+            f"own directory in its place"
+        )
+    return ""
+
+
+def _verify_ancestry(fd: int, resolved: str, geteuid) -> None:
+    """Walk from the validated directory up to the root, checking each parent.
+
+    The leaf's own `0700` is not what gates a replacement, and three issues
+    (#568, #583, #598) each concluded it was. POSIX permits `rename()` over any
+    entry in a writable, non-sticky directory *regardless of that entry's own
+    owner or mode* — so someone who can write any ancestor can substitute a
+    directory of their own for ours, and every check made about the leaf goes
+    on passing about an object nobody is using. `$XDG_RUNTIME_DIR` was accepted
+    on the sole evidence that it `is_dir()`, so this was reachable cross-uid.
+
+    **How far up:** to the filesystem root, mount points included. Crossing one
+    is not a stopping condition — `..` at a mount root is handed to the parent
+    filesystem by the kernel, and every process that later re-resolves the
+    returned string (`stop.py`, `status.py`, the daemon on its next boot)
+    traverses those components too, so they are part of the path's trust chain
+    whether or not a `rename()` could reach across the boundary.
+
+    **What it does when it fails:** refuses, with a sentence, the way the
+    ownership (#544) and mode (#568) checks beside it do. It does not relocate.
+    A fallback to a private directory supertool creates itself would move every
+    warm daemon out from under the clients still connecting to the old socket
+    path — a quiet failure swapped in for a loud one, which is the trade this
+    module exists to refuse.
+
+    **What it does when it cannot run:** says so, in different words. A
+    platform without `openat` cannot ask the question, and a component that
+    will not open leaves it unanswered; neither is "no finding". Same
+    three-state contract as `docs/validators.md`, same vocabulary as
+    `_require_dir_fd` and `require_relative_ops` above — the pattern was
+    already here, so nothing new was invented for it (#263).
+    """
+    if not _ANCESTRY_DIR_FD:
+        sys.exit(
+            f"daemon: cannot check who owns the directories above {resolved} on "
+            f"this platform — os.open(dir_fd=) is unavailable, so the walk from "
+            f"the validated directory up to the root cannot be made through "
+            f"descriptors. A writable ancestor lets any user who can write it "
+            f"replace the runtime dir wholesale, whatever the runtime dir's own "
+            f"mode says (#607), and that question cannot be asked here rather "
+            f"than merely being awkward. Refusing instead of assuming the "
+            f"ancestry is sound."
+        )
+    # Names for the message only. The *checks* below are made through the
+    # descriptor chain, so a concurrent rename cannot make us judge one
+    # directory and report another; the worst it can do is make a refusal name
+    # a stale path, which is a worse sentence rather than a wrong verdict.
+    names = [str(p) for p in Path(resolved).parents]
+    child = os.dup(fd)
+    try:
+        for step, name in enumerate(names):
+            try:
+                parent = os.open("..", os.O_RDONLY | os.O_DIRECTORY, dir_fd=child)
+            except OSError as exc:
+                if step == 0 and exc.errno in (errno.EACCES, errno.EPERM):
+                    # The runtime dir itself has no search bit — `0o600` is the
+                    # reachable shape, since #568 accepts it (owner-only, so
+                    # nothing is exposed) and a filesystem where the tightening
+                    # chmod is a no-op can leave it there. `..` cannot be opened
+                    # from a directory you cannot search, so the walk has no
+                    # starting point. Named separately because "fix the mode of
+                    # the runtime dir" and "fix the mode of something above it"
+                    # send an operator to different places.
+                    sys.exit(
+                        f"daemon: runtime dir {resolved} has no search "
+                        f"permission for its owner, so the directories above it "
+                        f"cannot be walked and it is unknowable whether a "
+                        f"stranger could replace it (#607). The daemon could not "
+                        f"open anything inside it either. Fix it with "
+                        f"`chmod 700 {resolved}`."
+                    )
+                sys.exit(
+                    f"daemon: could not open {name}, an ancestor of the runtime "
+                    f"dir {resolved}: {exc.strerror or exc}. Whether a stranger "
+                    f"can replace the runtime dir depends on who owns the "
+                    f"directories above it (#607), and that question is now "
+                    f"unanswered rather than answered favourably. Refusing. "
+                    f"Set SUPERTOOL_RUNTIME_DIR to an absolute path whose "
+                    f"parents you can read."
+                )
+            os.close(child)
+            child = parent
+            try:
+                st = os.fstat(child)
+            except OSError as exc:
+                sys.exit(
+                    f"daemon: could not stat {name}, an ancestor of the runtime "
+                    f"dir {resolved}: {exc.strerror or exc}. Refusing rather "
+                    f"than treating an unasked question as a clean answer "
+                    f"(#607)."
+                )
+            finding = _ancestor_finding(st, geteuid)
+            if finding:
+                sys.exit(
+                    f"daemon: {name} is {finding}. It is an ancestor of the "
+                    f"runtime dir {resolved}, and the runtime dir's own 0700 is "
+                    f"no defence: POSIX allows any entry in a writable, "
+                    f"non-sticky directory to be renamed away by whoever can "
+                    f"write that directory, whatever the entry itself is set to "
+                    f"(#607). The daemon socket and pidfiles would then live in "
+                    f"a directory nothing inspected. Refusing to use it — and "
+                    f"deliberately not relocating, which would move every warm "
+                    f"daemon out from under the clients still looking for it. "
+                    f"Fix it with `chmod go-w {name}` (or `chmod 755 {name}`), "
+                    f"or set SUPERTOOL_RUNTIME_DIR to an absolute path whose "
+                    f"every parent is yours — `/run/user/{geteuid()}` on Linux."
+                )
+    finally:
+        os.close(child)
 
 
 def _describe(resolved: str, base: Path) -> str:

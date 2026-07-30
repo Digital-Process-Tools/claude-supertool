@@ -227,13 +227,20 @@ class TestALooseExistingDirIsTightenedOrRefused:
         with pytest.raises(SystemExit):
             _paths.runtime_dir()
 
-    @pytest.mark.parametrize("mode", [0o700, 0o600, 0o500])
+    @pytest.mark.parametrize("mode", [0o700, 0o500])
     def test_an_owner_only_dir_is_accepted_unchanged(self, no_chmod, mode):
         """Do not invent a finding: no group/other bits means nothing to say.
 
-        `0o600` and `0o500` are owner-only too. They are not what supertool
-        asks for and the daemon would fail on them for its own reasons, but
-        this check's question is exposure to other users, and the answer is no.
+        `0o500` is owner-only too. It is not what supertool asks for and the
+        daemon would fail on it for its own reasons, but this check's question
+        is exposure to other users, and the answer is no.
+
+        `0o600` was in this list until #607 and is now refused — not by *this*
+        check, which still has nothing to say about it, but by the ancestry
+        walk, which cannot open `..` from a directory it has no search
+        permission on. Its own test lives with that check
+        (`test_mcp_runtime_dir_ancestry_607.py`), because the sentence an
+        operator gets is about the missing `x` bit and not about exposure.
         """
         import _paths  # noqa: PLC0415
 

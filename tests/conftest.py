@@ -13,6 +13,31 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import supertool  # noqa: E402
 
+# `presets/mcp/_paths.py` probes its platform capabilities at *import*
+# (`_LISTDIR_TAKES_FD`, `_RELATIVE_OPS`, `_ANCESTRY_DIR_FD`) precisely so that a
+# test double installed over `os.listdir`/`os.chmod`/`os.open` is never read as
+# a missing syscall. That reasoning holds only if the import wins the race
+# against the first double. In production it always does — the import happens at
+# startup. In a pytest worker it does not: every suite here imports `_paths`
+# from *inside* a test body, so under `-n auto` the winner depends on how xdist
+# happened to split the files. A worker whose first import landed inside
+# `test_mcp_runtime_dir_mode_568.py`'s `no_chmod` fixture recorded the double
+# and permanently believed `os.chmod(dir_fd=)` was unavailable, failing three
+# unrelated #598 tests with a platform verdict invented by another test.
+#
+# Importing here takes every probe at collection time, before any fixture can
+# run, which is the condition the probes' own comments assume. Found while
+# adding the #607 suite — new tests changed the split and the landmine went off.
+# Tolerated rather than assumed: `test_git_state_guard.py` copies this file
+# into a synthetic repo that has no `presets/` tree and runs pytest there, so a
+# hard import would turn "the probe was taken early" into "the guard suite
+# cannot start". Nothing is lost when it is absent — there is no `_paths` to
+# probe in that repo either.
+_MCP_PRESETS = Path(__file__).parent.parent / "presets" / "mcp"
+if (_MCP_PRESETS / "_paths.py").is_file():
+    sys.path.insert(0, str(_MCP_PRESETS))
+    import _paths  # noqa: E402,F401
+
 
 def pytest_configure(config):
     """Opt out of #146 cwd containment for the test suite.

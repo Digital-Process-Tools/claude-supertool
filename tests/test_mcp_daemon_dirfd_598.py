@@ -393,27 +393,31 @@ class TestAPlatformThatCannotDoThisSaysSo:
 
 
 @posix_only
-class TestTheAncestryOfTheRuntimeDirIsUnchecked:
-    """The reachability both issues understate (found, not briefed).
+class TestTheAncestryOfTheRuntimeDirIsCheckedSince607:
+    """The reachability both issues understate — found here, fixed in #607.
 
     #583 and #598 both describe the residual window as needing "write access to
     a directory supertool owns". That is true of the default locations, whose
-    parents are inside `$HOME`. It is not true of `$XDG_RUNTIME_DIR`, which
-    `_runtime_base()` accepts on the sole evidence that it `is_dir()`.
+    parents are inside `$HOME`. It was not true of `$XDG_RUNTIME_DIR`, which
+    `_runtime_base()` accepted on the sole evidence that it `is_dir()`.
 
     An attacker who pre-creates `$XDG_RUNTIME_DIR/supertool` mode `0777` (no
     sticky bit) owns the parent of the leaf supertool then creates, owns and
     validates. POSIX grants `rename()` over any entry in a writable, non-sticky
     directory regardless of the entry's own owner or mode — so `0700` on the
-    leaf is no defence at all, and the swap the tests above simulate is
+    leaf was never the defence, and the swap the tests above simulate was
     performable by another uid.
 
-    Asserted here as a *finding*, not fixed: tightening the ancestry is a
-    different change from making the daemon descriptor-relative, and the
-    descriptor is what closes this one regardless of who owns the parent.
+    Recorded here as a finding when this file was written, deliberately not
+    fixed in that PR — tightening the ancestry is a different change from
+    making the daemon descriptor-relative, and the descriptor closes *this*
+    file's hole regardless of who owns the parent. #607 did the tightening; the
+    first test below is the same scenario, inverted, and stays here so the
+    provenance survives. The full behaviour is pinned in
+    `test_mcp_runtime_dir_ancestry_607.py`.
     """
 
-    def test_a_world_writable_xdg_runtime_dir_is_accepted_without_comment(
+    def test_a_world_writable_xdg_runtime_dir_is_now_refused(
         self, tmp_path, monkeypatch, loose_umask
     ):
         import _paths  # noqa: PLC0415
@@ -424,13 +428,13 @@ class TestTheAncestryOfTheRuntimeDirIsUnchecked:
         monkeypatch.delenv("SUPERTOOL_RUNTIME_DIR", raising=False)
         monkeypatch.setenv("XDG_RUNTIME_DIR", str(xdg))
 
-        base = _paths.runtime_dir()
+        with pytest.raises(SystemExit) as excinfo:
+            _paths.runtime_dir()
 
-        parent_mode = stat.S_IMODE(os.stat(Path(base).parent).st_mode)
-        assert stat.S_IMODE(os.stat(base).st_mode) == 0o700
-        assert not (parent_mode & stat.S_ISVTX and parent_mode & 0o002), (
-            "documenting the state, not asserting it is safe"
+        assert isinstance(excinfo.value.code, str), (
+            "a refusal must carry a sentence, not a bare exit code"
         )
+        assert str(xdg) in excinfo.value.code
 
     def test_a_writable_non_sticky_parent_lets_a_stranger_rename_the_leaf(
         self, tmp_path, loose_umask
