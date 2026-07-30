@@ -297,7 +297,12 @@ def test_the_scan_reaches_shipping_code_and_not_only_tests():
     banned name for eight months underneath a green check. Re-narrowing the
     walk has to fail here rather than quietly reporting clean, which is the
     failure mode that made #559 possible."""
-    scanned = {str(p.relative_to(REPO_ROOT)) for p in scanned_files()}
+    # `.as_posix()`, not `str()`: on Windows `relative_to` renders
+    # `presets\mcp\_spawn.py`, which never equals the forward-slash literals
+    # below, so this guard failed on all four Windows legs while the scan it
+    # checks was working perfectly. A scope test that reports a narrowed walk
+    # when the walk is fine is the same false alarm, pointed the other way.
+    scanned = {p.relative_to(REPO_ROOT).as_posix() for p in scanned_files()}
     for required in ("supertool.py",
                      "presets/mcp/_spawn.py",
                      "presets/watch/transport.py",
