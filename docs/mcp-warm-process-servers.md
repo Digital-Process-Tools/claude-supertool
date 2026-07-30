@@ -31,7 +31,11 @@ served by a daemon whose config has since changed.** Both halves are load-bearin
 one daemon still holding stale config just makes the wrong answer consistent.
 
 Per daemon, in the runtime dir (`$XDG_RUNTIME_DIR/supertool/mcp/` or
-`~/Library/Caches/supertool/mcp/`), all named `supertool-mcp-<sha1[:12]>`:
+`~/Library/Caches/supertool/mcp/` — owned by you, mode `0700`, and with every
+directory above it owned by you or root and not writable by anyone else, or the
+daemon refuses to start: see
+[mcp-integration.md](mcp-integration.md#the-directories-above-the-runtime-dir-are-checked-too-607)),
+all named `supertool-mcp-<sha1[:12]>`:
 
 | File      | Written by | Meaning                                     |
 | --------- | ---------- | ------------------------------------------- |

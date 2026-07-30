@@ -211,6 +211,16 @@ never in `/tmp` (#148):
 | 3 | `~/Library/Caches/supertool/mcp/` — macOS |
 | 4 | `~/.cache/supertool/mcp/` — fallback |
 
+**Both variables must be absolute paths** (#607). A relative value is resolved
+against the current working directory, which would give you a different runtime
+directory per project — inside the project — so it is refused rather than
+guessed at:
+
+```
+daemon: SUPERTOOL_RUNTIME_DIR is set to 'runtime/mcp', which is not an absolute
+path. … Set SUPERTOOL_RUNTIME_DIR to an absolute path.
+```
+
 **That directory must be owned by you and must be mode `0700`.** It is not
 housekeeping: on Linux it is the *directory's* mode, not the socket's, that
 decides whether another local user can `connect()` to your daemon and enumerate
@@ -289,17 +299,72 @@ you `rm -rf` the runtime dir while a daemon is running, the names disappear but
 the daemon keeps serving out of the now-nameless directory and the space is only
 reclaimed when it exits. Use `mcp_stop --all` rather than `rm -rf`.
 
-**Not covered, and not claimed to be:** the *ancestors* of the runtime dir are
-never checked. `$XDG_RUNTIME_DIR` is accepted on the evidence that it is a
-directory, and the intermediate `supertool/` that `parents=True` creates stays at
-the umask default (`0o755`). On a correctly-configured system those live inside
-`$HOME` or a `0700` `/run/user/<uid>` and nobody else can write them. If
-`$XDG_RUNTIME_DIR` points somewhere world-writable, someone who pre-creates
-`$XDG_RUNTIME_DIR/supertool` owns the parent of the directory supertool then
-creates and validates — and write + execute on a non-sticky directory permits
-`rename()` of any entry inside it regardless of that entry's own mode. The
-descriptor above is what makes that harmless to the running daemon; it does not
-make the configuration a good one. Tracked separately.
+### The directories *above* the runtime dir are checked too (#607)
+
+The runtime dir's own `0700` says who may **enter** it. It says nothing about who
+may **replace** it: POSIX permits `rename()` over any entry in a writable,
+non-sticky directory regardless of that entry's owner or mode. So the parent's
+write bit — not the leaf's mode — is what decides whether a co-tenant can swap
+your runtime directory for one of their own. `$XDG_RUNTIME_DIR` used to be
+accepted on the sole evidence that it was a directory, which made a
+world-writable one accepted in silence.
+
+Supertool now walks from the validated directory up to the filesystem root,
+climbing with `os.open("..", dir_fd=…)` so every component it judges is reached
+through the descriptor chain anchored at the directory it already validated.
+Each component must be:
+
+- **owned by you or by `root`** — `/`, `/run`, `/run/user`, `/home` and `/Users`
+  are root-owned everywhere, so "owner only" would refuse every machine there is;
+- **not group- or world-writable, unless sticky** — the same `& 022` question
+  `ssh`'s `StrictModes` asks. The sticky exception is what keeps `/tmp` (`1777`)
+  usable: with `S_ISVTX`, only an entry's owner may rename or unlink it.
+
+The two rules are independent, not alternatives: a `1777` directory belonging to
+someone *else* is still theirs to empty, so sticky never excuses foreign
+ownership.
+
+**The ordinary case is silent.** `systemd`'s `/run/user/<uid>` (`0700`, yours),
+`~/Library/Caches` and `~/.cache` all pass without a word, and the mount points
+crossed on the way up are walked rather than treated as a boundary — every
+process that later re-resolves the path traverses them too.
+
+**When it fails, it refuses — it does not relocate.** Falling back to a private
+directory supertool made for itself would move every warm daemon out from under
+the clients still connecting to the old socket path, which is a worse bug than
+the one being fixed:
+
+```
+daemon: /run/user/1000 is 0o777 — world-writable with no sticky bit, so any user
+who can write it may rename() our runtime dir out of it and put their own
+directory in its place. … Fix it with `chmod go-w /run/user/1000`, or set
+SUPERTOOL_RUNTIME_DIR to an absolute path whose every parent is yours.
+
+daemon: /srv/shared is owned by uid 1002, not us (1000) or root — its owner may
+rename or remove any entry in it, including ours. …
+```
+
+**"Could not check" is a different sentence from "check failed."** A platform
+with no `openat` cannot make the walk at all; a runtime dir with no search bit
+for its owner (`0o600` — accepted by the mode check, since nothing is exposed)
+has no starting point for it; an ancestor that will not open leaves the question
+open. All three decline in their own words rather than reporting a clean result:
+
+```
+daemon: cannot check who owns the directories above /run/user/1000 on this
+platform — os.open(dir_fd=) is unavailable … Refusing instead of assuming the
+ancestry is sound.
+
+daemon: runtime dir /mnt/rt has no search permission for its owner, so the
+directories above it cannot be walked and it is unknowable whether a stranger
+could replace it. … Fix it with `chmod 700 /mnt/rt`.
+```
+
+**Still not covered, and not claimed to be:** the intermediate `supertool/` that
+`parents=True` creates stays at the umask default (`0o755`). That is a metadata
+leak and this time the phrase is accurate — it is owned by you, it is not
+writable by anyone else, and the ancestry walk above is what now establishes
+that rather than assuming it.
 
 **On the POSIX-only platforms.** `O_DIRECTORY`, `O_NOFOLLOW`, `os.listdir(fd)`
 and the `*at` syscalls behind `dir_fd=` do not exist on Windows. Supertool
