@@ -58,15 +58,34 @@ def _junit(message: str, *, ident: str = "tests.test_thing.test_case") -> str:
     )
 
 
+#: Inherited, minus the keys that would decide the question under test. Copying
+#: `os.environ` and stripping is `tests/test_encoding_seam.py::_run`'s pattern,
+#: and the reason for it is not tidiness: a *minimal* env (`{"PATH": ...}`) took
+#: the Windows 3.9 and 3.10 legs down with `Fatal Python error:
+#: _Py_HashRandomization_Init: failed to get random numbers`, because CPython
+#: reaches the Windows CryptoAPI through `SystemRoot` on those versions. Pinning
+#: an env by allowlist means guessing what an interpreter needs to boot on a
+#: platform you are not on. Strip what you are testing; inherit the rest.
+_ENCODING_KEYS = ("PYTHONIOENCODING", "PYTHONUTF8", "PYTHONCOERCECLOCALE",
+                  "LC_ALL", "LC_CTYPE", "LANG")
+
+
+def _clean_env(**overrides: str) -> dict[str, str]:
+    import os
+    env = dict(os.environ)
+    for key in _ENCODING_KEYS:
+        env.pop(key, None)
+    env.update(overrides)
+    return env
+
+
 def _run_reporter(path: Path, *, console_cp: str | None = None) -> tuple[int, bytes]:
     """The reporter, as CI runs it: a subprocess, output captured as bytes.
 
     Bytes on purpose — the whole question is which bytes leave the process, and
     decoding here before asserting would hide the defect being pinned.
     """
-    env = {"PATH": __import__("os").environ.get("PATH", "")}
-    if console_cp:
-        env["PYTHONIOENCODING"] = console_cp
+    env = _clean_env(**({"PYTHONIOENCODING": console_cp} if console_cp else {}))
     proc = subprocess.run(
         [sys.executable, str(REPORTER), str(path)],
         capture_output=True, cwd=str(path.parent), env=env, timeout=60,
@@ -103,8 +122,7 @@ def test_the_cp437_reproduction_is_real_and_not_a_no_op() -> None:
     proc = subprocess.run(
         [sys.executable, "-c", f"print('left {EM_DASH} right')"],
         capture_output=True, timeout=60,
-        env={"PATH": __import__("os").environ.get("PATH", ""),
-             "PYTHONIOENCODING": CONSOLE_CP},
+        env=_clean_env(PYTHONIOENCODING=CONSOLE_CP),
     )
     survived = EM_DASH.encode("utf-8") in proc.stdout
     assert not survived, (
