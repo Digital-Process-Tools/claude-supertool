@@ -205,9 +205,35 @@ Full reference (sections, `builtin-ops` overrides, custom ops, aliases, dispatch
 
 ## Presets — reusable op packs
 
-8 presets ship out of the box (`git`, `github`, `gitlab`, `claude-log`, `hashnode`, `devto`, `bluesky`, `xml`). Each has a dedicated reference page in [`docs/presets/`](docs/presets/index.md) covering ops, common workflows, env vars, and authoring notes.
+10 presets ship out of the box (`git`, `github`, `gitlab`, `claude-log`, `hashnode`, `devto`, `bluesky`, `xml`, `mcp`, `watch`). Each has a dedicated reference page in [`docs/presets/`](docs/presets/index.md) covering ops, common workflows, env vars, and authoring notes.
 
 Writing your own: see [docs/contributing.md](docs/contributing.md).
+
+### `unavailable here`, not `unknown` — reaching a preset op from outside the project
+
+Preset ops only exist where a `.supertool.json` enables them, so the same binary answers differently depending on your cwd. Asking for one from somewhere else does **not** report it as a typo:
+
+```
+$ cd ~/some/other/repo
+$ /path/to/supertool 'gl-mr:33323:status'
+ERROR: op 'gl-mr' is unavailable here, not unknown — it is provided by the shipped preset 'gitlab'.
+       No .supertool.json was found from /Users/…/some/other/repo or any parent, so no preset
+       ops and no project ops are loaded — only the built-ins.
+       Fix: run it from a project that enables the 'gitlab' preset, or make this call's first
+       op 'cwd:<project-path>'.
+```
+
+Three states, not two — `available`, `unknown`, and `unavailable here` with the reason ([#614](https://github.com/Digital-Process-Tools/claude-supertool/issues/614)). The wording distinguishes two situations that need different fixes: **no `.supertool.json` anywhere above your cwd** (run from the project, or use `cwd:`) versus **a config that exists but does not list that preset** — which names the file and tells you to add the preset to its `"presets"` list.
+
+A name that is not a shipped preset op still reads as a plain `unknown operation`. A typo is never softened into "maybe you need a project root".
+
+**The escape hatch is `cwd:`** — the first op in a call, which `chdir`s before dispatch so the rest of the call resolves against that project's config:
+
+```bash
+./supertool 'cwd:~/projects/myapp' 'gl-mr:33323:status' 'gl-pipeline:33323'
+```
+
+`ops` carries the same disclosure. From a directory with no config it leads with one line naming the presets that are not loaded and their op count, so the built-in listing is not mistaken for the tool's whole capability; from inside a configured project the same line trails the listing, since a preset that project chose not to enable is not a surprise.
 
 ### Legacy `check:` syntax
 
