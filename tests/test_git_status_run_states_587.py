@@ -387,3 +387,85 @@ def test_an_existing_gitlab_pipeline_status_is_untouched(
     out = _run(repo, monkeypatch)
     assert "Pipeline: success" in out
     assert "UNKNOWN" not in out
+
+# --- #594: the conflict leg, and the commit it is allowed to be about -------
+#
+# A CONFLICTING PR can never get a check run — `refs/pull/N/merge` cannot be
+# built — so the absence has a fifth cause here. `git-status` resolves the PR by
+# branch, so the claim is only made when the PR head is established equal to the
+# local HEAD; otherwise it would be a true statement about the wrong commit,
+# which is exactly what #587 exists to prevent.
+
+
+def test_conflicting_pr_at_your_head_says_rebase(tmp_path: Path, monkeypatch) -> None:
+    repo = _init_repo(tmp_path, when="2020-01-02T03:04:05 +0000")
+    head = _git(repo, "rev-parse", "HEAD")
+    calls = _Calls()
+    _stub(monkeypatch, calls, _payload(head, mergeable="CONFLICTING"))
+    out = _run(repo, monkeypatch)
+    text = _checks_text(out)
+    assert "CONFLICTING" in text
+    assert "Rebase" in text
+    assert "none yet" not in text
+    assert "Check the PR's Checks tab" not in text
+
+
+def test_conflicting_claim_is_withheld_when_the_pr_head_is_not_your_head(
+        tmp_path: Path, monkeypatch) -> None:
+    """A conflict claim about a commit the reader is not standing on is #587's
+    defect wearing #594's words. It falls through to the old three states."""
+    repo = _init_repo(tmp_path)
+    pr_head = _git(repo, "rev-parse", "HEAD~1")
+    local = _git(repo, "rev-parse", "HEAD")
+    calls = _Calls()
+    _stub(monkeypatch, calls, _payload(pr_head, mergeable="CONFLICTING"))
+    out = _run(repo, monkeypatch)
+    text = _checks_text(out)
+    assert "CONFLICTING" not in text
+    assert "rebase" not in text.lower()
+    assert "none yet" in text
+    assert pr_head[:7] in out
+    assert local[:7] in out
+    assert "NOT" in out
+
+
+def test_an_unestablished_head_relation_also_withholds_the_conflict_claim(
+        tmp_path: Path, monkeypatch) -> None:
+    """No `headRefOid` → the relation is UNKNOWN → no claim about this commit."""
+    repo = _init_repo(tmp_path)
+    payload = _payload("x", mergeable="CONFLICTING")
+    del payload["headRefOid"]
+    calls = _Calls()
+    _stub(monkeypatch, calls, payload)
+    out = _run(repo, monkeypatch)
+    text = _checks_text(out)
+    assert "CONFLICTING" not in text
+    assert "rebase" not in text.lower()
+    assert "UNKNOWN" in text
+
+
+def test_an_unresolved_mergeable_state_renders_exactly_as_no_state_at_all(
+        tmp_path: Path, monkeypatch) -> None:
+    """GitHub's `UNKNOWN` mergeable must not shift a single word, either way."""
+    repo = _init_repo(tmp_path, when="2020-01-02T03:04:05 +0000")
+    head = _git(repo, "rev-parse", "HEAD")
+    c1, c2 = _Calls(), _Calls()
+    _stub(monkeypatch, c1, _payload(head, mergeable="UNKNOWN"))
+    with_unknown = _checks_text(_run(repo, monkeypatch))
+    _stub(monkeypatch, c2, _payload(head))
+    without = _checks_text(_run(repo, monkeypatch))
+    assert with_unknown == without
+    assert "CONFLICTING" not in with_unknown
+
+
+def test_the_conflict_leg_issues_no_extra_lookup(tmp_path: Path, monkeypatch) -> None:
+    """`mergeable` rides the `gh pr view` call already being made."""
+    repo = _init_repo(tmp_path, when="2020-01-02T03:04:05 +0000")
+    calls = _Calls()
+    _stub(monkeypatch, calls, _payload(
+        _git(repo, "rev-parse", "HEAD"), mergeable="CONFLICTING"))
+    out = _run(repo, monkeypatch)
+    assert "CONFLICTING" in out
+    assert len(calls.gh) == 1, calls.gh
+    assert "mergeable" in " ".join(calls.gh[0])
+    assert not any("graphql" in " ".join(a) for a in calls.argv)

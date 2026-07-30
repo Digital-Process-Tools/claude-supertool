@@ -128,7 +128,9 @@ Set via the op's JSON config if you want project-wide defaults:
 
 ### What `git-status`'s `Checks:` line is about
 
-The three states of zero check runs are defined once, in [github.md → Zero check runs is three states, not one](github.md#zero-check-runs-is-three-states-not-one) — `none yet` inside the creation window, `none, and none will be created` once the head commit is past it on a merged/closed PR, a stated `UNKNOWN` otherwise. `git-status` renders the same three from the same `_checks.absence()`, so the wording never drifts between the two ops ([#587](https://github.com/Digital-Process-Tools/claude-supertool/issues/587)).
+The four states of zero check runs are defined once, in [github.md → Zero check runs is four states, not one](github.md#zero-check-runs-is-four-states-not-one) — `none yet` inside the creation window, `none, and none will be created` once the head commit is past it on a merged/closed PR, `none … until the conflict is resolved — Rebase` when `mergeable` is `CONFLICTING`, a stated `UNKNOWN` otherwise. `git-status` renders the same four from the same `_checks.absence()`, so the wording never drifts between the two ops ([#587](https://github.com/Digital-Process-Tools/claude-supertool/issues/587), [#594](https://github.com/Digital-Process-Tools/claude-supertool/issues/594)).
+
+The conflict leg is passed `mergeable` **only** when the PR's head SHA is established equal to the local `HEAD`, and `None` otherwise — a rebase instruction is about a specific commit, and stating it about one the reader is not standing on is the same defect as a green tally for a commit you have moved past. Withheld, it falls through to the other three legs unchanged. `mergeable` rides the `gh pr view` call already being made, so this arm still pays no network call on any path.
 
 Two things differ here, both because `git-status` resolves the PR **by branch** while standing in a working tree.
 

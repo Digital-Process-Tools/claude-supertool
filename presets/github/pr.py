@@ -162,6 +162,7 @@ def _absence_lines(d: dict, number: int | str) -> tuple[str, str]:
     return _checks.absence(
         d.get("state"),
         _head_commit_age_secs(d.get("url") or "", number),
+        mergeable=d.get("mergeable"),
     )
 
 
@@ -353,7 +354,7 @@ def main() -> int:
     # nothing has run yet" and "unknown because nothing will run" are different
     # answers to a merge question, and this printed one sentence for both.
     if mergeable == "CONFLICTING":
-        print("Conflicts: YES — cannot merge")
+        print(f"Conflicts: YES — cannot merge{merge_note}")
     elif mergeable == "MERGEABLE":
         print(f"Mergeable: yes (no merge conflicts){merge_note}")
     else:

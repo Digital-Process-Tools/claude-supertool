@@ -208,8 +208,9 @@ _TERMINAL_PR_STATES = {
 
 
 def absence(pr_state: object, age_secs: int | None,
-            grace_secs: int = CHECK_CREATION_GRACE_SECS) -> tuple[str, str]:
-    """Render zero check runs as one of three states (#585).
+            grace_secs: int = CHECK_CREATION_GRACE_SECS,
+            mergeable: object = None) -> tuple[str, str]:
+    """Render zero check runs as one of four states (#585, #594).
 
     Returns `(checks_text, mergeable_note)`. `NO_CHECKS` on its own answered a
     merge question with one sentence covering two opposite situations — the run
@@ -232,7 +233,30 @@ def absence(pr_state: object, age_secs: int | None,
       so the age is printed and the conclusion is declined. `docs/validators.md`
       ("Declining instead of guessing"): a checker that cannot answer says so.
       A failed age lookup lands here too, never in the leg above.
+    * **conflicting** — `mergeable` is exactly `CONFLICTING` (#594). A
+      `pull_request` workflow runs against `refs/pull/N/merge`, which GitHub
+      builds by merging head into base; it cannot be built while the merge
+      conflicts, so this PR has zero runs *permanently* and a rebase is the only
+      thing that changes it. Rendered as the UNKNOWN leg it told the reader to
+      wait or go look at a tab that will stay empty.
+
+      Only an exact match claims this, and nothing else in this function claims
+      the opposite. GitHub returns `UNKNOWN` while it recomputes mergeability,
+      so an unresolved state falls through to the three legs above — all of
+      which are silent about conflicts — rather than reading as "not
+      conflicted". Neither confident claim is reachable from a state GitHub has
+      not settled.
     """
+    if str(mergeable or "").strip().upper() == "CONFLICTING":
+        return (
+            "none, and none will be created until the conflict is resolved — "
+            "mergeable state is CONFLICTING, so GitHub cannot build "
+            "refs/pull/N/merge for a pull_request run to execute against. "
+            "Rebase — waiting will not change this.",
+            " — no checks, and none will be created (mergeable is CONFLICTING)"
+            " — rebase",
+        )
+
     state = normalize(pr_state)
     window = f"~{max(1, grace_secs // 60)}min"
 

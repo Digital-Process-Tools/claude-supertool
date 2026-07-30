@@ -291,7 +291,7 @@ def main() -> int:
             gh_result = subprocess.run(
                 ["gh", "pr", "view", branch_name, "--json",
                  "number,title,state,baseRefName,statusCheckRollup,body,"
-                 "additions,deletions,changedFiles,headRefOid"],
+                 "additions,deletions,changedFiles,headRefOid,mergeable"],
                 capture_output=True, text=True, timeout=5, encoding="utf-8", errors="replace",
             )
             if gh_result.returncode == 0:
@@ -306,18 +306,32 @@ def main() -> int:
                 local = _git(["rev-parse", "HEAD"], timeout=3)
                 local_head = local.stdout.strip() if local.returncode == 0 else ""
 
+                # Computed before the Checks line, not just for printing after
+                # it: `''` means the two SHAs are *established equal* (#587), and
+                # that is what decides whether a claim about the PR's merge
+                # state may be made about the commit under the reader's cursor.
+                relation = _checks.head_relation(local_head, pr_head, pr_num)
+
                 check_states = _checks.github_states(pr.get("statusCheckRollup"))
                 if check_states:
                     check_summary = _checks.summarize(check_states)
                 else:
-                    # Zero check runs is three states, not one (#585). The
+                    # Zero check runs is four states, not one (#585, #594). The
                     # evidence is the age of the *PR's* head commit and the PR
                     # state; the age comes from the local object store, so this
                     # leg pays no network call either. `absence()` also returns
                     # a `Mergeable:` suffix so the two lines cannot disagree —
                     # `git-status` prints no Mergeable line, so it is dropped.
+                    #
+                    # `mergeable` rides the `gh pr view` call already being made
+                    # (#594), and is withheld unless local HEAD is established
+                    # equal to the PR head: "CONFLICTING, so rebase" is about a
+                    # specific commit, and stating it about one the reader has
+                    # moved past is #587's defect wearing #594's words. Withheld,
+                    # it falls through to the three legs above unchanged.
                     check_summary, _unused_merge_note = _checks.absence(
-                        pr_state, _head_commit_age_secs(pr_head)
+                        pr_state, _head_commit_age_secs(pr_head),
+                        mergeable=pr.get("mergeable") if relation == "" else None,
                     )
 
                 print(f"\n## PR #{pr_num} — {pr_title}")
@@ -325,7 +339,6 @@ def main() -> int:
                 # Whichever of the two the Checks line came from, it is a
                 # statement about the PR's head commit. Say so whenever that is
                 # not the commit the reader is standing on (#587).
-                relation = _checks.head_relation(local_head, pr_head, pr_num)
                 if relation:
                     print(relation)
 
