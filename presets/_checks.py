@@ -404,6 +404,37 @@ _CLOSING_REF = re.compile(
 )
 
 
+# GitHub does not honour a closing reference inside a code span, a fenced block
+# or an HTML comment — established by dogfooding rather than reasoned. PR #600's
+# body cites `Closes #571 and closes #572` inside a code span as an *example* of
+# the rendering, and GitHub's own `closingIssuesReferences` for that PR returned
+# {571, 591}: 571 from a prose sentence elsewhere in the body, 572 from nowhere.
+# One variable, one observation — the span was skipped. Matching it here would
+# claim an issue the merge will not close, which is this whole change's defect
+# pointed at a different input.
+#
+# The regions are removed and replaced by a newline, not skipped over, so text on
+# either side of a removal cannot fuse into a match that neither half contained.
+# An unterminated fence runs to end-of-body, which is what a markdown renderer
+# does with one too.
+#
+# Four-space indented code blocks are deliberately NOT handled: telling one from
+# a nested list continuation needs a real block parser, and guessing wrong would
+# delete body prose and drop a genuine closing reference — the failure direction
+# this change exists to remove. Erring toward matching is the safe side here.
+_HTML_COMMENT = re.compile(r"<!--[\s\S]*?-->")
+_FENCED = re.compile(r"^[ \t]*(```+|~~~+)[\s\S]*?(?:^[ \t]*\1[ \t]*$|\Z)",
+                     re.MULTILINE)
+_CODE_SPAN = re.compile(r"(`+)[\s\S]*?\1")
+
+
+def _strip_unhonoured(text: str) -> str:
+    """Drop the regions GitHub's own reference parser does not read."""
+    for pattern in (_HTML_COMMENT, _FENCED, _CODE_SPAN):
+        text = pattern.sub("\n", text)
+    return text
+
+
 def closing_issue_refs(body: object) -> List[str]:
     """Every issue this body declares it closes, in order, deduped.
 
@@ -422,8 +453,11 @@ def closing_issue_refs(body: object) -> List[str]:
     Every reference is returned, not the first. A PR closing two issues is
     normal (#584 closed #571 and #572) and picking one is the same defect with
     a smaller blast radius.
+
+    Code spans, fenced blocks and HTML comments are removed before matching,
+    because GitHub does not read them either — see `_strip_unhonoured`.
     """
-    text = str(body or "")
+    text = _strip_unhonoured(str(body or ""))
     if not text:
         return []
 

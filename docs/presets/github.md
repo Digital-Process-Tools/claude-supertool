@@ -89,6 +89,7 @@ A PR body routinely cites issues it does **not** close: a precedent (`the same s
 | `Closes #571 and closes #572` | `Issues: #571, #572` — plural label, every reference, deduped in order |
 | `Background: see #454` | `Issue: none declared in the body — no closing keyword (Closes/Fixes/Resolves #N) bound to an issue number. A bare #N mention is not a closing reference to GitHub and is not reported as one here; a link made through the PR's Development panel is not in the body and is invisible to this line.` |
 | `Closes octo/other#5` | `Issue: octo/other#5 — in another repository, not fetched` |
+| ``Example: `Closes #572` `` | nothing — a code span is not a declaration, because GitHub does not read one either |
 
 **GitHub's keyword set, verbatim.** `close`/`closes`/`closed`, `fix`/`fixes`/`fixed`, `resolve`/`resolves`/`resolved`, case-insensitive. That list is what actually decides whether merging the PR closes the issue, so a narrower one here would silently drop an issue this PR really does close — a divergence between what we print and what the merge does is its own trap. The reference shapes GitHub honours are all accepted: `#N`, `GH-N`, `owner/repo#N`, and the full `https://github.com/owner/repo/issues/N` URL.
 
@@ -97,6 +98,8 @@ A PR body routinely cites issues it does **not** close: a precedent (`the same s
 **Nothing declared is a printed sentence, not a skipped line.** A missing `Issue:` line is indistinguishable from a renderer that never looked — the three-state contract of [Zero check runs](#zero-check-runs-is-four-states-not-one), one line further up the same output.
 
 **A cross-repo reference is never resolved locally.** `gh issue view 5` resolves 5 against the *current* repository, so fetching `octo/other#5` here would print a different issue's title under this PR's closing reference — this defect with more confidence attached. Those refs are printed as written.
+
+**Code spans, fenced blocks and HTML comments are removed before matching, and that rule was measured rather than assumed.** [#600](https://github.com/Digital-Process-Tools/claude-supertool/pull/600)'s own body cites ``Closes #571 and closes #572`` inside a code span as an example of this table, and GitHub's `closingIssuesReferences` for that PR returned `{571, 591}` — 571 from a prose sentence elsewhere in the body, 572 from nowhere. One variable, one observation: GitHub skipped the span. With the rule in place the extractor returns `['#591', '#571']` for that body — exact agreement with GitHub on a real PR. Four-space indented blocks are deliberately not handled: distinguishing one from a nested list continuation needs a real block parser, and guessing wrong would delete prose and drop a genuine reference.
 
 Both ops call `_checks.closing_issue_refs()` and `_checks.linked_issue_line()`, so the extraction and the wording cannot drift between them. The GitLab arm still uses its own `#(\d{4,})` heuristic with no keyword requirement — same class of defect, different closing vocabulary, filed separately.
 

@@ -118,6 +118,40 @@ def test_cross_repo_and_url_references_keep_the_repo_they_name() -> None:
         "Fixes https://github.com/octo/other/issues/5") == ["octo/other#5"]
 
 
+def test_a_reference_inside_a_code_span_is_not_a_declaration() -> None:
+    """GitHub skips code spans, and PR #600 proved it rather than assuming it.
+
+    That PR's body cites `Closes #571 and closes #572` inside a code span as an
+    example of the rendering. GitHub's own `closingIssuesReferences` for it
+    returned {571, 591} — 571 from a prose sentence elsewhere in the body, 572
+    from nowhere at all. One variable, one observation: the code span was not
+    honoured. Matching it here would claim an issue the merge will not close.
+    """
+    assert checks.closing_issue_refs("Renders `Closes #572` in the table") == []
+    assert checks.closing_issue_refs(
+        "Closes #591\n\nExample: `Closes #572`") == ["#591"]
+
+
+def test_a_reference_inside_a_fenced_block_is_not_a_declaration() -> None:
+    body = "Closes #591\n\n```\nCloses #263\n```\n"
+    assert checks.closing_issue_refs(body) == ["#591"]
+    assert checks.closing_issue_refs("~~~\nfixes #263\n~~~\n") == []
+
+
+def test_a_reference_inside_an_html_comment_is_not_a_declaration() -> None:
+    assert checks.closing_issue_refs("<!-- Closes #263 -->\nCloses #591") == ["#591"]
+
+
+def test_stripping_a_span_must_not_fuse_a_keyword_onto_a_later_number() -> None:
+    """The removal leaves a break, so neither half's text becomes a match."""
+    assert checks.closing_issue_refs("Closes `the helper` #591") == []
+
+
+def test_an_unterminated_fence_does_not_swallow_the_whole_body() -> None:
+    """A body ending mid-fence must not lose a reference declared before it."""
+    assert checks.closing_issue_refs("Closes #591\n\n```\nunterminated") == ["#591"]
+
+
 def test_repeated_references_are_deduped_in_order() -> None:
     body = "Closes #591\n\nAlso closes #571.\nAnd, again, fixes #591."
     assert checks.closing_issue_refs(body) == ["#591", "#571"]
