@@ -199,6 +199,59 @@ and retries the connect for ~7.5s before giving up. For ops with a heuristic fal
 the call succeeds (slower, less accurate). For LSP-only ops (`diag`, `hover`, `rename`),
 giveup surfaces a clear error message so the caller knows the LSP is the bottleneck.
 
+### Where the daemon lives, and when supertool refuses to use it
+
+Every daemon's socket, pidfile and log live in a per-user runtime directory, and
+never in `/tmp` (#148):
+
+| Order | Location |
+|---|---|
+| 1 | `$SUPERTOOL_RUNTIME_DIR` — explicit override |
+| 2 | `$XDG_RUNTIME_DIR/supertool/mcp/` — Linux |
+| 3 | `~/Library/Caches/supertool/mcp/` — macOS |
+| 4 | `~/.cache/supertool/mcp/` — fallback |
+
+**That directory must be owned by you and must be mode `0700`.** It is not
+housekeeping: on Linux it is the *directory's* mode, not the socket's, that
+decides whether another local user can `connect()` to your daemon and enumerate
+your pidfiles. Supertool creates it `0700`, `chmod`s an existing one back to
+`0700`, and then **checks the result rather than assuming it** (#568). Three ways
+it declines, each with the reason on stderr and — through `stop.py` — exit `4`:
+
+```
+daemon: cannot create runtime dir /Volumes/usb/rt: Not a directory. Set
+SUPERTOOL_RUNTIME_DIR to a path you can create as a directory.
+
+daemon: runtime dir /Volumes/usb/rt owned by uid 501, not us (502). Refusing to
+use it. Set SUPERTOOL_RUNTIME_DIR to a directory you own.
+
+daemon: runtime dir /Volumes/usb/rt is 0o755, not owner-only, and the chmod to
+0700 did not take. … Fix it with `chmod 700 /Volumes/usb/rt` — or, if this is a
+filesystem with no POSIX modes (exFAT/FAT32/SMB), remount it with `umask=077` or
+point SUPERTOOL_RUNTIME_DIR at a filesystem that has them.
+```
+
+**Who refuses and who degrades.** The three sentences above are refusals for the
+surfaces whose job is to report on the runtime dir — `mcp_status`, and `mcp_stop`
+via exit `4`. For an op that merely *wants* a warm daemon they arrive as an
+ordinary "MCP server unavailable" and the op falls back to its cold path with the
+reason surfaced (#568). A daemon is an optimization, the same as the invalidation
+below, and the same rule applies: it never blocks the op. Degrading is also the
+safer half of that trade rather than the more forgiving one — the cold path binds
+no socket and writes no pidfile, so on the path that keeps working there is
+nothing left for the directory mode to have been protecting.
+
+The third is the behaviour change to know about. Pointing
+`SUPERTOOL_RUNTIME_DIR` at an external drive or a network share used to work
+silently and give you a daemon directory with no enforceable mode at all; it now
+says so. On those filesystems the mode is set at mount time rather than per
+directory, so `umask=077` / `dmask=077` on the mount is the fix, and a path on a
+POSIX filesystem is the alternative. Supertool does not warn-and-continue here:
+a check that never stops anything cannot be told apart from one that keeps
+passing, which is [#544](https://github.com/Digital-Process-Tools/claude-supertool/issues/544)'s
+lesson, and unlike #544 the question here *was* answered — a readable `0o755` is
+a finding, not an absence.
+
 ### When the stop fails
 
 Invalidation is an optimization and never blocks the op — a `stop.py` that
@@ -214,7 +267,7 @@ automatic caller has:
 | `1` | *not used* — CPython's status for an uncaught exception (#574) | failure — `stop.py` crashed and checked nothing |
 | `2` | bad arguments | failure |
 | `3` | a daemon was found and is still there, or its pidfile could not be read as one pid | failure |
-| `4` | no claim established — a runtime dir whose ownership cannot be verified (#544), or one `--all` could not enumerate (#551) | failure |
+| `4` | no claim established — a runtime dir whose ownership cannot be verified (#544), one that is not owner-only and cannot be made so (#568), or one `--all` could not enumerate (#551) | failure |
 | `5` | no daemon was running | success — nothing stale can come from nothing |
 
 `1` is reserved rather than assigned, and `5` is where "no daemon was running"

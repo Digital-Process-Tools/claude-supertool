@@ -114,10 +114,13 @@ def main() -> int:
     pidfiles, listing_error = list_pidfiles()
     if listing_error:
         # Not a row — no row was enumerated, so there is nothing to carry a
-        # verdict. On stdout deliberately: `mcp_status` exits 0 in every case,
-        # and the custom-op runner only folds stderr into the output on a
-        # non-zero status. A stderr-only line here would be #551 again, wearing
-        # a different coat.
+        # verdict. On stdout deliberately: every path `mcp_status` reaches
+        # itself returns 0, and the custom-op runner only folds stderr into the
+        # output on a non-zero status. A stderr-only line here would be #551
+        # again, wearing a different coat. (`runtime_dir()` can refuse before
+        # this function is entered — a stated exit, message on stderr, and the
+        # non-zero status is what gets it folded in, #568. That is the one
+        # non-zero exit and it never reaches this branch.)
         print(f"Cannot list supertool MCP daemons: {listing_error}")
         print("  The runtime dir could not be read, so this is NOT a report "
               "that none are running.")

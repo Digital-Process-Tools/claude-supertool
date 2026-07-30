@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import stat
 import sys
 from pathlib import Path
 from typing import Tuple
@@ -40,7 +41,9 @@ def runtime_dir() -> str:
 
     Creates the directory with mode `0700` if missing. If it exists but is
     owned by another uid (a co-tenant squatting), aborts with an error —
-    we will not trust a directory we don't own.
+    we will not trust a directory we don't own. Also aborts when the
+    directory is not owner-only and cannot be made so (#568): the mode is
+    verified after the chmod rather than assumed from it.
     """
     override = os.environ.get("SUPERTOOL_RUNTIME_DIR")
     if override:
@@ -54,8 +57,32 @@ def runtime_dir() -> str:
         else:
             base = Path.home() / ".cache" / "supertool" / "mcp"
 
-    base.mkdir(parents=True, exist_ok=True)
-    # Tighten perms — directory must be owner-only.
+    # Created owner-only, not created loose and tightened afterwards (#568).
+    # `mkdir` with no `mode=` uses `0o777 & ~umask` — `0o755` under the common
+    # `umask 022` — so every first run had a window between the mkdir and the
+    # chmod in which this directory was group- and world-traversable. That is
+    # the window #148 exists to close, since on Linux it is the parent dir's
+    # mode, not the socket's, that gates a co-tenant's connect().
+    #
+    # An OSError here is a stated refusal rather than a traceback out of a
+    # library helper. `exist_ok=True` does not tolerate a non-directory, so a
+    # `SUPERTOOL_RUNTIME_DIR` naming a regular file raised `FileExistsError`
+    # from inside pathlib; a read-only parent raised `PermissionError`. Both
+    # reached callers as the #544 shape — a crash where a sentence belongs.
+    try:
+        base.mkdir(mode=0o700, parents=True, exist_ok=True)
+    except OSError as exc:
+        sys.exit(
+            f"daemon: cannot create runtime dir {base}: "
+            f"{exc.strerror or exc}. Set SUPERTOOL_RUNTIME_DIR to a path you "
+            f"can create as a directory."
+        )
+    # The chmod still has a job. `mode=` above applies only to the leaf and
+    # only when we are the ones creating it: it is ignored for a directory
+    # that already exists, and ignored for the intermediate directories
+    # `parents=True` makes. Its result is checked below rather than assumed —
+    # the `except OSError: pass` that used to be the whole of the handling
+    # left the requirement stated in a comment and enforced by nothing.
     try:
         os.chmod(base, 0o700)
     except OSError:
@@ -93,6 +120,33 @@ def runtime_dir() -> str:
             )
     except OSError as e:
         sys.exit(f"daemon: cannot stat {base}: {e}")
+    # Mode check — the requirement the comment above the chmod always claimed
+    # (#568). `os.stat` answers this, so a loose mode is a finding and not the
+    # absence of one: `skipped` is for a question that cannot be asked, which
+    # is what `st_uid` is on the platforms #544 covers, and is not what a
+    # readable `0o755` is. Refusing rather than warning follows the same
+    # argument as the ownership check it shares this stat with, and matches
+    # `_publish_safety.check_token_file_mode`, which declines an insecure
+    # token file the way `ssh` declines an insecure key. A warning here would
+    # be a security check that never stops anything, which is #544's lesson
+    # read backwards.
+    #
+    # `& 0o077` rather than `!= 0o700`: the question is exposure to other
+    # users, so a group-read-only dir fails it and an owner-only `0o600` — odd
+    # but not exposed — passes it and is left to fail elsewhere on its own
+    # terms if it is going to.
+    mode = stat.S_IMODE(st.st_mode)
+    if mode & 0o077:
+        sys.exit(
+            f"daemon: runtime dir {base} is {oct(mode)}, not owner-only, and "
+            f"the chmod to 0700 did not take. On Linux it is this directory's "
+            f"mode that gates a co-tenant's connect() to the daemon socket and "
+            f"their enumeration of the pidfiles (#148), so this is exposure "
+            f"rather than untidiness. Refusing to use it. Fix it with "
+            f"`chmod 700 {base}` — or, if this is a filesystem with no POSIX "
+            f"modes (exFAT/FAT32/SMB), remount it with `umask=077` or point "
+            f"SUPERTOOL_RUNTIME_DIR at a filesystem that has them."
+        )
     return str(base)
 
 
@@ -126,8 +180,9 @@ def list_pidfiles() -> Tuple[list, str]:
     Reachability is low by construction, and worth stating rather than
     inflating. `runtime_dir()` runs first, chmods the directory back to `0700`
     (so a `chmod 000` heals instead of raising) and exits outright on foreign
-    ownership, which leaves an `ENOENT` race against its own `mkdir`, `EIO` on a
-    failing volume, and `EMFILE` under fd pressure. Fixed anyway because the
+    ownership or on a mode it could not tighten (#568), which leaves an `ENOENT`
+    race against its own `mkdir`, `EIO` on a failing volume, and `EMFILE` under
+    fd pressure. Fixed anyway because the
     failure is silent by construction — before this, nothing on either surface
     could ever report that it had happened.
     """
