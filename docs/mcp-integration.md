@@ -215,7 +215,7 @@ never in `/tmp` (#148):
 housekeeping: on Linux it is the *directory's* mode, not the socket's, that
 decides whether another local user can `connect()` to your daemon and enumerate
 your pidfiles. Supertool creates it `0700`, `chmod`s an existing one back to
-`0700`, and then **checks the result rather than assuming it** (#568). Three ways
+`0700`, and then **checks the result rather than assuming it** (#568). Four ways
 it declines, each with the reason on stderr and — through `stop.py` — exit `4`:
 
 ```
@@ -229,9 +229,53 @@ daemon: runtime dir /Volumes/usb/rt is 0o755, not owner-only, and the chmod to
 0700 did not take. … Fix it with `chmod 700 /Volumes/usb/rt` — or, if this is a
 filesystem with no POSIX modes (exFAT/FAT32/SMB), remount it with `umask=077` or
 point SUPERTOOL_RUNTIME_DIR at a filesystem that has them.
+
+daemon: cannot pin runtime dir C:\\Users\\me\\rt to a directory descriptor on this
+platform — O_DIRECTORY, O_NOFOLLOW unavailable. … That question cannot be asked
+here rather than merely being awkward, so this declines instead of checking
+whatever the path currently points at.
 ```
 
-**Who refuses and who degrades.** The three sentences above are refusals for the
+**A symlink is allowed, and is resolved once (#583).** Pointing
+`SUPERTOOL_RUNTIME_DIR` at a symlink is a supported thing to do. Supertool
+follows it exactly once, then holds the directory on the far end open as an
+`O_DIRECTORY | O_NOFOLLOW` descriptor and answers every question about it with
+`fchmod`/`fstat` on that descriptor — so the ownership check, the mode check and
+the tightening cannot each describe a different directory. Messages then name the
+**resolved** path, because that is the one to `chmod` or `chown`, with the
+configured path in parentheses when the two differ:
+
+```
+daemon: runtime dir /srv/rt-real (reached via /home/me/rt) is 0o755, not owner-only …
+```
+
+Two consequences worth knowing before you configure one:
+
+- **The path supertool reports and uses is the resolved one.** If your
+  `SUPERTOOL_RUNTIME_DIR` (or `$HOME`) contains a symlink, the socket and pidfile
+  paths change once, on upgrade, from the link path to the resolved path. Daemons
+  started before the upgrade are bound to the old path and are no longer found by
+  `mcp_status` or `mcp_stop --all`; `pkill -f supertool-mcp` clears them, and
+  nothing else is affected. This is the point of the change rather than a side
+  effect — a path with a link in it is a path something else can re-aim.
+- **UDS paths have a length cap** (~104 bytes on macOS, 108 on Linux). Resolving
+  can lengthen a path, so a link used to *shorten* a long runtime dir no longer
+  does.
+
+**Where the guarantee starts and stops.** It starts at the resolve and covers
+everything `_paths.py` asserts: the directory that is tightened, ownership-checked
+and mode-checked is one object, held open, and the path handed to callers
+traverses no symlink, so repointing a link cannot move it afterwards. It stops at
+the daemon: `socket.bind()` takes no `dir_fd`, and the daemon is a separate
+process that receives a path, so its `bind` and its pidfile/log opens are still
+by path. `list_pidfiles` is the one consumer handed the descriptor itself
+(`os.listdir(fd)`). The residual window is the resolved leaf directory being
+replaced between validation and use, which needs write access to a directory
+supertool owns — narrower than the symlink swap it replaces, and stated here
+rather than claimed closed. Closing it means `dir_fd`-relative opens and an
+`fchdir`-relative `bind` inside `daemon.py`; that is tracked separately.
+
+**Who refuses and who degrades.** The sentences above are refusals for the
 surfaces whose job is to report on the runtime dir — `mcp_status`, and `mcp_stop`
 via exit `4`. For an op that merely *wants* a warm daemon they arrive as an
 ordinary "MCP server unavailable" and the op falls back to its cold path with the
@@ -267,7 +311,7 @@ automatic caller has:
 | `1` | *not used* — CPython's status for an uncaught exception (#574) | failure — `stop.py` crashed and checked nothing |
 | `2` | bad arguments | failure |
 | `3` | a daemon was found and is still there, or its pidfile could not be read as one pid | failure |
-| `4` | no claim established — a runtime dir whose ownership cannot be verified (#544), one that is not owner-only and cannot be made so (#568), or one `--all` could not enumerate (#551) | failure |
+| `4` | no claim established — a runtime dir whose ownership cannot be verified (#544), one that is not owner-only and cannot be made so (#568), one that cannot be pinned to a directory descriptor so that the checks and the use agree on one object (#583), or one `--all` could not enumerate (#551) | failure |
 | `5` | no daemon was running | success — nothing stale can come from nothing |
 
 `1` is reserved rather than assigned, and `5` is where "no daemon was running"

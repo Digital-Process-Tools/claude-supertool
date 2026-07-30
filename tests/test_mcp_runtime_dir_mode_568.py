@@ -96,19 +96,39 @@ def runtime(tmp_path, monkeypatch, loose_umask):
 
 @pytest.fixture
 def no_chmod(monkeypatch, runtime):
-    """Make `os.chmod` fail for the runtime dir only — the exFAT/SMB case.
+    """Make every chmod of the runtime dir fail — the exFAT/SMB case.
 
-    Narrow on purpose: patching `os.chmod` wholesale would break unrelated
-    machinery reached from the same call, and the real failure is per-path.
+    Narrow on purpose: patching wholesale would break unrelated machinery
+    reached from the same call, and the real failure is per-path.
+
+    `os.fchmod` is patched alongside `os.chmod` because since #583 the runtime
+    dir is tightened through a held directory descriptor rather than by path.
+    An fd carries no path, so it is matched by `(st_dev, st_ino)` instead. A
+    fixture that only knew about `os.chmod` would stop simulating anything the
+    moment the implementation stopped calling it, and every mode test here would
+    go green because the chmod started working — not because the check did.
     """
-    real = os.chmod
+    real_chmod, real_fchmod = os.chmod, os.fchmod
 
-    def _fail(path, mode, *a, **kw):
-        if str(path) in (str(runtime), str(runtime.resolve())):
+    def _is_runtime(target) -> bool:
+        try:
+            st, want = os.stat(target), os.stat(runtime)
+        except OSError:
+            return False
+        return (st.st_dev, st.st_ino) == (want.st_dev, want.st_ino)
+
+    def _chmod(path, mode, *a, **kw):
+        if str(path) in (str(runtime), str(runtime.resolve())) or _is_runtime(path):
             raise OSError(errno.EPERM, "Operation not permitted")
-        return real(path, mode, *a, **kw)
+        return real_chmod(path, mode, *a, **kw)
 
-    monkeypatch.setattr(os, "chmod", _fail)
+    def _fchmod(fd, mode):
+        if _is_runtime(fd):
+            raise OSError(errno.EPERM, "Operation not permitted")
+        return real_fchmod(fd, mode)
+
+    monkeypatch.setattr(os, "chmod", _chmod)
+    monkeypatch.setattr(os, "fchmod", _fchmod)
     return runtime
 
 
