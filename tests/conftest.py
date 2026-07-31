@@ -90,6 +90,29 @@ def pytest_configure(config):
     # real env still wins via setdefault, and tests that pin the timeout itself
     # monkeypatch.setenv over this.
     os.environ.setdefault("SUPERTOOL_LINT_TIMEOUT", "30")
+    # #650: same call, one layer along, but on weaker evidence — say so rather
+    # than inherit the lint budget's confidence.
+    #
+    # #650 was filed as "5s is reachable with 11 xdist workers hammering one
+    # object store". That did not survive measurement on the machine that
+    # reported it: worst git latency was 0.30s while the real suite ran, and
+    # 0.76s under 96 CPU burners on 11 cores — 6x inside the budget at a load
+    # no CI runner will see. So the *cause* of that one pre-push stall is still
+    # unknown, and this line is not a diagnosis of it.
+    #
+    # What justifies the line anyway is the leg above: a 2-core Windows runner
+    # with Defender scanning every freshly written temp file has blown the lint
+    # budget twice on master. That is a measured fact about an environment this
+    # suite actually runs in and my laptop is not, and git spawns are the same
+    # shape of work. Generalising a macOS measurement to that runner would be
+    # the same overreach the issue made in the other direction.
+    #
+    # It is insurance, not the fix. The fix is that the product now declines
+    # instead of crashing, which is what made the #650 red fatal — see
+    # presets/git/status.py::_git. As with the lint budget: a property of the
+    # runner, never of supertool. The shipped default stays 5s, pinned by
+    # test_git_timeout_disclosure_650.py::test_the_suite_budget_does_not_move_the_product_default.
+    os.environ.setdefault("SUPERTOOL_GIT_TIMEOUT", "30")
     # #149: publish-body allowlist + confirm gate. Existing publish tests use
     # `tmp_path` for body files (outside the production .max/ / drafts/ /
     # posts/ / blog/ allowlist) and don't `|force`, so opt the suite in.

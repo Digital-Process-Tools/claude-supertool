@@ -3961,23 +3961,56 @@ def _atomic_write(path: str, content: str) -> None:
         _WRITE_WARNINGS.append((_key, _warn))
 
 
-_BRANCH_CACHE: List[Optional[str]] = [None]
+_BRANCH_CACHE: List[Optional[Tuple[str, str]]] = [None]
 
 # Above this, the nearest-line scan is skipped — the diagnostic is a courtesy
 # on a failure path and must never become the slow part of a failed edit.
 _EDIT_DIAG_MAX_LINES = 20000
 
+_GIT_TIMEOUT_DEFAULT = 5
 
-def _current_branch() -> str:
-    """Current git branch, or "" when there isn't one to report.
+
+def _git_timeout() -> int:
+    """Budget for the git calls supertool makes about itself (#650).
+
+    Overridable per environment for the same reason SUPERTOOL_LINT_TIMEOUT is
+    (#553): a loaded runner occasionally needs room, and that is a fact about
+    the runner, never a decision about the product. The shipped default does
+    not move — pinned by test_the_suite_budget_does_not_move_the_product_default.
+    """
+    try:
+        val = int(os.environ.get("SUPERTOOL_GIT_TIMEOUT", ""))
+    except (TypeError, ValueError):
+        return _GIT_TIMEOUT_DEFAULT
+    return val if val > 0 else _GIT_TIMEOUT_DEFAULT
+
+
+def _branch_reading() -> Tuple[str, str]:
+    """`(branch, why_unavailable)` — three states, not two (#650).
+
+    `("my-feature", "")` git answered and named a branch; `("", "")` git
+    answered and there is no branch to name; `("", why)` git did not answer.
+
+    The third state used to be the second. Both were `""`, and `_branch_line()`
+    renders `""` as silence, so a receipt whose branch lookup timed out was
+    byte-identical to one taken outside a repo — an absence the tool produced,
+    read as an absence in the world (docs/validators.md, "Declining instead of
+    guessing"). It is the wrong direction to be wrong in: the footer exists to
+    catch right-file-wrong-branch, so it fell silent on exactly the run where
+    the caller had least idea what state the repo was in.
+
+    A missing git binary stays in the middle state deliberately. Nothing on
+    that machine was ever going to name a branch, which is the one honest
+    silence — the same line `_vim_render_lint` draws for an uninstalled checker.
 
     Cached for the process: a single supertool invocation cannot change branch
-    mid-call, and a batch of edits would otherwise pay a subprocess each.
-    Returns "" for a non-repo, a missing git, or any error — the branch is a
-    convenience on the receipt and must never be the thing that fails an op.
+    mid-call, and a batch of edits would otherwise pay a subprocess each. The
+    decline is cached with it — a stalled read is the expensive one to repeat.
     """
     if _BRANCH_CACHE[0] is None:
         branch = ""
+        why = ""
+        budget = _git_timeout()
         try:
             # symbolic-ref, not rev-parse: it resolves an *unborn* branch (a
             # fresh `git init` before the first commit), where rev-parse fails
@@ -3985,21 +4018,37 @@ def _current_branch() -> str:
             # HEAD, which is the one case worth a second call.
             r = subprocess.run(
                 ["git", "symbolic-ref", "--short", "-q", "HEAD"],
-                capture_output=True, text=True, timeout=5, encoding="utf-8", errors="replace",
+                capture_output=True, text=True, timeout=budget,
+                encoding="utf-8", errors="replace",
             )
             if r.returncode == 0:
                 branch = r.stdout.strip()
             else:
                 d = subprocess.run(
                     ["git", "rev-parse", "--short", "HEAD"],
-                    capture_output=True, text=True, timeout=5, encoding="utf-8", errors="replace",
+                    capture_output=True, text=True, timeout=budget,
+                    encoding="utf-8", errors="replace",
                 )
                 if d.returncode == 0 and d.stdout.strip():
                     branch = f"detached HEAD at {d.stdout.strip()}"
-        except (subprocess.TimeoutExpired, OSError):
-            branch = ""
-        _BRANCH_CACHE[0] = branch
-    return _BRANCH_CACHE[0] or ""
+        except FileNotFoundError:
+            pass
+        except subprocess.TimeoutExpired as exc:
+            cmd = " ".join(str(a) for a in (exc.cmd or ["git"]))
+            why = f"`{cmd}` did not answer within {budget}s"
+        except OSError as exc:
+            why = f"`git symbolic-ref` could not be run — {exc}"
+        _BRANCH_CACHE[0] = (branch, why)
+    return _BRANCH_CACHE[0]
+
+
+def _current_branch() -> str:
+    """Current git branch, or "" when there isn't one to report.
+
+    The plain-string contract every caller but the receipt wants; *why* the
+    string is empty is `_branch_reading()`'s second value.
+    """
+    return _branch_reading()[0]
 
 
 def _branch_line() -> str:
@@ -4009,8 +4058,14 @@ def _branch_line() -> str:
     branch — and supertool is the thing that knows. A handful of tokens per
     call, against a class of mistake that is otherwise silent until commit time.
     """
-    branch = _current_branch()
-    return f"[branch: {branch}]\n" if branch else ""
+    branch, why = _branch_reading()
+    if branch:
+        return f"[branch: {branch}]\n"
+    # A read that failed is not a repo without a branch (#650). Silence is
+    # reserved for the second; the first says so and names what stalled.
+    if why:
+        return f"[branch: UNKNOWN — {why}]\n"
+    return ""
 
 
 def _result_line(ops: int, writes: int) -> str:

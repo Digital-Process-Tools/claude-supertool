@@ -150,6 +150,7 @@ Most ops need no project config. `git-investigate` takes two env vars (below); `
 |----------|---------|--------|
 | `SUPERTOOL_COMMITS` | `10` | Number of recent commits to show |
 | `SUPERTOOL_BLAME_RECENT` | `5` | Number of blame hotspot lines to surface |
+| `SUPERTOOL_GIT_TIMEOUT` | `5` | Seconds each individual git call gets before it is abandoned and disclosed (see **When git does not answer**) |
 
 Set via the op's JSON config if you want project-wide defaults:
 ```json
@@ -161,6 +162,23 @@ Set via the op's JSON config if you want project-wide defaults:
 ```
 
 `git-status` and `git-push` try `glab` then `gh` to surface the open MR/PR — skip gracefully if neither is installed.
+
+### When git does not answer
+
+`git-status` is a dozen or so separate git calls, and each one gets `SUPERTOOL_GIT_TIMEOUT` seconds (default **5**). A call that does not come back inside its budget is abandoned rather than waited out, and it costs its own section instead of the whole report ([#650](https://github.com/Digital-Process-Tools/claude-supertool/issues/650)). Previously the `TimeoutExpired` escaped: one stalled `rev-list` — the courtesy line about divergence from master — replaced branch, commits, working tree, stashes and PR with a stack trace.
+
+An abandoned call is never rendered as a git that succeeded and printed nothing. It carries exit code `124` (the shell convention for "killed by a timeout"), so every call site's existing "did this work?" branch skips its section exactly as it would for a git that failed. Without that, an empty `rev-list --left-right --count` reads as `0 ahead — branch has no own commits!` and an empty `rev-parse --abbrev-ref HEAD` prints `Branch:` with nothing after it — a false alarm about the branch manufactured out of a fact about the machine.
+
+The missing sections are then named rather than left to look like nothing-to-report:
+
+```
+git-status INCOMPLETE — 1 git call did not answer within 5s and was skipped:
+`git rev-list --left-right --count master...HEAD`. Sections that depend on them
+are missing because git did not answer, not because there was nothing to
+report. Raise SUPERTOOL_GIT_TIMEOUT if this recurs.
+```
+
+The line appears last, and only when there is something to disclose — a clean run carries no permanent disclaimer, which would disclose nothing. Raising the budget is the right move on a loaded or slow runner; it is a property of that machine, never of the repo being reported on.
 
 ### What `git-status`'s `Checks:` line is about
 
