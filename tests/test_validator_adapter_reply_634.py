@@ -27,6 +27,8 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -165,6 +167,52 @@ def test_missing_adapter_binary_is_skipped_with_the_reason(tmp_path: Path) -> No
     assert "skipped" in res, f"a missing binary is not a finding: {res!r}"
     assert "supertool-no-such-binary-634" in str(res["skipped"])
     assert supertool._validator_regressed(None, res) is False
+
+
+def test_missing_binary_reason_names_the_program_on_every_platform(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The Windows leg of #634's own fix: `WinError 2` names nothing.
+
+    POSIX puts the binary in the OSError text (`No such file or directory:
+    'jsonlint'`); Windows raises `[WinError 2] The system cannot find the file
+    specified` and names no file at all. Sourcing the name from the exception
+    told Windows users a checker could not run without telling them which —
+    the same platform-shaped hole as #627. The name comes from the spec now, so
+    this asserts it on every platform by injecting the Windows-shaped error.
+    """
+    target = tmp_path / "good.json"
+    target.write_text("{}", encoding="utf-8")
+
+    def _winerror(*a, **kw):
+        raise OSError(2, "The system cannot find the file specified")
+
+    monkeypatch.setattr(subprocess, "run", _winerror)
+    spec = {"cmd": "supertool-no-such-binary-634 {file}", "match": "*.json"}
+    res = _run(spec, target)
+    assert "skipped" in res
+    assert "supertool-no-such-binary-634" in res["skipped"], (
+        f"name the program from the spec, not the exception: {res['skipped']!r}")
+    assert res["skipped"].count("supertool-no-such-binary-634") == 1, (
+        "the program is named once, from the spec — not echoed again out of "
+        f"the platform's exception text: {res['skipped']!r}")
+
+
+def test_install_dir_is_posix_so_cmds_survive_shlex() -> None:
+    """Why the product was never hit by the fixture bug this test file had.
+
+    `cmd` is split with POSIX-mode `shlex.split` on every platform, which eats
+    backslashes. `{supertool_dir}` is safe because supertool.py:317 stores the
+    install dir with `os.sep` already replaced by `/` — a Windows path pasted
+    in raw would reach the adapter as `C:Usersrunneradmin...`.
+    """
+    assert "\\" not in supertool._INSTALL_DIR
+
+
+def test_windows_style_target_survives_quoting() -> None:
+    """`{file}` is the other half: shlex.quote keeps backslashes intact."""
+    win = r"C:\Users\runneradmin\work\good.json"
+    cmd = "python adapter.py " + shlex.quote(win)
+    assert shlex.split(cmd)[-1] == win
 
 
 def test_skip_row_renders_the_reason(tmp_path: Path) -> None:

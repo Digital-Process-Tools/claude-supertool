@@ -141,6 +141,8 @@ jsonlint    : skipped — jsonlint adapter replied with something that is not JS
 
 Four exits route here, all of them "no verdict was produced": empty stdout, stdout that is not JSON, a reply that parses but carries neither `ok` nor `skipped`, and a `cmd` that could not be spawned at all (the missing-binary case — `1 err` there claimed the *file* was broken because a tool was not installed).
 
+The skip reason names the program from the **spec**, never from the exception text: POSIX puts the missing binary in the `OSError` (`No such file or directory: 'jsonlint'`) and Windows does not (`[WinError 2] The system cannot find the file specified`), so reading it from the exception told Windows users a checker could not run without telling them which one — the platform-shaped hole #627 already paid for once. Only the platform's *reason* (`e.strerror`) is quoted, so the message reads the same shape everywhere: `jsonlint adapter could not be run: jsonlint — No such file or directory — this file was not checked`.
+
 A **timeout is deliberately excluded** and stays a loud error. The binary exists and was invoked; a tool that hangs is a validator failure, and guessing towards silence there is how a broken validator starts looking clean.
 
 This is not suppression, and the distinction is the whole point. Muting the row would have traded a loud false positive for a quiet absence of coverage — the failure nobody notices. The row still prints on every run; it now names the adapter, says it was the adapter's own reply that failed, and states plainly that the file was not checked. What it no longer does is claim a fact about the file.

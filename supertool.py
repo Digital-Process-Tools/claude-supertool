@@ -10724,6 +10724,24 @@ def _validator_warm_unsafe_reason(spec: Dict[str, Any], target: str) -> Optional
     return None
 
 
+def _validator_cmd_program(cmd: str) -> str:
+    """The program a validator `cmd` tries to spawn, for messages (#634).
+
+    Sourced from the spec rather than from the `OSError` text, because that
+    text is not portable: POSIX names the missing binary
+    (`No such file or directory: 'jsonlint'`), while Windows raises
+    `[WinError 2] The system cannot find the file specified` and names nothing.
+    Reading the name from the exception told Windows users a checker could not
+    run without telling them which one — the same platform-shaped hole as #627.
+    The spec knows the answer on every platform, so it is the one asked.
+    """
+    try:
+        parts = shlex.split(cmd)
+    except ValueError:
+        parts = cmd.split()
+    return parts[0] if parts else cmd.strip()
+
+
 def _validator_unusable_reply(name: str, target: str, what: str,
                               elapsed: float) -> Dict[str, Any]:
     """The adapter gave us nothing we can read — a skip, never a finding (#634).
@@ -10862,8 +10880,14 @@ def _validator_run_one(name: str, spec: Dict[str, Any], file: str,
                 "duration_ms": timeout * 1000, "elapsed_s": time.monotonic() - _t0,
                 "timeout": True}
     except OSError as e:
+        # strerror, not str(e): the program name comes from the spec, and the
+        # full exception text repeats it on POSIX while omitting it on Windows.
+        # Taking only the reason makes the message the same shape everywhere.
+        _why = e.strerror or str(e)
         return _validator_unusable_reply(
-            name, target, f"could not be run — {e}", time.monotonic() - _t0)
+            name, target,
+            f"could not be run: {_validator_cmd_program(cmd)} — {_why}",
+            time.monotonic() - _t0)
     except (json.JSONDecodeError, IndexError) as e:
         return _validator_unusable_reply(
             name, target, f"replied with something that is not JSON — {e}",
