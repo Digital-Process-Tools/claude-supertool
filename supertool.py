@@ -4205,6 +4205,97 @@ def _compact_header_arg(op: str, parts: List[str]) -> str:
     return ""
 
 
+def _payload_header_arg(op: str, target: str) -> str:
+    """Header for a sub-op that arrived through an @payload, not the colon CLI.
+
+    A batch sub-op used to be echoed back as its fields joined on ':'. The
+    payload route exists *because* the content contains ':', so that join does
+    not merely lose information — it produces a string that parses as a
+    DIFFERENT op. `replace` on `time: 10:30` rendered as
+
+        --- replace:time: 10:30:time: 11:45:/tmp/h.txt ---
+
+    which, pasted back, sends the dispatcher looking for a file named `30`.
+    A header is the thing a reader trusts to reconstruct what happened, and in
+    a bug report it is often the only surviving record. Inviting them to run an
+    op that touches a path nobody named is worse than telling them nothing.
+
+    So this does not attempt a faithful one-line colon rendering — for a
+    payload op there isn't one. It names the ROUTE and the TARGET, which is
+    what identifies the step, and the `@payload` reference does not resolve to
+    a file, so pasting it fails loudly instead of quietly doing something else.
+    That is the invariant: a header must never be a runnable string that runs
+    something other than what ran; if it cannot be re-runnable it must not look
+    re-runnable. Same family as #621 — output presenting itself as a faithful
+    account of an operation and not being one. #644.
+    """
+    return f"{op}:@payload" + (f" → {target}" if target else "")
+
+
+# Positional colon-argument order for batch sub-ops that have no @payload
+# route of their own. Only ops whose colon syntax takes more than one argument
+# need an entry; single-argument ops are unambiguous without one. Ordering here
+# mirrors the `syntax` strings in .supertool.json.
+_BATCH_POSITIONAL_FIELDS: Dict[str, Tuple[str, ...]] = {
+    "head":        ("path", "n"),
+    "tail":        ("path", "n"),
+    "tree":        ("path", "depth"),
+    "around_line": ("path", "line", "n"),
+    "diff":        ("path1", "path2"),
+}
+
+
+def _ordered_batch_fields(op: str, item: Dict[str, Any]) -> Tuple[List[str], str]:
+    """Positional colon fields for a batch sub-op with no @payload route.
+
+    Returns (fields, error) — exactly one is non-empty.
+
+    This replaces `sorted(item)`, which ordered the payload's fields
+    ALPHABETICALLY and is not any op's argument order. That was not a header
+    defect: it is the arg that gets dispatched. `{"op": "tree", "path": "src/",
+    "depth": 2}` ran as `tree:2:src/`, and `between` with `symbol` + `path` ran
+    as `between:<path>:<symbol>` — silently searching for the file inside the
+    symbol name.
+
+    Where the order is declared it is used; where it is not, this declines
+    rather than inventing one. Guessing is how the original defect happened.
+    #644.
+    """
+    lower = {str(k).lower(): v for k, v in item.items() if str(k).lower() != "op"}
+    if not lower:
+        return [], ""
+    order = _BATCH_POSITIONAL_FIELDS.get(op)
+    if order is None:
+        if len(lower) == 1:
+            return [str(next(iter(lower.values())))], ""
+        return [], (
+            f"ERROR: batch sub-op '{op}' takes its arguments positionally and has "
+            f"no declared payload field order, so {', '.join(sorted(lower))} "
+            f"cannot be placed. Ordering them alphabetically is a guess, and a "
+            f"wrong guess dispatches a different op — so this declines instead. "
+            f"Use the colon form for '{op}', or an op with an @payload route.\n"
+        )
+    unknown = sorted(k for k in lower if k not in order)
+    if unknown:
+        return [], (
+            f"ERROR: unknown field(s) {', '.join(unknown)} in batch '{op}' "
+            f"— accepted: {', '.join(order)}\n"
+        )
+    fields: List[str] = []
+    for name in order:
+        if name not in lower:
+            break
+        fields.append(str(lower[name]))
+    skipped = [n for n in order[len(fields):] if n in lower]
+    if skipped:
+        return [], (
+            f"ERROR: batch '{op}' payload sets {', '.join(skipped)} without the "
+            f"earlier positional field(s) {', '.join(order[len(fields):order.index(skipped[0])] or order[:1])} "
+            f"— colon arguments cannot be sparse.\n"
+        )
+    return fields, ""
+
+
 def _sh_backslash_warning(path: str, content: str) -> str:
     """Flag `\\\\` at end-of-line in a shell script (#380).
 
@@ -13304,6 +13395,18 @@ def _load_at_file(ref: str) -> Any:
     Returns the parsed value (dict, list, etc.).
     Raises ValueError with a human-readable message on any error.
     """
+    if ref == "@payload" or ref.startswith("@payload "):
+        # A batch sub-op that ran from a payload is echoed as
+        # `op:@payload → target` (#644). That header is deliberately not
+        # re-runnable: the fields it ran from cannot be flattened onto a colon
+        # CLI without becoming a different op. Say so, rather than letting it
+        # fall through to a bare "@file not found: payload", which reads as a
+        # missing file and invites the reader to go looking for one.
+        raise ValueError(
+            "'@payload' is a header placeholder, not a reference. This op ran "
+            "from an @payload whose fields no single-colon header can reproduce "
+            "(#644) — re-run it from the original payload file or stdin."
+        )
     if ref == "@-":
         raw = sys.stdin.read()
         source = "<stdin>"
@@ -13836,8 +13939,16 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
     # it would take the reproduction material away at the one moment it is
     # needed. So the compact form is computed now, while `parts` is in hand,
     # and swapped in at the end only if the op succeeded.
+    #
+    # Not for a payload-sourced sub-op (`pre_parsed`): its `arg` is already the
+    # honest `op:@payload → target` header the batch loop synthesized, and
+    # eliding THAT would replace a truthful line with a summary of fields the
+    # caller never typed on a colon CLI. The swap below is also gated on the op
+    # having written, which for a payload op meant a FAILING one fell back to
+    # the flattened lie — at the one moment a reader is reconstructing what
+    # happened. #644.
     _compact_header = ""
-    if len(arg) > _HEADER_ARG_MAX:
+    if pre_parsed is None and len(arg) > _HEADER_ARG_MAX:
         _compact_header = _compact_header_arg(op, parts)
     _writes_before = _WRITE_COUNT[0]
     _attempts_before = _MUTATION_ATTEMPTS[0]
@@ -14176,6 +14287,34 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                                     # using the @file→parts machinery for mutating ops
                                     # (preserves validators) and plain dispatch for others.
                                     _sub_pre_parsed = None
+                                    if _sub_op in _READ_OP_AT_FIELDS:
+                                        # Read op with its own payload route (#625).
+                                        # Dispatch straight to the op, exactly as a
+                                        # standalone `grep:@-` does: its pattern or
+                                        # symbol is precisely what a colon join cannot
+                                        # survive, and re-serializing it here undid the
+                                        # reason the payload route was built. #644.
+                                        _read_payload_fields = {
+                                            str(_k): _v for _k, _v in _item.items()
+                                            if str(_k).lower() != "op"
+                                        }
+                                        _read_target = str(
+                                            _read_payload_fields.get("path", "") or ""
+                                        )
+                                        _sub_result = (
+                                            "--- "
+                                            + _payload_header_arg(_sub_op, _read_target)
+                                            + " ---\n"
+                                            + _read_op_from_payload(
+                                                _sub_op, _read_payload_fields
+                                            )
+                                        )
+                                        results.append(_sub_result)
+                                        if not continue_on_error and _sub_result.split("\n")[1:2] and (
+                                            _sub_result.split("\n")[1].startswith("ERROR")
+                                        ):
+                                            break
+                                        continue
                                     if _at_file_fields(_sub_op):
                                         try:
                                             _sub_parts, _sub_replace_all = _at_file_to_parts(_sub_op, _item)
@@ -14194,11 +14333,32 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                                         # content that itself contains `:::` (issue #252).
                                         # A readable colon summary is used only for the header.
                                         _sub_pre_parsed = (_sub_parts, _sub_replace_all)
-                                        _sub_arg = ":".join(_sub_parts)
+                                        # The header gets the same treatment as the
+                                        # parts: NOT re-serialized to a colon string.
+                                        # `":".join(_sub_parts)` produced a header that
+                                        # parsed as a different op — see
+                                        # _payload_header_arg. #644.
+                                        _sub_field_names = _at_file_fields(_sub_op)
+                                        _sub_target = ""
+                                        if "path" in _sub_field_names:
+                                            _sub_path_idx = _sub_field_names.index("path") + 1
+                                            if len(_sub_parts) > _sub_path_idx:
+                                                _sub_target = _sub_parts[_sub_path_idx]
+                                        _sub_arg = _payload_header_arg(
+                                            _sub_parts[0], _sub_target
+                                        )
                                     else:
-                                        # Read-only op: build plain colon arg from known fields.
-                                        # For unknown ops, pass what we have and let dispatch error.
-                                        _fields = [str(_item[k]) for k in sorted(_item) if k != "op"]
+                                        # Op with neither a mutating nor a read payload
+                                        # route. Fields are placed by declared order, or
+                                        # the op declines — never by alphabetical key
+                                        # order, which is not any op's argument order and
+                                        # dispatched a different op outright. #644.
+                                        _fields, _order_err = _ordered_batch_fields(_sub_op, _item)
+                                        if _order_err:
+                                            results.append(_order_err)
+                                            if not continue_on_error:
+                                                break
+                                            continue
                                         _sub_arg = ":".join([_sub_op] + _fields) if _fields else _sub_op
                                     _sub_result = dispatch(_sub_arg, pre_parsed=_sub_pre_parsed)
                                     results.append(_sub_result)
