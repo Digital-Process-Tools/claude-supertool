@@ -27,11 +27,84 @@ import _checks  # noqa: E402  (the one check tally, shared with gh-pr / gh-prs)
 from _git_common import use_utf8_stdout  # noqa: E402
 
 
-def _git(args: list[str], timeout: int = 5) -> subprocess.CompletedProcess[str]:
-    """Run a git command."""
-    return subprocess.run(
-        ["git"] + args,
-        capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace",
+_GIT_TIMEOUT_DEFAULT = 5
+
+# Shell convention for "killed by a timeout" (coreutils `timeout`). Distinct
+# from any exit code git itself produces, so a caller checking `returncode != 0`
+# keeps working while a caller that wants to tell the two apart can.
+TIMEOUT_RC = 124
+
+INCOMPLETE_MARKER = "git-status INCOMPLETE"
+
+# Every git call that ran out of budget this invocation, as (command, budget).
+# Module-level because the calls are scattered through `main()` and the note
+# can only be written once the last of them has had its chance.
+_UNANSWERED: list[tuple[str, int]] = []
+
+
+def _git_timeout(default: int | None = None) -> int:
+    """Budget for one git call, overridable per environment (#650).
+
+    Same shape and same reasoning as `SUPERTOOL_LINT_TIMEOUT` (#553): a loaded
+    runner occasionally needs room without a code change, and what supertool
+    ships with does not move for it.
+    """
+    base = _GIT_TIMEOUT_DEFAULT if default is None else default
+    try:
+        val = int(os.environ.get("SUPERTOOL_GIT_TIMEOUT", ""))
+    except (TypeError, ValueError):
+        return base
+    return val if val > 0 else base
+
+
+def _git(args: list[str], timeout: int | None = None) -> subprocess.CompletedProcess[str]:
+    """Run a git command; a call that does not answer costs its own line (#650).
+
+    `TimeoutExpired` used to escape. One stalled `rev-list` — the courtesy line
+    about divergence from master — then took the whole report with it, stack
+    trace and all: no branch, no commits, no working tree, no PR. That is the
+    loudest possible reaction to the least important call on the page.
+
+    It is not swallowed either. The result carries `TIMEOUT_RC`, so every call
+    site's existing `returncode != 0` branch skips its section exactly as it
+    would for a git that failed, and the call is recorded so the footer can say
+    which sections are missing *because git did not answer* rather than because
+    there was nothing to report (docs/validators.md, "Declining instead of
+    guessing"). Rendering it as a success is the one thing that must never
+    happen here: an empty `rev-list --left-right --count` stdout would print as
+    `0 ahead — branch has no own commits!`, a false alarm about the branch
+    manufactured out of a fact about the machine.
+    """
+    budget = _git_timeout(timeout)
+    cmd = ["git"] + args
+    try:
+        return subprocess.run(
+            cmd,
+            capture_output=True, text=True, timeout=budget, encoding="utf-8", errors="replace",
+        )
+    except subprocess.TimeoutExpired:
+        _UNANSWERED.append((" ".join(cmd), budget))
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=TIMEOUT_RC, stdout="",
+            stderr=f"timed out after {budget}s",
+        )
+
+
+def _incomplete_note() -> str:
+    """One line naming the git calls that went unanswered, or "" if none."""
+    if not _UNANSWERED:
+        return ""
+    budget = _UNANSWERED[0][1]
+    shown = [c for c, _ in _UNANSWERED[:3]]
+    more = len(_UNANSWERED) - len(shown)
+    calls = ", ".join(f"`{c}`" for c in shown) + (f" (+{more} more)" if more else "")
+    plural = "s" if len(_UNANSWERED) != 1 else ""
+    return (
+        f"\n{INCOMPLETE_MARKER} — {len(_UNANSWERED)} git call{plural} did not "
+        f"answer within {budget}s and {'were' if len(_UNANSWERED) != 1 else 'was'} "
+        f"skipped: {calls}. Sections that depend on them are missing because git "
+        f"did not answer, not because there was nothing to report. "
+        f"Raise SUPERTOOL_GIT_TIMEOUT if this recurs."
     )
 
 
@@ -76,6 +149,10 @@ def _head_commit_age_secs(sha: str) -> int | None:
 
 def main() -> int:
     use_utf8_stdout()
+    # This invocation's tally, not the process's. In production they are the
+    # same thing; under a test harness that imports this module once and calls
+    # main() repeatedly, a stale entry would caption a clean run as incomplete.
+    _UNANSWERED.clear()
     # `git-status:full` (alias `:porcelain`) uncaps every list below — for when
     # the default truncated overview isn't enough to drive precise staging
     # (e.g. excluding a few pre-existing untracked items from a large commit).
@@ -357,6 +434,13 @@ def main() -> int:
                 mr_found = True
         except (FileNotFoundError, subprocess.TimeoutExpired, _json.JSONDecodeError):
             pass
+
+    # Last, and only when there is something to disclose. A reader reaching for
+    # `| tail` sees it; a clean run carries no permanent disclaimer, which would
+    # disclose nothing (#621's footer, same reasoning).
+    note = _incomplete_note()
+    if note:
+        print(note)
 
     return 0
 

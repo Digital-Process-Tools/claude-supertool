@@ -31,7 +31,7 @@ def _repo(tmp_path: Path, name: str) -> Path:
 def test_batch_with_a_failing_sub_op_still_reports_the_branch(
     tmp_path: Path, monkeypatch
 ) -> None:
-    monkeypatch.setattr(supertool, "_current_branch", lambda: "my-feature")
+    monkeypatch.setattr(supertool, "_branch_reading", lambda: ("my-feature", ""))
     f = tmp_path / "x.py"
     f.write_text("a = 1\n")
     payload = tmp_path / "ops.json"
@@ -46,7 +46,7 @@ def test_batch_with_a_failing_sub_op_still_reports_the_branch(
 def test_nested_batch_with_a_failing_sub_op_still_reports_the_branch(
     tmp_path: Path, monkeypatch
 ) -> None:
-    monkeypatch.setattr(supertool, "_current_branch", lambda: "my-feature")
+    monkeypatch.setattr(supertool, "_branch_reading", lambda: ("my-feature", ""))
     f = tmp_path / "x.py"
     f.write_text("a = 1\n")
     inner = tmp_path / "inner.json"
@@ -61,7 +61,7 @@ def test_nested_batch_with_a_failing_sub_op_still_reports_the_branch(
 
 def test_read_only_batch_still_has_no_footer(tmp_path: Path, monkeypatch) -> None:
     """The attempt counter must not make every batch report a branch."""
-    monkeypatch.setattr(supertool, "_current_branch", lambda: "my-feature")
+    monkeypatch.setattr(supertool, "_branch_reading", lambda: ("my-feature", ""))
     f = tmp_path / "x.py"
     f.write_text("a = 1\n")
     payload = tmp_path / "ops.json"
