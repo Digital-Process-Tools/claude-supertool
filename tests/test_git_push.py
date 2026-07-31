@@ -421,7 +421,14 @@ def test_main_force_with_lease_and_no_verify_flags(capsys) -> None:
 
 
 def test_main_first_push_sets_upstream(capsys) -> None:
-    """No upstream initially → push -u; receipt notes branch created."""
+    """No upstream initially → push -u; receipt notes branch created.
+
+    The push stub emits the porcelain per-ref line git actually emits for a
+    created branch. It used to return bare `""`, and the receipt said "branch
+    created" anyway — because it was inferring that from the missing upstream
+    rather than reading git's answer (#661). With the inference gone, the stub
+    has to supply the evidence, which is the point.
+    """
     calls: list[list[str]] = []
 
     def fake_git(args, timeout=30):
@@ -436,7 +443,7 @@ def test_main_first_push_sets_upstream(capsys) -> None:
         if args[0] == "rev-parse" and args[1] == "--short":
             return _proc("ccc3333\n", 0)
         if args[0] == "push":
-            return _proc("", 0)
+            return _proc("*\tHEAD:refs/heads/feat\t[new branch]\n", 0)
         if args[:2] == ["rev-list", "--left-right"]:
             return _proc("0\t0\n", 0)
         return _proc("", 0)
@@ -448,6 +455,40 @@ def test_main_first_push_sets_upstream(capsys) -> None:
     assert rc == 0
     assert ["push", "--porcelain", "-u", "origin", "HEAD"] in calls
     assert "branch created" in out
+    assert "UNKNOWN" not in out
+
+
+def test_main_first_push_without_a_per_ref_line_declines(capsys) -> None:
+    """#661: no evidence from git is not evidence of a creation.
+
+    Same shape as the test above with one thing removed — git reports no
+    per-ref status line for the ref. The old receipt could not tell the two
+    apart, because in both cases it was reading the absence of a local
+    upstream rather than anything git said about the remote.
+    """
+    def fake_git(args, timeout=30):
+        if args[:2] == ["rev-parse", "--git-dir"]:
+            return _proc(".git\n", 0)
+        if args[:2] == ["rev-parse", "--abbrev-ref"] and "@{upstream}" not in args:
+            return _proc("feat\n", 0)
+        if args[0] == "rev-parse" and args[1] == "--short":
+            return _proc("ccc3333\n", 0)
+        if args[0] == "push":
+            return _proc("", 0)
+        if args[:2] == ["rev-list", "--left-right"]:
+            return _proc("0\t0\n", 0)
+        return _proc("", 0)
+
+    with mock.patch.object(push, "_git", side_effect=fake_git), \
+         mock.patch.object(push, "query_open_mr", return_value=None), \
+         mock.patch.object(push, "_upstream_ref", side_effect=["", "origin/feat"]):
+        rc = push.main()
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "branch created" not in out
+    assert "UNKNOWN" in out
+    assert "UNKNOWN" in out.strip().splitlines()[-1], (
+        "the doubt does not survive `| tail -3` (#623)")
 
 
 # ── post-push advisories ─────────────────────────────────────────────────
@@ -461,7 +502,16 @@ def test_watch_target_maps_source() -> None:
 
 def test_uncommitted_leftovers_lists_porcelain() -> None:
     with mock.patch.object(push, "_git", return_value=_proc(" M a.py\n?? b.py\n")):
-        assert push._uncommitted_leftovers() == [" M a.py", "?? b.py"]
+        assert push._uncommitted_leftovers() == ([" M a.py", "?? b.py"], "")
+
+
+def test_uncommitted_leftovers_declines_on_a_failed_status() -> None:
+    """#662: an empty stdout from a failed `git status` is not a clean tree."""
+    with mock.patch.object(push, "_git",
+                           return_value=_proc("", 128, "fatal: bad config")):
+        changes, why = push._uncommitted_leftovers()
+    assert changes is None, "a failed check returned a list, as if it had run"
+    assert "128" in why and "fatal: bad config" in why
 
 
 def test_discarded_by_force_lists_commits() -> None:

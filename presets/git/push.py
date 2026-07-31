@@ -181,15 +181,46 @@ def _ref_line(push_stdout: str, ref: str) -> tuple[str, str]:
     return "", ""
 
 
+def _push_outcome(push_stdout: str, ref: str) -> tuple[str, str, str]:
+    """What git says this push did to `ref`: `(kind, old_sha, why)`.
+
+    `kind` is `created` | `updated` | `forced` | `uptodate` | `unknown`, read
+    off git's porcelain per-ref summary — the machine-readable channel #641
+    established, not free text and not our local remote-tracking ref. The four
+    summaries cannot be confused with each other: `[new branch]`,
+    `<old>..<new>` (two dots), `<old>...<new> (forced update)` (three dots,
+    behind a `+` flag), `[up to date]`.
+
+    `unknown` carries `why` and is returned whenever git reported no line for
+    this ref at all, or a summary this grammar does not cover. It exists so
+    that callers of this function decline instead of guessing (#661); every
+    other state here is a claim git itself made.
+    """
+    flag, summary = _ref_line(push_stdout, ref)
+    if not flag:
+        return "unknown", "", "git reported no per-ref status line for it"
+    if "[new branch]" in summary:
+        return "created", "", ""
+    if flag == "=" or "[up to date]" in summary:
+        return "uptodate", "", ""
+    if flag == "+":
+        if "..." in summary:
+            return "forced", summary.split("...", 1)[0].strip(), ""
+        return "unknown", "", ("git reported a forced update of it without the "
+                               f"SHA it overwrote (`{summary}`)")
+    if ".." in summary:
+        return "updated", summary.split("..", 1)[0].strip(), ""
+    return "unknown", "", f"git's per-ref summary for it was `{summary}`"
+
+
 def _forced_update_old_sha(push_stdout: str, ref: str) -> str:
     """The SHA git says it overwrote, when it reports a forced update of `ref`.
 
-    The porcelain summary for a forced update is `<old>...<new> (forced
-    update)`; a plain fast-forward is `<old>..<new>` with two dots and no
-    suffix, and a new branch is `[new branch]`, so the three cannot be
-    confused. This is git's own answer about the remote, on the same
-    machine-readable channel #641 established — not free text, and not our
-    local remote-tracking ref.
+    A thin reading of `_push_outcome`: only the `forced` kind carries a SHA
+    this caller may act on. A forced update whose summary cannot be parsed is
+    `unknown` there and empty here — returning the raw summary would hand
+    `git log` a garbage revision and convert an unreadable answer into a
+    *failed* check, the same wrong state by a longer route.
 
     It exists because the op's usual source for the pre-push SHA, `@{upstream}`,
     needs `branch.<name>.remote`/`.merge`, while `--force-with-lease` leases
@@ -198,10 +229,8 @@ def _forced_update_old_sha(push_stdout: str, ref: str) -> str:
     still overwrites the remote while the op has nothing to compare against
     (#655).
     """
-    flag, summary = _ref_line(push_stdout, ref)
-    if flag != "+" or "..." not in summary:
-        return ""
-    return summary.split("...", 1)[0].strip()
+    kind, old, _ = _push_outcome(push_stdout, ref)
+    return old if kind == "forced" else ""
 
 
 def _ref_status(push_stdout: str, ref: str) -> str:
@@ -354,10 +383,35 @@ def _spawn_watch(source: str, iid: str) -> tuple[bool, str]:
     return True, how
 
 
-def _uncommitted_leftovers() -> list[str]:
-    """Working-tree changes NOT in this push — the 'forgot to commit X' catch."""
-    r = _git(["status", "--porcelain"])
-    return [ln for ln in r.stdout.splitlines() if ln.strip()]
+def _uncommitted_leftovers() -> tuple[Optional[list[str]], str]:
+    """Working-tree changes NOT in this push — the 'forgot to commit X' catch.
+
+    Three states, not two (#662; docs/validators.md "Declining instead of
+    guessing"): `([], "")` the check ran and the tree is clean, `([...], "")`
+    it ran and found these, `(None, why)` it could not run.
+
+    The return code used to be ignored entirely. A `git status --porcelain`
+    that exited non-zero — a broken `status.*` config, local or inherited, an
+    index another process was holding — yields empty stdout, which became an
+    empty list, which in this receipt renders as silence, which means "nothing
+    was left behind". So the warning that exists to catch work you forgot to
+    commit went quiet on precisely the run where git was not answering and you
+    were least sure what state you were in.
+
+    The timeout and OSError are caught here for the same reason they are a
+    third state and not a traceback: this runs *after* the push has landed, and
+    a stack trace at this point costs the caller the whole receipt of a push
+    that succeeded (#399/#640).
+    """
+    try:
+        r = _git(["status", "--porcelain"])
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        return None, f"`git status --porcelain` did not complete — {exc}"
+    if r.returncode != 0:
+        why = _first_error_line((r.stdout or "") + "\n" + (r.stderr or ""))
+        return None, (f"`git status --porcelain` exited {r.returncode}"
+                      + (f" — {why}" if why else ""))
+    return [ln for ln in r.stdout.splitlines() if ln.strip()], ""
 
 
 def _discarded_by_force(old_remote_sha: str) -> tuple[Optional[list[str]], str]:
@@ -520,33 +574,134 @@ def _post_push_advisories(mr: Optional[dict], flags: set[str],
     # Count, not a listing (#623): on a tree full of generated junk the list
     # crowded the push verdict off the end of the output. The "did I forget to
     # stage something?" signal is the count; the files stay one op away.
-    leftovers = _uncommitted_leftovers()
-    if leftovers:
+    leftovers, why = _uncommitted_leftovers()
+    if leftovers is None:
+        print(f"⚠ UNCOMMITTED-CHANGES CHECK DID NOT RUN — {why}")
+        print("  Whether this push left work behind in the working tree is "
+              "UNKNOWN — this receipt is not saying the tree is clean. "
+              "Settle it: ./supertool 'git-status:full'")
+    elif leftovers:
         print(f"⚠ {len(leftovers)} change(s) NOT in this push (uncommitted) — "
               "list them: ./supertool 'git-status:full'")
 
     _watch_advisory(mr, flags)
 
 
+def _report_first_seen_remote(remote_after: str, push_stdout: str, ref: str,
+                              target: str) -> tuple[bool, str]:
+    """The remote resolves now and the op had no pre-push SHA — what happened?
+
+    Returns `(moved, verdict_note)`.
+
+    This used to be one `elif` printing `(branch created)`, and it inferred the
+    creation from `remote_before` being empty. `remote_before` is empty
+    whenever `@{upstream}` does not resolve, which is a fact about local config
+    and says nothing about the remote: `--force-with-lease` leases against the
+    remote-tracking *ref*, so unsetting only `branch.<name>.merge` leaves the
+    lease passing and the push overwriting an existing branch while the op has
+    no SHA to compare against (#655). The receipt then announced a creation —
+    on the one operation here that destroys work irrecoverably, the least
+    alarming possible story available, and the opposite of what happened. Read
+    it and you stop looking (#661).
+
+    So the answer is git's own per-ref line, which distinguishes all four
+    outcomes unambiguously, and when git said nothing this function declines
+    instead of picking the reassuring branch (three states, not two;
+    docs/validators.md "Declining instead of guessing"). The doubt rides to the
+    `[result]` line because a receipt is read from the bottom (#623).
+    """
+    kind, old, why = _push_outcome(push_stdout, ref)
+    if kind == "created":
+        print(f"Remote now at {remote_after} (branch created)")
+        return True, ""
+    if kind == "uptodate":
+        print(f"Remote at {remote_after} — already up to date, ref unchanged")
+        return False, ""
+    if kind == "forced":
+        print(f"Remote {old} → {remote_after} (force-updated — the branch "
+              "already existed on the remote and was overwritten)")
+        return True, ""
+    if kind == "updated":
+        print(f"Remote {old} → {remote_after} (the branch already existed on "
+              "the remote)")
+        return True, ""
+    print(f"⚠ Remote now at {remote_after} — what it pointed at BEFORE this "
+          "push is UNKNOWN")
+    print(f"  No pre-push SHA was recorded (@{{upstream}} did not resolve) and "
+          f"{why}. That is not evidence of a branch creation: the branch may "
+          "have already existed and been overwritten.")
+    print(f"  Settle it: git reflog show {target}")
+    return True, (" - PRE-PUSH REMOTE STATE UNKNOWN: whether this push created "
+                  f"{target} or overwrote it is not established")
+
+
+def _ahead_behind_line() -> None:
+    """`vs upstream: …` — three states, not two (#662).
+
+    The guard here used to be `if ab.returncode == 0:` with no `else`. An
+    in-sync push legitimately prints nothing extra elsewhere in this receipt,
+    and a caller reads a missing block the same way either time, so a check
+    that *could not run* was indistinguishable from one that ran and found
+    agreement. Silence in this receipt is a positive claim; it has to be
+    earned, which means the failing path says so out loud and names the command
+    that settles it.
+
+    Deliberately no `[result]` suffix: the verdict already carries the verified
+    remote SHA against local HEAD, which is the load-bearing half of this
+    block, and a suffix for every soft check dilutes the one channel that has
+    to stay readable (#623/#655).
+    """
+    cmd = "git rev-list --left-right --count HEAD...@{upstream}"
+    try:
+        ab = _git(["rev-list", "--left-right", "--count", "HEAD...@{upstream}"])
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        print(f"⚠ vs upstream: UNKNOWN — `{cmd}` did not complete ({exc})")
+        return
+    if ab.returncode != 0:
+        why = _first_error_line((ab.stdout or "") + "\n" + (ab.stderr or ""))
+        print(f"⚠ vs upstream: UNKNOWN — `{cmd}` exited {ab.returncode}"
+              + (f" — {why}" if why else ""))
+        return
+    parts = ab.stdout.split()
+    if len(parts) != 2 or not all(p.isdigit() for p in parts):
+        print(f"⚠ vs upstream: UNKNOWN — `{cmd}` answered "
+              f"`{ab.stdout.strip()}`, which is not an ahead/behind pair")
+        return
+    ahead, behind = int(parts[0]), int(parts[1])
+    if ahead or behind:
+        print(f"vs upstream: ahead {ahead}, behind {behind}")
+    else:
+        print("vs upstream: in sync")
+
+
 def _success_receipt(branch: str, remote_before: str, upstream: str,
-                     flags: set[str], force_note: str = "") -> None:
+                     flags: set[str], force_note: str = "",
+                     push_stdout: str = "") -> None:
     """Shared 'what landed' tail — remote diff, ahead/behind, MR line, advisories.
 
     `force_note` rides all the way to the `[result]` line on purpose. The force
     aftermath is printed several lines above it, and a receipt is read from the
     bottom (#623) — a caller reading only the verdict would otherwise walk away
     from a destructive push believing it was clean (#655).
+
+    `push_stdout` is git's `--porcelain` output for the push that just landed.
+    It is the only evidence here about what the remote ref was *before*, on the
+    path where `@{upstream}` never resolved — the local absence of a pre-push
+    SHA is not evidence of anything (#661).
     """
     upstream = upstream or _upstream_ref()
+    remote_name, remote_ref = _split_upstream(upstream, branch)
     remote_after = _remote_sha(upstream)
-    moved, ncommits = True, ""
+    moved, ncommits, unknown_note = True, "", ""
     if remote_before and remote_after and remote_before != remote_after:
         rng = _git(["rev-list", "--count", f"{remote_before}..{remote_after}"])
         n = rng.stdout.strip() if rng.returncode == 0 else "?"
         ncommits = n
         print(f"Remote {remote_before} → {remote_after} ({n} commit(s))")
     elif not remote_before and remote_after:
-        print(f"Remote now at {remote_after} (branch created)")
+        moved, unknown_note = _report_first_seen_remote(
+            remote_after, push_stdout, remote_ref,
+            f"{remote_name}/{remote_ref}")
     elif remote_before and remote_after and remote_before == remote_after:
         moved = False
         print("Already up to date — nothing to push")
@@ -556,24 +711,15 @@ def _success_receipt(branch: str, remote_before: str, upstream: str,
         remote_after = ""
         print("Pushed — remote ref not locally resolvable for a before/after diff")
 
-    ab = _git(["rev-list", "--left-right", "--count", "HEAD...@{upstream}"])
-    if ab.returncode == 0:
-        parts = ab.stdout.strip().split()
-        if len(parts) == 2:
-            ahead, behind = int(parts[0]), int(parts[1])
-            if ahead or behind:
-                print(f"vs upstream: ahead {ahead}, behind {behind}")
-            else:
-                print("vs upstream: in sync")
+    _ahead_behind_line()
 
     mr = query_open_mr(branch)
     mr_line = _open_mr_line(mr)
     if mr_line:
         print(mr_line)
-    remote_name, remote_ref = _split_upstream(upstream, branch)
     _post_push_advisories(mr, flags, remote_name)
     _push_verdict(moved, branch, remote_name, remote_ref, remote_after,
-                  ncommits, force_note)
+                  ncommits, force_note + unknown_note)
 
 
 def _report_hook_pushed(head_before: str, head_after: str,
@@ -618,8 +764,15 @@ def _report_push_timeout(branch: str, head_before: str,
             print(f"Local HEAD rewritten {head_before[:7]} → {head_after[:7]}")
         print(f"Remote {remote}/{ref} now at {live[:7]}")
         print(f"Push outlasted its {_PUSH_TIMEOUT}s budget (slow pre-push hook "
-              "or transfer) — raise ops.git-push.timeout in .supertool.json to "
-              "see the full receipt.")
+              "or transfer), so the receipt above is only what fit in the "
+              "time. The push landed — re-run `git-push` for the full receipt "
+              "(it will report already up to date).")
+        print(f"That budget is _PUSH_TIMEOUT in presets/git/push.py, NOT "
+              "ops.git-push.timeout: the op-level cap in .supertool.json "
+              "bounds the whole process and raising it alone will not move "
+              "this one. The two are not interchangeable — this budget has to "
+              "stay strictly under that cap, or a push killed by the outer "
+              "one can verify nothing (#399).")
         mr = query_open_mr(branch)
         mr_line = _open_mr_line(mr)
         if mr_line:
@@ -815,7 +968,10 @@ def _recover_by_rebase(branch: str, remote_before: str, upstream: str,
         return 1
 
     print("Rebase clean — pushing rebased work")
-    push_args = ["push"]
+    # --porcelain here too: the success receipt reads git's own per-ref line to
+    # say what the remote ref was before this push, and on this path
+    # `remote_before` is empty whenever `@{upstream}` never resolved (#661).
+    push_args = ["push", "--porcelain"]
     if "no-verify" in flags:
         push_args.append("--no-verify")
     if not upstream:
@@ -837,7 +993,8 @@ def _recover_by_rebase(branch: str, remote_before: str, upstream: str,
         return result.returncode
 
     print("Status: pushed ✓ (rebased onto remote)")
-    _success_receipt(branch, remote_before, upstream, flags)
+    _success_receipt(branch, remote_before, upstream, flags,
+                     push_stdout=result.stdout or "")
     return 0
 
 
@@ -977,7 +1134,8 @@ def main() -> int:
         # that skipped it without a word (#655).
         force_note = _force_aftermath(remote_before, result.stdout or "",
                                       remote_name, remote_ref)
-    _success_receipt(branch, remote_before, upstream, flags, force_note)
+    _success_receipt(branch, remote_before, upstream, flags, force_note,
+                     push_stdout=result.stdout or "")
     return 0
 
 
