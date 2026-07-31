@@ -103,7 +103,8 @@ def test_zero_match_tail_says_nothing_changed(tmp_path: Path, monkeypatch) -> No
     f = tmp_path / "x.txt"
     f.write_text("alpha\n")
     out = supertool.dispatch(f"replace:::NOPE_NOT_THERE:::x:::{f}")
-    assert "[result] 1 op run, 0 writes — nothing changed on disk" in _tail(out)
+    assert ("[result] 1 op run, 0 writes, 1 skipped — nothing changed on disk"
+            in _tail(out))
 
 
 def test_applied_tail_reports_the_write(tmp_path: Path, monkeypatch) -> None:
@@ -123,7 +124,8 @@ def test_failed_edit_tail_says_nothing_changed(tmp_path: Path, monkeypatch) -> N
     f = tmp_path / "x.py"
     f.write_text("a = 1\n")
     out = supertool.dispatch(f"edit:::nope = 1:::a = 2:::{f}")
-    assert "[result] 1 op run, 0 writes — nothing changed on disk" in _tail(out)
+    assert ("[result] 1 op run, 0 writes, 1 skipped — nothing changed on disk"
+            in _tail(out))
 
 
 # ---------------------------------------------------------------------------
@@ -199,7 +201,8 @@ def test_batch_where_every_op_misses_says_nothing_changed(tmp_path: Path, monkey
     ]))
     out = supertool.dispatch(f"batch:@{payload}")
     assert f.read_text(encoding="utf-8") == "alpha\n"
-    assert "[result] 2 ops run, 0 writes — nothing changed on disk" in _tail(out)
+    assert ("[result] 2 ops run, 0 writes, 2 skipped — nothing changed on disk"
+            in _tail(out))
 
 
 def test_nested_batch_reports_one_footer(tmp_path: Path, monkeypatch) -> None:

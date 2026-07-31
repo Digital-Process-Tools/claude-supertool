@@ -3844,6 +3844,11 @@ def op_replace(old: str, new: str, path: str = ".", dry: bool = False) -> str:
             total_count += len(positions)
 
     if total_count == 0:
+        # The one no-op receipt in the tool that does not say ERROR, so it
+        # never reached the exit code either (#680). A preview finding nothing
+        # is a truthful preview, not a decline — only the real op declines.
+        if not dry:
+            _SKIP_COUNT[0] += 1
         return f"(0 occurrences of '{old}' found)\n"
 
     if dry:
@@ -4068,8 +4073,8 @@ def _branch_line() -> str:
     return ""
 
 
-def _result_line(ops: int, writes: int) -> str:
-    """`[result] N ops run, M writes` footer for a mutating call (#621).
+def _result_line(ops: int, writes: int, skipped: int = 0) -> str:
+    """`[result] N ops run, M writes[, K skipped]` footer for a mutating call (#621).
 
     The receipt a mutating op prints sits ABOVE the `[validators]` block, and a
     long validators block is exactly when a reader reaches for `| tail -4`. So
@@ -4095,11 +4100,22 @@ def _result_line(ops: int, writes: int) -> str:
     `ops == 0` means no mutating op was accounted for and the state cannot be
     determined — this declines rather than guessing a tidy `0 writes`, per the
     three-state contract in docs/validators.md.
+
+    `skipped` names the third state for the ops themselves (#680). `ops` vs
+    `writes` already carried the information, but only as a subtraction the
+    reader had to perform while suspicious: a batch that reported
+    `6 ops run, 4 writes` had dropped two edits, and the branch went to CI.
+    A count you must diff is not a signal; a word is. So the word appears
+    whenever an op declined, and never otherwise — `0 skipped` on the green
+    path is exactly the kind of number a reader learns to stop seeing, which
+    is how `4 writes` failed in the first place.
     """
     if ops <= 0:
         return ""
     line = (f"[result] {ops} {'op' if ops == 1 else 'ops'} run, "
             f"{writes} {'write' if writes == 1 else 'writes'}")
+    if skipped > 0:
+        line += f", {skipped} skipped"
     if writes == 0:
         line += " — nothing changed on disk"
     return line + "\n"
@@ -4207,6 +4223,19 @@ _MUTATION_ATTEMPTS: List[int] = [0]
 # and not every no-op failure says ERROR (op_replace's zero-match returns
 # "(0 occurrences of 'x' found)").
 _WRITE_COUNT: List[int] = [0]
+
+# Bumped where a mutating op DECLINES: it ran, it could have written, and it
+# deliberately left the disk alone (#680). The third state docs/validators.md
+# already defines for validators — `ok`, a finding, `skipped` — applied to the
+# ops themselves.
+#
+# Declared at the decline, never inferred from `attempts - writes`. That
+# subtraction looks equivalent and is not: a multi-file `replace` writes more
+# times than it was attempted, `replace_dry` writes nothing by design, and a
+# validator rollback retracts a write that was genuinely made. Each would be
+# mis-reported as a decline, and a skip count that is sometimes wrong is worse
+# than none — it is the same absence-read-as-fact this counter exists to stop.
+_SKIP_COUNT: List[int] = [0]
 
 
 def _drop_write_warnings(path: str) -> None:
@@ -4413,9 +4442,11 @@ def op_edit(old: str, new: str, path: str) -> str:
 
     count = content.count(old)
     if count == 0:
+        _SKIP_COUNT[0] += 1
         return (f"ERROR: old string not found in {path}\n"
                 + _edit_miss_diagnostic(old, content))
     if count > 1:
+        _SKIP_COUNT[0] += 1
         return (
             f"ERROR: old string found {count} times in {path} — ambiguous. "
             f"Use a larger snippet to make it unique, or use replace for "
@@ -5538,6 +5569,9 @@ def op_vim(path: str, script: str) -> str:
     """
     out = _op_vim_impl(path, script)
     if out.startswith("ERROR"):
+        # Atomic by contract: an errored vim op applied none of its actions, so
+        # every one of them is a decline the footer has to carry (#680).
+        _SKIP_COUNT[0] += 1
         suffix = " (file unchanged — vim ops are atomic, no actions applied)\n"
         # Ensure the suffix sits on its own line right before EOF.
         if out.endswith("\n"):
@@ -14007,6 +14041,7 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
         _compact_header = _compact_header_arg(op, parts)
     _writes_before = _WRITE_COUNT[0]
     _attempts_before = _MUTATION_ATTEMPTS[0]
+    _skips_before = _SKIP_COUNT[0]
 
     # #146: dispatch-level path containment. Each op has a known position(s)
     # of its path arg(s) in `parts`. _safe_path enforces cwd containment
@@ -14565,7 +14600,8 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
     if getattr(_DISPATCH_STATE, "depth", 1) <= 1:
         if op in _OP_TARGETS or _MUTATION_ATTEMPTS[0] > _attempts_before:
             body += _result_line(_MUTATION_ATTEMPTS[0] - _attempts_before,
-                                 _WRITE_COUNT[0] - _writes_before)
+                                 _WRITE_COUNT[0] - _writes_before,
+                                 _SKIP_COUNT[0] - _skips_before)
             body += _branch_line()
 
     return header + body
@@ -15503,6 +15539,11 @@ def _main(argv: List[str]) -> int:
     # Normal batched-ops mode
     total_out_bytes = 0
     any_failure = False
+    # Per-call delta, not the absolute count: the counter is process-global and
+    # the daemon reuses the process, so reading `_SKIP_COUNT[0] > 0` would let
+    # one declined op in an early call poison the exit code of every later call
+    # in the same worker (#680).
+    _skips_at_entry = _SKIP_COUNT[0]
 
     # Optional parallel execution — opt-in, only when every op is read-only.
     # Custom ops are excluded (could mutate via shell). Mixed batches stay
@@ -15557,6 +15598,14 @@ def _main(argv: List[str]) -> int:
         if validator_drain_out:
             sys.stdout.write(validator_drain_out)
             total_out_bytes += len(validator_drain_out.encode("utf-8"))
+
+    # A declined op is a failure even when its receipt never said ERROR (#680).
+    # `_body_indicates_failure` reads the first content line, which catches
+    # `edit`'s no-match but not `replace`'s "(0 occurrences of 'x' found)" — so
+    # `batch: && git commit` committed a half-applied set and exited 0. The
+    # counter is the authority here precisely because it does not read prose.
+    if _SKIP_COUNT[0] > _skips_at_entry:
+        any_failure = True
 
     log_call(argv, total_out_bytes)
     return 1 if any_failure else 0
