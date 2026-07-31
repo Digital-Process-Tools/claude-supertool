@@ -13,10 +13,12 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))  # for mrs._conflict_label
+sys.path.insert(0, str(Path(__file__).parent.parent))  # for _checks (#619)
 
 # Imported by name, not `import mrs` — main() already binds a local `mrs`
 # (the branch-lookup result list), which would shadow a module import.
 from mrs import _conflict_label  # noqa: E402
+import _checks  # noqa: E402  (named_disclosure/NAMED_CAP — shared with gh-pr, #619)
 
 DESCRIPTION_MAX = 2000
 COMMENT_MAX = 500
@@ -58,6 +60,66 @@ def _glab_api(endpoint: str, timeout: int = 10) -> subprocess.CompletedProcess[s
         ["glab", "api", endpoint],
         capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace",
     )
+
+
+# Statuses that resolve on their own — a job here will move to success/failed/
+# etc. without anyone naming it. Everything NOT in this set (and not
+# "success") gets its own line: `failed`/`canceled`/`skipped`/`manual` are
+# this platform's spelling of #445/#454's defect class — a leg that is
+# neither passing nor still moving must never be silently absent from the
+# answer (#619). `_checks.named_disclosure()` isn't reused here — GitLab's
+# job vocabulary (`canceled`, one L) and GitHub's rollup vocabulary
+# (`CANCELLED`, two Ls, plus conclusion/status split) don't share a
+# classifier, and forcing them through one would be guessing a mapping
+# nobody has verified rather than naming what glab actually returns.
+_GL_JOB_RESOLVES_ITSELF = {"running", "pending", "created", "scheduled"}
+
+
+def _named_gl_jobs(pipe_id: str | int, cap: int = _checks.NAMED_CAP) -> list[str]:
+    """`  label: name (job #id), ...` lines for a pipeline's non-passing jobs.
+
+    Mirrors `gl-pipeline:ID:failed`'s shape (name + job id + grouping) rather
+    than inventing a second one — that op already answers "what broke" for a
+    pipeline on its own; this is the same answer surfacing where `gl-mr` is
+    actually read; from a poll loop, without a second op call.
+
+    One extra `glab api` call, made only by the caller's own judgment about
+    when it's worth it — this function does the fetch unconditionally once
+    asked, same as `gl-pipeline`'s failed-jobs list already does.
+    """
+    if not pipe_id:
+        return []
+    try:
+        r = _glab_api(f"projects/:id/pipelines/{pipe_id}/jobs?per_page=100")
+        if r.returncode != 0:
+            return []
+        jobs = json.loads(r.stdout)
+    except (subprocess.TimeoutExpired, json.JSONDecodeError):
+        return []
+    if not isinstance(jobs, list):
+        return []
+
+    groups: dict[str, list[tuple[str, str]]] = {}
+    for j in jobs:
+        if not isinstance(j, dict):
+            continue
+        status = str(j.get("status") or "").strip().lower()
+        if not status or status == "success" or status in _GL_JOB_RESOLVES_ITSELF:
+            continue
+        name = str(j.get("name") or "?")
+        job_id = str(j.get("id") or "")
+        groups.setdefault(status, []).append((name, job_id))
+
+    lines: list[str] = []
+    for label in sorted(groups):
+        items = groups[label]
+        shown = items[:cap]
+        parts = [f"{n} (job #{jid})" if jid else n for n, jid in shown]
+        text = ", ".join(parts)
+        if len(items) > cap:
+            text += f", +{len(items) - cap} more"
+        lines.append(f"  {label}: {text}")
+    return lines
 
 
 def _local_branch_check(source: str) -> str:
@@ -540,6 +602,13 @@ def main() -> int:
         if meta:
             pipe_str += f" | {meta}"
         print(f"pipeline: {pipe_str}")
+        # The extra `glab api` round trip is bought only when the pipeline
+        # status says there might be something to name — never on a green or
+        # not-yet-started pipeline, which is the overwhelmingly common poll
+        # (#619, mirrors `gh-pr`'s "only when the rollup is empty" discipline).
+        if pipe_id and pipe_status not in ("success", "", "pending", "created", "scheduled"):
+            for line in _named_gl_jobs(pipe_id):
+                print(line)
         print(f"merged_at: {merged_at}")
         if merge_commit:
             print(f"merge_commit: {merge_commit[:12]}")

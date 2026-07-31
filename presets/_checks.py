@@ -138,6 +138,111 @@ def github_states(checks: object) -> List[str]:
     return [github_state(c) for c in checks]
 
 
+_JOB_ID_IN_URL = re.compile(r"/job/([0-9]+)(?:[/?#]|$)")
+
+
+def github_job_id(check: dict) -> str:
+    """The Actions job id parsed from a CheckRun's `detailsUrl`, '' if absent.
+
+    Rides along for free — no extra GraphQL/API call — because the id was
+    already sitting in a field `gh-pr` fetches on every call (#619). It is
+    what makes the leg named by `named_disclosure()` reachable with
+    `gh-job:<id>:fail` instead of a `gh api .../actions/jobs` detour: the
+    step after "which leg" is always "what did it say".
+
+    Only `CheckRun` entries carry an Actions job id in their `detailsUrl`
+    (`.../actions/runs/<run>/job/<job>`); legacy commit statuses point at
+    whatever external system set them and never match, so they return ''
+    rather than a wrong id.
+    """
+    if not isinstance(check, dict):
+        return ""
+    m = _JOB_ID_IN_URL.search(str(check.get("detailsUrl") or ""))
+    return m.group(1) if m else ""
+
+
+def github_named_states(checks: object) -> List[tuple[str, str, str]]:
+    """`(name, state, job_id)` triples for a rollup — length == len(checks).
+
+    The input `named_disclosure()` is built for: everything `summarize()`
+    already counts, plus the name and job id `summarize()` throws away.
+    """
+    if not isinstance(checks, list):
+        return []
+    out: List[tuple[str, str, str]] = []
+    for c in checks:
+        if isinstance(c, dict):
+            name = str(c.get("name") or c.get("context") or "?")
+            out.append((name, github_state(c), github_job_id(c)))
+        else:
+            out.append(("?", _UNKNOWN, ""))
+    return out
+
+
+# Legs listed per non-passing group before the line switches to `+N more`.
+# `summarize()`'s own arithmetic is unbounded — it has to be, the count has
+# to sum to the total — but *naming* fourteen legs one poll after another is
+# the failure this repo already has a word for (#605's disclosure cap): the
+# thing meant to answer "which one" becomes the thing that blows the budget.
+# 5 is not measured, it is chosen to match the issue's own worked example
+# (5 failing legs printed with no elision) — small enough that the terse
+# `:status` form stays terse in the common case, generous enough that a
+# typical single-leg or single-platform failure is never truncated.
+NAMED_CAP = 5
+
+
+def named_disclosure(
+    entries: Sequence[tuple[str, str, str]], cap: int = NAMED_CAP
+) -> List[str]:
+    """One line per non-pass/non-pending state, naming every leg (#619).
+
+    `summarize()` answers "how many"; this answers "which". Two buckets are
+    deliberately excluded, for opposite reasons:
+
+    * **passed** — needs no naming, it is not the reader's problem.
+    * **pending** — resolves itself. Naming eight still-queued legs on every
+      poll is the noise the terse form exists to avoid, and nothing about a
+      pending leg tells the reader what to do next.
+
+    Everything else — `failed`, and every `other`-bucket state
+    (`CANCELLED`, `SKIPPED`, `NEUTRAL`, `TIMED_OUT`, `ACTION_REQUIRED`, and
+    anything this module has not been taught about yet) — is named, grouped
+    under its own label, never merged into a bare count. That fold is
+    `summarize()`'s own docstring, one layer up: `0 failed, 0 pending` read
+    as "nothing outstanding" when two legs were silently CANCELLED. Naming
+    them here is the same arithmetic promise applied to the "which" question
+    instead of the "how many" one.
+
+    Grouping matches `summarize()`'s buckets exactly — every `FAILED_STATES`
+    member (including `TIMED_OUT`/`ACTION_REQUIRED`) lands under one
+    `failed:` line, same as the tally's `N failed` count — so the two lines
+    can be read side by side without arithmetic drift between them.
+
+    Each group is capped at `cap` legs, oldest-first as handed in, with a
+    trailing `+N more` — this repo's established disclosure vocabulary
+    (#605) — when the group is larger. A leg carrying a job id prints
+    `name (job #id)`; one without prints its bare name.
+    """
+    groups: dict[str, list[tuple[str, str]]] = {}
+    for name, state, job_id in entries:
+        b = bucket(state)
+        if b in ("passed", "pending"):
+            continue
+        label = "failed" if b == "failed" else _label(state)
+        groups.setdefault(label, []).append((name, job_id))
+
+    lines: List[str] = []
+    for label in sorted(groups):
+        items = groups[label]
+        shown = items[:cap]
+        parts = [f"{n} (job #{j})" if j else n for n, j in shown]
+        text = ", ".join(parts)
+        if len(items) > cap:
+            text += f", +{len(items) - cap} more"
+        lines.append(f"  {label}: {text}")
+    return lines
+
+
 def _label(state: str) -> str:
     """Term label for a leftover state. Lowercase, underscores kept."""
     return normalize(state).lower()

@@ -59,6 +59,21 @@ A commit with no check runs used to print one sentence — `Checks: none reporte
 
 **Casing:** the full dashboard prints `Title Case:` labels throughout (`State:`, `Checks:`, `Mergeable:`, `Merge commit:`); `:status` prints `lowercase:` labels throughout (`state:`, `checks:`, `mergeable:`, `merge_commit:`) as part of its terser, ~250-byte machine-oriented format. Each mode is internally consistent but the two never match each other, so grep the casing for the mode you're reading, not both — `grep 'Checks:'` finds nothing in `:status` output, and that silence means "wrong case", not "no checks".
 
+### A red tally names its legs
+
+`checks: 14 total: 1 passed, 5 failed, 8 pending ⚠ NOT ALL GREEN` answers "how many". It does not answer "which" — and a Windows-only red and an ubuntu-only red call for opposite actions (read the failure vs. `gh run rerun --failed`). Any check whose state is not `SUCCESS` and not still moving now gets its own named line, directly under the `Checks:`/`checks:` line, in **both** the full dashboard and `:status` — the terse form is what gets read on every poll, so it is exactly where naming pays off most ([#619](https://github.com/Digital-Process-Tools/claude-supertool/issues/619)):
+
+```
+checks: 14 total: 1 passed, 5 failed, 8 pending ⚠ NOT ALL GREEN
+  failed: pytest (ubuntu-latest, 3.9) (job #91015853871), pytest (ubuntu-latest, 3.10) (job #91015853935), pytest (ubuntu-latest, 3.11) (job #91015853882), pytest (ubuntu-latest, 3.12) (job #91015853868), pytest (macos-latest, 3.12) (job #91015853854)
+```
+
+Two buckets are deliberately left unnamed: **passed** (not the reader's problem) and **pending** (resolves itself — naming eight still-queued legs on every poll is exactly the noise the terse form exists to avoid). Everything else is named, including the states that used to get folded into a bare count and read as "nothing outstanding" — `CANCELLED`, `SKIPPED`, `NEUTRAL`, `TIMED_OUT`, `ACTION_REQUIRED` each get their own `label:` line, same defect class as [#445/#454](https://github.com/Digital-Process-Tools/claude-supertool/issues/454), applied to the "which" question instead of the "how many" one.
+
+**A job id rides along, for free.** GitHub's `statusCheckRollup` already carries `detailsUrl` (`.../actions/runs/<run>/job/<job>`) on every call `gh-pr` makes — no extra request. Parsing the id out of it is what makes `gh-job:91015853871:fail` reachable with no `gh api .../actions/jobs` detour, which was the more expensive half of the original fallback.
+
+**Bounded at 5 legs per group**, then `+N more` — this repo's disclosure vocabulary ([#605](https://github.com/Digital-Process-Tools/claude-supertool/issues/605)) — so a wide matrix cannot turn the answer to "which" into a second output-budget problem.
+
 **Debug a failed Actions job:**
 ```bash
 ./supertool 'gh-run:12345'
