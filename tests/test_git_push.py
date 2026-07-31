@@ -487,7 +487,10 @@ def test_advisories_uncommitted_leftovers_warn(capsys) -> None:
         push._post_push_advisories(mr, set())
     out = capsys.readouterr().out
     assert "2 change(s) NOT in this push" in out
-    assert " M x.py" in out
+    # #623: the count is the signal; the listing used to bury the push verdict
+    # under it, so the files moved behind a named escape hatch.
+    assert " M x.py" not in out
+    assert "git-status:full" in out
 
 
 def test_advisories_autowatch_flag_spawns(capsys) -> None:

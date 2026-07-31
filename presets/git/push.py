@@ -129,7 +129,44 @@ def _is_non_fast_forward(combined: str) -> bool:
             or "tip of your current branch is behind" in low)
 
 
-_LEFTOVER_CAP = 8
+def _result(verdict: str) -> None:
+    """Terminal one-line verdict — always the LAST line the op prints.
+
+    Issue #623: a receipt whose tail is an untracked-file list makes the
+    caller run `git fetch` + `git log` to learn the one thing the op was run
+    to tell them. Being *present* in the output is not enough — the verdict
+    has to survive `| tail -3`, which means being last. Every return path
+    from main() ends here, including the ones where no push was attempted.
+    """
+    print(f"[result] {verdict}")
+
+
+def _push_verdict(moved: bool, branch: str, remote: str, ref: str,
+                  tracking_sha: str, ncommits: str) -> None:
+    """Verdict for a push git reported as successful.
+
+    The sha is read back off the real remote (ls-remote), not just the local
+    remote-tracking ref, so the caller does not have to fetch to trust it —
+    that fetch is precisely the round-trip this op exists to remove. When the
+    remote does not answer we say `unverified` and fall back to the tracking
+    sha, labelled: a sha we did not read is never printed as if we had.
+    """
+    live = _live_remote_sha(remote, ref)
+    head = _local_head()
+    target = f"{remote}/{ref}"
+    if live:
+        sha = live[:7]
+        note = ("verified" if (head and live == head)
+                else "verified, but remote != local HEAD")
+    else:
+        sha = tracking_sha or "unknown"
+        note = "unverified - remote did not answer ls-remote"
+    if moved:
+        extra = f", {ncommits} commit(s)" if ncommits else ""
+        _result(f"PUSHED  {branch} -> {target} @ {sha}  ({note}{extra})")
+    else:
+        _result(f"NOT PUSHED - already up to date  {branch} -> {target} "
+                f"@ {sha}  ({note})")
 
 
 def _open_mr_line(mr: Optional[dict]) -> str:
@@ -198,13 +235,13 @@ def _post_push_advisories(mr: Optional[dict], flags: set[str]) -> None:
                 print(f"⚠ {behind} commit(s) behind origin/{target} — "
                       "consider rebasing (stale base under review)")
 
+    # Count, not a listing (#623): on a tree full of generated junk the list
+    # crowded the push verdict off the end of the output. The "did I forget to
+    # stage something?" signal is the count; the files stay one op away.
     leftovers = _uncommitted_leftovers()
     if leftovers:
-        print(f"⚠ {len(leftovers)} change(s) NOT in this push (uncommitted):")
-        for ln in leftovers[:_LEFTOVER_CAP]:
-            print(f"  {ln}")
-        if len(leftovers) > _LEFTOVER_CAP:
-            print(f"  … +{len(leftovers) - _LEFTOVER_CAP} more")
+        print(f"⚠ {len(leftovers)} change(s) NOT in this push (uncommitted) — "
+              "list them: ./supertool 'git-status:full'")
 
     wt = _watch_target(mr)
     if wt:
@@ -221,17 +258,21 @@ def _success_receipt(branch: str, remote_before: str, upstream: str,
     """Shared 'what landed' tail — remote diff, ahead/behind, MR line, advisories."""
     upstream = upstream or _upstream_ref()
     remote_after = _remote_sha(upstream)
+    moved, ncommits = True, ""
     if remote_before and remote_after and remote_before != remote_after:
         rng = _git(["rev-list", "--count", f"{remote_before}..{remote_after}"])
         n = rng.stdout.strip() if rng.returncode == 0 else "?"
+        ncommits = n
         print(f"Remote {remote_before} → {remote_after} ({n} commit(s))")
     elif not remote_before and remote_after:
         print(f"Remote now at {remote_after} (branch created)")
     elif remote_before and remote_after and remote_before == remote_after:
+        moved = False
         print("Already up to date — nothing to push")
     else:
         # Push succeeded but the remote-tracking SHA isn't locally resolvable
         # (shallow clone, odd remote layout). Don't claim up-to-date.
+        remote_after = ""
         print("Pushed — remote ref not locally resolvable for a before/after diff")
 
     ab = _git(["rev-list", "--left-right", "--count", "HEAD...@{upstream}"])
@@ -249,6 +290,8 @@ def _success_receipt(branch: str, remote_before: str, upstream: str,
     if mr_line:
         print(mr_line)
     _post_push_advisories(mr, flags)
+    remote_name, remote_ref = _split_upstream(upstream, branch)
+    _push_verdict(moved, branch, remote_name, remote_ref, remote_after, ncommits)
 
 
 def _report_hook_pushed(head_before: str, head_after: str,
@@ -269,6 +312,8 @@ def _report_hook_pushed(head_before: str, head_after: str,
     if mr_line:
         print(mr_line)
     _post_push_advisories(mr, flags)
+    _result(f"PUSHED  {branch} -> {remote}/{ref} @ {remote_sha[:7]}  "
+            "(verified - pre-push hook pushed it, remote matches HEAD)")
 
 
 def _report_push_timeout(branch: str, head_before: str,
@@ -298,12 +343,17 @@ def _report_push_timeout(branch: str, head_before: str,
         if mr_line:
             print(mr_line)
         _post_push_advisories(mr, flags)
+        _result(f"PUSHED  {branch} -> {remote}/{ref} @ {live[:7]}  "
+                "(verified - push timed out locally, remote matches HEAD)")
         return 0
     print("Status: PUSH TIMED OUT ✗ — remote ref does NOT match local HEAD")
     print(f"local HEAD {head_after[:7] or 'unknown'} | "
           f"remote {remote}/{ref} at {live[:7] or 'unknown'}")
     print("The push may still be in flight — `git fetch` and re-check before "
           "retrying; do NOT force-push on a timeout alone.")
+    _result(f"NOT PUSHED - UNVERIFIED  {branch} -> {remote}/{ref} - push timed "
+            f"out and the remote does not match local HEAD "
+            f"(remote {live[:7] or 'unknown'}, HEAD {head_after[:7] or 'unknown'})")
     return 1
 
 
@@ -347,6 +397,8 @@ def _recover_by_rebase(branch: str, remote_before: str, upstream: str,
         if err:
             print(f"First error: {err}")
         print("Hint: remote unreachable or ref gone — check connectivity, then retry.")
+        _result(f"NOT PUSHED - REJECTED (non-fast-forward)  {branch} -> {target} "
+                "- fetch failed, could not rebase")
         return fetched.returncode or 1
 
     # Rebase onto FETCH_HEAD, not origin/<branch>: a one-shot `git fetch origin
@@ -379,6 +431,8 @@ def _recover_by_rebase(branch: str, remote_before: str, upstream: str,
                 print(f"First error: {err}")
             print("\n--- git output ---")
             print(combined.strip() or "(no output)")
+            _result(f"NOT PUSHED - REJECTED (non-fast-forward)  {branch} -> "
+                    f"{target} - rebase could not start")
             return rebase.returncode
         # Real conflict — leave it paused (don't abort) so git-conflicts can
         # read the blocks. Non-clean but explicit; the receipt names the way out.
@@ -393,6 +447,9 @@ def _recover_by_rebase(branch: str, remote_before: str, upstream: str,
         print("  • keep both — resolve, then `git rebase --continue` && `git-push`")
         print("  • cancel — `git rebase --abort` (back to before the push, nothing changed)")
         print("  • force yours over remote — `git rebase --abort`, then `git-push:force-with-lease`")
+        _result(f"NOT PUSHED - REBASE PAUSED (conflict in {len(files)} file(s))  "
+                f"{branch} -> {target} - resolve then `git rebase --continue`, "
+                "or `git rebase --abort`")
         return 1
 
     print("Rebase clean — pushing rebased work")
@@ -414,6 +471,7 @@ def _recover_by_rebase(branch: str, remote_before: str, upstream: str,
             print(f"First error: {err}")
         print("\n--- git output ---")
         print(combined.strip() or "(no output)")
+        _result(f"NOT PUSHED - REJECTED after a clean rebase  {branch} -> {target}")
         return result.returncode
 
     print("Status: pushed ✓ (rebased onto remote)")
@@ -425,11 +483,14 @@ def main() -> int:
     use_utf8_stdout()
     if _git(["rev-parse", "--git-dir"]).returncode != 0:
         print("ERROR: not inside a git repository.")
+        _result("NOT PUSHED - no push attempted (not inside a git repository)")
         return 1
 
     branch = _git(["rev-parse", "--abbrev-ref", "HEAD"]).stdout.strip()
     if not branch or branch == "HEAD":
         print("ERROR: detached HEAD — checkout a branch before pushing.")
+        _result("NOT PUSHED - no push attempted (detached HEAD - checkout a "
+                "branch first)")
         return 1
 
     flags = _parse_flags(sys.argv[1:])
@@ -497,6 +558,8 @@ def main() -> int:
                   "above. A rebase will not help.")
         print("\n--- git output ---")
         print(combined.strip() or "(no output)")
+        _result(f"NOT PUSHED - REJECTED  {branch} -> {remote_name}/{remote_ref}"
+                + (f" - {err}" if err else ""))
         return result.returncode
 
     print("Status: pushed ✓")
