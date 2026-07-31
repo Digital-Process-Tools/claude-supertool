@@ -3985,6 +3985,43 @@ def _branch_line() -> str:
     return f"[branch: {branch}]\n" if branch else ""
 
 
+def _result_line(ops: int, writes: int) -> str:
+    """`[result] N ops run, M writes` footer for a mutating call (#621).
+
+    The receipt a mutating op prints sits ABOVE the `[validators]` block, and a
+    long validators block is exactly when a reader reaches for `| tail -4`. So
+    the last thing on screen was `git-status : ok` — which describes the
+    validators and reads as though it described the edit. A no-match and an
+    11-file replace were indistinguishable that way, twice, at real cost: once a
+    teammate was told files were unfixed when they had been fixed, once an agent
+    reported a no-matched batch edit as landed and sent a broken branch to CI.
+
+    The invariant this pins is stronger than "print the summary last": an op
+    which changed nothing must not END with output that looks like an op which
+    did. So this is a footer, not a move — the detailed receipt stays where
+    positional readers and every existing ordering test expect it, and one
+    honest line is repeated below the noise.
+
+    Both numbers come from counters, never from re-reading the prose receipt.
+    `ops` is `_MUTATION_ATTEMPTS` (bumped when a mutating op runs, outcome
+    unknown); `writes` is `_WRITE_COUNT` (bumped at `_atomic_write`, decremented
+    by `_retract_write`), so a rolled-back edit correctly reports 0. In a batch
+    that is precisely "requested" vs "applied", which is the single line that
+    would have caught the #634 incident: one no-match among five successes.
+
+    `ops == 0` means no mutating op was accounted for and the state cannot be
+    determined — this declines rather than guessing a tidy `0 writes`, per the
+    three-state contract in docs/validators.md.
+    """
+    if ops <= 0:
+        return ""
+    line = (f"[result] {ops} {'op' if ops == 1 else 'ops'} run, "
+            f"{writes} {'write' if writes == 1 else 'writes'}")
+    if writes == 0:
+        line += " — nothing changed on disk"
+    return line + "\n"
+
+
 def _normalise_ws(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
@@ -14197,8 +14234,15 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
     # in an INNER batch never propagated outward and a nested batch reported no
     # branch at all (#392). The counter is bumped at `_atomic_write`, which every
     # mutating op passes through however deeply it is nested.
+    #
+    # `[result]` goes directly above it, under the same gate: the branch line
+    # must stay the last line (#381's tests assert `endswith`), and a footer
+    # that only appears when a branch happens to exist would go missing outside
+    # a repo — which is the exact shape #621 is about.
     if getattr(_DISPATCH_STATE, "depth", 1) <= 1:
         if op in _OP_TARGETS or _MUTATION_ATTEMPTS[0] > _attempts_before:
+            body += _result_line(_MUTATION_ATTEMPTS[0] - _attempts_before,
+                                 _WRITE_COUNT[0] - _writes_before)
             body += _branch_line()
 
     return header + body

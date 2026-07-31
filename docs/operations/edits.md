@@ -8,7 +8,18 @@ Rollback is unconditional for `.py` (built-in parse check, no config needed) and
 
 A `vim` receipt also carries a post-edit syntax lint (`php -l`, `xmllint`, `py_compile`, JSON parse). An empty lint section means the file is clean, and only that: a lint that times out says `POST-EDIT LINT TIMED OUT` instead of falling silent, since silence would read as a pass. The 5s budget is raised with `SUPERTOOL_LINT_TIMEOUT=<seconds>` when a slow runner needs room.
 
-Every mutating op closes with `[branch: X]` — right file, wrong branch is otherwise silent until commit time. A failed `edit` also reports why the anchor probably missed: doubled backslashes (TOML literal strings don't process escapes), a whitespace-only difference with its line number, or the nearest line by similarity.
+Every mutating call closes with two footer lines, in this order:
+
+```
+[result] 3 ops run, 2 writes
+[branch: my-feature]
+```
+
+`[result]` is the authoritative outcome and is safe to read with `| tail -2`. It exists because the per-op receipt sits **above** the `[validators]` block, and a long validators block is exactly when you reach for `tail` — so the last line on screen used to be `git-status : ok`, which describes the validators and reads as though it described the edit (#621). `N ops run` counts mutating ops attempted; `M writes` counts writes that landed *and stuck*, so a validator rollback reports `0`. When `M` is `0` the line ends `— nothing changed on disk`. In a batch the two numbers are "requested" vs "applied": `3 ops run, 2 writes` means one op no-matched. Exactly one footer per call, never one per sub-op. Preview ops (`replace_dry`) and read-only ops get no `[result]` — a read op's own count line is already the last thing printed, so nothing intervenes to misread.
+
+The per-op receipt has **not** moved: it is still printed above `[validators]`, so anything parsing output positionally is unaffected.
+
+`[branch: X]` stays the final line — right file, wrong branch is otherwise silent until commit time. A failed `edit` also reports why the anchor probably missed: doubled backslashes (TOML literal strings don't process escapes), a whitespace-only difference with its line number, or the nearest line by similarity.
 
 ## Ops
 

@@ -187,7 +187,9 @@ Example: edit a `.json` file with a missing comma → `jsonlint` catches it → 
 
 Results are cached per file-content hash **plus a fingerprint of the tools themselves** (adapter scripts, binaries, and any `validator_fingerprint_paths` such as your lockfile), so upgrading an analyser invalidates the answers it produced instead of replaying them. A TTL (`validator_cache_ttl_hours`, default 24h) backstops whatever the key still can't see. Non-deterministic engine failures are never cached.
 
-Full reference: [docs/validators.md](docs/validators.md) — bundled list, how they hook in, caching, adding your own.
+**A mutating call ends with `[result] N ops run, M writes`, then `[branch: X]`.** The per-op receipt is printed *above* the `[validators]` block, and a long validators block is exactly when you pipe to `tail` — so the last line used to be `git-status : ok`, describing the validators while reading as though it described the edit. `[result]` is the authoritative outcome: `M` counts writes that landed and stuck (a rollback reports `0`, ending `— nothing changed on disk`), and in a batch `N` vs `M` is "requested" vs "applied". Safe to read with `| tail -2`. The receipt above has not moved.
+
+Full reference: [docs/validators.md](docs/validators.md) — bundled list, how they hook in, caching, adding your own. Footer contract: [docs/operations/edits.md](docs/operations/edits.md).
 
 ---
 
