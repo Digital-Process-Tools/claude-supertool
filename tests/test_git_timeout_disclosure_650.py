@@ -49,6 +49,25 @@ assert _spec is not None and _spec.loader is not None
 status = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(status)
 
+_CONFLICTS_PATH = _ROOT / "presets" / "git" / "conflicts.py"
+_c_spec = importlib.util.spec_from_file_location("git_conflicts_650", _CONFLICTS_PATH)
+assert _c_spec is not None and _c_spec.loader is not None
+conflicts = importlib.util.module_from_spec(_c_spec)
+_c_spec.loader.exec_module(conflicts)
+
+
+def _load_preset(name: str):
+    path = _ROOT / "presets" / "git" / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(f"git_{name}_650", path)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+resolve = _load_preset("resolve")
+merge = _load_preset("merge")
+
 pytestmark = pytest.mark.skipif(os.name == "nt", reason="POSIX /bin/sh shim")
 
 
@@ -360,6 +379,151 @@ def test_the_declined_reading_is_cached_like_any_other(
     for _ in range(5):
         supertool._branch_reading()
     assert time.monotonic() - started < 4, "the decline was re-read every call"
+
+
+# ---------------------------------------------------------------------------
+# git-conflicts: "I could not look" must never print as "there are none"
+# ---------------------------------------------------------------------------
+
+def _failing_git_path(tmp_path: Path, subcommand: str) -> str:
+    """PATH containing a `git` that exits 1 on `subcommand`, real git otherwise.
+
+    The hang shim above covers the timeout leg. This covers the other half of
+    the same conflation, and the one that needs no load at all to happen: a
+    git that answers, unsuccessfully. An index lock held by a concurrent
+    process is the everyday cause.
+    """
+    real = shutil.which("git")
+    assert real, "git must be on PATH for this suite"
+    bindir = tmp_path / "failbin"
+    bindir.mkdir()
+    shim = bindir / "git"
+    shim.write_text(
+        "#!/bin/sh\n"
+        f'if [ "$1" = "{subcommand}" ]; then echo "fatal: shim" >&2; exit 1; fi\n'
+        f'exec {real} "$@"\n'
+    )
+    shim.chmod(0o755)
+    return str(bindir)
+
+
+def _conflicted_repo(tmp_path: Path) -> Path:
+    """A repo genuinely stopped mid-merge with one unresolved file."""
+    repo = tmp_path / "c"
+    repo.mkdir(parents=True)
+    _git(repo, "init", "-b", "master")
+    _git(repo, "config", "user.email", "t@test.com")
+    _git(repo, "config", "user.name", "Test")
+    (repo / "f").write_text("base\n")
+    _git(repo, "add", "f")
+    _git(repo, "commit", "-m", "base")
+    _git(repo, "checkout", "-b", "theirs")
+    (repo / "f").write_text("theirs\n")
+    _git(repo, "commit", "-am", "theirs")
+    _git(repo, "checkout", "master")
+    (repo / "f").write_text("ours\n")
+    _git(repo, "commit", "-am", "ours")
+    subprocess.run(["git", "-C", str(repo), "merge", "theirs"],
+                   capture_output=True, text=True)
+    return repo
+
+
+def _run_conflicts(repo: Path, monkeypatch) -> tuple[str, int]:
+    monkeypatch.chdir(repo)
+    monkeypatch.setattr(conflicts.sys, "argv", ["conflicts.py"])
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rc = conflicts.main()
+    return buf.getvalue(), rc
+
+
+def test_a_failed_conflict_list_does_not_read_as_no_conflicts(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The most dangerous instance of the house defect in the tool.
+
+    `_list_conflicts` returned `[]` for both "git says the tree is clean" and
+    "git did not answer", and `main` renders `[]` as `No conflicted files.`
+    You reach for `git-conflicts` precisely when you are stopped mid-merge, so
+    the sentence it prints on a failed lookup is an invitation to `git commit`
+    over live `<<<<<<<` markers. The repo here really is mid-merge with a real
+    unresolved file — only the lookup fails.
+    """
+    repo = _conflicted_repo(tmp_path)
+    monkeypatch.setenv("PATH", _failing_git_path(tmp_path, "diff"))
+
+    out, rc = _run_conflicts(repo, monkeypatch)
+
+    assert "No conflicted files." not in out, out
+    assert "UNKNOWN" in out, out
+    assert rc != 0, "a report that could not be produced must not exit clean"
+
+
+def test_a_stalled_conflict_list_declines_instead_of_crashing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The timeout leg of the same call — a stack trace is not a conflict list."""
+    repo = _conflicted_repo(tmp_path)
+    monkeypatch.setenv("PATH", _slow_git_path(tmp_path, "diff"))
+    monkeypatch.setenv("SUPERTOOL_GIT_TIMEOUT", "1")
+
+    started = time.monotonic()
+    out, rc = _run_conflicts(repo, monkeypatch)
+    elapsed = time.monotonic() - started
+
+    assert "No conflicted files." not in out, out
+    assert "UNKNOWN" in out, out
+    assert rc != 0
+    assert elapsed < 60, elapsed
+
+
+def test_conflicts_still_reports_a_genuinely_clean_tree(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Kills the mutant that declines unconditionally.
+
+    Real git, no shim, no merge in progress: the honest `No conflicted files.`
+    must survive, or the fix above would have bought silence for noise.
+    """
+    repo = _repo(tmp_path)
+    monkeypatch.setenv("PATH", os.path.dirname(shutil.which("git") or "/usr/bin"))
+
+    out, rc = _run_conflicts(repo, monkeypatch)
+
+    assert "No conflicted files." in out, out
+    assert "UNKNOWN" not in out, out
+    assert rc == 0
+
+
+def test_every_conflict_list_in_the_tool_declines(tmp_path, monkeypatch) -> None:
+    """`_list_conflicts` exists in triplicate — all three must say "unknown".
+
+    `git-resolve` is the one that mattered enough to fix alongside
+    `git-conflicts`: its closing `Remaining: N` line is followed by
+    `Next: git-commit ...` when N is 0, so a failed lookup there ends in a
+    commit over live markers. `git-merge`'s copy is fixed for consistency
+    rather than danger — by the time it runs, the merge has already failed.
+    """
+    repo = _conflicted_repo(tmp_path)
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("PATH", _failing_git_path(tmp_path, "diff"))
+
+    for mod in (conflicts, resolve, merge):
+        paths, why = mod._list_conflicts()
+        assert paths == [], mod.__name__
+        assert why, f"{mod.__name__} folded a failed lookup into 'no conflicts'"
+
+
+def test_a_conflict_list_that_answers_reports_no_reason(tmp_path, monkeypatch) -> None:
+    """Kills the mutant that declines unconditionally in all three copies."""
+    repo = _conflicted_repo(tmp_path)
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("PATH", os.path.dirname(shutil.which("git") or "/usr/bin"))
+
+    for mod in (conflicts, resolve, merge):
+        paths, why = mod._list_conflicts()
+        assert why == "", mod.__name__
+        assert paths == ["f"], mod.__name__
 
 
 def test_current_branch_still_returns_a_plain_string(

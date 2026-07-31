@@ -30,18 +30,56 @@ _STATE_TO_REF = {
 }
 
 
-def _git(args: list[str], timeout: int = 10) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["git"] + args,
-        capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace",
-    )
+_GIT_TIMEOUT_DEFAULT = 10
+
+# Shell convention for "killed by a timeout" (coreutils `timeout`), same value
+# and same reasoning as `presets/git/status.py`: distinct from any exit code
+# git itself produces, so a caller checking `returncode != 0` keeps working
+# while one that wants to tell a stall from a failure can.
+TIMEOUT_RC = 124
 
 
-def _list_conflicts() -> list[str]:
+def _git(args: list[str], timeout: int | None = None) -> subprocess.CompletedProcess[str]:
+    """Run a git command; a call that does not answer says so (#650).
+
+    `TimeoutExpired` used to escape here exactly as it did from `status.py::_git`
+    before #685 — same defect, one preset over, and this is the preset you run
+    while stopped mid-merge.
+    """
+    budget = env_int("SUPERTOOL_GIT_TIMEOUT", _GIT_TIMEOUT_DEFAULT, minimum=1)
+    if timeout is not None:
+        budget = timeout
+    cmd = ["git"] + args
+    try:
+        return subprocess.run(
+            cmd,
+            capture_output=True, text=True, timeout=budget, encoding="utf-8", errors="replace",
+        )
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=TIMEOUT_RC, stdout="",
+            stderr=f"timed out after {budget}s",
+        )
+
+
+def _list_conflicts() -> tuple[list[str], str]:
+    """`(paths, why_unavailable)` — three states, not two (#650).
+
+    `([...], "")` git answered and named conflicts; `([], "")` git answered and
+    the tree is clean; `([], why)` git did not answer.
+
+    The third state used to be the second, and this is the worst place in the
+    tool to make that mistake. `main` renders an empty list as
+    `No conflicted files.`, and you only run `git-conflicts` because you are
+    already stopped mid-merge — so a lookup that failed printed the one
+    sentence that says "go ahead and commit", over live `<<<<<<<` markers.
+    An index lock held by a concurrent git is enough to trigger it; no load
+    required (docs/validators.md, "Declining instead of guessing").
+    """
     res = _git(["diff", "--name-only", "--diff-filter=U"])
     if res.returncode != 0:
-        return []
-    return [l for l in res.stdout.splitlines() if l.strip()]
+        return [], (res.stderr.strip() or f"git exited {res.returncode}")
+    return [l for l in res.stdout.splitlines() if l.strip()], ""
 
 
 def _all_conflict_blocks(path: str, max_lines_per_block: int) -> str:
@@ -175,13 +213,20 @@ def main() -> int:
         return 1
 
     state = _detect_state()
-    conflicts = _list_conflicts()
+    conflicts, unavailable = _list_conflicts()
 
     print("# git-conflicts")
     if state:
         print(f"State: {state} in progress")
     else:
         print("State: no merge/rebase/cherry-pick in progress")
+
+    if unavailable:
+        print(f"Conflicts: UNKNOWN — `git diff --name-only --diff-filter=U` "
+              f"did not answer: {unavailable}")
+        print("This is NOT 'no conflicts'. Nothing was inspected, so do not "
+              "commit or resolve on the strength of this report — re-run it.")
+        return 1
 
     if not conflicts:
         print("No conflicted files.")

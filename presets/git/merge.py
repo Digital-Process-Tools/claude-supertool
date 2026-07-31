@@ -31,11 +31,17 @@ def _git(args: list[str], timeout: int = 30) -> subprocess.CompletedProcess[str]
     )
 
 
-def _list_conflicts() -> list[str]:
+def _list_conflicts() -> tuple[list[str], str]:
+    """`(paths, why_unavailable)` — three states, not two (#650).
+
+    Lowest-stakes of the three copies (the merge has already failed by the
+    time this runs, so no report here invites a commit), fixed alongside them
+    so the tool has one answer to "git did not answer" rather than two.
+    """
     res = _git(["diff", "--name-only", "--diff-filter=U"])
     if res.returncode != 0:
-        return []
-    return [l for l in res.stdout.splitlines() if l.strip()]
+        return [], (res.stderr.strip() or f"git exited {res.returncode}")
+    return [l for l in res.stdout.splitlines() if l.strip()], ""
 
 
 def _first_conflict_block(path: str, max_lines: int) -> str:
@@ -175,7 +181,13 @@ def main() -> int:
             print(stdout)
         return 0
 
-    conflicts = _list_conflicts()
+    conflicts, unavailable = _list_conflicts()
+    if unavailable:
+        print("Status: merge failed, and the conflict list is UNKNOWN — "
+              f"git did not answer: {unavailable}")
+        if stderr:
+            print(stderr)
+        return 1
     if not conflicts:
         print(f"Status: merge failed (no conflicts detected — abort or fix)")
         if stderr:
