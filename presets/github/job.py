@@ -18,6 +18,21 @@ import re
 import subprocess
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import _repo_target  # noqa: E402  (the repo this call is about, when not the cwd's)
+
+
+def _api_repo_path(suffix: str) -> str:
+    """A `gh api` repo path — the target's, or gh's own cwd placeholders.
+
+    `gh api repos/{owner}/{repo}/…` expands those two literal placeholders from
+    the cwd's remote. That expansion is precisely what a repo target has to
+    override, so the placeholders are replaced rather than accompanied — there
+    is no `--repo` on `gh api` to add beside them (#673).
+    """
+    return _repo_target.api_path(suffix)
+
 
 def _local_branch_check(source: str) -> str:
     """Return a one-line local-branch-vs-source check for output.
@@ -47,7 +62,7 @@ def _format_error(stderr: str, resource: str, identifier: str) -> str:
     """Classify gh errors into actionable messages for LLMs."""
     s = stderr.lower()
     if "github host" in s or "not a git repository" in s or "git remotes" in s:
-        return f"ERROR: cwd is not a GitHub repo. cd into a GitHub-cloned repo, or run gh directly with --repo OWNER/REPO."
+        return _repo_target.no_repo_error("gh-job:12345:fail")
     if "could not resolve" in s or "404" in s or "not found" in s:
         return f"ERROR: {resource} #{identifier} not found. Check the ID. Use gh-run to list jobs first, then gh-job with the job ID."
     if "401" in s or "unauthorized" in s or "not logged in" in s or "token" in s:
@@ -313,7 +328,7 @@ def main() -> int:
     try:
         # gh api to get job details
         meta_result = subprocess.run(
-            ["gh", "api", f"repos/{{owner}}/{{repo}}/actions/jobs/{job_id}"],
+            ["gh", "api", _api_repo_path(f"actions/jobs/{job_id}")],
             capture_output=True, text=True, timeout=10, encoding="utf-8", errors="replace",
         )
         if meta_result.returncode == 0:
@@ -327,7 +342,7 @@ def main() -> int:
             # Get the run to find the PR
             if run_id:
                 run_result = subprocess.run(
-                    ["gh", "run", "view", run_id, "--json",
+                    ["gh", "run", "view", run_id, *_repo_target.gh_args(), "--json",
                      "headBranch,event,pullRequests"],
                     capture_output=True, text=True, timeout=5, encoding="utf-8", errors="replace",
                 )
@@ -340,7 +355,7 @@ def main() -> int:
                         # Get PR details
                         if pr_number:
                             pr_result = subprocess.run(
-                                ["gh", "pr", "view", pr_number, "--json",
+                                ["gh", "pr", "view", pr_number, *_repo_target.gh_args(), "--json",
                                  "title,author,headRefName,baseRefName,labels"],
                                 capture_output=True, text=True, timeout=5, encoding="utf-8", errors="replace",
                             )
@@ -355,8 +370,7 @@ def main() -> int:
     # 2. Get job log
     try:
         log_result = subprocess.run(
-            ["gh", "api",
-             f"repos/{{owner}}/{{repo}}/actions/jobs/{job_id}/logs"],
+            ["gh", "api", _api_repo_path(f"actions/jobs/{job_id}/logs")],
             capture_output=True, text=True, timeout=20, encoding="utf-8", errors="replace",
         )
     except FileNotFoundError:

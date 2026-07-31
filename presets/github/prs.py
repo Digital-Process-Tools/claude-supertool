@@ -38,6 +38,7 @@ from pr import _gh, _fetch_review_threads  # noqa: E402  (reuse the gh-pr helper
 import _board  # noqa: E402  (the board layout shared with gl-mrs / radar)
 import _checks  # noqa: E402  (the one check classifier, shared with gh-pr / gl-mrs)
 import _proc  # noqa: E402  (the one liveness probe, shared with watch / gl-mrs)
+import _repo_target  # noqa: E402  (the repo this call is about, when not the cwd's)
 
 WATCH_SOURCE = "github-pr"
 STATE_DIR = "/tmp"
@@ -114,7 +115,8 @@ def _build_list_cmd(filters: dict[str, str], per_page: int) -> list[str]:
     no list flag on gh, so it routes through --search review-requested:USER.
     """
     has_role = any(k in filters for k in ("author", "assignee", "reviewer"))
-    cmd = ["gh", "pr", "list", "--json", _LIST_FIELDS, "--limit", str(per_page)]
+    cmd = (["gh", "pr", "list", "--json", _LIST_FIELDS, "--limit", str(per_page)]
+           + _repo_target.gh_args())
     if not has_role:
         cmd += ["--author", "@me"]
     for key, val in filters.items():
@@ -228,13 +230,22 @@ def _enrich(prs: list[dict], cap: int = ENRICH_CAP, workers: int = ENRICH_WORKER
 _pid_alive = _proc.pid_alive
 
 
-def _watched_numbers(state_dir: str = STATE_DIR) -> set[str]:
+def _watched_numbers(state_dir: str = STATE_DIR) -> set[str] | None:
     """PR numbers that currently have a live github-pr watch poller.
 
     Reads PID files written by the watch dispatcher
     (/tmp/supertool-watch-github-pr__{number}.pid). A stale file whose process
     is dead does not count as watched.
+
+    None under a repo target (#673): that filename is keyed by PR number and
+    carries no repo, so a live poller for #12 of whatever repo the watcher was
+    started in cannot be told apart from #12 of the repo this board is about.
+    Returning the set anyway would mark the wrong rows watched; returning an
+    empty set would assert that none are. Neither is knowable here, so the
+    board is told so and says `?`.
     """
+    if _repo_target.target():
+        return None
     prefix = f"supertool-watch-{WATCH_SOURCE}__"
     watched: set[str] = set()
     for path in glob.glob(os.path.join(state_dir, f"{prefix}*.pid")):
@@ -333,7 +344,7 @@ def _branches(p: dict) -> str:
     return _board.branch_pair(p.get("headRefName"), p.get("baseRefName"))
 
 
-def _row(p: dict, watched: set[str], suffix: str = "") -> str:
+def _row(p: dict, watched: set[str] | None, suffix: str = "") -> str:
     """One triage row, rendered through the shared board layout so `gh-prs`,
     `gl-mrs` and `radar` cannot drift apart.
 
@@ -344,7 +355,7 @@ def _row(p: dict, watched: set[str], suffix: str = "") -> str:
     return _board.render_row(
         sigil="#",
         ident=str(p.get("number", "?")),
-        watched=str(p.get("number", "?")) in watched,
+        watched=None if watched is None else str(p.get("number", "?")) in watched,
         status=_check_cell(p),
         appr=_appr_cell(p),
         age=_age(str(p.get("updatedAt", ""))),
@@ -356,7 +367,7 @@ def _row(p: dict, watched: set[str], suffix: str = "") -> str:
     )
 
 
-def _render_table(prs: list[dict], watched: set[str]) -> str:
+def _render_table(prs: list[dict], watched: set[str] | None) -> str:
     """Triage table: checks (+ failed check), approval, age, diff size, flags.
 
     Sorted failing-first then stalest so what needs you is at the top.
@@ -366,20 +377,33 @@ def _render_table(prs: list[dict], watched: set[str]) -> str:
     return "\n".join(_row(p, watched) for p in sorted(prs, key=_sort_key))
 
 
-def _footer(prs: list[dict], watched: set[str]) -> str:
-    """Actionable summary: failing, unapproved, and the watch command."""
+def _footer(prs: list[dict], watched: set[str] | None) -> str:
+    """Actionable summary: failing, unapproved, and the watch command.
+
+    `watched=None` (a repo target, see `_watched_numbers`) drops the watch
+    clause rather than guessing at it. The clause is not decoration: it emits a
+    ready-to-run `watch:github-pr:N`, and watch state is keyed by number alone,
+    so under a target that command would start polling *this* repo's #N while
+    the board it came from was about another. A suggestion that does the wrong
+    thing is worse than no suggestion, and going silent about it would leave
+    the reader thinking nothing needs watching — so it says which it is.
+    """
     failing = [str(p.get("number")) for p in prs if p.get("_checks") == "failed"]
-    unwatched_fail = [n for n in failing if n not in watched]
     unapproved = [p for p in prs if p.get("_approved") is False]
     parts = [f"{len(prs)} PR(s)"]
     if failing:
         parts.append(f"{len(failing)} failing")
     if unapproved:
         parts.append(f"{len(unapproved)} unapproved")
-    if unwatched_fail:
-        parts.append(
-            f"{len(unwatched_fail)} unwatched → watch:{WATCH_SOURCE}:{unwatched_fail[0]}"
-        )
+    if watched is None:
+        parts.append("watch state unknown for a repo target (keyed by number "
+                     "only) — watch from a clone of that repo")
+    else:
+        unwatched_fail = [n for n in failing if n not in watched]
+        if unwatched_fail:
+            parts.append(
+                f"{len(unwatched_fail)} unwatched → watch:{WATCH_SOURCE}:{unwatched_fail[0]}"
+            )
     return " | ".join(parts)
 
 
@@ -405,8 +429,12 @@ def main() -> int:
         return 1
     if result.returncode != 0:
         err = result.stderr.strip() or "unknown error"
-        if "not logged in" in err.lower() or "401" in err:
+        low = err.lower()
+        if "not logged in" in low or "401" in err:
             print("ERROR: gh not authenticated. Run: gh auth login", file=sys.stderr)
+        elif ("github host" in low or "not a git repository" in low
+                or "git remotes" in low):
+            print(_repo_target.no_repo_error("gh-prs:author=@me"), file=sys.stderr)
         else:
             print(f"ERROR: gh pr list: {err}", file=sys.stderr)
         return 1

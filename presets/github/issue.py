@@ -9,13 +9,22 @@ import subprocess
 import sys
 import urllib.request
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import _repo_target  # noqa: E402  (the repo this call is about, when not the cwd's)
+
 DESCRIPTION_MAX = 3000
 COMMENT_MAX = 1000
 IMAGE_DIR = "/tmp/supertool-images/gh"
 
 
 def _gh(args: list[str], timeout: int = 10) -> subprocess.CompletedProcess[str]:
-    """Run a gh command and return the result."""
+    """Run a gh command and return the result.
+
+    A repo target (#673) becomes `--repo OWNER/NAME`; `gh api` never takes one.
+    """
+    if args and args[0] != "api":
+        args = args + _repo_target.gh_args()
     return subprocess.run(
         ["gh"] + args,
         capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace",
@@ -26,9 +35,11 @@ def _format_error(stderr: str, resource: str, identifier: str) -> str:
     """Classify gh errors into actionable messages for LLMs."""
     s = stderr.lower()
     if "github host" in s or "not a git repository" in s or "git remotes" in s:
-        return f"ERROR: cwd is not a GitHub repo. cd into a GitHub-cloned repo, or run gh directly with --repo OWNER/REPO."
+        return _repo_target.no_repo_error("gh-issue:673")
     if "could not resolve" in s or "404" in s or "not found" in s:
-        return f"ERROR: {resource} #{identifier} not found in this repo. Check the number or verify you're in the right repo (gh repo view)."
+        return (f"ERROR: {resource} #{identifier} not found "
+                f"{_repo_target.not_found_scope()}. "
+                f"{_repo_target.not_found_hint()}")
     if "401" in s or "unauthorized" in s or "not logged in" in s or "token" in s:
         return f"ERROR: gh CLI not authenticated. Run: gh auth login (verify with: gh auth status)"
     if "rate limit" in s or "429" in s:

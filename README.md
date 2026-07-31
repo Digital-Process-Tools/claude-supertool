@@ -245,6 +245,39 @@ A name that is not a shipped preset op still reads as a plain `unknown operation
 
 `ops` carries the same disclosure. From a directory with no config it leads with one line naming the presets that are not loaded and their op count, so the built-in listing is not mistaken for the tool's whole capability; from inside a configured project the same line trails the listing, since a preset that project chose not to enable is not a surprise.
 
+### `repo:OWNER/NAME` — which repo the call is *about*
+
+`cwd:` says where the call stands. It is not the same question as which repo the call is about, and until [#673](https://github.com/Digital-Process-Tools/claude-supertool/issues/673) there was no way to ask the second one: the `gh-*` read ops took their repo from the cwd's git remote, so a repo you have not cloned — or one whose project root is a *GitLab* repo — was unreachable through the ops. `gh-issue-create` had accepted a `repo` key in its payload since it shipped, so the vocabulary existed in the family and was simply missing on the read side.
+
+```bash
+./supertool 'repo:Digital-Process-Tools/claude-remember' 'gh-pr:265:status'
+```
+
+It composes with `cwd:`, which is what makes a GitLab project root usable as the place you stand while asking about a GitHub repo:
+
+```bash
+./supertool 'cwd:~/projects/my-gitlab-app' 'repo:some-org/some-gh-repo' 'gh-pr:265:status'
+```
+
+**Rules.** First op, or immediately after `cwd:`. One per call. `OWNER/NAME` or it is refused before anything runs — a half-target never reaches `gh`.
+
+**A `repo:` no op in the call can honour is refused, not ignored.** Only ops that declare a repo target accept one (`gh-pr`, `gh-prs`, `gh-issue`, `gh-run`, `gh-job`); mixing in one that cannot — `read:`, or `gh-issue-create`, which has its own payload key — fails the call and names the op. A target that silently applied to half a call is the defect the issue was about, so it is not the fix's behaviour either.
+
+**The error moved with the capability.** `cwd is not a GitHub repo` was a complete answer while cwd was the only way to name a repo. It now names the second route as well — and when a target *was* given it is not used at all, because cwd had no part in that lookup:
+
+```
+$ ./supertool 'gh-pr:265:status'                       # from a GitLab project root
+ERROR: cwd is not a GitHub repo and no repo target was given. cd into a GitHub-cloned repo,
+name one with a leading repo: op (./supertool 'repo:OWNER/NAME' 'gh-pr:265:status'), or run
+gh directly with --repo OWNER/REPO.
+
+$ ./supertool 'repo:some-org/typo' 'gh-pr:265:status'
+ERROR: PR #265 not found in some-org/typo. Check the number, or the repo target
+(gh repo view some-org/typo).
+```
+
+**`gh-prs` declines its watch column under a target.** Watch pollers write `supertool-watch-github-pr__{number}.pid` — keyed by PR number with no repo — so a live poller for `#12` of one repo cannot be told from `#12` of another. The board prints `?` rather than 👁 or blank (blank asserts *not watched*), and the footer drops its ready-to-run `watch:github-pr:N` rather than offer a command that would poll the wrong repo. Three states, not two.
+
 ### Legacy `check:` syntax
 
 The `check:PRESET:PATH` op still works — it reads from the `ops` section first, then falls back to `.supertool-checks.json` for backward compatibility. New projects should use direct ops (`mypy:file`) instead of `check:mypy:file`.

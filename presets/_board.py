@@ -42,7 +42,7 @@ def render_row(
     *,
     sigil: str,
     ident: str,
-    watched: bool,
+    watched: bool | None,
     status: str,
     appr: str,
     age: str,
@@ -57,8 +57,14 @@ def render_row(
     `suffix` is appended to the status line so callers that annotate rows
     (radar's drift/healed marks) land their marks there rather than on the
     title line.
+
+    `watched` is three-valued. Blank is not a neutral rendering on this board —
+    it reads as "no poller is watching this", which is a claim. A caller that
+    cannot establish the watch state passes None and gets `?`, so an absence
+    the tool could not measure is never printed as an absence in the world
+    (#673). Callers that do know pass a bool and are unaffected.
     """
-    eye = EYE if watched else " "
+    eye = "?" if watched is None else (EYE if watched else " ")
     head = (
         f"{eye} {status:<{STATUS_WIDTH}} {appr} {age:>3} {changes:>5}  "
         f"{sigil}{ident:<{IDENT_WIDTH}} {branches}{flags}{suffix}"

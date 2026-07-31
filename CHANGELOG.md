@@ -9,6 +9,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`repo:OWNER/NAME` — a leading op naming the repo a call is *about*, which `cwd:` never answered** ([#673](https://github.com/Digital-Process-Tools/claude-supertool/issues/673)). Every `gh-*` read op took its repo from the cwd's git remote with no override, so two repos were unreachable through the ops at once: any repo not cloned locally, and any repo whose work happens from a project root that is not a GitHub clone. The reported case was both — `claude-remember` PRs, from a DVSI project root that is a **GitLab** repo, where `gh-*` correctly refuses. `cwd:` into the one GitHub clone available answered about *that* clone instead. No combination of cwd reached the PR.
+
+  **The vocabulary already existed in the family, on the wrong side of it.** `gh-issue-create` has accepted a `repo` key in its payload since it shipped, and the reporter demonstrated it working against a different repo an hour after filing. So this is a write/read asymmetry, not a missing concept: `gh-pr`, `gh-prs`, `gh-issue`, `gh-run` and `gh-job` now accept a target too.
+
+  ```bash
+  ./supertool 'repo:Digital-Process-Tools/claude-remember' 'gh-pr:265:status'
+  ./supertool 'cwd:~/a-gitlab-project' 'repo:some-org/a-github-repo' 'gh-run:30654362436'
+  ```
+
+  First op or immediately after `cwd:`, one per call, `OWNER/NAME` validated before anything runs, scoped to the whole call.
+
+  **Why a leading op rather than the trailing `…:repo=OWNER/NAME` token the issue also proposed.** The suffix grammar in this family is not free. `gh-job:ID:grep:PATTERN` takes an arbitrary regex in exactly that position, so `gh-job:5:grep:repo=x` is a legitimate log search a trailing-token scan would silently steal — and stealing a search term to mean something else is the same class of defect as the one being fixed. `gh-prs` also already spells its filters `key=value` *inside* one comma-separated token (`gh-prs:author=@me,state=open`), so a second, colon-separated `key=` grammar would be two rules for one idea. A leading op lands in one place in the dispatcher instead of five presets' argument parsers, and composes with `cwd:` without either needing to know about the other.
+
+  **A `repo:` that no op in the call can honour is refused, not ignored.** Ops opt in with `"repo_target": true` in the preset manifest (`"payload"` for `gh-issue-create`, which routes it through its own payload), and a call mixing in an op that cannot take one fails before anything runs, naming the op *and* which of the two problems it is — a target to move, or a target to drop. A target silently applying to half a call is the exact shape of the bug this closes; it is not the fix's behaviour either.
+
+### Changed
+
+- **`cwd is not a GitHub repo` no longer describes a wall that has a door** ([#673](https://github.com/Digital-Process-Tools/claude-supertool/issues/673)). That sentence was complete and honest while the cwd was the only way to name a repo. With `repo:` shipping it is half the story, so it names the second route as well — and when a target *was* given, the cwd is not blamed at all, because it took no part in the lookup. Three situations, three answers:
+
+  | Situation | Message |
+  |---|---|
+  | No target, cwd is not a GitHub clone | `cwd is not a GitHub repo and no repo target was given. cd into a GitHub-cloned repo, name one with a leading repo: op …, or run gh directly with --repo OWNER/REPO.` |
+  | Target given, `gh` cannot resolve it | `repo target 'owner/name' could not be resolved by gh. Check the spelling and your access: gh repo view owner/name` |
+  | Target given, wrong number | `PR #265 not found in owner/name. Check the number, or the repo target (gh repo view owner/name).` |
+
+  The third previously read *not found in this repo … verify you're in the right repo*, which under a target sends the reader to inspect a working directory that had nothing to do with the request.
+
+- **`gh-prs` declines its watch column under a repo target instead of answering it wrong** ([#673](https://github.com/Digital-Process-Tools/claude-supertool/issues/673)). Found while building the above, not reported. Watch pollers write `supertool-watch-github-pr__{number}.pid` — keyed by PR number, with no repo in the key — so under a target a live poller for `#12` of the repo you are standing in is indistinguishable from `#12` of the repo the board is about.
+
+  Returning the set anyway marks the wrong rows watched; returning an empty set *asserts* that none are. So `_watched_numbers()` returns `None`, `_board.render_row`'s `watched` becomes three-valued, and rows print `?` — not blank, because blank on this board is the claim "no poller is watching this". The footer drops its ready-to-run `watch:github-pr:N` and says why, since that clause is not decoration: under a target the command it emits would start polling *this* repo's `#N` while the board it came from was about another. An actionable suggestion that does the wrong thing is worse than none, and going quiet would read as "nothing needs watching".
+
+  Callers that know their watch state (`gl-mrs`, `radar`) pass a bool and are unaffected.
+
 - **Read ops (`grep`, `around`, `grep_around`, `between`, `read`) accept the `@file` / `@-` payload the mutating ops already had, and a mis-tokenized read op now names the split instead of just failing** ([#625](https://github.com/Digital-Process-Tools/claude-supertool/issues/625)). The report was that a `:` in a search pattern is guesswork, that `grep:Element: <:traces.txt:8:0` tokenizes with `Element` as the pattern and `` ` <` `` as the path, and that unlike a mutating op the failure is silent. **Two of those three did not reproduce.** `_parse_grep_args` and `_parse_around_args` already peel the trailing integers, take the *last* token as the path and rejoin everything before it, so `grep:Element: <:PATH:8:0` and `grep:passed|failed|Error:FILE:15` — the issue's two examples — both parse correctly and always did; and a mis-parse does not return a zero, it returns `path not found`, because the path is checked before the scan. The escape was missing, but the trap was not where it was reported, so the fix is aimed at where it is.
 
   **Where the colon genuinely defeats the parser is where nothing anchors the right-hand end.** Omit the path and the pattern's own tail is taken for one — `grep:A::CONST` searches for `A:` in a path named `CONST`. And `between:re:START:END:PATH` rejoins **rightward** (`":".join(parts[4:])`), so a `:` in START or END steals from the path rather than from the pattern — the opposite failure to `grep`'s, in the same character.

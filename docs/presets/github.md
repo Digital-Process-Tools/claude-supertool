@@ -6,6 +6,8 @@ GitHub ops via the `gh` CLI. Replaces the 4-6 separate `gh` calls needed to revi
 
 [`gh` CLI](https://cli.github.com) installed and authenticated (`gh auth login`).
 
+A GitHub-cloned cwd, **or** a `repo:OWNER/NAME` target — see [Targeting another repo](#targeting-another-repo).
+
 ## Ops
 
 | Op | Syntax | What it returns |
@@ -15,6 +17,7 @@ GitHub ops via the `gh` CLI. Replaces the 4-6 separate `gh` calls needed to revi
 | `gh-prs` | `gh-prs[:author=@me,reviewer=@me,state=open,failed,nopipe,iids]` | PR triage board: your open PRs sorted failing-first then stalest. Per PR: check rollup (a failure shows the failing **check name**), approval state, age, diff size, watch-state, `draft`/`conflict`/`threads` flags + footer pointing at the first failing-and-unwatched PR. The gl-mrs twin. `iids` emits a bare number list for `watch-mine.sh` |
 | `gh-run` | `gh-run:NUMBER` | Workflow run job list with statuses and failed step names |
 | `gh-job` | `gh-job:NUMBER[:raw[:-N\|:START[:END]]\|:grep:PATTERN]` | Job failure detail: PR context + error pattern search + log tail. `:raw` dumps the full trace; `:raw:START:END` slices lines (1-indexed, inclusive); `:raw:-N` returns the **last N lines**, and a START past the end returns the tail of the width requested with a line saying so rather than declining — see [Reading a range](gitlab.md#reading-a-range) ([#487](https://github.com/Digital-Process-Tools/claude-supertool/issues/487)); `:grep:PATTERN` runs an ad-hoc regex over the log (literal fallback on bad regex, ±context, names the pattern + tail on no-match — never silent-empty). Optional per-job `job_patterns` table in `.supertool.json` (see gitlab preset doc) maps job names to tighter patterns + a `resolution` op. Zero matches on a job GitHub calls `failure` prints `## FAILED — no error pattern matched` — patterns tried + a log tail, never silence. `## No error patterns matched` survives only for jobs that did not fail |
+| `repo:` prefix | `repo:OWNER/NAME` (leading op) | Points `gh-pr`, `gh-prs`, `gh-issue`, `gh-run`, `gh-job` at a repo other than the cwd's — see [Targeting another repo](#targeting-another-repo) |
 | `gh-follow` | `gh-follow:USERNAME` | Follow a GitHub user via the authenticated session |
 | `gh-following` | `gh-following[:N]` | List users you follow (default 30) |
 | `gh-batch-follow` | `gh-batch-follow:FILE` | Follow each username from a file (one per line, `#` comments). 1s delay between calls |
@@ -23,6 +26,66 @@ GitHub ops via the `gh` CLI. Replaces the 4-6 separate `gh` calls needed to revi
 | `gh-batch-star` | `gh-batch-star:FILE` | Star each `OWNER/REPO` from a file (one per line, `#` comments). 1s delay between calls |
 | `gh-find-followable` | `gh-find-followable:OWNER/REPO[|N]` | Discover candidate users to follow: pulls stargazers + contributors, deduplicates, filters orgs. Pipe output to a file then review before `gh-batch-follow` |
 | `gh-find-starable` | `gh-find-starable:TOPIC[|N]` | Discover repos worth starring by topic, sorted by stars. Pipe output to a file then review before `gh-batch-star` |
+
+## Targeting another repo
+
+Every read op above took its repo from the cwd's git remote and offered no override, so two repos were unreachable through the ops at once: any repo you have not cloned, and any repo whose work happens from a project root that is **not** a GitHub clone. `gh-issue-create` had accepted a `repo` key in its payload since it shipped, so the write side could already name a target while the read side could not ([#673](https://github.com/Digital-Process-Tools/claude-supertool/issues/673)).
+
+A leading `repo:OWNER/NAME` op supplies it:
+
+```bash
+./supertool 'repo:Digital-Process-Tools/claude-remember' 'gh-pr:265:status'
+./supertool 'cwd:~/projects/a-gitlab-repo' 'repo:some-org/a-github-repo' 'gh-run:30654362436'
+```
+
+| | Rule |
+|---|---|
+| Position | First op, or immediately after `cwd:` — `cwd:` keeps its own must-be-absolutely-first rule |
+| Count | One per call |
+| Shape | `OWNER/NAME`, validated before anything runs |
+| Scope | The whole call. Two targets in one call is two calls |
+| Accepted by | `gh-pr`, `gh-prs`, `gh-issue`, `gh-run`, `gh-job` |
+
+**Why a leading op and not a trailing `…:repo=OWNER/NAME` token.** The suffix grammar in this family is not free. `gh-job:ID:grep:PATTERN` takes an arbitrary regex in that position, so `gh-job:5:grep:repo=x` is a legitimate log search that a trailing-token scan would silently steal — and `gh-prs` already spells its filters `key=value` *inside one comma-separated token* (`gh-prs:author=@me,state=open`), so a second, colon-separated `key=` grammar would be two rules for one idea. A leading op also lands in one place in the dispatcher instead of in five presets' argument parsers.
+
+### A target no op can honour is refused
+
+```
+$ ./supertool 'repo:owner/name' 'gh-pr:1:status' 'read:foo.py'
+repo: 'read' cannot be pointed at a repo, so a repo: op in this call would apply to some ops
+and be silently ignored by this one. Drop the repo: op, or give the repo-scoped ops a call of
+their own.
+
+$ ./supertool 'repo:owner/name' 'gh-issue-create:@.max/new.toml'
+repo: 'gh-issue-create' takes its repo target in the payload (repo = "OWNER/NAME"), not from a
+repo: op — so there is one place the target comes from. Set it there and drop the repo: op.
+```
+
+Both fail before any op runs. A target that quietly applied to part of a call is the shape of the bug this fixed, so it is not the fix's behaviour either. Ops opt in via `"repo_target": true` in the preset manifest (`"payload"` for those routing it through their own payload), which is also what makes the refusal able to name *which* of the two problems you have.
+
+### The error names the door, not just the wall
+
+`ERROR: cwd is not a GitHub repo` was complete and honest while cwd was the only way to name a repo. With a second route it describes a wall that now has a door, so it names both — and when a target *was* given it is not used at all, because the cwd had no part in that lookup:
+
+| Situation | Message |
+|---|---|
+| No target, cwd is not a GitHub clone | `cwd is not a GitHub repo and no repo target was given. cd into a GitHub-cloned repo, name one with a leading repo: op …, or run gh directly with --repo OWNER/REPO.` |
+| Target given, `gh` cannot resolve it | `repo target 'owner/name' could not be resolved by gh. Check the spelling and your access: gh repo view owner/name` |
+| Target given, the number is wrong | `PR #265 not found in owner/name. Check the number, or the repo target (gh repo view owner/name).` |
+
+The third one used to read *not found in this repo … verify you're in the right repo*, which under a target sends the reader to inspect a working directory that took no part in the request.
+
+### `gh-prs` declines its watch column under a target
+
+Watch pollers write `supertool-watch-github-pr__{number}.pid` — keyed by PR number, with no repo in the key. Under a repo target that key is ambiguous: a live poller for `#12` of the repo you are standing in cannot be told apart from `#12` of the repo the board is about.
+
+So the board declines rather than guesses. Rows print `?` instead of 👁 — and instead of blank, because blank on this board is the *claim* "no poller is watching this". The footer drops its ready-to-run `watch:github-pr:N` and says why:
+
+```
+0 PR(s) | watch state unknown for a repo target (keyed by number only) — watch from a clone of that repo
+```
+
+That clause is not decoration: it emits a command, and under a target that command would start polling *this* repo's `#N` while the board it came from was about another. An actionable suggestion that does the wrong thing is worse than no suggestion — and going quiet about it would read as "nothing needs watching". `ok`, a finding, and `skipped` are three different answers; see [Declining instead of guessing](../validators.md).
 
 ## Common workflows
 
