@@ -163,6 +163,14 @@ Three ways to pass arguments. Full reference: [docs/input-forms.md](docs/input-f
 
 - **Colon-CLI** (default) — `read:PATH:OFFSET:LIMIT` (or `read:PATH:START-END` for an explicit, inclusive line range). Use `:::` when content contains colons: `edit:::OLD:::NEW:::PATH`.
 - **`@file` route** — JSON payload for `edit`/`replace_lines`/`paste`/`append`/`vim` when content is multi-line or shell-hostile: `edit:@.max/my-edit.json`.
+- **`@file` for read ops** — `grep`/`around`/`grep_around`/`between`/`read` take the same payload, for patterns containing `:` (`Class::CONST`, `ERROR: …`, alternations). The colon CLI copes with `grep:PATTERN:PATH:LIMIT` but cannot when the path is omitted; a payload never has to guess. There is **no** backslash escape — `grep:A\:B` only appears to work. See [docs/input-forms.md](docs/input-forms.md).
+
+  ```bash
+  ./supertool 'grep:@-' <<'EOF'
+  pattern = '''Element: <'''
+  path = "traces.txt"
+  EOF
+  ```
 - **`batch:@file`** — mixed reads + writes in one round-trip: `batch:@.max/ops.json` (bare array or `{continue_on_error, ops}` wrapper).
 
 ---
