@@ -38,6 +38,31 @@ import pytest
 import supertool
 
 
+def _toml_str(value: object) -> str:
+    r"""Render `value` as a TOML string the parser hands back byte-for-byte.
+
+    A TOML *basic* (double-quoted) string processes backslash escapes, so
+    interpolating a path into one is lossless only while the path has no
+    backslashes. A Windows `tmp_path` is all backslashes, and `\U`, `\r`, `\t`,
+    `\A` are escape sequences in that position: stdlib `tomllib` (3.11+) rejects
+    the file outright, while supertool's `_mini_toml_loads` fallback (3.9/3.10)
+    swallows the backslashes and dispatches the op at a path nobody wrote —
+    `C:\Users\runneradmin\...` arriving as `C:Users<CR>unneradmin...`. Both are
+    unreachable on a POSIX runner by construction, which is how this file went
+    green on ten legs and red on four (#683).
+
+    A *literal* (single-quoted) TOML string has no escape processing at all, so
+    the value survives whatever separator the platform uses. The payload then
+    carries the path a real caller would write, instead of one the product
+    could never receive — which is the only version worth asserting on.
+    """
+    text = str(value)
+    assert "'" not in text and "\n" not in text, (
+        f"not representable as a TOML literal string: {text!r}"
+    )
+    return f"'{text}'"
+
+
 def _run_batch(tmp_path: Path, ops_toml: str) -> str:
     spec = tmp_path / "ops.toml"
     spec.write_text(ops_toml, encoding="utf-8")
@@ -106,7 +131,7 @@ class TestPayloadHeaderRoundTrip:
             tmp_path,
             "[[ops]]\n"
             'op = "replace"\n'
-            f'path = "{target}"\n'
+            f"path = {_toml_str(target)}\n"
             'old = "time: 10:30"\n'
             'new = "time: 11:45"\n',
         )
@@ -124,7 +149,7 @@ class TestPayloadHeaderRoundTrip:
             tmp_path,
             "[[ops]]\n"
             'op = "edit"\n'
-            f'path = "{target}"\n'
+            f"path = {_toml_str(target)}\n"
             'old = "url: http://a/b"\n'
             'new = "url: https://a/b"\n',
         )
@@ -143,9 +168,9 @@ class TestPayloadHeaderRoundTrip:
             tmp_path,
             "[[ops]]\n"
             'op = "replace"\n'
-            f'path = "{target}"\n'
-            f'old = "{old}"\n'
-            f'new = "{new}"\n',
+            f"path = {_toml_str(target)}\n"
+            f"old = {_toml_str(old)}\n"
+            f"new = {_toml_str(new)}\n",
         )
         headers = _sub_headers(out)
         assert len(headers) == 1, out
@@ -161,7 +186,7 @@ class TestPayloadHeaderRoundTrip:
             tmp_path,
             "[[ops]]\n"
             'op = "replace"\n'
-            f'path = "{target}"\n'
+            f"path = {_toml_str(target)}\n"
             'old = "time: 10:30"\n'
             'new = "time: 11:45"\n',
         )
@@ -182,7 +207,7 @@ class TestPayloadHeaderShape:
             tmp_path,
             "[[ops]]\n"
             'op = "replace"\n'
-            f'path = "{target}"\n'
+            f"path = {_toml_str(target)}\n"
             'old = "time: 10:30"\n'
             'new = "time: 11:45"\n',
         )
@@ -201,12 +226,15 @@ class TestPayloadHeaderShape:
         short_out = _run_batch(
             tmp_path,
             "[[ops]]\nop = \"replace\"\n"
-            f'path = "{short_t}"\nold = "a:1"\nnew = "a:2"\n',
+            f"path = {_toml_str(short_t)}\n"
+            'old = "a:1"\nnew = "a:2"\n',
         )
         long_out = _run_batch(
             tmp_path,
             "[[ops]]\nop = \"replace\"\n"
-            f'path = "{long_t}"\nold = "{long_old}"\nnew = "b:2"\n',
+            f"path = {_toml_str(long_t)}\n"
+            f"old = {_toml_str(long_old)}\n"
+            'new = "b:2"\n',
         )
         short_h = _sub_headers(short_out)[0]
         long_h = _sub_headers(long_out)[0]
@@ -255,7 +283,7 @@ class TestBatchReadOpFieldOrder:
             'op = "between"\n'
             'start = "START:"\n'
             'end = "END:"\n'
-            f'path = "{src}"\n',
+            f"path = {_toml_str(src)}\n",
         )
         # sorted({end, path, start}) => end, path, start, i.e.
         # `between:END::<path>:START:` — not any argument order between takes.
@@ -270,7 +298,7 @@ class TestBatchReadOpFieldOrder:
         src.write_text("".join(f"line{i}\n" for i in range(1, 21)), encoding="utf-8")
         out = _run_batch(
             tmp_path,
-            "[[ops]]\n" 'op = "read"\n' f'path = "{src}"\n' "offset = 5\n" "limit = 2\n",
+            "[[ops]]\n" 'op = "read"\n' f"path = {_toml_str(src)}\n" "offset = 5\n" "limit = 2\n",
         )
         # sorted({limit, offset, path}) => limit, offset, path
         # => `read:2:5:<path>` => "invalid literal for int()".
@@ -288,7 +316,7 @@ class TestBatchReadOpFieldOrder:
             "[[ops]]\n"
             'op = "grep"\n'
             'pattern = "Foo::BAR"\n'
-            f'path = "{src}"\n'
+            f"path = {_toml_str(src)}\n"
             "limit = 5\n",
         )
         assert "ERROR" not in out, out
@@ -302,7 +330,7 @@ class TestBatchReadOpFieldOrder:
             "[[ops]]\n"
             'op = "around"\n'
             'pattern = "ERROR: boom"\n'
-            f'path = "{src}"\n'
+            f"path = {_toml_str(src)}\n"
             "n = 1\n",
         )
         assert "ERROR: file not found" not in out, out
@@ -339,7 +367,7 @@ class TestDeclineRatherThanGuess:
         src.write_text("".join(f"row{i}\n" for i in range(1, 11)), encoding="utf-8")
         out = _run_batch(
             tmp_path,
-            "[[ops]]\n" 'op = "head"\n' f'path = "{src}"\n' "n = 2\n",
+            "[[ops]]\n" 'op = "head"\n' f"path = {_toml_str(src)}\n" "n = 2\n",
         )
         # sorted({n, path}) => n, path => `head:2:<path>` — path "2".
         assert "ERROR" not in out, out
@@ -353,7 +381,7 @@ class TestDeclineRatherThanGuess:
         src.write_text("a\nb\nc\n", encoding="utf-8")
         out = _run_batch(
             tmp_path,
-            "[[ops]]\n" 'op = "around_line"\n' f'path = "{src}"\n' "n = 1\n",
+            "[[ops]]\n" 'op = "around_line"\n' f"path = {_toml_str(src)}\n" "n = 1\n",
         )
         assert "ERROR" in out, out
         assert "sparse" in out, out
