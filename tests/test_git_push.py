@@ -292,6 +292,14 @@ def test_parse_flags_collects_known_ignores_rest() -> None:
     assert push._parse_flags(["bogus", "42", ""]) == set()
 
 
+def test_split_flags_reports_what_it_did_not_recognise() -> None:
+    """#647: the unrecognised half is returned, not discarded. main() refuses on it."""
+    assert push._split_flags(["watch"]) == ({"watch"}, [])
+    assert push._split_flags(["no-verifyy"]) == (set(), ["no-verifyy"])
+    assert push._split_flags(["no-verify", "force", ""]) == (
+        {"no-verify"}, ["force"])
+
+
 def test_split_upstream() -> None:
     assert push._split_upstream("origin/feat", "feat") == ("origin", "feat")
     assert push._split_upstream("up/team/x", "x") == ("up", "team/x")
@@ -481,7 +489,7 @@ def test_advisories_mergeability_warn(capsys) -> None:
     mr = {"source": "gitlab", "iid": 42, "target": "master",
           "merge_status": "cannot_be_merged"}
     with mock.patch.object(push, "_git", side_effect=_advisory_git()):
-        push._post_push_advisories(mr, set())
+        push._post_push_advisories(mr, set(), "origin")
     out = capsys.readouterr().out
     assert "conflicts with master" in out
     assert "Watch pipeline: ./supertool 'watch:gitlab-mr:42'" in out
@@ -491,16 +499,25 @@ def test_advisories_behind_target_warn(capsys) -> None:
     mr = {"source": "gitlab", "iid": 42, "target": "master"}
     with mock.patch.object(push, "_git",
                            side_effect=_advisory_git(rev_list_count="3\n")):
-        push._post_push_advisories(mr, set())
+        push._post_push_advisories(mr, set(), "origin")
     out = capsys.readouterr().out
     assert "3 commit(s) behind origin/master" in out
+
+
+def test_advisories_behind_target_follows_the_upstream_remote(capsys) -> None:
+    """#642: the ref counted is the branch's real upstream, not a hardcoded origin."""
+    mr = {"source": "gitlab", "iid": 42, "target": "master"}
+    with mock.patch.object(push, "_git",
+                           side_effect=_advisory_git(rev_list_count="3" + chr(10))):
+        push._post_push_advisories(mr, set(), "upstream")
+    assert "3 commit(s) behind upstream/master" in capsys.readouterr().out
 
 
 def test_advisories_uncommitted_leftovers_warn(capsys) -> None:
     mr = {"source": "gitlab", "iid": 42, "target": "master"}
     with mock.patch.object(push, "_git",
                            side_effect=_advisory_git(porcelain=" M x.py\n?? y.py\n")):
-        push._post_push_advisories(mr, set())
+        push._post_push_advisories(mr, set(), "origin")
     out = capsys.readouterr().out
     assert "2 change(s) NOT in this push" in out
     # #623: the count is the signal; the listing used to bury the push verdict
@@ -512,8 +529,9 @@ def test_advisories_uncommitted_leftovers_warn(capsys) -> None:
 def test_advisories_autowatch_flag_spawns(capsys) -> None:
     mr = {"source": "gitlab", "iid": 42, "target": "master"}
     with mock.patch.object(push, "_git", side_effect=_advisory_git()), \
-         mock.patch.object(push, "_spawn_watch", return_value=True) as sp:
-        push._post_push_advisories(mr, {"watch"})
+         mock.patch.object(push, "_spawn_watch",
+                           return_value=(True, "./supertool")) as sp:
+        push._post_push_advisories(mr, {"watch"}, "origin")
     out = capsys.readouterr().out
     sp.assert_called_once_with("gitlab-mr", "42")
     assert "Watching →" in out
