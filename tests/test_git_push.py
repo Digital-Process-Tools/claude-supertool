@@ -67,12 +67,28 @@ def test_mr_line_none_is_empty() -> None:
 # ── _remote_sha ──────────────────────────────────────────────────────────
 
 def test_remote_sha_empty_ref() -> None:
-    assert push._remote_sha("") == ""
+    """No ref to ask about is not a failure to ask (#675)."""
+    assert push._remote_sha("") == ("", "")
 
 
 def test_remote_sha_resolves() -> None:
     with mock.patch.object(push, "_git", return_value=_proc("abc1234\n")):
-        assert push._remote_sha("origin/x") == "abc1234"
+        assert push._remote_sha("origin/x") == ("abc1234", "")
+
+
+def test_remote_sha_that_could_not_be_read_says_so(tmp_path) -> None:
+    """#675: `""` used to mean "does not resolve" and "never asked" at once.
+
+    The caller prints a different line for each, and the second is the one that
+    used to be a traceback over a push that had already landed.
+    """
+    def dead_git(args, timeout=30):
+        raise OSError(2, "No such file or directory: 'git'")
+
+    with mock.patch.object(push, "_git", side_effect=dead_git):
+        sha, why = push._remote_sha("origin/x")
+    assert sha == ""
+    assert "did not complete" in why, why
 
 
 # ── main() guards ────────────────────────────────────────────────────────
@@ -481,7 +497,8 @@ def test_main_first_push_without_a_per_ref_line_declines(capsys) -> None:
 
     with mock.patch.object(push, "_git", side_effect=fake_git), \
          mock.patch.object(push, "query_open_mr", return_value=None), \
-         mock.patch.object(push, "_upstream_ref", side_effect=["", "origin/feat"]):
+         mock.patch.object(push, "_upstream_ref",
+                           side_effect=[("", ""), ("origin/feat", "")]):
         rc = push.main()
     out = capsys.readouterr().out
     assert rc == 0
@@ -873,7 +890,25 @@ def test_live_remote_sha_survives_ls_remote_timeout() -> None:
         raise subprocess.TimeoutExpired(cmd="git ls-remote", timeout=timeout)
 
     with mock.patch.object(push, "_git", side_effect=fake_git):
-        assert push._live_remote_sha("origin", "feat") == ""
+        sha, why = push._live_remote_sha("origin", "feat")
+    assert sha == ""
+    assert "did not complete" in why, why
+
+
+def test_live_remote_sha_survives_git_not_starting_at_all() -> None:
+    """#675: this was the only guarded helper, and it caught the wrong thing.
+
+    `TimeoutExpired` was handled because that is what somebody hit. An
+    `OSError` — git missing from PATH, fork failing — went straight out of
+    `main()` as a traceback, for a push that had already landed.
+    """
+    def dead_git(args, timeout=30):
+        raise OSError(2, "No such file or directory: 'git'")
+
+    with mock.patch.object(push, "_git", side_effect=dead_git):
+        sha, why = push._live_remote_sha("origin", "feat")
+    assert sha == ""
+    assert "did not complete" in why, why
 
 
 def test_push_budget_is_strictly_below_the_op_timeout_cap() -> None:

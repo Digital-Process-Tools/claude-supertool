@@ -57,6 +57,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import traceback
 from typing import Optional
 
 # Sibling import: runtime puts this dir on sys.path[0]; the test harness
@@ -82,6 +83,78 @@ _PUSH_TIMEOUT = 300
 # can land on a worktree git has already paused (#640) — see
 # _report_recovery_timeout.
 _RECOVER_TIMEOUT = 120
+
+# Budget for the checks that make up the receipt — everything this op runs
+# *after* the push has landed. Named for the same reason _PUSH_TIMEOUT is:
+# these calls all sit past the point of no return, where an expiring clock is
+# not evidence about the remote and must never cost the caller the verdict
+# (#675).
+_CHECK_TIMEOUT = 30
+
+
+# How far this run got, and whether it has already spoken. The receipt-level
+# invariant — exactly one `[result]` line, and never one claiming a landed push
+# failed — cannot be held up by each helper remembering to be careful. That is
+# what produced #675: one guarded helper among six unguarded ones, each patched
+# when somebody hit it. It is held up here instead, by main() knowing which
+# phase it crashed in.
+_RUN = {
+    "phase": "not-attempted",   # -> "attempted" -> "landed"
+    "branch": "",
+    "remote": "",
+    "ref": "",
+    "target": "",
+    "verdict": False,
+}
+
+
+def _note_landed(branch: str, remote: str, ref: str) -> None:
+    """Record that the remote has moved — every caller of this is past no-return.
+
+    `remote` and `ref` are kept apart as well as joined. The joined form is
+    what the receipt prints; the split form is what `git ls-remote` takes, and
+    a crash receipt that advises `ls-remote origin/feature` names a remote git
+    cannot resolve — advice that looks actionable and is not (#663).
+    """
+    _RUN.update({"phase": "landed", "branch": branch, "remote": remote,
+                 "ref": ref, "target": f"{remote}/{ref}"})
+
+
+def _checked_git(args: list[str], label: str = "") -> tuple[
+        Optional[subprocess.CompletedProcess[str]], str]:
+    """Run a receipt check. `(result, "")` if it answered, `(None, why)` if not.
+
+    The generalisation nothing ever did (#675). Every check in this receipt has
+    the same three states — it ran and found nothing, it ran and found
+    something, it could not run — and the third was spelled a different way at
+    each call site, or not at all: `_live_remote_sha` caught `TimeoutExpired`
+    but not `OSError`, `_remote_sha` and `_local_head` returned `""` for both
+    "no" and "could not ask", and the rest raised straight out of `main()` for
+    a push that had already landed.
+
+    `""` is what makes this worth centralising rather than repeating. It reads
+    as an *answer* at every call site here, so a per-helper guard returning it
+    converts a loud crash into a silent wrong claim — the receipt saying the
+    tree is clean, the base is fresh, the remote differs from a HEAD it never
+    read. `None` cannot be mistaken for an answer, and `why` is what lets the
+    caller name the missing check instead of just printing less receipt.
+
+    A non-zero exit and an exception are deliberately the same state: both mean
+    this check has nothing to contribute, and the caller needs to hear which
+    command and why either way. Where a non-zero exit is git *answering* the
+    question (`@{upstream}` on a branch that has none), the call site says so
+    itself rather than coming through here.
+    """
+    cmd = label or "git " + " ".join(args)
+    try:
+        r = _git(args, timeout=_CHECK_TIMEOUT)
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        return None, f"`{cmd}` did not complete — {exc}"
+    if r.returncode != 0:
+        why = _first_error_line((r.stdout or "") + "\n" + (r.stderr or ""))
+        return None, (f"`{cmd}` exited {r.returncode}"
+                      + (f" — {why}" if why else ""))
+    return r, ""
 
 
 def _split_flags(argv: list[str]) -> tuple[set[str], list[str]]:
@@ -112,40 +185,81 @@ def _parse_flags(argv: list[str]) -> set[str]:
     return _split_flags(argv)[0]
 
 
-def _upstream_ref() -> str:
-    """Configured upstream of HEAD (e.g. origin/foo), or empty if none."""
-    r = _git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"])
-    return r.stdout.strip() if r.returncode == 0 else ""
+def _upstream_ref() -> tuple[str, str]:
+    """Configured upstream of HEAD (e.g. origin/foo). `(ref, could-not-ask)`.
+
+    A non-zero exit is git *answering* this question: this branch has no
+    upstream, the ordinary first-push case, and reporting it as a failure would
+    make the receipt shout on every new branch. So it does not go through
+    `_checked_git`; only the exception is an absence of an answer.
+
+    That distinction is the whole point of the second element. An empty ref
+    used to mean both things at once, and the caller falls back to a hardcoded
+    `origin` — the exact defect #642 fixed, re-entered through a failure path,
+    and then named in a verdict about a remote nobody confirmed (#675).
+    """
+    cmd = "git rev-parse --abbrev-ref --symbolic-full-name @{upstream}"
+    try:
+        r = _git(["rev-parse", "--abbrev-ref", "--symbolic-full-name",
+                  "@{upstream}"], timeout=_CHECK_TIMEOUT)
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        return "", f"`{cmd}` did not complete — {exc}"
+    return (r.stdout.strip(), "") if r.returncode == 0 else ("", "")
 
 
-def _remote_sha(ref: str) -> str:
+def _remote_sha(ref: str) -> tuple[str, str]:
+    """Short SHA `ref` resolves to locally. `(sha, could-not-ask)`.
+
+    As with `_upstream_ref`, a non-zero exit is an answer — the ref does not
+    resolve in this clone (shallow, odd remote layout), which the receipt
+    already knows how to say. An exception is not an answer, and used to be a
+    traceback over a push that had landed.
+    """
     if not ref:
-        return ""
-    r = _git(["rev-parse", "--short", ref])
-    return r.stdout.strip() if r.returncode == 0 else ""
+        return "", ""
+    cmd = f"git rev-parse --short {ref}"
+    try:
+        r = _git(["rev-parse", "--short", ref], timeout=_CHECK_TIMEOUT)
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        return "", f"`{cmd}` did not complete — {exc}"
+    return (r.stdout.strip(), "") if r.returncode == 0 else ("", "")
 
 
-def _local_head() -> str:
-    """Full SHA of local HEAD (a pre-push hook may rewrite it mid-push)."""
-    r = _git(["rev-parse", "HEAD"])
-    return r.stdout.strip() if r.returncode == 0 else ""
+def _local_head() -> tuple[str, str]:
+    """Full SHA of local HEAD. `(sha, why-not)`.
+
+    Both failure modes collapse into one state here on purpose: past the push,
+    a `rev-parse HEAD` that exits non-zero and one that never ran leave the
+    caller in the same position — unable to compare the remote against local
+    work — and `_push_verdict` has to say which, because the alternative is
+    the divergence claim #675 found on the `[result]` line.
+    """
+    r, why = _checked_git(["rev-parse", "HEAD"], "git rev-parse HEAD")
+    return ("", why) if r is None else (r.stdout.strip(), "")
 
 
-def _live_remote_sha(remote: str, ref: str) -> str:
-    """Authoritative remote SHA via ls-remote (full sha), or empty.
+def _live_remote_sha(remote: str, ref: str) -> tuple[str, str]:
+    """Authoritative remote SHA via ls-remote (full sha). `(sha, why-not)`.
 
     Reads the real remote, not the local remote-tracking ref — a hook that
     pushes on our behalf moves the remote without us having fetched.
+
+    This was the only guarded helper in the receipt, and the shape of that
+    guard is what #675 is about: it caught `TimeoutExpired` because that is
+    what somebody hit, and let an `OSError` — git failing to start at all —
+    through as a traceback over a landed push. It also returned a bare `""`,
+    so every caller reported "remote did not answer ls-remote" no matter what
+    actually went wrong, which is the wrong-cause advice #663 warns about.
     """
     if not remote or not ref:
-        return ""
-    try:
-        r = _git(["ls-remote", remote, ref], timeout=30)
-    except subprocess.TimeoutExpired:
-        return ""
-    if r.returncode == 0 and r.stdout.strip():
-        return r.stdout.split()[0]
-    return ""
+        return "", ""
+    cmd = f"git ls-remote {remote} {ref}"
+    r, why = _checked_git(["ls-remote", remote, ref], cmd)
+    if r is None:
+        return "", why
+    if r.stdout.strip():
+        return r.stdout.split()[0], ""
+    return "", f"`{cmd}` returned no ref — the remote does not have {ref}"
 
 
 def _split_upstream(upstream: str, branch: str) -> tuple[str, str]:
@@ -284,7 +398,14 @@ def _result(verdict: str) -> None:
     to tell them. Being *present* in the output is not enough — the verdict
     has to survive `| tail -3`, which means being last. Every return path
     from main() ends here, including the ones where no push was attempted.
+
+    Recorded, not just printed: "every return path" was a convention held up by
+    each new return path remembering it, and a raised exception is not a return
+    path at all (#675). main()'s catch-all needs to know whether the verdict
+    already went out, so that a crash below this line adds nothing and a crash
+    above it is still answered.
     """
+    _RUN["verdict"] = True
     print(f"[result] {verdict}")
 
 
@@ -298,17 +419,31 @@ def _push_verdict(moved: bool, branch: str, remote: str, ref: str,
     that fetch is precisely the round-trip this op exists to remove. When the
     remote does not answer we say `unverified` and fall back to the tracking
     sha, labelled: a sha we did not read is never printed as if we had.
+
+    Three states on each half of that comparison, not two (#675). Both `live`
+    and `head` are reads that can fail, and the note used to be decided by
+    `head and live == head` — a conjunction in which a `rev-parse HEAD` that
+    never answered is indistinguishable from a remote that disagrees with local
+    work. So a failed local read printed `verified, but remote != local HEAD`:
+    a divergence claim, made out of an absence, on the one line #623 exists to
+    make callers read. It now names which read went missing, and the reason the
+    remote could not be verified is the real one rather than a fixed string.
     """
-    live = _live_remote_sha(remote, ref)
-    head = _local_head()
+    live, live_why = _live_remote_sha(remote, ref)
+    head, head_why = _local_head()
     target = f"{remote}/{ref}"
     if live:
         sha = live[:7]
-        note = ("verified" if (head and live == head)
-                else "verified, but remote != local HEAD")
+        if not head:
+            note = ("verified against the remote; the comparison with local "
+                    f"HEAD could not be made — {head_why}")
+        elif live == head:
+            note = "verified"
+        else:
+            note = "verified, but remote != local HEAD"
     else:
         sha = tracking_sha or "unknown"
-        note = "unverified - remote did not answer ls-remote"
+        note = f"unverified - {live_why or 'remote did not answer ls-remote'}"
     if moved:
         extra = f", {ncommits} commit(s)" if ncommits else ""
         _result(f"PUSHED  {branch} -> {target} @ {sha}  ({note}{extra})"
@@ -403,14 +538,9 @@ def _uncommitted_leftovers() -> tuple[Optional[list[str]], str]:
     a stack trace at this point costs the caller the whole receipt of a push
     that succeeded (#399/#640).
     """
-    try:
-        r = _git(["status", "--porcelain"])
-    except (subprocess.TimeoutExpired, OSError) as exc:
-        return None, f"`git status --porcelain` did not complete — {exc}"
-    if r.returncode != 0:
-        why = _first_error_line((r.stdout or "") + "\n" + (r.stderr or ""))
-        return None, (f"`git status --porcelain` exited {r.returncode}"
-                      + (f" — {why}" if why else ""))
+    r, why = _checked_git(["status", "--porcelain"], "git status --porcelain")
+    if r is None:
+        return None, why
     return [ln for ln in r.stdout.splitlines() if ln.strip()], ""
 
 
@@ -431,11 +561,11 @@ def _discarded_by_force(old_remote_sha: str) -> tuple[Optional[list[str]], str]:
     """
     if not old_remote_sha:
         return None, "no pre-push SHA recorded for the remote branch"
-    r = _git(["log", "--format=%h %an: %s", old_remote_sha, "--not", "HEAD"])
-    if r.returncode != 0:
-        why = _first_error_line((r.stdout or "") + "\n" + (r.stderr or ""))
-        return None, (f"`git log {old_remote_sha} --not HEAD` exited "
-                      f"{r.returncode}" + (f" — {why}" if why else ""))
+    r, why = _checked_git(
+        ["log", "--format=%h %an: %s", old_remote_sha, "--not", "HEAD"],
+        f"git log {old_remote_sha} --not HEAD")
+    if r is None:
+        return None, why
     return [ln for ln in r.stdout.splitlines() if ln.strip()], ""
 
 
@@ -514,9 +644,30 @@ def _stale_base_advisory(target: str, remote: str) -> None:
     Three states, not two (docs/validators.md). A ref we cannot resolve is an
     absence of information and says so, so that silence from this function
     means one thing only: the check ran and the base is fresh.
+
+    That contract is why the call could not simply be wrapped and returned from
+    (#675). This function is silent on its *good* path, so a guard that
+    swallowed a timeout would render "could not check" exactly like "checked,
+    your base is fresh" — the loud bug traded for the quiet one it was already
+    fixed for once.
     """
     ref = f"{remote}/{target}"
-    cnt = _git(["rev-list", "--count", f"HEAD..{ref}"])
+    cmd = f"git rev-list --count HEAD..{ref}"
+    # Not routed through _checked_git: here the two failures mean different
+    # things to the caller and get different words. A non-zero exit is git
+    # answering — that ref is not in this clone, which `git fetch` fixes and
+    # which #642 named "skipped". A call that never completed is answering
+    # nothing, and takes #674's "DID NOT RUN" vocabulary, because fetching is
+    # not the lever and the caller needs to know a check went missing rather
+    # than that a ref is absent.
+    try:
+        cnt = _git(["rev-list", "--count", f"HEAD..{ref}"],
+                   timeout=_CHECK_TIMEOUT)
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        print(f"⚠ STALE-BASE CHECK DID NOT RUN — `{cmd}` did not complete ({exc})")
+        print(f"  How far behind {ref} you are is UNKNOWN — this receipt is "
+              f"not saying your base is fresh. Settle it: {cmd}")
+        return
     if cnt.returncode != 0 or not cnt.stdout.strip().isdigit():
         print(f"⚠ stale-base check skipped — {ref} does not resolve locally, "
               f"so how far behind the target you are is UNKNOWN "
@@ -652,15 +803,10 @@ def _ahead_behind_line() -> None:
     to stay readable (#623/#655).
     """
     cmd = "git rev-list --left-right --count HEAD...@{upstream}"
-    try:
-        ab = _git(["rev-list", "--left-right", "--count", "HEAD...@{upstream}"])
-    except (subprocess.TimeoutExpired, OSError) as exc:
-        print(f"⚠ vs upstream: UNKNOWN — `{cmd}` did not complete ({exc})")
-        return
-    if ab.returncode != 0:
-        why = _first_error_line((ab.stdout or "") + "\n" + (ab.stderr or ""))
-        print(f"⚠ vs upstream: UNKNOWN — `{cmd}` exited {ab.returncode}"
-              + (f" — {why}" if why else ""))
+    ab, why = _checked_git(
+        ["rev-list", "--left-right", "--count", "HEAD...@{upstream}"], cmd)
+    if ab is None:
+        print(f"⚠ vs upstream: UNKNOWN — {why}")
         return
     parts = ab.stdout.split()
     if len(parts) != 2 or not all(p.isdigit() for p in parts):
@@ -672,6 +818,28 @@ def _ahead_behind_line() -> None:
         print(f"vs upstream: ahead {ahead}, behind {behind}")
     else:
         print("vs upstream: in sync")
+
+
+def _pushed_commit_count(before: str, after: str) -> tuple[str, str]:
+    """How many commits the remote moved by. `(count, why-not)`.
+
+    #674's summary lists this call as fixed. It was `_ahead_behind_line`'s
+    `rev-list` that was fixed — a different call, extracted out of this same
+    function in the same commit — and this one stayed unguarded, which is the
+    reason #675 says to read each function rather than a window around it.
+
+    Its old fallback was the string `"?"`, printed as `(? commit(s))` and then
+    carried into the verdict. That is a decline nobody reads as one, and it was
+    no decline at all when the call raised instead of exiting non-zero.
+    """
+    cmd = f"git rev-list --count {before}..{after}"
+    r, why = _checked_git(["rev-list", "--count", f"{before}..{after}"], cmd)
+    if r is None:
+        return "", why
+    n = r.stdout.strip()
+    if not n.isdigit():
+        return "", f"`{cmd}` answered `{n}`, which is not a count"
+    return n, ""
 
 
 def _success_receipt(branch: str, remote_before: str, upstream: str,
@@ -689,15 +857,28 @@ def _success_receipt(branch: str, remote_before: str, upstream: str,
     path where `@{upstream}` never resolved — the local absence of a pre-push
     SHA is not evidence of anything (#661).
     """
-    upstream = upstream or _upstream_ref()
+    if not upstream:
+        upstream, up_why = _upstream_ref()
+        if up_why:
+            print(f"⚠ UPSTREAM LOOKUP DID NOT RUN — {up_why}")
+            print(f"  The remote named below falls back to origin/{branch} and "
+                  "may not be this branch's real upstream (#642), so the "
+                  "stale-base check and the verified SHA below may be about "
+                  "the wrong ref.")
     remote_name, remote_ref = _split_upstream(upstream, branch)
-    remote_after = _remote_sha(upstream)
+    remote_after, after_why = _remote_sha(upstream)
     moved, ncommits, unknown_note = True, "", ""
     if remote_before and remote_after and remote_before != remote_after:
-        rng = _git(["rev-list", "--count", f"{remote_before}..{remote_after}"])
-        n = rng.stdout.strip() if rng.returncode == 0 else "?"
-        ncommits = n
-        print(f"Remote {remote_before} → {remote_after} ({n} commit(s))")
+        ncommits, cnt_why = _pushed_commit_count(remote_before, remote_after)
+        if cnt_why:
+            # Body-only, and the verdict simply omits the count: how many
+            # commits moved is a decoration on a line that already carries both
+            # SHAs, and a verdict that grows a clause per soft check stops
+            # being readable (#623/#674).
+            print(f"Remote {remote_before} → {remote_after} — how many "
+                  f"commit(s) that is: UNKNOWN ({cnt_why})")
+        else:
+            print(f"Remote {remote_before} → {remote_after} ({ncommits} commit(s))")
     elif not remote_before and remote_after:
         moved, unknown_note = _report_first_seen_remote(
             remote_after, push_stdout, remote_ref,
@@ -709,7 +890,8 @@ def _success_receipt(branch: str, remote_before: str, upstream: str,
         # Push succeeded but the remote-tracking SHA isn't locally resolvable
         # (shallow clone, odd remote layout). Don't claim up-to-date.
         remote_after = ""
-        print("Pushed — remote ref not locally resolvable for a before/after diff")
+        print("Pushed — remote ref not locally resolvable for a before/after "
+              "diff" + (f" ({after_why})" if after_why else ""))
 
     _ahead_behind_line()
 
@@ -726,6 +908,7 @@ def _report_hook_pushed(head_before: str, head_after: str,
                         remote: str, ref: str, remote_sha: str,
                         branch: str, flags: set[str]) -> None:
     """Receipt for the 'non-zero exit but the ref actually moved' case."""
+    _note_landed(branch, remote, ref)
     if head_after != head_before:
         print("Status: PUSHED (pre-push hook amended HEAD) ✓")
         print(f"Local HEAD rewritten {head_before[:7]} → {head_after[:7]}")
@@ -755,10 +938,11 @@ def _report_push_timeout(branch: str, head_before: str,
     then it is reported as *unverified*, not rejected — the push may still be
     in flight server-side.
     """
-    head_after = _local_head()
-    live = _live_remote_sha(remote, ref)
+    head_after, _head_why = _local_head()
+    live, live_why = _live_remote_sha(remote, ref)
     print(f"Push exceeded its {_PUSH_TIMEOUT}s budget — asking the remote what landed…")
     if live and head_after and live == head_after:
+        _note_landed(branch, remote, ref)
         print("Status: pushed ✓ (push timed out locally; remote ref matches HEAD)")
         if head_after != head_before:
             print(f"Local HEAD rewritten {head_before[:7]} → {head_after[:7]}")
@@ -783,7 +967,8 @@ def _report_push_timeout(branch: str, head_before: str,
         return 0
     print("Status: PUSH TIMED OUT ✗ — remote ref does NOT match local HEAD")
     print(f"local HEAD {head_after[:7] or 'unknown'} | "
-          f"remote {remote}/{ref} at {live[:7] or 'unknown'}")
+          f"remote {remote}/{ref} at {live[:7] or 'unknown'}"
+          + (f" ({live_why})" if not live and live_why else ""))
     print("The push may still be in flight — `git fetch` and re-check before "
           "retrying; do NOT force-push on a timeout alone.")
     _result(f"NOT PUSHED - UNVERIFIED  {branch} -> {remote}/{ref} - push timed "
@@ -979,7 +1164,7 @@ def _recover_by_rebase(branch: str, remote_before: str, upstream: str,
     try:
         result = _git(push_args, timeout=_PUSH_TIMEOUT)
     except subprocess.TimeoutExpired:
-        return _report_push_timeout(branch, _local_head(),
+        return _report_push_timeout(branch, _local_head()[0],
                                     remote_name, remote_ref, flags)
     if result.returncode != 0:
         combined = (result.stdout or "") + "\n" + (result.stderr or "")
@@ -993,13 +1178,94 @@ def _recover_by_rebase(branch: str, remote_before: str, upstream: str,
         return result.returncode
 
     print("Status: pushed ✓ (rebased onto remote)")
+    _note_landed(branch, remote_name, remote_ref)
     _success_receipt(branch, remote_before, upstream, flags,
                      push_stdout=result.stdout or "")
     return 0
 
 
+def _crash_receipt(exc: BaseException) -> int:
+    """Something unforeseen raised. Say what, and still answer the question.
+
+    The one guard here that is not about a call site. Every other fix in #675
+    makes a known check decline by name; this one makes the *next* check
+    harmless, because a helper added to this receipt tomorrow is unguarded the
+    moment it is written, and the caller of a push that already landed must not
+    pay for that with a stack trace where the verdict should be.
+
+    That is the argument for a structural guard over six more `try/except`
+    blocks. Per-site guards are still the better fix *per site* — they keep the
+    remaining checks running and name the one that went missing, which this
+    cannot do — so both exist, with different jobs. What this adds is that the
+    invariant stops depending on anyone remembering.
+
+    Deliberately not a quiet catch. The traceback is printed in full, and on
+    **stdout**: supertool discards a preset's stderr entirely when the preset
+    exits zero, and a landed push exits zero, so a crash reported on stderr
+    would be invisible through the op. Converting a loud bug into a silent one
+    is the failure mode this issue exists to avoid — the verdict is appended to
+    the crash, it does not replace it.
+
+    The exit code follows the *push*, not the receipt. A landed push that could
+    not be described is still a landed push, and returning non-zero would tell
+    every caller treating that as "the push failed" exactly the wrong thing.
+    """
+    print("\n--- receipt crash ---")
+    traceback.print_exc(file=sys.stdout)
+    detail = f"{exc.__class__.__name__}: {exc}"
+    if _RUN["phase"] == "landed":
+        print("The push itself LANDED — the remote moved. What broke is the "
+              "receipt describing it, so any check below the crash point never "
+              "ran and nothing here is claiming otherwise.")
+        print("Re-run `git-push` for the full receipt (it will report already "
+              "up to date).")
+        if not _RUN["verdict"]:
+            _result(f"PUSHED  {_RUN['branch']} -> {_RUN['target']} @ unknown  "
+                    f"(RECEIPT INCOMPLETE - git-push crashed after the push "
+                    f"landed: {detail})")
+        return 0
+    if _RUN["phase"] == "attempted":
+        print("The push was started and git-push crashed before it could "
+              "establish what reached the remote.")
+        if not _RUN["verdict"]:
+            # Two arguments, not one path: `git ls-remote origin/feature`
+            # asks git for a remote named `origin/feature`, which does not
+            # exist. A verdict that hands the caller a command that cannot run
+            # is #663's defect wearing this issue's clothes — the whole point
+            # of naming a lever is that pulling it settles the question.
+            settle = (f"git ls-remote {_RUN['remote']} {_RUN['ref']}"
+                      if _RUN["remote"] and _RUN["ref"] else "git ls-remote")
+            _result(f"NOT PUSHED - UNVERIFIED  {_RUN['branch'] or 'branch'} -> "
+                    f"{_RUN['target'] or 'remote'} - git-push crashed mid-push "
+                    f"({detail}); whether anything landed is UNKNOWN - settle "
+                    f"it: {settle}")
+        return 1
+    if not _RUN["verdict"]:
+        _result("NOT PUSHED - no push attempted (git-push crashed before "
+                f"pushing: {detail})")
+    return 1
+
+
 def main() -> int:
+    # Entry point: run the op, and guarantee it ends on a verdict either way.
+    #
+    # use_utf8_stdout() before the try, not inside it: _crash_receipt prints ⚠
+    # and ✓ too, and a cp1252 console kills the process on the first one
+    # (#308) — the guard that exists to keep a receipt alive must not be the
+    # thing that loses it. It also has to stay the literal first statement of
+    # main(), which is what tests/test_encoding_seam.py checks, so this is a
+    # comment rather than a docstring.
     use_utf8_stdout()
+    _RUN.update({"phase": "not-attempted", "branch": "", "remote": "",
+                 "ref": "", "target": "", "verdict": False})
+    try:
+        return _push_op()
+    except Exception as exc:  # noqa: BLE001 — deliberate; see _crash_receipt
+        return _crash_receipt(exc)
+
+
+def _push_op() -> int:
+    """The op itself. Reached only through main(), which owns the guard."""
     if _git(["rev-parse", "--git-dir"]).returncode != 0:
         print("ERROR: not inside a git repository.")
         _result("NOT PUSHED - no push attempted (not inside a git repository)")
@@ -1028,15 +1294,26 @@ def main() -> int:
                 f"accepted: {', '.join(_KNOWN_FLAGS)})")
         return 2
 
-    upstream = _upstream_ref()
+    upstream, upstream_why = _upstream_ref()
     has_upstream = bool(upstream)
-    remote_before = _remote_sha(upstream) if has_upstream else ""
+    remote_before, before_why = (_remote_sha(upstream) if has_upstream
+                                 else ("", ""))
     remote_name, remote_ref = _split_upstream(upstream, branch)
-    head_before = _local_head()
+    head_before, _head_before_why = _local_head()
 
     print(f"# git-push on {branch}")
     if has_upstream:
         print(f"Upstream: {upstream}" + (f" @ {remote_before}" if remote_before else ""))
+        if before_why:
+            print(f"⚠ Pre-push remote SHA UNKNOWN — {before_why}")
+    elif upstream_why:
+        # Not the same as having no upstream, and the difference is load-bearing
+        # on the next line: `-u origin HEAD` is about to be chosen from an
+        # answer git never gave (#675).
+        print(f"⚠ UPSTREAM LOOKUP DID NOT RUN — {upstream_why}")
+        print("  Treating this as 'no upstream' and setting one on push. If "
+              f"{branch} already tracks something other than origin, this push "
+              "will retarget it.")
     else:
         print("Upstream: none — setting on first push (origin)")
     if flags:
@@ -1052,6 +1329,9 @@ def main() -> int:
         push_args.append("--no-verify")
     if not has_upstream:
         push_args += ["-u", "origin", "HEAD"]
+    _RUN.update({"phase": "attempted", "branch": branch,
+                 "remote": remote_name, "ref": remote_ref,
+                 "target": f"{remote_name}/{remote_ref}"})
     try:
         result = _git(push_args, timeout=_PUSH_TIMEOUT)
     except subprocess.TimeoutExpired:
@@ -1065,8 +1345,8 @@ def main() -> int:
         # the fixed commit itself exits non-zero on purpose. Ground truth is
         # the remote ref — if it already matches our (possibly rewritten)
         # HEAD, the content is on the remote. Report honestly.
-        head_after = _local_head()
-        live = _live_remote_sha(remote_name, remote_ref)
+        head_after, _ = _local_head()
+        live, _ = _live_remote_sha(remote_name, remote_ref)
         if live and head_after and live == head_after:
             _report_hook_pushed(head_before, head_after,
                                  remote_name, remote_ref, live, branch, flags)
@@ -1125,6 +1405,7 @@ def main() -> int:
         return result.returncode
 
     print("Status: pushed ✓")
+    _note_landed(branch, remote_name, remote_ref)
     force_note = ""
     if "force-with-lease" in flags:
         # No `and remote_before` guard any more: that guard was itself a silent
