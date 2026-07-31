@@ -35,12 +35,30 @@ def _set_validators(cfg: dict) -> None:
     supertool._CONFIG_CHECKED = True
 
 
-def _noisy_validator() -> None:
+def _py_adapter(script: Path, body: str) -> str:
+    """A validator `cmd` that actually runs under shell=False on every platform.
+
+    Deliberately not `echo '<json>'` and not a `#!/bin/sh` script. Windows has
+    no `/bin/sh` and no shebang handling, `echo` is a cmd.exe builtin rather
+    than an executable, and a raw `str(Path)` is eaten by POSIX-mode
+    `shlex.split` (#637). All three fail the same way: the adapter cannot be
+    spawned, so the validator correctly reports `skipped`, no rollback fires,
+    and a test whose premise was "this validator fails" silently tests nothing.
+    `{python}` + `as_posix()` is the pattern `_counter_cmd` in
+    tests/test_validators.py already uses, for exactly this reason.
+    """
+    script.write_text(body, encoding="utf-8")
+    return f"{{python}} {script.as_posix()}"
+
+
+def _noisy_validator(tmp_path: Path) -> None:
     """A validator that always passes, so every mutating op ends in a green
     `[validators]` block — the exact condition that hides the summary."""
+    cmd = _py_adapter(tmp_path / "_ok_adapter.py",
+                      f"import sys\nsys.stdout.write({OK_PAYLOAD!r})\n")
     _set_validators({
-        "fake": {"cmd": f"echo '{OK_PAYLOAD}'", "hooks_into": ["edit", "replace", "paste",
-                                                               "append", "replace_lines", "vim"],
+        "fake": {"cmd": cmd, "hooks_into": ["edit", "replace", "paste",
+                                            "append", "replace_lines", "vim"],
                  "match": "*", "cache": False},
     })
 
@@ -67,7 +85,7 @@ def test_zero_match_tail_is_distinguishable_from_applied_tail(tmp_path: Path, mo
     """THE bug. Two calls, one that wrote and one that did not, read the same
     through `tail -4`."""
     monkeypatch.setattr(supertool, "_current_branch", lambda: "my-feature")
-    _noisy_validator()
+    _noisy_validator(tmp_path)
     f = tmp_path / "x.txt"
     f.write_text("alpha\n")
 
@@ -81,7 +99,7 @@ def test_zero_match_tail_is_distinguishable_from_applied_tail(tmp_path: Path, mo
 
 def test_zero_match_tail_says_nothing_changed(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(supertool, "_current_branch", lambda: "my-feature")
-    _noisy_validator()
+    _noisy_validator(tmp_path)
     f = tmp_path / "x.txt"
     f.write_text("alpha\n")
     out = supertool.dispatch(f"replace:::NOPE_NOT_THERE:::x:::{f}")
@@ -90,7 +108,7 @@ def test_zero_match_tail_says_nothing_changed(tmp_path: Path, monkeypatch) -> No
 
 def test_applied_tail_reports_the_write(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(supertool, "_current_branch", lambda: "my-feature")
-    _noisy_validator()
+    _noisy_validator(tmp_path)
     f = tmp_path / "x.txt"
     f.write_text("alpha\n")
     out = supertool.dispatch(f"replace:::alpha:::gamma:::{f}")
@@ -101,7 +119,7 @@ def test_applied_tail_reports_the_write(tmp_path: Path, monkeypatch) -> None:
 def test_failed_edit_tail_says_nothing_changed(tmp_path: Path, monkeypatch) -> None:
     """An `ERROR:` receipt is equally above the validators block."""
     monkeypatch.setattr(supertool, "_current_branch", lambda: "my-feature")
-    _noisy_validator()
+    _noisy_validator(tmp_path)
     f = tmp_path / "x.py"
     f.write_text("a = 1\n")
     out = supertool.dispatch(f"edit:::nope = 1:::a = 2:::{f}")
@@ -114,7 +132,7 @@ def test_failed_edit_tail_says_nothing_changed(tmp_path: Path, monkeypatch) -> N
 
 def test_result_sits_directly_above_the_branch_line(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(supertool, "_current_branch", lambda: "my-feature")
-    _noisy_validator()
+    _noisy_validator(tmp_path)
     f = tmp_path / "x.txt"
     f.write_text("alpha\n")
     out = supertool.dispatch(f"replace:::alpha:::gamma:::{f}")
@@ -127,7 +145,7 @@ def test_result_footer_survives_absence_of_a_branch(tmp_path: Path, monkeypatch)
     """Outside a repo there is no branch line, and the output would otherwise
     end on `[validators]` — the precise shape #621 is about."""
     monkeypatch.setattr(supertool, "_current_branch", lambda: "")
-    _noisy_validator()
+    _noisy_validator(tmp_path)
     f = tmp_path / "x.txt"
     f.write_text("alpha\n")
     out = supertool.dispatch(f"replace:::NOPE:::x:::{f}")
@@ -140,7 +158,7 @@ def test_summary_stays_where_it_was(tmp_path: Path, monkeypatch) -> None:
     break every positional reader and every existing ordering assertion, so
     the detailed receipt must still precede the validators block."""
     monkeypatch.setattr(supertool, "_current_branch", lambda: "my-feature")
-    _noisy_validator()
+    _noisy_validator(tmp_path)
     f = tmp_path / "x.txt"
     f.write_text("alpha\n")
     out = supertool.dispatch(f"replace:::alpha:::gamma:::{f}")
@@ -155,7 +173,7 @@ def test_batch_footer_distinguishes_ops_run_from_writes(tmp_path: Path, monkeypa
     """The #634 incident: one no-match in the middle of five successes. The
     footer alone has to expose it."""
     monkeypatch.setattr(supertool, "_current_branch", lambda: "my-feature")
-    _noisy_validator()
+    _noisy_validator(tmp_path)
     f = tmp_path / "x.txt"
     f.write_text("alpha\nbeta\n")
     payload = tmp_path / "ops.json"
@@ -171,7 +189,7 @@ def test_batch_footer_distinguishes_ops_run_from_writes(tmp_path: Path, monkeypa
 
 def test_batch_where_every_op_misses_says_nothing_changed(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(supertool, "_current_branch", lambda: "my-feature")
-    _noisy_validator()
+    _noisy_validator(tmp_path)
     f = tmp_path / "x.txt"
     f.write_text("alpha\n")
     payload = tmp_path / "ops.json"
@@ -212,18 +230,18 @@ def test_rolled_back_edit_reports_zero_writes(tmp_path: Path) -> None:
                                    "severity": "error"}], "duration_ms": 1})
     counter = tmp_path / "n"
     counter.write_text("0")
-    script = tmp_path / "v.sh"
-    script.write_text(
-        "#!/bin/sh\n"
-        f"n=$(cat {counter}); echo $((n+1)) > {counter}\n"
-        f"if [ \"$n\" = \"0\" ]; then echo '{OK_PAYLOAD}'; else echo '{fail}'; fi\n"
-    )
-    script.chmod(0o755)
+    cmd = _py_adapter(tmp_path / "_counter_adapter.py",
+                      "import pathlib, sys\n"
+                      f"p = pathlib.Path({str(counter)!r})\n"
+                      "n = int(p.read_text())\n"
+                      "p.write_text(str(n + 1))\n"
+                      f"sys.stdout.write({OK_PAYLOAD!r} if n == 0 else {fail!r})\n")
     _set_validators({
-        "fake": {"cmd": str(script), "hooks_into": ["edit"], "match": "*.py",
+        "fake": {"cmd": cmd, "hooks_into": ["edit"], "match": "*.py",
                  "rollback_on_fail": True, "cache": False},
     })
     out = supertool.dispatch(f"edit:::a = 1:::a = 2:::{f}")
+    assert "skipped" not in out, "the adapter must really run — a skip would test nothing"
     assert "rolled back" in out
     assert f.read_text(encoding="utf-8") == original
     assert "[result] 1 op run, 0 writes — nothing changed on disk" in _tail(out)
