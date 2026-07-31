@@ -10,7 +10,7 @@ GitHub ops via the `gh` CLI. Replaces the 4-6 separate `gh` calls needed to revi
 
 | Op | Syntax | What it returns |
 |----|--------|-----------------|
-| `gh-issue` | `gh-issue:NUMBER[:full]` | Issue metadata, description, all comments (truncated by default), linked PRs, image download. `:full` disables truncation |
+| `gh-issue` | `gh-issue:NUMBER[:full]` | Issue metadata, description, all comments (truncated by default), linked PRs, image download. `:full` disables truncation. A truncated body says so twice — in the header, before the reader reaches it, and again at the cut — with the exact char count withheld and `:full` named as the way to get the rest (see [A truncated body says so before you reach it](#a-truncated-body-says-so-before-you-reach-it)) |
 | `gh-pr` | `gh-pr:NUMBER_OR_BRANCH[:status]` | Full PR dashboard: branch, checks, reviews/approval state, linked issue, diff stat, comments. `:status` returns slim merge-state plus the `head -> base` branch line only (~250 bytes). The check line opens with `N total:` and every count after it sums back to N, so a state the tally does not recognise is named (`2 cancelled`) instead of dropped; anything short of every-check-passed carries `⚠ NOT ALL GREEN`, and zero check runs renders as one of four states — `none yet`, `none, and none will be created`, `none until the conflict is resolved … Rebase`, or a stated `UNKNOWN` — rather than one sentence for all of them ([#585](https://github.com/Digital-Process-Tools/claude-supertool/issues/585), [#594](https://github.com/Digital-Process-Tools/claude-supertool/issues/594), see [Zero check runs](#zero-check-runs-is-four-states-not-one)). The linked issue is every issue a GitHub closing keyword binds to — all of them, plural label when there are several — and a stated `none declared` when the body names no keyword, never the first `#N` in the body ([#591](https://github.com/Digital-Process-Tools/claude-supertool/issues/591), see [The linked issue](#the-linked-issue-is-a-declared-closing-reference-not-the-first-n)) |
 | `gh-prs` | `gh-prs[:author=@me,reviewer=@me,state=open,failed,nopipe,iids]` | PR triage board: your open PRs sorted failing-first then stalest. Per PR: check rollup (a failure shows the failing **check name**), approval state, age, diff size, watch-state, `draft`/`conflict`/`threads` flags + footer pointing at the first failing-and-unwatched PR. The gl-mrs twin. `iids` emits a bare number list for `watch-mine.sh` |
 | `gh-run` | `gh-run:NUMBER` | Workflow run job list with statuses and failed step names |
@@ -117,6 +117,20 @@ A PR body routinely cites issues it does **not** close: a precedent (`the same s
 **Code spans, fenced blocks and HTML comments are removed before matching, and that rule was measured rather than assumed.** [#600](https://github.com/Digital-Process-Tools/claude-supertool/pull/600)'s own body cites ``Closes #571 and closes #572`` inside a code span as an example of this table, and GitHub's `closingIssuesReferences` for that PR returned `{571, 591}` — 571 from a prose sentence elsewhere in the body, 572 from nowhere. One variable, one observation: GitHub skipped the span. With the rule in place the extractor returns `['#591', '#571']` for that body — exact agreement with GitHub on a real PR. Four-space indented blocks are deliberately not handled: distinguishing one from a nested list continuation needs a real block parser, and guessing wrong would delete prose and drop a genuine reference.
 
 Both ops call `_checks.closing_issue_refs()` and `_checks.linked_issue_line()`, so the extraction and the wording cannot drift between them. The GitLab arm still uses its own `#(\d{4,})` heuristic with no keyword requirement — same class of defect, different closing vocabulary, filed separately.
+
+### A truncated body says so before you reach it
+
+`DESCRIPTION_MAX` (3000 chars) is a bound the op has always had, and it is right to keep — an unbounded issue render is a context blowout in the caller, a different bug from this one. What was missing was the disclosure. A raw `body[:DESCRIPTION_MAX]` slice cut mid-line with no marker anywhere, and the `## Comments (0)` line that printed right after gave the truncated output a natural-looking ending — read top to bottom it looks like a complete issue, not a partial one. It also produced malformed markdown: cutting three characters into a real heading rendered as `## The` ([#681](https://github.com/Digital-Process-Tools/claude-supertool/issues/681)).
+
+Same family as [`gh-job:...:grep:`](#gh-jobgrep-bounds-its-own-output-and-says-when-it-did) one row down, and the fix follows the same shape:
+
+- **The cut lands on a line break, not a byte offset.** The last `\n` at-or-before the cap is where the body ends, so truncation can no longer produce a fragment of a heading or any other line.
+- **The withheld amount is stated in the header, before `## Description`** — `Body: TRUNCATED — N of M chars shown, K withheld — use :full to fetch all` — so a reader who stops at the top still sees it. A footer-only disclosure is read by nobody in exactly the case it exists for: the reader being cut off is cut off before reaching it.
+- **And again at the point of the cut**, matching the `## Comments` truncation convention already in this op: `…[K chars truncated here — use :full to fetch all]`.
+
+`:full` disables the cap entirely, same as it always has for comments.
+
+`gh-pr`, `gl-issue`, and `gl-mr` bodies go through the identical unguarded `[:DESCRIPTION_MAX]` slice and were not touched by this fix — same defect, filed as follow-ups.
 
 ### `gh-job:...:grep:` bounds its own output, and says when it did
 

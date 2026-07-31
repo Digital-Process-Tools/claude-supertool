@@ -111,3 +111,67 @@ def test_default_truncates_long_comment_body(monkeypatch, capsys) -> None:
     issue.main()
     out = capsys.readouterr().out
     assert "truncated" in out
+
+
+def test_default_body_truncation_is_disclosed_with_amount_and_escape_hatch(
+    monkeypatch, capsys
+) -> None:
+    """#681: a truncated body must be distinguishable from a complete one —
+    the disclosure has to state how much was withheld and how to get the
+    rest, not just that *something* happened."""
+    long_body = "x" * (issue.DESCRIPTION_MAX + 500)
+    _install_fakes(monkeypatch, body=long_body, comments=[])
+    monkeypatch.setattr(sys, "argv", ["issue.py", "42"])
+    rc = issue.main()
+    out = capsys.readouterr().out
+    assert rc == 0
+    # Withheld amount is stated in exact numbers, not just "truncated".
+    assert "500" in out
+    assert "use :full" in out
+
+
+def test_full_flag_body_carries_no_truncation_disclosure(monkeypatch, capsys) -> None:
+    """A complete read must not carry the marker meant for a partial one —
+    otherwise the two are indistinguishable in the other direction."""
+    long_body = "x" * (issue.DESCRIPTION_MAX + 500)
+    _install_fakes(monkeypatch, body=long_body, comments=[])
+    monkeypatch.setattr(sys, "argv", ["issue.py", "42", "full"])
+    issue.main()
+    out = capsys.readouterr().out
+    assert "withheld" not in out
+    assert "TRUNCATED" not in out
+
+
+def test_default_body_truncation_marker_is_visible_before_the_body(
+    monkeypatch, capsys
+) -> None:
+    """#681's exact failure mode: the marker existing somewhere is not
+    enough if a reader stops at the top. The disclosure must appear in the
+    header, before '## Description', not only after the cut content."""
+    long_body = "x" * (issue.DESCRIPTION_MAX + 500)
+    _install_fakes(monkeypatch, body=long_body, comments=[])
+    monkeypatch.setattr(sys, "argv", ["issue.py", "42"])
+    issue.main()
+    out = capsys.readouterr().out
+    desc_idx = out.index("## Description")
+    disclosure_idx = out.index("withheld")
+    assert disclosure_idx < desc_idx
+
+
+def test_truncation_lands_on_a_line_boundary_not_mid_heading(
+    monkeypatch, capsys
+) -> None:
+    """#681's own repro: a raw byte-cut landed 3 chars into a heading
+    ('## The'), which is both malformed markdown and gives the output a
+    natural-looking ending ('## Comments (0)' right after) that reads as
+    complete. The cut must back off to the previous line break."""
+    prefix = "x" * (issue.DESCRIPTION_MAX - 5)
+    heading = "## The rest of this heading, well beyond the cap " + "z" * 200
+    body = prefix + "\n" + heading
+    _install_fakes(monkeypatch, body=body, comments=[])
+    monkeypatch.setattr(sys, "argv", ["issue.py", "42"])
+    issue.main()
+    out = capsys.readouterr().out
+    # A raw body[:DESCRIPTION_MAX] slice here produces the trailing
+    # fragment "## T" — the same shape as the issue's "## The".
+    assert "## T" not in out
