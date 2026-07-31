@@ -64,7 +64,41 @@ EOF
 | `between` | `symbol` **or** `start` + `end`, plus `path` |
 | `read` | `path` (required), `offset`, `limit`, `grep`, `full` |
 
-A read-op argument beginning with `@` is only treated as a payload when it actually resolves — `@-`, or a file that exists. `grep:@Override:src/` still searches for `@Override`.
+A read-op argument beginning with `@` is only treated as a payload when it could be one — `@-`, a file that exists, or a lone `@….toml` / `@….json`. `grep:@Override:src/` still searches for `@Override`.
+
+### Where a relative `@payload` path resolves from
+
+**Against the directory the call was made from — never against `cwd:`.**
+
+Two different kinds of path meet in one call, and only one of them belongs to the repo being operated on:
+
+| Path | Resolves against | Why |
+| --- | --- | --- |
+| the `@reference` itself | the invocation directory | it is an argument you typed, and you wrote the payload where you were standing |
+| `path = ` *inside* the payload | the working directory (`cwd:` target) | it is repo content — this is what makes `cwd:` useful |
+
+This matters because `cwd:` exists precisely *because* the target repo has no `./supertool` wrapper. The call is made from a directory that has one, so the payload lands there too — one side of `cwd:`, with the repo on the other:
+
+```bash
+./supertool 'cwd:~/other-repo' 'batch:@.max/edits.toml'
+#            └─ repo paths          └─ resolved here, next to the call
+```
+
+The same rule covers the auto-resolved project root ([#363](https://github.com/Digital-Process-Tools/claude-supertool/issues/363)): whatever moves the working directory, it does not move the `@reference`.
+
+**There is no fallback.** A payload that is not at the invocation root is an error even when a file of that name sits under the `cwd:` target — reading whichever one happens to exist is how a tool starts opening a file the caller did not mean. The error names both roots and says which is which ([#672](https://github.com/Digital-Process-Tools/claude-supertool/issues/672)):
+
+```
+ERROR: @file not found: .max/edits.toml
+  ↳ @payload paths resolve against the invocation directory: /Users/…/dvsi
+    It does exist under the cwd: target /Users/…/other-repo, and is not read from there:
+    the @reference is an argument you typed, not repo content. Only `path =` inside the
+    payload follows the working directory.
+    Pass an absolute path (@/Users/…/other-repo/.max/edits.toml), or write the payload
+    next to the call.
+```
+
+To drive a repo from a payload stored *inside* it, pass an absolute path — that has always worked and is unaffected.
 
 ```bash
 ./supertool 'edit:@.max/my-edit.json'

@@ -13222,6 +13222,69 @@ def _toml_delimiter_hint(raw: str) -> str:
     )
 
 
+# Where a relative `@payload` reference resolves from, and where the working
+# directory was moved to. Both are set by main() before any chdir, and only
+# when a chdir actually happens — so dispatch() called on its own (MCP mode,
+# tests) keeps resolving against os.getcwd() exactly as it always did.
+_INVOCATION_DIR: Optional[str] = None
+_CWD_SHIFT: Optional[str] = None       # label of what moved the cwd, e.g. "cwd:"
+
+
+def _at_root() -> str:
+    """Directory a relative `@payload` reference resolves against.
+
+    A `@reference` is an argument the caller typed, so it belongs to the
+    directory the call was made from — not to the repo being operated on.
+    `path = ` *inside* the payload is the other kind of path and keeps
+    following the working directory, which is what makes `cwd:` useful.
+    """
+    return _INVOCATION_DIR or os.getcwd()
+
+
+def _resolve_at_path(rel: str) -> str:
+    """Absolute path for a relative `@payload` reference. No existence check."""
+    if os.path.isabs(rel):
+        return rel
+    return os.path.join(_at_root(), rel)
+
+
+def _at_file_missing_msg(rel: str) -> str:
+    """Error for an unresolvable `@payload`, distinguishing absence from a moved root.
+
+    "not found" states an absence in the world. When the working directory has
+    moved out from under a relative reference, the absence is one the tool
+    produced, and saying so is the difference between a zero-call debug and a
+    two-call one. Both roots are named; neither is silently searched — reading
+    whichever file happens to exist is how a tool starts opening one the caller
+    never meant (#672).
+    """
+    root = _at_root()
+    here = os.getcwd()
+    head = f"@file not found: {rel}"
+    if os.path.isabs(rel) or os.path.realpath(root) == os.path.realpath(here):
+        return head
+    label = _CWD_SHIFT or "cwd:"
+    alt = os.path.join(here, rel)
+    lines = [
+        head,
+        f"  {mark('↳')} @payload paths resolve against the invocation directory: {root}",
+    ]
+    if os.path.isfile(alt):
+        lines.append(
+            f"    It does exist under the {label} target {here}, and is not read from there: "
+            "the @reference is an argument you typed, not repo content. Only `path =` inside "
+            "the payload follows the working directory."
+        )
+        lines.append(f"    Pass an absolute path (@{alt}), or write the payload next to the call.")
+    else:
+        lines.append(
+            f"    The {label} target is {here} — moving the working directory does not move "
+            "the @reference."
+        )
+        lines.append("    Present under neither directory: check the path, or pass an absolute one.")
+    return chr(10).join(lines)
+
+
 def _load_at_file(ref: str) -> Any:
     """Load JSON or TOML from an @file reference.
 
@@ -13246,10 +13309,11 @@ def _load_at_file(ref: str) -> Any:
         source = "<stdin>"
     else:
         fpath = ref[1:]  # strip leading @
-        if not os.path.isfile(fpath):
-            raise ValueError(f"@file not found: {fpath}")
+        resolved = _resolve_at_path(fpath)
+        if not os.path.isfile(resolved):
+            raise ValueError(_at_file_missing_msg(fpath))
         try:
-            with open(fpath, "r", encoding="utf-8") as _f:
+            with open(resolved, "r", encoding="utf-8") as _f:
                 raw = _f.read()
         except OSError as _e:
             raise ValueError(f"@file read error: {fpath}: {_e}") from _e
@@ -13702,7 +13766,23 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
         and len(parts) >= 2
         and parts[1].startswith("@")
         and op in _READ_OP_AT_FIELDS
-        and (parts[1] == "@-" or os.path.isfile(parts[1][1:]))
+        and (
+            parts[1] == "@-"
+            or os.path.isfile(_resolve_at_path(parts[1][1:]))
+            # Resolvable only under the moved-to root: still a payload reference,
+            # so route it in and let _load_at_file explain which root was searched
+            # rather than falling through to a bare "file not found: @…" (#672).
+            or os.path.isfile(parts[1][1:])
+            # Resolvable under neither root, but payload-shaped: a lone `@….toml`
+            # / `@….json` argument. Routing it in only changes which error is
+            # printed — an unresolvable reference reads no file either way — and
+            # it is the case that most needs the two roots named. Extension-gated
+            # so `grep:@Override:src/` keeps falling through as the search it is.
+            or (
+                len(parts) == 2
+                and parts[1][1:].lower().endswith((".toml", ".json"))
+            )
+        )
     ):
         if len(parts) > 2:
             return header + (
@@ -15088,6 +15168,22 @@ def _auto_cwd_root(argv: List[str]) -> Optional[str]:
 
 
 def main(argv: List[str]) -> int:
+    """Entry point. Scopes the @payload root state to this one call.
+
+    `_CWD_SHIFT` outliving main() would let a `cwd:` call poison a later bare
+    dispatch() — the MCP server and the test suite both drive dispatch()
+    directly in a process where main() has already run, and a stale root there
+    resolves payloads against a directory nobody is standing in (#672).
+    """
+    global _INVOCATION_DIR, _CWD_SHIFT
+    try:
+        return _main(argv)
+    finally:
+        _INVOCATION_DIR = None
+        _CWD_SHIFT = None
+
+
+def _main(argv: List[str]) -> int:
     # Cheap insurance: a stray glyph in user content must never crash the
     # process on a non-UTF-8 console (Windows cp1252). Runs even in plain mode.
     _reconfigure_stdout_utf8()
@@ -15122,6 +15218,10 @@ def main(argv: List[str]) -> int:
     # so it can't race the parallel read path or force a batch sequential.
     # Required-first keeps the rule unambiguous: appearing later is an error,
     # not a silently-honored mid-call cwd switch.
+    global _INVOCATION_DIR, _CWD_SHIFT
+    _INVOCATION_DIR = os.getcwd()
+    _CWD_SHIFT = None
+
     cwd_positions = [i for i, a in enumerate(argv) if a.split(":", 1)[0] == "cwd"]
     if cwd_positions:
         if len(cwd_positions) > 1:
@@ -15142,6 +15242,7 @@ def main(argv: List[str]) -> int:
             sys.stderr.write(f"cwd: not a directory: {target}\n")
             return 1
         os.chdir(target)
+        _CWD_SHIFT = "cwd:"
         argv = argv[1:]
         if not argv:
             return 0
@@ -15155,6 +15256,7 @@ def main(argv: List[str]) -> int:
             auto_root = None
         if auto_root:
             os.chdir(auto_root)
+            _CWD_SHIFT = "auto-resolved project root"
             sys.stdout.write(
                 f"[cwd auto-resolved to project root: {auto_root}]\n")
 
