@@ -67,6 +67,17 @@ def _extract_image_urls(text: str) -> list[str]:
     return urls
 
 
+def _is_inside(candidate: str, directory: str) -> bool:
+    """True when `candidate` really resolves inside `directory`.
+
+    Compared after realpath on both sides, and with a trailing separator on the
+    directory so a sibling like `/tmp/images-other` cannot pass as `/tmp/images`.
+    """
+    root = os.path.realpath(directory)
+    target = os.path.realpath(candidate)
+    return target == root or target.startswith(root + os.sep)
+
+
 def _download_images(image_urls: list[str], issue_number: str) -> list[str]:
     """Download GitLab upload images to local temp directory.
 
@@ -86,10 +97,17 @@ def _download_images(image_urls: list[str], issue_number: str) -> list[str]:
             continue
 
         upload_path = match.group(1)
-        filename = os.path.basename(upload_path)
-        # URL-decode filename for local storage
-        local_name = urllib.parse.unquote(filename)
+        # Decode BEFORE taking the basename. The remote name is percent-encoded,
+        # so `basename` on the encoded form sees one segment and leaves any
+        # encoded separators intact — they only become separators afterwards.
+        # Decoding first means basename operates on what the name really says.
+        local_name = os.path.basename(urllib.parse.unquote(upload_path))
         local_path = os.path.join(out_dir, local_name)
+        # And confirm it: a name is only usable if it actually resolves inside
+        # the directory we chose. Anything else is skipped rather than guessed at.
+        if not _is_inside(local_path, out_dir):
+            print(f"note: skipped an attachment whose name resolves outside {out_dir}")
+            continue
 
         # Use glab api to download (handles auth automatically)
         # The endpoint is projects/:id/uploads — but glab api with GET
