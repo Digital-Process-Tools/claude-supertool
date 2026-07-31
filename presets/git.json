@@ -71,7 +71,7 @@
     "git-push": {
       "cmd": "{python} {path}git/push.py {args}",
       "timeout": 420,
-      "description": "Push current branch (sets upstream if missing). Receipt: remote before/after, ahead/behind, MR/PR + pipeline, mergeability, behind-target, uncommitted leftovers, watch cmd. Non-ff auto-rebases (conflict → paused + git-conflicts). Hook amend+push reported as PUSHED. A push that outlasts its budget is verified against the remote ref before any verdict — landed = PUSHED. Flags: :force-with-lease, :no-verify, :watch",
+      "description": "Push current branch (sets upstream if missing). ALWAYS ends on a one-line `[result]` verdict — PUSHED / NOT PUSHED (already up to date | REJECTED | REBASE PAUSED | UNVERIFIED | no push attempted) with branch → remote/ref @ sha — so the answer survives `| tail -3`. The post-push sha is read back off the real remote via ls-remote and labelled verified/unverified; a sha that was not read is never printed as if it were. Receipt: remote before/after, ahead/behind, MR/PR + pipeline, mergeability, behind-target, uncommitted-leftover COUNT (list: git-status:full), watch cmd. Non-ff auto-rebases (conflict → paused + git-conflicts). Hook amend+push reported as PUSHED. A push that outlasts its budget is verified against the remote ref before any verdict — landed = PUSHED. Flags: :force-with-lease, :no-verify, :watch",
       "syntax": "git-push[:force-with-lease][:no-verify][:watch]"
     }
   }
