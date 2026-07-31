@@ -368,6 +368,39 @@ Candidates 2 and 3 are **executed** before being committed to (`-c 'import sys'`
 
 If nothing resolves and no `$PYTHON` was set, the hook **refuses the push** and lists every name it tried. It does not fall back to the bare name, since that would restore the hang for exactly the people who have no versioned interpreter.
 
+### Never assume the checkout has history
+
+`actions/checkout` clones at **depth 1**, and the workflows do not set
+`fetch-depth`. On CI this repo has exactly **one commit**. Any test that reads
+supertool's own git history — commit counts, `git log` ranges, blame, anything a
+pickaxe search walks back through — passes on a developer's full clone and fails
+on eight of fourteen CI legs, with a failure that says nothing about the code it
+was meant to be testing.
+
+Build the history the test needs, in a `tmp_path` repo the test owns:
+
+```python
+@pytest.fixture(scope="session")
+def history_repo(tmp_path_factory):
+    repo = tmp_path_factory.mktemp("history")
+    ...  # git init, then commit as many times as the assertion requires
+    return repo
+```
+
+Twenty-five commits cost about a second, once per session. Pair it with a guard
+test asserting the fixture is actually bigger than whatever limit is under test —
+otherwise the day it shrinks, the assertions it feeds go quietly green instead of
+red. See `tests/test_env_knob_parsing_654.py`.
+
+**Raising `fetch-depth` is not the fix.** It changes CI for every job in the repo
+to suit one assertion, and it leaves the next such test just as free to make the
+same assumption.
+
+If a test genuinely cannot work without real history, skip it with a stated
+reason — a reported skip, never a silent pass. See
+[Declining instead of guessing](validators.md#declining-instead-of-guessing) for
+why the distinction is load-bearing here too.
+
 ### Comparing rendered output
 
 If your test compares two rendered blocks to each other, **the thing that

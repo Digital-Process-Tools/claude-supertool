@@ -370,21 +370,20 @@ def _run_supertool(args, env_extra):
     )
 
 
-#: A pattern with enough churn in this repo's own history that the default cap
-#: of 20 actually bites — which is what makes "the fallback is in force" an
-#: observable claim rather than a restatement of the notice text.
-_CHURNY = "git-trail:return:supertool.py"
-
-
 def test_issue_reproduction_no_longer_tracebacks():
     """`SUPERTOOL_MAX_COMMITS=x ./supertool 'git-trail:...'` — the issue's repro.
 
-    Asserts three separate things, because "no traceback" alone would pass on a
-    silent swallow: the crash is gone, the notice names the variable and the
-    fallback, **and the timeline is actually cut at 20** — the fallback is in
-    force, not merely advertised.
+    Deliberately asserts nothing about how many commits came back. It runs
+    against whatever history the checkout happens to have, and its job is the
+    part that does not vary: the crash is gone, and the notice **survives the
+    trip through `_run_custom_op`** — which is the claim that matters here,
+    because that function returns a successful subprocess's stdout and discards
+    its stderr. "The fallback is the value actually used" is proved separately,
+    against history this file builds; see `test_junk_knob_falls_back_to_the_cap_
+    that_is_actually_applied`.
     """
-    proc = _run_supertool([_CHURNY], {"SUPERTOOL_MAX_COMMITS": "x"})
+    proc = _run_supertool(["git-trail:return:supertool.py"],
+                          {"SUPERTOOL_MAX_COMMITS": "x"})
     combined = proc.stdout + proc.stderr
     # The op receipt, not a substring search: this preset prints source diffs,
     # and the word "ValueError" legitimately appears inside supertool's own
@@ -392,27 +391,119 @@ def test_issue_reproduction_no_longer_tracebacks():
     # exited 0, so it is the assertion that cannot be faked by printed content.
     assert "\nPASS (" in combined, combined[:2000]
     assert "Traceback (most recent call last)" not in combined, combined[-2000:]
-    assert "SUPERTOOL_MAX_COMMITS" in combined
+    assert "note: SUPERTOOL_MAX_COMMITS='x'" in combined, combined[:2000]
     assert "using 20" in combined, combined[-2000:]
-    assert "## Timeline (20 commits)" in combined, (
+
+
+# --------------------------------------------------------------------------
+# History the test owns, because the checkout's history is not ours to assume.
+# --------------------------------------------------------------------------
+
+#: More commits than `DEFAULT_MAX_COMMITS` (20), so the default cap visibly
+#: bites. Without that headroom every assertion below passes vacuously.
+_HISTORY_COMMITS = 25
+
+
+@pytest.fixture(scope="session")
+def history_repo(tmp_path_factory):
+    """A git repo whose history this file builds, and can therefore rely on.
+
+    Proving a cap is *in force* — not merely announced — needs more commits than
+    the cap. Reading that from supertool's own history passed locally and failed
+    on eight of fourteen CI legs: `actions/checkout` clones at depth 1 by
+    default, so the repo there has exactly one commit and `## Timeline (20
+    commits)` is unreachable by construction. The test was pinning a property of
+    the developer's clone while claiming to pin a property of the fix.
+
+    Twenty-five commits here cost about a second, once per session, and the
+    claim stops depending on how the checkout was configured. Raising
+    `fetch-depth` in the workflow would also have made it pass — by changing CI
+    for every job in the repo to suit one assertion, which is the wrong lever.
+    """
+    repo = tmp_path_factory.mktemp("trail_history")
+
+    def git(*args):
+        subprocess.run(["git", *args], cwd=repo, check=True,
+                       capture_output=True, text=True)
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "test@example.invalid")
+    git("config", "user.name", "Knob Test")
+    git("config", "commit.gpgsign", "false")
+    target = repo / "data.txt"
+    for i in range(_HISTORY_COMMITS):
+        with target.open("a", encoding="utf-8") as fh:
+            fh.write(f"NEEDLE occurrence {i}\n")
+        git("add", "data.txt")
+        git("commit", "-q", "-m", f"add occurrence {i}")
+    return repo
+
+
+def _run_trail(repo, env_extra):
+    """Run the preset directly, in `repo`, with the detail section switched off.
+
+    `SUPERTOOL_TRAIL_DETAIL_CAP=0` is a legitimate value (minimum 0) and so is
+    silent; it just spares us one `git show` per commit, which is the only slow
+    part of the preset.
+    """
+    import os
+
+    env = dict(os.environ)
+    env.setdefault("SUPERTOOL_TRAIL_DETAIL_CAP", "0")
+    env.update(env_extra)
+    return subprocess.run(
+        [sys.executable, str(REPO_ROOT / "presets" / "git" / "trail.py"),
+         "NEEDLE", "data.txt"],
+        capture_output=True, text=True, timeout=120, cwd=str(repo), env=env,
+    )
+
+
+def test_the_history_fixture_outgrows_the_default_cap(history_repo):
+    """Guards every assertion below from passing vacuously.
+
+    If the fixture ever built fewer than 21 commits, "the cap is 20" and "the
+    cap is however many exist" would be indistinguishable, and the tests that
+    rely on the difference would go quietly green.
+    """
+    count = subprocess.run(["git", "rev-list", "--count", "HEAD"], cwd=history_repo,
+                           capture_output=True, text=True, check=True).stdout.strip()
+    assert int(count) == _HISTORY_COMMITS
+    out = _run_trail(history_repo, {}).stdout
+    assert "## Timeline (20 commits)" in out, out[:2000]
+    assert "CAPPED" in out, "20 of 25 must render as a cut, not as the whole set"
+
+
+def test_junk_knob_falls_back_to_the_cap_that_is_actually_applied(history_repo):
+    """The announced number must be the number in force, not just printed.
+
+    A helper that reported "using 20" and then applied something else would pass
+    a message-only assertion. The timeline is the observable: 25 commits exist,
+    20 come back.
+    """
+    proc = _run_trail(history_repo, {"SUPERTOOL_MAX_COMMITS": "x"})
+    out = proc.stdout
+    assert proc.returncode == 0, out + proc.stderr
+    assert "Traceback (most recent call last)" not in (out + proc.stderr)
+    assert "note: SUPERTOOL_MAX_COMMITS='x' is not a whole number" in out, out[:2000]
+    assert "using 20" in out
+    assert "## Timeline (20 commits)" in out, (
         "the announced fallback of 20 is not the cap that was actually applied\n"
-        + combined[:2000])
+        + out[:2000])
 
 
-def test_negative_knob_falls_back_rather_than_showing_nothing():
-    """`SUPERTOOL_MAX_COMMITS=-5` must not quietly become "no commits".
+def test_negative_knob_falls_back_rather_than_showing_nothing(history_repo):
+    """`SUPERTOOL_MAX_COMMITS=-5` must not quietly become "none".
 
     A `max(0, ...)` clamp would have produced an empty timeline with nothing
     said. The timeline is the observable: it holds 20, the documented default.
     """
-    proc = _run_supertool([_CHURNY], {"SUPERTOOL_MAX_COMMITS": "-5"})
-    combined = proc.stdout + proc.stderr
-    assert "\nPASS (" in combined, combined[:2000]
-    assert "Traceback (most recent call last)" not in combined, combined[-2000:]
-    assert "SUPERTOOL_MAX_COMMITS" in combined
-    assert "-5" in combined
-    assert "## Timeline (20 commits)" in combined, combined[:2000]
-    assert "## Timeline (0 commits)" not in combined
+    proc = _run_trail(history_repo, {"SUPERTOOL_MAX_COMMITS": "-5"})
+    out = proc.stdout
+    assert proc.returncode == 0, out + proc.stderr
+    assert "note: SUPERTOOL_MAX_COMMITS='-5' is below the minimum of 1" in out, out[:2000]
+    assert "using 20" in out
+    assert "## Timeline (20 commits)" in out, out[:2000]
+    assert "## Timeline (0 commits)" not in out
 
 
 def test_dispatch_depth_junk_does_not_break_every_op(tmp_path):
@@ -433,18 +524,18 @@ def test_dispatch_depth_junk_does_not_break_every_op(tmp_path):
     assert "using 32" in combined
 
 
-def test_good_knob_still_reaches_the_preset():
+def test_good_knob_still_reaches_the_preset(history_repo):
     """The fallback path must not be the only path.
 
     `SUPERTOOL_MAX_COMMITS=3` has to actually cut the timeline to 3 — otherwise
     every assertion above would hold just as well on a helper that ignored the
     environment and returned the default every time.
     """
-    proc = _run_supertool([_CHURNY], {"SUPERTOOL_MAX_COMMITS": "3"})
-    combined = proc.stdout + proc.stderr
-    assert "\nPASS (" in combined, combined[:2000]
-    assert "## Timeline (3 commits)" in combined, combined[:2000]
-    assert "note: SUPERTOOL_" not in combined, (
+    proc = _run_trail(history_repo, {"SUPERTOOL_MAX_COMMITS": "3"})
+    out = proc.stdout
+    assert proc.returncode == 0, out + proc.stderr
+    assert "## Timeline (3 commits)" in out, out[:2000]
+    assert "note: SUPERTOOL_" not in out, (
         "a good value must not be reported as a problem")
 
 
