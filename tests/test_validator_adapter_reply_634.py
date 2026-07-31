@@ -237,7 +237,13 @@ def test_wellformed_receipt_with_errors_still_reports_them(tmp_path: Path) -> No
                                       "code": "syntax", "msg": "boom"}]})
     script = tmp_path / "adapter.py"
     script.write_text("import sys; sys.stdout.write(%r)\n" % receipt, encoding="utf-8")
-    spec = {"cmd": "{python} " + str(script), "match": "*.json"}
+    # as_posix(): `cmd` is split with POSIX-mode shlex.split on every platform,
+    # so a raw str(Path) loses its backslashes on Windows and the stub is never
+    # spawned — the run then looks like `produced no output` and this guard goes
+    # red for a reason that has nothing to do with the product. The product is
+    # safe by the same means: `{supertool_dir}` is posix-ified at
+    # supertool.py:317 and `{file}` is shlex.quote'd before substitution.
+    spec = {"cmd": "{python} " + shlex.quote(script.as_posix()), "match": "*.json"}
     res = _run(spec, target)
     assert "skipped" not in res
     assert res["ok"] is False and res["count"] == 1
