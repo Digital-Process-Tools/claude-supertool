@@ -726,6 +726,14 @@ def _footer(open_mrs: list[dict], covered: set[str], healed: list[str],
         parts.append(f"{counts['running']} running")
     if counts.get("success"):
         parts.append(f"{counts['success']} green")
+    # Read off the rows rather than derived from the cap, and counted over the
+    # population this footer describes, so the tokens always add up. Without it
+    # an MR with no pipeline status lands in the "none" bucket, which is
+    # counted above and then never printed — 45 open, 40 green, and five rows
+    # the tally silently declines to account for.
+    unchecked = mrs._unchecked_count(open_mrs)
+    if unchecked:
+        parts.append(f"{unchecked} unchecked")
     parts.append(f"{len([m for m in open_mrs if str(m.get('iid')) in covered])} watched")
     if healed:
         parts.append(f"{len(healed)} healed")
@@ -768,6 +776,39 @@ def _feed_warnings(feed: str, feed_err: str,
                    f"which this board does not cover. Its MRs are not on this "
                    f"board; re-run as radar:{other} to see them.")
     return out
+
+
+def _unchecked_warning(unchecked: int, total: int) -> list[str]:
+    """Disclose the MRs whose pipeline was never read. [] when there are none.
+
+    The empty return is load-bearing: on a fully-checked board the absence of
+    this line is how the tier claims it saw everything, so a complete board
+    prints nothing extra and the marker keeps meaning something.
+
+    `_enrich` is capped (#659 is the radar half of #652), and an MR it never
+    reached has no `_pipeline` at all — which `mrs._is_failing` reads as "not
+    failing" and `mrs._sort_key` therefore sorts among the green. The row is
+    still on the board, but nothing about it says its status is unknown, and on
+    a delta board it is not even that: an unenriched MR is not a standing
+    problem, so it drops out of every run after the first.
+
+    Deliberately not the word "capped". This tier already spends that word on
+    the respawn cap (`FEED_LABEL`, radar's watcher cap warnings), and a reader
+    who knows it there would read it here as a watcher problem.
+    """
+    if unchecked <= 0:
+        return []
+    cap = mrs._get_config()["enrich_cap"]
+    line = (f"radar: WARNING — {unchecked} of {total} MRs on this board were not "
+            f"checked: their pipeline status is unknown, not green, so a failing "
+            f"one among them is indistinguishable from a passing one here.")
+    # The cap is named as the escape only when the cap is what cut. Below it the
+    # unchecked MRs are detail lookups that failed, and pointing at a limit that
+    # never applied is a confidently wrong cause — the rule mrs._cap_notice
+    # states, applied at the surface that renders rather than the one that lists.
+    if total > cap:
+        line += f" Enrichment cap is {cap}; raise {mrs.ENRICH_CAP_KNOB}=N."
+    return [line]
 
 
 def render(open_mrs: list[dict], covered: set[str], healed: list[str],
@@ -814,7 +855,9 @@ def render(open_mrs: list[dict], covered: set[str], healed: list[str],
     footer = _footer(board_mrs, covered, healed, drifted, pruned, uncovered, gone,
                      feed, label, len(excluded))
 
-    lines = _feed_warnings(feed, feed_err, other_scopes) + list(losses or [])
+    lines = (_feed_warnings(feed, feed_err, other_scopes)
+             + _unchecked_warning(mrs._unchecked_count(open_mrs), len(open_mrs))
+             + list(losses or []))
     if cold:
         lines.append("radar: cold start — no prior snapshot, full board")
     if shown:
@@ -854,6 +897,14 @@ def radar_report(options: dict | None = None) -> tuple[list[str], bool]:
     world; a board that lost its feed, or whose watchers are capped, is a
     report that cannot be trusted to be complete, and that is the thing radar
     must never render as green.
+
+    An MR whose pipeline was never read counts against that completeness for
+    the same reason (#659). `healthy` has exactly one consumer —
+    `quiet_when_healthy`, which suppresses the whole board — so claiming health
+    over MRs nobody checked is what lets a configured radar print nothing at
+    all about a board it could not see the whole of. It stays a claim about
+    coverage rather than an alarm: it does not touch radar's exit code, which
+    belongs to tiers that could not run.
 
     Raises `RadarError` when live GitLab could not be reached. Radar catches
     it, prints it to stderr and exits non-zero — deliberately louder than a
@@ -905,5 +956,6 @@ def radar_report(options: dict | None = None) -> tuple[list[str], bool]:
     )
 
     healthy = not (uncovered or other_scopes or feed_err
+                   or mrs._unchecked_count(open_mrs)
                    or feed in ("failed", "capped"))
     return lines, healthy

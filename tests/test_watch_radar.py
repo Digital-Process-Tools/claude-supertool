@@ -54,6 +54,11 @@ def _mr(iid, pipeline="success", pipeline_id="100", title="a title",
         "_approved": True,
         "_approved_by": [],
         "_failed_jobs": failed_jobs or ([] if pipeline != "failed" else ["test_unit"]),
+        # What `mrs._enrich` writes when it actually read this MR's status.
+        # These fixtures stand for enriched MRs — they carry a `_pipeline` — so
+        # they carry the marker that says the status was read (#659). Omitting
+        # it would make every board in this file read as incompletely covered.
+        "_enriched": True,
     }
     m.update(kw)
     return m
