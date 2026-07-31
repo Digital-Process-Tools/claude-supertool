@@ -323,7 +323,7 @@ def test_rebase_state_that_cannot_be_read_is_stated_not_guessed() -> None:
                            side_effect=subprocess.TimeoutExpired("git", 1)):
         assert push._rebase_state() == "unknown"
     with mock.patch.object(push, "_git",
-                           return_value=mock.Mock(stdout="", returncode=1)):
+                           return_value=mock.Mock(stdout="", stderr="", returncode=1)):
         assert push._rebase_state() == "unknown"
 
 
@@ -448,7 +448,7 @@ def test_watch_spawn_failure_is_reported_not_swallowed(tmp_path,
     monkeypatch.setattr(push, "_repo_root", lambda: str(root))
 
     with mock.patch.object(push, "_git",
-                           return_value=mock.Mock(stdout="", returncode=1)):
+                           return_value=mock.Mock(stdout="", stderr="", returncode=1)):
         push._post_push_advisories(
             {"source": "gitlab", "iid": 42, "target": "master"},
             {"watch"}, "origin")
@@ -462,7 +462,7 @@ def test_watch_spawn_failure_is_reported_not_swallowed(tmp_path,
 def test_watch_requested_with_no_open_mr_still_says_so(capsys, monkeypatch) -> None:
     """Nothing to watch is a state; silence is not a way to report it."""
     with mock.patch.object(push, "_git",
-                           return_value=mock.Mock(stdout="", returncode=1)):
+                           return_value=mock.Mock(stdout="", stderr="", returncode=1)):
         push._post_push_advisories(None, {"watch"}, "origin")
     out = capsys.readouterr().out
     assert "watch" in out.lower(), out
