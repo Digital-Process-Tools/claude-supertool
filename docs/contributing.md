@@ -401,6 +401,33 @@ reason — a reported skip, never a silent pass. See
 [Declining instead of guessing](validators.md#declining-instead-of-guessing) for
 why the distinction is load-bearing here too.
 
+### Never assume which worker a test lands in
+
+The suite runs under `pytest-xdist`, so the unit of process isolation is the
+**worker**, not the test file. Two test files can share one interpreter, and
+which two is decided by the runner's core count — a property of the machine,
+never of the code.
+
+That matters wherever the product deliberately keeps *per-process* state.
+`env_int` in `presets/_env.py` says each distinct notice at most once per
+process (`_ANNOUNCED`), because a knob read once per file would otherwise print
+the same line ten times over the output it is warning about. In production that
+is exactly right: a preset is a subprocess that reads its knobs and exits. In a
+worker it means the second test to provoke a given message reads an **empty**
+`capsys` and fails an assertion that describes the code correctly.
+
+`test_github_prs.py` and `test_gitlab_mrs.py` both set
+`SUPERTOOL_ENRICH_WORKERS=0` against a default of `8`, producing a byte-identical
+notice. The pair shared a worker only on the macOS legs, so [#689] read as a
+platform bug for a day; `-n0` reproduces it on any platform in under a second.
+
+**Registering the state is the fix, not relaxing the assertion.** Every
+process-lifetime ledger or cache belongs in `conftest.RESET_GLOBALS` (for
+`supertool`) or `conftest.PRESET_ENV_RESET_GLOBALS` (for the `_env` module the
+presets share), so it is restored between tests and the assertion keeps meaning
+what it says. Loosening the assertion, or asserting only when the output is
+non-empty, converts "this broke" into "this silently gave you something else".
+
 ### Comparing rendered output
 
 If your test compares two rendered blocks to each other, **the thing that
@@ -475,6 +502,7 @@ including what each metric does and does not catch.
 [#485]: https://github.com/Digital-Process-Tools/claude-supertool/issues/485
 [#621]: https://github.com/Digital-Process-Tools/claude-supertool/issues/621
 [#643]: https://github.com/Digital-Process-Tools/claude-supertool/issues/643
+[#689]: https://github.com/Digital-Process-Tools/claude-supertool/pull/689
 
 ## Submitting upstream
 

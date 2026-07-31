@@ -38,6 +38,34 @@ if (_MCP_PRESETS / "_paths.py").is_file():
     sys.path.insert(0, str(_MCP_PRESETS))
     import _paths  # noqa: E402,F401
 
+# `presets/_env.py` is imported by 29 presets under the single module name
+# `_env`, so all of them share one `_ANNOUNCED` ledger — by design: `env_int`
+# says each distinct notice at most once per process, because a knob read once
+# per file would otherwise print the same line ten times over the output it is
+# warning about (#654).
+#
+# Per *process* is the right unit in production, where a preset is a subprocess
+# that reads its knobs and exits. It is the wrong unit in a pytest worker, which
+# is one process running many presets' suites. `test_github_prs.py` and
+# `test_gitlab_mrs.py` both set `SUPERTOOL_ENRICH_WORKERS=0` against a default of
+# 8, so both produce a byte-identical notice; whichever ran second in a given
+# worker read an empty `capsys` and failed its assertion. That is why this
+# surfaced as a macOS-only red on PR #689 and nowhere else — xdist splits by
+# worker count, the two files shared a worker only on the runners with the
+# smaller core count, and the split, not the platform, decided it.
+#
+# `supertool._ENV_ANNOUNCED` is the same ledger for the same reason and has been
+# per-run scratch since #397 (`RESET_GLOBALS`). This one was missed because it
+# lives in a different module. Same treatment, in `_reset_module_state` below.
+#
+# Tolerated rather than assumed, exactly as `_paths` above: `test_git_state_
+# guard.py` copies this file into a synthetic repo that has no `presets/` tree.
+_PRESETS = Path(__file__).parent.parent / "presets"
+_env = None
+if (_PRESETS / "_env.py").is_file():
+    sys.path.insert(0, str(_PRESETS))
+    import _env  # noqa: E402
+
 
 def pytest_configure(config):
     """Opt out of #146 cwd containment for the test suite.
@@ -571,6 +599,12 @@ RESET_EXEMPT_GLOBALS = (
     "_TS_LANG_MAP",
 )
 
+#: The same contract as RESET_GLOBALS, for the `_env` module shared by every
+#: preset. A separate tuple because those names are resolved against
+#: `supertool`, and because `_env` may legitimately be absent — see the import
+#: guard at the top of this file.
+PRESET_ENV_RESET_GLOBALS = ("_ANNOUNCED",)
+
 _PRISTINE_GLOBALS = {
     name: copy.deepcopy(getattr(supertool, name)) for name in RESET_GLOBALS
 }
@@ -588,6 +622,9 @@ def _reset_module_state():
             current.update(pristine)
         else:
             current[:] = pristine
+    if _env is not None:
+        for name in PRESET_ENV_RESET_GLOBALS:
+            getattr(_env, name).clear()
 
 
 @pytest.fixture(autouse=True)
