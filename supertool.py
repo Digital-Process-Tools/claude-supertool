@@ -118,6 +118,34 @@ def _fwd(p: str) -> str:
     return p.replace(os.sep, "/")
 
 
+DETERMINISTIC_TIME_ENV = "SUPERTOOL_DETERMINISTIC_TIME"
+
+
+def _elapsed_since(t0: float) -> float:
+    """Seconds since `t0`, or 0.0 when durations must be deterministic (#643).
+
+    Every duration supertool prints — the `[validators]` time column, the
+    `PASS (0.02s)` header on a custom op — is wall clock it measured itself. So
+    two runs of the same op render two different strings, differing only in
+    that field.
+
+    That breaks tests in the dangerous direction. A test asserting two rendered
+    blocks are *indistinguishable* passes on the jitter alone, reports the
+    defect fixed, and does it non-deterministically depending on scheduling and
+    on whether xdist is in play. It happened in #621's own RED run: the test
+    went green while the bug it targeted was fully present.
+
+    Set `SUPERTOOL_DETERMINISTIC_TIME=1` and every measured duration renders as
+    a frozen placeholder, so no comparison can ever see a varying field.
+    `tests/conftest.py` sets it for the whole suite. Test-only: nothing in
+    normal operation sets it, and a real run still reports the real time —
+    that number is how a human sees which validator is slow.
+    """
+    if os.environ.get(DETERMINISTIC_TIME_ENV) == "1":
+        return 0.0
+    return time.monotonic() - t0
+
+
 def _python_token() -> str:
     """Cross-platform shell-quoted Python interpreter for cmd templates.
 
@@ -1360,7 +1388,7 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
             shlex.split(cmd), shell=False, capture_output=True, text=True, timeout=timeout,
             encoding="utf-8", errors="replace", env=env,
         )
-        elapsed = time.monotonic() - t0
+        elapsed = _elapsed_since(t0)
         output = result.stdout
         if result.returncode != 0:
             if result.stderr:
@@ -1368,7 +1396,7 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
             return f"FAIL ({elapsed:.2f}s)\n{output}"
         return f"PASS ({elapsed:.2f}s)\n{output}{_maybe_restart_mcp(entry)}"
     except subprocess.TimeoutExpired as e:
-        elapsed = time.monotonic() - t0
+        elapsed = _elapsed_since(t0)
         return (f"FAIL (timeout {elapsed:.1f}s > {timeout}s)\n"
                 f"{_timeout_partial_output(e)}")
     except OSError as e:
@@ -9885,16 +9913,16 @@ def _builtin_syntax_run(name: str, kind: str, file: str) -> Dict[str, Any]:
             "msg": (getattr(e, "msg", None) or str(e)).strip()[:300],
         }
         return {"tool": name, "file": file, "ok": False, "count": 1,
-                "errors": [err], "elapsed_s": time.monotonic() - _t0}
+                "errors": [err], "elapsed_s": _elapsed_since(_t0)}
     except (ValueError, MemoryError, RecursionError) as e:
         # Null bytes, absurd nesting: the source is rejected by the compiler but
         # not with a line number. Still a hard "does not compile".
         return {"tool": name, "file": file, "ok": False, "count": 1,
                 "errors": [{"line": None, "col": None, "severity": "error",
                             "code": "syntax", "msg": str(e)[:300]}],
-                "elapsed_s": time.monotonic() - _t0}
+                "elapsed_s": _elapsed_since(_t0)}
     return {"tool": name, "file": file, "ok": True, "count": 0, "errors": [],
-            "elapsed_s": time.monotonic() - _t0}
+            "elapsed_s": _elapsed_since(_t0)}
 
 
 # --- The syntax floor (#478) ------------------------------------------------
@@ -10039,7 +10067,7 @@ def _syntax_floor_check(paths: Iterable[str],
                "msg": str(f.get("msg", ""))[:300]} for f in found]
     result: Dict[str, Any] = {
         "tool": "syntax-floor", "ok": not errors, "count": len(errors),
-        "errors": errors, "duration_ms": int((time.monotonic() - t0) * 1000),
+        "errors": errors, "duration_ms": int(_elapsed_since(t0) * 1000),
         "interpreter": interp, "checked": len(targets),
     }
     ver = _interpreter_version(interp)
@@ -10940,7 +10968,7 @@ def _validator_run_one(name: str, spec: Dict[str, Any], file: str,
     try:
         r = subprocess.run(shlex.split(cmd), shell=False, capture_output=True, text=True, timeout=timeout,
                            env=run_env, encoding="utf-8", errors="replace")
-        _elapsed = time.monotonic() - _t0
+        _elapsed = _elapsed_since(_t0)
         out = r.stdout.strip()
         if not out:
             return _validator_unusable_reply(
@@ -10960,7 +10988,7 @@ def _validator_run_one(name: str, spec: Dict[str, Any], file: str,
         return {"tool": name, "file": target, "ok": False, "count": 1,
                 "errors": [{"line": None, "col": None, "severity": "error",
                             "code": "orchestrator", "msg": f"timeout after {timeout}s"}],
-                "duration_ms": timeout * 1000, "elapsed_s": time.monotonic() - _t0,
+                "duration_ms": timeout * 1000, "elapsed_s": _elapsed_since(_t0),
                 "timeout": True}
     except OSError as e:
         # strerror, not str(e): the program name comes from the spec, and the
@@ -10970,11 +10998,11 @@ def _validator_run_one(name: str, spec: Dict[str, Any], file: str,
         return _validator_unusable_reply(
             name, target,
             f"could not be run: {_validator_cmd_program(cmd)} — {_why}",
-            time.monotonic() - _t0)
+            _elapsed_since(_t0))
     except (json.JSONDecodeError, IndexError) as e:
         return _validator_unusable_reply(
             name, target, f"replied with something that is not JSON — {e}",
-            time.monotonic() - _t0)
+            _elapsed_since(_t0))
 
 
 def _validator_render_row(data: Dict[str, Any], verbose: bool = False) -> list:

@@ -368,6 +368,46 @@ Candidates 2 and 3 are **executed** before being committed to (`-c 'import sys'`
 
 If nothing resolves and no `$PYTHON` was set, the hook **refuses the push** and lists every name it tried. It does not fall back to the bare name, since that would restore the hang for exactly the people who have no versioned interpreter.
 
+### Comparing rendered output
+
+If your test compares two rendered blocks to each other, **the thing that
+differs may be the clock, not the code.**
+
+Supertool prints durations it measured itself: the `[validators]` per-tool time
+column, and the `PASS (0.02s)` header on a custom op. Two runs of the same op
+therefore render two different strings. An assertion that two outputs are
+*indistinguishable* then passes on that jitter alone — and it fails in the
+direction that hurts, going green while the bug it targets is fully present.
+That is not hypothetical: it happened in [#621]'s own RED run, and it happened
+non-deterministically, passing under xdist and failing serially on the same
+code ([#643]).
+
+You do not have to remember any of this. `tests/conftest.py` sets
+`SUPERTOOL_DETERMINISTIC_TIME=1` for the whole suite, and every duration
+supertool measured then renders as a frozen `0.0s`, so a comparison can only
+ever see a real difference. Two rules follow:
+
+- **Do not set that variable in shipped code, a preset, or a config.** It is
+  test-only. A real run must report the real time — that number is how a human
+  sees which validator is slow. `test_switch_is_not_enabled_outside_the_test_suite`
+  fails if it ever leaks.
+- **Where the switch cannot reach, normalise instead.** Recorded fixtures, a
+  subprocess with its own environment, or a test that deliberately
+  `monkeypatch.delenv`s the switch to exercise the real formatting path: use
+  `stable_render` from `tests/_render.py`, which rewrites duration-shaped
+  tokens and nothing else.
+
+A normaliser that strips more than the varying field is a worse version of the
+bug it fixes — its tests would pass on anything. The bar is that a test using
+one **still goes red when the behaviour breaks**;
+`TestNormaliserIsNotTooBroad` and
+`test_normalised_comparison_still_catches_a_real_regression` in
+`tests/test_render_determinism_643.py` are what keep `stable_render` honest.
+
+Durations supertool was *given* rather than measured — an adapter's own
+`duration_ms`, which tests supply as a constant — are deliberately **not**
+frozen, so `assert "(12ms)" in row` keeps working.
+
 ### `slow` vs `benchmark`
 
 Two markers, and the difference is not how long the test takes.
@@ -400,6 +440,8 @@ cancels out. `TestParseScaling` in `tests/test_xml.py` is the worked example,
 including what each metric does and does not catch.
 
 [#485]: https://github.com/Digital-Process-Tools/claude-supertool/issues/485
+[#621]: https://github.com/Digital-Process-Tools/claude-supertool/issues/621
+[#643]: https://github.com/Digital-Process-Tools/claude-supertool/issues/643
 
 ## Submitting upstream
 

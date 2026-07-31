@@ -66,6 +66,18 @@ def pytest_configure(config):
     # ~/.cache/supertool as a side effect. test_gc_474.py opts back in with
     # monkeypatch.delenv after redirecting XDG_CACHE_HOME at a tmp_path.
     os.environ.setdefault("SUPERTOOL_GC_DISABLE", "1")
+    # #643: freeze every duration supertool measures and prints. The
+    # `[validators]` time column and a custom op's `PASS (0.02s)` header are
+    # wall clock, so two runs of the same op render two different strings. Any
+    # test comparing two rendered blocks can then pass on that jitter alone —
+    # and it fails in the dangerous direction: #621's own invariant test went
+    # green, reporting the defect fixed, while the defect was fully present.
+    # With this set, a comparison can only ever see a real difference. Tests
+    # that exercise the real timing path monkeypatch.delenv it (see
+    # test_render_determinism_643.py); where the switch cannot reach — recorded
+    # fixtures, a subprocess with its own environment — use
+    # `tests/_render.py::stable_render`.
+    os.environ.setdefault("SUPERTOOL_DETERMINISTIC_TIME", "1")
     # #553: the post-edit lint budget is a guard against a linter that stalled,
     # not a stopwatch on the runner. `xmllint --noout` on a two-line file is a
     # ~7ms operation; the 5s default is three orders of magnitude of headroom,
