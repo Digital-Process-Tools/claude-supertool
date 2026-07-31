@@ -198,7 +198,25 @@ Or with explicit options:
 }
 ```
 
-`continue_on_error` defaults to `true` — a failed op is reported but the rest of the batch continues. Set to `false` to abort on first error. Validators (phplint, xmllint, etc.) fire per mutating op, same as inline edits. Use `@-` to pipe the payload from stdin.
+In TOML the ops array is a `[[ops]]` table array — which is what lets a payload full of code blocks skip JSON's double-escaping:
+
+```bash
+./supertool 'batch:@-' <<'PAYLOAD'
+[[ops]]
+op = "edit"
+path = "src/app/Config.py"
+old = "DEBUG = False"
+new = "DEBUG = True"
+
+[[ops]]
+op = "read"
+path = "src/app/Config.py"
+PAYLOAD
+```
+
+**Every entry needs its own `op` key**, including the common case where all of them are edits — there is no default. Omitting it fails with `batch op missing 'op' field` rather than guessing, since a batch is routinely mixed (`read` + `edit` + `replace`) and a guess would be wrong as often as right.
+
+`continue_on_error` defaults to `true` — a failed op is reported but the rest of the batch continues. Set to `false` to abort on first error. **A batch is not atomic:** under the default, ops that ran before a failure stay applied. The `[result]` footer names the shortfall (`3 ops run, 2 writes, 1 skipped`) and the call exits non-zero whenever anything was skipped, so `&&` chains stop — see [operations/edits.md](operations/edits.md). Validators (phplint, xmllint, etc.) fire per mutating op, same as inline edits. Use `@-` to pipe the payload from stdin.
 ### What the sub-op headers say
 
 Each sub-op prints a header. A sub-op that ran from the payload is labelled by **route and target**, not re-serialized onto a colon CLI:
