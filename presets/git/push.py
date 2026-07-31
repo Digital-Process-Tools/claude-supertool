@@ -26,6 +26,16 @@ Flags (colon-appended: `git-push:force-with-lease:no-verify`):
   - no-verify — skip the local pre-push hook. Documented escape when a
     local formatter legitimately diverges from CI.
 
+Hook output is never evidence about the remote. The auto-rebase above is the
+one path here that rewrites local history, so it fires only on git's own
+machine-readable answer: the push runs `--porcelain` and the per-ref status
+line for our ref, on stdout, is the sole input to the decision. A pre-push
+hook shares stdout/stderr with git, and it used to be enough for one to print
+`fetch first` in its own advice to make this op fetch and rebase the caller's
+branch (#641). When a hook blocks the push, git never reaches the remote and
+emits no status line at all — that is an undetermined state, and it fails
+loudly here rather than falling through into the recovery path.
+
 A pre-push hook that auto-fixes files commonly amends HEAD, pushes the
 corrected commit itself, then exits non-zero so git won't also push the
 stale pre-amend ref. That non-zero exit is *success*, not failure — the
@@ -122,11 +132,61 @@ def _split_upstream(upstream: str, branch: str) -> tuple[str, str]:
     return "origin", branch
 
 
-def _is_non_fast_forward(combined: str) -> bool:
-    low = combined.lower()
-    return ("non-fast-forward" in low
-            or "fetch first" in low
-            or "tip of your current branch is behind" in low)
+# Summaries git uses for "your ref diverged from the remote's" — the one
+# rejection a rebase actually recovers. Matched against the porcelain status
+# summary for our own ref, never against free text (#641).
+_NFF_SUMMARIES = ("non-fast-forward", "fetch first",
+                  "tip of your current branch is behind")
+
+
+def _ref_status(push_stdout: str, ref: str) -> str:
+    """git's own rejection summary for `ref`, or '' if it never reported one.
+
+    Reads the stdout of `git push --porcelain`, whose per-ref status lines have
+    a fixed three-field grammar:
+
+        <flag> TAB <from>:<to> TAB <summary>
+
+    e.g. `!\\trefs/heads/feat:refs/heads/feat\\t[rejected] (fetch first)`. Only
+    the `!` (rejected) flag is of interest, and only for the ref we pushed.
+
+    This is the whole point of #641. The previous predicate scanned the merged
+    stdout+stderr of the push subprocess, which is also where a pre-push hook
+    writes — so a hook printing `fetch first` in its own advice was read as the
+    remote rejecting the push, and the op rebased the caller's branch on the
+    strength of a substring in text it did not produce. `--porcelain` separates
+    the channels at the source: a push a hook blocked never reaches the remote,
+    so git emits no status line at all and stdout comes back empty. For hook
+    output to reach this function it would have to be a tab-separated line
+    carrying the `!` flag *and* naming our exact ref — not something a hook
+    does by accident.
+
+    Returning '' therefore means "git did not say" — never "git said no". The
+    caller must not treat it as a divergence; see main().
+    """
+    want = ref.rsplit("/", 1)[-1]
+    for line in push_stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) != 3 or parts[0] != "!":
+            continue
+        if parts[1].split(":", 1)[-1].rsplit("/", 1)[-1] != want:
+            continue
+        return parts[2].strip()
+    return ""
+
+
+def _is_non_fast_forward(push_stdout: str, ref: str) -> bool:
+    """True only when git itself rejected OUR ref for divergence.
+
+    `[remote rejected]` is deliberately excluded: a pre-receive hook or branch
+    protection declining the push is a server-side rule, not a divergence, and
+    rebasing does not help — the receipt already says so.
+    """
+    status = _ref_status(push_stdout, ref)
+    if not status.lower().startswith("[rejected]"):
+        return False
+    low = status.lower()
+    return any(marker in low for marker in _NFF_SUMMARIES)
 
 
 def _result(verdict: str) -> None:
@@ -508,7 +568,10 @@ def main() -> int:
     if flags:
         print(f"Flags: {', '.join(sorted(flags))}")
 
-    push_args = ["push"]
+    # --porcelain is what makes the non-fast-forward decision trustworthy: it
+    # moves git's per-ref status onto stdout in a machine-readable grammar,
+    # out of the stream a pre-push hook shares with it (#641).
+    push_args = ["push", "--porcelain"]
     if "force-with-lease" in flags:
         push_args.append("--force-with-lease")
     if "no-verify" in flags:
@@ -537,7 +600,8 @@ def main() -> int:
 
         # Routine recoverable case: remote moved ahead. Rebase onto it and
         # push — unless the caller already chose to force (their decision).
-        if _is_non_fast_forward(combined) and "force-with-lease" not in flags:
+        if (_is_non_fast_forward(result.stdout or "", remote_ref)
+                and "force-with-lease" not in flags):
             return _recover_by_rebase(branch, remote_before, upstream,
                                       remote_name, remote_ref, flags)
 
@@ -545,17 +609,33 @@ def main() -> int:
         err = _first_error_line(combined)
         if err:
             print(f"First error: {err}")
-        low = combined.lower()
-        if "force-with-lease" in flags and ("stale info" in low or "stale" in low):
+        # Every hint below reads git's own ref status, not the merged stream —
+        # same channel discipline as the non-fast-forward decision (#641). A
+        # hook's advice used to pick which hint the caller was shown.
+        status = _ref_status(result.stdout or "", remote_ref)
+        low = status.lower()
+        if "stale info" in low:
             # The lease check failed — the remote moved since you fetched.
             # NOT a server-side rule; a rebase isn't the fix either.
             print("Hint: the lease is stale — remote moved since you last fetched. "
                   "`git fetch` to review the new commits, then retry "
                   "`git-push:force-with-lease`.")
-        elif "rejected" in low or "declined" in low:
+        elif low.startswith("[remote rejected]") or low.startswith("[remote failure]"):
             print("Hint: rejected by a server-side rule (protected branch / hook), "
                   "not a divergence — check branch protection or the hook output "
                   "above. A rebase will not help.")
+        elif status:
+            print(f"Hint: git rejected {remote_name}/{remote_ref} — {status}")
+        else:
+            # No ref status at all: git never got as far as talking to the
+            # remote. A local pre-push hook refused, or the transport failed.
+            # Declining to guess is the point — this is exactly the state the
+            # old predicate used to read as a divergence and rebase on.
+            print(f"Hint: git reported no ref status for {remote_name}/{remote_ref} "
+                  "— the push was stopped before it reached the remote (local "
+                  "pre-push hook, or transport). Not a divergence: a rebase "
+                  "would not help. The output below is what stopped it; "
+                  "`git-push:no-verify` skips a local hook.")
         print("\n--- git output ---")
         print(combined.strip() or "(no output)")
         _result(f"NOT PUSHED - REJECTED  {branch} -> {remote_name}/{remote_ref}"

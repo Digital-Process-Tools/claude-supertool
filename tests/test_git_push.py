@@ -19,6 +19,19 @@ def _proc(stdout: str = "", returncode: int = 0, stderr: str = ""):
     return mock.Mock(stdout=stdout, returncode=returncode, stderr=stderr)
 
 
+def _porcelain(ref: str, summary: str) -> str:
+    """`git push --porcelain` stdout for a rejected ref.
+
+    Since #641 the rejection reason is read off this channel — git's own
+    machine-readable per-ref status, on stdout — and not off the merged
+    stdout+stderr, which a pre-push hook writes to as well. The fixtures still
+    carry the human-readable `! [rejected] feat -> feat (...)` on stderr,
+    because that is what the receipt dumps for the caller to read; it is simply
+    no longer what any decision is made on.
+    """
+    return f"To origin\n!\trefs/heads/{ref}:refs/heads/{ref}\t{summary}\nDone\n"
+
+
 # ── _open_mr_line ────────────────────────────────────────────────────────
 
 def test_mr_line_gitlab_with_pipeline() -> None:
@@ -89,7 +102,8 @@ def test_main_non_ff_rebase_clean_pushes(capsys) -> None:
     """Non-ff → fetch, surface incoming commits, rebase clean → re-push."""
     rejected = ("To origin\n ! [rejected] feat -> feat (non-fast-forward)\n"
                 "error: failed to push some refs")
-    pushes = iter([_proc("", 1, rejected), _proc("", 0)])  # first non-ff, then ok
+    porc = _porcelain("feat", "[rejected] (non-fast-forward)")
+    pushes = iter([_proc(porc, 1, rejected), _proc("", 0)])  # first non-ff, then ok
 
     def fake_git(args, timeout=30):
         if args[:2] == ["rev-parse", "--git-dir"]:
@@ -162,7 +176,8 @@ def test_main_non_ff_rebase_conflict_leaves_paused_and_points_to_git_conflicts(c
         if args[:2] == ["rebase", "--abort"]:
             raise AssertionError("must NOT abort — leave paused for git-conflicts")
         if args[0] == "push":
-            return _proc("", 1, rejected)
+            return _proc(_porcelain("feat", "[rejected] (non-fast-forward)"),
+                         1, rejected)
         return _proc("", 0)
 
     with mock.patch.object(push, "_git", side_effect=fake_git):
@@ -185,6 +200,7 @@ def test_main_protected_branch_rejection_no_rebase_hint(capsys) -> None:
     """Server-side rejection (protected branch) must NOT advise pull --rebase."""
     rejected = ("To origin\n ! [remote rejected] main -> main "
                 "(protected branch hook declined)\nerror: failed to push some refs")
+    porc = _porcelain("main", "[remote rejected] (protected branch hook declined)")
 
     def fake_git(args, timeout=30):
         if args[:2] == ["rev-parse", "--git-dir"]:
@@ -196,7 +212,7 @@ def test_main_protected_branch_rejection_no_rebase_hint(capsys) -> None:
         if args[0] == "rev-parse" and args[1] == "--short":
             return _proc("aaa1111\n", 0)
         if args[0] == "push":
-            return _proc("", 1, rejected)
+            return _proc(porc, 1, rejected)
         return _proc("", 0)
 
     with mock.patch.object(push, "_git", side_effect=fake_git):
@@ -422,7 +438,7 @@ def test_main_first_push_sets_upstream(capsys) -> None:
         rc = push.main()
     out = capsys.readouterr().out
     assert rc == 0
-    assert ["push", "-u", "origin", "HEAD"] in calls
+    assert ["push", "--porcelain", "-u", "origin", "HEAD"] in calls
     assert "branch created" in out
 
 
@@ -525,7 +541,8 @@ def test_main_non_ff_fetch_failure_rejects_not_false_clean(capsys) -> None:
         if args[0] == "fetch":
             return _proc("", 1, "fatal: unable to access 'origin': could not resolve host")
         if args[0] == "push":
-            return _proc("", 1, rejected)
+            return _proc(_porcelain("feat", "[rejected] (non-fast-forward)"),
+                         1, rejected)
         return _proc("", 0)
 
     with mock.patch.object(push, "_git", side_effect=fake_git):
@@ -556,7 +573,8 @@ def test_main_force_with_lease_stale_gives_correct_hint(capsys) -> None:
         if args[0] == "ls-remote":
             return _proc("remotehead999\trefs/heads/feat\n", 0)
         if args[0] == "push":
-            return _proc("", 1, rejected)
+            return _proc(_porcelain("feat", "[rejected] (stale info)"),
+                         1, rejected)
         return _proc("", 0)
 
     with mock.patch.object(push, "_git", side_effect=fake_git), \
@@ -602,7 +620,8 @@ def test_main_non_ff_rebase_cannot_start_aborts_not_phantom_paused(capsys) -> No
             aborted.append(True)
             return _proc("", 0)
         if args[0] == "push":
-            return _proc("", 1, rejected)
+            return _proc(_porcelain("feat", "[rejected] (non-fast-forward)"),
+                         1, rejected)
         return _proc("", 0)
 
     with mock.patch.object(push, "_git", side_effect=fake_git):
