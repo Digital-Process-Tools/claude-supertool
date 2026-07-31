@@ -199,7 +199,9 @@ def test_non_fast_forward_rebase_conflict_verdict_survives_tail(capsys) -> None:
         if args[0] == "ls-remote":
             return _proc(f"{OLD_SHA}\trefs/heads/feat\n", 0)
         if args[0] == "push":
-            return _proc("", 1, rejected)
+            return _proc(
+                "To origin\n!\trefs/heads/feat:refs/heads/feat"
+                "\t[rejected] (non-fast-forward)\nDone\n", 1, rejected)
         if args[0] == "fetch":
             return _proc("", 0)
         if args[:2] == ["rebase", "FETCH_HEAD"]:

@@ -122,6 +122,20 @@ git rebase --continue && ./supertool 'git-push'
 ```
 To **cancel** and get back to exactly where you were before the push (your commits intact, nothing pushed), `git rebase --abort`. To overwrite the remote intentionally (your history wins), `git rebase --abort` then `./supertool 'git-push:force-with-lease'`. To skip a local pre-push hook that diverges from CI, `./supertool 'git-push:no-verify'`.
 
+**Only git decides that the remote moved ahead.** The auto-rebase is the one path in this op that rewrites local history, so it fires on git's own machine-readable answer and nothing else: the push runs `--porcelain`, and the per-ref status line for your branch on stdout — `!<TAB>refs/heads/x:refs/heads/x<TAB>[rejected] (non-fast-forward)` — is the only input to the decision. Text printed by a **pre-push hook** cannot reach it, even when the hook prints the exact words git uses (`fetch first`, `non-fast-forward`, `tip of your current branch is behind`); before [#641](https://github.com/Digital-Process-Tools/claude-supertool/issues/641) it could, and a hook saying "fetch first" in its own advice was enough to make the op fetch and rebase your branch.
+
+The practical consequence: when a **local hook blocks the push**, git never contacts the remote and emits no ref status at all. That is not a divergence, and the op will not guess it into one — it stops, prints the hook's own output, and says so:
+
+```
+Hint: git reported no ref status for origin/feat — the push was stopped before it
+reached the remote (local pre-push hook, or transport). Not a divergence: a rebase
+would not help. The output below is what stopped it; `git-push:no-verify` skips a
+local hook.
+[result] NOT PUSHED - REJECTED  feat -> origin/feat - <the hook's first error line>
+```
+
+`[remote rejected]` (protected branch, pre-receive hook) is likewise never treated as a divergence — it keeps its own "a rebase will not help" hint.
+
 ## Configuration
 
 Most ops need no project config. `git-investigate` takes two env vars (below); `git-diff` takes optional review policy (see **git-diff policy** below).
