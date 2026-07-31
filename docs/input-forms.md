@@ -199,3 +199,41 @@ Or with explicit options:
 ```
 
 `continue_on_error` defaults to `true` — a failed op is reported but the rest of the batch continues. Set to `false` to abort on first error. Validators (phplint, xmllint, etc.) fire per mutating op, same as inline edits. Use `@-` to pipe the payload from stdin.
+### What the sub-op headers say
+
+Each sub-op prints a header. A sub-op that ran from the payload is labelled by **route and target**, not re-serialized onto a colon CLI:
+
+```
+--- batch:@.max/ops.toml ---
+--- replace:@payload → src/app/Config.py ---
+--- read:@payload → src/app/Config.py ---
+```
+
+**This header is deliberately not re-runnable, and that is the point.** The payload route exists *because* the content contains `:`; flattening those fields back into `replace:OLD:NEW:PATH` does not merely lose information, it produces a string that parses as a **different op**. A `replace` of `time: 10:30` used to render as `--- replace:time: 10:30:time: 11:45:/tmp/h.txt ---`, and pasting that sent the dispatcher looking for a file named `30`. A header is what a reader trusts to reconstruct a step — in a bug report it is often the only surviving record — so it must never be a runnable string that runs something other than what ran. Where no faithful one-line rendering exists, it does not fake one.
+
+Pasting `replace:@payload → …` back is a loud, self-explaining refusal rather than a silent misfire:
+
+```
+ERROR: '@payload' is a header placeholder, not a reference. This op ran from an
+@payload whose fields no single-colon header can reproduce (#644) — re-run it
+from the original payload file or stdin.
+```
+
+To re-run the step, re-run the payload — `./supertool 'batch:@.max/ops.toml'` — which is the artifact that holds the fields.
+
+A sub-op typed on the colon CLI is unaffected: its header stays verbatim, because there it genuinely *is* re-runnable.
+
+### Field order in a batch sub-op
+
+For an op with an `@payload` route of its own — every mutating op, plus `grep` / `around` / `grep_around` / `between` / `read` — fields are named and order does not matter.
+
+For the remaining colon-only ops, the payload's fields are placed by the op's **declared** argument order (`head`/`tail`: `path`, `n` · `tree`: `path`, `depth` · `around_line`: `path`, `line`, `n` · `diff`: `path1`, `path2`). An op with more than one field and no declared order **declines** rather than picking one:
+
+```
+ERROR: batch sub-op 'glob' takes its arguments positionally and has no declared
+payload field order, so limit, pattern cannot be placed. Ordering them
+alphabetically is a guess, and a wrong guess dispatches a different op — so this
+declines instead.
+```
+
+Colon arguments cannot be sparse either: a payload that sets a later positional field without the earlier ones is refused for the same reason.
