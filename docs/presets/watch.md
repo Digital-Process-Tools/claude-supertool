@@ -101,6 +101,28 @@ Rows use the same format as `gl-mrs`, plus two marks radar alone can report:
 | `[healed]` | this open MR had no live poller; radar respawned one |
 | `[unwatched]` | radar could not respawn a poller — a real coverage gap |
 
+### MRs the board could not check are named ([#659](https://github.com/Digital-Process-Tools/claude-supertool/issues/659))
+
+The board is built from one `gl-mrs` query plus a **capped** per-MR enrichment (`enrich_cap`, 40 by default) — the list endpoint carries no pipeline status, so an MR past the cap has none. `mrs._is_failing` reads that field, and an absent field used to answer **`False` — "not failing", not "unknown"** — so those rows sorted among the green with nothing on the board saying so. On a delta board they were quieter still: an unenriched MR is not a standing problem, so it disappears after the first run.
+
+Whenever any MR went unchecked, the board now says so above the table and in the footer:
+
+```
+radar: WARNING — 5 of 45 MRs on this board were not checked: their pipeline status is
+unknown, not green, so a failing one among them is indistinguishable from a passing one
+here. Enrichment cap is 40; raise SUPERTOOL_ENRICH_CAP=N.
+
+scope author=@me,state=opened (default) | 45 open | 40 green | 5 unchecked | 45 watched | feed ok
+```
+
+Three properties, each deliberate:
+
+- **A fully-checked board prints nothing extra.** The absence of the line is how the board claims it saw everything, so it is a positive claim and not merely a default.
+- **The cap is named only when the cap is what cut.** Below `enrich_cap` an unchecked MR is a detail lookup that timed out or 5xx'd — the marker is `bool(detail)`, "we read this status", not "the loop reached it" ([#652](https://github.com/Digital-Process-Tools/claude-supertool/issues/652)) — and pointing at a limit that never applied is an escape that cannot work.
+- **The tier reports `healthy=False` while anything is unchecked.** `healthy` means "coverage is known and complete", and its only consumer is `quiet_when_healthy`, which suppresses a tier's whole board. It does not affect radar's exit code — that channel belongs to tiers that could not run at all.
+
+The cap is not lifted. At shipped defaults it saves 20 API calls out of 100, but `per_page` / `SUPERTOOL_PER_PAGE` are unbounded, so a `per=200` board would fan out 400 calls with no ceiling. The budget stays; the board states its own edges.
+
 ### Effective scope is stated, never implied ([#486](https://github.com/Digital-Process-Tools/claude-supertool/issues/486))
 
 The filter is an argument in the `gl-mrs` vocabulary, and it lives for **one invocation only**:
