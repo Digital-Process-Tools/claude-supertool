@@ -116,8 +116,18 @@ def main() -> int:
     iid = d.get("number", number)
     web_url = d.get("url", "")
     body = d.get("body") or ""
-    if desc_max is not None:
-        body = body[:desc_max]
+    body_total = len(body)
+    body_truncated = False
+    if desc_max is not None and body_total > desc_max:
+        # Cut at the last line break at-or-before the cap, not a raw byte
+        # offset — a byte cut lands mid-line (#681: "## The", three chars
+        # into a heading), which is both malformed markdown and gives the
+        # output a natural-looking ending that reads as complete.
+        cut_at = body.rfind("\n", 0, desc_max)
+        if cut_at <= 0:
+            cut_at = desc_max
+        body = body[:cut_at]
+        body_truncated = True
 
     # Header
     print(f"# #{iid} {title}")
@@ -127,6 +137,14 @@ def main() -> int:
     print(f"Assignees: {assignees}")
     if web_url:
         print(f"URL: {web_url}")
+    if body_truncated:
+        # Disclosed here, not just at the point of the cut — a reader who
+        # stops at the top must still see it (#681).
+        withheld = body_total - len(body)
+        print(
+            f"Body: TRUNCATED — {len(body)} of {body_total} chars shown, "
+            f"{withheld} withheld — use :full to fetch all"
+        )
 
     # Linked PRs — search by issue number in PR body/title
     try:
@@ -154,6 +172,9 @@ def main() -> int:
     all_image_urls = _extract_image_urls(body)
     if body:
         print(f"\n## Description\n{body}")
+        if body_truncated:
+            withheld = body_total - len(body)
+            print(f"\n…[{withheld} chars truncated here — use :full to fetch all]")
 
     # Comments — gh gives them directly in the issue JSON
     comments = d.get("comments", [])
