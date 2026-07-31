@@ -10724,6 +10724,36 @@ def _validator_warm_unsafe_reason(spec: Dict[str, Any], target: str) -> Optional
     return None
 
 
+def _validator_unusable_reply(name: str, target: str, what: str,
+                              elapsed: float) -> Dict[str, Any]:
+    """The adapter gave us nothing we can read — a skip, never a finding (#634).
+
+    `validate:presets/gitlab.json` used to print `jsonlint : 1 err (0ms)` with
+    `adapter bad json: Expecting value: line 1 column 1 (char 0)` against a file
+    stdlib `json.load()` reads happily. That text is what `json.loads("")`
+    raises, so it was never about the file: the adapter's own reply failed to
+    parse, and the orchestrator rendered its own confusion as a finding about
+    the user's code, in the position and colour a real syntax error prints in.
+
+    This is #263's failure inverted, and worse. A missed error costs one bug; an
+    invented one costs the credibility of every error the validator prints, and
+    this fired on every `.json` edit — which is exactly how the first genuinely
+    malformed file gets read as the usual noise and skipped.
+
+    So it takes the third state (`docs/validators.md`, "Declining instead of
+    guessing"): no `ok`, no `count`, no `errors` (#515), never a regression,
+    never a rollback. That is not suppression — the row still prints, loudly,
+    and now says *whose* JSON was bad. `1 err` claimed a fact about the file;
+    `skipped` states the truth, which is that nobody checked it.
+
+    Only exits where nothing ran, or ran and said nothing readable, come here.
+    A timeout does not: the binary exists and was invoked, and a tool that hangs
+    is a validator failure that must stay loud.
+    """
+    return {"tool": name, "file": target, "elapsed_s": elapsed,
+            "skipped": f"{name} adapter {what} — this file was not checked"}
+
+
 def _validator_run_one(name: str, spec: Dict[str, Any], file: str,
                        doc_maybe_stale: bool = False) -> Optional[Dict[str, Any]]:
     """Run one validator adapter on `file`. Returns SCHEMA.md-compliant dict.
@@ -10812,11 +10842,13 @@ def _validator_run_one(name: str, spec: Dict[str, Any], file: str,
         _elapsed = time.monotonic() - _t0
         out = r.stdout.strip()
         if not out:
-            return {"tool": name, "file": target, "ok": False, "count": 1,
-                    "errors": [{"line": None, "col": None, "severity": "error",
-                                "code": "orchestrator", "msg": "adapter produced no output"}],
-                    "duration_ms": 0, "elapsed_s": _elapsed}
+            return _validator_unusable_reply(
+                name, target, "produced no output", _elapsed)
         data = json.loads(out.splitlines()[-1])
+        if not isinstance(data, dict) or not ("ok" in data or "skipped" in data):
+            return _validator_unusable_reply(
+                name, target, "replied without a verdict "
+                "(no 'ok' and no 'skipped' key)", _elapsed)
         data["elapsed_s"] = _elapsed
         if target != file:
             data["resolved_to"] = target
@@ -10830,15 +10862,12 @@ def _validator_run_one(name: str, spec: Dict[str, Any], file: str,
                 "duration_ms": timeout * 1000, "elapsed_s": time.monotonic() - _t0,
                 "timeout": True}
     except OSError as e:
-        return {"tool": name, "file": target, "ok": False, "count": 1,
-                "errors": [{"line": None, "col": None, "severity": "error",
-                            "code": "orchestrator", "msg": f"adapter not found or unrunnable: {e}"}],
-                "duration_ms": 0, "elapsed_s": time.monotonic() - _t0}
+        return _validator_unusable_reply(
+            name, target, f"could not be run — {e}", time.monotonic() - _t0)
     except (json.JSONDecodeError, IndexError) as e:
-        return {"tool": name, "file": target, "ok": False, "count": 1,
-                "errors": [{"line": None, "col": None, "severity": "error",
-                            "code": "orchestrator", "msg": f"adapter bad json: {e}"}],
-                "duration_ms": 0, "elapsed_s": time.monotonic() - _t0}
+        return _validator_unusable_reply(
+            name, target, f"replied with something that is not JSON — {e}",
+            time.monotonic() - _t0)
 
 
 def _validator_render_row(data: Dict[str, Any], verbose: bool = False) -> list:

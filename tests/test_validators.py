@@ -137,17 +137,26 @@ def test_run_one_parses_adapter_json() -> None:
 
 
 def test_run_one_handles_no_output() -> None:
+    """#634 changed this contract: an unusable reply is a skip, not an error.
+
+    It used to assert `ok is False` with one error, which is how an empty reply
+    reached the row as a finding about the user's file. The adapter is still
+    named and the row still prints — see
+    tests/test_validator_adapter_reply_634.py for the full contract.
+    """
     spec = {"cmd": "{python} -c \"pass\"", "timeout": 5}
     out = supertool._validator_run_one("fake", spec, "x.php")
-    assert out["ok"] is False
-    assert "no output" in out["errors"][0]["msg"]
+    assert "skipped" in out
+    assert "no output" in out["skipped"]
+    assert "ok" not in out and "errors" not in out
 
 
 def test_run_one_handles_bad_json() -> None:
     spec = {"cmd": "{python} -c \"import sys; sys.stdout.write('not json')\"", "timeout": 5}
     out = supertool._validator_run_one("fake", spec, "x.php")
-    assert out["ok"] is False
-    assert "bad json" in out["errors"][0]["msg"]
+    assert "skipped" in out
+    assert out["skipped"].startswith("fake adapter")
+    assert "not JSON" in out["skipped"]
 
 
 def test_run_one_substitutes_file_token(tmp_path: Path) -> None:
@@ -239,8 +248,9 @@ def test_env_var_disables_cache(tmp_path: Path, monkeypatch) -> None:
     # Cache disabled → second call re-runs adapter → counter increments
     out2 = supertool._validator_run_one("t", spec, str(f))
     assert state.read_text(encoding="utf-8").strip() == "2"
-    # Second call hits the BROKEN branch → no output → schema error
-    assert out2["ok"] is False
+    # Second call hits the BROKEN branch → no output → skipped, not an error
+    # (#634: an adapter that said nothing has judged nothing).
+    assert "skipped" in out2
 
 
 def test_run_one_substitutes_supertool_dir_token() -> None:

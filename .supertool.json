@@ -274,7 +274,7 @@
       "timeout": 15
     },
     "jsonlint": {
-      "cmd": "{python} -m json.tool {file}",
+      "cmd": "{python} {supertool_dir}/validators/jsonlint/jsonlint.py {file}",
       "match": "*.json",
       "hooks_into": [
         "edit",
