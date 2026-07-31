@@ -12,7 +12,9 @@ import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
+sys.path.insert(0, str(Path(__file__).parent.parent))  # for _env (#654)
 sys.path.insert(0, str(Path(__file__).parent))
+from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 from _auth import get_api_key
 from _me import get_username
 from _rest import request
@@ -109,7 +111,7 @@ def main(arg: str) -> None:
         c = request("GET", "/comments", api_key, query={"a_id": aid})
         if isinstance(c, list):
             comments = c
-    inline_n = int(os.environ.get("SUPERTOOL_INLINE_COMMENTS", "5"))
+    inline_n = env_int("SUPERTOOL_INLINE_COMMENTS", 5, minimum=0)
     me = get_username(api_key)
     print(render(article, comments, inline_n, me))
 

@@ -514,6 +514,7 @@ def _guard_repo_git_state():
 RESET_GLOBALS = (
     "_BRANCH_CACHE",
     "_CONFIG_WARNINGS",
+    "_ENV_ANNOUNCED",
     "_FORMATTER_SKIPS",
     "_FORMAT_QUEUE",
     "_GIT_IGNORED_CACHE",

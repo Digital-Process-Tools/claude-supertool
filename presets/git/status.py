@@ -24,6 +24,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import _checks  # noqa: E402  (the one check tally, shared with gh-pr / gh-prs)
+from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 from _git_common import use_utf8_stdout  # noqa: E402
 
 
@@ -50,11 +51,7 @@ def _git_timeout(default: int | None = None) -> int:
     ships with does not move for it.
     """
     base = _GIT_TIMEOUT_DEFAULT if default is None else default
-    try:
-        val = int(os.environ.get("SUPERTOOL_GIT_TIMEOUT", ""))
-    except (TypeError, ValueError):
-        return base
-    return val if val > 0 else base
+    return env_int("SUPERTOOL_GIT_TIMEOUT", base, minimum=1)
 
 
 def _git(args: list[str], timeout: int | None = None) -> subprocess.CompletedProcess[str]:

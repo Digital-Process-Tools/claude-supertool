@@ -18,6 +18,9 @@ import re
 import subprocess
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from _env import env_int  # noqa: E402  (the one numeric-knob reader)
+
 
 def _local_branch_check(source: str) -> str:
     """Return a one-line local-branch-vs-source check for output.
@@ -62,11 +65,11 @@ def _format_error(stderr: str, resource: str, identifier: str) -> str:
 def _get_config() -> dict:
     """Read config from SUPERTOOL_ env vars."""
     return {
-        "lines": int(os.environ.get("SUPERTOOL_LINES", "80")),
+        "lines": env_int("SUPERTOOL_LINES", 80, minimum=1),
         "error_patterns": os.environ.get(
             "SUPERTOOL_ERROR_PATTERNS", "ERROR,FAILED,Error:,Failed,fatal:,##[error]"
         ).split(","),
-        "error_context": int(os.environ.get("SUPERTOOL_ERROR_CONTEXT", "5")),
+        "error_context": env_int("SUPERTOOL_ERROR_CONTEXT", 5, minimum=0),
         "job_patterns": _parse_job_patterns(os.environ.get("SUPERTOOL_JOB_PATTERNS", "")),
     }
 
@@ -125,7 +128,7 @@ def _print_unmatched_failure(
     routinely a step that has nothing to do with the failure — naming it would
     mislead rather than help.
     """
-    tail_n = int(os.environ.get("GH_JOB_UNMATCHED_TAIL_LINES", "40"))
+    tail_n = env_int("GH_JOB_UNMATCHED_TAIL_LINES", 40, minimum=1)
     print("\n## FAILED — no error pattern matched")
     print(
         f"Job status is `{status_label}`: something did go wrong. supertool "
@@ -451,7 +454,7 @@ def main() -> int:
             return 0
         match_count = sum(1 for line in lines if rx.search(line))
         _emit_grep_hits(lines, sorted(hits), rx, match_count,
-                        int(os.environ.get("GH_JOB_GREP_MAX_BYTES", "65536")),
+                        env_int("GH_JOB_GREP_MAX_BYTES", 65536, minimum=1),
                         "GH_JOB_GREP_MAX_BYTES", shown_pattern, ctx)
         return 0
 

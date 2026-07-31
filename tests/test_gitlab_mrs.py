@@ -148,10 +148,25 @@ def test_get_config_bad_value_falls_back(monkeypatch) -> None:
     assert mrs._get_config()["enrich_workers"] == mrs.ENRICH_WORKERS
 
 
-def test_get_config_clamps_workers_floor(monkeypatch) -> None:
-    """workers must never drop below 1 (ThreadPoolExecutor rejects 0)."""
+def test_get_config_refuses_workers_below_floor(monkeypatch, capsys) -> None:
+    """workers must never drop below 1 (ThreadPoolExecutor rejects 0).
+
+    The invariant is unchanged; where an out-of-range value lands is not.
+    This used to `max(1, ...)` its way to exactly 1, in silence — so
+    `SUPERTOOL_ENRICH_WORKERS=0` read identically to `=1`, and a caller who had
+    asked for something impossible was never told. #654 makes the floor a
+    *validated minimum*: the value is refused, the default is used, and the
+    swap is stated. Deliberate behaviour change, not an accident of the
+    refactor — see the helper's docstring for why an announced fallback beats a
+    silent clamp.
+    """
     monkeypatch.setenv("SUPERTOOL_ENRICH_WORKERS", "0")
-    assert mrs._get_config()["enrich_workers"] == 1
+    workers = mrs._get_config()["enrich_workers"]
+    assert workers == mrs.ENRICH_WORKERS
+    assert workers >= 1
+    out = capsys.readouterr().out
+    assert "SUPERTOOL_ENRICH_WORKERS" in out
+    assert f"using {mrs.ENRICH_WORKERS}" in out
 
 
 # ---------------------------------------------------------------------------

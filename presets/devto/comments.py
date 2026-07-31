@@ -6,7 +6,9 @@ import os
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent.parent))  # for _env (#654)
 sys.path.insert(0, str(Path(__file__).parent))
+from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 from _auth import get_api_key
 from _outbound import my_comment_ids, read as read_outbound
 from _rest import request
@@ -17,7 +19,7 @@ def parse_args(arg: str) -> tuple[str, int]:
     if not arg:
         sys.stderr.write("ERROR: usage devto_comments:ARTICLE_ID[:N]\n")
         sys.exit(2)
-    default_n = int(os.environ.get("SUPERTOOL_DEFAULT_LIMIT", "20"))
+    default_n = env_int("SUPERTOOL_DEFAULT_LIMIT", 20, minimum=1)
     parts = arg.split(":")
     aid = parts[0]
     n = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else default_n

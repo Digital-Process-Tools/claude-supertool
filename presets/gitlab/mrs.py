@@ -29,6 +29,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))  # for _board, _proc
 
 import _board  # noqa: E402
+from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 import _checks  # noqa: E402  (the one check classifier, shared with gh-pr / gh-prs)
 import _proc  # noqa: E402  (the one liveness probe, shared with watch / gh-prs)
 
@@ -49,15 +50,14 @@ def _get_config() -> dict[str, int]:
     SUPERTOOL_ENRICH_CAP     — max MRs to pipeline-enrich (default 40)
     SUPERTOOL_PER_PAGE       — MRs fetched from the list endpoint (default 50)
     """
-    def _int(name: str, default: int) -> int:
-        try:
-            return int(os.environ.get(name, str(default)))
-        except ValueError:
-            return default
+    # The local `_int` this replaces tolerated junk in silence and then clamped
+    # in silence, so a caller who set SUPERTOOL_ENRICH_CAP=-1 got "no enrichment"
+    # with nothing said. `env_int` keeps the floors as validated minimums and
+    # says which knob it could not honour and what it used instead (#654).
     return {
-        "enrich_workers": max(1, _int("SUPERTOOL_ENRICH_WORKERS", ENRICH_WORKERS)),
-        "enrich_cap": max(0, _int("SUPERTOOL_ENRICH_CAP", ENRICH_CAP)),
-        "per_page": max(1, _int("SUPERTOOL_PER_PAGE", DEFAULT_PER_PAGE)),
+        "enrich_workers": env_int("SUPERTOOL_ENRICH_WORKERS", ENRICH_WORKERS, minimum=1),
+        "enrich_cap": env_int("SUPERTOOL_ENRICH_CAP", ENRICH_CAP, minimum=0),
+        "per_page": env_int("SUPERTOOL_PER_PAGE", DEFAULT_PER_PAGE, minimum=1),
     }
 
 # state=X maps to a glab list flag. opened is the glab default (no flag).

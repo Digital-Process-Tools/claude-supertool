@@ -12,6 +12,9 @@ import sys
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from _env import env_float  # noqa: E402  (the one numeric-knob reader)
+
 
 def star(repo: str) -> tuple[bool, str]:
     result = subprocess.run(
@@ -51,7 +54,7 @@ def main(arg: str) -> int:
     print(f"(batch-star {len(repos)} repos)")
     ok = 0
     failed = 0
-    delay = float(os.environ.get("SUPERTOOL_STAR_DELAY", "1.0"))
+    delay = env_float("SUPERTOOL_STAR_DELAY", 1.0, minimum=0.0)
     for i, repo in enumerate(repos):
         if i > 0:
             time.sleep(delay)
