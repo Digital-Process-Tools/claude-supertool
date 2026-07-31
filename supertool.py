@@ -13254,13 +13254,60 @@ def _detect_payload_format(raw: str) -> str:
 _TOML_ESCAPES = {"n": "\n", "t": "\t", "r": "\r", "\\": "\\", '"': '"', "b": "\b", "f": "\f"}
 
 
-def _toml_basic_unescape(s: str) -> str:
+_TOML_HEXDIGITS = frozenset("0123456789abcdefABCDEF")
+
+_TOML_ESCAPE_ADVICE = (
+    "in a basic string a backslash must be escaped as a double backslash, or "
+    "use a triple-single-quote literal block, which keeps backslashes as typed"
+)
+
+
+def _toml_decode_escape(s: str, i: int, key: str, multiline: bool) -> Tuple[str, int]:
+    r"""Decode the escape starting at s[i] (a backslash); return (text, offset).
+
+    Raises on everything TOML calls invalid, because stdlib `tomllib` raises
+    and this parser stands in for it on Python <3.11 (#684). The default it
+    replaces — keep the escaped character, drop the backslash — turned
+    `path = "C:\Users\dev"` into `C:Usersdev`, and the op then reported a
+    missing file at an address the parser had invented: same payload, same
+    tool, a parse error on 3.11+ and a manufactured absence below it.
+
+    `\u` / `\U` are decoded rather than rejected. tomllib accepts them, so
+    refusing them would trade a silent divergence for a loud one. Agreement
+    with tomllib is what matters here, not severity.
+    """
+    c = s[i + 1] if i + 1 < len(s) else ""
+    if c in _TOML_ESCAPES:
+        return _TOML_ESCAPES[c], i + 2
+    if c in ("u", "U"):
+        width = 4 if c == "u" else 8
+        digits = s[i + 2:i + 2 + width]
+        if len(digits) == width and all(d in _TOML_HEXDIGITS for d in digits):
+            code = int(digits, 16)
+            if code < 0x110000 and not 0xD800 <= code <= 0xDFFF:
+                return chr(code), i + 2 + width
+        raise ValueError(
+            f"invalid escape: \\{c} for '{key}' wants {width} hex digits naming "
+            f"a Unicode scalar — {_TOML_ESCAPE_ADVICE}"
+        )
+    if multiline:
+        j = i + 1
+        while j < len(s) and s[j] in " \t":
+            j += 1
+        if j < len(s) and s[j] in "\r\n":
+            while j < len(s) and s[j] in " \t\r\n":
+                j += 1
+            return "", j
+    raise ValueError(f"invalid escape '\\{c}' for '{key}' — {_TOML_ESCAPE_ADVICE}")
+
+
+def _toml_basic_unescape(s: str, key: str = "value", multiline: bool = True) -> str:
     out = []
     i = 0
     while i < len(s):
-        if s[i] == "\\" and i + 1 < len(s):
-            out.append(_TOML_ESCAPES.get(s[i + 1], s[i + 1]))
-            i += 2
+        if s[i] == "\\":
+            text, i = _toml_decode_escape(s, i, key, multiline)
+            out.append(text)
         else:
             out.append(s[i])
             i += 1
@@ -13327,7 +13374,7 @@ def _toml_parse_value(raw: str, i: int, key: str) -> Tuple[Any, int]:
         end = raw.find('"""', i)
         if end < 0:
             raise ValueError(f"unterminated \"\"\" for '{key}'")
-        val: Any = _toml_basic_unescape(raw[i:end])
+        val: Any = _toml_basic_unescape(raw[i:end], key, True)
         if val.startswith("\r\n"):
             val = val[2:]
         elif val.startswith("\n"):
@@ -13348,9 +13395,9 @@ def _toml_parse_value(raw: str, i: int, key: str) -> Tuple[Any, int]:
         i += 1
         buf = []
         while i < n and raw[i] != '"':
-            if raw[i] == "\\" and i + 1 < n:
-                buf.append(_TOML_ESCAPES.get(raw[i + 1], raw[i + 1]))
-                i += 2
+            if raw[i] == "\\":
+                text, i = _toml_decode_escape(raw, i, key, False)
+                buf.append(text)
             elif raw[i] == "\n":
                 raise ValueError(f"newline in single-line string for '{key}'")
             else:

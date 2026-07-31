@@ -162,6 +162,25 @@ the parse error names both, and fires the hint on an odd number of `'''` runs �
 every literal block opens and closes, so a stray one means the content carried
 its own.
 
+### An invalid escape is an error, on every Python
+
+A basic string (`"..."` or `"""..."""`) processes escapes, and an escape TOML
+does not recognise is a **parse error** — not a character that quietly loses its
+backslash. A Windows path is how most people meet this:
+
+```
+path = "C:\Users\dev\notes.txt"     # parse error: invalid escape \U
+path = "C:\\Users\\dev\\notes.txt"  # fine — doubled
+path = 'C:\Users\dev\notes.txt'     # fine — a literal string, kept as typed
+```
+
+Before [#684](https://github.com/Digital-Process-Tools/claude-supertool/issues/684)
+that first line behaved differently depending on the interpreter: Python 3.11+
+(stdlib `tomllib`) raised, while the fallback parser below it dropped the
+backslashes and handed the op `C:Usersdevnotes.txt`, which then failed with
+`path not found` at an address nobody had typed. Both parsers now agree, and
+`\u` / `\U` escapes (`"\u00e9"`) work on every version.
+
 Other TOML primitives supported in payloads: integers (`start = 42`), booleans (`replace_all = true`), `# comments`. Arrays, tables, dotted keys, and dates aren't needed — payloads are flat key/value maps.
 
 ### Implementation note
