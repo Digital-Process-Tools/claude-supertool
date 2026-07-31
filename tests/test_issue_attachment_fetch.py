@@ -68,10 +68,10 @@ def test_everything_written_stays_under_the_issue_dir(tmp_path, monkeypatch):
 def test_url_extraction_stays_proportional_on_a_long_body():
     """The extraction pass runs over the description and every comment.
 
-    A pattern with a lazy segment before a literal, followed by a greedy one,
-    backtracks super-linearly: measured 0.07s at 4 KB but 53s at 65 KB on the
-    original. The bound here is deliberately loose — it is checking the growth
-    curve, not a stopwatch.
+    No super-linear growth has been reproduced against this pattern: 65 KB
+    measures ~0.001s here. This is a regression pin on the growth curve, not a
+    fix for an observed slowdown — the bound is deliberately loose so that a
+    future pattern change cannot quietly make extraction cost the op its budget.
     """
     body = "![x](https://example.com/" + "a" * 65000 + ")"
     start = time.monotonic()
