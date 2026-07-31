@@ -245,7 +245,14 @@ def _enrich(
         # The marker every downstream three-state read depends on. Without it,
         # "no pipeline status" is indistinguishable from "reached, and green",
         # and the difference is the whole of #652.
-        m["_enriched"] = True
+        #
+        # `bool(detail)` rather than True, because "reached" is not the property
+        # that matters — "we read this MR's status" is. `_fetch_mr_detail`
+        # returns {} on a timeout, a 5xx or an unparseable body, which lands as
+        # `_pipeline = ""` and reads as green to `_is_failing` exactly like an
+        # MR past the cap. A marker set unconditionally would certify the one
+        # unchecked MR the cap notice could never account for.
+        m["_enriched"] = bool(detail)
 
     failing = [m for m in targets if m.get("_pipeline") == "failed" and m.get("_pipeline_id")]
     if failing:
@@ -504,16 +511,21 @@ def _cap_notice(unchecked: int, total: int, cap: int, failed_only: bool) -> str:
     """
     if unchecked <= 0:
         return ""
-    if failed_only:
-        return (
-            f"({unchecked} of {total} MRs not checked — enrichment cap {cap}; "
-            f"a failing MR among them cannot appear on this board. "
-            f"Raise {ENRICH_CAP_KNOB}=N)"
-        )
-    return (
-        f"(pipeline enrichment capped at {cap} MRs — "
-        f"{unchecked} of {total} MRs not checked; raise {ENRICH_CAP_KNOB}=N)"
+    consequence = (
+        ", so a failing MR among them cannot appear on this board"
+        if failed_only else ""
     )
+    body = (
+        f"{unchecked} of {total} MRs not checked — "
+        f"pipeline status unavailable{consequence}"
+    )
+    # The cap is named as the escape only when the cap is what cut. Below the
+    # cap the unchecked MRs are failed lookups, and pointing at a limit that
+    # never applied is advice that cannot work — a confidently wrong cause,
+    # which this repo rates as worse than saying less.
+    if total > cap:
+        body += f". Enrichment cap is {cap}; raise {ENRICH_CAP_KNOB}=N"
+    return f"({body})"
 
 
 def _footer(mrs: list[dict], watched: set[str], show_pipe: bool, unchecked: int = 0) -> str:

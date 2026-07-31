@@ -185,6 +185,71 @@ def test_nopipe_prints_no_cap_marker(monkeypatch, capsys) -> None:
 
 
 # ---------------------------------------------------------------------------
+# The cap is not the only way an MR ends up unchecked. A detail fetch that
+# fails returns {} — inside the cap — and that is the same third state.
+# ---------------------------------------------------------------------------
+
+def _drive_with_failures(monkeypatch, capsys, rows, arg_str, failing=(), broken=()):
+    """As `_drive`, but the detail endpoint returns None for `broken` iids —
+    what `_api_json` does on a timeout, a 5xx, or an unparseable body."""
+    failing, broken = set(failing), set(broken)
+    monkeypatch.setattr(sys, "argv", ["mrs.py", arg_str])
+    monkeypatch.setattr(
+        mrs, "_run",
+        lambda cmd, timeout=25: subprocess.CompletedProcess(cmd, 0, json.dumps(rows), ""),
+    )
+
+    def _api(endpoint, timeout=10):
+        if endpoint.endswith("/approvals"):
+            return {"approved": True, "approved_by": []}
+        if "/pipelines/" in endpoint:
+            return [{"name": "phpstan2"}]
+        iid = endpoint.rsplit("/", 1)[-1]
+        if int(iid) in broken:
+            return None
+        status = "failed" if int(iid) in failing else "success"
+        return {"head_pipeline": {"status": status, "id": iid}, "changes_count": "3"}
+
+    monkeypatch.setattr(mrs, "_api_json", _api)
+    monkeypatch.setattr(mrs, "_watched_iids", lambda *a, **k: set())
+    assert mrs.main() == 0
+    cap = capsys.readouterr()
+    return cap.out, cap.err
+
+
+def test_an_mr_whose_detail_fetch_failed_is_not_reported_as_healthy(
+    monkeypatch, capsys,
+) -> None:
+    """The transient-failure version of the same defect, well inside the cap.
+
+    `_fetch_mr_detail` returns {} on any failure, so `_pipeline` is "" and
+    `_is_failing` is False — the MR is dropped and the board renders an
+    unqualified all-clear over an MR whose state it never learned.
+    """
+    rows = [_row(i) for i in range(1, 6)]
+    out, _err = _drive_with_failures(monkeypatch, capsys, rows, "failed", broken={4})
+
+    assert "not checked" in out, (
+        "an MR whose pipeline lookup failed was silently treated as green"
+    )
+    assert "1 of 5 MRs not checked" in out
+
+
+def test_a_failed_lookup_does_not_blame_the_cap_it_did_not_hit(monkeypatch, capsys) -> None:
+    """Five MRs, cap forty. Naming the cap as the cause would be a confidently
+    wrong reason, which this repo rates worse than silence."""
+    rows = [_row(i) for i in range(1, 6)]
+    out, _err = _drive_with_failures(monkeypatch, capsys, rows, "failed", broken={4})
+
+    assert "1 of 5 MRs not checked" in out
+    assert "Enrichment cap" not in out, (
+        "the cap never bound at 5 MRs — naming it states a cause that was not "
+        "measured, and offers an escape that cannot work"
+    )
+    assert "SUPERTOOL_ENRICH_CAP" not in out
+
+
+# ---------------------------------------------------------------------------
 # The machine-readable feed. `failed,iids` is what pipes into the watch
 # supervisor, so it is the silent-omission channel with the longest reach.
 # ---------------------------------------------------------------------------
@@ -220,8 +285,9 @@ def test_the_default_board_still_discloses_the_cap(monkeypatch, capsys) -> None:
     out, _err, fetched = _drive(monkeypatch, capsys, rows, "")
 
     assert len(fetched) == CAP
-    assert "enrichment capped" in out
-    assert "not checked" in out
+    assert "5 of 45 MRs not checked" in out
+    assert "Enrichment cap is 40" in out
+    assert "SUPERTOOL_ENRICH_CAP" in out
 
 
 def test_the_cap_notice_is_printed_above_the_table(monkeypatch, capsys) -> None:
