@@ -300,12 +300,20 @@ def desktop_notify(title: str, message: str) -> None:
         return
     if not shutil.which("osascript"):
         return
-    body = message.replace('"', '\\"')
-    head = title.replace('"', '\\"')
-    script = f'display notification "{body}" with title "{head}"'
+    # Titles and bodies arrive from remote repos, so they routinely contain
+    # quotes, backslashes and other characters that are syntax to AppleScript.
+    # Interpolating them into the script text makes the notification depend on
+    # someone else's branch name; osascript reads positional arguments after
+    # `--` into `argv`, where they are values rather than source.
     try:
         subprocess.run(
-            ["osascript", "-e", script],
+            [
+                "osascript",
+                "-e", "on run argv",
+                "-e", "display notification (item 1 of argv) with title (item 2 of argv)",
+                "-e", "end run",
+                "--", message, title,
+            ],
             capture_output=True, timeout=3, check=False,
         )
     except (subprocess.TimeoutExpired, OSError):
