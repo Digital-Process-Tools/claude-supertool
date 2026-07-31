@@ -120,6 +120,35 @@ Two things to keep in mind when setting it. It belongs on the **validator entry*
 
 **Silence is the refusal that hides best.** PHPStan does not announce a declined file on stdout at all — it writes `[ERROR] No files found to analyse.` to stderr, exits non-zero, and leaves stdout empty. Any adapter that treats "no output" as "no findings" turns that into `ok: true, count: 0` (#263), and a green meaning *"I analysed nothing"* is byte-identical to one meaning *"I analysed it and it is fine"*. An adapter with no parseable result must therefore decide between three outcomes and never default into the fourth: a recognised refusal is `skipped`, an unexplained non-zero exit is an error naming the exit code, and only a genuinely quiet success — empty output, exit 0 — keeps the clean verdict. When quoting the tool's words back as the skip reason, quote **the line that refused**, not the first line printed: analysers open with preamble (`Note: Using configuration file ...`) that names the config and explains nothing.
 
+### The adapter's own reply is never a finding
+
+The mirror image of that, and it shipped for as long: `validate:presets/gitlab.json` printed
+
+```
+jsonlint    : 1 err       (0ms)
+     orchestrator  adapter bad json: Expecting value: line 1 column 1 (char 0)
+```
+
+against a file `json.load()` reads without complaint (#634). `Expecting value: line 1 column 1 (char 0)` is what `json.loads("")` raises — it was never about the file. The **adapter's** reply could not be parsed, and the orchestrator rendered its own confusion as an error attributed to the user's code, in the position and colour a real syntax error prints in. The `0ms` was the second tell: nothing had been measured.
+
+Where #263 turned a silence into a false clean, this turned one into a false *finding*, which is the worse trade. A missed error costs one bug. An invented error costs the credibility of every error the validator prints — and this one fired on every `.json` edit, which is exactly how the first genuinely malformed file gets read as the usual noise and waved through.
+
+So the orchestrator now takes the third state whenever the adapter gave it nothing it can read:
+
+```
+jsonlint    : skipped — jsonlint adapter replied with something that is not JSON — Expecting value: line 1 column 1 (char 0) — this file was not checked
+```
+
+Four exits route here, all of them "no verdict was produced": empty stdout, stdout that is not JSON, a reply that parses but carries neither `ok` nor `skipped`, and a `cmd` that could not be spawned at all (the missing-binary case — `1 err` there claimed the *file* was broken because a tool was not installed).
+
+The skip reason names the program from the **spec**, never from the exception text: POSIX puts the missing binary in the `OSError` (`No such file or directory: 'jsonlint'`) and Windows does not (`[WinError 2] The system cannot find the file specified`), so reading it from the exception told Windows users a checker could not run without telling them which one — the platform-shaped hole #627 already paid for once. Only the platform's *reason* (`e.strerror`) is quoted, so the message reads the same shape everywhere: `jsonlint adapter could not be run: jsonlint — No such file or directory — this file was not checked`.
+
+A **timeout is deliberately excluded** and stays a loud error. The binary exists and was invoked; a tool that hangs is a validator failure, and guessing towards silence there is how a broken validator starts looking clean.
+
+This is not suppression, and the distinction is the whole point. Muting the row would have traded a loud false positive for a quiet absence of coverage — the failure nobody notices. The row still prints on every run; it now names the adapter, says it was the adapter's own reply that failed, and states plainly that the file was not checked. What it no longer does is claim a fact about the file.
+
+**A `cmd` must point at a SCHEMA.md adapter, not at the raw tool.** That was the root cause: this repo's own `.supertool.json` had `"cmd": "{python} -m json.tool {file}"` while the bundled `validators/jsonlint/jsonlint.py` sat unused beside it. `json.tool` is a pretty-printer — it exits 0 and echoes the reformatted file, so the last stdout line is `}`, and `json.loads("}")` raises exactly the error above. Any raw linter wired this way reproduces it, which is why the two `_example-*` entries in `.supertool.example.json` (`phpcs …`, `pytest -q …`) illustrate `opt_in` and `resolve` but are **not** usable as adapter commands. Wrap the tool; do not invoke it directly.
+
 ## Bundled validators
 
 Enable any of these by copying the relevant entry from `.supertool.example.json` into your project's `.supertool.json`. Each ships as a thin Python wrapper that delegates to the real tool and handles graceful skip when the tool is absent.
