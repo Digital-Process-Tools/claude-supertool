@@ -14,6 +14,10 @@ import sys
 import urllib.parse
 
 DESCRIPTION_MAX = 3000
+# Related MRs are listed, not summarised, so the list is capped. A *count* cut
+# it — the total was always printed correctly above a short list, which reads as
+# the numbers being wrong rather than as a ceiling being hit (#635).
+RELATED_MRS_MAX = 10
 COMMENT_MAX = 1000
 IMAGE_DIR = "/tmp/supertool-images"
 
@@ -166,14 +170,28 @@ def main() -> int:
         if mr_result.returncode == 0:
             mrs = json.loads(mr_result.stdout)
             if isinstance(mrs, list) and mrs:
-                print(f"\nRelated MRs: {len(mrs)}")
-                for mr in mrs[:10]:
+                shown_mrs = mrs if full else mrs[:RELATED_MRS_MAX]
+                hidden_mrs = len(mrs) - len(shown_mrs)
+                if hidden_mrs:
+                    print(
+                        f"\nRelated MRs: {len(shown_mrs)} of {len(mrs)} shown "
+                        f"({hidden_mrs} not listed — count limit of "
+                        f"{RELATED_MRS_MAX}; use :full for all)"
+                    )
+                else:
+                    print(f"\nRelated MRs: {len(mrs)}")
+                for mr in shown_mrs:
                     mr_iid = mr.get("iid", "?")
                     mr_title = mr.get("title", "?")
                     mr_state = mr.get("state", "?")
                     mr_branch = mr.get("source_branch", "?")
                     print(f"  !{mr_iid} ({mr_state}) {mr_title}")
                     print(f"    branch: {mr_branch}")
+                if hidden_mrs:
+                    print(
+                        f"  ... ({hidden_mrs} more related MR(s) not shown — "
+                        f"use :full)"
+                    )
             else:
                 print("\nRelated MRs: none")
     except (subprocess.TimeoutExpired, json.JSONDecodeError):
