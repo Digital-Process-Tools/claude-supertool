@@ -18,12 +18,32 @@ Three concerns, in the order they matter:
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 from pathlib import Path
 
 import pytest
 
 import supertool
+
+
+def _tree_sitter_installed() -> bool:
+    """Is a tree-sitter language pack importable in THIS environment?
+
+    `enable_tree_sitter` only clears supertool's cached detection flags — it
+    cannot install the package. CI has no pack, so symbol mode legitimately
+    declines there; that is a reason to skip one assertion, not to loosen it.
+    """
+    for name in ("tree_sitter_language_pack", "tree_sitter_languages"):
+        try:
+            if importlib.util.find_spec(name) is not None:
+                return True
+        except (ImportError, ValueError):
+            continue
+    return False
+
+
+_HAS_TREE_SITTER = _tree_sitter_installed()
 
 
 HAYSTACK = (
@@ -197,7 +217,7 @@ class TestGrepAtPayload:
         assert "ERROR" in out
 
     def test_grep_payload_from_stdin(
-        self, hay: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+        self, hay: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         import io
         body = (
@@ -244,7 +264,57 @@ class TestBetweenAtPayload:
         assert "Element: <div>" in out
         assert "A::CONST used here" in out
 
-    def test_between_payload_symbol_mode(self, tmp_path: Path, enable_tree_sitter) -> None:
+    def test_between_payload_symbol_mode_extracts_both_fields(self, tmp_path: Path) -> None:
+        """Pins the thing #625 changed — routing and field extraction — on every
+        platform, with no optional dependency.
+
+        `op_between_symbol` checks symbol, then path, and only *then* reaches
+        for tree-sitter. Pointing a well-formed payload at a path that does not
+        exist therefore lands on a deterministic error that echoes the path
+        back, which is only reachable if BOTH fields survived the payload:
+        a dropped route gives "between requires SYMBOL:PATH", a dropped symbol
+        gives "empty symbol", a dropped path gives "empty path".
+        """
+        missing = tmp_path / "no_such_module.py"
+        spec = _payload(tmp_path, "b.json", {"symbol": "foo", "path": str(missing)})
+        out = supertool.dispatch(f"between:@{spec}")
+        assert "file not found" in out
+        assert str(missing) in out
+        assert "requires SYMBOL:PATH" not in out
+        assert "empty symbol" not in out
+        assert "empty path" not in out
+
+    def test_between_payload_symbol_mode_reaches_the_resolver(
+        self, tmp_path: Path, enable_tree_sitter
+    ) -> None:
+        """A valid symbol payload must reach the symbol resolver on every
+        platform — and either resolve, or DECLINE by name.
+
+        The decline is not a failure: `between` symbol mode without tree-sitter
+        states the missing package and points at `between:re`, which is the
+        three-state contract working. What must never happen is the payload
+        failing to route, so those signatures are excluded explicitly rather
+        than the assertion being broadened to accept anything.
+        """
+        src = tmp_path / "m.py"
+        src.write_text("def foo():\n    return 1\n\n\ndef bar():\n    return 2\n", encoding="utf-8")
+        spec = _payload(tmp_path, "b.json", {"symbol": "foo", "path": str(src)})
+        out = supertool.dispatch(f"between:@{spec}")
+        resolved = "return 1" in out and "return 2" not in out
+        declined = "requires tree-sitter" in out and "between:re" in out
+        assert resolved or declined, out
+        assert "requires SYMBOL:PATH" not in out
+        assert "unknown field" not in out
+        assert "needs 'symbol'" not in out
+
+    @pytest.mark.skipif(
+        not _HAS_TREE_SITTER,
+        reason="tree-sitter language pack not installed — symbol mode declines "
+               "by design; routing is pinned by the two tests above",
+    )
+    def test_between_payload_symbol_mode_returns_the_symbol(
+        self, tmp_path: Path, enable_tree_sitter
+    ) -> None:
         src = tmp_path / "m.py"
         src.write_text("def foo():\n    return 1\n\n\ndef bar():\n    return 2\n", encoding="utf-8")
         spec = _payload(tmp_path, "b.json", {"symbol": "foo", "path": str(src)})
