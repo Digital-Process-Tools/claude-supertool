@@ -16,7 +16,21 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 HOOK = Path(__file__).parent.parent / "hooks" / "session-start.sh"
+
+# On Windows runners, a bare `bash` resolves to the WSL launcher stub, which
+# prints "Windows Subsystem for Linux has no installed distributions" (in
+# UTF-16) and exits without running anything — so the hook under test never
+# executes and every assertion here would be about the stub's output. The hook
+# itself runs under Git Bash in a real install; verifying that needs a Git Bash
+# path this suite cannot assume. Skipped with the reason stated rather than
+# quietly passing on a run that proved nothing.
+windows_has_no_usable_bash = pytest.mark.skipif(
+    os.name == "nt",
+    reason="bare `bash` on Windows CI is the WSL stub; the hook never runs",
+)
 
 
 def _run_hook(cwd: Path, plugin_root: Path):
@@ -39,6 +53,7 @@ def _fake_plugin_root(tmp_path: Path) -> Path:
     return root
 
 
+@windows_has_no_usable_bash
 def test_a_preexisting_supertool_in_the_project_is_not_executed(tmp_path):
     project = tmp_path / "project"
     project.mkdir()
@@ -59,6 +74,7 @@ def test_a_preexisting_supertool_in_the_project_is_not_executed(tmp_path):
     )
 
 
+@windows_has_no_usable_bash
 def test_a_preexisting_file_is_left_in_place(tmp_path):
     project = tmp_path / "project"
     project.mkdir()
@@ -73,6 +89,7 @@ def test_a_preexisting_file_is_left_in_place(tmp_path):
     assert not impostor.is_symlink(), "existing file was replaced by a symlink"
 
 
+@windows_has_no_usable_bash
 def test_the_symlink_is_still_created_when_absent(tmp_path):
     project = tmp_path / "project"
     project.mkdir()
