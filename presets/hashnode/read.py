@@ -11,7 +11,9 @@ import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
+sys.path.insert(0, str(Path(__file__).parent.parent))  # for _env (#654)
 sys.path.insert(0, str(Path(__file__).parent))
+from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 from _auth import get_publication_id, get_token
 from _graphql import gql
 from _me import get_username
@@ -141,8 +143,8 @@ def render(post: dict, inline_n: int, me: str = "") -> str:
 def main(arg: str) -> None:
     token = get_token()
     slug, post_id, host = parse_arg(arg)
-    inline_n = int(os.environ.get("SUPERTOOL_INLINE_COMMENTS", "5"))
-    scan_n = max(inline_n, int(os.environ.get("SUPERTOOL_SCAN_COMMENTS", "50")))
+    inline_n = env_int("SUPERTOOL_INLINE_COMMENTS", 5, minimum=0)
+    scan_n = max(inline_n, env_int("SUPERTOOL_SCAN_COMMENTS", 50, minimum=0))
     if post_id is not None:
         data = gql(ID_QUERY, {"id": post_id, "cFirst": scan_n}, token)
         post = data.get("post")

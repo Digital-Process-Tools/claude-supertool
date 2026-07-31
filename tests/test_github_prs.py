@@ -223,9 +223,17 @@ def test_get_config_bad_value_falls_back(monkeypatch) -> None:
     assert prs._get_config()["enrich_workers"] == prs.ENRICH_WORKERS
 
 
-def test_get_config_clamps_workers_floor(monkeypatch) -> None:
+def test_get_config_refuses_workers_below_floor(monkeypatch, capsys) -> None:
+    """See the twin in `test_gitlab_mrs.py`. The floor is now a validated
+    minimum rather than a silent `max(1, ...)` clamp: an out-of-range value is
+    refused, the default is used, and the substitution is stated (#654)."""
     monkeypatch.setenv("SUPERTOOL_ENRICH_WORKERS", "0")
-    assert prs._get_config()["enrich_workers"] == 1
+    workers = prs._get_config()["enrich_workers"]
+    assert workers == prs.ENRICH_WORKERS
+    assert workers >= 1
+    out = capsys.readouterr().out
+    assert "SUPERTOOL_ENRICH_WORKERS" in out
+    assert f"using {prs.ENRICH_WORKERS}" in out
 
 
 # ---------------------------------------------------------------------------

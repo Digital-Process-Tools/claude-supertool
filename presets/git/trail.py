@@ -13,9 +13,12 @@ import sys
 
 # Sibling import: runtime puts this dir on sys.path[0]; the test harness
 # loads scripts via importlib (no dir on path), so add it explicitly.
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _HERE)
+sys.path.insert(0, os.path.dirname(_HERE))  # for _env (#654)
 
 from _git_common import use_utf8_stdout  # noqa: E402
+from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 
 DEFAULT_MAX_COMMITS = 20
 DEFAULT_CONTEXT = 3
@@ -54,9 +57,9 @@ def main() -> int:
 
     pattern = sys.argv[1]
     path = sys.argv[2] if len(sys.argv) > 2 else ""
-    max_commits = int(os.environ.get("SUPERTOOL_MAX_COMMITS", str(DEFAULT_MAX_COMMITS)))
-    context = int(os.environ.get("SUPERTOOL_CONTEXT", str(DEFAULT_CONTEXT)))
-    detail_cap = int(os.environ.get("SUPERTOOL_TRAIL_DETAIL_CAP", str(DEFAULT_DETAIL_CAP)))
+    max_commits = env_int("SUPERTOOL_MAX_COMMITS", DEFAULT_MAX_COMMITS, minimum=1)
+    context = env_int("SUPERTOOL_CONTEXT", DEFAULT_CONTEXT, minimum=0)
+    detail_cap = env_int("SUPERTOOL_TRAIL_DETAIL_CAP", DEFAULT_DETAIL_CAP, minimum=0)
 
     print(f"# git-trail: {pattern!r}" + (f" in {path}" if path else ""))
 

@@ -14,9 +14,12 @@ import sys
 
 # Sibling import: runtime puts this dir on sys.path[0]; the test harness
 # loads scripts via importlib (no dir on path), so add it explicitly.
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _HERE)
+sys.path.insert(0, os.path.dirname(_HERE))  # for _env (#654)
 
 from _git_common import use_utf8_stdout  # noqa: E402
+from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 
 DEFAULT_PREVIEW_LINES = 12
 
@@ -137,7 +140,7 @@ def main() -> int:
     if ref.startswith("-"):
         print(f"ERROR: ref starts with '-' (refusing for safety): {ref!r}")
         return 1
-    preview = int(os.environ.get("SUPERTOOL_PREVIEW_LINES", str(DEFAULT_PREVIEW_LINES)))
+    preview = env_int("SUPERTOOL_PREVIEW_LINES", DEFAULT_PREVIEW_LINES, minimum=0)
 
     if _git(["rev-parse", "--verify", "--quiet", ref]).returncode != 0:
         print(f"ERROR: ref {ref!r} not found. Try `git fetch` first.")

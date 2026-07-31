@@ -10,7 +10,9 @@ import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
+sys.path.insert(0, str(Path(__file__).parent.parent))  # for _env (#654)
 sys.path.insert(0, str(Path(__file__).parent))
+from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 from _atproto import get_session, xrpc
 from _auth import get_app_password, get_handle
 from _sanitize import detect, wrap as wrap_untrusted
@@ -84,7 +86,7 @@ def main(arg: str) -> None:
     handle = get_handle()
     session = get_session(handle, get_app_password())
     uri = parse_arg(arg, session)
-    inline_n = int(os.environ.get("SUPERTOOL_INLINE_COMMENTS", "5"))
+    inline_n = env_int("SUPERTOOL_INLINE_COMMENTS", 5, minimum=0)
     data = xrpc("app.bsky.feed.getPostThread", session,
                  params={"uri": uri, "depth": 1})
     thread = data.get("thread") or {}

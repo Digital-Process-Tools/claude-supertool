@@ -7,9 +7,12 @@ import os
 import subprocess
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from _env import env_int  # noqa: E402  (the one numeric-knob reader)
+
 
 def main(arg: str) -> int:
-    n = int(arg) if arg.strip().isdigit() else int(os.environ.get("SUPERTOOL_DEFAULT_LIMIT", "30"))
+    n = int(arg) if arg.strip().isdigit() else env_int("SUPERTOOL_DEFAULT_LIMIT", 30, minimum=1)
     result = subprocess.run(
         ["gh", "api", f"user/following?per_page={min(n, 100)}"],
         capture_output=True, text=True, timeout=15, encoding="utf-8", errors="replace",

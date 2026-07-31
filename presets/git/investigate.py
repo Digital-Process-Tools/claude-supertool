@@ -15,9 +15,12 @@ import sys
 
 # Sibling import: runtime puts this dir on sys.path[0]; the test harness
 # loads scripts via importlib (no dir on path), so add it explicitly.
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _HERE)
+sys.path.insert(0, os.path.dirname(_HERE))  # for _env (#654)
 
 from _git_common import use_utf8_stdout  # noqa: E402
+from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 
 DEFAULT_COMMITS = 15
 DEFAULT_BLAME_RECENT = 10
@@ -50,8 +53,8 @@ def main() -> int:
         return 1
 
     path = sys.argv[1]
-    commits = int(os.environ.get("SUPERTOOL_COMMITS", str(DEFAULT_COMMITS)))
-    blame_recent = int(os.environ.get("SUPERTOOL_BLAME_RECENT", str(DEFAULT_BLAME_RECENT)))
+    commits = env_int("SUPERTOOL_COMMITS", DEFAULT_COMMITS, minimum=1)
+    blame_recent = env_int("SUPERTOOL_BLAME_RECENT", DEFAULT_BLAME_RECENT, minimum=0)
 
     # Check file exists in repo
     if not os.path.exists(path):

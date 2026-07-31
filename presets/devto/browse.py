@@ -9,7 +9,9 @@ import os
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent.parent))  # for _env (#654)
 sys.path.insert(0, str(Path(__file__).parent))
+from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 from _auth import get_api_key
 from _rest import request
 from _sanitize import safe_short
@@ -25,7 +27,7 @@ def parse_args(arg: str) -> tuple[str, int, str]:
     import re
     parts = re.split(r"[|:]", arg)
     tag = parts[0]
-    default_n = int(os.environ.get("SUPERTOOL_DEFAULT_LIMIT", "10"))
+    default_n = env_int("SUPERTOOL_DEFAULT_LIMIT", 10, minimum=1)
     n = default_n
     sort = "recent"
     for p in parts[1:]:

@@ -730,11 +730,98 @@ def _parallel_workers() -> int:
             return 4
         if s in ("false", "no", "off", ""):
             return 0
+        # `SUPERTOOL_PARALLEL=x` used to return 0 — indistinguishable from not
+        # setting it at all, so a caller who asked for parallelism silently got
+        # none. `=-4` did the same through `max(0, ...)`. Both now say so (#654).
+        # Only an *env* value is reported: the int branch above is reachable only
+        # from JSON config, which is not what this message would be naming.
         try:
-            return max(0, int(s))
+            n = int(s)
         except ValueError:
+            if env is not None:
+                _env_notice(f"note: SUPERTOOL_PARALLEL={raw!r} is not a whole number "
+                            f"or true/false - ignoring it and using 0 (sequential).")
             return 0
+        if n < 0:
+            if env is not None:
+                _env_notice(f"note: SUPERTOOL_PARALLEL={raw!r} is below the minimum of 0 "
+                            f"- ignoring it and using 0 (sequential).")
+            return 0
+        return n
     return 0
+
+
+#: Messages already emitted this process — see `presets/_env.py`. `_get_op_int`
+#: is consulted several times for a single `read`, so without this one bad
+#: `SUPERTOOL_READ_MAX_LINES` would print the same line six times above the
+#: output it is warning about.
+_ENV_ANNOUNCED: "set[str]" = set()
+
+
+def _env_notice(text: str) -> None:
+    """One line, on stdout, flushed, at most once per distinct message.
+
+    Not stderr: `_run_custom_op` returns a successful subprocess's stdout and
+    drops its stderr, and falling back to a default *is* success — so a notice
+    on stderr is a notice nobody receives (#654).
+    """
+    if text in _ENV_ANNOUNCED:
+        return
+    _ENV_ANNOUNCED.add(text)
+    print(text)
+    sys.stdout.flush()
+
+
+def _env_int(name: str, default: int, *, minimum: "Optional[int]" = None) -> int:
+    """Read `name` as an int, or say why it could not be and what is in force.
+
+    Deliberately duplicated from `presets/_env.py` rather than imported.
+    `supertool.py` is a single self-contained file — importing a preset helper
+    would make core dispatch fail wherever `presets/` was not shipped alongside,
+    which is a larger blast radius than the fifteen lines it saves. The two
+    copies are kept in step by `tests/test_env_knob_parsing_654.py`, which
+    asserts the same contract against both.
+
+    Unset is silent. Set-but-unusable is announced and falls back to `default`.
+    `minimum` is a validated floor, not a clamp — see `presets/_env.py` for why
+    a negative is refused rather than quietly rounded up.
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        _env_notice(f"note: {name}={raw!r} is not a whole number "
+                    f"- ignoring it and using {default}.")
+        return default
+    if minimum is not None and value < minimum:
+        _env_notice(f"note: {name}={raw!r} is below the minimum of {minimum} "
+                    f"- ignoring it and using {default}.")
+        return default
+    return value
+
+
+def _env_float(name: str, default: float, *, minimum: "Optional[float]" = None) -> float:
+    """`_env_int` for the knobs measured in seconds. Same contract."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        _env_notice(f"note: {name}={raw!r} is not a number "
+                    f"- ignoring it and using {default}.")
+        return default
+    if value != value:  # NaN is below every bound and equal to none, including itself
+        _env_notice(f"note: {name}={raw!r} is not a usable number "
+                    f"- ignoring it and using {default}.")
+        return default
+    if minimum is not None and value < minimum:
+        _env_notice(f"note: {name}={raw!r} is below the minimum of {minimum} "
+                    f"- ignoring it and using {default}.")
+        return default
+    return value
 
 
 def _get_op_int(op_name: str, key: str, default: int) -> int:
@@ -742,22 +829,32 @@ def _get_op_int(op_name: str, key: str, default: int) -> int:
 
     Env var SUPERTOOL_<OP>_<KEY> takes precedence over JSON config.
     Example: SUPERTOOL_READ_ABSTRACT_THRESHOLD_BYTES=12000
+
+    The env override used to fail closed in silence: a non-numeric or
+    non-positive `SUPERTOOL_READ_MAX_LINES` fell through to config and read
+    exactly like no override at all, so a caller who had set a cap could not
+    tell it had been discarded (#654). It now names the variable, the value, and
+    the limit actually in force — resolved first, so the number printed is the
+    one that will be used rather than a guess at it.
     """
     env_key = f"SUPERTOOL_{op_name.upper()}_{key.upper()}"
     env_val = os.environ.get(env_key)
-    if env_val:
-        try:
-            n = int(env_val)
-            if n > 0:
-                return n
-        except ValueError:
-            pass
     cfg = _load_config()
     op_cfg = cfg.get("builtin-ops", {}).get(op_name, {})
     val = op_cfg.get(key)
-    if isinstance(val, int) and val > 0:
-        return val
-    return default
+    fallback = val if isinstance(val, int) and val > 0 else default
+    if env_val:
+        try:
+            n = int(env_val)
+        except ValueError:
+            _env_notice(f"note: {env_key}={env_val!r} is not a whole number "
+                        f"- ignoring it and using {fallback}.")
+            return fallback
+        if n > 0:
+            return n
+        _env_notice(f"note: {env_key}={env_val!r} is below the minimum of 1 "
+                    f"- ignoring it and using {fallback}.")
+    return fallback
 
 
 def _grep_file_includes() -> Tuple[str, ...] | None:
@@ -3983,11 +4080,7 @@ def _git_timeout() -> int:
     the runner, never a decision about the product. The shipped default does
     not move — pinned by test_the_suite_budget_does_not_move_the_product_default.
     """
-    try:
-        val = int(os.environ.get("SUPERTOOL_GIT_TIMEOUT", ""))
-    except (TypeError, ValueError):
-        return _GIT_TIMEOUT_DEFAULT
-    return val if val > 0 else _GIT_TIMEOUT_DEFAULT
+    return _env_int("SUPERTOOL_GIT_TIMEOUT", _GIT_TIMEOUT_DEFAULT, minimum=1)
 
 
 def _branch_reading() -> Tuple[str, str]:
@@ -5189,11 +5282,7 @@ def _lint_timeout() -> int:
     A slow runner (Windows antivirus scanning a freshly written temp file is
     the usual suspect) needs room without a code change.
     """
-    try:
-        val = int(os.environ.get("SUPERTOOL_LINT_TIMEOUT", ""))
-    except (TypeError, ValueError):
-        return _LINT_TIMEOUT_DEFAULT
-    return val if val > 0 else _LINT_TIMEOUT_DEFAULT
+    return _env_int("SUPERTOOL_LINT_TIMEOUT", _LINT_TIMEOUT_DEFAULT, minimum=1)
 
 
 def _lint_declined(tool: str, reason: str) -> str:
@@ -13859,7 +13948,10 @@ def _at_file_to_parts(op: str, payload: Any) -> Tuple[List[str], bool]:
 
 import threading as _threading
 _DISPATCH_STATE = _threading.local()
-_DISPATCH_MAX_DEPTH = int(os.environ.get("SUPERTOOL_DISPATCH_MAX_DEPTH", "32"))
+# Parsed at module scope, so a bad value here used to raise during *import* and
+# take down every op in the tool, most of which have nothing to do with dispatch
+# depth. The widest blast radius of the #654 class, for the smallest knob.
+_DISPATCH_MAX_DEPTH = _env_int("SUPERTOOL_DISPATCH_MAX_DEPTH", 32, minimum=1)
 
 
 def dispatch(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = None) -> str:
@@ -15058,7 +15150,8 @@ class MCPClient:
                 raise MCPServerError(
                     "MCP daemon requires socket.AF_UNIX — not available on this platform"
                 )
-            budget = float(os.environ.get("SUPERTOOL_MCP_CONNECT_TIMEOUT", self._CONNECT_TIMEOUT_SECONDS))
+            budget = _env_float("SUPERTOOL_MCP_CONNECT_TIMEOUT",
+                                float(self._CONNECT_TIMEOUT_SECONDS), minimum=0.0)
             # Explicit socket_path (tests, externally managed daemons) → no one
             # else will spawn it. Single-shot connect, fail fast on miss.
             # Polling the same dead path burns the full 60s budget for nothing.

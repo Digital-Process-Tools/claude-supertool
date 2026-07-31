@@ -197,6 +197,50 @@ Compact is disabled when using `grep=` filter or `offset` (editing needs exact l
 
 Each rule appends a non-blocking `[advice]` line after a mutating op when it matches. Gates: `hooks_into` (ops, default all mutating), `match` (path glob), `when` (`new-file`|`existing-file`|`always`), `contains` (regex over the content the op *added*), and `resolve`/`resolveFromValidator` (a subprocess emitting a would-be target). Full field reference and the resolve contract in [validators.md → advice](validators.md#advice--config-driven-post-op-hints).
 
+## Numeric environment knobs, and what happens when one is wrong
+
+Every `SUPERTOOL_*` knob that takes a number — `SUPERTOOL_MAX_COMMITS`,
+`SUPERTOOL_DEFAULT_LIMIT`, `SUPERTOOL_PARALLEL`, `SUPERTOOL_LINT_TIMEOUT`, the
+`SUPERTOOL_<OP>_<KEY>` overrides, and the rest — is read through one helper with
+one contract. Three outcomes, never two:
+
+| You set | What happens |
+| --- | --- |
+| a usable value | it is used, silently |
+| nothing | the default is used, silently |
+| something unusable | the default is used, **and a `note:` line says so** |
+
+An unusable value is announced on **stdout**, naming the variable, the value it
+saw, and the number actually in force:
+
+```
+$ SUPERTOOL_MAX_COMMITS=x ./supertool 'git-trail:dispatch:supertool.py'
+note: SUPERTOOL_MAX_COMMITS='x' is not a whole number - ignoring it and using 20.
+## Timeline (20 commits) [CAPPED: newest 20 by count, more exist — …]
+```
+
+This used to be an uncaught `ValueError` and a Python traceback
+([#654](https://github.com/Digital-Process-Tools/claude-supertool/issues/654)).
+The traceback is gone, but the run is **not** made quiet in exchange: a knob
+that was set and then ignored without a word is worse than a crash, because a
+cap you believe is in force and isn't will not announce itself later either.
+
+**Out of range is refused, not clamped.** `SUPERTOOL_MAX_COMMITS=-5` does not
+mean "none" and does not quietly become `1`. It is treated exactly like `x` —
+reported, and the documented default is used instead. Rounding a negative up to
+the nearest legal value would invent an intention you never expressed, and do it
+silently, which is the same failure in a different shape:
+
+```
+note: SUPERTOOL_ENRICH_WORKERS='0' is below the minimum of 1 - ignoring it and using 8.
+```
+
+If you want the minimum, set the minimum.
+
+**The note goes to stdout on purpose.** A preset that warns on stderr and then
+succeeds has that warning discarded before it reaches you — supertool returns a
+successful subprocess's stdout and only appends its stderr on a non-zero exit.
+
 ## Parallel execution
 
 Read-only ops in a batch can run concurrently. Output order is preserved (matches input order, not completion order).
@@ -210,6 +254,8 @@ Enable in `.supertool.json`:
 `parallel: N` runs up to N ops concurrently via a thread pool. `0` (default) = sequential. Boolean `true` is accepted as `4` for back-compat.
 
 Override via env: `SUPERTOOL_PARALLEL=4 ./supertool 'read:a' 'grep:x:b/' 'glob:c/**'`. Env wins over JSON. Set `0` to force off for one call.
+
+A value that is neither a number nor `true`/`false` — or a negative one — leaves parallelism off *and says so*, rather than looking identical to never having set it. See [Numeric environment knobs](#numeric-environment-knobs-and-what-happens-when-one-is-wrong).
 
 **Safe ops** (parallelized): `read`, `grep`, `glob`, `ls`, `head`, `tail`, `wc`, `stat`, `map`, `tree`, `around`, `around_line`, `between`, `diff`, `blame`, `version`.
 
