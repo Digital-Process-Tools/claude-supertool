@@ -65,7 +65,7 @@
   "builtin-ops": {
     "read": {
       "syntax": "read:PATH[:OFFSET:LIMIT|:START-END|:full]",
-      "description": "Read file (300 lines, 20KB cap). Set php_abstract:1 to return tree-sitter symbol maps for PHP files larger than max_bytes \u2014 saves tokens on big classes. Use :full to force raw. Threshold override: SUPERTOOL_READ_ABSTRACT_THRESHOLD_BYTES=N",
+      "description": "Read file (300 lines, 20KB cap). Set php_abstract:1 to return tree-sitter symbol maps for PHP files larger than max_bytes \u2014 saves tokens on big classes. Use :full to force raw. Threshold override: SUPERTOOL_READ_ABSTRACT_THRESHOLD_BYTES=N Inline grep= filter contains ':'? Use read:@payload.toml or read:@- (fields: path, offset, limit, grep, full).",
       "example": "read:src/app/Module.py:full",
       "max_lines": 300,
       "max_bytes": 20000,
@@ -78,7 +78,7 @@
     },
     "grep": {
       "syntax": "grep:PATTERN:PATH[:LIMIT[:CONTEXT]][:no-auto-read]",
-      "description": "Search (10 results def). CONTEXT=N lines around match. Lines capped at max_line_chars (500). :no-auto-read suppresses single-file auto-read",
+      "description": "Search (10 results def). CONTEXT=N lines around match. Lines capped at max_line_chars (500). :no-auto-read suppresses single-file auto-read Pattern contains ':'? The colon CLI can't tell where it ends — use grep:@payload.toml or grep:@- (fields: pattern, path, limit, context, count, no_auto_read).",
       "example": "grep:class:src/app/:20",
       "max_results": 10,
       "max_line_chars": 500,
@@ -96,13 +96,13 @@
     },
     "around": {
       "syntax": "around:PATTERN:PATH[:N]",
-      "description": "First match + N lines ctx (def 10). 1-shot grep+read. Output capped ~16KB (max_bytes) — truncates at line boundary",
+      "description": "First match + N lines ctx (def 10). 1-shot grep+read. Output capped ~16KB (max_bytes) — truncates at line boundary Pattern contains ':'? Use around:@payload.toml or around:@- (fields: pattern, path, n).",
       "example": "around:def main:src/app/Module.py:15",
       "max_bytes": 16000
     },
     "grep_around": {
       "syntax": "grep_around:PATTERN:PATH[:N[:LIMIT]]",
-      "description": "Every match + N ctx lines (def 3, limit 10). Bulk usage scan. Output capped ~16KB (max_bytes) — truncates at line boundary",
+      "description": "Every match + N ctx lines (def 3, limit 10). Bulk usage scan. Output capped ~16KB (max_bytes) — truncates at line boundary Pattern contains ':'? Use grep_around:@payload.toml or grep_around:@- (fields: pattern, path, n, limit).",
       "example": "grep_around:CommandDriveCreateFile:src/:5",
       "max_bytes": 16000
     },
@@ -154,7 +154,7 @@
     },
     "between": {
       "syntax": "between:SYMBOL:PATH | between:re:START:END:PATH",
-      "description": "Chunk of file. Symbol mode (tree-sitter, multi-lang; source-shaped names OK: 'async function foo') or re:START:END pattern mode",
+      "description": "Chunk of file. Symbol mode (tree-sitter, multi-lang; source-shaped names OK: 'async function foo') or re:START:END pattern mode SYMBOL/START/END contains ':'? Use between:@payload.toml or between:@- (fields: symbol | start+end, path).",
       "example": "between:op_dispatch:src/app/Module.py"
     },
     "version": {

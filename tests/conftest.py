@@ -509,6 +509,7 @@ RESET_EXEMPT_GLOBALS = (
     "_AT_FILE_REGISTRY",
     "_AROUND_DIR_SKIP",
     "_AT_FILE_BUILTIN_DEFAULTS",
+    "_READ_OP_AT_FIELDS",
     "_BUILTIN_OPS",
     "_BUILTIN_SYNTAX_VALIDATORS",
     # Constant op-name tables, same lifetime as _BUILTIN_OPS (#614).

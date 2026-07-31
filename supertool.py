@@ -3714,6 +3714,52 @@ def _parse_around_args(parts: List[str]) -> tuple:
     return (pattern, path, n)
 
 
+def _looks_like_path(tok: str) -> bool:
+    """Could *tok* plausibly be a path the caller typed?
+
+    Only used to decide whether a not-found path is more likely a typo or the
+    tail of a `:`-split pattern. Whitespace, quotes, pipes and regex punctuation
+    are what a spilled pattern carries; a path the caller meant has none.
+    """
+    if not tok or tok != tok.strip():
+        return False
+    return not any(c in tok for c in " \t\"'()|<>*?")
+
+
+def _colon_split_hint(op: str, leading: str, path: str,
+                      keys: Tuple[str, ...] = ("pattern",)) -> str:
+    """Error text for a read op whose PATH does not exist and probably should.
+
+    A read op that mis-tokenizes must never read as an absence in the world.
+    grep/around/between already fail loudly on a missing path rather than
+    returning a bare zero — this makes the failure NAME the cause and carry
+    the escape, so the next caller does not re-derive it from scratch (#625).
+
+    Returns "" when the missing path is an ordinary typo (no ':' in the
+    leading argument and the path token still looks like a path) — crying
+    wolf on every wrong path would make the advice worthless.
+    """
+    if not path or path == "." or os.path.exists(path):
+        return ""
+    if ":" not in leading and _looks_like_path(path):
+        return ""
+    original = f"{leading}:{path}"
+    q = chr(39) * 3
+    fields = "\n".join(f"    {k} = {q}<{k}, colons and all>{q}" for k in keys)
+    return (
+        f"ERROR: path not found: {path!r} (cwd: {os.getcwd()})\n"
+        f"  Read as {'+'.join(keys)}={leading!r} + path={path!r}"
+        f" — i.e. {original!r} split on ':'.\n"
+        f"  If your {keys[0]} contains ':', that split is the likely cause. "
+        f"The colon CLI cannot tell where the {keys[0]} ends; a payload can:\n"
+        f"    ./supertool '{op}:@-' <<'EOF'\n"
+        f"{fields}\n"
+        f"    path = \"<path>\"\n"
+        f"    EOF\n"
+        f"  (or {op}:@file.toml — same shape the mutating ops use.)\n"
+    )
+
+
 def op_replace(old: str, new: str, path: str = ".", dry: bool = False) -> str:
     """Find and replace text across files. Supports dry-run preview.
 
@@ -13212,6 +13258,107 @@ def _fields_from_syntax(syntax: str) -> List[Tuple[str, bool, bool]]:
     return specs
 
 
+# Read ops that accept `op:@file` / `op:@-`. Deliberately NOT routed through
+# _AT_FILE_BUILTIN_DEFAULTS: that registry rebuilds a positional parts list and
+# hands it back to the colon parsers, which would re-split the very pattern the
+# payload exists to protect. These are dispatched straight to the op (#625).
+_READ_OP_AT_FIELDS: Dict[str, Tuple[str, ...]] = {
+    "grep":        ("pattern", "path", "limit", "context", "count", "no_auto_read"),
+    "around":      ("pattern", "path", "n"),
+    "grep_around": ("pattern", "path", "n", "limit"),
+    "between":     ("symbol", "start", "end", "path"),
+    "read":        ("path", "offset", "limit", "grep", "full"),
+}
+
+
+def _payload_int(p: Dict[str, Any], key: str, default: int) -> int:
+    value = p.get(key)
+    if value is None or value == "":
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"field '{key}' must be an integer, got {value!r}")
+
+
+def _payload_bool(p: Dict[str, Any], key: str) -> bool:
+    value = p.get(key, False)
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _read_op_from_payload(op: str, payload: Any, no_exclude: bool = False) -> str:
+    """Run a read op from an @file/@- payload — the colon-free route (#625).
+
+    The things worth grepping for contain ':' by nature: PHP `Class::CONST`,
+    log prefixes, assertion messages, timestamps, and alternations whose last
+    branch ends in one. The colon CLI has to guess where the pattern stops; a
+    payload never has to. Same @file/@- shape the mutating ops already use, so
+    it is one rule applied consistently rather than two to remember.
+    """
+    if isinstance(payload, list) or (
+        isinstance(payload, dict) and isinstance(payload.get("ops"), list)
+    ):
+        return (f"ERROR: this payload is an ops array — use 'batch:@file' "
+                f"instead of '{op}:@file'\n")
+    if not isinstance(payload, dict):
+        return (f"ERROR: @payload for op '{op}' must be a JSON object / TOML "
+                f"table, got {type(payload).__name__}\n")
+    p = {str(k).lower(): v for k, v in payload.items()}
+    allowed = _READ_OP_AT_FIELDS[op]
+    unknown = sorted(k for k in p if k not in allowed)
+    if unknown:
+        return (f"ERROR: unknown field(s) {', '.join(unknown)} in {op}:@payload "
+                f"— accepted: {', '.join(allowed)}\n")
+    try:
+        if op in ("grep", "grep_around", "around"):
+            pattern = str(p.get("pattern", "") or "")
+            if not pattern:
+                return (f"ERROR: @payload for op '{op}' missing required "
+                        f"field 'pattern'\n")
+            path = str(p.get("path") or ".")
+            if op == "grep":
+                return op_grep(
+                    pattern, path,
+                    _payload_int(p, "limit",
+                                 _get_op_int("grep", "max_results", MAX_GREP_RESULTS)),
+                    _payload_int(p, "context", 0),
+                    _payload_bool(p, "count"),
+                    no_exclude=no_exclude,
+                    no_auto_read=_payload_bool(p, "no_auto_read"),
+                )
+            if op == "grep_around":
+                return op_grep(pattern, path, _payload_int(p, "limit", 10),
+                               _payload_int(p, "n", 3), False,
+                               no_exclude=no_exclude)
+            return op_around(pattern, path, _payload_int(p, "n", 10))
+        if op == "between":
+            path = str(p.get("path", "") or "")
+            symbol = str(p.get("symbol", "") or "")
+            start = str(p.get("start", "") or "")
+            end = str(p.get("end", "") or "")
+            if symbol and (start or end):
+                return ("ERROR: between:@payload takes EITHER 'symbol' (symbol "
+                        "mode) OR 'start' + 'end' (pattern mode), not both\n")
+            if symbol:
+                return op_between_symbol(symbol, path)
+            if start and end:
+                return op_between_pattern(start, end, path)
+            return ("ERROR: @payload for op 'between' needs 'symbol' (symbol "
+                    "mode) or 'start' + 'end' (pattern mode)\n")
+        path = str(p.get("path", "") or "")
+        if not path:
+            return "ERROR: @payload for op 'read' missing required field 'path'\n"
+        offset = _payload_int(p, "offset", 0)
+        limit = _payload_int(p, "limit", 0)
+        body = op_read(path, offset, limit, str(p.get("grep", "") or ""),
+                       _payload_bool(p, "full"))
+        return body + _read_range_note(path, offset, limit, body)
+    except ValueError as exc:
+        return f"ERROR: {exc}\n"
+
+
 _AT_FILE_BUILTIN_DEFAULTS: Dict[str, List[Tuple[str, bool, bool]]] = {
     "edit":          [("old", False, False), ("new", False, False), ("path", False, False)],
     "replace":       [("old", False, False), ("new", False, False), ("path", False, False)],
@@ -13478,6 +13625,33 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
             parts = _split_arg(arg)
         op = parts[0] if parts else ""
 
+    # Read-op @payload route — 'grep:@file' / 'around:@-' etc. (#625).
+    #
+    # Gated on the reference actually resolving ('@-', or an existing file)
+    # rather than on the leading '@' alone: `grep:@Override:src/` is a real and
+    # common search, and must keep meaning what it always meant. A pattern that
+    # merely starts with '@' therefore falls through untouched — only a genuine
+    # payload reference is intercepted.
+    if (
+        pre_parsed is None
+        and len(parts) >= 2
+        and parts[1].startswith("@")
+        and op in _READ_OP_AT_FIELDS
+        and (parts[1] == "@-" or os.path.isfile(parts[1][1:]))
+    ):
+        if len(parts) > 2:
+            return header + (
+                f"ERROR: {op}:@... takes the @reference as the only argument "
+                f"(e.g. {op}:@payload.toml or {op}:@-). Put fields in the "
+                f"payload, not on the colon CLI.\n"
+            )
+        try:
+            _read_payload = _load_at_file(parts[1])
+        except ValueError as _e:
+            return header + f"ERROR: {_e}\n"
+        return header + _read_op_from_payload(op, _read_payload,
+                                              no_exclude=no_exclude)
+
     # @file route — 'op:@path' or 'op:@-' (stdin).
     # Load JSON, rebuild parts list, then fall through to the normal handlers.
     # Applies to mutating ops that have ':::' fields in their syntax string.
@@ -13610,6 +13784,9 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
         elif op == "grep":
             pattern, path, limit, context, count_only, no_auto_read = \
                 _parse_grep_args(parts)
+            _hint = _colon_split_hint("grep", pattern, path)
+            if _hint:
+                return header + _hint
             body = op_grep(pattern, path, limit, context, count_only,
                            no_exclude=no_exclude, no_auto_read=no_auto_read)
         elif op == "grep_around":
@@ -13649,6 +13826,9 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
             body = op_gc(mode, kind)
         elif op == "around":
             pattern, path, n = _parse_around_args(parts)
+            _hint = _colon_split_hint("around", pattern, path)
+            if _hint:
+                return header + _hint
             body = op_around(pattern, path, n)
         elif op == "map":
             path = parts[1] if len(parts) > 1 else "."
@@ -13678,6 +13858,16 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                     start_pat = parts[2]
                     end_pat = parts[3]
                     path = ":".join(parts[4:])
+                    # between:re rejoins RIGHTWARD, so a ':' in START or END
+                    # steals from the path rather than from the pattern — the
+                    # opposite of grep/around, and the reason it needs its own
+                    # hint (#625).
+                    _hint = _colon_split_hint(
+                        "between", f"{start_pat}:{end_pat}", path,
+                        keys=("start", "end"),
+                    )
+                    if _hint:
+                        return header + _hint
                     body = op_between_pattern(start_pat, end_pat, path)
                 else:
                     body = ("ERROR: between:re: requires START:END:PATH "
@@ -13687,6 +13877,10 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                 # Join middle parts on ':' so PHP Foo::bar style names work.
                 symbol = ":".join(parts[1:-1])
                 path = parts[-1]
+                _hint = _colon_split_hint("between", symbol, path,
+                                          keys=("symbol",))
+                if _hint:
+                    return header + _hint
                 body = op_between_symbol(symbol, path)
             else:
                 body = ("ERROR: between requires SYMBOL:PATH or "

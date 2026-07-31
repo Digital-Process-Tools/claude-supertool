@@ -20,9 +20,51 @@ Most ops take arguments via `:` — `read:PATH:OFFSET:LIMIT`, `grep:PATTERN:PATH
 
 `read` also accepts an explicit line range, `read:PATH:START-END`, inclusive on both ends. Prefer it whenever you know the lines you want: `:OFFSET:LIMIT` reads like `start:end` but is not, and the overshoot is silent — `read:file.py:352:372` returns line 353 onward for 372 lines, not lines 352 to 372.
 
+### When the *pattern* contains a colon
+
+`:::` separates the fields of a mutating op. It does not help a read op, whose problem is the opposite: `grep:PATTERN:PATH:LIMIT` has to work out where PATTERN stops, and PATTERN is exactly the argument most likely to contain a `:` — PHP `Class::CONST`, log prefixes (`ERROR: …`), assertion messages, timestamps, alternations whose last branch ends in one.
+
+The parsers do try. `grep` and `around` peel the trailing integers, take the **last** token as the path, and rejoin everything before it — so the common shape works today and keeps working:
+
+```bash
+./supertool 'grep:Element: <:traces.txt:8:0'      # pattern 'Element: <'
+./supertool 'grep:passed|failed|Error:log.txt:15' # pattern 'passed|failed|Error'
+```
+
+Where it cannot work is when there is nothing on the right to anchor against — omit the path and the pattern's own tail is taken for one:
+
+```bash
+./supertool 'grep:A::CONST'     # path 'CONST' -> ERROR, naming the split
+```
+
+`between` is worse: `between:re:START:END:PATH` rejoins **rightward**, so a `:` in START or END steals from the path instead.
+
+None of these guess silently — a mis-tokenized read op fails with `path not found` and, when the split is the likely cause, prints how it read your argument and how to escape it. **There is no backslash escape.** `grep:Element\: <:…` appears to work only because the backslash survives into the regex, where `\:` and `:` mean the same thing; it breaks the moment the literal fallback kicks in. Use the payload route instead.
+
 ## `@file` route — long or structured payloads
 
 Mutating ops (`edit`, `replace`, `replace_lines`, `paste`, `append`, `vim`) accept a payload file instead of inline args. Pass the path with an `@` prefix; use `@-` for stdin.
+
+Read ops (`grep`, `around`, `grep_around`, `between`, `read`) accept the same route, for the reason above — a payload never has to guess where the pattern ends:
+
+```bash
+./supertool 'grep:@-' <<'EOF'
+pattern = '''Element: <'''
+path = "traces.txt"
+limit = 8
+context = 0
+EOF
+```
+
+| Op | Payload fields |
+| --- | --- |
+| `grep` | `pattern` (required), `path`, `limit`, `context`, `count`, `no_auto_read` |
+| `grep_around` | `pattern` (required), `path`, `n`, `limit` |
+| `around` | `pattern` (required), `path`, `n` |
+| `between` | `symbol` **or** `start` + `end`, plus `path` |
+| `read` | `path` (required), `offset`, `limit`, `grep`, `full` |
+
+A read-op argument beginning with `@` is only treated as a payload when it actually resolves — `@-`, or a file that exists. `grep:@Override:src/` still searches for `@Override`.
 
 ```bash
 ./supertool 'edit:@.max/my-edit.json'

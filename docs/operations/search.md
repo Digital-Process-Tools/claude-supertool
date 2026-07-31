@@ -101,6 +101,17 @@ Find all usages of a function across a codebase, with 2 lines of context:
 ./supertool 'grep:handle_request:src/:20:2'
 ```
 
+Search for a pattern containing `:` when there is no path to anchor the right-hand end (`grep:A::CONST` would read `CONST` as the path):
+
+```bash
+./supertool 'grep:@-' <<'EOF'
+pattern = '''A::CONST'''
+path = "src/"
+EOF
+```
+
+The colon CLI handles `grep:PATTERN:PATH:LIMIT` on its own — it peels the trailing ints and takes the last token as the path — so `grep:Element: <:traces.txt:8:0` needs no payload. There is no backslash escape; see [input forms](../input-forms.md).
+
 Count which files reference a symbol most:
 
 ```bash
