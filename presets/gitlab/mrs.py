@@ -242,6 +242,10 @@ def _enrich(
         m["_approved"] = appr.get("approved")
         m["_approved_by"] = appr.get("approved_by") or []
         m["_failed_jobs"] = []
+        # The marker every downstream three-state read depends on. Without it,
+        # "no pipeline status" is indistinguishable from "reached, and green",
+        # and the difference is the whole of #652.
+        m["_enriched"] = True
 
     failing = [m for m in targets if m.get("_pipeline") == "failed" and m.get("_pipeline_id")]
     if failing:
@@ -472,8 +476,52 @@ def _render_table(mrs: list[dict], watched: set[str], show_pipe: bool) -> str:
     return "\n".join(_row(m, watched, show_pipe) for m in sorted(mrs, key=_sort_key))
 
 
-def _footer(mrs: list[dict], watched: set[str], show_pipe: bool) -> str:
-    """Actionable summary: failing, unapproved, and the watch command."""
+ENRICH_CAP_KNOB = "SUPERTOOL_ENRICH_CAP"
+
+
+def _unchecked_count(mrs: list[dict]) -> int:
+    """How many MRs `_enrich` never reached — pipeline unknown, not "green".
+
+    Read off the MRs themselves rather than recomputed as `total - cap`. A
+    re-derivation would go stale the moment `_enrich` changes which rows it
+    reaches, and it would go stale silently, which is the failure being fixed.
+    """
+    return sum(1 for m in mrs if not m.get("_enriched"))
+
+
+def _cap_notice(unchecked: int, total: int, cap: int, failed_only: bool) -> str:
+    """Disclose the MRs whose pipeline was never fetched. '' when there are none.
+
+    The empty return is load-bearing: on a fully-checked board the absence of a
+    marker is how the op claims it saw everything, so nothing extra may print.
+
+    The `failed` wording is stronger than the default board's on purpose. On
+    the default board an unchecked MR is still listed, rendered `? none`, so
+    the reader can see it. `failed` *drops* it — `_is_failing` reads `_pipeline`
+    and an unenriched MR has none — so the omission leaves no trace in the
+    table at all, and the notice is the only thing standing between a
+    truncated board and a reader concluding nothing is failing (#652).
+    """
+    if unchecked <= 0:
+        return ""
+    if failed_only:
+        return (
+            f"({unchecked} of {total} MRs not checked — enrichment cap {cap}; "
+            f"a failing MR among them cannot appear on this board. "
+            f"Raise {ENRICH_CAP_KNOB}=N)"
+        )
+    return (
+        f"(pipeline enrichment capped at {cap} MRs — "
+        f"{unchecked} of {total} MRs not checked; raise {ENRICH_CAP_KNOB}=N)"
+    )
+
+
+def _footer(mrs: list[dict], watched: set[str], show_pipe: bool, unchecked: int = 0) -> str:
+    """Actionable summary: failing, unapproved, and the watch command.
+
+    `unchecked` sits next to the failing count because it qualifies it: "2
+    failing" is a floor, not a total, whenever anything went unchecked.
+    """
     if not show_pipe:
         return ""
     failing = [str(m.get("iid")) for m in mrs if _is_failing(m)]
@@ -482,6 +530,8 @@ def _footer(mrs: list[dict], watched: set[str], show_pipe: bool) -> str:
     parts = [f"{len(mrs)} MR(s)"]
     if failing:
         parts.append(f"{len(failing)} failing")
+    if unchecked:
+        parts.append(f"{unchecked} unchecked")
     if unapproved:
         parts.append(f"{len(unapproved)} unapproved")
     if unwatched_fail:
@@ -525,25 +575,37 @@ def main() -> int:
     if not isinstance(mrs, list):
         mrs = []
 
+    total = len(mrs)
     if show_pipe:
         _enrich(mrs, cfg["enrich_cap"], cfg["enrich_workers"])
+    # Both counted BEFORE the filter. The filter rebinds `mrs` to a list that
+    # is nearly always far shorter than the cap, so a notice computed after it
+    # could not fire in `failed` mode — the one mode where the truncation is
+    # invisible in the table itself (#652).
+    unchecked = _unchecked_count(mrs) if show_pipe else 0
+    notice = _cap_notice(unchecked, total, cfg["enrich_cap"], failed_only)
     if failed_only:
         mrs = [m for m in mrs if _is_failing(m)]
 
-    # Bare iid list — for piping into the watch supervisor.
+    # Bare iid list — for piping into the watch supervisor. The disclosure goes
+    # to stderr: stdout has to stay a parseable id feed, but this is the channel
+    # that starts background pollers, so an MR dropped here is one nobody looks
+    # at again. Losing it on both streams is the one option not available.
     if iids_only:
+        if notice:
+            print(notice, file=sys.stderr)
         for m in mrs:
             iid = m.get("iid")
             if iid is not None:
                 print(iid)
         return 0
 
-    if show_pipe and len(mrs) > cfg["enrich_cap"]:
-        print(f"(pipeline enrichment capped at {cfg['enrich_cap']} MRs)")
+    if notice:
+        print(notice)
 
     watched = _watched_iids()
     print(_render_table(mrs, watched, show_pipe))
-    footer = _footer(mrs, watched, show_pipe)
+    footer = _footer(mrs, watched, show_pipe, unchecked)
     if footer:
         print(f"\n{footer}")
     return 0
