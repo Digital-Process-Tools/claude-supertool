@@ -243,6 +243,16 @@ A name that is not a shipped preset op still reads as a plain `unknown operation
 ./supertool 'cwd:~/projects/myapp' 'gl-mr:33323:status' 'gl-pipeline:33323'
 ```
 
+`cwd:` moves where *repo* paths resolve. It does not move where a `@payload` reference resolves — that stays the directory the call was made from, because the payload is an argument you typed, not repo content ([#672](https://github.com/Digital-Process-Tools/claude-supertool/issues/672)). So the natural shape works without absolute paths:
+
+```bash
+./supertool 'cwd:~/projects/myapp' 'batch:@.max/edits.toml'
+#            └─ `path =` inside the payload resolves here
+#                                        └─ the payload file itself resolves next to the call
+```
+
+There is no second lookup: a payload absent from the invocation directory is an error naming both roots, even if a file of that name exists under the `cwd:` target. Pass an absolute `@path` to read one from inside the target repo.
+
 `ops` carries the same disclosure. From a directory with no config it leads with one line naming the presets that are not loaded and their op count, so the built-in listing is not mistaken for the tool's whole capability; from inside a configured project the same line trails the listing, since a preset that project chose not to enable is not a surprise.
 
 ### Legacy `check:` syntax

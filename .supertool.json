@@ -128,7 +128,7 @@
     },
     "cwd": {
       "syntax": "cwd:PATH",
-      "description": "Set working dir for the whole call. MUST be first op. chdir before dispatch, then stripped. Avoids `cd ... &&` prefix (hook-safe, no stale-cwd poisoning). ~/$VAR expanded",
+      "description": "Set working dir for the whole call. MUST be first op. chdir before dispatch, then stripped. Avoids `cd ... &&` prefix (hook-safe, no stale-cwd poisoning). ~/$VAR expanded. Moves repo paths only: a relative @payload ref still resolves against the dir the call was made from, `path=` inside the payload against PATH",
       "example": "cwd:~/repo",
       "hint": true
     },
