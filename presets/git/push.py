@@ -70,22 +70,46 @@ from _git_common import (  # noqa: E402
     use_utf8_stdout,
 )
 
-_KNOWN_FLAGS = ("force-with-lease", "no-verify")
+_KNOWN_FLAGS = ("force-with-lease", "no-verify", "watch")
 
 # Budget for a single `git push` invocation. Must stay strictly below the
 # git-push op timeout in presets/git.json so this script — not supertool's
 # outer cap — owns the timeout and can verify the remote before reporting.
 _PUSH_TIMEOUT = 300
 
+# Budget for each git call on the non-fast-forward recovery path (fetch,
+# rebase). Named rather than inline because these are the calls whose expiry
+# can land on a worktree git has already paused (#640) — see
+# _report_recovery_timeout.
+_RECOVER_TIMEOUT = 120
 
-def _parse_flags(argv: list[str]) -> set[str]:
-    """Collect known flags from colon-split argv tokens; ignore the rest."""
-    flags: set[str] = set()
+
+def _split_flags(argv: list[str]) -> tuple[set[str], list[str]]:
+    """(recognised flags, unrecognised tokens) from colon-split argv.
+
+    The second half is the point (#647). The parser used to be `if t in
+    _KNOWN_FLAGS: flags.add(t)` with no else, so `git-push:no-verifyy` ran an
+    ordinary *verified* push while the caller believed the hook was skipped —
+    and `:watch`, advertised in presets/git.json but absent from _KNOWN_FLAGS,
+    rotted undetected for the same reason. A request the op cannot honour is
+    reported, never discarded.
+    """
+    known: set[str] = set()
+    unknown: list[str] = []
     for tok in argv:
         t = tok.strip().lower()
+        if not t:
+            continue
         if t in _KNOWN_FLAGS:
-            flags.add(t)
-    return flags
+            known.add(t)
+        else:
+            unknown.append(tok.strip())
+    return known, unknown
+
+
+def _parse_flags(argv: list[str]) -> set[str]:
+    """Recognised flags only — see _split_flags for what happens to the rest."""
+    return _split_flags(argv)[0]
 
 
 def _upstream_ref() -> str:
@@ -252,16 +276,46 @@ def _watch_target(mr: Optional[dict]) -> Optional[tuple[str, str]]:
     return source, str(mr["iid"])
 
 
-def _spawn_watch(source: str, iid: str) -> bool:
-    """Fire-and-forget a background watch poller via the repo-root supertool."""
-    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    st = os.path.join(root, "supertool")
+def _repo_root() -> str:
+    """Directory holding the `supertool` wrapper and `supertool.py`."""
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def _watch_argv(source: str, iid: str) -> tuple[list[str], str]:
+    """(argv, how) for the background watcher; ([], reason) when none works.
+
+    The `./supertool` wrapper is a gitignored symlink, so in a git worktree —
+    the exact environment agents work in — it is absent and the Popen used to
+    fail into a swallowed OSError (#642). `python3 supertool.py` is the
+    working invocation there, so it is the fallback rather than a dead end.
+    """
+    root = _repo_root()
+    arg = f"watch:{source}:{iid}"
+    wrapper = os.path.join(root, "supertool")
+    if os.path.isfile(wrapper) and os.access(wrapper, os.X_OK):
+        return [wrapper, arg], wrapper
+    entry = os.path.join(root, "supertool.py")
+    if os.path.isfile(entry):
+        return [sys.executable, entry, arg], f"{sys.executable} {entry}"
+    return [], f"no runnable supertool at {root} (neither ./supertool nor supertool.py)"
+
+
+def _spawn_watch(source: str, iid: str) -> tuple[bool, str]:
+    """Fire-and-forget a background watch poller. (started?, how-or-why-not).
+
+    The reason is returned rather than dropped: `:watch` is an explicit
+    request, and the caller who is told nothing walks away believing a
+    watcher exists.
+    """
+    argv, how = _watch_argv(source, iid)
+    if not argv:
+        return False, how
     try:
-        subprocess.Popen([st, f"watch:{source}:{iid}"],
+        subprocess.Popen(argv, cwd=_repo_root(),
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        return True
-    except OSError:
-        return False
+    except OSError as exc:
+        return False, f"{how} ({exc})"
+    return True, how
 
 
 def _uncommitted_leftovers() -> list[str]:
@@ -280,20 +334,74 @@ def _discarded_by_force(old_remote_sha: str) -> list[str]:
     return [ln for ln in r.stdout.splitlines() if ln.strip()]
 
 
-def _post_push_advisories(mr: Optional[dict], flags: set[str]) -> None:
-    """Surface the next-decision signals: mergeability, stale base, leftovers, watch."""
+def _stale_base_advisory(target: str, remote: str) -> None:
+    """Commits the review target has that we lack — or a stated skip (#642).
+
+    The remote is the branch's *actual* upstream, never a hardcoded `origin`.
+    On a fork/upstream layout `origin/<target>` does not resolve, the count
+    exits non-zero, and the warning simply did not print: a genuinely stale
+    base rendered exactly like a fresh one, and the caller pushed onto an
+    out-of-date base believing the op had checked.
+
+    Three states, not two (docs/validators.md). A ref we cannot resolve is an
+    absence of information and says so, so that silence from this function
+    means one thing only: the check ran and the base is fresh.
+    """
+    ref = f"{remote}/{target}"
+    cnt = _git(["rev-list", "--count", f"HEAD..{ref}"])
+    if cnt.returncode != 0 or not cnt.stdout.strip().isdigit():
+        print(f"⚠ stale-base check skipped — {ref} does not resolve locally, "
+              f"so how far behind the target you are is UNKNOWN "
+              f"(enable it: git fetch {remote} {target})")
+        return
+    behind = int(cnt.stdout.strip())
+    if behind:
+        print(f"⚠ {behind} commit(s) behind {ref} — "
+              "consider rebasing (stale base under review)")
+
+
+def _watch_advisory(mr: Optional[dict], flags: set[str]) -> None:
+    """The watch line — which of four states we are in, never silence (#642/#647).
+
+    `:watch` used to be unreachable (dropped by the flag parser) and, once
+    reached, could fail to spawn in a worktree with the OSError swallowed. So
+    a requested watcher that does not exist is now named as such, together
+    with the command that does work.
+    """
+    wt = _watch_target(mr)
+    if "watch" not in flags:
+        if wt:
+            print(f"Watch pipeline: ./supertool 'watch:{wt[0]}:{wt[1]}'")
+        return
+    if not wt:
+        print("⚠ :watch requested, but there is no open MR/PR for this branch "
+              "yet — nothing to watch. Open one, then: "
+              "./supertool 'watch:gitlab-mr:<iid>'")
+        return
+    source, iid = wt
+    started, how = _spawn_watch(source, iid)
+    if started:
+        print(f"Watching → notifies on pipeline finish/fail "
+              f"(unwatch: ./supertool 'unwatch:{source}:{iid}')")
+        return
+    print(f"⚠ :watch requested but the watcher could not be started — {how}")
+    print(f"Run it yourself: ./supertool 'watch:{source}:{iid}'")
+
+
+def _post_push_advisories(mr: Optional[dict], flags: set[str],
+                          remote: str) -> None:
+    """Surface the next-decision signals: mergeability, stale base, leftovers, watch.
+
+    `remote` is the branch's upstream remote — required, not defaulted, so a
+    new call site cannot quietly reintroduce the hardcoded `origin` of #642.
+    """
     if mr and mr.get("merge_status") in ("cannot_be_merged", "conflict", "broken_status"):
         print(f"⚠ MR conflicts with {mr.get('target', 'target')} — "
               "won't merge until rebased/resolved")
 
     target = mr.get("target") if mr else ""
     if target and target != "?":
-        cnt = _git(["rev-list", "--count", f"HEAD..origin/{target}"])
-        if cnt.returncode == 0 and cnt.stdout.strip().isdigit():
-            behind = int(cnt.stdout.strip())
-            if behind:
-                print(f"⚠ {behind} commit(s) behind origin/{target} — "
-                      "consider rebasing (stale base under review)")
+        _stale_base_advisory(target, remote)
 
     # Count, not a listing (#623): on a tree full of generated junk the list
     # crowded the push verdict off the end of the output. The "did I forget to
@@ -303,14 +411,7 @@ def _post_push_advisories(mr: Optional[dict], flags: set[str]) -> None:
         print(f"⚠ {len(leftovers)} change(s) NOT in this push (uncommitted) — "
               "list them: ./supertool 'git-status:full'")
 
-    wt = _watch_target(mr)
-    if wt:
-        source, iid = wt
-        if "watch" in flags and _spawn_watch(source, iid):
-            print(f"Watching → notifies on pipeline finish/fail "
-                  f"(unwatch: ./supertool 'unwatch:{source}:{iid}')")
-        else:
-            print(f"Watch pipeline: ./supertool 'watch:{source}:{iid}'")
+    _watch_advisory(mr, flags)
 
 
 def _success_receipt(branch: str, remote_before: str, upstream: str,
@@ -349,8 +450,8 @@ def _success_receipt(branch: str, remote_before: str, upstream: str,
     mr_line = _open_mr_line(mr)
     if mr_line:
         print(mr_line)
-    _post_push_advisories(mr, flags)
     remote_name, remote_ref = _split_upstream(upstream, branch)
+    _post_push_advisories(mr, flags, remote_name)
     _push_verdict(moved, branch, remote_name, remote_ref, remote_after, ncommits)
 
 
@@ -371,7 +472,7 @@ def _report_hook_pushed(head_before: str, head_after: str,
     mr_line = _open_mr_line(mr)
     if mr_line:
         print(mr_line)
-    _post_push_advisories(mr, flags)
+    _post_push_advisories(mr, flags, remote)
     _result(f"PUSHED  {branch} -> {remote}/{ref} @ {remote_sha[:7]}  "
             "(verified - pre-push hook pushed it, remote matches HEAD)")
 
@@ -402,7 +503,7 @@ def _report_push_timeout(branch: str, head_before: str,
         mr_line = _open_mr_line(mr)
         if mr_line:
             print(mr_line)
-        _post_push_advisories(mr, flags)
+        _post_push_advisories(mr, flags, remote)
         _result(f"PUSHED  {branch} -> {remote}/{ref} @ {live[:7]}  "
                 "(verified - push timed out locally, remote matches HEAD)")
         return 0
@@ -414,6 +515,79 @@ def _report_push_timeout(branch: str, head_before: str,
     _result(f"NOT PUSHED - UNVERIFIED  {branch} -> {remote}/{ref} - push timed "
             f"out and the remote does not match local HEAD "
             f"(remote {live[:7] or 'unknown'}, HEAD {head_after[:7] or 'unknown'})")
+    return 1
+
+
+def _rebase_state() -> str:
+    """'in-progress' | 'not-started' | 'unknown' — three states, not two (#640).
+
+    Read off git's own directory layout: `rebase-merge` (the merge/interactive
+    backend) or `rebase-apply` (am backend) exists for exactly as long as a
+    rebase is paused. Resolved through `rev-parse --git-path` rather than
+    assembled by hand so it is correct in a worktree, where `.git` is a file
+    and the real gitdir lives elsewhere.
+
+    When git cannot be asked — it timed out, or the command failed — the state
+    is *unknown* and says so. Defaulting to 'not-started' would tell a caller
+    whose worktree git has just paused that nothing happened, which is the
+    single worst thing this receipt could claim.
+    """
+    paths: list[str] = []
+    for name in ("rebase-merge", "rebase-apply"):
+        try:
+            r = _git(["rev-parse", "--git-path", name], timeout=10)
+        except subprocess.TimeoutExpired:
+            return "unknown"
+        if r.returncode != 0 or not r.stdout.strip():
+            return "unknown"
+        paths.append(r.stdout.strip())
+    return "in-progress" if any(os.path.exists(p) for p in paths) else "not-started"
+
+
+def _report_recovery_timeout(stage: str, branch: str, target: str) -> int:
+    """Verdict for a fetch/rebase that outlasted its budget (#640).
+
+    The exception this replaces was raised out of main() as a bare traceback,
+    and it can fire *after* `git rebase` has left the tree paused: the caller
+    got a stack trace and a half-rebased worktree with no statement of either.
+    A traceback is not a verdict — it says the tool broke, not what state the
+    repository is now in.
+
+    This is a receipt, not a suppression. The op still fails (returns 1); what
+    changes is that the failure names the worktree state and the way out of it.
+    """
+    stage_up = stage.upper()
+    state = _rebase_state()
+    print(f"Status: {stage_up} TIMED OUT ✗ — exceeded its {_RECOVER_TIMEOUT}s "
+          f"budget while recovering the non-fast-forward push")
+    if state == "in-progress":
+        print("Your worktree has a REBASE IN PROGRESS — git paused it and the "
+              "clock ran out before it finished. Nothing was pushed.")
+        print("Inspect: ./supertool 'git-conflicts'")
+        print("Then decide:")
+        print("  • finish it — resolve if needed, then `git rebase --continue`")
+        print("  • undo it — `git rebase --abort` (back to before the push, "
+              "nothing changed)")
+        _result(f"NOT PUSHED - {stage_up} TIMED OUT ({_RECOVER_TIMEOUT}s)  "
+                f"{branch} -> {target} - REBASE IN PROGRESS: finish with "
+                "`git rebase --continue` or undo with `git rebase --abort`")
+    elif state == "not-started":
+        print("No rebase is in progress — the working tree is unchanged and "
+              "your branch is where it was.")
+        print(f"Retry. If this repo genuinely needs more than "
+              f"{_RECOVER_TIMEOUT}s to {stage}, the budget is _RECOVER_TIMEOUT "
+              "in presets/git/push.py — raising ops.git-push.timeout alone "
+              "will not move it.")
+        _result(f"NOT PUSHED - {stage_up} TIMED OUT ({_RECOVER_TIMEOUT}s)  "
+                f"{branch} -> {target} - no rebase started, working tree "
+                "unchanged")
+    else:
+        print("Could NOT determine whether a rebase is in progress — git did "
+              "not answer. Your worktree may or may not be paused mid-rebase.")
+        print("Check before anything else: `git status`")
+        _result(f"NOT PUSHED - {stage_up} TIMED OUT ({_RECOVER_TIMEOUT}s)  "
+                f"{branch} -> {target} - rebase state UNKNOWN, run "
+                "`git status` before retrying")
     return 1
 
 
@@ -449,7 +623,11 @@ def _recover_by_rebase(branch: str, remote_before: str, upstream: str,
     """
     target = f"{remote_name}/{remote_ref}"
     print(f"Remote moved ahead — fetching to rebase onto {target}…")
-    fetched = _git(["fetch", remote_name, remote_ref], timeout=120)
+    try:
+        fetched = _git(["fetch", remote_name, remote_ref],
+                       timeout=_RECOVER_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return _report_recovery_timeout("fetch", branch, target)
     if fetched.returncode != 0:
         combined = (fetched.stdout or "") + "\n" + (fetched.stderr or "")
         print(f"Status: PUSH REJECTED ✗ — fetch of {target} failed, cannot rebase")
@@ -476,7 +654,10 @@ def _recover_by_rebase(branch: str, remote_before: str, upstream: str,
         if behind > _INCOMING_CAP:
             print(f"  … +{behind - _INCOMING_CAP} more")
 
-    rebase = _git(["rebase", rebase_target], timeout=120)
+    try:
+        rebase = _git(["rebase", rebase_target], timeout=_RECOVER_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return _report_recovery_timeout("rebase", branch, target)
     if rebase.returncode != 0:
         # Distinguish a real merge conflict (unmerged paths → leave paused for
         # git-conflicts) from a rebase that never started (bad ref, etc.).
@@ -553,7 +734,22 @@ def main() -> int:
                 "branch first)")
         return 1
 
-    flags = _parse_flags(sys.argv[1:])
+    flags, unknown = _split_flags(sys.argv[1:])
+    if unknown:
+        # Refused, not warned-and-pushed (#647). Nothing has changed yet at
+        # this point, so the cost of stopping is a retype; the cost of
+        # continuing is a push whose behaviour is not the one that was asked
+        # for — a dropped `:no-verifyy` runs the very hook it meant to skip.
+        listed = ", ".join(unknown)
+        print(f"ERROR: unknown flag(s): {listed}")
+        print(f"Accepted: {', '.join(_KNOWN_FLAGS)}")
+        print("Nothing was pushed. A flag this op cannot honour is refused "
+              "rather than silently dropped — re-run without it, or fix the "
+              "spelling.")
+        _result(f"NOT PUSHED - no push attempted (unknown flag(s): {listed}; "
+                f"accepted: {', '.join(_KNOWN_FLAGS)})")
+        return 2
+
     upstream = _upstream_ref()
     has_upstream = bool(upstream)
     remote_before = _remote_sha(upstream) if has_upstream else ""
@@ -602,8 +798,16 @@ def main() -> int:
         # push — unless the caller already chose to force (their decision).
         if (_is_non_fast_forward(result.stdout or "", remote_ref)
                 and "force-with-lease" not in flags):
-            return _recover_by_rebase(branch, remote_before, upstream,
-                                      remote_name, remote_ref, flags)
+            try:
+                return _recover_by_rebase(branch, remote_before, upstream,
+                                          remote_name, remote_ref, flags)
+            except subprocess.TimeoutExpired:
+                # Backstop for the recovery path's smaller git calls (#640).
+                # The fetch and the rebase report their own stage; anything
+                # else that expires here still owes the caller a worktree
+                # state rather than a traceback.
+                return _report_recovery_timeout(
+                    "rebase recovery", branch, f"{remote_name}/{remote_ref}")
 
         print("Status: PUSH REJECTED ✗")
         err = _first_error_line(combined)
