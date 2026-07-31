@@ -163,6 +163,47 @@ _NFF_SUMMARIES = ("non-fast-forward", "fetch first",
                   "tip of your current branch is behind")
 
 
+def _ref_line(push_stdout: str, ref: str) -> tuple[str, str]:
+    """(flag, summary) from git's own per-ref status line for `ref`.
+
+    ('', '') means git never reported a line for that ref — an absence of
+    information, never a "no". Every reader of the porcelain channel goes
+    through here so they all share one grammar and one #641 discipline.
+    """
+    want = ref.rsplit("/", 1)[-1]
+    for line in push_stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) != 3:
+            continue
+        if parts[1].split(":", 1)[-1].rsplit("/", 1)[-1] != want:
+            continue
+        return parts[0], parts[2].strip()
+    return "", ""
+
+
+def _forced_update_old_sha(push_stdout: str, ref: str) -> str:
+    """The SHA git says it overwrote, when it reports a forced update of `ref`.
+
+    The porcelain summary for a forced update is `<old>...<new> (forced
+    update)`; a plain fast-forward is `<old>..<new>` with two dots and no
+    suffix, and a new branch is `[new branch]`, so the three cannot be
+    confused. This is git's own answer about the remote, on the same
+    machine-readable channel #641 established — not free text, and not our
+    local remote-tracking ref.
+
+    It exists because the op's usual source for the pre-push SHA, `@{upstream}`,
+    needs `branch.<name>.remote`/`.merge`, while `--force-with-lease` leases
+    against the remote-tracking *ref*. Remove only the former — `git branch
+    --unset-upstream`, a worktree checked out without tracking — and the push
+    still overwrites the remote while the op has nothing to compare against
+    (#655).
+    """
+    flag, summary = _ref_line(push_stdout, ref)
+    if flag != "+" or "..." not in summary:
+        return ""
+    return summary.split("...", 1)[0].strip()
+
+
 def _ref_status(push_stdout: str, ref: str) -> str:
     """git's own rejection summary for `ref`, or '' if it never reported one.
 
@@ -188,15 +229,8 @@ def _ref_status(push_stdout: str, ref: str) -> str:
     Returning '' therefore means "git did not say" — never "git said no". The
     caller must not treat it as a divergence; see main().
     """
-    want = ref.rsplit("/", 1)[-1]
-    for line in push_stdout.splitlines():
-        parts = line.split("\t")
-        if len(parts) != 3 or parts[0] != "!":
-            continue
-        if parts[1].split(":", 1)[-1].rsplit("/", 1)[-1] != want:
-            continue
-        return parts[2].strip()
-    return ""
+    flag, summary = _ref_line(push_stdout, ref)
+    return summary if flag == "!" else ""
 
 
 def _is_non_fast_forward(push_stdout: str, ref: str) -> bool:
@@ -226,7 +260,8 @@ def _result(verdict: str) -> None:
 
 
 def _push_verdict(moved: bool, branch: str, remote: str, ref: str,
-                  tracking_sha: str, ncommits: str) -> None:
+                  tracking_sha: str, ncommits: str,
+                  force_note: str = "") -> None:
     """Verdict for a push git reported as successful.
 
     The sha is read back off the real remote (ls-remote), not just the local
@@ -247,10 +282,11 @@ def _push_verdict(moved: bool, branch: str, remote: str, ref: str,
         note = "unverified - remote did not answer ls-remote"
     if moved:
         extra = f", {ncommits} commit(s)" if ncommits else ""
-        _result(f"PUSHED  {branch} -> {target} @ {sha}  ({note}{extra})")
+        _result(f"PUSHED  {branch} -> {target} @ {sha}  ({note}{extra})"
+                f"{force_note}")
     else:
         _result(f"NOT PUSHED - already up to date  {branch} -> {target} "
-                f"@ {sha}  ({note})")
+                f"@ {sha}  ({note}){force_note}")
 
 
 def _open_mr_line(mr: Optional[dict]) -> str:
@@ -324,14 +360,92 @@ def _uncommitted_leftovers() -> list[str]:
     return [ln for ln in r.stdout.splitlines() if ln.strip()]
 
 
-def _discarded_by_force(old_remote_sha: str) -> list[str]:
-    """Commits that were on the old remote tip but are now off the branch."""
+def _discarded_by_force(old_remote_sha: str) -> tuple[Optional[list[str]], str]:
+    """Commits that were on the old remote tip but are now off the branch.
+
+    Three states, not two (#655; docs/validators.md "Declining instead of
+    guessing"): `([], "")` the check ran and found nothing, `([...], "")` it ran
+    and found these, `(None, why)` it could not run.
+
+    All three used to be `[]`. Two of them are absences of information and the
+    third is a clean bill of health, so a `git log` that failed rendered
+    byte-for-byte like a force-push that discarded nothing — on the one
+    operation in this op that destroys work irrecoverably from the remote's
+    point of view, and the one check here whose subject is commits that are
+    very often somebody else's. The failure direction was the harmful one: the
+    receipt reassured exactly where it should have warned.
+    """
     if not old_remote_sha:
-        return []
+        return None, "no pre-push SHA recorded for the remote branch"
     r = _git(["log", "--format=%h %an: %s", old_remote_sha, "--not", "HEAD"])
     if r.returncode != 0:
-        return []
-    return [ln for ln in r.stdout.splitlines() if ln.strip()]
+        why = _first_error_line((r.stdout or "") + "\n" + (r.stderr or ""))
+        return None, (f"`git log {old_remote_sha} --not HEAD` exited "
+                      f"{r.returncode}" + (f" — {why}" if why else ""))
+    return [ln for ln in r.stdout.splitlines() if ln.strip()], ""
+
+
+def _report_discard_unknown(target: str, why: str, look: str) -> str:
+    """The loud third state: the force-push landed, its cost is unmeasured.
+
+    How loud is a judgment call, and this is the one it settled on. It does not
+    block, abort or undo the push — the caller asked to force and that decision
+    stands — and it does not default to a frightening message when the check
+    simply had nothing to find, which is the silent path. What it refuses to do
+    is let "could not check" render as "checked, clean" on a destructive
+    operation. The named command is the point: the caller can settle it
+    themselves in one step rather than walking away on a receipt that never
+    looked.
+    """
+    print(f"⚠ DISCARD CHECK DID NOT RUN — {why}")
+    print(f"  {target} was force-updated. Whether that destroyed commits that "
+          "were on the remote — possibly someone else's — is UNKNOWN here: "
+          "the check could not run, and --force-with-lease does not answer it "
+          "either (a current lease still discards commits you never saw).")
+    print(f"  Look before you walk away:  {look}")
+    return (f" - DISCARD CHECK DID NOT RUN: whether this force-push destroyed "
+            f"commits on {target} is UNKNOWN")
+
+
+def _force_aftermath(old_remote_sha: str, push_stdout: str,
+                     remote: str, ref: str) -> str:
+    """What the force-push cost the remote. Returns the verdict suffix.
+
+    Reached only from a `:force-with-lease` push git reported as successful, so
+    an ordinary push never sees a word of this — a warning that fires on every
+    push is one nobody reads, and this one has to be read.
+
+    Silence from here is a positive claim in both of its cases, and both are
+    decided from evidence rather than assumed: either the check ran and found
+    nothing, or git's own per-ref line says this push did not force-update the
+    remote at all (a fast-forward, a new branch), so nothing could have been
+    discarded.
+    """
+    target = f"{remote}/{ref}"
+    old = old_remote_sha or _forced_update_old_sha(push_stdout, ref)
+    if not old:
+        flag, _ = _ref_line(push_stdout, ref)
+        if flag and flag != "+":
+            return ""
+        why = (f"git reported a forced update of {target} without the SHA it "
+               "overwrote" if flag else
+               f"no pre-push SHA for {target} (no upstream configured) and git "
+               "reported no per-ref status line for it")
+        return _report_discard_unknown(target, why, f"git reflog show {target}")
+
+    commits, why = _discarded_by_force(old)
+    if commits is None:
+        return _report_discard_unknown(target, why,
+                                       f"git log {old} --not HEAD")
+    if not commits:
+        return ""
+    print(f"Force discarded {len(commits)} remote commit(s) — now off the branch:")
+    for line in commits[:_INCOMING_CAP]:
+        print(f"  {line}")
+    if len(commits) > _INCOMING_CAP:
+        print(f"  … +{len(commits) - _INCOMING_CAP} more")
+    return (f" - FORCE-DISCARDED {len(commits)} remote commit(s) "
+            f"(recover: git reflog show {target})")
 
 
 def _stale_base_advisory(target: str, remote: str) -> None:
@@ -415,8 +529,14 @@ def _post_push_advisories(mr: Optional[dict], flags: set[str],
 
 
 def _success_receipt(branch: str, remote_before: str, upstream: str,
-                     flags: set[str]) -> None:
-    """Shared 'what landed' tail — remote diff, ahead/behind, MR line, advisories."""
+                     flags: set[str], force_note: str = "") -> None:
+    """Shared 'what landed' tail — remote diff, ahead/behind, MR line, advisories.
+
+    `force_note` rides all the way to the `[result]` line on purpose. The force
+    aftermath is printed several lines above it, and a receipt is read from the
+    bottom (#623) — a caller reading only the verdict would otherwise walk away
+    from a destructive push believing it was clean (#655).
+    """
     upstream = upstream or _upstream_ref()
     remote_after = _remote_sha(upstream)
     moved, ncommits = True, ""
@@ -452,7 +572,8 @@ def _success_receipt(branch: str, remote_before: str, upstream: str,
         print(mr_line)
     remote_name, remote_ref = _split_upstream(upstream, branch)
     _post_push_advisories(mr, flags, remote_name)
-    _push_verdict(moved, branch, remote_name, remote_ref, remote_after, ncommits)
+    _push_verdict(moved, branch, remote_name, remote_ref, remote_after,
+                  ncommits, force_note)
 
 
 def _report_hook_pushed(head_before: str, head_after: str,
@@ -847,15 +968,16 @@ def main() -> int:
         return result.returncode
 
     print("Status: pushed ✓")
-    if "force-with-lease" in flags and remote_before:
-        discarded = _discarded_by_force(remote_before)
-        if discarded:
-            print(f"Force discarded {len(discarded)} remote commit(s) — now off the branch:")
-            for d in discarded[:_INCOMING_CAP]:
-                print(f"  {d}")
-            if len(discarded) > _INCOMING_CAP:
-                print(f"  … +{len(discarded) - _INCOMING_CAP} more")
-    _success_receipt(branch, remote_before, upstream, flags)
+    force_note = ""
+    if "force-with-lease" in flags:
+        # No `and remote_before` guard any more: that guard was itself a silent
+        # third state. `remote_before` is empty whenever `@{upstream}` does not
+        # resolve, which does not stop `--force-with-lease` from overwriting
+        # the remote — so the one push that most needed the check was the one
+        # that skipped it without a word (#655).
+        force_note = _force_aftermath(remote_before, result.stdout or "",
+                                      remote_name, remote_ref)
+    _success_receipt(branch, remote_before, upstream, flags, force_note)
     return 0
 
 

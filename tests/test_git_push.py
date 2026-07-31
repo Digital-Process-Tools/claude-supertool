@@ -467,12 +467,26 @@ def test_uncommitted_leftovers_lists_porcelain() -> None:
 def test_discarded_by_force_lists_commits() -> None:
     with mock.patch.object(push, "_git",
                            return_value=_proc("abc cj.adams: x\ndef theminh: y\n")):
-        assert push._discarded_by_force("old123") == [
-            "abc cj.adams: x", "def theminh: y"]
+        assert push._discarded_by_force("old123") == (
+            ["abc cj.adams: x", "def theminh: y"], "")
 
 
-def test_discarded_by_force_empty_sha() -> None:
-    assert push._discarded_by_force("") == []
+def test_discarded_by_force_empty_sha_declines() -> None:
+    """#655: an absent pre-push SHA is 'could not check', not 'nothing lost'."""
+    commits, why = push._discarded_by_force("")
+    assert commits is None
+    assert why
+
+
+def test_discarded_by_force_failed_log_declines() -> None:
+    """The path #655 is about. The same contract is exercised against a real
+    repository — and a real broken `git log` — in
+    tests/test_git_push_force_discard_655.py; this one only pins the shape."""
+    with mock.patch.object(push, "_git",
+                           return_value=_proc("", 128, "fatal: bad object x")):
+        commits, why = push._discarded_by_force("old123")
+    assert commits is None, "a failed check reported as a clean one"
+    assert "bad object x" in why
 
 
 def _advisory_git(rev_list_count: str = "", porcelain: str = ""):
