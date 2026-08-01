@@ -307,6 +307,8 @@ Three things about that table are load-bearing:
 
 The `.ts` inventory in `tests/test_ci_non_python_coverage_557.py` is asserted against `git ls-files`, so a new TypeScript file fails the suite until somebody classifies it as executed, uncovered or a fixture. That is the durable half of "accept the gap explicitly": a gap nobody can add to silently.
 
+Both jobs also carry a `timeout-minutes` — 30 for `pytest`, 10 for `notifiers` — and the channel integration step runs under a `--timeout=30` per-test budget. See §"Never leave a CI job without a wall-clock budget" for the sizing and for why the two numbers differ.
+
 ---
 
 ## Running tests
@@ -599,6 +601,60 @@ timeout. Emit the decline instead (`code: "adapter"`, message naming the
 budget); `test_every_adapter_that_grants_itself_a_budget_survives_blowing_it`
 enforces it across `validators/`.
 
+### Never leave a CI job without a wall-clock budget
+
+Every job in `.github/workflows/tests.yml` declares `timeout-minutes`.
+`tests/test_ci_job_timeouts_722.py` fails the suite if one does not, so a
+fifteenth job cannot arrive without a budget.
+
+**Why it is a rule and not a nicety.** GitHub's default is **six hours**, and
+until it expires a hung leg renders as `pending` — byte-identical to a leg that
+is about to finish. `notifiers (bun + TypeScript) (ubuntu-latest)` sat at 26
+minutes on [#715] against 24-37s on every recent master run, its macOS twin
+green on the same commit, on a PR that touched no TypeScript ([#722]). The board
+read `13 passed, 0 failed, 1 pending`, the states still summed to the leg count
+so [#454]'s arithmetic check passed, and the merge gate quietly became a six-hour
+block. There is also nothing to read while it hangs: `gh api .../jobs/<id>/logs`
+answers `BlobNotFound` for an in-progress job, and a job cancelled by hand never
+writes a log at all. A job killed by `timeout-minutes` **fails, with its log
+written** — that is the half of this worth having.
+
+**Size per job class, from that class's own measurements.** Copying one number
+across classes is [#702] in CI config. The current two came from 70 job
+observations across five master runs:
+
+| job | observed | budget |
+| --- | --- | --- |
+| `pytest` (windows 483-574s, macos 128-197s, ubuntu 93-125s) | worst 574s | 30 min — 3.1x |
+| `notifiers` | worst 37s | 10 min — 16x |
+
+The multiple on `notifiers` is large because its base is 37s and three of its
+steps are package-manager installs (npm, pip, bun), whose tail latency against a
+degraded registry is minutes. A tight multiple there would fire on a bad network
+day, and a guard that reds a genuine green teaches everyone to press re-run —
+worse than the disease. The floors and ceilings are asserted at both ends: a
+budget tightened into a benchmark fails the suite, and so does one loosened far
+enough to be the six-hour default with extra steps.
+
+**Bound the step too, but with the inner tool rather than a second wall clock.**
+The step that hung now runs pytest under `--timeout=30` (pytest-timeout, which
+both jobs had installed and neither used). A job ceiling can only report "this
+leg did not finish"; the per-test budget names the test and dumps the stack of
+the thread stuck in it, which is the artefact [#554] needs. A step-level
+`timeout-minutes` was the alternative and buys nothing the other two do not: it
+is a third number to keep ordered and it names no test. The ordering is the
+[#702] rule one layer out — the job ceiling must exceed the per-test budget, or
+the inner guard can never fire — and it is asserted by reading both numbers out
+of the workflow rather than tabulating them beside it.
+
+**The `pytest` job deliberately gets no per-test budget.** ~4000 tests under
+`-n auto`, `slow` included in CI, and its windows legs are the ones this repo has
+three times measured blowing a hand-written number under contention ([#702],
+[#658], [#650]). There is no per-test timing from a windows leg to size one
+from, and guessing it is precisely those three incidents one layer up. The job
+ceiling bounds it; the finer guard waits for evidence.
+
+[#454]: https://github.com/Digital-Process-Tools/claude-supertool/issues/454
 [#485]: https://github.com/Digital-Process-Tools/claude-supertool/issues/485
 [#553]: https://github.com/Digital-Process-Tools/claude-supertool/issues/553
 [#621]: https://github.com/Digital-Process-Tools/claude-supertool/issues/621
@@ -607,6 +663,9 @@ enforces it across `validators/`.
 [#658]: https://github.com/Digital-Process-Tools/claude-supertool/issues/658
 [#689]: https://github.com/Digital-Process-Tools/claude-supertool/pull/689
 [#702]: https://github.com/Digital-Process-Tools/claude-supertool/issues/702
+[#554]: https://github.com/Digital-Process-Tools/claude-supertool/issues/554
+[#715]: https://github.com/Digital-Process-Tools/claude-supertool/pull/715
+[#722]: https://github.com/Digital-Process-Tools/claude-supertool/issues/722
 
 ## Submitting upstream
 
