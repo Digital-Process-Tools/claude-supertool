@@ -7,6 +7,8 @@ import os
 import re
 import subprocess
 import sys
+from collections import Counter
+from typing import Sequence
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -44,6 +46,157 @@ def _gh(args: list[str], timeout: int = 10) -> subprocess.CompletedProcess[str]:
         ["gh"] + args,
         capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace",
     )
+
+
+_RUN_ID_IN_URL = re.compile(r"/actions/runs/([0-9]+)(?:[/?#]|$)")
+
+# How many distinct Actions runs one PR may be reconciled against before the
+# op stops paying for it. The cost is one `gh api` call per run and `:status`
+# is a hot path; a PR fanning out past this is outside what a single
+# merge-gate call should spend, so the tally declines (UNVERIFIED) rather than
+# either skipping the check or quietly blocking on N calls.
+MAX_RECONCILED_RUNS = 4
+
+
+def _rollup_run_ids(rollup: object) -> list[str]:
+    """Distinct Actions run ids named by a rollup, in first-seen order.
+
+    The id rides on `detailsUrl`, already fetched — the same field
+    `_checks.github_job_id()` reads for the job id (#619), so this costs no
+    extra request. Entries pointing at anything other than an Actions run
+    (external CI, legacy commit statuses) contribute no id, which is what
+    keeps them out of the reconciliation entirely.
+    """
+    if not isinstance(rollup, list):
+        return []
+    seen: list[str] = []
+    for c in rollup:
+        if not isinstance(c, dict):
+            continue
+        m = _RUN_ID_IN_URL.search(str(c.get("detailsUrl") or ""))
+        if m and m.group(1) not in seen:
+            seen.append(m.group(1))
+    return seen
+
+
+def _actions_leg_names(rollup: object) -> list[str]:
+    """Names of the rollup entries that belong to an Actions run."""
+    if not isinstance(rollup, list):
+        return []
+    out: list[str] = []
+    for c in rollup:
+        if not isinstance(c, dict):
+            continue
+        if _RUN_ID_IN_URL.search(str(c.get("detailsUrl") or "")):
+            out.append(str(c.get("name") or c.get("context") or "?"))
+    return out
+
+
+def _missing_names(declared: Sequence[str], found: Sequence[str]) -> list[str]:
+    """Declared leg names with the found ones removed, duplicates respected."""
+    remaining = Counter(found)
+    out: list[str] = []
+    for name in declared:
+        if remaining.get(name, 0):
+            remaining[name] -= 1
+        else:
+            out.append(name)
+    return out
+
+
+def _declared_legs(url: str, run_ids: Sequence[str]) -> tuple[int | None, list[str]]:
+    """`(total, names)` the Actions runs declare — `(None, [])` if unestablished.
+
+    The second, independent count #724 needs, and the choice of source is the
+    whole fix. Measured live on PR #728, cancelling a run and re-running the
+    failed job three times over:
+
+        11:28:20  rollup=0   latest=0   all_distinct=14
+        11:28:24  rollup=11  latest=11  all_distinct=14
+        11:28:32  rollup=14  latest=14  all_distinct=14
+
+    `statusCheckRollup` empties and refills over ~12s while GitHub re-creates
+    the check runs — that is the transient behind #724, and reading it mid-way
+    is what produced `9 total` against a fourteen-leg matrix. **The
+    latest-attempt job count dips with it**, in lockstep, so
+    `jobs?filter=latest` is not a floor at all: it agrees with the short
+    rollup and the tally stays silent, which was this function's first
+    version.
+
+    What holds is `filter=all`. A previous attempt's job rows are history and
+    cannot be withdrawn, so the set of *distinct job names across every
+    attempt* only ever grows. That is what is counted here.
+
+    Two ways this can read low, both in the safe direction — a floor that is
+    too low under-claims a shortfall, it never invents one:
+
+    * a run whose matrix genuinely gained legs between attempts (the workflow
+      file is fixed per commit, so this needs a matrix computed at runtime);
+    * more than 100 job records across all attempts — eight-plus attempts on a
+      matrix this wide — where the first page truncates the name set.
+
+    `None` on every failure, never a fallback number: a guessed floor can sit
+    under the real one, which is this defect wearing a fix's clothes.
+    """
+    if not run_ids:
+        return (None, [])
+    if len(run_ids) > MAX_RECONCILED_RUNS:
+        return (None, [])
+    m = re.match(r"https?://github\.com/([^/]+)/([^/]+)/pull/\d+", url or "")
+    if not m:
+        return (None, [])
+    owner, repo = m.group(1), m.group(2)
+    total = 0
+    names: list[str] = []
+    for rid in run_ids:
+        try:
+            r = _gh([
+                "api",
+                f"repos/{owner}/{repo}/actions/runs/{rid}"
+                "/jobs?filter=all&per_page=100",
+            ])
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            return (None, [])
+        if r.returncode != 0:
+            return (None, [])
+        try:
+            data = json.loads(r.stdout)
+        except json.JSONDecodeError:
+            return (None, [])
+        jobs = data.get("jobs") if isinstance(data, dict) else None
+        if not isinstance(jobs, list):
+            return (None, [])
+        # Distinct names, not `total_count`: under `filter=all` the count is
+        # every job record of every attempt (42 across three attempts of a
+        # fourteen-leg matrix), which is not a leg count. First-seen order is
+        # kept so the names read like the matrix rather than like a set.
+        seen: list[str] = []
+        for j in jobs:
+            if not isinstance(j, dict):
+                continue
+            name = str(j.get("name") or "?")
+            if name not in seen:
+                seen.append(name)
+        total += len(seen)
+        names.extend(seen)
+    return (total, names)
+
+
+def _reconcile_checks(d: dict) -> tuple[str, list[str]]:
+    """`(marker, lines)` disclosing legs the rollup never carried (#724).
+
+    Silent, and free, when the rollup names no Actions run: there is then no
+    declared count anywhere to be short of, and printing UNVERIFIED over a
+    purely external check suite would be noise where nothing is missing.
+    """
+    rollup = d.get("statusCheckRollup")
+    run_ids = _rollup_run_ids(rollup)
+    if not run_ids:
+        return ("", [])
+    declared, declared_names = _declared_legs(d.get("url") or "", run_ids)
+    found_names = _actions_leg_names(rollup)
+    missing = _missing_names(declared_names, found_names)
+    return _checks.shortfall(len(found_names), declared, missing)
 
 
 def _local_branch_check(source: str) -> str:
@@ -263,11 +416,17 @@ def main() -> int:
         conflicts = "yes" if mergeable == "CONFLICTING" else "no"
         print(f"#{iid} | state: {state} | mergeable: {mergeable} | conflicts: {conflicts}")
         print(f"branch: {d.get('headRefName') or '?'} -> {d.get('baseRefName') or '?'}")
+        shortfall_lines: list[str] = []
         if check_states:
             checks_text = _checks.summarize(check_states)
+            marker, shortfall_lines = _reconcile_checks(d)
+            if marker:
+                checks_text += f" {marker}"
         else:
             checks_text, _ = _absence_lines(d, iid)
         print(f"checks: {checks_text}")
+        for line in shortfall_lines:
+            print(line)
         for line in _checks.named_disclosure(
             _checks.github_named_states(d.get("statusCheckRollup"))
         ):
@@ -355,14 +514,26 @@ def main() -> int:
     # rather than named — see _checks.absence() (#585). It buys the evidence for
     # that (one GraphQL call) only here, never when runs exist.
     check_states = _checks.github_states(d.get("statusCheckRollup"))
+    shortfall_lines: list[str] = []
     if check_states:
         checks_text = _checks.summarize(check_states)
         merge_note = "" if _checks.all_green(check_states) else (
             f" — checks {_checks.NOT_GREEN}, see Checks above"
         )
+        # A tally that does not cover every leg is not a merge signal even when
+        # every leg it *does* cover passed, so the caveat printed next to
+        # `Mergeable:` has to carry it too — that is the line a reader stops
+        # at when the answer looks green (#724).
+        marker, shortfall_lines = _reconcile_checks(d)
+        if marker:
+            checks_text += f" {marker}"
+            if not merge_note:
+                merge_note = f" — checks {marker}, see Checks above"
     else:
         checks_text, merge_note = _absence_lines(d, iid)
     print(f"Checks: {checks_text}")
+    for line in shortfall_lines:
+        print(line)
     for line in _checks.named_disclosure(
         _checks.github_named_states(d.get("statusCheckRollup"))
     ):

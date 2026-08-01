@@ -219,15 +219,23 @@ def test_slim_status_bounds_failed_names_with_plus_more(monkeypatch, capsys) -> 
 
 
 def test_slim_status_all_green_adds_no_extra_lines(monkeypatch, capsys) -> None:
-    """The terseness guarantee end to end, not just in the helper."""
+    """The terseness guarantee end to end, not just in the helper.
+
+    The leg count is stubbed as reconciled on purpose (#724). Left unstubbed,
+    the fixture's `gh` double answers the Actions jobs call with a PR payload,
+    the tally declines as UNVERIFIED, and this test measures the length of a
+    decline notice instead of the terseness it claims to pin.
+    """
     rollup = [{"name": "pytest (ubuntu, 3.9)", "conclusion": "SUCCESS",
                "status": "COMPLETED", "detailsUrl": "https://github.com/o/r/actions/runs/1/job/1"}]
     payload = _pr_payload(statusCheckRollup=rollup)
     monkeypatch.setattr(pr.subprocess, "run", lambda *a, **kw: _fake_gh_run(payload))
+    monkeypatch.setattr(pr, "_declared_legs", lambda *a, **kw: (1, ["pytest (ubuntu, 3.9)"]))
     monkeypatch.setattr(sys, "argv", ["pr.py", "617", "status"])
     pr.main()
     out = capsys.readouterr().out
     assert "failed:" not in out
+    assert "⚠" not in out
     assert len(out) < 500
 
 
