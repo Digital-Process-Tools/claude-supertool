@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))  # for _checks (#619)
 # (the branch-lookup result list), which would shadow a module import.
 from mrs import _conflict_label  # noqa: E402
 import _body  # noqa: E402  (the one body cap + disclosure — #698)
+import _untrusted  # noqa: E402  (the fence around tracker text — #694)
 import _checks  # noqa: E402  (named_disclosure/NAMED_CAP — shared with gh-pr, #619)
 
 DESCRIPTION_MAX = 2000
@@ -493,13 +494,20 @@ def _render_note(note: dict, cap: int | None = COMMENT_MAX) -> str:
     uncapped how many comments printed, never how much of each — the same
     half-working escape hatch #698 found in this file's description handling,
     caught by the check #719 asked for.
+
+    The body is fenced (#694): a note reproducing this very format string used
+    to render as a second, earlier note that the MR never held. The cut notice
+    is supertool's own, so it is appended after the fence closes rather than
+    inside it — see the same call in gh-issue.
     """
-    author = (note.get("author") or {}).get("username", "?")
+    author = _untrusted.flat((note.get("author") or {}).get("username", "?"))
     body = note.get("body") or ""
+    trunc = ""
     if cap is not None and len(body) > cap:
-        body = body[:cap] + f"\n{_body.comment_cut_notice(cap)}"
+        body = body[:cap]
+        trunc = f"\n{_body.comment_cut_notice(cap)}"
     created = (note.get("created_at") or "")[:10]
-    return f"\n**{author}** ({created}):\n{body}\n"
+    return f"\n**{author}** ({created}):\n{_untrusted.fence(body)}{trunc}\n"
 
 
 def _fmt_kb(nbytes: int) -> str:
@@ -769,15 +777,16 @@ def main() -> int:
             print(f"url: {web_url}")
         return 0
 
-    title = d.get("title", "?")
+    # One-line fields are flattened rather than fenced — see presets/_untrusted.py.
+    title = _untrusted.flat(d.get("title", "?"))
     state = d.get("state", "?")
     iid = d.get("iid", arg)
-    source = d.get("source_branch", "?")
-    target = d.get("target_branch", "?")
-    author = (d.get("author") or {}).get("username", "?")
+    source = _untrusted.flat(d.get("source_branch", "?"))
+    target = _untrusted.flat(d.get("target_branch", "?"))
+    author = _untrusted.flat((d.get("author") or {}).get("username", "?"))
     web_url = d.get("web_url", "")
-    labels = ", ".join(d.get("labels", [])) or "none"
-    milestone = (d.get("milestone") or {}).get("title", "none")
+    labels = _untrusted.flat(", ".join(d.get("labels", [])) or "none")
+    milestone = _untrusted.flat((d.get("milestone") or {}).get("title", "none"))
     merge_status = d.get("merge_status") or d.get("detailed_merge_status") or "?"
     merge_commit = d.get("merge_commit_sha") or d.get("squash_commit_sha") or ""
     draft = d.get("draft", False) or d.get("work_in_progress", False)
@@ -807,8 +816,10 @@ def main() -> int:
     description, description_withheld = _body.cut(
         description_raw, None if full else DESCRIPTION_MAX)
 
-    # Header
+    # Header. The fence convention is declared before the first thing inside a
+    # fence — the reader this protects is the one who acts on the first line.
     draft_marker = " [DRAFT]" if draft else ""
+    print(_untrusted.banner())
     print(f"# !{iid} {title}{draft_marker}")
     print(f"State: {state} | Author: {author}")
     print(f"Branch: {source} -> {target}")
@@ -1025,7 +1036,7 @@ def main() -> int:
 
     # Description
     if description:
-        print(f"\n## Description\n{description}")
+        print(f"\n## Description\n{_untrusted.fence(description)}")
         if description_withheld:
             print(f"\n{_body.cut_notice(description_withheld)}")
     else:

@@ -216,6 +216,10 @@ The cancelled row is the one that saves real time: it is the only state whose ri
 
 `gh-run` was checked in the same pass and is **not** affected: it only ever fetches run metadata, where a 404 does mean the ID is wrong.
 
+### Text from the tracker is fenced
+
+Issue and PR bodies and every comment are wrapped in `⟨remote NONCE⟩ … ⟨/remote NONCE⟩` markers, and one-line fields (titles, logins, labels) are flattened to a single line. See [Remote text is fenced](index.md#remote-text-is-fenced) for the convention, what it costs, and why the fence cannot be closed from inside ([#694](https://github.com/Digital-Process-Tools/claude-supertool/issues/694)).
+
 ## Configuration
 
 `gh-job` error pattern search is configurable via JSON:

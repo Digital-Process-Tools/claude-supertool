@@ -16,6 +16,7 @@ import urllib.parse
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import _body  # noqa: E402  (the one body cap + disclosure — #698)
+import _untrusted  # noqa: E402  (the fence around tracker text — #694)
 
 DESCRIPTION_MAX = 3000
 # Related MRs are listed, not summarised, so the list is capped. A *count* cut
@@ -162,12 +163,13 @@ def main() -> int:
         print(f"ERROR: invalid JSON from glab\n{result.stdout[:500]}")
         return 1
 
-    title = d.get("title", "?")
+    # One-line fields are flattened rather than fenced — see presets/_untrusted.py.
+    title = _untrusted.flat(d.get("title", "?"))
     state = d.get("state", "?")
-    labels = ", ".join(d.get("labels", [])) or "none"
-    milestone = (d.get("milestone") or {}).get("title", "none")
-    assignees = ", ".join(a.get("username", "?") for a in d.get("assignees", [])) or "none"
-    author = (d.get("author") or {}).get("username", "?")
+    labels = _untrusted.flat(", ".join(d.get("labels", [])) or "none")
+    milestone = _untrusted.flat((d.get("milestone") or {}).get("title", "none"))
+    assignees = _untrusted.flat(", ".join(a.get("username", "?") for a in d.get("assignees", [])) or "none")
+    author = _untrusted.flat((d.get("author") or {}).get("username", "?"))
     iid = d.get("iid", number)
     web_url = d.get("web_url", "")
     # GitLab markdown attributes are stripped *before* the cap, not after, so
@@ -179,7 +181,9 @@ def main() -> int:
     description, description_withheld = _body.cut(description, desc_max)
     project_id = d.get("project_id", "")
 
-    # Header
+    # Header. The fence convention is declared before the first thing inside a
+    # fence — the reader this protects is the one who acts on the first line.
+    print(_untrusted.banner())
     print(f"# #{iid} {title}")
     print(f"State: {state} | Author: {author}")
     print(f"Labels: {labels}")
@@ -230,7 +234,7 @@ def main() -> int:
 
     # 3. Description (markdown attributes already stripped, above the cap)
     if description:
-        print(f"\n## Description\n{description}")
+        print(f"\n## Description\n{_untrusted.fence(description)}")
         if description_withheld:
             print(f"\n{_body.cut_notice(description_withheld)}")
 
@@ -255,13 +259,19 @@ def main() -> int:
                         suffix = f", {truncated} earlier truncated — use :full to fetch all" if truncated else ""
                         print(f"\n## Comments ({len(shown_notes)} of {len(human_notes)} human shown{suffix}, {system_count} system skipped)")
                     for note in shown_notes:
-                        note_author = (note.get("author") or {}).get("username", "?")
+                        note_author = _untrusted.flat((note.get("author") or {}).get("username", "?"))
                         body = note.get("body") or ""
+                        # The truncation notice is supertool's, so it prints
+                        # outside the fence — see the same call in gh-issue.
+                        note_trunc = ""
                         if comment_max is not None and len(body) > comment_max:
-                            body = body[:comment_max] + f"\n{_body.comment_cut_notice(comment_max)}"
+                            body = body[:comment_max]
+                            note_trunc = _body.comment_cut_notice(comment_max)
                         created = (note.get("created_at") or "")[:10]
                         print(f"\n**{note_author}** ({created}):")
-                        print(body)
+                        print(_untrusted.fence(body))
+                        if note_trunc:
+                            print(note_trunc)
                         # Extract images from comments too
                         all_image_urls.extend(_extract_image_urls(note.get("body") or ""))
                 else:

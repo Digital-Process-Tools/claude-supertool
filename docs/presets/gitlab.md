@@ -305,6 +305,10 @@ Gets the full issue context and checks whether an MR already exists for the bran
 ```
 The last form feeds the [`watch`](watch.md) supervisor: pipe failing-MR ids straight into background pollers.
 
+### Text from the tracker is fenced
+
+Issue and MR descriptions and every comment are wrapped in `⟨remote NONCE⟩ … ⟨/remote NONCE⟩` markers, and one-line fields (titles, usernames, labels, branch names) are flattened to a single line. See [Remote text is fenced](index.md#remote-text-is-fenced) for the convention, what it costs, and why the fence cannot be closed from inside ([#694](https://github.com/Digital-Process-Tools/claude-supertool/issues/694)).
+
 ## Configuration
 
 `gl-mrs` enrichment is tunable (parallelism, how many MRs to enrich, page size):

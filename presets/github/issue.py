@@ -12,6 +12,7 @@ import urllib.request
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import _body  # noqa: E402  (the one body cap + disclosure — #698)
+import _untrusted  # noqa: E402  (the fence around tracker text — #694)
 
 DESCRIPTION_MAX = 3000
 COMMENT_MAX = 1000
@@ -111,12 +112,15 @@ def main() -> int:
         print(f"ERROR: invalid JSON from gh\n{result.stdout[:500]}")
         return 1
 
-    title = d.get("title", "?")
+    # One-line fields are flattened rather than fenced (#694): two marker lines
+    # around a six-word title is the noise that gets a convention abandoned,
+    # and the only thing a single line could otherwise do is become two.
+    title = _untrusted.flat(d.get("title", "?"))
     state = d.get("state", "?")
-    labels = ", ".join(l.get("name", "?") for l in d.get("labels", [])) or "none"
-    milestone = (d.get("milestone") or {}).get("title", "none")
-    assignees = ", ".join(a.get("login", "?") for a in d.get("assignees", [])) or "none"
-    author = (d.get("author") or {}).get("login", "?")
+    labels = _untrusted.flat(", ".join(l.get("name", "?") for l in d.get("labels", [])) or "none")
+    milestone = _untrusted.flat((d.get("milestone") or {}).get("title", "none"))
+    assignees = _untrusted.flat(", ".join(a.get("login", "?") for a in d.get("assignees", [])) or "none")
+    author = _untrusted.flat((d.get("author") or {}).get("login", "?"))
     iid = d.get("number", number)
     web_url = d.get("url", "")
     body = d.get("body") or ""
@@ -126,7 +130,9 @@ def main() -> int:
     # fifth forgets to have one (#698).
     body, body_withheld = _body.cut(body, desc_max)
 
-    # Header
+    # Header. The fence convention is declared before the first thing inside a
+    # fence — the reader this protects is the one who acts on the first line.
+    print(_untrusted.banner())
     print(f"# #{iid} {title}")
     print(f"State: {state} | Author: {author}")
     print(f"Labels: {labels}")
@@ -164,7 +170,7 @@ def main() -> int:
     # Description
     all_image_urls = _extract_image_urls(body)
     if body:
-        print(f"\n## Description\n{body}")
+        print(f"\n## Description\n{_untrusted.fence(body)}")
         if body_withheld:
             print(f"\n{_body.cut_notice(body_withheld)}")
 
@@ -173,13 +179,22 @@ def main() -> int:
     shown = comments if full else comments[-_body.COMMENT_TAIL:]
     print(f"\n{_body.comments_heading(len(shown), len(comments))}")
     for comment in shown:
-        c_author = (comment.get("author") or {}).get("login", "?")
+        c_author = _untrusted.flat((comment.get("author") or {}).get("login", "?"))
         c_body = comment.get("body") or ""
+        # The truncation notice is supertool's, so it is printed outside the
+        # fence. Inside it, a reader who is applying the fence correctly
+        # would have to discount it — and it is the one line here they need
+        # to be able to believe. The comment-count heading above is the tool's
+        # words for the same reason, and is printed before any fence opens.
+        c_trunc = ""
         if comment_max is not None and len(c_body) > comment_max:
-            c_body = c_body[:comment_max] + f"\n{_body.comment_cut_notice(comment_max)}"
+            c_body = c_body[:comment_max]
+            c_trunc = _body.comment_cut_notice(comment_max)
         c_created = (comment.get("createdAt") or "")[:10]
         print(f"\n**{c_author}** ({c_created}):")
-        print(c_body)
+        print(_untrusted.fence(c_body))
+        if c_trunc:
+            print(c_trunc)
         all_image_urls.extend(_extract_image_urls(comment.get("body") or ""))
 
     # Download images
