@@ -175,6 +175,30 @@ incident and the reasoning. The knob here is `GH_JOB_GREP_MAX_BYTES` (default
 limit, which this op does not have
 ([#622](https://github.com/Digital-Process-Tools/claude-supertool/issues/622)).
 
+### A missing job log is explained by the job's state, never by the ID
+
+GitHub writes a job's log **on completion**. So `404` from `repos/.../actions/jobs/<id>/logs` has four causes that call for four different next actions, and `gh-job` used to render all four as one sentence — `Check the ID. Use gh-run to list jobs first` — which is the one thing that was already right in the incident that filed [#723](https://github.com/Digital-Process-Tools/claude-supertool/issues/723): the ID had just been read out of `gh run view --json jobs`, and the *job* endpoint returned the full object for it.
+
+Verified live against this repo: a `queued` job and an `in_progress` job both return `gh: HTTP 404` with an `<Error><Code>BlobNotFound</Code>` body from the logs endpoint, byte-identical to each other — while `gh api repos/{owner}/{repo}/actions/jobs/<id>` answers in full for the same number. A job ID that genuinely does not exist 404s on **both** endpoints, with `gh: Not Found (HTTP 404)`.
+
+| Job state | What `gh-job` says |
+|---|---|
+| job endpoint also 404s | `Job #N not found — the job endpoint returned 404 for this ID too, so no such job exists in this repo. Check the ID.` |
+| `status` is not `completed` | has no log — its status is `in_progress`, **so the log is not written yet**. GitHub writes a job's log when the job completes; the ID is correct and there is nothing to fix. Retry once it finishes. |
+| `conclusion` is `cancelled` or `skipped` | has no log — the job was `cancelled` (with its `completed_at`). GitHub only writes a log for a job that ran to completion, so **no log was ever written for this one and none ever will be**. Stop waiting — the ID is correct. |
+| completed, log still gone | completed `failure` at its `completed_at`, but its log is **unavailable — expired or purged**. The ID is correct; the log is gone, not missing from your query. |
+| job endpoint did not answer | has no log (HTTP 404), and **supertool could not tell why** — the job endpoint did not answer, and the reason is quoted. Names all three remaining possibilities rather than picking one. |
+
+The cancelled row is the one that saves real time: it is the only state whose right response is to **stop looking** rather than to retry. The reporter cancelled a hung leg specifically expecting the log to be written on completion, and it never was.
+
+**The extra API call is not extra.** `gh-job` already fetches the job object before it fetches the log — it needs the name, status, conclusion and run id for the header. So the distinction costs **no additional request on any path**, including the happy one where the log exists and nobody cares about the job's status. Fetching metadata lazily *after* a 404 was the obvious-looking design and buys nothing here; the fix is to stop discarding an answer already in hand. The last row exists because that fetch can itself fail: when it does, the state is unknowable and the op declines rather than picking the likeliest of four (`docs/validators.md` §"Declining instead of guessing").
+
+**Every branch is still `ERROR:` and still exits 1.** A log that could not be read must never soften into an empty log or an ok — the direction this class of fix is most likely to be wrong in.
+
+**Empty is not absent, and now reads differently.** `gh run view --log` returning nothing for a genuinely failed job is the other lie this surface tells, so a log that was fetched successfully and *is* 0 bytes prints `## The log is empty — the fetch succeeded and returned 0 bytes`, names the job's status and conclusion, and gives the raw `gh api` command to cross-check. Previously a zero-line log fell through to the error-pattern search and printed the unmatched-failure banner over nothing at all. `:raw` already said this; the other modes did not.
+
+`gh-run` was checked in the same pass and is **not** affected: it only ever fetches run metadata, where a 404 does mean the ID is wrong.
+
 ## Configuration
 
 `gh-job` error pattern search is configurable via JSON:
