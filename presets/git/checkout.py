@@ -25,6 +25,33 @@ def _git(args: list[str], timeout: int = 10) -> subprocess.CompletedProcess[str]
     )
 
 
+def _ref_missing(ref: str) -> bool:
+    """True when this repo cannot resolve `ref` to a commit.
+
+    Every recovery path below rewrites local state — `fetch --all --prune`
+    drops remote-tracking refs, `checkout -b --track` and `checkout -B <ref>
+    FETCH_HEAD` create and move a local branch — and each used to be chosen by
+    scanning git's human error message for `pathspec` / `did not match any`.
+    That message is translated. Under `LANGUAGE=fr` git answers `le
+    specificateur de chemin 'x' ne correspond a aucun fichier connu de git`,
+    the substrings never match, and all three recoveries silently stop firing
+    for anyone not running an English git (#649) — the same channel defect
+    #641 fixed in push.py, one preset over.
+
+    `rev-parse --verify --quiet` answers the actual question on its exit code,
+    which no locale changes. It is also a strictly better question: "can this
+    repo resolve the ref" is what the recoveries need to know, where the error
+    string was only ever a proxy for it.
+
+    `-` is `@{-1}`, the previous branch. No fetch can make it resolve, so a
+    failed `checkout -` is never a case for recovery.
+    """
+    if ref == "-":
+        return False
+    return _git(["rev-parse", "--verify", "--quiet",
+                 f"{ref}^{{commit}}"]).returncode != 0
+
+
 def main() -> int:
     use_utf8_stdout()
     if len(sys.argv) < 2:
@@ -52,12 +79,16 @@ def main() -> int:
 
     stderr = ""
     s = ""
+    # Set once the explicit single-ref fetch below succeeded: from that point
+    # the remote demonstrably has the ref, so "not found" is a false report no
+    # matter what the failing checkout said (#267, #649).
+    ref_fetched = False
     result = _git(["checkout", ref])
     if result.returncode != 0:
         stderr = result.stderr.strip() or result.stdout.strip()
         s = stderr.lower()
         # Auto-fetch fallback: if ref not found locally, try once after fetch
-        if "did not match any" in s or "pathspec" in s:
+        if _ref_missing(ref):
             fetch = _git(["fetch", "--all", "--prune", "--quiet"], timeout=30)
             if fetch.returncode == 0:
                 result = _git(["checkout", ref])
@@ -73,7 +104,7 @@ def main() -> int:
         # Resolve it ourselves: if exactly one remote has
         # refs/remotes/<remote>/REF, create the tracking branch explicitly.
         # Multiple matches → error like git does.
-        if result.returncode != 0 and ("did not match" in s or "pathspec" in s):
+        if result.returncode != 0 and _ref_missing(ref):
             remotes_res = _git(["remote"])
             remotes = remotes_res.stdout.split() if remotes_res.returncode == 0 else []
             matches = [
@@ -97,9 +128,10 @@ def main() -> int:
         # refs/remotes/origin/<branch> tracking ref, so the #277 path above
         # finds no match and `git fetch --all` only moved FETCH_HEAD. Fall
         # back to an explicit single-ref fetch + checkout of FETCH_HEAD.
-        if result.returncode != 0 and ("did not match any" in s or "pathspec" in s):
+        if result.returncode != 0 and _ref_missing(ref):
             single = _git(["fetch", "origin", ref], timeout=30)
             if single.returncode == 0:
+                ref_fetched = True
                 cob = _git(["checkout", "-B", ref, "FETCH_HEAD"])
                 if cob.returncode == 0:
                     print(f"# (fetched origin {ref}, reset local branch to FETCH_HEAD)")
@@ -126,10 +158,14 @@ def main() -> int:
             if path:
                 print(f"Switch with: cd {path}")
                 print(f"Or remove it: git worktree remove {path}")
-        elif "did not match any" in s or "pathspec" in s:
-            print(f"ERROR: ref {ref!r} not found even after fetch.")
         elif "would be overwritten" in s or "local changes" in s:
             print(f"ERROR: uncommitted changes block checkout. Stash or commit first.\n{stderr}")
+        elif _ref_missing(ref) and not ref_fetched:
+            # `_ref_missing` alone is not enough here. When the single-ref fetch
+            # reached the ref and only `checkout -B` was blocked, the ref is
+            # still unresolvable locally — but "not found" is not the blocker
+            # the caller needs to hear (#267), so `ref_fetched` vetoes it.
+            print(f"ERROR: ref {ref!r} not found even after fetch.")
         else:
             print(f"ERROR: checkout failed: {stderr}")
         return 1
