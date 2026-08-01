@@ -350,6 +350,7 @@ def main() -> int:
     # looking for another (#698).
     full = "full" in flags
     desc_max = None if full else DESCRIPTION_MAX
+    comment_max = None if full else COMMENT_MAX
 
     # If not all digits, treat as branch name
     if not arg.isdigit():
@@ -607,18 +608,19 @@ def main() -> int:
     else:
         print("\n## Description\n_(empty)_")
 
-    # Comments
+    # Comments — the header printed the total and then showed the last ten of
+    # them, with nothing in between saying so (#719).
     comments = d.get("comments", [])
-    if comments:
-        print(f"\n## Comments ({len(comments)})")
-        for c in comments[-10:]:
-            c_author = (c.get("author") or {}).get("login", "?")
-            c_body = (c.get("body") or "")[:COMMENT_MAX]
-            c_created = (c.get("createdAt") or "")[:10]
-            print(f"\n**{c_author}** ({c_created}):")
-            print(c_body)
-    else:
-        print(f"\n## Comments (0)")
+    shown = comments if full else comments[-_body.COMMENT_TAIL:]
+    print(f"\n{_body.comments_heading(len(shown), len(comments))}")
+    for c in shown:
+        c_author = (c.get("author") or {}).get("login", "?")
+        c_body = c.get("body") or ""
+        if comment_max is not None and len(c_body) > comment_max:
+            c_body = c_body[:comment_max] + f"\n{_body.comment_cut_notice(comment_max)}"
+        c_created = (c.get("createdAt") or "")[:10]
+        print(f"\n**{c_author}** ({c_created}):")
+        print(c_body)
 
     return 0
 
