@@ -317,9 +317,10 @@ def test_split_flags_reports_what_it_did_not_recognise() -> None:
 
 
 def test_split_upstream() -> None:
-    assert push._split_upstream("origin/feat", "feat") == ("origin", "feat")
-    assert push._split_upstream("up/team/x", "x") == ("up", "team/x")
-    assert push._split_upstream("", "feat") == ("origin", "feat")
+    assert push._split_upstream("origin/feat", "feat", "gl") == ("origin", "feat")
+    assert push._split_upstream("up/team/x", "x", "gl") == ("up", "team/x")
+    # No upstream: the caller's resolved remote, never a hardcoded origin (#656).
+    assert push._split_upstream("", "feat", "gitlab") == ("gitlab", "feat")
 
 
 # ── _first_error_line skips success banners (issue #297) ─────────────────
@@ -453,6 +454,10 @@ def test_main_first_push_sets_upstream(capsys) -> None:
             return _proc(".git\n", 0)
         if args[:2] == ["rev-parse", "--abbrev-ref"] and "@{upstream}" not in args:
             return _proc("feat\n", 0)
+        if args == ["remote"]:
+            # A repo with no upstream still has to have a remote for `-u` to
+            # name one; the op resolves it rather than assuming it (#656).
+            return _proc("origin\n", 0)
         if args[0] == "rev-parse" and "@{upstream}" in args:
             # No upstream the first call, set after push
             return _proc("origin/feat\n", 0) if any(c[0] == "push" for c in calls) else _proc("", 1)
@@ -489,6 +494,8 @@ def test_main_first_push_without_a_per_ref_line_declines(capsys) -> None:
             return _proc("feat\n", 0)
         if args[0] == "rev-parse" and args[1] == "--short":
             return _proc("ccc3333\n", 0)
+        if args == ["remote"]:
+            return _proc("origin\n", 0)
         if args[0] == "push":
             return _proc("", 0)
         if args[:2] == ["rev-list", "--left-right"]:

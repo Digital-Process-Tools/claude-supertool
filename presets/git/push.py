@@ -278,12 +278,142 @@ def _live_remote_sha(remote: str, ref: str) -> tuple[str, str]:
     return "", f"`{cmd}` returned no ref — the remote does not have {ref}"
 
 
-def _split_upstream(upstream: str, branch: str) -> tuple[str, str]:
-    """(remote, ref) from an upstream like 'origin/foo'; fall back to origin."""
+def _split_upstream(upstream: str, branch: str,
+                    fallback_remote: str) -> tuple[str, str]:
+    """(remote, ref) from an upstream like 'origin/foo'.
+
+    `fallback_remote` is required, not defaulted — the same discipline as
+    `_post_push_advisories` (#642), for the same reason. It used to be a
+    hardcoded `origin`, and on a branch with no upstream that hardcode *was*
+    the fallback: in a repo whose only remote is `gitlab`, every downstream
+    reader of this pair — the push target, the `ls-remote` verification, the
+    crash receipt's settle command — named a remote that does not exist
+    (#656). The caller resolves it once through `_resolve_push_remote`, and a
+    new call site cannot reintroduce the guess by omitting the argument.
+    """
     if "/" in upstream:
         remote, ref = upstream.split("/", 1)
         return remote, ref
-    return "origin", branch
+    return fallback_remote, branch
+
+
+# The keys `git push` itself consults, in git's own precedence order, before it
+# falls back to `origin`. Reading them is what makes this op target whatever a
+# bare `git push` would target; a resolver that invented its own order would be
+# a second surprise stacked on the one #656 is about.
+_PUSH_REMOTE_KEYS = ("branch.{b}.pushRemote", "remote.pushDefault",
+                     "branch.{b}.remote")
+
+
+def _config_value(key: str) -> tuple[str, str]:
+    """`git config --get <key>`. `(value, could-not-ask)`; unset is `("", "")`.
+
+    Exit 1 here is git *answering* "not set" — the ordinary case on nearly
+    every branch — so it does not go through `_checked_git`, for the same
+    reason `_upstream_ref` does not.
+    """
+    cmd = f"git config --get {key}"
+    try:
+        r = _git(["config", "--get", key], timeout=_CHECK_TIMEOUT)
+    except OSError as exc:
+        return "", f"`{cmd}` did not complete — {exc}"
+    if r.returncode == TIMEOUT_RC:
+        return "", f"`{cmd}` did not complete — {r.stderr.strip()}"
+    return (r.stdout.strip(), "") if r.returncode == 0 else ("", "")
+
+
+def _remote_names() -> tuple[list[str], str]:
+    """Configured remote names. `([names], could-not-ask)`.
+
+    An empty list means one thing only: this repository has no remotes. A call
+    that did not answer returns the reason instead, because the two lead to
+    opposite receipts — "you have no remote to push to" versus "I could not
+    find out" — and rendering them alike is the defect class this file is
+    mostly made of.
+    """
+    cmd = "git remote"
+    try:
+        r = _git(["remote"], timeout=_CHECK_TIMEOUT)
+    except OSError as exc:
+        return [], f"`{cmd}` did not complete — {exc}"
+    if r.returncode == TIMEOUT_RC:
+        return [], f"`{cmd}` did not complete — {r.stderr.strip()}"
+    if r.returncode != 0:
+        return [], f"`{cmd}` exited {r.returncode} — {r.stderr.strip()}"
+    return [ln.strip() for ln in r.stdout.splitlines() if ln.strip()], ""
+
+
+def _resolve_push_remote(branch: str) -> tuple[str, str, str]:
+    """Where a branch with no upstream pushes. `(remote, how, cannot-tell)`.
+
+    Exactly one of `remote` and `cannot-tell` is ever set. The ladder, and why
+    each rung sits where it does:
+
+    1. `branch.<b>.pushRemote`, `remote.pushDefault`, `branch.<b>.remote` — in
+       git's own precedence order for a bare `git push`. Configuration is not a
+       guess, and honouring it means this op pushes where plain `git push`
+       would. They are taken verbatim rather than checked against `git remote`:
+       git accepts a URL in these keys too, and a name that resolves to nothing
+       produces git's own error, which is clearer than a second-guess of it.
+    2. `origin`, if a remote by that name exists. Above the single-remote rung
+       for the fork layout, where `origin` is the fork and the *other* remote
+       is the canonical, plausibly public one — the push that most needs not to
+       be guessed at. The two rungs can never actually disagree: with one
+       remote named `origin` they give the same answer, and with one remote not
+       named `origin` this rung does not fire. Ordering them is about which
+       sentence the receipt prints, and about refusing to be more surprising
+       than `git push` on the commonest multi-remote layout.
+    3. The only remote, whatever it is called. `git clone -o gitlab`, a repo
+       with a single `upstream`: there is one answer and picking it is not a
+       guess.
+    4. Otherwise nothing. Two or more remotes, none named `origin`, nothing
+       configured — no correct answer exists, so none is invented.
+
+    The rung deliberately *not* here is falling back to `origin` when no remote
+    is called that. That was the whole of #656: the assumption was standing in
+    for the fallback, so there was nothing left to fall back to.
+    """
+    for key in (k.format(b=branch) for k in _PUSH_REMOTE_KEYS):
+        value, why = _config_value(key)
+        if why:
+            return "", "", why
+        if value:
+            return value, f"configured in {key}", ""
+    names, why = _remote_names()
+    if why:
+        return "", "", why
+    if not names:
+        return "", "", "this repository has no remote configured"
+    if "origin" in names:
+        return "origin", "the remote named origin", ""
+    if len(names) == 1:
+        return names[0], "the only remote in this repository", ""
+    return "", "", (f"this repository has {len(names)} remotes and none of "
+                    f"them is named origin: {', '.join(names)}")
+
+
+def _refuse_unresolved_remote(branch: str, why: str) -> int:
+    """No upstream and no determinable remote — say so, and push nothing.
+
+    The alternative is to pick one, and picking wrong on a *first* push does
+    not fail — it succeeds. It creates a branch on a remote nobody named,
+    plausibly a public one, and `-u` then aims every later push at it. That is
+    the one outcome here worse than an error message, so this is a decline in
+    the sense of docs/validators.md §"Declining instead of guessing": a third
+    state, not a failure being hidden behind.
+
+    A refusal the caller cannot act on is half a fix, so the reason names the
+    candidates and the message names both ways out — the one-off push, and the
+    config that stops this branch asking again.
+    """
+    print(f"ERROR: cannot determine which remote to push {branch} to — {why}")
+    print("Nothing was pushed. Name the remote once, either way:")
+    print("  git push -u <remote> HEAD")
+    print(f"  git config branch.{branch}.remote <remote>   "
+          "# then re-run git-push")
+    _result(f"NOT PUSHED - no push attempted (cannot determine the push "
+            f"remote for {branch}: {why})")
+    return 1
 
 
 # Summaries git uses for "your ref diverged from the remote's" — the one
@@ -865,8 +995,8 @@ def _pushed_commit_count(before: str, after: str) -> tuple[str, str]:
 
 
 def _success_receipt(branch: str, remote_before: str, upstream: str,
-                     flags: set[str], force_note: str = "",
-                     push_stdout: str = "") -> None:
+                     flags: set[str], fallback_remote: str,
+                     force_note: str = "", push_stdout: str = "") -> None:
     """Shared 'what landed' tail — remote diff, ahead/behind, MR line, advisories.
 
     `force_note` rides all the way to the `[result]` line on purpose. The force
@@ -878,16 +1008,21 @@ def _success_receipt(branch: str, remote_before: str, upstream: str,
     It is the only evidence here about what the remote ref was *before*, on the
     path where `@{upstream}` never resolved — the local absence of a pre-push
     SHA is not evidence of anything (#661).
+
+    `fallback_remote` is the remote the caller resolved for a branch with no
+    upstream (#656) — required rather than defaulted, so this receipt cannot
+    quietly name `origin` in a repo that has no such remote.
     """
     if not upstream:
         upstream, up_why = _upstream_ref()
         if up_why:
             print(f"⚠ UPSTREAM LOOKUP DID NOT RUN — {up_why}")
-            print(f"  The remote named below falls back to origin/{branch} and "
-                  "may not be this branch's real upstream (#642), so the "
-                  "stale-base check and the verified SHA below may be about "
-                  "the wrong ref.")
-    remote_name, remote_ref = _split_upstream(upstream, branch)
+            print(f"  The remote named below falls back to "
+                  f"{fallback_remote}/{branch} and may not be this branch's "
+                  "real upstream (#642), so the stale-base check and the "
+                  "verified SHA below may be about the wrong ref.")
+    remote_name, remote_ref = _split_upstream(upstream, branch,
+                                              fallback_remote)
     remote_after, after_why = _remote_sha(upstream)
     moved, ncommits, unknown_note = True, "", ""
     if remote_before and remote_after and remote_before != remote_after:
@@ -1195,7 +1330,7 @@ def _recover_by_rebase(branch: str, remote_before: str, upstream: str,
 
     print("Status: pushed ✓ (rebased onto remote)")
     _note_landed(branch, remote_name, remote_ref)
-    _success_receipt(branch, remote_before, upstream, flags,
+    _success_receipt(branch, remote_before, upstream, flags, remote_name,
                      push_stdout=result.stdout or "")
     return 0
 
@@ -1314,7 +1449,17 @@ def _push_op() -> int:
     has_upstream = bool(upstream)
     remote_before, before_why = (_remote_sha(upstream) if has_upstream
                                  else ("", ""))
-    remote_name, remote_ref = _split_upstream(upstream, branch)
+    # Resolved before anything is printed, because a repo this op cannot pick a
+    # remote for must not get as far as a push line (#656). `has_upstream` is
+    # false both when the branch has no upstream and when the lookup did not
+    # run, and both need a resolved remote — the second one especially, since
+    # that is the path #675 caught naming a remote nobody confirmed.
+    push_remote, chosen_how = "", ""
+    if not has_upstream:
+        push_remote, chosen_how, cannot_tell = _resolve_push_remote(branch)
+        if not push_remote:
+            return _refuse_unresolved_remote(branch, cannot_tell)
+    remote_name, remote_ref = _split_upstream(upstream, branch, push_remote)
     head_before, _head_before_why = _local_head()
 
     print(f"# git-push on {branch}")
@@ -1328,14 +1473,15 @@ def _push_op() -> int:
             print(f"⚠ Pre-push remote SHA UNKNOWN — {before_why}")
     elif upstream_why:
         # Not the same as having no upstream, and the difference is load-bearing
-        # on the next line: `-u origin HEAD` is about to be chosen from an
+        # on the next line: `-u <remote> HEAD` is about to be chosen from an
         # answer git never gave (#675).
         print(f"⚠ UPSTREAM LOOKUP DID NOT RUN — {upstream_why}")
-        print("  Treating this as 'no upstream' and setting one on push. If "
-              f"{branch} already tracks something other than origin, this push "
-              "will retarget it.")
+        print("  Treating this as 'no upstream' and setting one on push, to "
+              f"{remote_name} ({chosen_how}). If {branch} already tracks "
+              "something else, this push will retarget it.")
     else:
-        print("Upstream: none — setting on first push (origin)")
+        print(f"Upstream: none — setting on first push to "
+              f"{remote_name}/{branch} ({chosen_how})")
     if flags:
         print(f"Flags: {', '.join(sorted(flags))}")
 
@@ -1348,7 +1494,7 @@ def _push_op() -> int:
     if "no-verify" in flags:
         push_args.append("--no-verify")
     if not has_upstream:
-        push_args += ["-u", "origin", "HEAD"]
+        push_args += ["-u", remote_name, "HEAD"]
     _RUN.update({"phase": "attempted", "branch": branch,
                  "remote": remote_name, "ref": remote_ref,
                  "target": f"{remote_name}/{remote_ref}"})
@@ -1434,8 +1580,8 @@ def _push_op() -> int:
         # that skipped it without a word (#655).
         force_note = _force_aftermath(remote_before, result.stdout or "",
                                       remote_name, remote_ref)
-    _success_receipt(branch, remote_before, upstream, flags, force_note,
-                     push_stdout=result.stdout or "")
+    _success_receipt(branch, remote_before, upstream, flags, remote_name,
+                     force_note, push_stdout=result.stdout or "")
     return 0
 
 
