@@ -43,6 +43,17 @@ Consumers must branch on the presence of `skipped` before reading any verdict ke
 - the result is **not cached** (a skip is config-derived; the cache key is a content hash);
 - the result **never triggers rollback**, whatever `rollback_on_fail` says.
 
+### `adapter`: the reserved code for "no verdict was obtained"
+
+`code: "adapter"` is reserved across every adapter for a failure of the adapter or its tool rather than a finding about the file: a binary that is absent, a timeout, output that would not parse, a tool that exited non-zero without saying anything about the file. It stays a real error — `ok: false`, `count: 1` — because the process ran and something is broken that someone has to fix; a fault routed to `skipped` is a validator quietly reporting clean.
+
+Two consequences a consumer can rely on:
+
+- **The message names what failed**, including the exit code and the tool's raw output when there is any, and says so explicitly when there is none.
+- **The result is never cached.** `adapter` is in the core's `_NONDETERMINISTIC_ERROR_CODES`: a verdict that was never obtained is not a function of the file's content, and the cache key is a content hash, so caching one replays it until the file changes.
+
+Emit it whenever the tool's output does not confirm it looked at the file. Where the boundary is genuinely unclear, prefer the finding: an `adapter` result is fully legible to a reader, while a real finding relabelled `adapter` sends them to the wrong place. See `docs/validators.md`, "Declining instead of guessing".
+
 ### Error object
 
 | Field            | Type             | Required | Notes                                              |
