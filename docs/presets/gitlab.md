@@ -52,6 +52,20 @@ The caps stay — an unbounded render is a context blowout in the caller, a diff
 
 The cut and its wording live in `presets/_body.py`, shared with `gh-issue` and `gh-pr`. Four hand-maintained copies of a disclosure is how a fifth site forgets to have one.
 
+### The approvals line, and the linked-issue block
+
+`Approved by:` has three states, not two ([#720](https://github.com/Digital-Process-Tools/claude-supertool/issues/720)):
+
+| Output | Means |
+|--------|-------|
+| `Approved by: alice, bob` | GitLab answered and named them |
+| `Approved by: none` | GitLab answered and the list is empty |
+| `Approved by: UNKNOWN — <reason>` | **nobody asked or nobody answered** — the approval state of this MR is not known |
+
+The third one is new. `GET /projects/:id/merge_requests/:iid/approvals` is documented as returning a JSON **object** carrying `approved_by`, on every tier including Free, so anything else is not GitLab answering — and none of it means nobody approved. Previously each of those cases rendered as one of two wrong things: a non-zero `glab` exit, a timeout or an unparseable body printed **no line at all**, and a body that parsed to anything but an object raised `AttributeError` out of the whole render, taking the sections below it — threads, pipeline, files, description, comments — with it. The reasons are stated verbatim, including `glab`'s own stderr: an unauthenticated CLI now reads `Approved by: UNKNOWN — approvals API failed (glab exit 1: Unauthenticated.)`.
+
+The `## Issue #N` block that follows the conflicts section takes the same treatment, because it had the same two shapes: a failed lookup printed nothing at all, and a non-object payload crashed the render. It now degrades to `Issue: #N — details unavailable (<reason>)`.
+
 ### The conflicts section
 
 A conflicted MR gets a `## Conflicts` block: the conflicting paths, a per-file hunk preview, and the resolve commands. Two `git merge-tree` calls feed it, and the distinction matters when reading the output:

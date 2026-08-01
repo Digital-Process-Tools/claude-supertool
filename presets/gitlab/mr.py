@@ -63,6 +63,88 @@ def _glab_api(endpoint: str, timeout: int = 10) -> subprocess.CompletedProcess[s
     )
 
 
+def _glab_fail_detail(r: subprocess.CompletedProcess[str]) -> str:
+    """One line naming why a `glab api` call failed, for a decline message.
+
+    `glab` writes its error to stderr in a boxed multi-line form and leaves
+    stdout empty, so the reason is there to be had — it was simply never read.
+    """
+    for line in (r.stderr or "").splitlines():
+        line = line.strip()
+        if line and line != "ERROR":
+            return f"glab exit {r.returncode}: {line[:120]}"
+    return f"glab exit {r.returncode}"
+
+
+def _approver_name(entry: object) -> str:
+    """`username` out of one `approved_by` entry, or `?` for a shape we do not know."""
+    if not isinstance(entry, dict):
+        return "?"
+    user = entry.get("user")
+    if not isinstance(user, dict):
+        return "?"
+    name = user.get("username")
+    return str(name) if name else "?"
+
+
+def _approvals_line(iid: str | int) -> str:
+    """The `Approved by: ...` line — one line, three states, never raises.
+
+    GitLab documents `GET /projects/:id/merge_requests/:iid/approvals` as
+    returning a JSON **object** carrying `approved_by`, on every tier including
+    Free. Every branch below that is not that object is therefore not GitLab
+    answering — a `glab` that could not ask, a body that is not JSON, a
+    responder that is not GitLab — and **none of them mean nobody approved this
+    MR**. The line used to spell that third state three different ways, all of
+    them wrong (#720):
+
+    - a non-zero `glab` exit printed **no line at all**, so the most ordinary
+      failure on this call — an unauthenticated CLI, which exits 1 with empty
+      stdout — silently removed a line whose neighbours (`Reviewers:`,
+      `Assignees:`) print `none` precisely so that absence is signal;
+    - a timeout or a decode failure fell into `except: pass`, same silence;
+    - anything that parsed to a non-object hit `.get` on it and raised
+      `AttributeError` **out of the whole render**, taking the threads,
+      pipeline, conflicts, linked issue, description and comments sections with
+      it — none of which are about approvals. #507's precedent in this same op:
+      the loud failure was hiding inside the quiet one.
+
+    Declining is the fix rather than defaulting, per `docs/validators.md`
+    §"Declining instead of guessing" — suppressing this into `[]` would trade a
+    crash for `Approved by: none`, which is a wrong answer rather than a missing
+    one, and is the defect class this tracker is mostly made of.
+    """
+    unknown = "Approved by: UNKNOWN"
+    try:
+        r = _glab_api(f"projects/:id/merge_requests/{iid}/approvals")
+    except subprocess.TimeoutExpired:
+        return f"{unknown} — approvals API timed out"
+    except OSError as e:  # FileNotFoundError included — glab absent, or an errno
+        # OSError is listed on its own authority: #507 was filed as a silent
+        # decline and the fatal thing found inside it was an unlisted OSError.
+        return f"{unknown} — could not run glab ({e})"
+    if r.returncode != 0:
+        return f"{unknown} — approvals API failed ({_glab_fail_detail(r)})"
+    try:
+        approvals = json.loads(r.stdout)
+    except json.JSONDecodeError:
+        return f"{unknown} — approvals API returned no parseable JSON"
+    if not isinstance(approvals, dict):
+        return (f"{unknown} — approvals API returned a "
+                f"{type(approvals).__name__}, expected an object")
+    if "approved_by" not in approvals:
+        note = approvals.get("message") or approvals.get("error") or ""
+        detail = f": {str(note)[:120]}" if note else ""
+        return f"{unknown} — approvals payload carries no approved_by field{detail}"
+    approved_by = approvals["approved_by"]
+    if not isinstance(approved_by, list):
+        return (f"{unknown} — approved_by is a "
+                f"{type(approved_by).__name__}, expected a list")
+    if not approved_by:
+        return "Approved by: none"
+    return f"Approved by: {', '.join(_approver_name(a) for a in approved_by)}"
+
+
 # Statuses that resolve on their own — a job here will move to success/failed/
 # etc. without anyone naming it. Everything NOT in this set (and not
 # "success") gets its own line: `failed`/`canceled`/`skipped`/`manual` are
@@ -688,22 +770,9 @@ def main() -> int:
             age_str += f" | Updated: {_relative_age(updated_at)}"
         print(age_str)
 
-    # Fetch approvals via API (glab mr view doesn't include this)
-    try:
-        approvals_result = _glab_api(f"projects/:id/merge_requests/{iid}/approvals")
-        if approvals_result.returncode == 0:
-            approvals = json.loads(approvals_result.stdout)
-            approved_by = approvals.get("approved_by", [])
-            if approved_by:
-                approver_names = [
-                    (a.get("user") or {}).get("username", "?")
-                    for a in approved_by
-                ]
-                print(f"Approved by: {', '.join(approver_names)}")
-            else:
-                print("Approved by: none")
-    except (subprocess.TimeoutExpired, json.JSONDecodeError):
-        pass
+    # Fetch approvals via API (glab mr view doesn't include this). Always one
+    # line, in all three states, and never an exception — see _approvals_line.
+    print(_approvals_line(iid))
 
     # Unresolved discussion threads — distinct blocker from comments
     try:
@@ -844,20 +913,39 @@ def main() -> int:
     issue_match = re.search(r'#(\d{4,})', description_raw)
     if issue_match:
         issue_iid = issue_match.group(1)
+        # Same three states as the approvals line above, and the same sweep
+        # (#720): a non-zero exit printed nothing at all — the MR names an
+        # issue and the section promising to describe it simply was not there —
+        # and a payload that parsed to a non-object raised `AttributeError` out
+        # of the render, this time taking the description and comments with it.
+        unavailable = f"\nIssue: #{issue_iid} — details unavailable"
         try:
             issue_result = _glab_api(f"projects/:id/issues/{issue_iid}")
-            if issue_result.returncode == 0:
+            if issue_result.returncode != 0:
+                print(f"{unavailable} ({_glab_fail_detail(issue_result)})")
+            else:
                 issue_data = json.loads(issue_result.stdout)
-                issue_title = issue_data.get("title", "?")
-                issue_state = issue_data.get("state", "?")
-                issue_labels = ", ".join(issue_data.get("labels", [])) or "none"
-                issue_assignees = ", ".join(
-                    a.get("username", "?") for a in issue_data.get("assignees", [])
-                ) or "none"
-                print(f"\n## Issue #{issue_iid} — {issue_title}")
-                print(f"State: {issue_state} | Labels: {issue_labels} | Assignees: {issue_assignees}")
-        except (subprocess.TimeoutExpired, json.JSONDecodeError):
-            print(f"\nIssue: #{issue_iid}")
+                if not isinstance(issue_data, dict):
+                    print(f"{unavailable} (issues API returned a "
+                          f"{type(issue_data).__name__}, expected an object)")
+                else:
+                    issue_title = issue_data.get("title") or "?"
+                    issue_state = issue_data.get("state") or "?"
+                    raw_labels = issue_data.get("labels")
+                    issue_labels = ", ".join(
+                        str(label) for label in raw_labels
+                    ) if isinstance(raw_labels, list) and raw_labels else "none"
+                    raw_assignees = issue_data.get("assignees")
+                    issue_assignees = ", ".join(
+                        (a.get("username") or "?") if isinstance(a, dict) else "?"
+                        for a in raw_assignees
+                    ) if isinstance(raw_assignees, list) and raw_assignees else "none"
+                    print(f"\n## Issue #{issue_iid} — {issue_title}")
+                    print(f"State: {issue_state} | Labels: {issue_labels} | Assignees: {issue_assignees}")
+        except (subprocess.TimeoutExpired, json.JSONDecodeError) as e:
+            print(f"{unavailable} ({type(e).__name__})")
+        except OSError as e:
+            print(f"{unavailable} (could not run glab: {e})")
 
     # Description
     if description:
