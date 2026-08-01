@@ -1409,6 +1409,47 @@ def _safe_path(p: str, *, allow_outside_cwd: Optional[bool] = None) -> str:
     return abs_p
 
 
+def _path_not_found(path: str, *, label: str = "path") -> str:
+    """The "not found" error, naming the path it actually tried (#624).
+
+    `ERROR: file not found: src/foo.py` is true and useless: it cannot tell a
+    typo from a cwd that drifted — a `cd` in an earlier shell call, which is
+    the shape #624 was filed about. The absolute path tried separates the two
+    at a glance, with no second `pwd` round-trip.
+
+    When cwd sits under a project root that DOES hold the path, the root and
+    the exact `cwd:` prefix that would reach it are named as well. Named, not
+    used: auto-recovery (#363) already re-roots the unambiguous call, so every
+    call that reaches here is one it declined — ambiguous by construction.
+    Resolving it here would trade a loud wrong path for a quiet wrong root,
+    which is the defect this tracker is about, not the fix.
+    """
+    if not path:
+        return f"ERROR: {label} not found: {path}\n"
+    tried = os.path.abspath(os.path.expanduser(path))
+    lines = [
+        f"ERROR: {label} not found: {path}",
+        f"  tried: {tried} (cwd: {os.getcwd()})",
+    ]
+    root = None
+    if not os.path.isabs(path):
+        try:
+            root = _project_root_above_cwd()
+        except OSError:
+            root = None
+    if root and os.path.exists(os.path.join(root, path)):
+        lines.append(
+            f"  exists at {os.path.join(root, path)} — prefix the call with "
+            f"'cwd:{root}' to run it from the project root"
+        )
+    else:
+        lines.append(
+            "  wrong CWD? Prefix the call with cwd:PATH to run it from "
+            "elsewhere."
+        )
+    return "\n".join(lines) + "\n"
+
+
 def _extract_env_prefix(cmd: str) -> Tuple[Dict[str, str], str]:
     """Split a leading `KEY=VAL KEY2=VAL2 ...` shell env-prefix off `cmd`.
 
@@ -1735,7 +1776,7 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
     if limit <= 0:
         limit = _get_op_int("read", "max_lines", MAX_READ_LINES)
     if not path or not os.path.isfile(path):
-        return f"ERROR: file not found: {path}\n"
+        return _path_not_found(path, label="file")
 
     # RTK delegation — simple reads without offset/filter/limit changes
     if not grep_filter and offset == 0 and limit == _get_op_int("read", "max_lines", MAX_READ_LINES) and _rtk_enabled() and _has_rtk():
@@ -1977,8 +2018,7 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
         # Could be a glob pattern — check if it expands to anything
         from glob import glob as _glob
         if not _glob(path, recursive=True):
-            return (f"ERROR: path not found: {path} (cwd: {os.getcwd()}) — wrong CWD? "
-                    f"Prefix the call with cwd:PATH to run it from elsewhere.\n")
+            return _path_not_found(path)
 
     excl = _get_exclude_paths("grep", no_exclude)
 
@@ -2217,7 +2257,7 @@ def op_around(pattern: str, path: str, n: int = 10) -> str:
         regex = re.compile(re.escape(pattern))
 
     if not os.path.isdir(path) and not os.path.isfile(path):
-        return f"ERROR: file not found: {path}\n"
+        return _path_not_found(path, label="file")
 
     def _render(rx: "re.Pattern[str]") -> Tuple[str, bool]:
         """Render the around-window for `rx`. Returns (output, matched) so the
@@ -2720,7 +2760,7 @@ def op_stat(path: str) -> str:
 def op_around_line(path: str, line: int, n: int = 10) -> str:
     """Show N lines of context around a specific line number."""
     if not path or not os.path.isfile(path):
-        return f"ERROR: file not found: {path}\n"
+        return _path_not_found(path, label="file")
     if line < 1:
         return f"ERROR: line number must be >= 1, got {line}\n"
 
@@ -3292,7 +3332,7 @@ def op_map(path: str, no_exclude: bool = False) -> str:
     if not path:
         return "ERROR: empty path\n"
     if not os.path.exists(path):
-        return f"ERROR: path not found: {path}\n"
+        return _path_not_found(path)
 
     files = _collect_files(path, _get_exclude_paths("map", no_exclude))
     if not files:
@@ -3993,7 +4033,7 @@ def op_replace(old: str, new: str, path: str = ".", dry: bool = False) -> str:
 
     # Validate path exists
     if path != "." and not os.path.isfile(path) and not os.path.isdir(path):
-        return f"ERROR: path not found: {path}\n"
+        return _path_not_found(path)
 
     candidates = _grep_candidates(path, _get_exclude_paths("replace"))
     if not candidates:
