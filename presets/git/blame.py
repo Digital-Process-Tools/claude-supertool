@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 
 # Sibling import: runtime puts this dir on sys.path[0]; the test harness
 # loads scripts via importlib (no dir on path), so add it explicitly.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from _git_common import use_utf8_stdout  # noqa: E402
+from _git_common import TIMEOUT_RC, _git, use_utf8_stdout  # noqa: E402
+
+# `git blame` reads history for one file; `rev-parse --git-dir` is a stat. Both
+# are well under the shared 10s default, and neither is worth its own number.
+
 
 DEFAULT_CONTEXT = 5
 
@@ -39,33 +42,31 @@ def main() -> int:
         print(f"ERROR: line number must be >= 1, got {line}")
         return 1
 
-    # Check git repo
+    # Check git repo. The OSError guard stays local — `_git_common._git`
+    # converts a stall into TIMEOUT_RC but lets a git that cannot start at all
+    # raise, and "git not available" is this preset's own wording for it.
     try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--git-dir"],
-            capture_output=True, text=True, timeout=5, encoding="utf-8", errors="replace",
-        )
+        result = _git(["rev-parse", "--git-dir"])
         if result.returncode != 0:
             print("ERROR: not inside a git repository.")
             return 1
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError:
         print("ERROR: git not available.")
         return 1
 
     start = max(1, line - n)
     end = line + n
     try:
-        result = subprocess.run(
+        result = _git(
             # #150: `--` separator so a PATH starting with `-` (e.g. literal
             # file named `-foo`) is treated as a path, not a CLI flag.
-            ["git", "blame", "-L", f"{start},{end}", "--date=short", "--", path],
-            capture_output=True, text=True, timeout=10, encoding="utf-8", errors="replace",
-        )
-    except subprocess.TimeoutExpired:
-        print(f"ERROR: git blame timed out for {path}")
-        return 1
+            ["blame", "-L", f"{start},{end}", "--date=short", "--", path])
     except OSError as e:
         print(f"ERROR: git blame failed: {e}")
+        return 1
+
+    if result.returncode == TIMEOUT_RC:
+        print(f"ERROR: git blame timed out for {path}")
         return 1
 
     if result.returncode != 0:

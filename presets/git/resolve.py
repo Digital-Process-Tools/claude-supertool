@@ -18,7 +18,7 @@ from typing import Optional
 # loads scripts via importlib (no dir on path), so add it explicitly.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from _git_common import use_utf8_stdout  # noqa: E402
+from _git_common import _git, _list_conflicts, use_utf8_stdout  # noqa: E402
 
 
 # Unambiguous conflict markers — `<<<<<<<` / `>>>>>>>` at line start. A bare row
@@ -26,38 +26,6 @@ from _git_common import use_utf8_stdout  # noqa: E402
 # underlines, comment rules) and a real leftover always carries the angle markers
 # too, so the angle scan never misses an actual unresolved hunk.
 _MARKER_RE = re.compile(r"^(<{7,}|>{7,})(\s|$)")
-
-
-# Shell convention for "killed by a timeout", as in presets/git/status.py.
-TIMEOUT_RC = 124
-
-
-def _git(args: list[str], timeout: int = 10) -> subprocess.CompletedProcess[str]:
-    cmd = ["git"] + args
-    try:
-        return subprocess.run(
-            cmd,
-            capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace",
-        )
-    except subprocess.TimeoutExpired:
-        return subprocess.CompletedProcess(
-            args=cmd, returncode=TIMEOUT_RC, stdout="",
-            stderr=f"timed out after {timeout}s",
-        )
-
-
-def _list_conflicts() -> tuple[list[str], str]:
-    """`(paths, why_unavailable)` — three states, not two (#650).
-
-    The `Remaining: N` line at the end of a resolve is followed by
-    `Next: git-commit ...` when N is 0, so folding "git did not answer" into
-    the same `[]` that means "everything is resolved" ends in a commit over
-    live markers. Same defect and same fix as `presets/git/conflicts.py`.
-    """
-    res = _git(["diff", "--name-only", "--diff-filter=U"])
-    if res.returncode != 0:
-        return [], (res.stderr.strip() or f"git exited {res.returncode}")
-    return [l for l in res.stdout.splitlines() if l.strip()], ""
 
 
 def _union_file(path: str) -> tuple[bool, str]:

@@ -8,22 +8,13 @@ flurry with a single round-trip.
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 
 # Sibling import: runtime puts this dir on sys.path[0]; the test harness
 # loads scripts via importlib (no dir on path), so add it explicitly.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from _git_common import use_utf8_stdout  # noqa: E402
-
-
-def _git(args: list[str], timeout: int = 10) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["git"] + args,
-        capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace",
-    )
-
+from _git_common import _git, use_utf8_stdout  # noqa: E402
 
 def _ref_missing(ref: str) -> bool:
     """True when this repo cannot resolve `ref` to a commit.

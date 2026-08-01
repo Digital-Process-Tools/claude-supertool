@@ -32,6 +32,12 @@ from _git_common import (  # noqa: E402
 
 # triple-colon separator handled by supertool; we receive plain argv here.
 
+# The commit itself, which runs whatever the pre-commit hook chain is. Every
+# other call in this preset is rev-parse / diff --cached plumbing on the shared
+# 10s default; this one carries the 30s the whole module used to assume, and is
+# the only place in it where 30s was ever doing work.
+_COMMIT_TIMEOUT = 30
+
 
 def _existing_mr_for_branch(branch: str) -> str:
     """Open MR/PR identifier for `branch` (e.g. !42 / #7), or empty when none.
@@ -149,9 +155,10 @@ def main() -> int:
 
     # Commit
     if no_edit:
-        result = _git(["commit", "--no-edit"])
+        result = _git(["commit", "--no-edit"], timeout=_COMMIT_TIMEOUT)
     else:
-        result = _git(["commit", "-m", _with_coauthor(msg)])
+        result = _git(["commit", "-m", _with_coauthor(msg)],
+                      timeout=_COMMIT_TIMEOUT)
     head_after = _head_sha()
 
     if result.returncode == 0 and head_after and head_after != head_before:

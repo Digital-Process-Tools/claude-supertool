@@ -65,12 +65,21 @@ from typing import Optional
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from _git_common import (  # noqa: E402
+    TIMEOUT_RC,
     _first_error_line,
     _git,
     query_open_mr,
     repo_label,
     use_utf8_stdout,
 )
+
+# `_git` no longer raises `TimeoutExpired` — a stall comes back as a result
+# carrying `TIMEOUT_RC` (#704). That is not a cosmetic change in this file: a
+# timed-out push falling through to the ordinary `returncode != 0` branch would
+# print `Status: PUSH REJECTED ✗` about a push that may well have landed, which
+# is the exact class of claim #675 and #663 exist to prevent. Every site below
+# that used to `except subprocess.TimeoutExpired` now tests for the code, and
+# the `except` clauses that remain are there for `OSError`, which still raises.
 
 _KNOWN_FLAGS = ("force-with-lease", "no-verify", "watch")
 
@@ -149,8 +158,10 @@ def _checked_git(args: list[str], label: str = "") -> tuple[
     cmd = label or "git " + " ".join(args)
     try:
         r = _git(args, timeout=_CHECK_TIMEOUT)
-    except (subprocess.TimeoutExpired, OSError) as exc:
+    except OSError as exc:
         return None, f"`{cmd}` did not complete — {exc}"
+    if r.returncode == TIMEOUT_RC:
+        return None, f"`{cmd}` did not complete — {r.stderr.strip()}"
     if r.returncode != 0:
         why = _first_error_line((r.stdout or "") + "\n" + (r.stderr or ""))
         return None, (f"`{cmd}` exited {r.returncode}"
@@ -203,8 +214,10 @@ def _upstream_ref() -> tuple[str, str]:
     try:
         r = _git(["rev-parse", "--abbrev-ref", "--symbolic-full-name",
                   "@{upstream}"], timeout=_CHECK_TIMEOUT)
-    except (subprocess.TimeoutExpired, OSError) as exc:
+    except OSError as exc:
         return "", f"`{cmd}` did not complete — {exc}"
+    if r.returncode == TIMEOUT_RC:
+        return "", f"`{cmd}` did not complete — {r.stderr.strip()}"
     return (r.stdout.strip(), "") if r.returncode == 0 else ("", "")
 
 
@@ -221,8 +234,10 @@ def _remote_sha(ref: str) -> tuple[str, str]:
     cmd = f"git rev-parse --short {ref}"
     try:
         r = _git(["rev-parse", "--short", ref], timeout=_CHECK_TIMEOUT)
-    except (subprocess.TimeoutExpired, OSError) as exc:
+    except OSError as exc:
         return "", f"`{cmd}` did not complete — {exc}"
+    if r.returncode == TIMEOUT_RC:
+        return "", f"`{cmd}` did not complete — {r.stderr.strip()}"
     return (r.stdout.strip(), "") if r.returncode == 0 else ("", "")
 
 
@@ -664,8 +679,14 @@ def _stale_base_advisory(target: str, remote: str) -> None:
     try:
         cnt = _git(["rev-list", "--count", f"HEAD..{ref}"],
                    timeout=_CHECK_TIMEOUT)
-    except (subprocess.TimeoutExpired, OSError) as exc:
+    except OSError as exc:
         print(f"⚠ STALE-BASE CHECK DID NOT RUN — `{cmd}` did not complete ({exc})")
+        print(f"  How far behind {ref} you are is UNKNOWN — this receipt is "
+              f"not saying your base is fresh. Settle it: {cmd}")
+        return
+    if cnt.returncode == TIMEOUT_RC:
+        print(f"⚠ STALE-BASE CHECK DID NOT RUN — `{cmd}` did not complete "
+              f"({cnt.stderr.strip()})")
         print(f"  How far behind {ref} you are is UNKNOWN — this receipt is "
               f"not saying your base is fresh. Settle it: {cmd}")
         return
@@ -994,10 +1015,7 @@ def _rebase_state() -> str:
     """
     paths: list[str] = []
     for name in ("rebase-merge", "rebase-apply"):
-        try:
-            r = _git(["rev-parse", "--git-path", name], timeout=10)
-        except subprocess.TimeoutExpired:
-            return "unknown"
+        r = _git(["rev-parse", "--git-path", name], timeout=10)
         if r.returncode != 0 or not r.stdout.strip():
             return "unknown"
         paths.append(r.stdout.strip())
@@ -1083,10 +1101,9 @@ def _recover_by_rebase(branch: str, remote_before: str, upstream: str,
     """
     target = f"{remote_name}/{remote_ref}"
     print(f"Remote moved ahead — fetching to rebase onto {target}…")
-    try:
-        fetched = _git(["fetch", remote_name, remote_ref],
-                       timeout=_RECOVER_TIMEOUT)
-    except subprocess.TimeoutExpired:
+    fetched = _git(["fetch", remote_name, remote_ref],
+                   timeout=_RECOVER_TIMEOUT)
+    if fetched.returncode == TIMEOUT_RC:
         return _report_recovery_timeout("fetch", branch, target)
     if fetched.returncode != 0:
         combined = (fetched.stdout or "") + "\n" + (fetched.stderr or "")
@@ -1114,9 +1131,8 @@ def _recover_by_rebase(branch: str, remote_before: str, upstream: str,
         if behind > _INCOMING_CAP:
             print(f"  … +{behind - _INCOMING_CAP} more")
 
-    try:
-        rebase = _git(["rebase", rebase_target], timeout=_RECOVER_TIMEOUT)
-    except subprocess.TimeoutExpired:
+    rebase = _git(["rebase", rebase_target], timeout=_RECOVER_TIMEOUT)
+    if rebase.returncode == TIMEOUT_RC:
         return _report_recovery_timeout("rebase", branch, target)
     if rebase.returncode != 0:
         # Distinguish a real merge conflict (unmerged paths → leave paused for
@@ -1162,9 +1178,8 @@ def _recover_by_rebase(branch: str, remote_before: str, upstream: str,
         push_args.append("--no-verify")
     if not upstream:
         push_args += ["-u", remote_name, "HEAD"]
-    try:
-        result = _git(push_args, timeout=_PUSH_TIMEOUT)
-    except subprocess.TimeoutExpired:
+    result = _git(push_args, timeout=_PUSH_TIMEOUT)
+    if result.returncode == TIMEOUT_RC:
         return _report_push_timeout(branch, _local_head()[0],
                                     remote_name, remote_ref, flags)
     if result.returncode != 0:
@@ -1337,9 +1352,8 @@ def _push_op() -> int:
     _RUN.update({"phase": "attempted", "branch": branch,
                  "remote": remote_name, "ref": remote_ref,
                  "target": f"{remote_name}/{remote_ref}"})
-    try:
-        result = _git(push_args, timeout=_PUSH_TIMEOUT)
-    except subprocess.TimeoutExpired:
+    result = _git(push_args, timeout=_PUSH_TIMEOUT)
+    if result.returncode == TIMEOUT_RC:
         return _report_push_timeout(branch, head_before,
                                     remote_name, remote_ref, flags)
 

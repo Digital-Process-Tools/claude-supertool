@@ -13,10 +13,23 @@ Each script formats query_open_mr's output its own way — the lookup
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
 from typing import Optional
+
+# Sibling import: `_env` lives one directory up. Arranged here rather than at
+# each call site, so that importing this module is enough to get the knob —
+# `presets/git/checkout.py` and five others had no `SUPERTOOL_GIT_TIMEOUT`
+# override at all, purely because each would have had to set up its own path.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+if os.path.dirname(_HERE) not in sys.path:
+    sys.path.insert(0, os.path.dirname(_HERE))
+
+from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 
 
 def use_utf8_stdout() -> None:
@@ -42,11 +55,92 @@ def use_utf8_stdout() -> None:
             pass
 
 
-def _git(args: list[str], timeout: int = 30) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["git"] + args,
-        capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace",
-    )
+#: Budget for one git call when the call site does not name its own.
+#:
+#: The ten copies this module replaces did not agree: 5 in `status.py`, 10 in
+#: six presets, 30 here and in `merge.py`. No test pinned any of them and no
+#: two were chosen together, so consolidating had to pick one. 10 is the value
+#: six of the ten already used, and it is the only one that was ever reachable
+#: from the environment. The three calls that genuinely need longer — the push,
+#: the merge, the commit that runs a hook suite — now say so at the call site,
+#: which is where a budget of 300s is legible and a module default is not.
+_GIT_TIMEOUT_DEFAULT = 10
+
+#: Shell convention for "killed by a timeout" (coreutils `timeout`). Distinct
+#: from any exit code git itself produces, so a caller checking
+#: `returncode != 0` keeps working while one that wants to tell a stall from a
+#: failure can. `status.py`, `conflicts.py` and `resolve.py` had each defined
+#: this constant separately, with the same value and the same comment.
+TIMEOUT_RC = 124
+
+
+def git_timeout(default: int | None = None) -> int:
+    """Default budget for a git call, overridable per environment (#650).
+
+    Same shape and same reasoning as `SUPERTOOL_LINT_TIMEOUT` (#553): a loaded
+    runner occasionally needs room without a code change, and what supertool
+    ships with does not move for it.
+    """
+    base = _GIT_TIMEOUT_DEFAULT if default is None else default
+    return env_int("SUPERTOOL_GIT_TIMEOUT", base, minimum=1)
+
+
+def _git(args: list[str], timeout: int | None = None) -> subprocess.CompletedProcess[str]:
+    """Run a git command; a call that does not answer says so (#650, #704).
+
+    `TimeoutExpired` is not allowed to escape. It is not swallowed either: the
+    result carries `TIMEOUT_RC`, so every call site's existing
+    `returncode != 0` branch behaves exactly as it would for a git that failed,
+    while a caller that needs to tell a stall from a failure still can. The one
+    thing that must never happen is rendering it as a success — an empty
+    `diff --diff-filter=U` reads as "no conflicts", which is the sentence
+    `git-conflicts` printed over live `<<<<<<<` markers until #703.
+
+    **The argument wins; the environment sets the default.** A call site that
+    names its own budget is making a statement about that call — `git-push`
+    gives its push 300s because it owns the timeout and must verify the remote
+    before reporting — and a `SUPERTOOL_GIT_TIMEOUT` set to shorten the
+    courtesy calls in `git-status` must not silently cap it. `status.py` had
+    the reverse precedence; it was reachable only through its own default, so
+    nothing depended on it.
+    """
+    budget = git_timeout() if timeout is None else timeout
+    cmd = ["git"] + args
+    try:
+        return subprocess.run(
+            cmd,
+            capture_output=True, text=True, timeout=budget, encoding="utf-8", errors="replace",
+        )
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=TIMEOUT_RC, stdout="",
+            stderr=f"timed out after {budget}s",
+        )
+
+
+def _list_conflicts() -> tuple[list[str], str]:
+    """`(paths, why_unavailable)` — three states, not two (#650).
+
+    `([...], "")` git answered and named conflicts; `([], "")` git answered and
+    the tree is clean; `([], why)` git did not answer.
+
+    The third state used to be the second, in all three copies of this
+    function, and `git-conflicts` is the worst place in the tool to make that
+    mistake: `main` renders an empty list as `No conflicted files.`, and you
+    only run it because you are already stopped mid-merge — so a lookup that
+    failed printed the one sentence that says "go ahead and commit". An index
+    lock held by a concurrent git is enough to trigger it; no load required
+    (docs/validators.md, "Declining instead of guessing").
+
+    `resolve.py` reached the same hazard by a different route — its
+    `Remaining: 0` line is followed by `Next: git-commit ...` — and `merge.py`
+    was the lowest-stakes of the three. One function now, so the next fix does
+    not have to find all three.
+    """
+    res = _git(["diff", "--name-only", "--diff-filter=U"])
+    if res.returncode != 0:
+        return [], (res.stderr.strip() or f"git exited {res.returncode}")
+    return [l for l in res.stdout.splitlines() if l.strip()], ""
 
 
 def repo_label() -> str:

@@ -158,7 +158,7 @@ Most ops need no project config. `git-investigate` takes two env vars (below); `
 |----------|---------|--------|
 | `SUPERTOOL_COMMITS` | `10` | Number of recent commits to show |
 | `SUPERTOOL_BLAME_RECENT` | `5` | Number of blame hotspot lines to surface |
-| `SUPERTOOL_GIT_TIMEOUT` | `5` | Seconds each individual git call gets before it is abandoned and disclosed (see **When git does not answer**) |
+| `SUPERTOOL_GIT_TIMEOUT` | `10` (`5` for `git-status`) | Seconds each individual git call gets before it is abandoned and disclosed (see **When git does not answer**) |
 
 Set via the op's JSON config if you want project-wide defaults:
 ```json
@@ -171,9 +171,28 @@ Set via the op's JSON config if you want project-wide defaults:
 
 `git-status` and `git-push` try `glab` then `gh` to surface the open MR/PR — skip gracefully if neither is installed. A CLI that *is* installed and cannot answer is a different state and is disclosed rather than skipped; see below.
 
+### The git-call budget
+
+Every git call any of these ops makes gets `SUPERTOOL_GIT_TIMEOUT` seconds — default **10**, except `git-status`, which keeps **5** because every call it makes is a courtesy line on a report you want back fast and none of them writes anything.
+
+Three calls name their own budget instead, because they are the ones that legitimately take longer, and a module-wide default large enough for them would be far too generous for the `rev-parse` plumbing around them:
+
+| call | budget | why |
+|---|---|---|
+| `git push` (`git-push`) | 300s | The op owns its own timeout so it can verify the remote before reporting; supertool's outer cap must not fire first |
+| `git fetch` / `git rebase` on `git-push`'s recovery path | 120s | Can land on a worktree git has already paused ([#640](https://github.com/Digital-Process-Tools/claude-supertool/issues/640)) |
+| `git commit` (`git-commit`) | 30s | Runs whatever the pre-commit hook chain is |
+| `git merge` (`git-merge`) | 30s | Runs merge drivers, potentially over the whole tree |
+
+**An explicit budget wins; the environment sets the default** ([#704](https://github.com/Digital-Process-Tools/claude-supertool/issues/704)). Setting `SUPERTOOL_GIT_TIMEOUT=5` to tighten `git-status` does not cap `git-push`'s 300s and report a push still in flight as failed.
+
+**What changed in [#704](https://github.com/Digital-Process-Tools/claude-supertool/issues/704).** Ten of these presets each carried their own copy of the git wrapper, and the copies had drifted to three different budgets — 5, 10 and 30 — that nobody had chosen together and no test pinned. They now share one, so the numbers above are the whole story rather than a summary of ten. Two consequences worth knowing before you upgrade: the plumbing calls in `git-commit` and `git-push` (`rev-parse`, `diff --cached`, `rev-list`) drop from a 30s budget to 10s, and `SUPERTOOL_GIT_TIMEOUT` now reaches `git-checkout`, `git-diff`, `git-diverge`, `git-trail`, `git-investigate`, `git-blame`, `git-merge`, `git-resolve`, `git-commit` and `git-push`, which previously ignored it entirely.
+
 ### When git does not answer
 
-`git-status` is a dozen or so separate git calls, and each one gets `SUPERTOOL_GIT_TIMEOUT` seconds (default **5**). A call that does not come back inside its budget is abandoned rather than waited out, and it costs its own section instead of the whole report ([#650](https://github.com/Digital-Process-Tools/claude-supertool/issues/650)). Previously the `TimeoutExpired` escaped: one stalled `rev-list` — the courtesy line about divergence from master — replaced branch, commits, working tree, stashes and PR with a stack trace.
+A call that does not come back inside its budget is abandoned rather than waited out, and it costs its own section instead of the whole report ([#650](https://github.com/Digital-Process-Tools/claude-supertool/issues/650)). Previously the `TimeoutExpired` escaped: one stalled `rev-list` — the courtesy line about divergence from master — replaced branch, commits, working tree, stashes and PR with a stack trace.
+
+That fix landed in `git-status` and nowhere else, because the wrapper existed ten times ([#704](https://github.com/Digital-Process-Tools/claude-supertool/issues/704)). `git-conflicts` kept the defect for two more releases and printed `No conflicted files.` and exit 0 over live `<<<<<<<` markers. Every op listed on this page now behaves the way the paragraph above describes.
 
 An abandoned call is never rendered as a git that succeeded and printed nothing. It carries exit code `124` (the shell convention for "killed by a timeout"), so every call site's existing "did this work?" branch skips its section exactly as it would for a git that failed. Without that, an empty `rev-list --left-right --count` reads as `0 ahead — branch has no own commits!` and an empty `rev-parse --abbrev-ref HEAD` prints `Branch:` with nothing after it — a false alarm about the branch manufactured out of a fact about the machine.
 
