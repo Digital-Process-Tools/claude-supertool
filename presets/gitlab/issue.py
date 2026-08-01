@@ -13,6 +13,10 @@ import subprocess
 import sys
 import urllib.parse
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import _body  # noqa: E402  (the one body cap + disclosure — #698)
+
 DESCRIPTION_MAX = 3000
 # Related MRs are listed, not summarised, so the list is capped. A *count* cut
 # it — the total was always printed correctly above a short list, which reads as
@@ -166,9 +170,13 @@ def main() -> int:
     author = (d.get("author") or {}).get("username", "?")
     iid = d.get("iid", number)
     web_url = d.get("web_url", "")
-    description = d.get("description") or ""
-    if desc_max is not None:
-        description = description[:desc_max]
+    # GitLab markdown attributes are stripped *before* the cap, not after, so
+    # the disclosed counts describe the text actually printed (#698).
+    description = re.sub(
+        r'\{width=\d+\s+height=\d+\}', '', d.get("description") or ""
+    )
+    description_total = len(description)
+    description, description_withheld = _body.cut(description, desc_max)
     project_id = d.get("project_id", "")
 
     # Header
@@ -179,6 +187,11 @@ def main() -> int:
     print(f"Assignees: {assignees}")
     if web_url:
         print(f"URL: {web_url}")
+    if description_withheld:
+        # Before the description, not only at the cut — the reader this
+        # protects is the one who stops at the top (#681, #698).
+        print(_body.header_notice(
+            description, description_total, description_withheld))
 
     # 2. Fetch related MRs via API
     try:
@@ -215,10 +228,11 @@ def main() -> int:
     except (subprocess.TimeoutExpired, json.JSONDecodeError):
         pass
 
-    # 3. Description (strip GitLab markdown attributes like {width=... height=...})
-    description = re.sub(r'\{width=\d+\s+height=\d+\}', '', description)
+    # 3. Description (markdown attributes already stripped, above the cap)
     if description:
         print(f"\n## Description\n{description}")
+        if description_withheld:
+            print(f"\n{_body.cut_notice(description_withheld)}")
 
     # 4. Fetch comments (notes) — human only
     all_image_urls = _extract_image_urls(description)

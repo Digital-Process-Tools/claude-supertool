@@ -5,13 +5,13 @@
     "gl-issue": {
       "cmd": "{python} {path}gitlab/issue.py {args}",
       "timeout": 30,
-      "description": "GitLab issue: desc, comments, images, related MRs. :full = no truncation, all comments",
+      "description": "GitLab issue: desc, comments, images, related MRs. A truncated description says so twice — in the header and at the cut — with the exact char count withheld. :full = no truncation, all comments",
       "syntax": "gl-issue:NUMBER[:full]"
     },
     "gl-mr": {
       "cmd": "{python} {path}gitlab/mr.py {args}",
       "timeout": 20,
-      "description": "MR review: branch, pipeline, approval, linked issue, diff stat, per-file name-status (A/D/R/M) list, comments. :status = slim merge-state only. :full uncaps the file list + comments",
+      "description": "MR review: branch, pipeline, approval, linked issue, diff stat, per-file name-status (A/D/R/M) list, comments. A truncated description says so twice — in the header and at the cut — with the exact char count withheld. :status = slim merge-state only. :full uncaps the description, the file list + comments",
       "syntax": "gl-mr:NUMBER_OR_BRANCH[:status|:full]"
     },
     "gl-mrs": {
