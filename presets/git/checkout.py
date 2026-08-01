@@ -43,6 +43,29 @@ def _ref_missing(ref: str) -> bool:
                  f"{ref}^{{commit}}"]).returncode != 0
 
 
+def _in_repo() -> bool:
+    return _git(["rev-parse", "--git-dir"]).returncode == 0
+
+
+def _names_a_path(arg: str) -> bool:
+    """True when git would understand `arg` as a pathspec in this repo.
+
+    A tracked-file match is the question that actually matters: `git checkout
+    <pathspec>` only rewrites paths git already holds in the index, so
+    `ls-files --error-unmatch` answers precisely "would this argument have
+    destroyed something". The on-disk fallback catches untracked paths, which
+    git refuses harmlessly — named anyway, because someone who typed a filename
+    needs to hear "that is a path", not "ref not found".
+
+    `-` is `@{-1}`, the previous branch, and is never a pathspec.
+    """
+    if arg == "-":
+        return False
+    if _git(["ls-files", "--error-unmatch", "--", arg]).returncode == 0:
+        return True
+    return os.path.exists(arg)
+
+
 def main() -> int:
     use_utf8_stdout()
     if len(sys.argv) < 2:
@@ -57,6 +80,40 @@ def main() -> int:
     if ref.startswith("-") and ref != "-":
         print(f"ERROR: ref starts with '-' (refusing for safety): {ref!r}")
         return 1
+
+    # #756: `git checkout <arg>` is two operations sharing one name. Given a
+    # ref it switches branches; given a pathspec it restores those paths from
+    # the index, discarding uncommitted work — and that write leaves no reflog
+    # entry, no stash and no object, so there is nothing anywhere to recover it
+    # from. git picks between the two by what the string happens to name, and
+    # #150 already established that this argument is attacker-influenced. A
+    # pathspec needs no flag and no special characters, so the `-` guard above
+    # cannot see it: it is the *absence* of anything suspicious that makes it
+    # work.
+    #
+    # Two defences, in this order:
+    #   1. refuse up front when the argument names a path and no commit — this
+    #      is what makes the message useful;
+    #   2. pass `--` on every switch below, so git cannot select the pathspec
+    #      reading even for an argument this check did not anticipate (a glob,
+    #      say). The `--` is the guarantee; the refusal is the explanation.
+    #
+    # An argument that is *both* (a `docs` branch beside a `docs/` directory)
+    # resolves to the ref, always, pinned by the `--` rather than left to git's
+    # DWIM — and says so, because deterministic without disclosed is still a
+    # surprise.
+    ambiguous = False
+    if ref != "-" and _in_repo():
+        resolves = not _ref_missing(ref)
+        is_path = _names_a_path(ref)
+        if is_path and not resolves:
+            print(f"ERROR: {ref!r} names a path, not a ref (refusing for safety).")
+            print("`git checkout <path>` restores files from the index and discards")
+            print("uncommitted changes to them unrecoverably — no reflog entry, no")
+            print("stash, no object written. git-checkout switches branches only.")
+            print(f"To restore it anyway, deliberately: git checkout -- {ref}")
+            return 1
+        ambiguous = is_path and resolves
 
     prev_branch = ""
     prev = _git(["rev-parse", "--abbrev-ref", "HEAD"])
@@ -74,7 +131,7 @@ def main() -> int:
     # the remote demonstrably has the ref, so "not found" is a false report no
     # matter what the failing checkout said (#267, #649).
     ref_fetched = False
-    result = _git(["checkout", ref])
+    result = _git(["checkout", ref, "--"])
     if result.returncode != 0:
         stderr = result.stderr.strip() or result.stdout.strip()
         s = stderr.lower()
@@ -82,7 +139,7 @@ def main() -> int:
         if _ref_missing(ref):
             fetch = _git(["fetch", "--all", "--prune", "--quiet"], timeout=30)
             if fetch.returncode == 0:
-                result = _git(["checkout", ref])
+                result = _git(["checkout", ref, "--"])
                 if result.returncode == 0:
                     print("# (auto-fetched before checkout)")
                     stderr = ""
@@ -168,6 +225,16 @@ def main() -> int:
     head_sha = head_sha_res.stdout.strip() if head_sha_res.returncode == 0 else "?"
 
     print(f"# git-checkout: {prev_branch}@{prev_sha} → {branch}@{head_sha}")
+
+    if ambiguous:
+        print(f"Note: {ref!r} also names a path here; taken as a ref "
+              f"(pinned with `--`, not left to git's guess).")
+
+    # #756: identical before/after is the one signal that nothing moved, and in
+    # the original report it was printed unflagged directly above `Working
+    # tree: clean` — which together read as a successful switch. Say it.
+    if prev_branch == branch and prev_sha == head_sha and prev_sha:
+        print(f"# no branch change occurred — already on {branch}@{head_sha}")
 
     # Tracking + ahead/behind
     upstream_res = _git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"])
