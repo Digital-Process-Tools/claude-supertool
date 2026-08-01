@@ -28,18 +28,36 @@ from _git_common import use_utf8_stdout  # noqa: E402
 _MARKER_RE = re.compile(r"^(<{7,}|>{7,})(\s|$)")
 
 
+# Shell convention for "killed by a timeout", as in presets/git/status.py.
+TIMEOUT_RC = 124
+
+
 def _git(args: list[str], timeout: int = 10) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["git"] + args,
-        capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace",
-    )
+    cmd = ["git"] + args
+    try:
+        return subprocess.run(
+            cmd,
+            capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace",
+        )
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=TIMEOUT_RC, stdout="",
+            stderr=f"timed out after {timeout}s",
+        )
 
 
-def _list_conflicts() -> list[str]:
+def _list_conflicts() -> tuple[list[str], str]:
+    """`(paths, why_unavailable)` — three states, not two (#650).
+
+    The `Remaining: N` line at the end of a resolve is followed by
+    `Next: git-commit ...` when N is 0, so folding "git did not answer" into
+    the same `[]` that means "everything is resolved" ends in a commit over
+    live markers. Same defect and same fix as `presets/git/conflicts.py`.
+    """
     res = _git(["diff", "--name-only", "--diff-filter=U"])
     if res.returncode != 0:
-        return []
-    return [l for l in res.stdout.splitlines() if l.strip()]
+        return [], (res.stderr.strip() or f"git exited {res.returncode}")
+    return [l for l in res.stdout.splitlines() if l.strip()], ""
 
 
 def _union_file(path: str) -> tuple[bool, str]:
@@ -398,7 +416,13 @@ def main() -> int:
         print("ERROR: not inside a git repository.")
         return 1
 
-    all_conflicts = _list_conflicts()
+    all_conflicts, unavailable = _list_conflicts()
+    if unavailable:
+        print("# git-resolve")
+        print(f"Conflicts: UNKNOWN — `git diff --name-only --diff-filter=U` "
+              f"did not answer: {unavailable}")
+        print("Nothing was inspected, so nothing was resolved. Re-run.")
+        return 1
     if not all_conflicts:
         print("# git-resolve")
         print("No conflicted files. Nothing to resolve.")
@@ -464,7 +488,13 @@ def main() -> int:
     for path, err in failed:
         print(f"  ✗ {path}: {err}")
 
-    remaining = _list_conflicts()
+    remaining, remaining_unavailable = _list_conflicts()
+    if remaining_unavailable:
+        print(f"\nResolved: {len(resolved)} | Failed: {len(failed)} | "
+              f"Remaining: UNKNOWN — git did not answer: {remaining_unavailable}")
+        print("Do NOT continue the merge on this report — re-run to confirm "
+              "nothing is still conflicted.")
+        return 1
     print(f"\nResolved: {len(resolved)} | Failed: {len(failed)} | Remaining: {len(remaining)}")
     if remaining:
         print("Still conflicted:")
