@@ -27,15 +27,16 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import _checks  # noqa: E402  (the one check tally, shared with gh-pr / gh-prs)
 from _env import env_int  # noqa: E402  (the one numeric-knob reader)
-from _git_common import use_utf8_stdout  # noqa: E402
+from _git_common import TIMEOUT_RC, use_utf8_stdout  # noqa: E402
+from _git_common import _git as _spawn_git  # noqa: E402
 
 
+# This preset's own budget, and lower than the shared 10s on purpose: every
+# git call here is a courtesy line on a report the caller wants back fast, and
+# none of them writes anything. Kept as a per-preset number rather than folded
+# into `_git_common` for that reason — pinned by
+# test_git_timeout_disclosure_650.py::test_the_suite_budget_does_not_move_the_product_default.
 _GIT_TIMEOUT_DEFAULT = 5
-
-# Shell convention for "killed by a timeout" (coreutils `timeout`). Distinct
-# from any exit code git itself produces, so a caller checking `returncode != 0`
-# keeps working while a caller that wants to tell the two apart can.
-TIMEOUT_RC = 124
 
 INCOMPLETE_MARKER = "git-status INCOMPLETE"
 
@@ -102,19 +103,11 @@ def _git(args: list[str], timeout: int | None = None) -> subprocess.CompletedPro
     `0 ahead — branch has no own commits!`, a false alarm about the branch
     manufactured out of a fact about the machine.
     """
-    budget = _git_timeout(timeout)
-    cmd = ["git"] + args
-    try:
-        return subprocess.run(
-            cmd,
-            capture_output=True, text=True, timeout=budget, encoding="utf-8", errors="replace",
-        )
-    except subprocess.TimeoutExpired:
-        _UNANSWERED.append((" ".join(cmd), f"timed out after {budget}s"))
-        return subprocess.CompletedProcess(
-            args=cmd, returncode=TIMEOUT_RC, stdout="",
-            stderr=f"timed out after {budget}s",
-        )
+    budget = _git_timeout() if timeout is None else timeout
+    res = _spawn_git(args, timeout=budget)
+    if res.returncode == TIMEOUT_RC:
+        _UNANSWERED.append(("git " + " ".join(args), res.stderr))
+    return res
 
 
 def _reason(returncode: int, stderr: str) -> str:

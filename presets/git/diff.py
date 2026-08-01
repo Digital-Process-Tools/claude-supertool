@@ -30,14 +30,13 @@ from __future__ import annotations
 import json
 import os
 import re
-import subprocess
 import sys
 
 # Sibling import: runtime puts this dir on sys.path[0]; the test harness
 # loads scripts via importlib (no dir on path), so add it explicitly.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from _git_common import use_utf8_stdout  # noqa: E402
+from _git_common import _git, use_utf8_stdout  # noqa: E402
 
 MAX_FILES = 60
 MAX_FLAGS = 40
@@ -115,10 +114,6 @@ DEFAULT_FORBIDDEN_PATHS = [
     {"pattern": r"(^|/)\.aws/",
      "reason": "secret-shaped path — AWS profile directory"},
 ]
-
-
-def _git(args: list[str], timeout: int = 10) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(["git"] + args, capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace")
 
 
 def _json_env(key: str) -> tuple[list, str]:

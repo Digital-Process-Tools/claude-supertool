@@ -819,7 +819,11 @@ def _timeout_git(remote_sha: str, head: str = "head000aaaa",
         if args[:2] == ["rev-parse", "HEAD"]:
             return _proc((next(heads) if heads is not None else head) + "\n", 0)
         if args[0] == "push":
-            raise subprocess.TimeoutExpired(cmd="git push", timeout=timeout)
+            # Since #704 `_git_common._git` catches the expiry and hands back
+            # TIMEOUT_RC rather than letting `TimeoutExpired` escape. The
+            # assertions below are unchanged — what is being proved is still
+            # that a push which blew its budget is never reported as REJECTED.
+            return _proc("", push.TIMEOUT_RC, f"timed out after {timeout}s")
         if args[0] == "ls-remote":
             return _proc(f"{remote_sha}\trefs/heads/feat\n", 0) if remote_sha else _proc("", 1)
         return _proc("", 0)
@@ -887,7 +891,7 @@ def test_main_push_timeout_unreadable_remote_reports_unknown(capsys) -> None:
 def test_live_remote_sha_survives_ls_remote_timeout() -> None:
     """The verification probe must not turn into the crash it exists to prevent."""
     def fake_git(args, timeout=30):
-        raise subprocess.TimeoutExpired(cmd="git ls-remote", timeout=timeout)
+        return _proc("", push.TIMEOUT_RC, f"timed out after {timeout}s")
 
     with mock.patch.object(push, "_git", side_effect=fake_git):
         sha, why = push._live_remote_sha("origin", "feat")

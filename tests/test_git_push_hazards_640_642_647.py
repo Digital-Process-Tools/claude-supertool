@@ -319,8 +319,8 @@ def test_rebase_timeout_names_the_paused_worktree_and_the_way_out(
 def test_rebase_state_that_cannot_be_read_is_stated_not_guessed() -> None:
     """Three states, not two: unknown is an answer, not a default to 'clean'."""
     assert push._rebase_state() in ("in-progress", "not-started")
-    with mock.patch.object(push, "_git",
-                           side_effect=subprocess.TimeoutExpired("git", 1)):
+    with mock.patch.object(push, "_git", return_value=mock.Mock(
+            stdout="", stderr="timed out after 10s", returncode=push.TIMEOUT_RC)):
         assert push._rebase_state() == "unknown"
     with mock.patch.object(push, "_git",
                            return_value=mock.Mock(stdout="", stderr="", returncode=1)):
