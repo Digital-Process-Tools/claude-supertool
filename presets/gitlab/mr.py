@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -19,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))  # for _checks (#619)
 # (the branch-lookup result list), which would shadow a module import.
 from mrs import _conflict_label  # noqa: E402
 import _body  # noqa: E402  (the one body cap + disclosure — #698)
+import _untrusted  # noqa: E402  (the fence around tracker text — #694)
 import _checks  # noqa: E402  (named_disclosure/NAMED_CAP — shared with gh-pr, #619)
 
 DESCRIPTION_MAX = 2000
@@ -412,6 +414,70 @@ def _get_conflict_hunks(
     )
 
 
+# What a refname looks like when nobody is trying. Git permits a great deal
+# more — `;`, backtick, `$`, `&`, quotes, parentheses, spaces — and the source
+# branch of a merge request is named by whoever opened it (#694).
+_ORDINARY_REF = re.compile(r"^[A-Za-z0-9._/-]+$")
+
+
+def _ordinary_ref(ref: str) -> bool:
+    """True for a name that can be printed into a shell command untouched.
+
+    The leading-dash exclusion is not cosmetic: `-B` is inside the character
+    class above and is still an option, not a ref, and quoting does not stop a
+    shell word from being read as a flag.
+    """
+    return bool(ref) and not ref.startswith("-") and bool(_ORDINARY_REF.match(ref))
+
+
+def _shell_ref(ref: str) -> str:
+    """Quote a ref or path for a *printed* shell command (#694).
+
+    The "To resolve:" block is not executed by supertool — it is printed for a
+    human or an agent to paste. That is far enough from running it to make this
+    hardening rather than a fix for a command injection, and close enough that
+    the printed line has to be safe anyway.
+
+    Ordinary names print bare. Quoting every branch to defend against the rare
+    one would make the common case harder to read, and a command block that is
+    tedious to read is one that gets skimmed instead of checked.
+
+    Option-shaped names are the limit of what quoting can do: `git checkout -B`
+    still reads `-B` as a flag inside quotes. They are quoted anyway so they
+    look wrong, and `_ref_warning` names them above the block — a name git
+    itself refuses to create arriving from the API is worth a reader stopping
+    over, and there is no in-line escape that makes it merely a ref.
+    """
+    if _ordinary_ref(ref):
+        return ref
+    quoted = shlex.quote(ref)
+    if quoted == ref:
+        # POSIX single-quote escaping is close-quote, escaped quote, reopen:
+        # '\''. Unreachable while _ORDINARY_REF is narrower than shlex's own
+        # safe set (a ref holding ' is never returned unchanged by shlex.quote),
+        # so this is the branch that would go wrong silently the day that set is
+        # widened — which is the failure mode this file exists to prevent.
+        quoted = "'" + ref.replace("'", "'\\''") + "'"
+    return quoted
+
+
+def _ref_warning(refs: list[str]) -> str | None:
+    """The line above the block when a name in it is not ordinary.
+
+    Quoting makes the command safe to run; this makes it visible that there was
+    a reason to quote. `None` when every name is ordinary — the common case
+    prints nothing extra, which is what keeps the notice worth reading.
+    """
+    odd = [r for r in refs if not _ordinary_ref(r)]
+    if not odd:
+        return None
+    plural = "s" if len(odd) != 1 else ""
+    return (
+        f"  # ⚠ {len(odd)} name{plural} below contain characters a shell acts "
+        f"on, and have been quoted — read the command before running it."
+    )
+
+
 def _format_error(stderr: str, resource: str, identifier: str) -> str:
     """Classify glab errors into actionable messages for LLMs."""
     s = stderr.lower()
@@ -433,13 +499,20 @@ def _render_note(note: dict, cap: int | None = COMMENT_MAX) -> str:
     uncapped how many comments printed, never how much of each — the same
     half-working escape hatch #698 found in this file's description handling,
     caught by the check #719 asked for.
+
+    The body is fenced (#694): a note reproducing this very format string used
+    to render as a second, earlier note that the MR never held. The cut notice
+    is supertool's own, so it is appended after the fence closes rather than
+    inside it — see the same call in gh-issue.
     """
-    author = (note.get("author") or {}).get("username", "?")
+    author = _untrusted.flat((note.get("author") or {}).get("username", "?"))
     body = note.get("body") or ""
+    trunc = ""
     if cap is not None and len(body) > cap:
-        body = body[:cap] + f"\n{_body.comment_cut_notice(cap)}"
+        body = body[:cap]
+        trunc = f"\n{_body.comment_cut_notice(cap)}"
     created = (note.get("created_at") or "")[:10]
-    return f"\n**{author}** ({created}):\n{body}\n"
+    return f"\n**{author}** ({created}):\n{_untrusted.fence(body)}{trunc}\n"
 
 
 def _fmt_kb(nbytes: int) -> str:
@@ -709,15 +782,16 @@ def main() -> int:
             print(f"url: {web_url}")
         return 0
 
-    title = d.get("title", "?")
+    # One-line fields are flattened rather than fenced — see presets/_untrusted.py.
+    title = _untrusted.flat(d.get("title", "?"))
     state = d.get("state", "?")
     iid = d.get("iid", arg)
-    source = d.get("source_branch", "?")
-    target = d.get("target_branch", "?")
-    author = (d.get("author") or {}).get("username", "?")
+    source = _untrusted.flat(d.get("source_branch", "?"))
+    target = _untrusted.flat(d.get("target_branch", "?"))
+    author = _untrusted.flat((d.get("author") or {}).get("username", "?"))
     web_url = d.get("web_url", "")
-    labels = ", ".join(d.get("labels", [])) or "none"
-    milestone = (d.get("milestone") or {}).get("title", "none")
+    labels = _untrusted.flat(", ".join(d.get("labels", [])) or "none")
+    milestone = _untrusted.flat((d.get("milestone") or {}).get("title", "none"))
     merge_status = d.get("merge_status") or d.get("detailed_merge_status") or "?"
     merge_commit = d.get("merge_commit_sha") or d.get("squash_commit_sha") or ""
     draft = d.get("draft", False) or d.get("work_in_progress", False)
@@ -747,8 +821,10 @@ def main() -> int:
     description, description_withheld = _body.cut(
         description_raw, None if full else DESCRIPTION_MAX)
 
-    # Header
+    # Header. The fence convention is declared before the first thing inside a
+    # fence — the reader this protects is the one who acts on the first line.
     draft_marker = " [DRAFT]" if draft else ""
+    print(_untrusted.banner())
     print(f"# !{iid} {title}{draft_marker}")
     print(f"State: {state} | Author: {author}")
     print(f"Branch: {source} -> {target}")
@@ -913,8 +989,14 @@ def main() -> int:
             print("  delete/modify and rename conflicts have no inline hunks).")
 
         print("\nTo resolve:")
-        print(f"  git checkout {source} && git fetch origin && git merge origin/{target}")
-        files_arg = " ".join(conflict_files)
+        ref_warning = _ref_warning([source, target, *conflict_files])
+        if ref_warning:
+            print(ref_warning)
+        print(
+            f"  git checkout {_shell_ref(source)} && git fetch origin "
+            f"&& git merge origin/{_shell_ref(target)}"
+        )
+        files_arg = " ".join(_shell_ref(f) for f in conflict_files)
         print(f"  # Resolve <<<<<<< markers in the files above, then:")
         print(f"  git add {files_arg} && git commit && git push")
 
@@ -959,7 +1041,7 @@ def main() -> int:
 
     # Description
     if description:
-        print(f"\n## Description\n{description}")
+        print(f"\n## Description\n{_untrusted.fence(description)}")
         if description_withheld:
             print(f"\n{_body.cut_notice(description_withheld)}")
     else:

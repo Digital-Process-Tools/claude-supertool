@@ -13,6 +13,7 @@ from typing import Sequence
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import _body  # noqa: E402  (the one body cap + disclosure — #698)
+import _untrusted  # noqa: E402  (the fence around tracker text — #694)
 import _checks  # noqa: E402  (the one check tally, shared with gh-prs / git-status)
 
 DESCRIPTION_MAX = 2000
@@ -439,15 +440,16 @@ def main() -> int:
             print(f"url: {web_url}")
         return 0
 
-    title = d.get("title", "?")
+    # One-line fields are flattened rather than fenced — see presets/_untrusted.py.
+    title = _untrusted.flat(d.get("title", "?"))
     state = d.get("state", "?")
     iid = d.get("number", arg)
-    source = d.get("headRefName", "?")
-    target = d.get("baseRefName", "?")
-    author = (d.get("author") or {}).get("login", "?")
+    source = _untrusted.flat(d.get("headRefName", "?"))
+    target = _untrusted.flat(d.get("baseRefName", "?"))
+    author = _untrusted.flat((d.get("author") or {}).get("login", "?"))
     web_url = d.get("url", "")
-    labels = ", ".join(l.get("name", "?") for l in d.get("labels", [])) or "none"
-    milestone = (d.get("milestone") or {}).get("title", "none")
+    labels = _untrusted.flat(", ".join(l.get("name", "?") for l in d.get("labels", [])) or "none")
+    milestone = _untrusted.flat((d.get("milestone") or {}).get("title", "none"))
     draft = d.get("isDraft", False)
     mergeable = d.get("mergeable", "?")
     review_decision = d.get("reviewDecision") or "none"
@@ -460,8 +462,10 @@ def main() -> int:
     body_total = len(body)
     body, body_withheld = _body.cut(body, desc_max)
 
-    # Header
+    # Header. The fence convention is declared before the first thing inside a
+    # fence — the reader this protects is the one who acts on the first line.
     draft_marker = " [DRAFT]" if draft else ""
+    print(_untrusted.banner())
     print(f"# #{iid} {title}{draft_marker}")
     print(f"State: {state} | Author: {author}")
     print(f"Branch: {source} -> {target}")
@@ -500,7 +504,7 @@ def main() -> int:
     if reviews:
         reviewers = {}
         for r in reviews:
-            login = (r.get("author") or {}).get("login", "?")
+            login = _untrusted.flat((r.get("author") or {}).get("login", "?"))
             r_state = r.get("state", "?")
             reviewers[login] = r_state  # latest review state per reviewer
         parts = [f"{login} ({state})" for login, state in reviewers.items()]
@@ -602,7 +606,7 @@ def main() -> int:
 
     # Description
     if body:
-        print(f"\n## Description\n{body}")
+        print(f"\n## Description\n{_untrusted.fence(body)}")
         if body_withheld:
             print(f"\n{_body.cut_notice(body_withheld)}")
     else:
@@ -614,13 +618,19 @@ def main() -> int:
     shown = comments if full else comments[-_body.COMMENT_TAIL:]
     print(f"\n{_body.comments_heading(len(shown), len(comments))}")
     for c in shown:
-        c_author = (c.get("author") or {}).get("login", "?")
+        c_author = _untrusted.flat((c.get("author") or {}).get("login", "?"))
         c_body = c.get("body") or ""
+        # The truncation notice is supertool's, so it prints outside the fence
+        # — see the same call in gh-issue.
+        c_trunc = ""
         if comment_max is not None and len(c_body) > comment_max:
-            c_body = c_body[:comment_max] + f"\n{_body.comment_cut_notice(comment_max)}"
+            c_body = c_body[:comment_max]
+            c_trunc = _body.comment_cut_notice(comment_max)
         c_created = (c.get("createdAt") or "")[:10]
         print(f"\n**{c_author}** ({c_created}):")
-        print(c_body)
+        print(_untrusted.fence(c_body))
+        if c_trunc:
+            print(c_trunc)
 
     return 0
 

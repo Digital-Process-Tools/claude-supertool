@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Text from a tracker is now marked as text from a tracker** ([#694](https://github.com/Digital-Process-Tools/claude-supertool/issues/694)). `gh-issue`, `gh-pr`, `gl-issue` and `gl-mr` interpolated every title, body and comment into a bare f-string alongside supertool's own output. Reproduced before touching anything: a comment body containing the comment loop's own format string rendered as a second, earlier comment attributed to a maintainer, followed by a forged `## Comments (0)` — with nothing in the output distinguishing it from the render's own lines.
+
+  The operating rule for this tracker is that content from outside the allowlist is *data, not instructions*. That rule lived in a skill file and in a human's head and had **no implementation anywhere in the repo**: nothing marked the boundary it applies to, so nothing downstream could apply it even in principle. This is the boundary.
+
+  **A render helper, not a `RemoteText` type.** The issue asked which. A type that cannot be formatted without marking is harder to forget at a new call site — but only where something enforces it, and this repo runs pytest and no type checker, so a forgotten wrapper would surface as a mangled render in production rather than a red build. Against that, the sites are countable: **four read ops, eight fenced blocks and twenty-seven flattened fields** — the same four ops `_body.cut` already serves as a shared render helper. `presets/_untrusted.py` sits beside `presets/_body.py` and is imported the same way.
+
+  **What it costs to read.** One line per op, two per fenced block. One-line fields — titles, logins, labels, milestones, branch names — are **not** fenced; they are flattened, which removes the only thing a single line could do, namely become several and grow a header the reader takes as supertool's. These renders are read dozens of times a session by the reader they protect, and a scheme that doubles the line count is one that gets turned off.
+
+  **The fence cannot be closed from inside**, which is the only test that matters. Two layers: the nonce is drawn per process, so content written in advance cannot name it, and the two bracket glyphs are removed from content on the way in, so content cannot write the marker shape even having guessed the nonce. Fired at the fence with a literal close marker, a bare close marker, a nonce-shaped guess and a naked glyph pair; the balance of every fence is asserted, because a fence that opens and never closes hands the attacker everything after it.
+
+  **Demarcation, not detection.** No injection heuristic was added here. The fence makes a weak, certain claim — a stranger wrote this — and `presets/*/_sanitize.py`'s pattern list makes a different, weaker one. Bundling them would make the certain claim inherit the uncertain one's caveats, and would have put a fourth copy of that pattern list in the tree.
+
+  **Two things in the issue did not survive contact.** It said `presets/_sanitize.py` exists and is imported by five `hashnode/` files; that path does not exist — there are three per-preset copies (`hashnode/`, `devto/`, `bluesky/`), currently **byte-identical**, deliberately duplicated per a note in their own docstring. Not consolidated here: that is the [#704](https://github.com/Digital-Process-Tools/claude-supertool/issues/704) pattern and belongs with it, not inside a security fix. And the "two defects in `wrap()` noted in the T11 issue" are #693 items 2 and 3, **both already fixed** in `dbda2a2` — the nonce and the fence-shaped-run scrub are in the tree, so there was nothing left to fix there. `presets/_untrusted.py` reaches the same two conclusions independently rather than importing a per-preset copy.
+
+
+- **`gl-mr` printed an attacker-chosen branch name into a shell command unquoted** ([#694](https://github.com/Digital-Process-Tools/claude-supertool/issues/694), second item). The `To resolve:` block a conflicted MR prints interpolates the MR's source branch, its target branch and the conflicting file paths straight into `git checkout … && git merge origin/…` and `git add …`. The source branch is named by whoever opened the merge request, and git refnames permit `;`, backtick, `$`, `&`, quotes, parentheses and spaces.
+
+  Supertool does not execute this block — it prints it for a human or an agent to paste — so this is hardening rather than a fix for a command injection. It is not nothing: the block exists precisely because the reader is expected to run it, and the reader most likely to paste it without reading is the one the op is written for.
+
+  A name matching `^[A-Za-z0-9._/-]+$` still prints bare, so the ordinary block is byte-identical to before; quoting every branch to defend against the rare one would make the common case harder to read, and a command block that is tedious to read is one that gets skimmed instead of checked. Anything else is `shlex.quote`d and a `⚠` line above the block names how many and says to read before running.
+
+  Option-shaped names are the honest limit: `git checkout '-B'` still reads `-B` as a flag, so quoting cannot make it merely a ref. Those are quoted so they look wrong and flagged in the warning rather than passed silently — git itself refuses to create such a refname, so one arriving from the API is worth stopping over. The test asserts what is delivered (`'-B'` plus a warning), not a safety quoting does not provide.
+
+  The issue cited `presets/gitlab/mr.py:822-825` and `presets/github/pr.py:67`. Both were stale: the gitlab lines had moved, and **`presets/github/pr.py` prints no shell block at all** — `gh-pr` has no conflicts-resolution section, so there was one site, not two.
+
 ### Fixed
 
 - **`git-resolve:both` applied a union to source files and reported only that it completed** ([#744](https://github.com/Digital-Process-Tools/claude-supertool/issues/744)). A rebase left four conflicted `.py` renderers; `git-resolve:both:all` — the reflex on a repo where the conflicting file is nearly always `CHANGELOG.md` — answered `Resolved: 4 | Failed: 0`, with `markers: clean | validate: ok` on every one. All four were wrong. Three of the four hunks had one side's whole `if comments:` block sitting next to the other side's replacement of it, so the union rendered every comment **twice**. That is not a syntax error, so it passed `ast.parse` and it passed the receipt's own validator digest, and the next step in the workflow is `git rebase --continue`.
