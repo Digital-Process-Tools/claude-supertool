@@ -1340,7 +1340,9 @@ def test_dot_repeat_dd_same_call():
         r = st.op_vim(p, "gg\u241e""dd\u241e""j.")
         result = open(p, encoding="utf-8").read()
         lines = [l for l in result.split("\n") if l]
-        assert len(lines) <= 1, f"expected at most 1 line left, got: {result!r}\nreceipt: {r}"
+        assert lines == ["beta"], (
+            "expected `beta` alone — gg dd removes alpha, j moves to gamma, "
+            f". repeats the dd — got: {result!r}\nreceipt: {r}")
         assert "ERROR" not in r
     finally:
         _cleanup_persist(p, cache_dir)

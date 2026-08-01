@@ -32,11 +32,23 @@ import pytest
 
 from _toolchain_gate import (ToolchainPromiseBroken, js_promised,
                              posix_ci_promised, require_or_skip, which)
+from _workflow_parse import job_blocks, job_steps, matrix_os, run_blocks
 
 REPO = Path(__file__).resolve().parents[1]
-WORKFLOW = REPO / ".github" / "workflows" / "tests.yml"
 
 _SHEBANG = re.compile(rb"^#!.*\b(?:ba|da|z|k)?sh\b")
+
+#: A tracked channel test file, and the same name as a pytest argument inside a
+#: step's `run:` block. Discovered rather than listed — #730's second half: the
+#: workflow guard below named two of these while the job ran five, so three
+#: could have been dropped from CI without this file noticing. #605 and #609
+#: had already arrived without being added to the job, which is the same gap in
+#: the other direction. A list here would have needed the same edit the
+#: workflow did, at the same moment nobody made it.
+_CHANNEL_TEST_RE = re.compile(
+    r"^tests/test_notifiers_claude_channel_[A-Za-z0-9_]+\.py$")
+_CHANNEL_ARG_RE = re.compile(
+    r"tests/test_notifiers_claude_channel_[A-Za-z0-9_]+\.py")
 
 
 def _tracked() -> list[str]:
@@ -71,6 +83,17 @@ def shell_files() -> list[Path]:
             if _SHEBANG.match(handle.readline()):
                 found.append(path)
     return sorted(found)
+
+
+def channel_test_files() -> set[str]:
+    """Every tracked channel test file, by discovery.
+
+    Its non-emptiness is asserted by every caller, for the same reason
+    `shell_files()`'s is: a discovery bug here would render the guards below
+    green while checking nothing, which is #557 reproduced inside the fix for
+    #557 — and #731 in the file that names it.
+    """
+    return {rel for rel in _tracked() if _CHANNEL_TEST_RE.match(rel)}
 
 
 # --- shell syntax, on every leg -------------------------------------------
@@ -196,50 +219,166 @@ def test_the_promise_is_not_inferred_from_ci(monkeypatch) -> None:
     assert js_promised() is False
 
 
-def test_the_channel_tests_route_their_skips_through_the_gate() -> None:
+def test_the_channel_test_discovery_is_not_empty() -> None:
+    """A parametrize over an empty set collects nothing and renders green.
+
+    Same failure as `test_the_shell_population_is_not_empty` guards against,
+    one directory over: if `git ls-files` cannot answer, every channel guard
+    below silently checks no file at all and the board says it checked five.
+    """
+    assert channel_test_files(), (
+        "no channel test files discovered — git could not answer `ls-files`, "
+        "so the gate and workflow guards below are now checking nothing and "
+        "reporting a pass")
+
+
+@pytest.mark.parametrize("name", sorted(channel_test_files()))
+def test_the_channel_tests_route_their_skips_through_the_gate(name: str) -> None:
     """Pins the decision, not just its current effect.
 
     A bare `pytest.mark.skipif(shutil.which("bun") is None, ...)` here is what
     #557 is about: correct locally, and unable to fail in the job that installs
     bun.
+
+    Over every channel file rather than the two this named until #731. The
+    other three were added to the workflow and never to this list, so a raw
+    `skipif` in #605, #609 or #612 would have skipped silently in the one job
+    that can run them and left the leg green.
     """
-    for name in ("tests/test_notifiers_claude_channel_550.py",
-                 "tests/test_notifiers_claude_channel_554.py"):
-        source = (REPO / name).read_text(encoding="utf-8")
-        assert "require_or_skip(" in source, name
-        assert "promised=js_promised()" in source, name
-        assert "pytest.mark.skipif(" not in source, (
-            f"{name} has a raw skipif again — it will skip silently in the "
-            "notifiers job and the leg will still be green")
+    source = (REPO / name).read_text(encoding="utf-8")
+    assert "require_or_skip(" in source, name
+    assert "promised=js_promised()" in source, name
+    assert "pytest.mark.skipif(" not in source, (
+        f"{name} has a raw skipif again — it will skip silently in the "
+        "notifiers job and the leg will still be green")
 
 
-# --- the workflow, pinned -------------------------------------------------
+# --- the workflow, pinned structurally ------------------------------------
+#
+# #731. Every assertion in this section used to be a substring match against
+# the whole of `tests.yml`. Roughly two thirds of that file is comments
+# recording why each decision was made, so the needle and the prose describing
+# the needle are the same match — and prose survives the change it describes:
+#
+#   assert "oven-sh/setup-bun" in text, "nothing installs bun any more"
+#
+# passed for months on the strength of the comment saying bun is *not*
+# installed that way any more (#730). `assert "--no-cov" in notifiers` had the
+# identical shape and nobody had noticed: the comment "--no-cov because
+# pyproject's addopts carry a whole-suite 86% gate" sits eleven lines above the
+# flag and would have kept that guard green with the flag deleted.
+#
+# So these read the job's *steps* — `uses:`, `env:`, `run:` — via
+# `tests/_workflow_parse.py`. A comment can then say anything at all and no
+# assertion moves, and the question "what would have to be true for this to
+# fail?" has a product-shaped answer: delete the step, and it goes red.
 
 
-def _workflow() -> str:
-    return WORKFLOW.read_text(encoding="utf-8")
+_BUN_INSTALL_RE = re.compile(
+    r"npm\s+(?:i|install)\s+(?:-g|--global)\s+bun\b"
+    r"|curl\b[^\n]*\bbun\.sh/install")
+_TSC_RE = re.compile(r"\btsc\b[^\n]*--noEmit")
 
 
-def test_a_job_installs_bun_and_runs_the_channel_tests() -> None:
-    text = _workflow()
-    assert "notifiers:" in text, "the notifiers job is gone"
-    assert "oven-sh/setup-bun" in text, "nothing installs bun any more"
-    for name in ("tests/test_notifiers_claude_channel_550.py",
-                 "tests/test_notifiers_claude_channel_554.py"):
-        assert name in text, f"{name} is no longer executed by any job"
+def _notifiers_block() -> str:
+    block = job_blocks().get("notifiers")
+    assert block, (
+        "there is no `notifiers` job in tests.yml. It is the only job that "
+        "installs bun, so without it the channel tests skip on all fourteen "
+        "legs and the board is green over TypeScript nothing has executed")
+    return block
+
+
+def _notifiers_steps() -> list:
+    steps = job_steps(_notifiers_block())
+    assert steps, (
+        "no steps parsed out of the notifiers job — either the workflow's "
+        "shape moved or the indentation parser broke. Either way every "
+        "assertion below is now checking nothing and reporting a pass")
+    return steps
+
+
+def _channel_pytest_steps() -> list:
+    steps = [s for s in _notifiers_steps()
+             if "pytest" in s.run and _CHANNEL_ARG_RE.search(s.run)]
+    assert steps, (
+        "no step in the notifiers job runs any channel test file. The job "
+        "installs a toolchain and then runs nothing with it — a green leg "
+        "that proves less than no leg at all")
+    return steps
+
+
+def test_a_step_of_the_notifiers_job_actually_installs_bun() -> None:
+    """Read out of `uses:` and `run:`, never out of the file's prose.
+
+    The predecessor asserted `"oven-sh/setup-bun" in text`. That action was
+    dropped for `npm i -g bun@1.3.14` and the string survived only inside the
+    comment explaining the switch, so the assertion had been reporting on a
+    comment since the day the switch landed. Both installation routes are
+    accepted here because either is a real answer to "is bun on PATH for the
+    steps below"; what is not accepted is a file that merely mentions one.
+    """
+    steps = _notifiers_steps()
+    by_action = [s for s in steps if "setup-bun" in s.uses]
+    by_run = [s for s in steps if _BUN_INSTALL_RE.search(s.run)]
+    assert by_action or by_run, (
+        "no step of the notifiers job installs bun — neither a `uses:` naming "
+        "a setup-bun action nor a `run:` installing it from npm or bun.sh. "
+        "Every step after it needs bun on PATH, and the channel tests would "
+        "raise ToolchainPromiseBroken rather than skip, so this should be "
+        f"loud. Steps found: {[s.name or s.uses for s in steps]}")
+
+
+def test_the_job_runs_every_channel_test_file_the_repo_has() -> None:
+    """The set the job passes to pytest must equal the set that exists.
+
+    Both directions matter and both have already happened. #605 and #609
+    landed without being added to the job, so their tests had never executed
+    in CI — caught by hand while wiring #612 in. And until #731 this guard
+    named only the 550 and 554 files while the step ran five, so three could
+    have been dropped from the step without anything going red.
+
+    Comparing sets rather than listing names means neither can recur: a new
+    channel file fails this test until the workflow runs it, and a removed
+    argument fails it until the file goes too.
+    """
+    tracked = channel_test_files()
+    assert tracked, "no channel test files discovered — git could not answer"
+    named: set[str] = set()
+    for run in run_blocks(_notifiers_steps()):
+        if "pytest" in run:
+            named.update(_CHANNEL_ARG_RE.findall(run))
+    assert named == tracked, (
+        "the channel test files the notifiers job runs are not the channel "
+        "test files this repo has. The 12-leg matrix installs no bun, so this "
+        "job is the only place any of them executes — a file missing from it "
+        "has never run in CI and its green means nothing:\n"
+        f"  in the repo, not run by CI: {sorted(tracked - named)}\n"
+        f"  run by CI, not in the repo: {sorted(named - tracked)}")
 
 
 def test_the_channel_job_arms_the_promise() -> None:
-    """Without this the job's tests skip and it passes having run nothing."""
-    assert "SUPERTOOL_REQUIRE_JS: \"1\"" in _workflow(), (
-        "the notifiers job no longer arms SUPERTOOL_REQUIRE_JS, so a failed "
-        "bun install would skip the tests and leave the job green")
+    """Without this the job's tests skip and it passes having run nothing.
+
+    Asserted on the step's parsed `env:` mapping. The whole-file version could
+    have been satisfied by a comment quoting the variable — the neighbouring
+    comment quotes it as `SUPERTOOL_REQUIRE_JS=1` and missed only by spelling.
+    """
+    for step in _channel_pytest_steps():
+        assert step.env.get("SUPERTOOL_REQUIRE_JS") == "1", (
+            f"step {step.name!r} runs channel tests without arming "
+            "SUPERTOOL_REQUIRE_JS, so a failed bun install would skip them "
+            f"and leave the job green. Its env is {step.env}")
 
 
 def test_the_channel_job_type_checks_the_typescript() -> None:
     """`bunx tsc --noEmit` is the cheap half: it catches what the integration
     tests cannot, which is a type regression on a path they do not exercise."""
-    assert "tsc --noEmit" in _workflow()
+    steps = _notifiers_steps()
+    assert any(_TSC_RE.search(s.run) for s in steps), (
+        "no step of the notifiers job type-checks channel.ts. The integration "
+        "tests only cover the paths they walk; the type check is what covers "
+        f"the rest. Steps found: {[s.name or s.uses for s in steps]}")
 
 
 def test_the_channel_job_states_why_it_skips_windows() -> None:
@@ -248,16 +387,28 @@ def test_the_channel_job_states_why_it_skips_windows() -> None:
     `channel.ts` binds an AF_UNIX socket. Installing bun on `windows-latest`
     would add a leg that skips by platform and reports green — the exact shape
     of the defect being fixed, wearing the fix's clothes.
+
+    The first half is deliberately an assertion about prose, and that is not
+    #731's defect: the property being pinned *is* that the file explains its
+    platform scope, so a comment satisfying it is the correct answer rather
+    than an accidental one. The second half is not about prose, and used to
+    read `"windows" not in matrix` on a text slice — it now reads the parsed
+    `matrix.os` list, so the comment a few lines above it that contains the
+    word "windows-latest" can never be what answers.
     """
-    notifiers = _workflow().split("notifiers:", 1)[1]
-    header = notifiers.split("steps:")[0]
+    block = _notifiers_block()
+    header = block.split("steps:")[0]
     assert "AF_UNIX" in header, (
         "the notifiers job no longer explains its platform scope; the next "
         "reader will file 'why is windows missing' or, worse, add it")
-    matrix = header.split("matrix:", 1)[1]
-    assert "windows" not in matrix, (
+    platforms = matrix_os(block)
+    assert platforms, (
+        "the notifiers job declares no matrix.os, so this guard cannot tell "
+        "which platforms it runs on and is checking nothing")
+    assert not any("windows" in name for name in platforms), (
         "a windows leg here installs a toolchain for tests that skip by "
-        "platform and then reports green — #557's shape wearing #557's fix")
+        "platform and then reports green — #557's shape wearing #557's fix. "
+        f"matrix.os is {platforms}")
 
 
 def test_the_channel_job_disables_the_whole_suite_coverage_gate() -> None:
@@ -265,9 +416,74 @@ def test_the_channel_job_disables_the_whole_suite_coverage_gate() -> None:
 
     Two files cannot meet it, so without `--no-cov` this job fails for a reason
     that has nothing to do with `channel.ts`.
+
+    On the step's `run:`, not on the job text. The job text contains the
+    comment "--no-cov because pyproject's addopts carry a whole-suite 86%
+    gate", which would have held this guard green with the flag deleted —
+    a second live instance of #730's shape, found while fixing the first.
     """
-    notifiers = _workflow().split("notifiers:", 1)[1]
-    assert "--no-cov" in notifiers
+    for step in _channel_pytest_steps():
+        assert "--no-cov" in step.run, (
+            f"step {step.name!r} runs the channel tests without --no-cov, so "
+            "the whole-suite 86% coverage gate applies to two files that "
+            "cannot meet it and the job fails for an unrelated reason")
+
+
+# --- the step parser, so a discovery bug cannot read as a clean sheet ------
+
+
+def test_the_step_parser_finds_the_steps_that_exist() -> None:
+    names = [s.name or s.uses for s in _notifiers_steps()]
+    assert "Install bun" in names or any("setup-bun" in n for n in names), (
+        f"the notifiers job's steps no longer include a bun install: {names}")
+
+
+def test_the_step_parser_does_not_read_a_comment_as_a_step() -> None:
+    """#731 in one fixture: the prose says everything, the step does nothing.
+
+    If this parser ever let a comment reach `run` or `env`, every guard above
+    would degrade straight back into the whole-file substring match they
+    replaced — and it would do so silently, which is the defect itself.
+    """
+    fixture = "\n".join([
+        "    steps:",
+        "      - uses: actions/checkout@v7",
+        "      # Bun used to be installed via `oven-sh/setup-bun`, and this",
+        "      # step used to pass `--no-cov` and set SUPERTOOL_REQUIRE_JS.",
+        "      - name: Run something else entirely",
+        "        # tsc --noEmit and npm i -g bun both appear in this comment",
+        "        run: echo hello",
+    ])
+    steps = job_steps(fixture)
+    assert [s.name or s.uses for s in steps] == [
+        "actions/checkout@v7", "Run something else entirely"]
+    assert steps[1].run == "echo hello"
+    assert steps[1].env == {}
+    assert not _BUN_INSTALL_RE.search(steps[1].run)
+    assert not _TSC_RE.search(steps[1].run)
+    assert "--no-cov" not in steps[1].run
+    assert "setup-bun" not in steps[1].uses
+
+
+def test_the_step_parser_reads_block_scalars_and_env() -> None:
+    """A folded `run: >-` block and its sibling `env:` are the two shapes the
+    real workflow uses for the step this file cares about most."""
+    fixture = "\n".join([
+        "    steps:",
+        "      - name: Run the channel integration tests for real",
+        "        # SUPERTOOL_REQUIRE_JS is named in this comment and not set",
+        "        env:",
+        "          SUPERTOOL_REQUIRE_JS: \"1\"",
+        "        run: >-",
+        "          python -m pytest -n0 --no-cov",
+        "          tests/test_notifiers_claude_channel_550.py",
+    ])
+    steps = job_steps(fixture)
+    assert len(steps) == 1
+    assert steps[0].env == {"SUPERTOOL_REQUIRE_JS": "1"}
+    assert "--no-cov" in steps[0].run
+    assert _CHANNEL_ARG_RE.findall(steps[0].run) == [
+        "tests/test_notifiers_claude_channel_550.py"]
 
 
 # --- what stays uncovered, said out loud ---------------------------------
