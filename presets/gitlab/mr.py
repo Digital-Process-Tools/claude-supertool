@@ -452,7 +452,12 @@ def _shell_ref(ref: str) -> str:
         return ref
     quoted = shlex.quote(ref)
     if quoted == ref:
-        quoted = "'" + ref.replace("'", "'\\\\''") + "'"
+        # POSIX single-quote escaping is close-quote, escaped quote, reopen:
+        # '\''. Unreachable while _ORDINARY_REF is narrower than shlex's own
+        # safe set (a ref holding ' is never returned unchanged by shlex.quote),
+        # so this is the branch that would go wrong silently the day that set is
+        # widened — which is the failure mode this file exists to prevent.
+        quoted = "'" + ref.replace("'", "'\\''") + "'"
     return quoted
 
 
