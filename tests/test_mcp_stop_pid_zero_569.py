@@ -50,6 +50,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent / "presets" / "mcp"))
 sys.path.insert(0, str(Path(__file__).parent.parent / "presets"))
 
+from _preset_loader import load_preset_module  # noqa: E402
+
 # stop.py reaches _paths.runtime_dir(), which refuses outright where
 # os.geteuid does not exist (#544).
 pytestmark = pytest.mark.skipif(
@@ -195,7 +197,8 @@ class TestTheTwoSurfacesShareOneReader:
 
     def test_stop_and_status_read_pidfiles_with_the_same_function(self, stop_mod) -> None:
         import _paths  # noqa: PLC0415
-        import status  # noqa: PLC0415
+
+        status = load_preset_module("mcp", "status", prefix="mcp_")
 
         assert stop_mod.read_pid is _paths.read_pid
         assert status.read_pid is _paths.read_pid

@@ -67,7 +67,27 @@ def _make_repo(path: Path, name: str, with_remote: bool = False,
     # other files here.
     _git(["config", "user.email", "fixture@example.invalid"], path)
     _git(["config", "user.name", "fixture"], path)
-    (path / ".supertool.json").write_text('{"presets": ["git"]}\n')
+    # The op budget is raised for the fixture only, and the shipped default is
+    # not touched. `git-status` costs ~1.3s against its shipped 10s on an idle
+    # machine — seven times the headroom, and still not enough on a two-core
+    # Windows runner under `-n auto`, where each of its ~8 git spawns pays
+    # Defender and a slower process creation. It blew the budget on
+    # `windows-latest, 3.12` twice while `3.9`/`3.10`/`3.11` passed the same
+    # code, which is the signature of contention rather than of a defect.
+    #
+    # Same call as `SUPERTOOL_LINT_TIMEOUT=30` in `conftest.py`: a budget in the
+    # suite is a guard against an op that stalled, not a stopwatch on the
+    # runner, and this file asserts on which repository the op acted — never on
+    # how fast it did so. A genuine hang is still caught by the 180s ceiling on
+    # `_run_op`'s own `subprocess.run`.
+    #
+    # A project `ops` entry deep-merges key-by-key over the preset's, so naming
+    # `timeout` alone keeps `presets/git.json`'s cmd (see `_merge_presets`).
+    (path / ".supertool.json").write_text(
+        '{"presets": ["git"], "ops": {"git-status": {"timeout": 60},'
+        ' "git-commit": {"timeout": 60}, "git-push": {"timeout": 60},'
+        ' "git-diff": {"timeout": 60}}}\n'
+    )
     (path / f"{name}.txt").write_text(f"{name}\n")
     _git(["add", "-A"], path)
     _git(["commit", "-q", "-m", f"base {name}"], path)

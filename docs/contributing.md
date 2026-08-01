@@ -428,6 +428,45 @@ presets share), so it is restored between tests and the assertion keeps meaning
 what it says. Loosening the assertion, or asserting only when the output is
 non-empty, converts "this broke" into "this silently gave you something else".
 
+### Never reach a preset module by bare import
+
+`presets/*/` basenames are **op names**, not module names. Twenty of them are
+already claimed by more than one preset directory — `status`, `list`, `read`,
+`publish`, `issue`, `job`, `search`, `_auth`, `_common`, `_sanitize`, ... — and
+`sys.modules` has one slot for each. Every preset script also puts its own
+directory on `sys.path` at import and never takes it off, so by the time a
+fixture runs there are ~180 `presets`-flavoured entries on the path, ordered by
+whichever suite imported its preset first.
+
+So `import status` inside a test does not name a file. It names whichever of
+`presets/mcp/status.py` and `presets/git/status.py` xdist's work split put on
+the path first, and that is a property of the runner's core count. [#693] moved
+it by *adding an unrelated test file*: the split changed, `presets/git` was
+scheduled beside four `presets/mcp` suites for the first time, and 18 of them
+went red on a module they do not cover.
+
+Load it by absolute path under a preset-qualified name instead:
+
+```python
+from _preset_loader import load_preset_module
+
+status = load_preset_module("mcp", "status", prefix="mcp_")
+```
+
+`tests/_preset_loader.py` evicts the sibling shims, scopes the path edit to the
+`exec_module` call, and restores `sys.path` exactly as it found it — nothing is
+registered in `sys.modules`, so two presets' same-named modules can coexist in
+one worker. `test_git_status.py` and `test_status_swallowed_705.py` show the
+raw `spec_from_file_location` form for cases that need it.
+
+Binding the contested name once, early, in `conftest.py` is not the fix. It
+wins the race rather than removing it: the slot is still one slot two files
+claim, the next conftest edit or earlier-importing plugin flips it back, and it
+flips back silently — the same `AttributeError`, or the same `git-status`
+render inside an mcp assertion. `test_preset_basename_collision_726.py`
+AST-scans `tests/*.py` and fails on the shape, naming the file, the line, and
+the rival paths.
+
 ### Comparing rendered output
 
 If your test compares two rendered blocks to each other, **the thing that

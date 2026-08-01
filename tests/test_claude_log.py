@@ -21,7 +21,9 @@ import pytest
 PRESET_DIR = Path(__file__).resolve().parent.parent / "presets" / "claude-log"
 sys.path.insert(0, str(PRESET_DIR))
 
-import _common  # noqa: E402
+from _preset_loader import load_preset_module  # noqa: E402
+
+_common = load_preset_module("claude-log", "_common", prefix="claude_log_")
 
 
 # ---------- helpers ----------------------------------------------------------

@@ -30,6 +30,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent / "presets" / "mcp"))
 sys.path.insert(0, str(Path(__file__).parent.parent / "presets"))
 
+from _preset_loader import load_preset_module  # noqa: E402
+
 pytestmark = pytest.mark.skipif(
     not hasattr(os, "geteuid"),
     reason="status.py's runtime dir is ownership-checked; os.geteuid is required.",
@@ -43,9 +45,7 @@ def status_mod(tmp_path, monkeypatch):
     project = tmp_path / "project"
     project.mkdir()
     monkeypatch.chdir(project)
-    import status  # noqa: PLC0415
-
-    return status
+    return load_preset_module("mcp", "status", prefix="mcp_")
 
 
 def _pidfile(status_mod, h: str, body: str = "4242\n") -> Path:
