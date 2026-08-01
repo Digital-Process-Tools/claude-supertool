@@ -79,21 +79,78 @@ DEFAULT_RED_FLAGS = [
     {"pattern": r"^\|\|\|\|\|\|\|", "label": "conflict marker"},
 ]
 
+# Secret-shaped filenames, shipped on by default. `forbidden_paths` is project
+# policy, it appears in neither shipped config, and most repos never write any —
+# so the shipped state of this guard was *zero rules*, which cannot produce a
+# hit, which rendered as an affirmative "no forbidden paths" on every run. A
+# `.env` and an `id_rsa` went through the review op with the file list called
+# clean (#693).
+#
+# Three answers were available and this is the one chosen. Refusing to render a
+# verdict while unconfigured is `radar`'s precedent, but `radar` is opt-in
+# machinery and `git-diff` is the op you run before every commit: a refusal on
+# every unconfigured repo makes it annoying enough to stop using, and an
+# abandoned checker is worse than the defect. Disclosing "guard not configured"
+# is one line of permanent disclaimer that resolves nothing and flags nothing.
+# Shipping defaults is the only one of the three that makes the *shipped* state
+# a state that can fail — and it is the state nearly every user is in.
+#
+# Chosen to be safe on files projects commit on purpose: `.env.example` and its
+# siblings are excluded by name, and `id_rsa.pub` is a public key, so only the
+# private halves match. A default that cries wolf gets configured away, which
+# puts the user back in the always-passing state by a longer route.
+DEFAULT_FORBIDDEN_PATHS = [
+    {"pattern": r"(^|/)\.env(\.(?!example|sample|template|dist|defaults)[^/]+)*$",
+     "reason": "secret-shaped filename — .env files carry credentials"},
+    {"pattern": r"(^|/)id_(rsa|dsa|ecdsa|ed25519)$",
+     "reason": "secret-shaped filename — private SSH key"},
+    {"pattern": r"\.(pem|pfx|p12|jks|keystore|key)$",
+     "reason": "secret-shaped filename — private key or keystore"},
+    {"pattern": r"(^|/)\.(npmrc|pypirc|netrc)$",
+     "reason": "secret-shaped filename — registry or host credentials"},
+    {"pattern": r"(^|/)credentials(\.json)?$",
+     "reason": "secret-shaped filename — credential file"},
+    {"pattern": r"(^|/)service-account[^/]*\.json$",
+     "reason": "secret-shaped filename — service-account key"},
+    {"pattern": r"(^|/)\.aws/",
+     "reason": "secret-shaped path — AWS profile directory"},
+]
+
 
 def _git(args: list[str], timeout: int = 10) -> subprocess.CompletedProcess[str]:
     return subprocess.run(["git"] + args, capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace")
 
 
-def _json_env(key: str) -> list:
-    """Read a JSON-list config value from SUPERTOOL_<KEY>; [] on absent/malformed."""
+def _json_env(key: str) -> tuple[list, str]:
+    """Read a JSON-list config value from SUPERTOOL_<KEY> — three states, not two.
+
+    Returns `(rules, why_not_loaded)`. An empty `why` means there was nothing to
+    load, which is an answer. A non-empty `why` means a value was configured and
+    could not be used, which is a finding — and the caller must not let the
+    resulting zero rules render as zero hits (#693).
+
+    Absent and malformed both used to yield `[]`. A typo in `.supertool.json`
+    therefore disabled a guard silently, and the run it disabled still printed
+    the affirmative clean verdict.
+    """
     raw = os.environ.get(key, "")
     if not raw.strip():
-        return []
+        return [], ""
     try:
         data = json.loads(raw)
-        return data if isinstance(data, list) else []
-    except (json.JSONDecodeError, ValueError):
-        return []
+    except (json.JSONDecodeError, ValueError) as e:
+        return [], f"not valid JSON ({str(e).split(chr(58))[0]})"
+    if not isinstance(data, list):
+        return [], f"parsed as {type(data).__name__}, not a list of rules"
+    return data, ""
+
+
+def _join(items: list[str]) -> str:
+    """"a", "a or b", "a, b, or c" — the verdict names what actually ran."""
+    if len(items) < 2:
+        return items[0] if items else ""
+    head = ", ".join(items[:-1])
+    return f"{head}{',' if len(items) > 2 else ''} or {items[-1]}"
 
 
 def _resolve_base(arg: str) -> str:
@@ -339,11 +396,21 @@ def main() -> int:
             print(f"  {_mark('…')} truncated at {MAX_FILES} files")
             break
 
-    # Policy from .supertool.json (env), generic defaults otherwise
-    red_flags = DEFAULT_RED_FLAGS + _json_env("SUPERTOOL_RED_FLAGS_EXTRA")
-    forbidden = _json_env("SUPERTOOL_FORBIDDEN_PATHS")
-    pairing = _json_env("SUPERTOOL_TEST_PAIRING")
-    hints_cfg = _json_env("SUPERTOOL_HINTS")
+    # Policy from .supertool.json (env), on top of the shipped defaults. Each
+    # read carries why it did not load, so a broken value is a finding rather
+    # than silently zero rules.
+    red_flags_extra, red_why = _json_env("SUPERTOOL_RED_FLAGS_EXTRA")
+    forbidden_extra, forbidden_why = _json_env("SUPERTOOL_FORBIDDEN_PATHS")
+    pairing, pairing_why = _json_env("SUPERTOOL_TEST_PAIRING")
+    hints_cfg, hints_why = _json_env("SUPERTOOL_HINTS")
+    red_flags = DEFAULT_RED_FLAGS + red_flags_extra
+    forbidden = DEFAULT_FORBIDDEN_PATHS + forbidden_extra
+    unloaded = [(k, w) for k, w in (
+        ("SUPERTOOL_RED_FLAGS_EXTRA", red_why),
+        ("SUPERTOOL_FORBIDDEN_PATHS", forbidden_why),
+        ("SUPERTOOL_TEST_PAIRING", pairing_why),
+        ("SUPERTOOL_HINTS", hints_why),
+    ) if w]
 
     paths = [p for _, p in changed]
 
@@ -373,8 +440,20 @@ def main() -> int:
         for m in hint_msgs:
             print(f"  {m}")
 
+    if unloaded:
+        print(f"\n## {_mark('⚠')} Policy not loaded ({len(unloaded)})")
+        for key, why in unloaded:
+            print(f"  {key}  {_mark('—')}  {why} {_mark('—')} "
+                  f"its rules were NOT applied")
+
     if not (forbidden_hits or flag_hits or pairing_hits):
-        print(f"\n{_mark('✓')} No red flags, forbidden paths, or missing tests.")
+        # Name only the checks that ran. `_check_test_pairing` returns [] both
+        # for "every added file has its test" and for "there were no rules to
+        # run", and this line used to claim the first on behalf of the second.
+        ran = ["red flags", "forbidden paths"]
+        if pairing:
+            ran.append("missing tests")
+        print(f"\n{_mark('✓')} No {_join(ran)}.")
 
     if full:
         patch = _git(["diff"] + diff_args)

@@ -247,10 +247,14 @@ There is deliberately **no grace window** on this arm. The ~15min on the GitHub 
 
 | Key | Shape | Effect |
 |-----|-------|--------|
-| `forbidden_paths` | `[{pattern, reason}]` | Warn when a changed file's path matches `pattern` (regex); `reason` is printed verbatim. |
+| `forbidden_paths` | `[{pattern, reason}]` | Warn when a changed file's path matches `pattern` (regex); `reason` is printed verbatim. **Added to the shipped secret-shaped defaults, not a replacement for them** — see below. |
 | `test_pairing` | `[{src, test}]` | For each **added** source file matching `src` (regex with named groups), warn if the derived `test` path exists neither in the diff nor on disk. `test` is a template — `{name}` placeholders are filled from `src`'s named captures. |
 | `hints` | `[{added, message}]` | Print `message` once if any **added** path matches `added` (regex) — for follow-up reminders. |
 | `red_flags_extra` | `[{pattern, ext?, label}]` | Extra added-line red flags on top of the defaults. `pattern` (regex) is tested per added line; optional `ext` (e.g. `.js`) scopes it to one extension; `label` names the hit. |
+
+**The forbidden-path guard ships with rules** ([#693](https://github.com/Digital-Process-Tools/claude-supertool/issues/693)). It used to hold only what `forbidden_paths` gave it, so a repo that had configured nothing ran the guard over an empty rule set and got an affirmative `✓ … no forbidden paths` for free — a `.env` and an `id_rsa` passed review that way. `DEFAULT_FORBIDDEN_PATHS` now covers secret-shaped names: `.env` (but not `.env.example`/`.sample`/`.template`/`.dist`/`.defaults`), `id_rsa`/`id_dsa`/`id_ecdsa`/`id_ed25519` (but not the `.pub` halves), `*.pem`/`*.pfx`/`*.p12`/`*.jks`/`*.keystore`/`*.key`, `.npmrc`/`.pypirc`/`.netrc`, `credentials.json`, `service-account*.json`, and anything under `.aws/`. They are heuristics on filenames — not a secret scanner, and not a substitute for one.
+
+**Two related behaviours.** A policy value that cannot be parsed is now reported rather than treated as an empty one: a malformed `forbidden_paths`, `test_pairing`, `hints` or `red_flags_extra` prints under `⚠ Policy not loaded`, names the key, and states that its rules were not applied — previously a typo disabled a guard silently and the run still printed a clean verdict. And the clean verdict names only the checks that ran, so with no `test_pairing` configured it reads `✓ No red flags or forbidden paths.` rather than claiming a test-pairing check that had no rules.
 
 ```json
 {

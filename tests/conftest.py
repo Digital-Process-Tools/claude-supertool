@@ -38,6 +38,19 @@ if (_MCP_PRESETS / "_paths.py").is_file():
     sys.path.insert(0, str(_MCP_PRESETS))
     import _paths  # noqa: E402,F401
 
+    # `status` is an ambiguous top-level module name: presets/mcp/status.py and
+    # presets/git/status.py both claim it, and four mcp suites reach the first
+    # with a bare `import status`. Whichever preset dir happens to sit earlier on
+    # sys.path inside a given xdist worker decides which one they get, so those
+    # suites were passing on test *distribution* rather than on anything they
+    # assert — the git module had simply never been scheduled beside them. Adding
+    # one test file to the repo (#693) reshuffled the split and turned 18 of them
+    # red without touching a line they cover. Binding the name once, here, before
+    # any suite can insert a competing directory, makes the answer identical on
+    # every worker. status.py's top level is imports and constants only.
+    if (_MCP_PRESETS / "status.py").is_file():
+        import status  # noqa: E402,F401
+
 # `presets/_env.py` is imported by 29 presets under the single module name
 # `_env`, so all of them share one `_ANNOUNCED` ledger — by design: `env_int`
 # says each distinct notice at most once per process, because a knob read once

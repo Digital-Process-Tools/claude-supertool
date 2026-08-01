@@ -8,12 +8,17 @@ the next op call.
 Defense layers:
 
 1. Wrapping — every chunk of external text is wrapped in
-   `<<UNTRUSTED CONTENT — START>> ... <<END>>` markers. The LLM is
-   trained to treat tagged regions as data, not instructions.
+   `<<UNTRUSTED CONTENT — START <nonce>>> ... <<END ... <nonce>>>`
+   markers. The LLM is trained to treat tagged regions as data, not
+   instructions. The nonce is per call and the wrapped text cannot
+   predict it, so content cannot close the region from inside; any
+   fence-shaped run in the content is neutralised on the way in (#693).
 
 2. Heuristic flag — known injection patterns get prefixed with a
    ⚠ POSSIBLE INJECTION warning so the human reviewer notices before
-   firing the next op.
+   firing the next op. A *clean* scan says so as well: silence would be
+   the same output as content that was never scanned at all, and the two
+   are not the same claim.
 
 3. (Action gate, separate) — engagement queue + Florian-fires-only.
 
@@ -23,6 +28,20 @@ each preset stays self-contained. Keep them in sync.
 from __future__ import annotations
 
 import re
+import secrets
+
+# What a clean scan says. Printing nothing made "the scanner found nothing" and
+# "there was nothing scanning" one output — the house defect (#693), on the
+# layer whose whole job is to be suspicious. It states the limit of the claim
+# too: this is a pattern list, not a proof.
+SCAN_CLEAN_NOTE = (
+    "[scan] no known injection patterns matched (heuristic — not a guarantee)"
+)
+
+# Anything fence-shaped in the content itself. Neutralised rather than removed,
+# so the reader can see something was there.
+_FENCE_LIKE = re.compile(r"<<\s*(?:END\s+)?UNTRUSTED[^>]*>>", re.IGNORECASE)
+_NEUTRALISED = "[fence marker in content — neutralised]"
 
 # Known injection trigger phrases — case-insensitive.
 _PATTERNS = [
@@ -43,7 +62,14 @@ _BASE64_BLOB = re.compile(r"[A-Za-z0-9+/]{80,}={0,2}")
 
 
 def detect(text: str) -> list[str]:
-    """Return a list of detected injection-pattern names. Empty = clean."""
+    """Return a list of detected injection-pattern names. Empty = clean.
+
+    Empty is an answer, not an absence of one — but only the caller can render
+    it, since this returns a list and prints nothing. `wrap` states it; see
+    SCAN_CLEAN_NOTE. `safe_short` deliberately does not: it renders once per
+    row of every list and browse, and a disclaimer on every row is one nobody
+    reads on the row that needed it.
+    """
     if not text:
         return []
     hits: list[str] = []
@@ -61,12 +87,22 @@ def wrap(text: str, source: str = "external") -> str:
     if not text:
         return text
     hits = detect(text)
-    header = f"<<UNTRUSTED {source.upper()} CONTENT — START>>"
-    footer = "<<END UNTRUSTED CONTENT>>"
+    # A fixed delimiter is one the attacker can write down. The old markers were
+    # constants, so a post body containing `<<END UNTRUSTED CONTENT>>` closed the
+    # region early and everything after it read as trusted — and the test suite
+    # asserted only that the markers were *present*, which stayed true while it
+    # happened (#693). Two layers, because either alone is thin: a per-call nonce
+    # the content cannot guess, and a scrub of fence-shaped runs so a human
+    # skimming the block is not fooled either.
+    nonce = secrets.token_hex(4)
+    body = _FENCE_LIKE.sub(_NEUTRALISED, text)
+    header = f"<<UNTRUSTED {source.upper()} CONTENT — START {nonce}>>"
+    footer = f"<<END UNTRUSTED CONTENT {nonce}>>"
     if hits:
-        warning = f"⚠ POSSIBLE INJECTION — review carefully ({', '.join(hits[:3])})\n"
-        return f"{warning}{header}\n{text}\n{footer}"
-    return f"{header}\n{text}\n{footer}"
+        lead = f"⚠ POSSIBLE INJECTION — review carefully ({', '.join(hits[:3])})\n"
+    else:
+        lead = f"{SCAN_CLEAN_NOTE}\n"
+    return f"{lead}{header}\n{body}\n{footer}"
 
 
 def safe_short(text: str, max_len: int = 200) -> str:

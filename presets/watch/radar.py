@@ -108,7 +108,11 @@ NO_TIERS = ('radar: no tiers configured. Add ops.radar.radar_tiers to .supertool
 
 
 def ensure_watcher(source: str, scope: str, only: list[str] | None = None) -> str:
-    """One live poller for a slot. "alive"|"spawned"|"failed"|"capped".
+    """One live poller for a slot.
+
+    "alive"|"spawned"|"failed"|"capped"|"unclaimable" — the last is #693's third
+    state, passed straight through from `start_poller`: the slot could not be
+    claimed, so nothing was spawned and nothing was established about it.
 
     Idempotent, because radar runs on a loop and n pollers over one slot means
     n copies of every event. `start_poller` claims the slot before the fork:
