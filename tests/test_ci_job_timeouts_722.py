@@ -55,27 +55,16 @@ inner guard so the inner one can always fire first.
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
 import pytest
 
-REPO = Path(__file__).resolve().parents[1]
-WORKFLOW = REPO / ".github" / "workflows" / "tests.yml"
+from _workflow_parse import job_blocks, job_budget, job_steps
 
-#: A key at exactly two spaces of indent inside the top-level `jobs:` mapping.
-#: PyYAML is deliberately not used: CI installs pytest, pytest-cov,
-#: pytest-xdist and pytest-timeout and nothing else, so importing `yaml` here
-#: would make this guard skip on all fourteen legs — silence in the file whose
-#: subject is a silent wait. `tests/test_yaml_check.py` already has to gate
-#: itself on PyYAML's presence for that reason.
-_JOB_RE = re.compile(r"^  ([A-Za-z0-9_.-]+):\s*(?:#.*)?$")
-
-#: Four spaces: a *job's* budget. A step's would be at eight or more, under a
-#: `- name:`, and must not be mistaken for its job's — a step ceiling leaves the
-#: rest of the job unbounded.
-_JOB_TIMEOUT_RE = re.compile(r"^    timeout-minutes:\s*(\d+)\s*$", re.M)
-
-#: pytest-timeout's per-test budget, wherever a step arms it.
+#: pytest-timeout's per-test budget. Matched against a *step's* `run:` block
+#: and never against the job text: until #731 it was searched across the whole
+#: `notifiers` block, and the comment justifying the flag quotes it twelve
+#: lines above the flag, so deleting the real `--timeout=30` left this file
+#: 14/14 green.
 _PER_TEST_RE = re.compile(r"--timeout[= ](\d+)")
 
 #: Floors. Below these a budget stops being a hang-guard and becomes a
@@ -92,42 +81,11 @@ MIN_BUDGET_MIN = {"pytest": 20, "notifiers": 5}
 MAX_BUDGET_MIN = {"pytest": 60, "notifiers": 30}
 
 
-def _text() -> str:
-    return WORKFLOW.read_text(encoding="utf-8")
-
-
-def job_blocks(text: str | None = None) -> dict[str, str]:
-    """Map each job name to the raw text of its block.
-
-    Takes the text so the parser can be exercised against fixtures below; a
-    parser that silently found nothing would render this whole file green while
-    checking no job at all, which is the #557 shape.
-    """
-    lines = (_text() if text is None else text).splitlines()
-    blocks: dict[str, list[str]] = {}
-    current: str | None = None
-    in_jobs = False
-    for line in lines:
-        if not line.startswith((" ", "\t")) and line.strip():
-            in_jobs = line.split("#", 1)[0].strip() == "jobs:"
-            current = None
-            continue
-        if not in_jobs:
-            continue
-        match = _JOB_RE.match(line)
-        if match:
-            current = match.group(1)
-            blocks[current] = []
-            continue
-        if current is not None:
-            blocks[current].append(line)
-    return {name: "\n".join(body) for name, body in blocks.items()}
-
-
-def job_budget(block: str) -> int | None:
-    """The job-level `timeout-minutes` of a job block, or None if it has none."""
-    found = _JOB_TIMEOUT_RE.findall(block)
-    return int(found[0]) if found else None
+#: `job_blocks` and `job_budget` now live in `tests/_workflow_parse.py`,
+#: shared with `test_ci_non_python_coverage_557.py` since #731 — that file
+#: needed the same indentation reader one level deeper (steps, not just jobs)
+#: and had no business growing a second parser beside this one. The fixture
+#: tests below still exercise them, through the import.
 
 
 # --- the parser, so a discovery bug cannot read as a clean sheet ------------
@@ -247,21 +205,47 @@ def test_the_two_job_classes_do_not_share_one_number() -> None:
 # --- the inner guard on the step that actually hung ------------------------
 
 
+def _hung_step():
+    """The step that hung, found by name among the notifiers job's steps."""
+    steps = job_steps(job_blocks()["notifiers"])
+    assert steps, (
+        "no steps parsed out of the notifiers job — the guards below are now "
+        "checking nothing and reporting a pass")
+    named = [s for s in steps
+             if s.name == "Run the channel integration tests for real"]
+    assert named, (
+        "the channel integration step was renamed or removed; this guard no "
+        f"longer knows which step it is checking. Steps: "
+        f"{[s.name or s.uses for s in steps]}")
+    return named[0]
+
+
+def _per_test_budget(step) -> int | None:
+    found = _PER_TEST_RE.findall(step.run)
+    return int(found[0]) if found else None
+
+
 def test_the_step_that_hung_arms_a_per_test_timeout() -> None:
     """pytest-timeout was already installed by both jobs and used by neither.
 
     A job ceiling can only say "this leg did not finish". The per-test budget
     names the test and dumps the stack of the thread stuck in it, which is the
     one artefact #554 needs and the one a wall-clock kill cannot produce.
+
+    #731: this used to search the whole `notifiers` job block, comments and
+    all. The comment justifying the flag quotes it — "`--timeout=30` (#722) is
+    the inner half of the guard" — twelve lines above the flag itself, so
+    deleting the real `--timeout=30` from the run block left this file 14/14
+    green. Verified by deleting it. That is #730's shape sitting in the file
+    that was held up as the structural alternative to #730, which is the best
+    argument there is that the class was worth sweeping for on purpose.
     """
-    block = job_blocks()["notifiers"]
-    assert "Run the channel integration tests for real" in block, (
-        "the channel integration step was renamed; this guard no longer knows "
-        "which step it is checking")
-    assert _PER_TEST_RE.search(block), (
+    step = _hung_step()
+    assert _per_test_budget(step) is not None, (
         "the channel integration step no longer arms pytest-timeout, so a "
         "hung socket wait is bounded only by the job ceiling — which reports "
-        "'the leg did not finish' and names no test")
+        "'the leg did not finish' and names no test. Its run block is:\\n"
+        f"{step.run}")
 
 
 def test_the_job_ceiling_sits_above_the_inner_budget_it_guards() -> None:
@@ -271,10 +255,15 @@ def test_the_job_ceiling_sits_above_the_inner_budget_it_guards() -> None:
     one, so it must exceed it. A job ceiling below the per-test budget could
     never let the per-test guard fire — the leg would be killed first, and the
     traceback that names the hung test would never be written.
+
+    The inner number now comes from the step's `run:`. Read off the job text it
+    came from the comment, which held the same figure by coincidence — so a
+    step raised to `--timeout=3000` against a 10-minute ceiling would have been
+    compared against the comment's stale 30 and passed.
     """
-    block = job_blocks()["notifiers"]
-    inner = int(_PER_TEST_RE.search(block).group(1))
-    outer = job_budget(block)
+    inner = _per_test_budget(_hung_step())
+    outer = job_budget(job_blocks()["notifiers"])
+    assert inner is not None, "no per-test budget to compare the ceiling to"
     assert outer is not None and outer * 60 > inner, (
         f"the notifiers job ceiling ({outer} min) is at or under its own "
         f"per-test budget ({inner}s). The inner guard can then never fire, so "
@@ -291,9 +280,17 @@ def test_the_pytest_job_deliberately_has_no_per_test_budget() -> None:
     a contended windows runner is the exact mistake those three issues are
     about, one layer up. The job ceiling bounds it; the finer guard waits for
     evidence. If that changes, delete this test and say so in the changelog.
+
+    Over the steps' `run:` blocks rather than the job text. This assertion is a
+    negative, so the whole-job version failed in the safe direction — a comment
+    mentioning `--timeout=N` anywhere in the pytest job would have turned it
+    red for no reason. A false red is cheaper than a false green and still not
+    free: it is a guard nobody trusts, which is how a guard stops being read.
     """
-    block = job_blocks()["pytest"]
-    assert not _PER_TEST_RE.search(block), (
-        "the pytest job now arms a per-test timeout. That may well be right — "
+    steps = job_steps(job_blocks()["pytest"])
+    assert steps, "no steps parsed out of the pytest job"
+    armed = [s.name for s in steps if _PER_TEST_RE.search(s.run)]
+    assert not armed, (
+        f"steps {armed} now arm a per-test timeout. That may well be right — "
         "but it needs per-test timings from a windows leg behind it, not a "
         "number chosen from a laptop. Record them and remove this test.")

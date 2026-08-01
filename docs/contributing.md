@@ -667,6 +667,58 @@ ceiling bounds it; the finer guard waits for evidence.
 [#715]: https://github.com/Digital-Process-Tools/claude-supertool/pull/715
 [#722]: https://github.com/Digital-Process-Tools/claude-supertool/issues/722
 
+### Never assert a property of a workflow by grepping the workflow
+
+`.github/workflows/tests.yml` is 183 lines of which roughly two thirds are
+comments explaining why each decision was made. A comment is prose about the
+code; a substring match cannot tell the two apart. So
+
+```python
+assert "oven-sh/setup-bun" in workflow_text, "nothing installs bun any more"
+```
+
+went on passing after the action was dropped for `npm i -g bun@1.3.14` —
+because the string survived inside the comment recording the switch. The test
+was kept green by the prose documenting the change it existed to notice
+([#730]). The same file did it a second time with `--no-cov`, and
+`test_ci_job_timeouts_722.py` — which was the *structural* alternative — did
+it a third time with `--timeout=30`, whose justifying comment quotes the flag
+twelve lines above the flag ([#731]).
+
+**Read the structure instead.** `tests/_workflow_parse.py` gives you the jobs
+(`job_blocks`), their steps (`job_steps`), and each step's `uses:`, `env:` and
+`run:`. Assert against those. A comment can then say anything at all and no
+assertion moves.
+
+```python
+steps = job_steps(job_blocks()["notifiers"])
+assert any(_BUN_INSTALL_RE.search(s.run) for s in steps)   # yes
+assert "npm i -g bun" in workflow_text                     # no — re-arms on the next rename
+```
+
+Two rules follow from the three instances:
+
+* **Swapping the needle is not the fix.** `"npm i -g bun"` is the same defect
+  with a fresher string: the next rename re-arms it, and a comment mentioning
+  the old command re-arms it immediately.
+* **Compare sets, do not list names.** The same guard named two of the five
+  channel test files the job runs, so three could have been dropped without it
+  noticing — while two others had already arrived without being added. Both
+  directions close if you assert the set CI runs equals the set the repo has.
+
+PyYAML is deliberately not used: CI installs pytest, pytest-cov, pytest-xdist
+and pytest-timeout and nothing else, so importing `yaml` would make every
+guard built on it skip on all fourteen legs. The parser reads indentation, and
+it is fixture-tested — a parser that silently finds nothing renders its callers
+green while checking no job at all, which is the defect one layer up.
+
+The general form, worth asking of any guard: **what would have to be true for
+this test to fail?** If you cannot name a realistic change to the product that
+turns it red, it is not a guard.
+
+[#730]: https://github.com/Digital-Process-Tools/claude-supertool/issues/730
+[#731]: https://github.com/Digital-Process-Tools/claude-supertool/issues/731
+
 ## Submitting upstream
 
 Want to add a preset, op, or validator to the shipped supertool?

@@ -263,7 +263,11 @@ class TestOpsDisclosure:
         out = supertool.op_ops()
         footer = [ln for ln in out.splitlines() if "preset" in ln.lower()]
         assert footer, "expected a disclosure line"
-        assert len(footer) <= 2, f"disclosure bloated to {len(footer)} lines"
+        assert len(footer) == 1, (
+            f"disclosure bloated to {len(footer)} lines: {footer}. This test "
+            "is named for the property that it is one line and not a second "
+            "listing; the bound was `<= 2`, which admitted exactly the second "
+            "line the name rules out (#731).")
         # No op name from a not-enabled preset may be enumerated.
         assert "gl-issue" not in out and "gh-pr" not in out
 
