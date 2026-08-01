@@ -109,6 +109,26 @@ python3 /abs/path/to/supertool.py 'read:...'   # absolute path to the script
 
 Watch out for filtering the failure away: `./supertool '...' | grep -E 'state:'` from a directory with no wrapper prints **nothing**, which reads like an empty answer rather than a tool that never ran.
 
+### A git worktree starts without one — and the right target is not always the plugin
+
+The wrapper is a gitignored symlink that the session-start hook creates in the directory a session *starts* in. `git worktree add` makes a new directory in the middle of a session, so nothing ever creates one there. This is the same layer as the `cd` above and unfixable for the same reason: the wrapper has to be found before a single op is parsed, so no op — and no hook that already ran — can produce it.
+
+The invocation that needs no wrapper at all is the one to reach for. It is what `git-push:watch` already falls back to when it finds no wrapper to spawn:
+
+```bash
+python3 /abs/path/to/claude-supertool/supertool.py 'read:...'   # worktree of any project
+python3 supertool.py 'read:...'                                 # worktree of claude-supertool itself
+```
+
+If you do want the wrapper, **the target depends on whether the worktree is a checkout of supertool**:
+
+```bash
+ln -s "$CLAUDE_PLUGIN_ROOT/supertool.py" supertool   # worktree of any other project — absolute, outside the worktree
+ln -s supertool.py supertool                         # worktree of claude-supertool — its own file, relative
+```
+
+Pointing a supertool worktree's wrapper at the plugin install runs **master's core against the branch's config and presets**. Since the mixed-tree check, every custom op in that worktree answers `SKIPPED: ... comes from a different supertool tree` and the call exits 1; before it, they answered `PASS` for code that never ran. In any other project the same absolute link is correct and is *not* a mix — the check fires only when the resolved project root holds a `supertool.py` of its own, which an ordinary repo does not.
+
 **Path arguments are a separate question**, and that one is handled inside the tool. They resolve against the process cwd; when a call's paths only make sense from the project root, supertool chdirs there itself and says so (`[cwd auto-resolved to project root: ...]`) — provided an ancestor carries a `.supertool.json` and nothing in the call resolves locally. Where that evidence is ambiguous it does not guess: the `not found` error names the absolute path it tried and, if the file does exist under the project root, the exact `cwd:` prefix that would reach it.
 
 ---
