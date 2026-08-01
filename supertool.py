@@ -4402,8 +4402,9 @@ def _branch_line() -> str:
     return ""
 
 
-def _result_line(ops: int, writes: int, skipped: int = 0) -> str:
-    """`[result] N ops run, M writes[, K skipped]` footer for a mutating call (#621).
+def _result_line(ops: int, writes: int, skipped: int = 0,
+                 reapplied: int = 0) -> str:
+    """`[result] N ops run, M writes[, K skipped][, K re-applied]` footer (#621).
 
     The receipt a mutating op prints sits ABOVE the `[validators]` block, and a
     long validators block is exactly when a reader reaches for `| tail -4`. So
@@ -4438,6 +4439,19 @@ def _result_line(ops: int, writes: int, skipped: int = 0) -> str:
     whenever an op declined, and never otherwise — `0 skipped` on the green
     path is exactly the kind of number a reader learns to stop seeing, which
     is how `4 writes` failed in the first place.
+
+    `re-applied` names a fourth state (#701): the op wrote, and what it wrote
+    was already there. Re-running a payload whose anchor survives its own edit
+    applies the edit a SECOND time, and pre-fix the two runs differed only by a
+    line range — so an identical footer read as "the same thing happened" when
+    what happened was another mutation. It is a separate word from `skipped`
+    deliberately: a skipped op left the disk alone, a re-applied one did not,
+    and collapsing them would degrade `skipped` into "something was odd".
+
+    It is also NOT a failure. `_SKIP_COUNT` drives the exit code so a `&&` chain
+    stops on a half-applied batch; a re-apply is a legitimate outcome (appending
+    a second repeated element has exactly this shape), so it discloses and exits
+    0. Refusing would be guessing at intent, which is the line #680 drew too.
     """
     if ops <= 0:
         return ""
@@ -4445,8 +4459,14 @@ def _result_line(ops: int, writes: int, skipped: int = 0) -> str:
             f"{writes} {'write' if writes == 1 else 'writes'}")
     if skipped > 0:
         line += f", {skipped} skipped"
+    if reapplied > 0:
+        line += f", {reapplied} re-applied"
     if writes == 0:
+        # A rolled-back write is not a second application of anything, so this
+        # clause wins: the bytes complained about are no longer on disk.
         line += " — nothing changed on disk"
+    elif reapplied > 0:
+        line += " — an edit already present in the file was applied again"
     return line + "\n"
 
 
@@ -4565,6 +4585,16 @@ _WRITE_COUNT: List[int] = [0]
 # mis-reported as a decline, and a skip count that is sometimes wrong is worse
 # than none — it is the same absence-read-as-fact this counter exists to stop.
 _SKIP_COUNT: List[int] = [0]
+
+# Bumped where a mutating op wrote text the file ALREADY contained at that spot
+# (#701) — the fourth state, and the only one that is not a decline. See
+# `_edit_already_applied` for why the test is positional rather than
+# `new in content`, and `_result_line` for why it is not folded into
+# `_SKIP_COUNT`. Never decremented on rollback: `_retract_write` is per-path and
+# this counter is not, so a batch rollback could retract the wrong op's
+# disclosure. The `writes == 0` clause in `_result_line` covers that case
+# honestly instead — "nothing changed on disk" is the stronger statement.
+_REAPPLY_COUNT: List[int] = [0]
 
 
 def _drop_write_warnings(path: str) -> None:
@@ -4744,6 +4774,36 @@ def _sh_backslash_warning(path: str, content: str) -> str:
     )
 
 
+def _edit_already_applied(content: str, old: str, new: str, idx: int) -> bool:
+    """Is the `old` at `idx` sitting INSIDE text this same edit already made?
+
+    The re-run case (#701): `new` contains `old`, so the anchor survives its own
+    edit and matches again on a second run. `content[idx:idx+len(old)]` is then
+    literally a substring of an occurrence of `new` that a previous run wrote.
+
+    Positional containment, not `new in content`. The issue floated the simpler
+    test and it has a real failure mode: `new` may legitimately pre-exist
+    somewhere unrelated (an edit inserting `return None` into a file that
+    already has a `return None` elsewhere), and a signal that fires on a first
+    application is noise — which is how a footer count stops being read. Asking
+    instead whether the anchor being replaced is bracketed by an existing copy
+    of `new` is the literal statement "this edit's result is already here".
+
+    Deliberately says nothing about intent. An append of a second repeated
+    element is indistinguishable from an accidental re-run and must stay
+    allowed; the caller decides, the tool discloses.
+    """
+    if len(new) <= len(old) or old not in new:
+        return False
+    end = idx + len(old)
+    j = content.find(new)
+    while j != -1 and j <= idx:
+        if end <= j + len(new):
+            return True
+        j = content.find(new, j + 1)
+    return False
+
+
 def op_edit(old: str, new: str, path: str) -> str:
     """Single-file, single-occurrence edit — mirrors native Edit semantics.
 
@@ -4782,14 +4842,20 @@ def op_edit(old: str, new: str, path: str) -> str:
             f"replace_all semantics.\n"
         )
 
+    idx = content.index(old)
+    reapplied = _edit_already_applied(content, old, new, idx)
+
     new_content = content.replace(old, new, 1)
     try:
         _atomic_write(path, new_content)
     except OSError as e:
         return f"ERROR: failed to write {path}: {e}\n"
 
+    if reapplied:
+        _REAPPLY_COUNT[0] += 1
+
     # Receipt — locate the change and show ±2 lines context
-    pre = content[: content.index(old)]
+    pre = content[:idx]
     start_line = pre.count("\n") + 1
     new_lines = new_content.splitlines()
     new_block_line_count = new.count("\n") + 1
@@ -4801,6 +4867,16 @@ def op_edit(old: str, new: str, path: str) -> str:
     if end_line != start_line:
         out.append(f"-{end_line}")
     out.append(")\n")
+    # Attached to the claim it qualifies, not only to the footer: `edited a.py
+    # (line 2-3)` is a true sentence that reads as a first application, and the
+    # reader who is about to trust it is looking here. The footer carries the
+    # same signal for the reader who is piping to `tail` (#621).
+    if reapplied:
+        out.append(
+            f"  {mark('↳')} re-applied: the text this edit produces was already "
+            f"present around the anchor — this is a SECOND application, not a "
+            f"repeat of the first\n"
+        )
     for ln in range(ctx_start, ctx_end + 1):
         marker = "→" if start_line <= ln <= end_line else " "
         out.append(f"  {ln:>5} {marker} {new_lines[ln - 1]}\n")
@@ -14417,6 +14493,7 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
     _writes_before = _WRITE_COUNT[0]
     _attempts_before = _MUTATION_ATTEMPTS[0]
     _skips_before = _SKIP_COUNT[0]
+    _reapplies_before = _REAPPLY_COUNT[0]
 
     # #146: dispatch-level path containment. Each op has a known position(s)
     # of its path arg(s) in `parts`. _safe_path enforces cwd containment
@@ -14976,7 +15053,8 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
         if op in _OP_TARGETS or _MUTATION_ATTEMPTS[0] > _attempts_before:
             body += _result_line(_MUTATION_ATTEMPTS[0] - _attempts_before,
                                  _WRITE_COUNT[0] - _writes_before,
-                                 _SKIP_COUNT[0] - _skips_before)
+                                 _SKIP_COUNT[0] - _skips_before,
+                                 _REAPPLY_COUNT[0] - _reapplies_before)
             body += _branch_line()
 
     return header + body
