@@ -170,26 +170,17 @@ def main() -> int:
 
     # Comments — gh gives them directly in the issue JSON
     comments = d.get("comments", [])
-    if comments:
-        if full:
-            shown = comments
-            print(f"\n## Comments ({len(comments)})")
-        else:
-            shown = comments[-10:]
-            truncated = len(comments) - len(shown)
-            suffix = f", {truncated} earlier truncated — use :full to fetch all" if truncated else ""
-            print(f"\n## Comments ({len(shown)} of {len(comments)} shown{suffix})")
-        for comment in shown:
-            c_author = (comment.get("author") or {}).get("login", "?")
-            c_body = comment.get("body") or ""
-            if comment_max is not None and len(c_body) > comment_max:
-                c_body = c_body[:comment_max] + f"\n…[truncated at {comment_max} chars — use :full]"
-            c_created = (comment.get("createdAt") or "")[:10]
-            print(f"\n**{c_author}** ({c_created}):")
-            print(c_body)
-            all_image_urls.extend(_extract_image_urls(comment.get("body") or ""))
-    else:
-        print(f"\n## Comments (0)")
+    shown = comments if full else comments[-_body.COMMENT_TAIL:]
+    print(f"\n{_body.comments_heading(len(shown), len(comments))}")
+    for comment in shown:
+        c_author = (comment.get("author") or {}).get("login", "?")
+        c_body = comment.get("body") or ""
+        if comment_max is not None and len(c_body) > comment_max:
+            c_body = c_body[:comment_max] + f"\n{_body.comment_cut_notice(comment_max)}"
+        c_created = (comment.get("createdAt") or "")[:10]
+        print(f"\n**{c_author}** ({c_created}):")
+        print(c_body)
+        all_image_urls.extend(_extract_image_urls(comment.get("body") or ""))
 
     # Download images
     if all_image_urls:

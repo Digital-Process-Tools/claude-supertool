@@ -65,3 +65,46 @@ def header_notice(shown: str, total: int, withheld: int) -> str:
 def cut_notice(withheld: int) -> str:
     """The marker at the point of the cut, matching the `## Comments` convention."""
     return f"…[{withheld} chars truncated here — use :full to fetch all]"
+
+
+COMMENT_TAIL = 10
+"""How many comments a capped render keeps — the most recent ones.
+
+Which end gets kept is deliberate and is not a disclosure question: recency is
+usually what a reviewer is after. #719 argued the opposite — that the oldest
+comments carry the original objection — and that is a real argument, but it is a
+*selection* argument and belongs in its own issue — #738, which also raises the
+option of keeping both ends with the gap marked in the middle, the way `gl-mr`'s
+byte-budgeted render already does. What #719 fixed is that the cut was invisible
+whichever end it took.
+"""
+
+
+def comments_heading(shown: int, total: int) -> str:
+    """The `## Comments (…)` line, stating the cut when there is one.
+
+    An uncut list prints the bare count and nothing else, so the *absence* of a
+    marker is itself the signal that the list is whole — the same contract
+    `gl-issue` uses for its related-MR list (#635). A cut list names the exact
+    number withheld and the flag that returns them.
+
+    This exists because `gh-issue` had it and `gh-pr`, in the next file over,
+    printed `## Comments (25)` above ten of them with nothing in between (#719).
+    That is not a display preference: the header supplies a number the reader has
+    every reason to trust, so a brief written from the render is confidently
+    missing the fifteen comments that changed the deliverable. Two correct copies
+    of a disclosure is how a third site forgets to have one, which is the whole
+    argument this module exists to settle.
+    """
+    if shown >= total:
+        return f"## Comments ({total})"
+    withheld = total - shown
+    return (
+        f"## Comments ({shown} of {total} shown, {withheld} earlier "
+        f"truncated — use :full to fetch all)"
+    )
+
+
+def comment_cut_notice(cap: int) -> str:
+    """The marker for one comment body cut at the per-comment cap."""
+    return f"…[truncated at {cap} chars — use :full]"

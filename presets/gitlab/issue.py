@@ -258,7 +258,7 @@ def main() -> int:
                         note_author = (note.get("author") or {}).get("username", "?")
                         body = note.get("body") or ""
                         if comment_max is not None and len(body) > comment_max:
-                            body = body[:comment_max] + f"\n…[truncated at {comment_max} chars — use :full]"
+                            body = body[:comment_max] + f"\n{_body.comment_cut_notice(comment_max)}"
                         created = (note.get("created_at") or "")[:10]
                         print(f"\n**{note_author}** ({created}):")
                         print(body)

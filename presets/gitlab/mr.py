@@ -424,10 +424,20 @@ def _format_error(stderr: str, resource: str, identifier: str) -> str:
     return f"ERROR: glab failed for {resource} #{identifier}: {stderr.strip()}"
 
 
-def _render_note(note: dict) -> str:
-    """Format one MR note for printing. Body capped at COMMENT_MAX chars."""
+def _render_note(note: dict, cap: int | None = COMMENT_MAX) -> str:
+    """Format one MR note for printing, saying so when the body is cut.
+
+    A `cap` of None is the `:full` path, which had no way to ask for one: every
+    note was sliced at COMMENT_MAX with no marker, on `:full` as well, while the
+    op's docs promised `:full` uncapped "the file list and the comments". It
+    uncapped how many comments printed, never how much of each — the same
+    half-working escape hatch #698 found in this file's description handling,
+    caught by the check #719 asked for.
+    """
     author = (note.get("author") or {}).get("username", "?")
-    body = (note.get("body") or "")[:COMMENT_MAX]
+    body = note.get("body") or ""
+    if cap is not None and len(body) > cap:
+        body = body[:cap] + f"\n{_body.comment_cut_notice(cap)}"
     created = (note.get("created_at") or "")[:10]
     return f"\n**{author}** ({created}):\n{body}\n"
 
@@ -971,7 +981,7 @@ def main() -> int:
 
     print(f"\n## Comments ({len(human_notes)})")
     if full:
-        for r in (_render_note(n) for n in human_notes):
+        for r in (_render_note(n, None) for n in human_notes):
             print(r, end="")
     else:
         rendered, hidden_count, hidden_bytes = _budgeted_comments(
