@@ -509,6 +509,22 @@ Durations supertool was *given* rather than measured — an adapter's own
 `duration_ms`, which tests supply as a constant — are deliberately **not**
 frozen, so `assert "(12ms)" in row` keeps working.
 
+One measured duration renders as words rather than as `0.0s`: the elapsed on a
+**timeout verdict** ([#727]). Everywhere else freezing a duration removes noise;
+there it removes the evidence, because the elapsed is the only number the
+message exists to carry, and `FAIL (timeout 0.0s > 10s)` states a verdict its
+own figures contradict. Under the switch that line reads `FAIL (timeout after
+its 10s budget - elapsed frozen, deterministic-time mode)` — still constant
+across runs, so the property above is unaffected. It was **not** exempted from
+the freeze: an exemption is a call site to remember, and this fix lives at the
+renderer for the same reason [#643]'s did. If you need to assert on a real
+elapsed there, `monkeypatch.delenv` the switch as
+`test_real_durations_render_when_the_switch_is_off` does.
+
+`_timeout_verdict_line` also refuses to print an elapsed *below* its budget as
+a result: `subprocess.run(timeout=T)` cannot raise before T has passed, so that
+combination is a bug in the reporting path and says so.
+
 ### `slow` vs `benchmark`
 
 Two markers, and the difference is not how long the test takes.
@@ -666,6 +682,7 @@ ceiling bounds it; the finer guard waits for evidence.
 [#554]: https://github.com/Digital-Process-Tools/claude-supertool/issues/554
 [#715]: https://github.com/Digital-Process-Tools/claude-supertool/pull/715
 [#722]: https://github.com/Digital-Process-Tools/claude-supertool/issues/722
+[#727]: https://github.com/Digital-Process-Tools/claude-supertool/issues/727
 
 ### Never assert a property of a workflow by grepping the workflow
 
