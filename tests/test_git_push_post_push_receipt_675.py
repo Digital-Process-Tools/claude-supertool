@@ -357,7 +357,18 @@ def test_a_post_push_timeout_costs_a_check_not_the_receipt(
     really killed. The push itself keeps its own budget and lands.
     """
     box.add_commit_on_top()
+    # The upstream lookup runs *before* the push, on the same budget. Killing it
+    # too stopped exercising this test's subject once #656 landed: a branch
+    # whose upstream cannot be read, in a repo whose `git remote` cannot be
+    # asked either, has no determinable remote — and git-push declines rather
+    # than assuming `origin`. Pinned to the answer a real, untimed call gives in
+    # this sandbox, so nothing here is invented; every post-push check still
+    # meets the 0s budget, which is what the assertions below are about.
+    upstream = _run(["rev-parse", "--abbrev-ref", "--symbolic-full-name",
+                     "@{upstream}"], box.mine).stdout.strip()
+    assert upstream == "origin/feature", upstream
     monkeypatch.setattr(push, "_CHECK_TIMEOUT", 0)
+    monkeypatch.setattr(push, "_upstream_ref", lambda: (upstream, ""))
 
     rc, out = box.drive_push()
 
