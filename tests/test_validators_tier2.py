@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from _adapter_budget import adapter_budget
+from _adapter_verdict import assert_declined, assert_ok
 
 VALIDATORS = Path(__file__).parent.parent / "validators"
 
@@ -45,7 +46,7 @@ def test_gofmt_check_no_arg_returns_schema_error() -> None:
                        capture_output=True, text=True, timeout=adapter_budget(GOFMT_CHECK))
     data = json.loads(r.stdout.strip())
     assert data["tool"] == "gofmt-check"
-    assert data["ok"] is False
+    assert_declined(data)
     assert "no file arg" in data["errors"][0]["msg"]
 
 
@@ -57,7 +58,7 @@ def test_gofmt_check_valid_formatted_file(tmp_path: Path) -> None:
     f.write_text('package main\n\nfunc main() {\n\t_ = 1\n}\n')
     data = run_adapter(GOFMT_CHECK, str(f))
     assert data["tool"] == "gofmt-check"
-    assert data["ok"] is True
+    assert_ok(data)
     assert data["count"] == 0
 
 
@@ -68,7 +69,7 @@ def test_gofmt_check_unformatted_file_is_hard_error(tmp_path: Path) -> None:
     f.write_text('package main\n\nfunc main() {\n    _ = 1\n}\n')
     data = run_adapter(GOFMT_CHECK, str(f))
     assert data["tool"] == "gofmt-check"
-    assert data["ok"] is False
+    assert_declined(data)
     assert data["count"] == 1
     assert data["errors"][0]["code"] == "formatting"
     assert "gofmt" in data["errors"][0]["msg"]
@@ -83,7 +84,7 @@ def test_gofmt_check_graceful_skip_when_tool_missing(tmp_path: Path) -> None:
     r = subprocess.run([sys.executable, str(GOFMT_CHECK), str(f)],
                        capture_output=True, text=True, timeout=adapter_budget(GOFMT_CHECK), env=env)
     data = json.loads(r.stdout.strip())
-    assert data["ok"] is True
+    assert_ok(data)
     assert data["count"] == 0
     assert "gofmt" in r.stderr
 
@@ -97,7 +98,7 @@ def test_terraform_check_no_arg_returns_schema_error() -> None:
                        capture_output=True, text=True, timeout=adapter_budget(TERRAFORM_CHECK))
     data = json.loads(r.stdout.strip())
     assert data["tool"] == "terraform-check"
-    assert data["ok"] is False
+    assert_declined(data)
     assert "no file arg" in data["errors"][0]["msg"]
 
 
@@ -107,7 +108,7 @@ def test_terraform_check_valid_formatted_file(tmp_path: Path) -> None:
     f.write_text('resource "null_resource" "example" {\n}\n')
     data = run_adapter(TERRAFORM_CHECK, str(f))
     assert data["tool"] == "terraform-check"
-    assert data["ok"] is True
+    assert_ok(data)
     assert data["count"] == 0
 
 
@@ -132,7 +133,7 @@ def test_terraform_check_graceful_skip_when_tool_missing(tmp_path: Path) -> None
     r = subprocess.run([sys.executable, str(TERRAFORM_CHECK), str(f)],
                        capture_output=True, text=True, timeout=adapter_budget(TERRAFORM_CHECK), env=env)
     data = json.loads(r.stdout.strip())
-    assert data["ok"] is True
+    assert_ok(data)
     assert data["count"] == 0
     assert "terraform" in r.stderr
 
@@ -146,7 +147,7 @@ def test_cargo_check_no_arg_returns_schema_error() -> None:
                        capture_output=True, text=True, timeout=adapter_budget(CARGO_CHECK))
     data = json.loads(r.stdout.strip())
     assert data["tool"] == "cargo-check"
-    assert data["ok"] is False
+    assert_declined(data)
     assert "no file arg" in data["errors"][0]["msg"]
 
 
@@ -161,7 +162,7 @@ def test_cargo_check_graceful_skip_when_tool_missing(tmp_path: Path) -> None:
     r = subprocess.run([sys.executable, str(CARGO_CHECK), str(f)],
                        capture_output=True, text=True, timeout=adapter_budget(CARGO_CHECK), env=env)
     data = json.loads(r.stdout.strip())
-    assert data["ok"] is True
+    assert_ok(data)
     assert data["count"] == 0
     assert "cargo" in r.stderr
 
@@ -174,7 +175,7 @@ def test_cargo_check_graceful_skip_when_no_cargo_toml(tmp_path: Path) -> None:
                        capture_output=True, text=True, timeout=adapter_budget(CARGO_CHECK))
     data = json.loads(r.stdout.strip())
     # If cargo is on PATH: skip because no Cargo.toml. If cargo missing: also skip.
-    assert data["ok"] is True
+    assert_ok(data)
     assert data["count"] == 0
 
 
@@ -190,7 +191,7 @@ def test_cargo_check_valid_crate(tmp_path: Path) -> None:
     main.write_text("fn main() {}\n")
     data = run_adapter(CARGO_CHECK, str(main), timeout=adapter_budget(CARGO_CHECK, inner=120))
     assert data["tool"] == "cargo-check"
-    assert data["ok"] is True
+    assert_ok(data)
     assert data["count"] == 0
 
 
@@ -205,7 +206,7 @@ def test_cargo_check_broken_crate_reports_errors(tmp_path: Path) -> None:
     main.write_text("fn main() { let x: i32 = \"not an int\"; }\n")
     data = run_adapter(CARGO_CHECK, str(main), timeout=adapter_budget(CARGO_CHECK, inner=120))
     assert data["tool"] == "cargo-check"
-    assert data["ok"] is False
+    assert_declined(data)
     assert data["count"] >= 1
 
 

@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from _adapter_budget import adapter_budget
+from _adapter_verdict import assert_declined, assert_ok
 
 PHPSTAN_PY = Path(__file__).parent.parent / "validators" / "phpstan" / "phpstan.py"
 
@@ -54,7 +55,7 @@ def test_phpstan_no_arg_returns_schema_error() -> None:
     assert r.returncode == 0
     data = json.loads(r.stdout.strip())
     assert data["tool"] == "phpstan"
-    assert data["ok"] is False
+    assert_declined(data)
     assert "no file arg" in data["errors"][0]["msg"]
 
 
@@ -70,7 +71,7 @@ def test_phpstan_clean_php(tmp_path: Path) -> None:
     assert r.returncode == 0
     data = json.loads(r.stdout.strip())
     assert data["tool"] == "phpstan"
-    assert data["ok"] is True
+    assert_ok(data)
     assert data["count"] == 0
     assert isinstance(data["errors"], list)
     assert isinstance(data["duration_ms"], int)
@@ -88,7 +89,7 @@ def test_phpstan_reports_errors(tmp_path: Path) -> None:
     assert r.returncode == 0
     data = json.loads(r.stdout.strip())
     assert data["tool"] == "phpstan"
-    assert data["ok"] is False
+    assert_declined(data)
     assert data["count"] > 0
     assert len(data["errors"]) > 0
     err = data["errors"][0]
@@ -110,7 +111,7 @@ def test_phpstan_missing_binary_emits_json(tmp_path: Path) -> None:
     assert r.returncode == 0
     data = json.loads(r.stdout.strip())
     assert data["tool"] == "phpstan"
-    assert data["ok"] is False
+    assert_declined(data)
     assert "PHPSTAN_BIN not found" in data["errors"][0]["msg"]
     assert "errors" in data
 
@@ -145,7 +146,7 @@ def _run_adapter_with_fake_php(tmp_path: Path, php_stdout: str) -> dict:
 def test_phpstan_clean_via_fake_php(tmp_path: Path) -> None:
     data = _run_adapter_with_fake_php(tmp_path, '{"totals": {"file_errors": 0}, "files": {}}')
     assert data["tool"] == "phpstan"
-    assert data["ok"] is True
+    assert_ok(data)
     assert data["count"] == 0
     assert data["errors"] == []
     assert isinstance(data["duration_ms"], int)
@@ -159,7 +160,7 @@ def test_phpstan_errors_via_fake_php(tmp_path: Path) -> None:
             {"line": 2, "identifier": "return.type", "message": "bad return"}]}},
     })
     data = _run_adapter_with_fake_php(tmp_path, payload)
-    assert data["ok"] is False
+    assert_declined(data)
     assert data["count"] == 1
     assert len(data["errors"]) == 1
     err = data["errors"][0]
@@ -172,6 +173,6 @@ def test_phpstan_errors_via_fake_php(tmp_path: Path) -> None:
 @pytest.mark.skipif(os.name == "nt", reason="POSIX /bin/sh shim")
 def test_phpstan_non_json_output_via_fake_php(tmp_path: Path) -> None:
     data = _run_adapter_with_fake_php(tmp_path, "PHP Fatal error: boom")
-    assert data["ok"] is False
+    assert_declined(data)
     assert data["errors"][0]["code"] == "adapter"
     assert "not json" in data["errors"][0]["msg"]

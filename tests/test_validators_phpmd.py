@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from _adapter_budget import adapter_budget
+from _adapter_verdict import assert_declined, assert_ok
 
 PHPMD_PY = Path(__file__).parent.parent / "validators" / "phpmd" / "phpmd.py"
 
@@ -21,7 +22,7 @@ def test_phpmd_no_arg_returns_schema_error() -> None:
     assert r.returncode == 0
     data = json.loads(r.stdout.strip())
     assert data["tool"] == "phpmd"
-    assert data["ok"] is False
+    assert_declined(data)
     assert "no file arg" in data["errors"][0]["msg"]
 
 
@@ -45,7 +46,7 @@ def test_phpmd_clean_output_parses_to_ok(tmp_path: Path) -> None:
     assert r.returncode == 0
     data = json.loads(r.stdout.strip())
     assert data["tool"] == "phpmd"
-    assert data["ok"] is True
+    assert_ok(data)
     assert data["count"] == 0
     assert data["errors"] == []
 
@@ -71,7 +72,7 @@ def test_phpmd_parses_text_output(tmp_path: Path) -> None:
     assert r.returncode == 0
     data = json.loads(r.stdout.strip())
     assert data["tool"] == "phpmd"
-    assert data["ok"] is False
+    assert_declined(data)
     assert data["count"] == 1
     err = data["errors"][0]
     assert err["line"] == 3
