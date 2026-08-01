@@ -97,6 +97,20 @@ supertool 'read:README.md'
 
 Standalone install doesn't wire up the session-start hook (no plugin system). You get the binary; the marketplace install adds the session-start prompt that primes the model on your project's ops.
 
+### The wrapper lives at the project root — a `cd` breaks `./supertool`
+
+`./supertool` is a relative path. It resolves only from the directory holding the symlink, so a shell that has `cd`'d deeper into the repo — a test run in `tests/e2e`, or a `cd` that persists between an agent's tool calls — gets `no such file or directory: ./supertool` and no op runs at all. Nothing inside the tool can fix this: the wrapper has to be *found* before a single op is parsed, so even `cwd:PATH` as the first op of the call cannot help — that op is read by a process that already started.
+
+```bash
+supertool 'read:src/foo.py'                    # on $PATH (see Install) — works from any directory
+python3 /abs/path/to/supertool.py 'read:...'   # absolute path to the script
+./supertool 'cwd:~/repo' 'read:...'            # only when ./supertool itself is reachable
+```
+
+Watch out for filtering the failure away: `./supertool '...' | grep -E 'state:'` from a directory with no wrapper prints **nothing**, which reads like an empty answer rather than a tool that never ran.
+
+**Path arguments are a separate question**, and that one is handled inside the tool. They resolve against the process cwd; when a call's paths only make sense from the project root, supertool chdirs there itself and says so (`[cwd auto-resolved to project root: ...]`) — provided an ancestor carries a `.supertool.json` and nothing in the call resolves locally. Where that evidence is ambiguous it does not guess: the `not found` error names the absolute path it tried and, if the file does exist under the project root, the exact `cwd:` prefix that would reach it.
+
 ---
 
 ## How to use
