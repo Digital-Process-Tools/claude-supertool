@@ -235,6 +235,8 @@ PAYLOAD
 
 **Every entry needs its own `op` key**, including the common case where all of them are edits — there is no default. Omitting it fails with `batch op missing 'op' field` rather than guessing, since a batch is routinely mixed (`read` + `edit` + `replace`) and a guess would be wrong as often as right.
 
+**Re-running a payload is not free of consequence.** An edit whose `new` contains its `old` keeps its anchor alive, so a second run applies it a second time — legitimately, and by design. The `[result]` footer names it (`1 op run, 1 write, 1 re-applied`) and the op receipt adds a `↳ re-applied:` line, so a re-run reads differently from a first run instead of identically; see [operations/edits.md](operations/edits.md). It discloses, it does not refuse: appending a repeated element has the same shape and stays allowed.
+
 `continue_on_error` defaults to `true` — a failed op is reported but the rest of the batch continues. Set to `false` to abort on first error. **A batch is not atomic:** under the default, ops that ran before a failure stay applied. The `[result]` footer names the shortfall (`3 ops run, 2 writes, 1 skipped`) and the call exits non-zero whenever anything was skipped, so `&&` chains stop — see [operations/edits.md](operations/edits.md). Validators (phplint, xmllint, etc.) fire per mutating op, same as inline edits. Use `@-` to pipe the payload from stdin.
 ### What the sub-op headers say
 
