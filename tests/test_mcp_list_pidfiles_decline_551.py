@@ -43,6 +43,8 @@ import supertool
 sys.path.insert(0, str(Path(__file__).parent.parent / "presets" / "mcp"))
 sys.path.insert(0, str(Path(__file__).parent.parent / "presets"))
 
+from _preset_loader import load_preset_module  # noqa: E402
+
 # Both scripts reach _paths.runtime_dir(), which refuses outright where
 # os.geteuid does not exist (#544).
 posix_only = pytest.mark.skipif(
@@ -181,9 +183,7 @@ class TestStatusDoesNotClaimAnEmptyTable:
 
     @pytest.fixture
     def status_mod(self, runtime):
-        import status  # noqa: PLC0415
-
-        return status
+        return load_preset_module("mcp", "status", prefix="mcp_")
 
     def test_unlistable_dir_does_not_print_the_empty_report(
         self, status_mod, blind, capsys

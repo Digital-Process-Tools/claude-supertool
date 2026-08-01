@@ -38,6 +38,7 @@ if (_MCP_PRESETS / "_paths.py").is_file():
     sys.path.insert(0, str(_MCP_PRESETS))
     import _paths  # noqa: E402,F401
 
+
 # `presets/_env.py` is imported by 29 presets under the single module name
 # `_env`, so all of them share one `_ANNOUNCED` ledger — by design: `env_int`
 # says each distinct notice at most once per process, because a knob read once

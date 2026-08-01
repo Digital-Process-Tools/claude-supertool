@@ -888,6 +888,8 @@ Already watching gitlab-mr:33223 (PID 71163) — not starting a second. Use ./su
 
 It is never silent, and never rendered like a clean start. Exit status stays `0` — a refusal is the op working, not failing. A spawn that genuinely fails prints `ERROR: could not spawn a poller for …` and exits `1`.
 
+There is a third outcome ([#693](https://github.com/Digital-Process-Tools/claude-supertool/issues/693)). If the pid file cannot be created at all — an unwritable or absent `SUPERTOOL_WATCH_STATE_DIR`, a path that is a directory — the slot was neither taken nor identified, and `claim_pidfile` used to answer `0` for that, which is the value meaning *you own it, go spawn*. It now answers `CLAIM_UNKNOWN`, `watch` prints `ERROR: could not claim the slot for …`, names the pid path and the env var, and exits `1` having started nothing. Radar's MR tier counts such a slot as still uncovered rather than losing it between "healed" and "failed".
+
 Three rules follow from "a missing watcher is worse than a duplicate one":
 
 - **A slot whose owner is dead is reclaimed**, after one retry. A crashed poller must not wedge its id shut forever; an unwatched population renders exactly like a quiet one.
