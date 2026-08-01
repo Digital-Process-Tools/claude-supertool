@@ -153,7 +153,7 @@
     },
     "edit": {
       "syntax": "edit:::OLD:::NEW:::PATH",
-      "description": "Single-file, single-occurrence edit (mirrors native Edit). Errors if 0 or >1 matches. Bypasses Edit's must-Read-first state \u2014 saves a round-trip. Use ::: separator (single ':' also accepted when content has no colons)",
+      "description": "Single-file, single-occurrence edit (mirrors native Edit). Errors if 0 or >1 matches. Bypasses Edit's must-Read-first state \u2014 saves a round-trip. Use ::: separator (single ':' also accepted when content has no colons). An edit whose NEW contains its OLD keeps its anchor alive, so RE-RUNNING it applies it AGAIN. That still happens (a repeated append is a real use), but the receipt now says so: a 're-applied:' note under the 'edited' line, plus 'K re-applied' in the [result] footer.",
       "example": "edit:::return False:::return True:::supertool.py",
       "status": 1,
       "hint": true

@@ -23,6 +23,19 @@ Every mutating call closes with two footer lines, in this order:
 
 The field is **omitted** when `K` is `0`. `#680` asked for `0 skipped` on every line; a zero on the green path is the kind of number a reader learns to stop seeing, which is exactly how `4 writes` failed. A word that appears only when it means something is the stronger signal.
 
+`K re-applied` is the fourth state (#701), and it is the one to read after **re-running a payload**. Some edits keep their own anchor — `old = "def f():"`, `new = "@decorated<newline>def f():"` — so `old` is still in the file after the edit and matches again on a second run. That is correct find-and-replace behaviour, and it applies the edit twice. What was wrong is that the two runs printed the same thing: `edited a.py (line 1-2)` then `edited a.py (line 2-3)`, both `[result] 1 op run, 1 write`, both exit 0. An identical receipt reads as "the same thing happened" when what happened is a second mutation — and the caller who re-runs a payload is by definition the caller who was already unsure whether it landed, which is how this composes with #680: the first defect makes you doubt, the second punishes checking.
+
+A re-apply is **not** a decline and **not** a failure. It wrote, the write stuck, and the call still exits `0` — an edit that legitimately applies twice exists (appending a second repeated element has exactly this shape) and refusing it would be guessing at intent. `skipped` and `re-applied` are separate words for that reason: a skipped op left the disk alone, a re-applied one did not. When `K` is non-zero and something was written, the line ends `— an edit already present in the file was applied again`; a rolled-back write keeps `— nothing changed on disk` instead, which is the stronger statement.
+
+The op receipt carries the same signal next to the claim it qualifies, because `edited a.py (line 2-3)` on its own is a true sentence that reads as a first application:
+
+```
+edited a.py (line 2-3)
+  ↳ re-applied: the text this edit produces was already present around the anchor — this is a SECOND application, not a repeat of the first
+```
+
+**The test is positional, not "does the file already contain `new`".** The signal fires only when the occurrence of `old` about to be replaced is *contained inside* an existing occurrence of `new` — the literal statement "this edit's result is already here, around this anchor". A `new` that happens to exist elsewhere in the file (inserting `return None` into a file that already has one in another function) is a first application and says nothing. A signal that fires on first applications is noise, and noise is how a footer field stops being read. It applies to `edit` (colon CLI and payload route); `replace` is replace-all and already reports occurrence counts, and `vim` is scripted rather than anchored, so neither is instrumented.
+
 Interdependent edits are the normal case for a batch, and a half-applied set is rarely wanted — but `batch:` is **not** atomic by default, and this change does not make it so. Set `continue_on_error: false` in the payload wrapper to stop at the first failure. Preview ops (`replace_dry`) and read-only ops get no `[result]` — a read op's own count line is already the last thing printed, so nothing intervenes to misread.
 
 The per-op receipt has **not** moved: it is still printed above `[validators]`, so anything parsing output positionally is unaffected.
