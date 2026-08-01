@@ -38,7 +38,7 @@ def gql(query: str, variables: dict[str, Any], token: str, timeout: int = 30) ->
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             body = resp.read().decode("utf-8")
     except urllib.error.HTTPError as e:
-        msg = _scrub_token(_format_http_error(e), token)
+        msg = _format_http_error(e, token)
         sys.stderr.write(f"ERROR: {msg}\n")
         sys.exit(1)
     except urllib.error.URLError as e:
@@ -84,8 +84,12 @@ def gql_safe(query: str, variables: dict[str, Any], token: str, timeout: int = 3
     return data.get("data", {})
 
 
-def _format_http_error(e: urllib.error.HTTPError) -> str:
-    body = e.read().decode("utf-8", errors="replace")
+def _format_http_error(e: urllib.error.HTTPError, token: str = "") -> str:
+    # Scrubbed here rather than by the caller (#691): the caller scrubbed the
+    # *formatted* string, by which point the body had already been cut to 200
+    # chars — a token straddling that boundary survived `replace()` as a
+    # fragment, because the fragment is not the string being replaced.
+    body = _scrub_token(e.read().decode("utf-8", errors="replace"), token)
     if e.code == 401:
         return "401 Unauthorized — check HASHNODE_TOKEN, may have expired"
     if e.code == 403:

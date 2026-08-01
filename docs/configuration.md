@@ -299,24 +299,53 @@ Speedup: I/O-bound ops on different files. ~3-5× faster on cold filesystem; mod
 
 ## Excluding paths from traversal ops
 
-`glob`, `grep`, `tree`, and `map` walk the filesystem recursively. On large repos this can be slow and noisy — `.git/objects/`, `node_modules/`, `vendor/`, and similar dirs rarely contain what you're looking for.
+`glob`, `grep`, `tree`, and `map` walk the filesystem recursively. On large repos this can be slow and noisy — `.git/objects/`, `node_modules/`, `vendor/`, and similar dirs rarely contain what you're looking for. And some files are worse than noise: a `grep` that happens to cross a `.env` puts a live token in an LLM's context.
 
-Supertool prunes these at the **directory boundary** (never opens them), not after the fact.
+Excluded **directories** are pruned at the walk boundary — never opened. Excluded **files** are dropped from the result, and a file dropped for **credential** reasons is **counted**, so the report line says how many were hidden rather than simply not mentioning them.
+
+Noise entries (`.git`, `node_modules`, `__pycache__`, `dist/`, the caches) are dropped without being counted — see [Hidden files](operations/search.md#hidden-files-are-counted-not-silently-dropped) for why a counter that is never zero stops being a signal.
 
 **Built-in defaults** — always active unless overridden:
 
 ```
+# Noise
 .git/  node_modules/  .svn/  .hg/  .idea/  .vscode/
 __pycache__/  .venv/  venv/  dist/  build/
+phpstan-result-cache/  .phpunit.cache/  .rector/
+
+# Credential directories
+.max/  .ssh/  .aws/  .gnupg/  .kube/  .docker/
+.terraform/  .chef/  .npm/  secrets/  credentials/
+
+# Credential files
+.env/  .env.*  .netrc/  _netrc/  .npmrc/  .pypirc/
+.git-credentials/  .pgpass/  .my.cnf/  .htpasswd/  .dockercfg/
+id_rsa*  id_dsa*  id_ecdsa*  id_ed25519*
+*.pem  *.key  *.p12  *.pfx  *.jks  *.keystore  *.ppk
+.hashnode-token/  .devto-token/  .bluesky-app-password/
+
+# Kept visible on purpose
+!.env.example  !.env.sample  !.env.template
+!.env.dist  !.env.defaults  !.env.schema
 ```
 
-**Project-level additions** — add to `.supertool.json` under `ops.<op-name>.exclude-paths`. These are **merged additively** with the defaults (not replacing):
+**Three entry shapes:**
+
+| Shape | Example | Matches |
+|---|---|---|
+| Literal | `.env/`, `node_modules/` | a dir **or a file** of that name. One segment matches at any depth; a multi-segment path (`src/legacy/`) is anchored to the project root. The trailing `/` is normalisation, not a directory assertion. |
+| Glob | `*.pem`, `id_rsa*` | fnmatched against the basename. Needed for shapes that are not a fixed name. |
+| Negation | `!.env.example` | un-excludes what it matches, and wins over every other entry whatever the order. |
+
+**Where the credential-file boundary sits.** A file is on the list only when holding a credential is its entire purpose: an exact name (`.netrc`) or an unambiguous key-file shape (`*.pem`). There are deliberately no name-fragment heuristics — `*secret*`, `*token*`, `*password*` would hit source and test files constantly, and a search that silently skips your own code is a worse failure than the one the list exists to prevent. `.env.example` and its siblings are committed placeholders people legitimately read to learn which keys exist, so they are negated back in.
+
+**Project-level additions** — add to `.supertool.json` under `ops.<op-name>.exclude-paths`. These are **merged additively** with the defaults (not replacing), and take all three shapes:
 
 ```json
 {
   "ops": {
-    "glob": { "exclude-paths": ["vendor/", "Dvsi/dvsi-private/libs/"] },
-    "grep": { "exclude-paths": ["vendor/", "Dvsi/dvsi-private/libs/"] }
+    "glob": { "exclude-paths": ["vendor/", "Dvsi/dvsi-private/libs/", "*.p8"] },
+    "grep": { "exclude-paths": ["vendor/", "*.p8", "!config/*.key"] }
   }
 }
 ```
@@ -328,9 +357,11 @@ __pycache__/  .venv/  venv/  dist/  build/
 ./supertool 'glob:**/*.php:::no-exclude'
 ```
 
+**A path you name yourself is never excluded.** `grep:PATTERN:.env` searches `.env`, and `read:.env` prints it. Naming the file is a deliberate act; gating it would buy nothing (`read` was never gated) and would break the case someone meant. The list guards the *side effect* — a search aimed elsewhere that walks over a credential on the way.
+
 Ops that take explicit paths and don't traverse (`ls`, `read`, `head`, `tail`, `wc`, `stat`, `around`, `around_line`, `between`, `diff`, `blame`) are not affected — they always work on exactly the path you give them.
 
-See [issue #4](https://github.com/Digital-Process-Tools/claude-supertool/issues/4) for the full design rationale.
+See [issue #4](https://github.com/Digital-Process-Tools/claude-supertool/issues/4) for the original design rationale and [#691](https://github.com/Digital-Process-Tools/claude-supertool/issues/691) for the file-level wiring.
 
 ---
 

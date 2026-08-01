@@ -22,8 +22,28 @@ PDS = "https://bsky.social"  # Default PDS — handles can override via DID reso
 SESSION_FILE = Path(os.path.expanduser("~/.config/bluesky/session.json"))
 
 
-def _format_http_error(e: urllib.error.HTTPError) -> str:
-    body = e.read().decode("utf-8", errors="replace")
+def _scrub(s: str, *secrets: str) -> str:
+    """Redact credential material from a string before printing it (#691).
+
+    Mirrors `presets/hashnode/_graphql.py::_scrub_token`, which this module
+    lacked. The gap mattered most in `create_session`, whose request body *is*
+    the app password: an upstream proxy or PDS that echoes the request in its
+    error body replayed the password onto stderr and from there into whatever
+    read it. Cheap, idempotent, and cheaper than a credential leak.
+
+    Short values are skipped — a 1-2 character "secret" would redact ordinary
+    text everywhere it appeared and turn the error message into noise.
+    """
+    for secret in secrets:
+        if secret and len(secret) >= 6:
+            s = s.replace(secret, "[REDACTED]")
+    return s
+
+
+def _format_http_error(e: urllib.error.HTTPError, *secrets: str) -> str:
+    # Scrubbed before truncation, not after: a secret straddling the 200-char
+    # boundary survives `replace()` as a fragment if the order is reversed.
+    body = _scrub(e.read().decode("utf-8", errors="replace"), *secrets)
     if e.code == 400:
         return f"400 Bad Request: {body[:200]}"
     if e.code == 401:
@@ -67,7 +87,8 @@ def create_session(handle: str, app_password: str) -> dict[str, Any]:
         with urllib.request.urlopen(req, timeout=20) as resp:
             session = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
-        sys.stderr.write(f"ERROR: createSession: {_format_http_error(e)}\n")
+        sys.stderr.write(
+            f"ERROR: createSession: {_format_http_error(e, app_password)}\n")
         sys.exit(1)
     except urllib.error.URLError as e:
         sys.stderr.write(f"ERROR: network: {e.reason}\n")
@@ -132,7 +153,9 @@ def xrpc(
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
-        sys.stderr.write(f"ERROR: {nsid}: {_format_http_error(e)}\n")
+        detail = _format_http_error(
+            e, session.get("accessJwt", ""), session.get("refreshJwt", ""))
+        sys.stderr.write(f"ERROR: {nsid}: {detail}\n")
         sys.exit(1)
     except urllib.error.URLError as e:
         sys.stderr.write(f"ERROR: network: {e.reason}\n")
