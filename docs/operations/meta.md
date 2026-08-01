@@ -26,6 +26,49 @@ The trigger is deliberately narrow, and all three conditions must hold:
 
 So a subdirectory-relative call is never hijacked. An explicit `cwd:` op disables the probe entirely; `@` payloads, flags, absolute paths, `~` paths and wildcards are ignored when probing.
 
+## Inherited `GIT_*` environment
+
+Git's `GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`, `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES` and `GIT_NAMESPACE` override discovery-from-cwd, and git **exports them to every hook it runs**. A supertool call made from inside a git hook — this repo's own `.githooks/pre-commit` invokes `./supertool` — therefore inherits a pointer to whatever repository invoked the hook.
+
+Supertool removes all seven from its own environment **once per call, in the launcher, before any op dispatches**. Because the removal is applied to the process environment rather than to a copied dict, it reaches every child: presets (launched with a `dict(os.environ)` copy taken afterwards) and the git commands core spawns for itself.
+
+```
+scrubbed inherited git env: GIT_DIR — this call acted on the repo at /path/to/cwd, not the one those variables named (#692, #714)
+```
+
+One line per call, not per op: the scrub is one event.
+
+### Where the boundary sits, and why there
+
+[#692](https://github.com/Digital-Process-Tools/claude-supertool/issues/692) put the scrub in the **preset** launcher and argued — correctly — for a single chokepoint, on the grounds that a preset should be protected by being launched rather than by remembering to opt in. [#714](https://github.com/Digital-Process-Tools/claude-supertool/issues/714) found the level was one too low. Built-in ops never pass through that function, and core spawns git in six of its own places:
+
+| Function | Feeds |
+|----------|-------|
+| `_run_git_ignore_query` | the gitignore pruning behind `glob`, `grep`, `tree`, `map` |
+| `_path_meta_suffix` | the ` m` / ` ?` / ` !` marker on every `read` and on `workspace`'s meta line |
+| `_branch_probe` | the branch named in receipts |
+| `op_workspace` §Git | branch, ahead/behind, file status, log, blame |
+| `op_validate_staged` | `git diff --cached` |
+| `op_format_staged` | `git diff --cached` |
+
+Twelve `subprocess.run` calls, none of which passed an `env=`. Guarding each one would be the partial-adoption failure [#704](https://github.com/Digital-Process-Tools/claude-supertool/issues/704) describes — twelve sites to keep in step, and spawn thirteen written without the guard. So the boundary **moved up rather than multiplying**: one call site, now in `_main`. A test pins that there is exactly one and that it is the launcher.
+
+### Why it needed its own issue
+
+Under [#692](https://github.com/Digital-Process-Tools/claude-supertool/issues/692)'s reported case the op acted on the wrong repo and said nothing. On the built-in side git **exits 0** — it answers correctly, about a different repository. So [#705](https://github.com/Digital-Process-Tools/claude-supertool/issues/705)'s `git?` decline has no failure to catch, and the marker is not absent but *wrong*. Observed under `GIT_DIR` pointing at another repo, all three exiting 0:
+
+- a tracked, locally modified file read ` ?` (untracked) instead of ` m`;
+- `workspace` reported the other repository's branch;
+- `validate_staged` — the op a pre-commit hook exists to run — printed `no staged files` with a file staged.
+
+Only **index**-derived answers flip. A bare `GIT_DIR` leaves the work tree at the cwd, and `.gitignore` is read from the work tree, so the ` !` ignored marker is identical either way. That also means two synthetic repos carrying the same paths hide the bug completely: the foreign index answers the same thing. A reproduction needs the repos to be **asymmetric**.
+
+### Opting out
+
+There is no opt-out. If you meant to operate on the repo those variables name, `cd` there — or use `cwd:PATH` as the call's first op — rather than relying on the environment. The scrub is unconditional because a redirect that survives into `git push` is not something a receipt can undo after the fact.
+
+`GIT_CEILING_DIRECTORIES` and `GIT_DISCOVERY_ACROSS_FILESYSTEM` are deliberately left alone: they only *restrict* discovery, so they cannot land an op on the wrong repo — the worst they do is make it find none — and they are set on purpose by people working over slow mounts.
+
 ## `gc` — cache retention
 
 Supertool writes four caches under `~/.cache/supertool` (`XDG_CACHE_HOME` honoured): `vim-cursor` and `vim-undo` (per-file cursor state and the cross-call undo snapshot), `validators` (validator results keyed by content hash), and the legacy `vi-cursor`. Nothing used to reap them — on a daily-driver machine the tree reached **1.0 GB across 242,000 files in about two weeks**, and both `vim-*` directories exceeded the 65535-dirent listing cap, which is enough to make an ordinary `ls` visibly slow.

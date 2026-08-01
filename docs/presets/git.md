@@ -97,15 +97,9 @@ whole-file resolve.
 
 Every git op runs against the repository discovered from the **current working directory**, and says which one that was. `git-diff`, `git-commit` and `git-push` each stamp a `Repo: <toplevel>` header (a bare repo reports its git dir, marked `(bare)`); `git-commit` prints it before staging, so it is on the receipt even when a hook rejects the commit or nothing was staged.
 
-That is not a formality. Git's `GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`, `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES` and `GIT_NAMESPACE` override discovery-from-cwd, and git exports them to every hook it runs — so a supertool call made from inside a git hook inherits a pointer to whatever repo invoked the hook. Before [#692](https://github.com/Digital-Process-Tools/claude-supertool/issues/692) that silently retargeted the op, and the receipt named no repository to contradict it.
+That is not a formality. Git's `GIT_DIR`, `GIT_WORK_TREE` and five siblings override discovery-from-cwd, and git exports them to every hook it runs — so a supertool call made from inside a git hook inherits a pointer to whatever repo invoked the hook. Before [#692](https://github.com/Digital-Process-Tools/claude-supertool/issues/692) that silently retargeted the op, and the receipt named no repository to contradict it.
 
-Those seven variables are now **removed from the environment of every preset op**, so the op always acts on the repo you are standing in. The removal is reported, never silent:
-
-```
-scrubbed inherited git env: GIT_DIR — this op acted on the repo at /path/to/cwd, not the one those variables named (#692)
-```
-
-If you genuinely meant to operate on the repo those variables name, `cd` there (or use `cwd:PATH` as the call's first op) rather than relying on the environment — the scrub is unconditional, because a redirect that survives into `git push` is not something a receipt can undo after the fact. `GIT_CEILING_DIRECTORIES` and `GIT_DISCOVERY_ACROSS_FILESYSTEM` are deliberately left alone: they only restrict discovery, so they cannot land an op on the wrong repo, and they are set on purpose by people working over slow mounts.
+Those seven variables are removed **once per call, before any op dispatches** — see [Inherited `GIT_*` environment](../operations/meta.md#inherited-git-environment), which is where the boundary and its reasoning are written down. The scrub is not a property of the git preset: it covers every op, preset and built-in alike.
 
 **Just tell me whether it landed:**
 ```bash
