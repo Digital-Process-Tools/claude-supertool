@@ -25,12 +25,19 @@ import conftest
 
 SUITE_ROOT = Path(__file__).resolve().parent.parent
 
+# Widened by #692, which found the same leak reaching the OPS and picked the
+# set by "does this redirect which repo/index/refs git touches" rather than by
+# "does git export it to hooks". GIT_COMMON_DIR and GIT_NAMESPACE joined on
+# that rule. Scrubbing two more in the test runner is strictly safer — no test
+# in this suite wants an ambient git environment of any shape.
 EXPECTED_VARS = (
     "GIT_DIR",
     "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
     "GIT_INDEX_FILE",
     "GIT_OBJECT_DIRECTORY",
     "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_NAMESPACE",
 )
 
 _ID = ["-c", "user.email=fixture@example.invalid", "-c", "user.name=fixture"]
@@ -159,15 +166,14 @@ def test_pre_push_hook_scrubs_before_invoking_pytest(tmp_path):
     _make_outer_repo(repo)
     shutil.copy(SUITE_ROOT / ".githooks" / "pre-push", repo / "pre-push")
     stub = repo / "fake-python"
+    # Generated from EXPECTED_VARS rather than hand-listed: the hand-listed
+    # version reported only the five it knew about, so a sixth variable added
+    # to the hook could never have failed this test.
     stub.write_text(
         "#!/bin/sh\n"
-        'echo "SEEN GIT_DIR=[${GIT_DIR-<unset>}]"\n'
-        'echo "SEEN GIT_INDEX_FILE=[${GIT_INDEX_FILE-<unset>}]"\n'
-        'echo "SEEN GIT_WORK_TREE=[${GIT_WORK_TREE-<unset>}]"\n'
-        'echo "SEEN GIT_OBJECT_DIRECTORY=[${GIT_OBJECT_DIRECTORY-<unset>}]"\n'
-        'echo "SEEN GIT_ALTERNATE_OBJECT_DIRECTORIES='
-        '[${GIT_ALTERNATE_OBJECT_DIRECTORIES-<unset>}]"\n'
-        "exit 0\n"
+        + "".join(f'echo "SEEN {name}=[${{{name}-<unset>}}]"\n'
+                  for name in EXPECTED_VARS)
+        + "exit 0\n"
     )
     stub.chmod(0o755)
 

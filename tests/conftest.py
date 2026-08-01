@@ -179,13 +179,13 @@ def pytest_report_header(config):
 # — fixture commits stacked on master, core.bare flipped, index desynced (#416).
 # The hook scrubs them too; this layer makes the bug class unreachable from any
 # caller, not just that one entry point.
-GIT_ENV_VARS = (
-    "GIT_DIR",
-    "GIT_WORK_TREE",
-    "GIT_INDEX_FILE",
-    "GIT_OBJECT_DIRECTORY",
-    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-)
+#
+# Imported, not re-typed: #692 was the same lesson reaching the test runner and
+# never reaching the ops, and it stayed invisible partly because the list lived
+# in two hand-maintained copies that nothing compared. There is now one list.
+# `.githooks/pre-push` is a third consumer that cannot import Python, so a test
+# pins its `unset` line to this tuple instead.
+GIT_ENV_VARS = supertool.GIT_ENV_VARS
 
 
 def scrub_git_env(environ=None):

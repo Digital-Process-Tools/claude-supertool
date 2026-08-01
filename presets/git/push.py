@@ -68,6 +68,7 @@ from _git_common import (  # noqa: E402
     _first_error_line,
     _git,
     query_open_mr,
+    repo_label,
     use_utf8_stdout,
 )
 
@@ -1302,6 +1303,10 @@ def _push_op() -> int:
     head_before, _head_before_why = _local_head()
 
     print(f"# git-push on {branch}")
+    # Which LOCAL repo these commits came from. `Upstream:` below says where
+    # they are going; neither answered "from where" before #692, and push is
+    # the op whose wrong answer is hardest to take back.
+    print(f"Repo: {repo_label()}")
     if has_upstream:
         print(f"Upstream: {upstream}" + (f" @ {remote_before}" if remote_before else ""))
         if before_why:

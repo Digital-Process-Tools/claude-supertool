@@ -26,6 +26,7 @@ from _git_common import (  # noqa: E402
     _first_error_line,
     _git,
     query_open_mr,
+    repo_label,
     use_utf8_stdout,
 )
 
@@ -118,6 +119,9 @@ def main() -> int:
             return 1
 
     print(f"# git-commit on {branch}")
+    # Printed before anything is staged, so it is on the receipt whether the
+    # commit lands, is refused by a hook, or finds nothing staged (#692).
+    print(f"Repo: {repo_label()}")
     print(f"HEAD before: {head_before}")
 
     # Stage PATHS if given. A path that's already a staged deletion (gone from

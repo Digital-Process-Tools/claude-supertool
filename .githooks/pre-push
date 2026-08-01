@@ -13,13 +13,17 @@ cd "$(git rev-parse --show-toplevel)"
 # The cd above already resolved the toplevel; anything that still needs the
 # repo rediscovers it from cwd. Reported, not silent: a scrub that leaves no
 # trace hides the fact that the caller leaked in the first place.
+# The list is supertool.GIT_ENV_VARS, kept in sync by a test rather than by
+# memory (#692 widened it: GIT_COMMON_DIR and GIT_NAMESPACE redirect too).
+# Bash cannot import it, so tests/test_git_env_scrub_692.py pins the `unset`
+# line below to the Python tuple and goes red the day they diverge.
 leaked=""
-for var in GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES; do
+for var in GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE; do
     if [ -n "${!var:-}" ]; then
         leaked="$leaked $var"
     fi
 done
-unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
+unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE
 if [ -n "$leaked" ]; then
     echo "── pre-push: scrubbed inherited git env from the test run:$leaked (#416) ──"
 fi
