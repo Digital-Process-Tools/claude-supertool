@@ -108,7 +108,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Tuple
+from typing import Any, Dict, Iterable, List, MutableMapping, NamedTuple, Optional, Tuple
 
 VERSION = "0.22.0"
 
@@ -1559,9 +1559,24 @@ GIT_ENV_VARS = (
     "GIT_NAMESPACE",
 )
 
+# What `_main` removed from `os.environ` on the way in, so the notice can name
+# it after the cwd has settled — the scrub happens before argv is parsed, the
+# cwd it acted under is only known after `cwd:`/auto-root.
+#
+# Per-run scratch, filled in place rather than rebound: a daemon reuses the
+# process, and a leak list left over from an earlier call would print a notice
+# on a later clean one — #680's lesson about `_SKIP_COUNT`, same shape (#714).
+_LEAKED_GIT_ENV: List[str] = []
 
-def scrub_git_env(env: Dict[str, str]) -> List[str]:
-    """Delete git's repo pointers from `env`; return the names removed."""
+
+def scrub_git_env(env: MutableMapping[str, str]) -> List[str]:
+    """Delete git's repo pointers from `env`; return the names removed.
+
+    `env` is `os.environ` itself at the one call site (#714), not a copy: a
+    `del` there unsets the variable for this process AND for every child it
+    spawns, which is what makes the guard total. Typed as a MutableMapping
+    rather than a Dict because `os._Environ` is not a dict.
+    """
     removed = [name for name in GIT_ENV_VARS if name in env]
     for name in removed:
         del env[name]
@@ -1580,12 +1595,17 @@ def _git_env_notice(removed: List[str]) -> str:
     answer belonged" that made the original bug invisible, just pointing the
     other way. The line costs one row of output and is the only thing that
     tells a caller their environment is leaking.
+
+    Said once per call rather than once per op (#714). The scrub is now a
+    property of the process, so repeating the line under each of six reads
+    would describe one event six times.
     """
     if not removed:
         return ""
     return (
-        f"scrubbed inherited git env: {', '.join(removed)} — this op acted on "
-        f"the repo at {os.getcwd()}, not the one those variables named (#692)\n"
+        f"scrubbed inherited git env: {', '.join(removed)} — this call acted "
+        f"on the repo at {os.getcwd()}, not the one those variables named "
+        f"(#692, #714)\n"
     )
 
 
@@ -1648,16 +1668,13 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
 
     # Pass extra config keys as SUPERTOOL_ env vars
     _RESERVED_KEYS = {"cmd", "timeout", "description", "syntax", "example", "status", "restartMcp"}
+    # No scrub here any more (#714). #692 put one on this line because every
+    # PRESET op is launched from it — true, and the reasoning holds, but this
+    # is the launcher for half the op table. Built-ins never reach it, and core
+    # spawns git in six of its own functions. `os.environ` is scrubbed once in
+    # `_main` instead, so this copy is already clean and a preset stays covered
+    # by being launched rather than by opting in.
     env = dict(os.environ)
-    # #692 — every preset op is launched from here, so this is the one place
-    # that can make the bug class unreachable. Fixing `presets/git/_git_common`
-    # instead would have covered the two presets that import its `_git`
-    # (commit, push) and silently missed the other ten — nine that define a
-    # local `_git` shadowing it, plus blame, which calls subprocess directly.
-    # That is this repo's signature defect arriving inside the fix for it. A
-    # preset is protected by being launched, not by remembering to opt in, and
-    # preset number thirteen is protected before it is written.
-    _leaked_git = scrub_git_env(env)
     if isinstance(entry, dict):
         for k, v in entry.items():
             if k not in _RESERVED_KEYS:
@@ -1686,7 +1703,7 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
             encoding="utf-8", errors="replace", env=env,
         )
         elapsed = _elapsed_since(t0)
-        output = _git_env_notice(_leaked_git) + result.stdout
+        output = result.stdout
         if result.returncode != 0:
             if result.stderr:
                 output += result.stderr
@@ -1697,10 +1714,8 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
         return f"PASS ({elapsed:.2f}s){_stamp}\n{output}{_maybe_restart_mcp(entry)}"
     except subprocess.TimeoutExpired as e:
         elapsed = _elapsed_since(t0)
-        # The notice rides the timeout path too: an op killed mid-flight is
-        # exactly when "which repo did that touch?" is worth answering.
         return (f"FAIL (timeout {elapsed:.1f}s > {timeout}s)\n"
-                f"{_git_env_notice(_leaked_git)}{_timeout_partial_output(e)}")
+                f"{_timeout_partial_output(e)}")
     except OSError as e:
         return f"FAIL: {e}\n"
 
@@ -15904,6 +15919,31 @@ def _main(argv: List[str]) -> int:
     # overrides it, since that env is applied after os.environ is copied.
     os.environ["PYTHONIOENCODING"] = "utf-8"
 
+    # #714 — the process launcher, scrubbed before ANY op dispatches.
+    #
+    # #692 chose `_resolve_custom_op` and argued for one chokepoint. The
+    # argument was right and the level was one too low: that function launches
+    # preset ops, and built-ins never pass through it. Core spawns git itself
+    # in six places — `_run_git_ignore_query` (the ignore pruning behind glob,
+    # grep, tree, map), `_path_meta_suffix` (the ` m`/` ?`/` !` marker on every
+    # read), `_branch_probe`, `op_workspace`'s Git section, `op_validate_staged`
+    # and `op_format_staged` — none of which passes `env=`, so each inherited
+    # whatever `GIT_*` the parent had. Under a leaked GIT_DIR a tracked,
+    # modified file read ` ?`, `workspace` reported the other repo's branch,
+    # and `validate_staged` — the op `.githooks/pre-commit` exists to run —
+    # answered "no staged files" with a file staged.
+    #
+    # Guarding each spawn instead would be #704's disease: twelve call sites
+    # today, and spawn thirteen written without the guard. Scrubbing
+    # `os.environ` itself covers all of them at once, including presets, whose
+    # `dict(os.environ)` copy is now clean before it is taken — one boundary,
+    # moved up, not a second one added.
+    #
+    # Before the argv checks so a usage error or an early return still leaves
+    # the process clean; the notice waits until after any chdir, because it
+    # names the cwd the ops actually ran in.
+    _LEAKED_GIT_ENV[:] = scrub_git_env(os.environ)
+
     # --plain consumes the flag and exports SUPERTOOL_PLAIN=1 so preset
     # subprocesses (run via {python} {path}*.py) inherit it through the env.
     if "--plain" in argv:
@@ -16000,6 +16040,15 @@ def _main(argv: List[str]) -> int:
     # Normal batched-ops mode
     total_out_bytes = 0
     any_failure = False
+
+    # The scrub happened before argv was even parsed; the cwd it acted under is
+    # only settled here, after `cwd:`/auto-root. Printed ahead of the op bodies
+    # so a caller reading top-down learns their environment leaked before they
+    # read an answer that would otherwise look ordinary (#692, #714).
+    _leak_notice = _git_env_notice(_LEAKED_GIT_ENV)
+    if _leak_notice:
+        sys.stdout.write(_leak_notice)
+        total_out_bytes += len(_leak_notice.encode("utf-8"))
     # Per-call delta, not the absolute count: the counter is process-global and
     # the daemon reuses the process, so reading `_SKIP_COUNT[0] > 0` would let
     # one declined op in an early call poison the exit code of every later call
