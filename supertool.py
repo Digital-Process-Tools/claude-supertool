@@ -11366,7 +11366,17 @@ def _validator_cache_write(key: str, data: Dict[str, Any]) -> None:
 # Engine-failure error codes/messages that are NON-deterministic: a clean re-run
 # can flip them. These must never be cached (the cache key is the file's content
 # hash, so a frozen failure replays on every later run until the file changes).
-_NONDETERMINISTIC_ERROR_CODES = {"mcp", "orchestrator", "rector.exit"}
+_NONDETERMINISTIC_ERROR_CODES = {"mcp", "orchestrator", "rector.exit", "adapter"}
+# `adapter` joined the set with #745. SCHEMA.md and docs/contributing.md already
+# reserve it for "the adapter or its tool could not produce a verdict" — a binary
+# that is absent, a timeout, output that would not parse, a `php -l` that exited
+# without saying anything about the file. None of those are a function of the
+# file's content, which is exactly the criterion this set encodes and exactly the
+# shape of the 2100-entry incident below: a toolchain broken for ten minutes
+# would otherwise freeze a red into a content-hash-keyed cache and replay it
+# until someone touched the file. Before #745 those exits reached the cache
+# wearing a finding's code (`parse`), so they were cached and this never had a
+# chance to fire; naming them correctly is what makes the guard reachable.
 
 
 def _validator_result_is_cacheable(data: Dict[str, Any]) -> bool:

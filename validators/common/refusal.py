@@ -151,6 +151,37 @@ def outside_roots(file_path: str, env_var: str) -> str | None:
     return f"path outside {env_var} allowlist"
 
 
+def tool_fault(tool: str, returncode: int, output: str, limit: int = 300) -> str:
+    """Message for a non-zero exit that said nothing about the file (#745).
+
+    The sibling of `skipped()` on the other side of the same distinction. A
+    refusal is an analyser that declined *before* running; this is one that ran,
+    fell over, and exited non-zero without producing a verdict — a broken
+    extension, a fatal startup error, a path it could not open. Neither is a
+    finding about the file.
+
+    Unlike a refusal this stays an **error**, not a third state. A refusal is a
+    configured, expected non-answer; a tool that crashed on a file it was asked
+    about is a fault someone has to fix, and a fault routed to `skipped` is a
+    validator quietly reporting clean. So the caller keeps `ok: False` and
+    `count: 1` and changes only the `code` and the message.
+
+    The message names the exit code first, because on the failures this exists
+    for the output is frequently the least informative part — and sometimes
+    empty, which is why the empty case is spelled out rather than rendered as a
+    blank tail. A formatter that goes blank on the input it was written for is
+    the defect one layer in (see `tests/_adapter_verdict.py`).
+    """
+    body = " ".join((output or "").split())
+    if not body:
+        body = "(no output)"
+    elif len(body) > limit:
+        body = body[:limit] + f"... (+{len(body) - limit} chars)"
+    return (f"{tool} exited {returncode} without reporting anything about the "
+            f"file - this is a {tool} failure, not a finding about the file: "
+            f"{body}")
+
+
 def skipped(tool: str, file_path: str, reason: str, dur_ms: int) -> dict:
     """A SCHEMA.md result in the third state: not clean, not broken, not looked at.
 
