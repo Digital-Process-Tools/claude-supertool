@@ -330,23 +330,73 @@ def _expand_braces(pattern: str) -> List[str]:
 
 
 # Default exclude-paths applied to all traversal ops (glob, grep, tree, map).
-# These are pruned at the directory-walk boundary — the dirs are never opened.
-# Match is prefix-relative-to-cwd; trailing slash is normalised in _get_exclude_paths.
-_DEFAULT_EXCLUDE_PATHS: Tuple[str, ...] = (
+# Directories are pruned at the walk boundary — they are never opened. Files
+# are dropped from the result, and dropping one *silently* is the thing this
+# list must not do — see `_hidden_suffix` and `_is_disclosable_exclusion`.
+#
+# Three entry shapes, all honoured by `_is_excluded`:
+#   "name/"   literal — a DIR or a FILE of that name. A single segment matches
+#             at any depth; a multi-segment path is anchored to cwd.
+#   "*.pem"   glob — fnmatched against the basename. Needed for shapes that are
+#             not a fixed name (`id_rsa*`, `*.pem`).
+#   "!name"   negation — un-excludes what it matches and wins over every other
+#             entry, whatever the order.
+#
+# Split in two because the *disclosure count* distinguishes them, not because
+# matching does: `_is_excluded` is handed the concatenation and cannot tell
+# them apart. Noise is skipped in silence; a credential file is skipped and
+# counted (#691).
+
+# Build output, caches and VCS metadata. Deliberately NOT counted: nobody
+# searching a repo meant these, they are documented, and a counter that fires
+# on them is a number that is never zero — which is noise, not disclosure.
+_NOISE_EXCLUDE_PATHS: Tuple[str, ...] = (
     ".git/", "node_modules/", ".svn/", ".hg/", ".idea/", ".vscode/",
     "__pycache__/", ".venv/", "venv/", "dist/", "build/",
     "phpstan-result-cache/", ".phpunit.cache/", ".rector/",
-    # #146: credential/secret dirs and files. Pruned so grep/glob/tree/map
-    # don't accidentally surface tokens in their output (which then lands in
-    # an LLM's context). Override per-project via .supertool.json exclude-paths.
-    # Note: trailing slash matches dirs AND files of the same name —
-    # `_is_excluded` appends `/` to rel_path before prefix-matching, so `.env/`
-    # catches a FILE named `.env` and a DIR named `.env/`. Distinct entries
-    # are needed for `.env.local`, `.env.production`, etc. (each is its own name).
-    ".env/", ".env.local/", ".env.production/", ".env.development/", ".env.test/",
+)
+
+_SECRET_EXCLUDE_PATHS: Tuple[str, ...] = (
+    # #146 / #691: credential dirs and files, kept out of glob/grep/tree/map so
+    # a token cannot land in an LLM context as a side effect of a search nobody
+    # aimed at it. #146 added the file entries below and documented that the
+    # trailing slash covered files; for two years nothing called `_is_excluded`
+    # on a file, so it did not. #691 wired it up.
+    #
+    # The boundary is deliberately narrow. A file earns a place here only when
+    # holding a credential is its entire purpose: an exact name (`.netrc`) or an
+    # unambiguous key-file shape (`*.pem`). No name-fragment heuristics —
+    # `*secret*`, `*token*`, `*password*` hit source and test files constantly,
+    # and a search that silently skips your own code is a worse failure than
+    # the one this list exists to prevent.
+    #
+    # Directories.
     ".max/", ".ssh/", ".aws/", ".gnupg/", ".kube/", ".docker/",
     ".terraform/", ".chef/", ".npm/", "secrets/", "credentials/",
+    # Environment files. `.env.*` covers `.local`, `.production`, `.staging`
+    # and whatever a project invents next. The negations keep the committed
+    # placeholders greppable — people read those to learn which keys exist,
+    # and hiding them is the over-broad direction of this same defect.
+    ".env/", ".env.*",
+    "!.env.example", "!.env.sample", "!.env.template", "!.env.dist",
+    "!.env.defaults", "!.env.schema",
+    # Tool credential files.
+    ".netrc/", "_netrc/", ".npmrc/", ".pypirc/", ".git-credentials/",
+    ".pgpass/", ".my.cnf/", ".htpasswd/", ".dockercfg/",
+    # Private keys and keystores.
+    "id_rsa*", "id_dsa*", "id_ecdsa*", "id_ed25519*",
+    "*.pem", "*.key", "*.p12", "*.pfx", "*.jks", "*.keystore", "*.ppk",
+    # Supertool's own documented cwd token files (see presets/*/_auth.py). The
+    # `.bluesky-handle` and `.hashnode-publication-id` siblings are public
+    # identifiers, not credentials, and stay visible.
+    ".hashnode-token/", ".devto-token/", ".bluesky-app-password/",
 )
+
+# Matching sees one flat list; only the disclosure count reads the split.
+_DEFAULT_EXCLUDE_PATHS: Tuple[str, ...] = (
+    _NOISE_EXCLUDE_PATHS + _SECRET_EXCLUDE_PATHS
+)
+_NOISE_EXCLUDE_SET = frozenset(_NOISE_EXCLUDE_PATHS)
 WILDCARD_CHARS = re.compile(r"[*?\[]")
 # Patterns for lines that are "blank or comment-only" across common languages
 _COMPACT_SKIP = re.compile(
@@ -1016,22 +1066,47 @@ def _get_exclude_paths(op_name: str, no_exclude: bool = False) -> Tuple[str, ...
         extra = project_paths.get("exclude-paths", [])
         if isinstance(extra, list):
             for p in extra:
-                if isinstance(p, str):
-                    # Normalise: ensure trailing slash for directory prefix matching
-                    defaults.add(p if p.endswith("/") else p + "/")
+                if isinstance(p, str) and p:
+                    defaults.add(_normalise_exclude_entry(p))
     return tuple(sorted(defaults))
 
 
-def _is_excluded(rel_path: str, exclude_paths: Tuple[str, ...]) -> bool:
-    """Return True if rel_path matches any of the exclude prefixes.
+def _normalise_exclude_entry(entry: str) -> str:
+    """Normalise one `exclude-paths` entry to the shape `_is_excluded` expects.
 
-    Two match modes (matches `.gitignore` semantics):
-      1. **Prefix match** — `rel_path` literally starts with a prefix (catches
+    A literal gets a trailing slash so it prefix-matches. A glob and a negation
+    are returned untouched: appending `/` to `*.key` produced `*.key/`, which
+    fnmatches nothing and no longer looks like a glob either — so a wildcard in
+    a project config was a silent no-op, failing in exactly the direction this
+    setting exists to prevent (#691).
+    """
+    if entry.startswith("!") or WILDCARD_CHARS.search(entry):
+        return entry
+    return entry if entry.endswith("/") else entry + "/"
+
+
+def _is_excluded(rel_path: str, exclude_paths: Tuple[str, ...]) -> bool:
+    """Return True if rel_path matches any of the exclude entries.
+
+    Answers for **files as well as directories**. Callers that walk must ask
+    about both: pruning `dirs[:]` alone is how `.env/` sat on the default list
+    from #146 to #691 while `grep` printed the contents of every `.env` in the
+    tree. There is nothing wrong with the matching here — it was simply never
+    asked about a file.
+
+    Four entry shapes (`.gitignore` semantics):
+      1. **Prefix match** — `rel_path` literally starts with the entry (catches
          a `node_modules/` at the project root).
-      2. **Component match** — any single-segment prefix (`__pycache__/`,
-         `.git/`, `node_modules/`) matches that name appearing ANYWHERE in
-         the path (catches nested `presets/devto/__pycache__/foo.pyc`,
-         which the old prefix-only logic missed).
+      2. **Component match** — a single-segment entry (`__pycache__/`, `.git/`)
+         matches that name appearing ANYWHERE in the path (catches nested
+         `presets/devto/__pycache__/foo.pyc`). The trailing `/` is not a
+         directory assertion: `rel_path` gets one appended before comparison,
+         so `.env/` matches a FILE named `.env` and a DIR named `.env/` alike.
+      3. **Glob** — an entry containing `*`, `?` or `[` is fnmatched against the
+         basename and against the whole relative path (`*.pem`, `id_rsa*`).
+      4. **Negation** — an entry starting with `!` un-excludes what it matches
+         and wins over every other entry regardless of order, so `.env.*` can
+         be listed without hiding the committed `.env.example`.
 
     Multi-segment prefixes (`Dvsi/dvsi-private/libs/`) keep prefix-only
     semantics — anchoring to repo root is the whole point of them.
@@ -1041,23 +1116,82 @@ def _is_excluded(rel_path: str, exclude_paths: Tuple[str, ...]) -> bool:
     """
     if not exclude_paths:
         return False
+    import fnmatch
     # Normalise to forward-slashes for consistent prefix matching
     normalised = rel_path.replace(os.sep, "/")
     # Strip leading "./" produced by os.path.join(".", name) or relpath at cwd
     if normalised.startswith("./"):
         normalised = normalised[2:]
+    bare_path = normalised.rstrip("/")
     if not normalised.endswith("/"):
         normalised += "/"
+    basename = bare_path.rsplit("/", 1)[-1]
     # Component set for the "matches anywhere" check (skip empties).
-    components = {c for c in normalised.rstrip("/").split("/") if c}
-    for prefix in exclude_paths:
-        if normalised.startswith(prefix):
+    components = {c for c in bare_path.split("/") if c}
+
+    def _glob_hit(pattern: str) -> bool:
+        return (fnmatch.fnmatch(basename, pattern)
+                or fnmatch.fnmatch(bare_path, pattern))
+
+    # Negations first, and they are final — an entry cannot be re-excluded by a
+    # later pattern, so the answer never depends on tuple order (the defaults
+    # are `sorted()` before they get here).
+    for entry in exclude_paths:
+        if not entry.startswith("!"):
+            continue
+        pattern = entry[1:].rstrip("/")
+        if not pattern:
+            continue
+        if WILDCARD_CHARS.search(pattern):
+            if _glob_hit(pattern):
+                return False
+        elif pattern == basename or normalised.startswith(pattern + "/"):
+            return False
+
+    for entry in exclude_paths:
+        if entry.startswith("!"):
+            continue
+        if WILDCARD_CHARS.search(entry):
+            if _glob_hit(entry.rstrip("/")):
+                return True
+            continue
+        if normalised.startswith(entry):
             return True
         # Single-segment prefixes also match anywhere in the path.
-        bare = prefix.rstrip("/")
+        bare = entry.rstrip("/")
         if "/" not in bare and bare in components:
             return True
     return False
+
+
+def _is_disclosable_exclusion(
+    rel_path: str, exclude_paths: Tuple[str, ...]
+) -> bool:
+    """Does this file's exclusion belong in the report's hidden count? (#691)
+
+    The count is the entire justification for hiding a file at all: a `*.pem`
+    sitting in a fixtures directory is survivable *because* the header says
+    something was dropped. That holds only while the number discriminates, so
+    entries that fire constantly and mean nothing have to stay out of it.
+
+    `_hidden_suffix` already made this argument — for directories. Files
+    versus directories was a *proxy* for the real line, which is noise versus
+    credential, and the proxy holds only because almost every noise entry
+    happens to be a directory. In a git **worktree** `.git` is a gitfile, not
+    a directory, so the proxy broke precisely where the agent work happens:
+    the counter read `1` on every call in the tree, about a pointer file
+    nobody searched for. A reader learns to skip a number that is never zero,
+    and then the call that says `2` because a real `.env` was hidden looks
+    like all the others.
+
+    Built-in noise entries are kept out of the count and still kept out of
+    the result — nothing is hidden any less than before. A project's own
+    `exclude-paths` entries always count: we cannot know whether one is noise
+    or a credential, over-disclosure is the safe direction, and whoever added
+    the pattern is the person most likely to want to know that it fired.
+    """
+    signal = tuple(p for p in exclude_paths if p not in _NOISE_EXCLUDE_SET)
+    return bool(signal) and _is_excluded(rel_path, signal)
 
 
 def _split_exclude_prefixes(
@@ -1081,6 +1215,68 @@ def _split_exclude_prefixes(
         else:
             singles.append(trimmed)
     return tuple(singles), tuple(multis)
+
+
+def _grep_exclude_flags(exclude_paths: Tuple[str, ...]) -> List[str]:
+    """Build the `--exclude` / `--exclude-dir` argv for the delegated grep.
+
+    Two things the old `--exclude-dir`-only argv got wrong (#691):
+
+    - **`--exclude-dir` cannot skip a file.** `.env/` means "a dir or a file
+      named `.env`" everywhere else in supertool, so every literal entry now
+      emits both flags. This alone is what stopped the delegated engine reading
+      `.env` off disk at all.
+    - **System grep has no negation.** `--exclude=.env.*` would hide
+      `.env.example`, which the native walker shows — and which backend ran must
+      never change the answer. So when the effective list carries any negation,
+      wildcard entries are withheld from the argv entirely and left to the
+      post-filter in `op_grep`. Literal entries still go through, which is where
+      the traversal win lives (`node_modules`, `.git`).
+
+    Multi-segment entries are never expressible as a bare name; `op_grep`
+    already refuses to delegate at all when one is present.
+    """
+    has_negation = any(p.startswith("!") for p in exclude_paths)
+    negated = {p[1:].rstrip("/") for p in exclude_paths if p.startswith("!")}
+    flags: List[str] = []
+    for entry in exclude_paths:
+        if entry.startswith("!"):
+            continue
+        bare = entry.rstrip("/")
+        if not bare or "/" in bare or bare in negated:
+            continue
+        if WILDCARD_CHARS.search(bare) and has_negation:
+            continue
+        flags.append(f"--exclude-dir={bare}")
+        flags.append(f"--exclude={bare}")
+    return flags
+
+
+def _rtk_drop_excluded(
+    rtk_out: str, exclude_paths: Tuple[str, ...]
+) -> Tuple[str, int]:
+    """Filter excluded paths out of a delegated grep's `path:lineno:content`.
+
+    The authoritative guard on the delegated path, and deliberately not the
+    only one: the argv flags are an optimisation, this is the guarantee. It
+    runs the same `_is_excluded` the native walker runs, so an rtk release that
+    rewrites the argv, or a system grep that ignores `--exclude`, still cannot
+    put a credential in the output.
+
+    Returns (kept_text, dropped_file_count).
+    """
+    if not exclude_paths:
+        return rtk_out, 0
+    cwd = os.getcwd()
+    kept: List[str] = []
+    dropped: set = set()
+    for line in rtk_out.splitlines():
+        m = re.match(r"^(.+?):\d+:", line)
+        if m and _is_excluded(_safe_relpath(m.group(1), cwd), exclude_paths):
+            dropped.add(m.group(1))
+            continue
+        kept.append(line)
+    return "\n".join(kept) + ("\n" if kept else ""), len(dropped)
 
 
 # Directories git ignores, keyed on (cwd, search root). One entry per walk
@@ -2167,22 +2363,32 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
 
     excl = _get_exclude_paths("grep", no_exclude)
 
-    # RTK delegation — basic grep (no context, no count). Thread excludes through
-    # via grep's --exclude-dir for single-segment prefixes (.git/, node_modules/,
-    # etc.). Multi-segment prefixes (e.g. "Dvsi/dvsi-private/libs/") can't be
-    # expressed as --exclude-dir; fall through to the native walker in that case.
+    # RTK delegation — basic grep (no context, no count). Excludes are threaded
+    # through as --exclude-dir AND --exclude for single-segment entries (.git/,
+    # node_modules/, .env/) and re-applied to whatever comes back. Multi-segment
+    # prefixes (e.g. "Dvsi/dvsi-private/libs/") can't be expressed as either;
+    # fall through to the native walker in that case.
     if not count_only and context == 0 and _rtk_enabled() and _has_rtk():
-        single, multi = _split_exclude_prefixes(excl)
+        _, multi = _split_exclude_prefixes(excl)
         if not multi and not _gitignore_residual(path, excl):
             # limit + 1 so the report can tell "exactly N" from "stopped at N"
             # (#448). The extra line is trimmed off before output.
             rtk_args = ["grep", "-rn", "-m", str(limit + 1)]
-            for d in single:
-                rtk_args.append(f"--exclude-dir={d}")
+            rtk_args.extend(_grep_exclude_flags(excl))
             rtk_args.extend([pattern, path])
             rtk_out = _rtk_run(rtk_args)
             if rtk_out is not None and rtk_out.strip():
-                return _rtk_grep_report(rtk_out, limit)
+                rtk_out, rtk_dropped = _rtk_drop_excluded(rtk_out, excl)
+                if not rtk_dropped:
+                    return _rtk_grep_report(rtk_out, limit)
+                # An excluded file came back anyway — expected whenever the
+                # list carries a negation, since those wildcards are withheld
+                # from the argv. Printing the filtered lines under the
+                # delegated header would leave its count, its `limit + 1`
+                # truncation probe and its `?` denominator all describing a
+                # result set that no longer exists. Redo the walk natively
+                # instead: same filter, honest report, and the two engines
+                # answer identically in the one case where it matters (#691).
             # No RTK output — rtk failed, or it ran and matched nothing. Fall
             # through to the native walker either way (#414). A zero result is
             # the ambiguous case #407 exists for, so it must reach the walker
@@ -2194,8 +2400,10 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
     # many files were actually scanned (#407) — without it, "0 results" is
     # ambiguous between "searched everything, found nothing" and "path/glob
     # resolved to nothing, so nothing was searched".
-    candidates = _grep_candidates(path, excl)
+    hidden_files: List[str] = []
+    candidates = _grep_candidates(path, excl, hidden_files)
     scanned = len(candidates)
+    hidden = _hidden_suffix(len(hidden_files))
 
     if count_only:
         counts = _grep_count(pattern, path, limit, excl, candidates=candidates)
@@ -2207,7 +2415,7 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
         total = sum(counts.values())
         file_count = len(counts)
         out = [literal_note,
-               f"({total} total matches across {file_count} files{_scanned_suffix(scanned)})\n"]
+               f"({total} total matches across {file_count} files{_scanned_suffix(scanned)}{hidden})\n"]
         for fp, cnt in sorted(counts.items()):
             out.append(f"{_fwd(fp)}:{cnt}\n")
         out.append("\n")
@@ -2227,7 +2435,7 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
         )
         literal_note = _literal_note(pattern, count) if literal else ""
         file_count = len({g[0][0] for g in groups if g})
-        out = [literal_note, f"({count} results in {file_count} files{_scanned_suffix(scanned)}, "
+        out = [literal_note, f"({count} results in {file_count} files{_scanned_suffix(scanned)}{hidden}, "
                f"limit {limit}, context {context}{_truncation_suffix(truncated)})\n"]
         current_file: str = ""
         first_group = True
@@ -2266,7 +2474,7 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
     file_count = len({fp for fp, _, _ in hits})
 
     out = [literal_note,
-           f"({count} results in {file_count} files{_scanned_suffix(scanned)}, "
+           f"({count} results in {file_count} files{_scanned_suffix(scanned)}{hidden}, "
            f"limit {limit}{_truncation_suffix(truncated)})\n"]
     current_file = ""
     for fp, lineno, content in hits:
@@ -2611,7 +2819,8 @@ def op_glob(pattern: str, no_exclude: bool = False, no_auto_read: bool = False) 
     # header did, and one file past the cap is what distinguishes "N matched"
     # from "N shown".
     cap = _get_op_int("glob", "max_results", MAX_GLOB_RESULTS)
-    files = _glob_files(pattern, excl, over_fetch=1)
+    hidden_files: List[str] = []
+    files = _glob_files(pattern, excl, over_fetch=1, hidden=hidden_files)
     # glob is repo-root relative, so a pattern naming a mid-path segment
     # (`SiBrief/**/*.php` for a dir nested under Dvsi/src2/) returns 0 while the
     # same segment works fine in grep. Retry once with a `**/` prefix so both
@@ -2620,7 +2829,8 @@ def op_glob(pattern: str, no_exclude: bool = False, no_auto_read: bool = False) 
     if (not files and "/" in pattern
             and not pattern.startswith(("/", "~", "**", "./", "../"))):
         retry = "**/" + pattern
-        files = _glob_files(retry, excl, over_fetch=1)
+        hidden_files = []
+        files = _glob_files(retry, excl, over_fetch=1, hidden=hidden_files)
         if files:
             midpath_note = (f"[mid-path retry: no match at repo root for "
                             f"{pattern!r} — matched {retry!r}]\n")
@@ -2636,7 +2846,8 @@ def op_glob(pattern: str, no_exclude: bool = False, no_auto_read: bool = False) 
         if len(prefix) <= 10:
             prefix = ""
     truncation = " — TRUNCATED, more files match" if glob_truncated else ""
-    out = [midpath_note, f"({len(files)} files{truncation})\n"]
+    out = [midpath_note,
+           f"({len(files)} files{_hidden_suffix(len(hidden_files))}{truncation})\n"]
     if prefix:
         fwd_prefix = _fwd(prefix)
         out.append(f"{fwd_prefix}\n")
@@ -2986,6 +3197,7 @@ def op_tree(path: str, depth: int = 3,
         return f"ERROR: depth must be >= 1, got {depth}\n"
 
     out: List[str] = []
+    hidden: List[str] = []
     base = os.path.abspath(path)
     cwd = os.getcwd()
 
@@ -3002,6 +3214,12 @@ def op_tree(path: str, depth: int = 3,
         files = [e for e in entries if not os.path.isdir(os.path.join(dir_path, e))]
 
         for f in files:
+            if exclude_paths:
+                rel_f = _safe_relpath(os.path.join(dir_path, f), cwd)
+                if _is_excluded(rel_f, exclude_paths):
+                    if _is_disclosable_exclusion(rel_f, exclude_paths):
+                        hidden.append(f)
+                    continue
             out.append(f"{prefix}{f}\n")
         for d in dirs:
             if exclude_paths:
@@ -3014,6 +3232,8 @@ def op_tree(path: str, depth: int = 3,
 
     out.append(f"{os.path.basename(base)}/\n")
     _walk(base, "  ", 1)
+    if hidden:
+        out.append(f"({len(hidden)} files hidden by exclude-paths)\n")
     return "".join(out)
 
 
@@ -3469,7 +3689,8 @@ _MAP_EXTENSIONS = frozenset(
 
 
 def _collect_files(
-    path: str, exclude_paths: Tuple[str, ...]
+    path: str, exclude_paths: Tuple[str, ...],
+    hidden: Optional[List[str]] = None,
 ) -> List[str]:
     """Collect files to map from a path (file or directory).
 
@@ -3501,8 +3722,15 @@ def _collect_files(
         )
         for fn in sorted(filenames):
             ext = os.path.splitext(fn)[1].lower()
-            if ext in _MAP_EXTENSIONS:
-                files.append(os.path.join(root, fn))
+            if ext not in _MAP_EXTENSIONS:
+                continue
+            rel_fn = os.path.join(rel_root, fn)
+            if exclude_paths and _is_excluded(rel_fn, exclude_paths):
+                if hidden is not None and _is_disclosable_exclusion(
+                        rel_fn, exclude_paths):
+                    hidden.append(os.path.join(root, fn))
+                continue
+            files.append(os.path.join(root, fn))
     return files
 
 
@@ -3524,7 +3752,9 @@ def op_map(path: str, no_exclude: bool = False) -> str:
     if not os.path.exists(path):
         return _path_not_found(path)
 
-    files = _collect_files(path, _get_exclude_paths("map", no_exclude))
+    hidden_files: List[str] = []
+    files = _collect_files(
+        path, _get_exclude_paths("map", no_exclude), hidden_files)
     if not files:
         return f"(no supported files found in {path})\n"
 
@@ -3574,7 +3804,7 @@ def op_map(path: str, no_exclude: bool = False) -> str:
             # File exists but no symbols extracted — show it as empty
             out_files.append(f"{_fwd(fpath)} ({line_count} lines)\n  (no symbols)\n")
 
-    out = [f"({len(files)} files, tier: {actual_tier})\n"] + out_files
+    out = [f"({len(files)} files{_hidden_suffix(len(hidden_files))}, tier: {actual_tier})\n"] + out_files
     if truncated:
         out.append(f"\n... (truncated at {MAX_MAP_FILES} files)\n")
     out.append("\n")
@@ -3672,6 +3902,26 @@ def _trim_context_groups(
     return kept, truncated
 
 
+def _hidden_suffix(hidden: int) -> str:
+    """Report format's ", N files hidden by exclude-paths" clause (#691).
+
+    An exclusion that leaves no trace in the output is indistinguishable from a
+    file that was not there — the same silent-failure shape the `scanned N`
+    denominator and the TRUNCATED marker were both added to close. Credential
+    files are the reason the list exists, but "your search skipped something"
+    is the caller's to know, and the way back (`no-exclude`) is one flag away.
+
+    Which exclusions count is decided by `_is_disclosable_exclusion`, not by
+    file-versus-directory: built-in noise entries stay out of the number so it
+    reads zero on the ordinary call. A counter that is never zero is one a
+    reader learns to skip, and then the call that fires because a real `.env`
+    was hidden looks like all the others.
+    """
+    if hidden <= 0:
+        return ""
+    return f", {hidden} files hidden by exclude-paths"
+
+
 def _scanned_suffix(scanned: int) -> str:
     """Report format's ", scanned N files" clause (#407).
 
@@ -3717,7 +3967,8 @@ def _grep_count(
 
 
 def _grep_candidates(
-    path: str, exclude_paths: Tuple[str, ...] = ()
+    path: str, exclude_paths: Tuple[str, ...] = (),
+    hidden: Optional[List[str]] = None,
 ) -> List[str]:
     """Return list of file paths to search for a given path argument.
 
@@ -3728,6 +3979,16 @@ def _grep_candidates(
     before the files are collected, the returned length is what op_grep reports
     as `scanned N`, so #407's denominator shrinks with the walk instead of
     counting agent worktrees six times over.
+
+    **Files are filtered too** (#691). This loop used to test the extension and
+    nothing else, so `.env` — on the default exclude list since #146 — was read
+    and printed like any other file. Excluded files are appended to `hidden`
+    when a list is passed, rather than merely counted: op_grep discloses how
+    many there were, and anyone questioning that number needs the names.
+
+    A `path` that IS an excluded file is still searched. Naming it is a
+    deliberate act and `read` never gated it, so gating it here would buy
+    nothing and break the case someone meant.
     """
     candidates: List[str] = []
     if os.path.isfile(path):
@@ -3737,16 +3998,24 @@ def _grep_candidates(
         cwd = os.getcwd()
         ignored = _git_ignored_dirs(path) if exclude_paths else frozenset()
         for root, dirs, files in os.walk(path):
+            rel_root = _safe_relpath(root, cwd) if exclude_paths else ""
             if exclude_paths:
-                rel_root = _safe_relpath(root, cwd)
                 dirs[:] = [
                     d for d in dirs
                     if not _is_excluded(os.path.join(rel_root, d), exclude_paths)
                     and not _is_git_ignored(rel_root, d, ignored)
                 ]
             for name in files:
-                if exts is None or any(name.endswith(ext.lstrip("*")) for ext in exts):
-                    candidates.append(os.path.join(root, name))
+                if exts is not None and not any(
+                        name.endswith(ext.lstrip("*")) for ext in exts):
+                    continue
+                rel_name = os.path.join(rel_root, name)
+                if exclude_paths and _is_excluded(rel_name, exclude_paths):
+                    if hidden is not None and _is_disclosable_exclusion(
+                            rel_name, exclude_paths):
+                        hidden.append(os.path.join(root, name))
+                    continue
+                candidates.append(os.path.join(root, name))
     return candidates
 
 
@@ -3866,7 +4135,8 @@ def _grep_recursive_context(
 
 
 def _glob_files(
-    pattern: str, exclude_paths: Tuple[str, ...] = (), over_fetch: int = 0
+    pattern: str, exclude_paths: Tuple[str, ...] = (), over_fetch: int = 0,
+    hidden: Optional[List[str]] = None,
 ) -> List[str]:
     """Glob matching files, supports ** recursive. Returns up to MAX_GLOB_RESULTS.
 
@@ -3878,6 +4148,11 @@ def _glob_files(
     os.walk-based implementation that prunes excluded directories at the walk
     boundary (never opens them).  For non-recursive patterns, falls back to
     glob.glob and filters results post-hoc (no subtree to prune anyway).
+
+    Both halves filter *files* against exclude_paths (#691). Only the glob.glob
+    half ever did, so one op gave two answers: `glob:.env*` hid `.env` and
+    `glob:**/.env*` listed it. Excluded files land in `hidden` when a list is
+    passed, so op_glob can say how many it dropped.
     """
     max_results = _get_op_int("glob", "max_results", MAX_GLOB_RESULTS) + over_fetch
 
@@ -3887,7 +4162,7 @@ def _glob_files(
         seen: set = set()
         results: List[str] = []
         for sub_pattern in expanded:
-            for f in _glob_files(sub_pattern, exclude_paths, over_fetch):
+            for f in _glob_files(sub_pattern, exclude_paths, over_fetch, hidden):
                 if f not in seen:
                     seen.add(f)
                     results.append(f)
@@ -3925,6 +4200,13 @@ def _glob_files(
                 rel_from_root = _safe_relpath(full, root_part)
                 if not tail or fnmatch.fnmatch(name, tail) or fnmatch.fnmatch(rel_from_root, tail):
                     if os.path.isfile(full):
+                        rel_full = _safe_relpath(full, cwd)
+                        if _is_excluded(rel_full, exclude_paths):
+                            if hidden is not None and (
+                                    _is_disclosable_exclusion(
+                                        rel_full, exclude_paths)):
+                                hidden.append(full)
+                            continue
                         files.append(full)
                         if len(files) >= max_results:
                             return files
@@ -3945,6 +4227,12 @@ def _glob_files(
         # No walk boundary to prune at on this path, so gitignored hits are
         # filtered out of the result instead (#449).
         ignored = _git_ignored_dirs(_glob_ignore_root(pattern))
+        if hidden is not None:
+            hidden.extend(
+                m for m in files_out
+                if _is_disclosable_exclusion(
+                    _safe_relpath(m, cwd), exclude_paths)
+            )
         files_out = [
             m for m in files_out
             if not _is_excluded(_safe_relpath(m, cwd), exclude_paths)
