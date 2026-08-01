@@ -48,7 +48,12 @@ def test_read_missing_path_names_the_absolute_path_tried(project) -> None:
     _root, _sub = project
     out = supertool.op_read("nope/missing.py")
     assert "not found" in out
-    assert os.path.join(os.getcwd(), "nope/missing.py") in out
+    # abspath, not join(getcwd(), ...): on Windows, join leaves an embedded
+    # forward slash alone while the product calls abspath, which normalises the
+    # separator. The two agree on POSIX by construction, so this assertion could
+    # only ever fail on the platform able to see the difference — and did, on
+    # all four Windows legs of #708.
+    assert os.path.abspath("nope/missing.py") in out
 
 
 def test_read_missing_path_points_at_the_root_that_has_it(project) -> None:
@@ -64,7 +69,9 @@ def test_grep_missing_path_names_the_absolute_path_tried(project) -> None:
     _root, _sub = project
     out = supertool.op_grep("anything", "nope/missing.py")
     assert "ERROR: path not found" in out
-    assert os.path.join(os.getcwd(), "nope/missing.py") in out
+    # abspath for the same reason as above: the assertion has to compute the
+    # post-condition the same way the product does, on every platform.
+    assert os.path.abspath("nope/missing.py") in out
 
 
 def test_grep_missing_path_points_at_the_root_that_has_it(project) -> None:
