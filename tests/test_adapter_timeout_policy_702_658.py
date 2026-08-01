@@ -35,6 +35,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent))
 
 import _adapter_budget as budget  # noqa: E402
+from _adapter_verdict import assert_adapter_ok, assert_declined  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
 VALIDATORS = REPO / "validators"
@@ -296,7 +297,7 @@ def test_a_blown_budget_is_a_stated_decline_with_valid_json(
     payloads = [json.loads(line) for line in emitted if line.strip().startswith("{")]
     assert payloads, f"{adapter_dir} emitted no JSON when its budget expired"
     data = payloads[-1]
-    assert data["ok"] is False
+    assert_declined(data, context="an adapter whose own internal budget expired")
     assert data["errors"][0]["code"] == "adapter"
     assert "timeout" in data["errors"][0]["msg"].lower(), (
         "the decline has to name what happened; a caller reading this is "
@@ -318,4 +319,12 @@ def test_a_real_adapter_spawn_answers_well_inside_the_shared_budget(tmp_path: Pa
         [sys.executable, str(adapter), str(f)],
         capture_output=True, text=True, timeout=budget.adapter_budget(adapter),
     )
-    assert json.loads(r.stdout.strip())["ok"] is True
+    # This fired once on windows-latest/3.10 as `assert False is True` and named
+    # nothing (#725). It is not a blown budget — that raises TimeoutExpired. The
+    # adapter answered, and it answered no, and the reason was in a payload the
+    # assertion threw away. Now it is in the message.
+    assert_adapter_ok(
+        r,
+        adapter=adapter.name,
+        context="a two-line PHP file with nothing wrong with it",
+    )

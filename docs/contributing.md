@@ -617,6 +617,62 @@ timeout. Emit the decline instead (`code: "adapter"`, message naming the
 budget); `test_every_adapter_that_grants_itself_a_budget_survives_blowing_it`
 enforces it across `validators/`.
 
+### Never assert an adapter's verdict as a bare boolean
+
+`assert out["ok"] is True` fires as `assert False is True`. Every adapter under
+`validators/` answers with the same object — `tool`, `ok`, `count`, `errors`,
+`duration_ms` ([`validators/SCHEMA.md`](validators.md)) — so at the moment that
+assertion fails the test is holding a full statement of *why*, and throws it
+away. An adapter has roughly a dozen routes to `ok=False`: tool absent, tool
+present but not executable, its own internal budget expired, the file genuinely
+did not parse, no file argument. The bare boolean separates none of them.
+
+That has now cost two whole occurrences, both Windows-only, neither
+reproducible on demand:
+[#658](https://github.com/Digital-Process-Tools/claude-supertool/issues/658)/[#717](https://github.com/Digital-Process-Tools/claude-supertool/issues/717)
+(`test_valid_ruby`) and
+[#725](https://github.com/Digital-Process-Tools/claude-supertool/issues/725)
+(the phplint spawn test that
+[#716](https://github.com/Digital-Process-Tools/claude-supertool/issues/716)
+added *in the same PR where it was fixing this exact opacity elsewhere*). For a
+red that appears once a quarter on a runner you do not have, that one occurrence
+is the entire diagnostic budget.
+
+Use `tests/_adapter_verdict.py`:
+
+```python
+from _adapter_verdict import assert_ok, assert_declined, verdict, assert_adapter_ok
+
+out = verdict(result, adapter="ruby-check")   # instead of json.loads(r.stdout.strip())
+assert_ok(out, context="a Ruby file with nothing wrong with it")
+assert_declined(out, context="a file with a deliberate syntax error")
+assert_adapter_ok(result, adapter=name, context="…")   # both, for one-spawn tests
+```
+
+`verdict()` replaces `json.loads(r.stdout.strip())`, whose failure is a
+`JSONDecodeError` naming neither the adapter, the exit code, nor the stderr
+holding the traceback. `assert_ok`/`assert_declined` render the payload.
+
+**The formatter is defensive on purpose, and that is the part to preserve.** It
+formats a structure it does not own: adapters are separate programs, and a
+payload can arrive in a shape nobody anticipated — `errors` as a string, an
+entry that is not an object, no `errors` key at all, a crash before any JSON.
+A diagnostic that renders blank on those reproduces the defect inside its own
+fix, which is this repo's house failure exactly. So every branch of
+`describe()` ends in text naming what it could not read, none of them can
+raise, and `describe()` returning `""` is a bug. Output is bounded — three
+errors, 200 characters a field — because an unbounded dump buries the first
+error it exists to show ([#719](https://github.com/Digital-Process-Tools/claude-supertool/issues/719)'s
+rule: a capped list says how many it hid).
+
+**The guard is scoped to files that have adopted it**, deliberately.
+`test_a_file_that_adopts_the_convention_adopts_it_everywhere` walks the AST of
+every test file importing `_adapter_verdict` and fails on any remaining
+message-less `["ok"] is <bool>`. It does not police files that have not adopted
+it yet: a guard that fails on work nobody has done is a guard that gets deleted.
+What it does prevent is #725's actual complaint — a new bare assertion landing
+in a file that already knows better.
+
 ### Never leave a CI job without a wall-clock budget
 
 Every job in `.github/workflows/tests.yml` declares `timeout-minutes`.

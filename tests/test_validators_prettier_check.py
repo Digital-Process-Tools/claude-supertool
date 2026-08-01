@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from _adapter_budget import adapter_budget
+from _adapter_verdict import assert_declined, assert_ok
 
 ADAPTER = Path(__file__).resolve().parent.parent / "validators" / "prettier-check" / "prettier-check.py"
 
@@ -30,7 +31,7 @@ def _run(args: list[str], env: dict | None = None) -> dict:
 
 def test_no_arg_returns_schema_error() -> None:
     data = _run([])
-    assert data["ok"] is False
+    assert_declined(data)
     assert data["count"] == 1
     assert "no file arg" in data["errors"][0]["msg"]
 
@@ -39,7 +40,7 @@ def test_missing_binary_emits_schema_error(tmp_path: Path) -> None:
     f = tmp_path / "x.json"
     f.write_text('{"a":1}\n')
     data = _run([str(f)], env={"PRETTIER_BIN": "/nonexistent/prettier-bin"})
-    assert data["ok"] is False
+    assert_declined(data)
     assert "PRETTIER_BIN not found" in data["errors"][0]["msg"]
 
 
@@ -51,7 +52,7 @@ def test_clean_file_is_ok(tmp_path: Path) -> None:
     # Run prettier --write first to canonicalize whatever the local config wants
     subprocess.run(["prettier", "--write", str(f)], capture_output=True, timeout=10)
     data = _run([str(f)])
-    assert data["ok"] is True
+    assert_ok(data)
     assert data["count"] == 0
 
 

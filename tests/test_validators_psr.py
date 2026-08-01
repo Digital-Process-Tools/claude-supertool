@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from _adapter_budget import adapter_budget
+from _adapter_verdict import assert_declined, assert_ok
 
 PSR_PY = Path(__file__).parent.parent / "validators" / "psr" / "psr.py"
 
@@ -21,7 +22,7 @@ def test_psr_no_arg_returns_schema_error() -> None:
     assert r.returncode == 0
     data = json.loads(r.stdout.strip())
     assert data["tool"] == "psr"
-    assert data["ok"] is False
+    assert_declined(data)
     assert "no file arg" in data["errors"][0]["msg"]
 
 
@@ -37,7 +38,7 @@ def test_psr_missing_binary_returns_schema_error(tmp_path: Path) -> None:
     assert r.returncode == 0
     data = json.loads(r.stdout.strip())
     assert data["tool"] == "psr"
-    assert data["ok"] is False
+    assert_declined(data)
     assert "PSR_BIN not found" in data["errors"][0]["msg"]
 
 
@@ -61,7 +62,7 @@ def test_psr_clean_output_parses_to_ok(tmp_path: Path) -> None:
     assert r.returncode == 0
     data = json.loads(r.stdout.strip())
     assert data["tool"] == "psr"
-    assert data["ok"] is True
+    assert_ok(data)
     assert data["count"] == 0
     assert data["errors"] == []
 
@@ -105,7 +106,7 @@ def test_psr_parses_json_violations(tmp_path: Path) -> None:
     assert r.returncode == 0
     data = json.loads(r.stdout.strip())
     assert data["tool"] == "psr"
-    assert data["ok"] is False
+    assert_declined(data)
     assert data["count"] == 1
     err = data["errors"][0]
     assert err["line"] == 2
