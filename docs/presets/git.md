@@ -175,7 +175,7 @@ Set via the op's JSON config if you want project-wide defaults:
 }
 ```
 
-`git-status` and `git-push` try `glab` then `gh` to surface the open MR/PR — skip gracefully if neither is installed.
+`git-status` and `git-push` try `glab` then `gh` to surface the open MR/PR — skip gracefully if neither is installed. A CLI that *is* installed and cannot answer is a different state and is disclosed rather than skipped; see below.
 
 ### When git does not answer
 
@@ -183,16 +183,29 @@ Set via the op's JSON config if you want project-wide defaults:
 
 An abandoned call is never rendered as a git that succeeded and printed nothing. It carries exit code `124` (the shell convention for "killed by a timeout"), so every call site's existing "did this work?" branch skips its section exactly as it would for a git that failed. Without that, an empty `rev-list --left-right --count` reads as `0 ahead — branch has no own commits!` and an empty `rev-parse --abbrev-ref HEAD` prints `Branch:` with nothing after it — a false alarm about the branch manufactured out of a fact about the machine.
 
-The missing sections are then named rather than left to look like nothing-to-report:
+The missing sections are then named rather than left to look like nothing-to-report, each with the reason it could not answer:
 
 ```
-git-status INCOMPLETE — 1 git call did not answer within 5s and was skipped:
-`git rev-list --left-right --count master...HEAD`. Sections that depend on them
-are missing because git did not answer, not because there was nothing to
-report. Raise SUPERTOOL_GIT_TIMEOUT if this recurs.
+git-status INCOMPLETE — 2 calls did not answer and were skipped: `git status
+--porcelain=v1` (exit 128: fatal: Unable to create index.lock: File exists),
+`glab mr view` (exit 1: error: 401 Unauthorized). Sections that depend on them
+are missing because the call did not answer, not because there was nothing to
+report. Raise SUPERTOOL_GIT_TIMEOUT if a timeout recurs.
 ```
 
 The line appears last, and only when there is something to disclose — a clean run carries no permanent disclaimer, which would disclose nothing. Raising the budget is the right move on a loaded or slow runner; it is a property of that machine, never of the repo being reported on.
+
+**A timeout is not the only way a call fails to answer** ([#705](https://github.com/Digital-Process-Tools/claude-supertool/issues/705)). The footer covers three more sources, all of which previously rendered as an answer:
+
+| what happened | used to read as | now |
+|---|---|---|
+| `glab`/`gh` stalled, refused, or returned non-JSON | *this branch has no MR* — identical output | footer names the CLI and quotes its own words |
+| `git status --porcelain=v1` failed (a held `index.lock` is enough) | no working-tree section, as though the report simply had none | footer names the call |
+| `git stash list` failed | no stash section | footer names the call |
+
+The reason travels with the command because "did not answer" alone sends a reader to raise `SUPERTOOL_GIT_TIMEOUT` for what is actually an expired token.
+
+**"There is no MR on this branch" stays silent, and that is deliberate.** `glab` and `gh` exit `1` both for that and for an expired token, so the exit code cannot separate them and the message has to. The phrases meaning a genuine absence — *no open merge request*, *no pull requests found*, and the other host's CLI reporting *none of the git remotes … point to a known GitLab host* — render as silence, because a branch with no MR yet is the most ordinary state a branch can be in and a footer on every such run is one nobody reads on the run that needs it. Anything unrecognised is disclosed instead of assumed benign: that costs one footer line quoting the CLI, which a reader dismisses in a second, where the opposite error is the defect itself. A CLI that is not installed stays silent — nothing on that machine was going to answer, and a decline that can never resolve is noise on every run.
 
 ### What `git-status`'s `Checks:` line is about
 

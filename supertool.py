@@ -2748,9 +2748,33 @@ def op_diff(path1: str, path2: str) -> str:
     return "\n".join(diff) + "\n"
 
 
+# git's way of saying "nothing here is version-controlled" — an answer, and
+# the common one for a file outside any checkout. Every other non-zero exit
+# (a held index lock, a dubious-ownership refusal, a corrupt object store) is
+# a lookup that did not happen, and renders as PATH_META_UNKNOWN.
+_NOT_A_REPO = "not a git repository"
+
+# The third state of the working-tree marker (#705). `?`, `!` and `m` are
+# answers; their joint absence used to mean both "this file matches the index"
+# and "the lookup failed", which inverts the marker's whole job on the failure
+# leg — a modified file reading as clean, on every `read`.
+#
+# It is a token rather than a punctuation mark on purpose. The field looks
+# one character wide because its busiest members are, but it is a
+# space-separated token list whose members already run to `non-utf8`, `crlf`
+# and `->target broken`, so nothing was costing a character. A punctuation
+# mark would have had to be one the reader has no meaning for yet — and every
+# free character is free precisely because it says nothing, which is the
+# wrong property for the token that has to say the most. `git?` names the
+# check that declined and cannot be confused with the three answers it
+# replaces, none of which mention git.
+PATH_META_UNKNOWN = "git?"
+
+
 def _path_meta_suffix(path: str, sample: bytes = b"") -> str:
     """Compact suffix for read/workspace meta line. Empty when nothing notable.
     Tokens: ->target [broken] | bin | non-utf8 | ? | ! | m | x | crlf | Nd|Nw|Nmo
+            | git? (the working-tree lookup declined — state unknown, not clean)
     """
     parts = []
     if sample:
@@ -2795,7 +2819,7 @@ def _path_meta_suffix(path: str, sample: bytes = b"") -> str:
             capture_output=True, text=True, timeout=2,
             cwd=os.path.dirname(os.path.abspath(path)) or ".", encoding="utf-8", errors="replace",
         )
-        if r.returncode == 0 and r.stdout:
+        if r.returncode == 0:
             code = r.stdout[:2]
             if code == "??":
                 parts.append("?")
@@ -2803,7 +2827,15 @@ def _path_meta_suffix(path: str, sample: bytes = b"") -> str:
                 parts.append("!")
             elif "M" in code or "A" in code:
                 parts.append("m")
-    except (OSError, subprocess.TimeoutExpired):
+        elif _NOT_A_REPO not in r.stderr.lower():
+            parts.append(PATH_META_UNKNOWN)
+    except subprocess.TimeoutExpired:
+        parts.append(PATH_META_UNKNOWN)
+    except OSError:
+        # No git on this machine, or the file's directory went away under us.
+        # Nothing here was ever going to answer, so a decline that can never
+        # resolve would be noise on every read (docs/validators.md,
+        # "Declining instead of guessing").
         pass
     return (" " + " ".join(parts)) if parts else ""
 
