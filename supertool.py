@@ -121,6 +121,49 @@ def _fwd(p: str) -> str:
 DETERMINISTIC_TIME_ENV = "SUPERTOOL_DETERMINISTIC_TIME"
 
 
+def _deterministic_time() -> bool:
+    """Is the duration freeze on? See `_elapsed_since` for why it exists."""
+    return os.environ.get(DETERMINISTIC_TIME_ENV) == "1"
+
+
+def _timeout_verdict_line(t0: float, timeout: float) -> str:
+    """The `FAIL (timeout ...)` line, with its elapsed figure kept honest (#727).
+
+    `FAIL (timeout 0.0s > 10s)` asserts an op blew a 10s budget and reports
+    that it took no time at all. A reader cannot tell which half to believe,
+    and read literally the message points at the budget rather than at the
+    process — a diagnostic whose own figures contradict its verdict is worse
+    than one that says nothing.
+
+    Two ways the elapsed can come out below the budget, and they need
+    different words because they are different facts:
+
+    * The `SUPERTOOL_DETERMINISTIC_TIME` freeze (#643) is on. Everywhere else
+      zeroing a measured duration removes noise; on this one path it removes
+      the evidence, because the elapsed is the only number the message exists
+      to carry. The freeze still applies here — exempting this renderer would
+      put a varying field back into rendered output, which is the hole #643
+      closed *at the renderer* precisely so no call site has to remember it.
+      What changes is that the absence announces itself instead of posing as a
+      measurement. That is this repo's three-state contract applied to a number
+      rather than to a verdict.
+    * Anything else. `subprocess.run(timeout=T)` raises `TimeoutExpired` only
+      once T has actually elapsed, so a measured span under the budget is not a
+      fast machine or a near miss — it means this reporting path did not
+      measure the interval that expired. Say that, rather than printing the
+      number as if it were a result.
+    """
+    if _deterministic_time():
+        return (f"FAIL (timeout after its {timeout}s budget - elapsed frozen, "
+                f"deterministic-time mode)")
+    elapsed = time.monotonic() - t0
+    if elapsed < timeout:
+        return (f"FAIL (timeout {elapsed:.1f}s > {timeout}s - elapsed is under "
+                f"the budget, which no measured timeout can be: this is a bug "
+                f"in the reporting path, not a result (#727))")
+    return f"FAIL (timeout {elapsed:.1f}s > {timeout}s)"
+
+
 def _elapsed_since(t0: float) -> float:
     """Seconds since `t0`, or 0.0 when durations must be deterministic (#643).
 
@@ -141,7 +184,7 @@ def _elapsed_since(t0: float) -> float:
     normal operation sets it, and a real run still reports the real time —
     that number is how a human sees which validator is slow.
     """
-    if os.environ.get(DETERMINISTIC_TIME_ENV) == "1":
+    if _deterministic_time():
         return 0.0
     return time.monotonic() - t0
 
@@ -1713,8 +1756,9 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
         _stamp = f" [{_mixed_tree_note(_mixed)}]" if _mixed is not None else ""
         return f"PASS ({elapsed:.2f}s){_stamp}\n{output}{_maybe_restart_mcp(entry)}"
     except subprocess.TimeoutExpired as e:
-        elapsed = _elapsed_since(t0)
-        return (f"FAIL (timeout {elapsed:.1f}s > {timeout}s)\n"
+        # Not `_elapsed_since`: the freeze it applies zeroes the one number
+        # this line exists to report (#727).
+        return (f"{_timeout_verdict_line(t0, timeout)}\n"
                 f"{_timeout_partial_output(e)}")
     except OSError as e:
         return f"FAIL: {e}\n"
