@@ -55,6 +55,7 @@ would be the same false-success defect in a new coat.
 """
 from __future__ import annotations
 
+import sys
 import urllib.parse
 import urllib.request
 from typing import Any
@@ -178,13 +179,41 @@ _OPEN = _OPENER.open
 def urlopen(req: urllib.request.Request | str, timeout: int = 30) -> Any:
     """Drop-in replacement for urllib.request.urlopen with off-origin redirects refused.
 
-    A *permitted* (same-origin) redirect is followed silently, as urllib does.
-    Announcing those too is arguably right — the caller asked one URL a question
-    and a different URL answered — but it changes the stderr of every op on a
-    normal day, so it is filed rather than smuggled in here.
+    A *permitted* (same-origin) redirect is still disclosed on stderr. Allowing
+    a hop is not the same as saying nothing about it: the caller asked one URL a
+    question, a different URL answered, and every return value below this line
+    describes the second one. Staying silent about that is the same substitution
+    the refusal path exists to prevent, minus the credential theft.
+
+    It is not hypothetical. dev.to answers `/settings` with a same-origin 302 to
+    `/enter` the moment the session cookie expires, and `fetch_csrf_token` then
+    reports "authenticity_token not found in /settings HTML — Dev.to layout may
+    have changed", in which every noun is wrong: the HTML is `/enter`, the layout
+    is fine, and the cookie is dead. An operator acting reasonably on that goes
+    looking for a redesign that never happened.
+
+    The cost is bounded because the line is gated on an actual hop — `final !=
+    requested`. A call that is not redirected prints nothing, which is every call
+    on a normal day against all four of these APIs. Measured on loopback:
+    no redirect -> stderr is empty; same-origin hop -> one NOTE line.
+
+    Both URLs are printed with `!r`. The destination comes from a remote
+    `Location` header, so it is attacker-chosen text on its way to a terminal;
+    `repr` escapes the control characters that would otherwise let it rewrite the
+    lines around it.
 
     `timeout` keeps urllib's meaning: a per-socket-operation timeout, not an
     overall deadline. That distinction is a separate defect, tracked apart from
     this module's redirect guarantee.
     """
-    return _OPEN(req, timeout=timeout)
+    requested = req.full_url if isinstance(req, urllib.request.Request) else req
+    resp = _OPEN(req, timeout=timeout)
+    final = getattr(resp, "url", None)
+    if final and final != requested:
+        print(
+            f"NOTE: the request was redirected before it was answered: "
+            f"{requested!r} -> {final!r}. The response came from the second URL. "
+            f"The hop stayed on the same origin, so it was followed.",
+            file=sys.stderr,
+        )
+    return resp

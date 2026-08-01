@@ -308,6 +308,32 @@ def test_same_origin_redirect_is_still_followed(hop, monkeypatch) -> None:
     assert hop.front.received[1].get("api-key") == FAKE_DEVTO_KEY
 
 
+def test_a_permitted_redirect_is_still_disclosed(hop, capsys, monkeypatch) -> None:
+    """Allowing a redirect is not the same as saying nothing about it.
+
+    A followed redirect still changes which URL answered the question, and the
+    caller cannot see it: `request()` returns a parsed body with no indication
+    that a second URL produced it. That is the same substitution the refusal
+    path exists to prevent, minus the credential theft.
+
+    This is not hypothetical for these clients. dev.to really does answer
+    `/settings` with a same-origin 302 to `/enter` once the session cookie has
+    expired, and `fetch_csrf_token` then reports `authenticity_token not found
+    in /settings HTML - Dev.to layout may have changed`. Every noun in that
+    sentence is wrong: the HTML is `/enter`, not `/settings`, and the layout is
+    fine - the cookie is dead. An operator acting reasonably on it goes looking
+    for a dev.to redesign.
+    """
+    hop.front.redirect_to = hop.front_base + "/api/elsewhere"
+    monkeypatch.setattr(dv_rest, "BASE", hop.front_base + "/api")
+    dv_rest.request("GET", "/articles/1", FAKE_DEVTO_KEY, timeout=5)
+    err = capsys.readouterr().err
+    assert "redirected" in err, f"a followed redirect was not disclosed: {err!r}"
+    assert "/articles/1" in err, f"origin URL not named: {err!r}"
+    assert "/api/elsewhere" in err, f"destination URL not named: {err!r}"
+    assert FAKE_DEVTO_KEY not in err, "the disclosure must not echo the credential"
+
+
 
 # ---------------------------------------------------------------------------
 # 5. Structural: the guard must be wired at every call site, not merely exist
