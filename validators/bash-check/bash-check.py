@@ -16,6 +16,40 @@ import pathlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from source_context import source_context
+from refusal import tool_fault
+
+# `bash -n` reports a syntax finding as `file: line N: message`. Its other
+# non-zero exits are the shell failing to get as far as parsing:
+#
+#   bash: x.sh: No such file or directory   exit 127
+#   bash: x.sh: Permission denied           exit 126
+#   .: .: is a directory                    exit 126
+#   bash: --nope: invalid option + usage    exit 2
+#
+# 126 and 127 are the shell's own "could not execute" codes and can never be a
+# statement about syntax. All four used to become one `code: "syntax"` error
+# carrying the raw text — the usage dump included (#753). A located `: line N:`
+# is the marker.
+
+
+# `file: line N: message`. Extracted so the rule can be driven in process on
+# every platform — the fake-binary fixture is POSIX-only (see
+# tests/test_adapter_tool_vs_file_753.py).
+DIAGNOSTIC = re.compile(r":\s*line\s+(\d+):\s*(.+)")
+
+
+def parse_diagnostics(out: str, file: str) -> list[dict]:
+    """Every located diagnostic in bash's stderr. Empty means the shell never
+    got as far as parsing."""
+    errors = []
+    for line in out.splitlines():
+        m = DIAGNOSTIC.search(line)
+        if m:
+            ln = int(m.group(1))
+            errors.append({"line": ln, "col": None, "severity": "error",
+                           "code": "syntax", "msg": m.group(2).strip()[:200],
+                           "source_context": source_context(file, ln)})
+    return errors
 
 
 def emit(d: dict) -> None:
@@ -53,18 +87,11 @@ def main() -> None:
         return
     # stderr lines: "file: line N: msg" or "file: line N: syntax error near unexpected token ..."
     out = r.stderr or ""
-    errors = []
-    for line in out.splitlines():
-        m = re.search(r":\s*line\s+(\d+):\s*(.+)", line)
-        if m:
-            ln = int(m.group(1))
-            err = {"line": ln, "col": None, "severity": "error", "code": "syntax",
-                   "msg": m.group(2).strip()[:200]}
-            err["source_context"] = source_context(file, ln)
-            errors.append(err)
+    errors = parse_diagnostics(out, file)
     if not errors:
         errors = [{"line": None, "col": None, "severity": "error",
-                   "code": "syntax", "msg": (out or "unknown error")[:300]}]
+                   "code": "adapter",
+                   "msg": tool_fault("bash -n", r.returncode, out)}]
     emit({"tool": "bash-check", "file": file, "ok": False, "count": len(errors),
           "errors": errors, "duration_ms": dur})
 

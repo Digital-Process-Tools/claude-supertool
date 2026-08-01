@@ -54,6 +54,13 @@ Two consequences a consumer can rely on:
 
 Emit it whenever the tool's output does not confirm it looked at the file. Where the boundary is genuinely unclear, prefer the finding: an `adapter` result is fully legible to a reader, while a real finding relabelled `adapter` sends them to the wrong place. See `docs/validators.md`, "Declining instead of guessing".
 
+**What confirms it looked at the file is per-tool, and it is a located diagnostic, not the exit code** (#753). An adapter picks the marker out of its own tool's output format — `file:LINE:` (xmllint, ruby), `: line N:` (bash), a resolved-path header (node), `path:line:col:` (gofmt, cargo short format), `on <file> line N` (terraform). Two rules generalise from that sweep:
+
+- **Never take a location from the output at large.** Search anchored to the diagnostic, and where the tool prints the path it resolved, check it against the file. `node --check` reports a missing module by printing `node:internal/modules/cjs/loader:1386` first, and a bare `:(\d+)` search turned that into the file's syntax-error line.
+- **A finding you cannot place reports `line: null`.** Reclassifying and inventing a location are separate fixes; keeping a finding does not license borrowing a number for it.
+
+Where a tool documents distinct exit codes, read them — `terraform fmt -check` returns `3` for "needs formatting" and `2` for "I failed" — but the located diagnostic is still the marker, because an exit code alone cannot say *which* file it is about.
+
 ### Error object
 
 | Field            | Type             | Required | Notes                                              |

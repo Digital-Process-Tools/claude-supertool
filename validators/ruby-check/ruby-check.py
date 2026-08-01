@@ -18,6 +18,34 @@ import pathlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from source_context import source_context
+from refusal import tool_fault
+
+
+# `file:line: message`. Extracted so the rule can be driven in process on every
+# platform — the fake-binary fixture is POSIX-only (see
+# tests/test_adapter_tool_vs_file_753.py).
+DIAGNOSTIC = re.compile(r"^(?:.*?):(\d+):\s+(.+)$")
+SUMMARY = re.compile(r"^\d+\s+error")
+
+
+def parse_diagnostics(out: str, file: str) -> list[dict]:
+    """Every located diagnostic in ruby's stderr, minus its own count summary.
+
+    Empty means ruby exited non-zero without placing anything in the file —
+    `ruby: No such file or directory -- x.rb (LoadError)` is the common shape.
+    """
+    errors = []
+    for line in out.splitlines():
+        m = DIAGNOSTIC.match(line)
+        if m:
+            lineno, msg = m.groups()
+            if SUMMARY.match(msg):
+                continue
+            ln = int(lineno)
+            errors.append({"line": ln, "col": None, "severity": "error",
+                           "code": "syntax", "msg": msg.strip()[:300],
+                           "source_context": source_context(file, ln)})
+    return errors
 
 
 def emit(d: dict) -> None:
@@ -62,43 +90,31 @@ def main() -> None:
         return
 
     # Parse ruby -c stderr: "file:line: message"
-    errors = []
-    pattern = re.compile(r"^(?:.*?):(\d+):\s+(.+)$")
     output = result.stderr.strip()
-    for line in output.splitlines():
-        m = pattern.match(line)
-        if m:
-            lineno, msg = m.groups()
-            # Skip the "1 error found" summary line
-            if re.match(r"^\d+\s+error", msg):
-                continue
-            ln = int(lineno)
-            err = {
-                "line": ln,
-                "col": None,
-                "severity": "error",
-                "code": "syntax",
-                "msg": msg.strip()[:300],
-            }
-            err["source_context"] = source_context(file, ln)
-            errors.append(err)
+    errors = parse_diagnostics(output, file)
 
     if not errors:
-        if output:
-            errors = [{"line": None, "col": None, "severity": "error",
-                       "code": "syntax", "msg": output[:300]}]
-        else:
-            # `ruby -c` exited non-zero and said nothing on stderr. That is
-            # not "no syntax errors" (returncode == 0 already handled that
-            # above) — resolving on PATH is not proof the spawned process ran
-            # like ruby (a shim, alias, or broken install can exit non-zero
-            # silently). An unexplained exit must stay a named error rather
-            # than fold into `count: 0`, which reads as a finding about the
-            # file with nothing in it (#263-shaped: a "finding" that names
-            # nothing is indistinguishable from a checker that never ran).
-            errors = [{"line": None, "col": None, "severity": "error",
-                       "code": "adapter",
-                       "msg": f"ruby -c produced no output (exit {result.returncode})"}]
+        # `ruby -c` exited non-zero without a `file:line:` diagnostic. That is
+        # not "no syntax errors" (returncode == 0 already handled that above) —
+        # resolving on PATH is not proof the spawned process ran like ruby (a
+        # shim, alias, or broken install can exit non-zero silently). An
+        # unexplained exit must stay a named error rather than fold into
+        # `count: 0`, which reads as a finding about the file with nothing in
+        # it (#263-shaped: a "finding" that names nothing is indistinguishable
+        # from a checker that never ran).
+        #
+        # #752's sweep recorded this adapter as the model and noted a residual:
+        # only the *empty*-stderr case reached `adapter`, while non-empty but
+        # unlocated output still became `code: "syntax"`. That residual is live
+        # on the first thing anyone tries —
+        #
+        #   ruby -c /nope/x.rb  ->  ruby: No such file or directory -- ... (LoadError)
+        #   ruby -c .           ->  ruby: Is a directory -- . (LoadError)
+        #
+        # — so both cases now route through the same helper as its siblings (#753).
+        errors = [{"line": None, "col": None, "severity": "error",
+                   "code": "adapter",
+                   "msg": tool_fault("ruby -c", result.returncode, output)}]
 
     emit({"tool": "ruby-check", "file": file, "ok": False, "count": len(errors),
           "errors": errors, "duration_ms": duration})
