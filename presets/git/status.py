@@ -13,7 +13,9 @@ Modes (colon-appended: `git-status:full`):
 """
 from __future__ import annotations
 
+import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -37,10 +39,38 @@ TIMEOUT_RC = 124
 
 INCOMPLETE_MARKER = "git-status INCOMPLETE"
 
-# Every git call that ran out of budget this invocation, as (command, budget).
+# Every call that could not answer this invocation, as (command, why).
 # Module-level because the calls are scattered through `main()` and the note
 # can only be written once the last of them has had its chance.
-_UNANSWERED: list[tuple[str, int]] = []
+#
+# Not only timeouts (#705). A `glab` that refuses for want of a token, or a
+# `git status` that meets a held index lock, has answered nothing either, and
+# a reader looking at the missing section needs the same disclosure for both.
+# The reason travels with the command because "did not answer" alone sends
+# them to raise SUPERTOOL_GIT_TIMEOUT for a problem that is an expired token.
+_UNANSWERED: list[tuple[str, str]] = []
+
+# The phrases with which `glab` and `gh` say "there is no such request here".
+# That is an answer — a fact about the repository — and it renders as silence,
+# because a branch with no MR yet is the most ordinary state a branch can be
+# in and a footer on every such run would not be read on the run that needs it.
+#
+# Both CLIs exit 1 for that *and* for an expired token, so the exit code cannot
+# tell them apart and the sentence has to. Anything unrecognised is disclosed
+# rather than assumed benign: being wrong in that direction costs one footer
+# line quoting the CLI's own words, which a reader can dismiss in a second;
+# being wrong the other way is the defect this list exists to prevent.
+_ANSWERED_NONE = (
+    "no open merge request",
+    "no merge request",
+    "no pull request",
+    # The other host's CLI, in a repo that is not on its host: a GitLab repo
+    # runs `gh` too, and a GitHub repo runs `glab`. Structural and permanent —
+    # nothing about it will be different on the next run.
+    "none of the git remotes",
+    "no git remotes found",
+    "no remotes found",
+)
 
 
 def _git_timeout(default: int | None = None) -> int:
@@ -80,28 +110,110 @@ def _git(args: list[str], timeout: int | None = None) -> subprocess.CompletedPro
             capture_output=True, text=True, timeout=budget, encoding="utf-8", errors="replace",
         )
     except subprocess.TimeoutExpired:
-        _UNANSWERED.append((" ".join(cmd), budget))
+        _UNANSWERED.append((" ".join(cmd), f"timed out after {budget}s"))
         return subprocess.CompletedProcess(
             args=cmd, returncode=TIMEOUT_RC, stdout="",
             stderr=f"timed out after {budget}s",
         )
 
 
+def _reason(returncode: int, stderr: str) -> str:
+    """Why a call did not answer, flattened to one line for the footer.
+
+    The CLI's own words, not a paraphrase: "exit 1: error: 401 Unauthorized"
+    tells the reader to re-authenticate, where "did not answer" would send
+    them to raise a timeout that was never the problem.
+    """
+    said = " ".join(stderr.split())
+    return f"exit {returncode}: {said[:100]}" if said else f"exit {returncode}"
+
+
+def _note_failed(cmd: list[str], r: subprocess.CompletedProcess[str]) -> None:
+    """Disclose a git call that failed for a reason `_git` has not recorded.
+
+    Only for calls with no legitimate non-zero exit — `git status` and `git
+    stash list`, inside a repository the branch lookup has already proved
+    exists. The calls that fail as a matter of course stay silent on purpose:
+    `rev-parse --verify master` on a repo that has neither master nor main,
+    `rev-list @{upstream}` on a branch that tracks nothing. Disclosing those
+    would put a footer on nearly every run, and a footer on every run is one
+    nobody reads on the run that needed it.
+
+    A timeout is already in `_UNANSWERED` with the budget it was cut off at,
+    so it is skipped here rather than counted twice.
+    """
+    if r.returncode in (0, TIMEOUT_RC):
+        return
+    _UNANSWERED.append(("git " + " ".join(cmd), _reason(r.returncode, r.stderr)))
+
+
+def _hosted_request(cmd: list[str]) -> dict | None:
+    """One `glab mr view` / `gh pr view` JSON lookup — three states, not two.
+
+    Returns the parsed object, or `None` when there is no section to render.
+    The two reasons for `None` are not the same thing and are not rendered the
+    same way: "this branch has no MR" is left silent, while a lookup that
+    stalled, was refused, or answered with something that is not JSON is
+    recorded so the `INCOMPLETE` footer names it.
+
+    Both used to be `pass` (#705). A network stall, an expired token and an
+    unauthenticated CLI therefore produced byte-for-byte the report of a
+    branch that simply has no MR yet — in the file #685 rewrote to carry a
+    footer for exactly this, by a route that never reached it.
+
+    A CLI that is not installed stays silent. Nothing on that machine was ever
+    going to answer, and a decline that can never resolve is noise on every
+    run of every op (docs/validators.md, "Declining instead of guessing") —
+    the same reading that keeps a missing `git` binary quiet.
+    """
+    budget = _git_timeout()
+    label = " ".join(cmd[:3])
+    try:
+        r = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=budget,
+            encoding="utf-8", errors="replace",
+        )
+    except FileNotFoundError:
+        return None
+    except subprocess.TimeoutExpired:
+        _UNANSWERED.append((label, f"timed out after {budget}s"))
+        return None
+    except OSError as e:
+        _UNANSWERED.append((label, f"could not be run: {e}"))
+        return None
+    if r.returncode != 0:
+        said = (r.stderr + r.stdout).lower()
+        if not any(phrase in said for phrase in _ANSWERED_NONE):
+            _UNANSWERED.append((label, _reason(r.returncode, r.stderr)))
+        return None
+    try:
+        parsed = json.loads(r.stdout)
+    except json.JSONDecodeError:
+        # Exit 0 and a body that is not JSON is not "there is no MR" either —
+        # a proxy interstitial and a CLI version that dropped the flag both
+        # land here, and both leave the section unknown rather than empty.
+        _UNANSWERED.append((label, "answered with output that is not JSON"))
+        return None
+    if not isinstance(parsed, dict):
+        _UNANSWERED.append((label, "answered with JSON that is not an object"))
+        return None
+    return parsed
+
+
 def _incomplete_note() -> str:
-    """One line naming the git calls that went unanswered, or "" if none."""
+    """One line naming the calls that went unanswered, or "" if none."""
     if not _UNANSWERED:
         return ""
-    budget = _UNANSWERED[0][1]
-    shown = [c for c, _ in _UNANSWERED[:3]]
+    shown = [f"`{c}` ({w})" for c, w in _UNANSWERED[:3]]
     more = len(_UNANSWERED) - len(shown)
-    calls = ", ".join(f"`{c}`" for c in shown) + (f" (+{more} more)" if more else "")
+    calls = ", ".join(shown) + (f" (+{more} more)" if more else "")
     plural = "s" if len(_UNANSWERED) != 1 else ""
     return (
-        f"\n{INCOMPLETE_MARKER} — {len(_UNANSWERED)} git call{plural} did not "
-        f"answer within {budget}s and {'were' if len(_UNANSWERED) != 1 else 'was'} "
-        f"skipped: {calls}. Sections that depend on them are missing because git "
-        f"did not answer, not because there was nothing to report. "
-        f"Raise SUPERTOOL_GIT_TIMEOUT if this recurs."
+        f"\n{INCOMPLETE_MARKER} — {len(_UNANSWERED)} call{plural} did not answer "
+        f"and {'were' if len(_UNANSWERED) != 1 else 'was'} skipped: {calls}. "
+        f"Sections that depend on them are missing because the call did not "
+        f"answer, not because there was nothing to report. "
+        f"Raise SUPERTOOL_GIT_TIMEOUT if a timeout recurs."
     )
 
 
@@ -259,7 +371,9 @@ def main() -> int:
             print(f"  {line}")
 
     # 3. Working tree
-    status_result = _git(["status", "--porcelain=v1"])
+    status_cmd = ["status", "--porcelain=v1"]
+    status_result = _git(status_cmd)
+    _note_failed(status_cmd, status_result)
     if status_result.returncode == 0:
         lines = [l for l in status_result.stdout.splitlines() if l.strip()]
         staged = [l for l in lines if l[0] != " " and l[0] != "?"]
@@ -290,7 +404,9 @@ def main() -> int:
                     print(f"  ... ({len(untracked) - 10} more)")
 
     # 4. Stash
-    stash_result = _git(["stash", "list"])
+    stash_cmd = ["stash", "list"]
+    stash_result = _git(stash_cmd)
+    _note_failed(stash_cmd, stash_result)
     if stash_result.returncode == 0 and stash_result.stdout.strip():
         stashes = stash_result.stdout.strip().splitlines()
         print(f"\n## Stashes ({len(stashes)})")
@@ -300,137 +416,116 @@ def main() -> int:
             print(f"  ... ({len(stashes) - 5} more)")
 
     # 5. MR/PR for current branch (try glab, then gh — skip if neither available)
-    import json as _json
-    import re as _re
+    mr = _hosted_request(["glab", "mr", "view", branch_name, "--output", "json"])
+    if mr is not None:
+        mr_iid = mr.get("iid", "?")
+        mr_title = mr.get("title", "?")
+        mr_state = mr.get("state", "?")
+        mr_target = mr.get("target_branch", "?")
+        pipeline = mr.get("pipeline") or mr.get("head_pipeline") or {}
+        if not isinstance(pipeline, dict):
+            pipeline = {}
+        # A missing pipeline is GitLab's spelling of #585's ambiguity, and
+        # `none` renders it as the "never" reading for free. Decline instead
+        # — see _checks.NO_PIPELINE for why there is no grace leg here.
+        pipe_status = pipeline.get("status") or _checks.NO_PIPELINE
 
-    mr_found = False
+        print(f"\n## MR !{mr_iid} — {mr_title}")
+        print(f"State: {mr_state} | Target: {mr_target} | Pipeline: {pipe_status}")
 
-    # Try GitLab (glab)
-    try:
-        glab_result = subprocess.run(
-            ["glab", "mr", "view", branch_name, "--output", "json"],
-            capture_output=True, text=True, timeout=5, encoding="utf-8", errors="replace",
-        )
-        if glab_result.returncode == 0:
-            mr = _json.loads(glab_result.stdout)
-            mr_iid = mr.get("iid", "?")
-            mr_title = mr.get("title", "?")
-            mr_state = mr.get("state", "?")
-            mr_target = mr.get("target_branch", "?")
-            pipeline = mr.get("pipeline") or mr.get("head_pipeline") or {}
-            if not isinstance(pipeline, dict):
-                pipeline = {}
-            # A missing pipeline is GitLab's spelling of #585's ambiguity, and
-            # `none` renders it as the "never" reading for free. Decline instead
-            # — see _checks.NO_PIPELINE for why there is no grace leg here.
-            pipe_status = pipeline.get("status") or _checks.NO_PIPELINE
+        # MR diff size — file count from existing JSON (no extra network).
+        # +/- line counts via local git diff against target branch (also no
+        # network; falls back silently if target ref isn't present locally).
+        changes_count = mr.get("changes_count")
+        if changes_count is None or changes_count == "" or changes_count == "0":
+            print("Diff: EMPTY — branch has no commits ahead of target!")
+        else:
+            diff_line = f"Diff: {changes_count} files"
+            target_ref = f"origin/{mr_target}" if mr_target != "?" else ""
+            if target_ref:
+                shortstat = _git(["diff", "--shortstat",
+                                  f"{target_ref}...HEAD"], timeout=3)
+                if shortstat.returncode == 0 and shortstat.stdout.strip():
+                    # e.g. " 5 files changed, 126 insertions(+), 72 deletions(-)"
+                    text = shortstat.stdout.strip()
+                    adds = re.search(r"(\d+) insertions?", text)
+                    dels = re.search(r"(\d+) deletions?", text)
+                    a = adds.group(1) if adds else "0"
+                    d = dels.group(1) if dels else "0"
+                    diff_line += f" (+{a} -{d})"
+            print(diff_line)
 
-            print(f"\n## MR !{mr_iid} — {mr_title}")
-            print(f"State: {mr_state} | Target: {mr_target} | Pipeline: {pipe_status}")
-
-            # MR diff size — file count from existing JSON (no extra network).
-            # +/- line counts via local git diff against target branch (also no
-            # network; falls back silently if target ref isn't present locally).
-            changes_count = mr.get("changes_count")
-            if changes_count is None or changes_count == "" or changes_count == "0":
-                print("Diff: EMPTY — branch has no commits ahead of target!")
-            else:
-                diff_line = f"Diff: {changes_count} files"
-                target_ref = f"origin/{mr_target}" if mr_target != "?" else ""
-                if target_ref:
-                    shortstat = _git(["diff", "--shortstat",
-                                      f"{target_ref}...HEAD"], timeout=3)
-                    if shortstat.returncode == 0 and shortstat.stdout.strip():
-                        # e.g. " 5 files changed, 126 insertions(+), 72 deletions(-)"
-                        text = shortstat.stdout.strip()
-                        adds = _re.search(r"(\d+) insertions?", text)
-                        dels = _re.search(r"(\d+) deletions?", text)
-                        a = adds.group(1) if adds else "0"
-                        d = dels.group(1) if dels else "0"
-                        diff_line += f" (+{a} -{d})"
-                print(diff_line)
-
-            # Extract linked issue from description
-            desc = mr.get("description") or ""
-            issue_match = _re.search(r'#(\d{4,})', desc)
-            if issue_match:
-                print(f"Issue: #{issue_match.group(1)}")
-            mr_found = True
-    except (FileNotFoundError, subprocess.TimeoutExpired, _json.JSONDecodeError):
-        pass
+        # Extract linked issue from description
+        desc = mr.get("description") or ""
+        issue_match = re.search(r'#(\d{4,})', desc)
+        if issue_match:
+            print(f"Issue: #{issue_match.group(1)}")
 
     # Try GitHub (gh) if glab didn't find anything
-    if not mr_found:
-        try:
-            gh_result = subprocess.run(
-                ["gh", "pr", "view", branch_name, "--json",
-                 "number,title,state,baseRefName,statusCheckRollup,body,"
-                 "additions,deletions,changedFiles,headRefOid,mergeable"],
-                capture_output=True, text=True, timeout=5, encoding="utf-8", errors="replace",
-            )
-            if gh_result.returncode == 0:
-                pr = _json.loads(gh_result.stdout)
-                pr_num = pr.get("number", "?")
-                pr_title = pr.get("title", "?")
-                pr_state = pr.get("state", "?")
-                pr_target = pr.get("baseRefName", "?")
-                # `headRefOid` rides along in the single `gh pr view` call
-                # already being made — the field costs nothing extra.
-                pr_head = str(pr.get("headRefOid") or "")
-                local = _git(["rev-parse", "HEAD"], timeout=3)
-                local_head = local.stdout.strip() if local.returncode == 0 else ""
+    if mr is None:
+        pr = _hosted_request(
+            ["gh", "pr", "view", branch_name, "--json",
+             "number,title,state,baseRefName,statusCheckRollup,body,"
+             "additions,deletions,changedFiles,headRefOid,mergeable"])
+        if pr is not None:
+            pr_num = pr.get("number", "?")
+            pr_title = pr.get("title", "?")
+            pr_state = pr.get("state", "?")
+            pr_target = pr.get("baseRefName", "?")
+            # `headRefOid` rides along in the single `gh pr view` call
+            # already being made — the field costs nothing extra.
+            pr_head = str(pr.get("headRefOid") or "")
+            local = _git(["rev-parse", "HEAD"], timeout=3)
+            local_head = local.stdout.strip() if local.returncode == 0 else ""
 
-                # Computed before the Checks line, not just for printing after
-                # it: `''` means the two SHAs are *established equal* (#587), and
-                # that is what decides whether a claim about the PR's merge
-                # state may be made about the commit under the reader's cursor.
-                relation = _checks.head_relation(local_head, pr_head, pr_num)
+            # Computed before the Checks line, not just for printing after
+            # it: `''` means the two SHAs are *established equal* (#587), and
+            # that is what decides whether a claim about the PR's merge
+            # state may be made about the commit under the reader's cursor.
+            relation = _checks.head_relation(local_head, pr_head, pr_num)
 
-                check_states = _checks.github_states(pr.get("statusCheckRollup"))
-                if check_states:
-                    check_summary = _checks.summarize(check_states)
-                else:
-                    # Zero check runs is four states, not one (#585, #594). The
-                    # evidence is the age of the *PR's* head commit and the PR
-                    # state; the age comes from the local object store, so this
-                    # leg pays no network call either. `absence()` also returns
-                    # a `Mergeable:` suffix so the two lines cannot disagree —
-                    # `git-status` prints no Mergeable line, so it is dropped.
-                    #
-                    # `mergeable` rides the `gh pr view` call already being made
-                    # (#594), and is withheld unless local HEAD is established
-                    # equal to the PR head: "CONFLICTING, so rebase" is about a
-                    # specific commit, and stating it about one the reader has
-                    # moved past is #587's defect wearing #594's words. Withheld,
-                    # it falls through to the three legs above unchanged.
-                    check_summary, _unused_merge_note = _checks.absence(
-                        pr_state, _head_commit_age_secs(pr_head),
-                        mergeable=pr.get("mergeable") if relation == "" else None,
-                    )
+            check_states = _checks.github_states(pr.get("statusCheckRollup"))
+            if check_states:
+                check_summary = _checks.summarize(check_states)
+            else:
+                # Zero check runs is four states, not one (#585, #594). The
+                # evidence is the age of the *PR's* head commit and the PR
+                # state; the age comes from the local object store, so this
+                # leg pays no network call either. `absence()` also returns
+                # a `Mergeable:` suffix so the two lines cannot disagree —
+                # `git-status` prints no Mergeable line, so it is dropped.
+                #
+                # `mergeable` rides the `gh pr view` call already being made
+                # (#594), and is withheld unless local HEAD is established
+                # equal to the PR head: "CONFLICTING, so rebase" is about a
+                # specific commit, and stating it about one the reader has
+                # moved past is #587's defect wearing #594's words. Withheld,
+                # it falls through to the three legs above unchanged.
+                check_summary, _unused_merge_note = _checks.absence(
+                    pr_state, _head_commit_age_secs(pr_head),
+                    mergeable=pr.get("mergeable") if relation == "" else None,
+                )
 
-                print(f"\n## PR #{pr_num} — {pr_title}")
-                print(f"State: {pr_state} | Target: {pr_target} | Checks: {check_summary}")
-                # Whichever of the two the Checks line came from, it is a
-                # statement about the PR's head commit. Say so whenever that is
-                # not the commit the reader is standing on (#587).
-                if relation:
-                    print(relation)
+            print(f"\n## PR #{pr_num} — {pr_title}")
+            print(f"State: {pr_state} | Target: {pr_target} | Checks: {check_summary}")
+            # Whichever of the two the Checks line came from, it is a
+            # statement about the PR's head commit. Say so whenever that is
+            # not the commit the reader is standing on (#587).
+            if relation:
+                print(relation)
 
-                changed_files = pr.get("changedFiles", 0)
-                if changed_files == 0:
-                    print("Diff: EMPTY — branch has no commits ahead of target!")
-                else:
-                    print(f"Diff: {changed_files} files (+{pr.get('additions', 0)} -{pr.get('deletions', 0)})")
+            changed_files = pr.get("changedFiles", 0)
+            if changed_files == 0:
+                print("Diff: EMPTY — branch has no commits ahead of target!")
+            else:
+                print(f"Diff: {changed_files} files (+{pr.get('additions', 0)} -{pr.get('deletions', 0)})")
 
-                # Linked issue — one shared extractor with `gh-pr`, which
-                # carried the identical pattern and the identical defect
-                # (#591). The keyword was optional there too, so both printed
-                # the first `#N` in the body as the issue being closed.
-                print(_checks.linked_issue_line(
-                    _checks.closing_issue_refs(pr.get("body"))))
-                mr_found = True
-        except (FileNotFoundError, subprocess.TimeoutExpired, _json.JSONDecodeError):
-            pass
+            # Linked issue — one shared extractor with `gh-pr`, which
+            # carried the identical pattern and the identical defect
+            # (#591). The keyword was optional there too, so both printed
+            # the first `#N` in the body as the issue being closed.
+            print(_checks.linked_issue_line(
+                _checks.closing_issue_refs(pr.get("body"))))
 
     # Last, and only when there is something to disclose. A reader reaching for
     # `| tail` sees it; a clean run carries no permanent disclaimer, which would
