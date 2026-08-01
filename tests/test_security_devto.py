@@ -96,7 +96,7 @@ class TestTokenLeakageIn401:
 
         monkeypatch.setenv("DEVTO_API_KEY", FAKE_TOKEN)
 
-        with patch("urllib.request.urlopen", side_effect=err):
+        with patch("_http._OPEN", side_effect=err):
             with pytest.raises(SystemExit):
                 rest_mod.request("GET", "/articles/1", FAKE_TOKEN)
 
@@ -115,7 +115,7 @@ class TestTokenLeakageIn401:
         err = _make_http_error(401, f"api_key={FAKE_TOKEN} is expired")
         monkeypatch.setenv("DEVTO_API_KEY", FAKE_TOKEN)
 
-        with patch("urllib.request.urlopen", side_effect=err):
+        with patch("_http._OPEN", side_effect=err):
             with pytest.raises(SystemExit):
                 rest_mod.request("POST", "/reactions/toggle", FAKE_TOKEN, body={"x": 1})
 
@@ -140,7 +140,7 @@ class TestSessionCookieLeakage:
         evil_body = f"Session invalid: {FAKE_COOKIE}"
         err = _make_http_error(401, evil_body)
 
-        with patch("urllib.request.urlopen", side_effect=err):
+        with patch("_http._OPEN", side_effect=err):
             with pytest.raises(SystemExit):
                 session_mod.web_post_json("/reactions", FAKE_COOKIE, "csrf123", {"x": 1})
 
@@ -156,7 +156,7 @@ class TestSessionCookieLeakage:
     ) -> None:
         err = _make_http_error(403, f"forbidden for cookie={FAKE_COOKIE}")
 
-        with patch("urllib.request.urlopen", side_effect=err):
+        with patch("_http._OPEN", side_effect=err):
             with pytest.raises(SystemExit):
                 session_mod.web_post_json("/comments", FAKE_COOKIE, "csrf456", {"comment": {}})
 
@@ -169,7 +169,7 @@ class TestSessionCookieLeakage:
     ) -> None:
         err = _make_http_error(401, f"Session: {FAKE_COOKIE}")
 
-        with patch("urllib.request.urlopen", side_effect=err):
+        with patch("_http._OPEN", side_effect=err):
             with pytest.raises(SystemExit):
                 session_mod.fetch_csrf_token(FAKE_COOKIE)
 
@@ -207,7 +207,7 @@ class TestTokenLeakageInStackTrace:
             def __exit__(self, *a):
                 pass
 
-        with patch("urllib.request.urlopen", return_value=FakeResp()):
+        with patch("_http._OPEN", return_value=FakeResp()):
             with pytest.raises(SystemExit):
                 rest_mod.request("GET", "/articles/1", FAKE_TOKEN)
 
@@ -227,7 +227,7 @@ class TestTokenLeakageInStackTrace:
         """URLError.reason must not accidentally include the token."""
         net_err = urllib.error.URLError(reason=f"connection refused (key={FAKE_TOKEN})")
 
-        with patch("urllib.request.urlopen", side_effect=net_err):
+        with patch("_http._OPEN", side_effect=net_err):
             with pytest.raises(SystemExit):
                 rest_mod.request("GET", "/articles/1", FAKE_TOKEN)
 
@@ -351,7 +351,7 @@ class TestUrlInjectionInRead:
         monkeypatch.setenv("DEVTO_API_KEY", FAKE_TOKEN)
         monkeypatch.setenv("DEVTO_USERNAME", "testuser")
 
-        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        with patch("_http._OPEN", side_effect=fake_urlopen):
             try:
                 read_mod.main("https://evil.com/author/slug")
             except SystemExit:

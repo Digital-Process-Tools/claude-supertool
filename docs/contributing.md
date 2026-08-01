@@ -196,6 +196,37 @@ Validators are post-write hooks — they run after a file is written and report 
 - **Validators output JSON.** See [validators.md](validators.md) for the exact schema. Other scripts can output anything — supertool passes it through as-is.
 - **One file per op.** `gitlab/issue.py`, `gitlab/mr.py`, `gitlab/pipeline.py` — not one monolithic `gitlab.py` with a dispatch table.
 - **Scripts are co-located with their preset.** `presets/mytools/status.py`, not `scripts/status.py`. The `{path}` placeholder makes this work without hardcoded paths.
+- **Never call `urllib.request.urlopen` directly.** Use `urlopen()` from [`presets/_http.py`](../presets/_http.py). See below — this one is enforced by a test.
+
+### HTTP requests go through `presets/_http.py`
+
+`urllib.request.urlopen` uses the default global opener, whose `HTTPRedirectHandler` rebuilds a redirected request stripping exactly two headers — `content-length` and `content-type` — and carrying everything else, including `Authorization`, `api-key` and `Cookie`, to whatever host the `Location` names. `http_error_302` additionally permits an `https` -> `http` downgrade. A server answering `302 Location: http://attacker.example/` therefore receives the caller's live credential, and because the redirect is followed transparently, its response body comes back to the caller as though the real API had answered it ([#691](https://github.com/Digital-Process-Tools/claude-supertool/issues/691)).
+
+```python
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))  # for _http
+
+from _http import RedirectRefused, urlopen  # noqa: E402
+
+try:
+    with urlopen(req, timeout=timeout) as resp:
+        body = resp.read()
+except RedirectRefused as e:
+    print(f"ERROR: {e}", file=sys.stderr)
+    sys.exit(1)
+```
+
+`_http.urlopen` follows a redirect only when it stays on the same origin — `(scheme, host, port)` with default ports normalised and the host compared case-insensitively — plus the one asymmetry of an `http` -> `https` upgrade on the default ports, which moves the credential onto a *more* protected channel. A different host, a different port on the same host, a downgrade, a non-HTTP scheme or an unparseable port all raise `RedirectRefused`.
+
+Three rules about the refusal:
+
+1. **Catch it explicitly and print it.** `str(exc)` names the origin, the status code, the attempted destination and the reason. Returning the pre-redirect state quietly is the false-success defect wearing a new coat.
+2. **It is deliberately not an `OSError`.** A blanket `except OSError` or `except urllib.error.URLError` must not absorb a credential-exfiltration attempt into a generic "network error", and a `..._safe()` helper whose contract is "returns `None` on any error" must not turn it into a silent `None`. Where such a helper exists (`hashnode._graphql.gql_safe`, `bluesky._atproto.refresh_session`), the refusal is a documented carve-out that exits instead.
+3. **Ordering matters.** Put `except RedirectRefused` *before* the broad handlers.
+
+`tests/test_security_redirect.py::test_no_bare_urlopen_call_sites_remain_under_presets` fails the build on any `urllib.request.urlopen(` left under `presets/`. That test exists because a guard that is written but not wired at every call site is this repo's most frequently repeated defect — the protection has to be inherited, not re-earned per integration.
 
 ---
 

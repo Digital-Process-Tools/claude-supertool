@@ -25,6 +25,10 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent.parent))  # for _http (#691)
+
+from _http import RedirectRefused, urlopen  # noqa: E402
+
 WEB_BASE = "https://dev.to"
 
 
@@ -52,8 +56,11 @@ def fetch_csrf_token(cookie: str, timeout: int = 15) -> str:
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urlopen(req, timeout=timeout) as resp:
             html = resp.read().decode("utf-8", errors="replace")
+    except RedirectRefused as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(1)
     except urllib.error.HTTPError as e:
         sys.stderr.write(f"ERROR: session-cookie fetch failed: HTTP {e.code} (cookie expired?)\n")
         sys.exit(1)
@@ -81,8 +88,11 @@ def web_post_json(path: str, cookie: str, csrf: str, body: dict, timeout: int = 
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urlopen(req, timeout=timeout) as resp:
             return resp.read().decode("utf-8", errors="replace"), resp.status
+    except RedirectRefused as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(1)
     except urllib.error.HTTPError as e:
         text = e.read().decode("utf-8", errors="replace")[:300]
         if e.code in (401, 403):

@@ -94,3 +94,5 @@ A missing sibling module (`_auth`, `_rest`) is deliberately **not** in the table
 ## Authoring notes
 
 Preset JSON: `presets/devto.json`. Helper scripts: `presets/devto/` — one Python file per op (`publish.py`, `list.py`, `read.py`, `browse.py`, `comments.py`, `react.py`, `comment.py`, `status_since.py`). The `{path}` placeholder in `cmd` resolves to `presets/devto/` at runtime.
+
+Both the API-key calls and the opt-in session-cookie calls go through `presets/_http.py`, so neither the `api-key` header nor the full logged-in `Cookie` is carried across a redirect that leaves `dev.to`. A redirect off-origin stops the op with `refused off-origin redirect: ...` naming the destination. See [contributing.md](../contributing.md#http-requests-go-through-presets_httppy).

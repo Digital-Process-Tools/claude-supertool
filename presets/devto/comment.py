@@ -49,6 +49,7 @@ from _outbound import append as track_append
 from _resolve import resolve_article_id
 from _session import fetch_csrf_token, get_session_cookie, web_post_json
 from _publish_safety import safe_resolve_body_path  # noqa: E402
+from _http import RedirectRefused, urlopen  # noqa: E402
 
 WEB_BASE = "https://dev.to"
 API_BASE = "https://dev.to/api"
@@ -256,8 +257,14 @@ def _resolve_parent_numeric_id(id_code: str, timeout: int = 15) -> int | None:
             f"{API_BASE}/comments/{id_code}",
             headers={"User-Agent": "claude-supertool/devto-resolver", "Accept": "application/json"},
         )
-        with urllib.request.urlopen(meta_req, timeout=timeout) as resp:
+        with urlopen(meta_req, timeout=timeout) as resp:
             meta = json.loads(resp.read().decode("utf-8"))
+    except RedirectRefused as e:
+        # No credential rides on this hop, so the best-effort contract holds and
+        # we still return None — but name the destination that was refused, so
+        # it does not read as an ordinary miss.
+        print(f"(parent resolve: {e})")
+        return None
     except (urllib.error.URLError, json.JSONDecodeError):
         return None
     username = ((meta or {}).get("user") or {}).get("username")
@@ -268,8 +275,11 @@ def _resolve_parent_numeric_id(id_code: str, timeout: int = 15) -> int | None:
             f"{WEB_BASE}/{username}/comment/{id_code}",
             headers={"User-Agent": "Mozilla/5.0 (claude-supertool/devto-resolver)"},
         )
-        with urllib.request.urlopen(html_req, timeout=timeout) as resp:
+        with urlopen(html_req, timeout=timeout) as resp:
             html = resp.read().decode("utf-8", errors="replace")
+    except RedirectRefused as e:
+        print(f"(parent resolve: {e})")
+        return None
     except urllib.error.URLError:
         return None
     m = _COMMENT_ID_RE.search(html)

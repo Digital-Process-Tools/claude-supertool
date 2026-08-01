@@ -6,7 +6,12 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).parent.parent))  # for _http (#691)
+
+from _http import RedirectRefused, urlopen  # noqa: E402
 
 BASE = "https://dev.to/api"
 
@@ -69,8 +74,11 @@ def request(
         headers["Content-Type"] = "application/json"
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urlopen(req, timeout=timeout) as resp:
             text = resp.read().decode("utf-8")
+    except RedirectRefused as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(1)
     except urllib.error.HTTPError as e:
         sys.stderr.write(f"ERROR: {_format_http_error(e, api_key)}\n")
         sys.exit(1)

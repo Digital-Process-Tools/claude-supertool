@@ -5,7 +5,12 @@ import json
 import sys
 import urllib.error
 import urllib.request
+from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).parent.parent))  # for _http (#691)
+
+from _http import RedirectRefused, urlopen  # noqa: E402
 
 ENDPOINT = "https://gql.hashnode.com"
 
@@ -35,8 +40,11 @@ def gql(query: str, variables: dict[str, Any], token: str, timeout: int = 30) ->
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urlopen(req, timeout=timeout) as resp:
             body = resp.read().decode("utf-8")
+    except RedirectRefused as e:
+        print(f"ERROR: {_scrub_token(str(e), token)}", file=sys.stderr)
+        sys.exit(1)
     except urllib.error.HTTPError as e:
         msg = _format_http_error(e, token)
         sys.stderr.write(f"ERROR: {msg}\n")
@@ -60,9 +68,13 @@ def gql(query: str, variables: dict[str, Any], token: str, timeout: int = 30) ->
 
 
 def gql_safe(query: str, variables: dict[str, Any], token: str, timeout: int = 30) -> dict[str, Any] | None:
-    """Like gql() but returns None on any error instead of exiting. For preflight
+    """Like gql() but returns None on most errors instead of exiting. For preflight
     checks that must degrade gracefully — caller decides whether to abort, warn,
-    or proceed when the lookup itself fails."""
+    or proceed when the lookup itself fails.
+
+    One deliberate exception: a redirect off the endpoint's origin still exits.
+    That is an attempt to capture the token, not a lookup that failed, and
+    degrading gracefully past it would be the thing that hides it."""
     payload = json.dumps({"query": query, "variables": variables}).encode("utf-8")
     req = urllib.request.Request(
         ENDPOINT,
@@ -74,9 +86,12 @@ def gql_safe(query: str, variables: dict[str, Any], token: str, timeout: int = 3
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urlopen(req, timeout=timeout) as resp:
             body = resp.read().decode("utf-8")
         data = json.loads(body)
+    except RedirectRefused as e:
+        print(f"ERROR: {_scrub_token(str(e), token)}", file=sys.stderr)
+        sys.exit(1)
     except (urllib.error.HTTPError, urllib.error.URLError, json.JSONDecodeError, OSError):
         return None
     if "errors" in data:

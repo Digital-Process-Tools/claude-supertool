@@ -86,3 +86,5 @@ Hashnode has behaved this way since these ops were written — it is the preset 
 ## Authoring notes
 
 Preset JSON: `presets/hashnode.json`. Helper scripts: `presets/hashnode/` — one Python file per op (`publish.py`, `list.py`, `read.py`, `browse.py`, `comments.py`, `comment.py`, `react.py`, `reply.py`, `search.py`, `status_since.py`). The `{path}` placeholder in `cmd` resolves to `presets/hashnode/` at runtime.
+
+All GraphQL calls go through `presets/_http.py`, so the `Authorization` header is never carried across a redirect that leaves `gql.hashnode.com`. If the endpoint ever answers a redirect pointing elsewhere, the op stops with `refused off-origin redirect: ...` naming the destination — including in `gql_safe`, which otherwise degrades to `None`. See [contributing.md](../contributing.md#http-requests-go-through-presets_httppy).

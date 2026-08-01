@@ -45,7 +45,7 @@ def test_gql_passes_variables_as_separate_payload_field() -> None:
         ctx.__exit__ = lambda *a: None
         return ctx
 
-    with patch("urllib.request.urlopen", fake_urlopen):
+    with patch("_http._OPEN", fake_urlopen):
         hn_gql.gql(
             "query Foo($slug: String!) { post(slug: $slug) { id } }",
             {"slug": "evil\"} mutation X { __typename"},
@@ -83,7 +83,7 @@ def test_known_http_errors_never_include_token(
     def fake_urlopen(*a, **k):
         raise err
 
-    with patch("urllib.request.urlopen", fake_urlopen):
+    with patch("_http._OPEN", fake_urlopen):
         with pytest.raises(SystemExit):
             hn_gql.gql("query{}", {}, FAKE_TOKEN)
     captured = capsys.readouterr()
@@ -112,7 +112,7 @@ def test_unknown_http_code_body_does_not_leak_token(capsys) -> None:
     def fake_urlopen(*a, **k):
         raise err
 
-    with patch("urllib.request.urlopen", fake_urlopen):
+    with patch("_http._OPEN", fake_urlopen):
         with pytest.raises(SystemExit):
             hn_gql.gql("query{}", {}, FAKE_TOKEN)
     captured = capsys.readouterr()
@@ -131,7 +131,7 @@ def test_network_error_does_not_leak_token(capsys) -> None:
     def fake_urlopen(*a, **k):
         raise urllib.error.URLError(f"refused: token was {FAKE_TOKEN}")
 
-    with patch("urllib.request.urlopen", fake_urlopen):
+    with patch("_http._OPEN", fake_urlopen):
         with pytest.raises(SystemExit):
             hn_gql.gql("query{}", {}, FAKE_TOKEN)
     captured = capsys.readouterr()
@@ -151,7 +151,7 @@ def test_bad_json_response_does_not_leak_token(capsys) -> None:
         ctx.__exit__ = lambda *a: None
         return ctx
 
-    with patch("urllib.request.urlopen", fake_urlopen):
+    with patch("_http._OPEN", fake_urlopen):
         with pytest.raises(SystemExit):
             hn_gql.gql("query{}", {}, FAKE_TOKEN)
     captured = capsys.readouterr()
@@ -181,7 +181,7 @@ def test_graphql_errors_message_does_not_leak_token(capsys) -> None:
         ctx.__exit__ = lambda *a: None
         return ctx
 
-    with patch("urllib.request.urlopen", fake_urlopen):
+    with patch("_http._OPEN", fake_urlopen):
         with pytest.raises(SystemExit):
             hn_gql.gql("query{}", {}, FAKE_TOKEN)
     captured = capsys.readouterr()
