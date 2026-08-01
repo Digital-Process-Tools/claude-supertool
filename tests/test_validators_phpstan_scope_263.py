@@ -33,6 +33,8 @@ from pathlib import Path
 
 import pytest
 
+from _adapter_budget import adapter_budget
+
 PHPSTAN_PY = Path(__file__).parent.parent / "validators" / "phpstan" / "phpstan.py"
 
 pytestmark = pytest.mark.skipif(os.name == "nt", reason="POSIX /bin/sh shim")
@@ -66,7 +68,7 @@ def _run_adapter(tmp_path: Path, *, stdout: str = "", stderr: str = "",
            "PATH": str(bindir) + os.pathsep + os.environ.get("PATH", ""),
            "PHPSTAN_BIN": str(dummy_bin)}
     r = subprocess.run([sys.executable, str(PHPSTAN_PY), str(target)],
-                       capture_output=True, text=True, timeout=30, env=env)
+                       capture_output=True, text=True, timeout=adapter_budget(PHPSTAN_PY), env=env)
     assert r.returncode == 0, r.stderr
     return json.loads(r.stdout.strip())
 
@@ -176,7 +178,7 @@ def _phpstan_ready() -> bool:
         f.write_text("<?php\n$x = 1;\n")
         try:
             r = subprocess.run([sys.executable, str(PHPSTAN_PY), str(f)],
-                               capture_output=True, text=True, timeout=60)
+                               capture_output=True, text=True, timeout=adapter_budget(PHPSTAN_PY))
         except (OSError, subprocess.SubprocessError):
             return False
     try:
@@ -204,7 +206,7 @@ def test_real_phpstan_sees_the_parent_in_single_file_scope(tmp_path: Path) -> No
         "parameters:\n    level: 8\n    paths:\n        - src\n")
     r = subprocess.run(
         [sys.executable, str(PHPSTAN_PY), "src/ChildC.php"],
-        capture_output=True, text=True, timeout=120, cwd=str(tmp_path),
+        capture_output=True, text=True, timeout=adapter_budget(PHPSTAN_PY), cwd=str(tmp_path),
     )
     data = json.loads(r.stdout.strip())
     assert data["ok"] is False, "single-file scope reported CLEAN on an inheritance error"

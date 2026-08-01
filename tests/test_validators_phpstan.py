@@ -12,6 +12,8 @@ from pathlib import Path
 
 import pytest
 
+from _adapter_budget import adapter_budget
+
 PHPSTAN_PY = Path(__file__).parent.parent / "validators" / "phpstan" / "phpstan.py"
 
 
@@ -31,7 +33,7 @@ def _phpstan_emits_schema_json() -> bool:
         f.write_text("<?php\n$x = 1;\n")
         try:
             r = subprocess.run([sys.executable, str(PHPSTAN_PY), str(f)],
-                               capture_output=True, text=True, timeout=60)
+                               capture_output=True, text=True, timeout=adapter_budget(PHPSTAN_PY))
         except (OSError, subprocess.SubprocessError):
             return False
     try:
@@ -48,7 +50,7 @@ _PHPSTAN_SKIP_REASON = "phpstan adapter not emitting SCHEMA JSON in this env (gl
 
 def test_phpstan_no_arg_returns_schema_error() -> None:
     """Calling with no arg must emit a valid SCHEMA.md error dict and exit 0."""
-    r = subprocess.run([sys.executable, str(PHPSTAN_PY)], capture_output=True, text=True, timeout=10)
+    r = subprocess.run([sys.executable, str(PHPSTAN_PY)], capture_output=True, text=True, timeout=adapter_budget(PHPSTAN_PY))
     assert r.returncode == 0
     data = json.loads(r.stdout.strip())
     assert data["tool"] == "phpstan"
@@ -63,7 +65,7 @@ def test_phpstan_clean_php(tmp_path: Path) -> None:
     f.write_text("<?php\n$x = 1;\n")
     r = subprocess.run(
         [sys.executable, str(PHPSTAN_PY), str(f)],
-        capture_output=True, text=True, timeout=60,
+        capture_output=True, text=True, timeout=adapter_budget(PHPSTAN_PY),
     )
     assert r.returncode == 0
     data = json.loads(r.stdout.strip())
@@ -81,7 +83,7 @@ def test_phpstan_reports_errors(tmp_path: Path) -> None:
     f.write_text("<?php\nfunction foo(): int { return 'not an int'; }\n")
     r = subprocess.run(
         [sys.executable, str(PHPSTAN_PY), str(f)],
-        capture_output=True, text=True, timeout=60,
+        capture_output=True, text=True, timeout=adapter_budget(PHPSTAN_PY),
     )
     assert r.returncode == 0
     data = json.loads(r.stdout.strip())
@@ -102,7 +104,7 @@ def test_phpstan_missing_binary_emits_json(tmp_path: Path) -> None:
     full_env = {**os.environ, "PHPSTAN_BIN": "/nonexistent/phpstan"}
     r = subprocess.run(
         [sys.executable, str(PHPSTAN_PY), str(f)],
-        capture_output=True, text=True, timeout=10,
+        capture_output=True, text=True, timeout=adapter_budget(PHPSTAN_PY),
         env=full_env,
     )
     assert r.returncode == 0
@@ -134,7 +136,7 @@ def _run_adapter_with_fake_php(tmp_path: Path, php_stdout: str) -> dict:
            "PATH": str(bindir) + os.pathsep + os.environ.get("PATH", ""),
            "PHPSTAN_BIN": str(dummy_bin)}
     r = subprocess.run([sys.executable, str(PHPSTAN_PY), str(target)],
-                       capture_output=True, text=True, timeout=30, env=env)
+                       capture_output=True, text=True, timeout=adapter_budget(PHPSTAN_PY), env=env)
     assert r.returncode == 0
     return json.loads(r.stdout.strip())
 

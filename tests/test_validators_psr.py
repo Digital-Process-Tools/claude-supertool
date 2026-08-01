@@ -10,12 +10,14 @@ from pathlib import Path
 
 import pytest
 
+from _adapter_budget import adapter_budget
+
 PSR_PY = Path(__file__).parent.parent / "validators" / "psr" / "psr.py"
 
 
 def test_psr_no_arg_returns_schema_error() -> None:
     """Calling with no arg must emit a valid SCHEMA.md error dict and exit 0."""
-    r = subprocess.run([sys.executable, str(PSR_PY)], capture_output=True, text=True, timeout=10)
+    r = subprocess.run([sys.executable, str(PSR_PY)], capture_output=True, text=True, timeout=adapter_budget(PSR_PY))
     assert r.returncode == 0
     data = json.loads(r.stdout.strip())
     assert data["tool"] == "psr"
@@ -30,7 +32,7 @@ def test_psr_missing_binary_returns_schema_error(tmp_path: Path) -> None:
     env = {**os.environ, "PSR_BIN": str(tmp_path / "phpcs-does-not-exist")}
     r = subprocess.run(
         [sys.executable, str(PSR_PY), str(f)],
-        capture_output=True, text=True, timeout=10, env=env,
+        capture_output=True, text=True, timeout=adapter_budget(PSR_PY), env=env,
     )
     assert r.returncode == 0
     data = json.loads(r.stdout.strip())
@@ -54,7 +56,7 @@ def test_psr_clean_output_parses_to_ok(tmp_path: Path) -> None:
     env = {**os.environ, "PSR_BIN": str(stub)}
     r = subprocess.run(
         [sys.executable, str(PSR_PY), str(f)],
-        capture_output=True, text=True, timeout=10, env=env,
+        capture_output=True, text=True, timeout=adapter_budget(PSR_PY), env=env,
     )
     assert r.returncode == 0
     data = json.loads(r.stdout.strip())
@@ -98,7 +100,7 @@ def test_psr_parses_json_violations(tmp_path: Path) -> None:
     env = {**os.environ, "PSR_BIN": str(stub)}
     r = subprocess.run(
         [sys.executable, str(PSR_PY), str(f)],
-        capture_output=True, text=True, timeout=10, env=env,
+        capture_output=True, text=True, timeout=adapter_budget(PSR_PY), env=env,
     )
     assert r.returncode == 0
     data = json.loads(r.stdout.strip())
@@ -121,7 +123,7 @@ def test_psr_live_clean_php(tmp_path: Path) -> None:
     f.write_text("<?php\n\nfunction add(int $a, int $b): int\n{\n    return $a + $b;\n}\n")
     r = subprocess.run(
         [sys.executable, str(PSR_PY), str(f)],
-        capture_output=True, text=True, timeout=30,
+        capture_output=True, text=True, timeout=adapter_budget(PSR_PY),
     )
     assert r.returncode == 0
     data = json.loads(r.stdout.strip())

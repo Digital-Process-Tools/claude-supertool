@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pytest
 
+from _adapter_budget import adapter_budget
+
 ADAPTER = Path(__file__).resolve().parent.parent / "validators" / "prettier-check" / "prettier-check.py"
 
 
@@ -20,7 +22,7 @@ def _run(args: list[str], env: dict | None = None) -> dict:
         full_env.update(env)
     result = subprocess.run(
         [sys.executable, str(ADAPTER), *args],
-        capture_output=True, text=True, env=full_env, timeout=15,
+        capture_output=True, text=True, env=full_env, timeout=adapter_budget(ADAPTER),
     )
     assert result.stdout, f"adapter produced no stdout (stderr={result.stderr})"
     return json.loads(result.stdout)

@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pytest
 
+from _adapter_budget import adapter_budget
+
 VALIDATORS = Path(__file__).parent.parent / "validators"
 
 GOFMT_CHECK = VALIDATORS / "gofmt-check" / "gofmt-check.py"
@@ -21,15 +23,17 @@ CARGO_CHECK = VALIDATORS / "cargo-check" / "cargo-check.py"
 # Helpers
 # ---------------------------------------------------------------------------
 
-def run_adapter(adapter: Path, file: str, timeout: int = 15) -> dict:
+def run_adapter(adapter: Path, file: str, timeout: int | None = None) -> dict:
     r = subprocess.run([sys.executable, str(adapter), file],
-                       capture_output=True, text=True, timeout=timeout)
+                       capture_output=True, text=True,
+                       timeout=adapter_budget(adapter) if timeout is None else timeout)
     return json.loads(r.stdout.strip())
 
 
-def run_adapter_proc(adapter: Path, file: str, timeout: int = 15) -> subprocess.CompletedProcess:
+def run_adapter_proc(adapter: Path, file: str, timeout: int | None = None) -> subprocess.CompletedProcess:
     return subprocess.run([sys.executable, str(adapter), file],
-                          capture_output=True, text=True, timeout=timeout)
+                          capture_output=True, text=True,
+                          timeout=adapter_budget(adapter) if timeout is None else timeout)
 
 
 # ---------------------------------------------------------------------------
@@ -38,7 +42,7 @@ def run_adapter_proc(adapter: Path, file: str, timeout: int = 15) -> subprocess.
 
 def test_gofmt_check_no_arg_returns_schema_error() -> None:
     r = subprocess.run([sys.executable, str(GOFMT_CHECK)],
-                       capture_output=True, text=True, timeout=5)
+                       capture_output=True, text=True, timeout=adapter_budget(GOFMT_CHECK))
     data = json.loads(r.stdout.strip())
     assert data["tool"] == "gofmt-check"
     assert data["ok"] is False
@@ -77,7 +81,7 @@ def test_gofmt_check_graceful_skip_when_tool_missing(tmp_path: Path) -> None:
     python_dir = str(Path(sys.executable).parent)
     env = {**os.environ, "PATH": python_dir}
     r = subprocess.run([sys.executable, str(GOFMT_CHECK), str(f)],
-                       capture_output=True, text=True, timeout=5, env=env)
+                       capture_output=True, text=True, timeout=adapter_budget(GOFMT_CHECK), env=env)
     data = json.loads(r.stdout.strip())
     assert data["ok"] is True
     assert data["count"] == 0
@@ -90,7 +94,7 @@ def test_gofmt_check_graceful_skip_when_tool_missing(tmp_path: Path) -> None:
 
 def test_terraform_check_no_arg_returns_schema_error() -> None:
     r = subprocess.run([sys.executable, str(TERRAFORM_CHECK)],
-                       capture_output=True, text=True, timeout=5)
+                       capture_output=True, text=True, timeout=adapter_budget(TERRAFORM_CHECK))
     data = json.loads(r.stdout.strip())
     assert data["tool"] == "terraform-check"
     assert data["ok"] is False
@@ -126,7 +130,7 @@ def test_terraform_check_graceful_skip_when_tool_missing(tmp_path: Path) -> None
     python_dir = str(Path(sys.executable).parent)
     env = {**os.environ, "PATH": python_dir}
     r = subprocess.run([sys.executable, str(TERRAFORM_CHECK), str(f)],
-                       capture_output=True, text=True, timeout=5, env=env)
+                       capture_output=True, text=True, timeout=adapter_budget(TERRAFORM_CHECK), env=env)
     data = json.loads(r.stdout.strip())
     assert data["ok"] is True
     assert data["count"] == 0
@@ -139,7 +143,7 @@ def test_terraform_check_graceful_skip_when_tool_missing(tmp_path: Path) -> None
 
 def test_cargo_check_no_arg_returns_schema_error() -> None:
     r = subprocess.run([sys.executable, str(CARGO_CHECK)],
-                       capture_output=True, text=True, timeout=5)
+                       capture_output=True, text=True, timeout=adapter_budget(CARGO_CHECK))
     data = json.loads(r.stdout.strip())
     assert data["tool"] == "cargo-check"
     assert data["ok"] is False
@@ -155,7 +159,7 @@ def test_cargo_check_graceful_skip_when_tool_missing(tmp_path: Path) -> None:
     python_dir = str(Path(sys.executable).parent)
     env = {**os.environ, "PATH": python_dir}
     r = subprocess.run([sys.executable, str(CARGO_CHECK), str(f)],
-                       capture_output=True, text=True, timeout=10, env=env)
+                       capture_output=True, text=True, timeout=adapter_budget(CARGO_CHECK), env=env)
     data = json.loads(r.stdout.strip())
     assert data["ok"] is True
     assert data["count"] == 0
@@ -167,7 +171,7 @@ def test_cargo_check_graceful_skip_when_no_cargo_toml(tmp_path: Path) -> None:
     f.write_text("fn main() {}\n")
     # No Cargo.toml anywhere in tmp_path parents (tmp_path is ephemeral)
     r = subprocess.run([sys.executable, str(CARGO_CHECK), str(f)],
-                       capture_output=True, text=True, timeout=10)
+                       capture_output=True, text=True, timeout=adapter_budget(CARGO_CHECK))
     data = json.loads(r.stdout.strip())
     # If cargo is on PATH: skip because no Cargo.toml. If cargo missing: also skip.
     assert data["ok"] is True
@@ -184,7 +188,7 @@ def test_cargo_check_valid_crate(tmp_path: Path) -> None:
     src.mkdir()
     main = src / "main.rs"
     main.write_text("fn main() {}\n")
-    data = run_adapter(CARGO_CHECK, str(main), timeout=120)
+    data = run_adapter(CARGO_CHECK, str(main), timeout=adapter_budget(CARGO_CHECK, inner=120))
     assert data["tool"] == "cargo-check"
     assert data["ok"] is True
     assert data["count"] == 0
@@ -199,7 +203,7 @@ def test_cargo_check_broken_crate_reports_errors(tmp_path: Path) -> None:
     src.mkdir()
     main = src / "main.rs"
     main.write_text("fn main() { let x: i32 = \"not an int\"; }\n")
-    data = run_adapter(CARGO_CHECK, str(main), timeout=120)
+    data = run_adapter(CARGO_CHECK, str(main), timeout=adapter_budget(CARGO_CHECK, inner=120))
     assert data["tool"] == "cargo-check"
     assert data["ok"] is False
     assert data["count"] >= 1
@@ -214,7 +218,7 @@ def test_cargo_check_source_context_on_error(tmp_path: Path) -> None:
     src.mkdir()
     main = src / "main.rs"
     main.write_text("fn main() { let x: i32 = \"not an int\"; }\n")
-    data = run_adapter(CARGO_CHECK, str(main), timeout=120)
+    data = run_adapter(CARGO_CHECK, str(main), timeout=adapter_budget(CARGO_CHECK, inner=120))
     if data["ok"] or not data["errors"]:
         pytest.skip("cargo check found no errors")
     err = data["errors"][0]

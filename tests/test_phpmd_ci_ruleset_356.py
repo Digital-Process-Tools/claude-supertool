@@ -25,6 +25,8 @@ from pathlib import Path
 
 import pytest
 
+from _adapter_budget import adapter_budget
+
 PHPMD_PY = Path(__file__).parent.parent / "validators" / "phpmd" / "phpmd.py"
 
 pytestmark = pytest.mark.skipif(
@@ -56,7 +58,7 @@ def _run(php_file: Path, stub: Path, extra_env: dict | None = None) -> subproces
         env.update(extra_env)
     return subprocess.run(
         [sys.executable, str(PHPMD_PY), str(php_file)],
-        capture_output=True, text=True, timeout=15, env=env,
+        capture_output=True, text=True, timeout=adapter_budget(PHPMD_PY), env=env,
     )
 
 

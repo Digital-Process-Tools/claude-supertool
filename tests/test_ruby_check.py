@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from _adapter_budget import adapter_budget
 from _winenv import empty_path_env
 
 ADAPTER = Path(__file__).parent.parent / "validators" / "ruby-check" / "ruby-check.py"
@@ -32,12 +33,30 @@ def _run(file_path: str) -> dict:
             [sys.executable, str(ADAPTER), file_path],
             capture_output=True,
             text=True,
+            timeout=adapter_budget(ADAPTER),
         )
         if result.stdout.strip():
             return json.loads(result.stdout)
     raise AssertionError(
         f"ruby-check adapter produced empty stdout (rc={result.returncode}); "
         f"stderr={result.stderr!r}"
+    )
+
+
+def _assert_clean(out: dict) -> None:
+    """Assert the adapter found nothing, and say what it found when it did.
+
+    `assert out["ok"] is True` was the whole assertion, and on the one Windows
+    leg where it fired it disclosed exactly nothing (#658): `assert False is
+    True`. Triaging that needed two unrelated phplint tracebacks in the same
+    report to guess at a cause, and the guess was never confirmed. The
+    adapter always emits its reason in `errors` — this puts it where the
+    reader is, so the next occurrence identifies itself instead of needing
+    company.
+    """
+    assert out["ok"] is True, (
+        f"ruby-check reported {out.get('count')} error(s) on a file that has "
+        f"none: {out.get('errors')}"
     )
 
 
@@ -70,7 +89,7 @@ def test_valid_ruby(tmp_path: Path) -> None:
     f = tmp_path / "good.rb"
     f.write_text('def hello\n  puts "hello"\nend\n')
     out = _run(str(f))
-    assert out["ok"] is True
+    _assert_clean(out)
     assert out["count"] == 0
     assert out["tool"] == "ruby-check"
 
@@ -80,7 +99,7 @@ def test_valid_ruby_class(tmp_path: Path) -> None:
     f = tmp_path / "cls.rb"
     f.write_text("class Foo\n  def bar\n    42\n  end\nend\n")
     out = _run(str(f))
-    assert out["ok"] is True
+    _assert_clean(out)
 
 
 # ---------------------------------------------------------------------------
