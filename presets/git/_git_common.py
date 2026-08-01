@@ -49,6 +49,29 @@ def _git(args: list[str], timeout: int = 30) -> subprocess.CompletedProcess[str]
     )
 
 
+def repo_label() -> str:
+    """Absolute path of the repo the calling op is acting on.
+
+    `git-diff` has printed a `Repo:` line for a long time; `git-commit` and
+    `git-push` did not — so the two ops that WRITE were the two that never said
+    where they wrote. When a commit lands somewhere unexpected, that line is
+    the difference between noticing within the minute and noticing next week
+    (#692).
+
+    The work tree when there is one, the git dir otherwise: a bare repo has no
+    top level, and printing an empty string there would be worse than printing
+    nothing. "unknown" rather than a guess when git answers neither — a wrong
+    repo name is the one output worse than no repo name.
+    """
+    top = _git(["rev-parse", "--show-toplevel"])
+    if top.returncode == 0 and top.stdout.strip():
+        return top.stdout.strip()
+    bare = _git(["rev-parse", "--absolute-git-dir"])
+    if bare.returncode == 0 and bare.stdout.strip():
+        return f"{bare.stdout.strip()} (bare)"
+    return "unknown"
+
+
 def _looks_like_success(line: str) -> bool:
     """True for lines that report success — must never be picked as an error.
 

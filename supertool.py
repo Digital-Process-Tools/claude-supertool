@@ -1524,6 +1524,71 @@ def _expand_env(s: str, env: Dict[str, str]) -> str:
     )
 
 
+# Git's repo pointers. Any of these, set anywhere in the parent environment,
+# overrides discovery-from-cwd and points a git command at the repository they
+# name instead — so an op run from repoB acts on repoA (#692). Proven: a
+# `git-commit` with cwd=repoB and GIT_DIR=repoA/.git wrote the commit into
+# repoA, and the receipt named no repository at all.
+#
+# Not hypothetical, and not something the caller has to do to themselves: git
+# exports GIT_DIR to every hook it runs, and `.githooks/pre-commit` invokes
+# `./supertool 'git-diff:staged'`. This repo hands supertool a leaked git
+# environment as a matter of routine.
+#
+# #416 learned this once and fixed it for the TEST RUNNER (`.githooks/pre-push`
+# unsets them before pytest; `tests/conftest.py` again before every test). The
+# ops never got the same treatment. This is the same list, kept in one place —
+# conftest imports it from here, and a test pins the hook's `unset` line to it,
+# because three copies of one lesson is how the ops came to be missed.
+#
+# Membership rule: does the variable change WHICH repository, index, or refs a
+# git command reads or writes? GIT_COMMON_DIR and GIT_NAMESPACE do and were not
+# in #416's five — the first redirects config and refs for a worktree, the
+# second redirects every ref a push writes. GIT_CEILING_DIRECTORIES and
+# GIT_DISCOVERY_ACROSS_FILESYSTEM do not: they only restrict discovery, so the
+# worst they cause is finding no repo rather than the wrong one, and people set
+# them deliberately on slow network mounts. Scrubbing those would make
+# supertool disagree with the user's own shell about where they are.
+GIT_ENV_VARS = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_NAMESPACE",
+)
+
+
+def scrub_git_env(env: Dict[str, str]) -> List[str]:
+    """Delete git's repo pointers from `env`; return the names removed."""
+    removed = [name for name in GIT_ENV_VARS if name in env]
+    for name in removed:
+        del env[name]
+    return removed
+
+
+def _git_env_notice(removed: List[str]) -> str:
+    """One line naming what was scrubbed, or "" when nothing was.
+
+    Scrubbed rather than refused: refusing would break the caller this repo
+    creates itself — `.githooks/pre-commit` runs `git-diff:staged` under git's
+    exported GIT_DIR, and a commit hook that aborts because supertool declined
+    is a worse outcome than one that reads the right repo. But scrubbed
+    LOUDLY. A silent scrub makes the tool ignore something the caller may have
+    set on purpose and say nothing about it — the same "quiet where a loud
+    answer belonged" that made the original bug invisible, just pointing the
+    other way. The line costs one row of output and is the only thing that
+    tells a caller their environment is leaking.
+    """
+    if not removed:
+        return ""
+    return (
+        f"scrubbed inherited git env: {', '.join(removed)} — this op acted on "
+        f"the repo at {os.getcwd()}, not the one those variables named (#692)\n"
+    )
+
+
 def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
     """Try to run op as a custom command from config["ops"].
 
@@ -1584,6 +1649,15 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
     # Pass extra config keys as SUPERTOOL_ env vars
     _RESERVED_KEYS = {"cmd", "timeout", "description", "syntax", "example", "status", "restartMcp"}
     env = dict(os.environ)
+    # #692 — every preset op is launched from here, so this is the one place
+    # that can make the bug class unreachable. Fixing `presets/git/_git_common`
+    # instead would have covered the two presets that import its `_git`
+    # (commit, push) and silently missed the other ten — nine that define a
+    # local `_git` shadowing it, plus blame, which calls subprocess directly.
+    # That is this repo's signature defect arriving inside the fix for it. A
+    # preset is protected by being launched, not by remembering to opt in, and
+    # preset number thirteen is protected before it is written.
+    _leaked_git = scrub_git_env(env)
     if isinstance(entry, dict):
         for k, v in entry.items():
             if k not in _RESERVED_KEYS:
@@ -1612,7 +1686,7 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
             encoding="utf-8", errors="replace", env=env,
         )
         elapsed = _elapsed_since(t0)
-        output = result.stdout
+        output = _git_env_notice(_leaked_git) + result.stdout
         if result.returncode != 0:
             if result.stderr:
                 output += result.stderr
@@ -1623,8 +1697,10 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
         return f"PASS ({elapsed:.2f}s){_stamp}\n{output}{_maybe_restart_mcp(entry)}"
     except subprocess.TimeoutExpired as e:
         elapsed = _elapsed_since(t0)
+        # The notice rides the timeout path too: an op killed mid-flight is
+        # exactly when "which repo did that touch?" is worth answering.
         return (f"FAIL (timeout {elapsed:.1f}s > {timeout}s)\n"
-                f"{_timeout_partial_output(e)}")
+                f"{_git_env_notice(_leaked_git)}{_timeout_partial_output(e)}")
     except OSError as e:
         return f"FAIL: {e}\n"
 
