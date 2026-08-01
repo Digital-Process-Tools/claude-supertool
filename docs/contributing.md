@@ -499,10 +499,75 @@ between two input sizes measured in the same process, where machine speed
 cancels out. `TestParseScaling` in `tests/test_xml.py` is the worked example,
 including what each metric does and does not catch.
 
+### Never write a subprocess timeout by hand
+
+If a test spawns a validator adapter, its budget comes from
+`tests/_adapter_budget.py` and nowhere else:
+
+```python
+from _adapter_budget import adapter_budget
+
+r = subprocess.run([sys.executable, str(PHPLINT), str(f)],
+                   capture_output=True, text=True,
+                   timeout=adapter_budget(PHPLINT))
+```
+
+A test guard fails the suite if you write the integer instead
+(`test_no_test_spawns_a_validator_adapter_on_a_hardcoded_budget`).
+
+**Why there is a rule rather than a habit.** Three separate reds have now been
+one hand-written number each, all Windows-only, all under load: `gofmt-check`
+at 15s ([#702]), `phplint` twice at 10s ([#658]), `git rev-list` at 5s
+([#650]). The value is not what was wrong with them. What was wrong is that
+nothing related the number to what the adapter is *allowed* to take.
+
+**The rule, in one line: an outer budget is a hang-guard on the adapter, so it
+must exceed the adapter's own budget.** Every adapter under `validators/`
+already wraps the real tool in its own `timeout=` and already declines when it
+blows it. So a test spawning the adapter is not waiting on the tool — it is
+waiting on the adapter, which owes an answer within its own budget plus the
+cost of starting Python twice.
+
+Set the outer budget *below* that and it can never fire for a hang: the
+adapter declines first and the test gets JSON, not a `TimeoutExpired`. The
+only thing left that can trip it is a slow machine. That is the previous
+section's benchmark, arrived at by accident — multiply it by ten and the
+assertion catches nothing new, so the number *was* the assertion. Every
+reported site was on the wrong side of the line: phplint 10 < 30,
+gofmt-check 15 < 30, cargo-check 120 == 120 (a tie is a race).
+
+`adapter_budget()` reads the adapter's internal budget out of its source, adds
+spawn headroom, and multiplies on Windows — where process spawn is materially
+slower, antivirus interposes on every temp file, and the runner is shared, and
+where all three incidents happened. Raising an adapter's internal timeout
+therefore raises every test budget over it with no second number to update.
+`SUPERTOOL_TEST_ADAPTER_TIMEOUT` overrides it for a run, the way
+`SUPERTOOL_LINT_TIMEOUT` ([#553]) and `SUPERTOOL_GIT_TIMEOUT` ([#650]) do.
+
+**These tests fail rather than skip when the budget blows, deliberately.** A
+skip is right for a check that cannot tell "the tool hung" from "the runner
+was busy" — which is precisely what a 10s budget over a 30s adapter could not
+do. Deriving the outer budget from the inner one removes that ambiguity: a
+blown budget now means the adapter did not honour its own timeout, which is a
+real hang in the code under test. Skipping it is how a genuine hang becomes
+invisible, and this repo files that trade against itself every time.
+
+**The adapter side of the same rule.** An adapter that grants itself a budget
+must survive blowing it. Letting `TimeoutExpired` escape kills the process on
+a traceback with **empty stdout**, and every caller `json.loads()` that — so a
+slow linter surfaces as a `JSONDecodeError` naming neither the tool nor the
+timeout. Emit the decline instead (`code: "adapter"`, message naming the
+budget); `test_every_adapter_that_grants_itself_a_budget_survives_blowing_it`
+enforces it across `validators/`.
+
 [#485]: https://github.com/Digital-Process-Tools/claude-supertool/issues/485
+[#553]: https://github.com/Digital-Process-Tools/claude-supertool/issues/553
 [#621]: https://github.com/Digital-Process-Tools/claude-supertool/issues/621
 [#643]: https://github.com/Digital-Process-Tools/claude-supertool/issues/643
+[#650]: https://github.com/Digital-Process-Tools/claude-supertool/issues/650
+[#658]: https://github.com/Digital-Process-Tools/claude-supertool/issues/658
 [#689]: https://github.com/Digital-Process-Tools/claude-supertool/pull/689
+[#702]: https://github.com/Digital-Process-Tools/claude-supertool/issues/702
 
 ## Submitting upstream
 

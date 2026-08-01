@@ -19,6 +19,13 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"
 from source_context import source_context
 
 
+# Budget for the one tool spawn below. A module constant rather than a literal
+# in the call so the decline can name it: a caller reading "timeout" cannot
+# tell a hung linter from a busy machine, and the number is the first thing
+# they need to decide which (#658).
+TIMEOUT_S = 30
+
+
 def emit(d: dict) -> None:
     print(json.dumps(d))
 
@@ -45,12 +52,29 @@ def main() -> None:
             ["hadolint", "--format", "tty", file],
             capture_output=True,
             text=True,
-            timeout=30, encoding="utf-8", errors="replace",
+            timeout=TIMEOUT_S, encoding="utf-8", errors="replace",
         )
     except FileNotFoundError:
         print("hadolint: hadolint not found on PATH, skipping", file=sys.stderr)
         emit({"tool": "hadolint", "file": file, "ok": True, "count": 0,
               "errors": [], "duration_ms": int((time.time() - start) * 1000)})
+        return
+    except subprocess.TimeoutExpired:
+        # Not a finding about the file, and not silence either. Without this
+        # the exception escapes an adapter with no top-level handler, the
+        # process dies on a traceback with **empty stdout**, and every caller
+        # json.loads() that — so a slow linter surfaces as a JSONDecodeError
+        # naming neither the tool nor the timeout. Same three-state collapse
+        # #650 fixed for git: "could not answer" wearing the clothes of an
+        # answer. It stays ok=False rather than becoming a skip, because the
+        # binary was found and started (docs/validators.md — a post-spawn
+        # failure is a finding with an `adapter` code, never a decline).
+        emit({"tool": "hadolint", "file": file, "ok": False, "count": 1,
+              "errors": [{"line": None, "col": None, "severity": "error",
+                          "code": "adapter",
+                          "msg": f"timeout — hadolint did not return within {TIMEOUT_S}s; "
+                                 "the file was NOT checked"}],
+              "duration_ms": int((time.time() - start) * 1000)})
         return
 
     duration = int((time.time() - start) * 1000)

@@ -19,6 +19,13 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"
 from source_context import source_context
 
 
+# Budget for the one tool spawn below. A module constant rather than a literal
+# in the call so the decline can name it: a caller reading "timeout" cannot
+# tell a hung compiler from a busy machine, and the number is the first thing
+# they need to decide which (#658).
+TIMEOUT_S = 30
+
+
 def emit(d: dict) -> None:
     print(json.dumps(d))
 
@@ -45,12 +52,27 @@ def main() -> None:
             ["tsc", "--noEmit", "--skipLibCheck", file],
             capture_output=True,
             text=True,
-            timeout=30, encoding="utf-8", errors="replace",
+            timeout=TIMEOUT_S, encoding="utf-8", errors="replace",
         )
     except FileNotFoundError:
         print("tsc-check: tsc not found on PATH, skipping", file=sys.stderr)
         emit({"tool": "tsc-check", "file": file, "ok": True, "count": 0,
               "errors": [], "duration_ms": int((time.time() - start) * 1000)})
+        return
+    except subprocess.TimeoutExpired:
+        # See hadolint.py for why this is a finding rather than a skip, and
+        # why its absence was worse than a wrong verdict: an escaping
+        # TimeoutExpired leaves stdout empty and the caller crashes on
+        # json.loads with nothing naming the tool or the budget. `tsc` is the
+        # likeliest of the three to reach its budget honestly — a cold
+        # TypeScript compile on a cold runner is not fast — which makes
+        # saying so, rather than dying, worth more here than anywhere.
+        emit({"tool": "tsc-check", "file": file, "ok": False, "count": 1,
+              "errors": [{"line": None, "col": None, "severity": "error",
+                          "code": "adapter",
+                          "msg": f"timeout — tsc did not return within {TIMEOUT_S}s; "
+                                 "the file was NOT checked"}],
+              "duration_ms": int((time.time() - start) * 1000)})
         return
 
     duration = int((time.time() - start) * 1000)

@@ -37,6 +37,7 @@ from pathlib import Path
 import pytest
 
 import supertool
+from _adapter_budget import adapter_budget
 
 
 _VPATH = Path(__file__).parent.parent / "validators" / "lsp-diag" / "lsp-diag.py"
@@ -87,7 +88,7 @@ def _run_adapter(tmp_path: Path, diag_text: str, *, env_extra: dict | None = Non
     env["SUPERTOOL_BIN"] = str(stub)
     env.update(env_extra or {})
     r = subprocess.run([sys.executable, str(_VPATH), str(target)],
-                       capture_output=True, text=True, env=env, timeout=120)
+                       capture_output=True, text=True, env=env, timeout=adapter_budget(_VPATH))
     assert r.stdout.strip(), f"adapter produced no output; stderr:\n{r.stderr}"
     return json.loads(r.stdout.strip().splitlines()[-1])
 
