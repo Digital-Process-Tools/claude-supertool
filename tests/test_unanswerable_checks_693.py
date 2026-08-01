@@ -26,6 +26,7 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -256,27 +257,41 @@ def test_a_failed_stash_query_does_not_render_as_no_stashes(
     repo.mkdir()
     _init_repo(repo)
 
-    bindir = tmp_path / "bin"
-    bindir.mkdir()
-    real_git = subprocess.run(["which", "git"], capture_output=True,
-                              text=True, check=True).stdout.strip()
-    shim = bindir / "git"
-    shim.write_text(
-        "#!/bin/sh\n"
-        'if [ "$1" = "stash" ]; then echo "fatal: unable to read index" >&2; exit 128; fi\n'
-        f'exec {real_git} "$@"\n'
-    )
-    shim.chmod(0o755)
+    real_git = shutil.which("git")
+    assert real_git, "git must be on PATH for this suite"
 
-    def _status(env: dict) -> str:
+    def _bin(name: str, body: str) -> Path:
+        """A PATH holding exactly one executable — the premise, built.
+
+        Never the runner's own PATH. On a GitHub runner that also carries an
+        unauthenticated `gh`, which refuses with exit 4 and is disclosed in the
+        very footer this test is about, so the control run would carry
+        INCOMPLETE for a reason that has nothing to do with stashes. #705 was
+        bitten by exactly this fixture and repaired it the same way.
+        """
+        d = tmp_path / name
+        d.mkdir()
+        shim = d / "git"
+        shim.write_text("#!/bin/sh\n" + body)
+        shim.chmod(0o755)
+        return d
+
+    passthrough = _bin("okbin", f'exec {real_git} "$@"\n')
+    refusing = _bin(
+        "badbin",
+        'if [ "$1" = "stash" ]; then echo "fatal: unable to read index" >&2; exit 128; fi\n'
+        f'exec {real_git} "$@"\n',
+    )
+
+    def _status(bindir: Path) -> str:
+        env = dict(os.environ)
+        env["PATH"] = str(bindir)
         return subprocess.run([sys.executable, str(status_py)], cwd=repo,
                               capture_output=True, text=True,
                               encoding="utf-8", env=env).stdout
 
-    working = _status(dict(os.environ))
-    broken_env = dict(os.environ)
-    broken_env["PATH"] = str(bindir) + os.pathsep + broken_env["PATH"]
-    broken = _status(broken_env)
+    working = _status(passthrough)
+    broken = _status(refusing)
 
     assert working != broken, (
         "a stash query that failed rendered identically to a repo with no stashes"
