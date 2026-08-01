@@ -190,7 +190,12 @@ def test_union_unterminated_fails(tmp_path) -> None:
 
 
 def test_both_end_to_end(monkeypatch, capsys, tmp_path) -> None:
-    """side=both unions the file and stages it via git add."""
+    """side=both unions the file and stages it via git add.
+
+    `force` because the fixture is `.php`: since #744 a union on source text is
+    refused per file unless forced. The refusal itself is covered in
+    test_git_resolve_source_guard_744.py; this test stays on the union path.
+    """
     import subprocess
     f = tmp_path / "x.php"
     f.write_text(CONFLICT, encoding="utf-8")
@@ -208,7 +213,7 @@ def test_both_end_to_end(monkeypatch, capsys, tmp_path) -> None:
 
     _patch_git(monkeypatch, fake_git)
     monkeypatch.setattr(resolve, "_validate_paths", lambda ps: {p: None for p in ps})
-    monkeypatch.setattr(resolve.sys, "argv", ["resolve.py", "both", str(f)])
+    monkeypatch.setattr(resolve.sys, "argv", ["resolve.py", "both", str(f), "force"])
     rc = resolve.main()
     out = capsys.readouterr().out
 
