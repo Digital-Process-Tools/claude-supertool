@@ -1452,7 +1452,8 @@ def _safe_path(p: str, *, allow_outside_cwd: Optional[bool] = None) -> str:
     return abs_p
 
 
-def _path_not_found(path: str, *, label: str = "path") -> str:
+def _path_not_found(path: str, *, label: str = "path",
+                     suggest: Optional[str] = None) -> str:
     """The "not found" error, naming the path it actually tried (#624).
 
     `ERROR: file not found: src/foo.py` is true and useless: it cannot tell a
@@ -1466,6 +1467,13 @@ def _path_not_found(path: str, *, label: str = "path") -> str:
     call that reaches here is one it declined — ambiguous by construction.
     Resolving it here would trade a loud wrong path for a quiet wrong root,
     which is the defect this tracker is about, not the fix.
+
+    `suggest`, when given, replaces the generic `wrong CWD?` hint (#734).
+    The cwd-drift explanation is a real default, but a caller that already
+    knows a *specific*, more plausible mistake — e.g. `around` recognising
+    its PATH argument as an all-digit token that looks like the LINE its
+    sibling `around_line` wants — should say that instead of pointing at the
+    one thing that provably did not cause this failure.
     """
     if not path:
         return f"ERROR: {label} not found: {path}\n"
@@ -1485,6 +1493,8 @@ def _path_not_found(path: str, *, label: str = "path") -> str:
             f"  exists at {os.path.join(root, path)} — prefix the call with "
             f"'cwd:{root}' to run it from the project root"
         )
+    elif suggest:
+        lines.append(f"  {suggest}")
     else:
         lines.append(
             "  wrong CWD? Prefix the call with cwd:PATH to run it from "
@@ -2392,7 +2402,20 @@ def op_around(pattern: str, path: str, n: int = 10) -> str:
         regex = re.compile(re.escape(pattern))
 
     if not os.path.isdir(path) and not os.path.isfile(path):
-        return _path_not_found(path, label="file")
+        # #734: `around` is PATTERN:PATH[:N] and its sibling `around_line`
+        # is PATH:LINE[:N] — same op-name family, opposite argument order.
+        # Swap them and PATH resolves to a line number, which is never a
+        # real path but IS a plausible typo. `wrong CWD?` cannot be right
+        # here (the cwd was fine), so name the actual mistake instead —
+        # never redirect the call itself, only the advice.
+        suggest = None
+        if path.isdigit():
+            suggest = (
+                "`around` takes PATTERN:PATH[:N] — "
+                f"'{path}' was read as the path. Did you mean: "
+                f"around_line:{pattern}:{path}[:N]"
+            )
+        return _path_not_found(path, label="file", suggest=suggest)
 
     def _render(rx: "re.Pattern[str]") -> Tuple[str, bool]:
         """Render the around-window for `rx`. Returns (output, matched) so the
