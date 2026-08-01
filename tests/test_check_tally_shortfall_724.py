@@ -274,21 +274,60 @@ def test_shortfall_helper_never_reports_more_found_than_declared_as_a_gap():
 # --- Pin 9: the declared count is read off the run, not off the rollup ------
 
 
-def _jobs_payload(names: Sequence[str], total: int | None = None) -> str:
+def _jobs_payload(records: Sequence[str], total: int | None = None) -> str:
+    """One `jobs` response. `records` is job *rows*, so names may repeat."""
     return json.dumps({
-        "total_count": len(names) if total is None else total,
-        "jobs": [{"name": n} for n in names],
+        "total_count": len(records) if total is None else total,
+        "jobs": [{"name": n} for n in records],
     })
 
 
-def test_declared_legs_reads_total_count_from_the_actions_api(monkeypatch):
+def test_declared_legs_counts_distinct_names_not_job_records(monkeypatch):
+    """`filter=all` returns every attempt's rows; the leg count is the names.
+
+    Live on PR #728 a three-attempt run reported `total_count: 42` for a
+    fourteen-leg matrix. Counting records would declare 42 legs and mark a
+    complete tally as a 28-leg shortfall — a false alarm is how a disclosure
+    gets ignored.
+    """
     names = [f"pytest-{i}" for i in range(14)]
     monkeypatch.setattr(
-        pr, "_gh", lambda *a, **kw: _fake_run(_jobs_payload(names))
+        pr, "_gh", lambda *a, **kw: _fake_run(_jobs_payload(names * 3))
     )
     total, got = pr._declared_legs("https://github.com/o/r/pull/715", [RUN_ID])
     assert total == 14
     assert got == names
+
+
+def test_declared_legs_asks_for_every_attempt_not_just_the_latest(monkeypatch):
+    """The load-bearing half, and the half the first version got wrong.
+
+    Measured on PR #728: while the rollup was empty mid-re-run, the *latest*
+    attempt's job count was empty with it — `filter=latest` agrees with the
+    short rollup and the shortfall goes unreported. Only the all-attempts
+    name set held at 14 across the whole window.
+    """
+    seen: list[list[str]] = []
+
+    def _capture(args, **kw):
+        seen.append(args)
+        return _fake_run(_jobs_payload(["a", "b"]))
+
+    monkeypatch.setattr(pr, "_gh", _capture)
+    pr._declared_legs("https://github.com/o/r/pull/715", [RUN_ID])
+    assert seen, "no request was made"
+    assert any("filter=all" in part for part in seen[0]), seen[0]
+
+
+def test_declared_legs_floor_does_not_dip_with_the_latest_attempt(monkeypatch):
+    """A re-run in flight: one attempt's rows are complete, the new one is not."""
+    matrix = [f"pytest-{i}" for i in range(14)]
+    in_flight = matrix + matrix[:3]   # attempt 1 complete, attempt 2 starting
+    monkeypatch.setattr(
+        pr, "_gh", lambda *a, **kw: _fake_run(_jobs_payload(in_flight))
+    )
+    total, _ = pr._declared_legs("https://github.com/o/r/pull/715", [RUN_ID])
+    assert total == 14
 
 
 def test_declared_legs_declines_when_gh_fails(monkeypatch):
@@ -296,8 +335,8 @@ def test_declared_legs_declines_when_gh_fails(monkeypatch):
     assert pr._declared_legs("https://github.com/o/r/pull/715", [RUN_ID]) == (None, [])
 
 
-def test_declared_legs_declines_on_a_payload_without_a_count(monkeypatch):
-    monkeypatch.setattr(pr, "_gh", lambda *a, **kw: _fake_run('{"number": 715}'))
+def test_declared_legs_declines_on_a_payload_without_jobs(monkeypatch):
+    monkeypatch.setattr(pr, "_gh", lambda *a, **kw: _fake_run('{"total_count": 14}'))
     assert pr._declared_legs("https://github.com/o/r/pull/715", [RUN_ID]) == (None, [])
 
 

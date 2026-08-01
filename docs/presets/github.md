@@ -87,7 +87,17 @@ checks: 9 total: 8 passed, 0 failed, 1 pending ⚠ NOT ALL GREEN ⚠ INCOMPLETE 
 
 `⚠ INCOMPLETE` is a **second** marker, not a reworded `⚠ NOT ALL GREEN`. The two say different things — "the legs I read were not all green" and "I did not read all the legs" — and an all-passing shortfall carries only the second one, which is the case that was silent.
 
-**The run ids are free; the count is not.** The run id comes off the same `detailsUrl` the job ids already come off, so finding *which* runs to reconcile against costs nothing. Reading `total_count` off `repos/{owner}/{repo}/actions/runs/{id}/jobs` costs one extra `gh api` call per distinct run, which roughly doubles `:status` wall time (~1.1s to ~2.0s, measured on this repo). That is deliberate and it is the whole point of the op: `:status` exists to be the thing a merge is decided on, and a merge decided on nine of fourteen legs is the failure this cost buys out. `gh-prs` and `git-status` are **not** reconciled — a board paying that per PR is a different trade, and neither is a merge gate.
+**The floor is the all-attempts name set, and the source matters more than the idea.** Measured live, cancelling a run and re-running the failed job:
+
+```
+11:28:20  rollup=0   latest_attempt=0   all_attempts_distinct=14
+11:28:24  rollup=11  latest_attempt=11  all_attempts_distinct=14
+11:28:32  rollup=14  latest_attempt=14  all_attempts_distinct=14
+```
+
+GitHub withdraws and re-creates the check runs over ~12s, and the rollup is genuinely short while it does. **`repos/{o}/{r}/actions/runs/{id}/jobs` defaults to `filter=latest` and dips with it** — a floor that agrees with the short answer is no floor. `filter=all` holds, because a previous attempt's job rows are history: the count of *distinct job names across every attempt* only ever grows. It is the name set and not `total_count`, which under `filter=all` counts every row of every attempt (42 across three attempts of a fourteen-leg matrix).
+
+**The run ids are free; the count is not.** The run id comes off the same `detailsUrl` the job ids already come off, so finding *which* runs to reconcile against costs nothing. The jobs call costs one extra `gh api` per distinct run, which roughly doubles `:status` wall time (~1.1s to ~2.0s, measured on this repo). That is deliberate and it is the whole point of the op: `:status` exists to be the thing a merge is decided on, and a merge decided on nine of fourteen legs is the failure this cost buys out. `gh-prs` and `git-status` are **not** reconciled — a board paying that per PR is a different trade, and neither is a merge gate.
 
 **An unestablished count declines; it never guesses.** If the jobs API cannot be reached, or the PR fans out past `MAX_RECONCILED_RUNS` (4) distinct runs, the line reads `⚠ TALLY UNVERIFIED` and says so — `docs/validators.md` ([Declining instead of guessing](../validators.md#declining-instead-of-guessing)). Assuming `declared == found` would restore exactly the silence this exists to break; assuming a larger number would invent legs and trade a loud failure for a quiet one.
 

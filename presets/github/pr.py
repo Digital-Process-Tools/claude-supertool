@@ -107,11 +107,33 @@ def _missing_names(declared: Sequence[str], found: Sequence[str]) -> list[str]:
 def _declared_legs(url: str, run_ids: Sequence[str]) -> tuple[int | None, list[str]]:
     """`(total, names)` the Actions runs declare — `(None, [])` if unestablished.
 
-    The second, independent count #724 needs. `statusCheckRollup` was the only
-    source the tally had, so a rollup that came back short was indistinguishable
-    from a matrix that genuinely *is* short. The Actions jobs API answers a
-    different question — how many jobs this run has — and it was the source
-    that stayed right through the re-run window in which the rollup did not.
+    The second, independent count #724 needs, and the choice of source is the
+    whole fix. Measured live on PR #728, cancelling a run and re-running the
+    failed job three times over:
+
+        11:28:20  rollup=0   latest=0   all_distinct=14
+        11:28:24  rollup=11  latest=11  all_distinct=14
+        11:28:32  rollup=14  latest=14  all_distinct=14
+
+    `statusCheckRollup` empties and refills over ~12s while GitHub re-creates
+    the check runs — that is the transient behind #724, and reading it mid-way
+    is what produced `9 total` against a fourteen-leg matrix. **The
+    latest-attempt job count dips with it**, in lockstep, so
+    `jobs?filter=latest` is not a floor at all: it agrees with the short
+    rollup and the tally stays silent, which was this function's first
+    version.
+
+    What holds is `filter=all`. A previous attempt's job rows are history and
+    cannot be withdrawn, so the set of *distinct job names across every
+    attempt* only ever grows. That is what is counted here.
+
+    Two ways this can read low, both in the safe direction — a floor that is
+    too low under-claims a shortfall, it never invents one:
+
+    * a run whose matrix genuinely gained legs between attempts (the workflow
+      file is fixed per commit, so this needs a matrix computed at runtime);
+    * more than 100 job records across all attempts — eight-plus attempts on a
+      matrix this wide — where the first page truncates the name set.
 
     `None` on every failure, never a fallback number: a guessed floor can sit
     under the real one, which is this defect wearing a fix's clothes.
@@ -130,7 +152,8 @@ def _declared_legs(url: str, run_ids: Sequence[str]) -> tuple[int | None, list[s
         try:
             r = _gh([
                 "api",
-                f"repos/{owner}/{repo}/actions/runs/{rid}/jobs?per_page=100",
+                f"repos/{owner}/{repo}/actions/runs/{rid}"
+                "/jobs?filter=all&per_page=100",
             ])
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
             return (None, [])
@@ -140,15 +163,22 @@ def _declared_legs(url: str, run_ids: Sequence[str]) -> tuple[int | None, list[s
             data = json.loads(r.stdout)
         except json.JSONDecodeError:
             return (None, [])
-        count = data.get("total_count") if isinstance(data, dict) else None
-        if not isinstance(count, int) or isinstance(count, bool):
+        jobs = data.get("jobs") if isinstance(data, dict) else None
+        if not isinstance(jobs, list):
             return (None, [])
-        total += count
-        jobs = data.get("jobs")
-        if isinstance(jobs, list):
-            names.extend(
-                str(j.get("name") or "?") for j in jobs if isinstance(j, dict)
-            )
+        # Distinct names, not `total_count`: under `filter=all` the count is
+        # every job record of every attempt (42 across three attempts of a
+        # fourteen-leg matrix), which is not a leg count. First-seen order is
+        # kept so the names read like the matrix rather than like a set.
+        seen: list[str] = []
+        for j in jobs:
+            if not isinstance(j, dict):
+                continue
+            name = str(j.get("name") or "?")
+            if name not in seen:
+                seen.append(name)
+        total += len(seen)
+        names.extend(seen)
     return (total, names)
 
 
