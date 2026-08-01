@@ -599,11 +599,49 @@ RESET_EXEMPT_GLOBALS = (
     "_TS_LANG_MAP",
 )
 
-#: The same contract as RESET_GLOBALS, for the `_env` module shared by every
-#: preset. A separate tuple because those names are resolved against
-#: `supertool`, and because `_env` may legitimately be absent — see the import
-#: guard at the top of this file.
-PRESET_ENV_RESET_GLOBALS = ("_ANNOUNCED",)
+# ---------------------------------------------------------------------------
+# The same contract, for `presets/` (#686).
+#
+# The three tables below are keyed by repo-relative path and cover every
+# module-level global under `presets/` that is *mutated at run time* — 4 names
+# out of the 43 module-level mutables there, because the other 39 are constant
+# lookup tables that merely happen to be dicts. `tests/test_preset_global_
+# lifetimes_686.py` fails the build when a fifth appears in none of them, and
+# fails it again when one of them names something that is no longer state.
+#
+# Mutability alone was rejected as the trigger deliberately: a guard demanding a
+# registry entry for `_CHECK_GLYPH` would be 91% noise, and a noisy guard gets
+# exempted without reading, which is how a guard stops working.
+# ---------------------------------------------------------------------------
+
+#: Cleared by `_reset_module_state` below, exactly as `RESET_GLOBALS` is. Open
+#: only to preset modules this file imports — today just `_env`, which 29
+#: presets share, and whose shared ledger cost PR #689 a macOS-only red.
+#: Extending it to all 125 preset modules means importing and deep-copying all
+#: of them per test; #686 declined that cost, and this stays the exception.
+PRESET_RESET_GLOBALS: dict[str, tuple[str, ...]] = {
+    "presets/_env.py": ("_ANNOUNCED",),
+}
+
+#: Held by the module itself: reset in `main()`'s prologue, before the first
+#: branch. Right for a preset, which is a subprocess that runs `main()` once —
+#: and it keeps working under a harness that imports the module once and calls
+#: `main()` repeatedly, which is the case conftest's list exists for.
+#:
+#: The claim is verified, not trusted: the guard re-reads each module and fails
+#: if the reset is not really there. `presets/mcp/stop.py` writes
+#: `_RUNTIME_HINT` inside `main()` too, but 150 lines in and as the value being
+#: used — "mutated somewhere in main" would have accepted that.
+PRESET_SELF_CLEARING_GLOBALS: dict[str, tuple[str, ...]] = {
+    "presets/git/push.py": ("_RUN",),
+    "presets/git/status.py": ("_UNANSWERED",),
+    "presets/mcp/stop.py": ("_RUNTIME_HINT",),
+}
+
+#: Neither reset nor self-clearing, and deliberately so. Empty, and that is the
+#: point: an entry here is a claim that state surviving a run is correct, and it
+#: should have to be argued for in review rather than added to quiet a build.
+PRESET_RESET_EXEMPT_GLOBALS: dict[str, tuple[str, ...]] = {}
 
 _PRISTINE_GLOBALS = {
     name: copy.deepcopy(getattr(supertool, name)) for name in RESET_GLOBALS
@@ -623,7 +661,7 @@ def _reset_module_state():
         else:
             current[:] = pristine
     if _env is not None:
-        for name in PRESET_ENV_RESET_GLOBALS:
+        for name in PRESET_RESET_GLOBALS["presets/_env.py"]:
             getattr(_env, name).clear()
 
 

@@ -165,6 +165,14 @@ def _refused(exc: SystemExit) -> int:
 
 
 def main(argv: list) -> int:
+    # This invocation's hint, not the process's (#686). Same reasoning as
+    # `_UNANSWERED` in presets/git/status.py: in production a preset is a
+    # subprocess and the two are the same thing, but under a harness that
+    # imports this module once and calls main() repeatedly, a base left behind
+    # by an earlier run would caption this one's messages with a directory it
+    # never opened. Empty is the import-time value, and _runtime_hint() joining
+    # "" is exactly the pre-resolution behaviour.
+    _RUNTIME_HINT[0] = ""
     if len(argv) < 2:
         sys.stderr.write("usage: stop.py NAME | --all\n")
         return EXIT_USAGE
