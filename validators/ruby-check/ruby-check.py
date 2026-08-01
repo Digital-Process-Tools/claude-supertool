@@ -18,6 +18,7 @@ import pathlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from source_context import source_context
+from refusal import tool_fault
 
 
 def emit(d: dict) -> None:
@@ -84,21 +85,27 @@ def main() -> None:
             errors.append(err)
 
     if not errors:
-        if output:
-            errors = [{"line": None, "col": None, "severity": "error",
-                       "code": "syntax", "msg": output[:300]}]
-        else:
-            # `ruby -c` exited non-zero and said nothing on stderr. That is
-            # not "no syntax errors" (returncode == 0 already handled that
-            # above) — resolving on PATH is not proof the spawned process ran
-            # like ruby (a shim, alias, or broken install can exit non-zero
-            # silently). An unexplained exit must stay a named error rather
-            # than fold into `count: 0`, which reads as a finding about the
-            # file with nothing in it (#263-shaped: a "finding" that names
-            # nothing is indistinguishable from a checker that never ran).
-            errors = [{"line": None, "col": None, "severity": "error",
-                       "code": "adapter",
-                       "msg": f"ruby -c produced no output (exit {result.returncode})"}]
+        # `ruby -c` exited non-zero without a `file:line:` diagnostic. That is
+        # not "no syntax errors" (returncode == 0 already handled that above) —
+        # resolving on PATH is not proof the spawned process ran like ruby (a
+        # shim, alias, or broken install can exit non-zero silently). An
+        # unexplained exit must stay a named error rather than fold into
+        # `count: 0`, which reads as a finding about the file with nothing in
+        # it (#263-shaped: a "finding" that names nothing is indistinguishable
+        # from a checker that never ran).
+        #
+        # #752's sweep recorded this adapter as the model and noted a residual:
+        # only the *empty*-stderr case reached `adapter`, while non-empty but
+        # unlocated output still became `code: "syntax"`. That residual is live
+        # on the first thing anyone tries —
+        #
+        #   ruby -c /nope/x.rb  ->  ruby: No such file or directory -- ... (LoadError)
+        #   ruby -c .           ->  ruby: Is a directory -- . (LoadError)
+        #
+        # — so both cases now route through the same helper as its siblings (#753).
+        errors = [{"line": None, "col": None, "severity": "error",
+                   "code": "adapter",
+                   "msg": tool_fault("ruby -c", result.returncode, output)}]
 
     emit({"tool": "ruby-check", "file": file, "ok": False, "count": len(errors),
           "errors": errors, "duration_ms": duration})

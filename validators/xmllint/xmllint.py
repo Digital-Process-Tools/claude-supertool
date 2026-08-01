@@ -16,6 +16,19 @@ import pathlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from source_context import source_context
+from refusal import tool_fault
+
+# libxml announces a finding about the document as `file:LINE: parser error : ...`.
+# Every other way it exits non-zero says nothing about the document's XML:
+#
+#   warning: failed to load external entity "x.xml"   (missing or unreadable path)
+#   I/O error : Permission denied
+#   Unknown option --bogusflag  + ~70 lines of usage
+#
+# All three used to be published as one `code: "xml"` error at file level, so a
+# path typo and a wrong flag were both reported as malformed XML (#753). A
+# located diagnostic is the marker; anything else on a non-zero exit is a
+# libxml failure, not a verdict about the file.
 
 
 def emit(d: dict) -> None:
@@ -69,8 +82,9 @@ def main() -> None:
             err["source_context"] = source_context(file, ln)
             errors.append(err)
     if not errors:
-        errors = [{"line": None, "col": None, "severity": "error", "code": "xml",
-                   "msg": (out or "unknown error")[:300]}]
+        errors = [{"line": None, "col": None, "severity": "error",
+                   "code": "adapter",
+                   "msg": tool_fault("xmllint", r.returncode, out)}]
     emit({"tool": "xmllint", "file": file, "ok": False, "count": len(errors),
           "errors": errors, "duration_ms": dur})
 

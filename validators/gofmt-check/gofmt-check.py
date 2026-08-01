@@ -8,10 +8,33 @@ Usage:  gofmt-check.py <file>
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import sys
 import time
+import pathlib
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
+from source_context import source_context
+from refusal import tool_fault
+
+# gofmt splits its two answers across the two streams and two exit codes, and
+# the adapter read neither until #753:
+#
+#   clean         rc=0  (nothing)
+#   unformatted   rc=0  stdout: subject.go        <- the `-l` signal
+#   malformed     rc=2  stderr: subject.go:3:12: expected ')', found '{'
+#   unopenable    rc=2  stderr: stat subject.go: no such file or directory
+#
+# `if r.returncode != 0` published the last two identically as `code: "syntax"`
+# with the raw stderr, so a path gofmt could not stat became a Go syntax error
+# — and a genuine parse error threw away the `line:col` gofmt had just handed
+# over, reporting `line: None` and no source context.
+#
+# The marker is a located `path:line:col: message`. `stat ...: no such file`
+# carries no line, which is precisely what distinguishes it.
+DIAGNOSTIC = re.compile(r"^(?P<path>.+?):(?P<line>\d+):(?P<col>\d+):\s*(?P<msg>.+)$")
 
 
 def emit(d: dict) -> None:
@@ -53,11 +76,23 @@ def main() -> None:
     dur = int((time.time() - start) * 1000)
 
     if r.returncode != 0:
-        msg = (r.stderr or "gofmt error").strip()[:300]
-        emit({"tool": "gofmt-check", "file": file, "ok": False, "count": 1,
-              "errors": [{"line": None, "col": None, "severity": "error",
-                          "code": "syntax", "msg": msg}],
-              "duration_ms": dur})
+        out = (r.stderr or "") + (r.stdout or "")
+        errors = []
+        for raw in out.splitlines():
+            m = DIAGNOSTIC.match(raw)
+            if m:
+                ln = int(m.group("line"))
+                errors.append({
+                    "line": ln, "col": int(m.group("col")), "severity": "error",
+                    "code": "syntax", "msg": m.group("msg").strip()[:300],
+                    "source_context": source_context(file, ln),
+                })
+        if not errors:
+            errors = [{"line": None, "col": None, "severity": "error",
+                       "code": "adapter",
+                       "msg": tool_fault("gofmt -l", r.returncode, out)}]
+        emit({"tool": "gofmt-check", "file": file, "ok": False,
+              "count": len(errors), "errors": errors, "duration_ms": dur})
         return
 
     # gofmt -l prints the filename if formatting is needed, empty if clean
