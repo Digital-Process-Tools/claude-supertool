@@ -58,6 +58,15 @@ def _make_repo(path: Path, name: str, with_remote: bool = False,
     """
     path.mkdir(parents=True)
     _git(["init", "-q", "-b", branch], path)
+    # Identity as repo CONFIG, not only as the `-c` flags in `_ID`. Those apply
+    # to the git commands this file runs; the commit under test is made by
+    # supertool's own `git` child, which inherits none of them. A machine with a
+    # global user.email cannot see the difference — local and the macOS legs
+    # passed while every ubuntu and windows leg failed with
+    # `fatal: empty ident name`. Same pattern as test_git_commit.py and five
+    # other files here.
+    _git(["config", "user.email", "fixture@example.invalid"], path)
+    _git(["config", "user.name", "fixture"], path)
     (path / ".supertool.json").write_text('{"presets": ["git"]}\n')
     (path / f"{name}.txt").write_text(f"{name}\n")
     _git(["add", "-A"], path)
