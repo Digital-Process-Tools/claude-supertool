@@ -83,8 +83,7 @@ def _slow_git_path(tmp_path: Path, subcommand: str) -> str:
     returned PATH holds nothing else — `gh` and `glab` are unfindable, which
     is how the PR section stays off the network.
     """
-    real = shutil.which("git")
-    assert real, "git must be on PATH for this suite"
+    real = _require_git()
     # Absolute, because the PATH handed to the shim contains only the shim:
     # a bare `sleep` is not found there, the script falls through to real git,
     # and the test passes having stalled nothing at all. It did, once.
@@ -100,6 +99,33 @@ def _slow_git_path(tmp_path: Path, subcommand: str) -> str:
     )
     shim.chmod(0o755)
     return str(bindir)
+
+
+def _git_only_path(tmp_path: Path) -> str:
+    """A PATH holding a real, unshimmed `git` — and nothing else at all.
+
+    `os.path.dirname(shutil.which("git"))` was the obvious way to write this
+    and is not the same thing: it hands over whatever else happens to live in
+    git's directory, which on a GitHub runner is `gh`. An unauthenticated `gh`
+    then declines the MR lookup, `git-status` discloses it in the INCOMPLETE
+    footer — correctly — and a test asserting the footer is absent fails on
+    a machine, not on a defect (#705).
+
+    So the premise is built rather than assumed. `gh` and `glab` being
+    unfindable is the documented middle state: a CLI that is not installed is
+    silent, because nothing on that machine was ever going to answer.
+    """
+    bindir = tmp_path / "gitonlybin"
+    bindir.mkdir(exist_ok=True)
+    shim = bindir / "git"
+    shim.symlink_to(_require_git())
+    return str(bindir)
+
+
+def _require_git() -> str:
+    real = shutil.which("git")
+    assert real, "git must be on PATH for this suite"
+    return real
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -184,9 +210,18 @@ def test_the_report_says_which_git_call_went_unanswered(
 def test_the_incomplete_note_is_absent_when_every_call_answered(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """A permanent disclaimer discloses nothing. Real git, no shim."""
+    """A permanent disclaimer discloses nothing. Real git, no shim.
+
+    The PATH is built to hold git alone rather than taken as git's directory:
+    on a GitHub runner that directory also holds `gh`, which is unauthenticated
+    inside a workflow and declines. That decline is a true one and is disclosed
+    on purpose — an unauthenticated CLI cannot tell you whether a branch has a
+    PR, and unlike a missing binary it can be resolved (`gh auth login`), so it
+    is not the never-resolving noise the doctrine keeps silent. Silencing it to
+    keep this fixture quiet would re-open #705 exactly where it was closed.
+    """
     repo = _repo(tmp_path)
-    monkeypatch.setenv("PATH", os.path.dirname(shutil.which("git") or "/usr/bin"))
+    monkeypatch.setenv("PATH", _git_only_path(tmp_path))
     out = _run_status(repo, monkeypatch)
 
     assert status.INCOMPLETE_MARKER not in out
@@ -486,7 +521,7 @@ def test_conflicts_still_reports_a_genuinely_clean_tree(
     must survive, or the fix above would have bought silence for noise.
     """
     repo = _repo(tmp_path)
-    monkeypatch.setenv("PATH", os.path.dirname(shutil.which("git") or "/usr/bin"))
+    monkeypatch.setenv("PATH", _git_only_path(tmp_path))
 
     out, rc = _run_conflicts(repo, monkeypatch)
 
@@ -518,7 +553,7 @@ def test_a_conflict_list_that_answers_reports_no_reason(tmp_path, monkeypatch) -
     """Kills the mutant that declines unconditionally in all three copies."""
     repo = _conflicted_repo(tmp_path)
     monkeypatch.chdir(repo)
-    monkeypatch.setenv("PATH", os.path.dirname(shutil.which("git") or "/usr/bin"))
+    monkeypatch.setenv("PATH", _git_only_path(tmp_path))
 
     for mod in (conflicts, resolve, merge):
         paths, why = mod._list_conflicts()
