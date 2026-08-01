@@ -31,6 +31,26 @@ from refusal import tool_fault
 # libxml failure, not a verdict about the file.
 
 
+# `file:LINE: message`. Extracted so the rule can be driven in process on every
+# platform — the fake-binary fixture that drives the whole adapter is POSIX-only
+# (see tests/test_adapter_tool_vs_file_753.py).
+DIAGNOSTIC = re.compile(r"^.+?:(\d+):\s*(.+)")
+
+
+def parse_diagnostics(out: str, file: str) -> list[dict]:
+    """Every located diagnostic in libxml's stderr. Empty means it did not
+    speak about the document."""
+    errors = []
+    for line in out.splitlines():
+        m = DIAGNOSTIC.match(line)
+        if m:
+            ln = int(m.group(1))
+            errors.append({"line": ln, "col": None, "severity": "error",
+                           "code": "xml", "msg": m.group(2).strip()[:200],
+                           "source_context": source_context(file, ln)})
+    return errors
+
+
 def emit(d: dict) -> None:
     print(json.dumps(d))
 
@@ -72,15 +92,7 @@ def main() -> None:
         return
     # xmllint stderr: "file:LINE: parser error : msg" + context lines
     out = r.stderr or ""
-    errors = []
-    for line in out.splitlines():
-        m = re.match(r"^.+?:(\d+):\s*(.+)", line)
-        if m:
-            ln = int(m.group(1))
-            err = {"line": ln, "col": None, "severity": "error", "code": "xml",
-                   "msg": m.group(2).strip()[:200]}
-            err["source_context"] = source_context(file, ln)
-            errors.append(err)
+    errors = parse_diagnostics(out, file)
     if not errors:
         errors = [{"line": None, "col": None, "severity": "error",
                    "code": "adapter",

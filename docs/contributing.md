@@ -556,6 +556,55 @@ between two input sizes measured in the same process, where machine speed
 cancels out. `TestParseScaling` in `tests/test_xml.py` is the worked example,
 including what each metric does and does not catch.
 
+### A fake binary on `PATH` cannot intercept an adapter's spawn on Windows
+
+Every adapter under `validators/` spawns a **list** with an extensionless
+program name — `["php", "-l", f]`, `["gofmt", "-l", f]`, `["cargo", "check"]`.
+Python hands that to `CreateProcess`, which appends `.exe` and **does not
+consult `PATHEXT`**. A `php.bat` or `gofmt.bat` shim in the first `PATH` entry
+is therefore invisible: the search walks straight past it and the real binary
+the `windows-latest` image ships answers instead. (`.bat` files *are* runnable
+through `subprocess` — the CVE-2024-1874 surface — but only when the extension
+is explicit.)
+
+**The failure is silent, and it wears two different faces.** Neither is an
+error, which is what makes this worth a rule:
+
+- where the real tool accepts the subject file, you get a **clean verdict** —
+  `assert True is False`, indistinguishable from a pass;
+- where it rejects the subject file, you get a **real finding** — #753's
+  JSON-contract case handed a `subject.txt` of `noise` to a real `xmllint`,
+  which correctly reported `parser error : Start tag expected`, so the leg
+  failed as `assert 'xml' == 'adapter'` and looked like a classification bug.
+
+So: **split the test into two layers.**
+
+1. **The rule, in process, on every platform.** Classification over a tool's
+   output is platform-independent by construction. Import the adapter module
+   (`importlib.util.spec_from_file_location` — most adapter filenames have
+   hyphens) and call its classifier directly against **real captured
+   transcripts**. This is the layer that has to hold everywhere. Keep the
+   classifier at module level rather than inline in `main()` so it can be
+   called; `xmllint.parse_diagnostics`, `node_check.diagnostic_line` and
+   `terraform_check.is_fmt_verdict` exist in that shape for this reason.
+2. **The whole adapter, spawned, POSIX-only.** `pytest.mark.skipif(os.name ==
+   "nt", ...)` with the `CreateProcess` reason written into the marker, not a
+   bare platform exclusion. What Windows loses is the spawn-and-decode path,
+   which `test_validators.py` already covers there against the real binaries.
+
+**And assert the interception itself.** A fixture that is never used cannot
+fail, so one case per faked binary must prove the fake answered, using an exit
+code and a marker no real tool emits:
+
+```python
+bindir = _fake_tool(tmp_path, "gofmt", exit_code=42, stdout="I-AM-THE-FAKE\n")
+data = _run("gofmt-check", bindir, target)
+assert "I-AM-THE-FAKE" in json.dumps(data), describe(data)
+```
+
+Worked examples: `tests/test_phplint_tool_vs_file_745.py` (one adapter) and
+`tests/test_adapter_tool_vs_file_753.py` (seven, parametrised).
+
 ### Never write a subprocess timeout by hand
 
 If a test spawns a validator adapter, its budget comes from

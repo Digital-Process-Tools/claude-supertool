@@ -32,6 +32,26 @@ from refusal import tool_fault
 # is the marker.
 
 
+# `file: line N: message`. Extracted so the rule can be driven in process on
+# every platform — the fake-binary fixture is POSIX-only (see
+# tests/test_adapter_tool_vs_file_753.py).
+DIAGNOSTIC = re.compile(r":\s*line\s+(\d+):\s*(.+)")
+
+
+def parse_diagnostics(out: str, file: str) -> list[dict]:
+    """Every located diagnostic in bash's stderr. Empty means the shell never
+    got as far as parsing."""
+    errors = []
+    for line in out.splitlines():
+        m = DIAGNOSTIC.search(line)
+        if m:
+            ln = int(m.group(1))
+            errors.append({"line": ln, "col": None, "severity": "error",
+                           "code": "syntax", "msg": m.group(2).strip()[:200],
+                           "source_context": source_context(file, ln)})
+    return errors
+
+
 def emit(d: dict) -> None:
     print(json.dumps(d))
 
@@ -67,15 +87,7 @@ def main() -> None:
         return
     # stderr lines: "file: line N: msg" or "file: line N: syntax error near unexpected token ..."
     out = r.stderr or ""
-    errors = []
-    for line in out.splitlines():
-        m = re.search(r":\s*line\s+(\d+):\s*(.+)", line)
-        if m:
-            ln = int(m.group(1))
-            err = {"line": ln, "col": None, "severity": "error", "code": "syntax",
-                   "msg": m.group(2).strip()[:200]}
-            err["source_context"] = source_context(file, ln)
-            errors.append(err)
+    errors = parse_diagnostics(out, file)
     if not errors:
         errors = [{"line": None, "col": None, "severity": "error",
                    "code": "adapter",

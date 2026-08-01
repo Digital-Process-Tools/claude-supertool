@@ -71,6 +71,16 @@ def is_fmt_verdict(stdout: str, file: str) -> bool:
     return first == file or os.path.basename(first) == os.path.basename(file)
 
 
+def diagnostic_line(body: str) -> int | None:
+    """The source line terraform attributed to a diagnostic, or None.
+
+    `on <file> line N, in <block>:` is the only thing in an Error block that
+    places it in the file; without one, terraform is talking about itself.
+    """
+    m = LOCATED.search(body)
+    return int(m.group(1)) if m else None
+
+
 def emit(d: dict) -> None:
     print(json.dumps(d))
 
@@ -117,9 +127,8 @@ def main() -> None:
                    "msg": "file needs terraform fmt formatting:\n" + diff}
         else:
             body = plain(r.stderr or r.stdout or "")
-            m = LOCATED.search(body)
-            if m:
-                ln = int(m.group(1))
+            ln = diagnostic_line(body)
+            if ln is not None:
                 err = {"line": ln, "col": None, "severity": "error",
                        "code": "syntax", "msg": body[:300],
                        "source_context": source_context(file, ln)}

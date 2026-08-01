@@ -37,6 +37,26 @@ from refusal import tool_fault
 DIAGNOSTIC = re.compile(r"^(?P<path>.+?):(?P<line>\d+):(?P<col>\d+):\s*(?P<msg>.+)$")
 
 
+def parse_diagnostics(out: str, file: str) -> list[dict]:
+    """Every located gofmt diagnostic. Empty means gofmt never parsed the file
+    — `stat ...: no such file or directory` lands here and carries no line.
+
+    Extracted so the rule can be driven in process on every platform; the
+    fake-binary fixture is POSIX-only (see tests/test_adapter_tool_vs_file_753.py).
+    """
+    errors = []
+    for raw in out.splitlines():
+        m = DIAGNOSTIC.match(raw)
+        if m:
+            ln = int(m.group("line"))
+            errors.append({
+                "line": ln, "col": int(m.group("col")), "severity": "error",
+                "code": "syntax", "msg": m.group("msg").strip()[:300],
+                "source_context": source_context(file, ln),
+            })
+    return errors
+
+
 def emit(d: dict) -> None:
     print(json.dumps(d))
 
@@ -77,16 +97,7 @@ def main() -> None:
 
     if r.returncode != 0:
         out = (r.stderr or "") + (r.stdout or "")
-        errors = []
-        for raw in out.splitlines():
-            m = DIAGNOSTIC.match(raw)
-            if m:
-                ln = int(m.group("line"))
-                errors.append({
-                    "line": ln, "col": int(m.group("col")), "severity": "error",
-                    "code": "syntax", "msg": m.group("msg").strip()[:300],
-                    "source_context": source_context(file, ln),
-                })
+        errors = parse_diagnostics(out, file)
         if not errors:
             errors = [{"line": None, "col": None, "severity": "error",
                        "code": "adapter",

@@ -21,6 +21,33 @@ from source_context import source_context
 from refusal import tool_fault
 
 
+# `file:line: message`. Extracted so the rule can be driven in process on every
+# platform — the fake-binary fixture is POSIX-only (see
+# tests/test_adapter_tool_vs_file_753.py).
+DIAGNOSTIC = re.compile(r"^(?:.*?):(\d+):\s+(.+)$")
+SUMMARY = re.compile(r"^\d+\s+error")
+
+
+def parse_diagnostics(out: str, file: str) -> list[dict]:
+    """Every located diagnostic in ruby's stderr, minus its own count summary.
+
+    Empty means ruby exited non-zero without placing anything in the file —
+    `ruby: No such file or directory -- x.rb (LoadError)` is the common shape.
+    """
+    errors = []
+    for line in out.splitlines():
+        m = DIAGNOSTIC.match(line)
+        if m:
+            lineno, msg = m.groups()
+            if SUMMARY.match(msg):
+                continue
+            ln = int(lineno)
+            errors.append({"line": ln, "col": None, "severity": "error",
+                           "code": "syntax", "msg": msg.strip()[:300],
+                           "source_context": source_context(file, ln)})
+    return errors
+
+
 def emit(d: dict) -> None:
     print(json.dumps(d))
 
@@ -63,26 +90,8 @@ def main() -> None:
         return
 
     # Parse ruby -c stderr: "file:line: message"
-    errors = []
-    pattern = re.compile(r"^(?:.*?):(\d+):\s+(.+)$")
     output = result.stderr.strip()
-    for line in output.splitlines():
-        m = pattern.match(line)
-        if m:
-            lineno, msg = m.groups()
-            # Skip the "1 error found" summary line
-            if re.match(r"^\d+\s+error", msg):
-                continue
-            ln = int(lineno)
-            err = {
-                "line": ln,
-                "col": None,
-                "severity": "error",
-                "code": "syntax",
-                "msg": msg.strip()[:300],
-            }
-            err["source_context"] = source_context(file, ln)
-            errors.append(err)
+    errors = parse_diagnostics(output, file)
 
     if not errors:
         # `ruby -c` exited non-zero without a `file:line:` diagnostic. That is
