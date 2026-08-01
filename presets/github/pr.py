@@ -10,6 +10,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import _body  # noqa: E402  (the one body cap + disclosure — #698)
 import _checks  # noqa: E402  (the one check tally, shared with gh-prs / git-status)
 
 DESCRIPTION_MAX = 2000
@@ -184,11 +185,18 @@ def _format_error(stderr: str, resource: str, identifier: str) -> str:
 
 def main() -> int:
     if len(sys.argv) < 2:
-        print("ERROR: usage: pr.py NUMBER_OR_BRANCH [status]")
+        print("ERROR: usage: pr.py NUMBER_OR_BRANCH [status|full]")
         return 1
 
     arg = sys.argv[1]
-    slim = len(sys.argv) > 2 and sys.argv[2] == "status"
+    flags = sys.argv[2:]
+    slim = "status" in flags
+    # gh-pr had no :full at all. The truncation disclosure names one as the way
+    # to get the withheld text, so one has to exist — a stated escape hatch
+    # that does not work is worse than none, because it stops the reader
+    # looking for another (#698).
+    full = "full" in flags
+    desc_max = None if full else DESCRIPTION_MAX
 
     # If not all digits, treat as branch name
     if not arg.isdigit():
@@ -288,6 +296,10 @@ def main() -> int:
     deletions = d.get("deletions", "?")
     changed_files = d.get("changedFiles", "?")
 
+    body = d.get("body") or ""
+    body_total = len(body)
+    body, body_withheld = _body.cut(body, desc_max)
+
     # Header
     draft_marker = " [DRAFT]" if draft else ""
     print(f"# #{iid} {title}{draft_marker}")
@@ -298,6 +310,10 @@ def main() -> int:
         print(local_check)
     print(f"Labels: {labels}")
     print(f"Milestone: {milestone}")
+    if body_withheld:
+        # In the header, before ## Description — a footer-only notice is read
+        # by nobody in exactly the case it exists for (#681, #698).
+        print(_body.header_notice(body, body_total, body_withheld))
 
     # Assignees (distinct from reviewers)
     assignees = d.get("assignees") or []
@@ -413,9 +429,10 @@ def main() -> int:
             print(f"\nIssue: {ref}")
 
     # Description
-    body = (d.get("body") or "")[:DESCRIPTION_MAX]
     if body:
         print(f"\n## Description\n{body}")
+        if body_withheld:
+            print(f"\n{_body.cut_notice(body_withheld)}")
     else:
         print("\n## Description\n_(empty)_")
 

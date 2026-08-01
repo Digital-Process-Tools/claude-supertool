@@ -60,8 +60,13 @@ def test_default_truncates_long_description(monkeypatch, capsys) -> None:
     rc = issue.main()
     out = capsys.readouterr().out
     assert rc == 0
+    # Measure the description text itself — everything up to the truncation
+    # marker that #698 added at the cut. Splitting on "## Description" alone
+    # also swallows that marker and the Comments header, which is a
+    # measurement artefact, not description content.
     body = out.split("## Description")[1] if "## Description" in out else ""
-    assert len(body.strip()) <= issue.DESCRIPTION_MAX + 50  # trailing whitespace
+    body = body.split("…[")[0]
+    assert len(body.strip()) <= issue.DESCRIPTION_MAX
 
 
 def test_full_flag_keeps_full_description(monkeypatch, capsys) -> None:

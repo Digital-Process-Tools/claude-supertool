@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))  # for _checks (#619)
 # Imported by name, not `import mrs` — main() already binds a local `mrs`
 # (the branch-lookup result list), which would shadow a module import.
 from mrs import _conflict_label  # noqa: E402
+import _body  # noqa: E402  (the one body cap + disclosure — #698)
 import _checks  # noqa: E402  (named_disclosure/NAMED_CAP — shared with gh-pr, #619)
 
 DESCRIPTION_MAX = 2000
@@ -645,6 +646,15 @@ def main() -> int:
     reviewers = d.get("reviewers") or []
     reviewer_names = [r.get("username", "?") for r in reviewers]
 
+    # Description is cut here rather than at its print site, because the
+    # disclosure belongs in the header below — and because :full documented
+    # itself as uncapping the file list and comments while the description
+    # stayed capped regardless (#698).
+    description_raw = d.get("description") or ""
+    description_total = len(description_raw)
+    description, description_withheld = _body.cut(
+        description_raw, None if full else DESCRIPTION_MAX)
+
     # Header
     draft_marker = " [DRAFT]" if draft else ""
     print(f"# !{iid} {title}{draft_marker}")
@@ -655,6 +665,11 @@ def main() -> int:
         print(local_check)
     print(f"Labels: {labels}")
     print(f"Milestone: {milestone}")
+    if description_withheld:
+        # In the header, before ## Description — a footer-only notice is read
+        # by nobody in exactly the case it exists for (#681, #698).
+        print(_body.header_notice(
+            description, description_total, description_withheld))
 
     # Assignees (distinct from reviewers on GitLab)
     assignees = d.get("assignees") or []
@@ -824,8 +839,8 @@ def main() -> int:
         print(f"  # Resolve <<<<<<< markers in the files above, then:")
         print(f"  git add {files_arg} && git commit && git push")
 
-    # Linked issue — extract from description or closing_issues
-    description_raw = d.get("description") or ""
+    # Linked issue — extract from the *uncut* description, so a reference the
+    # cap happened to remove is still resolved.
     issue_match = re.search(r'#(\d{4,})', description_raw)
     if issue_match:
         issue_iid = issue_match.group(1)
@@ -845,9 +860,10 @@ def main() -> int:
             print(f"\nIssue: #{issue_iid}")
 
     # Description
-    description = description_raw[:DESCRIPTION_MAX]
     if description:
         print(f"\n## Description\n{description}")
+        if description_withheld:
+            print(f"\n{_body.cut_notice(description_withheld)}")
     else:
         print("\n## Description\n_(empty)_")
 

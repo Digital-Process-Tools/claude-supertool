@@ -18,8 +18,8 @@
     "gh-pr": {
       "cmd": "{python} {path}github/pr.py {args}",
       "timeout": 20,
-      "description": "Review a pull request: branch, checks, reviews/approval, linked issue, diff stat, comments \u2014 the full dashboard. :status = slim merge-state only (~250B, fits hook cache).",
-      "syntax": "gh-pr:NUMBER_OR_BRANCH[:status]"
+      "description": "Review a pull request: branch, checks, reviews/approval, linked issue, diff stat, comments \u2014 the full dashboard. A truncated description says so twice \u2014 in the header and at the cut \u2014 with the exact char count withheld; :full uncaps it. :status = slim merge-state only (~250B, fits hook cache).",
+      "syntax": "gh-pr:NUMBER_OR_BRANCH[:status|:full]"
     },
     "gh-prs": {
       "cmd": "{python} {path}github/prs.py {args}",
