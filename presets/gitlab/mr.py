@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -409,6 +410,65 @@ def _get_conflict_hunks(
     return (
         {p: "\n".join(lines).strip() for p, lines in blocks.items() if any(lines)},
         None,
+    )
+
+
+# What a refname looks like when nobody is trying. Git permits a great deal
+# more — `;`, backtick, `$`, `&`, quotes, parentheses, spaces — and the source
+# branch of a merge request is named by whoever opened it (#694).
+_ORDINARY_REF = re.compile(r"^[A-Za-z0-9._/-]+$")
+
+
+def _ordinary_ref(ref: str) -> bool:
+    """True for a name that can be printed into a shell command untouched.
+
+    The leading-dash exclusion is not cosmetic: `-B` is inside the character
+    class above and is still an option, not a ref, and quoting does not stop a
+    shell word from being read as a flag.
+    """
+    return bool(ref) and not ref.startswith("-") and bool(_ORDINARY_REF.match(ref))
+
+
+def _shell_ref(ref: str) -> str:
+    """Quote a ref or path for a *printed* shell command (#694).
+
+    The "To resolve:" block is not executed by supertool — it is printed for a
+    human or an agent to paste. That is far enough from running it to make this
+    hardening rather than a fix for a command injection, and close enough that
+    the printed line has to be safe anyway.
+
+    Ordinary names print bare. Quoting every branch to defend against the rare
+    one would make the common case harder to read, and a command block that is
+    tedious to read is one that gets skimmed instead of checked.
+
+    Option-shaped names are the limit of what quoting can do: `git checkout -B`
+    still reads `-B` as a flag inside quotes. They are quoted anyway so they
+    look wrong, and `_ref_warning` names them above the block — a name git
+    itself refuses to create arriving from the API is worth a reader stopping
+    over, and there is no in-line escape that makes it merely a ref.
+    """
+    if _ordinary_ref(ref):
+        return ref
+    quoted = shlex.quote(ref)
+    if quoted == ref:
+        quoted = "'" + ref.replace("'", "'\\\\''") + "'"
+    return quoted
+
+
+def _ref_warning(refs: list[str]) -> str | None:
+    """The line above the block when a name in it is not ordinary.
+
+    Quoting makes the command safe to run; this makes it visible that there was
+    a reason to quote. `None` when every name is ordinary — the common case
+    prints nothing extra, which is what keeps the notice worth reading.
+    """
+    odd = [r for r in refs if not _ordinary_ref(r)]
+    if not odd:
+        return None
+    plural = "s" if len(odd) != 1 else ""
+    return (
+        f"  # ⚠ {len(odd)} name{plural} below contain characters a shell acts "
+        f"on, and have been quoted — read the command before running it."
     )
 
 
@@ -913,8 +973,14 @@ def main() -> int:
             print("  delete/modify and rename conflicts have no inline hunks).")
 
         print("\nTo resolve:")
-        print(f"  git checkout {source} && git fetch origin && git merge origin/{target}")
-        files_arg = " ".join(conflict_files)
+        ref_warning = _ref_warning([source, target, *conflict_files])
+        if ref_warning:
+            print(ref_warning)
+        print(
+            f"  git checkout {_shell_ref(source)} && git fetch origin "
+            f"&& git merge origin/{_shell_ref(target)}"
+        )
+        files_arg = " ".join(_shell_ref(f) for f in conflict_files)
         print(f"  # Resolve <<<<<<< markers in the files above, then:")
         print(f"  git add {files_arg} && git commit && git push")
 

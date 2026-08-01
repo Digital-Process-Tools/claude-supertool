@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **`gl-mr` printed an attacker-chosen branch name into a shell command unquoted** ([#694](https://github.com/Digital-Process-Tools/claude-supertool/issues/694), second item). The `To resolve:` block a conflicted MR prints interpolates the MR's source branch, its target branch and the conflicting file paths straight into `git checkout … && git merge origin/…` and `git add …`. The source branch is named by whoever opened the merge request, and git refnames permit `;`, backtick, `$`, `&`, quotes, parentheses and spaces.
+
+  Supertool does not execute this block — it prints it for a human or an agent to paste — so this is hardening rather than a fix for a command injection. It is not nothing: the block exists precisely because the reader is expected to run it, and the reader most likely to paste it without reading is the one the op is written for.
+
+  A name matching `^[A-Za-z0-9._/-]+$` still prints bare, so the ordinary block is byte-identical to before; quoting every branch to defend against the rare one would make the common case harder to read, and a command block that is tedious to read is one that gets skimmed instead of checked. Anything else is `shlex.quote`d and a `⚠` line above the block names how many and says to read before running.
+
+  Option-shaped names are the honest limit: `git checkout '-B'` still reads `-B` as a flag, so quoting cannot make it merely a ref. Those are quoted so they look wrong and flagged in the warning rather than passed silently — git itself refuses to create such a refname, so one arriving from the API is worth stopping over. The test asserts what is delivered (`'-B'` plus a warning), not a safety quoting does not provide.
+
+  The issue cited `presets/gitlab/mr.py:822-825` and `presets/github/pr.py:67`. Both were stale: the gitlab lines had moved, and **`presets/github/pr.py` prints no shell block at all** — `gh-pr` has no conflicts-resolution section, so there was one site, not two.
+
 ### Fixed
 
 - **A timeout verdict reported `0.0s` elapsed against a 10s budget** ([#727](https://github.com/Digital-Process-Tools/claude-supertool/issues/727)). `FAIL (timeout 0.0s > 10s)` was the sole diagnostic on a reproducible CI failure, and its two halves cannot both be true — read literally it says the op was instantaneous, which points at the budget rather than at the process. The issue proposed three mechanisms (unstarted timer, catch-all branch, spawn outside the timed span) and a later comment retracted all three; the real one is narrower. `_elapsed_since` returns a hard `0.0` when `SUPERTOOL_DETERMINISTIC_TIME=1` ([#643](https://github.com/Digital-Process-Tools/claude-supertool/issues/643)), and `tests/conftest.py` sets that for the whole suite, inherited by every subprocess a test spawns. Re-derived against master before designing: `sleep 5` under a 1s budget renders `FAIL (timeout 0.0s > 1s)` frozen and `FAIL (timeout 1.0s > 1s)` unfrozen, from one call site.

