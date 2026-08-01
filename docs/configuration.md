@@ -197,6 +197,39 @@ Compact is disabled when using `grep=` filter or `offset` (editing needs exact l
 
 Each rule appends a non-blocking `[advice]` line after a mutating op when it matches. Gates: `hooks_into` (ops, default all mutating), `match` (path glob), `when` (`new-file`|`existing-file`|`always`), `contains` (regex over the content the op *added*), and `resolve`/`resolveFromValidator` (a subprocess emitting a would-be target). Full field reference and the resolve contract in [validators.md → advice](validators.md#advice--config-driven-post-op-hints).
 
+## Two supertool trees in one call
+
+Config, presets and the scripts they point at are resolved from the **cwd's**
+project root; the core that parses the ops comes from the `supertool.py` that
+was invoked. Those are normally the same tree. When they are not — running a
+branch worktree's `supertool.py` from a different checkout — every config op is
+answered by the *other* tree, and the receipt used to say `PASS` regardless
+([#678](https://github.com/Digital-Process-Tools/claude-supertool/issues/678)).
+
+Supertool now detects the case and **declines the config ops** rather than
+reporting a verdict for a build it cannot name:
+
+```
+$ cd ~/checkout-a
+$ python3 ~/checkout-b/supertool.py 'git-status'
+supertool: mixed supertool trees: core=~/checkout-b/supertool.py presets=~/checkout-a
+--- git-status ---
+SKIPPED: 'git-status' comes from a different supertool tree than the core that is running.
+  ...
+Fix: run from ~/checkout-b, or make the first op 'cwd:~/checkout-b'.
+```
+
+The call exits non-zero (the decline is counted as a skip, per
+[#680](https://github.com/Digital-Process-Tools/claude-supertool/issues/680)).
+
+| | |
+| --- | --- |
+| **What triggers it** | the resolved project root is *itself a different supertool checkout* — it holds a `supertool.py` whose `realpath` is not the invoked one |
+| **What does not** | the ordinary install: a clone symlinked onto `$PATH` and used from any project root. Those roots are not supertool checkouts, so nothing is mixed. A project shipping its own `presets/` override is not a mix either. |
+| **Built-in ops** | still run — `read`, `grep`, `edit` come from the core that was invoked. A one-line disclosure goes to stderr so the operator knows whose validators and formatters are loaded. |
+| **The remedy** | run from the checkout you meant, or make `cwd:<that checkout>` the first op |
+| **Deliberate mixing** | `SUPERTOOL_ALLOW_MIXED_TREE=1`. Config ops then run, and the verdict line carries the pairing — `PASS (0.42s) [mixed supertool trees: core=… presets=…]` — so it is never a bare `PASS`. |
+
 ## Numeric environment knobs, and what happens when one is wrong
 
 Every `SUPERTOOL_*` knob that takes a number — `SUPERTOOL_MAX_COMMITS`,

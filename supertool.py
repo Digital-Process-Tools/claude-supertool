@@ -598,6 +598,82 @@ def _load_config() -> Dict[str, Any]:
     return _CONFIG
 
 
+_MIXED_TREE_ENV = "SUPERTOOL_ALLOW_MIXED_TREE"
+
+
+def _mixed_tree_pair() -> Optional[Tuple[str, str]]:
+    """(core dir, other checkout) when two supertool trees answer one call (#678).
+
+    `_load_config()` walks up from **cwd**, and `_find_preset_file` looks in
+    `{project_dir}/presets/` first. So the config, the preset JSONs and the
+    scripts they point at all come from wherever the caller is standing, while
+    the core that parsed the ops came from the file that was invoked. Run a
+    branch worktree's `supertool.py` from a master checkout and you get branch
+    core + master presets in one process, with nothing on the receipt saying so
+    — the code under test never executes and the answer still says `PASS`.
+
+    The signal is deliberately narrow: the resolved project root is *itself a
+    different supertool checkout*. The cheaper "the invoked supertool.py is not
+    under the project root" was considered and rejected — that is the documented
+    install (a clone symlinked onto `$PATH`, used from arbitrary project roots),
+    so it would fire on essentially every legitimate invocation and teach
+    everyone to ignore it. A project root that merely ships its own `presets/`
+    is not a mix either: overriding a shipped preset is a documented feature.
+
+    Uncached — two `stat` calls, and a cached verdict is one more thing to go
+    stale in a reused daemon process (#680).
+    """
+    _load_config()
+    if not _CONFIG_PATH:
+        return None
+    project_dir = os.path.dirname(os.path.realpath(_CONFIG_PATH))
+    peer = os.path.join(project_dir, "supertool.py")
+    try:
+        if not os.path.isfile(peer):
+            return None
+        if os.path.realpath(peer) == os.path.realpath(__file__):
+            return None
+    except OSError:
+        return None
+    return (_INSTALL_DIR, project_dir)
+
+
+def _mixed_tree_allowed() -> bool:
+    """True when the caller has declared the mix deliberate via env."""
+    return (os.environ.get(_MIXED_TREE_ENV) or "").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
+def _mixed_tree_note(pair: Tuple[str, str]) -> str:
+    """One line naming both trees — used on stderr and on the stamped receipt."""
+    core, other = pair
+    return f"mixed supertool trees: core={core}/supertool.py presets={other}"
+
+
+def _mixed_tree_decline(op: str, pair: Tuple[str, str]) -> str:
+    """The third state for a config op whose provenance is unknown (#678).
+
+    Not a finding — nothing was found wrong with the op. An absence: the tool
+    cannot say which version would answer, so it says that instead of printing a
+    `PASS` indistinguishable from one the invoked build produced. Same contract
+    as `docs/validators.md` §"Declining instead of guessing".
+    """
+    core, other = pair
+    return (
+        f"SKIPPED: '{op}' comes from a different supertool tree than the core "
+        f"that is running.\n"
+        f"  core:    {core}/supertool.py (the file you invoked)\n"
+        f"  presets: {other} (resolved from this cwd — its .supertool.json and "
+        f"presets/ would answer)\n"
+        f"Declined rather than PASSing for a build the tool cannot name: the "
+        f"code you meant to exercise would not have run, and the answer would "
+        f"have looked exactly like a correct one (#678).\n"
+        f"Fix: run from {core}, or make the first op 'cwd:{core}'. To mix on "
+        f"purpose, set {_MIXED_TREE_ENV}=1 — the receipt then carries the "
+        f"pairing instead of a bare PASS.\n"
+    )
+
+
 def _is_compact() -> bool:
     """Check if compact mode is enabled in .supertool.json."""
     return bool(_load_config().get("compact", False))
@@ -1421,6 +1497,15 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
     if not ops or op not in ops:
         return None
 
+    # #678 — this op is defined by whatever tree the cwd resolved to, which is
+    # not necessarily the tree this core came from. Decide before running it:
+    # once the subprocess has answered, its output is indistinguishable from
+    # the right one.
+    _mixed = _mixed_tree_pair()
+    if _mixed is not None and not _mixed_tree_allowed():
+        _SKIP_COUNT[0] += 1
+        return _mixed_tree_decline(op, _mixed)
+
     entry = ops[op]
     if isinstance(entry, str):
         cmd_template = entry
@@ -1491,7 +1576,10 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
             if result.stderr:
                 output += result.stderr
             return f"FAIL ({elapsed:.2f}s)\n{output}"
-        return f"PASS ({elapsed:.2f}s)\n{output}{_maybe_restart_mcp(entry)}"
+        # A deliberate mix still never prints a bare PASS — the verdict line
+        # carries which two trees produced it (#678).
+        _stamp = f" [{_mixed_tree_note(_mixed)}]" if _mixed is not None else ""
+        return f"PASS ({elapsed:.2f}s){_stamp}\n{output}{_maybe_restart_mcp(entry)}"
     except subprocess.TimeoutExpired as e:
         elapsed = _elapsed_since(t0)
         return (f"FAIL (timeout {elapsed:.1f}s > {timeout}s)\n"
@@ -15675,6 +15763,13 @@ def _main(argv: List[str]) -> int:
     _preset_warnings = list(_load_config().get("_preset_warnings") or [])
     for _warning in list(_CONFIG_WARNINGS) + _preset_warnings:
         sys.stderr.write(f"supertool: {_warning}\n")
+
+    # #678 — config ops decline outright, but a built-in-only call under a mix
+    # runs to completion using the other tree's validators, formatters and
+    # hooks. Say so once, on stderr, so the operator knows what answered.
+    _mixed_call = _mixed_tree_pair()
+    if _mixed_call is not None:
+        sys.stderr.write(f"supertool: {_mixed_tree_note(_mixed_call)}\n")
 
     # Normal batched-ops mode
     total_out_bytes = 0
