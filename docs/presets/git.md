@@ -108,6 +108,43 @@ whole-file resolve.
 
 ### Which repository an op acted on
 
+### A commit message containing `:` needs the triple-colon or `@payload` route
+
+`git-commit:fix(rector): link the importer` does not work, and cannot: supertool's
+single-colon CLI splits on **every** `:`, so that message arrives as
+`MESSAGE='fix(rector)'` plus a PATH of `' link the importer'`. Every Conventional
+Commits subject has this shape.
+
+Use either documented route instead:
+
+```bash
+./supertool 'git-commit:::fix(rector): link the importer'
+./supertool 'git-commit:::fix(rector): link the importer:::src/importer.py'
+```
+
+```bash
+./supertool 'git-commit:@-' <<'EOF'
+message = '''fix(rector): link the importer
+
+Co-Authored-By: Max <noreply>'''
+paths = ["src/importer.py"]
+EOF
+```
+
+Since [#751](https://github.com/Digital-Process-Tools/claude-supertool/issues/751)
+the split shape is **refused before anything is staged**, with the reconstructed
+message handed back in both forms — instead of failing downstream as
+`git add failed: fatal: pathspec ' link the importer' did not match any files`,
+which named neither the message nor the tokenizer.
+
+The trigger is narrow: a PATH argument that is neither path-shaped (no whitespace,
+no quotes) nor known to git (on disk, tracked, or an already-staged deletion). A
+path-shaped PATH that git simply does not know — a typo, a file not created yet —
+still gets git's own pathspec error, because supertool has no basis to decide it
+was really message text. Nothing is ever folded back into the message: guessing
+wrong in that direction would commit the already-staged fileset under a mangled
+subject and print a success receipt for it.
+
 Every git op runs against the repository discovered from the **current working directory**, and says which one that was. `git-diff`, `git-commit` and `git-push` each stamp a `Repo: <toplevel>` header (a bare repo reports its git dir, marked `(bare)`); `git-commit` prints it before staging, so it is on the receipt even when a hook rejects the commit or nothing was staged.
 
 That is not a formality. Git's `GIT_DIR`, `GIT_WORK_TREE` and five siblings override discovery-from-cwd, and git exports them to every hook it runs — so a supertool call made from inside a git hook inherits a pointer to whatever repo invoked the hook. Before [#692](https://github.com/Digital-Process-Tools/claude-supertool/issues/692) that silently retargeted the op, and the receipt named no repository to contradict it.
