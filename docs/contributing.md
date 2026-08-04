@@ -87,9 +87,11 @@ Shorthand string ops (`"lint": "ruff check {file}"`) work with a 60s default tim
 | `cmd` | yes | Shell command to run. Supports placeholders (see below). |
 | `timeout` | no | Seconds before the subprocess is killed. Default: 60. |
 | `description` | no | One-line description shown in `ops` listing. |
-| `syntax` | no | Usage pattern shown in help, e.g. `mypy:FILE`. |
+| `syntax` | no | Usage pattern shown in help, e.g. `mypy:FILE`. **Parsed, not just displayed** — see the note below. |
 | `example` | no | Concrete example, e.g. `mypy:src/app/module.py`. |
 | `status` | no | `"experimental"` or `"stable"`. Informational only. |
+
+`syntax` reads like documentation because it's rendered in `ops` output — but for any op whose syntax uses `:::` (e.g. `git-commit:::MESSAGE[:::PATHS...]`), it is also parsed to derive that op's `@file`/`@payload` field registry: `MESSAGE[:::PATHS...]` becomes the fields `message`, `paths`. Edit it for readability — add a clarifying parenthetical, reword a field name into prose — and the parser can silently stop deriving clean field names, which silently deletes the op's whole payload route. No error, no warning: the op just stops accepting `op:@-`/`op:@payload`, while its docs (and the `ops` listing) still describe the route as if it existed. `tests/test_at_file_route.py::TestPayloadRoutePin` pins which real ops currently have a payload route specifically to catch this at test time — if you're touching a `:::`-bearing `syntax` string, expect that test to have an opinion. See [#770](https://github.com/Digital-Process-Tools/claude-supertool/issues/770).
 
 ### Placeholders
 
