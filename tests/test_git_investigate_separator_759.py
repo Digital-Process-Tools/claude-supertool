@@ -18,6 +18,7 @@ import importlib.util
 import io
 import os
 import subprocess
+import sys
 from contextlib import redirect_stdout
 from pathlib import Path
 
@@ -64,10 +65,25 @@ def repo_with(tmp_path, monkeypatch):
 
 
 def _investigate(filename: str) -> str:
+    """Run the op, restoring argv before returning.
+
+    `investigate.sys` is the real `sys` module, so assigning to
+    `investigate.sys.argv` mutates the interpreter's argv for the rest of the
+    session — which is how the first version of this file made eighteen
+    `test_git_push` tests read a fixture filename as a command-line flag.
+
+    Restored here in a `finally` rather than through `monkeypatch`, which undoes
+    its patches at *teardown*: that is late enough to keep the leak invisible to
+    a test in this same file, and the guard below has to be able to see it.
+    """
     buf = io.StringIO()
-    with redirect_stdout(buf):
-        investigate.sys.argv = ["investigate.py", filename]
-        investigate.main()
+    saved = list(sys.argv)
+    try:
+        sys.argv = ["investigate.py", filename]
+        with redirect_stdout(buf):
+            investigate.main()
+    finally:
+        sys.argv = saved
     return buf.getvalue()
 
 
@@ -120,3 +136,20 @@ def test_every_git_call_passes_the_path_after_a_separator(repo_with,
         assert call.index("--") < call.index("plain.txt"), (
             f"{call[0]!r} passes the path before its separator: {call}"
         )
+
+
+def test_running_the_op_leaves_argv_alone(repo_with) -> None:
+    """This fixture must not change the interpreter's argv for anyone else.
+
+    The first version of this file assigned to `investigate.sys.argv` — the
+    real `sys` module — and eighteen `test_git_push` tests then refused a
+    fixture filename as an unknown command-line flag. Cross-file damage from a
+    test helper is invisible when the file is run alone, which is exactly how
+    it reached CI.
+    """
+    before = list(sys.argv)
+    repo_with("plain.txt")
+
+    _investigate("plain.txt")
+
+    assert sys.argv == before
