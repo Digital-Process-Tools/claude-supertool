@@ -101,7 +101,7 @@ def main() -> int:
 
     # 4. Blame hotspots — find the N most recently changed lines
     blame_result = _git([
-        "blame", "--line-porcelain", path
+        "blame", "--line-porcelain", "--", path
     ])
     if blame_result.returncode == 0 and blame_result.stdout.strip():
         # Parse porcelain blame: extract commit date + line number
