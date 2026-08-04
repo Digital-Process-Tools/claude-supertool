@@ -489,11 +489,20 @@ class TestConfigGlobEntries:
 
 
 class TestGrepExcludeFlags:
-    def test_literal_entries_produce_both_file_and_dir_flags(self) -> None:
-        flags = supertool._grep_exclude_flags((".git/", ".env/"))
+    def test_literal_noise_entries_produce_both_file_and_dir_flags(self) -> None:
+        """`--exclude-dir` alone cannot skip a *file* of that name, which is
+        what let the delegated engine read `.env` off disk at all."""
+        flags = supertool._grep_exclude_flags((".git/",))
         assert "--exclude-dir=.git" in flags
-        assert "--exclude=.env" in flags
+        assert "--exclude=.git" in flags
+
+    def test_literal_secret_entries_send_only_the_dir_flag(self) -> None:
+        """`--exclude=.env` also hides the file from the post-filter, so the
+        report could not say it had hidden anything (#764). See
+        tests/test_delegated_grep_disclosure_764.py."""
+        flags = supertool._grep_exclude_flags((".env/",))
         assert "--exclude-dir=.env" in flags
+        assert "--exclude=.env" not in flags
 
     def test_multi_segment_entries_are_not_sent(self) -> None:
         flags = supertool._grep_exclude_flags(("Dvsi/libs/",))

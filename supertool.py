@@ -1233,6 +1233,28 @@ def _grep_exclude_flags(exclude_paths: Tuple[str, ...]) -> List[str]:
       post-filter in `op_grep`. Literal entries still go through, which is where
       the traversal win lives (`node_modules`, `.git`).
 
+    And one thing this argv got wrong in turn (#764): a file grep never opens
+    is a file `_rtk_drop_excluded` never sees, so `rtk_dropped` stayed 0 and
+    `_rtk_grep_report` printed no hidden clause. The disclosure #691 added was
+    therefore inverted against usefulness — honest whenever the flags failed,
+    silent whenever they worked, which is the fast path and the common one.
+
+    So `--exclude=NAME` is emitted only for entries the report would not have
+    counted anyway. A **disclosable** entry (anything off the built-in noise
+    list — the same test `_is_disclosable_exclusion` applies) sends only
+    `--exclude-dir=NAME`: the file comes back, the post-filter drops it,
+    `dropped > 0`, and `op_grep` redoes the walk natively for a full and honest
+    report. The cost is that second walk, paid only when a credential-shaped
+    file actually matched the pattern — and already the status quo for the
+    wildcard half, which the negation rule above withholds for its own reasons.
+    A silent search is the worse surprise: the count is the entire
+    justification for hiding a file without asking.
+
+    `--exclude-dir` is kept in both cases. A pruned directory is not counted by
+    the native walker either — it is never opened, so there are no files to
+    count — and withholding it would cost the traversal win and buy no
+    disclosure at all.
+
     Multi-segment entries are never expressible as a bare name; `op_grep`
     already refuses to delegate at all when one is present.
     """
@@ -1248,7 +1270,8 @@ def _grep_exclude_flags(exclude_paths: Tuple[str, ...]) -> List[str]:
         if WILDCARD_CHARS.search(bare) and has_negation:
             continue
         flags.append(f"--exclude-dir={bare}")
-        flags.append(f"--exclude={bare}")
+        if entry in _NOISE_EXCLUDE_SET:
+            flags.append(f"--exclude={bare}")
     return flags
 
 
