@@ -33,6 +33,7 @@ supertool 'read:src/Module.py' 'read:src/Auth.py' 'grep:TODO:src/:20' 'map:src/'
 - **`git-status`** — branch + tracking + ahead/behind + dirty files + open MR/PR + suggested next step. One call, decision ready.
 - **`gl-mr:NUMBER`** / **`gh-pr:NUMBER`** — full MR/PR dashboard: branch, pipeline, reviewer, approval, diff stat, per-file name-status (A/D/R/M) list, comments. Replaces 4-5 `glab`/`gh` calls. A commit with no check runs says which kind of nothing it is — `none yet` vs `none, and none will be created` vs `CONFLICTING, so rebase — nothing will ever run` vs a stated `UNKNOWN` ([details](docs/presets/github.md#zero-check-runs-is-four-states-not-one)). When the tally is not all-green, both ops (including the terse `:status` form) name the non-passing legs with a job id per leg, bounded at 5 with `+N more` ([details](docs/presets/github.md#a-red-tally-names-its-legs)).
 - **`gl-mrs`** — MR triage board: your open MRs + per-MR pipeline status + which already have a `watch` poller running + an actionable footer. Pairs with `watch` to auto-watch every failing MR.
+- **`gh-issues`** — issue triage board that *ranks* the queue instead of listing it: unrankable first, then reports filed from outside the repo, then issues whose comments have overtaken the body, then untouched-oldest. A row nobody could enrich says `?` and sorts to the top rather than quietly to the bottom ([details](docs/presets/github.md#the-issue-board)).
 - **`claude-log-summary:UUID`** — model, duration, tool calls, tokens, cache hit %, errors-by-tool. Audit your own runs.
 
 That's a sample. supertool ships ~40 ops out of the box (built-ins + `gitlab` / `github` / `git` / `claude-log` presets) — add your own and you're past 60 fast.
@@ -339,7 +340,7 @@ It composes with `cwd:`, which is what makes a GitLab project root usable as the
 
 **Rules.** First op, or immediately after `cwd:`. One per call. `OWNER/NAME` or it is refused before anything runs — a half-target never reaches `gh`.
 
-**A `repo:` no op in the call can honour is refused, not ignored.** Only ops that declare a repo target accept one (`gh-pr`, `gh-prs`, `gh-issue`, `gh-run`, `gh-job`); mixing in one that cannot — `read:`, or `gh-issue-create`, which has its own payload key — fails the call and names the op. A target that silently applied to half a call is the defect the issue was about, so it is not the fix's behaviour either.
+**A `repo:` no op in the call can honour is refused, not ignored.** Only ops that declare a repo target accept one (`gh-pr`, `gh-prs`, `gh-issue`, `gh-issues`, `gh-run`, `gh-job`); mixing in one that cannot — `read:`, or `gh-issue-create`, which has its own payload key — fails the call and names the op. A target that silently applied to half a call is the defect the issue was about, so it is not the fix's behaviour either.
 
 **The error moved with the capability.** `cwd is not a GitHub repo` was a complete answer while cwd was the only way to name a repo. It now names the second route as well — and when a target *was* given it is not used at all, because cwd had no part in that lookup:
 

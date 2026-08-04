@@ -9,6 +9,14 @@
       "syntax": "gh-issue:NUMBER[:full]",
       "repo_target": true
     },
+    "gh-issues": {
+      "cmd": "{python} {path}github/issues.py {args}",
+      "timeout": 90,
+      "description": "Issue triage board: list issues (no default author filter — the queue, not mine), ranked unrankable → external author → stale body → no linked PR → oldest. Per issue: linked-PR state from the timeline, external-filer marker from GitHub's authorAssociation, age, comment count, labels, stale-body flag (newest comment newer than lastEditedAt, or createdAt when the body was never edited). Enrichment is one GraphQL call per 20 issues; when it fails the derived fields render '?' and the footer names why — never 0, never 'internal', never 'no PR'. Filters (comma-sep): author/assignee/label/milestone/state. Flags: nopipe (skip enrichment), iids, external, stale.",
+      "syntax": "gh-issues[:author=@me,label=bug,state=open,external,stale,nopipe,iids]",
+      "repo_target": true,
+      "per_page": 50
+    },
     "gh-issue-create": {
       "cmd": "{python} {path}github/issue_create.py {arg}",
       "timeout": 30,
