@@ -82,6 +82,8 @@ The forged comment and the forged `## Comments (0)` are still readable — nothi
 
 The `requires` field is documentation only — supertool does not enforce it at runtime. See [contributing.md](../contributing.md) for full authoring guidelines.
 
+**If your preset makes HTTP requests, use `urlopen()` from `presets/_http.py`, never `urllib.request.urlopen`.** The default opener carries `Authorization`, `api-key` and `Cookie` headers across a redirect to any host, and permits an `https` -> `http` downgrade. `_http.urlopen` refuses any redirect that leaves the origin and raises `RedirectRefused` naming the attempted destination. A test fails the build on bare `urlopen` call sites under `presets/` — see [contributing.md](../contributing.md#http-requests-go-through-presets_httppy).
+
 ## Preset vs. custom op
 
 Use a **preset** when:

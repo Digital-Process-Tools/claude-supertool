@@ -18,6 +18,10 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).parent.parent))  # for _http (#691)
+
+from _http import RedirectRefused, urlopen  # noqa: E402
+
 PDS = "https://bsky.social"  # Default PDS — handles can override via DID resolution
 SESSION_FILE = Path(os.path.expanduser("~/.config/bluesky/session.json"))
 
@@ -84,8 +88,11 @@ def create_session(handle: str, app_password: str) -> dict[str, Any]:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
+        with urlopen(req, timeout=20) as resp:
             session = json.loads(resp.read().decode("utf-8"))
+    except RedirectRefused as e:
+        print(f"ERROR: createSession: {e}", file=sys.stderr)
+        sys.exit(1)
     except urllib.error.HTTPError as e:
         sys.stderr.write(
             f"ERROR: createSession: {_format_http_error(e, app_password)}\n")
@@ -105,8 +112,13 @@ def refresh_session(refresh_jwt: str) -> dict[str, Any] | None:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
+        with urlopen(req, timeout=20) as resp:
             session = json.loads(resp.read().decode("utf-8"))
+    except RedirectRefused as e:
+        # A None here silently falls back to create_session, which would hide
+        # that the refresh JWT had been aimed at another origin.
+        print(f"ERROR: refreshSession: {e}", file=sys.stderr)
+        sys.exit(1)
     except urllib.error.HTTPError:
         return None
     except urllib.error.URLError:
@@ -150,8 +162,11 @@ def xrpc(
         headers["Content-Type"] = "application/json"
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
+    except RedirectRefused as e:
+        print(f"ERROR: {nsid}: {e}", file=sys.stderr)
+        sys.exit(1)
     except urllib.error.HTTPError as e:
         detail = _format_http_error(
             e, session.get("accessJwt", ""), session.get("refreshJwt", ""))
