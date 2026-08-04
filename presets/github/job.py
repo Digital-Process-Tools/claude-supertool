@@ -127,13 +127,14 @@ def _missing_log_message(
                 f"Check the ID. Use gh-run to list jobs first, then gh-job "
                 f"with the job ID."
             )
+        state_path = _api_repo_path("actions/jobs/" + str(job_id))
         return (
             f"ERROR: Job #{job_id} has no log (HTTP 404), and supertool "
             f"could not tell why — the job endpoint did not answer: "
             f"{meta_error}. A wrong ID, a job still running, and a log that "
             f"was never written or has since expired are all still possible; "
             f"this op is not guessing between them. Read the job state "
-            f"directly with: gh api repos/{{owner}}/{{repo}}/actions/jobs/{job_id}"
+            f"directly with: gh api {state_path}"
         )
     name = meta.get("name") or "?"
     status = meta.get("status") or "?"
@@ -532,8 +533,8 @@ def main() -> int:
         print(f"This is not a missing log: gh returned one, and it has no "
               f"content. Job state: status `{job_status}`, conclusion "
               f"`{job_conclusion}`.")
-        print(f"Cross-check the raw bytes with: "
-              f"gh api repos/{{owner}}/{{repo}}/actions/jobs/{job_id}/logs")
+        logs_path = _api_repo_path("actions/jobs/" + str(job_id) + "/logs")
+        print(f"Cross-check the raw bytes with: gh api {logs_path}")
         return 0
 
     # 3. Raw mode — dump (sliced) trace, skip filters
