@@ -1,6 +1,7 @@
 """Dev.to REST request helper. Stdlib-only."""
 from __future__ import annotations
 
+import http.client
 import json
 import sys
 import urllib.error
@@ -11,7 +12,14 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent.parent))  # for _http (#691)
 
-from _http import RedirectRefused, urlopen  # noqa: E402
+from _http import (  # noqa: E402
+    ERROR_BODY_BYTES,
+    DeadlineExceeded,
+    RedirectRefused,
+    ResponseTooLarge,
+    read_capped,
+    urlopen,
+)
 
 BASE = "https://dev.to/api"
 
@@ -35,7 +43,7 @@ def _scrub(s: str, *secrets: str) -> str:
 def _format_http_error(e: urllib.error.HTTPError, *secrets: str) -> str:
     # Scrubbed before truncation, not after: a secret straddling the 200-char
     # boundary survives `replace()` as a fragment if the order is reversed.
-    body = _scrub(e.read().decode("utf-8", errors="replace"), *secrets)
+    body = _scrub(e.read(ERROR_BODY_BYTES).decode("utf-8", errors="replace"), *secrets)
     if e.code == 401:
         return "401 Unauthorized — check DEVTO_API_KEY, may have expired"
     if e.code == 403:
@@ -75,9 +83,16 @@ def request(
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
         with urlopen(req, timeout=timeout) as resp:
-            text = resp.read().decode("utf-8")
+            text = read_capped(resp).decode("utf-8")
     except RedirectRefused as e:
         print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(1)
+    except (ResponseTooLarge, DeadlineExceeded) as e:
+        sys.stderr.write(f"ERROR: {_scrub(str(e), api_key)}\n")
+        sys.exit(1)
+    except http.client.HTTPException as e:
+        # IncompleteRead subclasses HTTPException, not OSError (#766).
+        sys.stderr.write(f"ERROR: incomplete response: {type(e).__name__}: {e}\n")
         sys.exit(1)
     except urllib.error.HTTPError as e:
         sys.stderr.write(f"ERROR: {_format_http_error(e, api_key)}\n")

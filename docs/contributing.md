@@ -197,6 +197,7 @@ Validators are post-write hooks — they run after a file is written and report 
 - **One file per op.** `gitlab/issue.py`, `gitlab/mr.py`, `gitlab/pipeline.py` — not one monolithic `gitlab.py` with a dispatch table.
 - **Scripts are co-located with their preset.** `presets/mytools/status.py`, not `scripts/status.py`. The `{path}` placeholder makes this work without hardcoded paths.
 - **Never call `urllib.request.urlopen` directly.** Use `urlopen()` from [`presets/_http.py`](../presets/_http.py). See below — this one is enforced by a test.
+- **Never call `.read()` on a response.** Use `read_capped()` from the same module. Also enforced by a test.
 
 ### HTTP requests go through `presets/_http.py`
 
@@ -208,13 +209,21 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))  # for _http
 
-from _http import RedirectRefused, urlopen  # noqa: E402
+from _http import (  # noqa: E402
+    DeadlineExceeded, RedirectRefused, ResponseTooLarge, read_capped, urlopen,
+)
 
 try:
     with urlopen(req, timeout=timeout) as resp:
-        body = resp.read()
+        body = read_capped(resp)
 except RedirectRefused as e:
     print(f"ERROR: {e}", file=sys.stderr)
+    sys.exit(1)
+except (ResponseTooLarge, DeadlineExceeded) as e:
+    print(f"ERROR: {e}", file=sys.stderr)
+    sys.exit(1)
+except http.client.HTTPException as e:          # IncompleteRead is NOT an OSError
+    print(f"ERROR: incomplete response: {e}", file=sys.stderr)
     sys.exit(1)
 ```
 
@@ -225,6 +234,20 @@ Three rules about the refusal:
 1. **Catch it explicitly and print it.** `str(exc)` names the origin, the status code, the attempted destination and the reason. Returning the pre-redirect state quietly is the false-success defect wearing a new coat.
 2. **It is deliberately not an `OSError`.** A blanket `except OSError` or `except urllib.error.URLError` must not absorb a credential-exfiltration attempt into a generic "network error", and a `..._safe()` helper whose contract is "returns `None` on any error" must not turn it into a silent `None`. Where such a helper exists (`hashnode._graphql.gql_safe`, `bluesky._atproto.refresh_session`), the refusal is a documented carve-out that exits instead.
 3. **Ordering matters.** Put `except RedirectRefused` *before* the broad handlers.
+
+### The body is bounded, in bytes and in wall clock
+
+`resp.read()` has no cap, and urllib's `timeout` bounds each socket operation rather than the call, so a server that drips one byte at a time resets it forever — measured at 4.7s against `timeout=1` ([#766](https://github.com/Digital-Process-Tools/claude-supertool/issues/766)). Unbounded body plus unbounded wall clock is the whole slowloris shape, so `read_capped()` closes both.
+
+1. **The cap is a refusal, not a truncation.** Over `_http.MAX_RESPONSE_BYTES` (10 MiB) raises `ResponseTooLarge` and returns nothing. Handing back the first N bytes of a JSON body produces a `JSONDecodeError` that reads as "bad JSON from the endpoint", which sends the reader to the wrong file. Pass `limit=` if you know your call site better than the default does.
+2. **`ResponseTooLarge` is not an `OSError`, and `DeadlineExceeded` is.** A body past the cap is a statement about the endpoint and must not vanish into a `..._safe()` helper's `None`; a slow endpoint is exactly the failure those helpers exist to degrade past, so `DeadlineExceeded` subclasses `TimeoutError` and needs no handler of its own there.
+3. **The deadline needs no new argument.** It defaults to `_http.DEADLINE_FACTOR` (4) × the `timeout` you already pass, so a new call site inherits a bound without asking for one.
+4. **A short body raises.** A response ending before its declared `Content-Length` raises `http.client.IncompleteRead` with an **empty** partial. The bytes that arrived are not a smaller answer; they are the start of an answer that never came.
+5. **Catch `http.client.HTTPException`.** `IncompleteRead` subclasses it, **not** `OSError`, so it walks past `except OSError` and `except urllib.error.URLError` alike. That is how it used to propagate out of `gql_safe`, whose docstring promised it never raised.
+
+What the deadline does **not** cover: urllib gives no way to interrupt the request-line and header phase, so a server dripping *headers* forever is still bounded only by the per-socket-operation `timeout`. The deadline catches it at the first opportunity afterwards. That is a partial bound and is documented as one — closing it needs a socket layer `_http` does not have.
+
+`tests/test_http_bounds.py::test_no_unbounded_response_reads_remain_under_presets` fails the build on any argument-less `.read()` under `presets/` on a name bound from `urlopen` or an `HTTPError`, for the same reason the bare-`urlopen` test exists: a guard that is written but not wired at every call site is this repo's most frequently repeated defect. Error bodies are the one deliberate exception — they are truncated rather than refused, with `e.read(ERROR_BODY_BYTES)`, because they are already cut to 200-500 characters for display and are never parsed, so a short read has nothing to misdiagnose.
 4. **A permitted redirect is disclosed too, and you get that for free.** `_http.urlopen` prints a `NOTE: the request was redirected before it was answered: ... -> ...` line to stderr whenever the final URL differs from the one you asked for. Allowing a hop is not the same as saying nothing about it — the caller asked one URL a question and a different URL answered, and every value you return below that line describes the second one. dev.to answers `/settings` with a same-origin 302 to `/enter` as soon as the session cookie expires, which is exactly how `fetch_csrf_token` came to report a layout change when the real cause was a dead cookie. Both URLs are printed with `repr`, because the destination is remote-controlled text on its way to a terminal.
 
 `tests/test_security_redirect.py::test_no_bare_urlopen_call_sites_remain_under_presets` fails the build on any `urllib.request.urlopen(` left under `presets/`. That test exists because a guard that is written but not wired at every call site is this repo's most frequently repeated defect — the protection has to be inherited, not re-earned per integration.
