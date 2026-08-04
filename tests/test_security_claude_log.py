@@ -718,40 +718,68 @@ class TestSummaryEdgeCases:
 # ---------------------------------------------------------------------------
 
 class TestTokenLeakage:
-    """SEVERITY: MEDIUM (by design, but must be documented).
+    """CONTRACT (reversed in #760): redact by default, `:raw` to opt out, and
+    say so in the output.
 
-    These ops are a debug tool — they echo tool inputs verbatim. A session
-    that contained a tool call like Bash(command="curl -H 'Authorization:
-    Bearer sk-xxx'") will display that secret in the tail output.
+    The previous contract was the opposite, and it was deliberate — the test
+    below used to be named ``test_tail_echoes_api_key_in_bash_command`` and
+    asserted the key WAS visible, commented ``# CONTRACT: no redaction``. It is
+    rewritten rather than deleted because the argument it defended is a real
+    one and deserves an answer on the record.
 
-    This is intentional (debug transparency), but users should be aware that:
-    1. tail.py prints tool_use inputs without redaction
-    2. summary.py prints the first user message without redaction
-    3. No scrubbing of common secret patterns (Bearer tokens, API keys, passwords)
+    **The argument for verbatim:** ``claude-log tail`` exists to show you what
+    you actually ran, on your own machine, in answer to a direct question about
+    your own history. A tail that silently redacts LIES about the command it is
+    showing. That is correct, and it is why this reversal is not a bug fix.
 
-    CONTRACT: these ops are debug tools. They echo verbatim. Do not pipe
-    output to untrusted consumers or log files in shared environments.
+    **Why it loses anyway:** the objection is fatal to *silent* redaction and
+    survivable for *disclosed* redaction. ``[REDACTED:anthropic-api-key]`` plus
+    a line naming ``:raw`` does not misreport the command — it refuses part of
+    it and says which part and how to get it back. That is this repo's
+    three-state contract (``ok`` / finding / ``skipped``, docs/validators.md
+    §"Declining instead of guessing") applied to output rather than to a check.
+
+    **And the tie-breaker the issue does not make:** ``claude-log tail`` is not
+    ``cat``. Its output lands in an LLM context by construction — it is an op an
+    agent invokes. Ownership of the history does not imply consent to
+    re-transmit the credential to a provider. Asking to see what you ran is not
+    asking to send it anywhere.
+
+    **What is NOT claimed:** that the output is now safe. Detection is
+    pattern-based (``presets/_secrets.py``) and has false negatives by
+    construction. The disclosure line says what was looked for, never that the
+    text is clean. A confident "redacted" over a missed secret would be worse
+    than no redaction at all.
+
+    Full coverage of the new behaviour lives in
+    ``tests/test_secret_redaction_760.py``.
     """
 
-    def test_tail_echoes_tool_input_verbatim(self, tmp_path: Path) -> None:
-        """Tool inputs containing secrets are echoed without redaction."""
+    def test_tail_redacts_bearer_token_and_discloses_it(self, tmp_path: Path) -> None:
+        """Was: test_tail_echoes_tool_input_verbatim. Reversed in #760."""
         home, cwd, proj_dir = _make_project(tmp_path)
         uuid = "secret-in-tool"
         _write_jsonl(proj_dir / f"{uuid}.jsonl", [
-            _assistant_tool("Bash", {"command": "curl -H 'Authorization: Bearer sk-test-1234' https://api.example.com"}),
+            _assistant_tool("Bash", {"command": "curl -H 'Authorization: Bearer sk-test-1234567890abcd' https://api.example.com"}),
             _tool_result("200 OK"),
         ])
 
         r = _run_in("tail.py", uuid, home=home, cwd=cwd)
         assert r.returncode == 0, r.stderr + r.stdout
-        # CONTRACT: echoed verbatim — sk-test-1234 is visible
-        assert "sk-test-1234" in r.stdout, (
-            "Expected tool input to be echoed verbatim (this is the documented contract). "
-            "If this fails, the tool now redacts — update the contract doc."
+        assert "sk-test-1234567890abcd" not in r.stdout, (
+            "CONTRACT (#760): tool inputs are redacted by default."
         )
+        assert "[REDACTED:" in r.stdout, (
+            "CONTRACT (#760): the redaction must be disclosed in place. A silent "
+            "redaction misreports the command and is a worse defect than the leak."
+        )
+        assert ":raw" in r.stdout, "the disclosure must name the escape hatch"
 
-    def test_tail_echoes_api_key_in_bash_command(self, tmp_path: Path) -> None:
-        """API key embedded in a Bash command is visible in tail output."""
+    def test_tail_redacts_api_key_in_bash_command(self, tmp_path: Path) -> None:
+        """Was: test_tail_echoes_api_key_in_bash_command, ``# CONTRACT: no
+        redaction``. Reversed deliberately in #760 — see the class docstring
+        for why the verbatim argument loses to disclosed redaction.
+        """
         home, cwd, proj_dir = _make_project(tmp_path)
         uuid = "api-key-leak"
         _write_jsonl(proj_dir / f"{uuid}.jsonl", [
@@ -761,7 +789,20 @@ class TestTokenLeakage:
 
         r = _run_in("tail.py", uuid, home=home, cwd=cwd)
         assert r.returncode == 0, r.stderr + r.stdout
-        # CONTRACT: no redaction — key is visible
+        assert "sk-ant-secret" not in r.stdout
+        assert "[REDACTED:" in r.stdout
+
+    def test_tail_raw_restores_the_old_contract(self, tmp_path: Path) -> None:
+        """The old behaviour is one keystroke away, not gone."""
+        home, cwd, proj_dir = _make_project(tmp_path)
+        uuid = "api-key-raw"
+        _write_jsonl(proj_dir / f"{uuid}.jsonl", [
+            _assistant_tool("Bash", {"command": "ANTHROPIC_API_KEY=sk-ant-secret python3 script.py"}),
+            _tool_result("done"),
+        ])
+
+        r = _run_in("tail.py", uuid, "raw", home=home, cwd=cwd)
+        assert r.returncode == 0, r.stderr + r.stdout
         assert "sk-ant-secret" in r.stdout
 
     def test_summary_does_not_echo_tool_inputs(self, tmp_path: Path) -> None:

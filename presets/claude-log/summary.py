@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _common import event_content_parts, event_role, read_jsonl, session_path, trunc  # noqa: E402
+from _common import Redactor, event_content_parts, event_role, read_jsonl, session_path, trunc, wants_raw  # noqa: E402
 
 
 def _parse_ts(ts: str) -> datetime | None:
@@ -46,6 +46,7 @@ def main() -> int:
         return 1
 
     uuid = sys.argv[1]
+    red = Redactor(enabled=not wants_raw(sys.argv[2:]))
     sp = session_path(uuid)
     if not sp.exists():
         print(f"ERROR: session not found: {sp}")
@@ -117,6 +118,13 @@ def main() -> int:
                     if not (txt.startswith("<") or txt.startswith("# ")):
                         first_user_text = txt
 
+    # summary already refuses to echo tool inputs, but it prints two blocks of
+    # free text — and a pasted credential arrives as free text far more often
+    # than as a tool argument. Redacting only tail would leave the likeliest
+    # surface open while claiming the preset was covered.
+    first_user_text = red(first_user_text)
+    last_assistant_text = red(last_assistant_text)
+
     total_tools = sum(tool_counts.values())
     total_tokens = tokens_in + tokens_out + tokens_cache_read + tokens_cache_creation
     cache_inputs = tokens_cache_read + tokens_cache_creation
@@ -126,6 +134,9 @@ def main() -> int:
 
     print(f"Session: {uuid}")
     print(f"File:    {sp}")
+    note = red.note()
+    if note:
+        print(note)
     print()
     if model:
         print(f"Model:           {model}")
