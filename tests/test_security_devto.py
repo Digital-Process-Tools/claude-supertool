@@ -198,16 +198,17 @@ class TestTokenLeakageInStackTrace:
         # in what looks like a parse error message.
         bad_json = f"{{invalid json with token={FAKE_TOKEN}}}"
 
-        class FakeResp:
+        class FakeResp(io.BytesIO):
+            # A BytesIO rather than a bare stub: `_http.read_capped` reads in
+            # bounded chunks and stops at EOF (#766), so a double whose read()
+            # takes no size and never ends no longer models a response.
             status = 200
-            def read(self):
-                return bad_json.encode()
             def __enter__(self):
                 return self
             def __exit__(self, *a):
                 pass
 
-        with patch("_http._OPEN", return_value=FakeResp()):
+        with patch("_http._OPEN", return_value=FakeResp(bad_json.encode())):
             with pytest.raises(SystemExit):
                 rest_mod.request("GET", "/articles/1", FAKE_TOKEN)
 
@@ -330,23 +331,25 @@ class TestUrlInjectionInRead:
         """
         calls: list[str] = []
 
-        class FakeResp:
+        class FakeResp(io.BytesIO):
+            # See the note on the other FakeResp in this file: bounded reads
+            # (#766) need a double that answers read(n) and reaches EOF.
             status = 200
-            def read(self):
-                return json.dumps({
-                    "id": 42, "title": "T", "user": {"name": "A", "username": "a"},
-                    "published_at": "2024-01-01T00:00:00Z", "url": "https://dev.to/a/t",
-                    "tag_list": [], "body_markdown": "body",
-                    "public_reactions_count": 0, "comments_count": 0,
-                }).encode()
             def __enter__(self):
                 return self
             def __exit__(self, *a):
                 pass
 
+        article = json.dumps({
+            "id": 42, "title": "T", "user": {"name": "A", "username": "a"},
+            "published_at": "2024-01-01T00:00:00Z", "url": "https://dev.to/a/t",
+            "tag_list": [], "body_markdown": "body",
+            "public_reactions_count": 0, "comments_count": 0,
+        }).encode()
+
         def fake_urlopen(req, timeout=30):
             calls.append(req.full_url if hasattr(req, "full_url") else str(req))
-            return FakeResp()
+            return FakeResp(article)
 
         monkeypatch.setenv("DEVTO_API_KEY", FAKE_TOKEN)
         monkeypatch.setenv("DEVTO_USERNAME", "testuser")
