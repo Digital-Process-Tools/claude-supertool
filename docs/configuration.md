@@ -361,7 +361,7 @@ id_rsa*  id_dsa*  id_ecdsa*  id_ed25519*
 
 Ops that take explicit paths and don't traverse (`ls`, `read`, `head`, `tail`, `wc`, `stat`, `around`, `around_line`, `between`, `diff`, `blame`) are not affected — they always work on exactly the path you give them.
 
-See [issue #4](https://github.com/Digital-Process-Tools/claude-supertool/issues/4) for the original design rationale and [#691](https://github.com/Digital-Process-Tools/claude-supertool/issues/691) for the file-level wiring.
+See [issue #4](https://github.com/Digital-Process-Tools/claude-supertool/issues/4) for the original design rationale, [#691](https://github.com/Digital-Process-Tools/claude-supertool/issues/691) for the file-level wiring and the hidden-file count, and [#764](https://github.com/Digital-Process-Tools/claude-supertool/issues/764) for why that count survives the rtk-delegated `grep` — see [operations/search.md](operations/search.md#delegated-to-rtk).
 
 ---
 
