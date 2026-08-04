@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import sys
 from pathlib import Path
 
 
@@ -10,6 +11,19 @@ _spec = importlib.util.spec_from_file_location("git_resolve", PRESET)
 assert _spec is not None and _spec.loader is not None
 resolve = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(resolve)
+
+#: The shared helper `resolve` delegates to. `_list_conflicts` lives in
+#: `_git_common` since #704 and therefore calls `_git_common._git`, not
+#: `resolve._git` — so rebinding only the preset's name leaves the conflict
+#: listing running real git against the test's temp tree, and every receipt
+#: comes back "No conflicted files."
+_common = sys.modules["_git_common"]
+
+
+def _patch_git(monkeypatch, fn) -> None:
+    """Intercept git for the preset *and* for the shared helper it calls."""
+    monkeypatch.setattr(resolve, "_git", fn)
+    monkeypatch.setattr(_common, "_git", fn)
 
 
 def test_missing_args_prints_usage(monkeypatch, capsys) -> None:
@@ -40,7 +54,7 @@ def test_side_case_insensitive(monkeypatch, capsys) -> None:
     """SIDE accepts uppercase."""
     import subprocess
     fake = subprocess.CompletedProcess(args=["git"], returncode=1, stdout="", stderr="not a git repo")
-    monkeypatch.setattr(resolve, "_git", lambda args, timeout=10: fake)
+    _patch_git(monkeypatch, lambda args, timeout=10: fake)
     monkeypatch.setattr(resolve.sys, "argv", ["resolve.py", "OURS", "x.py"])
     rc = resolve.main()
     # Reaches the "not in a git repo" check — proves SIDE was accepted
@@ -65,7 +79,7 @@ def test_comma_separated_paths(monkeypatch, capsys) -> None:
         # checkout / add — succeed silently
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr(resolve, "_git", fake_git)
+    _patch_git(monkeypatch, fake_git)
     monkeypatch.setattr(resolve, "_validate_paths", lambda ps: {p: None for p in ps})
     monkeypatch.setattr(resolve.sys, "argv", ["resolve.py", "theirs", "a.php,b.php"])
     rc = resolve.main()
@@ -95,7 +109,7 @@ def test_comma_separated_unknown_path_rejected(monkeypatch, capsys) -> None:
             return subprocess.CompletedProcess(args=args, returncode=0, stdout="a.php\nb.php\n", stderr="")
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr(resolve, "_git", fake_git)
+    _patch_git(monkeypatch, fake_git)
     monkeypatch.setattr(resolve.sys, "argv", ["resolve.py", "ours", "a.php,zzz.php"])
     rc = resolve.main()
     out = capsys.readouterr().out
@@ -176,7 +190,12 @@ def test_union_unterminated_fails(tmp_path) -> None:
 
 
 def test_both_end_to_end(monkeypatch, capsys, tmp_path) -> None:
-    """side=both unions the file and stages it via git add."""
+    """side=both unions the file and stages it via git add.
+
+    `force` because the fixture is `.php`: since #744 a union on source text is
+    refused per file unless forced. The refusal itself is covered in
+    test_git_resolve_source_guard_744.py; this test stays on the union path.
+    """
     import subprocess
     f = tmp_path / "x.php"
     f.write_text(CONFLICT, encoding="utf-8")
@@ -192,9 +211,9 @@ def test_both_end_to_end(monkeypatch, capsys, tmp_path) -> None:
             return subprocess.CompletedProcess(args=args, returncode=0, stdout=stdout, stderr="")
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr(resolve, "_git", fake_git)
+    _patch_git(monkeypatch, fake_git)
     monkeypatch.setattr(resolve, "_validate_paths", lambda ps: {p: None for p in ps})
-    monkeypatch.setattr(resolve.sys, "argv", ["resolve.py", "both", str(f)])
+    monkeypatch.setattr(resolve.sys, "argv", ["resolve.py", "both", str(f), "force"])
     rc = resolve.main()
     out = capsys.readouterr().out
 
@@ -252,7 +271,7 @@ def test_marker_leftover_blocks_staging(monkeypatch, capsys, tmp_path) -> None:
             return subprocess.CompletedProcess(args=args, returncode=0, stdout=stdout, stderr="")
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr(resolve, "_git", fake_git)
+    _patch_git(monkeypatch, fake_git)
     monkeypatch.setattr(resolve.sys, "argv", ["resolve.py", "ours", str(f)])
     rc = resolve.main()
     out = capsys.readouterr().out
@@ -280,7 +299,7 @@ def test_validate_digest_in_receipt(monkeypatch, capsys, tmp_path) -> None:
             return subprocess.CompletedProcess(args=args, returncode=0, stdout=stdout, stderr="")
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr(resolve, "_git", fake_git)
+    _patch_git(monkeypatch, fake_git)
     monkeypatch.setattr(resolve, "_validate_paths", lambda ps: {p: "validate: ok" for p in ps})
     monkeypatch.setattr(resolve.sys, "argv", ["resolve.py", "ours", str(f)])
     rc = resolve.main()
@@ -503,7 +522,7 @@ def test_partial_resolve_reports_n_of_m_not_staged(monkeypatch, capsys, tmp_path
     f = tmp_path / "x.py"
     f.write_text(THREE_BLOCKS, encoding="utf-8")
     calls: list[list[str]] = []
-    monkeypatch.setattr(resolve, "_git", _fake_git_single(f, calls))
+    _patch_git(monkeypatch, _fake_git_single(f, calls))
     monkeypatch.setattr(resolve, "_validate_paths", lambda ps: {p: None for p in ps})
     monkeypatch.setattr(resolve.sys, "argv", ["resolve.py", "ours", str(f), "1,3"])
     rc = resolve.main()
@@ -523,7 +542,7 @@ def test_full_selector_stages_clean(monkeypatch, capsys, tmp_path) -> None:
     f = tmp_path / "x.py"
     f.write_text(THREE_BLOCKS, encoding="utf-8")
     calls: list[list[str]] = []
-    monkeypatch.setattr(resolve, "_git", _fake_git_single(f, calls))
+    _patch_git(monkeypatch, _fake_git_single(f, calls))
     monkeypatch.setattr(resolve, "_validate_paths", lambda ps: {p: "validate: ok" for p in ps})
     monkeypatch.setattr(resolve.sys, "argv", ["resolve.py", "theirs", str(f), "1,2,3"])
     rc = resolve.main()
@@ -540,7 +559,7 @@ def test_full_selector_stages_clean(monkeypatch, capsys, tmp_path) -> None:
 def test_blocks_invalid_token_rejected(monkeypatch, capsys) -> None:
     import subprocess
     fake = subprocess.CompletedProcess(args=["git"], returncode=0, stdout=".git\n", stderr="")
-    monkeypatch.setattr(resolve, "_git", lambda args, timeout=10: fake)
+    _patch_git(monkeypatch, lambda args, timeout=10: fake)
     monkeypatch.setattr(resolve.sys, "argv", ["resolve.py", "ours", "x.py", "1,abc"])
     rc = resolve.main()
     out = capsys.readouterr().out
@@ -551,7 +570,7 @@ def test_blocks_invalid_token_rejected(monkeypatch, capsys) -> None:
 def test_blocks_zero_rejected(monkeypatch, capsys) -> None:
     import subprocess
     fake = subprocess.CompletedProcess(args=["git"], returncode=0, stdout=".git\n", stderr="")
-    monkeypatch.setattr(resolve, "_git", lambda args, timeout=10: fake)
+    _patch_git(monkeypatch, lambda args, timeout=10: fake)
     monkeypatch.setattr(resolve.sys, "argv", ["resolve.py", "ours", "x.py", "0"])
     rc = resolve.main()
     out = capsys.readouterr().out
@@ -570,7 +589,7 @@ def test_blocks_require_single_file(monkeypatch, capsys) -> None:
             return subprocess.CompletedProcess(args=args, returncode=0, stdout="a.py\nb.py\n", stderr="")
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr(resolve, "_git", fake_git)
+    _patch_git(monkeypatch, fake_git)
     monkeypatch.setattr(resolve.sys, "argv", ["resolve.py", "ours", "a.py,b.py", "1"])
     rc = resolve.main()
     out = capsys.readouterr().out
@@ -589,7 +608,7 @@ def test_blocks_require_single_file_not_all(monkeypatch, capsys) -> None:
             return subprocess.CompletedProcess(args=args, returncode=0, stdout="a.py\nb.py\n", stderr="")
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr(resolve, "_git", fake_git)
+    _patch_git(monkeypatch, fake_git)
     monkeypatch.setattr(resolve.sys, "argv", ["resolve.py", "ours", "all", "1"])
     rc = resolve.main()
     out = capsys.readouterr().out
@@ -614,7 +633,7 @@ def test_no_blocks_is_whole_file_backcompat(monkeypatch, capsys, tmp_path) -> No
             return subprocess.CompletedProcess(args=args, returncode=0, stdout=stdout, stderr="")
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr(resolve, "_git", fake_git)
+    _patch_git(monkeypatch, fake_git)
     monkeypatch.setattr(resolve, "_validate_paths", lambda ps: {p: None for p in ps})
     monkeypatch.setattr(resolve.sys, "argv", ["resolve.py", "ours", str(f)])
     rc = resolve.main()

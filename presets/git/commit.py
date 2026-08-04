@@ -12,6 +12,11 @@ that's printed loudly. Replaces the add/commit/log-1 cycle.
 Special MSG values:
   --no-edit   Use prepared commit message (MERGE_MSG / CHERRY_PICK_HEAD).
               Only valid when a merge or cherry-pick is in progress.
+
+A message containing ':' must arrive via `git-commit:::MSG` or the @payload
+route: the single-colon CLI tokenizes on ':', so `git-commit:fix: thing`
+reaches this script as MSG='fix' plus a PATH of ' thing'. That shape is
+REFUSED here rather than re-parsed — see _spilled_message_paths (#751).
 """
 from __future__ import annotations
 
@@ -26,10 +31,17 @@ from _git_common import (  # noqa: E402
     _first_error_line,
     _git,
     query_open_mr,
+    repo_label,
     use_utf8_stdout,
 )
 
 # triple-colon separator handled by supertool; we receive plain argv here.
+
+# The commit itself, which runs whatever the pre-commit hook chain is. Every
+# other call in this preset is rev-parse / diff --cached plumbing on the shared
+# 10s default; this one carries the 30s the whole module used to assume, and is
+# the only place in it where 30s was ever doing work.
+_COMMIT_TIMEOUT = 30
 
 
 def _existing_mr_for_branch(branch: str) -> str:
@@ -85,6 +97,87 @@ def _with_coauthor(msg: str) -> str:
     return f"{body}\n\n{trailer}"
 
 
+# Characters a caller does not put in a pathspec they typed at this CLI, but
+# that prose spilled by the ':' tokenizer always carries. Glob magic (*, ?, [)
+# is deliberately absent: `src/*.py` is a legitimate pathspec.
+_PROSE_CHARS = (" ", "\t", "\n", "\r", '"', "'")
+
+# The @payload example quotes the message with a triple-single-quote block.
+# Built rather than typed so this file stays editable through supertool's own
+# TOML payload route, where a literal triple quote would close the block.
+_TRIPLE = "'" * 3
+
+
+def _looks_like_pathspec(tok: str) -> bool:
+    """Could *tok* be a pathspec the caller actually typed? (#751)"""
+    return bool(tok) and tok == tok.strip() and not any(
+        c in tok for c in _PROSE_CHARS
+    )
+
+
+def _known_to_git(path: str, staged_deletions: set) -> bool:
+    """Does git recognise *path* as something it could stage?
+
+    On disk, already staged as a deletion (`git rm`, issue #324), or tracked.
+    Existence alone is not the test: the deletion case is exactly why a
+    'does it resolve to a real file' discriminator cannot be trusted.
+    """
+    if os.path.exists(path) or path in staged_deletions:
+        return True
+    r = _git(["ls-files", "--", path])
+    return r.returncode == 0 and bool(r.stdout.strip())
+
+
+def _spilled_message_paths(paths, staged_deletions):
+    """PATH args that are neither path-shaped nor known to git (#751).
+
+    An empty result means every PATH is plausibly a path and the call proceeds
+    exactly as it always has — including a typo'd path, which stays git's error
+    to report rather than something this script reinterprets.
+    """
+    return [
+        p for p in paths
+        if not _looks_like_pathspec(p) and not _known_to_git(p, staged_deletions)
+    ]
+
+
+def _colon_split_refusal(msg, paths, spilled):
+    """The error printed instead of guessing what the caller meant (#751).
+
+    Reconstructs the message the caller almost certainly typed — the leading
+    run of spilled segments, rejoined on ':' — and hands back both routes that
+    carry a ':' intact. Nothing is staged and nothing is committed.
+    """
+    rest = list(paths)
+    head = []
+    while rest and rest[0] in spilled:
+        head.append(rest.pop(0))
+    rebuilt = ":".join([msg] + head)
+
+    suggestion = "git-commit:::" + rebuilt
+    if rest:
+        suggestion += ":::" + ":::".join(rest)
+
+    lines = [
+        "ERROR: commit message was split on ':' — nothing staged, nothing committed.",
+        "  Parsed as: message=%r" % (msg,),
+    ]
+    for p in paths:
+        why = " (not a path, and unknown to git)" if p in spilled else ""
+        lines.append("             path=%r%s" % (p, why))
+    lines += [
+        "  supertool's single-colon CLI splits on every ':', so a Conventional",
+        "  Commits subject cannot survive it. Use a route that does not tokenize:",
+        "    ./supertool '%s'" % (suggestion,),
+        "  or, for paths with spaces or a multi-line body:",
+        "    ./supertool 'git-commit:@-' <<'EOF'",
+        "    message = " + _TRIPLE + rebuilt + _TRIPLE,
+        "    paths = [" + ", ".join('"%s"' % p for p in rest or ["path/to/file"]) + "]",
+        "    EOF",
+    ]
+    return "\n".join(lines)
+
+
 def main() -> int:
     use_utf8_stdout()
     if len(sys.argv) < 2:
@@ -118,6 +211,9 @@ def main() -> int:
             return 1
 
     print(f"# git-commit on {branch}")
+    # Printed before anything is staged, so it is on the receipt whether the
+    # commit lands, is refused by a hook, or finds nothing staged (#692).
+    print(f"Repo: {repo_label()}")
     print(f"HEAD before: {head_before}")
 
     # Stage PATHS if given. A path that's already a staged deletion (gone from
@@ -128,6 +224,15 @@ def main() -> int:
     if paths:
         deleted = _git(["diff", "--cached", "--diff-filter=D", "--name-only"])
         staged_deletions = {l for l in deleted.stdout.splitlines() if l.strip()}
+        # #751 — a PATH that is neither path-shaped nor known to git is far more
+        # likely the tail of a ':'-split message than a file. Refuse before
+        # anything is staged; do NOT fold it back into the message, because a
+        # wrong guess in that direction commits whatever was already staged
+        # under a mangled subject and prints a success receipt for it.
+        spilled = _spilled_message_paths(paths, staged_deletions)
+        if spilled:
+            print(_colon_split_refusal(msg, paths, spilled))
+            return 1
         to_add = [p for p in paths if p not in staged_deletions]
         if to_add:
             add = _git(["add", "--"] + to_add)
@@ -145,9 +250,10 @@ def main() -> int:
 
     # Commit
     if no_edit:
-        result = _git(["commit", "--no-edit"])
+        result = _git(["commit", "--no-edit"], timeout=_COMMIT_TIMEOUT)
     else:
-        result = _git(["commit", "-m", _with_coauthor(msg)])
+        result = _git(["commit", "-m", _with_coauthor(msg)],
+                      timeout=_COMMIT_TIMEOUT)
     head_after = _head_sha()
 
     if result.returncode == 0 and head_after and head_after != head_before:

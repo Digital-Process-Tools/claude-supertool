@@ -36,6 +36,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pr import _gh, _fetch_review_threads  # noqa: E402  (reuse the gh-pr helpers)
 import _board  # noqa: E402  (the board layout shared with gl-mrs / radar)
+from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 import _checks  # noqa: E402  (the one check classifier, shared with gh-pr / gl-mrs)
 import _proc  # noqa: E402  (the one liveness probe, shared with watch / gl-mrs)
 import _repo_target  # noqa: E402  (the repo this call is about, when not the cwd's)
@@ -71,15 +72,13 @@ def _get_config() -> dict[str, int]:
     SUPERTOOL_ENRICH_CAP     — max PRs to thread-enrich (default 40)
     SUPERTOOL_PER_PAGE       — PRs fetched from the list endpoint (default 50)
     """
-    def _int(name: str, default: int) -> int:
-        try:
-            return int(os.environ.get(name, str(default)))
-        except ValueError:
-            return default
+    # Was a second private copy of gl-mrs's `_int` — same silent tolerate, same
+    # silent clamp, duplicated. One reader now, and it says what it could not
+    # honour (#654).
     return {
-        "enrich_workers": max(1, _int("SUPERTOOL_ENRICH_WORKERS", ENRICH_WORKERS)),
-        "enrich_cap": max(0, _int("SUPERTOOL_ENRICH_CAP", ENRICH_CAP)),
-        "per_page": max(1, _int("SUPERTOOL_PER_PAGE", DEFAULT_PER_PAGE)),
+        "enrich_workers": env_int("SUPERTOOL_ENRICH_WORKERS", ENRICH_WORKERS, minimum=1),
+        "enrich_cap": env_int("SUPERTOOL_ENRICH_CAP", ENRICH_CAP, minimum=0),
+        "per_page": env_int("SUPERTOOL_PER_PAGE", DEFAULT_PER_PAGE, minimum=1),
     }
 
 

@@ -32,6 +32,8 @@ from pathlib import Path
 
 import pytest
 
+from _workflow_parse import job_blocks, job_steps
+
 REPO = Path(__file__).resolve().parents[1]
 WORKFLOW = REPO / ".github" / "workflows" / "tests.yml"
 REPORTER = REPO / ".github" / "scripts" / "junit_summary.py"
@@ -239,14 +241,33 @@ def test_the_workflow_does_not_export_utf8_to_every_child_process() -> None:
 
 
 def test_the_failure_summary_step_uses_the_reporter_and_masks_nothing() -> None:
-    text = _workflow_text()
-    assert "junit_summary.py junit.xml" in text, (
-        "the always-run summary step no longer calls the reporter")
-    step = text.split("Show failing tests")[1]
-    assert "||" not in step.split("run:")[1].split("\n")[0], (
-        "a `|| echo` on this step reports a specific cause — 'pytest crashed "
-        "before generating it' — for any failure of the reporter itself, "
-        "including one that merely could not encode what it was printing")
+    """#731: read off the step's `run:`, not off the whole workflow.
+
+    The first assertion here used to be a substring match against all 183
+    lines of `tests.yml`, two thirds of which are comments — the shape that
+    kept `"oven-sh/setup-bun" in text` green in #730. It was not yet lying:
+    the only occurrence of the needle today is the real command. But the
+    second assertion, one line below it, already scoped itself to the step
+    before looking, so the file was carrying both idioms and only one of them
+    could fail for the right reason.
+    """
+    steps = job_steps(job_blocks()["pytest"])
+    assert steps, "no steps parsed out of the pytest job"
+    summary = [s for s in steps if "junit_summary.py" in s.run]
+    assert summary, (
+        "no step of the pytest job calls the reporter. `--tb=no` means the "
+        "one-line summary is all pytest prints, and it elides the middle of a "
+        "long one — junit.xml is the untruncated channel. Steps: "
+        f"{[s.name for s in steps]}")
+    for step in summary:
+        assert "junit.xml" in step.run, (
+            f"step {step.name!r} runs the reporter without passing it the "
+            "junit file")
+        assert "||" not in step.run, (
+            "a `|| echo` on this step reports a specific cause — 'pytest crashed "
+            "before generating it' — for any failure of the reporter "
+            "itself, including one that merely could not encode what it was "
+            f"printing: {step.run}")
 
 
 def test_the_reporter_exists_where_the_workflow_says_it_does() -> None:

@@ -19,8 +19,8 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 import _repo_target  # noqa: E402  (the repo this call is about, when not the cwd's)
+from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 
 
 def _api_repo_path(suffix: str) -> str:
@@ -58,30 +58,119 @@ def _local_branch_check(source: str) -> str:
         return ""
 
 
-def _format_error(stderr: str, resource: str, identifier: str) -> str:
-    """Classify gh errors into actionable messages for LLMs."""
+def _gh_error_kind(stderr: str) -> str:
+    """Bucket a gh failure. Probe order matches the original _format_error
+    chain exactly, so the message any given stderr produces is unchanged."""
     s = stderr.lower()
     if "github host" in s or "not a git repository" in s or "git remotes" in s:
-        return _repo_target.no_repo_error("gh-job:12345:fail")
+        return "repo"
     if "could not resolve" in s or "404" in s or "not found" in s:
-        return f"ERROR: {resource} #{identifier} not found. Check the ID. Use gh-run to list jobs first, then gh-job with the job ID."
+        return "notfound"
     if "401" in s or "unauthorized" in s or "not logged in" in s or "token" in s:
-        return f"ERROR: gh CLI not authenticated. Run: gh auth login (verify with: gh auth status)"
+        return "auth"
     if "rate limit" in s or "429" in s:
-        return "ERROR: GitHub API rate limit exceeded. Wait a few minutes and retry."
+        return "ratelimit"
     if "403" in s or "forbidden" in s:
+        return "forbidden"
+    return "other"
+
+
+def _format_error(stderr: str, resource: str, identifier: str) -> str:
+    """Classify gh errors into actionable messages for LLMs."""
+    kind = _gh_error_kind(stderr)
+    if kind == "repo":
+        return _repo_target.no_repo_error("gh-job:12345:fail")
+    if kind == "notfound":
+        return f"ERROR: {resource} #{identifier} not found. Check the ID. Use gh-run to list jobs first, then gh-job with the job ID."
+    if kind == "auth":
+        return f"ERROR: gh CLI not authenticated. Run: gh auth login (verify with: gh auth status)"
+    if kind == "ratelimit":
+        return "ERROR: GitHub API rate limit exceeded. Wait a few minutes and retry."
+    if kind == "forbidden":
         return f"ERROR: permission denied for {resource} #{identifier}. Check repo access (gh auth status)."
     return f"ERROR: gh failed for {resource} #{identifier}: {stderr.strip()}"
+
+
+def _missing_log_message(
+    job_id: str, meta: dict | None, meta_absent: bool, meta_error: str
+) -> str:
+    """Explain a 404 from the logs endpoint by the job's state, not the ID.
+
+    GitHub writes a job's log **on completion**, so `404 BlobNotFound` from
+    `actions/jobs/<id>/logs` has four causes that call for four different
+    next actions, and the op used to render all four as "Check the ID" — the
+    one thing that was demonstrably right in the incident that filed #723.
+    Verified live on this repo: a queued job and an in_progress job both
+    return `gh: HTTP 404` with a `<Code>BlobNotFound</Code>` body, while the
+    *job* endpoint returns the full object for the same ID.
+
+    That job endpoint is what separates them, and `main` already calls it
+    before it fetches the log — so this costs **no extra request on any
+    path**, including the happy one where the log exists and nobody cares
+    about the job's status. Fetching metadata defensively *after* the failure
+    would have been the cheap-looking option; there was nothing to buy.
+
+    The cancelled row is the one that saves real time: it is the only state
+    whose right response is to stop looking rather than to retry.
+
+    When the job endpoint itself did not answer, there is nothing to decide
+    from. That is the third state and it declines, rather than picking the
+    likeliest of four (`docs/validators.md`, "Declining instead of
+    guessing"). All four branches stay ERROR and exit 1 — a log that could
+    not be read must never soften into an empty log or an ok.
+    """
+    if meta is None:
+        if meta_absent:
+            return (
+                f"ERROR: Job #{job_id} not found — the job endpoint returned "
+                f"404 for this ID too, so no such job exists in this repo. "
+                f"Check the ID. Use gh-run to list jobs first, then gh-job "
+                f"with the job ID."
+            )
+        return (
+            f"ERROR: Job #{job_id} has no log (HTTP 404), and supertool "
+            f"could not tell why — the job endpoint did not answer: "
+            f"{meta_error}. A wrong ID, a job still running, and a log that "
+            f"was never written or has since expired are all still possible; "
+            f"this op is not guessing between them. Read the job state "
+            f"directly with: gh api repos/{{owner}}/{{repo}}/actions/jobs/{job_id}"
+        )
+    name = meta.get("name") or "?"
+    status = meta.get("status") or "?"
+    conclusion = meta.get("conclusion") or ""
+    completed_at = meta.get("completed_at") or "?"
+    label = f"Job #{job_id} ({name})"
+    if status != "completed":
+        return (
+            f"ERROR: {label} has no log — its status is `{status}`, so the "
+            f"log is not written yet. GitHub writes a job's log when the job "
+            f"completes; the ID is correct and there is nothing to fix. "
+            f"Retry once it finishes: ./supertool 'gh-job:{job_id}'"
+        )
+    if conclusion in ("cancelled", "skipped"):
+        return (
+            f"ERROR: {label} has no log — the job was `{conclusion}` "
+            f"(completed_at {completed_at}). GitHub only writes a log for a "
+            f"job that ran to completion, so no log was ever written for this "
+            f"one and none ever will be. Stop waiting — the ID is correct. "
+            f"Sibling jobs on the same run may still have logs."
+        )
+    return (
+        f"ERROR: {label} completed `{conclusion}` at {completed_at}, but its "
+        f"log is unavailable — expired or purged (GitHub keeps job logs for a "
+        f"limited retention window). The ID is correct; the log is gone, not "
+        f"missing from your query."
+    )
 
 
 def _get_config() -> dict:
     """Read config from SUPERTOOL_ env vars."""
     return {
-        "lines": int(os.environ.get("SUPERTOOL_LINES", "80")),
+        "lines": env_int("SUPERTOOL_LINES", 80, minimum=1),
         "error_patterns": os.environ.get(
             "SUPERTOOL_ERROR_PATTERNS", "ERROR,FAILED,Error:,Failed,fatal:,##[error]"
         ).split(","),
-        "error_context": int(os.environ.get("SUPERTOOL_ERROR_CONTEXT", "5")),
+        "error_context": env_int("SUPERTOOL_ERROR_CONTEXT", 5, minimum=0),
         "job_patterns": _parse_job_patterns(os.environ.get("SUPERTOOL_JOB_PATTERNS", "")),
     }
 
@@ -140,7 +229,7 @@ def _print_unmatched_failure(
     routinely a step that has nothing to do with the failure — naming it would
     mislead rather than help.
     """
-    tail_n = int(os.environ.get("GH_JOB_UNMATCHED_TAIL_LINES", "40"))
+    tail_n = env_int("GH_JOB_UNMATCHED_TAIL_LINES", 40, minimum=1)
     print("\n## FAILED — no error pattern matched")
     print(
         f"Job status is `{status_label}`: something did go wrong. supertool "
@@ -319,6 +408,9 @@ def main() -> int:
     job_name = "?"
     job_status = "?"
     job_conclusion = "?"
+    job_meta: dict | None = None
+    meta_absent = False
+    meta_error = ""
     run_id = ""
     pr_title = ""
     pr_number = ""
@@ -331,8 +423,19 @@ def main() -> int:
             ["gh", "api", _api_repo_path(f"actions/jobs/{job_id}")],
             capture_output=True, text=True, timeout=10, encoding="utf-8", errors="replace",
         )
+        if meta_result.returncode != 0:
+            # A 404 *here* is the one case where "check the ID" is the truth:
+            # there is no such job. Every other failure means the job's state
+            # is unknowable, and #723 is precisely about not converting that
+            # into a confident answer further down.
+            if _gh_error_kind(meta_result.stderr) == "notfound":
+                meta_absent = True
+            else:
+                meta_error = (meta_result.stderr.strip()
+                              or f"gh exited {meta_result.returncode}")
         if meta_result.returncode == 0:
             meta = json.loads(meta_result.stdout)
+            job_meta = meta
             job_name = meta.get("name", "?")
             job_status = meta.get("status", "?")
             job_conclusion = meta.get("conclusion") or "in_progress"
@@ -364,8 +467,8 @@ def main() -> int:
                                 pr_title = pr_data.get("title", "")
                                 pr_author = (pr_data.get("author") or {}).get("login", "")
                                 pr_branch = pr_data.get("headRefName", pr_branch)
-    except (FileNotFoundError, subprocess.TimeoutExpired, json.JSONDecodeError):
-        pass
+    except (FileNotFoundError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
+        meta_error = meta_error or f"{type(exc).__name__}: {exc}"
 
     # 2. Get job log
     try:
@@ -381,7 +484,10 @@ def main() -> int:
         return 1
 
     if log_result.returncode != 0:
-        print(_format_error(log_result.stderr, "Job log", job_id))
+        if _gh_error_kind(log_result.stderr) == "notfound":
+            print(_missing_log_message(job_id, job_meta, meta_absent, meta_error))
+        else:
+            print(_format_error(log_result.stderr, "Job log", job_id))
         return 1
 
     # Clean timestamps and ANSI codes from log
@@ -412,6 +518,23 @@ def main() -> int:
         print(f"Run: #{run_id}")
 
     print(f"Log: {total} lines total")
+
+    if total == 0 and not raw_mode:
+        # Empty and absent are two different lies this surface tells (#723):
+        # `gh run view --log` returns nothing at all for jobs whose log the
+        # API serves in full. Absence exits 1 above with a stated cause; a log
+        # that was fetched successfully and is genuinely 0 bytes says exactly
+        # that, in its own words, and never borrows the vocabulary of a log
+        # that could not be read. Without this the run fell through to the
+        # pattern search and printed a banner over nothing at all.
+        print()
+        print("## The log is empty — the fetch succeeded and returned 0 bytes")
+        print(f"This is not a missing log: gh returned one, and it has no "
+              f"content. Job state: status `{job_status}`, conclusion "
+              f"`{job_conclusion}`.")
+        print(f"Cross-check the raw bytes with: "
+              f"gh api repos/{{owner}}/{{repo}}/actions/jobs/{job_id}/logs")
+        return 0
 
     # 3. Raw mode — dump (sliced) trace, skip filters
     if raw_mode:
@@ -465,7 +588,7 @@ def main() -> int:
             return 0
         match_count = sum(1 for line in lines if rx.search(line))
         _emit_grep_hits(lines, sorted(hits), rx, match_count,
-                        int(os.environ.get("GH_JOB_GREP_MAX_BYTES", "65536")),
+                        env_int("GH_JOB_GREP_MAX_BYTES", 65536, minimum=1),
                         "GH_JOB_GREP_MAX_BYTES", shown_pattern, ctx)
         return 0
 

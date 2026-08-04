@@ -122,6 +122,13 @@ def cmd_watch(parts: list[str]) -> int:
     if status == "failed":
         print(f"ERROR: could not spawn a poller for {source}:{watcher_id}")
         return 1
+    if status == "unclaimable":
+        print(f"ERROR: could not claim the slot for {source}:{watcher_id} — its "
+              f"pid file at {transport.pid_path(source, watcher_id)} could not "
+              f"be created. Nothing was started, and nothing here knows whether "
+              f"a poller is already running for this id. Check that "
+              f"{transport.STATE_DIR_ENV} names a writable directory.")
+        return 1
     # An explicit re-arm is the operator saying they have seen the deaths and
     # are starting over — the one door out of the respawn cap in
     # `transport.DEATH_RESPAWN_LIMIT`. Nothing automatic clears the ledger.
@@ -351,7 +358,12 @@ def cmd_list() -> int:
 
 
 def start_poller(source: str, watcher_id: str, only: list[str]) -> tuple[str, int]:
-    """Claim the (source, id) slot, then spawn its poller. ("alive"|"spawned"|"failed", pid).
+    """Claim the (source, id) slot, then spawn its poller.
+
+    ("alive"|"spawned"|"failed"|"unclaimable", pid). `unclaimable` is the third
+    state (#693): the claim did not settle, so this process neither owns the
+    slot nor knows who does, and forking on that would be a spawn decided by an
+    absence of information.
 
     The one door to a new poller, for every tier — `watch` and radar's feed
     both come through here, because two spawn sites with two copies of the
@@ -368,6 +380,8 @@ def start_poller(source: str, watcher_id: str, only: list[str]) -> tuple[str, in
     refusal nobody asked for renders as a watcher quietly not existing.
     """
     owner = transport.claim_pidfile(source, watcher_id)
+    if owner == transport.CLAIM_UNKNOWN:
+        return "unclaimable", 0
     if owner:
         return "alive", owner
     try:

@@ -13,6 +13,11 @@ import subprocess
 import sys
 import urllib.parse
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import _body  # noqa: E402  (the one body cap + disclosure — #698)
+import _untrusted  # noqa: E402  (the fence around tracker text — #694)
+
 DESCRIPTION_MAX = 3000
 # Related MRs are listed, not summarised, so the list is capped. A *count* cut
 # it — the total was always printed correctly above a short list, which reads as
@@ -67,6 +72,17 @@ def _extract_image_urls(text: str) -> list[str]:
     return urls
 
 
+def _is_inside(candidate: str, directory: str) -> bool:
+    """True when `candidate` really resolves inside `directory`.
+
+    Compared after realpath on both sides, and with a trailing separator on the
+    directory so a sibling like `/tmp/images-other` cannot pass as `/tmp/images`.
+    """
+    root = os.path.realpath(directory)
+    target = os.path.realpath(candidate)
+    return target == root or target.startswith(root + os.sep)
+
+
 def _download_images(image_urls: list[str], issue_number: str) -> list[str]:
     """Download GitLab upload images to local temp directory.
 
@@ -86,10 +102,17 @@ def _download_images(image_urls: list[str], issue_number: str) -> list[str]:
             continue
 
         upload_path = match.group(1)
-        filename = os.path.basename(upload_path)
-        # URL-decode filename for local storage
-        local_name = urllib.parse.unquote(filename)
+        # Decode BEFORE taking the basename. The remote name is percent-encoded,
+        # so `basename` on the encoded form sees one segment and leaves any
+        # encoded separators intact — they only become separators afterwards.
+        # Decoding first means basename operates on what the name really says.
+        local_name = os.path.basename(urllib.parse.unquote(upload_path))
         local_path = os.path.join(out_dir, local_name)
+        # And confirm it: a name is only usable if it actually resolves inside
+        # the directory we chose. Anything else is skipped rather than guessed at.
+        if not _is_inside(local_path, out_dir):
+            print(f"note: skipped an attachment whose name resolves outside {out_dir}")
+            continue
 
         # Use glab api to download (handles auth automatically)
         # The endpoint is projects/:id/uploads — but glab api with GET
@@ -140,20 +163,27 @@ def main() -> int:
         print(f"ERROR: invalid JSON from glab\n{result.stdout[:500]}")
         return 1
 
-    title = d.get("title", "?")
+    # One-line fields are flattened rather than fenced — see presets/_untrusted.py.
+    title = _untrusted.flat(d.get("title", "?"))
     state = d.get("state", "?")
-    labels = ", ".join(d.get("labels", [])) or "none"
-    milestone = (d.get("milestone") or {}).get("title", "none")
-    assignees = ", ".join(a.get("username", "?") for a in d.get("assignees", [])) or "none"
-    author = (d.get("author") or {}).get("username", "?")
+    labels = _untrusted.flat(", ".join(d.get("labels", [])) or "none")
+    milestone = _untrusted.flat((d.get("milestone") or {}).get("title", "none"))
+    assignees = _untrusted.flat(", ".join(a.get("username", "?") for a in d.get("assignees", [])) or "none")
+    author = _untrusted.flat((d.get("author") or {}).get("username", "?"))
     iid = d.get("iid", number)
     web_url = d.get("web_url", "")
-    description = d.get("description") or ""
-    if desc_max is not None:
-        description = description[:desc_max]
+    # GitLab markdown attributes are stripped *before* the cap, not after, so
+    # the disclosed counts describe the text actually printed (#698).
+    description = re.sub(
+        r'\{width=\d+\s+height=\d+\}', '', d.get("description") or ""
+    )
+    description_total = len(description)
+    description, description_withheld = _body.cut(description, desc_max)
     project_id = d.get("project_id", "")
 
-    # Header
+    # Header. The fence convention is declared before the first thing inside a
+    # fence — the reader this protects is the one who acts on the first line.
+    print(_untrusted.banner())
     print(f"# #{iid} {title}")
     print(f"State: {state} | Author: {author}")
     print(f"Labels: {labels}")
@@ -161,6 +191,11 @@ def main() -> int:
     print(f"Assignees: {assignees}")
     if web_url:
         print(f"URL: {web_url}")
+    if description_withheld:
+        # Before the description, not only at the cut — the reader this
+        # protects is the one who stops at the top (#681, #698).
+        print(_body.header_notice(
+            description, description_total, description_withheld))
 
     # 2. Fetch related MRs via API
     try:
@@ -197,10 +232,11 @@ def main() -> int:
     except (subprocess.TimeoutExpired, json.JSONDecodeError):
         pass
 
-    # 3. Description (strip GitLab markdown attributes like {width=... height=...})
-    description = re.sub(r'\{width=\d+\s+height=\d+\}', '', description)
+    # 3. Description (markdown attributes already stripped, above the cap)
     if description:
-        print(f"\n## Description\n{description}")
+        print(f"\n## Description\n{_untrusted.fence(description)}")
+        if description_withheld:
+            print(f"\n{_body.cut_notice(description_withheld)}")
 
     # 4. Fetch comments (notes) — human only
     all_image_urls = _extract_image_urls(description)
@@ -223,13 +259,19 @@ def main() -> int:
                         suffix = f", {truncated} earlier truncated — use :full to fetch all" if truncated else ""
                         print(f"\n## Comments ({len(shown_notes)} of {len(human_notes)} human shown{suffix}, {system_count} system skipped)")
                     for note in shown_notes:
-                        note_author = (note.get("author") or {}).get("username", "?")
+                        note_author = _untrusted.flat((note.get("author") or {}).get("username", "?"))
                         body = note.get("body") or ""
+                        # The truncation notice is supertool's, so it prints
+                        # outside the fence — see the same call in gh-issue.
+                        note_trunc = ""
                         if comment_max is not None and len(body) > comment_max:
-                            body = body[:comment_max] + f"\n…[truncated at {comment_max} chars — use :full]"
+                            body = body[:comment_max]
+                            note_trunc = _body.comment_cut_notice(comment_max)
                         created = (note.get("created_at") or "")[:10]
                         print(f"\n**{note_author}** ({created}):")
-                        print(body)
+                        print(_untrusted.fence(body))
+                        if note_trunc:
+                            print(note_trunc)
                         # Extract images from comments too
                         all_image_urls.extend(_extract_image_urls(note.get("body") or ""))
                 else:

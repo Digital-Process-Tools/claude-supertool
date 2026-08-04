@@ -29,6 +29,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent / "presets" / "mcp"))
 sys.path.insert(0, str(Path(__file__).parent.parent / "presets"))
 
+from _preset_loader import load_preset_module  # noqa: E402
+
 # status.py reaches _paths.runtime_dir(), which refuses outright where
 # os.geteuid does not exist (#544).
 posix_only = pytest.mark.skipif(
@@ -42,9 +44,7 @@ pytestmark = posix_only
 @pytest.fixture
 def status_mod(tmp_path, monkeypatch):
     monkeypatch.setenv("SUPERTOOL_RUNTIME_DIR", str(tmp_path / "rt"))
-    import status  # noqa: PLC0415
-
-    return status
+    return load_preset_module("mcp", "status", prefix="mcp_")
 
 
 def _pidfile(status_mod, name: str, body: str) -> Path:

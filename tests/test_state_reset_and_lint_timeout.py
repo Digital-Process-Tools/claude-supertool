@@ -165,11 +165,18 @@ def test_b_the_next_test_sees_clean_module_state() -> None:
     assert _SENTINEL_DIR not in supertool._VALIDATOR_FINGERPRINT_CACHE
 
 
-def test_every_mutable_global_is_either_reset_or_deliberately_exempt() -> None:
+def test_every_mutable_global_in_supertool_py_is_reset_or_deliberately_exempt() -> None:
     """The reset list is hand-maintained; this makes forgetting loud.
 
     A new module-level dict/list/set is per-run scratch until someone says
     otherwise. Adding one without a decision fails here.
+
+    **This check covers `supertool.py` and nothing else**, and the name now says
+    so (#686). Both the snapshot and the restore go through
+    `getattr(supertool, name)`, so the reach stops at one module — while the old
+    name, `test_every_mutable_global_...`, read as a statement about the
+    codebase. `presets/` is held separately, and on a different contract, by
+    `tests/test_preset_global_lifetimes_686.py`.
     """
     import conftest
 
@@ -182,7 +189,8 @@ def test_every_mutable_global_is_either_reset_or_deliberately_exempt() -> None:
     }
     accounted = set(conftest.RESET_GLOBALS) | set(conftest.RESET_EXEMPT_GLOBALS)
     assert live - accounted == set(), (
-        "new module-level mutable global(s) not accounted for in "
-        "conftest.RESET_GLOBALS / RESET_EXEMPT_GLOBALS — decide which, "
-        "see issue #397"
+        "new module-level mutable global(s) in supertool.py not accounted for "
+        "in conftest.RESET_GLOBALS / RESET_EXEMPT_GLOBALS — decide which, "
+        "see issue #397. This check reads supertool.py only; globals under "
+        "presets/ are covered by test_preset_global_lifetimes_686.py (#686)."
     )

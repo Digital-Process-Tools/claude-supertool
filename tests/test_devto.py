@@ -581,7 +581,7 @@ def test_resolve_parent_numeric_id_happy(monkeypatch: pytest.MonkeyPatch) -> Non
         def __exit__(self, *a):
             return False
 
-    monkeypatch.setattr(comment_op.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(sys.modules["_http"], "_OPEN", fake_urlopen)
     assert comment_op._resolve_parent_numeric_id("abc") == 1502909
 
 
@@ -594,8 +594,8 @@ def test_resolve_parent_numeric_id_no_username(monkeypatch: pytest.MonkeyPatch) 
         def __exit__(self, *a): return False
 
     monkeypatch.setattr(
-        comment_op.urllib.request,
-        "urlopen",
+        sys.modules["_http"],
+        "_OPEN",
         lambda req, timeout=15: _Ctx(io.BytesIO(b'{"user": null}')),
     )
     assert comment_op._resolve_parent_numeric_id("abc") is None
@@ -616,7 +616,7 @@ def test_resolve_parent_numeric_id_no_match(monkeypatch: pytest.MonkeyPatch) -> 
         url = req.full_url
         return _Ctx(api_resp if "/api/comments/" in url else html_resp)
 
-    monkeypatch.setattr(comment_op.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(sys.modules["_http"], "_OPEN", fake_urlopen)
     assert comment_op._resolve_parent_numeric_id("abc") is None
 
 

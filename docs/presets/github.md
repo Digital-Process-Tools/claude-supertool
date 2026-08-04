@@ -12,8 +12,8 @@ A GitHub-cloned cwd, **or** a `repo:OWNER/NAME` target — see [Targeting anothe
 
 | Op | Syntax | What it returns |
 |----|--------|-----------------|
-| `gh-issue` | `gh-issue:NUMBER[:full]` | Issue metadata, description, all comments (truncated by default), linked PRs, image download. `:full` disables truncation |
-| `gh-pr` | `gh-pr:NUMBER_OR_BRANCH[:status]` | Full PR dashboard: branch, checks, reviews/approval state, linked issue, diff stat, comments. `:status` returns slim merge-state plus the `head -> base` branch line only (~250 bytes). The check line opens with `N total:` and every count after it sums back to N, so a state the tally does not recognise is named (`2 cancelled`) instead of dropped; anything short of every-check-passed carries `⚠ NOT ALL GREEN`, and zero check runs renders as one of four states — `none yet`, `none, and none will be created`, `none until the conflict is resolved … Rebase`, or a stated `UNKNOWN` — rather than one sentence for all of them ([#585](https://github.com/Digital-Process-Tools/claude-supertool/issues/585), [#594](https://github.com/Digital-Process-Tools/claude-supertool/issues/594), see [Zero check runs](#zero-check-runs-is-four-states-not-one)). The linked issue is every issue a GitHub closing keyword binds to — all of them, plural label when there are several — and a stated `none declared` when the body names no keyword, never the first `#N` in the body ([#591](https://github.com/Digital-Process-Tools/claude-supertool/issues/591), see [The linked issue](#the-linked-issue-is-a-declared-closing-reference-not-the-first-n)) |
+| `gh-issue` | `gh-issue:NUMBER[:full]` | Issue metadata, description, all comments (truncated by default), linked PRs, image download. `:full` disables truncation. A truncated body says so twice — in the header, before the reader reaches it, and again at the cut — with the exact char count withheld and `:full` named as the way to get the rest (see [A truncated body says so before you reach it](#a-truncated-body-says-so-before-you-reach-it)) |
+| `gh-pr` | `gh-pr:NUMBER_OR_BRANCH[:status\|:full]` | Full PR dashboard: branch, checks, reviews/approval state, linked issue, diff stat, comments. `:status` returns slim merge-state plus the `head -> base` branch line only (~250 bytes). The check line opens with `N total:` and every count after it sums back to N, so a state the tally does not recognise is named (`2 cancelled`) instead of dropped; the legs read are reconciled against the number the Actions run declares, so a rollup that came back short carries `⚠ INCOMPLETE — 9 of 14 legs read` and names the legs it never saw (see [The tally says how many legs it did *not* read](#the-tally-says-how-many-legs-it-did-not-read)); anything short of every-check-passed carries `⚠ NOT ALL GREEN`, and zero check runs renders as one of four states — `none yet`, `none, and none will be created`, `none until the conflict is resolved … Rebase`, or a stated `UNKNOWN` — rather than one sentence for all of them ([#585](https://github.com/Digital-Process-Tools/claude-supertool/issues/585), [#594](https://github.com/Digital-Process-Tools/claude-supertool/issues/594), see [Zero check runs](#zero-check-runs-is-four-states-not-one)). The linked issue is every issue a GitHub closing keyword binds to — all of them, plural label when there are several — and a stated `none declared` when the body names no keyword, never the first `#N` in the body ([#591](https://github.com/Digital-Process-Tools/claude-supertool/issues/591), see [The linked issue](#the-linked-issue-is-a-declared-closing-reference-not-the-first-n)). A description over `DESCRIPTION_MAX` (2000 chars) says so twice — in the header and again at the cut — naming the exact char count withheld, and `:full` returns the whole description ([#698](https://github.com/Digital-Process-Tools/claude-supertool/issues/698), see [A truncated body says so before you reach it](#a-truncated-body-says-so-before-you-reach-it)). The comment list is bounded the same way: the last 10 by default, disclosed as `## Comments (10 of 25 shown, 15 earlier truncated — use :full to fetch all)` rather than as a bare total above ten of them, with each comment body cut at 500 chars marked at the cut; `:full` returns every comment whole ([#719](https://github.com/Digital-Process-Tools/claude-supertool/issues/719), see [A capped comment list says how many it did not show](#a-capped-comment-list-says-how-many-it-did-not-show)) |
 | `gh-prs` | `gh-prs[:author=@me,reviewer=@me,state=open,failed,nopipe,iids]` | PR triage board: your open PRs sorted failing-first then stalest. Per PR: check rollup (a failure shows the failing **check name**), approval state, age, diff size, watch-state, `draft`/`conflict`/`threads` flags + footer pointing at the first failing-and-unwatched PR. The gl-mrs twin. `iids` emits a bare number list for `watch-mine.sh` |
 | `gh-run` | `gh-run:NUMBER` | Workflow run job list with statuses and failed step names |
 | `gh-job` | `gh-job:NUMBER[:raw[:-N\|:START[:END]]\|:grep:PATTERN]` | Job failure detail: PR context + error pattern search + log tail. `:raw` dumps the full trace; `:raw:START:END` slices lines (1-indexed, inclusive); `:raw:-N` returns the **last N lines**, and a START past the end returns the tail of the width requested with a line saying so rather than declining — see [Reading a range](gitlab.md#reading-a-range) ([#487](https://github.com/Digital-Process-Tools/claude-supertool/issues/487)); `:grep:PATTERN` runs an ad-hoc regex over the log (literal fallback on bad regex, ±context, names the pattern + tail on no-match — never silent-empty). Optional per-job `job_patterns` table in `.supertool.json` (see gitlab preset doc) maps job names to tighter patterns + a `resolution` op. Zero matches on a job GitHub calls `failure` prints `## FAILED — no error pattern matched` — patterns tried + a log tail, never silence. `## No error patterns matched` survives only for jobs that did not fail |
@@ -137,6 +137,35 @@ Two buckets are deliberately left unnamed: **passed** (not the reader's problem)
 
 **Bounded at 5 legs per group**, then `+N more` — this repo's disclosure vocabulary ([#605](https://github.com/Digital-Process-Tools/claude-supertool/issues/605)) — so a wide matrix cannot turn the answer to "which" into a second output-budget problem.
 
+### The tally says how many legs it did *not* read
+
+`N total:` and terms that sum to `N` ([#454](https://github.com/Digital-Process-Tools/claude-supertool/issues/454)) audit the tally against itself. That cannot detect a missing *input*. On PR #715, mid-way through a partial re-run, `statusCheckRollup` came back with nine of the run's fourteen legs and the op printed `9 total: 8 passed, 0 failed, 1 pending` — internally consistent, and wrong by five ([#724](https://github.com/Digital-Process-Tools/claude-supertool/issues/724)). Had the ninth leg been green, the line would have read `9 total: 9 passed, 0 failed, 0 pending` with **no** `⚠` at all: five legs invisible rather than pending, in the line a merge gate reads.
+
+So the rollup is now reconciled against a second, independent count — how many jobs the Actions run itself declares:
+
+```
+checks: 9 total: 8 passed, 0 failed, 1 pending ⚠ NOT ALL GREEN ⚠ INCOMPLETE — 9 of 14 legs read
+  not read: pytest (windows-latest, 3.10), pytest (windows-latest, 3.11), notifiers (bun + TypeScript) (macos-latest), +2 more — this tally describes 9 of 14 legs and is not a merge signal. GitHub re-creates check runs during a partial re-run, so re-running the op usually settles it.
+```
+
+`⚠ INCOMPLETE` is a **second** marker, not a reworded `⚠ NOT ALL GREEN`. The two say different things — "the legs I read were not all green" and "I did not read all the legs" — and an all-passing shortfall carries only the second one, which is the case that was silent.
+
+**The floor is the all-attempts name set, and the source matters more than the idea.** Measured live, cancelling a run and re-running the failed job:
+
+```
+11:28:20  rollup=0   latest_attempt=0   all_attempts_distinct=14
+11:28:24  rollup=11  latest_attempt=11  all_attempts_distinct=14
+11:28:32  rollup=14  latest_attempt=14  all_attempts_distinct=14
+```
+
+GitHub withdraws and re-creates the check runs over ~12s, and the rollup is genuinely short while it does. **`repos/{o}/{r}/actions/runs/{id}/jobs` defaults to `filter=latest` and dips with it** — a floor that agrees with the short answer is no floor. `filter=all` holds, because a previous attempt's job rows are history: the count of *distinct job names across every attempt* only ever grows. It is the name set and not `total_count`, which under `filter=all` counts every row of every attempt (42 across three attempts of a fourteen-leg matrix).
+
+**The run ids are free; the count is not.** The run id comes off the same `detailsUrl` the job ids already come off, so finding *which* runs to reconcile against costs nothing. The jobs call costs one extra `gh api` per distinct run, which roughly doubles `:status` wall time (~1.1s to ~2.0s, measured on this repo). That is deliberate and it is the whole point of the op: `:status` exists to be the thing a merge is decided on, and a merge decided on nine of fourteen legs is the failure this cost buys out. `gh-prs` and `git-status` are **not** reconciled — a board paying that per PR is a different trade, and neither is a merge gate.
+
+**An unestablished count declines; it never guesses.** If the jobs API cannot be reached, or the PR fans out past `MAX_RECONCILED_RUNS` (4) distinct runs, the line reads `⚠ TALLY UNVERIFIED` and says so — `docs/validators.md` ([Declining instead of guessing](../validators.md#declining-instead-of-guessing)). Assuming `declared == found` would restore exactly the silence this exists to break; assuming a larger number would invent legs and trade a loud failure for a quiet one.
+
+**A rollup naming no Actions run reconciles silently and for free.** External CI and legacy commit statuses carry no run id, so there is no declared count anywhere to be short of, and they are counted as extra rather than as missing — `declared < found` is never a shortfall.
+
 **Debug a failed Actions job:**
 ```bash
 ./supertool 'gh-run:12345'
@@ -181,6 +210,41 @@ A PR body routinely cites issues it does **not** close: a precedent (`the same s
 
 Both ops call `_checks.closing_issue_refs()` and `_checks.linked_issue_line()`, so the extraction and the wording cannot drift between them. The GitLab arm still uses its own `#(\d{4,})` heuristic with no keyword requirement — same class of defect, different closing vocabulary, filed separately.
 
+### A truncated body says so before you reach it
+
+`DESCRIPTION_MAX` (3000 chars) is a bound the op has always had, and it is right to keep — an unbounded issue render is a context blowout in the caller, a different bug from this one. What was missing was the disclosure. A raw `body[:DESCRIPTION_MAX]` slice cut mid-line with no marker anywhere, and the `## Comments (0)` line that printed right after gave the truncated output a natural-looking ending — read top to bottom it looks like a complete issue, not a partial one. It also produced malformed markdown: cutting three characters into a real heading rendered as `## The` ([#681](https://github.com/Digital-Process-Tools/claude-supertool/issues/681)).
+
+Same family as [`gh-job:...:grep:`](#gh-jobgrep-bounds-its-own-output-and-says-when-it-did) one row down, and the fix follows the same shape:
+
+- **The cut lands on a line break, not a byte offset.** The last `\n` at-or-before the cap is where the body ends, so truncation can no longer produce a fragment of a heading or any other line.
+- **The withheld amount is stated in the header, before `## Description`** — `Body: TRUNCATED — N of M chars shown, K withheld — use :full to fetch all` — so a reader who stops at the top still sees it. A footer-only disclosure is read by nobody in exactly the case it exists for: the reader being cut off is cut off before reaching it.
+- **And again at the point of the cut**, matching the `## Comments` truncation convention already in this op: `…[K chars truncated here — use :full to fetch all]`.
+
+`:full` disables the cap entirely, for the description and for the comments alike.
+
+`gh-pr`, `gl-issue`, and `gl-mr` bodies went through the identical unguarded `[:DESCRIPTION_MAX]` slice and were left as follow-ups by that fix. [#698](https://github.com/Digital-Process-Tools/claude-supertool/issues/698) closed all three, and moved the shape into `presets/_body.py` so the four ops share one cut and one wording rather than four copies of them — including this one, which was rewritten onto the helper rather than left as a fifth copy.
+
+**The caps themselves were checked per site and deliberately left unequal.** An issue description is the brief and is capped at 3000 (`gh-issue`, `gl-issue`); a PR or MR description is one panel in a render that also carries checks, reviews, threads, diff stat and comments, and stays at 2000 (`gh-pr`, `gl-mr`) so the body cannot crowd out the check and review data that is the reason to open the op at all. Uniform disclosure, per-context limit.
+
+**`gh-pr` gained a `:full` flag it did not have**, because the disclosure names one. A stated escape hatch that does not exist is worse than no disclosure: it stops the reader looking for another way to the text. For the same reason `gl-mr`'s `:full` — documented as uncapping the file list and comments — now also uncaps the description, which it never did.
+
+### A capped comment list says how many it did not show
+
+`## Comments (25)` above ten comments was the whole defect ([#719](https://github.com/Digital-Process-Tools/claude-supertool/issues/719)). The number in the header is correct and the ten below it are real, and a reader has no way to tell the two do not describe each other — so a brief written from the render is confidently missing fifteen comments. The ten shown are the most *recent*, which puts the original objection, the design decision and the "do not merge until X" precisely in the withheld half. Same family as the truncated body one section up, in count form rather than character form.
+
+`gh-issue` had already said this correctly since [#681](https://github.com/Digital-Process-Tools/claude-supertool/issues/681); `gh-pr`, in the next file over, had never adopted it. Both now print the same line, from `presets/_body.py`:
+
+| Situation | What prints |
+| --- | --- |
+| 3 comments, all shown | `## Comments (3)` — nothing else, so the absence of a marker means the list is whole |
+| 25 comments, 10 shown | `## Comments (10 of 25 shown, 15 earlier truncated — use :full to fetch all)` |
+| a comment over `COMMENT_MAX` | the body, then `…[truncated at 500 chars — use :full]` |
+| `:full` | every comment, every body, and no markers |
+
+**The per-comment cap is per-op and the wording is not.** `gh-issue` cuts a comment at 1000 chars and `gh-pr` at 500 — a PR render also carries checks, reviews, threads and a diff stat, and comments must not crowd out the data that is the reason to open the op. That is the same per-context split `DESCRIPTION_MAX` already makes (3000 / 2000). The *disclosure* is identical at both, which is the part that must not drift.
+
+**Which ten are shown is a separate question and was left alone.** #719 argues the oldest comments carry the objection and the newest are the least load-bearing. That may be right, but it is an argument about selection, not about disclosure, and settling it inside a fix for an invisible cut would smuggle a behaviour change into a diff about honesty. The reasoning sits on `_body.COMMENT_TAIL` and in [#738](https://github.com/Digital-Process-Tools/claude-supertool/issues/738), which also raises a third option neither side of the argument had: keep the head *and* the tail with the gap marked in the middle, which is structurally what `gl-mr` already does.
+
 ### `gh-job:...:grep:` bounds its own output, and says when it did
 
 Identical to `gl-job`'s — see
@@ -190,6 +254,34 @@ incident and the reasoning. The knob here is `GH_JOB_GREP_MAX_BYTES` (default
 `N of M matching lines shown`, and names **bytes** as what cut — never a match
 limit, which this op does not have
 ([#622](https://github.com/Digital-Process-Tools/claude-supertool/issues/622)).
+
+### A missing job log is explained by the job's state, never by the ID
+
+GitHub writes a job's log **on completion**. So `404` from `repos/.../actions/jobs/<id>/logs` has four causes that call for four different next actions, and `gh-job` used to render all four as one sentence — `Check the ID. Use gh-run to list jobs first` — which is the one thing that was already right in the incident that filed [#723](https://github.com/Digital-Process-Tools/claude-supertool/issues/723): the ID had just been read out of `gh run view --json jobs`, and the *job* endpoint returned the full object for it.
+
+Verified live against this repo: a `queued` job and an `in_progress` job both return `gh: HTTP 404` with an `<Error><Code>BlobNotFound</Code>` body from the logs endpoint, byte-identical to each other — while `gh api repos/{owner}/{repo}/actions/jobs/<id>` answers in full for the same number. A job ID that genuinely does not exist 404s on **both** endpoints, with `gh: Not Found (HTTP 404)`.
+
+| Job state | What `gh-job` says |
+|---|---|
+| job endpoint also 404s | `Job #N not found — the job endpoint returned 404 for this ID too, so no such job exists in this repo. Check the ID.` |
+| `status` is not `completed` | has no log — its status is `in_progress`, **so the log is not written yet**. GitHub writes a job's log when the job completes; the ID is correct and there is nothing to fix. Retry once it finishes. |
+| `conclusion` is `cancelled` or `skipped` | has no log — the job was `cancelled` (with its `completed_at`). GitHub only writes a log for a job that ran to completion, so **no log was ever written for this one and none ever will be**. Stop waiting — the ID is correct. |
+| completed, log still gone | completed `failure` at its `completed_at`, but its log is **unavailable — expired or purged**. The ID is correct; the log is gone, not missing from your query. |
+| job endpoint did not answer | has no log (HTTP 404), and **supertool could not tell why** — the job endpoint did not answer, and the reason is quoted. Names all three remaining possibilities rather than picking one. |
+
+The cancelled row is the one that saves real time: it is the only state whose right response is to **stop looking** rather than to retry. The reporter cancelled a hung leg specifically expecting the log to be written on completion, and it never was.
+
+**The extra API call is not extra.** `gh-job` already fetches the job object before it fetches the log — it needs the name, status, conclusion and run id for the header. So the distinction costs **no additional request on any path**, including the happy one where the log exists and nobody cares about the job's status. Fetching metadata lazily *after* a 404 was the obvious-looking design and buys nothing here; the fix is to stop discarding an answer already in hand. The last row exists because that fetch can itself fail: when it does, the state is unknowable and the op declines rather than picking the likeliest of four (`docs/validators.md` §"Declining instead of guessing").
+
+**Every branch is still `ERROR:` and still exits 1.** A log that could not be read must never soften into an empty log or an ok — the direction this class of fix is most likely to be wrong in.
+
+**Empty is not absent, and now reads differently.** `gh run view --log` returning nothing for a genuinely failed job is the other lie this surface tells, so a log that was fetched successfully and *is* 0 bytes prints `## The log is empty — the fetch succeeded and returned 0 bytes`, names the job's status and conclusion, and gives the raw `gh api` command to cross-check. Previously a zero-line log fell through to the error-pattern search and printed the unmatched-failure banner over nothing at all. `:raw` already said this; the other modes did not.
+
+`gh-run` was checked in the same pass and is **not** affected: it only ever fetches run metadata, where a 404 does mean the ID is wrong.
+
+### Text from the tracker is fenced
+
+Issue and PR bodies and every comment are wrapped in `⟨remote NONCE⟩ … ⟨/remote NONCE⟩` markers, and one-line fields (titles, logins, labels) are flattened to a single line. See [Remote text is fenced](index.md#remote-text-is-fenced) for the convention, what it costs, and why the fence cannot be closed from inside ([#694](https://github.com/Digital-Process-Tools/claude-supertool/issues/694)).
 
 ## Configuration
 

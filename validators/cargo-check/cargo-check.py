@@ -24,6 +24,7 @@ import pathlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from source_context import source_context
+from refusal import tool_fault
 
 
 def emit(d: dict) -> None:
@@ -119,8 +120,21 @@ def main() -> None:
     output = r.stderr or r.stdout or ""
     errors = _parse_errors(output)
     if not errors:
+        # cargo exited non-zero without emitting a single short-format
+        # `file:line:col: error[...]` diagnostic, so nothing here is a compile
+        # finding about any source file — let alone this one. The shapes that
+        # land here are cargo failing before or after compilation (#753):
+        #
+        #   error: unclosed table, expected `]`      (unparseable Cargo.toml)
+        #    --> Cargo.toml:1:9
+        #   error: could not compile `demo` ... due to 1 previous error
+        #                                            (the summary, alone)
+        #
+        # The first is a manifest error published as a Rust compile error in a
+        # .rs file the compiler never reached.
         errors = [{"line": None, "col": None, "severity": "error",
-                   "code": "compile", "msg": output.strip()[:300] or "cargo check failed"}]
+                   "code": "adapter",
+                   "msg": tool_fault("cargo check", r.returncode, output)}]
 
     emit({"tool": "cargo-check", "file": file, "ok": False, "count": len(errors),
           "errors": errors, "duration_ms": dur})

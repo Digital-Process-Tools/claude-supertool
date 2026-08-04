@@ -196,6 +196,61 @@ Validators are post-write hooks — they run after a file is written and report 
 - **Validators output JSON.** See [validators.md](validators.md) for the exact schema. Other scripts can output anything — supertool passes it through as-is.
 - **One file per op.** `gitlab/issue.py`, `gitlab/mr.py`, `gitlab/pipeline.py` — not one monolithic `gitlab.py` with a dispatch table.
 - **Scripts are co-located with their preset.** `presets/mytools/status.py`, not `scripts/status.py`. The `{path}` placeholder makes this work without hardcoded paths.
+- **Never call `urllib.request.urlopen` directly.** Use `urlopen()` from [`presets/_http.py`](../presets/_http.py). See below — this one is enforced by a test.
+- **Never call `.read()` on a response.** Use `read_capped()` from the same module. Also enforced by a test.
+
+### HTTP requests go through `presets/_http.py`
+
+`urllib.request.urlopen` uses the default global opener, whose `HTTPRedirectHandler` rebuilds a redirected request stripping exactly two headers — `content-length` and `content-type` — and carrying everything else, including `Authorization`, `api-key` and `Cookie`, to whatever host the `Location` names. `http_error_302` additionally permits an `https` -> `http` downgrade. A server answering `302 Location: http://attacker.example/` therefore receives the caller's live credential, and because the redirect is followed transparently, its response body comes back to the caller as though the real API had answered it ([#691](https://github.com/Digital-Process-Tools/claude-supertool/issues/691)).
+
+```python
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))  # for _http
+
+from _http import (  # noqa: E402
+    DeadlineExceeded, RedirectRefused, ResponseTooLarge, read_capped, urlopen,
+)
+
+try:
+    with urlopen(req, timeout=timeout) as resp:
+        body = read_capped(resp)
+except RedirectRefused as e:
+    print(f"ERROR: {e}", file=sys.stderr)
+    sys.exit(1)
+except (ResponseTooLarge, DeadlineExceeded) as e:
+    print(f"ERROR: {e}", file=sys.stderr)
+    sys.exit(1)
+except http.client.HTTPException as e:          # IncompleteRead is NOT an OSError
+    print(f"ERROR: incomplete response: {e}", file=sys.stderr)
+    sys.exit(1)
+```
+
+`_http.urlopen` follows a redirect only when it stays on the same origin — `(scheme, host, port)` with default ports normalised and the host compared case-insensitively — plus the one asymmetry of an `http` -> `https` upgrade on the default ports, which moves the credential onto a *more* protected channel. A different host, a different port on the same host, a downgrade, a non-HTTP scheme or an unparseable port all raise `RedirectRefused`.
+
+Three rules about the refusal:
+
+1. **Catch it explicitly and print it.** `str(exc)` names the origin, the status code, the attempted destination and the reason. Returning the pre-redirect state quietly is the false-success defect wearing a new coat.
+2. **It is deliberately not an `OSError`.** A blanket `except OSError` or `except urllib.error.URLError` must not absorb a credential-exfiltration attempt into a generic "network error", and a `..._safe()` helper whose contract is "returns `None` on any error" must not turn it into a silent `None`. Where such a helper exists (`hashnode._graphql.gql_safe`, `bluesky._atproto.refresh_session`), the refusal is a documented carve-out that exits instead.
+3. **Ordering matters.** Put `except RedirectRefused` *before* the broad handlers.
+
+### The body is bounded, in bytes and in wall clock
+
+`resp.read()` has no cap, and urllib's `timeout` bounds each socket operation rather than the call, so a server that drips one byte at a time resets it forever — measured at 4.7s against `timeout=1` ([#766](https://github.com/Digital-Process-Tools/claude-supertool/issues/766)). Unbounded body plus unbounded wall clock is the whole slowloris shape, so `read_capped()` closes both.
+
+1. **The cap is a refusal, not a truncation.** Over `_http.MAX_RESPONSE_BYTES` (10 MiB) raises `ResponseTooLarge` and returns nothing. Handing back the first N bytes of a JSON body produces a `JSONDecodeError` that reads as "bad JSON from the endpoint", which sends the reader to the wrong file. Pass `limit=` if you know your call site better than the default does.
+2. **`ResponseTooLarge` is not an `OSError`, and `DeadlineExceeded` is.** A body past the cap is a statement about the endpoint and must not vanish into a `..._safe()` helper's `None`; a slow endpoint is exactly the failure those helpers exist to degrade past, so `DeadlineExceeded` subclasses `TimeoutError` and needs no handler of its own there.
+3. **The deadline needs no new argument.** It defaults to `_http.DEADLINE_FACTOR` (4) × the `timeout` you already pass, so a new call site inherits a bound without asking for one.
+4. **A short body raises.** A response ending before its declared `Content-Length` raises `http.client.IncompleteRead` with an **empty** partial. The bytes that arrived are not a smaller answer; they are the start of an answer that never came.
+5. **Catch `http.client.HTTPException`.** `IncompleteRead` subclasses it, **not** `OSError`, so it walks past `except OSError` and `except urllib.error.URLError` alike. That is how it used to propagate out of `gql_safe`, whose docstring promised it never raised.
+
+What the deadline does **not** cover: urllib gives no way to interrupt the request-line and header phase, so a server dripping *headers* forever is still bounded only by the per-socket-operation `timeout`. The deadline catches it at the first opportunity afterwards. That is a partial bound and is documented as one — closing it needs a socket layer `_http` does not have.
+
+`tests/test_http_bounds.py::test_no_unbounded_response_reads_remain_under_presets` fails the build on any argument-less `.read()` under `presets/` on a name bound from `urlopen` or an `HTTPError`, for the same reason the bare-`urlopen` test exists: a guard that is written but not wired at every call site is this repo's most frequently repeated defect. Error bodies are the one deliberate exception — they are truncated rather than refused, with `e.read(ERROR_BODY_BYTES)`, because they are already cut to 200-500 characters for display and are never parsed, so a short read has nothing to misdiagnose.
+4. **A permitted redirect is disclosed too, and you get that for free.** `_http.urlopen` prints a `NOTE: the request was redirected before it was answered: ... -> ...` line to stderr whenever the final URL differs from the one you asked for. Allowing a hop is not the same as saying nothing about it — the caller asked one URL a question and a different URL answered, and every value you return below that line describes the second one. dev.to answers `/settings` with a same-origin 302 to `/enter` as soon as the session cookie expires, which is exactly how `fetch_csrf_token` came to report a layout change when the real cause was a dead cookie. Both URLs are printed with `repr`, because the destination is remote-controlled text on its way to a terminal.
+
+`tests/test_security_redirect.py::test_no_bare_urlopen_call_sites_remain_under_presets` fails the build on any `urllib.request.urlopen(` left under `presets/`. That test exists because a guard that is written but not wired at every call site is this repo's most frequently repeated defect — the protection has to be inherited, not re-earned per integration.
 
 ---
 
@@ -307,6 +362,8 @@ Three things about that table are load-bearing:
 
 The `.ts` inventory in `tests/test_ci_non_python_coverage_557.py` is asserted against `git ls-files`, so a new TypeScript file fails the suite until somebody classifies it as executed, uncovered or a fixture. That is the durable half of "accept the gap explicitly": a gap nobody can add to silently.
 
+Both jobs also carry a `timeout-minutes` — 30 for `pytest`, 10 for `notifiers` — and the channel integration step runs under a `--timeout=30` per-test budget. See §"Never leave a CI job without a wall-clock budget" for the sizing and for why the two numbers differ.
+
 ---
 
 ## Running tests
@@ -368,6 +425,105 @@ Candidates 2 and 3 are **executed** before being committed to (`-c 'import sys'`
 
 If nothing resolves and no `$PYTHON` was set, the hook **refuses the push** and lists every name it tried. It does not fall back to the bare name, since that would restore the hang for exactly the people who have no versioned interpreter.
 
+### Never assume the checkout has history
+
+`actions/checkout` clones at **depth 1**, and the workflows do not set
+`fetch-depth`. On CI this repo has exactly **one commit**. Any test that reads
+supertool's own git history — commit counts, `git log` ranges, blame, anything a
+pickaxe search walks back through — passes on a developer's full clone and fails
+on eight of fourteen CI legs, with a failure that says nothing about the code it
+was meant to be testing.
+
+Build the history the test needs, in a `tmp_path` repo the test owns:
+
+```python
+@pytest.fixture(scope="session")
+def history_repo(tmp_path_factory):
+    repo = tmp_path_factory.mktemp("history")
+    ...  # git init, then commit as many times as the assertion requires
+    return repo
+```
+
+Twenty-five commits cost about a second, once per session. Pair it with a guard
+test asserting the fixture is actually bigger than whatever limit is under test —
+otherwise the day it shrinks, the assertions it feeds go quietly green instead of
+red. See `tests/test_env_knob_parsing_654.py`.
+
+**Raising `fetch-depth` is not the fix.** It changes CI for every job in the repo
+to suit one assertion, and it leaves the next such test just as free to make the
+same assumption.
+
+If a test genuinely cannot work without real history, skip it with a stated
+reason — a reported skip, never a silent pass. See
+[Declining instead of guessing](validators.md#declining-instead-of-guessing) for
+why the distinction is load-bearing here too.
+
+### Never assume which worker a test lands in
+
+The suite runs under `pytest-xdist`, so the unit of process isolation is the
+**worker**, not the test file. Two test files can share one interpreter, and
+which two is decided by the runner's core count — a property of the machine,
+never of the code.
+
+That matters wherever the product deliberately keeps *per-process* state.
+`env_int` in `presets/_env.py` says each distinct notice at most once per
+process (`_ANNOUNCED`), because a knob read once per file would otherwise print
+the same line ten times over the output it is warning about. In production that
+is exactly right: a preset is a subprocess that reads its knobs and exits. In a
+worker it means the second test to provoke a given message reads an **empty**
+`capsys` and fails an assertion that describes the code correctly.
+
+`test_github_prs.py` and `test_gitlab_mrs.py` both set
+`SUPERTOOL_ENRICH_WORKERS=0` against a default of `8`, producing a byte-identical
+notice. The pair shared a worker only on the macOS legs, so [#689] read as a
+platform bug for a day; `-n0` reproduces it on any platform in under a second.
+
+**Registering the state is the fix, not relaxing the assertion.** Every
+process-lifetime ledger or cache belongs in `conftest.RESET_GLOBALS` (for
+`supertool`) or `conftest.PRESET_ENV_RESET_GLOBALS` (for the `_env` module the
+presets share), so it is restored between tests and the assertion keeps meaning
+what it says. Loosening the assertion, or asserting only when the output is
+non-empty, converts "this broke" into "this silently gave you something else".
+
+### Never reach a preset module by bare import
+
+`presets/*/` basenames are **op names**, not module names. Twenty of them are
+already claimed by more than one preset directory — `status`, `list`, `read`,
+`publish`, `issue`, `job`, `search`, `_auth`, `_common`, `_sanitize`, ... — and
+`sys.modules` has one slot for each. Every preset script also puts its own
+directory on `sys.path` at import and never takes it off, so by the time a
+fixture runs there are ~180 `presets`-flavoured entries on the path, ordered by
+whichever suite imported its preset first.
+
+So `import status` inside a test does not name a file. It names whichever of
+`presets/mcp/status.py` and `presets/git/status.py` xdist's work split put on
+the path first, and that is a property of the runner's core count. [#693] moved
+it by *adding an unrelated test file*: the split changed, `presets/git` was
+scheduled beside four `presets/mcp` suites for the first time, and 18 of them
+went red on a module they do not cover.
+
+Load it by absolute path under a preset-qualified name instead:
+
+```python
+from _preset_loader import load_preset_module
+
+status = load_preset_module("mcp", "status", prefix="mcp_")
+```
+
+`tests/_preset_loader.py` evicts the sibling shims, scopes the path edit to the
+`exec_module` call, and restores `sys.path` exactly as it found it — nothing is
+registered in `sys.modules`, so two presets' same-named modules can coexist in
+one worker. `test_git_status.py` and `test_status_swallowed_705.py` show the
+raw `spec_from_file_location` form for cases that need it.
+
+Binding the contested name once, early, in `conftest.py` is not the fix. It
+wins the race rather than removing it: the slot is still one slot two files
+claim, the next conftest edit or earlier-importing plugin flips it back, and it
+flips back silently — the same `AttributeError`, or the same `git-status`
+render inside an mcp assertion. `test_preset_basename_collision_726.py`
+AST-scans `tests/*.py` and fails on the shape, naming the file, the line, and
+the rival paths.
+
 ### Comparing rendered output
 
 If your test compares two rendered blocks to each other, **the thing that
@@ -408,6 +564,22 @@ Durations supertool was *given* rather than measured — an adapter's own
 `duration_ms`, which tests supply as a constant — are deliberately **not**
 frozen, so `assert "(12ms)" in row` keeps working.
 
+One measured duration renders as words rather than as `0.0s`: the elapsed on a
+**timeout verdict** ([#727]). Everywhere else freezing a duration removes noise;
+there it removes the evidence, because the elapsed is the only number the
+message exists to carry, and `FAIL (timeout 0.0s > 10s)` states a verdict its
+own figures contradict. Under the switch that line reads `FAIL (timeout after
+its 10s budget - elapsed frozen, deterministic-time mode)` — still constant
+across runs, so the property above is unaffected. It was **not** exempted from
+the freeze: an exemption is a call site to remember, and this fix lives at the
+renderer for the same reason [#643]'s did. If you need to assert on a real
+elapsed there, `monkeypatch.delenv` the switch as
+`test_real_durations_render_when_the_switch_is_off` does.
+
+`_timeout_verdict_line` also refuses to print an elapsed *below* its budget as
+a result: `subprocess.run(timeout=T)` cannot raise before T has passed, so that
+combination is a bug in the reporting path and says so.
+
 ### `slow` vs `benchmark`
 
 Two markers, and the difference is not how long the test takes.
@@ -439,9 +611,290 @@ between two input sizes measured in the same process, where machine speed
 cancels out. `TestParseScaling` in `tests/test_xml.py` is the worked example,
 including what each metric does and does not catch.
 
+### A fake binary on `PATH` cannot intercept an adapter's spawn on Windows
+
+Every adapter under `validators/` spawns a **list** with an extensionless
+program name — `["php", "-l", f]`, `["gofmt", "-l", f]`, `["cargo", "check"]`.
+Python hands that to `CreateProcess`, which appends `.exe` and **does not
+consult `PATHEXT`**. A `php.bat` or `gofmt.bat` shim in the first `PATH` entry
+is therefore invisible: the search walks straight past it and the real binary
+the `windows-latest` image ships answers instead. (`.bat` files *are* runnable
+through `subprocess` — the CVE-2024-1874 surface — but only when the extension
+is explicit.)
+
+**The failure is silent, and it wears two different faces.** Neither is an
+error, which is what makes this worth a rule:
+
+- where the real tool accepts the subject file, you get a **clean verdict** —
+  `assert True is False`, indistinguishable from a pass;
+- where it rejects the subject file, you get a **real finding** — #753's
+  JSON-contract case handed a `subject.txt` of `noise` to a real `xmllint`,
+  which correctly reported `parser error : Start tag expected`, so the leg
+  failed as `assert 'xml' == 'adapter'` and looked like a classification bug.
+
+So: **split the test into two layers.**
+
+1. **The rule, in process, on every platform.** Classification over a tool's
+   output is platform-independent by construction. Import the adapter module
+   (`importlib.util.spec_from_file_location` — most adapter filenames have
+   hyphens) and call its classifier directly against **real captured
+   transcripts**. This is the layer that has to hold everywhere. Keep the
+   classifier at module level rather than inline in `main()` so it can be
+   called; `xmllint.parse_diagnostics`, `node_check.diagnostic_line` and
+   `terraform_check.is_fmt_verdict` exist in that shape for this reason.
+2. **The whole adapter, spawned, POSIX-only.** `pytest.mark.skipif(os.name ==
+   "nt", ...)` with the `CreateProcess` reason written into the marker, not a
+   bare platform exclusion. What Windows loses is the spawn-and-decode path,
+   which `test_validators.py` already covers there against the real binaries.
+
+**And assert the interception itself.** A fixture that is never used cannot
+fail, so one case per faked binary must prove the fake answered, using an exit
+code and a marker no real tool emits:
+
+```python
+bindir = _fake_tool(tmp_path, "gofmt", exit_code=42, stdout="I-AM-THE-FAKE\n")
+data = _run("gofmt-check", bindir, target)
+assert "I-AM-THE-FAKE" in json.dumps(data), describe(data)
+```
+
+Worked examples: `tests/test_phplint_tool_vs_file_745.py` (one adapter) and
+`tests/test_adapter_tool_vs_file_753.py` (seven, parametrised).
+
+### Never write a subprocess timeout by hand
+
+If a test spawns a validator adapter, its budget comes from
+`tests/_adapter_budget.py` and nowhere else:
+
+```python
+from _adapter_budget import adapter_budget
+
+r = subprocess.run([sys.executable, str(PHPLINT), str(f)],
+                   capture_output=True, text=True,
+                   timeout=adapter_budget(PHPLINT))
+```
+
+A test guard fails the suite if you write the integer instead
+(`test_no_test_spawns_a_validator_adapter_on_a_hardcoded_budget`).
+
+**Why there is a rule rather than a habit.** Three separate reds have now been
+one hand-written number each, all Windows-only, all under load: `gofmt-check`
+at 15s ([#702]), `phplint` twice at 10s ([#658]), `git rev-list` at 5s
+([#650]). The value is not what was wrong with them. What was wrong is that
+nothing related the number to what the adapter is *allowed* to take.
+
+**The rule, in one line: an outer budget is a hang-guard on the adapter, so it
+must exceed the adapter's own budget.** Every adapter under `validators/`
+already wraps the real tool in its own `timeout=` and already declines when it
+blows it. So a test spawning the adapter is not waiting on the tool — it is
+waiting on the adapter, which owes an answer within its own budget plus the
+cost of starting Python twice.
+
+Set the outer budget *below* that and it can never fire for a hang: the
+adapter declines first and the test gets JSON, not a `TimeoutExpired`. The
+only thing left that can trip it is a slow machine. That is the previous
+section's benchmark, arrived at by accident — multiply it by ten and the
+assertion catches nothing new, so the number *was* the assertion. Every
+reported site was on the wrong side of the line: phplint 10 < 30,
+gofmt-check 15 < 30, cargo-check 120 == 120 (a tie is a race).
+
+`adapter_budget()` reads the adapter's internal budget out of its source, adds
+spawn headroom, and multiplies on Windows — where process spawn is materially
+slower, antivirus interposes on every temp file, and the runner is shared, and
+where all three incidents happened. Raising an adapter's internal timeout
+therefore raises every test budget over it with no second number to update.
+`SUPERTOOL_TEST_ADAPTER_TIMEOUT` overrides it for a run, the way
+`SUPERTOOL_LINT_TIMEOUT` ([#553]) and `SUPERTOOL_GIT_TIMEOUT` ([#650]) do.
+
+**These tests fail rather than skip when the budget blows, deliberately.** A
+skip is right for a check that cannot tell "the tool hung" from "the runner
+was busy" — which is precisely what a 10s budget over a 30s adapter could not
+do. Deriving the outer budget from the inner one removes that ambiguity: a
+blown budget now means the adapter did not honour its own timeout, which is a
+real hang in the code under test. Skipping it is how a genuine hang becomes
+invisible, and this repo files that trade against itself every time.
+
+**The adapter side of the same rule.** An adapter that grants itself a budget
+must survive blowing it. Letting `TimeoutExpired` escape kills the process on
+a traceback with **empty stdout**, and every caller `json.loads()` that — so a
+slow linter surfaces as a `JSONDecodeError` naming neither the tool nor the
+timeout. Emit the decline instead (`code: "adapter"`, message naming the
+budget); `test_every_adapter_that_grants_itself_a_budget_survives_blowing_it`
+enforces it across `validators/`.
+
+### Never assert an adapter's verdict as a bare boolean
+
+`assert out["ok"] is True` fires as `assert False is True`. Every adapter under
+`validators/` answers with the same object — `tool`, `ok`, `count`, `errors`,
+`duration_ms` ([`validators/SCHEMA.md`](validators.md)) — so at the moment that
+assertion fails the test is holding a full statement of *why*, and throws it
+away. An adapter has roughly a dozen routes to `ok=False`: tool absent, tool
+present but not executable, its own internal budget expired, the file genuinely
+did not parse, no file argument. The bare boolean separates none of them.
+
+That has now cost two whole occurrences, both Windows-only, neither
+reproducible on demand:
+[#658](https://github.com/Digital-Process-Tools/claude-supertool/issues/658)/[#717](https://github.com/Digital-Process-Tools/claude-supertool/issues/717)
+(`test_valid_ruby`) and
+[#725](https://github.com/Digital-Process-Tools/claude-supertool/issues/725)
+(the phplint spawn test that
+[#716](https://github.com/Digital-Process-Tools/claude-supertool/issues/716)
+added *in the same PR where it was fixing this exact opacity elsewhere*). For a
+red that appears once a quarter on a runner you do not have, that one occurrence
+is the entire diagnostic budget.
+
+Use `tests/_adapter_verdict.py`:
+
+```python
+from _adapter_verdict import assert_ok, assert_declined, verdict, assert_adapter_ok
+
+out = verdict(result, adapter="ruby-check")   # instead of json.loads(r.stdout.strip())
+assert_ok(out, context="a Ruby file with nothing wrong with it")
+assert_declined(out, context="a file with a deliberate syntax error")
+assert_adapter_ok(result, adapter=name, context="…")   # both, for one-spawn tests
+```
+
+`verdict()` replaces `json.loads(r.stdout.strip())`, whose failure is a
+`JSONDecodeError` naming neither the adapter, the exit code, nor the stderr
+holding the traceback. `assert_ok`/`assert_declined` render the payload.
+
+**The formatter is defensive on purpose, and that is the part to preserve.** It
+formats a structure it does not own: adapters are separate programs, and a
+payload can arrive in a shape nobody anticipated — `errors` as a string, an
+entry that is not an object, no `errors` key at all, a crash before any JSON.
+A diagnostic that renders blank on those reproduces the defect inside its own
+fix, which is this repo's house failure exactly. So every branch of
+`describe()` ends in text naming what it could not read, none of them can
+raise, and `describe()` returning `""` is a bug. Output is bounded — three
+errors, 200 characters a field — because an unbounded dump buries the first
+error it exists to show ([#719](https://github.com/Digital-Process-Tools/claude-supertool/issues/719)'s
+rule: a capped list says how many it hid).
+
+**The guard is scoped to files that have adopted it**, deliberately.
+`test_a_file_that_adopts_the_convention_adopts_it_everywhere` walks the AST of
+every test file importing `_adapter_verdict` and fails on any remaining
+message-less `["ok"] is <bool>`. It does not police files that have not adopted
+it yet: a guard that fails on work nobody has done is a guard that gets deleted.
+What it does prevent is #725's actual complaint — a new bare assertion landing
+in a file that already knows better.
+
+### Never leave a CI job without a wall-clock budget
+
+Every job in `.github/workflows/tests.yml` declares `timeout-minutes`.
+`tests/test_ci_job_timeouts_722.py` fails the suite if one does not, so a
+fifteenth job cannot arrive without a budget.
+
+**Why it is a rule and not a nicety.** GitHub's default is **six hours**, and
+until it expires a hung leg renders as `pending` — byte-identical to a leg that
+is about to finish. `notifiers (bun + TypeScript) (ubuntu-latest)` sat at 26
+minutes on [#715] against 24-37s on every recent master run, its macOS twin
+green on the same commit, on a PR that touched no TypeScript ([#722]). The board
+read `13 passed, 0 failed, 1 pending`, the states still summed to the leg count
+so [#454]'s arithmetic check passed, and the merge gate quietly became a six-hour
+block. There is also nothing to read while it hangs: `gh api .../jobs/<id>/logs`
+answers `BlobNotFound` for an in-progress job, and a job cancelled by hand never
+writes a log at all. A job killed by `timeout-minutes` **fails, with its log
+written** — that is the half of this worth having.
+
+**Size per job class, from that class's own measurements.** Copying one number
+across classes is [#702] in CI config. The current two came from 70 job
+observations across five master runs:
+
+| job | observed | budget |
+| --- | --- | --- |
+| `pytest` (windows 483-574s, macos 128-197s, ubuntu 93-125s) | worst 574s | 30 min — 3.1x |
+| `notifiers` | worst 37s | 10 min — 16x |
+
+The multiple on `notifiers` is large because its base is 37s and three of its
+steps are package-manager installs (npm, pip, bun), whose tail latency against a
+degraded registry is minutes. A tight multiple there would fire on a bad network
+day, and a guard that reds a genuine green teaches everyone to press re-run —
+worse than the disease. The floors and ceilings are asserted at both ends: a
+budget tightened into a benchmark fails the suite, and so does one loosened far
+enough to be the six-hour default with extra steps.
+
+**Bound the step too, but with the inner tool rather than a second wall clock.**
+The step that hung now runs pytest under `--timeout=30` (pytest-timeout, which
+both jobs had installed and neither used). A job ceiling can only report "this
+leg did not finish"; the per-test budget names the test and dumps the stack of
+the thread stuck in it, which is the artefact [#554] needs. A step-level
+`timeout-minutes` was the alternative and buys nothing the other two do not: it
+is a third number to keep ordered and it names no test. The ordering is the
+[#702] rule one layer out — the job ceiling must exceed the per-test budget, or
+the inner guard can never fire — and it is asserted by reading both numbers out
+of the workflow rather than tabulating them beside it.
+
+**The `pytest` job deliberately gets no per-test budget.** ~4000 tests under
+`-n auto`, `slow` included in CI, and its windows legs are the ones this repo has
+three times measured blowing a hand-written number under contention ([#702],
+[#658], [#650]). There is no per-test timing from a windows leg to size one
+from, and guessing it is precisely those three incidents one layer up. The job
+ceiling bounds it; the finer guard waits for evidence.
+
+[#454]: https://github.com/Digital-Process-Tools/claude-supertool/issues/454
 [#485]: https://github.com/Digital-Process-Tools/claude-supertool/issues/485
+[#553]: https://github.com/Digital-Process-Tools/claude-supertool/issues/553
 [#621]: https://github.com/Digital-Process-Tools/claude-supertool/issues/621
 [#643]: https://github.com/Digital-Process-Tools/claude-supertool/issues/643
+[#650]: https://github.com/Digital-Process-Tools/claude-supertool/issues/650
+[#658]: https://github.com/Digital-Process-Tools/claude-supertool/issues/658
+[#689]: https://github.com/Digital-Process-Tools/claude-supertool/pull/689
+[#702]: https://github.com/Digital-Process-Tools/claude-supertool/issues/702
+[#554]: https://github.com/Digital-Process-Tools/claude-supertool/issues/554
+[#715]: https://github.com/Digital-Process-Tools/claude-supertool/pull/715
+[#722]: https://github.com/Digital-Process-Tools/claude-supertool/issues/722
+[#727]: https://github.com/Digital-Process-Tools/claude-supertool/issues/727
+
+### Never assert a property of a workflow by grepping the workflow
+
+`.github/workflows/tests.yml` is 183 lines of which roughly two thirds are
+comments explaining why each decision was made. A comment is prose about the
+code; a substring match cannot tell the two apart. So
+
+```python
+assert "oven-sh/setup-bun" in workflow_text, "nothing installs bun any more"
+```
+
+went on passing after the action was dropped for `npm i -g bun@1.3.14` —
+because the string survived inside the comment recording the switch. The test
+was kept green by the prose documenting the change it existed to notice
+([#730]). The same file did it a second time with `--no-cov`, and
+`test_ci_job_timeouts_722.py` — which was the *structural* alternative — did
+it a third time with `--timeout=30`, whose justifying comment quotes the flag
+twelve lines above the flag ([#731]).
+
+**Read the structure instead.** `tests/_workflow_parse.py` gives you the jobs
+(`job_blocks`), their steps (`job_steps`), and each step's `uses:`, `env:` and
+`run:`. Assert against those. A comment can then say anything at all and no
+assertion moves.
+
+```python
+steps = job_steps(job_blocks()["notifiers"])
+assert any(_BUN_INSTALL_RE.search(s.run) for s in steps)   # yes
+assert "npm i -g bun" in workflow_text                     # no — re-arms on the next rename
+```
+
+Two rules follow from the three instances:
+
+* **Swapping the needle is not the fix.** `"npm i -g bun"` is the same defect
+  with a fresher string: the next rename re-arms it, and a comment mentioning
+  the old command re-arms it immediately.
+* **Compare sets, do not list names.** The same guard named two of the five
+  channel test files the job runs, so three could have been dropped without it
+  noticing — while two others had already arrived without being added. Both
+  directions close if you assert the set CI runs equals the set the repo has.
+
+PyYAML is deliberately not used: CI installs pytest, pytest-cov, pytest-xdist
+and pytest-timeout and nothing else, so importing `yaml` would make every
+guard built on it skip on all fourteen legs. The parser reads indentation, and
+it is fixture-tested — a parser that silently finds nothing renders its callers
+green while checking no job at all, which is the defect one layer up.
+
+The general form, worth asking of any guard: **what would have to be true for
+this test to fail?** If you cannot name a realistic change to the product that
+turns it red, it is not a guard.
+
+[#730]: https://github.com/Digital-Process-Tools/claude-supertool/issues/730
+[#731]: https://github.com/Digital-Process-Tools/claude-supertool/issues/731
 
 ## Submitting upstream
 

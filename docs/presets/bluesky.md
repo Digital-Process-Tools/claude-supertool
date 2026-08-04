@@ -84,3 +84,5 @@ Both AT URIs (`at://did:plc:.../app.bsky.feed.post/...`) and web URLs (`https://
 ## Authoring notes
 
 Preset JSON: `presets/bluesky.json`. Helper scripts: `presets/bluesky/` — one Python file per op (`publish.py`, `list.py`, `read.py`, `search.py`, `like.py`, `follow.py`, `repost.py`, `status_since.py`). The `{path}` placeholder in `cmd` resolves to `presets/bluesky/` at runtime.
+
+All XRPC calls — `createSession`, `refreshSession` and every authenticated procedure — go through `presets/_http.py`, so the access and refresh JWTs are never carried across a redirect that leaves the PDS. A redirect off-origin stops the op with `refused off-origin redirect: ...` naming the destination, including in `refresh_session`, which otherwise returns `None` and silently falls back to a fresh login. See [contributing.md](../contributing.md#http-requests-go-through-presets_httppy).

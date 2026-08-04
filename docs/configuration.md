@@ -197,6 +197,84 @@ Compact is disabled when using `grep=` filter or `offset` (editing needs exact l
 
 Each rule appends a non-blocking `[advice]` line after a mutating op when it matches. Gates: `hooks_into` (ops, default all mutating), `match` (path glob), `when` (`new-file`|`existing-file`|`always`), `contains` (regex over the content the op *added*), and `resolve`/`resolveFromValidator` (a subprocess emitting a would-be target). Full field reference and the resolve contract in [validators.md → advice](validators.md#advice--config-driven-post-op-hints).
 
+## Two supertool trees in one call
+
+Config, presets and the scripts they point at are resolved from the **cwd's**
+project root; the core that parses the ops comes from the `supertool.py` that
+was invoked. Those are normally the same tree. When they are not — running a
+branch worktree's `supertool.py` from a different checkout — every config op is
+answered by the *other* tree, and the receipt used to say `PASS` regardless
+([#678](https://github.com/Digital-Process-Tools/claude-supertool/issues/678)).
+
+Supertool now detects the case and **declines the config ops** rather than
+reporting a verdict for a build it cannot name:
+
+```
+$ cd ~/checkout-a
+$ python3 ~/checkout-b/supertool.py 'git-status'
+supertool: mixed supertool trees: core=~/checkout-b/supertool.py presets=~/checkout-a
+--- git-status ---
+SKIPPED: 'git-status' comes from a different supertool tree than the core that is running.
+  ...
+Fix: run from ~/checkout-b, or make the first op 'cwd:~/checkout-b'.
+```
+
+The call exits non-zero (the decline is counted as a skip, per
+[#680](https://github.com/Digital-Process-Tools/claude-supertool/issues/680)).
+
+| | |
+| --- | --- |
+| **What triggers it** | the resolved project root is *itself a different supertool checkout* — it holds a `supertool.py` whose `realpath` is not the invoked one |
+| **What does not** | the ordinary install: a clone symlinked onto `$PATH` and used from any project root. Those roots are not supertool checkouts, so nothing is mixed. A project shipping its own `presets/` override is not a mix either. |
+| **Built-in ops** | still run — `read`, `grep`, `edit` come from the core that was invoked. A one-line disclosure goes to stderr so the operator knows whose validators and formatters are loaded. |
+| **The remedy** | run from the checkout you meant, or make `cwd:<that checkout>` the first op |
+| **The session hook** | does not manufacture the case: starting a session inside a supertool checkout used to leave a `./supertool` pointing at the plugin install, i.e. a wrapper every custom op declined. It now creates none and names `python3 supertool.py` ([#711](https://github.com/Digital-Process-Tools/claude-supertool/issues/711)). |
+| **Deliberate mixing** | `SUPERTOOL_ALLOW_MIXED_TREE=1`. Config ops then run, and the verdict line carries the pairing — `PASS (0.42s) [mixed supertool trees: core=… presets=…]` — so it is never a bare `PASS`. |
+
+## Numeric environment knobs, and what happens when one is wrong
+
+Every `SUPERTOOL_*` knob that takes a number — `SUPERTOOL_MAX_COMMITS`,
+`SUPERTOOL_DEFAULT_LIMIT`, `SUPERTOOL_PARALLEL`, `SUPERTOOL_LINT_TIMEOUT`, the
+`SUPERTOOL_<OP>_<KEY>` overrides, and the rest — is read through one helper with
+one contract. Three outcomes, never two:
+
+| You set | What happens |
+| --- | --- |
+| a usable value | it is used, silently |
+| nothing | the default is used, silently |
+| something unusable | the default is used, **and a `note:` line says so** |
+
+An unusable value is announced on **stdout**, naming the variable, the value it
+saw, and the number actually in force:
+
+```
+$ SUPERTOOL_MAX_COMMITS=x ./supertool 'git-trail:dispatch:supertool.py'
+note: SUPERTOOL_MAX_COMMITS='x' is not a whole number - ignoring it and using 20.
+## Timeline (20 commits) [CAPPED: newest 20 by count, more exist — …]
+```
+
+This used to be an uncaught `ValueError` and a Python traceback
+([#654](https://github.com/Digital-Process-Tools/claude-supertool/issues/654)).
+The traceback is gone, but the run is **not** made quiet in exchange: a knob
+that was set and then ignored without a word is worse than a crash, because a
+cap you believe is in force and isn't will not announce itself later either.
+
+**Out of range is refused, not clamped.** `SUPERTOOL_MAX_COMMITS=-5` does not
+mean "none" and does not quietly become `1`. It is treated exactly like `x` —
+reported, and the documented default is used instead. Rounding a negative up to
+the nearest legal value would invent an intention you never expressed, and do it
+silently, which is the same failure in a different shape:
+
+```
+note: SUPERTOOL_ENRICH_WORKERS='0' is below the minimum of 1 - ignoring it and using 8.
+```
+
+If you want the minimum, set the minimum.
+
+**The note goes to stdout on purpose.** A preset that warns on stderr and then
+succeeds has that warning discarded before it reaches you — supertool returns a
+successful subprocess's stdout and only appends its stderr on a non-zero exit.
+
 ## Parallel execution
 
 Read-only ops in a batch can run concurrently. Output order is preserved (matches input order, not completion order).
@@ -211,6 +289,8 @@ Enable in `.supertool.json`:
 
 Override via env: `SUPERTOOL_PARALLEL=4 ./supertool 'read:a' 'grep:x:b/' 'glob:c/**'`. Env wins over JSON. Set `0` to force off for one call.
 
+A value that is neither a number nor `true`/`false` — or a negative one — leaves parallelism off *and says so*, rather than looking identical to never having set it. See [Numeric environment knobs](#numeric-environment-knobs-and-what-happens-when-one-is-wrong).
+
 **Safe ops** (parallelized): `read`, `grep`, `glob`, `ls`, `head`, `tail`, `wc`, `stat`, `map`, `tree`, `around`, `around_line`, `between`, `diff`, `blame`, `version`.
 
 **Unsafe** — batch falls back to sequential whenever any op is mutating (`edit`, `replace`, `replace_dry`, `replace_lines`) or custom (anything in `ops:` — could shell out to anything). All-or-nothing per call: no partial parallelism.
@@ -219,24 +299,53 @@ Speedup: I/O-bound ops on different files. ~3-5× faster on cold filesystem; mod
 
 ## Excluding paths from traversal ops
 
-`glob`, `grep`, `tree`, and `map` walk the filesystem recursively. On large repos this can be slow and noisy — `.git/objects/`, `node_modules/`, `vendor/`, and similar dirs rarely contain what you're looking for.
+`glob`, `grep`, `tree`, and `map` walk the filesystem recursively. On large repos this can be slow and noisy — `.git/objects/`, `node_modules/`, `vendor/`, and similar dirs rarely contain what you're looking for. And some files are worse than noise: a `grep` that happens to cross a `.env` puts a live token in an LLM's context.
 
-Supertool prunes these at the **directory boundary** (never opens them), not after the fact.
+Excluded **directories** are pruned at the walk boundary — never opened. Excluded **files** are dropped from the result, and a file dropped for **credential** reasons is **counted**, so the report line says how many were hidden rather than simply not mentioning them.
+
+Noise entries (`.git`, `node_modules`, `__pycache__`, `dist/`, the caches) are dropped without being counted — see [Hidden files](operations/search.md#hidden-files-are-counted-not-silently-dropped) for why a counter that is never zero stops being a signal.
 
 **Built-in defaults** — always active unless overridden:
 
 ```
+# Noise
 .git/  node_modules/  .svn/  .hg/  .idea/  .vscode/
 __pycache__/  .venv/  venv/  dist/  build/
+phpstan-result-cache/  .phpunit.cache/  .rector/
+
+# Credential directories
+.max/  .ssh/  .aws/  .gnupg/  .kube/  .docker/
+.terraform/  .chef/  .npm/  secrets/  credentials/
+
+# Credential files
+.env/  .env.*  .netrc/  _netrc/  .npmrc/  .pypirc/
+.git-credentials/  .pgpass/  .my.cnf/  .htpasswd/  .dockercfg/
+id_rsa*  id_dsa*  id_ecdsa*  id_ed25519*
+*.pem  *.key  *.p12  *.pfx  *.jks  *.keystore  *.ppk
+.hashnode-token/  .devto-token/  .bluesky-app-password/
+
+# Kept visible on purpose
+!.env.example  !.env.sample  !.env.template
+!.env.dist  !.env.defaults  !.env.schema
 ```
 
-**Project-level additions** — add to `.supertool.json` under `ops.<op-name>.exclude-paths`. These are **merged additively** with the defaults (not replacing):
+**Three entry shapes:**
+
+| Shape | Example | Matches |
+|---|---|---|
+| Literal | `.env/`, `node_modules/` | a dir **or a file** of that name. One segment matches at any depth; a multi-segment path (`src/legacy/`) is anchored to the project root. The trailing `/` is normalisation, not a directory assertion. |
+| Glob | `*.pem`, `id_rsa*` | fnmatched against the basename. Needed for shapes that are not a fixed name. |
+| Negation | `!.env.example` | un-excludes what it matches, and wins over every other entry whatever the order. |
+
+**Where the credential-file boundary sits.** A file is on the list only when holding a credential is its entire purpose: an exact name (`.netrc`) or an unambiguous key-file shape (`*.pem`). There are deliberately no name-fragment heuristics — `*secret*`, `*token*`, `*password*` would hit source and test files constantly, and a search that silently skips your own code is a worse failure than the one the list exists to prevent. `.env.example` and its siblings are committed placeholders people legitimately read to learn which keys exist, so they are negated back in.
+
+**Project-level additions** — add to `.supertool.json` under `ops.<op-name>.exclude-paths`. These are **merged additively** with the defaults (not replacing), and take all three shapes:
 
 ```json
 {
   "ops": {
-    "glob": { "exclude-paths": ["vendor/", "Dvsi/dvsi-private/libs/"] },
-    "grep": { "exclude-paths": ["vendor/", "Dvsi/dvsi-private/libs/"] }
+    "glob": { "exclude-paths": ["vendor/", "Dvsi/dvsi-private/libs/", "*.p8"] },
+    "grep": { "exclude-paths": ["vendor/", "*.p8", "!config/*.key"] }
   }
 }
 ```
@@ -248,9 +357,11 @@ __pycache__/  .venv/  venv/  dist/  build/
 ./supertool 'glob:**/*.php:::no-exclude'
 ```
 
+**A path you name yourself is never excluded.** `grep:PATTERN:.env` searches `.env`, and `read:.env` prints it. Naming the file is a deliberate act; gating it would buy nothing (`read` was never gated) and would break the case someone meant. The list guards the *side effect* — a search aimed elsewhere that walks over a credential on the way.
+
 Ops that take explicit paths and don't traverse (`ls`, `read`, `head`, `tail`, `wc`, `stat`, `around`, `around_line`, `between`, `diff`, `blame`) are not affected — they always work on exactly the path you give them.
 
-See [issue #4](https://github.com/Digital-Process-Tools/claude-supertool/issues/4) for the full design rationale.
+See [issue #4](https://github.com/Digital-Process-Tools/claude-supertool/issues/4) for the original design rationale, [#691](https://github.com/Digital-Process-Tools/claude-supertool/issues/691) for the file-level wiring and the hidden-file count, and [#764](https://github.com/Digital-Process-Tools/claude-supertool/issues/764) for why that count survives the rtk-delegated `grep` — see [operations/search.md](operations/search.md#delegated-to-rtk).
 
 ---
 

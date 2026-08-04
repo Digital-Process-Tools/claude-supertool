@@ -412,7 +412,10 @@ def heal(open_iids: list[str], watched: set[str]) -> tuple[list[str], list[str],
         status, _pid = dispatcher.start_poller(SOURCE, iid, only)
         if status == "spawned":
             healed.append(iid)
-        elif status == "failed":
+        elif status in ("failed", "unclaimable"):
+            # `unclaimable` is not "healed" and it is not silence: the gap this
+            # tier set out to close is still open and the operator has to be
+            # told, the same as for an outright failed spawn (#693).
             failed.append(iid)
     return healed, failed + refused, refused
 

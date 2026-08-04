@@ -60,8 +60,18 @@ def test_default_truncates_long_description(monkeypatch, capsys) -> None:
     rc = issue.main()
     out = capsys.readouterr().out
     assert rc == 0
+    # Measure the description text itself — everything up to the truncation
+    # marker that #698 added at the cut. Splitting on "## Description" alone
+    # also swallows that marker and the Comments header, which is a
+    # measurement artefact, not description content. The fence #694 puts around
+    # remote text is the same kind of artefact: it is supertool's own output
+    # sitting inside the slice, and counting it against the body cap would make
+    # this test measure the marker rather than the description.
     body = out.split("## Description")[1] if "## Description" in out else ""
-    assert len(body.strip()) <= issue.DESCRIPTION_MAX + 50  # trailing whitespace
+    body = body.split("…[")[0]
+    body = body.replace(issue._untrusted.open_marker(), "")
+    body = body.replace(issue._untrusted.close_marker(), "")
+    assert len(body.strip()) <= issue.DESCRIPTION_MAX
 
 
 def test_full_flag_keeps_full_description(monkeypatch, capsys) -> None:

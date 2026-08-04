@@ -51,6 +51,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SHIMS = (
     "_atproto",
     "_auth",
+    "_common",
     "_graphql",
     "_me",
     "_outbound",

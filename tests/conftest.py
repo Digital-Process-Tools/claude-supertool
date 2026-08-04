@@ -39,6 +39,35 @@ if (_MCP_PRESETS / "_paths.py").is_file():
     import _paths  # noqa: E402,F401
 
 
+# `presets/_env.py` is imported by 29 presets under the single module name
+# `_env`, so all of them share one `_ANNOUNCED` ledger — by design: `env_int`
+# says each distinct notice at most once per process, because a knob read once
+# per file would otherwise print the same line ten times over the output it is
+# warning about (#654).
+#
+# Per *process* is the right unit in production, where a preset is a subprocess
+# that reads its knobs and exits. It is the wrong unit in a pytest worker, which
+# is one process running many presets' suites. `test_github_prs.py` and
+# `test_gitlab_mrs.py` both set `SUPERTOOL_ENRICH_WORKERS=0` against a default of
+# 8, so both produce a byte-identical notice; whichever ran second in a given
+# worker read an empty `capsys` and failed its assertion. That is why this
+# surfaced as a macOS-only red on PR #689 and nowhere else — xdist splits by
+# worker count, the two files shared a worker only on the runners with the
+# smaller core count, and the split, not the platform, decided it.
+#
+# `supertool._ENV_ANNOUNCED` is the same ledger for the same reason and has been
+# per-run scratch since #397 (`RESET_GLOBALS`). This one was missed because it
+# lives in a different module. Same treatment, in `_reset_module_state` below.
+#
+# Tolerated rather than assumed, exactly as `_paths` above: `test_git_state_
+# guard.py` copies this file into a synthetic repo that has no `presets/` tree.
+_PRESETS = Path(__file__).parent.parent / "presets"
+_env = None
+if (_PRESETS / "_env.py").is_file():
+    sys.path.insert(0, str(_PRESETS))
+    import _env  # noqa: E402
+
+
 def pytest_configure(config):
     """Opt out of #146 cwd containment for the test suite.
 
@@ -90,6 +119,29 @@ def pytest_configure(config):
     # real env still wins via setdefault, and tests that pin the timeout itself
     # monkeypatch.setenv over this.
     os.environ.setdefault("SUPERTOOL_LINT_TIMEOUT", "30")
+    # #650: same call, one layer along, but on weaker evidence — say so rather
+    # than inherit the lint budget's confidence.
+    #
+    # #650 was filed as "5s is reachable with 11 xdist workers hammering one
+    # object store". That did not survive measurement on the machine that
+    # reported it: worst git latency was 0.30s while the real suite ran, and
+    # 0.76s under 96 CPU burners on 11 cores — 6x inside the budget at a load
+    # no CI runner will see. So the *cause* of that one pre-push stall is still
+    # unknown, and this line is not a diagnosis of it.
+    #
+    # What justifies the line anyway is the leg above: a 2-core Windows runner
+    # with Defender scanning every freshly written temp file has blown the lint
+    # budget twice on master. That is a measured fact about an environment this
+    # suite actually runs in and my laptop is not, and git spawns are the same
+    # shape of work. Generalising a macOS measurement to that runner would be
+    # the same overreach the issue made in the other direction.
+    #
+    # It is insurance, not the fix. The fix is that the product now declines
+    # instead of crashing, which is what made the #650 red fatal — see
+    # presets/git/status.py::_git. As with the lint budget: a property of the
+    # runner, never of supertool. The shipped default stays 5s, pinned by
+    # test_git_timeout_disclosure_650.py::test_the_suite_budget_does_not_move_the_product_default.
+    os.environ.setdefault("SUPERTOOL_GIT_TIMEOUT", "30")
     # #149: publish-body allowlist + confirm gate. Existing publish tests use
     # `tmp_path` for body files (outside the production .max/ / drafts/ /
     # posts/ / blog/ allowlist) and don't `|force`, so opt the suite in.
@@ -128,13 +180,13 @@ def pytest_report_header(config):
 # — fixture commits stacked on master, core.bare flipped, index desynced (#416).
 # The hook scrubs them too; this layer makes the bug class unreachable from any
 # caller, not just that one entry point.
-GIT_ENV_VARS = (
-    "GIT_DIR",
-    "GIT_WORK_TREE",
-    "GIT_INDEX_FILE",
-    "GIT_OBJECT_DIRECTORY",
-    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-)
+#
+# Imported, not re-typed: #692 was the same lesson reaching the test runner and
+# never reaching the ops, and it stayed invisible partly because the list lived
+# in two hand-maintained copies that nothing compared. There is now one list.
+# `.githooks/pre-push` is a third consumer that cannot import Python, so a test
+# pins its `unset` line to this tuple instead.
+GIT_ENV_VARS = supertool.GIT_ENV_VARS
 
 
 def scrub_git_env(environ=None):
@@ -491,14 +543,18 @@ def _guard_repo_git_state():
 RESET_GLOBALS = (
     "_BRANCH_CACHE",
     "_CONFIG_WARNINGS",
+    "_ENV_ANNOUNCED",
     "_FORMATTER_SKIPS",
     "_FORMAT_QUEUE",
     "_GIT_IGNORED_CACHE",
+    "_LEAKED_GIT_ENV",
     "_MUTATION_ATTEMPTS",
     "_REPO_ROOT_WALK_CACHE",
     "_VALIDATOR_DEFER_QUEUE",
     "_VALIDATOR_DEFER_SEEN",
     "_VALIDATOR_FINGERPRINT_CACHE",
+    "_REAPPLY_COUNT",
+    "_SKIP_COUNT",
     "_WRITE_COUNT",
     "_WRITE_WARNINGS",
 )
@@ -522,6 +578,7 @@ RESET_EXEMPT_GLOBALS = (
     "_AROUND_DIR_SKIP",
     "_AT_FILE_BUILTIN_DEFAULTS",
     "_READ_OP_AT_FIELDS",
+    "_BATCH_POSITIONAL_FIELDS",
     "_BUILTIN_OPS",
     "_BUILTIN_SYNTAX_VALIDATORS",
     # Constant op-name tables, same lifetime as _BUILTIN_OPS (#614).
@@ -548,6 +605,50 @@ RESET_EXEMPT_GLOBALS = (
     "_TS_LANG_MAP",
 )
 
+# ---------------------------------------------------------------------------
+# The same contract, for `presets/` (#686).
+#
+# The three tables below are keyed by repo-relative path and cover every
+# module-level global under `presets/` that is *mutated at run time* — 4 names
+# out of the 43 module-level mutables there, because the other 39 are constant
+# lookup tables that merely happen to be dicts. `tests/test_preset_global_
+# lifetimes_686.py` fails the build when a fifth appears in none of them, and
+# fails it again when one of them names something that is no longer state.
+#
+# Mutability alone was rejected as the trigger deliberately: a guard demanding a
+# registry entry for `_CHECK_GLYPH` would be 91% noise, and a noisy guard gets
+# exempted without reading, which is how a guard stops working.
+# ---------------------------------------------------------------------------
+
+#: Cleared by `_reset_module_state` below, exactly as `RESET_GLOBALS` is. Open
+#: only to preset modules this file imports — today just `_env`, which 29
+#: presets share, and whose shared ledger cost PR #689 a macOS-only red.
+#: Extending it to all 125 preset modules means importing and deep-copying all
+#: of them per test; #686 declined that cost, and this stays the exception.
+PRESET_RESET_GLOBALS: dict[str, tuple[str, ...]] = {
+    "presets/_env.py": ("_ANNOUNCED",),
+}
+
+#: Held by the module itself: reset in `main()`'s prologue, before the first
+#: branch. Right for a preset, which is a subprocess that runs `main()` once —
+#: and it keeps working under a harness that imports the module once and calls
+#: `main()` repeatedly, which is the case conftest's list exists for.
+#:
+#: The claim is verified, not trusted: the guard re-reads each module and fails
+#: if the reset is not really there. `presets/mcp/stop.py` writes
+#: `_RUNTIME_HINT` inside `main()` too, but 150 lines in and as the value being
+#: used — "mutated somewhere in main" would have accepted that.
+PRESET_SELF_CLEARING_GLOBALS: dict[str, tuple[str, ...]] = {
+    "presets/git/push.py": ("_RUN",),
+    "presets/git/status.py": ("_UNANSWERED",),
+    "presets/mcp/stop.py": ("_RUNTIME_HINT",),
+}
+
+#: Neither reset nor self-clearing, and deliberately so. Empty, and that is the
+#: point: an entry here is a claim that state surviving a run is correct, and it
+#: should have to be argued for in review rather than added to quiet a build.
+PRESET_RESET_EXEMPT_GLOBALS: dict[str, tuple[str, ...]] = {}
+
 _PRISTINE_GLOBALS = {
     name: copy.deepcopy(getattr(supertool, name)) for name in RESET_GLOBALS
 }
@@ -565,6 +666,9 @@ def _reset_module_state():
             current.update(pristine)
         else:
             current[:] = pristine
+    if _env is not None:
+        for name in PRESET_RESET_GLOBALS["presets/_env.py"]:
+            getattr(_env, name).clear()
 
 
 @pytest.fixture(autouse=True)

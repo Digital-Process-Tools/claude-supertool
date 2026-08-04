@@ -12,7 +12,9 @@ import os
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent.parent))  # for _env (#654)
 sys.path.insert(0, str(Path(__file__).parent))
+from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 from _atproto import get_session, xrpc
 from _auth import get_app_password, get_handle
 
@@ -85,7 +87,7 @@ def main(arg: str) -> None:
     now = _now_iso()
     handle = get_handle()
     session = get_session(handle, get_app_password())
-    limit = int(os.environ.get("SUPERTOOL_STATUS_LIMIT", "50"))
+    limit = env_int("SUPERTOOL_STATUS_LIMIT", 50, minimum=1)
     data = xrpc("app.bsky.notification.listNotifications", session, params={"limit": limit})
     print(render(data.get("notifications") or [], since, now))
     _write_state(now)

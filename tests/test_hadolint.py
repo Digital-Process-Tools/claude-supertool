@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from _winenv import empty_path_env
+from _adapter_verdict import assert_declined, assert_ok
 
 ADAPTER = Path(__file__).parent.parent / "validators" / "hadolint" / "hadolint.py"
 
@@ -38,7 +39,7 @@ def test_missing_tool_graceful(tmp_path: Path) -> None:
         env=empty_path_env(),
     )
     out = json.loads(result.stdout)
-    assert out["ok"] is True
+    assert_ok(out)
     assert out["count"] == 0
     assert "hadolint" in result.stderr.lower()
 
@@ -56,7 +57,7 @@ def test_valid_dockerfile(tmp_path: Path) -> None:
         'CMD ["bash"]\n'
     )
     out = _run(str(f))
-    assert out["ok"] is True
+    assert_ok(out)
     assert out["tool"] == "hadolint"
 
 
@@ -92,7 +93,7 @@ def test_no_arg_returns_error() -> None:
         text=True,
     )
     out = json.loads(result.stdout)
-    assert out["ok"] is False
+    assert_declined(out)
     assert out["errors"][0]["code"] == "adapter"
 
 

@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from _winenv import empty_path_env
+from _adapter_verdict import assert_declined, assert_ok
 
 ADAPTER = Path(__file__).parent.parent / "validators" / "pyright" / "pyright.py"
 
@@ -38,7 +39,7 @@ def test_missing_tool_graceful(tmp_path: Path) -> None:
         env=empty_path_env(),
     )
     out = json.loads(result.stdout)
-    assert out["ok"] is True
+    assert_ok(out)
     assert out["count"] == 0
     assert "pyright" in result.stderr.lower()
 
@@ -54,7 +55,7 @@ def test_no_arg_returns_error() -> None:
         text=True,
     )
     out = json.loads(result.stdout)
-    assert out["ok"] is False
+    assert_declined(out)
     assert out["errors"][0]["code"] == "adapter"
 
 
@@ -87,7 +88,7 @@ def test_clean_py(tmp_path: Path) -> None:
     f = tmp_path / "good.py"
     f.write_text("x: int = 42\nprint(x)\n")
     out = _run(str(f))
-    assert out["ok"] is True
+    assert_ok(out)
     assert out["count"] == 0
 
 
@@ -97,7 +98,7 @@ def test_type_error_reported(tmp_path: Path) -> None:
     # int annotation but assigned a str — pyright catches it.
     f.write_text("x: int = 'not a number'\nprint(x)\n")
     out = _run(str(f))
-    assert out["ok"] is False
+    assert_declined(out)
     assert out["count"] >= 1
     err = out["errors"][0]
     # pyright 0-indexed range.start converted to 1-indexed line/col.

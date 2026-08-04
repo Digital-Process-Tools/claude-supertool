@@ -18,12 +18,24 @@ Cached for the script run.
 """
 from __future__ import annotations
 
+import http.client
 import os
 import re
 import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))  # for _http (#691)
+
+from _http import (  # noqa: E402
+    ERROR_BODY_BYTES,
+    DeadlineExceeded,
+    RedirectRefused,
+    ResponseTooLarge,
+    read_capped,
+    urlopen,
+)
 
 WEB_BASE = "https://dev.to"
 
@@ -52,10 +64,21 @@ def fetch_csrf_token(cookie: str, timeout: int = 15) -> str:
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            html = resp.read().decode("utf-8", errors="replace")
+        with urlopen(req, timeout=timeout) as resp:
+            html = read_capped(resp).decode("utf-8", errors="replace")
+    except RedirectRefused as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(1)
+    except (ResponseTooLarge, DeadlineExceeded) as e:
+        # This was the worst of the unbounded call sites: it decoded the whole
+        # body to run one regex over it (#766).
+        sys.stderr.write(f"ERROR: {e}\n")
+        sys.exit(1)
     except urllib.error.HTTPError as e:
         sys.stderr.write(f"ERROR: session-cookie fetch failed: HTTP {e.code} (cookie expired?)\n")
+        sys.exit(1)
+    except http.client.HTTPException as e:
+        sys.stderr.write(f"ERROR: incomplete response: {type(e).__name__}: {e}\n")
         sys.exit(1)
     tokens = [t for t in _AUTH_TOKEN_RE.findall(html) if t != "NOTHING"]
     if not tokens:
@@ -81,10 +104,19 @@ def web_post_json(path: str, cookie: str, csrf: str, body: dict, timeout: int = 
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.read().decode("utf-8", errors="replace"), resp.status
+        with urlopen(req, timeout=timeout) as resp:
+            return read_capped(resp).decode("utf-8", errors="replace"), resp.status
+    except RedirectRefused as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(1)
+    except (ResponseTooLarge, DeadlineExceeded) as e:
+        sys.stderr.write(f"ERROR: {e}\n")
+        sys.exit(1)
+    except http.client.HTTPException as e:
+        sys.stderr.write(f"ERROR: incomplete response: {type(e).__name__}: {e}\n")
+        sys.exit(1)
     except urllib.error.HTTPError as e:
-        text = e.read().decode("utf-8", errors="replace")[:300]
+        text = e.read(ERROR_BODY_BYTES).decode("utf-8", errors="replace")[:300]
         if e.code in (401, 403):
             sys.stderr.write("ERROR: session unauthorized — cookie expired/rotated. Re-copy from browser.\n")
         elif e.code == 422:

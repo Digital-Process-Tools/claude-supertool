@@ -108,7 +108,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Tuple
+from typing import Any, Dict, Iterable, List, MutableMapping, NamedTuple, Optional, Tuple
 
 VERSION = "0.22.0"
 
@@ -119,6 +119,49 @@ def _fwd(p: str) -> str:
 
 
 DETERMINISTIC_TIME_ENV = "SUPERTOOL_DETERMINISTIC_TIME"
+
+
+def _deterministic_time() -> bool:
+    """Is the duration freeze on? See `_elapsed_since` for why it exists."""
+    return os.environ.get(DETERMINISTIC_TIME_ENV) == "1"
+
+
+def _timeout_verdict_line(t0: float, timeout: float) -> str:
+    """The `FAIL (timeout ...)` line, with its elapsed figure kept honest (#727).
+
+    `FAIL (timeout 0.0s > 10s)` asserts an op blew a 10s budget and reports
+    that it took no time at all. A reader cannot tell which half to believe,
+    and read literally the message points at the budget rather than at the
+    process — a diagnostic whose own figures contradict its verdict is worse
+    than one that says nothing.
+
+    Two ways the elapsed can come out below the budget, and they need
+    different words because they are different facts:
+
+    * The `SUPERTOOL_DETERMINISTIC_TIME` freeze (#643) is on. Everywhere else
+      zeroing a measured duration removes noise; on this one path it removes
+      the evidence, because the elapsed is the only number the message exists
+      to carry. The freeze still applies here — exempting this renderer would
+      put a varying field back into rendered output, which is the hole #643
+      closed *at the renderer* precisely so no call site has to remember it.
+      What changes is that the absence announces itself instead of posing as a
+      measurement. That is this repo's three-state contract applied to a number
+      rather than to a verdict.
+    * Anything else. `subprocess.run(timeout=T)` raises `TimeoutExpired` only
+      once T has actually elapsed, so a measured span under the budget is not a
+      fast machine or a near miss — it means this reporting path did not
+      measure the interval that expired. Say that, rather than printing the
+      number as if it were a result.
+    """
+    if _deterministic_time():
+        return (f"FAIL (timeout after its {timeout}s budget - elapsed frozen, "
+                f"deterministic-time mode)")
+    elapsed = time.monotonic() - t0
+    if elapsed < timeout:
+        return (f"FAIL (timeout {elapsed:.1f}s > {timeout}s - elapsed is under "
+                f"the budget, which no measured timeout can be: this is a bug "
+                f"in the reporting path, not a result (#727))")
+    return f"FAIL (timeout {elapsed:.1f}s > {timeout}s)"
 
 
 def _elapsed_since(t0: float) -> float:
@@ -141,7 +184,7 @@ def _elapsed_since(t0: float) -> float:
     normal operation sets it, and a real run still reports the real time —
     that number is how a human sees which validator is slow.
     """
-    if os.environ.get(DETERMINISTIC_TIME_ENV) == "1":
+    if _deterministic_time():
         return 0.0
     return time.monotonic() - t0
 
@@ -287,23 +330,73 @@ def _expand_braces(pattern: str) -> List[str]:
 
 
 # Default exclude-paths applied to all traversal ops (glob, grep, tree, map).
-# These are pruned at the directory-walk boundary — the dirs are never opened.
-# Match is prefix-relative-to-cwd; trailing slash is normalised in _get_exclude_paths.
-_DEFAULT_EXCLUDE_PATHS: Tuple[str, ...] = (
+# Directories are pruned at the walk boundary — they are never opened. Files
+# are dropped from the result, and dropping one *silently* is the thing this
+# list must not do — see `_hidden_suffix` and `_is_disclosable_exclusion`.
+#
+# Three entry shapes, all honoured by `_is_excluded`:
+#   "name/"   literal — a DIR or a FILE of that name. A single segment matches
+#             at any depth; a multi-segment path is anchored to cwd.
+#   "*.pem"   glob — fnmatched against the basename. Needed for shapes that are
+#             not a fixed name (`id_rsa*`, `*.pem`).
+#   "!name"   negation — un-excludes what it matches and wins over every other
+#             entry, whatever the order.
+#
+# Split in two because the *disclosure count* distinguishes them, not because
+# matching does: `_is_excluded` is handed the concatenation and cannot tell
+# them apart. Noise is skipped in silence; a credential file is skipped and
+# counted (#691).
+
+# Build output, caches and VCS metadata. Deliberately NOT counted: nobody
+# searching a repo meant these, they are documented, and a counter that fires
+# on them is a number that is never zero — which is noise, not disclosure.
+_NOISE_EXCLUDE_PATHS: Tuple[str, ...] = (
     ".git/", "node_modules/", ".svn/", ".hg/", ".idea/", ".vscode/",
     "__pycache__/", ".venv/", "venv/", "dist/", "build/",
     "phpstan-result-cache/", ".phpunit.cache/", ".rector/",
-    # #146: credential/secret dirs and files. Pruned so grep/glob/tree/map
-    # don't accidentally surface tokens in their output (which then lands in
-    # an LLM's context). Override per-project via .supertool.json exclude-paths.
-    # Note: trailing slash matches dirs AND files of the same name —
-    # `_is_excluded` appends `/` to rel_path before prefix-matching, so `.env/`
-    # catches a FILE named `.env` and a DIR named `.env/`. Distinct entries
-    # are needed for `.env.local`, `.env.production`, etc. (each is its own name).
-    ".env/", ".env.local/", ".env.production/", ".env.development/", ".env.test/",
+)
+
+_SECRET_EXCLUDE_PATHS: Tuple[str, ...] = (
+    # #146 / #691: credential dirs and files, kept out of glob/grep/tree/map so
+    # a token cannot land in an LLM context as a side effect of a search nobody
+    # aimed at it. #146 added the file entries below and documented that the
+    # trailing slash covered files; for two years nothing called `_is_excluded`
+    # on a file, so it did not. #691 wired it up.
+    #
+    # The boundary is deliberately narrow. A file earns a place here only when
+    # holding a credential is its entire purpose: an exact name (`.netrc`) or an
+    # unambiguous key-file shape (`*.pem`). No name-fragment heuristics —
+    # `*secret*`, `*token*`, `*password*` hit source and test files constantly,
+    # and a search that silently skips your own code is a worse failure than
+    # the one this list exists to prevent.
+    #
+    # Directories.
     ".max/", ".ssh/", ".aws/", ".gnupg/", ".kube/", ".docker/",
     ".terraform/", ".chef/", ".npm/", "secrets/", "credentials/",
+    # Environment files. `.env.*` covers `.local`, `.production`, `.staging`
+    # and whatever a project invents next. The negations keep the committed
+    # placeholders greppable — people read those to learn which keys exist,
+    # and hiding them is the over-broad direction of this same defect.
+    ".env/", ".env.*",
+    "!.env.example", "!.env.sample", "!.env.template", "!.env.dist",
+    "!.env.defaults", "!.env.schema",
+    # Tool credential files.
+    ".netrc/", "_netrc/", ".npmrc/", ".pypirc/", ".git-credentials/",
+    ".pgpass/", ".my.cnf/", ".htpasswd/", ".dockercfg/",
+    # Private keys and keystores.
+    "id_rsa*", "id_dsa*", "id_ecdsa*", "id_ed25519*",
+    "*.pem", "*.key", "*.p12", "*.pfx", "*.jks", "*.keystore", "*.ppk",
+    # Supertool's own documented cwd token files (see presets/*/_auth.py). The
+    # `.bluesky-handle` and `.hashnode-publication-id` siblings are public
+    # identifiers, not credentials, and stay visible.
+    ".hashnode-token/", ".devto-token/", ".bluesky-app-password/",
 )
+
+# Matching sees one flat list; only the disclosure count reads the split.
+_DEFAULT_EXCLUDE_PATHS: Tuple[str, ...] = (
+    _NOISE_EXCLUDE_PATHS + _SECRET_EXCLUDE_PATHS
+)
+_NOISE_EXCLUDE_SET = frozenset(_NOISE_EXCLUDE_PATHS)
 WILDCARD_CHARS = re.compile(r"[*?\[]")
 # Patterns for lines that are "blank or comment-only" across common languages
 _COMPACT_SKIP = re.compile(
@@ -675,6 +768,82 @@ def _load_config() -> Dict[str, Any]:
     return _CONFIG
 
 
+_MIXED_TREE_ENV = "SUPERTOOL_ALLOW_MIXED_TREE"
+
+
+def _mixed_tree_pair() -> Optional[Tuple[str, str]]:
+    """(core dir, other checkout) when two supertool trees answer one call (#678).
+
+    `_load_config()` walks up from **cwd**, and `_find_preset_file` looks in
+    `{project_dir}/presets/` first. So the config, the preset JSONs and the
+    scripts they point at all come from wherever the caller is standing, while
+    the core that parsed the ops came from the file that was invoked. Run a
+    branch worktree's `supertool.py` from a master checkout and you get branch
+    core + master presets in one process, with nothing on the receipt saying so
+    — the code under test never executes and the answer still says `PASS`.
+
+    The signal is deliberately narrow: the resolved project root is *itself a
+    different supertool checkout*. The cheaper "the invoked supertool.py is not
+    under the project root" was considered and rejected — that is the documented
+    install (a clone symlinked onto `$PATH`, used from arbitrary project roots),
+    so it would fire on essentially every legitimate invocation and teach
+    everyone to ignore it. A project root that merely ships its own `presets/`
+    is not a mix either: overriding a shipped preset is a documented feature.
+
+    Uncached — two `stat` calls, and a cached verdict is one more thing to go
+    stale in a reused daemon process (#680).
+    """
+    _load_config()
+    if not _CONFIG_PATH:
+        return None
+    project_dir = os.path.dirname(os.path.realpath(_CONFIG_PATH))
+    peer = os.path.join(project_dir, "supertool.py")
+    try:
+        if not os.path.isfile(peer):
+            return None
+        if os.path.realpath(peer) == os.path.realpath(__file__):
+            return None
+    except OSError:
+        return None
+    return (_INSTALL_DIR, project_dir)
+
+
+def _mixed_tree_allowed() -> bool:
+    """True when the caller has declared the mix deliberate via env."""
+    return (os.environ.get(_MIXED_TREE_ENV) or "").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
+def _mixed_tree_note(pair: Tuple[str, str]) -> str:
+    """One line naming both trees — used on stderr and on the stamped receipt."""
+    core, other = pair
+    return f"mixed supertool trees: core={core}/supertool.py presets={other}"
+
+
+def _mixed_tree_decline(op: str, pair: Tuple[str, str]) -> str:
+    """The third state for a config op whose provenance is unknown (#678).
+
+    Not a finding — nothing was found wrong with the op. An absence: the tool
+    cannot say which version would answer, so it says that instead of printing a
+    `PASS` indistinguishable from one the invoked build produced. Same contract
+    as `docs/validators.md` §"Declining instead of guessing".
+    """
+    core, other = pair
+    return (
+        f"SKIPPED: '{op}' comes from a different supertool tree than the core "
+        f"that is running.\n"
+        f"  core:    {core}/supertool.py (the file you invoked)\n"
+        f"  presets: {other} (resolved from this cwd — its .supertool.json and "
+        f"presets/ would answer)\n"
+        f"Declined rather than PASSing for a build the tool cannot name: the "
+        f"code you meant to exercise would not have run, and the answer would "
+        f"have looked exactly like a correct one (#678).\n"
+        f"Fix: run from {core}, or make the first op 'cwd:{core}'. To mix on "
+        f"purpose, set {_MIXED_TREE_ENV}=1 — the receipt then carries the "
+        f"pairing instead of a bare PASS.\n"
+    )
+
+
 def _is_compact() -> bool:
     """Check if compact mode is enabled in .supertool.json."""
     return bool(_load_config().get("compact", False))
@@ -807,11 +976,98 @@ def _parallel_workers() -> int:
             return 4
         if s in ("false", "no", "off", ""):
             return 0
+        # `SUPERTOOL_PARALLEL=x` used to return 0 — indistinguishable from not
+        # setting it at all, so a caller who asked for parallelism silently got
+        # none. `=-4` did the same through `max(0, ...)`. Both now say so (#654).
+        # Only an *env* value is reported: the int branch above is reachable only
+        # from JSON config, which is not what this message would be naming.
         try:
-            return max(0, int(s))
+            n = int(s)
         except ValueError:
+            if env is not None:
+                _env_notice(f"note: SUPERTOOL_PARALLEL={raw!r} is not a whole number "
+                            f"or true/false - ignoring it and using 0 (sequential).")
             return 0
+        if n < 0:
+            if env is not None:
+                _env_notice(f"note: SUPERTOOL_PARALLEL={raw!r} is below the minimum of 0 "
+                            f"- ignoring it and using 0 (sequential).")
+            return 0
+        return n
     return 0
+
+
+#: Messages already emitted this process — see `presets/_env.py`. `_get_op_int`
+#: is consulted several times for a single `read`, so without this one bad
+#: `SUPERTOOL_READ_MAX_LINES` would print the same line six times above the
+#: output it is warning about.
+_ENV_ANNOUNCED: "set[str]" = set()
+
+
+def _env_notice(text: str) -> None:
+    """One line, on stdout, flushed, at most once per distinct message.
+
+    Not stderr: `_run_custom_op` returns a successful subprocess's stdout and
+    drops its stderr, and falling back to a default *is* success — so a notice
+    on stderr is a notice nobody receives (#654).
+    """
+    if text in _ENV_ANNOUNCED:
+        return
+    _ENV_ANNOUNCED.add(text)
+    print(text)
+    sys.stdout.flush()
+
+
+def _env_int(name: str, default: int, *, minimum: "Optional[int]" = None) -> int:
+    """Read `name` as an int, or say why it could not be and what is in force.
+
+    Deliberately duplicated from `presets/_env.py` rather than imported.
+    `supertool.py` is a single self-contained file — importing a preset helper
+    would make core dispatch fail wherever `presets/` was not shipped alongside,
+    which is a larger blast radius than the fifteen lines it saves. The two
+    copies are kept in step by `tests/test_env_knob_parsing_654.py`, which
+    asserts the same contract against both.
+
+    Unset is silent. Set-but-unusable is announced and falls back to `default`.
+    `minimum` is a validated floor, not a clamp — see `presets/_env.py` for why
+    a negative is refused rather than quietly rounded up.
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        _env_notice(f"note: {name}={raw!r} is not a whole number "
+                    f"- ignoring it and using {default}.")
+        return default
+    if minimum is not None and value < minimum:
+        _env_notice(f"note: {name}={raw!r} is below the minimum of {minimum} "
+                    f"- ignoring it and using {default}.")
+        return default
+    return value
+
+
+def _env_float(name: str, default: float, *, minimum: "Optional[float]" = None) -> float:
+    """`_env_int` for the knobs measured in seconds. Same contract."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        _env_notice(f"note: {name}={raw!r} is not a number "
+                    f"- ignoring it and using {default}.")
+        return default
+    if value != value:  # NaN is below every bound and equal to none, including itself
+        _env_notice(f"note: {name}={raw!r} is not a usable number "
+                    f"- ignoring it and using {default}.")
+        return default
+    if minimum is not None and value < minimum:
+        _env_notice(f"note: {name}={raw!r} is below the minimum of {minimum} "
+                    f"- ignoring it and using {default}.")
+        return default
+    return value
 
 
 def _get_op_int(op_name: str, key: str, default: int) -> int:
@@ -819,22 +1075,32 @@ def _get_op_int(op_name: str, key: str, default: int) -> int:
 
     Env var SUPERTOOL_<OP>_<KEY> takes precedence over JSON config.
     Example: SUPERTOOL_READ_ABSTRACT_THRESHOLD_BYTES=12000
+
+    The env override used to fail closed in silence: a non-numeric or
+    non-positive `SUPERTOOL_READ_MAX_LINES` fell through to config and read
+    exactly like no override at all, so a caller who had set a cap could not
+    tell it had been discarded (#654). It now names the variable, the value, and
+    the limit actually in force — resolved first, so the number printed is the
+    one that will be used rather than a guess at it.
     """
     env_key = f"SUPERTOOL_{op_name.upper()}_{key.upper()}"
     env_val = os.environ.get(env_key)
-    if env_val:
-        try:
-            n = int(env_val)
-            if n > 0:
-                return n
-        except ValueError:
-            pass
     cfg = _load_config()
     op_cfg = cfg.get("builtin-ops", {}).get(op_name, {})
     val = op_cfg.get(key)
-    if isinstance(val, int) and val > 0:
-        return val
-    return default
+    fallback = val if isinstance(val, int) and val > 0 else default
+    if env_val:
+        try:
+            n = int(env_val)
+        except ValueError:
+            _env_notice(f"note: {env_key}={env_val!r} is not a whole number "
+                        f"- ignoring it and using {fallback}.")
+            return fallback
+        if n > 0:
+            return n
+        _env_notice(f"note: {env_key}={env_val!r} is below the minimum of 1 "
+                    f"- ignoring it and using {fallback}.")
+    return fallback
 
 
 def _grep_file_includes() -> Tuple[str, ...] | None:
@@ -877,22 +1143,47 @@ def _get_exclude_paths(op_name: str, no_exclude: bool = False) -> Tuple[str, ...
         extra = project_paths.get("exclude-paths", [])
         if isinstance(extra, list):
             for p in extra:
-                if isinstance(p, str):
-                    # Normalise: ensure trailing slash for directory prefix matching
-                    defaults.add(p if p.endswith("/") else p + "/")
+                if isinstance(p, str) and p:
+                    defaults.add(_normalise_exclude_entry(p))
     return tuple(sorted(defaults))
 
 
-def _is_excluded(rel_path: str, exclude_paths: Tuple[str, ...]) -> bool:
-    """Return True if rel_path matches any of the exclude prefixes.
+def _normalise_exclude_entry(entry: str) -> str:
+    """Normalise one `exclude-paths` entry to the shape `_is_excluded` expects.
 
-    Two match modes (matches `.gitignore` semantics):
-      1. **Prefix match** — `rel_path` literally starts with a prefix (catches
+    A literal gets a trailing slash so it prefix-matches. A glob and a negation
+    are returned untouched: appending `/` to `*.key` produced `*.key/`, which
+    fnmatches nothing and no longer looks like a glob either — so a wildcard in
+    a project config was a silent no-op, failing in exactly the direction this
+    setting exists to prevent (#691).
+    """
+    if entry.startswith("!") or WILDCARD_CHARS.search(entry):
+        return entry
+    return entry if entry.endswith("/") else entry + "/"
+
+
+def _is_excluded(rel_path: str, exclude_paths: Tuple[str, ...]) -> bool:
+    """Return True if rel_path matches any of the exclude entries.
+
+    Answers for **files as well as directories**. Callers that walk must ask
+    about both: pruning `dirs[:]` alone is how `.env/` sat on the default list
+    from #146 to #691 while `grep` printed the contents of every `.env` in the
+    tree. There is nothing wrong with the matching here — it was simply never
+    asked about a file.
+
+    Four entry shapes (`.gitignore` semantics):
+      1. **Prefix match** — `rel_path` literally starts with the entry (catches
          a `node_modules/` at the project root).
-      2. **Component match** — any single-segment prefix (`__pycache__/`,
-         `.git/`, `node_modules/`) matches that name appearing ANYWHERE in
-         the path (catches nested `presets/devto/__pycache__/foo.pyc`,
-         which the old prefix-only logic missed).
+      2. **Component match** — a single-segment entry (`__pycache__/`, `.git/`)
+         matches that name appearing ANYWHERE in the path (catches nested
+         `presets/devto/__pycache__/foo.pyc`). The trailing `/` is not a
+         directory assertion: `rel_path` gets one appended before comparison,
+         so `.env/` matches a FILE named `.env` and a DIR named `.env/` alike.
+      3. **Glob** — an entry containing `*`, `?` or `[` is fnmatched against the
+         basename and against the whole relative path (`*.pem`, `id_rsa*`).
+      4. **Negation** — an entry starting with `!` un-excludes what it matches
+         and wins over every other entry regardless of order, so `.env.*` can
+         be listed without hiding the committed `.env.example`.
 
     Multi-segment prefixes (`Dvsi/dvsi-private/libs/`) keep prefix-only
     semantics — anchoring to repo root is the whole point of them.
@@ -902,23 +1193,82 @@ def _is_excluded(rel_path: str, exclude_paths: Tuple[str, ...]) -> bool:
     """
     if not exclude_paths:
         return False
+    import fnmatch
     # Normalise to forward-slashes for consistent prefix matching
     normalised = rel_path.replace(os.sep, "/")
     # Strip leading "./" produced by os.path.join(".", name) or relpath at cwd
     if normalised.startswith("./"):
         normalised = normalised[2:]
+    bare_path = normalised.rstrip("/")
     if not normalised.endswith("/"):
         normalised += "/"
+    basename = bare_path.rsplit("/", 1)[-1]
     # Component set for the "matches anywhere" check (skip empties).
-    components = {c for c in normalised.rstrip("/").split("/") if c}
-    for prefix in exclude_paths:
-        if normalised.startswith(prefix):
+    components = {c for c in bare_path.split("/") if c}
+
+    def _glob_hit(pattern: str) -> bool:
+        return (fnmatch.fnmatch(basename, pattern)
+                or fnmatch.fnmatch(bare_path, pattern))
+
+    # Negations first, and they are final — an entry cannot be re-excluded by a
+    # later pattern, so the answer never depends on tuple order (the defaults
+    # are `sorted()` before they get here).
+    for entry in exclude_paths:
+        if not entry.startswith("!"):
+            continue
+        pattern = entry[1:].rstrip("/")
+        if not pattern:
+            continue
+        if WILDCARD_CHARS.search(pattern):
+            if _glob_hit(pattern):
+                return False
+        elif pattern == basename or normalised.startswith(pattern + "/"):
+            return False
+
+    for entry in exclude_paths:
+        if entry.startswith("!"):
+            continue
+        if WILDCARD_CHARS.search(entry):
+            if _glob_hit(entry.rstrip("/")):
+                return True
+            continue
+        if normalised.startswith(entry):
             return True
         # Single-segment prefixes also match anywhere in the path.
-        bare = prefix.rstrip("/")
+        bare = entry.rstrip("/")
         if "/" not in bare and bare in components:
             return True
     return False
+
+
+def _is_disclosable_exclusion(
+    rel_path: str, exclude_paths: Tuple[str, ...]
+) -> bool:
+    """Does this file's exclusion belong in the report's hidden count? (#691)
+
+    The count is the entire justification for hiding a file at all: a `*.pem`
+    sitting in a fixtures directory is survivable *because* the header says
+    something was dropped. That holds only while the number discriminates, so
+    entries that fire constantly and mean nothing have to stay out of it.
+
+    `_hidden_suffix` already made this argument — for directories. Files
+    versus directories was a *proxy* for the real line, which is noise versus
+    credential, and the proxy holds only because almost every noise entry
+    happens to be a directory. In a git **worktree** `.git` is a gitfile, not
+    a directory, so the proxy broke precisely where the agent work happens:
+    the counter read `1` on every call in the tree, about a pointer file
+    nobody searched for. A reader learns to skip a number that is never zero,
+    and then the call that says `2` because a real `.env` was hidden looks
+    like all the others.
+
+    Built-in noise entries are kept out of the count and still kept out of
+    the result — nothing is hidden any less than before. A project's own
+    `exclude-paths` entries always count: we cannot know whether one is noise
+    or a credential, over-disclosure is the safe direction, and whoever added
+    the pattern is the person most likely to want to know that it fired.
+    """
+    signal = tuple(p for p in exclude_paths if p not in _NOISE_EXCLUDE_SET)
+    return bool(signal) and _is_excluded(rel_path, signal)
 
 
 def _split_exclude_prefixes(
@@ -942,6 +1292,91 @@ def _split_exclude_prefixes(
         else:
             singles.append(trimmed)
     return tuple(singles), tuple(multis)
+
+
+def _grep_exclude_flags(exclude_paths: Tuple[str, ...]) -> List[str]:
+    """Build the `--exclude` / `--exclude-dir` argv for the delegated grep.
+
+    Two things the old `--exclude-dir`-only argv got wrong (#691):
+
+    - **`--exclude-dir` cannot skip a file.** `.env/` means "a dir or a file
+      named `.env`" everywhere else in supertool, so every literal entry now
+      emits both flags. This alone is what stopped the delegated engine reading
+      `.env` off disk at all.
+    - **System grep has no negation.** `--exclude=.env.*` would hide
+      `.env.example`, which the native walker shows — and which backend ran must
+      never change the answer. So when the effective list carries any negation,
+      wildcard entries are withheld from the argv entirely and left to the
+      post-filter in `op_grep`. Literal entries still go through, which is where
+      the traversal win lives (`node_modules`, `.git`).
+
+    And one thing this argv got wrong in turn (#764): a file grep never opens
+    is a file `_rtk_drop_excluded` never sees, so `rtk_dropped` stayed 0 and
+    `_rtk_grep_report` printed no hidden clause. The disclosure #691 added was
+    therefore inverted against usefulness — honest whenever the flags failed,
+    silent whenever they worked, which is the fast path and the common one.
+
+    So `--exclude=NAME` is emitted only for entries the report would not have
+    counted anyway. A **disclosable** entry (anything off the built-in noise
+    list — the same test `_is_disclosable_exclusion` applies) sends only
+    `--exclude-dir=NAME`: the file comes back, the post-filter drops it,
+    `dropped > 0`, and `op_grep` redoes the walk natively for a full and honest
+    report. The cost is that second walk, paid only when a credential-shaped
+    file actually matched the pattern — and already the status quo for the
+    wildcard half, which the negation rule above withholds for its own reasons.
+    A silent search is the worse surprise: the count is the entire
+    justification for hiding a file without asking.
+
+    `--exclude-dir` is kept in both cases. A pruned directory is not counted by
+    the native walker either — it is never opened, so there are no files to
+    count — and withholding it would cost the traversal win and buy no
+    disclosure at all.
+
+    Multi-segment entries are never expressible as a bare name; `op_grep`
+    already refuses to delegate at all when one is present.
+    """
+    has_negation = any(p.startswith("!") for p in exclude_paths)
+    negated = {p[1:].rstrip("/") for p in exclude_paths if p.startswith("!")}
+    flags: List[str] = []
+    for entry in exclude_paths:
+        if entry.startswith("!"):
+            continue
+        bare = entry.rstrip("/")
+        if not bare or "/" in bare or bare in negated:
+            continue
+        if WILDCARD_CHARS.search(bare) and has_negation:
+            continue
+        flags.append(f"--exclude-dir={bare}")
+        if entry in _NOISE_EXCLUDE_SET:
+            flags.append(f"--exclude={bare}")
+    return flags
+
+
+def _rtk_drop_excluded(
+    rtk_out: str, exclude_paths: Tuple[str, ...]
+) -> Tuple[str, int]:
+    """Filter excluded paths out of a delegated grep's `path:lineno:content`.
+
+    The authoritative guard on the delegated path, and deliberately not the
+    only one: the argv flags are an optimisation, this is the guarantee. It
+    runs the same `_is_excluded` the native walker runs, so an rtk release that
+    rewrites the argv, or a system grep that ignores `--exclude`, still cannot
+    put a credential in the output.
+
+    Returns (kept_text, dropped_file_count).
+    """
+    if not exclude_paths:
+        return rtk_out, 0
+    cwd = os.getcwd()
+    kept: List[str] = []
+    dropped: set = set()
+    for line in rtk_out.splitlines():
+        m = re.match(r"^(.+?):\d+:", line)
+        if m and _is_excluded(_safe_relpath(m.group(1), cwd), exclude_paths):
+            dropped.add(m.group(1))
+            continue
+        kept.append(line)
+    return "\n".join(kept) + ("\n" if kept else ""), len(dropped)
 
 
 # Directories git ignores, keyed on (cwd, search root). One entry per walk
@@ -1313,6 +1748,57 @@ def _safe_path(p: str, *, allow_outside_cwd: Optional[bool] = None) -> str:
     return abs_p
 
 
+def _path_not_found(path: str, *, label: str = "path",
+                     suggest: Optional[str] = None) -> str:
+    """The "not found" error, naming the path it actually tried (#624).
+
+    `ERROR: file not found: src/foo.py` is true and useless: it cannot tell a
+    typo from a cwd that drifted — a `cd` in an earlier shell call, which is
+    the shape #624 was filed about. The absolute path tried separates the two
+    at a glance, with no second `pwd` round-trip.
+
+    When cwd sits under a project root that DOES hold the path, the root and
+    the exact `cwd:` prefix that would reach it are named as well. Named, not
+    used: auto-recovery (#363) already re-roots the unambiguous call, so every
+    call that reaches here is one it declined — ambiguous by construction.
+    Resolving it here would trade a loud wrong path for a quiet wrong root,
+    which is the defect this tracker is about, not the fix.
+
+    `suggest`, when given, replaces the generic `wrong CWD?` hint (#734).
+    The cwd-drift explanation is a real default, but a caller that already
+    knows a *specific*, more plausible mistake — e.g. `around` recognising
+    its PATH argument as an all-digit token that looks like the LINE its
+    sibling `around_line` wants — should say that instead of pointing at the
+    one thing that provably did not cause this failure.
+    """
+    if not path:
+        return f"ERROR: {label} not found: {path}\n"
+    tried = os.path.abspath(os.path.expanduser(path))
+    lines = [
+        f"ERROR: {label} not found: {path}",
+        f"  tried: {tried} (cwd: {os.getcwd()})",
+    ]
+    root = None
+    if not os.path.isabs(path):
+        try:
+            root = _project_root_above_cwd()
+        except OSError:
+            root = None
+    if root and os.path.exists(os.path.join(root, path)):
+        lines.append(
+            f"  exists at {os.path.join(root, path)} — prefix the call with "
+            f"'cwd:{root}' to run it from the project root"
+        )
+    elif suggest:
+        lines.append(f"  {suggest}")
+    else:
+        lines.append(
+            "  wrong CWD? Prefix the call with cwd:PATH to run it from "
+            "elsewhere."
+        )
+    return "\n".join(lines) + "\n"
+
+
 def _extract_env_prefix(cmd: str) -> Tuple[Dict[str, str], str]:
     """Split a leading `KEY=VAL KEY2=VAL2 ...` shell env-prefix off `cmd`.
 
@@ -1387,6 +1873,91 @@ def _expand_env(s: str, env: Dict[str, str]) -> str:
     )
 
 
+# Git's repo pointers. Any of these, set anywhere in the parent environment,
+# overrides discovery-from-cwd and points a git command at the repository they
+# name instead — so an op run from repoB acts on repoA (#692). Proven: a
+# `git-commit` with cwd=repoB and GIT_DIR=repoA/.git wrote the commit into
+# repoA, and the receipt named no repository at all.
+#
+# Not hypothetical, and not something the caller has to do to themselves: git
+# exports GIT_DIR to every hook it runs, and `.githooks/pre-commit` invokes
+# `./supertool 'git-diff:staged'`. This repo hands supertool a leaked git
+# environment as a matter of routine.
+#
+# #416 learned this once and fixed it for the TEST RUNNER (`.githooks/pre-push`
+# unsets them before pytest; `tests/conftest.py` again before every test). The
+# ops never got the same treatment. This is the same list, kept in one place —
+# conftest imports it from here, and a test pins the hook's `unset` line to it,
+# because three copies of one lesson is how the ops came to be missed.
+#
+# Membership rule: does the variable change WHICH repository, index, or refs a
+# git command reads or writes? GIT_COMMON_DIR and GIT_NAMESPACE do and were not
+# in #416's five — the first redirects config and refs for a worktree, the
+# second redirects every ref a push writes. GIT_CEILING_DIRECTORIES and
+# GIT_DISCOVERY_ACROSS_FILESYSTEM do not: they only restrict discovery, so the
+# worst they cause is finding no repo rather than the wrong one, and people set
+# them deliberately on slow network mounts. Scrubbing those would make
+# supertool disagree with the user's own shell about where they are.
+GIT_ENV_VARS = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_NAMESPACE",
+)
+
+# What `_main` removed from `os.environ` on the way in, so the notice can name
+# it after the cwd has settled — the scrub happens before argv is parsed, the
+# cwd it acted under is only known after `cwd:`/auto-root.
+#
+# Per-run scratch, filled in place rather than rebound: a daemon reuses the
+# process, and a leak list left over from an earlier call would print a notice
+# on a later clean one — #680's lesson about `_SKIP_COUNT`, same shape (#714).
+_LEAKED_GIT_ENV: List[str] = []
+
+
+def scrub_git_env(env: MutableMapping[str, str]) -> List[str]:
+    """Delete git's repo pointers from `env`; return the names removed.
+
+    `env` is `os.environ` itself at the one call site (#714), not a copy: a
+    `del` there unsets the variable for this process AND for every child it
+    spawns, which is what makes the guard total. Typed as a MutableMapping
+    rather than a Dict because `os._Environ` is not a dict.
+    """
+    removed = [name for name in GIT_ENV_VARS if name in env]
+    for name in removed:
+        del env[name]
+    return removed
+
+
+def _git_env_notice(removed: List[str]) -> str:
+    """One line naming what was scrubbed, or "" when nothing was.
+
+    Scrubbed rather than refused: refusing would break the caller this repo
+    creates itself — `.githooks/pre-commit` runs `git-diff:staged` under git's
+    exported GIT_DIR, and a commit hook that aborts because supertool declined
+    is a worse outcome than one that reads the right repo. But scrubbed
+    LOUDLY. A silent scrub makes the tool ignore something the caller may have
+    set on purpose and say nothing about it — the same "quiet where a loud
+    answer belonged" that made the original bug invisible, just pointing the
+    other way. The line costs one row of output and is the only thing that
+    tells a caller their environment is leaking.
+
+    Said once per call rather than once per op (#714). The scrub is now a
+    property of the process, so repeating the line under each of six reads
+    would describe one event six times.
+    """
+    if not removed:
+        return ""
+    return (
+        f"scrubbed inherited git env: {', '.join(removed)} — this call acted "
+        f"on the repo at {os.getcwd()}, not the one those variables named "
+        f"(#692, #714)\n"
+    )
+
+
 def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
     """Try to run op as a custom command from config["ops"].
 
@@ -1400,6 +1971,15 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
     ops = config.get("ops")
     if not ops or op not in ops:
         return None
+
+    # #678 — this op is defined by whatever tree the cwd resolved to, which is
+    # not necessarily the tree this core came from. Decide before running it:
+    # once the subprocess has answered, its output is indistinguishable from
+    # the right one.
+    _mixed = _mixed_tree_pair()
+    if _mixed is not None and not _mixed_tree_allowed():
+        _SKIP_COUNT[0] += 1
+        return _mixed_tree_decline(op, _mixed)
 
     entry = ops[op]
     if isinstance(entry, str):
@@ -1437,6 +2017,12 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
 
     # Pass extra config keys as SUPERTOOL_ env vars
     _RESERVED_KEYS = {"cmd", "timeout", "description", "syntax", "example", "status", "restartMcp"}
+    # No scrub here any more (#714). #692 put one on this line because every
+    # PRESET op is launched from it — true, and the reasoning holds, but this
+    # is the launcher for half the op table. Built-ins never reach it, and core
+    # spawns git in six of its own functions. `os.environ` is scrubbed once in
+    # `_main` instead, so this copy is already clean and a preset stays covered
+    # by being launched rather than by opting in.
     env = dict(os.environ)
     if isinstance(entry, dict):
         for k, v in entry.items():
@@ -1471,10 +2057,14 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
             if result.stderr:
                 output += result.stderr
             return f"FAIL ({elapsed:.2f}s)\n{output}"
-        return f"PASS ({elapsed:.2f}s)\n{output}{_maybe_restart_mcp(entry)}"
+        # A deliberate mix still never prints a bare PASS — the verdict line
+        # carries which two trees produced it (#678).
+        _stamp = f" [{_mixed_tree_note(_mixed)}]" if _mixed is not None else ""
+        return f"PASS ({elapsed:.2f}s){_stamp}\n{output}{_maybe_restart_mcp(entry)}"
     except subprocess.TimeoutExpired as e:
-        elapsed = _elapsed_since(t0)
-        return (f"FAIL (timeout {elapsed:.1f}s > {timeout}s)\n"
+        # Not `_elapsed_since`: the freeze it applies zeroes the one number
+        # this line exists to report (#727).
+        return (f"{_timeout_verdict_line(t0, timeout)}\n"
                 f"{_timeout_partial_output(e)}")
     except OSError as e:
         return f"FAIL: {e}\n"
@@ -1627,7 +2217,7 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
     if limit <= 0:
         limit = _get_op_int("read", "max_lines", MAX_READ_LINES)
     if not path or not os.path.isfile(path):
-        return f"ERROR: file not found: {path}\n"
+        return _path_not_found(path, label="file")
 
     # RTK delegation — simple reads without offset/filter/limit changes
     if not grep_filter and offset == 0 and limit == _get_op_int("read", "max_lines", MAX_READ_LINES) and _rtk_enabled() and _has_rtk():
@@ -1869,27 +2459,36 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
         # Could be a glob pattern — check if it expands to anything
         from glob import glob as _glob
         if not _glob(path, recursive=True):
-            return (f"ERROR: path not found: {path} (cwd: {os.getcwd()}) — wrong CWD? "
-                    f"Prefix the call with cwd:PATH to run it from elsewhere.\n")
+            return _path_not_found(path)
 
     excl = _get_exclude_paths("grep", no_exclude)
 
-    # RTK delegation — basic grep (no context, no count). Thread excludes through
-    # via grep's --exclude-dir for single-segment prefixes (.git/, node_modules/,
-    # etc.). Multi-segment prefixes (e.g. "Dvsi/dvsi-private/libs/") can't be
-    # expressed as --exclude-dir; fall through to the native walker in that case.
+    # RTK delegation — basic grep (no context, no count). Excludes are threaded
+    # through as --exclude-dir AND --exclude for single-segment entries (.git/,
+    # node_modules/, .env/) and re-applied to whatever comes back. Multi-segment
+    # prefixes (e.g. "Dvsi/dvsi-private/libs/") can't be expressed as either;
+    # fall through to the native walker in that case.
     if not count_only and context == 0 and _rtk_enabled() and _has_rtk():
-        single, multi = _split_exclude_prefixes(excl)
+        _, multi = _split_exclude_prefixes(excl)
         if not multi and not _gitignore_residual(path, excl):
             # limit + 1 so the report can tell "exactly N" from "stopped at N"
             # (#448). The extra line is trimmed off before output.
             rtk_args = ["grep", "-rn", "-m", str(limit + 1)]
-            for d in single:
-                rtk_args.append(f"--exclude-dir={d}")
+            rtk_args.extend(_grep_exclude_flags(excl))
             rtk_args.extend([pattern, path])
             rtk_out = _rtk_run(rtk_args)
             if rtk_out is not None and rtk_out.strip():
-                return _rtk_grep_report(rtk_out, limit)
+                rtk_out, rtk_dropped = _rtk_drop_excluded(rtk_out, excl)
+                if not rtk_dropped:
+                    return _rtk_grep_report(rtk_out, limit)
+                # An excluded file came back anyway — expected whenever the
+                # list carries a negation, since those wildcards are withheld
+                # from the argv. Printing the filtered lines under the
+                # delegated header would leave its count, its `limit + 1`
+                # truncation probe and its `?` denominator all describing a
+                # result set that no longer exists. Redo the walk natively
+                # instead: same filter, honest report, and the two engines
+                # answer identically in the one case where it matters (#691).
             # No RTK output — rtk failed, or it ran and matched nothing. Fall
             # through to the native walker either way (#414). A zero result is
             # the ambiguous case #407 exists for, so it must reach the walker
@@ -1901,8 +2500,10 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
     # many files were actually scanned (#407) — without it, "0 results" is
     # ambiguous between "searched everything, found nothing" and "path/glob
     # resolved to nothing, so nothing was searched".
-    candidates = _grep_candidates(path, excl)
+    hidden_files: List[str] = []
+    candidates = _grep_candidates(path, excl, hidden_files)
     scanned = len(candidates)
+    hidden = _hidden_suffix(len(hidden_files))
 
     if count_only:
         counts = _grep_count(pattern, path, limit, excl, candidates=candidates)
@@ -1914,7 +2515,7 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
         total = sum(counts.values())
         file_count = len(counts)
         out = [literal_note,
-               f"({total} total matches across {file_count} files{_scanned_suffix(scanned)})\n"]
+               f"({total} total matches across {file_count} files{_scanned_suffix(scanned)}{hidden})\n"]
         for fp, cnt in sorted(counts.items()):
             out.append(f"{_fwd(fp)}:{cnt}\n")
         out.append("\n")
@@ -1934,7 +2535,7 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
         )
         literal_note = _literal_note(pattern, count) if literal else ""
         file_count = len({g[0][0] for g in groups if g})
-        out = [literal_note, f"({count} results in {file_count} files{_scanned_suffix(scanned)}, "
+        out = [literal_note, f"({count} results in {file_count} files{_scanned_suffix(scanned)}{hidden}, "
                f"limit {limit}, context {context}{_truncation_suffix(truncated)})\n"]
         current_file: str = ""
         first_group = True
@@ -1973,7 +2574,7 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
     file_count = len({fp for fp, _, _ in hits})
 
     out = [literal_note,
-           f"({count} results in {file_count} files{_scanned_suffix(scanned)}, "
+           f"({count} results in {file_count} files{_scanned_suffix(scanned)}{hidden}, "
            f"limit {limit}{_truncation_suffix(truncated)})\n"]
     current_file = ""
     for fp, lineno, content in hits:
@@ -2109,7 +2710,20 @@ def op_around(pattern: str, path: str, n: int = 10) -> str:
         regex = re.compile(re.escape(pattern))
 
     if not os.path.isdir(path) and not os.path.isfile(path):
-        return f"ERROR: file not found: {path}\n"
+        # #734: `around` is PATTERN:PATH[:N] and its sibling `around_line`
+        # is PATH:LINE[:N] — same op-name family, opposite argument order.
+        # Swap them and PATH resolves to a line number, which is never a
+        # real path but IS a plausible typo. `wrong CWD?` cannot be right
+        # here (the cwd was fine), so name the actual mistake instead —
+        # never redirect the call itself, only the advice.
+        suggest = None
+        if path.isdigit():
+            suggest = (
+                "`around` takes PATTERN:PATH[:N] — "
+                f"'{path}' was read as the path. Did you mean: "
+                f"around_line:{pattern}:{path}[:N]"
+            )
+        return _path_not_found(path, label="file", suggest=suggest)
 
     def _render(rx: "re.Pattern[str]") -> Tuple[str, bool]:
         """Render the around-window for `rx`. Returns (output, matched) so the
@@ -2305,7 +2919,8 @@ def op_glob(pattern: str, no_exclude: bool = False, no_auto_read: bool = False) 
     # header did, and one file past the cap is what distinguishes "N matched"
     # from "N shown".
     cap = _get_op_int("glob", "max_results", MAX_GLOB_RESULTS)
-    files = _glob_files(pattern, excl, over_fetch=1)
+    hidden_files: List[str] = []
+    files = _glob_files(pattern, excl, over_fetch=1, hidden=hidden_files)
     # glob is repo-root relative, so a pattern naming a mid-path segment
     # (`SiBrief/**/*.php` for a dir nested under Dvsi/src2/) returns 0 while the
     # same segment works fine in grep. Retry once with a `**/` prefix so both
@@ -2314,7 +2929,8 @@ def op_glob(pattern: str, no_exclude: bool = False, no_auto_read: bool = False) 
     if (not files and "/" in pattern
             and not pattern.startswith(("/", "~", "**", "./", "../"))):
         retry = "**/" + pattern
-        files = _glob_files(retry, excl, over_fetch=1)
+        hidden_files = []
+        files = _glob_files(retry, excl, over_fetch=1, hidden=hidden_files)
         if files:
             midpath_note = (f"[mid-path retry: no match at repo root for "
                             f"{pattern!r} — matched {retry!r}]\n")
@@ -2330,7 +2946,8 @@ def op_glob(pattern: str, no_exclude: bool = False, no_auto_read: bool = False) 
         if len(prefix) <= 10:
             prefix = ""
     truncation = " — TRUNCATED, more files match" if glob_truncated else ""
-    out = [midpath_note, f"({len(files)} files{truncation})\n"]
+    out = [midpath_note,
+           f"({len(files)} files{_hidden_suffix(len(hidden_files))}{truncation})\n"]
     if prefix:
         fwd_prefix = _fwd(prefix)
         out.append(f"{fwd_prefix}\n")
@@ -2524,9 +3141,33 @@ def op_diff(path1: str, path2: str) -> str:
     return "\n".join(diff) + "\n"
 
 
+# git's way of saying "nothing here is version-controlled" — an answer, and
+# the common one for a file outside any checkout. Every other non-zero exit
+# (a held index lock, a dubious-ownership refusal, a corrupt object store) is
+# a lookup that did not happen, and renders as PATH_META_UNKNOWN.
+_NOT_A_REPO = "not a git repository"
+
+# The third state of the working-tree marker (#705). `?`, `!` and `m` are
+# answers; their joint absence used to mean both "this file matches the index"
+# and "the lookup failed", which inverts the marker's whole job on the failure
+# leg — a modified file reading as clean, on every `read`.
+#
+# It is a token rather than a punctuation mark on purpose. The field looks
+# one character wide because its busiest members are, but it is a
+# space-separated token list whose members already run to `non-utf8`, `crlf`
+# and `->target broken`, so nothing was costing a character. A punctuation
+# mark would have had to be one the reader has no meaning for yet — and every
+# free character is free precisely because it says nothing, which is the
+# wrong property for the token that has to say the most. `git?` names the
+# check that declined and cannot be confused with the three answers it
+# replaces, none of which mention git.
+PATH_META_UNKNOWN = "git?"
+
+
 def _path_meta_suffix(path: str, sample: bytes = b"") -> str:
     """Compact suffix for read/workspace meta line. Empty when nothing notable.
     Tokens: ->target [broken] | bin | non-utf8 | ? | ! | m | x | crlf | Nd|Nw|Nmo
+            | git? (the working-tree lookup declined — state unknown, not clean)
     """
     parts = []
     if sample:
@@ -2571,7 +3212,7 @@ def _path_meta_suffix(path: str, sample: bytes = b"") -> str:
             capture_output=True, text=True, timeout=2,
             cwd=os.path.dirname(os.path.abspath(path)) or ".", encoding="utf-8", errors="replace",
         )
-        if r.returncode == 0 and r.stdout:
+        if r.returncode == 0:
             code = r.stdout[:2]
             if code == "??":
                 parts.append("?")
@@ -2579,7 +3220,15 @@ def _path_meta_suffix(path: str, sample: bytes = b"") -> str:
                 parts.append("!")
             elif "M" in code or "A" in code:
                 parts.append("m")
-    except (OSError, subprocess.TimeoutExpired):
+        elif _NOT_A_REPO not in r.stderr.lower():
+            parts.append(PATH_META_UNKNOWN)
+    except subprocess.TimeoutExpired:
+        parts.append(PATH_META_UNKNOWN)
+    except OSError:
+        # No git on this machine, or the file's directory went away under us.
+        # Nothing here was ever going to answer, so a decline that can never
+        # resolve would be noise on every read (docs/validators.md,
+        # "Declining instead of guessing").
         pass
     return (" " + " ".join(parts)) if parts else ""
 
@@ -2612,7 +3261,7 @@ def op_stat(path: str) -> str:
 def op_around_line(path: str, line: int, n: int = 10) -> str:
     """Show N lines of context around a specific line number."""
     if not path or not os.path.isfile(path):
-        return f"ERROR: file not found: {path}\n"
+        return _path_not_found(path, label="file")
     if line < 1:
         return f"ERROR: line number must be >= 1, got {line}\n"
 
@@ -2648,6 +3297,7 @@ def op_tree(path: str, depth: int = 3,
         return f"ERROR: depth must be >= 1, got {depth}\n"
 
     out: List[str] = []
+    hidden: List[str] = []
     base = os.path.abspath(path)
     cwd = os.getcwd()
 
@@ -2664,6 +3314,12 @@ def op_tree(path: str, depth: int = 3,
         files = [e for e in entries if not os.path.isdir(os.path.join(dir_path, e))]
 
         for f in files:
+            if exclude_paths:
+                rel_f = _safe_relpath(os.path.join(dir_path, f), cwd)
+                if _is_excluded(rel_f, exclude_paths):
+                    if _is_disclosable_exclusion(rel_f, exclude_paths):
+                        hidden.append(f)
+                    continue
             out.append(f"{prefix}{f}\n")
         for d in dirs:
             if exclude_paths:
@@ -2676,6 +3332,8 @@ def op_tree(path: str, depth: int = 3,
 
     out.append(f"{os.path.basename(base)}/\n")
     _walk(base, "  ", 1)
+    if hidden:
+        out.append(f"({len(hidden)} files hidden by exclude-paths)\n")
     return "".join(out)
 
 
@@ -3131,7 +3789,8 @@ _MAP_EXTENSIONS = frozenset(
 
 
 def _collect_files(
-    path: str, exclude_paths: Tuple[str, ...]
+    path: str, exclude_paths: Tuple[str, ...],
+    hidden: Optional[List[str]] = None,
 ) -> List[str]:
     """Collect files to map from a path (file or directory).
 
@@ -3163,8 +3822,15 @@ def _collect_files(
         )
         for fn in sorted(filenames):
             ext = os.path.splitext(fn)[1].lower()
-            if ext in _MAP_EXTENSIONS:
-                files.append(os.path.join(root, fn))
+            if ext not in _MAP_EXTENSIONS:
+                continue
+            rel_fn = os.path.join(rel_root, fn)
+            if exclude_paths and _is_excluded(rel_fn, exclude_paths):
+                if hidden is not None and _is_disclosable_exclusion(
+                        rel_fn, exclude_paths):
+                    hidden.append(os.path.join(root, fn))
+                continue
+            files.append(os.path.join(root, fn))
     return files
 
 
@@ -3184,9 +3850,11 @@ def op_map(path: str, no_exclude: bool = False) -> str:
     if not path:
         return "ERROR: empty path\n"
     if not os.path.exists(path):
-        return f"ERROR: path not found: {path}\n"
+        return _path_not_found(path)
 
-    files = _collect_files(path, _get_exclude_paths("map", no_exclude))
+    hidden_files: List[str] = []
+    files = _collect_files(
+        path, _get_exclude_paths("map", no_exclude), hidden_files)
     if not files:
         return f"(no supported files found in {path})\n"
 
@@ -3236,7 +3904,7 @@ def op_map(path: str, no_exclude: bool = False) -> str:
             # File exists but no symbols extracted — show it as empty
             out_files.append(f"{_fwd(fpath)} ({line_count} lines)\n  (no symbols)\n")
 
-    out = [f"({len(files)} files, tier: {actual_tier})\n"] + out_files
+    out = [f"({len(files)} files{_hidden_suffix(len(hidden_files))}, tier: {actual_tier})\n"] + out_files
     if truncated:
         out.append(f"\n... (truncated at {MAX_MAP_FILES} files)\n")
     out.append("\n")
@@ -3334,6 +4002,26 @@ def _trim_context_groups(
     return kept, truncated
 
 
+def _hidden_suffix(hidden: int) -> str:
+    """Report format's ", N files hidden by exclude-paths" clause (#691).
+
+    An exclusion that leaves no trace in the output is indistinguishable from a
+    file that was not there — the same silent-failure shape the `scanned N`
+    denominator and the TRUNCATED marker were both added to close. Credential
+    files are the reason the list exists, but "your search skipped something"
+    is the caller's to know, and the way back (`no-exclude`) is one flag away.
+
+    Which exclusions count is decided by `_is_disclosable_exclusion`, not by
+    file-versus-directory: built-in noise entries stay out of the number so it
+    reads zero on the ordinary call. A counter that is never zero is one a
+    reader learns to skip, and then the call that fires because a real `.env`
+    was hidden looks like all the others.
+    """
+    if hidden <= 0:
+        return ""
+    return f", {hidden} files hidden by exclude-paths"
+
+
 def _scanned_suffix(scanned: int) -> str:
     """Report format's ", scanned N files" clause (#407).
 
@@ -3379,7 +4067,8 @@ def _grep_count(
 
 
 def _grep_candidates(
-    path: str, exclude_paths: Tuple[str, ...] = ()
+    path: str, exclude_paths: Tuple[str, ...] = (),
+    hidden: Optional[List[str]] = None,
 ) -> List[str]:
     """Return list of file paths to search for a given path argument.
 
@@ -3390,6 +4079,16 @@ def _grep_candidates(
     before the files are collected, the returned length is what op_grep reports
     as `scanned N`, so #407's denominator shrinks with the walk instead of
     counting agent worktrees six times over.
+
+    **Files are filtered too** (#691). This loop used to test the extension and
+    nothing else, so `.env` — on the default exclude list since #146 — was read
+    and printed like any other file. Excluded files are appended to `hidden`
+    when a list is passed, rather than merely counted: op_grep discloses how
+    many there were, and anyone questioning that number needs the names.
+
+    A `path` that IS an excluded file is still searched. Naming it is a
+    deliberate act and `read` never gated it, so gating it here would buy
+    nothing and break the case someone meant.
     """
     candidates: List[str] = []
     if os.path.isfile(path):
@@ -3399,16 +4098,24 @@ def _grep_candidates(
         cwd = os.getcwd()
         ignored = _git_ignored_dirs(path) if exclude_paths else frozenset()
         for root, dirs, files in os.walk(path):
+            rel_root = _safe_relpath(root, cwd) if exclude_paths else ""
             if exclude_paths:
-                rel_root = _safe_relpath(root, cwd)
                 dirs[:] = [
                     d for d in dirs
                     if not _is_excluded(os.path.join(rel_root, d), exclude_paths)
                     and not _is_git_ignored(rel_root, d, ignored)
                 ]
             for name in files:
-                if exts is None or any(name.endswith(ext.lstrip("*")) for ext in exts):
-                    candidates.append(os.path.join(root, name))
+                if exts is not None and not any(
+                        name.endswith(ext.lstrip("*")) for ext in exts):
+                    continue
+                rel_name = os.path.join(rel_root, name)
+                if exclude_paths and _is_excluded(rel_name, exclude_paths):
+                    if hidden is not None and _is_disclosable_exclusion(
+                            rel_name, exclude_paths):
+                        hidden.append(os.path.join(root, name))
+                    continue
+                candidates.append(os.path.join(root, name))
     return candidates
 
 
@@ -3528,7 +4235,8 @@ def _grep_recursive_context(
 
 
 def _glob_files(
-    pattern: str, exclude_paths: Tuple[str, ...] = (), over_fetch: int = 0
+    pattern: str, exclude_paths: Tuple[str, ...] = (), over_fetch: int = 0,
+    hidden: Optional[List[str]] = None,
 ) -> List[str]:
     """Glob matching files, supports ** recursive. Returns up to MAX_GLOB_RESULTS.
 
@@ -3540,6 +4248,11 @@ def _glob_files(
     os.walk-based implementation that prunes excluded directories at the walk
     boundary (never opens them).  For non-recursive patterns, falls back to
     glob.glob and filters results post-hoc (no subtree to prune anyway).
+
+    Both halves filter *files* against exclude_paths (#691). Only the glob.glob
+    half ever did, so one op gave two answers: `glob:.env*` hid `.env` and
+    `glob:**/.env*` listed it. Excluded files land in `hidden` when a list is
+    passed, so op_glob can say how many it dropped.
     """
     max_results = _get_op_int("glob", "max_results", MAX_GLOB_RESULTS) + over_fetch
 
@@ -3549,7 +4262,7 @@ def _glob_files(
         seen: set = set()
         results: List[str] = []
         for sub_pattern in expanded:
-            for f in _glob_files(sub_pattern, exclude_paths, over_fetch):
+            for f in _glob_files(sub_pattern, exclude_paths, over_fetch, hidden):
                 if f not in seen:
                     seen.add(f)
                     results.append(f)
@@ -3587,6 +4300,13 @@ def _glob_files(
                 rel_from_root = _safe_relpath(full, root_part)
                 if not tail or fnmatch.fnmatch(name, tail) or fnmatch.fnmatch(rel_from_root, tail):
                     if os.path.isfile(full):
+                        rel_full = _safe_relpath(full, cwd)
+                        if _is_excluded(rel_full, exclude_paths):
+                            if hidden is not None and (
+                                    _is_disclosable_exclusion(
+                                        rel_full, exclude_paths)):
+                                hidden.append(full)
+                            continue
                         files.append(full)
                         if len(files) >= max_results:
                             return files
@@ -3607,6 +4327,12 @@ def _glob_files(
         # No walk boundary to prune at on this path, so gitignored hits are
         # filtered out of the result instead (#449).
         ignored = _git_ignored_dirs(_glob_ignore_root(pattern))
+        if hidden is not None:
+            hidden.extend(
+                m for m in files_out
+                if _is_disclosable_exclusion(
+                    _safe_relpath(m, cwd), exclude_paths)
+            )
         files_out = [
             m for m in files_out
             if not _is_excluded(_safe_relpath(m, cwd), exclude_paths)
@@ -3885,7 +4611,7 @@ def op_replace(old: str, new: str, path: str = ".", dry: bool = False) -> str:
 
     # Validate path exists
     if path != "." and not os.path.isfile(path) and not os.path.isdir(path):
-        return f"ERROR: path not found: {path}\n"
+        return _path_not_found(path)
 
     candidates = _grep_candidates(path, _get_exclude_paths("replace"))
     if not candidates:
@@ -3921,6 +4647,11 @@ def op_replace(old: str, new: str, path: str = ".", dry: bool = False) -> str:
             total_count += len(positions)
 
     if total_count == 0:
+        # The one no-op receipt in the tool that does not say ERROR, so it
+        # never reached the exit code either (#680). A preview finding nothing
+        # is a truthful preview, not a decline — only the real op declines.
+        if not dry:
+            _SKIP_COUNT[0] += 1
         return f"(0 occurrences of '{old}' found)\n"
 
     if dry:
@@ -4038,23 +4769,52 @@ def _atomic_write(path: str, content: str) -> None:
         _WRITE_WARNINGS.append((_key, _warn))
 
 
-_BRANCH_CACHE: List[Optional[str]] = [None]
+_BRANCH_CACHE: List[Optional[Tuple[str, str]]] = [None]
 
 # Above this, the nearest-line scan is skipped — the diagnostic is a courtesy
 # on a failure path and must never become the slow part of a failed edit.
 _EDIT_DIAG_MAX_LINES = 20000
 
+_GIT_TIMEOUT_DEFAULT = 5
 
-def _current_branch() -> str:
-    """Current git branch, or "" when there isn't one to report.
+
+def _git_timeout() -> int:
+    """Budget for the git calls supertool makes about itself (#650).
+
+    Overridable per environment for the same reason SUPERTOOL_LINT_TIMEOUT is
+    (#553): a loaded runner occasionally needs room, and that is a fact about
+    the runner, never a decision about the product. The shipped default does
+    not move — pinned by test_the_suite_budget_does_not_move_the_product_default.
+    """
+    return _env_int("SUPERTOOL_GIT_TIMEOUT", _GIT_TIMEOUT_DEFAULT, minimum=1)
+
+
+def _branch_reading() -> Tuple[str, str]:
+    """`(branch, why_unavailable)` — three states, not two (#650).
+
+    `("my-feature", "")` git answered and named a branch; `("", "")` git
+    answered and there is no branch to name; `("", why)` git did not answer.
+
+    The third state used to be the second. Both were `""`, and `_branch_line()`
+    renders `""` as silence, so a receipt whose branch lookup timed out was
+    byte-identical to one taken outside a repo — an absence the tool produced,
+    read as an absence in the world (docs/validators.md, "Declining instead of
+    guessing"). It is the wrong direction to be wrong in: the footer exists to
+    catch right-file-wrong-branch, so it fell silent on exactly the run where
+    the caller had least idea what state the repo was in.
+
+    A missing git binary stays in the middle state deliberately. Nothing on
+    that machine was ever going to name a branch, which is the one honest
+    silence — the same line `_vim_render_lint` draws for an uninstalled checker.
 
     Cached for the process: a single supertool invocation cannot change branch
-    mid-call, and a batch of edits would otherwise pay a subprocess each.
-    Returns "" for a non-repo, a missing git, or any error — the branch is a
-    convenience on the receipt and must never be the thing that fails an op.
+    mid-call, and a batch of edits would otherwise pay a subprocess each. The
+    decline is cached with it — a stalled read is the expensive one to repeat.
     """
     if _BRANCH_CACHE[0] is None:
         branch = ""
+        why = ""
+        budget = _git_timeout()
         try:
             # symbolic-ref, not rev-parse: it resolves an *unborn* branch (a
             # fresh `git init` before the first commit), where rev-parse fails
@@ -4062,21 +4822,37 @@ def _current_branch() -> str:
             # HEAD, which is the one case worth a second call.
             r = subprocess.run(
                 ["git", "symbolic-ref", "--short", "-q", "HEAD"],
-                capture_output=True, text=True, timeout=5, encoding="utf-8", errors="replace",
+                capture_output=True, text=True, timeout=budget,
+                encoding="utf-8", errors="replace",
             )
             if r.returncode == 0:
                 branch = r.stdout.strip()
             else:
                 d = subprocess.run(
                     ["git", "rev-parse", "--short", "HEAD"],
-                    capture_output=True, text=True, timeout=5, encoding="utf-8", errors="replace",
+                    capture_output=True, text=True, timeout=budget,
+                    encoding="utf-8", errors="replace",
                 )
                 if d.returncode == 0 and d.stdout.strip():
                     branch = f"detached HEAD at {d.stdout.strip()}"
-        except (subprocess.TimeoutExpired, OSError):
-            branch = ""
-        _BRANCH_CACHE[0] = branch
-    return _BRANCH_CACHE[0] or ""
+        except FileNotFoundError:
+            pass
+        except subprocess.TimeoutExpired as exc:
+            cmd = " ".join(str(a) for a in (exc.cmd or ["git"]))
+            why = f"`{cmd}` did not answer within {budget}s"
+        except OSError as exc:
+            why = f"`git symbolic-ref` could not be run — {exc}"
+        _BRANCH_CACHE[0] = (branch, why)
+    return _BRANCH_CACHE[0]
+
+
+def _current_branch() -> str:
+    """Current git branch, or "" when there isn't one to report.
+
+    The plain-string contract every caller but the receipt wants; *why* the
+    string is empty is `_branch_reading()`'s second value.
+    """
+    return _branch_reading()[0]
 
 
 def _branch_line() -> str:
@@ -4086,12 +4862,19 @@ def _branch_line() -> str:
     branch — and supertool is the thing that knows. A handful of tokens per
     call, against a class of mistake that is otherwise silent until commit time.
     """
-    branch = _current_branch()
-    return f"[branch: {branch}]\n" if branch else ""
+    branch, why = _branch_reading()
+    if branch:
+        return f"[branch: {branch}]\n"
+    # A read that failed is not a repo without a branch (#650). Silence is
+    # reserved for the second; the first says so and names what stalled.
+    if why:
+        return f"[branch: UNKNOWN — {why}]\n"
+    return ""
 
 
-def _result_line(ops: int, writes: int) -> str:
-    """`[result] N ops run, M writes` footer for a mutating call (#621).
+def _result_line(ops: int, writes: int, skipped: int = 0,
+                 reapplied: int = 0) -> str:
+    """`[result] N ops run, M writes[, K skipped][, K re-applied]` footer (#621).
 
     The receipt a mutating op prints sits ABOVE the `[validators]` block, and a
     long validators block is exactly when a reader reaches for `| tail -4`. So
@@ -4117,13 +4900,43 @@ def _result_line(ops: int, writes: int) -> str:
     `ops == 0` means no mutating op was accounted for and the state cannot be
     determined — this declines rather than guessing a tidy `0 writes`, per the
     three-state contract in docs/validators.md.
+
+    `skipped` names the third state for the ops themselves (#680). `ops` vs
+    `writes` already carried the information, but only as a subtraction the
+    reader had to perform while suspicious: a batch that reported
+    `6 ops run, 4 writes` had dropped two edits, and the branch went to CI.
+    A count you must diff is not a signal; a word is. So the word appears
+    whenever an op declined, and never otherwise — `0 skipped` on the green
+    path is exactly the kind of number a reader learns to stop seeing, which
+    is how `4 writes` failed in the first place.
+
+    `re-applied` names a fourth state (#701): the op wrote, and what it wrote
+    was already there. Re-running a payload whose anchor survives its own edit
+    applies the edit a SECOND time, and pre-fix the two runs differed only by a
+    line range — so an identical footer read as "the same thing happened" when
+    what happened was another mutation. It is a separate word from `skipped`
+    deliberately: a skipped op left the disk alone, a re-applied one did not,
+    and collapsing them would degrade `skipped` into "something was odd".
+
+    It is also NOT a failure. `_SKIP_COUNT` drives the exit code so a `&&` chain
+    stops on a half-applied batch; a re-apply is a legitimate outcome (appending
+    a second repeated element has exactly this shape), so it discloses and exits
+    0. Refusing would be guessing at intent, which is the line #680 drew too.
     """
     if ops <= 0:
         return ""
     line = (f"[result] {ops} {'op' if ops == 1 else 'ops'} run, "
             f"{writes} {'write' if writes == 1 else 'writes'}")
+    if skipped > 0:
+        line += f", {skipped} skipped"
+    if reapplied > 0:
+        line += f", {reapplied} re-applied"
     if writes == 0:
+        # A rolled-back write is not a second application of anything, so this
+        # clause wins: the bytes complained about are no longer on disk.
         line += " — nothing changed on disk"
+    elif reapplied > 0:
+        line += " — an edit already present in the file was applied again"
     return line + "\n"
 
 
@@ -4230,6 +5043,29 @@ _MUTATION_ATTEMPTS: List[int] = [0]
 # "(0 occurrences of 'x' found)").
 _WRITE_COUNT: List[int] = [0]
 
+# Bumped where a mutating op DECLINES: it ran, it could have written, and it
+# deliberately left the disk alone (#680). The third state docs/validators.md
+# already defines for validators — `ok`, a finding, `skipped` — applied to the
+# ops themselves.
+#
+# Declared at the decline, never inferred from `attempts - writes`. That
+# subtraction looks equivalent and is not: a multi-file `replace` writes more
+# times than it was attempted, `replace_dry` writes nothing by design, and a
+# validator rollback retracts a write that was genuinely made. Each would be
+# mis-reported as a decline, and a skip count that is sometimes wrong is worse
+# than none — it is the same absence-read-as-fact this counter exists to stop.
+_SKIP_COUNT: List[int] = [0]
+
+# Bumped where a mutating op wrote text the file ALREADY contained at that spot
+# (#701) — the fourth state, and the only one that is not a decline. See
+# `_edit_already_applied` for why the test is positional rather than
+# `new in content`, and `_result_line` for why it is not folded into
+# `_SKIP_COUNT`. Never decremented on rollback: `_retract_write` is per-path and
+# this counter is not, so a batch rollback could retract the wrong op's
+# disclosure. The `writes == 0` clause in `_result_line` covers that case
+# honestly instead — "nothing changed on disk" is the stronger statement.
+_REAPPLY_COUNT: List[int] = [0]
+
 
 def _drop_write_warnings(path: str) -> None:
     """Retract queued warnings for `path` — its write was rolled back."""
@@ -4282,6 +5118,97 @@ def _compact_header_arg(op: str, parts: List[str]) -> str:
     return ""
 
 
+def _payload_header_arg(op: str, target: str) -> str:
+    """Header for a sub-op that arrived through an @payload, not the colon CLI.
+
+    A batch sub-op used to be echoed back as its fields joined on ':'. The
+    payload route exists *because* the content contains ':', so that join does
+    not merely lose information — it produces a string that parses as a
+    DIFFERENT op. `replace` on `time: 10:30` rendered as
+
+        --- replace:time: 10:30:time: 11:45:/tmp/h.txt ---
+
+    which, pasted back, sends the dispatcher looking for a file named `30`.
+    A header is the thing a reader trusts to reconstruct what happened, and in
+    a bug report it is often the only surviving record. Inviting them to run an
+    op that touches a path nobody named is worse than telling them nothing.
+
+    So this does not attempt a faithful one-line colon rendering — for a
+    payload op there isn't one. It names the ROUTE and the TARGET, which is
+    what identifies the step, and the `@payload` reference does not resolve to
+    a file, so pasting it fails loudly instead of quietly doing something else.
+    That is the invariant: a header must never be a runnable string that runs
+    something other than what ran; if it cannot be re-runnable it must not look
+    re-runnable. Same family as #621 — output presenting itself as a faithful
+    account of an operation and not being one. #644.
+    """
+    return f"{op}:@payload" + (f" → {target}" if target else "")
+
+
+# Positional colon-argument order for batch sub-ops that have no @payload
+# route of their own. Only ops whose colon syntax takes more than one argument
+# need an entry; single-argument ops are unambiguous without one. Ordering here
+# mirrors the `syntax` strings in .supertool.json.
+_BATCH_POSITIONAL_FIELDS: Dict[str, Tuple[str, ...]] = {
+    "head":        ("path", "n"),
+    "tail":        ("path", "n"),
+    "tree":        ("path", "depth"),
+    "around_line": ("path", "line", "n"),
+    "diff":        ("path1", "path2"),
+}
+
+
+def _ordered_batch_fields(op: str, item: Dict[str, Any]) -> Tuple[List[str], str]:
+    """Positional colon fields for a batch sub-op with no @payload route.
+
+    Returns (fields, error) — exactly one is non-empty.
+
+    This replaces `sorted(item)`, which ordered the payload's fields
+    ALPHABETICALLY and is not any op's argument order. That was not a header
+    defect: it is the arg that gets dispatched. `{"op": "tree", "path": "src/",
+    "depth": 2}` ran as `tree:2:src/`, and `between` with `symbol` + `path` ran
+    as `between:<path>:<symbol>` — silently searching for the file inside the
+    symbol name.
+
+    Where the order is declared it is used; where it is not, this declines
+    rather than inventing one. Guessing is how the original defect happened.
+    #644.
+    """
+    lower = {str(k).lower(): v for k, v in item.items() if str(k).lower() != "op"}
+    if not lower:
+        return [], ""
+    order = _BATCH_POSITIONAL_FIELDS.get(op)
+    if order is None:
+        if len(lower) == 1:
+            return [str(next(iter(lower.values())))], ""
+        return [], (
+            f"ERROR: batch sub-op '{op}' takes its arguments positionally and has "
+            f"no declared payload field order, so {', '.join(sorted(lower))} "
+            f"cannot be placed. Ordering them alphabetically is a guess, and a "
+            f"wrong guess dispatches a different op — so this declines instead. "
+            f"Use the colon form for '{op}', or an op with an @payload route.\n"
+        )
+    unknown = sorted(k for k in lower if k not in order)
+    if unknown:
+        return [], (
+            f"ERROR: unknown field(s) {', '.join(unknown)} in batch '{op}' "
+            f"— accepted: {', '.join(order)}\n"
+        )
+    fields: List[str] = []
+    for name in order:
+        if name not in lower:
+            break
+        fields.append(str(lower[name]))
+    skipped = [n for n in order[len(fields):] if n in lower]
+    if skipped:
+        return [], (
+            f"ERROR: batch '{op}' payload sets {', '.join(skipped)} without the "
+            f"earlier positional field(s) {', '.join(order[len(fields):order.index(skipped[0])] or order[:1])} "
+            f"— colon arguments cannot be sparse.\n"
+        )
+    return fields, ""
+
+
 def _sh_backslash_warning(path: str, content: str) -> str:
     """Flag `\\\\` at end-of-line in a shell script (#380).
 
@@ -4317,6 +5244,36 @@ def _sh_backslash_warning(path: str, content: str) -> str:
     )
 
 
+def _edit_already_applied(content: str, old: str, new: str, idx: int) -> bool:
+    """Is the `old` at `idx` sitting INSIDE text this same edit already made?
+
+    The re-run case (#701): `new` contains `old`, so the anchor survives its own
+    edit and matches again on a second run. `content[idx:idx+len(old)]` is then
+    literally a substring of an occurrence of `new` that a previous run wrote.
+
+    Positional containment, not `new in content`. The issue floated the simpler
+    test and it has a real failure mode: `new` may legitimately pre-exist
+    somewhere unrelated (an edit inserting `return None` into a file that
+    already has a `return None` elsewhere), and a signal that fires on a first
+    application is noise — which is how a footer count stops being read. Asking
+    instead whether the anchor being replaced is bracketed by an existing copy
+    of `new` is the literal statement "this edit's result is already here".
+
+    Deliberately says nothing about intent. An append of a second repeated
+    element is indistinguishable from an accidental re-run and must stay
+    allowed; the caller decides, the tool discloses.
+    """
+    if len(new) <= len(old) or old not in new:
+        return False
+    end = idx + len(old)
+    j = content.find(new)
+    while j != -1 and j <= idx:
+        if end <= j + len(new):
+            return True
+        j = content.find(new, j + 1)
+    return False
+
+
 def op_edit(old: str, new: str, path: str) -> str:
     """Single-file, single-occurrence edit — mirrors native Edit semantics.
 
@@ -4344,14 +5301,19 @@ def op_edit(old: str, new: str, path: str) -> str:
 
     count = content.count(old)
     if count == 0:
+        _SKIP_COUNT[0] += 1
         return (f"ERROR: old string not found in {path}\n"
                 + _edit_miss_diagnostic(old, content))
     if count > 1:
+        _SKIP_COUNT[0] += 1
         return (
             f"ERROR: old string found {count} times in {path} — ambiguous. "
             f"Use a larger snippet to make it unique, or use replace for "
             f"replace_all semantics.\n"
         )
+
+    idx = content.index(old)
+    reapplied = _edit_already_applied(content, old, new, idx)
 
     new_content = content.replace(old, new, 1)
     try:
@@ -4359,8 +5321,11 @@ def op_edit(old: str, new: str, path: str) -> str:
     except OSError as e:
         return f"ERROR: failed to write {path}: {e}\n"
 
+    if reapplied:
+        _REAPPLY_COUNT[0] += 1
+
     # Receipt — locate the change and show ±2 lines context
-    pre = content[: content.index(old)]
+    pre = content[:idx]
     start_line = pre.count("\n") + 1
     new_lines = new_content.splitlines()
     new_block_line_count = new.count("\n") + 1
@@ -4372,6 +5337,16 @@ def op_edit(old: str, new: str, path: str) -> str:
     if end_line != start_line:
         out.append(f"-{end_line}")
     out.append(")\n")
+    # Attached to the claim it qualifies, not only to the footer: `edited a.py
+    # (line 2-3)` is a true sentence that reads as a first application, and the
+    # reader who is about to trust it is looking here. The footer carries the
+    # same signal for the reader who is piping to `tail` (#621).
+    if reapplied:
+        out.append(
+            f"  {mark('↳')} re-applied: the text this edit produces was already "
+            f"present around the anchor — this is a SECOND application, not a "
+            f"repeat of the first\n"
+        )
     for ln in range(ctx_start, ctx_end + 1):
         marker = "→" if start_line <= ln <= end_line else " "
         out.append(f"  {ln:>5} {marker} {new_lines[ln - 1]}\n")
@@ -5089,11 +6064,7 @@ def _lint_timeout() -> int:
     A slow runner (Windows antivirus scanning a freshly written temp file is
     the usual suspect) needs room without a code change.
     """
-    try:
-        val = int(os.environ.get("SUPERTOOL_LINT_TIMEOUT", ""))
-    except (TypeError, ValueError):
-        return _LINT_TIMEOUT_DEFAULT
-    return val if val > 0 else _LINT_TIMEOUT_DEFAULT
+    return _env_int("SUPERTOOL_LINT_TIMEOUT", _LINT_TIMEOUT_DEFAULT, minimum=1)
 
 
 def _lint_declined(tool: str, reason: str) -> str:
@@ -5469,6 +6440,9 @@ def op_vim(path: str, script: str) -> str:
     """
     out = _op_vim_impl(path, script)
     if out.startswith("ERROR"):
+        # Atomic by contract: an errored vim op applied none of its actions, so
+        # every one of them is a decline the footer has to carry (#680).
+        _SKIP_COUNT[0] += 1
         suffix = " (file unchanged — vim ops are atomic, no actions applied)\n"
         # Ensure the suffix sits on its own line right before EOF.
         if out.endswith("\n"):
@@ -10803,7 +11777,17 @@ def _validator_cache_write(key: str, data: Dict[str, Any]) -> None:
 # Engine-failure error codes/messages that are NON-deterministic: a clean re-run
 # can flip them. These must never be cached (the cache key is the file's content
 # hash, so a frozen failure replays on every later run until the file changes).
-_NONDETERMINISTIC_ERROR_CODES = {"mcp", "orchestrator", "rector.exit"}
+_NONDETERMINISTIC_ERROR_CODES = {"mcp", "orchestrator", "rector.exit", "adapter"}
+# `adapter` joined the set with #745. SCHEMA.md and docs/contributing.md already
+# reserve it for "the adapter or its tool could not produce a verdict" — a binary
+# that is absent, a timeout, output that would not parse, a `php -l` that exited
+# without saying anything about the file. None of those are a function of the
+# file's content, which is exactly the criterion this set encodes and exactly the
+# shape of the 2100-entry incident below: a toolchain broken for ten minutes
+# would otherwise freeze a red into a content-hash-keyed cache and replay it
+# until someone touched the file. Before #745 those exits reached the cache
+# wearing a finding's code (`parse`), so they were cached and this never had a
+# chance to fire; naming them correctly is what makes the guard reachable.
 
 
 def _validator_result_is_cacheable(data: Dict[str, Any]) -> bool:
@@ -13062,13 +14046,60 @@ def _detect_payload_format(raw: str) -> str:
 _TOML_ESCAPES = {"n": "\n", "t": "\t", "r": "\r", "\\": "\\", '"': '"', "b": "\b", "f": "\f"}
 
 
-def _toml_basic_unescape(s: str) -> str:
+_TOML_HEXDIGITS = frozenset("0123456789abcdefABCDEF")
+
+_TOML_ESCAPE_ADVICE = (
+    "in a basic string a backslash must be escaped as a double backslash, or "
+    "use a triple-single-quote literal block, which keeps backslashes as typed"
+)
+
+
+def _toml_decode_escape(s: str, i: int, key: str, multiline: bool) -> Tuple[str, int]:
+    r"""Decode the escape starting at s[i] (a backslash); return (text, offset).
+
+    Raises on everything TOML calls invalid, because stdlib `tomllib` raises
+    and this parser stands in for it on Python <3.11 (#684). The default it
+    replaces — keep the escaped character, drop the backslash — turned
+    `path = "C:\Users\dev"` into `C:Usersdev`, and the op then reported a
+    missing file at an address the parser had invented: same payload, same
+    tool, a parse error on 3.11+ and a manufactured absence below it.
+
+    `\u` / `\U` are decoded rather than rejected. tomllib accepts them, so
+    refusing them would trade a silent divergence for a loud one. Agreement
+    with tomllib is what matters here, not severity.
+    """
+    c = s[i + 1] if i + 1 < len(s) else ""
+    if c in _TOML_ESCAPES:
+        return _TOML_ESCAPES[c], i + 2
+    if c in ("u", "U"):
+        width = 4 if c == "u" else 8
+        digits = s[i + 2:i + 2 + width]
+        if len(digits) == width and all(d in _TOML_HEXDIGITS for d in digits):
+            code = int(digits, 16)
+            if code < 0x110000 and not 0xD800 <= code <= 0xDFFF:
+                return chr(code), i + 2 + width
+        raise ValueError(
+            f"invalid escape: \\{c} for '{key}' wants {width} hex digits naming "
+            f"a Unicode scalar — {_TOML_ESCAPE_ADVICE}"
+        )
+    if multiline:
+        j = i + 1
+        while j < len(s) and s[j] in " \t":
+            j += 1
+        if j < len(s) and s[j] in "\r\n":
+            while j < len(s) and s[j] in " \t\r\n":
+                j += 1
+            return "", j
+    raise ValueError(f"invalid escape '\\{c}' for '{key}' — {_TOML_ESCAPE_ADVICE}")
+
+
+def _toml_basic_unescape(s: str, key: str = "value", multiline: bool = True) -> str:
     out = []
     i = 0
     while i < len(s):
-        if s[i] == "\\" and i + 1 < len(s):
-            out.append(_TOML_ESCAPES.get(s[i + 1], s[i + 1]))
-            i += 2
+        if s[i] == "\\":
+            text, i = _toml_decode_escape(s, i, key, multiline)
+            out.append(text)
         else:
             out.append(s[i])
             i += 1
@@ -13135,7 +14166,7 @@ def _toml_parse_value(raw: str, i: int, key: str) -> Tuple[Any, int]:
         end = raw.find('"""', i)
         if end < 0:
             raise ValueError(f"unterminated \"\"\" for '{key}'")
-        val: Any = _toml_basic_unescape(raw[i:end])
+        val: Any = _toml_basic_unescape(raw[i:end], key, True)
         if val.startswith("\r\n"):
             val = val[2:]
         elif val.startswith("\n"):
@@ -13156,9 +14187,9 @@ def _toml_parse_value(raw: str, i: int, key: str) -> Tuple[Any, int]:
         i += 1
         buf = []
         while i < n and raw[i] != '"':
-            if raw[i] == "\\" and i + 1 < n:
-                buf.append(_TOML_ESCAPES.get(raw[i + 1], raw[i + 1]))
-                i += 2
+            if raw[i] == "\\":
+                text, i = _toml_decode_escape(raw, i, key, False)
+                buf.append(text)
             elif raw[i] == "\n":
                 raise ValueError(f"newline in single-line string for '{key}'")
             else:
@@ -13299,6 +14330,69 @@ def _toml_delimiter_hint(raw: str) -> str:
     )
 
 
+# Where a relative `@payload` reference resolves from, and where the working
+# directory was moved to. Both are set by main() before any chdir, and only
+# when a chdir actually happens — so dispatch() called on its own (MCP mode,
+# tests) keeps resolving against os.getcwd() exactly as it always did.
+_INVOCATION_DIR: Optional[str] = None
+_CWD_SHIFT: Optional[str] = None       # label of what moved the cwd, e.g. "cwd:"
+
+
+def _at_root() -> str:
+    """Directory a relative `@payload` reference resolves against.
+
+    A `@reference` is an argument the caller typed, so it belongs to the
+    directory the call was made from — not to the repo being operated on.
+    `path = ` *inside* the payload is the other kind of path and keeps
+    following the working directory, which is what makes `cwd:` useful.
+    """
+    return _INVOCATION_DIR or os.getcwd()
+
+
+def _resolve_at_path(rel: str) -> str:
+    """Absolute path for a relative `@payload` reference. No existence check."""
+    if os.path.isabs(rel):
+        return rel
+    return os.path.join(_at_root(), rel)
+
+
+def _at_file_missing_msg(rel: str) -> str:
+    """Error for an unresolvable `@payload`, distinguishing absence from a moved root.
+
+    "not found" states an absence in the world. When the working directory has
+    moved out from under a relative reference, the absence is one the tool
+    produced, and saying so is the difference between a zero-call debug and a
+    two-call one. Both roots are named; neither is silently searched — reading
+    whichever file happens to exist is how a tool starts opening one the caller
+    never meant (#672).
+    """
+    root = _at_root()
+    here = os.getcwd()
+    head = f"@file not found: {rel}"
+    if os.path.isabs(rel) or os.path.realpath(root) == os.path.realpath(here):
+        return head
+    label = _CWD_SHIFT or "cwd:"
+    alt = os.path.join(here, rel)
+    lines = [
+        head,
+        f"  {mark('↳')} @payload paths resolve against the invocation directory: {root}",
+    ]
+    if os.path.isfile(alt):
+        lines.append(
+            f"    It does exist under the {label} target {here}, and is not read from there: "
+            "the @reference is an argument you typed, not repo content. Only `path =` inside "
+            "the payload follows the working directory."
+        )
+        lines.append(f"    Pass an absolute path (@{alt}), or write the payload next to the call.")
+    else:
+        lines.append(
+            f"    The {label} target is {here} — moving the working directory does not move "
+            "the @reference."
+        )
+        lines.append("    Present under neither directory: check the path, or pass an absolute one.")
+    return chr(10).join(lines)
+
+
 def _load_at_file(ref: str) -> Any:
     """Load JSON or TOML from an @file reference.
 
@@ -13318,15 +14412,28 @@ def _load_at_file(ref: str) -> Any:
     Returns the parsed value (dict, list, etc.).
     Raises ValueError with a human-readable message on any error.
     """
+    if ref == "@payload" or ref.startswith("@payload "):
+        # A batch sub-op that ran from a payload is echoed as
+        # `op:@payload → target` (#644). That header is deliberately not
+        # re-runnable: the fields it ran from cannot be flattened onto a colon
+        # CLI without becoming a different op. Say so, rather than letting it
+        # fall through to a bare "@file not found: payload", which reads as a
+        # missing file and invites the reader to go looking for one.
+        raise ValueError(
+            "'@payload' is a header placeholder, not a reference. This op ran "
+            "from an @payload whose fields no single-colon header can reproduce "
+            "(#644) — re-run it from the original payload file or stdin."
+        )
     if ref == "@-":
         raw = sys.stdin.read()
         source = "<stdin>"
     else:
         fpath = ref[1:]  # strip leading @
-        if not os.path.isfile(fpath):
-            raise ValueError(f"@file not found: {fpath}")
+        resolved = _resolve_at_path(fpath)
+        if not os.path.isfile(resolved):
+            raise ValueError(_at_file_missing_msg(fpath))
         try:
-            with open(fpath, "r", encoding="utf-8") as _f:
+            with open(resolved, "r", encoding="utf-8") as _f:
                 raw = _f.read()
         except OSError as _e:
             raise ValueError(f"@file read error: {fpath}: {_e}") from _e
@@ -13680,7 +14787,10 @@ def _at_file_to_parts(op: str, payload: Any) -> Tuple[List[str], bool]:
 
 import threading as _threading
 _DISPATCH_STATE = _threading.local()
-_DISPATCH_MAX_DEPTH = int(os.environ.get("SUPERTOOL_DISPATCH_MAX_DEPTH", "32"))
+# Parsed at module scope, so a bad value here used to raise during *import* and
+# take down every op in the tool, most of which have nothing to do with dispatch
+# depth. The widest blast radius of the #654 class, for the smallest knob.
+_DISPATCH_MAX_DEPTH = _env_int("SUPERTOOL_DISPATCH_MAX_DEPTH", 32, minimum=1)
 
 
 def dispatch(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = None) -> str:
@@ -13779,7 +14889,23 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
         and len(parts) >= 2
         and parts[1].startswith("@")
         and op in _READ_OP_AT_FIELDS
-        and (parts[1] == "@-" or os.path.isfile(parts[1][1:]))
+        and (
+            parts[1] == "@-"
+            or os.path.isfile(_resolve_at_path(parts[1][1:]))
+            # Resolvable only under the moved-to root: still a payload reference,
+            # so route it in and let _load_at_file explain which root was searched
+            # rather than falling through to a bare "file not found: @…" (#672).
+            or os.path.isfile(parts[1][1:])
+            # Resolvable under neither root, but payload-shaped: a lone `@….toml`
+            # / `@….json` argument. Routing it in only changes which error is
+            # printed — an unresolvable reference reads no file either way — and
+            # it is the case that most needs the two roots named. Extension-gated
+            # so `grep:@Override:src/` keeps falling through as the search it is.
+            or (
+                len(parts) == 2
+                and parts[1][1:].lower().endswith((".toml", ".json"))
+            )
+        )
     ):
         if len(parts) > 2:
             return header + (
@@ -13833,11 +14959,21 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
     # it would take the reproduction material away at the one moment it is
     # needed. So the compact form is computed now, while `parts` is in hand,
     # and swapped in at the end only if the op succeeded.
+    #
+    # Not for a payload-sourced sub-op (`pre_parsed`): its `arg` is already the
+    # honest `op:@payload → target` header the batch loop synthesized, and
+    # eliding THAT would replace a truthful line with a summary of fields the
+    # caller never typed on a colon CLI. The swap below is also gated on the op
+    # having written, which for a payload op meant a FAILING one fell back to
+    # the flattened lie — at the one moment a reader is reconstructing what
+    # happened. #644.
     _compact_header = ""
-    if len(arg) > _HEADER_ARG_MAX:
+    if pre_parsed is None and len(arg) > _HEADER_ARG_MAX:
         _compact_header = _compact_header_arg(op, parts)
     _writes_before = _WRITE_COUNT[0]
     _attempts_before = _MUTATION_ATTEMPTS[0]
+    _skips_before = _SKIP_COUNT[0]
+    _reapplies_before = _REAPPLY_COUNT[0]
 
     # #146: dispatch-level path containment. Each op has a known position(s)
     # of its path arg(s) in `parts`. _safe_path enforces cwd containment
@@ -14173,6 +15309,34 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                                     # using the @file→parts machinery for mutating ops
                                     # (preserves validators) and plain dispatch for others.
                                     _sub_pre_parsed = None
+                                    if _sub_op in _READ_OP_AT_FIELDS:
+                                        # Read op with its own payload route (#625).
+                                        # Dispatch straight to the op, exactly as a
+                                        # standalone `grep:@-` does: its pattern or
+                                        # symbol is precisely what a colon join cannot
+                                        # survive, and re-serializing it here undid the
+                                        # reason the payload route was built. #644.
+                                        _read_payload_fields = {
+                                            str(_k): _v for _k, _v in _item.items()
+                                            if str(_k).lower() != "op"
+                                        }
+                                        _read_target = str(
+                                            _read_payload_fields.get("path", "") or ""
+                                        )
+                                        _sub_result = (
+                                            "--- "
+                                            + _payload_header_arg(_sub_op, _read_target)
+                                            + " ---\n"
+                                            + _read_op_from_payload(
+                                                _sub_op, _read_payload_fields
+                                            )
+                                        )
+                                        results.append(_sub_result)
+                                        if not continue_on_error and _sub_result.split("\n")[1:2] and (
+                                            _sub_result.split("\n")[1].startswith("ERROR")
+                                        ):
+                                            break
+                                        continue
                                     if _at_file_fields(_sub_op):
                                         try:
                                             _sub_parts, _sub_replace_all = _at_file_to_parts(_sub_op, _item)
@@ -14191,11 +15355,32 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                                         # content that itself contains `:::` (issue #252).
                                         # A readable colon summary is used only for the header.
                                         _sub_pre_parsed = (_sub_parts, _sub_replace_all)
-                                        _sub_arg = ":".join(_sub_parts)
+                                        # The header gets the same treatment as the
+                                        # parts: NOT re-serialized to a colon string.
+                                        # `":".join(_sub_parts)` produced a header that
+                                        # parsed as a different op — see
+                                        # _payload_header_arg. #644.
+                                        _sub_field_names = _at_file_fields(_sub_op)
+                                        _sub_target = ""
+                                        if "path" in _sub_field_names:
+                                            _sub_path_idx = _sub_field_names.index("path") + 1
+                                            if len(_sub_parts) > _sub_path_idx:
+                                                _sub_target = _sub_parts[_sub_path_idx]
+                                        _sub_arg = _payload_header_arg(
+                                            _sub_parts[0], _sub_target
+                                        )
                                     else:
-                                        # Read-only op: build plain colon arg from known fields.
-                                        # For unknown ops, pass what we have and let dispatch error.
-                                        _fields = [str(_item[k]) for k in sorted(_item) if k != "op"]
+                                        # Op with neither a mutating nor a read payload
+                                        # route. Fields are placed by declared order, or
+                                        # the op declines — never by alphabetical key
+                                        # order, which is not any op's argument order and
+                                        # dispatched a different op outright. #644.
+                                        _fields, _order_err = _ordered_batch_fields(_sub_op, _item)
+                                        if _order_err:
+                                            results.append(_order_err)
+                                            if not continue_on_error:
+                                                break
+                                            continue
                                         _sub_arg = ":".join([_sub_op] + _fields) if _fields else _sub_op
                                     _sub_result = dispatch(_sub_arg, pre_parsed=_sub_pre_parsed)
                                     results.append(_sub_result)
@@ -14347,7 +15532,9 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
     if getattr(_DISPATCH_STATE, "depth", 1) <= 1:
         if op in _OP_TARGETS or _MUTATION_ATTEMPTS[0] > _attempts_before:
             body += _result_line(_MUTATION_ATTEMPTS[0] - _attempts_before,
-                                 _WRITE_COUNT[0] - _writes_before)
+                                 _WRITE_COUNT[0] - _writes_before,
+                                 _SKIP_COUNT[0] - _skips_before,
+                                 _REAPPLY_COUNT[0] - _reapplies_before)
             body += _branch_line()
 
     return header + body
@@ -14804,7 +15991,8 @@ class MCPClient:
                 raise MCPServerError(
                     "MCP daemon requires socket.AF_UNIX — not available on this platform"
                 )
-            budget = float(os.environ.get("SUPERTOOL_MCP_CONNECT_TIMEOUT", self._CONNECT_TIMEOUT_SECONDS))
+            budget = _env_float("SUPERTOOL_MCP_CONNECT_TIMEOUT",
+                                float(self._CONNECT_TIMEOUT_SECONDS), minimum=0.0)
             # Explicit socket_path (tests, externally managed daemons) → no one
             # else will spawn it. Single-shot connect, fail fast on miss.
             # Polling the same dead path burns the full 60s budget for nothing.
@@ -15165,6 +16353,22 @@ def _auto_cwd_root(argv: List[str]) -> Optional[str]:
 
 
 def main(argv: List[str]) -> int:
+    """Entry point. Scopes the @payload root state to this one call.
+
+    `_CWD_SHIFT` outliving main() would let a `cwd:` call poison a later bare
+    dispatch() — the MCP server and the test suite both drive dispatch()
+    directly in a process where main() has already run, and a stale root there
+    resolves payloads against a directory nobody is standing in (#672).
+    """
+    global _INVOCATION_DIR, _CWD_SHIFT
+    try:
+        return _main(argv)
+    finally:
+        _INVOCATION_DIR = None
+        _CWD_SHIFT = None
+
+
+def _main(argv: List[str]) -> int:
     # Cheap insurance: a stray glyph in user content must never crash the
     # process on a non-UTF-8 console (Windows cp1252). Runs even in plain mode.
     _reconfigure_stdout_utf8()
@@ -15179,6 +16383,31 @@ def main(argv: List[str]) -> int:
     # state-mutating op twice. An explicit `VAR=… cmd` prefix on an op still
     # overrides it, since that env is applied after os.environ is copied.
     os.environ["PYTHONIOENCODING"] = "utf-8"
+
+    # #714 — the process launcher, scrubbed before ANY op dispatches.
+    #
+    # #692 chose `_resolve_custom_op` and argued for one chokepoint. The
+    # argument was right and the level was one too low: that function launches
+    # preset ops, and built-ins never pass through it. Core spawns git itself
+    # in six places — `_run_git_ignore_query` (the ignore pruning behind glob,
+    # grep, tree, map), `_path_meta_suffix` (the ` m`/` ?`/` !` marker on every
+    # read), `_branch_probe`, `op_workspace`'s Git section, `op_validate_staged`
+    # and `op_format_staged` — none of which passes `env=`, so each inherited
+    # whatever `GIT_*` the parent had. Under a leaked GIT_DIR a tracked,
+    # modified file read ` ?`, `workspace` reported the other repo's branch,
+    # and `validate_staged` — the op `.githooks/pre-commit` exists to run —
+    # answered "no staged files" with a file staged.
+    #
+    # Guarding each spawn instead would be #704's disease: twelve call sites
+    # today, and spawn thirteen written without the guard. Scrubbing
+    # `os.environ` itself covers all of them at once, including presets, whose
+    # `dict(os.environ)` copy is now clean before it is taken — one boundary,
+    # moved up, not a second one added.
+    #
+    # Before the argv checks so a usage error or an early return still leaves
+    # the process clean; the notice waits until after any chdir, because it
+    # names the cwd the ops actually ran in.
+    _LEAKED_GIT_ENV[:] = scrub_git_env(os.environ)
 
     # --plain consumes the flag and exports SUPERTOOL_PLAIN=1 so preset
     # subprocesses (run via {python} {path}*.py) inherit it through the env.
@@ -15247,6 +16476,10 @@ def main(argv: List[str]) -> int:
     # so it can't race the parallel read path or force a batch sequential.
     # Required-first keeps the rule unambiguous: appearing later is an error,
     # not a silently-honored mid-call cwd switch.
+    global _INVOCATION_DIR, _CWD_SHIFT
+    _INVOCATION_DIR = os.getcwd()
+    _CWD_SHIFT = None
+
     cwd_positions = [i for i, a in enumerate(argv) if a.split(":", 1)[0] == "cwd"]
     if cwd_positions:
         if len(cwd_positions) > 1:
@@ -15267,6 +16500,7 @@ def main(argv: List[str]) -> int:
             sys.stderr.write(f"cwd: not a directory: {target}\n")
             return 1
         os.chdir(target)
+        _CWD_SHIFT = "cwd:"
         argv = argv[1:]
         if not argv:
             return 0
@@ -15280,6 +16514,7 @@ def main(argv: List[str]) -> int:
             auto_root = None
         if auto_root:
             os.chdir(auto_root)
+            _CWD_SHIFT = "auto-resolved project root"
             sys.stdout.write(
                 f"[cwd auto-resolved to project root: {auto_root}]\n")
 
@@ -15308,9 +16543,30 @@ def main(argv: List[str]) -> int:
     for _warning in list(_CONFIG_WARNINGS) + _preset_warnings:
         sys.stderr.write(f"supertool: {_warning}\n")
 
+    # #678 — config ops decline outright, but a built-in-only call under a mix
+    # runs to completion using the other tree's validators, formatters and
+    # hooks. Say so once, on stderr, so the operator knows what answered.
+    _mixed_call = _mixed_tree_pair()
+    if _mixed_call is not None:
+        sys.stderr.write(f"supertool: {_mixed_tree_note(_mixed_call)}\n")
+
     # Normal batched-ops mode
     total_out_bytes = 0
     any_failure = False
+
+    # The scrub happened before argv was even parsed; the cwd it acted under is
+    # only settled here, after `cwd:`/auto-root. Printed ahead of the op bodies
+    # so a caller reading top-down learns their environment leaked before they
+    # read an answer that would otherwise look ordinary (#692, #714).
+    _leak_notice = _git_env_notice(_LEAKED_GIT_ENV)
+    if _leak_notice:
+        sys.stdout.write(_leak_notice)
+        total_out_bytes += len(_leak_notice.encode("utf-8"))
+    # Per-call delta, not the absolute count: the counter is process-global and
+    # the daemon reuses the process, so reading `_SKIP_COUNT[0] > 0` would let
+    # one declined op in an early call poison the exit code of every later call
+    # in the same worker (#680).
+    _skips_at_entry = _SKIP_COUNT[0]
 
     # Optional parallel execution — opt-in, only when every op is read-only.
     # Custom ops are excluded (could mutate via shell). Mixed batches stay
@@ -15365,6 +16621,14 @@ def main(argv: List[str]) -> int:
         if validator_drain_out:
             sys.stdout.write(validator_drain_out)
             total_out_bytes += len(validator_drain_out.encode("utf-8"))
+
+    # A declined op is a failure even when its receipt never said ERROR (#680).
+    # `_body_indicates_failure` reads the first content line, which catches
+    # `edit`'s no-match but not `replace`'s "(0 occurrences of 'x' found)" — so
+    # `batch: && git commit` committed a half-applied set and exited 0. The
+    # counter is the authority here precisely because it does not read prose.
+    if _SKIP_COUNT[0] > _skips_at_entry:
+        any_failure = True
 
     log_call(argv, total_out_bytes)
     return 1 if any_failure else 0

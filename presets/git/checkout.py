@@ -8,21 +8,62 @@ flurry with a single round-trip.
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 
 # Sibling import: runtime puts this dir on sys.path[0]; the test harness
 # loads scripts via importlib (no dir on path), so add it explicitly.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from _git_common import use_utf8_stdout  # noqa: E402
+from _git_common import _git, use_utf8_stdout  # noqa: E402
+
+def _ref_missing(ref: str) -> bool:
+    """True when this repo cannot resolve `ref` to a commit.
+
+    Every recovery path below rewrites local state — `fetch --all --prune`
+    drops remote-tracking refs, `checkout -b --track` and `checkout -B <ref>
+    FETCH_HEAD` create and move a local branch — and each used to be chosen by
+    scanning git's human error message for `pathspec` / `did not match any`.
+    That message is translated. Under `LANGUAGE=fr` git answers `le
+    specificateur de chemin 'x' ne correspond a aucun fichier connu de git`,
+    the substrings never match, and all three recoveries silently stop firing
+    for anyone not running an English git (#649) — the same channel defect
+    #641 fixed in push.py, one preset over.
+
+    `rev-parse --verify --quiet` answers the actual question on its exit code,
+    which no locale changes. It is also a strictly better question: "can this
+    repo resolve the ref" is what the recoveries need to know, where the error
+    string was only ever a proxy for it.
+
+    `-` is `@{-1}`, the previous branch. No fetch can make it resolve, so a
+    failed `checkout -` is never a case for recovery.
+    """
+    if ref == "-":
+        return False
+    return _git(["rev-parse", "--verify", "--quiet",
+                 f"{ref}^{{commit}}"]).returncode != 0
 
 
-def _git(args: list[str], timeout: int = 10) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["git"] + args,
-        capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace",
-    )
+def _in_repo() -> bool:
+    return _git(["rev-parse", "--git-dir"]).returncode == 0
+
+
+def _names_a_path(arg: str) -> bool:
+    """True when git would understand `arg` as a pathspec in this repo.
+
+    A tracked-file match is the question that actually matters: `git checkout
+    <pathspec>` only rewrites paths git already holds in the index, so
+    `ls-files --error-unmatch` answers precisely "would this argument have
+    destroyed something". The on-disk fallback catches untracked paths, which
+    git refuses harmlessly — named anyway, because someone who typed a filename
+    needs to hear "that is a path", not "ref not found".
+
+    `-` is `@{-1}`, the previous branch, and is never a pathspec.
+    """
+    if arg == "-":
+        return False
+    if _git(["ls-files", "--error-unmatch", "--", arg]).returncode == 0:
+        return True
+    return os.path.exists(arg)
 
 
 def main() -> int:
@@ -40,6 +81,40 @@ def main() -> int:
         print(f"ERROR: ref starts with '-' (refusing for safety): {ref!r}")
         return 1
 
+    # #756: `git checkout <arg>` is two operations sharing one name. Given a
+    # ref it switches branches; given a pathspec it restores those paths from
+    # the index, discarding uncommitted work — and that write leaves no reflog
+    # entry, no stash and no object, so there is nothing anywhere to recover it
+    # from. git picks between the two by what the string happens to name, and
+    # #150 already established that this argument is attacker-influenced. A
+    # pathspec needs no flag and no special characters, so the `-` guard above
+    # cannot see it: it is the *absence* of anything suspicious that makes it
+    # work.
+    #
+    # Two defences, in this order:
+    #   1. refuse up front when the argument names a path and no commit — this
+    #      is what makes the message useful;
+    #   2. pass `--` on every switch below, so git cannot select the pathspec
+    #      reading even for an argument this check did not anticipate (a glob,
+    #      say). The `--` is the guarantee; the refusal is the explanation.
+    #
+    # An argument that is *both* (a `docs` branch beside a `docs/` directory)
+    # resolves to the ref, always, pinned by the `--` rather than left to git's
+    # DWIM — and says so, because deterministic without disclosed is still a
+    # surprise.
+    ambiguous = False
+    if ref != "-" and _in_repo():
+        resolves = not _ref_missing(ref)
+        is_path = _names_a_path(ref)
+        if is_path and not resolves:
+            print(f"ERROR: {ref!r} names a path, not a ref (refusing for safety).")
+            print("`git checkout <path>` restores files from the index and discards")
+            print("uncommitted changes to them unrecoverably — no reflog entry, no")
+            print("stash, no object written. git-checkout switches branches only.")
+            print(f"To restore it anyway, deliberately: git checkout -- {ref}")
+            return 1
+        ambiguous = is_path and resolves
+
     prev_branch = ""
     prev = _git(["rev-parse", "--abbrev-ref", "HEAD"])
     if prev.returncode == 0:
@@ -52,15 +127,19 @@ def main() -> int:
 
     stderr = ""
     s = ""
-    result = _git(["checkout", ref])
+    # Set once the explicit single-ref fetch below succeeded: from that point
+    # the remote demonstrably has the ref, so "not found" is a false report no
+    # matter what the failing checkout said (#267, #649).
+    ref_fetched = False
+    result = _git(["checkout", ref, "--"])
     if result.returncode != 0:
         stderr = result.stderr.strip() or result.stdout.strip()
         s = stderr.lower()
         # Auto-fetch fallback: if ref not found locally, try once after fetch
-        if "did not match any" in s or "pathspec" in s:
+        if _ref_missing(ref):
             fetch = _git(["fetch", "--all", "--prune", "--quiet"], timeout=30)
             if fetch.returncode == 0:
-                result = _git(["checkout", ref])
+                result = _git(["checkout", ref, "--"])
                 if result.returncode == 0:
                     print("# (auto-fetched before checkout)")
                     stderr = ""
@@ -73,7 +152,7 @@ def main() -> int:
         # Resolve it ourselves: if exactly one remote has
         # refs/remotes/<remote>/REF, create the tracking branch explicitly.
         # Multiple matches → error like git does.
-        if result.returncode != 0 and ("did not match" in s or "pathspec" in s):
+        if result.returncode != 0 and _ref_missing(ref):
             remotes_res = _git(["remote"])
             remotes = remotes_res.stdout.split() if remotes_res.returncode == 0 else []
             matches = [
@@ -97,9 +176,10 @@ def main() -> int:
         # refs/remotes/origin/<branch> tracking ref, so the #277 path above
         # finds no match and `git fetch --all` only moved FETCH_HEAD. Fall
         # back to an explicit single-ref fetch + checkout of FETCH_HEAD.
-        if result.returncode != 0 and ("did not match any" in s or "pathspec" in s):
+        if result.returncode != 0 and _ref_missing(ref):
             single = _git(["fetch", "origin", ref], timeout=30)
             if single.returncode == 0:
+                ref_fetched = True
                 cob = _git(["checkout", "-B", ref, "FETCH_HEAD"])
                 if cob.returncode == 0:
                     print(f"# (fetched origin {ref}, reset local branch to FETCH_HEAD)")
@@ -126,10 +206,14 @@ def main() -> int:
             if path:
                 print(f"Switch with: cd {path}")
                 print(f"Or remove it: git worktree remove {path}")
-        elif "did not match any" in s or "pathspec" in s:
-            print(f"ERROR: ref {ref!r} not found even after fetch.")
         elif "would be overwritten" in s or "local changes" in s:
             print(f"ERROR: uncommitted changes block checkout. Stash or commit first.\n{stderr}")
+        elif _ref_missing(ref) and not ref_fetched:
+            # `_ref_missing` alone is not enough here. When the single-ref fetch
+            # reached the ref and only `checkout -B` was blocked, the ref is
+            # still unresolvable locally — but "not found" is not the blocker
+            # the caller needs to hear (#267), so `ref_fetched` vetoes it.
+            print(f"ERROR: ref {ref!r} not found even after fetch.")
         else:
             print(f"ERROR: checkout failed: {stderr}")
         return 1
@@ -141,6 +225,16 @@ def main() -> int:
     head_sha = head_sha_res.stdout.strip() if head_sha_res.returncode == 0 else "?"
 
     print(f"# git-checkout: {prev_branch}@{prev_sha} → {branch}@{head_sha}")
+
+    if ambiguous:
+        print(f"Note: {ref!r} also names a path here; taken as a ref "
+              f"(pinned with `--`, not left to git's guess).")
+
+    # #756: identical before/after is the one signal that nothing moved, and in
+    # the original report it was printed unflagged directly above `Working
+    # tree: clean` — which together read as a successful switch. Say it.
+    if prev_branch == branch and prev_sha == head_sha and prev_sha:
+        print(f"# no branch change occurred — already on {branch}@{head_sha}")
 
     # Tracking + ahead/behind
     upstream_res = _git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"])

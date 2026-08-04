@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -18,6 +19,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))  # for _checks (#619)
 # Imported by name, not `import mrs` — main() already binds a local `mrs`
 # (the branch-lookup result list), which would shadow a module import.
 from mrs import _conflict_label  # noqa: E402
+import _body  # noqa: E402  (the one body cap + disclosure — #698)
+import _untrusted  # noqa: E402  (the fence around tracker text — #694)
 import _checks  # noqa: E402  (named_disclosure/NAMED_CAP — shared with gh-pr, #619)
 
 DESCRIPTION_MAX = 2000
@@ -60,6 +63,88 @@ def _glab_api(endpoint: str, timeout: int = 10) -> subprocess.CompletedProcess[s
         ["glab", "api", endpoint],
         capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace",
     )
+
+
+def _glab_fail_detail(r: subprocess.CompletedProcess[str]) -> str:
+    """One line naming why a `glab api` call failed, for a decline message.
+
+    `glab` writes its error to stderr in a boxed multi-line form and leaves
+    stdout empty, so the reason is there to be had — it was simply never read.
+    """
+    for line in (r.stderr or "").splitlines():
+        line = line.strip()
+        if line and line != "ERROR":
+            return f"glab exit {r.returncode}: {line[:120]}"
+    return f"glab exit {r.returncode}"
+
+
+def _approver_name(entry: object) -> str:
+    """`username` out of one `approved_by` entry, or `?` for a shape we do not know."""
+    if not isinstance(entry, dict):
+        return "?"
+    user = entry.get("user")
+    if not isinstance(user, dict):
+        return "?"
+    name = user.get("username")
+    return str(name) if name else "?"
+
+
+def _approvals_line(iid: str | int) -> str:
+    """The `Approved by: ...` line — one line, three states, never raises.
+
+    GitLab documents `GET /projects/:id/merge_requests/:iid/approvals` as
+    returning a JSON **object** carrying `approved_by`, on every tier including
+    Free. Every branch below that is not that object is therefore not GitLab
+    answering — a `glab` that could not ask, a body that is not JSON, a
+    responder that is not GitLab — and **none of them mean nobody approved this
+    MR**. The line used to spell that third state three different ways, all of
+    them wrong (#720):
+
+    - a non-zero `glab` exit printed **no line at all**, so the most ordinary
+      failure on this call — an unauthenticated CLI, which exits 1 with empty
+      stdout — silently removed a line whose neighbours (`Reviewers:`,
+      `Assignees:`) print `none` precisely so that absence is signal;
+    - a timeout or a decode failure fell into `except: pass`, same silence;
+    - anything that parsed to a non-object hit `.get` on it and raised
+      `AttributeError` **out of the whole render**, taking the threads,
+      pipeline, conflicts, linked issue, description and comments sections with
+      it — none of which are about approvals. #507's precedent in this same op:
+      the loud failure was hiding inside the quiet one.
+
+    Declining is the fix rather than defaulting, per `docs/validators.md`
+    §"Declining instead of guessing" — suppressing this into `[]` would trade a
+    crash for `Approved by: none`, which is a wrong answer rather than a missing
+    one, and is the defect class this tracker is mostly made of.
+    """
+    unknown = "Approved by: UNKNOWN"
+    try:
+        r = _glab_api(f"projects/:id/merge_requests/{iid}/approvals")
+    except subprocess.TimeoutExpired:
+        return f"{unknown} — approvals API timed out"
+    except OSError as e:  # FileNotFoundError included — glab absent, or an errno
+        # OSError is listed on its own authority: #507 was filed as a silent
+        # decline and the fatal thing found inside it was an unlisted OSError.
+        return f"{unknown} — could not run glab ({e})"
+    if r.returncode != 0:
+        return f"{unknown} — approvals API failed ({_glab_fail_detail(r)})"
+    try:
+        approvals = json.loads(r.stdout)
+    except json.JSONDecodeError:
+        return f"{unknown} — approvals API returned no parseable JSON"
+    if not isinstance(approvals, dict):
+        return (f"{unknown} — approvals API returned a "
+                f"{type(approvals).__name__}, expected an object")
+    if "approved_by" not in approvals:
+        note = approvals.get("message") or approvals.get("error") or ""
+        detail = f": {str(note)[:120]}" if note else ""
+        return f"{unknown} — approvals payload carries no approved_by field{detail}"
+    approved_by = approvals["approved_by"]
+    if not isinstance(approved_by, list):
+        return (f"{unknown} — approved_by is a "
+                f"{type(approved_by).__name__}, expected a list")
+    if not approved_by:
+        return "Approved by: none"
+    return f"Approved by: {', '.join(_approver_name(a) for a in approved_by)}"
 
 
 # Statuses that resolve on their own — a job here will move to success/failed/
@@ -329,6 +414,70 @@ def _get_conflict_hunks(
     )
 
 
+# What a refname looks like when nobody is trying. Git permits a great deal
+# more — `;`, backtick, `$`, `&`, quotes, parentheses, spaces — and the source
+# branch of a merge request is named by whoever opened it (#694).
+_ORDINARY_REF = re.compile(r"^[A-Za-z0-9._/-]+$")
+
+
+def _ordinary_ref(ref: str) -> bool:
+    """True for a name that can be printed into a shell command untouched.
+
+    The leading-dash exclusion is not cosmetic: `-B` is inside the character
+    class above and is still an option, not a ref, and quoting does not stop a
+    shell word from being read as a flag.
+    """
+    return bool(ref) and not ref.startswith("-") and bool(_ORDINARY_REF.match(ref))
+
+
+def _shell_ref(ref: str) -> str:
+    """Quote a ref or path for a *printed* shell command (#694).
+
+    The "To resolve:" block is not executed by supertool — it is printed for a
+    human or an agent to paste. That is far enough from running it to make this
+    hardening rather than a fix for a command injection, and close enough that
+    the printed line has to be safe anyway.
+
+    Ordinary names print bare. Quoting every branch to defend against the rare
+    one would make the common case harder to read, and a command block that is
+    tedious to read is one that gets skimmed instead of checked.
+
+    Option-shaped names are the limit of what quoting can do: `git checkout -B`
+    still reads `-B` as a flag inside quotes. They are quoted anyway so they
+    look wrong, and `_ref_warning` names them above the block — a name git
+    itself refuses to create arriving from the API is worth a reader stopping
+    over, and there is no in-line escape that makes it merely a ref.
+    """
+    if _ordinary_ref(ref):
+        return ref
+    quoted = shlex.quote(ref)
+    if quoted == ref:
+        # POSIX single-quote escaping is close-quote, escaped quote, reopen:
+        # '\''. Unreachable while _ORDINARY_REF is narrower than shlex's own
+        # safe set (a ref holding ' is never returned unchanged by shlex.quote),
+        # so this is the branch that would go wrong silently the day that set is
+        # widened — which is the failure mode this file exists to prevent.
+        quoted = "'" + ref.replace("'", "'\\''") + "'"
+    return quoted
+
+
+def _ref_warning(refs: list[str]) -> str | None:
+    """The line above the block when a name in it is not ordinary.
+
+    Quoting makes the command safe to run; this makes it visible that there was
+    a reason to quote. `None` when every name is ordinary — the common case
+    prints nothing extra, which is what keeps the notice worth reading.
+    """
+    odd = [r for r in refs if not _ordinary_ref(r)]
+    if not odd:
+        return None
+    plural = "s" if len(odd) != 1 else ""
+    return (
+        f"  # ⚠ {len(odd)} name{plural} below contain characters a shell acts "
+        f"on, and have been quoted — read the command before running it."
+    )
+
+
 def _format_error(stderr: str, resource: str, identifier: str) -> str:
     """Classify glab errors into actionable messages for LLMs."""
     s = stderr.lower()
@@ -341,12 +490,29 @@ def _format_error(stderr: str, resource: str, identifier: str) -> str:
     return f"ERROR: glab failed for {resource} #{identifier}: {stderr.strip()}"
 
 
-def _render_note(note: dict) -> str:
-    """Format one MR note for printing. Body capped at COMMENT_MAX chars."""
-    author = (note.get("author") or {}).get("username", "?")
-    body = (note.get("body") or "")[:COMMENT_MAX]
+def _render_note(note: dict, cap: int | None = COMMENT_MAX) -> str:
+    """Format one MR note for printing, saying so when the body is cut.
+
+    A `cap` of None is the `:full` path, which had no way to ask for one: every
+    note was sliced at COMMENT_MAX with no marker, on `:full` as well, while the
+    op's docs promised `:full` uncapped "the file list and the comments". It
+    uncapped how many comments printed, never how much of each — the same
+    half-working escape hatch #698 found in this file's description handling,
+    caught by the check #719 asked for.
+
+    The body is fenced (#694): a note reproducing this very format string used
+    to render as a second, earlier note that the MR never held. The cut notice
+    is supertool's own, so it is appended after the fence closes rather than
+    inside it — see the same call in gh-issue.
+    """
+    author = _untrusted.flat((note.get("author") or {}).get("username", "?"))
+    body = note.get("body") or ""
+    trunc = ""
+    if cap is not None and len(body) > cap:
+        body = body[:cap]
+        trunc = f"\n{_body.comment_cut_notice(cap)}"
     created = (note.get("created_at") or "")[:10]
-    return f"\n**{author}** ({created}):\n{body}\n"
+    return f"\n**{author}** ({created}):\n{_untrusted.fence(body)}{trunc}\n"
 
 
 def _fmt_kb(nbytes: int) -> str:
@@ -616,15 +782,16 @@ def main() -> int:
             print(f"url: {web_url}")
         return 0
 
-    title = d.get("title", "?")
+    # One-line fields are flattened rather than fenced — see presets/_untrusted.py.
+    title = _untrusted.flat(d.get("title", "?"))
     state = d.get("state", "?")
     iid = d.get("iid", arg)
-    source = d.get("source_branch", "?")
-    target = d.get("target_branch", "?")
-    author = (d.get("author") or {}).get("username", "?")
+    source = _untrusted.flat(d.get("source_branch", "?"))
+    target = _untrusted.flat(d.get("target_branch", "?"))
+    author = _untrusted.flat((d.get("author") or {}).get("username", "?"))
     web_url = d.get("web_url", "")
-    labels = ", ".join(d.get("labels", [])) or "none"
-    milestone = (d.get("milestone") or {}).get("title", "none")
+    labels = _untrusted.flat(", ".join(d.get("labels", [])) or "none")
+    milestone = _untrusted.flat((d.get("milestone") or {}).get("title", "none"))
     merge_status = d.get("merge_status") or d.get("detailed_merge_status") or "?"
     merge_commit = d.get("merge_commit_sha") or d.get("squash_commit_sha") or ""
     draft = d.get("draft", False) or d.get("work_in_progress", False)
@@ -645,8 +812,19 @@ def main() -> int:
     reviewers = d.get("reviewers") or []
     reviewer_names = [r.get("username", "?") for r in reviewers]
 
-    # Header
+    # Description is cut here rather than at its print site, because the
+    # disclosure belongs in the header below — and because :full documented
+    # itself as uncapping the file list and comments while the description
+    # stayed capped regardless (#698).
+    description_raw = d.get("description") or ""
+    description_total = len(description_raw)
+    description, description_withheld = _body.cut(
+        description_raw, None if full else DESCRIPTION_MAX)
+
+    # Header. The fence convention is declared before the first thing inside a
+    # fence — the reader this protects is the one who acts on the first line.
     draft_marker = " [DRAFT]" if draft else ""
+    print(_untrusted.banner())
     print(f"# !{iid} {title}{draft_marker}")
     print(f"State: {state} | Author: {author}")
     print(f"Branch: {source} -> {target}")
@@ -655,6 +833,11 @@ def main() -> int:
         print(local_check)
     print(f"Labels: {labels}")
     print(f"Milestone: {milestone}")
+    if description_withheld:
+        # In the header, before ## Description — a footer-only notice is read
+        # by nobody in exactly the case it exists for (#681, #698).
+        print(_body.header_notice(
+            description, description_total, description_withheld))
 
     # Assignees (distinct from reviewers on GitLab)
     assignees = d.get("assignees") or []
@@ -673,22 +856,9 @@ def main() -> int:
             age_str += f" | Updated: {_relative_age(updated_at)}"
         print(age_str)
 
-    # Fetch approvals via API (glab mr view doesn't include this)
-    try:
-        approvals_result = _glab_api(f"projects/:id/merge_requests/{iid}/approvals")
-        if approvals_result.returncode == 0:
-            approvals = json.loads(approvals_result.stdout)
-            approved_by = approvals.get("approved_by", [])
-            if approved_by:
-                approver_names = [
-                    (a.get("user") or {}).get("username", "?")
-                    for a in approved_by
-                ]
-                print(f"Approved by: {', '.join(approver_names)}")
-            else:
-                print("Approved by: none")
-    except (subprocess.TimeoutExpired, json.JSONDecodeError):
-        pass
+    # Fetch approvals via API (glab mr view doesn't include this). Always one
+    # line, in all three states, and never an exception — see _approvals_line.
+    print(_approvals_line(iid))
 
     # Unresolved discussion threads — distinct blocker from comments
     try:
@@ -819,35 +989,61 @@ def main() -> int:
             print("  delete/modify and rename conflicts have no inline hunks).")
 
         print("\nTo resolve:")
-        print(f"  git checkout {source} && git fetch origin && git merge origin/{target}")
-        files_arg = " ".join(conflict_files)
+        ref_warning = _ref_warning([source, target, *conflict_files])
+        if ref_warning:
+            print(ref_warning)
+        print(
+            f"  git checkout {_shell_ref(source)} && git fetch origin "
+            f"&& git merge origin/{_shell_ref(target)}"
+        )
+        files_arg = " ".join(_shell_ref(f) for f in conflict_files)
         print(f"  # Resolve <<<<<<< markers in the files above, then:")
         print(f"  git add {files_arg} && git commit && git push")
 
-    # Linked issue — extract from description or closing_issues
-    description_raw = d.get("description") or ""
+    # Linked issue — extract from the *uncut* description, so a reference the
+    # cap happened to remove is still resolved.
     issue_match = re.search(r'#(\d{4,})', description_raw)
     if issue_match:
         issue_iid = issue_match.group(1)
+        # Same three states as the approvals line above, and the same sweep
+        # (#720): a non-zero exit printed nothing at all — the MR names an
+        # issue and the section promising to describe it simply was not there —
+        # and a payload that parsed to a non-object raised `AttributeError` out
+        # of the render, this time taking the description and comments with it.
+        unavailable = f"\nIssue: #{issue_iid} — details unavailable"
         try:
             issue_result = _glab_api(f"projects/:id/issues/{issue_iid}")
-            if issue_result.returncode == 0:
+            if issue_result.returncode != 0:
+                print(f"{unavailable} ({_glab_fail_detail(issue_result)})")
+            else:
                 issue_data = json.loads(issue_result.stdout)
-                issue_title = issue_data.get("title", "?")
-                issue_state = issue_data.get("state", "?")
-                issue_labels = ", ".join(issue_data.get("labels", [])) or "none"
-                issue_assignees = ", ".join(
-                    a.get("username", "?") for a in issue_data.get("assignees", [])
-                ) or "none"
-                print(f"\n## Issue #{issue_iid} — {issue_title}")
-                print(f"State: {issue_state} | Labels: {issue_labels} | Assignees: {issue_assignees}")
-        except (subprocess.TimeoutExpired, json.JSONDecodeError):
-            print(f"\nIssue: #{issue_iid}")
+                if not isinstance(issue_data, dict):
+                    print(f"{unavailable} (issues API returned a "
+                          f"{type(issue_data).__name__}, expected an object)")
+                else:
+                    issue_title = issue_data.get("title") or "?"
+                    issue_state = issue_data.get("state") or "?"
+                    raw_labels = issue_data.get("labels")
+                    issue_labels = ", ".join(
+                        str(label) for label in raw_labels
+                    ) if isinstance(raw_labels, list) and raw_labels else "none"
+                    raw_assignees = issue_data.get("assignees")
+                    issue_assignees = ", ".join(
+                        (a.get("username") or "?") if isinstance(a, dict) else "?"
+                        for a in raw_assignees
+                    ) if isinstance(raw_assignees, list) and raw_assignees else "none"
+                    print(f"\n## Issue #{issue_iid} — {issue_title}")
+                    print(f"State: {issue_state} | Labels: {issue_labels} | Assignees: {issue_assignees}")
+        except (subprocess.TimeoutExpired, json.JSONDecodeError) as e:
+            print(f"{unavailable} ({type(e).__name__})")
+        except OSError as e:
+            print(f"{unavailable} (could not run glab: {e})")
 
     # Description
-    description = description_raw[:DESCRIPTION_MAX]
     if description:
-        print(f"\n## Description\n{description}")
+        print(f"\n## Description\n{_untrusted.fence(description)}")
+        if description_withheld:
+            print(f"\n{_body.cut_notice(description_withheld)}")
     else:
         print("\n## Description\n_(empty)_")
 
@@ -867,7 +1063,7 @@ def main() -> int:
 
     print(f"\n## Comments ({len(human_notes)})")
     if full:
-        for r in (_render_note(n) for n in human_notes):
+        for r in (_render_note(n, None) for n in human_notes):
             print(r, end="")
     else:
         rendered, hidden_count, hidden_bytes = _budgeted_comments(

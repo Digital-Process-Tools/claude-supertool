@@ -9,30 +9,23 @@ hunt with one round-trip.
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 
 # Sibling import: runtime puts this dir on sys.path[0]; the test harness
 # loads scripts via importlib (no dir on path), so add it explicitly.
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _HERE)
+sys.path.insert(0, os.path.dirname(_HERE))  # for _env (#654)
 
-from _git_common import use_utf8_stdout  # noqa: E402
+from _git_common import _git, _list_conflicts, use_utf8_stdout  # noqa: E402
+from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 
 DEFAULT_PREVIEW_LINES = 12
 
-
-def _git(args: list[str], timeout: int = 30) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["git"] + args,
-        capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace",
-    )
-
-
-def _list_conflicts() -> list[str]:
-    res = _git(["diff", "--name-only", "--diff-filter=U"])
-    if res.returncode != 0:
-        return []
-    return [l for l in res.stdout.splitlines() if l.strip()]
+# The merge itself, which runs merge drivers and can touch every file in the
+# tree. The rest of this preset is rev-parse plumbing on the shared 10s
+# default; this one call carries the 30s the whole module used to assume.
+_MERGE_TIMEOUT = 30
 
 
 def _first_conflict_block(path: str, max_lines: int) -> str:
@@ -137,7 +130,7 @@ def main() -> int:
     if ref.startswith("-"):
         print(f"ERROR: ref starts with '-' (refusing for safety): {ref!r}")
         return 1
-    preview = int(os.environ.get("SUPERTOOL_PREVIEW_LINES", str(DEFAULT_PREVIEW_LINES)))
+    preview = env_int("SUPERTOOL_PREVIEW_LINES", DEFAULT_PREVIEW_LINES, minimum=0)
 
     if _git(["rev-parse", "--verify", "--quiet", ref]).returncode != 0:
         print(f"ERROR: ref {ref!r} not found. Try `git fetch` first.")
@@ -160,7 +153,7 @@ def main() -> int:
     print(f"# git-merge: {merge_ref}@{their_sha} into {branch}@{head_before}")
     print(f"Merge-base: {merge_base}")
 
-    result = _git(["merge", "--no-edit", merge_ref])
+    result = _git(["merge", "--no-edit", merge_ref], timeout=_MERGE_TIMEOUT)
     head_after = _git(["rev-parse", "--short", "HEAD"]).stdout.strip()
 
     stdout = result.stdout.strip()
@@ -172,7 +165,13 @@ def main() -> int:
             print(stdout)
         return 0
 
-    conflicts = _list_conflicts()
+    conflicts, unavailable = _list_conflicts()
+    if unavailable:
+        print("Status: merge failed, and the conflict list is UNKNOWN — "
+              f"git did not answer: {unavailable}")
+        if stderr:
+            print(stderr)
+        return 1
     if not conflicts:
         print(f"Status: merge failed (no conflicts detected — abort or fix)")
         if stderr:

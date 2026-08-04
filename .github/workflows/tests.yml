@@ -8,6 +8,19 @@ on:
 jobs:
   pytest:
     runs-on: ${{ matrix.os }}
+    # #722: a job with no budget runs to GitHub's six-hour default, and the
+    # whole time the board reads `pending` — which is exactly what a leg about
+    # to finish looks like. 30 minutes is sized from 70 job observations across
+    # five master runs: windows 483-574s, macos 128-197s, ubuntu 93-125s. It is
+    # 3.1x the worst windows leg ever measured here, so it can only fire for a
+    # hang, not for a slow runner — the #702 trade, in CI config. Deliberately
+    # not the same number as `notifiers` below (24-37s): one figure across two
+    # job classes an order of magnitude apart is no guard on the smaller one.
+    # Per-OS budgets inside this matrix were considered and declined — bounding
+    # ubuntu at 15 instead of 30 is noise against the 360 it replaces, and it is
+    # three numbers to keep in step instead of one. Pinned by
+    # `tests/test_ci_job_timeouts_722.py`.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -84,6 +97,15 @@ jobs:
     # wall-clock does not move.
     name: notifiers (bun + TypeScript)
     runs-on: ${{ matrix.os }}
+    # #722: this is the job that hung — 26 minutes and still running on PR #715,
+    # against 24-37s on every one of the last five master runs, stuck on the
+    # channel integration step while its macOS twin passed in 32s. 10 minutes is
+    # ~16x the worst observed run of the whole job. The multiple is large on
+    # purpose and the base is why: three of these steps are package-manager
+    # installs (npm, pip, bun) whose tail latency against a degraded registry is
+    # minutes rather than seconds, so a tight multiple of 37s would fire on a bad
+    # network day and teach everyone to press re-run.
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
@@ -139,10 +161,21 @@ jobs:
         # -n0 because eleven tests that each spawn a server gain nothing from
         # xdist and lose determinism to it. --no-cov because pyproject's addopts
         # carry a whole-suite 86% gate that two files cannot meet.
+        #
+        # `--timeout=30` (#722) is the inner half of the guard, and it is the
+        # half that produces evidence. The job ceiling above can only ever say
+        # "this leg did not finish"; pytest-timeout names the test and dumps the
+        # stack of the thread stuck in it, which is the artefact #554 needs to
+        # find out why a socket wait never returns. pytest-timeout has been in
+        # the dev extras and installed by both jobs since it was added, and used
+        # by neither. 30s is ~85x the ~0.35s these ~30 tests average (10-11s for
+        # the step, measured across five master runs) and well under the job
+        # ceiling, so the inner guard always fires first — the ordering
+        # `tests/_adapter_budget.py` insists on, here between a step and its job.
         env:
           SUPERTOOL_REQUIRE_JS: "1"
         run: >-
-          python -X utf8 -m pytest -n0 --no-cov -q
+          python -X utf8 -m pytest -n0 --no-cov -q --timeout=30
           tests/test_notifiers_claude_channel_550.py
           tests/test_notifiers_claude_channel_554.py
           tests/test_notifiers_claude_channel_605.py

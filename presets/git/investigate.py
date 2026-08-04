@@ -10,25 +10,19 @@ from __future__ import annotations
 
 import os
 import re
-import subprocess
 import sys
 
 # Sibling import: runtime puts this dir on sys.path[0]; the test harness
 # loads scripts via importlib (no dir on path), so add it explicitly.
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _HERE)
+sys.path.insert(0, os.path.dirname(_HERE))  # for _env (#654)
 
-from _git_common import use_utf8_stdout  # noqa: E402
+from _git_common import _git, use_utf8_stdout  # noqa: E402
+from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 
 DEFAULT_COMMITS = 15
 DEFAULT_BLAME_RECENT = 10
-
-
-def _git(args: list[str], timeout: int = 10) -> subprocess.CompletedProcess[str]:
-    """Run a git command."""
-    return subprocess.run(
-        ["git"] + args,
-        capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace",
-    )
 
 
 def _format_error(stderr: str, path: str) -> str:
@@ -50,8 +44,8 @@ def main() -> int:
         return 1
 
     path = sys.argv[1]
-    commits = int(os.environ.get("SUPERTOOL_COMMITS", str(DEFAULT_COMMITS)))
-    blame_recent = int(os.environ.get("SUPERTOOL_BLAME_RECENT", str(DEFAULT_BLAME_RECENT)))
+    commits = env_int("SUPERTOOL_COMMITS", DEFAULT_COMMITS, minimum=1)
+    blame_recent = env_int("SUPERTOOL_BLAME_RECENT", DEFAULT_BLAME_RECENT, minimum=0)
 
     # Check file exists in repo
     if not os.path.exists(path):

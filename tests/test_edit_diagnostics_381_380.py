@@ -54,6 +54,23 @@ def test_branch_reads_the_checked_out_branch(tmp_path: Path, monkeypatch) -> Non
     _git(tmp_path, "commit", "-qm", "init")
     _git(tmp_path, "checkout", "-q", "-b", "my-feature")
     monkeypatch.chdir(tmp_path)
+
+    # #650: this failed once under `-n auto` from a pre-push hook, reporting
+    # `''` where a branch was expected, and blocked a push it had nothing to
+    # say about. `''` was then the value for both "no branch here" and "git
+    # never answered", so the test could not tell a product defect from a
+    # stalled subprocess and asserted the first.
+    #
+    # It declines instead — no retry, no second attempt, and no green (a skip
+    # is reported, with the reason git gave). This can only trigger when git
+    # itself did not answer: `why` is empty on every healthy read, pinned by
+    # test_git_timeout_disclosure_650.py::test_a_healthy_read_reports_no_reason,
+    # so a product that returns the wrong branch still fails here.
+    branch, why = supertool._branch_reading()
+    if why:
+        pytest.skip(f"git did not answer on this runner, so what this test is "
+                    f"about is unobservable — {why}")
+    assert branch == "my-feature"
     assert supertool._current_branch() == "my-feature"
 
 
@@ -103,7 +120,7 @@ def test_branch_is_cached_for_the_process(tmp_path: Path, monkeypatch) -> None:
 # ---------------------------------------------------------------------------
 
 def test_footer_on_successful_edit(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(supertool, "_current_branch", lambda: "my-feature")
+    monkeypatch.setattr(supertool, "_branch_reading", lambda: ("my-feature", ""))
     f = tmp_path / "x.py"
     f.write_text("a = 1\n")
     out = supertool.dispatch(f"edit:::a = 1:::a = 2:::{f}")
@@ -112,7 +129,7 @@ def test_footer_on_successful_edit(tmp_path: Path, monkeypatch) -> None:
 
 def test_footer_on_failed_edit(tmp_path: Path, monkeypatch) -> None:
     """The moment a wrong-branch hypothesis is worth having."""
-    monkeypatch.setattr(supertool, "_current_branch", lambda: "my-feature")
+    monkeypatch.setattr(supertool, "_branch_reading", lambda: ("my-feature", ""))
     f = tmp_path / "x.py"
     f.write_text("a = 1\n")
     out = supertool.dispatch(f"edit:::nope = 1:::a = 2:::{f}")
@@ -127,7 +144,7 @@ def test_footer_on_failed_edit(tmp_path: Path, monkeypatch) -> None:
     "vim:::{f}:::/a = 1\\edaw",
 ])
 def test_footer_on_every_mutating_op(tmp_path: Path, monkeypatch, op_arg: str) -> None:
-    monkeypatch.setattr(supertool, "_current_branch", lambda: "my-feature")
+    monkeypatch.setattr(supertool, "_branch_reading", lambda: ("my-feature", ""))
     f = tmp_path / "x.py"
     f.write_text("a = 1\n")
     out = supertool.dispatch(op_arg.format(f=f))
@@ -135,7 +152,7 @@ def test_footer_on_every_mutating_op(tmp_path: Path, monkeypatch, op_arg: str) -
 
 
 def test_no_footer_on_read_ops(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(supertool, "_current_branch", lambda: "my-feature")
+    monkeypatch.setattr(supertool, "_branch_reading", lambda: ("my-feature", ""))
     f = tmp_path / "x.py"
     f.write_text("a = 1\n")
     for arg in (f"read:{f}", f"grep:a:{f}", f"wc:{f}", f"stat:{f}"):
@@ -144,7 +161,7 @@ def test_no_footer_on_read_ops(tmp_path: Path, monkeypatch) -> None:
 
 def test_no_footer_when_there_is_no_branch(tmp_path: Path, monkeypatch) -> None:
     """Outside a repo the footer is absent, not `[branch: ]`."""
-    monkeypatch.setattr(supertool, "_current_branch", lambda: "")
+    monkeypatch.setattr(supertool, "_branch_reading", lambda: ("", ""))
     f = tmp_path / "x.py"
     f.write_text("a = 1\n")
     out = supertool.dispatch(f"edit:::a = 1:::a = 2:::{f}")
@@ -154,7 +171,7 @@ def test_no_footer_when_there_is_no_branch(tmp_path: Path, monkeypatch) -> None:
 def test_batch_emits_one_footer_not_one_per_sub_op(tmp_path: Path, monkeypatch) -> None:
     """A batch runs each sub-op through dispatch recursively — unguarded, a
     50-edit batch would print the branch 50 times."""
-    monkeypatch.setattr(supertool, "_current_branch", lambda: "my-feature")
+    monkeypatch.setattr(supertool, "_branch_reading", lambda: ("my-feature", ""))
     f = tmp_path / "x.py"
     f.write_text("a\nb\nc\n")
     payload = tmp_path / "ops.json"
@@ -170,7 +187,7 @@ def test_batch_emits_one_footer_not_one_per_sub_op(tmp_path: Path, monkeypatch) 
 
 def test_read_only_batch_has_no_footer(tmp_path: Path, monkeypatch) -> None:
     """Nothing was written, so there is no branch worth reporting."""
-    monkeypatch.setattr(supertool, "_current_branch", lambda: "my-feature")
+    monkeypatch.setattr(supertool, "_branch_reading", lambda: ("my-feature", ""))
     f = tmp_path / "x.py"
     f.write_text("a\n")
     payload = tmp_path / "ops.json"
@@ -183,7 +200,7 @@ def test_nested_batch_still_reports_the_branch(tmp_path: Path, monkeypatch) -> N
     """#392: a mutation buried in an inner batch used to produce ZERO footers —
     the inner one suppressed by depth, the outer one blind because its only
     sub-op was "batch", which is not in _OP_TARGETS."""
-    monkeypatch.setattr(supertool, "_current_branch", lambda: "my-feature")
+    monkeypatch.setattr(supertool, "_branch_reading", lambda: ("my-feature", ""))
     f = tmp_path / "x.py"
     f.write_text("a = 1\\n")
     inner = tmp_path / "inner.json"
@@ -200,7 +217,7 @@ def test_nested_batch_still_reports_the_branch(tmp_path: Path, monkeypatch) -> N
 def test_append_gets_the_footer_too(tmp_path: Path, monkeypatch) -> None:
     """"Every mutating op" has to mean every one — a silently excluded op is
     exactly the wrong-branch miss #381 exists to close."""
-    monkeypatch.setattr(supertool, "_current_branch", lambda: "my-feature")
+    monkeypatch.setattr(supertool, "_branch_reading", lambda: ("my-feature", ""))
     f = tmp_path / "x.py"
     f.write_text("a\n")
     out = supertool.dispatch(f"append:::{f}:::b")
@@ -209,7 +226,7 @@ def test_append_gets_the_footer_too(tmp_path: Path, monkeypatch) -> None:
 
 def test_replace_dry_stays_footer_free(tmp_path: Path, monkeypatch) -> None:
     """A preview op writes nothing, so there is no branch to warn about."""
-    monkeypatch.setattr(supertool, "_current_branch", lambda: "my-feature")
+    monkeypatch.setattr(supertool, "_branch_reading", lambda: ("my-feature", ""))
     f = tmp_path / "x.py"
     f.write_text("a = 1\n")
     out = supertool.dispatch(f"replace_dry:::a = 1:::a = 2:::{f}")

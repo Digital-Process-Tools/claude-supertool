@@ -67,12 +67,28 @@ def test_mr_line_none_is_empty() -> None:
 # ── _remote_sha ──────────────────────────────────────────────────────────
 
 def test_remote_sha_empty_ref() -> None:
-    assert push._remote_sha("") == ""
+    """No ref to ask about is not a failure to ask (#675)."""
+    assert push._remote_sha("") == ("", "")
 
 
 def test_remote_sha_resolves() -> None:
     with mock.patch.object(push, "_git", return_value=_proc("abc1234\n")):
-        assert push._remote_sha("origin/x") == "abc1234"
+        assert push._remote_sha("origin/x") == ("abc1234", "")
+
+
+def test_remote_sha_that_could_not_be_read_says_so(tmp_path) -> None:
+    """#675: `""` used to mean "does not resolve" and "never asked" at once.
+
+    The caller prints a different line for each, and the second is the one that
+    used to be a traceback over a push that had already landed.
+    """
+    def dead_git(args, timeout=30):
+        raise OSError(2, "No such file or directory: 'git'")
+
+    with mock.patch.object(push, "_git", side_effect=dead_git):
+        sha, why = push._remote_sha("origin/x")
+    assert sha == ""
+    assert "did not complete" in why, why
 
 
 # ── main() guards ────────────────────────────────────────────────────────
@@ -301,9 +317,10 @@ def test_split_flags_reports_what_it_did_not_recognise() -> None:
 
 
 def test_split_upstream() -> None:
-    assert push._split_upstream("origin/feat", "feat") == ("origin", "feat")
-    assert push._split_upstream("up/team/x", "x") == ("up", "team/x")
-    assert push._split_upstream("", "feat") == ("origin", "feat")
+    assert push._split_upstream("origin/feat", "feat", "gl") == ("origin", "feat")
+    assert push._split_upstream("up/team/x", "x", "gl") == ("up", "team/x")
+    # No upstream: the caller's resolved remote, never a hardcoded origin (#656).
+    assert push._split_upstream("", "feat", "gitlab") == ("gitlab", "feat")
 
 
 # ── _first_error_line skips success banners (issue #297) ─────────────────
@@ -437,6 +454,10 @@ def test_main_first_push_sets_upstream(capsys) -> None:
             return _proc(".git\n", 0)
         if args[:2] == ["rev-parse", "--abbrev-ref"] and "@{upstream}" not in args:
             return _proc("feat\n", 0)
+        if args == ["remote"]:
+            # A repo with no upstream still has to have a remote for `-u` to
+            # name one; the op resolves it rather than assuming it (#656).
+            return _proc("origin\n", 0)
         if args[0] == "rev-parse" and "@{upstream}" in args:
             # No upstream the first call, set after push
             return _proc("origin/feat\n", 0) if any(c[0] == "push" for c in calls) else _proc("", 1)
@@ -473,6 +494,8 @@ def test_main_first_push_without_a_per_ref_line_declines(capsys) -> None:
             return _proc("feat\n", 0)
         if args[0] == "rev-parse" and args[1] == "--short":
             return _proc("ccc3333\n", 0)
+        if args == ["remote"]:
+            return _proc("origin\n", 0)
         if args[0] == "push":
             return _proc("", 0)
         if args[:2] == ["rev-list", "--left-right"]:
@@ -481,7 +504,8 @@ def test_main_first_push_without_a_per_ref_line_declines(capsys) -> None:
 
     with mock.patch.object(push, "_git", side_effect=fake_git), \
          mock.patch.object(push, "query_open_mr", return_value=None), \
-         mock.patch.object(push, "_upstream_ref", side_effect=["", "origin/feat"]):
+         mock.patch.object(push, "_upstream_ref",
+                           side_effect=[("", ""), ("origin/feat", "")]):
         rc = push.main()
     out = capsys.readouterr().out
     assert rc == 0
@@ -802,7 +826,11 @@ def _timeout_git(remote_sha: str, head: str = "head000aaaa",
         if args[:2] == ["rev-parse", "HEAD"]:
             return _proc((next(heads) if heads is not None else head) + "\n", 0)
         if args[0] == "push":
-            raise subprocess.TimeoutExpired(cmd="git push", timeout=timeout)
+            # Since #704 `_git_common._git` catches the expiry and hands back
+            # TIMEOUT_RC rather than letting `TimeoutExpired` escape. The
+            # assertions below are unchanged — what is being proved is still
+            # that a push which blew its budget is never reported as REJECTED.
+            return _proc("", push.TIMEOUT_RC, f"timed out after {timeout}s")
         if args[0] == "ls-remote":
             return _proc(f"{remote_sha}\trefs/heads/feat\n", 0) if remote_sha else _proc("", 1)
         return _proc("", 0)
@@ -870,10 +898,28 @@ def test_main_push_timeout_unreadable_remote_reports_unknown(capsys) -> None:
 def test_live_remote_sha_survives_ls_remote_timeout() -> None:
     """The verification probe must not turn into the crash it exists to prevent."""
     def fake_git(args, timeout=30):
-        raise subprocess.TimeoutExpired(cmd="git ls-remote", timeout=timeout)
+        return _proc("", push.TIMEOUT_RC, f"timed out after {timeout}s")
 
     with mock.patch.object(push, "_git", side_effect=fake_git):
-        assert push._live_remote_sha("origin", "feat") == ""
+        sha, why = push._live_remote_sha("origin", "feat")
+    assert sha == ""
+    assert "did not complete" in why, why
+
+
+def test_live_remote_sha_survives_git_not_starting_at_all() -> None:
+    """#675: this was the only guarded helper, and it caught the wrong thing.
+
+    `TimeoutExpired` was handled because that is what somebody hit. An
+    `OSError` — git missing from PATH, fork failing — went straight out of
+    `main()` as a traceback, for a push that had already landed.
+    """
+    def dead_git(args, timeout=30):
+        raise OSError(2, "No such file or directory: 'git'")
+
+    with mock.patch.object(push, "_git", side_effect=dead_git):
+        sha, why = push._live_remote_sha("origin", "feat")
+    assert sha == ""
+    assert "did not complete" in why, why
 
 
 def test_push_budget_is_strictly_below_the_op_timeout_cap() -> None:

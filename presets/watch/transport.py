@@ -63,6 +63,15 @@ DEATH_RESPAWN_LIMIT = 3
 # such flag, and 0 leaves the open otherwise unchanged.
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 
+# `claim_pidfile` could not answer: the open failed, no file was created, and
+# nothing here knows who — if anyone — holds the slot. Distinct from `0` ("it is
+# yours, go spawn") and from a PID ("that live process holds it"). It used to
+# return `0` from both of the paths below, which is the strongest of the three
+# claims made on the evidence of the weakest (#693): the caller then forked a
+# poller against a slot it did not own, on a machine where the state directory
+# is unwritable or gone — exactly when two pollers are least wanted.
+CLAIM_UNKNOWN = -1
+
 
 def state_path(source: str, watcher_id: str) -> str:
     return f"{STATE_DIR}/supertool-watch-{source}__{watcher_id}.state.json"
@@ -87,8 +96,11 @@ def read_pid(source: str, watcher_id: str) -> int:
 def claim_pidfile(source: str, watcher_id: str) -> int:
     """Take the (source, id) poller slot, or report the live PID that holds it.
 
-    Returns 0 when this process now owns the slot, else the PID of the poller
-    that already does.
+    Returns 0 when this process now owns the slot, the PID of the poller that
+    already does, or `CLAIM_UNKNOWN` when the claim could not be settled — an
+    `os.open` that failed for anything other than "it already exists", and a
+    retry that ran out. Neither of those created a file, so neither may be
+    reported as ownership.
 
     `O_CREAT|O_EXCL` is the atomic part, and it is the whole fix for #476: the
     spawn sites used to *test* the pidfile and then fork, but the pidfile is
@@ -124,11 +136,17 @@ def claim_pidfile(source: str, watcher_id: str) -> int:
                 pass
             continue
         except OSError:
-            return 0
+            # An unwritable or absent state dir, a path that is a directory
+            # (IsADirectoryError on POSIX, PermissionError on Windows), a
+            # refused symlink. No file exists and no owner was identified.
+            return CLAIM_UNKNOWN
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(f"{os.getpid()}\n")
         return 0
-    return 0
+    # Both attempts met a file that existed and had no live owner, and both
+    # unlinks lost the follow-up race. Something is creating this pidfile faster
+    # than we can take it; that is not this process owning the slot.
+    return CLAIM_UNKNOWN
 
 
 def record_pid(source: str, watcher_id: str, pid: int) -> None:
@@ -300,12 +318,20 @@ def desktop_notify(title: str, message: str) -> None:
         return
     if not shutil.which("osascript"):
         return
-    body = message.replace('"', '\\"')
-    head = title.replace('"', '\\"')
-    script = f'display notification "{body}" with title "{head}"'
+    # Titles and bodies arrive from remote repos, so they routinely contain
+    # quotes, backslashes and other characters that are syntax to AppleScript.
+    # Interpolating them into the script text makes the notification depend on
+    # someone else's branch name; osascript reads positional arguments after
+    # `--` into `argv`, where they are values rather than source.
     try:
         subprocess.run(
-            ["osascript", "-e", script],
+            [
+                "osascript",
+                "-e", "on run argv",
+                "-e", "display notification (item 1 of argv) with title (item 2 of argv)",
+                "-e", "end run",
+                "--", message, title,
+            ],
             capture_output=True, timeout=3, check=False,
         )
     except (subprocess.TimeoutExpired, OSError):

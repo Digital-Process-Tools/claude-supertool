@@ -3,6 +3,8 @@
 
 ours/theirs: checkout --SIDE PATH + git add PATH (atomic).
 both: union — strip conflict markers, keep both sides, write back + git add.
+     Refused per file on known source extensions (see _SOURCE_EXTS) unless the
+     path declares merge=union in .gitattributes or `force` is passed.
 Receipt shows which files were resolved and how many conflicts remain.
 """
 from __future__ import annotations
@@ -18,7 +20,7 @@ from typing import Optional
 # loads scripts via importlib (no dir on path), so add it explicitly.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from _git_common import use_utf8_stdout  # noqa: E402
+from _git_common import _git, _list_conflicts, use_utf8_stdout  # noqa: E402
 
 
 # Unambiguous conflict markers — `<<<<<<<` / `>>>>>>>` at line start. A bare row
@@ -28,18 +30,73 @@ from _git_common import use_utf8_stdout  # noqa: E402
 _MARKER_RE = re.compile(r"^(<{7,}|>{7,})(\s|$)")
 
 
-def _git(args: list[str], timeout: int = 10) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["git"] + args,
-        capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace",
-    )
+# Extensions where a union resolve is close to always wrong. `both` concatenates
+# both versions of the hunk: on a changelog that is two entries and correct, on a
+# function body it is the statement run twice, or two `def`s of the same name
+# where the last silently wins. Neither the marker gate nor the syntax digest can
+# see that — the concatenation still parses (issue #744).
+#
+# This list is a heuristic and it is wrong in both directions: an extensionless
+# `bin/deploy` shell script is not caught, and a `.sql` file that is only INSERT
+# rows would union fine. It is deliberately small — mainstream program text only,
+# no structured-data formats (a unioned .json/.xml usually fails the syntax
+# validator that already runs, so it is not the silent class this guards). The
+# authoritative discriminator, when a repo has bothered to state one, is git's
+# own `merge=union` attribute — see _union_attr_paths, which overrides this list.
+_SOURCE_EXTS = frozenset({
+    ".py", ".pyi", ".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".vue", ".svelte",
+    ".php", ".rb", ".go", ".rs", ".java", ".kt", ".kts", ".swift", ".scala", ".dart",
+    ".c", ".h", ".cc", ".cpp", ".hpp", ".cs", ".sh", ".bash", ".zsh", ".pl", ".lua", ".sql",
+})
 
 
-def _list_conflicts() -> list[str]:
-    res = _git(["diff", "--name-only", "--diff-filter=U"])
+def _is_source_path(path: str) -> bool:
+    """True when PATH's extension is program text a union would corrupt."""
+    return os.path.splitext(path)[1].lower() in _SOURCE_EXTS
+
+
+def _union_attr_paths(paths: list[str]) -> set[str]:
+    """Subset of PATHS that .gitattributes declares as ``merge=union``.
+
+    A repo that sets the attribute has already answered the question this guard
+    asks, so those paths union without a prompt. ONE ``git check-attr`` call for
+    the whole batch; any failure returns the empty set — the fallback is always
+    to refuse, never to union.
+    """
+    if not paths:
+        return set()
+    res = _git(["check-attr", "merge", "--", *paths])
     if res.returncode != 0:
-        return []
-    return [l for l in res.stdout.splitlines() if l.strip()]
+        return set()
+    out: set[str] = set()
+    for line in res.stdout.splitlines():
+        # Format: "<path>: merge: <value>"
+        if line.endswith(": merge: union"):
+            out.add(line[: -len(": merge: union")])
+    return out
+
+
+_REFUSAL = (
+    "source file — 'both' concatenates both versions (the result parses; the code "
+    "runs twice); refused"
+)
+
+
+def _guarded_paths(paths: list[str], side: str, force: bool) -> set[str]:
+    """Paths where `both` must not run: source text, no merge=union, not forced."""
+    if side != "both" or force:
+        return set()
+    candidates = [p for p in paths if _is_source_path(p)]
+    if not candidates:
+        return set()
+    return set(candidates) - _union_attr_paths(candidates)
+
+
+def _print_refusal_help() -> None:
+    print("Next: resolve these by hand — ./supertool 'git-conflicts' to inspect, "
+          "./supertool 'git-resolve:::ours:::PATH' / ':::theirs:::PATH' to take one side,")
+    print("      or append 'force' (git-resolve:::both:::PATH:::force) to union anyway "
+          "and verify the result yourself.")
 
 
 def _union_file(path: str) -> tuple[bool, str]:
@@ -320,7 +377,7 @@ def _validate_paths(paths: list[str]) -> dict[str, Optional[str]]:
     return digests
 
 
-def _resolve_partial(path: str, side: str, selected: set[int]) -> int:
+def _resolve_partial(path: str, side: str, selected: set[int], force: bool = False) -> int:
     """Resolve only the selected blocks of one file (issue #305).
 
     A partial resolve always leaves the unselected blocks' markers in place, so
@@ -330,6 +387,12 @@ def _resolve_partial(path: str, side: str, selected: set[int]) -> int:
     """
     blocks_label = ", ".join(str(b) for b in sorted(selected))
     print(f"# git-resolve: {side} block(s) {blocks_label} in {path}")
+
+    if _guarded_paths([path], side, force):
+        print(f"  ⊘ {path}: {_REFUSAL}")
+        print("\nResolved blocks: 0 | Refused: 1 | Not staged (still conflicted).")
+        _print_refusal_help()
+        return 1
 
     ok, err, resolved, total = _resolve_blocks(path, side, selected)
     if not ok:
@@ -366,15 +429,22 @@ def _resolve_partial(path: str, side: str, selected: set[int]) -> int:
 def main() -> int:
     use_utf8_stdout()
     if len(sys.argv) < 3:
-        print("ERROR: usage: resolve.py SIDE PATH[,PATH...] [BLOCKS]")
+        print("ERROR: usage: resolve.py SIDE PATH[,PATH...] [BLOCKS] [force]")
         print("  SIDE — 'ours', 'theirs', or 'both' (union: keep both sides)")
         print("  PATH — conflicted file path, comma-separated list, or 'all' for every UU file")
         print("  BLOCKS — optional 1-indexed block list (e.g. '1,3') — per-file, as git-conflicts numbers them")
+        print("  force — union source files too ('both' is refused on them by default)")
         return 1
 
     side = sys.argv[1].lower()
     target = sys.argv[2]
-    blocks_arg = sys.argv[3] if len(sys.argv) > 3 else ""
+    force = False
+    blocks_arg = ""
+    for tok in sys.argv[3:]:
+        if tok.strip().lower() == "force":
+            force = True
+        elif tok.strip():
+            blocks_arg = tok
 
     if side not in ("ours", "theirs", "both"):
         print(f"ERROR: SIDE must be 'ours', 'theirs', or 'both', got {side!r}")
@@ -398,7 +468,13 @@ def main() -> int:
         print("ERROR: not inside a git repository.")
         return 1
 
-    all_conflicts = _list_conflicts()
+    all_conflicts, unavailable = _list_conflicts()
+    if unavailable:
+        print("# git-resolve")
+        print(f"Conflicts: UNKNOWN — `git diff --name-only --diff-filter=U` "
+              f"did not answer: {unavailable}")
+        print("Nothing was inspected, so nothing was resolved. Re-run.")
+        return 1
     if not all_conflicts:
         print("# git-resolve")
         print("No conflicted files. Nothing to resolve.")
@@ -422,15 +498,27 @@ def main() -> int:
         return 1
 
     if selected:
-        return _resolve_partial(targets[0], side, selected)
+        return _resolve_partial(targets[0], side, selected, force)
 
     print(f"# git-resolve: {side} ({len(targets)} file(s))")
 
+    # Per-file, not per-set: a mixed `both:all` still resolves the CHANGELOG and
+    # only holds back the files where a union is wrong. Refusing the whole set
+    # would just train the override.
+    guarded = _guarded_paths(targets, side, force)
+
     resolved: list[str] = []
+    refused: list[str] = []
+    forced_source: list[str] = []
     failed: list[tuple[str, str]] = []
     digests: dict[str, Optional[str]] = {}
     for path in targets:
+        if path in guarded:
+            refused.append(path)
+            continue
         if side == "both":
+            if force and _is_source_path(path):
+                forced_source.append(path)
             ok, err = _union_file(path)
             if not ok:
                 failed.append((path, err))
@@ -460,12 +548,33 @@ def main() -> int:
     for path in resolved:
         print(f"  ✓ {path}")
         digest = digests.get(path)
-        print(f"      markers: clean | {digest}" if digest else "      markers: clean")
+        line = f"      markers: clean | {digest}" if digest else "      markers: clean"
+        if path in forced_source:
+            line += " | ⚠ source union — verify manually"
+        print(line)
+    for path in refused:
+        print(f"  ⊘ {path}: {_REFUSAL}")
     for path, err in failed:
         print(f"  ✗ {path}: {err}")
 
-    remaining = _list_conflicts()
-    print(f"\nResolved: {len(resolved)} | Failed: {len(failed)} | Remaining: {len(remaining)}")
+    # A forced union of source text is reported as such — the syntax digest above
+    # says `validate: ok` on a file whose statements now run twice, so the tally
+    # has to carry the doubt the validator cannot.
+    note = (f" ({len(forced_source)} source file(s) unioned — 'both' concatenates; "
+            f"verify manually)") if forced_source else ""
+    refused_seg = f"Refused: {len(refused)} | " if refused else ""
+
+    remaining, remaining_unavailable = _list_conflicts()
+    if remaining_unavailable:
+        print(f"\nResolved: {len(resolved)}{note} | {refused_seg}Failed: {len(failed)} | "
+              f"Remaining: UNKNOWN — git did not answer: {remaining_unavailable}")
+        print("Do NOT continue the merge on this report — re-run to confirm "
+              "nothing is still conflicted.")
+        return 1
+    print(f"\nResolved: {len(resolved)}{note} | {refused_seg}Failed: {len(failed)} | "
+          f"Remaining: {len(remaining)}")
+    if refused:
+        _print_refusal_help()
     if remaining:
         print("Still conflicted:")
         for p in remaining:
@@ -484,7 +593,7 @@ def main() -> int:
         else:
             print("Next: ./supertool 'git-commit:::MESSAGE' to commit the resolution.")
 
-    return 0 if not failed else 1
+    return 0 if not failed and not refused else 1
 
 
 if __name__ == "__main__":

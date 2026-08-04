@@ -15,7 +15,9 @@ import os
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent.parent))  # for _env (#654)
 sys.path.insert(0, str(Path(__file__).parent))
+from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 from _auth import get_publication_id, get_token
 from _graphql import gql
 from _me import get_username
@@ -184,8 +186,8 @@ def main(arg: str) -> None:
     now = _now_iso()
     token = get_token()
     pub_id = get_publication_id()
-    post_first = int(os.environ.get("SUPERTOOL_STATUS_POSTS", "10"))
-    c_first = int(os.environ.get("SUPERTOOL_STATUS_COMMENTS", "20"))
+    post_first = env_int("SUPERTOOL_STATUS_POSTS", 10, minimum=1)
+    c_first = env_int("SUPERTOOL_STATUS_COMMENTS", 20, minimum=1)
     data = gql(QUERY, {"publicationId": pub_id, "postFirst": post_first, "cFirst": c_first}, token)
     pub = data.get("publication") or {}
     me = get_username(token)

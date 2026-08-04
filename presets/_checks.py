@@ -248,6 +248,83 @@ def _label(state: str) -> str:
     return normalize(state).lower()
 
 
+# Appended to the `Checks:` line when the rollup carried fewer legs than the
+# run declares. Deliberately a second marker rather than a reworded
+# `NOT_GREEN`: "not all green" is a claim about the legs that were read, and
+# this is a claim about the ones that were not. Both can be true at once and
+# a reader deciding a merge needs both.
+INCOMPLETE_MARK = "⚠ INCOMPLETE"
+
+# Appended when the declared count could not be established at all. Not
+# NOT_GREEN — that asserts red, and nothing here establishes red. It asserts
+# only that the completeness of the tally is UNKNOWN, which is what
+# `docs/validators.md` §"Declining instead of guessing" requires of a check
+# that cannot answer.
+UNVERIFIED_MARK = "⚠ TALLY UNVERIFIED"
+
+
+def _legs(n: int) -> str:
+    """`leg` / `legs`. A tally that says "1 legs" reads as machine output, and
+    machine output is what a reader skims past."""
+    return "leg" if n == 1 else "legs"
+
+
+def shortfall(found: int, declared: int | None,
+              missing: Sequence[str] = (),
+              cap: int = NAMED_CAP) -> tuple[str, List[str]]:
+    """Reconcile legs *read* against legs the run *declares* (#724).
+
+    Returns `(marker, lines)` — `("", [])` when the two agree, so the common
+    path costs nothing and the disclosure keeps its signal.
+
+    `summarize()` promises that its terms sum to the number of checks it was
+    handed. That promise held on PR #715 while the answer was wrong: nine
+    entries arrived, `8 + 0 + 1 = 9` summed, the header said `9 total`, and a
+    fourteen-leg matrix went unremarked. Internal consistency cannot detect a
+    missing *input* — only a second, independent count of what should have
+    arrived can, which is what `declared` is.
+
+    Three outcomes, and the two unhappy ones are deliberately different:
+
+    * `declared is None` — the count could not be established. Declined, not
+      guessed. Assuming `declared == found` restores exactly the silence this
+      exists to break; assuming the larger number invents legs and trades a
+      loud failure for a quiet one.
+    * `declared > found` — a proven shortfall. Both numbers are stated, in
+      that order, and the legs that never arrived are named when known.
+    * `declared <= found` — reconciled. `<` and not just `==` because a rollup
+      legitimately carries checks belonging to no Actions run at all (external
+      CI, legacy commit statuses); those are extra, never missing.
+    """
+    if declared is None:
+        return (UNVERIFIED_MARK, [
+            f"  unverified: {found} {_legs(found)} read, but how many the run declares "
+            "could not be established, so whether these are all of them is "
+            "UNKNOWN. Count by hand with `gh run view <run-id> --json jobs` "
+            "before treating this as a merge signal."
+        ])
+
+    if declared <= found:
+        return ("", [])
+
+    gap = declared - found
+    marker = f"{INCOMPLETE_MARK} — {found} of {declared} legs read"
+    named = [n for n in missing if n]
+    if named:
+        shown = ", ".join(named[:cap])
+        if len(named) > cap:
+            shown += f", +{len(named) - cap} more"
+        detail = f"not read: {shown}"
+    else:
+        detail = (f"not read: {gap} {_legs(gap)} the run declares "
+                  "are absent, names UNKNOWN")
+    return (marker, [
+        f"  {detail} — this tally describes {found} of {declared} legs and is "
+        "not a merge signal. GitHub re-creates check runs during a partial "
+        "re-run, so re-running the op usually settles it."
+    ])
+
+
 def summarize(states: Sequence[str] | Iterable[str]) -> str:
     """Render the summary that follows `Checks: `.
 

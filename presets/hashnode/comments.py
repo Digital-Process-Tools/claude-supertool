@@ -7,7 +7,9 @@ import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
+sys.path.insert(0, str(Path(__file__).parent.parent))  # for _env (#654)
 sys.path.insert(0, str(Path(__file__).parent))
+from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 from _auth import get_publication_id, get_token
 from _graphql import gql
 from _outbound import my_comment_ids, read as read_outbound
@@ -34,7 +36,7 @@ def parse_args(arg: str) -> tuple[str, int]:
     if not arg:
         sys.stderr.write("ERROR: usage hashnode_comments:SLUG_OR_URL[:N]\n")
         sys.exit(2)
-    default_n = int(os.environ.get("SUPERTOOL_DEFAULT_LIMIT", "20"))
+    default_n = env_int("SUPERTOOL_DEFAULT_LIMIT", 20, minimum=1)
     if arg.startswith("http"):
         path = urlparse(arg).path.strip("/")
         slug = path.split("/")[-1]

@@ -64,7 +64,41 @@ EOF
 | `between` | `symbol` **or** `start` + `end`, plus `path` |
 | `read` | `path` (required), `offset`, `limit`, `grep`, `full` |
 
-A read-op argument beginning with `@` is only treated as a payload when it actually resolves — `@-`, or a file that exists. `grep:@Override:src/` still searches for `@Override`.
+A read-op argument beginning with `@` is only treated as a payload when it could be one — `@-`, a file that exists, or a lone `@….toml` / `@….json`. `grep:@Override:src/` still searches for `@Override`.
+
+### Where a relative `@payload` path resolves from
+
+**Against the directory the call was made from — never against `cwd:`.**
+
+Two different kinds of path meet in one call, and only one of them belongs to the repo being operated on:
+
+| Path | Resolves against | Why |
+| --- | --- | --- |
+| the `@reference` itself | the invocation directory | it is an argument you typed, and you wrote the payload where you were standing |
+| `path = ` *inside* the payload | the working directory (`cwd:` target) | it is repo content — this is what makes `cwd:` useful |
+
+This matters because `cwd:` exists precisely *because* the target repo has no `./supertool` wrapper. The call is made from a directory that has one, so the payload lands there too — one side of `cwd:`, with the repo on the other:
+
+```bash
+./supertool 'cwd:~/other-repo' 'batch:@.max/edits.toml'
+#            └─ repo paths          └─ resolved here, next to the call
+```
+
+The same rule covers the auto-resolved project root ([#363](https://github.com/Digital-Process-Tools/claude-supertool/issues/363)): whatever moves the working directory, it does not move the `@reference`.
+
+**There is no fallback.** A payload that is not at the invocation root is an error even when a file of that name sits under the `cwd:` target — reading whichever one happens to exist is how a tool starts opening a file the caller did not mean. The error names both roots and says which is which ([#672](https://github.com/Digital-Process-Tools/claude-supertool/issues/672)):
+
+```
+ERROR: @file not found: .max/edits.toml
+  ↳ @payload paths resolve against the invocation directory: /Users/…/dvsi
+    It does exist under the cwd: target /Users/…/other-repo, and is not read from there:
+    the @reference is an argument you typed, not repo content. Only `path =` inside the
+    payload follows the working directory.
+    Pass an absolute path (@/Users/…/other-repo/.max/edits.toml), or write the payload
+    next to the call.
+```
+
+To drive a repo from a payload stored *inside* it, pass an absolute path — that has always worked and is unaffected.
 
 ```bash
 ./supertool 'edit:@.max/my-edit.json'
@@ -128,6 +162,25 @@ the parse error names both, and fires the hint on an odd number of `'''` runs �
 every literal block opens and closes, so a stray one means the content carried
 its own.
 
+### An invalid escape is an error, on every Python
+
+A basic string (`"..."` or `"""..."""`) processes escapes, and an escape TOML
+does not recognise is a **parse error** — not a character that quietly loses its
+backslash. A Windows path is how most people meet this:
+
+```
+path = "C:\Users\dev\notes.txt"     # parse error: invalid escape \U
+path = "C:\\Users\\dev\\notes.txt"  # fine — doubled
+path = 'C:\Users\dev\notes.txt'     # fine — a literal string, kept as typed
+```
+
+Before [#684](https://github.com/Digital-Process-Tools/claude-supertool/issues/684)
+that first line behaved differently depending on the interpreter: Python 3.11+
+(stdlib `tomllib`) raised, while the fallback parser below it dropped the
+backslashes and handed the op `C:Usersdevnotes.txt`, which then failed with
+`path not found` at an address nobody had typed. Both parsers now agree, and
+`\u` / `\U` escapes (`"\u00e9"`) work on every version.
+
 Other TOML primitives supported in payloads: integers (`start = 42`), booleans (`replace_all = true`), `# comments`. Arrays, tables, dotted keys, and dates aren't needed — payloads are flat key/value maps.
 
 ### Implementation note
@@ -164,4 +217,62 @@ Or with explicit options:
 }
 ```
 
-`continue_on_error` defaults to `true` — a failed op is reported but the rest of the batch continues. Set to `false` to abort on first error. Validators (phplint, xmllint, etc.) fire per mutating op, same as inline edits. Use `@-` to pipe the payload from stdin.
+In TOML the ops array is a `[[ops]]` table array — which is what lets a payload full of code blocks skip JSON's double-escaping:
+
+```bash
+./supertool 'batch:@-' <<'PAYLOAD'
+[[ops]]
+op = "edit"
+path = "src/app/Config.py"
+old = "DEBUG = False"
+new = "DEBUG = True"
+
+[[ops]]
+op = "read"
+path = "src/app/Config.py"
+PAYLOAD
+```
+
+**Every entry needs its own `op` key**, including the common case where all of them are edits — there is no default. Omitting it fails with `batch op missing 'op' field` rather than guessing, since a batch is routinely mixed (`read` + `edit` + `replace`) and a guess would be wrong as often as right.
+
+**Re-running a payload is not free of consequence.** An edit whose `new` contains its `old` keeps its anchor alive, so a second run applies it a second time — legitimately, and by design. The `[result]` footer names it (`1 op run, 1 write, 1 re-applied`) and the op receipt adds a `↳ re-applied:` line, so a re-run reads differently from a first run instead of identically; see [operations/edits.md](operations/edits.md). It discloses, it does not refuse: appending a repeated element has the same shape and stays allowed.
+
+`continue_on_error` defaults to `true` — a failed op is reported but the rest of the batch continues. Set to `false` to abort on first error. **A batch is not atomic:** under the default, ops that ran before a failure stay applied. The `[result]` footer names the shortfall (`3 ops run, 2 writes, 1 skipped`) and the call exits non-zero whenever anything was skipped, so `&&` chains stop — see [operations/edits.md](operations/edits.md). Validators (phplint, xmllint, etc.) fire per mutating op, same as inline edits. Use `@-` to pipe the payload from stdin.
+### What the sub-op headers say
+
+Each sub-op prints a header. A sub-op that ran from the payload is labelled by **route and target**, not re-serialized onto a colon CLI:
+
+```
+--- batch:@.max/ops.toml ---
+--- replace:@payload → src/app/Config.py ---
+--- read:@payload → src/app/Config.py ---
+```
+
+**This header is deliberately not re-runnable, and that is the point.** The payload route exists *because* the content contains `:`; flattening those fields back into `replace:OLD:NEW:PATH` does not merely lose information, it produces a string that parses as a **different op**. A `replace` of `time: 10:30` used to render as `--- replace:time: 10:30:time: 11:45:/tmp/h.txt ---`, and pasting that sent the dispatcher looking for a file named `30`. A header is what a reader trusts to reconstruct a step — in a bug report it is often the only surviving record — so it must never be a runnable string that runs something other than what ran. Where no faithful one-line rendering exists, it does not fake one.
+
+Pasting `replace:@payload → …` back is a loud, self-explaining refusal rather than a silent misfire:
+
+```
+ERROR: '@payload' is a header placeholder, not a reference. This op ran from an
+@payload whose fields no single-colon header can reproduce (#644) — re-run it
+from the original payload file or stdin.
+```
+
+To re-run the step, re-run the payload — `./supertool 'batch:@.max/ops.toml'` — which is the artifact that holds the fields.
+
+A sub-op typed on the colon CLI is unaffected: its header stays verbatim, because there it genuinely *is* re-runnable.
+
+### Field order in a batch sub-op
+
+For an op with an `@payload` route of its own — every mutating op, plus `grep` / `around` / `grep_around` / `between` / `read` — fields are named and order does not matter.
+
+For the remaining colon-only ops, the payload's fields are placed by the op's **declared** argument order (`head`/`tail`: `path`, `n` · `tree`: `path`, `depth` · `around_line`: `path`, `line`, `n` · `diff`: `path1`, `path2`). An op with more than one field and no declared order **declines** rather than picking one:
+
+```
+ERROR: batch sub-op 'glob' takes its arguments positionally and has no declared
+payload field order, so limit, pattern cannot be placed. Ordering them
+alphabetically is a guess, and a wrong guess dispatches a different op — so this
+declines instead.
+```
+
+Colon arguments cannot be sparse either: a payload that sets a later positional field without the earlier ones is refused for the same reason.

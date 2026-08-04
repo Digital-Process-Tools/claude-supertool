@@ -9,7 +9,9 @@ import os
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent.parent))  # for _env (#654)
 sys.path.insert(0, str(Path(__file__).parent))
+from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 from _auth import get_publication_id, get_token
 from _graphql import gql
 from _sanitize import safe_short
@@ -39,7 +41,7 @@ query UserPosts($username: String!, $first: Int!) {
 
 def parse_args(arg: str) -> tuple[str | None, int]:
     """Returns (username_or_None, limit)."""
-    default_n = int(os.environ.get("SUPERTOOL_DEFAULT_LIMIT", "10"))
+    default_n = env_int("SUPERTOOL_DEFAULT_LIMIT", 10, minimum=1)
     if not arg or arg.isdigit():
         return None, int(arg) if arg else default_n
     parts = arg.split(":")

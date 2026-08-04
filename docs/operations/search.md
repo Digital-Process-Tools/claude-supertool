@@ -42,6 +42,22 @@ The extra match costs no extra traversal. The whole tree is already walked to pr
 (200 files — TRUNCATED, more files match)
 ```
 
+## Hidden files are counted, not silently dropped
+
+When `exclude-paths` drops a **file** from a result, the report line says so:
+
+```
+(2 results in 2 files, scanned 2 files, 10 files hidden by exclude-paths, limit 30)
+```
+
+`grep`, `glob`, `map` and `tree` all carry it. An exclusion that leaves no trace is indistinguishable from a file that was not there — the same silent-failure shape the `scanned N` denominator and the `TRUNCATED` marker exist to close. Credential files are why the list has file entries at all, but "your search skipped something" is yours to know, and `no-exclude` is one flag away.
+
+**Only credential entries are counted.** Build output, caches and VCS metadata — `.git`, `node_modules`, `__pycache__`, `dist/`, `.venv/` — are skipped in silence: a counter that is never zero is noise rather than disclosure, and nobody searching a repo meant those.
+
+The rule is **noise versus credential**, not file versus directory. Those two look identical until you are in a git **worktree**, where `.git` is a gitfile rather than a directory — so a file-versus-directory rule reported `1 files hidden by exclude-paths` on every single search in the tree, about a pointer file nobody was looking for ([#691](https://github.com/Digital-Process-Tools/claude-supertool/issues/691)). A number that is always `1` is one you stop reading, and then the search that says `2` because a real `.env` was hidden looks like all the others. Nothing is hidden any *less*: `.git` still never appears in a result.
+
+A project's own `exclude-paths` entries always count, whatever they match. Supertool cannot know whether one is noise or a credential; over-disclosure is the safe direction, and whoever added the pattern is the person most likely to want to know it fired.
+
 `grep:…:count` has no marker because it has no cap — it counts every match in every file, and its header (`N total matches across M files`) never claims a limit.
 
 ## Gitignored directories are skipped
@@ -59,7 +75,7 @@ The extra match costs no extra traversal. The whole tree is already walked to pr
 
 Only a walk that would have *descended into* an ignored tree is pruned. Deliberately entering one is not.
 
-**Scope, deliberately narrow:** only ignored **directories** are pruned. Ignored *files* elsewhere in the tree are still searched — the win is at the directory boundary, and `exclude-paths` already covers the secret-file case. And the prune is not a filter on results: it shrinks the walk, so `scanned N` drops with it and stays an honest denominator.
+**Scope, deliberately narrow:** only ignored **directories** are pruned. Ignored *files* elsewhere in the tree are still searched — the win is at the directory boundary, and the secret-file case belongs to [`exclude-paths`](../configuration.md#excluding-paths-from-traversal-ops), which does filter files. And the prune is not a filter on results: it shrinks the walk, so `scanned N` drops with it and stays an honest denominator.
 
 Three ways out, in descending scope:
 
@@ -90,6 +106,12 @@ rtk shells out to the system `grep` and reports no scanned-file count, and re-wa
 The report line carries the same `— TRUNCATED, more matches exist` disclosure as the native walker: rtk is asked for `limit + 1` matches and the extra one is trimmed before output.
 
 **Delegation is skipped when git ignores a directory the exclude list would still walk.** rtk shells out to the system `grep`, whose `--exclude-dir` takes bare directory names and cannot express a nested path like `.claude/worktrees/` — a delegated grep would return exactly the copies the native walker prunes, and which backend ran must never change the answer. The test is *residual*: an ignore set already covered by `exclude-paths` (a lone `node_modules/`, say) costs you nothing.
+
+**Excluded files are filtered on the way back, not just on the way out.** The argv is the optimisation; the post-filter is the guarantee. Whatever rtk hands back is re-filtered through the same matcher the native walker uses, so a grep that ignores `--exclude` — or an rtk release that rewrites the argv — still cannot leak ([#691](https://github.com/Digital-Process-Tools/claude-supertool/issues/691)). If the filter drops anything, the search is **redone natively**: the delegated header's count, its `limit + 1` truncation probe and its `?` denominator all describe the unfiltered result set, and a header describing a result set that no longer exists is exactly the kind of quiet lie the `?` was introduced to avoid.
+
+**Credential entries are deliberately withheld from the argv, so that redo fires.** Every single-segment entry sends `--exclude-dir=NAME`, but only **noise** entries (`.git`, `node_modules`, `dist`) also send `--exclude=NAME`. A credential entry sends the directory flag alone, so grep still returns the file, the post-filter drops it, and the redo produces a report that says `N files hidden by exclude-paths` ([#764](https://github.com/Digital-Process-Tools/claude-supertool/issues/764)). Sending `--exclude=.env` instead meant grep never opened the file, the post-filter never saw it, and the delegated report had nothing to disclose — so the disclosure was inverted against usefulness: honest whenever the flags failed, silent whenever they worked, which is the fast path and the common one. The count is the entire justification for hiding a file without asking, so the path that hides most often is the one that can least afford to skip it.
+
+**What that costs.** A second walk, and only when a credential-shaped file actually *matched* your pattern — an ordinary search in a repo that merely contains a `.env` still runs once, because grep opening a non-matching file returns nothing to drop. It was already the behaviour for the wildcard half (`*.pem`, `.env.*`, `id_rsa*`), which system grep cannot be handed at all: it has no way to express a negation like `!.env.example`, so when the effective list carries one, wildcard entries are withheld from the argv and left entirely to the post-filter. Directory flags are never withheld — a pruned directory is never opened, so the native walker has no files to count there either, and dropping `--exclude-dir` would cost the traversal win and buy no disclosure.
 
 Set `"rtk": false` in `.supertool.json` to keep every grep on the native walker and its exact scanned count; `SUPERTOOL_NO_RTK=1` does the same for one invocation.
 

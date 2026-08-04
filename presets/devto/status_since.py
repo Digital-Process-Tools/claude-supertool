@@ -15,7 +15,9 @@ import os
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent.parent))  # for _env (#654)
 sys.path.insert(0, str(Path(__file__).parent))
+from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 from _auth import get_api_key
 from _me import get_username
 from _outbound import my_comment_ids, read as read_outbound, replied_parent_ids, unique_article_ids
@@ -154,14 +156,14 @@ def main(arg: str) -> None:
     since = resolve_since(arg)
     now = _now_iso()
     api_key = get_api_key()
-    post_n = int(os.environ.get("SUPERTOOL_STATUS_POSTS", "10"))
+    post_n = env_int("SUPERTOOL_STATUS_POSTS", 10, minimum=1)
     articles = request("GET", "/articles/me/published", api_key, query={"per_page": post_n})
     if not isinstance(articles, list):
         articles = []
     me = get_username(api_key)
     comments_by_article: dict[int, list[dict]] = {}
     my_recent = 0
-    cap = int(os.environ.get("SUPERTOOL_STATUS_COMMENTS", "20"))
+    cap = env_int("SUPERTOOL_STATUS_COMMENTS", 20, minimum=1)
     own_aids = {a.get("id") for a in articles if a.get("id")}
     for a in articles:
         aid = a.get("id")

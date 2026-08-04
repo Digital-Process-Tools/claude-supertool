@@ -13,7 +13,7 @@ import json
 import sys
 import urllib.error
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -28,6 +28,23 @@ hn_gql = importlib.import_module("hashnode._graphql")
 FAKE_TOKEN = "hn_supersecret_token_xyz_dont_leak"
 
 
+class _FakeResp(io.BytesIO):
+    """A response double that can be read the way `_http.read_capped` reads.
+
+    A `MagicMock(read=lambda: body)` stopped modelling a response once bodies
+    became bounded (#766): the reader asks for a byte count and stops at EOF,
+    and a mock answers both with another mock. `io.BytesIO` gives `read`,
+    `read1` and `close` for free, which is the whole surface `read_capped`
+    touches.
+    """
+
+    def __enter__(self) -> "_FakeResp":
+        return self
+
+    def __exit__(self, *a) -> None:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # 1. GraphQL helper uses variables (not string-concat) → injection-safe
 # ---------------------------------------------------------------------------
@@ -40,12 +57,9 @@ def test_gql_passes_variables_as_separate_payload_field() -> None:
 
     def fake_urlopen(req, timeout=30):
         captured["body"] = req.data.decode()
-        ctx = MagicMock()
-        ctx.__enter__ = lambda s: MagicMock(read=lambda: b'{"data":{"ok":true}}')
-        ctx.__exit__ = lambda *a: None
-        return ctx
+        return _FakeResp(b'{"data":{"ok":true}}')
 
-    with patch("urllib.request.urlopen", fake_urlopen):
+    with patch("_http._OPEN", fake_urlopen):
         hn_gql.gql(
             "query Foo($slug: String!) { post(slug: $slug) { id } }",
             {"slug": "evil\"} mutation X { __typename"},
@@ -83,7 +97,7 @@ def test_known_http_errors_never_include_token(
     def fake_urlopen(*a, **k):
         raise err
 
-    with patch("urllib.request.urlopen", fake_urlopen):
+    with patch("_http._OPEN", fake_urlopen):
         with pytest.raises(SystemExit):
             hn_gql.gql("query{}", {}, FAKE_TOKEN)
     captured = capsys.readouterr()
@@ -112,7 +126,7 @@ def test_unknown_http_code_body_does_not_leak_token(capsys) -> None:
     def fake_urlopen(*a, **k):
         raise err
 
-    with patch("urllib.request.urlopen", fake_urlopen):
+    with patch("_http._OPEN", fake_urlopen):
         with pytest.raises(SystemExit):
             hn_gql.gql("query{}", {}, FAKE_TOKEN)
     captured = capsys.readouterr()
@@ -131,7 +145,7 @@ def test_network_error_does_not_leak_token(capsys) -> None:
     def fake_urlopen(*a, **k):
         raise urllib.error.URLError(f"refused: token was {FAKE_TOKEN}")
 
-    with patch("urllib.request.urlopen", fake_urlopen):
+    with patch("_http._OPEN", fake_urlopen):
         with pytest.raises(SystemExit):
             hn_gql.gql("query{}", {}, FAKE_TOKEN)
     captured = capsys.readouterr()
@@ -144,14 +158,9 @@ def test_network_error_does_not_leak_token(capsys) -> None:
 
 def test_bad_json_response_does_not_leak_token(capsys) -> None:
     def fake_urlopen(req, timeout=30):
-        ctx = MagicMock()
-        ctx.__enter__ = lambda s: MagicMock(
-            read=lambda: f"<html>not json — {FAKE_TOKEN}</html>".encode()
-        )
-        ctx.__exit__ = lambda *a: None
-        return ctx
+        return _FakeResp(f"<html>not json — {FAKE_TOKEN}</html>".encode())
 
-    with patch("urllib.request.urlopen", fake_urlopen):
+    with patch("_http._OPEN", fake_urlopen):
         with pytest.raises(SystemExit):
             hn_gql.gql("query{}", {}, FAKE_TOKEN)
     captured = capsys.readouterr()
@@ -176,12 +185,9 @@ def test_graphql_errors_message_does_not_leak_token(capsys) -> None:
     }).encode()
 
     def fake_urlopen(req, timeout=30):
-        ctx = MagicMock()
-        ctx.__enter__ = lambda s: MagicMock(read=lambda: body)
-        ctx.__exit__ = lambda *a: None
-        return ctx
+        return _FakeResp(body)
 
-    with patch("urllib.request.urlopen", fake_urlopen):
+    with patch("_http._OPEN", fake_urlopen):
         with pytest.raises(SystemExit):
             hn_gql.gql("query{}", {}, FAKE_TOKEN)
     captured = capsys.readouterr()

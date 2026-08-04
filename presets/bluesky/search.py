@@ -9,7 +9,9 @@ import os
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent.parent))  # for _env (#654)
 sys.path.insert(0, str(Path(__file__).parent))
+from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 from _atproto import get_session, xrpc
 from _auth import get_app_password, get_handle
 
@@ -20,7 +22,7 @@ def parse_args(arg: str) -> tuple[str, int]:
         sys.exit(2)
     parts = arg.split("|")
     query = parts[0]
-    default_n = int(os.environ.get("SUPERTOOL_DEFAULT_LIMIT", "10"))
+    default_n = env_int("SUPERTOOL_DEFAULT_LIMIT", 10, minimum=1)
     n = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else default_n
     return query, min(n, 100)
 

@@ -10,7 +10,9 @@ from pathlib import Path
 
 import pytest
 
+from _adapter_budget import adapter_budget
 from _winenv import empty_path_env
+from _adapter_verdict import assert_declined, assert_ok, verdict
 
 ADAPTER = Path(__file__).parent.parent / "validators" / "ruby-check" / "ruby-check.py"
 
@@ -32,13 +34,34 @@ def _run(file_path: str) -> dict:
             [sys.executable, str(ADAPTER), file_path],
             capture_output=True,
             text=True,
+            timeout=adapter_budget(ADAPTER),
         )
         if result.stdout.strip():
-            return json.loads(result.stdout)
+            return verdict(result, adapter="ruby-check")
     raise AssertionError(
         f"ruby-check adapter produced empty stdout (rc={result.returncode}); "
         f"stderr={result.stderr!r}"
     )
+
+
+def _assert_clean(out: dict) -> None:
+    """Assert the adapter found nothing, and say what it found when it did.
+
+    `assert out["ok"] is True` was the whole assertion, and on the one Windows
+    leg where it fired it disclosed exactly nothing (#658): `assert False is
+    True`. Triaging that needed two unrelated phplint tracebacks in the same
+    report to guess at a cause, and the guess was never confirmed. The
+    adapter always emits its reason in `errors` — this puts it where the
+    reader is, so the next occurrence identifies itself instead of needing
+    company.
+
+    #716 wrote that rendering here, by hand, for this file. #725 then found
+    the same bare assertion shipped in a file created by the same PR, so the
+    rendering moved to `_adapter_verdict` where any adapter test can reach it
+    — including the ones that do not exist yet. This wrapper stays for the
+    file-specific wording.
+    """
+    assert_ok(out, context="a Ruby file with nothing wrong with it")
 
 
 # ---------------------------------------------------------------------------
@@ -56,7 +79,7 @@ def test_missing_tool_graceful(tmp_path: Path) -> None:
         env=empty_path_env(),
     )
     out = json.loads(result.stdout)
-    assert out["ok"] is True
+    assert_ok(out)
     assert out["count"] == 0
     assert "ruby" in result.stderr.lower()
 
@@ -70,7 +93,7 @@ def test_valid_ruby(tmp_path: Path) -> None:
     f = tmp_path / "good.rb"
     f.write_text('def hello\n  puts "hello"\nend\n')
     out = _run(str(f))
-    assert out["ok"] is True
+    _assert_clean(out)
     assert out["count"] == 0
     assert out["tool"] == "ruby-check"
 
@@ -80,7 +103,7 @@ def test_valid_ruby_class(tmp_path: Path) -> None:
     f = tmp_path / "cls.rb"
     f.write_text("class Foo\n  def bar\n    42\n  end\nend\n")
     out = _run(str(f))
-    assert out["ok"] is True
+    _assert_clean(out)
 
 
 # ---------------------------------------------------------------------------
@@ -92,7 +115,7 @@ def test_invalid_ruby_syntax(tmp_path: Path) -> None:
     f = tmp_path / "bad.rb"
     f.write_text("def foo\n  puts 'unclosed\nend\n")
     out = _run(str(f))
-    assert out["ok"] is False
+    assert_declined(out)
     assert out["count"] >= 1
     assert len(out["errors"]) >= 1
 
@@ -102,7 +125,7 @@ def test_invalid_ruby_error_has_line(tmp_path: Path) -> None:
     f = tmp_path / "bad.rb"
     f.write_text("class Foo\n  def bar\n    end\n")  # missing class end
     out = _run(str(f))
-    assert out["ok"] is False
+    assert_declined(out)
     err = out["errors"][0]
     assert err["line"] is not None
     assert err["severity"] == "error"
@@ -121,7 +144,7 @@ def test_no_arg_returns_error() -> None:
         text=True,
     )
     out = json.loads(result.stdout)
-    assert out["ok"] is False
+    assert_declined(out)
     assert out["errors"][0]["code"] == "adapter"
 
 
@@ -151,7 +174,7 @@ def test_duration_ms_is_int(tmp_path: Path) -> None:
 @pytest.mark.skipif(not shutil.which("ruby"), reason="ruby not on PATH")
 def test_missing_file_returns_error(tmp_path: Path) -> None:
     out = _run(str(tmp_path / "nonexistent.rb"))
-    assert out["ok"] is False
+    assert_declined(out)
 
 
 @pytest.mark.skipif(not shutil.which("ruby"), reason="ruby not on PATH")
@@ -159,7 +182,7 @@ def test_source_context_present_on_error(tmp_path: Path) -> None:
     f = tmp_path / "bad.rb"
     f.write_text("class Foo\n  def bar\n    end\n")
     out = _run(str(f))
-    assert out["ok"] is False
+    assert_declined(out)
     err = out["errors"][0]
     assert err["line"] is not None
     assert "source_context" in err
@@ -198,7 +221,7 @@ def test_unexplained_nonzero_exit_with_empty_stderr_is_a_named_error(monkeypatch
     ruby_check.main()
     out = json.loads(capsys.readouterr().out)
 
-    assert out["ok"] is False
+    assert_declined(out)
     assert out["count"] >= 1, "an unexplained non-zero exit must be a named error, not a silent finding of nothing"
     assert out["errors"], "errors must not be empty when ok is False"
     assert out["errors"][0]["code"] == "adapter"

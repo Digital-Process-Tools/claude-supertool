@@ -84,7 +84,7 @@ def _stable_tail(out: str, n: int = 4) -> str:
 def test_zero_match_tail_is_distinguishable_from_applied_tail(tmp_path: Path, monkeypatch) -> None:
     """THE bug. Two calls, one that wrote and one that did not, read the same
     through `tail -4`."""
-    monkeypatch.setattr(supertool, "_current_branch", lambda: "my-feature")
+    monkeypatch.setattr(supertool, "_branch_reading", lambda: ("my-feature", ""))
     _noisy_validator(tmp_path)
     f = tmp_path / "x.txt"
     f.write_text("alpha\n")
@@ -98,16 +98,17 @@ def test_zero_match_tail_is_distinguishable_from_applied_tail(tmp_path: Path, mo
 
 
 def test_zero_match_tail_says_nothing_changed(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(supertool, "_current_branch", lambda: "my-feature")
+    monkeypatch.setattr(supertool, "_branch_reading", lambda: ("my-feature", ""))
     _noisy_validator(tmp_path)
     f = tmp_path / "x.txt"
     f.write_text("alpha\n")
     out = supertool.dispatch(f"replace:::NOPE_NOT_THERE:::x:::{f}")
-    assert "[result] 1 op run, 0 writes — nothing changed on disk" in _tail(out)
+    assert ("[result] 1 op run, 0 writes, 1 skipped — nothing changed on disk"
+            in _tail(out))
 
 
 def test_applied_tail_reports_the_write(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(supertool, "_current_branch", lambda: "my-feature")
+    monkeypatch.setattr(supertool, "_branch_reading", lambda: ("my-feature", ""))
     _noisy_validator(tmp_path)
     f = tmp_path / "x.txt"
     f.write_text("alpha\n")
@@ -118,12 +119,13 @@ def test_applied_tail_reports_the_write(tmp_path: Path, monkeypatch) -> None:
 
 def test_failed_edit_tail_says_nothing_changed(tmp_path: Path, monkeypatch) -> None:
     """An `ERROR:` receipt is equally above the validators block."""
-    monkeypatch.setattr(supertool, "_current_branch", lambda: "my-feature")
+    monkeypatch.setattr(supertool, "_branch_reading", lambda: ("my-feature", ""))
     _noisy_validator(tmp_path)
     f = tmp_path / "x.py"
     f.write_text("a = 1\n")
     out = supertool.dispatch(f"edit:::nope = 1:::a = 2:::{f}")
-    assert "[result] 1 op run, 0 writes — nothing changed on disk" in _tail(out)
+    assert ("[result] 1 op run, 0 writes, 1 skipped — nothing changed on disk"
+            in _tail(out))
 
 
 # ---------------------------------------------------------------------------
@@ -131,7 +133,7 @@ def test_failed_edit_tail_says_nothing_changed(tmp_path: Path, monkeypatch) -> N
 # ---------------------------------------------------------------------------
 
 def test_result_sits_directly_above_the_branch_line(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(supertool, "_current_branch", lambda: "my-feature")
+    monkeypatch.setattr(supertool, "_branch_reading", lambda: ("my-feature", ""))
     _noisy_validator(tmp_path)
     f = tmp_path / "x.txt"
     f.write_text("alpha\n")
@@ -144,7 +146,7 @@ def test_result_sits_directly_above_the_branch_line(tmp_path: Path, monkeypatch)
 def test_result_footer_survives_absence_of_a_branch(tmp_path: Path, monkeypatch) -> None:
     """Outside a repo there is no branch line, and the output would otherwise
     end on `[validators]` — the precise shape #621 is about."""
-    monkeypatch.setattr(supertool, "_current_branch", lambda: "")
+    monkeypatch.setattr(supertool, "_branch_reading", lambda: ("", ""))
     _noisy_validator(tmp_path)
     f = tmp_path / "x.txt"
     f.write_text("alpha\n")
@@ -157,7 +159,7 @@ def test_summary_stays_where_it_was(tmp_path: Path, monkeypatch) -> None:
     """The footer is additive. Moving the summary below `[validators]` would
     break every positional reader and every existing ordering assertion, so
     the detailed receipt must still precede the validators block."""
-    monkeypatch.setattr(supertool, "_current_branch", lambda: "my-feature")
+    monkeypatch.setattr(supertool, "_branch_reading", lambda: ("my-feature", ""))
     _noisy_validator(tmp_path)
     f = tmp_path / "x.txt"
     f.write_text("alpha\n")
@@ -172,7 +174,7 @@ def test_summary_stays_where_it_was(tmp_path: Path, monkeypatch) -> None:
 def test_batch_footer_distinguishes_ops_run_from_writes(tmp_path: Path, monkeypatch) -> None:
     """The #634 incident: one no-match in the middle of five successes. The
     footer alone has to expose it."""
-    monkeypatch.setattr(supertool, "_current_branch", lambda: "my-feature")
+    monkeypatch.setattr(supertool, "_branch_reading", lambda: ("my-feature", ""))
     _noisy_validator(tmp_path)
     f = tmp_path / "x.txt"
     f.write_text("alpha\nbeta\n")
@@ -188,7 +190,7 @@ def test_batch_footer_distinguishes_ops_run_from_writes(tmp_path: Path, monkeypa
 
 
 def test_batch_where_every_op_misses_says_nothing_changed(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(supertool, "_current_branch", lambda: "my-feature")
+    monkeypatch.setattr(supertool, "_branch_reading", lambda: ("my-feature", ""))
     _noisy_validator(tmp_path)
     f = tmp_path / "x.txt"
     f.write_text("alpha\n")
@@ -199,11 +201,12 @@ def test_batch_where_every_op_misses_says_nothing_changed(tmp_path: Path, monkey
     ]))
     out = supertool.dispatch(f"batch:@{payload}")
     assert f.read_text(encoding="utf-8") == "alpha\n"
-    assert "[result] 2 ops run, 0 writes — nothing changed on disk" in _tail(out)
+    assert ("[result] 2 ops run, 0 writes, 2 skipped — nothing changed on disk"
+            in _tail(out))
 
 
 def test_nested_batch_reports_one_footer(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(supertool, "_current_branch", lambda: "my-feature")
+    monkeypatch.setattr(supertool, "_branch_reading", lambda: ("my-feature", ""))
     f = tmp_path / "x.txt"
     f.write_text("a = 1\n")
     inner = tmp_path / "inner.json"
@@ -257,7 +260,7 @@ def test_read_ops_get_no_result_footer(tmp_path: Path, monkeypatch, arg: str) ->
     """A read op's own count line is already the last thing printed — nothing
     intervenes between it and end-of-output, so there is no lie to correct.
     A footer on every read would be pure noise on the highest-frequency path."""
-    monkeypatch.setattr(supertool, "_current_branch", lambda: "my-feature")
+    monkeypatch.setattr(supertool, "_branch_reading", lambda: ("my-feature", ""))
     f = tmp_path / "x.txt"
     f.write_text("alpha\n")
     assert "[result] " not in supertool.dispatch(arg.format(f=f)), arg
@@ -265,7 +268,7 @@ def test_read_ops_get_no_result_footer(tmp_path: Path, monkeypatch, arg: str) ->
 
 def test_replace_dry_gets_no_result_footer(tmp_path: Path, monkeypatch) -> None:
     """A preview writes nothing by design; `0 writes` would read as a failure."""
-    monkeypatch.setattr(supertool, "_current_branch", lambda: "my-feature")
+    monkeypatch.setattr(supertool, "_branch_reading", lambda: ("my-feature", ""))
     f = tmp_path / "x.txt"
     f.write_text("alpha\n")
     out = supertool.dispatch(f"replace_dry:::alpha:::gamma:::{f}")

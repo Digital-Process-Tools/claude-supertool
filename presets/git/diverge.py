@@ -8,24 +8,19 @@ log-A..B / log-B..A / diff--stat trio.
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 
 # Sibling import: runtime puts this dir on sys.path[0]; the test harness
 # loads scripts via importlib (no dir on path), so add it explicitly.
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _HERE)
+sys.path.insert(0, os.path.dirname(_HERE))  # for _env (#654)
 
-from _git_common import use_utf8_stdout  # noqa: E402
+from _git_common import _git, use_utf8_stdout  # noqa: E402
+from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 
 DEFAULT_BASE = "master"
 DEFAULT_MAX_COMMITS = 30
-
-
-def _git(args: list[str], timeout: int = 10) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["git"] + args,
-        capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace",
-    )
 
 
 def _resolve_base(arg: str) -> str:
@@ -48,7 +43,7 @@ def main() -> int:
 
     branch = sys.argv[1]
     base = _resolve_base(sys.argv[2] if len(sys.argv) > 2 else "")
-    max_commits = int(os.environ.get("SUPERTOOL_MAX_COMMITS", str(DEFAULT_MAX_COMMITS)))
+    max_commits = env_int("SUPERTOOL_MAX_COMMITS", DEFAULT_MAX_COMMITS, minimum=1)
 
     # Verify both refs exist
     for ref in (branch, base):

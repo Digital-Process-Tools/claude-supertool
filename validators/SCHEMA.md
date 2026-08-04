@@ -43,6 +43,24 @@ Consumers must branch on the presence of `skipped` before reading any verdict ke
 - the result is **not cached** (a skip is config-derived; the cache key is a content hash);
 - the result **never triggers rollback**, whatever `rollback_on_fail` says.
 
+### `adapter`: the reserved code for "no verdict was obtained"
+
+`code: "adapter"` is reserved across every adapter for a failure of the adapter or its tool rather than a finding about the file: a binary that is absent, a timeout, output that would not parse, a tool that exited non-zero without saying anything about the file. It stays a real error — `ok: false`, `count: 1` — because the process ran and something is broken that someone has to fix; a fault routed to `skipped` is a validator quietly reporting clean.
+
+Two consequences a consumer can rely on:
+
+- **The message names what failed**, including the exit code and the tool's raw output when there is any, and says so explicitly when there is none.
+- **The result is never cached.** `adapter` is in the core's `_NONDETERMINISTIC_ERROR_CODES`: a verdict that was never obtained is not a function of the file's content, and the cache key is a content hash, so caching one replays it until the file changes.
+
+Emit it whenever the tool's output does not confirm it looked at the file. Where the boundary is genuinely unclear, prefer the finding: an `adapter` result is fully legible to a reader, while a real finding relabelled `adapter` sends them to the wrong place. See `docs/validators.md`, "Declining instead of guessing".
+
+**What confirms it looked at the file is per-tool, and it is a located diagnostic, not the exit code** (#753). An adapter picks the marker out of its own tool's output format — `file:LINE:` (xmllint, ruby), `: line N:` (bash), a resolved-path header (node), `path:line:col:` (gofmt, cargo short format), `on <file> line N` (terraform). Two rules generalise from that sweep:
+
+- **Never take a location from the output at large.** Search anchored to the diagnostic, and where the tool prints the path it resolved, check it against the file. `node --check` reports a missing module by printing `node:internal/modules/cjs/loader:1386` first, and a bare `:(\d+)` search turned that into the file's syntax-error line.
+- **A finding you cannot place reports `line: null`.** Reclassifying and inventing a location are separate fixes; keeping a finding does not license borrowing a number for it.
+
+Where a tool documents distinct exit codes, read them — `terraform fmt -check` returns `3` for "needs formatting" and `2` for "I failed" — but the located diagnostic is still the marker, because an exit code alone cannot say *which* file it is about.
+
 ### Error object
 
 | Field            | Type             | Required | Notes                                              |

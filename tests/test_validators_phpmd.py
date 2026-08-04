@@ -10,16 +10,19 @@ from pathlib import Path
 
 import pytest
 
+from _adapter_budget import adapter_budget
+from _adapter_verdict import assert_declined, assert_ok
+
 PHPMD_PY = Path(__file__).parent.parent / "validators" / "phpmd" / "phpmd.py"
 
 
 def test_phpmd_no_arg_returns_schema_error() -> None:
     """Calling with no arg must emit a valid SCHEMA.md error dict and exit 0."""
-    r = subprocess.run([sys.executable, str(PHPMD_PY)], capture_output=True, text=True, timeout=10)
+    r = subprocess.run([sys.executable, str(PHPMD_PY)], capture_output=True, text=True, timeout=adapter_budget(PHPMD_PY))
     assert r.returncode == 0
     data = json.loads(r.stdout.strip())
     assert data["tool"] == "phpmd"
-    assert data["ok"] is False
+    assert_declined(data)
     assert "no file arg" in data["errors"][0]["msg"]
 
 
@@ -38,12 +41,12 @@ def test_phpmd_clean_output_parses_to_ok(tmp_path: Path) -> None:
     env = {**os.environ, "PHPMD_BIN": str(stub)}
     r = subprocess.run(
         [sys.executable, str(PHPMD_PY), str(f)],
-        capture_output=True, text=True, timeout=10, env=env,
+        capture_output=True, text=True, timeout=adapter_budget(PHPMD_PY), env=env,
     )
     assert r.returncode == 0
     data = json.loads(r.stdout.strip())
     assert data["tool"] == "phpmd"
-    assert data["ok"] is True
+    assert_ok(data)
     assert data["count"] == 0
     assert data["errors"] == []
 
@@ -64,12 +67,12 @@ def test_phpmd_parses_text_output(tmp_path: Path) -> None:
     env = {**os.environ, "PHPMD_BIN": str(stub)}
     r = subprocess.run(
         [sys.executable, str(PHPMD_PY), str(f)],
-        capture_output=True, text=True, timeout=10, env=env,
+        capture_output=True, text=True, timeout=adapter_budget(PHPMD_PY), env=env,
     )
     assert r.returncode == 0
     data = json.loads(r.stdout.strip())
     assert data["tool"] == "phpmd"
-    assert data["ok"] is False
+    assert_declined(data)
     assert data["count"] == 1
     err = data["errors"][0]
     assert err["line"] == 3
@@ -85,7 +88,7 @@ def test_phpmd_live_clean_php(tmp_path: Path) -> None:
     f.write_text("<?php\nfunction add(int $a, int $b): int { return $a + $b; }\n")
     r = subprocess.run(
         [sys.executable, str(PHPMD_PY), str(f)],
-        capture_output=True, text=True, timeout=30,
+        capture_output=True, text=True, timeout=adapter_budget(PHPMD_PY),
     )
     assert r.returncode == 0
     data = json.loads(r.stdout.strip())
