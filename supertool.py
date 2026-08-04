@@ -490,6 +490,83 @@ def _shipped_preset_ops() -> Dict[str, str]:
     return index
 
 
+# Ops that accept a repo target, op name -> how it is named. Populated lazily.
+#   "op"      — honours a leading `repo:OWNER/NAME` op (#673)
+#   "payload" — takes the target in its own payload instead
+_REPO_TARGET_MODES: Dict[str, str] | None = None
+
+
+def _repo_target_modes() -> Dict[str, str]:
+    """Map every op that can be pointed at a repo to how it is pointed there.
+
+    Read from the same shipped ``presets/*.json`` as ``_shipped_preset_ops``,
+    for the same reason: it describes the installed build, so it is usable as
+    evidence about what this binary can do rather than about what the cwd
+    happens to enable.
+
+    An op absent from this map cannot be repo-targeted at all. That absence is
+    load-bearing — it is what lets a `repo:` op refuse a call it could only
+    have affected half of, instead of being quietly dropped for the other ops.
+    """
+    global _REPO_TARGET_MODES
+    if _REPO_TARGET_MODES is not None:
+        return _REPO_TARGET_MODES
+    modes: Dict[str, str] = {}
+    preset_dir = os.path.join(_INSTALL_DIR, "presets")
+    try:
+        entries = sorted(os.listdir(preset_dir))
+    except OSError:
+        entries = []
+    for fname in entries:
+        if not fname.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(preset_dir, fname), encoding="utf-8") as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        preset_ops = data.get("ops")
+        if not isinstance(preset_ops, dict):
+            continue
+        for op_name, op_def in preset_ops.items():
+            if not isinstance(op_name, str) or not isinstance(op_def, dict):
+                continue
+            declared = op_def.get("repo_target")
+            if declared is True:
+                modes.setdefault(op_name, "op")
+            elif isinstance(declared, str) and declared:
+                modes.setdefault(op_name, declared)
+    _REPO_TARGET_MODES = modes
+    return modes
+
+
+def _repo_target_ops() -> set[str]:
+    """Ops that honour a leading ``repo:OWNER/NAME``."""
+    return {op for op, mode in _repo_target_modes().items() if mode == "op"}
+
+
+def _repo_refusal(op: str) -> str:
+    """Why this call cannot carry a ``repo:`` op, and what to do instead.
+
+    Named rather than generic, because the two reasons have different fixes: an
+    op with its own payload key wants the target moved, an op with no repo
+    dimension at all wants the target dropped or the call split.
+    """
+    if _repo_target_modes().get(op) == "payload":
+        return (
+            f"repo: {op!r} takes its repo target in the payload "
+            f'(repo = "OWNER/NAME"), not from a repo: op — so there is one '
+            f"place the target comes from. Set it there and drop the repo: op.\n"
+        )
+    return (
+        f"repo: {op!r} cannot be pointed at a repo, so a repo: op in this call "
+        f"would apply to some ops and be silently ignored by this one. Drop "
+        f"the repo: op, or give the repo-scoped ops a call of their own.\n"
+    )
+
+
 def _presets_not_loaded_here() -> List[str]:
     """Shipped preset names the active config does not enable, sorted."""
     config = _load_config()
@@ -16344,6 +16421,54 @@ def _main(argv: List[str]) -> int:
             "       supertool 'read:file.py' 'grep:foo:src/:20' 'glob:**/*.md'\n"
         )
         return 1
+
+    # repo:OWNER/NAME — name the repo this call's repo-scoped ops are about,
+    # instead of deriving it from the cwd's git remote (#673). Consumed in the
+    # pre-pass like cwd: and --plain: exported as SUPERTOOL_REPO, which every
+    # preset subprocess inherits, then stripped before dispatch.
+    #
+    # A leading op rather than a trailing `…:repo=OWNER/NAME` token, because the
+    # suffix grammar in this family is not free: `gh-job:ID:grep:PATTERN` takes
+    # an arbitrary regex in that position, so a trailing scan would silently
+    # steal a legitimate `grep:repo=x` log search, and `gh-prs` already spells
+    # its filters `key=value` inside one comma-separated token — a second,
+    # colon-separated `key=` grammar in the same family would be two rules for
+    # one idea. Position mirrors cwd:: first, or immediately after it, so the
+    # two read in the order they apply ("stand here, ask about that").
+    repo_positions = [i for i, a in enumerate(argv)
+                      if a.split(":", 1)[0] == "repo"]
+    if repo_positions:
+        if len(repo_positions) > 1:
+            sys.stderr.write("repo: only one repo: op is allowed per call\n")
+            return 1
+        first_allowed = 1 if argv[0].split(":", 1)[0] == "cwd" else 0
+        if repo_positions != [first_allowed]:
+            sys.stderr.write(
+                "repo: must be the first op, or immediately after cwd: "
+                "(repo:OWNER/NAME op1 op2 ...)\n")
+            return 1
+        spec = argv[first_allowed]
+        repo_target = spec.split(":", 1)[1].strip() if ":" in spec else ""
+        if repo_target.count("/") != 1 or not all(repo_target.split("/")):
+            sys.stderr.write(
+                f"repo: expected OWNER/NAME, got {repo_target!r} "
+                "(e.g. repo:Digital-Process-Tools/claude-remember)\n")
+            return 1
+        rest = argv[:first_allowed] + argv[first_allowed + 1:]
+        targetable = _repo_target_ops()
+        # A leading cwd: survives in `rest` and is another pre-pass op, not a
+        # dispatch one — it is where the call stands, never what it is about,
+        # so it is exempt from the targetable check rather than refused by it.
+        blocked = [a.split(":", 1)[0] for a in rest
+                   if a.split(":", 1)[0] not in targetable
+                   and a.split(":", 1)[0] != "cwd"]
+        if blocked:
+            sys.stderr.write(_repo_refusal(blocked[0]))
+            return 1
+        os.environ["SUPERTOOL_REPO"] = repo_target
+        argv = rest
+        if not argv:
+            return 0
 
     # cwd:PATH — must be the FIRST op. chdir once before any dispatch so every
     # remaining op resolves against PATH (mirrors `cd PATH && …`), then strip

@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import _repo_target  # noqa: E402  (the repo this call is about, when not the cwd's)
 
 
 def _local_branch_check(source: str) -> str:
@@ -35,9 +40,11 @@ def _format_error(stderr: str, resource: str, identifier: str) -> str:
     """Classify gh errors into actionable messages for LLMs."""
     s = stderr.lower()
     if "github host" in s or "not a git repository" in s or "git remotes" in s:
-        return f"ERROR: cwd is not a GitHub repo. cd into a GitHub-cloned repo, or run gh directly with --repo OWNER/REPO."
+        return _repo_target.no_repo_error("gh-run:12345")
     if "could not resolve" in s or "404" in s or "not found" in s:
-        return f"ERROR: {resource} #{identifier} not found. Check the ID or verify you're in the right repo (gh repo view)."
+        return (f"ERROR: {resource} #{identifier} not found "
+                f"{_repo_target.not_found_scope()}. "
+                f"{_repo_target.not_found_hint()}")
     if "401" in s or "unauthorized" in s or "not logged in" in s or "token" in s:
         return f"ERROR: gh CLI not authenticated. Run: gh auth login (verify with: gh auth status)"
     if "rate limit" in s or "429" in s:
@@ -59,7 +66,7 @@ def main() -> int:
         result = subprocess.run(
             ["gh", "run", "view", run_id, "--json",
              "databaseId,name,status,conclusion,event,headBranch,"
-             "createdAt,updatedAt,url,jobs"],
+             "createdAt,updatedAt,url,jobs"] + _repo_target.gh_args(),
             capture_output=True, text=True, timeout=15, encoding="utf-8", errors="replace",
         )
     except FileNotFoundError:

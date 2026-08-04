@@ -588,6 +588,9 @@ RESET_EXEMPT_GLOBALS = (
     # install, not of the run — clearing it per test would only re-read the
     # same ten files and imply a lifetime it does not have.
     "_SHIPPED_PRESET_OPS",
+    # Which shipped ops accept a repo target, read from the same manifests
+    # (#673). Same lifetime and same reasoning as _SHIPPED_PRESET_OPS above.
+    "_REPO_TARGET_MODES",
     "_EXT_FAMILIES",
     "_FORMATTER_CONFIG_MARKERS",
     "_NONDETERMINISTIC_ERROR_CODES",

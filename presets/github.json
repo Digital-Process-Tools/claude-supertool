@@ -5,27 +5,31 @@
     "gh-issue": {
       "cmd": "{python} {path}github/issue.py {args}",
       "timeout": 30,
-      "description": "GitHub issue: desc, comments, images, linked PRs. :full = no truncation, all comments",
-      "syntax": "gh-issue:NUMBER[:full]"
+      "description": "GitHub issue: desc, comments, images, linked PRs. :full = no truncation, all comments. Targets another repo with a leading repo:OWNER/NAME op.",
+      "syntax": "gh-issue:NUMBER[:full]",
+      "repo_target": true
     },
     "gh-issue-create": {
       "cmd": "{python} {path}github/issue_create.py {arg}",
       "timeout": 30,
       "description": "Create a GitHub issue from a JSON/TOML payload file. Supports labels, assignees, and milestone (by title).",
       "syntax": "gh-issue-create:@FILE",
-      "example": "gh-issue-create:@.max/new-issue.json"
+      "example": "gh-issue-create:@.max/new-issue.json",
+      "repo_target": "payload"
     },
     "gh-pr": {
       "cmd": "{python} {path}github/pr.py {args}",
       "timeout": 20,
-      "description": "Review a pull request: branch, checks, reviews/approval, linked issue, diff stat, comments \u2014 the full dashboard. A truncated description says so twice \u2014 in the header and at the cut \u2014 with the exact char count withheld; :full uncaps it. :status = slim merge-state only (~250B, fits hook cache).",
-      "syntax": "gh-pr:NUMBER_OR_BRANCH[:status|:full]"
+      "description": "Review a pull request: branch, checks, reviews/approval, linked issue, diff stat, comments — the full dashboard. A truncated description says so twice — in the header and at the cut — with the exact char count withheld; :full uncaps it. :status = slim merge-state only (~250B, fits hook cache).",
+      "syntax": "gh-pr:NUMBER_OR_BRANCH[:status|:full]",
+      "repo_target": true
     },
     "gh-prs": {
       "cmd": "{python} {path}github/prs.py {args}",
       "timeout": 60,
       "description": "PR triage board: list PRs (default author=@me), sorted failing-first. Per PR: check rollup (failed\u2192check name), approval (reviewDecision), age, diff size, watch-state, draft/conflict/threads flags + actionable footer. Filters (comma-sep): author/reviewer/assignee/label/state. Flags: nopipe (skip review-thread enrichment), iids, failed. The core board is one gh call; review threads enrich in parallel.",
       "syntax": "gh-prs[:author=@me,reviewer=@me,state=open,failed,nopipe,iids]",
+      "repo_target": true,
       "enrich_workers": 8,
       "enrich_cap": 40,
       "per_page": 50
@@ -33,14 +37,16 @@
     "gh-run": {
       "cmd": "{python} {path}github/run.py {arg}",
       "timeout": 15,
-      "description": "What passed, what failed? Workflow run jobs with statuses and failed step names.",
-      "syntax": "gh-run:NUMBER"
+      "description": "What passed, what failed? Workflow run jobs with statuses and failed step names. Targets another repo with a leading repo:OWNER/NAME op.",
+      "syntax": "gh-run:NUMBER",
+      "repo_target": true
     },
     "gh-job": {
       "cmd": "{python} {path}github/job.py {args}",
       "timeout": 30,
       "description": "Why did this job fail? PR context + error pattern search + log tail. :fail (alias :errors) = matched failure blocks only, no tail — the tight triage view, per-job patterns; :raw dumps full trace; :raw:START[:END] slices lines (1-indexed, inclusive); :raw:-N is the last N lines; a START past the end returns the tail of the width requested and says so rather than declining; :grep:PATTERN ad-hoc regex over the log (literal fallback, context, tail on no-match; emission budgeted by GH_JOB_GREP_MAX_BYTES, default 65536 — a capped view says so in its header AND footer with an exact 'N of M matching lines shown' and names bytes, not a match limit, as what cut)",
       "syntax": "gh-job:NUMBER[:fail|:raw[:-N|:START[:END]]|:grep:PATTERN]",
+      "repo_target": true,
       "lines": 80,
       "error_patterns": "ERROR,FAILED,Error:,Failed,fatal:,##[error]",
       "error_context": 5
