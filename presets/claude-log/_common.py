@@ -3,7 +3,11 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # for _secrets (#760)
+import _secrets  # noqa: E402
 
 
 def encode_cwd(cwd: str) -> str:
@@ -107,11 +111,68 @@ def read_jsonl(path: Path):
 
 
 def trunc(s: str, n: int) -> str:
-    """Truncate a string with an ellipsis if it exceeds n chars."""
+    """Truncate a string with an ellipsis if it exceeds n chars.
+
+    Deliberately does NOT redact. #760 named this function as one of four
+    leaking surfaces, but it is a formatter, not a surface — its callers are.
+    Redacting here would be invisible from any call site, would double-count
+    values that pass through twice, and would run AFTER the caller had already
+    chosen what to print. Callers redact first, then truncate: truncating
+    first can cut a key in half and leave its head in the output, which reads
+    as safe and is not.
+    """
     if s is None:
         return ""
     s = str(s).replace("\n", " ").replace("\r", " ")
     return s if len(s) <= n else s[: n - 1] + "…"
+
+
+def wants_raw(args) -> bool:
+    """True when the caller passed the `raw` token, opting out of redaction.
+
+    Accepted in any argument position so it composes with the optional numeric
+    argument the ops already take: `UUID:50:raw` and `UUID:raw` both work.
+    """
+    return any(str(a).strip().lower() == "raw" for a in args)
+
+
+class Redactor:
+    """Applies `_secrets.redact` to every string an op is about to print, and
+    keeps the running count that the disclosure line reports.
+
+    Disabled (`raw`) it is the identity function, so the pre-#760 verbatim
+    contract is one keystroke away rather than gone.
+    """
+
+    def __init__(self, enabled: bool = True) -> None:
+        self.enabled = enabled
+        self.count = 0
+
+    def __call__(self, s):
+        if s is None:
+            return ""
+        if not self.enabled:
+            return s
+        out, n = _secrets.redact(s)
+        self.count += n
+        return out
+
+    def note(self, count=None) -> str:
+        """Disclosure line, or "" when nothing was redacted.
+
+        `count` overrides the running total. tail.py needs that: it redacts
+        while building every line, then prints only the last N, so the running
+        total can promise markers that were scrolled off. Reporting a number
+        larger than what is on screen is its own small lie.
+        """
+        if not self.enabled:
+            return ""
+        return _secrets.disclosure(self.count if count is None else count)
+
+    @staticmethod
+    def markers_in(text: str) -> int:
+        """How many redaction markers a rendered chunk actually contains."""
+        return text.count(_secrets.MARKER_PREFIX)
 
 
 def event_role(d: dict) -> str:

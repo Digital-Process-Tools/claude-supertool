@@ -11,11 +11,15 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _common import event_content_parts, project_dir, read_jsonl, trunc  # noqa: E402
+from _common import Redactor, event_content_parts, project_dir, read_jsonl, trunc, wants_raw  # noqa: E402
 
 
-def first_user_excerpt(path: Path, max_chars: int = 100) -> str:
-    """Find the first user-typed text in a session, skipping system prompts."""
+def first_user_excerpt(path: Path, red: Redactor, max_chars: int = 100) -> str:
+    """Find the first user-typed text in a session, skipping system prompts.
+
+    Redacts before truncating — the excerpt cap would otherwise decide how much
+    of a pasted key survives into the listing.
+    """
     for ev in read_jsonl(path):
         # Skip queue-operation entries (system bootstrap content)
         if ev.get("type") == "queue-operation":
@@ -30,7 +34,7 @@ def first_user_excerpt(path: Path, max_chars: int = 100) -> str:
                 if txt.startswith("<") or txt.startswith("# "):
                     continue
                 if txt.strip():
-                    return trunc(txt.strip(), max_chars)
+                    return trunc(red(txt.strip()), max_chars)
     return ""
 
 
@@ -54,8 +58,11 @@ def turn_count(path: Path) -> int:
 
 def main() -> int:
     limit = 10
-    if len(sys.argv) > 1 and sys.argv[1].isdigit():
-        limit = int(sys.argv[1])
+    for a in sys.argv[1:]:
+        if a.isdigit():
+            limit = int(a)
+            break
+    red = Redactor(enabled=not wants_raw(sys.argv[1:]))
 
     pdir = project_dir()
     if not pdir.exists():
@@ -72,19 +79,28 @@ def main() -> int:
         print(f"No sessions found in {pdir}")
         return 0
 
-    print(f"Project: {pdir}")
-    print(f"Showing {len(sessions)} most recent sessions (of {len(list(pdir.glob('*.jsonl')))})")
-    print()
-    print(f"{'UUID':<36}  {'When':<19}  {'Turns':>5}  {'Lines':>6}  First user message")
-    print(f"{'-' * 36}  {'-' * 19}  {'-' * 5}  {'-' * 6}  {'-' * 60}")
-
+    # Rows are built before anything is printed: the disclosure line belongs in
+    # the header, and its count is only known once every excerpt has been
+    # scanned. A footer would be scrolled past on a long listing.
+    rows: list[str] = []
     for sp in sessions:
         uuid = sp.stem
         mtime = datetime.fromtimestamp(sp.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
         lines = line_count(sp)
         turns = turn_count(sp)
-        excerpt = first_user_excerpt(sp)
-        print(f"{uuid}  {mtime}  {turns:>5}  {lines:>6}  {excerpt}")
+        excerpt = first_user_excerpt(sp, red)
+        rows.append(f"{uuid}  {mtime}  {turns:>5}  {lines:>6}  {excerpt}")
+
+    print(f"Project: {pdir}")
+    print(f"Showing {len(sessions)} most recent sessions (of {len(list(pdir.glob('*.jsonl')))})")
+    note = red.note()
+    if note:
+        print(note)
+    print()
+    print(f"{'UUID':<36}  {'When':<19}  {'Turns':>5}  {'Lines':>6}  First user message")
+    print(f"{'-' * 36}  {'-' * 19}  {'-' * 5}  {'-' * 6}  {'-' * 60}")
+    for row in rows:
+        print(row)
 
     return 0
 
