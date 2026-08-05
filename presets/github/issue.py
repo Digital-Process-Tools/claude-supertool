@@ -102,32 +102,128 @@ def _linked_prs_unknown(reason_lines: list) -> None:
     print(f"{chr(10)}Linked PRs: unknown — could not query ({reason})")
 
 
-def _print_linked_prs(iid: object) -> None:
+# Aliased in a single-issue GraphQL call. Generous relative to `gh-issues`'
+# `first: 5`: that op caps hard because it multiplies across a whole board's
+# worth of issues per call, but this op is answering about the one issue a
+# reader named, and probably wants the complete list. A cap that is hit is
+# reported rather than silently truncated (#780).
+CLOSING_PR_LIMIT = 20
+
+
+def _owner_repo(web_url: str) -> tuple[str, str] | None:
+    """(owner, name) for the GraphQL query. A repo target wins; else the issue's own URL.
+
+    `gh pr list` resolved the repo implicitly from the cwd's git remote via
+    `--repo`; `gh api graphql` has no such flag; the owner/name has to be in
+    the query text itself. The issue JSON always carries its own `url`, so
+    this costs no extra call and cannot disagree with the issue being shown.
+    """
+    target = _repo_target.owner_repo()
+    if target is not None:
+        return target
+    parts = web_url.split("/")
+    if len(parts) < 5:
+        return None
+    # Host equality, not a suffix test: `endswith("github.com")` also accepts
+    # `evilgithub.com`, so a hostile URL would resolve owner/name from a
+    # lookalike host and this would query the wrong repository while looking
+    # like it answered about the right one. The `.github.com` arm keeps
+    # Enterprise subdomains working. Flagged by CodeQL as
+    # py/incomplete-url-substring-sanitization.
+    host = parts[2].lower()
+    if host == "github.com" or host.endswith(".github.com"):
+        return parts[3], parts[4]
+    return None
+
+
+def _closing_prs_query(owner: str, name: str, number: object) -> str:
+    """GraphQL for "is a PR going to close this" — matches `gh-issues` (#782).
+
+    Not `gh pr list --search`, which matched the number anywhere in a PR's
+    text: a body that only mentions the issue ("unlike #761, this one…")
+    scored the same as a real closer (#780 item 2, measured live: #774
+    reported as linked to #770 when it only mentions it while closing #760).
+
+    `includeClosedPrs: true` is load-bearing: without it a *merged* closer
+    disappears, which is #780 item 3 measured live — `gh pr list --search`
+    defaults to open-only, so `gh-issue:778` reported "none" while #781
+    (MERGED) is the PR that actually closed it.
+    """
+    return (
+        f'query {{ repository(owner: "{owner}", name: "{name}") {{ '
+        f'issue(number: {number}) {{ '
+        f'closedByPullRequestsReferences(first: {CLOSING_PR_LIMIT}, includeClosedPrs: true) '
+        '{ nodes { number title state headRefName } } } } }'
+    )
+
+
+def _closing_pr_nodes(payload: object) -> list[dict] | None:
+    """Pull the closer PRs out of the GraphQL envelope.
+
+    `None` at any level — not a dict, missing key, explicit null — means the
+    lookup could not answer, distinct from an answered empty list. Mirrors
+    `_closing_prs` in `presets/github/issues.py` (#782), same vocabulary.
+    """
+    if not isinstance(payload, dict):
+        return None
+    repo = (payload.get("data") or {}).get("repository")
+    if not isinstance(repo, dict):
+        return None
+    issue_node = repo.get("issue")
+    if not isinstance(issue_node, dict):
+        return None
+    refs = issue_node.get("closedByPullRequestsReferences")
+    if not isinstance(refs, dict):
+        return None
+    nodes = refs.get("nodes")
+    if nodes is None:
+        return None
+    return [n for n in nodes if isinstance(n, dict)]
+
+
+def _print_linked_prs(iid: object, web_url: str = "") -> None:
     """Render the linked-PR section for an issue."""
+    owner_name = _owner_repo(web_url)
+    if owner_name is None:
+        _linked_prs_unknown(["could not determine owner/repo for the linked-PR lookup"])
+        return
+    owner, name = owner_name
+    query = _closing_prs_query(owner, name, iid)
+
     try:
-        pr_result = _gh([
-            "pr", "list", "--search", str(iid), "--json",
-            "number,title,state,headRefName", "--limit", "5"
-        ])
-        if pr_result.returncode == 0:
-            prs = json.loads(pr_result.stdout)
-            if prs:
-                print(f"{chr(10)}Linked PRs: {len(prs)}")
-                for pr in prs:
-                    pr_num = pr.get("number", "?")
-                    pr_title = pr.get("title", "?")
-                    pr_state = pr.get("state", "?")
-                    pr_branch = pr.get("headRefName", "?")
-                    print(f"  #{pr_num} ({pr_state}) {pr_title}")
-                    print(f"    branch: {pr_branch}")
-            else:
-                print(f"{chr(10)}Linked PRs: none")
-        else:
-            _linked_prs_unknown(pr_result.stderr.strip().splitlines()[:1])
+        result = _gh(["api", "graphql", "-f", f"query={query}"], timeout=15)
+        if result.returncode != 0:
+            _linked_prs_unknown(
+                result.stderr.strip().splitlines()[:1] or ["gh api graphql failed"]
+            )
+            return
+        payload = json.loads(result.stdout)
     except subprocess.TimeoutExpired:
-        _linked_prs_unknown(["gh pr list timed out"])
+        _linked_prs_unknown(["gh api graphql timed out"])
+        return
     except json.JSONDecodeError:
-        _linked_prs_unknown(["gh pr list returned output that is not JSON"])
+        _linked_prs_unknown(["gh api graphql returned output that is not JSON"])
+        return
+
+    nodes = _closing_pr_nodes(payload)
+    if nodes is None:
+        _linked_prs_unknown(["gh api graphql returned an unexpected shape"])
+        return
+
+    if not nodes:
+        print(f"{chr(10)}Linked PRs: none")
+        return
+
+    print(f"{chr(10)}Linked PRs: {len(nodes)}")
+    for pr in nodes:
+        pr_num = pr.get("number", "?")
+        pr_title = pr.get("title", "?")
+        pr_state = pr.get("state", "?")
+        pr_branch = pr.get("headRefName", "?")
+        print(f"  #{pr_num} ({pr_state}) {pr_title}")
+        print(f"    branch: {pr_branch}")
+    if len(nodes) == CLOSING_PR_LIMIT:
+        print(f"    (showing the first {CLOSING_PR_LIMIT} — there may be more)")
 
 
 def main() -> int:
@@ -196,7 +292,7 @@ def main() -> int:
         # stops at the top must still see it (#681).
         print(_body.header_notice(body, body_total, body_withheld))
 
-    _print_linked_prs(iid)
+    _print_linked_prs(iid, web_url)
 
     # Description
     all_image_urls = _extract_image_urls(body)

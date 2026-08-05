@@ -14,10 +14,14 @@ Same class as #414, #445/#454, #459, #477/#482, #487, #486: an absence produced
 by the tool, read as an absence in the world. `docs/validators.md` §"Declining
 instead of guessing" — three states, not two.
 
-Scope: item 1 only. Item 2 (the lookup uses a full-text `--search`, so prose
-matching the number counts as a link) is a separate defect on the same lines,
-re-scoped on the issue after measurement — the fix there is
-`closedByPullRequestsReferences`, not the timeline.
+Scope: item 1 only. Items 2 and 3 (the lookup used a full-text `--search`
+that both over-matched prose and, via its open-only default, under-matched
+merged closers) are covered separately in
+test_github_issue_linked_prs_search_wrong_780_items_2_3.py — the fix there is
+`closedByPullRequestsReferences(includeClosedPrs: true)`, not the timeline.
+That fix changed the shape of the stubbed `gh` response the tests below use
+(GraphQL envelope, not a `pr list --json` array); the three-state contract
+itself is unchanged.
 """
 from __future__ import annotations
 
@@ -38,12 +42,18 @@ issue = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(issue)
 
 
+# A resolvable owner/repo so these tests exercise the `gh` failure paths
+# themselves, not the owner/repo resolution added for #780 items 2/3 (that
+# has its own coverage in test_github_issue_linked_prs_search_wrong_780_items_2_3.py).
+WEB_URL = "https://github.com/Digital-Process-Tools/claude-supertool/issues/42"
+
+
 def _linked_section(monkeypatch, gh_behaviour) -> str:
-    """Render just the linked-PR section, with `gh pr list` stubbed."""
+    """Render just the linked-PR section, with `gh api graphql` stubbed."""
     monkeypatch.setattr(issue, "_gh", gh_behaviour)
     buf = io.StringIO()
     with redirect_stdout(buf):
-        issue._print_linked_prs(42)
+        issue._print_linked_prs(42, WEB_URL)
     return buf.getvalue()
 
 
@@ -90,10 +100,17 @@ def test_a_genuine_empty_result_still_says_none(monkeypatch) -> None:
     This passes against the broken code too — deliberately. It is here so that
     a fix cannot satisfy the tests above by simply never saying 'none' again,
     which would trade one wrong answer for another.
+
+    Payload shape is the GraphQL envelope (#780 items 2/3 moved the lookup off
+    `gh pr list`), not the old `pr list --json` array — the three-state
+    contract this file tests is unchanged, only the data source is.
     """
+    empty = json.dumps({"data": {"repository": {"issue": {
+        "closedByPullRequestsReferences": {"nodes": []}
+    }}}})
     out = _linked_section(
         monkeypatch,
-        lambda *a, **k: SimpleNamespace(returncode=0, stdout="[]", stderr=""),
+        lambda *a, **k: SimpleNamespace(returncode=0, stdout=empty, stderr=""),
     )
 
     assert "none" in out.lower()
@@ -102,9 +119,11 @@ def test_a_genuine_empty_result_still_says_none(monkeypatch) -> None:
 
 def test_a_populated_result_still_lists_the_prs(monkeypatch) -> None:
     """The other control: the happy path is unchanged."""
-    payload = json.dumps([
-        {"number": 99, "title": "a fix", "state": "OPEN", "headRefName": "b"},
-    ])
+    payload = json.dumps({"data": {"repository": {"issue": {
+        "closedByPullRequestsReferences": {"nodes": [
+            {"number": 99, "title": "a fix", "state": "OPEN", "headRefName": "b"},
+        ]}
+    }}}})
     out = _linked_section(
         monkeypatch,
         lambda *a, **k: SimpleNamespace(returncode=0, stdout=payload, stderr=""),
