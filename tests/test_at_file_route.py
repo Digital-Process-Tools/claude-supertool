@@ -230,6 +230,153 @@ class TestFieldsFromSyntax:
 
 
 # ---------------------------------------------------------------------------
+# #770 — a syntax-string edit can silently delete an op's @payload route.
+#
+# _fields_from_syntax's identifier guard is correct: a syntax string carrying
+# prose or punctuation must not register a route no payload key could match.
+# But `syntax` reads like a documentation field (it's rendered by `ops`), so
+# editing it for clarity is the most natural thing in the world — and when
+# the edit turns a clean field name into prose, the route disappears with no
+# error, no warning, and a suite that stays green, because nothing pinned
+# that the route existed. This is what almost happened to git-commit's
+# @payload route while writing #751.
+#
+# Two tests, two different jobs:
+#   - TestPayloadRoutePin pins the real, shipped registry (built from this
+#     repo's actual .supertool.json + presets/*.json) against a frozen
+#     expectation, so a future syntax edit that adds/removes a route fails
+#     right here, naming the op — the signal #751's near-miss didn't have.
+#   - TestDroppedRouteDiagnostic proves the mechanism that failure message
+#     leans on: _AT_FILE_DROPPED_ROUTES distinguishes "no ':::' in syntax"
+#     (a read-only op, correct and common) from "':::' is there but the
+#     guard discarded it" (suspicious — usually an edit, not a design). It
+#     reproduces the #751 scenario directly: take git-commit's real syntax
+#     string and add exactly the kind of clarifying parenthetical that
+#     incident added, and show the new field lights up.
+# ---------------------------------------------------------------------------
+
+class TestPayloadRoutePin:
+    """Pins which real ops have a @payload (@file) route today.
+
+    If this test fails because you *intentionally* changed an op's payload
+    fields (added one, renamed one, removed the route entirely): update
+    EXPECTED_PAYLOAD_ROUTES to match and say so in the commit — that is this
+    test doing its job, not a bug in it. If you did NOT mean to touch a
+    payload route, the failure message names which op(s) changed and — via
+    supertool._at_file_dropped_routes() — whether a ':::'-bearing syntax
+    string had its fields silently discarded, which is the #770 near-miss.
+    """
+
+    EXPECTED_PAYLOAD_ROUTES: dict = {
+        "edit":          [("old", False, False), ("new", False, False), ("path", False, False)],
+        "replace":       [("old", False, False), ("new", False, False), ("path", False, False)],
+        "replace_dry":   [("old", False, False), ("new", False, False), ("path", False, False)],
+        "replace_lines": [("path", False, False), ("start", False, False), ("end", False, False), ("content", False, False)],
+        "paste":         [("path", False, False), ("content", False, False)],
+        "append":        [("path", False, False), ("content", False, False)],
+        "vim":           [("path", False, False), ("script", False, False)],
+        # Preset-derived — from presets/git.json's "git" preset, shipped in
+        # this repo. git-resolve is deliberately absent: its syntax carries
+        # inline prose ("(SIDE: ours|theirs|both)") the guard correctly
+        # refuses to register as field names.
+        "git-commit": [("message", False, False), ("paths", True, True)],
+    }
+
+    def test_real_ops_payload_routes_match_pin(self, monkeypatch) -> None:
+        repo_root = Path(supertool.__file__).resolve().parent
+        monkeypatch.chdir(repo_root)
+        supertool._CONFIG = None
+        supertool._CONFIG_CHECKED = False
+        supertool._CONFIG_PATH = None
+        supertool._AT_FILE_REGISTRY_BUILT = False
+
+        supertool._build_at_file_registry()
+        actual = dict(supertool._AT_FILE_REGISTRY)
+        expected = self.EXPECTED_PAYLOAD_ROUTES
+
+        missing = {op: fields for op, fields in expected.items() if actual.get(op) != fields}
+        extra = {
+            op: fields for op, fields in actual.items()
+            if op not in expected
+        }
+        if not missing and not extra:
+            return
+
+        dropped = supertool._at_file_dropped_routes()
+        lines = [
+            "Real @payload route registry no longer matches the pin in "
+            "TestPayloadRoutePin.EXPECTED_PAYLOAD_ROUTES (#770).",
+            "",
+            "If this is a deliberate change to an op's payload fields, "
+            "update EXPECTED_PAYLOAD_ROUTES to match and note it in the "
+            "commit. If it is not deliberate, a syntax-string edit likely "
+            "just deleted (or altered) a @payload route.",
+        ]
+        if missing:
+            lines.append(f"\nPinned but changed/missing: {missing}")
+        if extra:
+            lines.append(f"\nPresent but not pinned: {extra}")
+        if dropped:
+            lines.append(
+                f"\n_AT_FILE_DROPPED_ROUTES (':::'-bearing syntax whose "
+                f"fields the identifier guard discarded — check these "
+                f"first, this is usually the #770 near-miss): {dropped}"
+            )
+        pytest.fail("\n".join(lines))
+
+
+class TestDroppedRouteDiagnostic:
+    """Proves _AT_FILE_DROPPED_ROUTES distinguishes the two shapes of
+    empty-field-list, using the exact #751 scenario: a clarifying
+    parenthetical appended to a real op's syntax string.
+    """
+
+    def test_no_colons_syntax_is_not_reported_as_dropped(self, monkeypatch) -> None:
+        """A read-only op (no ':::' at all) is the common, correct case —
+        it must never show up in the dropped-routes list."""
+        monkeypatch.setattr(
+            supertool, "_load_config",
+            lambda: {"ops": {"my-read-op": {"syntax": "my-read-op:PATTERN:PATH"}}},
+        )
+        supertool._AT_FILE_REGISTRY_BUILT = False
+
+        supertool._build_at_file_registry()
+
+        assert "my-read-op" not in dict(supertool._AT_FILE_DROPPED_ROUTES)
+        assert supertool._at_file_dropped_routes() == []
+
+    def test_751_near_miss_syntax_edit_is_reported_as_dropped(self, monkeypatch) -> None:
+        """Reproduces the #751 near-miss: git-commit's real syntax string
+        with a clarifying parenthetical appended — the exact edit that
+        deleted its @payload route while nothing else changed.
+        """
+        real_syntax = "git-commit:::MESSAGE[:::PATHS...]"
+        assert supertool._fields_from_syntax(real_syntax), (
+            "sanity check: git-commit's real syntax must have a route "
+            "before the mutation — otherwise this test proves nothing"
+        )
+
+        mutated_syntax = real_syntax + "  (a MESSAGE with ':' must use this form)"
+        monkeypatch.setattr(
+            supertool, "_load_config",
+            lambda: {"ops": {"git-commit": {"syntax": mutated_syntax}}},
+        )
+        supertool._AT_FILE_REGISTRY_BUILT = False
+
+        supertool._build_at_file_registry()
+
+        # The route is gone — this is #770's silent half, unchanged by design.
+        assert supertool._at_file_specs("git-commit") == []
+        # But it is no longer *silent*: the guard firing on a ':::'-bearing
+        # syntax string is now a recorded, inspectable fact.
+        dropped = dict(supertool._at_file_dropped_routes())
+        assert dropped.get("git-commit") == mutated_syntax, (
+            f"expected the mutated syntax to be recorded as a dropped "
+            f"route, got: {supertool._at_file_dropped_routes()!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Refactor 1 — case-insensitive payload key matching
 # ---------------------------------------------------------------------------
 

@@ -14463,6 +14463,19 @@ def _load_at_file(ref: str) -> Any:
 _AT_FILE_REGISTRY: Dict[str, List[Tuple[str, bool, bool]]] = {}
 _AT_FILE_REGISTRY_BUILT: bool = False
 
+# Ops whose syntax string contains ':::' (so a @payload route was clearly
+# intended) but whose derived field names were discarded by the identifier
+# guard in _fields_from_syntax — e.g. inline prose or punctuation that no
+# payload key could ever match. Populated alongside _AT_FILE_REGISTRY.
+#
+# This is NOT the same as an op with no ':::' at all (a read-only op, the
+# common and correct case, which never appears here). Conflating the two
+# would make this list mostly noise; keeping them apart is what lets a test
+# — or a human reading a failure message — ask "was this route dropped on
+# purpose, or did a syntax edit just delete it?" (#770). Nothing reads this
+# list at runtime; it exists so a test failure can explain itself.
+_AT_FILE_DROPPED_ROUTES: List[Tuple[str, str]] = []
+
 
 def _fields_from_syntax(syntax: str) -> List[Tuple[str, bool, bool]]:
     """Derive field specs from a syntax string using ':::' separator.
@@ -14633,6 +14646,7 @@ def _build_at_file_registry() -> None:
     if _AT_FILE_REGISTRY_BUILT:
         return
     registry: Dict[str, List[Tuple[str, bool, bool]]] = dict(_AT_FILE_BUILTIN_DEFAULTS)
+    dropped: List[Tuple[str, str]] = []
     config = _load_config()
     for section in ("builtin-ops", "ops"):
         for op_name, info in config.get(section, {}).items():
@@ -14644,7 +14658,13 @@ def _build_at_file_registry() -> None:
             fields = _fields_from_syntax(syntax)
             if fields:
                 registry[op_name] = fields
+            elif ":::" in re.split(r"\s*\|\s*", syntax)[0]:
+                # The guard fired, not a read-only op: syntax carries ':::' —
+                # a @payload route was intended — but the derived field
+                # names weren't clean identifiers, so it was discarded.
+                dropped.append((op_name, syntax))
     _AT_FILE_REGISTRY = registry
+    _AT_FILE_DROPPED_ROUTES[:] = dropped
     _AT_FILE_REGISTRY_BUILT = True
 
 
@@ -14652,6 +14672,14 @@ def _at_file_specs(op: str) -> List[Tuple[str, bool, bool]]:
     """Return (name, optional, variadic) specs for *op*, or [] if no @file route."""
     _build_at_file_registry()
     return _AT_FILE_REGISTRY.get(op, [])
+
+
+def _at_file_dropped_routes() -> List[Tuple[str, str]]:
+    """Ops whose ':::'-bearing syntax had its @payload route discarded by the
+    identifier guard in _fields_from_syntax — see _AT_FILE_DROPPED_ROUTES.
+    """
+    _build_at_file_registry()
+    return list(_AT_FILE_DROPPED_ROUTES)
 
 
 def _at_file_fields(op: str) -> List[str]:

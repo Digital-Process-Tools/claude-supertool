@@ -575,6 +575,10 @@ RESET_EXEMPT_GLOBALS = (
     "_MCP_STOP_CODES",
     "_CONFIG",
     "_AT_FILE_REGISTRY",
+    # Same guard, same reason: built once alongside _AT_FILE_REGISTRY inside
+    # _build_at_file_registry, which rebinds it (`[:] = dropped`) rather than
+    # mutating in place, gated by the same _AT_FILE_REGISTRY_BUILT flag.
+    "_AT_FILE_DROPPED_ROUTES",
     "_AROUND_DIR_SKIP",
     "_AT_FILE_BUILTIN_DEFAULTS",
     "_READ_OP_AT_FIELDS",
