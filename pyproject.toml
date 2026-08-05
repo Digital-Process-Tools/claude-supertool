@@ -34,10 +34,29 @@ testpaths = ["tests"]
 # `-n auto` — the suite is ~50% kernel time (269 subprocess call sites, ~4000
 # tests), so it parallelises well: 262s serial to 68s on 11 cores, and it still
 # wins on a 2-core runner because the workers overlap CPU with process spawning.
-# pytest-cov combines the per-worker data files, so --cov-fail-under still
+# pytest-cov combines the per-worker data files, so the term report below
 # measures the whole suite. Use `-n0` to run serially when debugging — xdist
 # interleaves output and disables --pdb.
-addopts = "-n auto --cov=supertool --cov-report=term-missing --cov-fail-under=86 -m 'not slow and not benchmark'"
+#
+# `--cov` here is a *view*, not the gate, and there is deliberately no
+# `--cov-fail-under` (#861). Two reasons, both about honesty:
+#
+# 1. It used to read `--cov=supertool --cov-fail-under=86`, which measured one
+#    file. Everything under `presets/` — ~14k statements, the entire op surface
+#    — was outside it, so a preset could ship with zero tests against a green
+#    number. `presets` is in the scope now so the inner loop at least sees it.
+# 2. This measurement *understates* what is tested, and a floor on it would
+#    fire wrongly. 122 test modules drive a preset by spawning it, and coverage
+#    does not follow a child process without `parallel = true` and
+#    `COVERAGE_PROCESS_START`. Measured here, `presets/git/diff.py` reads 9%;
+#    its 600-line dedicated test module actually covers 83.7% of it. Sending
+#    somebody to write tests that already exist is not a gate doing its job.
+#
+# The floor that reds the build is `.github/scripts/coverage_gate.py`, run by
+# the `coverage` job in `tests.yml`, which sets that environment up and reports
+# what it measured *and what it did not*. One number, one owner. Run it locally
+# with `python3 .github/scripts/coverage_gate.py`.
+addopts = "-n auto --cov=supertool --cov=presets --cov-report=term-missing -m 'not slow and not benchmark'"
 markers = [
     "slow: opt-in heavy tests (>5s). Run with `pytest -m slow` or `pytest -m ''` to include.",
     # `benchmark` is not a synonym for `slow`. A slow test is heavy and still
