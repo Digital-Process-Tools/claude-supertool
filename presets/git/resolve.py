@@ -432,8 +432,16 @@ def _validate_paths(paths: list[str]) -> dict[str, Optional[str]]:
     Output blocks are split on ``validate: PATH`` headers and folded back to each
     path. Returns ``{path: digest_or_None}``; advisory only — never blocks the
     resolve. Missing/timeout → every path maps to ``None``.
+
+    That list form has no escape for a path containing its own separators, and
+    a filename may legally contain both: a conflicted file called ``x:ruff``
+    re-parses so the field the receiver reads as the filter is not the one
+    chosen here (#876). Such a path is therefore left out of the batch and
+    reported as ``None`` — the documented "did not answer" — rather than sent
+    through a string that would silently run a different scope. Argv is
+    list-form, so this was never a shell exposure; it was a scope one.
     """
-    files = [p for p in paths if os.path.isfile(p)]
+    files = [p for p in paths if os.path.isfile(p) and ":" not in p and "," not in p]
     digests: dict[str, Optional[str]] = {p: None for p in paths}
     if not files:
         return digests

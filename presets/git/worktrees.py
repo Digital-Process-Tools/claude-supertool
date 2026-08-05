@@ -35,6 +35,16 @@ the signals below.
 **Inspection only.** Nothing here removes, prunes, unlocks or writes. The
 report never prints a removal command: a destructive suggestion sitting under
 an ambiguous verdict is how an occupied tree gets removed.
+
+**The board is the tool's, the cells are not.** A `st-wt/NNN` worktree exists
+to hold somebody else's branch, so its filenames, its path and its refnames are
+remote text — and one of them is printed: the newest write is named in the
+evidence. A filename may contain a newline, and unflattened it forged a whole
+extra row carrying an `idle` verdict, which is the one verdict that authorises
+deleting a tree (#876). Every cell is therefore flattened in `render()`, once,
+at the layer the lines are made — not at each producer, which is the part that
+keeps being added to. Nothing is censored; every character survives, on the one
+line it was given.
 """
 from __future__ import annotations
 
@@ -52,6 +62,7 @@ if os.path.dirname(_HERE) not in sys.path:
 
 from _git_common import _git, use_utf8_stdout  # noqa: E402
 from _env import env_int  # noqa: E402
+import _untrusted  # noqa: E402  (filenames in a worktree are not our text — #876)
 
 STATE_OCCUPIED = "occupied"
 STATE_IDLE = "idle"
@@ -477,7 +488,29 @@ def assess(entry: dict, *, now: float | None = None, window: int | None = None,
 # ── rendering ────────────────────────────────────────────────────────────
 
 def render(rows: list, merged=None, merged_why: str = "") -> str:
-    out = [f"# git-worktrees ({len(rows)})", ""]
+    """The board, and the guarantee it makes about its own shape.
+
+    **A row is one line plus one line per piece of evidence, whatever it is
+    handed.** The verdict word, the tally and the labels are the tool's; the
+    branch, the path and every filename inside the evidence are not, and are
+    flattened on the way in (`_untrusted.flat`). After that nothing a stranger
+    named can reach column 0, add a line, imitate the column gaps with a tab,
+    or move the cursor back over a line already printed — the three routes a
+    crafted filename had to a forged `idle` row (#876).
+
+    Flattening, not rejecting or quoting: the reader is an agent under context
+    pressure that has to act on the path, so an unreadable path is its own
+    failure. `repr()` — the sibling answer in `resolve.py` — is right for a
+    heading quoted inside a sentence and wrong for a column of paths, where it
+    would quote and backslash-escape every row to disclose the one. `flat()`
+    leaves an ordinary path exactly as it was typed and shows a control
+    character as itself.
+    """
+    flat = _untrusted.flat
+    out = [f"# git-worktrees ({len(rows)})",
+           _untrusted.flat_note("Branch names, paths and the filenames in the evidence",
+                                source="the filesystem"),
+           ""]
     for entry, verdict in rows:
         branch = entry.get("branch") or ("(detached)" if entry.get("detached") else "?")
         tags = []
@@ -486,9 +519,10 @@ def render(rows: list, merged=None, merged_why: str = "") -> str:
         if entry.get("prunable"):
             tags.append("prunable")
         suffix = f"  [{', '.join(tags)}]" if tags else ""
-        out.append(f"{verdict.state:<12} {branch:<26} {entry.get('path', '?')}{suffix}")
+        out.append(f"{verdict.state:<12} {flat(str(branch)):<26} "
+                   f"{flat(str(entry.get('path', '?')))}{suffix}")
         for item in verdict.evidence:
-            out.append(f"             · {item}")
+            out.append(f"             · {flat(str(item))}")
         out.append("")
 
     if merged is None:
@@ -537,8 +571,9 @@ def main() -> int:
     if wanted:
         entries = [e for e in entries if _inside(wanted, e["path"]) or _inside(e["path"], wanted)]
         if not entries:
-            print(f"# git-worktrees\n\ncannot tell   {wanted}")
-            print(f"             · {wanted} is not a worktree of this repository — "
+            shown = _untrusted.flat(wanted)
+            print(f"# git-worktrees\n\ncannot tell   {shown}")
+            print(f"             · {shown} is not a worktree of this repository — "
                   "nothing was inspected, so nothing is claimed")
             return EXIT_UNKNOWN
 
