@@ -37,11 +37,21 @@ import json
 import subprocess
 from typing import Any
 
-__all__ = ["verdict", "describe", "assert_ok", "assert_declined", "assert_adapter_ok"]
+import pytest
+
+__all__ = [
+    "verdict", "describe", "assert_ok", "assert_declined", "assert_adapter_ok",
+    "stalled_at_its_own_wall", "assert_adapter_ok_or_skip_if_stalled",
+]
 
 MAX_ERRORS_SHOWN = 3
 MAX_FIELD_CHARS = 200
 MAX_STREAM_CHARS = 600
+
+# The code every adapter reserves for "no verdict was obtained" — a tool that
+# was absent, a spawn that expired, output that would not parse. See
+# validators/SCHEMA.md, "`adapter`: the reserved code for no verdict".
+ADAPTER_CODE = "adapter"
 
 
 def _clip(text: object, limit: int = MAX_FIELD_CHARS) -> str:
@@ -196,3 +206,93 @@ def assert_adapter_ok(
 ) -> dict:
     """`verdict` then `assert_ok`, for the common one-spawn-one-assertion case."""
     return assert_ok(verdict(result, adapter=adapter), context=context)
+
+
+def stalled_at_its_own_wall(payload: Any, *, inner_s: int) -> str | None:
+    """Did the adapter spend its whole internal budget without a verdict? (#794)
+
+    Returns the reason to decline, or ``None`` when the payload is a verdict
+    about the file and must be asserted on normally. Never raises: a predicate
+    that throws while classifying a failure becomes the failure.
+
+    **All four clauses are load-bearing**, and each one is a route back to the
+    bug this exists to remove if it is dropped:
+
+    - ``ok is False`` — a pass is a pass.
+    - every error carries ``code: "adapter"`` — a `parse` finding beside a
+      stall is still a broken file, and one unmeasurable error does not buy
+      amnesty for a measured one.
+    - the message names a timeout — `validators/SCHEMA.md` is explicit that an
+      `adapter` error "stays a real error ... because the process ran and
+      something is broken that someone has to fix". A missing binary and an
+      unreadable argv are that. Only a wall is a statement about the machine.
+    - ``duration_ms`` reaches ``inner_s`` — an adapter that reports `timeout`
+      in 12ms did not time out, and its error routing is broken. That is a
+      defect in the thing the suite tests, and a message-only predicate would
+      swallow it.
+
+    ``inner_s`` is passed in rather than read here, so this file keeps knowing
+    nothing about `_adapter_budget` and no second copy of any adapter's budget
+    is written down (#702).
+    """
+    try:
+        if not isinstance(payload, dict) or payload.get("ok") is not False:
+            return None
+
+        errors = payload.get("errors")
+        if not isinstance(errors, list) or not errors:
+            return None
+
+        for entry in errors:
+            if not isinstance(entry, dict) or entry.get("code") != ADAPTER_CODE:
+                return None
+            msg = entry.get("msg")
+            if not isinstance(msg, str) or "timeout" not in msg.lower():
+                return None
+
+        duration = payload.get("duration_ms")
+        if not isinstance(duration, int) or isinstance(duration, bool):
+            return None
+        if duration < inner_s * 1000:
+            return None
+
+        return (
+            f"adapter spent its whole {inner_s}s internal budget without "
+            f"reaching a verdict, so there is nothing here to assert on — "
+            f"{describe(payload)}"
+        )
+    except Exception:  # pragma: no cover - classification must never be the failure
+        return None
+
+
+def assert_adapter_ok_or_skip_if_stalled(
+    result: subprocess.CompletedProcess,
+    *,
+    adapter: object = None,
+    inner_s: int,
+    context: str = "",
+) -> dict:
+    """`assert_adapter_ok`, except that a stalled adapter declines (#794).
+
+    For the one shape of test that spawns a real adapter to check a real tool
+    answers about a real file. Such a test is asserting a *lint verdict*, and a
+    stalled adapter has not produced one — it has reported, correctly and on
+    contract, that it never got to look. Failing on that publishes "this PHP
+    file is broken" about a file that is fine, on whichever pull request
+    happened to draw the loaded runner.
+
+    This is the three-state contract of `docs/validators.md` §"Declining
+    instead of guessing" applied one layer out, to the test rather than the
+    adapter. It moves nothing else: the adapter still reports the stall as
+    `ok: false` per SCHEMA.md, and a blown *outer* budget still raises
+    `TimeoutExpired` and still fails, because that one means the adapter
+    ignored its own timeout and is a genuine hang (see `_adapter_budget`).
+
+    The skip reason carries the rendered verdict, duration included — a 30s
+    spawn is worth knowing about even when it is not worth a red.
+    """
+    payload = verdict(result, adapter=adapter)
+    reason = stalled_at_its_own_wall(payload, inner_s=inner_s)
+    if reason is not None:
+        pytest.skip(reason)
+    return assert_ok(payload, context=context)
