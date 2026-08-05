@@ -42,6 +42,14 @@ import _secrets  # noqa: E402
 # Do not tidy this back into a single literal.
 FAKE_GITLAB_PAT = "glpat" + "-AbCdEf1234567890XyZq"
 
+# Same treatment, arrived at the other way round: this one was written as a
+# single literal and pushed fine, because scanning alerted after the fact
+# instead of blocking (alert #1, "Google API Key"). Nothing leaked — the value
+# is a prop, and a shape-matching detector cannot be tested without one that
+# looks real. A known-false entry left sitting in the alert list is how a real
+# alert later goes unread, so the literal is split here too.
+FAKE_GOOGLE_API_KEY = "AIza" + "Sy" + "A1234567890" + "abcdefghijklmnopqrstuv"
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -152,9 +160,9 @@ class TestDetectorMatches:
         assert "xoxb-1234567890" not in out
 
     def test_google_api_key(self) -> None:
-        out, n = _secrets.redact("key=AIzaSyA1234567890abcdefghijklmnopqrstuv")
+        out, n = _secrets.redact(f"key={FAKE_GOOGLE_API_KEY}")
         assert n >= 1
-        assert "AIzaSyA1234567890abcdefghijklmnopqrstuv" not in out
+        assert FAKE_GOOGLE_API_KEY not in out
 
     def test_url_basic_auth_password(self) -> None:
         out, n = _secrets.redact("git clone https://user:hunter2secret@example.com/repo.git")
