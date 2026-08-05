@@ -70,6 +70,9 @@ Events also cannot survive a session boundary: the transport is fire-and-forget 
 `radar` is therefore an idempotent reconcile, safe on every session start:
 
 ```
+0. reap         stop every surplus poller on a slot that has more than one,
+                before anything spawns. Bounded to labelled duplicates, so it
+                can only remove a copy, never coverage.
 1. live truth   one gl-mrs query for open MRs — authoritative. State files are
                 cache and may be absent or hours stale.
 2. reconcile    prune state files whose watcher reached a terminal state; flag
@@ -898,7 +901,7 @@ Three rules follow from "a missing watcher is worse than a duplicate one":
 
 For the feed tier the id is a *filter string*, so it is canonicalised (sorted keys, sorted deduped values) before it becomes a filename: `author=a,author=b` and `author=b,author=a` are one population and must be one poller. That merges only filters that are already the same set, so it can never refuse a filter that would have selected something different. Board labels still print the filter as you typed it.
 
-This prevents duplicates from being created. It does **not** reap detached pollers left over from before — those are `PPID 1` and nothing will reap them; `unwatch` (or `kill`) is still the way out.
+This prevents duplicates from being created. It does not, on its own, remove ones that already exist — those are `PPID 1` and nothing will reap them. Since [#749](https://github.com/Digital-Process-Tools/claude-supertool/issues/749) `radar` stops the *labelled* ones at the start of every run ([below](#radar-reaps-duplicates-before-it-respawns-749)); for everything else, `unwatch` (or `kill`) is still the way out.
 
 ### A slot tracks a set of PIDs, not one ([#511](https://github.com/Digital-Process-Tools/claude-supertool/issues/511))
 
@@ -920,6 +923,52 @@ Three absences are now three different sentences, because they call for differen
 - `No active watcher for … (no PID file, and no matching process)` — nothing is running, verified both ways.
 - `Tracked PID N … is not running` — the slot recorded a poller that died with nothing reporting it, so this id has been **unwatched** since. #511 caught two of those, and the board was silently blind on both MRs.
 - `… the process scan was unavailable` — `ps` could not be read, so an untracked poller could not be ruled out. Never rendered as "no watcher".
+
+### `radar` reaps duplicates before it respawns ([#749](https://github.com/Digital-Process-Tools/claude-supertool/issues/749))
+
+`radar` spawned and healed and never stopped anything, so nothing in the tool ever removed a poller. Over a ~28h session that produced **36 live processes against 18 tracked**, each survivor emitting every event independently: one `mr_opened` arrived 13 times, and the duplicate rate ranged 2–14 copies per event depending on the tick.
+
+Every `radar` run now begins by stopping the surplus:
+
+```
+radar: reaped 2 duplicate poller(s) on gitlab-mr:33311 — stopped 26952, 26977; PID 26951 still polls it.
+```
+
+**Before the tiers spawn, not after** — a reap that ran last would be judging this run's own new pollers.
+
+The bound is the one thing worth reading twice, because an over-eager reap is strictly worse than the duplicates it prevents. #511 is the precedent: three `ps` rows were *inferred* to be duplicate feed pollers and two were killed, and they were the watchers for two different MRs, one of them the MR that most needed watching.
+
+So the reap acts only on what a PID proves about itself:
+
+| Population | What happens | Why |
+|---|---|---|
+| A slot with **2+ labelled pollers** | all but one stopped, each named | Their own argv names the same slot as whole tokens, so they are duplicates *of each other* — stopping all but one provably leaves the slot covered. |
+| A slot with **one** poller, tracked or orphan | untouched | A lone orphan is the only thing polling that slot. Killing it trades a duplicate nobody has for a blind spot, which is the trade [#513](https://github.com/Digital-Process-Tools/claude-supertool/issues/513) says is the wrong way round. |
+| A poller **from before the labelling** | untouched, and invisible | It wears its parent's argv; nothing can tell it from the process that forked it. `pkill -f 'presets/watch/'` once — that call is an operator's, not the tool's. |
+| **Any**, when `ps` could not be read | untouched, and said out loud | See the decline below. |
+
+The survivor is the pidfile's PID when it is among the live ones, so the slot keeps the poller `watches` and `unwatch` already name. Otherwise it is the lowest PID — arbitrary, but *stable*, since the pollers on one slot are interchangeable and a survivor that changed every run would be.
+
+**Three states, and the third one is why this is not silent.** A clean fleet prints nothing; a reap names every PID it stopped; a scan that could not run declines:
+
+```
+radar: reap skipped — the process scan was unavailable, so a duplicate poller could not be ruled out. Nothing was stopped, and an id may be emitting every event more than once.
+```
+
+A reaper that cannot see the fleet and prints nothing renders byte-identically to one that looked and found it clean — this repository's recurring defect (`docs/validators.md` §"Declining instead of guessing") with a body count attached. A PID that refuses to die is named the same way, with the `unwatch` that reaches it; it is never swallowed, and it never costs the rest of the sweep.
+
+A slot whose pidfile names a dead PID while an orphan still polls it converges in two runs rather than one: this run reaps nothing (one live poller), then heals — spawning a second — and the next run reaps the older of the two. Both cover the same slot, so the intermediate state duplicates one slot for one tick and no slot goes uncovered.
+
+#### A batched `kill $PID_LIST` silently no-ops on these processes
+
+Worth knowing before reaching for one by hand:
+
+```bash
+kill -9 $(pgrep -f 'presets/watch/')     # exit 0. All 36 still alive.
+for p in $(pgrep -f 'presets/watch/'); do kill -9 "$p"; done   # works.
+```
+
+The mechanism is undiagnosed; the consequence is not. The batched form **looks like it worked** — exit 0, no error, nothing on stderr — which is the failure mode this whole preset is built against. Use the per-PID loop, or `unwatch`, which has always signalled one PID at a time. The reaper does too, and there is a test pinning it (`test_reap_stops_one_pid_per_call`) so it cannot quietly grow a batched form.
 
 ### `ps` cannot be used to identify a watcher
 

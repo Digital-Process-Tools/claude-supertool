@@ -318,7 +318,16 @@ def main(argv: list[str] | None = None) -> int:
         print(NO_TIERS, file=sys.stderr)
         return 1
 
+    # Before anything spawns, not after: a reap that ran last would be judging
+    # this run's own new pollers, and a radar that never reaps is how #749's 36
+    # processes accumulated behind 18 tracked slots — every session restart
+    # added emitters and nothing ever removed one. Bounded to slots carrying
+    # more than one *labelled* poller, so it can only ever remove a copy, never
+    # coverage. See `dispatcher.reap_duplicate_pollers`.
+    reaped = dispatcher.reap_duplicate_pollers()
+
     lines, _all_ok, failures = tier_reports(arg)
+    lines = reaped + lines
     for line in failures:
         print(line, file=sys.stderr)
     if lines:

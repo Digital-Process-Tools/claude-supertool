@@ -357,6 +357,92 @@ def cmd_list() -> int:
     return 0
 
 
+def reap_duplicate_pollers() -> list[str]:
+    """Stop every surplus poller on a slot that has more than one. Report it.
+
+    Returns the lines to print: one per slot reaped, plus a WARNING for any PID
+    that would not stop. An empty list means the scan ran and found no slot with
+    two pollers on it. A scan that could not run returns a `skipped` line and
+    kills nothing — see below.
+
+    What this may act on, and why that bound is where it is
+    ------------------------------------------------------
+
+    Only PIDs from `transport.scan_poller_pids`, which reads a process's *own*
+    argv (#511's `exec` labelling) and takes `source` and `watcher_id` as whole
+    tokens. That is the only thing a PID here proves about itself, and it is
+    exactly enough for the one judgement this makes: two pollers naming the same
+    slot are duplicates of each other, so stopping all but one provably leaves
+    the slot covered. No PID is ever killed for being unrecognised, for being
+    absent from a pidfile, or for belonging to a slot nobody asked about — the
+    #511 damage was three `ps` rows *inferred* to be duplicates, and two of them
+    were the watchers for two different MRs.
+
+    So three populations are deliberately not touched:
+
+      * A slot with one poller, tracked or not. A lone orphan is still the only
+        thing polling its slot; killing it trades a duplicate nobody has for a
+        blind spot, which is the trade #513 says is the wrong way round.
+      * A poller spawned before the labelling landed. It wears its parent's
+        argv, the scan cannot see it, and nothing can tell it from the process
+        that forked it. `pkill -f 'presets/watch/'` once, as docs/presets/watch.md
+        says — that judgement is an operator's, not this function's.
+      * Anything at all, when `ps` could not be read.
+
+    The survivor is the pidfile's PID when it is one of the live ones, so the
+    slot keeps the poller `watches` and `unwatch` already name; otherwise the
+    lowest PID, which is arbitrary but deterministic — the pollers on one slot
+    are interchangeable, the choice being *stable* across runs is not.
+
+    Three states, not two
+    ---------------------
+
+    `ok` is silent, a finding names every PID it stopped, and a scan that could
+    not run says `skipped` out loud. A reaper that cannot see the fleet and
+    prints nothing renders byte-identically to one that looked and found it
+    clean — which is this repository's recurring defect with a body count
+    attached (docs/validators.md, "Declining instead of guessing").
+
+    One PID per signal, never a batch: a batched `kill $PID_LIST` against these
+    processes silently no-ops — exit 0, every process still alive, `-9`
+    included — while looking exactly like a reap that worked.
+    """
+    found, scan_ok = transport.scan_poller_pids()
+    if not scan_ok:
+        return ["radar: reap skipped — the process scan was unavailable, so a "
+                "duplicate poller could not be ruled out. Nothing was stopped, "
+                "and an id may be emitting every event more than once."]
+
+    lines: list[str] = []
+    for (source, watcher_id), pids in sorted(found.items()):
+        live = sorted(pid for pid in pids
+                      if pid > 1 and pid != os.getpid() and transport._pid_alive(pid))
+        if len(live) < 2:
+            continue
+        tracked = transport.read_pid(source, watcher_id)
+        keep = tracked if tracked in live else live[0]
+        stopped: list[int] = []
+        failures: list[str] = []
+        for pid in [p for p in live if p != keep]:
+            why = _stop_pid(pid)
+            if why:
+                failures.append(f"radar: WARNING — could not stop duplicate poller "
+                                f"PID {pid} on {source}:{watcher_id}: {why}. It is "
+                                f"still emitting; stop it with "
+                                f"`unwatch:{source}:{watcher_id}`.")
+            else:
+                stopped.append(pid)
+        if stopped:
+            lines.append(
+                f"radar: reaped {len(stopped)} duplicate poller(s) on "
+                f"{source}:{watcher_id} — stopped "
+                + ", ".join(str(p) for p in stopped)
+                + f"; PID {keep} still polls it"
+                + ("" if keep == tracked else " (no pid file named one)") + ".")
+        lines.extend(failures)
+    return lines
+
+
 def start_poller(source: str, watcher_id: str, only: list[str]) -> tuple[str, int]:
     """Claim the (source, id) slot, then spawn its poller.
 
