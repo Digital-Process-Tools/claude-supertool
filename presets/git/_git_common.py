@@ -118,6 +118,34 @@ def _git(args: list[str], timeout: int | None = None) -> subprocess.CompletedPro
         )
 
 
+def reject_fetch_option(remote: str, ref: str) -> str:
+    """Non-empty error when a fetch (remote, ref) pair would smuggle an option.
+
+    Both values land as bare argv elements in `git fetch <remote> <ref>`, and
+    git parses any element beginning with '-' as an option before it reaches
+    the refspec grammar. `--upload-pack=<cmd>` is the weaponised case: git
+    *executes* <cmd> on fetch (proven on 2.46.2, #818) — unlike `ls-remote`,
+    where the same value does not run.
+
+    The dangerous values do not come from operator argv (checkout.py / merge.py
+    already refuse a leading-dash argv REF, #150). They come from `@{upstream}`
+    split into (remote, ref) — i.e. a remote-tracking ref name, which anyone who
+    controls the remote can choose. A real remote or branch never starts with
+    '-'; git refuses to create one. So a leading-dash value here is never a
+    legitimate ref — it is an option in ref position, and it is refused by name
+    rather than fetched silently (a dropped ref would fetch the wrong thing).
+
+    Returns "" when the pair is safe. Callers decide loudness: a mutation
+    (push) aborts; a refresh (merge) falls back to the local ref.
+    """
+    for label, val in (("remote", remote), ("ref", ref)):
+        if val.startswith("-"):
+            return (f"{label} {val!r} looks like a git option, not a {label} — "
+                    f"a tracking ref named like `--upload-pack=…` executes a "
+                    f"command on fetch (#818); refusing")
+    return ""
+
+
 def _list_conflicts() -> tuple[list[str], str]:
     """`(paths, why_unavailable)` — three states, not two (#650).
 

@@ -69,6 +69,7 @@ from _git_common import (  # noqa: E402
     _first_error_line,
     _git,
     query_open_mr,
+    reject_fetch_option,
     repo_label,
     use_utf8_stdout,
 )
@@ -1285,6 +1286,17 @@ def _recover_by_rebase(branch: str, remote_before: str, upstream: str,
     abort decision is the caller's, not the tool's.
     """
     target = f"{remote_name}/{remote_ref}"
+    # #818: `remote_name`/`remote_ref` come from `_split_upstream(@{upstream})`,
+    # a remote-tracking ref name an attacker who controls the remote can choose.
+    # `remote_ref` lands as a bare argv element in the fetch below, and a value
+    # like `--upload-pack=<cmd>` executes on fetch. The #787 mismatch guard in
+    # main() (remote_ref != branch) shields this path today, but that is a
+    # semantic check, not a security one — the refusal belongs at the sink.
+    refuse = reject_fetch_option(remote_name, remote_ref)
+    if refuse:
+        print(f"Status: PUSH REJECTED ✗ — {refuse}")
+        _result(f"NOT PUSHED - REJECTED  {branch} -> {target} - {refuse}")
+        return 1
     print(f"Remote moved ahead — fetching to rebase onto {target}…")
     fetched = _git(["fetch", remote_name, remote_ref],
                    timeout=_RECOVER_TIMEOUT)
