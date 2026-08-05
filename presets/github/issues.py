@@ -616,7 +616,13 @@ def main_with_args(arg_str: str) -> int:
             return 1
         rows = [r for r in rows if r.get("_stale")]
 
-    print(_untrusted.banner())
+    # `flat_note` rather than `banner()` (#819). This render fences nothing —
+    # titles and labels are one-line fields and are flattened — so the banner
+    # was announcing `⟨remote NONCE⟩` markers no reader would ever find. A
+    # disclosure naming a mechanism it does not use teaches the reader to skim
+    # the next one.
+    if rows:
+        print(_untrusted.flat_note("issue titles and labels"))
     print(_render_table(rows))
     footer = _footer(rows, reason, per_page)
     if footer:

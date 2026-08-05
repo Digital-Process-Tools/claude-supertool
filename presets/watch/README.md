@@ -182,6 +182,21 @@ If a payload legitimately needs to carry a list, join it into a string at the
 source — the same pattern `observed_failed_jobs` already uses for
 `gitlab-mr` — rather than relying on the bridge to render it.
 
+### Payload strings are other people's words ([#819](https://github.com/Digital-Process-Tools/claude-supertool/issues/819))
+
+`title`, `description`, `tags`, `branch`, `workflow`, `error` — whoever opened
+the watched object chose those words, and on a public tracker that is anyone.
+They land in `<channel>` attributes and in the body Claude reads as prose, in a
+session whose MCP `instructions` tell it to investigate the event.
+
+**A source does not have to remember this.** `transport.emit_event` flattens
+every string it is handed, and every string inside a list, so no field can grow
+a line that reads as the notifier's own. It is done at that one call rather
+than in each `poller.py` on purpose: the sources are the part that keeps being
+added to, and a rule that has to be re-applied by each new one is a rule that
+gets missed. Do not pre-flatten in a poller and do not work around it — a value
+that was already one line comes out byte-identical.
+
 ## Lifecycle
 
 Each `watch` invocation forks a detached poller process. The process IS the

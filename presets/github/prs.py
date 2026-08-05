@@ -36,6 +36,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pr import _gh, _fetch_review_threads  # noqa: E402  (reuse the gh-pr helpers)
 import _board  # noqa: E402  (the board layout shared with gl-mrs / radar)
+import _untrusted  # noqa: E402  (the repo's remote-text convention)
 from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 import _checks  # noqa: E402  (the one check classifier, shared with gh-pr / gl-mrs)
 import _proc  # noqa: E402  (the one liveness probe, shared with watch / gl-mrs)
@@ -464,6 +465,9 @@ def main() -> int:
             print(f"(review-thread enrichment capped at {cfg['enrich_cap']} PRs)")
 
     watched = _watched_numbers()
+    # One disclosure line above the board — see `gl-mrs.main` (#819).
+    if prs:
+        print(_untrusted.flat_note("PR titles"))
     print(_render_table(prs, watched))
     footer = _footer(prs, watched)
     if footer:
