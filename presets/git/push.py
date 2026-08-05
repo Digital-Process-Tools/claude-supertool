@@ -416,6 +416,56 @@ def _refuse_unresolved_remote(branch: str, why: str) -> int:
     return 1
 
 
+def _refuse_mismatched_upstream(branch: str, remote_name: str,
+                                remote_ref: str) -> int:
+    """`@{upstream}` resolves, but to a different branch — decline (#787).
+
+    This is not "no upstream": the lookup answered, cleanly, with
+    `{remote_name}/{remote_ref}`. The common trigger is
+    `git worktree add -b <branch> <path> <remote>/<ref>` — the normal way an
+    agent starts a fresh branch. `branch.autoSetupMerge` (on by default)
+    tracks the *start point*, not the new branch, so a branch that has never
+    been pushed anywhere still carries a real, resolvable `@{upstream}`.
+
+    Pushing bare here (no explicit refspec) hands the target to git's own
+    `push.default`, which refuses outright — a branch name mismatch is
+    exactly the case `push.default=simple` (the modern default) will not
+    guess through. That refusal used to be rendered as `PUSH REJECTED` with
+    `-> {remote_ref}`: a verb implying the remote acted (nothing was ever
+    sent) and a target nobody asked for (`push.default` chose it, not the
+    caller). Detecting the precondition ahead of the push — decidable
+    without ever invoking `git push` — replaces both with an accurate
+    decline.
+
+    Two targets are both plausible reads of that config: push `branch` under
+    its own name (the overwhelmingly common intent — this is what "first
+    push" means for a feature branch), or push onto `remote_ref` on purpose
+    (a deliberately different tracked name, set by hand). Guessing the first
+    one silently would retarget a tracking config the caller may have set up
+    on purpose; guessing the second would create a branch nobody named. Same
+    shape as `_refuse_unresolved_remote`: name both ways out, in the
+    docs/validators.md §"Declining instead of guessing" sense — a third
+    state, not a failure hidden behind a wrong one.
+    """
+    print(f"# git-push on {branch}")
+    print(f"Upstream: {remote_name}/{remote_ref} — a different branch, "
+          f"not {branch} itself")
+    print(f"ERROR: {branch}'s upstream is {remote_name}/{remote_ref}. A "
+          "bare push here is ambiguous — this is the exact state that "
+          "makes git itself refuse with 'the upstream branch of your "
+          "current branch does not match the name of your current "
+          "branch', not a remote rejection.")
+    print("Nothing was pushed. Name the target once:")
+    print(f"  git push -u {remote_name} HEAD"
+          f"          # push {branch} under its own name (the usual first push)")
+    print(f"  git push {remote_name} HEAD:{remote_ref}"
+          f"   # push onto {remote_ref} on purpose, if that's the real target")
+    _result(f"NOT PUSHED - no push attempted ({branch}'s upstream is "
+            f"{remote_name}/{remote_ref}, a different branch — ambiguous "
+            f"target, nothing pushed)")
+    return 1
+
+
 # Summaries git uses for "your ref diverged from the remote's" — the one
 # rejection a rebase actually recovers. Matched against the porcelain status
 # summary for our own ref, never against free text (#641).
@@ -1460,6 +1510,10 @@ def _push_op() -> int:
         if not push_remote:
             return _refuse_unresolved_remote(branch, cannot_tell)
     remote_name, remote_ref = _split_upstream(upstream, branch, push_remote)
+    if has_upstream and remote_ref != branch:
+        # @{upstream} resolved, but not to this branch's own name — a bare
+        # push here is git's own ambiguity, not ours to guess through (#787).
+        return _refuse_mismatched_upstream(branch, remote_name, remote_ref)
     head_before, _head_before_why = _local_head()
 
     print(f"# git-push on {branch}")
