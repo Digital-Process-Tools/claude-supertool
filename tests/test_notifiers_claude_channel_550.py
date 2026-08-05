@@ -172,7 +172,8 @@ class Channel:
             return self.proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             raise AssertionError(
-                f"channel.ts still running after {timeout}s; stderr={self.stderr_lines}")
+                f"channel.ts still running after {timeout}s; "
+                f"stderr={self.stderr_lines}") from None
 
     def close(self) -> None:
         self.proc.kill()

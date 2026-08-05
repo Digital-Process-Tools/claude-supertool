@@ -224,8 +224,6 @@ class _Sandbox:
         shutil.rmtree(self.tmp, ignore_errors=True)
 
 
-import tempfile  # noqa: E402  (kept next to nothing else that needs it)
-
 
 @pytest.fixture
 def box():

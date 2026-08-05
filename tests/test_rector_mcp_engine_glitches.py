@@ -20,7 +20,7 @@ def _load(working_dir):
     assert spec is not None and spec.loader is not None
     m = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(m)
-    setattr(m, "WORKING_DIR", str(working_dir))
+    m.WORKING_DIR = str(working_dir)
     return m
 
 

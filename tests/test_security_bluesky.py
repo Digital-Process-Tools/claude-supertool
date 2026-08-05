@@ -768,7 +768,11 @@ class TestUnicodeHandleRTL:
     the API layer. We pin this behaviour.
     """
 
-    RTL = "‮"  # RIGHT-TO-LEFT OVERRIDE
+    # Written as an escape, not as the raw codepoint: a literal U+202E in
+    # source reorders every line after it in a reviewer's diff, which is
+    # exactly what PLE2502 exists to stop. The escape is the same string
+    # to Python and readable to a human.
+    RTL = "\u202e"  # RIGHT-TO-LEFT OVERRIDE
 
     def test_rtl_override_in_handle_passed_to_api(self, monkeypatch, capsys):
         """Handle with U+202E → forwarded to getProfile, which will reject it.

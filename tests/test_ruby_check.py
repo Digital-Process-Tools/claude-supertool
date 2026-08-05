@@ -29,7 +29,7 @@ def _run(file_path: str) -> dict:
     # Windows runners occasionally yield empty stdout from the freshly-spawned
     # adapter (cold subprocess start); retry once, then fail with diagnostics
     # instead of a cryptic JSONDecodeError.
-    for attempt in range(2):
+    for _attempt in range(2):
         result = subprocess.run(
             [sys.executable, str(ADAPTER), file_path],
             capture_output=True,
