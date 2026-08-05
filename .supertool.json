@@ -31,7 +31,7 @@
   "builtin-ops": {
     "read": {
       "syntax": "read:PATH[:OFFSET:LIMIT|:START-END|:full]",
-      "description": "Read file (300 lines, 20KB cap) Inline grep= filter contains ':'? Use read:@payload.toml or read:@- (fields: path, offset, limit, grep, full).",
+      "description": "Read file (300 lines, 20KB cap). abstract:1 → tree-sitter symbol map instead of source for big files, any supported language; falls back to raw and says why. Inline grep= filter contains ':'? Use read:@payload.toml or read:@- (fields: path, offset, limit, grep, full).",
       "example": "read:supertool.py:1:50"
     },
     "read-grep": {

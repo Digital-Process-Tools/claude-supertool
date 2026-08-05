@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The abstract read is a tree-sitter capability now, not a PHP capability** ([#670](https://github.com/Digital-Process-Tools/claude-supertool/issues/670)). `read` on a file over the threshold returns the file's symbol map instead of the first 300 lines of source — the one thing that makes `read` better than an ordinary file read on a big file. It was gated on `path.endswith(".php")`, three hundred lines above a `_TS_LANG_MAP` that already covered eighteen extensions and a `_TS_DEF_NODES` the `between:` op already exercised for eight languages. Someone installing this plugin into a TypeScript repo — which is most of the Claude Code population — opened a 2,000-line component and got the file back. The gate is now membership of that table.
+
+  **Measured, not assumed, because `abstract_threshold_bytes` was tuned on PHP.** 263 real files over the 20 KB threshold, from Hugo, cobra, ripgrep, pdf.js, lodash, Vue core, React Router, gson, RuboCop, Sinatra, curl, nlohmann/json, Alamofire, OkHttp, os-lib, plenary.nvim, nvm and CPython's `site-packages`. Median map/source: TypeScript 2.3%, cpp 2.5%, tsx and lua 2.6%, c 2.7%, bash 3.1%, python 4.3%, java 4.7%, go 4.8%, php 5.4%, swift 5.4%, javascript 5.7%, rust 6.0%, kotlin 6.8%, ruby 10.7%, scala 17.5%. Every language wins, so none is excluded; scala, lua and bash have thin samples and lean on the per-file guard rather than the median. The full table is in `docs/operations/reads.md`.
+
+  **The threshold does not travel, so the decision moved per-file.** A language-level allowlist tuned on medians still hands you a bad answer for the file in front of you: the worst cpp map measured is 187% of the bytes the raw read would have emitted, and three of twenty javascript files parse to no definitions at all. So the map has to earn the substitution each time — non-empty, and smaller than the read it replaces — and when it does not, the read returns source **and says which of the two happened**, never a silent partial map:
+
+  ```
+  [abstract read skipped — no symbols found in src/rows.ts (typescript); showing raw source]
+  [abstract read skipped — symbol map for gen.cpp (cpp) is 37412 bytes, not smaller than the 20000 bytes this read emits; showing raw source]
+  ```
+
+  When tree-sitter is not installed at all the reason says so rather than blaming the file (`docs/validators.md` §"Declining instead of guessing"). 29 of the 263 files declined, 20 of them C# — see below. A `.txt` gets no note, because the feature never claimed to apply there and a skip line that fires everywhere means nothing.
+
+  **One switch, not a per-language map.** A per-language config would let a project turn it on for TS and off for Python, but the question it answers — "is a map worth it for this file" — is now answered per file by the guard, from measurement rather than from the user's guess. A per-language table would be a second, staler copy of that judgement, and it would need an entry for every new grammar.
+
+  **`read.php_abstract` still works.** It is documented in `.supertool.example.json` and listed by `ops`, so it is public API and a hard rename is not an auto-merge. The canonical key is now `read.abstract` — which also makes it consistent with `abstract_threshold_bytes`, already language-neutral next to it — and either key set to `1` enables the feature. `SUPERTOOL_READ_PHP_ABSTRACT` keeps working alongside `SUPERTOOL_READ_ABSTRACT`.
+
+  **The banner changed, and that is user-visible.** `[php abstract — …]` is now `[abstract read — <language>, …]`; it said "php" over a TypeScript map otherwise.
+
+  **Found on the way, filed separately: C# produces no symbols anywhere.** `_TS_LANG_MAP` maps `.cs` to `c_sharp`, the name the older `tree-sitter-languages` package used; `tree-sitter-language-pack` calls it `csharp` and raises `LookupError`, which `_ts_extract` swallows. All 20 sampled C# files yield zero symbols — in `map` and `between:` as well as in the abstract read. The guard means a `.cs` read degrades to source with a stated reason rather than to an empty map, but `map:` on a C# project still quietly returns nothing.
+
+  11 new tests in `tests/test_read_abstract_languages_670.py`, red before the change: the gate, the legacy key, the banner naming its language, both decline paths, the tree-sitter-missing reason, and two negative controls that must stay silent (`:full`, and an extension the feature never applied to).
+
 ### Added
 
 - **`gh-issues` — an issue board that ranks the queue and flags a body its comments have overtaken** ([#769](https://github.com/Digital-Process-Tools/claude-supertool/issues/769)). Both trackers could read an issue whose number you already knew and file a new one, and neither could tell you which numbers existed. Every triage tick fell back to a hand-written `gh issue list --json … -q …`, where the jq template decides what triage sees and silently omits whatever the caller forgot to ask for — the same shape as [#454](https://github.com/Digital-Process-Tools/claude-supertool/issues/454), where hand-summing CI legs turned `CANCELLED` into "pending". The shape now lives in the op.

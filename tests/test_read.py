@@ -127,13 +127,20 @@ def test_render_file_handles_empty_file(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# PHP abstract mode — size threshold, :full bypass, env var override
+# Abstract mode — size threshold, :full bypass, env var override
+#
+# Enabled here through the legacy `php_abstract` key on purpose: it is public
+# API (#670) and these tests are what keeps it honoured. The threshold is set
+# directly rather than through `max_bytes`, because since #670 `max_bytes` is
+# also the yardstick the map has to beat — driving both from one knob made a
+# 100-byte cap mean "abstract everything, then reject every map".
 # ---------------------------------------------------------------------------
 
-def _enable_abstract(monkeypatch, max_bytes: int = 100) -> None:
+def _enable_abstract(monkeypatch, threshold: int = 100) -> None:
     monkeypatch.setattr(
         supertool, "_CONFIG",
-        {"builtin-ops": {"read": {"php_abstract": 1, "max_bytes": max_bytes}}},
+        {"builtin-ops": {"read": {"php_abstract": 1,
+                                  "abstract_threshold_bytes": threshold}}},
     )
 
 
@@ -141,29 +148,29 @@ def test_read_php_abstract_off_by_default(tmp_path: Path) -> None:
     f = tmp_path / "x.php"
     f.write_text("<?php\n" + "// x\n" * 200)
     out = supertool.op_read(str(f))
-    assert "[php abstract" not in out
+    assert "[abstract read" not in out
     assert "<?php" in out
 
 
 def test_read_php_abstract_skipped_below_threshold(
     tmp_path: Path, monkeypatch
 ) -> None:
-    _enable_abstract(monkeypatch, max_bytes=100000)
+    _enable_abstract(monkeypatch, threshold=100000)
     f = tmp_path / "x.php"
     f.write_text("<?php\necho 'hi';\n")
     out = supertool.op_read(str(f))
-    assert "[php abstract" not in out
+    assert "[abstract read" not in out
     assert "echo" in out
 
 
 def test_read_php_abstract_triggers_above_threshold(
     tmp_path: Path, monkeypatch
 ) -> None:
-    _enable_abstract(monkeypatch, max_bytes=100)
+    _enable_abstract(monkeypatch, threshold=100)
     f = tmp_path / "x.php"
     f.write_text("<?php\nclass Foo {}\n" + "// pad\n" * 200)
     out = supertool.op_read(str(f))
-    assert "[php abstract" in out
+    assert "[abstract read — php" in out
     assert "bytes raw" in out
     assert ":full for content" in out
 
@@ -171,31 +178,31 @@ def test_read_php_abstract_triggers_above_threshold(
 def test_read_force_full_bypasses_abstract(
     tmp_path: Path, monkeypatch
 ) -> None:
-    _enable_abstract(monkeypatch, max_bytes=100)
+    _enable_abstract(monkeypatch, threshold=100)
     f = tmp_path / "x.php"
     f.write_text("<?php\nclass Foo {}\n" + "// pad\n" * 200)
     out = supertool.op_read(str(f), force_full=True)
-    assert "[php abstract" not in out
+    assert "[abstract read" not in out
     assert "<?php" in out
 
 
 def test_read_env_var_overrides_threshold(
     tmp_path: Path, monkeypatch
 ) -> None:
-    _enable_abstract(monkeypatch, max_bytes=100000)
+    _enable_abstract(monkeypatch, threshold=100000)
     monkeypatch.setenv("SUPERTOOL_READ_ABSTRACT_THRESHOLD_BYTES", "100")
     f = tmp_path / "x.php"
     f.write_text("<?php\nclass Foo {}\n" + "// pad\n" * 200)
     out = supertool.op_read(str(f))
-    assert "[php abstract" in out
+    assert "[abstract read — php" in out
 
 
 def test_dispatch_read_full_keyword(tmp_path: Path, monkeypatch) -> None:
-    _enable_abstract(monkeypatch, max_bytes=100)
+    _enable_abstract(monkeypatch, threshold=100)
     f = tmp_path / "x.php"
     f.write_text("<?php\nclass Foo {}\n" + "// pad\n" * 200)
     out = supertool.dispatch(f"read:{f}:full")
-    assert "[php abstract" not in out
+    assert "[abstract read" not in out
     assert "<?php" in out
 
 
