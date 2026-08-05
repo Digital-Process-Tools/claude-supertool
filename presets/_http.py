@@ -76,6 +76,25 @@ error" helpers must not absorb it. `DeadlineExceeded` *is* one (via
 `TimeoutError`), because a slow endpoint is exactly the failure those helpers
 exist to degrade past.
 
+Where a URL may point at all (#817)
+-----------------------------------
+The redirect rule above governs the *second* hop and later. It says nothing
+about the first, because the four API clients this module was written for hold
+their base URLs as constants — nobody can hand them a destination.
+
+`gh-issue` can. It pulled `http(s)` URLs out of issue markdown and fetched
+them, so `![x](http://169.254.169.254/latest/meta-data/…)` in any comment made
+the developer's machine read its own cloud metadata service and hand the agent
+the file. Adopting `urlopen()` alone would not have stopped that: the metadata
+URL is hop one, and there is no redirect to refuse.
+
+So there is a second, separate policy for callers that fetch a URL chosen by
+somebody else — `check_fetch_target()` and `download()`. It is **not** applied
+to `urlopen()`: turning it on globally would break every loopback test in this
+repo and any self-hosted endpoint, and the four constant-URL clients do not
+need it. Opt in by calling `download()`; see its docstring for what the policy
+does and, more importantly, does not cover.
+
 What the deadline does not cover
 --------------------------------
 It runs from before the connect, is checked once when the response object is
@@ -90,11 +109,14 @@ shape reported in #766 is a dripped body.
 from __future__ import annotations
 
 import http.client
+import ipaddress
+import os
+import socket
 import sys
 import time
 import urllib.parse
 import urllib.request
-from typing import Any
+from typing import Any, Iterable, Sequence
 
 MAX_REDIRECTS = 5
 
@@ -174,6 +196,31 @@ class DeadlineExceeded(TimeoutError):
         )
 
 
+class DestinationRefused(Exception):
+    """A URL was not fetched because the destination policy declined it (#817).
+
+    Not an `OSError`, for the third time and the same reason as
+    `RedirectRefused` and `ResponseTooLarge`. The call site this was written for
+    read `except (urllib.error.URLError, OSError): continue` — so an `OSError`
+    here would have been swallowed into the silent skip that made the original
+    defect invisible, and the op would have printed "0 downloaded" with no
+    reason next to a URL somebody planted deliberately.
+    """
+
+    def __init__(self, url: str, reason: str) -> None:
+        super().__init__(url, reason)
+        self.url = url
+        self.reason = reason
+
+    def __str__(self) -> str:
+        """`!r` on the URL: it comes from a tracker comment anyone can write, and
+        it is on its way to a terminal. Same reasoning as `RedirectRefused`."""
+        return (
+            f"refused to fetch {self.url!r}: {self.reason}. Nothing was requested "
+            f"from that destination and nothing was written to disk."
+        )
+
+
 class RedirectRefused(Exception):
     """A redirect pointed off-origin and was not followed.
 
@@ -247,6 +294,266 @@ def check_redirect(from_url: str, to_url: str) -> str | None:
             return None
         return f"scheme upgrade off the default ports: {f_port} -> {t_port}"
     return f"scheme downgrade: {f_scheme} -> {t_scheme}"
+
+
+# ---------------------------------------------------------------------------
+# Destination policy (#817) — for callers fetching a URL somebody else chose
+# ---------------------------------------------------------------------------
+
+def check_address(addr: str) -> str | None:
+    """Return None if `addr` is a public unicast address, else the refusal reason.
+
+    `ipaddress`' `is_global` is the whole test, deliberately, instead of a
+    hand-written list of CIDRs. IANA's special-purpose registries are what
+    `is_global` tracks, and a hand-written list is how `169.254.169.254` gets
+    blocked while `169.254.170.2` (ECS task metadata), `100.64.0.0/10` (CGNAT)
+    and `fd00::/8` (IPv6 ULA) do not. An address the stdlib cannot classify is
+    refused rather than allowed — this fails closed.
+
+    IPv4-mapped, 6to4 and Teredo v6 addresses are unwrapped first: `::ffff:
+    127.0.0.1` is loopback wearing a v6 spelling, and a check that only looks at
+    the outer form waves it through.
+    """
+    try:
+        ip: Any = ipaddress.ip_address(addr)
+    except ValueError:
+        return f"{addr!r} is not an IP address"
+    for attr in ("ipv4_mapped", "sixtofour", "teredo"):
+        inner = getattr(ip, attr, None)
+        if inner is not None:
+            # `teredo` is a (server, client) pair; the client is the endpoint.
+            ip = inner[1] if isinstance(inner, tuple) else inner
+    if ip.is_multicast:
+        return f"{ip} is a multicast address, not a public unicast one"
+    if not ip.is_global:
+        return (
+            f"{ip} is not a public address (loopback, link-local, private, "
+            f"shared or otherwise reserved)"
+        )
+    return None
+
+
+def host_allowed(host: str, allowed_hosts: Iterable[str]) -> bool:
+    """Exact host match, or a suffix match for entries written with a leading dot.
+
+    The leading dot is required rather than implied. `endswith("github
+    usercontent.com")` also accepts `evilgithubusercontent.com`, which is the
+    defect CodeQL flags as py/incomplete-url-substring-sanitization and which
+    `github/issue.py` already had to fix once in `_owner_repo`.
+    """
+    host = (host or "").lower().rstrip(".")
+    if not host:
+        return False
+    for entry in allowed_hosts:
+        entry = entry.lower().strip().rstrip(".")
+        if not entry:
+            continue
+        if entry.startswith("."):
+            if host.endswith(entry) and len(host) > len(entry):
+                return True
+        elif host == entry:
+            return True
+    return False
+
+
+def check_fetch_target(
+    url: str,
+    allowed_hosts: Iterable[str],
+    *,
+    allow_private: bool = False,
+    allow_schemes: Sequence[str] = ("http", "https"),
+) -> str | None:
+    """Return None if this URL may be fetched, else the refusal reason.
+
+    Pure — no DNS, no sockets — so it is safe to call before anything is sent
+    and cheap to call again on every redirect hop. The host allowlist is the
+    load-bearing half: a literal-IP URL matches no name, so
+    `http://169.254.169.254/…` dies here without a DNS query or a packet.
+    `check_address` is applied on top for a host that *is* an IP literal, which
+    only matters when a caller allowlists one.
+    """
+    parts = urllib.parse.urlsplit(url)
+    scheme = (parts.scheme or "").lower()
+    if scheme not in allow_schemes:
+        return f"scheme {scheme or '(none)'} is not one of {'/'.join(allow_schemes)}"
+    try:
+        host = parts.hostname
+    except ValueError:
+        return "the URL has an unparseable host"
+    if not host:
+        return "the URL has no host"
+    if not host_allowed(host, allowed_hosts):
+        return (
+            f"host {host!r} is not on the fetch allowlist "
+            f"({', '.join(sorted(allowed_hosts)) or 'empty'})"
+        )
+    if not allow_private:
+        try:
+            ipaddress.ip_address(host)
+        except ValueError:
+            pass
+        else:
+            reason = check_address(host)
+            if reason is not None:
+                return reason
+    return None
+
+
+class DestinationRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Applies `check_fetch_target` to every hop rather than a same-origin rule.
+
+    Same-origin is the right rule for `SafeRedirectHandler`, where the thing
+    being protected is a credential in a header. Here no credential is sent, and
+    the thing being protected is *which address the machine connects to* — so
+    the bound is the allowlist, checked again at each hop. That is strictly
+    tighter than same-origin for this caller and it keeps the one cross-host hop
+    GitHub actually performs (`github.com/user-attachments/…` ->
+    `private-user-images.githubusercontent.com`) working.
+    """
+
+    max_redirections = MAX_REDIRECTS
+
+    def __init__(self, allowed_hosts: Sequence[str], allow_private: bool) -> None:
+        self.allowed_hosts = tuple(allowed_hosts)
+        self.allow_private = allow_private
+
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+        newurl: str,
+    ) -> urllib.request.Request | None:
+        reason = check_fetch_target(
+            newurl, self.allowed_hosts, allow_private=self.allow_private
+        )
+        if reason is not None:
+            raise DestinationRefused(
+                newurl, f"HTTP {code} from {req.full_url!r} redirected here, and {reason}"
+            )
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def download_opener(
+    allowed_hosts: Sequence[str], allow_private: bool
+) -> urllib.request.OpenerDirector:
+    """A fresh opener whose redirect handler carries this call's policy.
+
+    Per call rather than module-level: the policy is an argument, and a shared
+    opener would need mutable state that two concurrent downloads would race on.
+    """
+    return urllib.request.build_opener(
+        DestinationRedirectHandler(allowed_hosts, allow_private)
+    )
+
+
+def _check_resolved(host: str, allow_private: bool) -> None:
+    """Refuse if *any* address the host resolves to is non-public.
+
+    Any, not all: a name answering with one public and one private address is a
+    rebinding attempt, and urllib picks whichever the resolver hands it first.
+    A resolution failure is left to the connect below, which reports it as the
+    network error it is rather than as a policy refusal.
+    """
+    if allow_private:
+        return
+    try:
+        infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+    except OSError:
+        return
+    for info in infos:
+        reason = check_address(info[4][0])
+        if reason is not None:
+            raise DestinationRefused(host, f"it resolves to {reason}")
+
+
+def download(
+    url: str,
+    dest: str,
+    *,
+    allowed_hosts: Sequence[str],
+    limit: int | None = None,
+    timeout: int = 20,
+    deadline: float | None = None,
+    allow_private: bool = False,
+    content_types: Sequence[str] | None = None,
+) -> int:
+    """Fetch `url` to `dest` under the destination policy. Returns bytes written.
+
+    The order matters as much as the checks:
+
+    1. scheme and host allowlist — pure, so a refused URL costs zero packets and
+       zero DNS queries. A probe that reaches the metadata service has already
+       told the attacker the machine can see it.
+    2. DNS resolution, every returned address checked with `check_address`.
+    3. connect, with `DestinationRedirectHandler` re-running step 1 per hop.
+    4. `Content-Type` against `content_types`, if the caller passed any.
+    5. `read_capped` — refusal, not truncation — into memory.
+    6. only then, one write. Nothing reaches the disk that did not pass.
+
+    Raises `DestinationRefused` for a policy decline, `ResponseTooLarge` /
+    `DeadlineExceeded` / `RedirectRefused` from the shared machinery, and the
+    ordinary `OSError`/`HTTPError`/`HTTPException` for a network failure. The
+    caller must keep those two groups apart: "we declined" and "we tried and
+    could not tell" are different facts with different next actions.
+
+    What this does NOT cover
+    ------------------------
+    * **DNS rebinding.** Step 2 resolves the name and step 3 resolves it again
+      inside urllib. A name that answers publicly to the first query and
+      privately to the second is not caught. Closing it needs connecting to a
+      pinned address with an overridden `Host` header, which is a socket layer
+      this module does not have. What actually holds the line is the allowlist:
+      the attacker would need control of DNS for a name already on it.
+    * **An HTTP proxy.** `build_opener` installs a `ProxyHandler`, so with
+      `http_proxy`/`https_proxy` set the connection goes to the proxy and the
+      proxy resolves the name. The address checks are then decorative and only
+      the allowlist is doing work. Stated, not fixed — unsetting the proxy is
+      not this function's call to make.
+    * **Public-address SSRF.** An allowlisted host is still a fetch to the
+      internet, and an attacker who can host a file on one can make this machine
+      request it. The size cap, the deadline and the content-type check bound
+      what that is worth; they do not prevent it.
+    * **The bytes themselves.** They are attacker-chosen content from an
+      allowlisted host. This function decides *where* they came from and *how
+      many*; it makes no claim about what they contain.
+    * **The header phase**, per this module's own deadline caveat above.
+    """
+    reason = check_fetch_target(url, allowed_hosts, allow_private=allow_private)
+    if reason is not None:
+        raise DestinationRefused(url, reason)
+    host = urllib.parse.urlsplit(url).hostname or ""
+    _check_resolved(host, allow_private)
+
+    opener = download_opener(allowed_hosts, allow_private)
+    with urlopen(url, timeout=timeout, deadline=deadline, opener=opener) as resp:
+        if content_types:
+            got = (getattr(resp, "headers", None) or {}).get("Content-Type", "") or ""
+            base = got.split(";")[0].strip().lower()
+            if not any(base.startswith(p) for p in content_types):
+                resp.close()
+                raise DestinationRefused(
+                    url,
+                    f"it answered Content-Type {base or '(none)'!r}, not one of "
+                    f"{'/'.join(content_types)}*. The body was not read and not saved",
+                )
+        data = read_capped(resp, limit=limit)
+
+    # The directory is created here and not by the caller, so that a refused URL
+    # leaves *nothing* behind — not even an empty `/tmp/supertool-images/gh/N/`.
+    # An empty directory is a small thing, but it is also a record that the
+    # machine considered the fetch, and a caller that pre-creates it cannot tell
+    # a refused issue from a fetched one afterwards.
+    parent = os.path.dirname(dest)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    tmp = dest + ".part"
+    with open(tmp, "wb") as fh:
+        fh.write(data)
+    os.replace(tmp, dest)
+    return len(data)
 
 
 class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -366,6 +673,7 @@ def urlopen(
     req: urllib.request.Request | str,
     timeout: int = 30,
     deadline: float | None = None,
+    opener: urllib.request.OpenerDirector | None = None,
 ) -> Any:
     """Drop-in replacement for urllib.request.urlopen with off-origin redirects refused.
 
@@ -402,7 +710,17 @@ def urlopen(
     if deadline is None:
         deadline = timeout * DEADLINE_FACTOR
     expires = (time.monotonic() + deadline, float(deadline)) if deadline > 0 else None
-    resp = _OPEN(req, timeout=timeout)
+    # `opener` exists for `download()`, which needs the #817 destination policy
+    # on its redirects instead of the same-origin rule. Everything else — the
+    # deadline, the hop disclosure, the caps — is identical, and duplicating this
+    # function to change one handler is how the two copies drift apart.
+    #
+    # Bound to a plain name before it is called, for the reason given where
+    # `_OPEN` is defined: `tests/test_encoding_seam.py` reads a literal
+    # `something.open(...)` as a locale-decoded `Path.open` and fails the build.
+    # It caught this line on the first full run.
+    do_open = _OPEN if opener is None else opener.open
+    resp = do_open(req, timeout=timeout)
     final = getattr(resp, "url", None)
     if final and final != requested:
         print(
