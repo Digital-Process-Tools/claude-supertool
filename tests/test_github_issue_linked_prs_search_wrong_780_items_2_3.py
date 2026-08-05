@@ -111,6 +111,27 @@ def test_a_merged_closer_is_reported_even_though_search_would_have_hidden_it(mon
     assert "unknown" not in out.lower()
 
 
+# --- the host check that decides which repo gets queried --------------------
+
+def test_a_lookalike_host_does_not_resolve_owner_repo() -> None:
+    """`endswith("github.com")` also accepts `evilgithub.com`.
+
+    The owner/name lifted from the URL decides which repository the GraphQL
+    query asks about, so a lookalike host would return a confident answer
+    about the wrong repo — this repo's recurring defect, arriving through a
+    hostname. Flagged by CodeQL as py/incomplete-url-substring-sanitization.
+    """
+    assert issue._owner_repo("https://evilgithub.com/o/r/issues/1") is None
+    assert issue._owner_repo("https://github.com.attacker.io/o/r/issues/1") is None
+
+
+def test_real_github_hosts_still_resolve() -> None:
+    """The fix must not cost Enterprise, whose host is a `github.com` subdomain."""
+    assert issue._owner_repo("https://github.com/o/r/issues/1") == ("o", "r")
+    assert issue._owner_repo("https://GitHub.com/o/r/issues/1") == ("o", "r")
+    assert issue._owner_repo("https://corp.github.com/o/r/issues/1") == ("o", "r")
+
+
 # --- a new failure surface: GraphQL needs owner/repo, `pr list` did not ----
 
 def test_unresolvable_owner_repo_says_unknown_not_none(monkeypatch) -> None:

@@ -122,7 +122,16 @@ def _owner_repo(web_url: str) -> tuple[str, str] | None:
     if target is not None:
         return target
     parts = web_url.split("/")
-    if len(parts) >= 5 and parts[2].endswith("github.com"):
+    if len(parts) < 5:
+        return None
+    # Host equality, not a suffix test: `endswith("github.com")` also accepts
+    # `evilgithub.com`, so a hostile URL would resolve owner/name from a
+    # lookalike host and this would query the wrong repository while looking
+    # like it answered about the right one. The `.github.com` arm keeps
+    # Enterprise subdomains working. Flagged by CodeQL as
+    # py/incomplete-url-substring-sanitization.
+    host = parts[2].lower()
+    if host == "github.com" or host.endswith(".github.com"):
         return parts[3], parts[4]
     return None
 
