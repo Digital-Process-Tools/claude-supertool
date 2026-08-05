@@ -15,7 +15,10 @@ genuinely outlast a real `subprocess.run(timeout=…)`:
 
 Both assert their fixture actually ran (a sentinel file the helper writes), so
 a fixture that cannot spawn fails loudly instead of making the test pass while
-testing nothing (#649).
+testing nothing (#649). Both also take their budget from `_BudgetAfterSpawn`
+rather than a number of seconds: a plain budget starts its clock when *git*
+starts, which makes the test a statement about how fast the runner reaches the
+helper, and on `windows-latest, 3.11` that statement came out false (#828).
 
 The only stubbed boundary is `query_open_mr` — the network call to glab/gh.
 Its return value is API metadata, not a git fact, and a sandbox has no MR.
@@ -29,6 +32,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
@@ -126,11 +130,17 @@ class _Sandbox:
 
     # -- hazard fixtures ---------------------------------------------------
 
-    def _sleeper(self, name: str, seconds: int = 90) -> str:
-        """A real python script that records it ran, then sleeps past a budget."""
+    def _sleeper(self, name: str, seconds: int = 90, spawn_delay: int = 0) -> str:
+        """A real python script that records it ran, then sleeps past a budget.
+
+        `spawn_delay` sleeps *before* the sentinel is written, standing in for a
+        runner on which git is simply slow to reach the helper at all — the #828
+        shape, reproducible on any platform.
+        """
         script = os.path.join(self.tmp, name)
         Path(script).write_text(
             "import pathlib, time" + NL +
+            "time.sleep(%d)" % spawn_delay + NL +
             "pathlib.Path(%r).write_text('ran')" % self.sentinel + NL +
             "time.sleep(%d)" % seconds + NL,
             encoding="utf-8")
@@ -153,14 +163,14 @@ class _Sandbox:
         assert _run(["config", "protocol.ext.allow", "always"],
                     self.mine).returncode == 0
 
-    def make_rebase_hang(self) -> None:
+    def make_rebase_hang(self, spawn_delay: int = 0) -> None:
         """Stall the rebase *after* git has paused the worktree.
 
         A custom low-level merge driver is invoked while `.git/rebase-merge`
         already exists, so the timeout lands on a half-rebased tree — the
         ordering that makes #640 more than a cosmetic traceback.
         """
-        script = self._sleeper("slow_merge_driver.py")
+        script = self._sleeper("slow_merge_driver.py", spawn_delay=spawn_delay)
         _commit(self.mine, ".gitattributes", "*.txt merge=slow" + NL,
                 "slow merge driver")
         assert _run(["push", self.remote_name, "feature"],
@@ -261,6 +271,58 @@ def _last_result(out: str) -> str:
     return lines[-1]
 
 
+class _BudgetAfterSpawn:
+    """A recovery budget whose clock starts when the fixture's helper spawns.
+
+    Both timeout tests need `_RECOVER_TIMEOUT` to expire *after* the real helper
+    git spawns — the sleeping `ext::` transport, the sleeping merge driver — and
+    a plain number cannot say that. It starts the clock when git starts, so what
+    the test actually asserts is "git reaches the helper faster than the budget".
+    On `windows-latest, 3.11` it did not: the merge driver never ran, and the
+    test refused to pass rather than assert against a hazard it had not set up
+    (#828). That refusal is correct and it still reddened master for a reason
+    nobody can act on.
+
+    `subprocess.run(timeout=x)` reads the budget exactly once, as `_time() + x`,
+    and that addition happens *after* the child is already running. Blocking
+    there until the sentinel exists turns the race into a barrier: the deadline
+    is set from the moment the helper announced itself, so `budget` seconds of
+    real stall are observed on any runner at any speed.
+
+    `stage` is which use of the recovery budget the sentinel belongs to — the
+    fetch is 1, the rebase that follows it is 2. Earlier uses are ordinary git
+    work with no helper to wait for and take `lead` outright. If the helper never
+    announces itself the wait gives up after `cap` and the test fails on its own
+    precondition exactly as it does today: this removes the race, not the
+    assertion.
+    """
+
+    def __init__(self, sentinel: str, stage: int, budget: int = 2,
+                 lead: int = 60, cap: float = 30.0) -> None:
+        self.sentinel = sentinel
+        self.stage = stage
+        self.budget = budget
+        self.lead = lead
+        self.cap = cap
+        self.uses = 0
+        self.waited = 0.0
+
+    def __radd__(self, started: float) -> float:
+        self.uses += 1
+        if self.uses < self.stage:
+            return started + self.lead
+        begin = time.monotonic()
+        while not os.path.exists(self.sentinel):
+            if time.monotonic() - begin >= self.cap:
+                break
+            time.sleep(0.01)
+        self.waited = time.monotonic() - begin
+        return started + self.waited + self.budget
+
+    def __str__(self) -> str:
+        return str(self.budget)
+
+
 # ===========================================================================
 # #640 — TimeoutExpired on the rebase-recovery path
 # ===========================================================================
@@ -273,12 +335,16 @@ def test_fetch_timeout_gives_a_verdict_not_a_traceback(box, monkeypatch) -> None
     """
     box.advance_remote_feature()
     box.make_fetch_hang()
-    monkeypatch.setattr(push, "_RECOVER_TIMEOUT", 3, raising=False)
+    budget = _BudgetAfterSpawn(box.sentinel, stage=1)
+    monkeypatch.setattr(push, "_RECOVER_TIMEOUT", budget, raising=False)
     before = box.head()
 
     with _no_mr():
         rc, out = box.drive_push()
 
+    assert budget.uses == budget.stage, (
+        "the recovery budget was consumed at a different git call than the "
+        "barrier arms on — the wait is guarding the wrong stage")
     assert box.fixture_ran, (
         "the ext:: transport helper never spawned — this test would prove nothing")
     assert rc != 0
@@ -299,11 +365,15 @@ def test_rebase_timeout_names_the_paused_worktree_and_the_way_out(
     statement of it. The receipt must name the state and both exits.
     """
     box.make_rebase_hang()
-    monkeypatch.setattr(push, "_RECOVER_TIMEOUT", 5, raising=False)
+    budget = _BudgetAfterSpawn(box.sentinel, stage=2)
+    monkeypatch.setattr(push, "_RECOVER_TIMEOUT", budget, raising=False)
 
     with _no_mr():
         rc, out = box.drive_push()
 
+    assert budget.uses == budget.stage, (
+        "the recovery budget was consumed at a different git call than the "
+        "barrier arms on — the wait is guarding the wrong stage")
     assert box.fixture_ran, (
         "the merge driver never spawned — this test would prove nothing")
     assert box.rebase_in_progress(), (
@@ -314,6 +384,46 @@ def test_rebase_timeout_names_the_paused_worktree_and_the_way_out(
     assert "REBASE IN PROGRESS" in verdict.upper(), verdict
     assert "git rebase --continue" in out
     assert "git rebase --abort" in out
+
+
+def test_rebase_timeout_fixture_survives_a_slow_helper_spawn(box, monkeypatch) -> None:
+    """#828: the budget must not expire before the helper it exists to catch.
+
+    On `windows-latest, 3.11` git took longer to reach the merge driver than the
+    whole budget the test allowed it, so the driver never spawned and the test —
+    correctly — refused to pass. `spawn_delay` reproduces that race on any
+    platform: with a wall-clock budget the assertion below is unreachable.
+    """
+    delay = 6
+    box.make_rebase_hang(spawn_delay=delay)
+    budget = _BudgetAfterSpawn(box.sentinel, stage=2)
+    monkeypatch.setattr(push, "_RECOVER_TIMEOUT", budget, raising=False)
+
+    started = time.monotonic()
+    with _no_mr():
+        rc, out = box.drive_push()
+    elapsed = time.monotonic() - started
+
+    # A lower bound, not a benchmark: a loaded runner can only make this larger.
+    # It fails only if the deadline was set from before the wait, which would put
+    # the whole budget back in front of the spawn it is supposed to follow.
+    assert elapsed >= budget.waited + budget.budget, (
+        "the rebase did not stall for the full budget after the driver "
+        "announced itself: %.2fs elapsed, %.2fs waited" % (elapsed, budget.waited))
+    assert budget.uses == budget.stage, (
+        "the recovery budget was consumed at a different git call than the "
+        "barrier arms on — the wait is guarding the wrong stage")
+    assert budget.waited >= delay / 2, (
+        "the barrier did not wait for the slow spawn — the budget is racing "
+        "the driver again, which is exactly what #828 reddened master with")
+    assert box.fixture_ran, (
+        "the merge driver never spawned — this test would prove nothing")
+    assert box.rebase_in_progress(), (
+        "fixture did not reproduce the hazard: git never paused the rebase")
+    assert rc != 0
+    verdict = _last_result(out)
+    assert "TIMED OUT" in verdict
+    assert "REBASE IN PROGRESS" in verdict.upper(), verdict
 
 
 def test_rebase_state_that_cannot_be_read_is_stated_not_guessed() -> None:
