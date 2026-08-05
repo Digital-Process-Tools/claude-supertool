@@ -389,12 +389,15 @@ The pytest matrix is {ubuntu, macos, windows} × py3.9–3.12. For a long time t
 
 | Code | Where it runs | What is checked |
 | --- | --- | --- |
-| Python | all 12 pytest legs | the suite, 86% coverage floor on `supertool.py` |
+| Python | all 12 pytest legs | the suite — and **no coverage floor**: every leg passes `--no-cov` |
+| Python | the `coverage` job, ubuntu + py3.12 | `.github/scripts/coverage_gate.py` — floors on `supertool.py` and `presets/`, plus the printed inventory of what it did *not* measure |
 | `notifiers/claude-channel/channel.ts` | `notifiers` job, ubuntu + macOS | `bunx tsc --noEmit` under the channel's own strict tsconfig, plus the two socket-level integration test files, run for real |
 | Shell (`*.sh`, `.githooks/*`) | all 12 pytest legs | `bash -n` — **syntax only**, via `tests/test_ci_non_python_coverage_557.py` |
 | `notifiers/cursor-witness/extension/src/extension.ts` | nowhere | **uncovered, knowingly** — a VS Code extension needs `npm install` of the editor's type packages to compile and an editor host to exercise |
 
-Three things about that table are load-bearing:
+Four things about that table are load-bearing:
+
+- **The coverage floor is a job, not a flag on the matrix, and until [#861](https://github.com/Digital-Process-Tools/claude-supertool/issues/861) it was neither.** It lived in `addopts` as `--cov=supertool --cov-fail-under=86`, which measured one file: `presets/` — ~14k statements, the whole op surface — had no floor at all, so a preset could ship with zero tests against a green number. And because the twelve legs pass `--no-cov` (and `.githooks/pre-push` does too, deliberately), the 86% was enforced only against whoever happened to run a bare local `pytest`, while the row above this one said it ran on all twelve legs. The gate now has one owner, one number, and one place it runs.
 
 - **The `notifiers` job does not run on Windows, and that is a decision.** `channel.ts` binds an AF_UNIX socket, so those tests skip there by platform whatever toolchain is installed. A Windows leg would install bun to report a green it had not earned — [#557](https://github.com/Digital-Process-Tools/claude-supertool/issues/557)'s defect wearing [#557](https://github.com/Digital-Process-Tools/claude-supertool/issues/557)'s fix. macOS is in because this code has already produced a macOS-specific defect: the ~104-byte `sun_path` cap, which is why the #554 harness pins `/tmp` rather than `tmp_path`.
 - **`SUPERTOOL_REQUIRE_JS=1`, set by that job and nowhere else, converts a missing prerequisite into a collection error.** Without it a half-failed `bun install` would skip the tests and leave the job green, which is the whole defect reproduced inside its own fix. See `tests/_toolchain_gate.py`; the promise is deliberately *not* inferred from `CI`, because eleven of the twelve pytest legs are on CI and install no JS runtime.
@@ -412,7 +415,51 @@ Both jobs also carry a `timeout-minutes` — 30 for `pytest`, 10 for `notifiers`
 python3 -m pytest tests/
 ```
 
-~4000 tests, 86% minimum coverage (enforced by pytest-cov). Current: 88%.
+~4000 tests. The `--cov` in `addopts` prints a term report and **enforces
+nothing** — see below for why that is deliberate.
+
+### Coverage
+
+```bash
+python3 .github/scripts/coverage_gate.py
+```
+
+One script, run by the `coverage` job in CI and by you locally, producing the
+same number both places. It runs the suite with child-process attribution on,
+then prints three sections and gates on the first:
+
+| State | What it means |
+| --- | --- |
+| **measured, enforced** | `supertool.py` and `presets/` — a floor that reds the build |
+| **measured, not enforced** | `validators/`, `formatters/`, `notifiers/*.py`, `.github/scripts/` — real numbers, printed, no floor. Each is a thin `subprocess` wrapper around an external binary (phpstan, prettier, hadolint) that is absent on the runner, so the figure reports the toolchain rather than the code, and a floor could only fire for a reason nobody can act on |
+| **not measured** | `tests/` itself, the TypeScript, the shell — each named with its reason and with whatever *does* check it |
+
+All three print on every run, pass or fail. A report that quietly omits a
+directory is exactly the defect [#861](https://github.com/Digital-Process-Tools/claude-supertool/issues/861)
+filed, and it must not come back in a new shape. `tests/test_coverage_scope_861.py`
+asserts every tracked `.py` file lands in one of those buckets, discovered from
+`git ls-files`, so a new preset directory reds the suite until somebody
+classifies it.
+
+**Why `addopts` no longer carries `--cov-fail-under`.** That measurement
+understates this repo, badly and unevenly. 122 test modules drive a preset by
+spawning it — the only honest way to test a script whose contract is its argv
+and its exit status — and coverage does not follow a child process without
+`parallel = true` and `COVERAGE_PROCESS_START`. In-process only,
+`presets/git/diff.py` reads **9%** while its 600-line dedicated test module sits
+right there; the true figure is **83.7%**. `trail.py` moves 12% → 75.6%,
+`commit.py` 80% → 94.2%. A floor on the unattributed number sends contributors
+to write tests that already exist, and leaves the genuinely thin files
+(`git/blame.py` 14%, `git/diverge.py` 24%, `mcp/daemon.py` 46%) looking no
+different from the well-tested ones. The gate script pays ~3% wall-clock to
+tell those two cases apart.
+
+**The floors are a measurement, not a target.** They sit a point or so under
+what a real run produces, and they ratchet: raise them when the number rises,
+never lower them to make a red go away. A gate nobody can pass gets deleted or
+bypassed inside a week, and a bypassed gate is worse than an absent one — it
+still prints green. The gate says so itself when a floor drifts more than three
+points below the measurement.
 
 **The suite runs in parallel by default** — `addopts` carries `-n auto`, which
 takes it from ~4m22s to ~1m08s on an 11-core machine. Two consequences worth

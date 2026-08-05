@@ -87,6 +87,58 @@ jobs:
         if: always()
         shell: bash
         run: python .github/scripts/junit_summary.py junit.xml
+  coverage:
+    # #861: the 86% floor lived in `addopts` as `--cov=supertool`, so it
+    # measured one file and every op under `presets/` — ~14k statements, the
+    # whole `gh-*`/`gl-*`/`git-*`/`watch` surface — had no floor at all. Worse,
+    # the twelve legs above pass `--no-cov` and so does `.githooks/pre-push`,
+    # deliberately, which means the number was enforced only against a bare
+    # local `pytest` while `docs/contributing.md` said it ran on all twelve
+    # legs. A floor with no owner is the same shape as no floor.
+    #
+    # One leg, not twelve. Line coverage of this code is not a per-OS question
+    # in any way a floor could act on — the platform-conditional branches are a
+    # couple of points either side, and a per-OS floor would be three more
+    # numbers to keep in step, which is the trade the `timeout-minutes` comment
+    # above already refuses. Twelve coverage runs would buy that and cost twelve
+    # times the wall-clock of the slowest thing in this workflow.
+    #
+    # Deliberately a separate job rather than a flag on the matrix: coverage
+    # needs `parallel = true` and `COVERAGE_PROCESS_START` so the 122
+    # subprocess-driving test modules are attributed at all (without it
+    # `presets/git/diff.py` reads 9% against its own 600-line test module, and
+    # the real figure is 83.7%). That environment is exactly what
+    # `tests/test_encoding_seam.py` and `tests/test_git_commit_payload_route.py`
+    # reproduce Windows defects by *not* having, so it does not belong on the
+    # legs that have to run them clean.
+    name: coverage (floors + disclosure)
+    runs-on: ubuntu-latest
+    # 3m24s to 6m04s across four local runs — the spread is contention on the
+    # measuring machine, not variance in the work — against ~3m36s for the same
+    # suite with no coverage at all. Tracing a 16.8k-line `supertool.py` inside
+    # each of ~900 spawned children is what the top of that range buys, and it
+    # is the cost of the attribution that makes the number true. 20 is ~3.3x the
+    # worst observed run, sized like the pytest budget above rather than tight,
+    # so it fires for a hang and not for a slow runner. Pinned by
+    # `tests/test_ci_job_timeouts_722.py`.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install test deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-cov pytest-xdist pytest-timeout ruff
+      - name: Install supertool (pip entry point — cross-platform, no symlink)
+        run: pip install -e .
+      # The script prints all three states — enforced, measured-without-a-floor,
+      # and not-measured-with-the-reason — on every run, pass or fail. A report
+      # that silently omits a directory is the defect being fixed here, and it
+      # must not survive in a new form.
+      - name: Coverage gate
+        run: python -X utf8 .github/scripts/coverage_gate.py
   notifiers:
     # #557: the matrix above runs pytest and nothing else, so
     # `notifiers/claude-channel/` — TypeScript, started in every radar session —
