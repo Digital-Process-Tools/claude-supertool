@@ -295,6 +295,22 @@ Same family as [`gh-job:...:grep:`](#gh-jobgrep-bounds-its-own-output-and-says-w
 
 **Which ten are shown is a separate question and was left alone.** #719 argues the oldest comments carry the objection and the newest are the least load-bearing. That may be right, but it is an argument about selection, not about disclosure, and settling it inside a fix for an invisible cut would smuggle a behaviour change into a diff about honesty. The reasoning sits on `_body.COMMENT_TAIL` and in [#738](https://github.com/Digital-Process-Tools/claude-supertool/issues/738), which also raises a third option neither side of the argument had: keep the head *and* the tail with the gap marked in the middle, which is structurally what `gl-mr` already does.
 
+### Linked PRs answer "will this close it", not "does this mention it"
+
+`gh-issue`'s "Linked PRs" section used to run `gh pr list --search N`, which was wrong in three directions at once ([#780](https://github.com/Digital-Process-Tools/claude-supertool/issues/780)):
+
+- **Silent on failure.** A non-zero exit printed nothing, and `except (TimeoutExpired, JSONDecodeError): pass` swallowed the rest. A reader who sees no `Linked PRs` line concludes there are none, when the truth may be "the lookup could not run" — and "no linked PR" is the signal that invites delegating work someone already did.
+- **False positive.** `--search` matches the number anywhere in a PR's title or body, not only a real closer. Measured live: `gh-issue:770` reported `#774` as linked; `#774` closes `#760` and only mentions `#770` in prose.
+- **False negative.** `gh pr list` defaults to open PRs, so a *merged* closer never appears. Measured live: `gh-issue:778` reported "none" while `#781` (MERGED) is the PR that actually closed it — the more dangerous direction, since it reads as "nobody is on this" about an issue that already shipped a fix.
+
+The first fix idea on the issue — read the issue timeline instead — was tried and measured wrong too: a `Closes #N` line in a PR body produces the same `CrossReferencedEvent` as a plain mention, so the timeline conflates the two exactly like `--search` does, just differently ([#782](https://github.com/Digital-Process-Tools/claude-supertool/issues/782)).
+
+What actually discriminates, verified against this repo: `closedByPullRequestsReferences(includeClosedPrs: true)` on the issue — the field GitHub itself computes for "is a PR going to close this". `gh-issue` now uses it, matching `gh-issues`' board ranking (#782), so the two ops agree instead of answering the same question two different ways ([#628](https://github.com/Digital-Process-Tools/claude-supertool/issues/628)'s theme). `includeClosedPrs: true` is not optional: without it a merged closer vanishes, recreating the false negative in the field meant to fix it.
+
+Three states, unchanged from before: a failed lookup prints `Linked PRs: unknown — could not query (...)`, never nothing and never "none". The switch to GraphQL added one new way to fail — no owner/repo to put in the query text, since `gh api` (unlike `gh pr list`) takes no `--repo` flag — and that failure gets the same "unknown" treatment rather than a silent "none".
+
+The lookup asks for the first 20 closing PRs, not the 5 `gh-issues` caps its board rows to: a board multiplies its cap across every row per call, but this op is answering about the one issue a reader named, and likely wants the complete list. Hitting the cap prints a note (`showing the first 20 — there may be more`) rather than truncating silently.
+
 ### `gh-job:...:grep:` bounds its own output, and says when it did
 
 Identical to `gl-job`'s — see
