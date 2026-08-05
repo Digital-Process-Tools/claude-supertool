@@ -30,6 +30,38 @@ pipeline: failed (#5001)
 
 Same shape as `gh-pr`'s named legs (bounded at 5 per group, `+N more` past that) but not routed through the same `_checks` classifier — GitLab's job vocabulary (`canceled`, one L; `success`/`failed`/`skipped`/`manual`) and GitHub's rollup vocabulary (`CANCELLED`, two Ls, split across `conclusion`/`status`) don't share a mapping anyone has verified, so `gl-mr` names GitLab's own states rather than translating them into GitHub's.
 
+### Every block prints a line, in all three states
+
+[#720](https://github.com/Digital-Process-Tools/claude-supertool/issues/720) gave the `Approved by:` line a third state — an answer, a verified `none`, and a stated `UNKNOWN` naming why — and the sibling blocks in the same render were never brought along ([#812](https://github.com/Digital-Process-Tools/claude-supertool/issues/812)). They failed in **two different shapes**, and the difference matters more than the count:
+
+- **A wrong but plausible value.** `Pipeline: none` and `## Comments (0)` printed from a fetch nobody could complete. There is nothing in the output to tell those from the real thing, and they point the reader the wrong way: "no pipeline" is a reason to merge, "we could not read the pipeline" is a reason not to.
+- **A section that vanishes.** `Unresolved threads:`, `Failed jobs:`, the `## Files` list and `:status`'s job list each sat behind an `except (TimeoutExpired, JSONDecodeError): pass` or an `isinstance(x, list)` with an empty false branch. A timeout on the discussions endpoint meant no threads line at all — not a zero, not a decline, nothing.
+
+The rule now applied uniformly: **a section that was asked for prints a line whatever happens.** A section prints nothing only when it was never asked for — no `## Files` block on an MR that changes nothing, no `Failed jobs:` on a pipeline that did not fail.
+
+Same input, four endpoints down, before and after:
+
+```
+ Approved by: none                 Approved by: none
+ Pipeline: none                    Unresolved threads: UNKNOWN — discussions API timed out
+ Changes: 18 files                 Pipeline: UNKNOWN — pipelines API timed out
+ Merge status: can_be_merged       Changes: 18 files
+                                   ## Files (18)
+ ## Comments (0)                     ! file list unavailable — diffs API failed (glab exit 1: 403 Forbidden)
+                                   Merge status: can_be_merged
+
+                                   ## Comments (UNKNOWN)
+                                     ! comments could not be read — notes API returned no parseable JSON
+```
+
+**The count in the issue was four; it is seven, and one of the four was filed under the wrong shape.** `:status` carries its own copy of both defects — the slim `pipeline:` line and its named-job list — and slim is the poll-loop render, read most often and looked at least closely. And `## Comments` does not vanish: its heading is unconditional, so a failed fetch rendered as `(0)`. That is the worse of the two shapes, because a missing line is at least visibly missing while a wrong number is indistinguishable from a right one.
+
+**Timeouts and unparseable bodies do not share a sentence.** A timeout is a retry, an unparseable body is a bug report, a non-zero exit is usually auth or permissions, and a missing binary is an install — four remedies, four sentences, carried by one `_fetch_json` helper that every block now goes through. Collapsing them into a single "could not fetch" would be a smaller copy of the mistake being fixed.
+
+**What was *not* done: the `except` was not widened.** The failure worth preserving here is the silent `pass`, and catching more things more quietly makes it worse. `_fetch_json` names exactly `TimeoutExpired`, `JSONDecodeError` and `OSError`, each mapped to its own printed sentence; there is no bare `except Exception`, so an `AttributeError` from supertool's own logic still comes out as a traceback rather than as a tidy decline. The one genuinely new catch is `OSError` — every sibling block caught `TimeoutExpired` and `JSONDecodeError` only, so an errno mid-render was an uncaught crash, the same thing [#507](https://github.com/Digital-Process-Tools/claude-supertool/issues/507) found hiding inside a silent decline.
+
+**A fallback that is used is a fallback that is disclosed.** When the live pipelines lookup declines but the MR payload still carries a `head_pipeline`, the status prints — it is real — followed by `! live pipeline lookup declined (…) — status above comes from the MR payload and can be stale`. The same discipline covers a paginated file list whose later page failed: the shortfall is described as a fetch failure rather than re-blamed on the display cap, because `use gl-mr:N:full` is advice that cannot work for files the tool never received.
+
 ## Common workflows
 
 **Review an MR before merging:**

@@ -79,6 +79,67 @@ def _glab_fail_detail(r: subprocess.CompletedProcess[str]) -> str:
     return f"glab exit {r.returncode}"
 
 
+def _fetch_json(
+    endpoint: str, noun: str, timeout: int = 10,
+) -> tuple[object | None, str | None]:
+    """`(payload, None)` when GitLab answered, `(None, reason)` when it did not.
+
+    The four ways a `glab api` call fails to produce a payload, each named in
+    its own sentence, in one place. #720 wrote these branches out by hand for
+    the approvals line and every sibling block in this file kept a two-state
+    `except ...: pass` instead — which is #812. The abstraction is the fix as
+    much as the wording is: a block that has to *remember* to decline is a
+    block that will stop remembering.
+
+    The sentences stay distinct on purpose. A timeout is a retry; an
+    unparseable body is a bug report; a non-zero exit is usually auth or
+    permissions; a missing binary is an install. Collapsing them into one
+    "could not fetch" would be a smaller copy of the mistake this exists to
+    fix, so the four remedies keep four sentences.
+
+    What is *not* caught here is as deliberate: there is no bare
+    `except Exception`. An AttributeError or TypeError from this module's own
+    logic is a defect in supertool, and turning it into a printed decline
+    would trade the loud bug for the quiet one.
+    """
+    try:
+        r = _glab_api(endpoint, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return None, f"{noun} API timed out"
+    except OSError as e:  # FileNotFoundError included — glab absent, or an errno
+        # Listed on its own authority, same as _approvals_line: #507 was filed
+        # as a silent decline and the fatal thing inside it was an unlisted
+        # OSError. Every sibling caller here caught TimeoutExpired and
+        # JSONDecodeError only, so an errno mid-render was a traceback.
+        return None, f"could not run glab ({e})"
+    if r.returncode != 0:
+        return None, f"{noun} API failed ({_glab_fail_detail(r)})"
+    try:
+        return json.loads(r.stdout), None
+    except json.JSONDecodeError:
+        return None, f"{noun} API returned no parseable JSON"
+
+
+def _fetch_array(
+    endpoint: str, noun: str, timeout: int = 10,
+) -> tuple[list | None, str | None]:
+    """`_fetch_json` for the endpoints documented as returning an array.
+
+    A body that parses but is not an array is a fifth way to have no answer,
+    and it is the one that used to reach `.get` on a string and take the whole
+    render down (#735). It names the type it got, because "the discussions
+    endpoint returned an object" is a sentence someone can act on and "could
+    not read discussions" is not.
+    """
+    data, reason = _fetch_json(endpoint, noun, timeout)
+    if reason is not None:
+        return None, reason
+    if not isinstance(data, list):
+        return None, (f"{noun} API returned a {type(data).__name__}, "
+                      f"expected an array")
+    return data, None
+
+
 def _as_dict(value: object) -> dict:
     """A remote field documented as an object, or `{}` when it came back as
     something else.
@@ -186,20 +247,14 @@ def _approvals_line(iid: str | int) -> str:
     one, and is the defect class this tracker is mostly made of.
     """
     unknown = "Approved by: UNKNOWN"
-    try:
-        r = _glab_api(f"projects/:id/merge_requests/{iid}/approvals")
-    except subprocess.TimeoutExpired:
-        return f"{unknown} — approvals API timed out"
-    except OSError as e:  # FileNotFoundError included — glab absent, or an errno
-        # OSError is listed on its own authority: #507 was filed as a silent
-        # decline and the fatal thing found inside it was an unlisted OSError.
-        return f"{unknown} — could not run glab ({e})"
-    if r.returncode != 0:
-        return f"{unknown} — approvals API failed ({_glab_fail_detail(r)})"
-    try:
-        approvals = json.loads(r.stdout)
-    except json.JSONDecodeError:
-        return f"{unknown} — approvals API returned no parseable JSON"
+    # The four fetch/parse states moved to `_fetch_json` unchanged, word for
+    # word, when #812 generalised them to this file's other blocks. They are
+    # #720's contract, not an implementation detail free to be reworded on the
+    # way past — `test_approvals_line_keeps_its_720_wording` pins that.
+    approvals, reason = _fetch_json(
+        f"projects/:id/merge_requests/{iid}/approvals", "approvals")
+    if reason is not None:
+        return f"{unknown} — {reason}"
     if not isinstance(approvals, dict):
         return (f"{unknown} — approvals API returned a "
                 f"{type(approvals).__name__}, expected an object")
@@ -243,15 +298,15 @@ def _named_gl_jobs(pipe_id: str | int, cap: int = _checks.NAMED_CAP) -> list[str
     """
     if not pipe_id:
         return []
-    try:
-        r = _glab_api(f"projects/:id/pipelines/{pipe_id}/jobs?per_page=100")
-        if r.returncode != 0:
-            return []
-        jobs = json.loads(r.stdout)
-    except (subprocess.TimeoutExpired, json.JSONDecodeError):
-        return []
-    if not isinstance(jobs, list):
-        return []
+    jobs, reason = _fetch_array(
+        f"projects/:id/pipelines/{pipe_id}/jobs?per_page=100", "jobs")
+    if reason is not None:
+        # Was four `return []` branches. This list is only ever fetched once
+        # the caller has decided the pipeline is worth naming legs for, so an
+        # empty return read as "nothing to name" on exactly the render where
+        # something needed naming — and slim is the poll-loop render, read
+        # most often and looked at least closely (#812).
+        return [f"  jobs: UNKNOWN — {reason}"]
 
     entries, skipped = _dict_elements(jobs)
     groups: dict[str, list[tuple[str, str]]] = {}
@@ -272,6 +327,8 @@ def _named_gl_jobs(pipe_id: str | int, cap: int = _checks.NAMED_CAP) -> list[str
         if len(items) > cap:
             text += f", +{len(items) - cap} more"
         lines.append(f"  {label}: {text}")
+    if not lines:
+        lines.append("  jobs: none non-passing reported for this pipeline")
     note = _unreadable(skipped, len(jobs), "pipeline jobs")
     if note:
         lines.append(note)
@@ -636,6 +693,12 @@ class _NameStatus(NamedTuple):
 
     entries: list[tuple[str, str]]
     skipped: int
+    reason: str | None = None
+    """Why the list is short or absent — `None` when the endpoint answered.
+
+    An empty `entries` with no reason is "this MR changes nothing"; an empty
+    `entries` with a reason is "nobody could read the diff". They rendered
+    identically — as no `## Files` block at all — until #812."""
 
     @property
     def total(self) -> int:
@@ -647,26 +710,25 @@ def _get_name_status(iid: str | int, fetch_all: bool) -> _NameStatus:
 
     Default fetches only the first page (100 files) — enough for the display
     cap. With fetch_all (gl-mr:N:full) it paginates up to NAMESTATUS_FETCH_CAP
-    files. Returns [] on any API/parse failure so the caller silently omits
-    the block rather than erroring.
+    files.
+
+    Carries `reason` for the same purpose `_get_conflict_hunks` carries
+    `skip_reason`: the four `break`s here used to return a bare `[]`, and the
+    caller omitted the whole `## Files` block on it — so a diffs endpoint that
+    timed out rendered exactly like an MR that changed nothing (#812). A
+    failure on page 3 is worse than either, because the entries already
+    collected are real and the shortfall is invisible; the reason survives
+    alongside them so the caller can say the list is short and why.
     """
     entries: list[tuple[str, str]] = []
     skipped = 0
+    reason: str | None = None
     page = 1
     while True:
-        try:
-            r = _glab_api(
-                f"projects/:id/merge_requests/{iid}/diffs?per_page=100&page={page}"
-            )
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            break
-        if r.returncode != 0:
-            break
-        try:
-            diffs = json.loads(r.stdout)
-        except json.JSONDecodeError:
-            break
-        if not isinstance(diffs, list) or not diffs:
+        diffs, reason = _fetch_array(
+            f"projects/:id/merge_requests/{iid}/diffs?per_page=100&page={page}",
+            "diffs")
+        if reason is not None or not diffs:
             break
         files, bad = _dict_elements(diffs)
         skipped += bad
@@ -682,7 +744,7 @@ def _get_name_status(iid: str | int, fetch_all: bool) -> _NameStatus:
         if not fetch_all or len(diffs) < 100 or len(entries) >= NAMESTATUS_FETCH_CAP:
             break
         page += 1
-    return _NameStatus(entries, skipped)
+    return _NameStatus(entries, skipped, reason)
 
 
 def _coerce_count(changes: object) -> int | None:
@@ -701,14 +763,24 @@ def _render_name_status(
 ) -> list[str]:
     """Build the '## Files' block lines from name-status entries.
 
-    Returns [] when there are no entries (caller omits the block). The total
-    file count drives the "+N more" overflow line: it comes from changes_count
-    (authoritative, survives the display cap and single-page fetch) and falls
-    back to the fetched count when changes_count is missing or smaller.
+    Returns [] only when the fetch succeeded and found nothing — the one case
+    where omitting the block is honest, because the block was never asked for.
+    An empty list carrying a `reason` prints the heading and the decline: the
+    caller reached here because `changes_count` said there were files, so a
+    missing block is a claim that contradicts the line above it (#812).
+
+    The total file count drives the "+N more" overflow line: it comes from
+    changes_count (authoritative, survives the display cap and single-page
+    fetch) and falls back to the fetched count when changes_count is missing
+    or smaller.
     """
     entries = name_status.entries
+    reason = name_status.reason
     if not entries:
-        return []
+        if reason is None:
+            return []
+        heading = f"\n## Files ({changes})"
+        return [heading, f"  ! file list unavailable — {reason}"]
     shown = entries if full else entries[:NAMESTATUS_DISPLAY_MAX]
     total = _coerce_count(changes)
     if total is None or total < len(entries):
@@ -717,10 +789,17 @@ def _render_name_status(
     lines.extend(f" {flag}  {path}" for flag, path in shown)
     hidden = total - len(shown)
     if hidden > 0:
-        if full:
+        if reason is not None:
+            # Not a display cap, so it must not be described as one: the old
+            # line blamed the cap and pointed at `:full`, advice that cannot
+            # work for a shortfall the tool itself caused (#812).
+            lines.append(f" … +{hidden} more not fetched — {reason}")
+        elif full:
             lines.append(f" … +{hidden} more (output capped at {NAMESTATUS_FETCH_CAP} files)")
         else:
             lines.append(f" … +{hidden} more (use gl-mr:{iid}:full)")
+    elif reason is not None:
+        lines.append(f"  ! file list may be incomplete — {reason}")
     note = _unreadable(name_status.skipped, name_status.total, "changed files")
     if note:
         lines.append(note)
@@ -803,18 +882,27 @@ def main() -> int:
         print(f"ERROR: glab mr view returned a {type(d).__name__}, expected an object")
         return 1
 
-    def _latest_pipeline(iid: str | int) -> dict:
-        """Fetch freshest pipeline for the MR — glab mr view can return stale head_pipeline."""
-        try:
-            r = _glab_api(f"projects/:id/merge_requests/{iid}/pipelines?per_page=1")
-            if r.returncode == 0:
-                pipes = json.loads(r.stdout)
-                found, _ = _dict_elements(pipes)
-                if found:
-                    return found[0]
-        except (subprocess.TimeoutExpired, json.JSONDecodeError):
-            pass
-        return {}
+    def _latest_pipeline(iid: str | int) -> tuple[dict, str | None]:
+        """Freshest pipeline for the MR, and why there is none.
+
+        `glab mr view` can return a stale `head_pipeline`, so this asks the
+        pipelines endpoint directly. `reason` is None when that endpoint
+        answered — *including* when the honest answer was "this MR has no
+        pipelines" — and a sentence when it did not.
+
+        Collapsing those two into a bare `{}` is the defect in #812: the
+        caller's `pipeline.get("status", "none")` then printed `Pipeline: none`
+        for a lookup nobody could complete, which is indistinguishable from an
+        MR that genuinely never started one. Worth naming plainly, because the
+        two point opposite ways: "no pipeline" is a reason to merge and "could
+        not read the pipeline" is a reason not to.
+        """
+        pipes, reason = _fetch_array(
+            f"projects/:id/merge_requests/{iid}/pipelines?per_page=1", "pipelines")
+        if reason is not None:
+            return {}, reason
+        found, _ = _dict_elements(pipes or [])
+        return (found[0] if found else {}), None
 
     def _pipe_meta(pipeline: dict) -> str:
         """One-liner: SHA + when + source + user + duration/elapsed + coverage."""
@@ -863,7 +951,8 @@ def main() -> int:
         state = d.get("state", "?")
         merge_status = d.get("merge_status", "?")
         has_conflicts = d.get("has_conflicts", False)
-        pipeline = _latest_pipeline(iid) or d.get("pipeline") or d.get("head_pipeline") or {}
+        fresh, pipe_reason = _latest_pipeline(iid)
+        pipeline = fresh or _as_dict(d.get("pipeline")) or _as_dict(d.get("head_pipeline"))
         pipe_status = pipeline.get("status", "none")
         pipe_id = pipeline.get("id", "")
         merged_at = d.get("merged_at") or "-"
@@ -871,11 +960,20 @@ def main() -> int:
         web_url = d.get("web_url", "")
         print(f"!{iid} | state: {state} | merge_status: {merge_status} | conflicts: {'yes' if has_conflicts else 'no'}")
         print(f"branch: {d.get('source_branch') or '?'} -> {d.get('target_branch') or '?'}")
-        pipe_str = pipe_status + (f" (#{pipe_id})" if pipe_id else "")
-        meta = _pipe_meta(pipeline)
-        if meta:
-            pipe_str += f" | {meta}"
-        print(f"pipeline: {pipe_str}")
+        if pipe_reason is not None and not pipeline:
+            # Slim is the poll-loop render — read most often, looked at least
+            # closely — so it is the one where `pipeline: none` from a failed
+            # lookup does the most damage (#812).
+            print(f"pipeline: UNKNOWN — {pipe_reason}")
+        else:
+            pipe_str = pipe_status + (f" (#{pipe_id})" if pipe_id else "")
+            meta = _pipe_meta(pipeline)
+            if meta:
+                pipe_str += f" | {meta}"
+            print(f"pipeline: {pipe_str}")
+            if pipe_reason is not None:
+                print(f"  ! live pipeline lookup declined ({pipe_reason}) — status "
+                      f"above comes from the MR payload and can be stale")
         # The extra `glab api` round trip is bought only when the pipeline
         # status says there might be something to name — never on a green or
         # not-yet-started pipeline, which is the overwhelmingly common poll
@@ -907,12 +1005,20 @@ def main() -> int:
     merge_commit = d.get("merge_commit_sha") or d.get("squash_commit_sha") or ""
     draft = d.get("draft", False) or d.get("work_in_progress", False)
 
-    # Pipeline — fetch latest from MR pipelines endpoint (head_pipeline can be stale)
-    pipeline = (_latest_pipeline(iid) or _as_dict(d.get("pipeline"))
+    # Pipeline — fetch latest from MR pipelines endpoint (head_pipeline can be stale).
+    # Three states, not two (#812, generalising #720): a status, a verified
+    # `none`, and a stated UNKNOWN naming why nobody could tell.
+    fresh_pipeline, pipe_reason = _latest_pipeline(iid)
+    pipeline = (fresh_pipeline or _as_dict(d.get("pipeline"))
                 or _as_dict(d.get("head_pipeline")))
     pipe_status = pipeline.get("status", "none")
     pipe_id = pipeline.get("id", "")
     pipe_meta = _pipe_meta(pipeline)
+    # A live lookup that declined but left a usable payload fallback is not the
+    # same fact as one that left nothing: the first prints a real status with
+    # the staleness disclosed, the second has no status to print.
+    pipe_unknown = pipe_reason is not None and not pipeline
+    pipe_stale = pipe_reason is not None and bool(pipeline)
 
     # Diff stats
     changes = d.get("changes_count") or 0
@@ -974,62 +1080,77 @@ def main() -> int:
     # line, in all three states, and never an exception — see _approvals_line.
     print(_approvals_line(iid))
 
-    # Unresolved discussion threads — distinct blocker from comments
-    try:
-        disc_result = _glab_api(
-            f"projects/:id/merge_requests/{iid}/discussions?per_page=100"
-        )
-        if disc_result.returncode == 0:
-            discussions = json.loads(disc_result.stdout)
-            if isinstance(discussions, list):
-                threads, bad_threads = _dict_elements(discussions)
-                bad_notes = notes_total = resolvable = unresolved = 0
-                for dd in threads:
-                    # A `notes` field that is not an array counts as one
-                    # unreadable note: `(x or [])` let a string through and the
-                    # loop iterated its characters.
-                    thread_notes, bad, seen = _array_elements(dd.get("notes"))
-                    bad_notes += bad
-                    notes_total += seen
-                    marked = [n for n in thread_notes if n.get("resolvable")]
-                    if not marked:
-                        continue
-                    resolvable += 1
-                    if not all(n.get("resolved") for n in marked):
-                        unresolved += 1
-                print(f"Unresolved threads: {unresolved} / {resolvable}")
-                _print_unreadable(bad_threads, len(discussions), "discussions")
-                _print_unreadable(bad_notes, notes_total, "discussion notes")
-    except (subprocess.TimeoutExpired, json.JSONDecodeError):
-        pass
+    # Unresolved discussion threads — distinct blocker from comments, and one
+    # line whatever happens (#812). The `except ...: pass` and the unentered
+    # `isinstance` below it used to remove the line entirely, so a timeout on
+    # this endpoint rendered as no `Unresolved threads:` at all: not a zero,
+    # not a decline, nothing. An unresolved thread is a merge blocker, which
+    # makes silence here the most expensive of the four.
+    discussions, disc_reason = _fetch_array(
+        f"projects/:id/merge_requests/{iid}/discussions?per_page=100", "discussions")
+    if disc_reason is not None:
+        print(f"Unresolved threads: UNKNOWN — {disc_reason}")
+    else:
+        threads, bad_threads = _dict_elements(discussions or [])
+        bad_notes = notes_total = resolvable = unresolved = 0
+        for dd in threads:
+            # A `notes` field that is not an array counts as one unreadable
+            # note: `(x or [])` let a string through and the loop iterated its
+            # characters.
+            thread_notes, bad, seen = _array_elements(dd.get("notes"))
+            bad_notes += bad
+            notes_total += seen
+            marked = [n for n in thread_notes if n.get("resolvable")]
+            if not marked:
+                continue
+            resolvable += 1
+            if not all(n.get("resolved") for n in marked):
+                unresolved += 1
+        print(f"Unresolved threads: {unresolved} / {resolvable}")
+        _print_unreadable(bad_threads, len(discussions or []), "discussions")
+        _print_unreadable(bad_notes, notes_total, "discussion notes")
 
     # Pipeline + changes
-    pipe_str = pipe_status
-    if pipe_id:
-        pipe_str += f" (#{pipe_id})"
-    if pipe_meta:
-        pipe_str += f" | {pipe_meta}"
-    print(f"Pipeline: {pipe_str}")
+    if pipe_unknown:
+        print(f"Pipeline: UNKNOWN — {pipe_reason}")
+    else:
+        pipe_str = pipe_status
+        if pipe_id:
+            pipe_str += f" (#{pipe_id})"
+        if pipe_meta:
+            pipe_str += f" | {pipe_meta}"
+        print(f"Pipeline: {pipe_str}")
+        if pipe_stale:
+            print(f"  ! live pipeline lookup declined ({pipe_reason}) — status "
+                  f"above comes from the MR payload and can be stale")
 
-    # Failed jobs (only when pipeline failed)
+    # Failed jobs — asked for exactly when the pipeline says it failed, so from
+    # here on it prints a line whatever comes back (#812). It cannot fire on an
+    # UNKNOWN pipeline: `pipe_status` is "none" there, which is the point —
+    # a section prints nothing only when it was never asked for.
     if pipe_status == "failed" and pipe_id:
-        try:
-            jobs_result = _glab_api(
-                f"projects/:id/pipelines/{pipe_id}/jobs?per_page=100&scope=failed"
-            )
-            if jobs_result.returncode == 0:
-                jobs = json.loads(jobs_result.stdout)
-                if isinstance(jobs, list) and jobs:
-                    named, bad_jobs = _dict_elements(jobs)
-                    print(f"Failed jobs ({len(named)}):")
-                    for job in named:
-                        jid = job.get("id", "?")
-                        jname = job.get("name", "?")
-                        jstage = job.get("stage", "?")
-                        print(f"  #{jid} | {jname} | {jstage}")
-                    _print_unreadable(bad_jobs, len(jobs), "failed jobs")
-        except (subprocess.TimeoutExpired, json.JSONDecodeError):
-            pass
+        jobs, jobs_reason = _fetch_array(
+            f"projects/:id/pipelines/{pipe_id}/jobs?per_page=100&scope=failed",
+            "jobs")
+        if jobs_reason is not None:
+            print(f"Failed jobs: UNKNOWN — {jobs_reason}")
+        else:
+            named, bad_jobs = _dict_elements(jobs or [])
+            if named:
+                print(f"Failed jobs ({len(named)}):")
+                for job in named:
+                    jid = job.get("id", "?")
+                    jname = job.get("name", "?")
+                    jstage = job.get("stage", "?")
+                    print(f"  #{jid} | {jname} | {jstage}")
+            else:
+                # A failed pipeline whose failed-jobs list is empty is a real
+                # and surprising answer — a blocked stage, a runner that never
+                # picked anything up. Printing nothing rendered it as though
+                # the block had never been asked for.
+                print("Failed jobs: none — the jobs API reports no failed job "
+                      "on this failed pipeline")
+            _print_unreadable(bad_jobs, len(jobs or []), "failed jobs")
 
     if additions or deletions:
         print(f"Changes: {changes} files, +{additions} -{deletions}")
@@ -1180,18 +1301,21 @@ def main() -> int:
     # not silence. Mirrors gh-pr behavior.
     human_notes: list = []
     notes_skipped = notes_seen = 0
-    try:
-        notes_result = _glab_api(
-            f"projects/:id/merge_requests/{iid}/notes?per_page=50&sort=asc"
-        )
-        if notes_result.returncode == 0:
-            notes = json.loads(notes_result.stdout)
-            if isinstance(notes, list):
-                readable, notes_skipped = _dict_elements(notes)
-                notes_seen = len(notes)
-                human_notes = [n for n in readable if not n.get("system", False)]
-    except (subprocess.TimeoutExpired, json.JSONDecodeError):
-        pass
+    notes, notes_reason = _fetch_array(
+        f"projects/:id/merge_requests/{iid}/notes?per_page=50&sort=asc", "notes")
+    if notes_reason is not None:
+        # #812 files this one among the sections that vanish. It is not one:
+        # the heading is unconditional, so a failed fetch rendered as
+        # `## Comments (0)` — a *count*, which is a claim that the MR has none.
+        # That is the `Pipeline: none` defect wearing a different hat, and the
+        # worse of the two shapes: a missing line is at least visibly missing,
+        # while a wrong number is indistinguishable from a right one.
+        print("\n## Comments (UNKNOWN)")
+        print(f"  ! comments could not be read — {notes_reason}")
+        return 0
+    readable, notes_skipped = _dict_elements(notes or [])
+    notes_seen = len(notes or [])
+    human_notes = [n for n in readable if not n.get("system", False)]
 
     print(f"\n## Comments ({len(human_notes)})")
     _print_unreadable(notes_skipped, notes_seen, "comments")
