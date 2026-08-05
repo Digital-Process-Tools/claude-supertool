@@ -856,7 +856,12 @@ The largest payload observed on a live fleet was 488 characters, so a poller
 carrying real data never meets them; one embedding a log excerpt will. An
 oversized attribute is **withheld whole rather than truncated**, the event is
 still delivered so the routing signal is never lost, and it carries a `clamped`
-attribute naming what went and its real size. Producer guidance is in
+attribute naming what went and its real size. A **burst** budget bounds the same
+cost spread across many events — 65,536 chars in a rolling minute across every
+poller, past which events keep their routing, lose their payload, and carry a
+`burst` attribute; past a hard 262,144 they are suppressed, counted, and the
+count is disclosed on the next delivery, so a gap is never silent.
+Producer guidance is in
 [`presets/watch/README.md`](../../presets/watch/README.md#size-limits-a-producer-must-know-about-605);
 the consumer's reasoning is in
 [`notifiers/claude-channel/README.md`](../../notifiers/claude-channel/README.md#size-limits-and-how-a-clamped-event-says-so-605).

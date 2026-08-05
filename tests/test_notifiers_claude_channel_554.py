@@ -64,7 +64,13 @@ CHANNEL_METHOD = "notifications/claude/channel"
 class Channel:
     """A live `channel.ts` process plus a minimal MCP client over its stdio."""
 
-    def __init__(self) -> None:
+    def __init__(self, env: dict[str, str] | None = None) -> None:
+        # `env` overrides the server's own tunables (the `capFromEnv` caps).
+        # Tests that assert on a *default* keep it None and get the shipped
+        # numbers; tests that assert on a *mechanism* pin small ones, so the
+        # fixture does not have to push 65 KB through a socket to reach a
+        # threshold. The socket path is set last and is never overridable —
+        # a test that redirected it would silently share a real one.
         # macOS caps AF_UNIX paths at ~104 bytes; keep it under /tmp, not tmp_path.
         self._dir = tempfile.mkdtemp(prefix="st554-", dir="/tmp")
         self.sock_path = os.path.join(self._dir, "w.sock")
@@ -74,7 +80,7 @@ class Channel:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             cwd=str(CHANNEL_TS.parent),
-            env={**os.environ, "SUPERTOOL_WATCH_SOCK": self.sock_path},
+            env={**os.environ, **(env or {}), "SUPERTOOL_WATCH_SOCK": self.sock_path},
             text=True,
             bufsize=1,
         )

@@ -237,13 +237,78 @@ delivered. When the event is over budget, attributes are withheld largest-first
 loud `drop()` path: withholding `event` or `id` would deliver a notification that
 says nothing about what happened.
 
-**A burst is not capped, deliberately.** Forty 40 KB events cost the window what
-one 1.6 MB event does, and a per-event cap does not address that shape. It is not
-capped here because dropping event #41 for the sins of #1–40 would refuse an
-event on grounds unrelated to its own content, and a rate limit that silently
-eats a `pipeline_failed` is a worse radar than a chatty one. The per-event cap
-does bound the realistic burst — forty oversized events measured 3,209,660 bytes
-before and 18,020 after — but forty *legal* 8 KB events still cost 320 KB.
+**A burst spends payload, not events.** The caps above bound one event against
+itself and nothing else: forty events of 8,192 chars are each perfect by every
+one of them and measured **315,460 bytes** together. The window does not care
+whether it was spent by one event or by forty.
+
+| Limit | Default | Applies to |
+| --- | --- | --- |
+| `SUPERTOOL_CHANNEL_WINDOW_SECS` | 60 s | the rolling window everything below is measured over |
+| `SUPERTOOL_CHANNEL_WINDOW_MAX` | 65,536 chars | past this, events are **reduced to routing** and say so |
+| `SUPERTOOL_CHANNEL_WINDOW_HARD` | 262,144 chars | past this, events are **suppressed**, counted, and the count is disclosed |
+
+This was left open by [#608](https://github.com/Digital-Process-Tools/claude-supertool/pull/608)
+for a reason that shaped the fix rather than being overruled by it: *dropping
+event #41 for the sins of #1–40 refuses an event on grounds unrelated to its own
+content, and a limiter that silently eats a `pipeline_failed` is a worse radar
+than a chatty one.* That is an argument against **dropping**, not against
+**bounding** — and the two separate here exactly as they separated per-event,
+because an event is two things glued together. Its **routing**
+(`watcher_source`/`id`/`event`) is ~60 chars and is the entire product of this
+bridge; its **payload** is all of the bulk and is context for an investigation
+the session can run for itself.
+
+So past `WINDOW_MAX` an event keeps its routing, loses its payload whole, and
+carries `burst` naming the budget that took it:
+
+```
+<channel source="claude-channel" watcher_source="gitlab-mr" id="33174"
+         event="pipeline_failed" ts="2026-08-05T00:00:00Z"
+         burst="4 attributes withheld — burst: 61600 of 65536 chars already delivered in the last 60s, so only routing was kept">
+gitlab-mr 33174: pipeline_failed
+[claude-channel] 4 attributes withheld — burst: 61600 of 65536 chars already delivered in the last 60s, so only routing was kept
+</channel>
+```
+
+Forty red pipelines are still forty notifications. Nothing is dropped for what
+its neighbours did, and the reduction is stated on the event that paid for it —
+the reader's next question is "why this event, it looks small", and the answer is
+never in the event, it is in the forty before it. An event that had nothing to
+lose is delivered unreduced and says nothing.
+
+**Past `WINDOW_HARD`, events really are suppressed** — and that is the one loss
+here, so it is the one thing most worth saying. Reduction alone is a ~50x
+discount rather than a bound: a routing-only event is ~120 chars, so a producer
+in a spin loop still spends the window, just slower. Reaching the hard limit
+takes ~1,700 routing-only events in a minute, which is not a radar, it is a loop.
+Each suppression writes a `drop()` line to stderr, and the **count rides the next
+event that gets through**, as a `suppressed` attribute and a body line:
+
+```
+suppressed="4 events were suppressed over the last 7s — past the burst hard limit of 262144 chars/60s; each is named on stderr"
+```
+
+stderr is not readable from inside a session; the next delivery is. Without that,
+a suppressed burst would be [#554](https://github.com/Digital-Process-Tools/claude-supertool/issues/554)'s
+invisible delivery gap with a budget attached. The disclosure is deliberately
+**not** re-checked against the budget: an event that goes over by confessing a
+gap is correct, one that stays under by hiding it is the defect.
+
+**The numbers, from the same traffic as the per-event caps.** Across ten live
+watchers the largest complete payload was 488 chars, and pollers emit only on
+state change. 65,536 chars/60s is ~8% of a 200K-token window per minute and
+~130x the busiest real minute — a fleet spawn, where every watcher emits one
+`first_tick` at once, is ten events and ~5 KB. The window is rolling rather than
+a fixed bucket, because a fixed one lets a burst spend a full budget either side
+of a boundary and reports it as compliant. The budget is one budget for the
+server, not one per connection: ten watchers are ten connections, and per-
+connection accounting would reopen the axis through the bookkeeping.
+
+`WINDOW_HARD` must be greater than `WINDOW_MAX`, or the server **refuses to
+start** (exit `4`). At or below it the reduce-and-disclose stage is unreachable
+and every over-budget event is suppressed instead — a strictly louder failure
+than the operator configured, arrived at in silence.
 
 **The line buffer is bounded too, and it is the louder half.** The NDJSON reader
 accumulated bytes until a newline arrived, with no limit: 50 MB with no newline
@@ -362,6 +427,9 @@ outage — trading a silent bug for a loud one, which is not an improvement.
 | `SUPERTOOL_CHANNEL_ATTR_MAX`  | `2048`      | Max chars in one attribute value. Larger values are withheld and disclosed — see "Size limits". |
 | `SUPERTOOL_CHANNEL_EVENT_MAX` | `8192`      | Max chars across all of one event's attributes, keys included. |
 | `SUPERTOOL_CHANNEL_LINE_MAX`  | `1048576`   | Max chars buffered for one NDJSON line before it is refused and the connection resyncs. |
+| `SUPERTOOL_CHANNEL_WINDOW_SECS` | `60`      | The rolling window the two burst budgets are measured over. |
+| `SUPERTOOL_CHANNEL_WINDOW_MAX`  | `65536`   | Chars per window before events are reduced to routing and carry `burst`. |
+| `SUPERTOOL_CHANNEL_WINDOW_HARD` | `262144`  | Chars per window before events are suppressed, counted, and disclosed via `suppressed`. Must exceed `WINDOW_MAX`. |
 
 A cap override that is not a positive integer **exits rather than falling back to
 the default**: an operator who typed `2O48` would otherwise believe a limit is in

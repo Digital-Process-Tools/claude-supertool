@@ -75,7 +75,7 @@ function capFromEnv(name: string, fallback: number): number {
   const n = Number(raw);
   if (!Number.isInteger(n) || n < 1) {
     process.stderr.write(
-      `claude-channel: refusing to start — ${name}=${raw} is not a positive integer\\n`,
+      `claude-channel: refusing to start — ${name}=${raw} is not a positive integer\n`,
     );
     process.exit(EXIT_BAD_CAP);
   }
@@ -121,6 +121,72 @@ const EVENT_MAX_CHARS = capFromEnv("SUPERTOOL_CHANNEL_EVENT_MAX", 8192);
 const LINE_MAX_CHARS = capFromEnv("SUPERTOOL_CHANNEL_LINE_MAX", 1_048_576);
 
 /**
+ * How much of the window a *burst* may spend — the third axis of #605, named
+ * there and deliberately left open by #608.
+ *
+ * The caps above bound one event and nothing else. Forty events of 8,192 chars
+ * are each perfect by every one of them and cost 320 KB together; measured on
+ * `235b377`, forty legal events left this server at 315,460 bytes. The window
+ * does not care whether it was spent by one event or by forty, so a per-event
+ * cap alone is a cap on the wrong noun.
+ *
+ * #608 declined to close it for a reason that constrains this fix rather than
+ * excusing it: *"dropping event #41 because #1–40 were chatty refuses an event
+ * on grounds unrelated to its own content, and a limiter that silently eats a
+ * `pipeline_failed` is a worse radar than a chatty one."* That is an argument
+ * against **dropping**, not against **bounding** — and the two separate here
+ * exactly as they separated per-event, because an event is two things glued
+ * together:
+ *
+ * - **routing** (`watcher_source`/`id`/`event`) — ~60 chars, and the entire
+ *   product of this bridge. "MR 33173 went red" is what a radar is for.
+ * - **payload** (`title`, `url`, `description`, ...) — all of the bulk, and
+ *   context for an investigation the session can run for itself.
+ *
+ * So a burst does not stop events; it stops **payload**. Past `WINDOW_MAX` an
+ * event is reduced to its routing keys and carries `burst` saying so. Every
+ * event still arrives, still says what happened, and forty red pipelines are
+ * forty notifications rather than eight and a silence.
+ *
+ * `WINDOW_HARD` is the floor under that, and it exists because reduction alone
+ * is a 50x discount rather than a bound: a routing-only event is ~120 chars,
+ * so a producer in a spin loop still spends the window, just slower. Past the
+ * hard limit events are suppressed — a real loss, and the only one here. What
+ * keeps it from being #554's invisible delivery gap is that suppression is
+ * counted, named on stderr per event, and disclosed on the next event that
+ * gets through, so the absence is visible from inside the session.
+ *
+ * The numbers, from the same traffic #608 measured rather than from feel.
+ * Across ten live watchers the largest complete payload was 488 chars, and a
+ * poller emits only on state change:
+ *
+ * - `WINDOW_MAX` 65,536 chars/60s is ~8% of a 200K-token context window
+ *   (~800 KB of text) per minute, and ~130x the busiest real minute — a fleet
+ *   spawn, where every watcher emits one `first_tick` at once, is ten events
+ *   and ~5 KB. Nothing a real radar does reaches it.
+ * - `WINDOW_HARD` 262,144 is 4x that, i.e. ~1,700 routing-only events in a
+ *   minute. That is not a radar; it is a loop.
+ */
+const WINDOW_SECS = capFromEnv("SUPERTOOL_CHANNEL_WINDOW_SECS", 60);
+const WINDOW_MAX_CHARS = capFromEnv("SUPERTOOL_CHANNEL_WINDOW_MAX", 65_536);
+const WINDOW_HARD_CHARS = capFromEnv("SUPERTOOL_CHANNEL_WINDOW_HARD", 262_144);
+
+// Two thresholds that cannot both hold is a cap that is not in force. With the
+// hard limit at or below the soft one, the reduce-and-disclose stage is
+// unreachable and every over-budget event is suppressed instead — a strictly
+// louder failure than the operator asked for, arrived at in silence. Refused
+// for the same reason `capFromEnv` refuses `2O48`.
+if (WINDOW_HARD_CHARS <= WINDOW_MAX_CHARS) {
+  process.stderr.write(
+    "claude-channel: refusing to start — " +
+      `SUPERTOOL_CHANNEL_WINDOW_HARD (${WINDOW_HARD_CHARS}) must be greater than ` +
+      `SUPERTOOL_CHANNEL_WINDOW_MAX (${WINDOW_MAX_CHARS}); below it no event is ever ` +
+      "reduced-and-disclosed, only suppressed\n",
+  );
+  process.exit(EXIT_BAD_CAP);
+}
+
+/**
  * Keys that identify the event rather than describe it.
  *
  * These are never withheld to save space. They are what makes an event
@@ -157,6 +223,8 @@ const RESERVED_KEYS = new Set([
   "clamped",
   "collided",
   "unsendable",
+  "burst",
+  "suppressed",
   "__proto__",
 ]);
 
@@ -410,6 +478,102 @@ function metaChars(meta: Record<string, string>): number {
   return total;
 }
 
+/** One delivery, and what it cost the rolling window. */
+interface Spend {
+  at: number;
+  chars: number;
+}
+
+/**
+ * Deliveries inside the current window, oldest first, and the suppressions
+ * waiting to be confessed.
+ *
+ * Module-level rather than per-connection on purpose: the budget belongs to
+ * the session's context window, which every poller spends from. Ten watchers
+ * are ten connections, and a per-connection budget would be ten budgets — the
+ * burst axis reopened by the accounting rather than by the caps.
+ */
+const spends: Spend[] = [];
+let suppressedCount = 0;
+let suppressedSince = 0;
+
+/**
+ * Characters delivered in the last `WINDOW_SECS`, dropping what has aged out.
+ *
+ * A rolling window rather than a fixed bucket: a fixed one lets a burst spend
+ * a full budget either side of a boundary, so twice the cap arrives in a
+ * moment and the accounting reports it as compliant.
+ */
+function windowSpent(now: number): number {
+  const cutoff = now - WINDOW_SECS * 1000;
+  let aged = 0;
+  while (aged < spends.length && spends[aged].at <= cutoff) aged++;
+  if (aged > 0) spends.splice(0, aged);
+  let total = 0;
+  for (const s of spends) total += s.chars;
+  return total;
+}
+
+/**
+ * Strip `meta` to its routing keys, returning how many attributes that cost.
+ *
+ * Withheld whole, never shortened, for the reason `clampMeta` gives: the first
+ * N characters of a title read downstream exactly like the title. The count is
+ * the return value because the disclosure has to state it, and because zero is
+ * the signal that this event had nothing to lose — an event that was already
+ * routing-only is delivered unreduced and says nothing, since a `burst` note
+ * on an event that lost nothing is a false alarm on the one surface that has
+ * to stay believable.
+ */
+function reduceToRouting(meta: Record<string, string>): number {
+  const keep = new Set<string>();
+  for (const key of ROUTING_KEYS) {
+    if (meta[key] !== undefined) keep.add(key);
+  }
+  let lost = 0;
+  for (const key of Object.keys(meta)) {
+    if (keep.has(key)) continue;
+    delete meta[key];
+    lost++;
+  }
+  return lost;
+}
+
+/**
+ * The sentence a burst-reduced event carries about its own reduction.
+ *
+ * Names the budget and what has already been spent against it, because the
+ * reader's next question is "why this event, it looks small" and the answer is
+ * never in the event — it is in the forty that came before it. Built in the
+ * `describeWithheld` vocabulary rather than a fourth one.
+ *
+ * It does not name the individual attributes. Under a burst that list is the
+ * payload of every event, and repeating it forty times spends the window the
+ * disclosure exists to protect.
+ */
+function describeBurst(lost: number, spent: number): string {
+  const noun = lost === 1 ? "attribute" : "attributes";
+  return (
+    `${lost} ${noun} withheld — burst: ${spent} of ${WINDOW_MAX_CHARS} chars already ` +
+    `delivered in the last ${WINDOW_SECS}s, so only routing was kept`
+  );
+}
+
+/**
+ * The sentence that makes a gap in the stream visible from inside the session.
+ *
+ * Suppression is the one place this bridge loses an event, so it is the one
+ * place that most needs saying. `drop()` already names each on stderr, which a
+ * session cannot read; this rides the next successful delivery, which it can.
+ */
+function describeSuppressed(count: number, sinceSecs: number): string {
+  const noun = count === 1 ? "event was" : "events were";
+  return (
+    `${count} ${noun} suppressed over the last ${sinceSecs}s — past the burst hard limit ` +
+    `of ${WINDOW_HARD_CHARS} chars/${WINDOW_SECS}s; each is named on stderr`
+  );
+}
+
 /**
  * Bring `meta` inside the size caps, reporting what that cost. `null` means
  * the event cannot be delivered at all.
@@ -481,6 +645,7 @@ function buildContent(
   withheld: Withheld[],
   collided: Withheld[],
   unsendable: Unsendable[],
+  notes: string[] = [],
 ): string {
   // The <channel> tag body — Claude reads this as the event's narrative.
   // Keep it short and route-oriented; payload details live in attributes.
@@ -513,6 +678,10 @@ function buildContent(
   if (withheld.length > 0) lines.push(`[claude-channel] ${describeWithheld(withheld)}`);
   if (collided.length > 0) lines.push(`[claude-channel] ${describeCollided(collided)}`);
   if (unsendable.length > 0) lines.push(`[claude-channel] ${describeUnsendable(unsendable)}`);
+  // Burst notes arrive as text rather than as a list, because unlike the three
+  // above they are facts about the *stream* and not about this event's own
+  // payload. Same prefix and same place, so a reader learns one shape.
+  for (const note of notes) lines.push(`[claude-channel] ${note}`);
   return lines.join("\n");
 }
 
@@ -773,10 +942,69 @@ const server = net.createServer((conn) => {
         if (withheld.length > 0) meta.clamped = describeWithheld(withheld);
         if (collided.length > 0) meta.collided = describeCollided(collided);
         if (unsendable.length > 0) meta.unsendable = describeUnsendable(unsendable);
+
+        // The burst axis (#605). Everything above bounds this event against
+        // itself; what follows bounds it against the forty before it.
+        //
+        // The cost charged is what the session actually pays — attributes plus
+        // body — measured after the per-event clamp and after its disclosures,
+        // so an event that went one line over budget to say it was clamped is
+        // charged for that line rather than being clamped a second time for it.
+        const now = Date.now();
+        const spent = windowSpent(now);
+        const notes: string[] = [];
+        let wList = withheld;
+        let cList = collided;
+        let uList = unsendable;
+        const render = (): [string, number] => {
+          const body = buildContent(meta, wList, cList, uList, notes);
+          return [body, metaChars(meta) + body.length];
+        };
+        let [content, cost] = render();
+
+        if (spent + cost > WINDOW_MAX_CHARS) {
+          const lost = reduceToRouting(meta);
+          if (lost > 0) {
+            // The per-event disclosures went with the payload they described.
+            // `burst` covers them: it says only routing was kept, which is the
+            // whole truth and does not leave a reader believing an event that
+            // was reduced twice was reduced once.
+            wList = [];
+            cList = [];
+            uList = [];
+            meta.burst = describeBurst(lost, spent);
+            notes.push(meta.burst);
+            [content, cost] = render();
+          }
+        }
+
+        if (spent + cost > WINDOW_HARD_CHARS) {
+          if (suppressedCount === 0) suppressedSince = now;
+          suppressedCount++;
+          drop(
+            line,
+            `burst hard limit — ${spent} of ${WINDOW_HARD_CHARS} chars already delivered` +
+              ` in the last ${WINDOW_SECS}s`,
+          );
+          continue;
+        }
+
+        if (suppressedCount > 0) {
+          const since = Math.max(1, Math.round((now - suppressedSince) / 1000));
+          meta.suppressed = describeSuppressed(suppressedCount, since);
+          notes.push(meta.suppressed);
+          suppressedCount = 0;
+          // Deliberately not re-checked against the budget. An event that goes
+          // over by confessing a gap is correct; one that stays under by
+          // hiding it is the defect this whole file exists to refuse.
+          [content, cost] = render();
+        }
+
+        spends.push({ at: now, chars: cost });
         mcp
           .notification({
             method: "notifications/claude/channel",
-            params: { content: buildContent(meta, withheld, collided, unsendable), meta },
+            params: { content, meta },
           })
           .catch((err) => {
             // Surface to stderr so `claude --debug` picks it up. Common causes:
