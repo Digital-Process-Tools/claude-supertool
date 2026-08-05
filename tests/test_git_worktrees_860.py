@@ -316,7 +316,8 @@ def _git(*args, cwd):
         "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e",
     })
     return subprocess.run(["git", *args], cwd=str(cwd), env=env,
-                          capture_output=True, text=True, timeout=30)
+                          capture_output=True, text=True, timeout=30,
+                          encoding="utf-8", errors="replace")
 
 
 @pytest.fixture()
@@ -354,7 +355,8 @@ def test_end_to_end_script_lists_both_trees(repo_with_worktree) -> None:
         if k.startswith("GIT_"):
             env.pop(k)
     res = subprocess.run([sys.executable, str(PRESET)], cwd=str(main), env=env,
-                         capture_output=True, text=True, timeout=60)
+                         capture_output=True, text=True, timeout=60,
+                         encoding="utf-8", errors="replace")
     assert res.returncode == 0, res.stdout + res.stderr
     assert "git-worktrees" in res.stdout
     assert Path(tree).as_posix() in res.stdout.replace(chr(92), "/")
@@ -372,7 +374,8 @@ def test_end_to_end_single_path_exit_code_flags_occupied(repo_with_worktree) -> 
             env.pop(k)
     try:
         res = subprocess.run([sys.executable, str(PRESET), str(tree)], cwd=str(main),
-                             env=env, capture_output=True, text=True, timeout=60)
+                             env=env, capture_output=True, text=True, timeout=60,
+                             encoding="utf-8", errors="replace")
     finally:
         (Path(gitdir) / "index.lock").unlink()
     assert res.returncode == wt.EXIT_OCCUPIED, (res.returncode, res.stdout)
@@ -386,7 +389,8 @@ def test_leading_dash_path_is_refused(repo_with_worktree) -> None:
         if k.startswith("GIT_"):
             env.pop(k)
     res = subprocess.run([sys.executable, str(PRESET), "--upload-pack=touch x"],
-                         cwd=str(main), env=env, capture_output=True, text=True, timeout=30)
+                         cwd=str(main), env=env, capture_output=True, text=True,
+                         timeout=30, encoding="utf-8", errors="replace")
     assert res.returncode != 0
     assert "refus" in res.stdout.lower() or "refus" in res.stderr.lower()
 
