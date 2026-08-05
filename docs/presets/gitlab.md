@@ -70,6 +70,25 @@ The third one is new. `GET /projects/:id/merge_requests/:iid/approvals` is docum
 
 The `## Issue #N` block that follows the conflicts section takes the same treatment, because it had the same two shapes: a failed lookup printed nothing at all, and a non-object payload crashed the render. It now degrades to `Issue: #N — details unavailable (<reason>)`.
 
+### An element the render could not read is counted, never dropped in silence
+
+Every list `gl-mr` fetches — discussions, notes, diffs, jobs, pipelines, reviewers, assignees — is documented by GitLab as an array of **objects**. The op checked that the array was an array and then called `.get()` on whatever was inside it ([#735](https://github.com/Digital-Process-Tools/claude-supertool/issues/735)). A `null`, a bare string or a nested list in any of those arrays raised `AttributeError` out of `main()` and took every section below it with it — the discussions loop sits above the pipeline, files, description and comments blocks.
+
+Elements that are not objects are now skipped, and **the skip is stated**:
+
+```
+Unresolved threads: 9 / 9
+  ! 3 of 12 discussions had a shape supertool could not read
+```
+
+The guard on its own would have traded a loud bug for a quiet one: `9` printed where `12` came back, with nothing saying a narrowing happened, is the reading error this repo files most often. So the disclosure is part of the fix rather than a follow-up, and it appears wherever a count can now be short — under `Assignees:`, `Reviewers:`, `Unresolved threads:`, `Failed jobs (N):`, the `## Files` block, `## Comments (N)` and `:status`'s named-job lines.
+
+**A field that is not an array at all counts as one unreadable element**, not as an empty one. `Reviewers: none` is a claim about the MR; printing it from a payload nobody could read is the same reading error one level up. An *absent* field is a real empty answer and stays silent.
+
+**A healthy render is byte-identical to before.** The line is emitted only when at least one element was actually dropped, so the case that happens every day — every element an object, which is every observed response — prints nothing extra.
+
+**Two sites decline instead of degrading**, because a partial answer there would be a wrong one rather than a short one. `glab mr view --output json` parsing to something other than an object exits 1 with `ERROR: glab mr view returned a list, expected an object` — there is no dashboard to render without it. And a branch lookup whose only match is unreadable exits 1 rather than falling through to the all-states lookup, which could otherwise resolve a *different* MR and print it as the answer.
+
 ### The conflicts section
 
 A conflicted MR gets a `## Conflicts` block: the conflicting paths, a per-file hunk preview, and the resolve commands. Two `git merge-tree` calls feed it, and the distinction matters when reading the output:

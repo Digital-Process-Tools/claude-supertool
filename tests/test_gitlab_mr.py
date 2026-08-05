@@ -705,7 +705,7 @@ def test_get_name_status_parses_flags_and_paths(monkeypatch) -> None:
         {"new_path": "e.py", "old_path": "e.py"},
     ]
     monkeypatch.setattr(mr, "_glab_api", lambda *a, **kw: _api_json(diffs))
-    assert mr._get_name_status(42, fetch_all=False) == [
+    assert mr._get_name_status(42, fetch_all=False).entries == [
         ("A", "a.py"), ("D", "b.py"), ("R", "c.py → d.py"), ("M", "e.py"),
     ]
 
@@ -714,31 +714,31 @@ def test_get_name_status_rename_without_path_change_shows_single(monkeypatch) ->
     """A renamed_file flag with identical paths (mode-only change) shows one path."""
     diffs = [{"renamed_file": True, "new_path": "x.py", "old_path": "x.py"}]
     monkeypatch.setattr(mr, "_glab_api", lambda *a, **kw: _api_json(diffs))
-    assert mr._get_name_status(1, fetch_all=False) == [("R", "x.py")]
+    assert mr._get_name_status(1, fetch_all=False).entries == [("R", "x.py")]
 
 
 def test_get_name_status_deleted_uses_old_path_when_new_missing(monkeypatch) -> None:
     diffs = [{"deleted_file": True, "new_path": "", "old_path": "gone.py"}]
     monkeypatch.setattr(mr, "_glab_api", lambda *a, **kw: _api_json(diffs))
-    assert mr._get_name_status(1, fetch_all=False) == [("D", "gone.py")]
+    assert mr._get_name_status(1, fetch_all=False).entries == [("D", "gone.py")]
 
 
 def test_get_name_status_api_failure_returns_empty(monkeypatch) -> None:
     monkeypatch.setattr(mr, "_glab_api", lambda *a, **kw: _api_json([], returncode=1))
-    assert mr._get_name_status(1, fetch_all=False) == []
+    assert mr._get_name_status(1, fetch_all=False).entries == []
 
 
 def test_get_name_status_bad_json_returns_empty(monkeypatch) -> None:
     bad = subprocess.CompletedProcess(args=["glab"], returncode=0, stdout="not json", stderr="")
     monkeypatch.setattr(mr, "_glab_api", lambda *a, **kw: bad)
-    assert mr._get_name_status(1, fetch_all=False) == []
+    assert mr._get_name_status(1, fetch_all=False).entries == []
 
 
 def test_get_name_status_timeout_returns_empty(monkeypatch) -> None:
     def boom(*a: Any, **kw: Any) -> Any:
         raise subprocess.TimeoutExpired(cmd="glab", timeout=10)
     monkeypatch.setattr(mr, "_glab_api", boom)
-    assert mr._get_name_status(1, fetch_all=False) == []
+    assert mr._get_name_status(1, fetch_all=False).entries == []
 
 
 def test_get_name_status_single_page_when_not_fetch_all(monkeypatch) -> None:
@@ -751,7 +751,7 @@ def test_get_name_status_single_page_when_not_fetch_all(monkeypatch) -> None:
         return _api_json(full_page)
 
     monkeypatch.setattr(mr, "_glab_api", fake)
-    entries = mr._get_name_status(1, fetch_all=False)
+    entries = mr._get_name_status(1, fetch_all=False).entries
     assert len(entries) == 100
     assert len(calls) == 1
 
@@ -765,7 +765,7 @@ def test_get_name_status_paginates_when_fetch_all(monkeypatch) -> None:
         return _api_json(page1 if "&page=1" in endpoint else page2)
 
     monkeypatch.setattr(mr, "_glab_api", fake)
-    entries = mr._get_name_status(1, fetch_all=True)
+    entries = mr._get_name_status(1, fetch_all=True).entries
     assert len(entries) == 101
     assert entries[-1] == ("M", "p2_0.py")
 
@@ -774,7 +774,7 @@ def test_get_name_status_respects_fetch_cap(monkeypatch) -> None:
     """fetch_all stops once NAMESTATUS_FETCH_CAP files are collected."""
     full_page = [{"new_path": f"f{i}.py", "old_path": f"f{i}.py"} for i in range(100)]
     monkeypatch.setattr(mr, "_glab_api", lambda *a, **kw: _api_json(full_page))
-    entries = mr._get_name_status(1, fetch_all=True)
+    entries = mr._get_name_status(1, fetch_all=True).entries
     assert len(entries) == mr.NAMESTATUS_FETCH_CAP
 
 
@@ -791,12 +791,12 @@ def test_coerce_count_handles_string_and_capped() -> None:
 
 
 def test_render_name_status_empty_entries_returns_nothing() -> None:
-    assert mr._render_name_status([], "0", full=False, iid=1) == []
+    assert mr._render_name_status(mr._NameStatus([], 0), "0", full=False, iid=1) == []
 
 
 def test_render_name_status_under_cap_no_overflow() -> None:
     entries = [("A", "a.py"), ("D", "b.py")]
-    lines = mr._render_name_status(entries, "2", full=False, iid=7)
+    lines = mr._render_name_status(mr._NameStatus(entries, 0), "2", full=False, iid=7)
     assert lines == ["\n## Files (2)", " A  a.py", " D  b.py"]
     assert not any("more" in ln for ln in lines)
 
@@ -809,7 +809,7 @@ def test_render_name_status_overflow_uses_changes_count_not_fetched() -> None:
     overflow on >100-file MRs. Here 100 fetched, 50 shown, true total 200.
     """
     entries = [("M", f"f{i}.py") for i in range(100)]
-    lines = mr._render_name_status(entries, "200", full=False, iid=9)
+    lines = mr._render_name_status(mr._NameStatus(entries, 0), "200", full=False, iid=9)
     assert lines[0] == "\n## Files (200)"
     assert len([ln for ln in lines if ln.startswith(" M")]) == mr.NAMESTATUS_DISPLAY_MAX
     assert lines[-1] == f" … +{200 - mr.NAMESTATUS_DISPLAY_MAX} more (use gl-mr:9:full)"
@@ -818,14 +818,14 @@ def test_render_name_status_overflow_uses_changes_count_not_fetched() -> None:
 def test_render_name_status_falls_back_to_len_when_count_smaller() -> None:
     """If changes_count is missing/smaller than fetched, use the fetched count."""
     entries = [("A", f"a{i}.py") for i in range(60)]
-    lines = mr._render_name_status(entries, "", full=False, iid=1)
+    lines = mr._render_name_status(mr._NameStatus(entries, 0), "", full=False, iid=1)
     assert lines[-1] == f" … +{60 - mr.NAMESTATUS_DISPLAY_MAX} more (use gl-mr:1:full)"
 
 
 def test_render_name_status_full_mode_cap_message() -> None:
     """In full mode an overflow points at the fetch cap, not :full again."""
     entries = [("M", f"f{i}.py") for i in range(mr.NAMESTATUS_FETCH_CAP)]
-    lines = mr._render_name_status(entries, "1200", full=True, iid=3)
+    lines = mr._render_name_status(mr._NameStatus(entries, 0), "1200", full=True, iid=3)
     body = [ln for ln in lines if ln.startswith(" M")]
     assert len(body) == mr.NAMESTATUS_FETCH_CAP  # full = uncapped display
     assert lines[-1] == f" … +{1200 - mr.NAMESTATUS_FETCH_CAP} more (output capped at {mr.NAMESTATUS_FETCH_CAP} files)"
