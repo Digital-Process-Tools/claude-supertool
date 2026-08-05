@@ -286,10 +286,12 @@ def _scan_unavailable_reason() -> str:
     carries only the one that is news (see `reap_duplicate_pollers`).
     """
     if not transport.ps_scan_supported():
-        return ("There is no `ps` on this platform, so an untracked or "
-                "duplicate poller can never be seen here and `radar` cannot "
-                "reap one. That is permanent, which is why radar does not "
-                "repeat it on every run — this line is the disclosure.")
+        return ("This machine's process scan cannot answer — either there is "
+                "no `ps` here, or the one there is does not accept the "
+                "invocation the scan makes. So an untracked or duplicate "
+                "poller can never be seen here and `radar` cannot reap one. "
+                "That is permanent, which is why radar does not repeat it on "
+                "every run — this line is the disclosure.")
     return ("The scan could not be read this time, though `ps` is present. "
             "Run it again; if it keeps failing, nothing is watching for "
             "duplicate pollers.")

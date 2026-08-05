@@ -263,15 +263,93 @@ def test_a_scan_that_failed_where_ps_exists_still_declines_loudly(fleet):
     assert fleet["killed"] == []
 
 
-def test_ps_support_is_decided_by_looking_for_the_binary(fleet):
-    """Not by platform name, and not by parsing a failure message."""
-    real = fleet["real_ps_scan_supported"]
+def _ps_stub(fleet, *, which="/bin/ps", scan=0, bare=0):
+    """Fake a machine's `ps`. `scan`/`bare` are a returncode or an exception.
 
-    fleet["monkeypatch"].setattr(transport.shutil, "which", lambda name: None)
-    assert real() is False
+    `scan` answers the exact invocation the scan makes; `bare` answers the
+    control probe. Returns the list of argvs actually run, so a test can pin
+    that the probe and the scan cannot drift apart.
+    """
+    calls: list[list[str]] = []
 
-    fleet["monkeypatch"].setattr(transport.shutil, "which", lambda name: "/bin/ps")
-    assert real() is True
+    def run(argv, *a, **k):
+        calls.append(list(argv))
+        outcome = scan if list(argv) == list(transport._SCAN_PS_ARGV) else bare
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return types.SimpleNamespace(returncode=outcome, stdout="")
+
+    fleet["monkeypatch"].setattr(transport.shutil, "which", lambda name: which)
+    fleet["monkeypatch"].setattr(transport.subprocess, "run", run)
+    fleet["monkeypatch"].setattr(transport, "_ps_scan_verdict", None)
+    return calls
+
+
+def test_no_ps_at_all_can_never_answer(fleet):
+    calls = _ps_stub(fleet, which=None)
+
+    assert fleet["real_ps_scan_supported"]() is False
+    assert calls == []
+
+
+def test_a_ps_that_answers_the_scan_is_supported(fleet):
+    _ps_stub(fleet, scan=0)
+
+    assert fleet["real_ps_scan_supported"]() is True
+
+
+def test_a_ps_that_works_but_rejects_our_invocation_can_never_answer(fleet):
+    """The GitHub `windows-latest` shape, and the one that reddened #786 twice.
+
+    A `ps` is on PATH (Git Bash / MSYS2 ships one), so presence proves nothing:
+    it runs, it does not understand `-axww -o`, and it will not understand it
+    tomorrow either. Permanently unable to answer *our* question is the same
+    state as no `ps` at all — not a failure that is news every run.
+
+    The claim is evidenced, not assumed: bare `ps` exits 0 here, so this
+    machine's `ps` demonstrably works and is refusing this invocation
+    specifically.
+    """
+    calls = _ps_stub(fleet, scan=1, bare=0)
+
+    assert fleet["real_ps_scan_supported"]() is False
+    # The probe asks the scan's own question first, from the same constant, so
+    # a future change to the scan's flags cannot leave the probe testing a
+    # question nothing asks.
+    assert calls[0] == list(transport._SCAN_PS_ARGV)
+
+
+def test_a_ps_that_fails_everything_is_not_claimed_to_be_permanent(fleet):
+    """Unclassifiable is loud. A machine where `ps` normally works and is
+    broken right now must not be silently written off as a platform limit."""
+    _ps_stub(fleet, scan=1, bare=OSError("ps is having a bad day"))
+
+    assert fleet["real_ps_scan_supported"]() is True
+
+
+def test_a_scan_that_could_not_be_spawned_is_not_evidence_of_permanence(fleet):
+    _ps_stub(fleet, scan=OSError("fork failed"))
+
+    assert fleet["real_ps_scan_supported"]() is True
+
+
+def test_a_scan_that_timed_out_is_not_evidence_of_permanence(fleet):
+    import subprocess as _sp
+    _ps_stub(fleet, scan=_sp.TimeoutExpired(cmd="ps", timeout=5))
+
+    assert fleet["real_ps_scan_supported"]() is True
+
+
+def test_the_verdict_is_reached_once_per_process(fleet):
+    """It cannot change under a running process, and the failure path must not
+    pay two subprocesses per radar tick to re-learn it."""
+    calls = _ps_stub(fleet, scan=1, bare=0)
+
+    assert fleet["real_ps_scan_supported"]() is False
+    after_first = len(calls)
+    assert fleet["real_ps_scan_supported"]() is False
+
+    assert len(calls) == after_first
 
 
 def test_watches_says_the_platform_can_never_scan(fleet, capsys):
@@ -291,7 +369,7 @@ def test_watches_says_the_platform_can_never_scan(fleet, capsys):
     dispatcher.cmd_list()
     out = capsys.readouterr().out
 
-    assert "`ps`" in out
+    assert "cannot answer" in out
     assert "radar" in out
 
 
@@ -307,8 +385,8 @@ def test_watches_says_a_present_ps_failed_this_time(fleet, capsys):
     out = capsys.readouterr().out
 
     assert "this time" in out
-    assert "no `ps` on this platform" not in out
-    assert "radar cannot" not in out
+    assert "cannot answer" not in out
+    assert "permanent" not in out
 
 
 def test_a_clean_fleet_is_silent(fleet):
@@ -389,6 +467,26 @@ def test_radar_is_silent_where_the_platform_cannot_scan(radar_env, capsys):
     _slot(radar_env, "gitlab-mr", "33311", [101, 102], tracked=101)
     radar_env["scan_ok"] = False
     radar_env["ps"] = False
+
+    radar.main([])
+
+    assert capsys.readouterr().out == ""
+    assert radar_env["killed"] == []
+
+
+def test_radar_is_silent_where_ps_exists_but_rejects_the_scan(radar_env, capsys):
+    """End to end in the runner's actual shape, not the one I first simulated.
+
+    `which` finds a `ps`, the scan invocation fails, bare `ps` works. The first
+    fix asked only whether a binary existed, so this machine took the *loud*
+    branch on every run — which is what the four exact-output tests in
+    test_watch_radar.py reported from four Windows legs, twice.
+    """
+    _slot(radar_env, "gitlab-mr", "33311", [101, 102], tracked=101)
+    radar_env["scan_ok"] = False
+    radar_env["monkeypatch"].setattr(transport, "ps_scan_supported",
+                                     radar_env["real_ps_scan_supported"])
+    _ps_stub(radar_env, scan=1, bare=0)
 
     radar.main([])
 

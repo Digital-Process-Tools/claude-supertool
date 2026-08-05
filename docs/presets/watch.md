@@ -946,7 +946,7 @@ So the reap acts only on what a PID proves about itself:
 | A slot with **one** poller, tracked or orphan | untouched | A lone orphan is the only thing polling that slot. Killing it trades a duplicate nobody has for a blind spot, which is the trade [#513](https://github.com/Digital-Process-Tools/claude-supertool/issues/513) says is the wrong way round. |
 | A poller **from before the labelling** | untouched, and invisible | It wears its parent's argv; nothing can tell it from the process that forked it. `pkill -f 'presets/watch/'` once — that call is an operator's, not the tool's. |
 | **Any**, when a present `ps` did not answer | untouched, and said out loud, every time | See the decline below. |
-| **Any**, on a platform with no `ps` at all | untouched, and said by `watches` instead | The scan can never answer here, so the board would carry the same line forever. See below. |
+| **Any**, on a machine whose `ps` can never answer | untouched, and said by `watches` instead | The scan can never answer here, so the board would carry the same line forever. See below. |
 
 The survivor is the pidfile's PID when it is among the live ones, so the slot keeps the poller `watches` and `unwatch` already name. Otherwise it is the lowest PID — arbitrary, but *stable*, since the pollers on one slot are interchangeable and a survivor that changed every run would be.
 
@@ -960,20 +960,21 @@ A reaper that cannot see the fleet and prints nothing renders byte-identically t
 
 #### "Could not this time" and "can never here" are different, and only one of them is news
 
-**On Windows there is no `ps`, so the scan fails on every run, forever.** The decline above would print on every board a Windows user ever sees. That is not disclosure — it is furniture. A reader learns to skim a line that is always there, and the skimming is what costs them the day the line means something, on the machine where `ps` *was* present and genuinely did not answer. A permanent entry in a list is how a real entry later goes unread.
+**On the Windows runners the scan fails on every run, forever.** Not because `ps` is missing — Git Bash / MSYS2 puts one on `PATH` — but because that `ps` does not accept `-axww -o`, which is the same permanence wearing a disguise, and it cost two CI rounds to see. The decline above would print on every board such a user ever sees. That is not disclosure — it is furniture. A reader learns to skim a line that is always there, and the skimming is what costs them the day the line means something, on the machine where `ps` *was* present and genuinely did not answer. A permanent entry in a list is how a real entry later goes unread.
 
 So the reap asks a second question before declining, and asks it the way `docs/validators.md` §"Declining instead of guessing" makes the same call — **at the point where the tool would be run, not by matching a failure message**:
 
 | | `transport.ps_scan_supported()` | radar's board | `watches` |
 |---|---|---|---|
 | `ps` present, scan failed | `True` | declines out loud, every run | says the scan failed this time |
-| no `ps` on this platform | `False` | silent | says it is permanent, and that radar cannot reap here |
+| no `ps`, or a `ps` that rejects the scan's own invocation while a bare `ps` succeeds | `False` | silent | says it is permanent, and that radar cannot reap here |
+| `ps` fails the scan **and** fails bare, or could not be spawned, or timed out | `True` | declines out loud, every run | unclassifiable is never claimed to be permanent |
 
-Nothing knowable is hidden by that silence: on a machine with no `ps` no duplicate poller was ever visible, with or without the line. What changes is *where* the absence is stated — on the surface someone reads on purpose rather than on every board. `watches` already told a Windows user its scan did not run; it now also says why, and that the reap is off:
+The verdict is probed rather than assumed, on exit status and spawnability only — never by matching a failure message — and reached once per process, since it describes the machine. The probe runs the scan's own argv from the same constant the scan uses, so it cannot drift to a question nothing asks. Nothing knowable is hidden by that silence: on a machine whose `ps` can never answer, no duplicate poller was ever visible, with or without the line. What changes is *where* the absence is stated — on the surface someone reads on purpose rather than on every board. `watches` already told a Windows user its scan did not run; it now also says why, and that the reap is off:
 
 ```
 Process scan unavailable — only pidfile-tracked pollers are listed here; untracked ones were not checked.
-There is no `ps` on this platform, so an untracked or duplicate poller can never be seen here and `radar` cannot reap one. That is permanent, which is why radar does not repeat it on every run — this line is the disclosure.
+This machine's process scan cannot answer — either there is no `ps` here, or the one there is does not accept the invocation the scan makes. So an untracked or duplicate poller can never be seen here and `radar` cannot reap one. That is permanent, which is why radar does not repeat it on every run — this line is the disclosure.
 ```
 
 Everything after a real `ps` is found stays loud. A `ps` that exists and times out, exits non-zero, or cannot be spawned is a failure, and guessing towards silence there is how a genuinely broken scan starts looking clean.
