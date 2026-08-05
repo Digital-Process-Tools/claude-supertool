@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -21,8 +22,87 @@ import _repo_target  # noqa: E402  (the repo this call is about, when not the cw
 _FIELD = "run-level field"
 
 # GitHub never transitions a run out of `completed`. The `gh-run` watcher keys
-# its `is_terminal` on the same string.
+# its `is_terminal` on the same string. This is a *run-lifecycle* field, which
+# is why comparing it to a literal is right here and wrong for a leg state:
+# the lifecycle has one terminal value and GitHub owns it, while the set of
+# leg states grows (#803).
 _TERMINAL_RUN_STATUS = "completed"
+
+# Steps named under one red leg before the list elides. A cancelled job can
+# carry two dozen cancelled steps, and the thing meant to answer "where did it
+# break" must not become the thing that fills the screen — this repo's
+# established disclosure cap and its `+N more` spelling (#605), shared with
+# `_checks.named_disclosure` so the two never diverge.
+_STEP_CAP = _checks.NAMED_CAP
+
+
+def red_breakdown(states: list[str]) -> str:
+    """`3 failed, 2 cancelled, 1 unknown` — the header's terms, re-used (#803).
+
+    `## Failed jobs (N)` and the header tally are two numbers on one screen,
+    and two numbers that disagree are worse than one that was too small. They
+    cannot disagree here because they are not two derivations: both bucket
+    through `_checks.bucket` and both spell leftovers with `_checks.label`, so
+    every term printed below is the same term `summarize()` printed above, and
+    the section's `N` is their sum.
+
+    The section is deliberately *wider* than the header's `N failed` term —
+    it is the set of legs a reader must act on, which is `is_red()`: the
+    failed bucket, plus `CANCELLED` and every state this module has not been
+    taught about. Those extra legs do not disappear from the reconciliation,
+    they appear as their own named terms, which is why the breakdown is
+    printed at all rather than left as a bare count a reader has to trust.
+    """
+    counts = Counter(
+        "failed" if _checks.bucket(s) == "failed" else _checks.label(s)
+        for s in states
+    )
+    ordered = sorted(counts.items(),
+                     key=lambda kv: (kv[0] != "failed", -kv[1], kv[0]))
+    return ", ".join(f"{n} {lab}" for lab, n in ordered)
+
+
+def steps_resolved(steps: object) -> int:
+    """How many of a job's steps will not change again (#803).
+
+    The `N/M steps` column answers **how much is left to happen**, not how
+    much went well — the verdict is the `Conclusion` cell immediately to its
+    left, and duplicating it here would say nothing new while hiding the one
+    thing the column is for. So a step counts as resolved whatever its
+    verdict: a `cancelled` or `timed_out` step is over, and the literal list
+    it used to be tested against (`success`/`failure`/`skipped`) rendered a
+    finished job as `8/10 steps`, which reads as still working.
+
+    Two states are not resolved, for opposite reasons. A pending step has not
+    finished — that is the whole point of the count. An `UNKNOWN` step (an
+    entry carrying neither `conclusion` nor `status`) was not *read*, and
+    counting an unread step as done is the guess this repo keeps re-filing;
+    it depresses the numerator instead, so the column under-claims progress
+    rather than over-claiming it.
+    """
+    if not isinstance(steps, list):
+        return 0
+    n = 0
+    for step in steps:
+        state = _checks.github_state(step) if isinstance(step, dict) else _checks.UNKNOWN
+        if state == _checks.UNKNOWN or _checks.bucket(state) == "pending":
+            continue
+        n += 1
+    return n
+
+
+def red_steps(job: object) -> list[str]:
+    """Names of the steps that put a red leg in the failed-jobs section.
+
+    Same predicate as the leg itself. Listing only `conclusion == "failure"`
+    steps left a `cancelled` leg named with no step under it at all, so the
+    section said *which* job without saying *where* — and for a timed-out or
+    cancelled job that is the only detail there is.
+    """
+    if not isinstance(job, dict) or not isinstance(job.get("steps"), list):
+        return []
+    return [str(s.get("name", "?")) for s in job["steps"]
+            if isinstance(s, dict) and _checks.is_red(_checks.github_state(s))]
 
 
 def job_states(jobs: object) -> list[str] | None:
@@ -210,40 +290,44 @@ def main() -> int:
         print(f"\n{'Job':<40} {'Status':<12} {'Conclusion':<12} {'Duration':<10}")
         print("-" * 74)
 
-        failed = []
+        failed: list[tuple[dict, str]] = []
         for job in jobs:
             j_name = job.get("name", "?")
             j_status = job.get("status", "?")
             j_conclusion = job.get("conclusion") or "-"
-            j_id = job.get("databaseId", "?")
 
-            # Calculate duration from steps if available
             steps = job.get("steps", [])
             duration_str = "-"
-            if steps:
-                completed = sum(
-                    1 for s in steps
-                    if s.get("conclusion") in ("success", "failure", "skipped")
-                )
-                duration_str = f"{completed}/{len(steps)} steps"
+            if isinstance(steps, list) and steps:
+                duration_str = f"{steps_resolved(steps)}/{len(steps)} steps"
 
+            # Membership is the shared predicate, never `== "failure"` (#803):
+            # a leg that timed out, was cancelled or is waiting on a human is
+            # exactly what a reader skipping to the section below is looking
+            # for, and the literal put it in no section at all.
+            state = _checks.github_state(job)
             marker = ""
-            if j_conclusion == "failure":
+            if _checks.is_red(state):
                 marker = " <!"
-                failed.append(job)
+                failed.append((job, state))
 
             print(f"{j_name:<40} {j_status:<12} {j_conclusion:<12} {duration_str:<10}{marker}")
 
         if failed:
-            print(f"\n## Failed jobs ({len(failed)})")
-            for job in failed:
+            breakdown = red_breakdown([s for _, s in failed])
+            print(f"\n## Failed jobs ({len(failed)}) — {breakdown}")
+            for job, state in failed:
                 j_name = job.get("name", "?")
                 j_id = job.get("databaseId", "?")
-                print(f"  - {j_name} (job #{j_id})")
-                # Show failed steps
-                for step in job.get("steps", []):
-                    if step.get("conclusion") == "failure":
-                        print(f"    step: {step.get('name', '?')}")
+                # The state is named per leg because the heading says
+                # "Failed": a CANCELLED leg belongs in this section, and
+                # letting it read as a test failure is its own wrong answer.
+                print(f"  - {j_name} (job #{j_id}) — {_checks.label(state)}")
+                names = red_steps(job)
+                for step_name in names[:_STEP_CAP]:
+                    print(f"    step: {step_name}")
+                if len(names) > _STEP_CAP:
+                    print(f"    +{len(names) - _STEP_CAP} more")
     elif isinstance(raw_jobs, list):
         print("\nNo jobs — GitHub reports zero jobs for this run.")
     else:
