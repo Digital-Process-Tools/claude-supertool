@@ -17,7 +17,9 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
 sys.path.insert(0, os.path.dirname(_HERE))  # for _env (#654)
 
-from _git_common import _git, _list_conflicts, use_utf8_stdout  # noqa: E402
+from _git_common import (  # noqa: E402
+    _git, _list_conflicts, reject_fetch_option, use_utf8_stdout,
+)
 from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 
 DEFAULT_PREVIEW_LINES = 12
@@ -104,6 +106,14 @@ def _fresh_merge_ref(ref: str) -> tuple[str, str | None]:
         return ref, None
 
     remote, rbranch = upstream.split("/", 1)
+    # #818: `upstream` is a remote-tracking ref name (attacker-choosable), and
+    # `rbranch` lands as a bare argv element in the fetch below — a value like
+    # `--upload-pack=<cmd>` executes on fetch. The #150 argv-REF guard in main()
+    # never sees this one. Refuse it by name and merge the local ref (safe: no
+    # fetch, no exec), the same fallback the offline branch below already takes.
+    refuse = reject_fetch_option(remote, rbranch)
+    if refuse:
+        return ref, f"WARN: {refuse} — merging local {ref}, not fetching {upstream}"
     fetch = _git(["fetch", remote, rbranch], timeout=45)
     if fetch.returncode != 0:
         msg = fetch.stderr.strip().splitlines()[-1] if fetch.stderr.strip() else "unknown error"
