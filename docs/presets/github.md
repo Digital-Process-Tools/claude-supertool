@@ -16,7 +16,7 @@ A GitHub-cloned cwd, **or** a `repo:OWNER/NAME` target — see [Targeting anothe
 | `gh-pr` | `gh-pr:NUMBER_OR_BRANCH[:status\|:full]` | Full PR dashboard: branch, checks, reviews/approval state, linked issue, diff stat, comments. `:status` returns slim merge-state plus the `head -> base` branch line only (~250 bytes). The check line opens with `N total:` and every count after it sums back to N, so a state the tally does not recognise is named (`2 cancelled`) instead of dropped; the legs read are reconciled against the number the Actions run declares, so a rollup that came back short carries `⚠ INCOMPLETE — 9 of 14 legs read` and names the legs it never saw (see [The tally says how many legs it did *not* read](#the-tally-says-how-many-legs-it-did-not-read)); anything short of every-check-passed carries `⚠ NOT ALL GREEN`, and zero check runs renders as one of four states — `none yet`, `none, and none will be created`, `none until the conflict is resolved … Rebase`, or a stated `UNKNOWN` — rather than one sentence for all of them ([#585](https://github.com/Digital-Process-Tools/claude-supertool/issues/585), [#594](https://github.com/Digital-Process-Tools/claude-supertool/issues/594), see [Zero check runs](#zero-check-runs-is-four-states-not-one)). The linked issue is every issue a GitHub closing keyword binds to — all of them, plural label when there are several — and a stated `none declared` when the body names no keyword, never the first `#N` in the body ([#591](https://github.com/Digital-Process-Tools/claude-supertool/issues/591), see [The linked issue](#the-linked-issue-is-a-declared-closing-reference-not-the-first-n)). A description over `DESCRIPTION_MAX` (2000 chars) says so twice — in the header and again at the cut — naming the exact char count withheld, and `:full` returns the whole description ([#698](https://github.com/Digital-Process-Tools/claude-supertool/issues/698), see [A truncated body says so before you reach it](#a-truncated-body-says-so-before-you-reach-it)). The comment list is bounded the same way: the last 10 by default, disclosed as `## Comments (10 of 25 shown, 15 earlier truncated — use :full to fetch all)` rather than as a bare total above ten of them, with each comment body cut at 500 chars marked at the cut; `:full` returns every comment whole ([#719](https://github.com/Digital-Process-Tools/claude-supertool/issues/719), see [A capped comment list says how many it did not show](#a-capped-comment-list-says-how-many-it-did-not-show)) |
 | `gh-prs` | `gh-prs[:author=@me,reviewer=@me,state=open,failed,nopipe,iids]` | PR triage board: your open PRs sorted failing-first then stalest. Per PR: check rollup (a failure shows the failing **check name**), approval state, age, diff size, watch-state, `draft`/`conflict`/`threads` flags + footer pointing at the first failing-and-unwatched PR. The gl-mrs twin. `iids` emits a bare number list for `watch-mine.sh` |
 | `gh-issues` | `gh-issues[:author=@me,label=bug,state=open,external,stale,nopipe,iids]` | Issue triage board, **ranked** rather than listed: unrankable → external author → stale body → no linked PR → oldest. Per issue: linked PRs read off the issue timeline, an external-filer marker from GitHub's `authorAssociation`, age, comment count, labels, and a `[stale]` flag when the newest comment is newer than the last time the body was written. Enrichment is one GraphQL call per 20 issues; when it fails the derived fields render `?` and the row sorts first — see [The issue board](#the-issue-board). No default `author=@me`, unlike `gh-prs` |
-| `gh-run` | `gh-run:NUMBER` | Workflow run job list with statuses and failed step names |
+| `gh-run` | `gh-run:NUMBER` | Workflow run job list with statuses and failed step names, under a header that sums it: `N total:` and every count after it sums back to N, so `2 cancelled` is named rather than dropped, and anything short of all-passed carries `⚠ NOT ALL GREEN`. GitHub's own run-level field stays visible as `(run-level field: queued)` but never leads — it is a run-lifecycle field, not a leg summary ([#789](https://github.com/Digital-Process-Tools/claude-supertool/issues/789), see [The header sums the table](#gh-runs-header-sums-the-table-beneath-it)) |
 | `gh-job` | `gh-job:NUMBER[:raw[:-N\|:START[:END]]\|:grep:PATTERN]` | Job failure detail: PR context + error pattern search + log tail. `:raw` dumps the full trace; `:raw:START:END` slices lines (1-indexed, inclusive); `:raw:-N` returns the **last N lines**, and a START past the end returns the tail of the width requested with a line saying so rather than declining — see [Reading a range](gitlab.md#reading-a-range) ([#487](https://github.com/Digital-Process-Tools/claude-supertool/issues/487)); `:grep:PATTERN` runs an ad-hoc regex over the log (literal fallback on bad regex, ±context, names the pattern + tail on no-match — never silent-empty). Optional per-job `job_patterns` table in `.supertool.json` (see gitlab preset doc) maps job names to tighter patterns + a `resolution` op. Zero matches on a job GitHub calls `failure` prints `## FAILED — no error pattern matched` — patterns tried + a log tail, never silence. `## No error patterns matched` survives only for jobs that did not fail |
 | `repo:` prefix | `repo:OWNER/NAME` (leading op) | Points `gh-pr`, `gh-prs`, `gh-issue`, `gh-issues`, `gh-run`, `gh-job` at a repo other than the cwd's — see [Targeting another repo](#targeting-another-repo) |
 | `gh-follow` | `gh-follow:USERNAME` | Follow a GitHub user via the authenticated session |
@@ -226,6 +226,49 @@ GitHub withdraws and re-creates the check runs over ~12s, and the rollup is genu
 # or just the tail, without knowing how long the log is:
 ./supertool 'gh-job:67890:raw:-40'
 ```
+
+### `gh-run`'s header sums the table beneath it
+
+`gh-run:30972816902` printed this, on `master`, while the run was two thirds done ([#789](https://github.com/Digital-Process-Tools/claude-supertool/issues/789)):
+
+```
+# Run #30972816902 — tests
+Status: queued | Event: push | Branch: master
+...
+pytest (ubuntu-latest, 3.9)              completed    success      10/10 steps
+   ... ten legs completed/success in total ...
+pytest (macos-latest, 3.11)              queued       -            -
+```
+
+Ten legs `completed success`, two running, two queued — and a header saying `queued`. Nothing was invented: the table is correct and `Status:` was GitHub's own run-level field, passed through. It is a field about the *run's lifecycle* being read as a summary of the legs, in the one line a header exists to be read alone. The same shape as [#445](https://github.com/Digital-Process-Tools/claude-supertool/issues/445)/[#454](https://github.com/Digital-Process-Tools/claude-supertool/issues/454), where `CANCELLED` counted as neither a pass nor a pending: a summary line that does not sum what is beneath it. It now reads
+
+```
+Status: in progress — 14 total: 10 passed, 0 failed, 4 pending ⚠ NOT ALL GREEN (run-level field: queued)
+Event: push | Branch: master
+```
+
+**The tally and GitHub's field are not ranked — they answer different questions.** The tally leads on *are the legs green*: it is arithmetic over what actually ran and can be audited term by term. The field leads on *is the run over*, and only it can — the tally structurally cannot see a leg GitHub has not created yet, because a `needs:`-gated job appears only once its dependency finishes. So the two failure directions get two different sentences, and neither source is silently dropped:
+
+| Situation | Header |
+|---|---|
+| run `queued`/`in_progress`, some legs unresolved | `in progress — 14 total: 10 passed, 0 failed, 4 pending ⚠ NOT ALL GREEN (run-level field: queued)` |
+| run not marked complete, every read leg resolved | `in progress — every leg read has resolved, but the run is not marked complete, so more legs may still be created — 10 total: 10 passed, 0 failed, 0 pending (run-level field: in_progress)` |
+| run `completed`, a leg still reads as running | `completed success, but 1 leg reads as running or queued — the run-level field and the legs disagree and which one is current is UNKNOWN — 3 total: 2 passed, 0 failed, 1 pending ⚠ NOT ALL GREEN (run-level field: completed)` |
+| run `completed`, everything resolved | `completed success — 3 total: 3 passed, 0 failed, 0 pending (run-level field: completed)` |
+
+**The counts come from `presets/_checks.py`, not from a second tally.** One module renders every check summary supertool prints, so `gh-run` cannot drift from `gh-pr`, and the promise that module makes holds here: the terms sum back to the leg count. `CANCELLED`, `SKIPPED`, `NEUTRAL` and any state GitHub adds after this was written are named (`2 cancelled`) rather than folded into a bucket or dropped; `TIMED_OUT` and `ACTION_REQUIRED` count as **failed**, because a job that ran out of wall clock produced no verdict and one waiting on a human approval is blocking.
+
+**Zero legs is three states, not two** — `docs/validators.md` ([Declining instead of guessing](../validators.md#declining-instead-of-guessing)). `No jobs found.` covered a run that has not started, a run that finished having created nothing, and a payload that simply did not carry a job list, and the first two read identically to a reader deciding whether to wait:
+
+| Zero legs, because | Header |
+|---|---|
+| GitHub has not created them yet | `no legs yet — GitHub has created no job for this run. Nothing has passed and nothing has failed; whether any leg appears is not established (run-level field: queued)` |
+| the run finished and created none | `completed success, and zero legs ran — GitHub created no job for this run, so nothing was tested (run-level field: completed) ⚠ NOT ALL GREEN` |
+| the payload carried no job list | `UNKNOWN — this run payload carried no job list, so nothing was tallied and whether any leg passed is UNKNOWN (run-level field: completed). Count by hand: gh run view <run-id> --json jobs` |
+
+Only the middle row claims red, and only the first two claim anything at all. A missing input and an established zero are different answers; rendering the first as the second states a verdict about legs nobody looked at.
+
+**`Event:` and `Branch:` moved to their own line.** Nothing parses this header — the `gh-run` watch source imports the op's `_format_error` and nothing else — so this is a rendering change, not a contract change.
 
 **Build a follow list from a repo's community:**
 ```bash
