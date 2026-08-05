@@ -74,16 +74,16 @@ def test_github_job_id_empty_when_no_details_url() -> None:
 
 def test_named_disclosure_empty_when_all_green() -> None:
     """The core terseness guarantee: an all-passed rollup adds zero lines."""
-    entries = [("pytest (ubuntu, 3.9)", "SUCCESS", "1"),
-               ("pytest (ubuntu, 3.10)", "SUCCESS", "2")]
+    entries = [("pytest (ubuntu, 3.9)", "SUCCESS", "job", "1"),
+               ("pytest (ubuntu, 3.10)", "SUCCESS", "job", "2")]
     assert checks.named_disclosure(entries) == []
 
 
 def test_named_disclosure_names_failed_legs_with_job_ids() -> None:
     entries = [
-        ("pytest (ubuntu-latest, 3.9)", "FAILURE", "111"),
-        ("pytest (ubuntu-latest, 3.10)", "FAILURE", "222"),
-        ("pytest (macos-latest, 3.12)", "SUCCESS", "333"),
+        ("pytest (ubuntu-latest, 3.9)", "FAILURE", "job", "111"),
+        ("pytest (ubuntu-latest, 3.10)", "FAILURE", "job", "222"),
+        ("pytest (macos-latest, 3.12)", "SUCCESS", "job", "333"),
     ]
     lines = checks.named_disclosure(entries)
     assert len(lines) == 1
@@ -96,9 +96,9 @@ def test_named_disclosure_names_failed_legs_with_job_ids() -> None:
 def test_named_disclosure_skips_pending_legs_entirely() -> None:
     """Pending resolves itself — naming it is noise, not signal (judgment call)."""
     entries = [
-        ("pytest (ubuntu-latest, 3.9)", "FAILURE", "1"),
-        ("notifiers (bun)", "IN_PROGRESS", ""),
-        ("notifiers (deno)", "QUEUED", ""),
+        ("pytest (ubuntu-latest, 3.9)", "FAILURE", "job", "1"),
+        ("notifiers (bun)", "IN_PROGRESS", "", ""),
+        ("notifiers (deno)", "QUEUED", "", ""),
     ]
     lines = checks.named_disclosure(entries)
     text = "\n".join(lines)
@@ -109,8 +109,8 @@ def test_named_disclosure_skips_pending_legs_entirely() -> None:
 def test_named_disclosure_never_folds_cancelled_into_a_count() -> None:
     """#445/#454's defect class, named — CANCELLED gets its own line."""
     entries = [
-        ("deploy-preview", "CANCELLED", "9"),
-        ("pytest (ubuntu, 3.9)", "SUCCESS", "1"),
+        ("deploy-preview", "CANCELLED", "job", "9"),
+        ("pytest (ubuntu, 3.9)", "SUCCESS", "job", "1"),
     ]
     lines = checks.named_disclosure(entries)
     assert any(l.startswith("  cancelled: deploy-preview (job #9)") for l in lines)
@@ -118,8 +118,8 @@ def test_named_disclosure_never_folds_cancelled_into_a_count() -> None:
 
 def test_named_disclosure_skipped_and_failed_get_separate_lines() -> None:
     entries = [
-        ("job-a", "SKIPPED", ""),
-        ("job-b", "FAILURE", "5"),
+        ("job-a", "SKIPPED", "", ""),
+        ("job-b", "FAILURE", "job", "5"),
     ]
     lines = checks.named_disclosure(entries)
     assert len(lines) == 2
@@ -128,7 +128,8 @@ def test_named_disclosure_skipped_and_failed_get_separate_lines() -> None:
 
 
 def test_named_disclosure_bounds_with_plus_n_more() -> None:
-    entries = [(f"pytest (ubuntu, 3.{n})", "FAILURE", str(n)) for n in range(9, 15)]
+    entries = [(f"pytest (ubuntu, 3.{n})", "FAILURE", "job", str(n))
+               for n in range(9, 15)]
     lines = checks.named_disclosure(entries, cap=5)
     assert len(lines) == 1
     assert lines[0].count("job #") == 5
@@ -136,7 +137,7 @@ def test_named_disclosure_bounds_with_plus_n_more() -> None:
 
 
 def test_named_disclosure_no_plus_more_when_under_cap() -> None:
-    entries = [("only-one", "FAILURE", "1")]
+    entries = [("only-one", "FAILURE", "job", "1")]
     lines = checks.named_disclosure(entries, cap=5)
     assert "more" not in lines[0]
 

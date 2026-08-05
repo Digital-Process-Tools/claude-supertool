@@ -91,21 +91,34 @@ def _format_error(stderr: str, resource: str, identifier: str) -> str:
     return f"ERROR: gh failed for {resource} #{identifier}: {stderr.strip()}"
 
 
-def _probe_check_run(job_id: str) -> tuple[str, str, str]:
+def _probe_check_run(job_id: str) -> tuple[str, str, str, dict | None]:
     """Ask the *checks* namespace about an id the Actions namespace disowned.
 
-    Returns `(state, name, error)` where state is `found` / `absent` /
+    Returns `(state, name, error, data)` where state is `found` / `absent` /
     `unknown`. Called from exactly one place — the path where both the job
     endpoint and the log endpoint have already 404'd — so it costs **no extra
     request on any path that was working**, including the happy one. That is
     the same trade #723 made for the metadata call it reused.
 
-    It exists to fix a message, never to produce an answer. CodeQL, Dependabot
-    and every other GitHub App reports through `check-runs/<id>`, and this op
-    reading one and rendering it under a `# Job #N` header would be a probe
-    that silently changes which API answered — the surface `gh-check` exists
-    to keep honest. So the caller gets a sentence and an op to run, and
-    `gh-job` still exits 1 having read no job.
+    **What changed in #827.** #793 used this to fix a *message* and refused to
+    let it produce an answer, on the grounds that rendering a check run under a
+    `# Job #N` header would be a probe that silently changed which API
+    answered. That is right about *silently* and not about *answering*: a
+    render whose header says `# Check run #N` and whose second line names the
+    routing is labelled, not silent. So the object comes back with the verdict
+    now, and `_render_routed_check` renders it in the **check** shape. The
+    reader does not have to know GitHub keeps CI in two id namespaces, which
+    is the whole of #827 — GitLab needs no equivalent op because its model is
+    one pipeline, one hierarchy, one id space.
+
+    **Why answering here is not a guess.** Verified live on 2026-08-05: an
+    Actions job's id *is* its check run's id (the job object publishes
+    `check_run_url: .../check-runs/<same id>`), and an App's check run 404s in
+    the Actions namespace. So Actions-first is a total order, not a
+    coin-flip — an answer from Actions is definitive and this probe never
+    runs; only a 404 there sends the question here. The genuine uncertainty is
+    narrower and it still declines: see the `unknown` state below and
+    `_absent_job_message`.
     """
     try:
         r = subprocess.run(
@@ -114,20 +127,82 @@ def _probe_check_run(job_id: str) -> tuple[str, str, str]:
             errors="replace",
         )
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
-        return ("unknown", "", f"{type(exc).__name__}: {exc}")
+        return ("unknown", "", f"{type(exc).__name__}: {exc}", None)
     if r.returncode != 0:
         if _gh_error_kind(r.stderr) == "notfound":
-            return ("absent", "", "")
-        return ("unknown", "", r.stderr.strip() or f"gh exited {r.returncode}")
+            return ("absent", "", "", None)
+        return ("unknown", "", r.stderr.strip() or f"gh exited {r.returncode}", None)
     try:
         data = json.loads(r.stdout or "null")
     except (json.JSONDecodeError, ValueError) as exc:
-        return ("unknown", "", f"checks API returned unparseable JSON: {exc}")
-    name = str(data.get("name") or "?") if isinstance(data, dict) else "?"
-    return ("found", name, "")
+        return ("unknown", "", f"checks API returned unparseable JSON: {exc}", None)
+    if not isinstance(data, dict):
+        return ("unknown", "", "checks API returned a non-object body", None)
+    return ("found", str(data.get("name") or "?"), "", data)
 
 
-def _absent_job_message(job_id: str, check: tuple[str, str, str]) -> str:
+def _load_check_renderer():
+    """`presets/github/check.py`, loaded by path. `None` if it cannot be.
+
+    The presets are standalone scripts rather than a package, so this is an
+    explicit path load rather than an import — it mutates no `sys.path` and
+    cannot collide with a module called `check`. It is lazy: only the routed
+    path calls it, so nothing that already worked pays for it.
+
+    A load failure returns `None` and the caller falls back to #793's message,
+    which names `gh-check` and exits 1. A routing convenience must not be able
+    to turn a legible error into a traceback.
+    """
+    import importlib.util
+
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "check.py")
+    try:
+        spec = importlib.util.spec_from_file_location("_gh_check_render", path)
+        if spec is None or spec.loader is None:
+            return None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+    except (OSError, ImportError, SyntaxError, ValueError):
+        return None
+    return mod if hasattr(mod, "render_check") else None
+
+
+def _log_mode_note(mode: str) -> str:
+    """Say that a requested log mode was not applied, when it cannot be.
+
+    `fail`, `raw` and `grep` all slice a job log, and a check run has no log.
+    Dropping the mode silently is the same quiet as rendering an absence: the
+    reader asked a question that was never answered and is not told which one.
+    """
+    if not mode:
+        return ""
+    return (
+        f"Note: `{mode}` slices a job log and this id is a check run, which "
+        f"has no log — that mode does not apply here and was not applied. "
+        f"What this check reported is in Output and Annotations below."
+    )
+
+
+def _render_routed_check(job_id: str, check: dict, mode: str) -> "int | None":
+    """Render a check run that `gh-job` was handed. `None` if it cannot.
+
+    Returning `None` rather than raising keeps the fallback honest: the caller
+    prints #793's message and exits 1, which is worse than a render but is
+    still a true sentence.
+    """
+    mod = _load_check_renderer()
+    if mod is None:
+        return None
+    routed = (
+        f"Routed: you called `gh-job:{job_id}`. That id is not an Actions job, "
+        f"so this op read the checks API instead — the same render as "
+        f"`gh-check:{job_id}`."
+    )
+    return mod.render_check(job_id, check, routed_from=routed,
+                            mode_note=_log_mode_note(mode))
+
+
+def _absent_job_message(job_id: str, check: tuple[str, str, str, object]) -> str:
     """The 404-on-both-endpoints case, split by what the checks API said.
 
     Before #793 this said "no such job exists in this repo. Check the ID." for
@@ -136,8 +211,13 @@ def _absent_job_message(job_id: str, check: tuple[str, str, str]) -> str:
     landing in its own error path: could-not-find-it-by-my-route published as
     absent-from-the-world (#672).
     """
-    state, name, error = check
+    state, name, error, _data = check
     if state == "found":
+        # Unreachable from `main` since #827 — that state routes and renders
+        # rather than printing a sentence. It stays because `_absent_job_message`
+        # is also the fallback when the check renderer cannot be loaded, and
+        # because a message pointing at the right op is the correct thing to
+        # print when the render is what failed.
         return (
             f"ERROR: No Actions job #{job_id} — but a **check run** with that "
             f"id does exist ({name}). CodeQL, Dependabot and any other GitHub "
@@ -165,7 +245,8 @@ def _absent_job_message(job_id: str, check: tuple[str, str, str]) -> str:
 
 
 def _missing_log_message(
-    job_id: str, meta: dict | None, meta_absent: bool, meta_error: str
+    job_id: str, meta: dict | None, meta_absent: bool, meta_error: str,
+    probe: "tuple[str, str, str, object] | None" = None,
 ) -> str:
     """Explain a 404 from the logs endpoint by the job's state, not the ID.
 
@@ -199,7 +280,10 @@ def _missing_log_message(
     """
     if meta is None:
         if meta_absent:
-            return _absent_job_message(job_id, _probe_check_run(job_id))
+            # `probe` is threaded in by the caller when it has already asked
+            # the checks namespace (#827), so the question is never put twice.
+            return _absent_job_message(
+                job_id, probe if probe is not None else _probe_check_run(job_id))
         state_path = _api_repo_path("actions/jobs/" + str(job_id))
         return (
             f"ERROR: Job #{job_id} has no log (HTTP 404), and supertool "
@@ -473,6 +557,12 @@ def main() -> int:
                   f"use raw:-{raw_tail} for the last {raw_tail} lines, "
                   "or raw:START:END for an absolute range")
             return 1
+    # Which log-slicing mode was asked for, by the name the caller typed. Only
+    # used to say it does not apply when the id turns out to be a check run.
+    log_mode = ""
+    if raw_mode or grep_mode or errors_mode:
+        log_mode = sys.argv[2]
+
     config = _get_config()
     tail_lines = config["lines"]
 
@@ -559,7 +649,20 @@ def main() -> int:
 
     if log_result.returncode != 0:
         if _gh_error_kind(log_result.stderr) == "notfound":
-            print(_missing_log_message(job_id, job_meta, meta_absent, meta_error))
+            probe = None
+            if job_meta is None and meta_absent:
+                # Both endpoints have 404'd. Ask the other namespace once —
+                # and this is the branch #827 turned from a signpost into an
+                # answer. Only `found` routes; `absent` and `unknown` fall
+                # through to the message, so an unanswered probe still
+                # declines rather than rendering an empty check.
+                probe = _probe_check_run(job_id)
+                if probe[0] == "found" and isinstance(probe[3], dict):
+                    routed = _render_routed_check(job_id, probe[3], log_mode)
+                    if routed is not None:
+                        return routed
+            print(_missing_log_message(job_id, job_meta, meta_absent,
+                                       meta_error, probe))
         else:
             print(_format_error(log_result.stderr, "Job log", job_id))
         return 1

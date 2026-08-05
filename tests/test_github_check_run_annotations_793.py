@@ -48,6 +48,16 @@ Still fixture-only, never observed: the 404 response bodies for a nonexistent
 check run, the `raw_details` field, `total_count` in the commits envelope, a
 100-annotation page, and every transport-failure path (403/502/timeout).
 
+Superseded in part by #827
+--------------------------
+The `gh-job` half of this file asserted that recognising a check-run id
+produced a *message* and never an answer. #827 overturned that — `gh-job:ID`
+now routes and renders, under `# Check run #N` with the routing named — on the
+grounds that the objection in #821's reasoning is to *silence*, not to
+answering, and a labelled header is not silent. The two tests below carry the
+amendment inline. Everything else here, including all three of the states that
+decline, is unchanged and still load-bearing.
+
 Stubbing note (#731): the fake gh dispatches per endpoint and raises on any
 call it does not recognise. That is load-bearing twice here — it is how the
 "no extra request on the happy path" claim is enforced, and it is how
@@ -205,10 +215,19 @@ def _run(mod, monkeypatch, capsys, fake, argv) -> tuple[int, str]:
 
 def test_gh_job_on_a_check_run_id_does_not_claim_the_id_does_not_exist(
         monkeypatch, capsys) -> None:
-    """The bug, stated as a test: the id exists, in the other namespace."""
+    """The bug, stated as a test: the id exists, in the other namespace.
+
+    **Amended by #827.** This asserted `rc == 1` — the op recognised the check
+    run and printed a signpost to `gh-check`. #827 is the decision that the
+    signpost was the wrong deliverable: the user should not have to know
+    GitHub keeps CI in two id namespaces, so the op now reads the check run
+    and renders it. What this test was actually filed to guard is untouched
+    and is what it still asserts — the op must never publish "I could not find
+    it by my route" as "it is not there".
+    """
     rc, out = _run(job, monkeypatch, capsys,
                    _fake_gh(check=_check_run()), ("job.py", CHECK_ID, "fail"))
-    assert rc == 1
+    assert rc == 0
     assert "no such job exists in this repo" not in out
     assert "check run" in out.lower()
     assert "CodeQL" in out
@@ -217,13 +236,21 @@ def test_gh_job_on_a_check_run_id_does_not_claim_the_id_does_not_exist(
 
 def test_gh_job_never_renders_check_run_content_under_a_job_header(
         monkeypatch, capsys) -> None:
-    """The probe changes the *message*. It must not silently become the answer."""
+    """The invariant that survives #827, and the reason routing is safe at all.
+
+    #793's version of this test forbade the *content*; that was the enforcement
+    mechanism for the real rule, not the rule. The rule is that an op's header
+    must name the API that answered — a `# Job #N` above a check run's body is
+    a probe that silently changed which API answered. Rendering the check run
+    under `# Check run #N`, with the routing named on the next line, breaks
+    nothing that sentence was protecting.
+    """
     rc, out = _run(job, monkeypatch, capsys,
                    _fake_gh(check=_check_run(), annotations=[_annotation()]),
                    ("job.py", CHECK_ID, "fail"))
-    assert rc == 1
-    assert "Incomplete URL substring sanitization" not in out
-    assert not out.lstrip().startswith("# Job #")
+    assert rc == 0
+    assert "# Job #" not in out
+    assert out.lstrip().startswith(f"# Check run #{CHECK_ID}")
 
 
 def test_gh_job_on_a_genuinely_unknown_id_still_blames_the_id(
