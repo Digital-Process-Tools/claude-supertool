@@ -77,6 +77,32 @@ forged-line half and left the cursor-movement half open. So it is fixed here,
 for every caller, and the widening is what makes adopting it at a new site
 mean what the site thinks it means.
 
+**Two of those characters were not moving any cursor (#854).** ``\\r`` and
+``\\t`` are C0, so #851 disclosed them with the rest, and every body written in
+either tracker's web editor came back with ``␍`` on the end of every line —
+1210 of them in the first eight open issues of ``nodejs/node``, 1221 in
+``python/cpython``, 231 plus 159 tabs in ``microsoft/vscode``. That is the
+argument three paragraphs down turned against itself: a glyph a reader meets on
+every line of every body is wallpaper, and a reader who has learned to skip
+``␍`` has learned to skip the disclosure that ``␛`` needs to work. The rule
+that separates them, and the reason it is a rule about the *pair* rather than
+about ``\\r``:
+
+* **A carriage return is inert only as ``\\r\\n``.** On its own it returns the
+  cursor to column 0, so ``real line\\rFORGED`` overwrites text the tool already
+  wrote — #851 exactly, one code point instead of five. So the pair is
+  normalised to a bare newline before disclosure and any ``\\r`` that is not
+  followed by ``\\n`` is still shown as ``␍``. Adding ``\\r`` to `keep` would
+  have been the obvious fix and would have reopened the hole.
+* **A tab is content in a block and a cursor command in a field**, which is why
+  `scrub()` and `flat()` answer differently. A tab advances; it cannot reach a
+  column it has passed and it cannot make a line, so inside a fence — text that
+  spans lines already, with markers owning its edges — it is the author's
+  indentation. A flattened field is interpolated into a line the tool owns, and
+  `_board.render_row` flattens every cell of a *column-aligned* board, where a
+  tab is the one C0 character that can imitate the board's own structure
+  without making a line. The difference is the surface, not the character.
+
 **Disclosed, not stripped.** Control characters are replaced by the Unicode
 Control Pictures glyph that names them (``\\x1b`` → ``␛``), never dropped.
 Suppressing them silently converts *this text was hostile* into *this text was
@@ -119,6 +145,13 @@ NEUTRALISED = "[fence glyph in content — neutralised]"
 _PICTURES = {chr(i): chr(0x2400 + i) for i in range(0x20)}
 _PICTURES[chr(0x7F)] = chr(0x2421)
 
+# The two C0 characters that are typography rather than cursor commands, and
+# the pair that is a line ending rather than a return to column 0 (#854). A
+# lone CR is neither and is disclosed like any other cursor movement.
+_LF = chr(10)
+_TAB = chr(9)
+_CRLF = chr(13) + _LF
+
 
 def _is_control(ch: str) -> bool:
     o = ord(ch)
@@ -128,8 +161,12 @@ def _is_control(ch: str) -> bool:
 def visible(text: str, *, keep: str = "") -> str:
     """Every control character shown as itself. `keep` is what the render emits.
 
-    A block keeps its newlines because the block *is* lines; a one-line field
-    keeps nothing, because there is no control character it could want.
+    A block keeps its newlines and its tabs, because the block *is* lines and
+    an author indented them; a one-line field keeps nothing, because there is no
+    control character it could want. What counts as inert is the caller's
+    decision, not this function's — it only knows characters, and ``\\r\\n``
+    being a line ending while ``\\r`` is a cursor command is a fact about lines
+    (#854). Callers normalise the pair before asking.
     """
     if not any(_is_control(c) for c in text if c not in keep):
         return text
@@ -169,8 +206,13 @@ def scrub(text: str) -> str:
     whose closing marker can be erased off the screen by an escape sequence in
     the body is no more a fence than one whose delimiter can be typed. Newlines
     stay — a block is lines.
+
+    Tabs stay too, and ``\\r\\n`` is normalised to the newline it is, because
+    neither can move a cursor anywhere it has not already been (#854). A ``\\r``
+    the normalisation leaves behind is one that no ``\\n`` followed: not a line
+    ending, a return to column 0, and disclosed as such.
     """
-    out = visible(text, keep=chr(10))
+    out = visible(text.replace(_CRLF, _LF), keep=_LF + _TAB)
     if _OPEN_G not in out and _CLOSE_G not in out:
         return out
     return out.replace(_OPEN_G, NEUTRALISED).replace(_CLOSE_G, NEUTRALISED)
@@ -189,8 +231,15 @@ def flat(text: str) -> str:
     they can do is add lines to a header the reader takes as the tool's, and
     that is what this removes — by every route, not only by newline (#851).
     Content is otherwise untouched.
+
+    A ``\\r\\n`` collapses to the one space its ``\\n`` would have, so a
+    web-authored field does not render two of them (#854). A tab is *not* kept
+    here although `scrub()` keeps it: this line is the tool's, and a board
+    flattens every cell of a column-aligned table, where a tab can imitate the
+    column structure without ever making a line. A ``\\r`` no ``\\n`` followed
+    is a cursor command and shows as ``␍``, the same answer `scrub()` gives it.
     """
-    return visible(" ".join(text.split("\n")).replace("\r", " "))
+    return visible(" ".join(text.replace(_CRLF, _LF).split(_LF)))
 
 
 def flat_note(fields: str) -> str:
