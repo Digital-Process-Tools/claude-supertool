@@ -210,6 +210,11 @@ def _graphql_query(owner: str, name: str, numbers: list[int]) -> str:
     """Aliased single-issue lookups — one call for a whole chunk of the board."""
     fields = (
         "number lastEditedAt authorAssociation "
+        # Ranks on *will this close the issue*, not on *has anyone referenced
+        # it*. includeClosedPrs is load-bearing: without it a merged closer
+        # vanishes and a shipped fix renders as unclaimed (#782).
+        "closedByPullRequestsReferences(first: 5, includeClosedPrs: true) "
+        "{ nodes { number state } } "
         "timelineItems(last: 20, itemTypes: [CROSS_REFERENCED_EVENT, CONNECTED_EVENT]) "
         "{ nodes { __typename "
         "... on CrossReferencedEvent { source { __typename ... on PullRequest { number state } } } "
@@ -264,8 +269,42 @@ def _fetch_enrichment(owner: str, name: str, numbers: list[int],
     return enriched, reason
 
 
-def _linked_prs(node: dict) -> list[dict]:
-    """Pull requests connected to this issue, deduped, in timeline order."""
+def _closing_prs(node: dict) -> list[dict] | None:
+    """PRs that will close this issue — the answer to "is anyone on it".
+
+    Not the timeline. A `Closes #N` line in a PR body produces a
+    `CrossReferencedEvent` indistinguishable from a prose mention, so the
+    timeline conflates "someone is fixing this" with "someone typed this
+    number". Measured on this repo: #736 mentions #735 while closing #720, and
+    #781 closes #778 — both render as `CrossReferencedEvent` (#782).
+
+    `None` when the field is absent or null, because `_linked` is a rank tier:
+    an unknown that renders as "no PR" does not merely misreport, it sorts the
+    row to the top of the work queue and gets it worked twice.
+    """
+    if "closedByPullRequestsReferences" not in node:
+        return None
+    refs = node["closedByPullRequestsReferences"]
+    if refs is None:
+        return None
+    nodes = refs.get("nodes") if isinstance(refs, dict) else None
+    if nodes is None:
+        return None
+    out: list[dict] = []
+    seen: set[object] = set()
+    for pr in nodes:
+        if not isinstance(pr, dict):
+            continue
+        number = pr.get("number")
+        if number in seen:
+            continue
+        seen.add(number)
+        out.append({"number": number, "state": pr.get("state")})
+    return out
+
+
+def _mentioning_prs(node: dict) -> list[dict]:
+    """PRs that reference this issue without closing it — context, not a claim."""
     out: list[dict] = []
     seen: set[object] = set()
     for item in ((node.get("timelineItems") or {}).get("nodes") or []):
@@ -318,7 +357,8 @@ def _apply_enrichment(rows: list[dict], data: dict) -> None:
         if not isinstance(node, dict):
             continue
         row["_external"] = _external(node.get("authorAssociation"))
-        row["_linked"] = _linked_prs(node)
+        row["_linked"] = _closing_prs(node)
+        row["_mentions"] = _mentioning_prs(node)
         row["_stale"] = _is_stale(
             row.get("_newest_comment"), row.get("createdAt"), node.get("lastEditedAt"),
         )
@@ -328,11 +368,21 @@ def _apply_enrichment(rows: list[dict], data: dict) -> None:
 # cells
 # ---------------------------------------------------------------------------
 
-def _linked_cell(linked: list[dict] | None) -> str:
-    """Linked-PR cell. `?` and `no PR` are different answers and look different."""
+def _linked_cell(linked: list[dict] | None,
+                 mentions: list[dict] | None = None) -> str:
+    """Linked-PR cell. `?` and `no PR` are different answers and look different.
+
+    A *mention* is shown only when there is no closer, and never as a link:
+    a PR that references the number without closing it means nobody is on this
+    issue, and saying otherwise is what #782 fixed. It is still worth seeing —
+    it is usually where the adjacent work happened — so it renders as `~`.
+    """
     if linked is None:
         return "? unknown"
     if not linked:
+        if mentions:
+            extra = f" +{len(mentions) - 1}" if len(mentions) > 1 else ""
+            return f"~ #{mentions[0].get('number')} mention{extra}"
         return "· no PR"
     first = linked[0]
     extra = f" +{len(linked) - 1}" if len(linked) > 1 else ""
@@ -428,7 +478,7 @@ def _row(row: dict) -> str:
         sigil="#",
         ident=str(row.get("number", "?")),
         watched=False,
-        status=_linked_cell(row.get("_linked")),
+        status=_linked_cell(row.get("_linked"), row.get("_mentions")),
         appr=_ext_cell(row.get("_external")),
         age=_age(str(row.get("createdAt", ""))),
         changes=_comments_cell(row.get("_comments")),
