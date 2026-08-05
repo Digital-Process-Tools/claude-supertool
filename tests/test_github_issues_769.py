@@ -316,6 +316,11 @@ def test_apply_enrichment_leaves_unfetched_rows_unknown() -> None:
     issues._apply_enrichment(rows, {1: {
         "authorAssociation": "NONE",
         "lastEditedAt": None,
+        # GraphQL always returns a field that was requested, so a real answer
+        # for a covered row carries an empty list rather than omitting the key.
+        # Omitting it would now mean "unknown", which is the point of #782 —
+        # and would make this fixture assert the wrong thing about row 1.
+        "closedByPullRequestsReferences": {"nodes": []},
         "timelineItems": {"nodes": []},
     }})
     assert rows[0]["_external"] is True
@@ -324,21 +329,30 @@ def test_apply_enrichment_leaves_unfetched_rows_unknown() -> None:
     assert rows[1]["_linked"] is None
 
 
-def test_apply_enrichment_reads_linked_prs_from_the_timeline() -> None:
+def test_apply_enrichment_reads_linked_prs_from_the_closers_not_the_timeline() -> None:
+    """Rewritten by #782: the timeline was the wrong source.
+
+    It used to assert that a `CrossReferencedEvent` naming a PR made the issue
+    linked. Measured against the real API, that conflates two different facts —
+    a `Closes #N` body line and a bare prose mention produce the same event —
+    so a merged PR that only name-dropped an issue pushed it down the rank.
+    The timeline entries below are now *mentions*, and only the closer counts.
+    """
     rows = [_issue(1)]
     issues._apply_enrichment(rows, {1: {
         "authorAssociation": "MEMBER",
         "lastEditedAt": None,
+        "closedByPullRequestsReferences": {
+            "nodes": [{"number": 761, "state": "MERGED"}]},
         "timelineItems": {"nodes": [
             {"__typename": "CrossReferencedEvent",
              "source": {"__typename": "Issue"}},
             {"__typename": "CrossReferencedEvent",
-             "source": {"__typename": "PullRequest", "number": 761, "state": "MERGED"}},
-            {"__typename": "ConnectedEvent",
-             "subject": {"__typename": "PullRequest", "number": 761, "state": "MERGED"}},
+             "source": {"__typename": "PullRequest", "number": 999, "state": "MERGED"}},
         ]},
     }})
     assert rows[0]["_linked"] == [{"number": 761, "state": "MERGED"}]
+    assert rows[0]["_mentions"] == [{"number": 999, "state": "MERGED"}]
 
 
 def test_annotate_counts_comments_and_finds_the_newest() -> None:
