@@ -200,6 +200,8 @@ Validators are post-write hooks — they run after a file is written and report 
 - **Scripts are co-located with their preset.** `presets/mytools/status.py`, not `scripts/status.py`. The `{path}` placeholder makes this work without hardcoded paths.
 - **Never call `urllib.request.urlopen` directly.** Use `urlopen()` from [`presets/_http.py`](../presets/_http.py). See below — this one is enforced by a test.
 - **Never call `.read()` on a response.** Use `read_capped()` from the same module. Also enforced by a test.
+- **Never call `urlretrieve`.** It is a third door onto the same default opener — no redirect guard, no cap, no deadline, no destination policy. Use `download()` from the same module. Enforced by a test, added after [#817](https://github.com/Digital-Process-Tools/claude-supertool/issues/817) came through that door.
+- **Never fetch a URL a user, an issue or an API response chose without a destination policy.** See "Fetching a URL somebody else chose" below.
 
 ### HTTP requests go through `presets/_http.py`
 
@@ -236,6 +238,42 @@ Three rules about the refusal:
 1. **Catch it explicitly and print it.** `str(exc)` names the origin, the status code, the attempted destination and the reason. Returning the pre-redirect state quietly is the false-success defect wearing a new coat.
 2. **It is deliberately not an `OSError`.** A blanket `except OSError` or `except urllib.error.URLError` must not absorb a credential-exfiltration attempt into a generic "network error", and a `..._safe()` helper whose contract is "returns `None` on any error" must not turn it into a silent `None`. Where such a helper exists (`hashnode._graphql.gql_safe`, `bluesky._atproto.refresh_session`), the refusal is a documented carve-out that exits instead.
 3. **Ordering matters.** Put `except RedirectRefused` *before* the broad handlers.
+
+### Fetching a URL somebody else chose
+
+Everything above governs a request to a URL *this repo* chose — the four API clients hold their base URLs as constants, and the only untrusted input is where a redirect points. `gh-issue` broke that assumption: it pulled `http(s)` URLs out of issue markdown and fetched them, so any comment containing
+
+```
+![x](http://169.254.169.254/latest/meta-data/iam/security-credentials/role)
+```
+
+made a developer's machine read its own cloud metadata service, write the body to `/tmp/supertool-images/gh/N/`, and print the path under `## Images` for an agent to open ([#817](https://github.com/Digital-Process-Tools/claude-supertool/issues/817)).
+
+**Adopting `urlopen()` would not have fixed it.** The metadata URL is the *first* hop, and the only guard `_http.py` had was a same-origin rule on redirects. There was no destination policy to adopt. So there is now a second one, deliberately **not** applied to `urlopen()` — turning it on globally would break every loopback test in this repo and every self-hosted endpoint, and the constant-URL clients do not need it:
+
+```python
+from _http import DestinationRefused, download  # noqa: E402
+
+try:
+    download(
+        url, local_path,
+        allowed_hosts=("github.com", ".githubusercontent.com"),
+        limit=8 * 1024 * 1024,
+        content_types=("image/",),
+    )
+except DestinationRefused as e:
+    ...   # a decision: report it, with the reason
+except (OSError, http.client.HTTPException) as e:
+    ...   # a failure: report it, as a different thing
+```
+
+`download()` checks scheme and host allowlist first — pure, no DNS, no packets, because a probe that *reaches* the metadata service has already told the attacker the machine can see it — then resolves and checks every returned address, then connects with a redirect handler that re-runs the allowlist per hop, then the `Content-Type`, then `read_capped`, and only then writes. A refusal leaves nothing on disk, not even the directory.
+
+**Use an allowlist of hosts, not a denylist of address ranges.** A denylist has to be complete to be worth anything — `169.254.169.254` *and* `169.254.170.2` *and* `100.64.0.0/10` *and* `fd00::/8` and whatever IANA reserves next — and after all that it still permits every public URL on the internet, so the input is still a way to make somebody's machine make a request. The address check is the second layer, for an allowlisted *name* that resolves somewhere it should not.
+
+**Three things it does not cover, and they are in the docstring rather than here so they cannot drift from the code:** DNS rebinding between the resolve and the connect; an `http_proxy` that makes the address checks decorative; and the bytes themselves, which are attacker-chosen content from an allowlisted host and are the caller's problem. A half-guard described as a guard is worse than none.
+
+**Two ends of the same rule: say when you decline.** `DestinationRefused` is not an `OSError`, for the same reason as `RedirectRefused` — the call site it was written for read `except (URLError, OSError): continue`. And the caller must print all three outcomes. "Fetched", "refused, because —", and "tried and could not tell" are different facts with different next actions, and an image that vanishes silently reads as an issue with no image. See [validators.md](validators.md), "Declining instead of guessing".
 
 ### The body is bounded, in bytes and in wall clock
 
