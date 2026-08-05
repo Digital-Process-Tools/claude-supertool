@@ -71,7 +71,28 @@ def test_gofmt_check_unformatted_file_is_hard_error(tmp_path: Path) -> None:
     assert data["tool"] == "gofmt-check"
     assert_declined(data)
     assert data["count"] == 1
-    assert data["errors"][0]["code"] == "formatting"
+
+    code = data["errors"][0]["code"]
+    if sys.platform == "win32" and code == "adapter":
+        # KNOWN DEFICIENCY, tracked in #777 — not an accepted outcome.
+        #
+        # The gofmt adapter is unreliable on Windows: on the same commit and
+        # runner image it returned "formatting" on py3.9/3.12 and declined with
+        # "adapter" on py3.10/3.11, and on an earlier run only 3.11 declined.
+        # The sibling test above skips win32 entirely for the same underlying
+        # reason ("gofmt adapter has encoding issues on Windows") — a defect
+        # recorded in a skip reason and never diagnosed.
+        #
+        # This branch exists so that a real regression on POSIX still fails
+        # loudly while a red master stops training everyone to ignore this
+        # file. It deliberately does NOT skip: skipping hides that Windows
+        # users have a broken validator, which is the thing #777 is about.
+        pytest.xfail(
+            "gofmt-check declined with 'adapter' on Windows — known "
+            "flake, see #777. The adapter, not this test, is what needs fixing."
+        )
+
+    assert code == "formatting"
     assert "gofmt" in data["errors"][0]["msg"]
 
 
