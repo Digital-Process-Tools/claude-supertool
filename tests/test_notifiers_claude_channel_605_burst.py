@@ -266,6 +266,7 @@ def test_a_hard_limit_below_the_soft_limit_refuses_to_start(tmp_path) -> None:
             "SUPERTOOL_CHANNEL_WINDOW_HARD": "1000",
         },
         capture_output=True, text=True, timeout=30,
+        encoding="utf-8", errors="replace",
     )
     assert proc.returncode == EXIT_BAD_CAP, (
         f"started with an unreachable reduction stage (exit {proc.returncode})"
