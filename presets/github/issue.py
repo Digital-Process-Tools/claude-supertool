@@ -87,6 +87,49 @@ def _download_images(image_urls: list[str], issue_number: str) -> list[str]:
     return downloaded
 
 
+def _linked_prs_unknown(reason_lines: list) -> None:
+    """Say the lookup could not be answered, rather than printing nothing.
+
+    Silence here reads as "there are no linked PRs", and that reading has an
+    action attached: an unclaimed issue is one to delegate. Work has been
+    re-delegated onto an already-merged fix on this tracker because a list did
+    not distinguish "none" from "could not ask" (#780).
+
+    Three states, not two — `docs/validators.md`, "Declining instead of
+    guessing".
+    """
+    reason = (reason_lines or [""])[0].strip() or "no detail from gh"
+    print(f"{chr(10)}Linked PRs: unknown — could not query ({reason})")
+
+
+def _print_linked_prs(iid: object) -> None:
+    """Render the linked-PR section for an issue."""
+    try:
+        pr_result = _gh([
+            "pr", "list", "--search", str(iid), "--json",
+            "number,title,state,headRefName", "--limit", "5"
+        ])
+        if pr_result.returncode == 0:
+            prs = json.loads(pr_result.stdout)
+            if prs:
+                print(f"{chr(10)}Linked PRs: {len(prs)}")
+                for pr in prs:
+                    pr_num = pr.get("number", "?")
+                    pr_title = pr.get("title", "?")
+                    pr_state = pr.get("state", "?")
+                    pr_branch = pr.get("headRefName", "?")
+                    print(f"  #{pr_num} ({pr_state}) {pr_title}")
+                    print(f"    branch: {pr_branch}")
+            else:
+                print(f"{chr(10)}Linked PRs: none")
+        else:
+            _linked_prs_unknown(pr_result.stderr.strip().splitlines()[:1])
+    except subprocess.TimeoutExpired:
+        _linked_prs_unknown(["gh pr list timed out"])
+    except json.JSONDecodeError:
+        _linked_prs_unknown(["gh pr list returned output that is not JSON"])
+
+
 def main() -> int:
     if len(sys.argv) < 2:
         print("ERROR: usage: issue.py NUMBER [full]")
@@ -153,27 +196,7 @@ def main() -> int:
         # stops at the top must still see it (#681).
         print(_body.header_notice(body, body_total, body_withheld))
 
-    # Linked PRs — search by issue number in PR body/title
-    try:
-        pr_result = _gh([
-            "pr", "list", "--search", str(iid), "--json",
-            "number,title,state,headRefName", "--limit", "5"
-        ])
-        if pr_result.returncode == 0:
-            prs = json.loads(pr_result.stdout)
-            if prs:
-                print(f"\nLinked PRs: {len(prs)}")
-                for pr in prs:
-                    pr_num = pr.get("number", "?")
-                    pr_title = pr.get("title", "?")
-                    pr_state = pr.get("state", "?")
-                    pr_branch = pr.get("headRefName", "?")
-                    print(f"  #{pr_num} ({pr_state}) {pr_title}")
-                    print(f"    branch: {pr_branch}")
-            else:
-                print("\nLinked PRs: none")
-    except (subprocess.TimeoutExpired, json.JSONDecodeError):
-        pass
+    _print_linked_prs(iid)
 
     # Description
     all_image_urls = _extract_image_urls(body)
