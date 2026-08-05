@@ -38,6 +38,38 @@ from _preset_loader import load_preset_module  # noqa: E402
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
+def _decode(raw: bytes | None) -> str:
+    return "" if raw is None else raw.decode("utf-8", errors="replace")
+
+
+def _run_utf8(argv, *, check: bool = False, **kwargs):
+    """Run `argv`, capture bytes, and decode them as UTF-8 — never as the locale codec.
+
+    `subprocess.run(..., text=True)` with no `encoding=` decodes the child's
+    output with the *locale's* preferred codec. On the Windows runners that is
+    cp1252, which has no mapping for 0x90 — and 0x90 is the second byte of every
+    UTF-8-encoded Control Picture (U+2400-U+243F). supertool prints those glyphs
+    (`\u241b`, `\u241e`), so as soon as one reached a helper here the decode blew up
+    inside `subprocess`'s reader thread, `proc.stdout` came back as `None`, and
+    the caller's `proc.stdout + proc.stderr` raised
+
+        TypeError: unsupported operand type(s) for +: 'NoneType' and 'str'
+
+    which is how four Windows legs went red in #856 while ubuntu and macOS —
+    whose locale codec is already UTF-8 — could not see the constraint at all.
+
+    Decoding here takes the locale out of the question entirely, and
+    `errors="replace"` means undecodable output degrades to a visible marker
+    rather than taking the test down.
+    """
+    proc = subprocess.run(argv, capture_output=True, **kwargs)
+    done = subprocess.CompletedProcess(
+        proc.args, proc.returncode, _decode(proc.stdout), _decode(proc.stderr))
+    if check:
+        done.check_returncode()
+    return done
+
+
 @pytest.fixture()
 def env_mod():
     """`presets/_env.py`, loaded the way a preset would import it."""
@@ -364,9 +396,9 @@ def _run_supertool(args, env_extra):
     env = dict(os.environ)
     env.update(env_extra)
     env["SUPERTOOL_NO_RTK"] = "1"
-    return subprocess.run(
+    return _run_utf8(
         [sys.executable, str(REPO_ROOT / "supertool.py"), *args],
-        capture_output=True, text=True, timeout=120, cwd=str(REPO_ROOT), env=env,
+        timeout=120, cwd=str(REPO_ROOT), env=env,
     )
 
 
@@ -393,6 +425,88 @@ def test_issue_reproduction_no_longer_tracebacks():
     assert "Traceback (most recent call last)" not in combined, combined[-2000:]
     assert "note: SUPERTOOL_MAX_COMMITS='x'" in combined, combined[:2000]
     assert "using 20" in combined, combined[-2000:]
+
+
+# --------------------------------------------------------------------------
+# The decode, which the locale must not get a vote in (#856).
+# --------------------------------------------------------------------------
+
+#: A UTF-8 Control Picture whose second byte, 0x90, is unmapped in cp1252.
+#: `\u241b` is what supertool renders `\x1b` as; `\u241e` appears in its own source.
+_CONTROL_PICTURES = "\u241e RS \u241b ESC"
+
+
+def test_supertool_output_is_undecodable_under_the_windows_locale_codec(tmp_path):
+    """The hazard the helpers defend against, forced on any platform.
+
+    Not a platform-gated skip: cp1252 is a stock codec everywhere, so asking for
+    it explicitly reproduces the Windows failure on a Mac. If this ever stops
+    raising, supertool has stopped emitting Control Pictures and the guard below
+    is defending against nothing — which is worth failing over either way.
+    """
+    target = tmp_path / "glyphs.txt"
+    target.write_text(f"alpha\n{_CONTROL_PICTURES}\nomega\n", encoding="utf-8")
+
+    import os
+
+    env = dict(os.environ)
+    env["SUPERTOOL_NO_RTK"] = "1"
+    raw = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "supertool.py"), f"read:{target}"],
+        capture_output=True, timeout=120, cwd=str(REPO_ROOT), env=env,
+    ).stdout
+    assert b"\xe2\x90" in raw, "supertool emitted no Control Picture to decode"
+    with pytest.raises(UnicodeDecodeError):
+        raw.decode("cp1252")
+
+
+def test_helper_returns_text_with_the_glyphs_intact(tmp_path):
+    """And the helper hands back a `str`, not the `None` that produced #856."""
+    target = tmp_path / "glyphs.txt"
+    target.write_text(f"alpha\n{_CONTROL_PICTURES}\nomega\n", encoding="utf-8")
+
+    proc = _run_supertool([f"read:{target}"], {})
+    combined = proc.stdout + proc.stderr
+    assert isinstance(proc.stdout, str) and isinstance(proc.stderr, str)
+    assert "\u241e" in combined and "\u241b" in combined, combined[:2000]
+
+
+def test_no_subprocess_here_leaves_decoding_to_the_locale():
+    """The lock that a Mac cannot pass by accident.
+
+    Every behavioural assertion above is satisfied on a UTF-8 platform whether or
+    not the decoding is pinned, so the reintroduction of `text=True` without
+    `encoding=` would go green on every leg the author can run. This reads the
+    source instead, and so fails wherever it is run.
+
+    It walks the AST rather than the text, because a regex over the source reads
+    prose as code: the docstring on `_run_utf8` names the very construct being
+    banned, and a textual scan duly reported it as a violation.
+    """
+    import ast
+
+    tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    calls = [n for n in ast.walk(tree)
+             if isinstance(n, ast.Call)
+             and isinstance(n.func, ast.Attribute)
+             and isinstance(n.func.value, ast.Name)
+             and n.func.value.id == "subprocess"
+             and n.func.attr in {"run", "Popen", "check_output"}]
+    assert calls, "the scan matched no subprocess call at all — this guard has drifted"
+
+    def _is_true(kw):
+        return isinstance(kw.value, ast.Constant) and kw.value.value is True
+
+    offenders = []
+    for call in calls:
+        names = {kw.arg for kw in call.keywords}
+        text_mode = any(_is_true(kw) for kw in call.keywords
+                        if kw.arg in {"text", "universal_newlines"})
+        if text_mode and "encoding" not in names:
+            offenders.append(f"line {call.lineno}")
+    assert not offenders, (
+        "decoding a child's output with the locale codec breaks the Windows legs "
+        f"(#856); capture bytes and use _run_utf8 instead: {offenders}")
 
 
 # --------------------------------------------------------------------------
@@ -423,8 +537,7 @@ def history_repo(tmp_path_factory):
     repo = tmp_path_factory.mktemp("trail_history")
 
     def git(*args):
-        subprocess.run(["git", *args], cwd=repo, check=True,
-                       capture_output=True, text=True)
+        _run_utf8(["git", *args], cwd=repo, check=True)
 
     git("init", "-q", "-b", "main")
     git("config", "user.email", "test@example.invalid")
@@ -451,10 +564,10 @@ def _run_trail(repo, env_extra):
     env = dict(os.environ)
     env.setdefault("SUPERTOOL_TRAIL_DETAIL_CAP", "0")
     env.update(env_extra)
-    return subprocess.run(
+    return _run_utf8(
         [sys.executable, str(REPO_ROOT / "presets" / "git" / "trail.py"),
          "NEEDLE", "data.txt"],
-        capture_output=True, text=True, timeout=120, cwd=str(repo), env=env,
+        timeout=120, cwd=str(repo), env=env,
     )
 
 
@@ -465,8 +578,8 @@ def test_the_history_fixture_outgrows_the_default_cap(history_repo):
     cap is however many exist" would be indistinguishable, and the tests that
     rely on the difference would go quietly green.
     """
-    count = subprocess.run(["git", "rev-list", "--count", "HEAD"], cwd=history_repo,
-                           capture_output=True, text=True, check=True).stdout.strip()
+    count = _run_utf8(["git", "rev-list", "--count", "HEAD"],
+                      cwd=history_repo, check=True).stdout.strip()
     assert int(count) == _HISTORY_COMMITS
     out = _run_trail(history_repo, {}).stdout
     assert "## Timeline (20 commits)" in out, out[:2000]
