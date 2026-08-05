@@ -376,18 +376,24 @@ def _linked_cell(linked: list[dict] | None,
     a PR that references the number without closing it means nobody is on this
     issue, and saying otherwise is what #782 fixed. It is still worth seeing —
     it is usually where the adjacent work happened — so it renders as `~`.
+
+    Neither reference is spelled `#N` (#842). `#` is this board's sigil for
+    "the row's subject" — `_row()` spells it once, on `ident`, the issue's own
+    number — and a foreign PR number in that same shape, sitting earlier on
+    the line, reads as the row's id to anyone taking the first `#N` they see.
+    `PR N` says the same thing without borrowing the sigil.
     """
     if linked is None:
         return "? unknown"
     if not linked:
         if mentions:
             extra = f" +{len(mentions) - 1}" if len(mentions) > 1 else ""
-            return f"~ #{mentions[0].get('number')} mention{extra}"
+            return f"~ PR {mentions[0].get('number')} mention{extra}"
         return "· no PR"
     first = linked[0]
     extra = f" +{len(linked) - 1}" if len(linked) > 1 else ""
     state = str(first.get("state") or "").lower()
-    return f"✓ #{first.get('number')} {state}{extra}".rstrip()
+    return f"✓ PR {first.get('number')} {state}{extra}".rstrip()
 
 
 def _ext_cell(external: bool | None) -> str:
