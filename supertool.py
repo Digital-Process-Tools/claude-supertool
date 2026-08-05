@@ -14278,6 +14278,49 @@ def _toml_parse_array(raw: str, i: int, key: str) -> Tuple[List[Any], int]:
         )
 
 
+def _toml_multiline_close(
+    raw: str, i: int, quote: str, escaped: bool
+) -> Tuple[int, int, int]:
+    """Locate the closing run of a TOML multi-line string opened at *i*.
+
+    Returns `(content_end, run_start, next_index)`, or `(-1, -1, -1)` when the
+    block is never closed.
+
+    The subtlety this exists for: a closing run may be **four or five** quotes,
+    and the surplus one or two belong to the content. That is not a curiosity —
+    it is the only way a multi-line string can end with its own delimiter
+    character, and a payload carrying quoted code meets it immediately. The
+    fallback parser used to stop at the first three quotes and then choke on the
+    leftovers, so that spelling parsed under stdlib `tomllib` (3.11+) and failed
+    below it. #834, and the same rule as #684: the escape hatch has to exist on
+    every interpreter, or the advice naming it is wrong exactly where it is
+    needed most.
+
+    A run of six or more is capped at five, which leaves a stray quote for the
+    caller to trip over — the error `tomllib` raises on the same input.
+    """
+    n = len(raw)
+    j = i
+    while j < n:
+        if escaped and raw[j] == chr(92):
+            j += 2
+            continue
+        if raw[j] != quote:
+            j += 1
+            continue
+        run = j
+        while j < n and raw[j] == quote:
+            j += 1
+        length = j - run
+        if length < 3:
+            continue
+        if length > 5:
+            length = 5
+            j = run + 5
+        return run + (length - 3), run, j
+    return -1, -1, -1
+
+
 def _toml_parse_value(raw: str, i: int, key: str) -> Tuple[Any, int]:
     """Parse one TOML value at *i*; return (value, offset just past it).
 
@@ -14287,7 +14330,7 @@ def _toml_parse_value(raw: str, i: int, key: str) -> Tuple[Any, int]:
     n = len(raw)
     if raw[i:i + 3] == '"""':
         i += 3
-        end = raw.find('"""', i)
+        end, _run, nxt = _toml_multiline_close(raw, i, '"', True)
         if end < 0:
             raise ValueError(f"unterminated \"\"\" for '{key}'")
         val: Any = _toml_basic_unescape(raw[i:end], key, True)
@@ -14295,10 +14338,10 @@ def _toml_parse_value(raw: str, i: int, key: str) -> Tuple[Any, int]:
             val = val[2:]
         elif val.startswith("\n"):
             val = val[1:]
-        return val, end + 3
+        return val, nxt
     if raw[i:i + 3] == "'''":
         i += 3
-        end = raw.find("'''", i)
+        end, _run, nxt = _toml_multiline_close(raw, i, "'", False)
         if end < 0:
             raise ValueError(f"unterminated ''' for '{key}'")
         val = raw[i:end]
@@ -14306,7 +14349,7 @@ def _toml_parse_value(raw: str, i: int, key: str) -> Tuple[Any, int]:
             val = val[2:]
         elif val.startswith("\n"):
             val = val[1:]
-        return val, end + 3
+        return val, nxt
     if raw[i] == '"':
         i += 1
         buf = []
@@ -14517,6 +14560,67 @@ def _at_file_missing_msg(rel: str) -> str:
     return chr(10).join(lines)
 
 
+# How much of the offending block the refusal echoes back, so the suggested
+# spelling is recognisably the caller's own line and not a generic example.
+_TOML_LITERAL_TAIL_CHARS = 48
+
+
+def _toml_literal_backslash_message(head: str, run: int) -> str:
+    """Name both spellings the refused backslash could have meant (#834)."""
+    q = "'"
+    tail = head[-_TOML_LITERAL_TAIL_CHARS:]
+    lead = "…" if len(head) > len(tail) else ""
+    want = run if run > 3 else 4
+    quoted = q * 3 + lead + tail + q * want
+    basic = chr(34) * 3 + lead + tail + chr(92) * 2 + chr(34) * 3
+    arrow = mark("↳")
+    return (
+        "a " + q * 3 + " literal block ends with a backslash immediately before "
+        "its closing quotes. Inside a literal block a backslash is content, "
+        "never an escape, so it is written to the file as typed and the line "
+        "that reaches the compiler is not the one you meant." + chr(10)
+        + "  " + arrow + " to end the content with a quote, drop the backslash "
+        "and let the closing run carry it (a literal block may end with 1 or 2 "
+        + q + "):" + chr(10) + "      " + quoted + chr(10)
+        + "  " + arrow + " to end the content with a backslash, write the block "
+        "as a basic one, where it doubles:" + chr(10) + "      " + basic + chr(10)
+    )
+
+
+def _toml_literal_backslash_refusal(raw: str) -> str:
+    """Refuse a payload whose literal block ends with an inert backslash (#834).
+
+    The issue was filed as "a string ending in an apostrophe writes broken
+    code", and that premise is wrong: a literal block ends with an apostrophe
+    perfectly well, by letting the closing run carry it. Refusing on a trailing
+    quote would refuse the correct spelling -- the check would fire on its own
+    fix.
+
+    What actually broke the reported write is the backslash before the closer.
+    The caller typed it out of escape reflex; in a literal block it is inert,
+    so the value ended with a stray backslash and the Python written from it
+    parsed as something else. The op reported success, the validators agreed,
+    and the failure surfaced a language away from its cause.
+
+    This refuses rather than warns for one reason, and it is the reason that
+    decides the severity of every guard in this family: **both** readings of
+    that backslash have another spelling -- drop it, or move to a basic block
+    where it doubles -- so refusing leaves nothing unwritable. A guard whose
+    refusal would strand a legitimate intent has to warn instead; see
+    `docs/validators.md`, "Declining instead of guessing".
+    """
+    opener = chr(39) * 3
+    i = raw.find(opener)
+    while i >= 0:
+        _end, run, nxt = _toml_multiline_close(raw, i + 3, chr(39), False)
+        if run < 0:
+            return ""
+        if raw[run - 1:run] == chr(92):
+            return _toml_literal_backslash_message(raw[i + 3:run - 1], nxt - run)
+        i = raw.find(opener, nxt)
+    return ""
+
+
 def _load_at_file(ref: str) -> Any:
     """Load JSON or TOML from an @file reference.
 
@@ -14574,11 +14678,15 @@ def _load_at_file(ref: str) -> Any:
     except ImportError:
         parser = _mini_toml_loads
     try:
-        return parser(raw)
+        parsed = parser(raw)
     except Exception as _e:
         raise ValueError(
             f"@file TOML parse error ({source}): {_e}{_toml_delimiter_hint(raw)}"
         ) from _e
+    refusal = _toml_literal_backslash_refusal(raw)
+    if refusal:
+        raise ValueError(f"@file payload refused ({source}): {refusal}")
+    return parsed
 
 
 # Dynamic @file field registry — built lazily from op syntax strings.
