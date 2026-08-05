@@ -49,6 +49,14 @@
       "syntax": "gh-run:NUMBER",
       "repo_target": true
     },
+    "gh-branch": {
+      "cmd": "{python} {path}github/branch.py {args}",
+      "timeout": 60,
+      "description": "Is this branch green? Answers for a *branch* — the shape gh-pr cannot take, because after a squash merge the ref that matters is the default branch and it has no PR. Selects runs by workflow identity, never by recency: `gh run list --limit 1` returns whichever workflow started last (routinely CodeQL) and reports its conclusion for the commit, which is how a green gets read off a run that is not the run you meant. The summary is conjunctive — green only when EVERY workflow on the head SHA concluded and every leg passed — and it states four things apart that collapse into each other by default: GREEN, NOT GREEN (failed, or not finished — worded differently), NO RUN (nothing exists for this SHA, with the reason and the ~15min creation window), and UNKNOWN (a job list did not come back — never counted as zero passing legs). Leg counts come from the same _checks.summarize tally as gh-pr/gh-run, so `2 cancelled` is named rather than dropped and the terms sum to the leg count. Names the head SHA, because green is a claim about a commit. Every row says `concluded` or `running` in words, so no bare column can be misread as a leg state. With no argument, answers for the repo default branch — the shape used right after a merge. Exit 0 only when GREEN. Targets another repo with a leading repo:OWNER/NAME op.",
+      "syntax": "gh-branch[:BRANCH]",
+      "example": "gh-branch:master",
+      "repo_target": true
+    },
     "gh-job": {
       "cmd": "{python} {path}github/job.py {args}",
       "timeout": 30,
