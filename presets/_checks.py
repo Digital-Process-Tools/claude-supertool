@@ -84,6 +84,11 @@ BENIGN_STATES = frozenset({"SKIPPED", "NEUTRAL", "MANUAL"})
 
 _UNKNOWN = "UNKNOWN"
 
+# Public spelling of the state above. A caller that must tell *unreadable*
+# from *resolved* — `gh-run`'s step counter, #803 — has to name this state,
+# and re-deriving it as a literal is the bug that op was fixing.
+UNKNOWN = _UNKNOWN
+
 
 def normalize(state: object) -> str:
     """Uppercase a raw platform state. Empty/None becomes UNKNOWN, not ''."""
@@ -243,9 +248,20 @@ def named_disclosure(
     return lines
 
 
-def _label(state: str) -> str:
-    """Term label for a leftover state. Lowercase, underscores kept."""
+def label(state: str) -> str:
+    """Term label for a leftover state. Lowercase, underscores kept.
+
+    Public because a caller rendering a *second* tally next to `summarize()`'s
+    must spell its terms identically or the two drift on screen (#803):
+    `gh-run` prints `## Failed jobs (6) — 3 failed, 2 cancelled, 1 unknown`
+    under a header saying `11 total: … 3 failed … 2 cancelled …`, and the only
+    thing making those the same numbers is that both come from here.
+    """
     return normalize(state).lower()
+
+
+# The spelling used inside this module since #445.
+_label = label
 
 
 # Appended to the `Checks:` line when the rollup carried fewer legs than the
