@@ -35,7 +35,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent))
 
 import _adapter_budget as budget  # noqa: E402
-from _adapter_verdict import assert_adapter_ok, assert_declined  # noqa: E402
+import _adapter_verdict as verdicts  # noqa: E402
+from _adapter_verdict import assert_declined  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
 VALIDATORS = REPO / "validators"
@@ -323,8 +324,214 @@ def test_a_real_adapter_spawn_answers_well_inside_the_shared_budget(tmp_path: Pa
     # nothing (#725). It is not a blown budget — that raises TimeoutExpired. The
     # adapter answered, and it answered no, and the reason was in a payload the
     # assertion threw away. Now it is in the message.
-    assert_adapter_ok(
+    #
+    # And it fired again on windows-latest/3.9 (#794) as `[adapter] timeout`
+    # after 30000ms — the adapter's *own* wall, not this spawn's budget, which
+    # was 120s and never came near firing. That is the adapter honouring its
+    # contract on a runner too loaded to answer, so there is no verdict here to
+    # assert against. See the section below for why that declines rather than
+    # fails, and for what still fails.
+    verdicts.assert_adapter_ok_or_skip_if_stalled(
         r,
         adapter=adapter.name,
+        inner_s=budget.inner_budget(adapter),
         context="a two-line PHP file with nothing wrong with it",
     )
+
+
+# ---------------------------------------------------------------------------
+# A stalled adapter has not found a defect; it has failed to measure (#794)
+# ---------------------------------------------------------------------------
+#
+# #794 reddened a PR about a GraphQL linked-PR lookup. The three shapes proposed
+# for it all move the *outer* budget — make it relative, widen it, isolate the
+# leg — and not one of them would have changed that run. The outer budget was
+# `(30 + 10) * 3 = 120s` and `subprocess.run` never raised: phplint answered, on
+# time, with `[adapter] timeout` after 30000ms, which is its own internal 30s
+# wall firing exactly as `validators/phplint/phplint.py` says it should.
+#
+# So the defect is not a number. It is that this end-to-end test asks "is a
+# clean PHP file reported clean" and accepts, as an answer to that question, a
+# payload whose whole content is "I never got to look". `validators/SCHEMA.md`
+# reserves `code: "adapter"` for precisely that — "no verdict was obtained" —
+# and `docs/validators.md` §"Declining instead of guessing" says an unmeasured
+# subject is a third state, not a failing one.
+#
+# **What is deliberately NOT widened.** SCHEMA.md is explicit that an adapter
+# must never route a tool fault to `skipped`, and `_adapter_budget` is explicit
+# that a blown *outer* budget must stay loud because it means an adapter
+# ignored its own timeout — a real hang. Neither moves. This is narrower than
+# either: a test that spawned an adapter, got a well-formed decline back, and
+# has nothing to assert on. Every other route to `ok=False` still fails.
+
+PHPLINT_INNER_S = 30
+
+
+def _spawn_result(payload: object) -> subprocess.CompletedProcess:
+    return subprocess.CompletedProcess(
+        args=["phplint.py", "subject.php"], returncode=0,
+        stdout=json.dumps(payload), stderr="",
+    )
+
+
+def _stall_payload(**over: object) -> dict:
+    """The payload that reddened someone else's PR in #794, to the byte."""
+    base: dict = {
+        "tool": "phplint", "file": "ok.php", "ok": False, "count": 1,
+        "errors": [{"line": None, "col": None, "severity": "error",
+                    "code": "adapter", "msg": "timeout"}],
+        "duration_ms": PHPLINT_INNER_S * 1000,
+    }
+    base.update(over)
+    return base
+
+
+def test_an_adapter_that_spent_its_whole_budget_declines_rather_than_fails() -> None:
+    """The #794 payload, and the one behaviour change in this file."""
+    with pytest.raises(pytest.skip.Exception) as caught:
+        verdicts.assert_adapter_ok_or_skip_if_stalled(
+            _spawn_result(_stall_payload()),
+            adapter="phplint.py", inner_s=PHPLINT_INNER_S,
+            context="a two-line PHP file with nothing wrong with it",
+        )
+    assert "30000" in str(caught.value), (
+        "the measured duration is the entire signal a skip has left to carry — "
+        "a 30s spawn is still worth knowing about, and a skip that drops the "
+        "number is a mute button"
+    )
+    assert "phplint" in str(caught.value)
+
+
+def test_a_real_finding_about_the_file_still_fails_loudly() -> None:
+    """The half that makes this a fix rather than a mute button."""
+    broken = _stall_payload(errors=[{
+        "line": 2, "col": None, "severity": "error",
+        "code": "parse", "msg": "syntax error, unexpected end of file",
+    }], duration_ms=40)
+    with pytest.raises(AssertionError) as caught:
+        verdicts.assert_adapter_ok_or_skip_if_stalled(
+            _spawn_result(broken), adapter="phplint.py", inner_s=PHPLINT_INNER_S,
+        )
+    assert "syntax error" in str(caught.value)
+
+
+def test_an_instant_adapter_fault_still_fails_loudly() -> None:
+    """`code: "adapter"` alone does not buy a skip.
+
+    SCHEMA.md: an `adapter` error "stays a real error ... because the process
+    ran and something is broken that someone has to fix". A php that vanished,
+    or an argv the adapter could not read, is that. Only a wall the adapter
+    actually spent its whole budget hitting is a statement about the machine,
+    so the duration is part of the predicate and not decoration.
+    """
+    for msg, dur in [("php binary not found", 4), ("no file arg", 0)]:
+        fault = _stall_payload(errors=[{
+            "line": None, "col": None, "severity": "error",
+            "code": "adapter", "msg": msg,
+        }], duration_ms=dur)
+        with pytest.raises(AssertionError) as caught:
+            verdicts.assert_adapter_ok_or_skip_if_stalled(
+                _spawn_result(fault), adapter="phplint.py", inner_s=PHPLINT_INNER_S,
+            )
+        assert msg in str(caught.value)
+
+
+def test_a_timeout_claimed_without_spending_the_budget_still_fails_loudly() -> None:
+    """An adapter that reports `timeout` in 12ms did not time out.
+
+    That is the adapter's error routing being wrong — a defect in the thing
+    this suite exists to test — and it is exactly what a message-only predicate
+    would swallow.
+    """
+    with pytest.raises(AssertionError):
+        verdicts.assert_adapter_ok_or_skip_if_stalled(
+            _spawn_result(_stall_payload(duration_ms=12)),
+            adapter="phplint.py", inner_s=PHPLINT_INNER_S,
+        )
+
+
+def test_a_stall_reported_beside_a_real_finding_still_fails_loudly() -> None:
+    """One error being unmeasurable does not make the other one disappear."""
+    mixed = _stall_payload(count=2, errors=[
+        {"line": None, "col": None, "severity": "error",
+         "code": "adapter", "msg": "timeout"},
+        {"line": 2, "col": None, "severity": "error",
+         "code": "parse", "msg": "unexpected end of file"},
+    ])
+    with pytest.raises(AssertionError) as caught:
+        verdicts.assert_adapter_ok_or_skip_if_stalled(
+            _spawn_result(mixed), adapter="phplint.py", inner_s=PHPLINT_INNER_S,
+        )
+    assert "unexpected end of file" in str(caught.value)
+
+
+def test_a_clean_verdict_is_still_a_pass() -> None:
+    """The wrapper has to be able to say yes, or it proves nothing."""
+    clean = {"tool": "phplint", "file": "ok.php", "ok": True, "count": 0,
+             "errors": [], "duration_ms": 41}
+    got = verdicts.assert_adapter_ok_or_skip_if_stalled(
+        _spawn_result(clean), adapter="phplint.py", inner_s=PHPLINT_INNER_S,
+    )
+    assert got == clean, "the wrapper returns the parsed verdict unchanged"
+
+
+def test_a_crashed_adapter_is_not_a_stall() -> None:
+    """No stdout at all still fails, naming the exit code and stderr (#725)."""
+    crashed = subprocess.CompletedProcess(
+        args=["phplint.py"], returncode=1, stdout="", stderr="Traceback ...")
+    with pytest.raises(AssertionError) as caught:
+        verdicts.assert_adapter_ok_or_skip_if_stalled(
+            crashed, adapter="phplint.py", inner_s=PHPLINT_INNER_S,
+        )
+    assert "no output on stdout" in str(caught.value)
+
+
+def test_the_payload_a_real_adapter_emits_on_a_stall_is_the_one_that_declines() -> None:
+    """Close the seam between the two halves, so they cannot drift apart.
+
+    Everything above works on a payload this file wrote. The predicate only
+    protects anyone if the payload `validators/phplint/phplint.py` *actually*
+    emits when its own budget expires is one the predicate recognises — and
+    that message is a free-text string in another file. Reword it to "budget
+    expired" and every test here still passes while #794 quietly returns.
+
+    Driven in-process, the same technique as the parametrized decline test
+    above, so it costs milliseconds rather than the adapter's real 30s wall.
+    """
+    import importlib.util
+
+    path = VALIDATORS / "phplint" / "phplint.py"
+    spec = importlib.util.spec_from_file_location("phplint_stalling", path)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    def _always_times_out(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=["php"], timeout=kwargs.get("timeout", 30))
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(mod.subprocess, "run", _always_times_out)
+        mp.setattr(mod.sys, "argv", [str(path), "subject.php"])
+        emitted: list[str] = []
+        mp.setattr("builtins.print", lambda *a, **k: emitted.append(" ".join(map(str, a))))
+        mod.main()
+
+    payload = json.loads(emitted[-1])
+    reason = verdicts.stalled_at_its_own_wall(payload, inner_s=budget.inner_budget(path))
+    assert reason is not None, (
+        "phplint's own stall payload no longer matches the predicate that "
+        "declines on it — the two drifted, and the next loaded Windows runner "
+        f"reddens a stranger's PR again (#794). Payload: {payload}"
+    )
+    assert str(budget.inner_budget(path) * 1000) in reason
+
+
+def test_the_stall_predicate_reads_the_adapters_real_wall_not_a_tabulated_one() -> None:
+    """The duration threshold comes from the adapter's source, same as #702.
+
+    A second number written down here would drift from `phplint.py` the moment
+    someone widened it, and the drift would land as a red on a stranger's PR —
+    which is the entire complaint of #794.
+    """
+    assert budget.inner_budget(VALIDATORS / "phplint" / "phplint.py") == PHPLINT_INNER_S
+

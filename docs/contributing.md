@@ -715,6 +715,29 @@ blown budget now means the adapter did not honour its own timeout, which is a
 real hang in the code under test. Skipping it is how a genuine hang becomes
 invisible, and this repo files that trade against itself every time.
 
+**But the adapter answering "I timed out" is a different event, and it
+declines** ([#794]). The paragraph above is about the *outer* budget — the
+`TimeoutExpired` this test never gets to see, because the adapter is
+contractually obliged to answer first. When it does answer, and the answer is
+its own `code: "adapter"` wall, the test asked for a lint verdict and did not
+receive one. #794 failed exactly there: phplint returned `[adapter] timeout`
+after 30000ms — its own 30s budget — while the outer budget was `(30 + 10) × 3
+= 120s` and never came near firing. Every remedy aimed at the outer number
+would have changed nothing about that run.
+
+So a test that spawns a real adapter to assert a real verdict uses
+`_adapter_verdict.assert_adapter_ok_or_skip_if_stalled(r, adapter=…,
+inner_s=adapter_budget's inner_budget(ADAPTER))`, which declines on a stall
+and reports the measured duration in the skip reason. **The predicate is
+deliberately narrow, and each clause keeps a real defect loud:** every error
+must carry `code: "adapter"` (a `parse` finding beside a stall is still a
+broken file), the message must name a timeout (a missing binary or an
+unreadable argv is something someone has to fix, per `validators/SCHEMA.md`),
+and `duration_ms` must actually reach the adapter's internal budget (an
+adapter reporting `timeout` in 12ms has broken error routing, which is a
+defect in the thing the suite tests). Nothing else in this rule moves: the
+adapter still publishes the stall as `ok: false`, never as `skipped`.
+
 **The adapter side of the same rule.** An adapter that grants itself a budget
 must survive blowing it. Letting `TimeoutExpired` escape kills the process on
 a traceback with **empty stdout**, and every caller `json.loads()` that — so a
@@ -845,6 +868,7 @@ ceiling bounds it; the finer guard waits for evidence.
 [#715]: https://github.com/Digital-Process-Tools/claude-supertool/pull/715
 [#722]: https://github.com/Digital-Process-Tools/claude-supertool/issues/722
 [#727]: https://github.com/Digital-Process-Tools/claude-supertool/issues/727
+[#794]: https://github.com/Digital-Process-Tools/claude-supertool/issues/794
 
 ### Never assert a property of a workflow by grepping the workflow
 
