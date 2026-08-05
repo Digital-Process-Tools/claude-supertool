@@ -38,6 +38,7 @@ def _load(name: str, path: Path):
 
 pr = _load("github_pr_724", PRESETS / "github" / "pr.py")
 checks_mod = _load("supertool_checks_724", PRESETS / "_checks.py")
+declared_mod = _load("supertool_declared_724", PRESETS / "_declared_legs.py")
 
 RUN_ID = "30687891233"
 
@@ -97,8 +98,14 @@ def _run_pr(monkeypatch, capsys, rollup: list[dict],
     monkeypatch.setattr(pr.subprocess, "run", lambda *a, **kw: _fake_run(payload))
     monkeypatch.setattr(pr, "_fetch_review_threads", lambda *a, **kw: [])
     monkeypatch.setattr(pr, "_head_commit_age_secs", lambda *a, **kw: 60)
+    # The seam moved in #804: the declared count is now read off the commit's
+    # runs rather than off the rollup's own ids, so the stub sits one function
+    # further out. Everything these pins assert — how `_reconcile_checks` and
+    # the two render paths treat a declared count — is still exercised for
+    # real; only where the number comes from has changed.
     monkeypatch.setattr(
-        pr, "_declared_legs", lambda *a, **kw: (declared, list(declared_names))
+        pr, "_declared_for_commit",
+        lambda *a, **kw: (declared, list(declared_names), [])
     )
     argv = ["pr.py", "715"] + (["status"] if slim else [])
     monkeypatch.setattr(sys, "argv", argv)
@@ -289,12 +296,16 @@ def test_declared_legs_counts_distinct_names_not_job_records(monkeypatch):
     fourteen-leg matrix. Counting records would declare 42 legs and mark a
     complete tally as a 28-leg shortfall — a false alarm is how a disclosure
     gets ignored.
+
+    The helper moved to `presets/_declared_legs` in #804, where `gh-run` and
+    `gh-branch` reuse it; these pins moved with it rather than being dropped.
     """
     names = [f"pytest-{i}" for i in range(14)]
     monkeypatch.setattr(
-        pr, "_gh", lambda *a, **kw: _fake_run(_jobs_payload(names * 3))
+        declared_mod.subprocess, "run",
+        lambda *a, **kw: _fake_run(_jobs_payload(names * 3))
     )
-    total, got = pr._declared_legs("https://github.com/o/r/pull/715", [RUN_ID])
+    total, got = declared_mod.legs_for_runs("o", "r", [RUN_ID])
     assert total == 14
     assert got == names
 
@@ -313,8 +324,8 @@ def test_declared_legs_asks_for_every_attempt_not_just_the_latest(monkeypatch):
         seen.append(args)
         return _fake_run(_jobs_payload(["a", "b"]))
 
-    monkeypatch.setattr(pr, "_gh", _capture)
-    pr._declared_legs("https://github.com/o/r/pull/715", [RUN_ID])
+    monkeypatch.setattr(declared_mod.subprocess, "run", _capture)
+    declared_mod.legs_for_runs("o", "r", [RUN_ID])
     assert seen, "no request was made"
     assert any("filter=all" in part for part in seen[0]), seen[0]
 
@@ -324,20 +335,23 @@ def test_declared_legs_floor_does_not_dip_with_the_latest_attempt(monkeypatch):
     matrix = [f"pytest-{i}" for i in range(14)]
     in_flight = matrix + matrix[:3]   # attempt 1 complete, attempt 2 starting
     monkeypatch.setattr(
-        pr, "_gh", lambda *a, **kw: _fake_run(_jobs_payload(in_flight))
+        declared_mod.subprocess, "run",
+        lambda *a, **kw: _fake_run(_jobs_payload(in_flight))
     )
-    total, _ = pr._declared_legs("https://github.com/o/r/pull/715", [RUN_ID])
+    total, _ = declared_mod.legs_for_runs("o", "r", [RUN_ID])
     assert total == 14
 
 
 def test_declared_legs_declines_when_gh_fails(monkeypatch):
-    monkeypatch.setattr(pr, "_gh", lambda *a, **kw: _fake_run("", returncode=1))
-    assert pr._declared_legs("https://github.com/o/r/pull/715", [RUN_ID]) == (None, [])
+    monkeypatch.setattr(declared_mod.subprocess, "run",
+                        lambda *a, **kw: _fake_run("", returncode=1))
+    assert declared_mod.legs_for_runs("o", "r", [RUN_ID]) == (None, [])
 
 
 def test_declared_legs_declines_on_a_payload_without_jobs(monkeypatch):
-    monkeypatch.setattr(pr, "_gh", lambda *a, **kw: _fake_run('{"total_count": 14}'))
-    assert pr._declared_legs("https://github.com/o/r/pull/715", [RUN_ID]) == (None, [])
+    monkeypatch.setattr(declared_mod.subprocess, "run",
+                        lambda *a, **kw: _fake_run('{"total_count": 14}'))
+    assert declared_mod.legs_for_runs("o", "r", [RUN_ID]) == (None, [])
 
 
 def test_declared_legs_costs_nothing_when_no_run_ids(monkeypatch):
@@ -347,8 +361,8 @@ def test_declared_legs_costs_nothing_when_no_run_ids(monkeypatch):
         called.append(1)
         raise AssertionError("no run id — nothing should have been fetched")
 
-    monkeypatch.setattr(pr, "_gh", _boom)
-    assert pr._declared_legs("https://github.com/o/r/pull/715", []) == (None, [])
+    monkeypatch.setattr(declared_mod.subprocess, "run", _boom)
+    assert declared_mod.legs_for_runs("o", "r", []) == (None, [])
     assert not called
 
 

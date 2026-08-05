@@ -52,7 +52,8 @@ from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import _checks  # noqa: E402  (the one check tally, shared with gh-pr / gh-run)
+import _checks  # noqa: E402
+import _declared_legs  # noqa: E402  (the second leg count, shared with gh-run / gh-pr)
 import _repo_target  # noqa: E402  (the repo this call is about, when not the cwd's)
 
 # The four states. Spelled as constants because the tests, the exit code and
@@ -231,7 +232,8 @@ def no_run_verdict(sha: str, age_secs: object, grace: int = _GRACE) -> tuple:
 
 
 def verdict(selected: dict, legs: dict, missing, sha: str,
-            age_secs: object, grace: int = _GRACE) -> tuple:
+            age_secs: object, grace: int = _GRACE,
+            unreconciled: str = "") -> tuple:
     """`(state, sentence)` for the whole commit. Conjunctive, and ordered.
 
     `legs` maps a workflow name to its leg states, or to ``None`` when the job
@@ -243,6 +245,13 @@ def verdict(selected: dict, legs: dict, missing, sha: str,
     branch names what it is talking about, because a verdict that says "not
     green" without naming the workflow sends the reader back to the web UI,
     which is the cost this op exists to remove.
+
+    `unreconciled` is `_checks.shortfall`'s marker when the legs read could not
+    be squared with the legs the runs declare (#837). It is tested last, and
+    only against the green: every branch above it is a finding about the legs
+    that *were* read, and a finding beats a doubt. But a green is a claim about
+    all of them, and "every leg I managed to read passed" is not that claim —
+    on a merge gate the difference is the whole point of the op.
     """
     if not selected:
         return no_run_verdict(sha, age_secs, grace)
@@ -287,6 +296,12 @@ def verdict(selected: dict, legs: dict, missing, sha: str,
 
     n_legs = sum(len(v or []) for v in legs.values())
     n_wf = len(selected)
+    if unreconciled:
+        return (UNKNOWN, f"{UNKNOWN} — every one of the {n_legs} legs read on "
+                         f"{short} passed, but the tally could not be squared "
+                         f"with what the runs declare ({unreconciled}), so "
+                         "whether these are all of the legs is UNKNOWN. "
+                         "Detailed below. Nothing here has failed.")
     return (GREEN, f"{GREEN} — every workflow on {short} concluded and every "
                    f"leg passed ({n_legs} legs across {n_wf} "
                    f"{'workflow' if n_wf == 1 else 'workflows'}).")
@@ -415,7 +430,7 @@ def _run_list(ref: str):
         r = _gh(["gh", "run", "list", "--branch", ref, "--limit",
                  str(RUN_LIST_LIMIT), "--json",
                  "workflowName,headSha,databaseId,status,conclusion,event,"
-                 "createdAt"] + _repo_target.gh_args())
+                 "createdAt,attempt"] + _repo_target.gh_args())
     except FileNotFoundError:
         return None, "ERROR: gh not found — install from https://cli.github.com"
     except subprocess.TimeoutExpired:
@@ -449,6 +464,53 @@ def _jobs_for(run_id: int):
         return None
     jobs = d.get("jobs")
     return jobs if isinstance(jobs, list) else None
+
+
+def _reconcile(repo: str, selected: dict, fetched: dict) -> tuple:
+    """`(marker, lines)` squaring the legs read against the legs declared (#837).
+
+    The second source is `jobs?filter=all`, per run, and the reasoning is in
+    `presets/_declared_legs`. Branch scope adds one thing over `gh-pr`'s: the
+    run ids come from the run *list*, so a workflow is reconciled whether or
+    not anything it produced reached a check rollup.
+
+    Runs whose job list never came back are skipped rather than reconciled —
+    `verdict()` already answers UNKNOWN for those, and a second, differently
+    worded doubt about the same absence is noise.
+
+    The two sides are summed across workflows before `shortfall()` sees them,
+    so the `Legs:` line and the marker beside it are the same arithmetic. Any
+    single run that cannot be reconciled makes the whole answer unverified: a
+    declared total summed over only the readable runs is smaller than the
+    truth, and a smaller declared total is exactly what makes a short tally
+    look complete.
+    """
+    owner, name = _declared_legs.owner_repo(repo)
+    found_total = 0
+    declared_total: int | None = 0
+    missing: list = []
+    for wf, run in sorted(selected.items()):
+        jobs = fetched.get(wf)
+        if jobs is None:
+            continue
+        found = [str(j.get("name") or "?") for j in jobs
+                 if isinstance(j, dict)]
+        found_total += len(found)
+        if not _declared_legs.reconcilable(run.get("attempt")):
+            declared_total = (declared_total + len(found)
+                              if declared_total is not None else None)
+            continue
+        names = _declared_legs.legs_for_run(owner, name, _run_id(run))
+        if names is None:
+            declared_total = None
+            continue
+        if declared_total is not None:
+            declared_total += len(names)
+        missing.extend(f"{wf} / {n}" for n in
+                       _declared_legs.missing_names(names, found))
+    if not found_total and declared_total == 0:
+        return ("", [])
+    return _checks.shortfall(found_total, declared_total, missing)
 
 
 # ---------------------------------------------------------------------------
@@ -519,7 +581,8 @@ def main() -> int:
     else:
         fetched = {}
 
-    state, sentence = verdict(selected, legs, missing, sha, age)
+    marker, shortfall_lines = _reconcile(repo, selected, fetched)
+    state, sentence = verdict(selected, legs, missing, sha, age, _GRACE, marker)
 
     print(f"# Is `{ref}` green? — {repo}")
     print(f"Branch {ref}: {state}")
@@ -528,7 +591,10 @@ def main() -> int:
 
     if selected:
         all_states = [s for v in legs.values() for s in (v or [])]
-        print(f"Legs: {leg_summary(all_states)}")
+        print(f"Legs: {leg_summary(all_states)}"
+              f"{' ' + marker if marker else ''}")
+        for line in shortfall_lines:
+            print(line)
         for line in _checks.named_disclosure(named):
             print(line)
 

@@ -72,10 +72,15 @@ class _Completed:
 
 
 def _run(workflow: str, sha: str, status: str, conclusion: str | None,
-         run_id: int, created: str = "2026-08-05T09:00:00Z") -> dict:
+         run_id: int, created: str = "2026-08-05T09:00:00Z",
+         attempt: int = 1) -> dict:
+    # `attempt` is listed by `gh run list` and is what #837's reconciliation
+    # keys on: on a first attempt `filter=all` and `filter=latest` are the same
+    # rows, so no second source is bought and no verdict here changes. A run
+    # fixture without it would be a shape `gh` never returns.
     return {"workflowName": workflow, "headSha": sha, "databaseId": run_id,
             "status": status, "conclusion": conclusion, "event": "push",
-            "createdAt": created}
+            "createdAt": created, "attempt": attempt}
 
 
 def _job(name: str, status: str, conclusion: str | None = None) -> dict:
