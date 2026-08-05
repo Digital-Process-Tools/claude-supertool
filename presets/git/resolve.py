@@ -55,6 +55,95 @@ def _is_source_path(path: str) -> bool:
     return os.path.splitext(path)[1].lower() in _SOURCE_EXTS
 
 
+# Markdown is the format where a union is otherwise right — a changelog conflict is
+# two entries, and unioning them is the whole point — but whose *meaning* comes from
+# repeating structural headings rather than from line order alone. When both sides of
+# one hunk carry the same heading, the union emits it twice and every line between
+# the two copies is reparented under the first (issue #839): unreleased work reads as
+# shipped. Nothing below merges, reorders or de-duplicates anything — it only detects
+# that the union came out structurally implausible and hands the decision back.
+_MD_EXTS = frozenset({".md", ".markdown", ".mdown", ".mkd"})
+
+# ATX headings only. Setext underlines (`---` under a title) are not matched: a bare
+# rule is legitimate decoration, and the false positives would land on exactly the
+# files this guard must stay quiet about.
+_HEADING_RE = re.compile(r"^#{1,6}[ \t]+\S")
+
+
+def _is_markdown_path(path: str) -> bool:
+    """True when PATH's extension is Markdown, whose headings carry structure."""
+    return os.path.splitext(path)[1].lower() in _MD_EXTS
+
+
+def _duplicated_headings(path: str, selected: Optional[set[int]] = None) -> list[str]:
+    """Headings a union of PATH would emit twice — in file order, deduped.
+
+    A heading counts only when the SAME heading line appears on BOTH sides of one
+    conflict hunk, because that is precisely the line the union concatenates into two
+    copies. Headings *outside* the hunk are shared context — the ordinary changelog
+    conflict, two bullets under one `### Fixed` — and are never reported, which is
+    what keeps this from firing on every conflict and training the override.
+
+    diff3 ``|||||||`` base content is skipped: `_union_file` drops it, so it cannot
+    contribute a copy. Non-Markdown paths return ``[]`` — the ``#`` heading grammar is
+    Markdown's, and a guard should only have opinions about a format it can read.
+
+    ``selected`` restricts the scan to those 1-indexed hunks, for a partial resolve.
+    """
+    if not _is_markdown_path(path):
+        return []
+    try:
+        with open(path, "rb") as fh:
+            text = fh.read().decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        return []
+
+    dups: list[str] = []
+    seen: set[str] = set()
+    ours: list[str] = []
+    theirs: set[str] = set()
+
+    def _flush() -> None:
+        for h in ours:
+            if h in theirs and h not in seen:
+                seen.add(h)
+                dups.append(h)
+
+    state = "normal"  # normal | skip | ours | base | theirs
+    block_idx = 0
+    for line in text.splitlines():
+        s = line.rstrip("\r\n")
+        if state == "normal":
+            if s.startswith("<<<<<<<"):
+                block_idx += 1
+                ours, theirs = [], set()
+                state = "ours" if (selected is None or block_idx in selected) else "skip"
+        elif state == "skip":
+            if s.startswith(">>>>>>>"):
+                state = "normal"
+        elif state == "ours":
+            if s.startswith("|||||||"):
+                state = "base"
+            elif s.startswith("======="):
+                state = "theirs"
+            elif s.startswith(">>>>>>>"):  # malformed — recover, claim nothing
+                state = "normal"
+            elif _HEADING_RE.match(s) and s.strip() not in ours:
+                ours.append(s.strip())
+        elif state == "base":
+            if s.startswith("======="):
+                state = "theirs"
+        elif state == "theirs":
+            if s.startswith(">>>>>>>"):
+                _flush()
+                state = "normal"
+            elif _HEADING_RE.match(s):
+                theirs.add(s.strip())
+    if state == "theirs":  # unterminated hunk — _union_file refuses it anyway
+        _flush()
+    return dups
+
+
 def _union_attr_paths(paths: list[str]) -> set[str]:
     """Subset of PATHS that .gitattributes declares as ``merge=union``.
 
@@ -90,6 +179,19 @@ def _guarded_paths(paths: list[str], side: str, force: bool) -> set[str]:
     if not candidates:
         return set()
     return set(candidates) - _union_attr_paths(candidates)
+
+
+def _heading_refusal(dups: list[str]) -> str:
+    """Refusal text that names the headings it saw.
+
+    A refusal that does not say what it found is a refusal you override blind, which
+    is the same defect one layer down.
+    """
+    shown = "; ".join(repr(h) for h in dups[:3])
+    more = f" (+{len(dups) - 3} more)" if len(dups) > 3 else ""
+    return (f"structured document — union would duplicate {len(dups)} heading(s) "
+            f"present on both sides: {shown}{more}, reparenting the lines between the "
+            f"two copies under the first; refused")
 
 
 def _print_refusal_help() -> None:
@@ -394,6 +496,14 @@ def _resolve_partial(path: str, side: str, selected: set[int], force: bool = Fal
         _print_refusal_help()
         return 1
 
+    # Same guard as the whole-file path, scoped to the blocks actually selected.
+    dups = _duplicated_headings(path, selected) if side == "both" and not force else []
+    if dups:
+        print(f"  ⊘ {path}: {_heading_refusal(dups)}")
+        print("\nResolved blocks: 0 | Refused: 1 | Not staged (still conflicted).")
+        _print_refusal_help()
+        return 1
+
     ok, err, resolved, total = _resolve_blocks(path, side, selected)
     if not ok:
         print(f"  ✗ {path}: {err}")
@@ -508,17 +618,28 @@ def main() -> int:
     guarded = _guarded_paths(targets, side, force)
 
     resolved: list[str] = []
-    refused: list[str] = []
+    refused: list[tuple[str, str]] = []
     forced_source: list[str] = []
+    forced_headings: list[str] = []
     failed: list[tuple[str, str]] = []
     digests: dict[str, Optional[str]] = {}
     for path in targets:
         if path in guarded:
-            refused.append(path)
+            refused.append((path, _REFUSAL))
             continue
         if side == "both":
-            if force and _is_source_path(path):
-                forced_source.append(path)
+            # Deliberately NOT bypassed by merge=union: that attribute answers
+            # "union this file", which is a different question from "this union
+            # came out sound". Only `force` gets through here.
+            dups = _duplicated_headings(path)
+            if dups and not force:
+                refused.append((path, _heading_refusal(dups)))
+                continue
+            if force:
+                if dups:
+                    forced_headings.append(path)
+                if _is_source_path(path):
+                    forced_source.append(path)
             ok, err = _union_file(path)
             if not ok:
                 failed.append((path, err))
@@ -551,17 +672,26 @@ def main() -> int:
         line = f"      markers: clean | {digest}" if digest else "      markers: clean"
         if path in forced_source:
             line += " | ⚠ source union — verify manually"
+        if path in forced_headings:
+            line += " | ⚠ duplicated heading(s) — verify section structure"
         print(line)
-    for path in refused:
-        print(f"  ⊘ {path}: {_REFUSAL}")
+    for path, reason in refused:
+        print(f"  ⊘ {path}: {reason}")
     for path, err in failed:
         print(f"  ✗ {path}: {err}")
 
-    # A forced union of source text is reported as such — the syntax digest above
-    # says `validate: ok` on a file whose statements now run twice, so the tally
-    # has to carry the doubt the validator cannot.
-    note = (f" ({len(forced_source)} source file(s) unioned — 'both' concatenates; "
-            f"verify manually)") if forced_source else ""
+    # A forced union is reported as such — the syntax digest above says
+    # `validate: ok` about a file whose statements now run twice, or whose
+    # unreleased entries now sit under a tagged release, so the tally has to carry
+    # the doubt the validator cannot.
+    notes: list[str] = []
+    if forced_source:
+        notes.append(f"{len(forced_source)} source file(s) unioned — 'both' "
+                     f"concatenates; verify manually")
+    if forced_headings:
+        notes.append(f"{len(forced_headings)} file(s) with duplicated heading(s) — "
+                     f"verify section structure")
+    note = f" ({'; '.join(notes)})" if notes else ""
     refused_seg = f"Refused: {len(refused)} | " if refused else ""
 
     remaining, remaining_unavailable = _list_conflicts()
