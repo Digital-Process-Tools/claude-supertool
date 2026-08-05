@@ -7,10 +7,12 @@ import os
 import subprocess
 import sys
 from collections import Counter
+from typing import Sequence
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import _checks  # noqa: E402  (the one check tally, shared with gh-pr / gh-prs)
+import _declared_legs  # noqa: E402  (the second leg count, shared with gh-pr / gh-branch)
 import _repo_target  # noqa: E402  (the repo this call is about, when not the cwd's)
 
 # Parenthetical that keeps GitHub's own run-level field visible next to the
@@ -125,8 +127,39 @@ def job_states(jobs: object) -> list[str] | None:
     return [_checks.github_state(j) for j in jobs]
 
 
+def declared_legs(url: str, run_id: str, attempt: object,
+                  found_names: Sequence[str]) -> tuple[int | None, list[str]]:
+    """`(declared, missing)` for this run — `(None, [])` when unestablished.
+
+    The second source is `jobs?filter=all`, and the reason is measured in
+    `_declared_legs`: `gh run view --json jobs` is `filter=latest`, which dips
+    to a strict subset of the matrix for ~18s after a partial re-run.
+
+    **On attempt 1 the answer is the tally itself, and no call is made.**
+    `filter=all` and `filter=latest` are the same rows when there is only one
+    attempt, so buying the second source there is paying for a number that
+    equals the first by construction. It returns `len(found_names)` rather
+    than `None` because nothing failed — declining would print
+    `TALLY UNVERIFIED` over every ordinary run in the repository, and a
+    warning that is always on is one nobody reads.
+
+    That silence is not a claim that the tally is complete on a first attempt.
+    A run still creating its jobs is short at *both* sources, and no second
+    count can see a leg GitHub has not made yet; the run-level field carries
+    that state instead, in `status_line`.
+    """
+    if not _declared_legs.reconcilable(attempt):
+        return (len(found_names), [])
+    owner, repo = _declared_legs.owner_repo(url)
+    total, names = _declared_legs.legs_for_runs(owner, repo, [run_id])
+    if total is None:
+        return (None, [])
+    return (total, _declared_legs.missing_names(names, found_names))
+
+
 def status_line(run_status: object, conclusion: object,
-                states: list[str] | None) -> str:
+                states: list[str] | None,
+                declared: int | None = None) -> str:
     """The header's verdict: what the job table adds up to, then GitHub's field.
 
     **Which leads when the two disagree is not one answer, because they answer
@@ -149,7 +182,14 @@ def status_line(run_status: object, conclusion: object,
 
     Zero legs is three states, not two (`docs/validators.md`, "Declining
     instead of guessing"): not created yet, created none and finished, and
-    *unread*.
+    *unread*. `declared` adds the fourth, and it is the one that was being
+    printed as a falsehood: **zero legs read while the run declares some**.
+    `completed failure, and zero legs ran — GitHub created no job for this
+    run, so nothing was tested` was printed about a run that had executed
+    fourteen legs seconds earlier (#804, measured 15:57:31 on run
+    30997282630). That is not an unsupported claim, it is one the second
+    source contradicts, so it is only ever printed when nothing contradicts
+    it.
     """
     raw = str(run_status or "").strip().lower()
     concl = str(conclusion or "").strip().lower()
@@ -163,6 +203,12 @@ def status_line(run_status: object, conclusion: object,
                 f"Count by hand: gh run view <run-id> --json jobs")
 
     if not states:
+        if declared:
+            legword = "leg" if declared == 1 else "legs"
+            return (f"{ended if over else 'in progress'} — zero legs read "
+                    f"while this run declares {declared} {legword}, so the "
+                    f"job list is being re-created and nothing here says the "
+                    f"run tested nothing {field} {_checks.NOT_GREEN}")
         if over:
             return (f"{ended}, and zero legs ran — GitHub created no job for "
                     f"this run, so nothing was tested {field} "
@@ -247,7 +293,7 @@ def main() -> int:
         result = subprocess.run(
             ["gh", "run", "view", run_id, "--json",
              "databaseId,name,status,conclusion,event,headBranch,"
-             "createdAt,updatedAt,url,jobs"] + _repo_target.gh_args(),
+             "createdAt,updatedAt,url,jobs,attempt"] + _repo_target.gh_args(),
             capture_output=True, text=True, timeout=15, encoding="utf-8", errors="replace",
         )
     except FileNotFoundError:
@@ -274,8 +320,28 @@ def main() -> int:
     branch = d.get("headBranch", "?")
     web_url = d.get("url", "")
 
+    raw_jobs = d.get("jobs")
+    states = job_states(raw_jobs)
+    found_names = ([str(j.get("name") or "?") for j in raw_jobs
+                    if isinstance(j, dict)]
+                   if isinstance(raw_jobs, list) else [])
+
+    # Reconciliation is bought only when there is a tally to reconcile. An
+    # absent job list was not read at all, so a second count would answer a
+    # question nobody can ask yet — and it would be a call spent on it.
+    declared: int | None = None
+    marker, shortfall_lines = "", []
+    if states is not None:
+        declared, missing = declared_legs(
+            web_url, run_id, d.get("attempt"), found_names)
+        marker, shortfall_lines = _checks.shortfall(
+            len(states), declared, missing)
+
     print(f"# Run #{run_id} — {name}")
-    print(f"Status: {status_line(status, conclusion, job_states(d.get('jobs')))}")
+    line = status_line(status, conclusion, states, declared)
+    print(f"Status: {line}{' ' + marker if marker else ''}")
+    for text in shortfall_lines:
+        print(text)
     print(f"Event: {event} | Branch: {branch}")
     local_check = _local_branch_check(branch)
     if local_check:
@@ -284,7 +350,6 @@ def main() -> int:
         print(f"URL: {web_url}")
 
     # Jobs
-    raw_jobs = d.get("jobs")
     jobs = raw_jobs if isinstance(raw_jobs, list) else []
     if jobs:
         print(f"\n{'Job':<40} {'Status':<12} {'Conclusion':<12} {'Duration':<10}")

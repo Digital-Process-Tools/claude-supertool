@@ -282,11 +282,40 @@ checks: 9 total: 8 passed, 0 failed, 1 pending ⚠ NOT ALL GREEN ⚠ INCOMPLETE 
 
 GitHub withdraws and re-creates the check runs over ~12s, and the rollup is genuinely short while it does. **`repos/{o}/{r}/actions/runs/{id}/jobs` defaults to `filter=latest` and dips with it** — a floor that agrees with the short answer is no floor. `filter=all` holds, because a previous attempt's job rows are history: the count of *distinct job names across every attempt* only ever grows. It is the name set and not `total_count`, which under `filter=all` counts every row of every attempt (42 across three attempts of a fourteen-leg matrix).
 
-**The run ids are free; the count is not.** The run id comes off the same `detailsUrl` the job ids already come off, so finding *which* runs to reconcile against costs nothing. The jobs call costs one extra `gh api` per distinct run, which roughly doubles `:status` wall time (~1.1s to ~2.0s, measured on this repo). That is deliberate and it is the whole point of the op: `:status` exists to be the thing a merge is decided on, and a merge decided on nine of fourteen legs is the failure this cost buys out. `gh-prs` and `git-status` are **not** reconciled — a board paying that per PR is a different trade, and neither is a merge gate.
+**The run ids come from the commit, not from the rollup — and that was a bug for a while** ([#804](https://github.com/Digital-Process-Tools/claude-supertool/issues/804)). The first version read them off the same `detailsUrl` the job ids come off, which made them free. It also made the check circular: a run **entirely absent** from the rollup contributes nothing to the found side *and* nothing to the declared side, so it cancels out and the tally reconciles. Live from the merge gate, minutes after PR #822 was pushed:
+
+```
+#822 | state: OPEN | mergeable: CONFLICTING | conflicts: yes
+checks: 4 total: 4 passed, 0 failed, 0 pending
+```
+
+No marker of any kind, on a repo whose matrix is 18. #822's head commit carries two Actions runs declaring 3 + 14 legs; only the CodeQL run's legs had reached the rollup, so the declared count was computed over that run alone and reconciled at 3 of 3. **A second source read through the first one is not a second source.** The runs are now listed from the head commit (`actions/runs?head_sha=`), which costs one extra `gh api` per render, plus one per distinct run for its jobs — roughly doubling `:status` wall time (~1.1s to ~2.0s, measured on this repo). That is deliberate and it is the whole point of the op: `:status` exists to be the thing a merge is decided on, and a merge decided on four green CodeQL legs is the failure this cost buys out. `gh-prs` and `git-status` are **not** reconciled — a board paying that per PR is a different trade, and neither is a merge gate.
+
+**A run with no jobs yet is named, not omitted.** It declares nothing, so it subtracts nothing, and no arithmetic can see it — which is the just-pushed window #822 was read in. It is reported in words instead, because an omitted field reads as "nothing to report":
+
+```
+  not covered: tests — that run on this commit has no job yet, so how many legs it declares is UNKNOWN and none of them are in this tally.
+```
 
 **An unestablished count declines; it never guesses.** If the jobs API cannot be reached, or the PR fans out past `MAX_RECONCILED_RUNS` (4) distinct runs, the line reads `⚠ TALLY UNVERIFIED` and says so — `docs/validators.md` ([Declining instead of guessing](../validators.md#declining-instead-of-guessing)). Assuming `declared == found` would restore exactly the silence this exists to break; assuming a larger number would invent legs and trade a loud failure for a quiet one.
 
-**A rollup naming no Actions run reconciles silently and for free.** External CI and legacy commit statuses carry no run id, so there is no declared count anywhere to be short of, and they are counted as extra rather than as missing — `declared < found` is never a shortfall.
+**A commit naming no Actions run reconciles silently.** External CI and legacy commit statuses carry no run id, so there is no declared count anywhere to be short of, and they are counted as extra rather than as missing — `declared < found` is never a shortfall.
+
+### `gh-run` and `gh-branch` reconcile the same way
+
+The mechanism is one module, `presets/_declared_legs.py`, shared by all three ops ([#804](https://github.com/Digital-Process-Tools/claude-supertool/issues/804), [#837](https://github.com/Digital-Process-Tools/claude-supertool/issues/837)). Both of these ops read their legs from `gh run view <id> --json jobs`, and **that call is the dipping source**: it requests `repos/{o}/{r}/actions/runs/{id}/jobs?per_page=100` with no filter, and GitHub defaults the endpoint to `filter=latest`. Read off `GH_DEBUG=api`, not inferred. Caught in the act on this repo, re-running one failed leg of run 30997282630:
+
+```
+15:57:31  run_view=0   latest=0   all_distinct=14
+15:57:39  run_view=9   latest=9   all_distinct=14
+15:57:49  run_view=14  latest=14  all_distinct=14
+```
+
+`gh-run` printed `9 total: 5 passed, 0 failed, 4 pending` through that window, and at the bottom of it printed `completed failure, and zero legs ran — GitHub created no job for this run, so nothing was tested` about a run that had executed fourteen legs seconds earlier. Zero legs read while the run demonstrably has some is a **fourth** state beside the three in `docs/validators.md`, and it now says so rather than asserting the run tested nothing.
+
+`gh-branch` carries it to the verdict: an otherwise-green branch whose tally could not be squared with what its runs declare renders **`UNKNOWN`, not `GREEN`**. "Every leg I managed to read passed" is not "every leg passed", and this op exists to be the authoritative check after a squash merge. Findings about legs that *were* read — a failure, an unfinished run — still outrank it, because a finding beats a doubt.
+
+**Neither op pays anything on an ordinary render.** On attempt 1 `filter=all` and `filter=latest` are the same rows, so there is nothing to buy; the second source is fetched only for a run on attempt 2 or later, one `gh api` per such run. `attempt` is listed by both `gh run view --json` and `gh run list --json`, so knowing whether to pay is itself free.
 
 **Debug a failed Actions job:**
 ```bash

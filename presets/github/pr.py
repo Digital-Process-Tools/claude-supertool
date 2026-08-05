@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import _body  # noqa: E402  (the one body cap + disclosure — #698)
 import _untrusted  # noqa: E402  (the fence around tracker text — #694)
 import _checks  # noqa: E402  (the one check tally, shared with gh-prs / git-status)
+import _declared_legs  # noqa: E402  (the second leg count, shared with gh-run / gh-branch)
 import _repo_target  # noqa: E402  (the repo this call is about, when not the cwd's)
 
 DESCRIPTION_MAX = 2000
@@ -114,100 +115,137 @@ def _missing_names(declared: Sequence[str], found: Sequence[str]) -> list[str]:
     return out
 
 
-def _declared_legs(url: str, run_ids: Sequence[str]) -> tuple[int | None, list[str]]:
-    """`(total, names)` the Actions runs declare — `(None, [])` if unestablished.
+def _runs_on_commit(owner: str, repo: str, sha: str) -> list | None:
+    """`[(run_id, workflow_name)]` for the head commit — `None` if unreadable.
 
-    The second, independent count #724 needs, and the choice of source is the
-    whole fix. Measured live on PR #728, cancelling a run and re-running the
-    failed job three times over:
+    **This is the fix for #804's comment, and it is one line of reasoning.**
+    The declared count used to be summed over the run ids parsed out of the
+    rollup — the very list it was checking. A run entirely absent from the
+    rollup then contributes nothing to *either* side and cancels out, so the
+    mechanism was structurally unable to see the case it was built for. On PR
+    #822 that rendered `checks: 4 total: 4 passed` against an 18-leg matrix,
+    with #724's reconciliation present, silent, and correct about the one run
+    it could see.
 
-        11:28:20  rollup=0   latest=0   all_distinct=14
-        11:28:24  rollup=11  latest=11  all_distinct=14
-        11:28:32  rollup=14  latest=14  all_distinct=14
-
-    `statusCheckRollup` empties and refills over ~12s while GitHub re-creates
-    the check runs — that is the transient behind #724, and reading it mid-way
-    is what produced `9 total` against a fourteen-leg matrix. **The
-    latest-attempt job count dips with it**, in lockstep, so
-    `jobs?filter=latest` is not a floor at all: it agrees with the short
-    rollup and the tally stays silent, which was this function's first
-    version.
-
-    What holds is `filter=all`. A previous attempt's job rows are history and
-    cannot be withdrawn, so the set of *distinct job names across every
-    attempt* only ever grows. That is what is counted here.
-
-    Two ways this can read low, both in the safe direction — a floor that is
-    too low under-claims a shortfall, it never invents one:
-
-    * a run whose matrix genuinely gained legs between attempts (the workflow
-      file is fixed per commit, so this needs a matrix computed at runtime);
-    * more than 100 job records across all attempts — eight-plus attempts on a
-      matrix this wide — where the first page truncates the name set.
-
-    `None` on every failure, never a fallback number: a guessed floor can sit
-    under the real one, which is this defect wearing a fix's clothes.
+    Runs are listed from the commit instead, so a run whose legs have not
+    reached the rollup is still on the declared side. One extra request per
+    render, on an op that sits in the merge gate — the trade #804 asks to be
+    stated: `gh-pr:status` is the line a maintainer reads before merging, and
+    a request is cheaper than a merge on four green CodeQL legs.
     """
-    if not run_ids:
-        return (None, [])
-    if len(run_ids) > MAX_RECONCILED_RUNS:
-        return (None, [])
-    m = re.match(r"https?://github\.com/([^/]+)/([^/]+)/pull/\d+", url or "")
-    if not m:
-        return (None, [])
-    owner, repo = m.group(1), m.group(2)
-    total = 0
-    names: list[str] = []
-    for rid in run_ids:
-        try:
-            r = _gh([
-                "api",
-                f"repos/{owner}/{repo}/actions/runs/{rid}"
-                "/jobs?filter=all&per_page=100",
-            ])
-        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-            return (None, [])
-        if r.returncode != 0:
-            return (None, [])
-        try:
-            data = json.loads(r.stdout)
-        except json.JSONDecodeError:
-            return (None, [])
-        jobs = data.get("jobs") if isinstance(data, dict) else None
-        if not isinstance(jobs, list):
-            return (None, [])
-        # Distinct names, not `total_count`: under `filter=all` the count is
-        # every job record of every attempt (42 across three attempts of a
-        # fourteen-leg matrix), which is not a leg count. First-seen order is
-        # kept so the names read like the matrix rather than like a set.
-        seen: list[str] = []
-        for j in jobs:
-            if not isinstance(j, dict):
-                continue
-            name = str(j.get("name") or "?")
-            if name not in seen:
-                seen.append(name)
-        total += len(seen)
-        names.extend(seen)
-    return (total, names)
+    if not owner or not repo or not sha:
+        return None
+    try:
+        r = _gh(["api", f"repos/{owner}/{repo}/actions/runs"
+                        f"?head_sha={sha}&per_page=100"])
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return None
+    if r.returncode != 0:
+        return None
+    try:
+        data = json.loads(r.stdout)
+    except json.JSONDecodeError:
+        return None
+    runs = data.get("workflow_runs") if isinstance(data, dict) else None
+    if not isinstance(runs, list):
+        return None
+    out = []
+    for run in runs:
+        if not isinstance(run, dict):
+            continue
+        rid = str(run.get("id") or "").strip()
+        if rid:
+            out.append((rid, str(run.get("name") or f"run #{rid}")))
+    return out
+
+
+def _declared_for_commit(d: dict) -> tuple:
+    """`(declared, names, uncovered)` — the second source, read off the commit.
+
+    **This is #804's comment, and the whole of it.** The declared count used to
+    be summed over the run ids parsed out of the rollup — the very list it was
+    checking. A run entirely absent from the rollup contributes nothing to
+    *either* side and cancels out, so the mechanism was structurally unable to
+    see the case it was built for. On PR #822 that rendered
+    `checks: 4 total: 4 passed` against an 18-leg matrix, with #724's
+    reconciliation present, silent, and correct about the one run it could see.
+
+    `uncovered` names the runs on this commit that declare no leg at all. They
+    are unreachable by arithmetic — zero on both sides reconciles — so they are
+    reported in words. A run whose jobs GitHub has not created yet is the exact
+    shape of the just-pushed window #822 was read in.
+
+    `(None, [], [])` on every failure and never a fallback: falling back to the
+    rollup's own ids restores the blind mechanism silently, which is worse than
+    declining because it looks like an answer.
+    """
+    rollup = d.get("statusCheckRollup")
+    rollup_ids = _rollup_run_ids(rollup)
+    owner, repo = _declared_legs.owner_repo(d.get("url") or "")
+    runs = _runs_on_commit(owner, repo, str(d.get("headRefOid") or ""))
+    if runs is None:
+        return (None, [], [])
+
+    ordered: list = [(rid, "") for rid in rollup_ids]
+    known = set(rollup_ids)
+    for rid, name in runs:
+        if rid not in known:
+            ordered.append((rid, name))
+            known.add(rid)
+    if not ordered:
+        return (0, [], [])
+    if len(ordered) > MAX_RECONCILED_RUNS:
+        return (None, [], [])
+
+    declared_names: list[str] = []
+    uncovered: list[str] = []
+    for rid, name in ordered:
+        names = _declared_legs.legs_for_run(owner, repo, rid)
+        if names is None:
+            return (None, [], [])
+        declared_names.extend(names)
+        if not names and rid not in rollup_ids:
+            uncovered.append(name or f"run #{rid}")
+    return (len(declared_names), declared_names, uncovered)
 
 
 def _reconcile_checks(d: dict) -> tuple[str, list[str]]:
-    """`(marker, lines)` disclosing legs the rollup never carried (#724).
+    """`(marker, lines)` disclosing legs the rollup never carried (#724/#804).
 
-    Silent, and free, when the rollup names no Actions run: there is then no
-    declared count anywhere to be short of, and printing UNVERIFIED over a
-    purely external check suite would be noise where nothing is missing.
+    Two independent gaps, because they are established two different ways and
+    a reader deciding a merge needs both:
+
+    * **the leg shortfall** — `shortfall()`'s arithmetic over every run on the
+      commit, which catches a rollup short of runs whose jobs exist.
+    * **the uncovered run** — a whole run contributing nothing, which the
+      arithmetic cannot see. Stated in words, because an omitted field reads
+      as "nothing to report", and that reading is the defect.
+
+    Silent when nothing Actions-shaped is reachable at all: no legs read, no
+    run declared, nothing to be short of. Printing a warning over a purely
+    external check suite is noise where nothing is missing, and a marker that
+    fires on every PR is one nobody reads.
     """
-    rollup = d.get("statusCheckRollup")
-    run_ids = _rollup_run_ids(rollup)
-    if not run_ids:
+    found_names = _actions_leg_names(d.get("statusCheckRollup"))
+    declared, declared_names, uncovered = _declared_for_commit(d)
+    if declared is None and not found_names and not uncovered:
         return ("", [])
-    declared, declared_names = _declared_legs(d.get("url") or "", run_ids)
-    found_names = _actions_leg_names(rollup)
-    missing = _missing_names(declared_names, found_names)
-    return _checks.shortfall(len(found_names), declared, missing)
 
+    missing = _missing_names(declared_names, found_names)
+    marker, lines = _checks.shortfall(len(found_names), declared, missing)
+    if uncovered:
+        shown = ", ".join(uncovered[:_checks.NAMED_CAP])
+        if len(uncovered) > _checks.NAMED_CAP:
+            shown += f", +{len(uncovered) - _checks.NAMED_CAP} more"
+        one = len(uncovered) == 1
+        lines = list(lines) + [
+            f"  not covered: {shown} — {'that run' if one else 'those runs'} on "
+            f"this commit ha{'s' if one else 've'} no job yet, so how many legs "
+            f"{'it declares' if one else 'they declare'} is UNKNOWN and none of "
+            "them are in this tally."
+        ]
+        marker = marker or _checks.INCOMPLETE_MARK
+    return (marker, lines)
 
 def _local_branch_check(source: str) -> str:
     """Return a one-line local-branch-vs-PR-source check.
@@ -399,7 +437,7 @@ def main() -> int:
             "number,title,state,author,headRefName,baseRefName,labels,"
             "milestone,reviewDecision,reviews,mergeCommit,mergeable,"
             "isDraft,url,body,comments,additions,deletions,changedFiles,"
-            "statusCheckRollup,assignees,createdAt,updatedAt"
+            "statusCheckRollup,assignees,createdAt,updatedAt,headRefOid"
         ])
     except FileNotFoundError:
         print("ERROR: gh not found — install from https://cli.github.com")
