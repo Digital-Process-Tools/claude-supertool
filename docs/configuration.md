@@ -88,7 +88,10 @@ Entries document built-in operations (`syntax`, `description`, `example`). Set `
 | Op     | Key           | Default          | Effect                                                                                   |
 | ------ | ------------- | ---------------- | ---------------------------------------------------------------------------------------- |
 | `read` | `max_lines`   | 300              | Max lines per read                                                                       |
-| `read` | `max_bytes`   | 20000            | Max bytes per read (truncates at cap)                                                    |
+| `read` | `max_bytes`   | 20000            | Max bytes per read (truncates at cap). Also the yardstick the abstract read has to beat  |
+| `read` | `abstract`    | 0                | `1` → a read of a file over the threshold returns its tree-sitter symbol map instead of source, for every language in supertool's table. Falls back to source, with the reason, when the map is empty or no smaller. See [operations/reads.md](operations/reads.md#abstract-read) |
+| `read` | `php_abstract` | 0               | Former name of `abstract`, from when the gate was `.php`. Still enables it; either key set to `1` is enough |
+| `read` | `abstract_threshold_bytes` | `max_bytes` | File size above which the abstract read applies. Env: `SUPERTOOL_READ_ABSTRACT_THRESHOLD_BYTES` |
 | `grep` | `max_results` | 10               | Default result limit when not specified in the op                                        |
 | `grep` | `max_line_chars` | 500           | Max chars per output line (match or context); remainder shown as `… (+N chars)`           |
 | `grep` | `extensions`  | `[]` (all files) | Restrict grep to these file patterns (e.g. `["*.py", "*.js"]`). Empty = search all files |

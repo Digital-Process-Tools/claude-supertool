@@ -2321,40 +2321,90 @@ def _read_range_note(path: str, offset: int, limit: int, body: str) -> str:
     )
 
 
+def _abstract_lang(path: str) -> str:
+    """tree-sitter language name for PATH's extension, or "" when the abstract
+    read has no language table for it.
+
+    The gate used to be `path.endswith(".php")` while `_TS_LANG_MAP` already
+    covered eighteen extensions (#670) — so a TypeScript or Python user got the
+    raw file, which is the thing they already had."""
+    return _TS_LANG_MAP.get(os.path.splitext(path)[1].lower(), "")
+
+
+def _abstract_map(path: str, lang: str, size_bytes: int) -> Tuple[str, str]:
+    """Symbol map for PATH, or the reason there isn't a usable one.
+
+    Returns `(map, "")` on success and `("", reason)` when the caller should
+    fall back to raw source. Two ways to fail, and the caller states which:
+
+    - **No symbols.** The parser ran and found no definitions (a data-only
+      module), or no parser matched at all. Returning that empty map would
+      read as "this file has no code" — the absence of an answer wearing the
+      shape of one. See docs/validators.md, "Declining instead of guessing".
+    - **No saving.** A map that is not smaller than the bytes this read would
+      otherwise emit is a worse answer than the source. Measured on 263 real
+      files across 16 languages this fires on ~4% of them, so it is rare but
+      not theoretical.
+    """
+    body = op_map(path)
+    if (body.startswith("ERROR:") or "(no symbols)" in body
+            or "no supported files" in body):
+        reason = f"no symbols found in {path} ({lang})"
+        if not _has_tree_sitter():
+            reason += " — tree-sitter is not installed, so only the regex tier ran"
+        return "", reason
+    map_bytes = len(body.encode("utf-8", errors="replace"))
+    budget = min(size_bytes, _get_op_int("read", "max_bytes", MAX_READ_BYTES))
+    if map_bytes >= budget:
+        return "", (f"symbol map for {path} ({lang}) is {map_bytes} bytes, "
+                    f"not smaller than the {budget} bytes this read emits")
+    return body, ""
+
+
 def op_read(path: str, offset: int = 0, limit: int = 0,
             grep_filter: str = "", force_full: bool = False) -> str:
-    # PHP abstract mode — when enabled, read:PATH on a PHP file with no
-    # offset/limit/grep returns the symbol map (~10x smaller). Skipped when:
+    # Abstract mode — when enabled, read:PATH on a file in a language
+    # tree-sitter knows, with no offset/limit/grep, returns the symbol map
+    # (measured 3-18% of the source bytes, median ~5%). Skipped when:
+    #   - the extension is not in _TS_LANG_MAP (no map to build)
     #   - file size <= threshold (small files fit raw in the cap, abstract
     #     buys nothing)
     #   - caller passes :full / :raw (force_full)
     #   - explicit offset/limit/grep
-    if (offset == 0 and limit == 0 and not grep_filter
-            and not force_full
-            and path.endswith(".php")
-            and _get_op_int("read", "php_abstract", 0)):
+    #   - the map would be empty or no smaller than the raw read — those two
+    #     fall back to source *and say so*, never silently
+    skip_note = ""
+    if (offset == 0 and limit == 0 and not grep_filter and not force_full
+            and (_get_op_int("read", "abstract", 0)
+                 or _get_op_int("read", "php_abstract", 0))):
+        lang = _abstract_lang(path)
         threshold = _get_op_int("read", "abstract_threshold_bytes",
                                 _get_op_int("read", "max_bytes", MAX_READ_BYTES))
         try:
             size_bytes = os.path.getsize(path)
         except OSError:
             size_bytes = 0
-        if size_bytes > threshold:
-            line_count = 0
-            try:
-                with open(path, "rb") as f:
-                    for line_count, _ in enumerate(f, 1):
-                        pass
-            except OSError:
-                pass
-            return (op_map(path)
-                    + f"\n[php abstract — {line_count} lines, {size_bytes} bytes raw — "
-                      f"use read:{path}:full for content "
-                      f"or read:{path}:::grep=PATTERN to filter]\n")
+        if lang and size_bytes > threshold:
+            body, reason = _abstract_map(path, lang, size_bytes)
+            if body:
+                line_count = 0
+                try:
+                    with open(path, "rb") as f:
+                        for line_count, _ in enumerate(f, 1):
+                            pass
+                except OSError:
+                    pass
+                return (body
+                        + f"\n[abstract read — {lang}, {line_count} lines, "
+                          f"{size_bytes} bytes raw — "
+                          f"use read:{path}:full for content "
+                          f"or read:{path}:::grep=PATTERN to filter]\n")
+            skip_note = (f"[abstract read skipped — {reason}; "
+                         f"showing raw source]\n")
     if limit <= 0:
         limit = _get_op_int("read", "max_lines", MAX_READ_LINES)
     body = render_file(path, offset, limit, grep_filter, force_full)
-    return body + _read_edit_hint(path, body)
+    return skip_note + body + _read_edit_hint(path, body)
 
 
 def _read_edit_hint(path: str, body: str) -> str:
