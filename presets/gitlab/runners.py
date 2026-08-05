@@ -739,11 +739,19 @@ def _print_fleet(runners: list[dict], pending: list[dict], running: list[dict]) 
         # totals two lines further down. Marking the row from `waiting` — any
         # pending job this runner is permitted to take — put `<! STARVED` above
         # a footer reading "all have a responsive runner" in the same render.
+        # `stuck`/`unproven` count stranded *work*, so on an empty queue both are
+        # 0 and every unresponsive row used to fall through to `<! silent` —
+        # including the one GitLab still advertises `online`, whose only demerit
+        # is the throttled heartbeat (#814). The reader got `online` and `silent`
+        # on one row with nothing saying which half to believe. So the last
+        # branch is keyed on the evidence rather than on the negation: `silent`
+        # only where GitLab itself says down, and the gap goes to the UNKNOWN
+        # this table already prints one line above.
         stuck, unproven = stranded_split_for(runner, pending, runners)
         marker = ""
         if not responsive and stuck:
             marker = "  <! STARVED"
-        elif not responsive and unproven:
+        elif not responsive and (unproven or _liveness_unknown(runner)):
             marker = "  <! UNKNOWN"
         elif not responsive:
             marker = "  <! silent"
