@@ -12,6 +12,7 @@ import shlex
 import subprocess
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).parent))  # for mrs._conflict_label
 sys.path.insert(0, str(Path(__file__).parent.parent))  # for _checks (#619)
@@ -76,6 +77,74 @@ def _glab_fail_detail(r: subprocess.CompletedProcess[str]) -> str:
         if line and line != "ERROR":
             return f"glab exit {r.returncode}: {line[:120]}"
     return f"glab exit {r.returncode}"
+
+
+def _as_dict(value: object) -> dict:
+    """A remote field documented as an object, or `{}` when it came back as
+    something else.
+
+    Replaces the `(x or {})` idiom, which guards `null` and nothing else — a
+    string or a list walks straight through it and raises `AttributeError` on
+    the very next `.get` (#735).
+    """
+    return value if isinstance(value, dict) else {}
+
+
+def _dict_elements(seq: object) -> tuple[list[dict], int]:
+    """`(objects, how_many_were_not)` for a remote array.
+
+    Every endpoint `gl-mr` reads is documented as returning an array of
+    objects, and checking `isinstance(seq, list)` says nothing about what is
+    inside it. Returning the skipped count rather than swallowing it is the
+    whole point: see `_unreadable`.
+    """
+    if not isinstance(seq, list):
+        return [], 0
+    kept = [e for e in seq if isinstance(e, dict)]
+    return kept, len(seq) - len(kept)
+
+
+def _array_elements(value: object) -> tuple[list[dict], int, int]:
+    """`(objects, unreadable, total)` for a field documented as an array of objects.
+
+    A field that is not an array *at all* counts as one unreadable element
+    rather than as an empty list. Without that, guarding the elements would
+    turn a crash into `Reviewers: none` — a claim about the MR, made from a
+    payload nobody could read, which is the trade this fix exists to avoid.
+
+    An absent field (`None`) is a real empty answer and stays silent.
+    """
+    if value is None:
+        return [], 0, 0
+    if not isinstance(value, list):
+        return [], 1, 1
+    kept, bad = _dict_elements(value)
+    return kept, bad, len(value)
+
+
+def _unreadable(skipped: int, total: int, noun: str) -> str:
+    """Disclosure line for elements `_dict_elements` dropped — `''` when none were.
+
+    The guard on its own turns a loud crash into a quiet undercount: nine
+    threads reported where twelve came back, with nothing in the output saying
+    a narrowing happened. That is this repo's most-filed defect class, and the
+    three-state contract in `docs/validators.md` covers it — an answer, a
+    finding, or declining, never a silent partial.
+
+    The disclosure costs nothing in the case that actually happens every day:
+    `skipped == 0` prints nothing at all, so a healthy render is byte-identical
+    to the one before this guard existed.
+    """
+    if skipped <= 0:
+        return ""
+    return f"  ! {skipped} of {total} {noun} had a shape supertool could not read"
+
+
+def _print_unreadable(skipped: int, total: int, noun: str) -> None:
+    """`_unreadable` straight to stdout, printing nothing when nothing was skipped."""
+    note = _unreadable(skipped, total, noun)
+    if note:
+        print(note)
 
 
 def _approver_name(entry: object) -> str:
@@ -184,10 +253,9 @@ def _named_gl_jobs(pipe_id: str | int, cap: int = _checks.NAMED_CAP) -> list[str
     if not isinstance(jobs, list):
         return []
 
+    entries, skipped = _dict_elements(jobs)
     groups: dict[str, list[tuple[str, str]]] = {}
-    for j in jobs:
-        if not isinstance(j, dict):
-            continue
+    for j in entries:
         status = str(j.get("status") or "").strip().lower()
         if not status or status == "success" or status in _GL_JOB_RESOLVES_ITSELF:
             continue
@@ -204,6 +272,9 @@ def _named_gl_jobs(pipe_id: str | int, cap: int = _checks.NAMED_CAP) -> list[str
         if len(items) > cap:
             text += f", +{len(items) - cap} more"
         lines.append(f"  {label}: {text}")
+    note = _unreadable(skipped, len(jobs), "pipeline jobs")
+    if note:
+        lines.append(note)
     return lines
 
 
@@ -505,7 +576,7 @@ def _render_note(note: dict, cap: int | None = COMMENT_MAX) -> str:
     is supertool's own, so it is appended after the fence closes rather than
     inside it — see the same call in gh-issue.
     """
-    author = _untrusted.flat((note.get("author") or {}).get("username", "?"))
+    author = _untrusted.flat(_as_dict(note.get("author")).get("username", "?"))
     body = note.get("body") or ""
     trunc = ""
     if cap is not None and len(body) > cap:
@@ -560,7 +631,18 @@ def _name_status_flag(f: dict) -> str:
     return "M"
 
 
-def _get_name_status(iid: str | int, fetch_all: bool) -> list[tuple[str, str]]:
+class _NameStatus(NamedTuple):
+    """Diff entries for an MR, plus the entries that were not objects (#735)."""
+
+    entries: list[tuple[str, str]]
+    skipped: int
+
+    @property
+    def total(self) -> int:
+        return len(self.entries) + self.skipped
+
+
+def _get_name_status(iid: str | int, fetch_all: bool) -> _NameStatus:
     """Return per-file (flag, path) for an MR via the paginated diffs endpoint.
 
     Default fetches only the first page (100 files) — enough for the display
@@ -569,6 +651,7 @@ def _get_name_status(iid: str | int, fetch_all: bool) -> list[tuple[str, str]]:
     the block rather than erroring.
     """
     entries: list[tuple[str, str]] = []
+    skipped = 0
     page = 1
     while True:
         try:
@@ -585,7 +668,9 @@ def _get_name_status(iid: str | int, fetch_all: bool) -> list[tuple[str, str]]:
             break
         if not isinstance(diffs, list) or not diffs:
             break
-        for f in diffs:
+        files, bad = _dict_elements(diffs)
+        skipped += bad
+        for f in files:
             flag = _name_status_flag(f)
             new_path = f.get("new_path") or ""
             old_path = f.get("old_path") or ""
@@ -597,7 +682,7 @@ def _get_name_status(iid: str | int, fetch_all: bool) -> list[tuple[str, str]]:
         if not fetch_all or len(diffs) < 100 or len(entries) >= NAMESTATUS_FETCH_CAP:
             break
         page += 1
-    return entries
+    return _NameStatus(entries, skipped)
 
 
 def _coerce_count(changes: object) -> int | None:
@@ -612,7 +697,7 @@ def _coerce_count(changes: object) -> int | None:
 
 
 def _render_name_status(
-    entries: list[tuple[str, str]], changes: object, full: bool, iid: str | int
+    name_status: _NameStatus, changes: object, full: bool, iid: str | int
 ) -> list[str]:
     """Build the '## Files' block lines from name-status entries.
 
@@ -621,6 +706,7 @@ def _render_name_status(
     (authoritative, survives the display cap and single-page fetch) and falls
     back to the fetched count when changes_count is missing or smaller.
     """
+    entries = name_status.entries
     if not entries:
         return []
     shown = entries if full else entries[:NAMESTATUS_DISPLAY_MAX]
@@ -635,6 +721,9 @@ def _render_name_status(
             lines.append(f" … +{hidden} more (output capped at {NAMESTATUS_FETCH_CAP} files)")
         else:
             lines.append(f" … +{hidden} more (use gl-mr:{iid}:full)")
+    note = _unreadable(name_status.skipped, name_status.total, "changed files")
+    if note:
+        lines.append(note)
     return lines
 
 
@@ -656,8 +745,13 @@ def main() -> int:
             )
             if branch_result.returncode == 0:
                 mrs = json.loads(branch_result.stdout)
-                if isinstance(mrs, list) and mrs:
-                    arg = str(mrs[0].get("iid", arg))
+                found, unreadable = _dict_elements(mrs)
+                if found:
+                    arg = str(found[0].get("iid", arg))
+                elif unreadable:
+                    print(f"ERROR: branch lookup for {arg!r} returned {unreadable} MR(s) "
+                          f"with a shape supertool could not read")
+                    return 1
                 else:
                     # Try all states if no open MR found
                     branch_result2 = _glab_api(
@@ -665,8 +759,13 @@ def main() -> int:
                     )
                     if branch_result2.returncode == 0:
                         mrs2 = json.loads(branch_result2.stdout)
-                        if isinstance(mrs2, list) and mrs2:
-                            arg = str(mrs2[0].get("iid", arg))
+                        found2, unreadable2 = _dict_elements(mrs2)
+                        if found2:
+                            arg = str(found2[0].get("iid", arg))
+                        elif unreadable2:
+                            print(f"ERROR: branch lookup for {arg!r} returned {unreadable2} "
+                                  f"MR(s) with a shape supertool could not read")
+                            return 1
                         else:
                             print(f"ERROR: no MR found for branch {arg!r}")
                             return 1
@@ -696,14 +795,23 @@ def main() -> int:
         print(f"ERROR: invalid JSON from glab\n{result.stdout[:500]}")
         return 1
 
+    # `glab mr view --output json` is documented as returning one object. It was
+    # parsed and then used with no type check at all — the top-level gap #720
+    # closed on the approvals and issue payloads, still open on the payload the
+    # whole render is built from (#735).
+    if not isinstance(d, dict):
+        print(f"ERROR: glab mr view returned a {type(d).__name__}, expected an object")
+        return 1
+
     def _latest_pipeline(iid: str | int) -> dict:
         """Fetch freshest pipeline for the MR — glab mr view can return stale head_pipeline."""
         try:
             r = _glab_api(f"projects/:id/merge_requests/{iid}/pipelines?per_page=1")
             if r.returncode == 0:
                 pipes = json.loads(r.stdout)
-                if isinstance(pipes, list) and pipes:
-                    return pipes[0]
+                found, _ = _dict_elements(pipes)
+                if found:
+                    return found[0]
         except (subprocess.TimeoutExpired, json.JSONDecodeError):
             pass
         return {}
@@ -719,7 +827,7 @@ def main() -> int:
         if source and source not in ("push",):
             bits.append(source)
         # Who triggered
-        user = (pipeline.get("user") or {}).get("username")
+        user = _as_dict(pipeline.get("user")).get("username")
         if user:
             bits.append(f"by {user}")
         # Time: running pipelines show elapsed; others show finished/updated
@@ -788,28 +896,32 @@ def main() -> int:
     iid = d.get("iid", arg)
     source = _untrusted.flat(d.get("source_branch", "?"))
     target = _untrusted.flat(d.get("target_branch", "?"))
-    author = _untrusted.flat((d.get("author") or {}).get("username", "?"))
+    author = _untrusted.flat(_as_dict(d.get("author")).get("username", "?"))
     web_url = d.get("web_url", "")
-    labels = _untrusted.flat(", ".join(d.get("labels", [])) or "none")
-    milestone = _untrusted.flat((d.get("milestone") or {}).get("title", "none"))
+    raw_labels = d.get("labels")
+    labels = _untrusted.flat(", ".join(
+        str(label) for label in raw_labels) if isinstance(raw_labels, list) else "none")
+    labels = labels or "none"
+    milestone = _untrusted.flat(_as_dict(d.get("milestone")).get("title", "none"))
     merge_status = d.get("merge_status") or d.get("detailed_merge_status") or "?"
     merge_commit = d.get("merge_commit_sha") or d.get("squash_commit_sha") or ""
     draft = d.get("draft", False) or d.get("work_in_progress", False)
 
     # Pipeline — fetch latest from MR pipelines endpoint (head_pipeline can be stale)
-    pipeline = _latest_pipeline(iid) or d.get("pipeline") or d.get("head_pipeline") or {}
+    pipeline = (_latest_pipeline(iid) or _as_dict(d.get("pipeline"))
+                or _as_dict(d.get("head_pipeline")))
     pipe_status = pipeline.get("status", "none")
     pipe_id = pipeline.get("id", "")
     pipe_meta = _pipe_meta(pipeline)
 
     # Diff stats
     changes = d.get("changes_count") or 0
-    diff_stats = d.get("diff_stats") or {}
+    diff_stats = _as_dict(d.get("diff_stats"))
     additions = diff_stats.get("additions", 0)
     deletions = diff_stats.get("deletions", 0)
 
     # Reviewers
-    reviewers = d.get("reviewers") or []
+    reviewers, reviewers_skipped, reviewers_total = _array_elements(d.get("reviewers"))
     reviewer_names = [r.get("username", "?") for r in reviewers]
 
     # Description is cut here rather than at its print site, because the
@@ -840,12 +952,14 @@ def main() -> int:
             description, description_total, description_withheld))
 
     # Assignees (distinct from reviewers on GitLab)
-    assignees = d.get("assignees") or []
+    assignees, assignees_skipped, assignees_total = _array_elements(d.get("assignees"))
     assignee_names = [a.get("username", "?") for a in assignees]
     print(f"Assignees: {', '.join(assignee_names) if assignee_names else 'none'}")
+    _print_unreadable(assignees_skipped, assignees_total, "assignees")
 
     # Reviewers + approvals — always print so absence is signal, not silence
     print(f"Reviewers: {', '.join(reviewer_names) if reviewer_names else 'none'}")
+    _print_unreadable(reviewers_skipped, reviewers_total, "reviewers")
 
     # Age — created/updated, for stale-MR signal
     created_at = d.get("created_at") or ""
@@ -868,11 +982,24 @@ def main() -> int:
         if disc_result.returncode == 0:
             discussions = json.loads(disc_result.stdout)
             if isinstance(discussions, list):
-                resolvable = [dd for dd in discussions
-                              if any(n.get("resolvable") for n in (dd.get("notes") or []))]
-                unresolved = [dd for dd in resolvable
-                              if not all(n.get("resolved") for n in (dd.get("notes") or []) if n.get("resolvable"))]
-                print(f"Unresolved threads: {len(unresolved)} / {len(resolvable)}")
+                threads, bad_threads = _dict_elements(discussions)
+                bad_notes = notes_total = resolvable = unresolved = 0
+                for dd in threads:
+                    # A `notes` field that is not an array counts as one
+                    # unreadable note: `(x or [])` let a string through and the
+                    # loop iterated its characters.
+                    thread_notes, bad, seen = _array_elements(dd.get("notes"))
+                    bad_notes += bad
+                    notes_total += seen
+                    marked = [n for n in thread_notes if n.get("resolvable")]
+                    if not marked:
+                        continue
+                    resolvable += 1
+                    if not all(n.get("resolved") for n in marked):
+                        unresolved += 1
+                print(f"Unresolved threads: {unresolved} / {resolvable}")
+                _print_unreadable(bad_threads, len(discussions), "discussions")
+                _print_unreadable(bad_notes, notes_total, "discussion notes")
     except (subprocess.TimeoutExpired, json.JSONDecodeError):
         pass
 
@@ -893,12 +1020,14 @@ def main() -> int:
             if jobs_result.returncode == 0:
                 jobs = json.loads(jobs_result.stdout)
                 if isinstance(jobs, list) and jobs:
-                    print(f"Failed jobs ({len(jobs)}):")
-                    for job in jobs:
+                    named, bad_jobs = _dict_elements(jobs)
+                    print(f"Failed jobs ({len(named)}):")
+                    for job in named:
                         jid = job.get("id", "?")
                         jname = job.get("name", "?")
                         jstage = job.get("stage", "?")
                         print(f"  #{jid} | {jname} | {jstage}")
+                    _print_unreadable(bad_jobs, len(jobs), "failed jobs")
         except (subprocess.TimeoutExpired, json.JSONDecodeError):
             pass
 
@@ -1050,6 +1179,7 @@ def main() -> int:
     # Human comments (notes) — always print header so absence is signal,
     # not silence. Mirrors gh-pr behavior.
     human_notes: list = []
+    notes_skipped = notes_seen = 0
     try:
         notes_result = _glab_api(
             f"projects/:id/merge_requests/{iid}/notes?per_page=50&sort=asc"
@@ -1057,11 +1187,14 @@ def main() -> int:
         if notes_result.returncode == 0:
             notes = json.loads(notes_result.stdout)
             if isinstance(notes, list):
-                human_notes = [n for n in notes if not n.get("system", False)]
+                readable, notes_skipped = _dict_elements(notes)
+                notes_seen = len(notes)
+                human_notes = [n for n in readable if not n.get("system", False)]
     except (subprocess.TimeoutExpired, json.JSONDecodeError):
         pass
 
     print(f"\n## Comments ({len(human_notes)})")
+    _print_unreadable(notes_skipped, notes_seen, "comments")
     if full:
         for r in (_render_note(n, None) for n in human_notes):
             print(r, end="")
