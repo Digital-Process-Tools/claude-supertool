@@ -200,7 +200,8 @@ def test_stale_unknown_when_body_write_time_is_unknown() -> None:
 def test_linked_cell_distinguishes_none_from_could_not_ask() -> None:
     assert issues._linked_cell(None) == "? unknown"
     assert issues._linked_cell([]) == "· no PR"
-    assert "#761" in issues._linked_cell([{"number": 761, "state": "MERGED"}])
+    assert "PR 761" in issues._linked_cell([{"number": 761, "state": "MERGED"}])
+    assert "#761" not in issues._linked_cell([{"number": 761, "state": "MERGED"}])
 
 
 def test_ext_cell_three_states() -> None:

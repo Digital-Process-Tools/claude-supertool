@@ -37,13 +37,17 @@ A GitHub-cloned cwd, **or** a `repo:OWNER/NAME` target — see [Targeting anothe
 ```
 ? unknown        ? 11m    0c  #777
         A title
-✓ #761 merged +1  4d    2c  #766     [stale]
+✓ PR 761 merged +1  4d    2c  #766     [stale]
         Another title
+~ PR 556 mention +2  6d    1c  #554     [stale]
+        A referenced-but-not-closing PR
 · no PR          ! 69d    0c  #227    bug
         A third
 ```
 
 Columns, left to right: linked-PR state · external-filer marker · age · comment count · number · labels · flags · title.
+
+**The `#N` in the number column is always this row's own issue — nothing else on the line is ever spelled with a leading `#`** ([#842](https://github.com/Digital-Process-Tools/claude-supertool/issues/842)). The linked-PR cell used to print the referenced PR's number the same way (`✓ #761 merged`, `~ #556 mention`), one column ahead of the issue's own `#766`/`#554` — so the first `#N` a reader's eye landed on, reading left to right, belonged to a different object, and pasting it into `gh-issue:` answered about the wrong one. `#` is now reserved for the row's own id everywhere on the board; a linked or mentioning PR renders as `PR 761`/`PR 556` — no `#`, same information.
 
 ### Who filed it — membership, not identity
 
