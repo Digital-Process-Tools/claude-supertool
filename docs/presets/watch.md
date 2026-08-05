@@ -482,6 +482,28 @@ So the correlation has **three** outcomes and it was publishing two:
 
 **The row flag and the footer are one computation, because they were two and they contradicted each other.** Observed in a single render: rows carrying `<! STARVED` above a footer reading `Queue: 31 pending, all have a responsive runner. Waiting on capacity, not routing.` The footer was right. The row matched pending tags against any non-heartbeating runner and skipped the queue-age floor entirely; the footer asked the routing question per job and applied it. The issue proposed keeping the footer and dropping the row — rejected, because that deletes the per-runner locality the table exists for. Both now come from `stranded_split_for`, which is `classify_queue` asked one runner at a time, so they cannot disagree by construction. The row has three states too: `<! STARVED`, `<! UNKNOWN`, `<! silent`.
 
+**Those three states were keyed on the queue alone, so on an empty queue there was only one of them** ([#814](https://github.com/Digital-Process-Tools/claude-supertool/issues/814)). `stuck` and `unproven` count *stranded work*; with nothing pending both are `0`, and every unresponsive row fell past the first two branches into `<! silent` regardless of the evidence behind it. So the marker that #805 gave a third state kept publishing two, and the row it published wrongly was the #750 shape:
+
+```
+21  docker-db-on-disk  project  online  idle  35m  0  0  0  docker-db-on-disk  <! silent
+```
+
+`online` and `silent` on one row, with nothing saying which half to believe. The runner failed `_is_responsive` on `contacted_at` age alone — the throttled field, consulted last and loosely for exactly this reason — which is the state `_liveness_unknown` exists to name.
+
+**The marker's last branch is now keyed on the evidence rather than on the negation.** `<! silent` fires only where `_demonstrably_down` holds, so its STATUS column always agrees with it: `paused`, `offline`, `stale`, `never_contacted`. The gap goes to `<! UNKNOWN`, which the same chain already prints one line above.
+
+| the row | marker |
+|---|---|
+| work stranded behind it, every candidate demonstrably down | `<! STARVED` |
+| work stranded behind it, a candidate still advertised `online` | `<! UNKNOWN` |
+| no work at stake, liveness unmeasured (`online`, heartbeat past the threshold) | `<! UNKNOWN` |
+| no work at stake, GitLab's own verdict is down | `<! silent` |
+| responsive | *(none)* |
+
+**Nothing was deleted and no threshold was widened**, which was the live risk in the fix rather than in the bug: both would have converted "this row is confusing" into "this row tells you nothing", and a fleet check that never flags anything is one nobody reads. Every row that carried a marker before carries one now — it is a re-key, not a suppression, and `tests/test_gl_runners_silent_marker_814.py` pins the partition in both directions so neither marker can grow into the other's rows.
+
+**The argument for leaving it, and why it did not hold.** [#806](https://github.com/Digital-Process-Tools/claude-supertool/issues/806) declined this deliberately: *"silent" states an observation — the heartbeat is stale — rather than asserting a verdict*, unlike the `check host uptime` caveat it was narrowing. The distinction is genuine and is why the two are separate contracts. It does not survive this row, because the heartbeat age is **already printed three columns to the left**, in `SEEN`. As an observation the marker is redundant with the table it sits in; the only work it does is verdict work, and beside `online` it is read as one.
+
 Job history is filtered by `finished_at`, never `created_at`. Ids order by creation and the two are **not monotonic**: a test job created hours ago finishes after jobs created since, so scanning by creation drops exactly the long jobs whose completion is the best evidence.
 
 **Steps 1 and 2 are evidence somebody has to go and gather, so the judgement refuses to run without it** ([#533](https://github.com/Digital-Process-Tools/claude-supertool/issues/533)). `annotate_recent_work` and `annotate_live_jobs` fold the throughput and running-jobs reads onto the runner records; a caller that skips them leaves `_is_responsive` holding step 3 alone — which is the version that fired on 6 of 6. So each annotator now leaves a mark, and an un-annotated record raises `UnannotatedFleetError` rather than receiving a verdict. Zero completed jobs is an observation; a missing `_recent_jobs` key is the absence of one, and the two must not read alike.
