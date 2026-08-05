@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The #851 disclosure could not be printed on the console it was written for** ([#863](https://github.com/Digital-Process-Tools/claude-supertool/issues/863)). `presets/_untrusted.py` discloses a control character in tracker text as the Control Pictures glyph that names it, and the whole security property of #851 rests on a reader *seeing* that glyph. Not one character it emits is ASCII: `␛` and its 32 siblings, the `⟨ ⟩` fence markers, the `…` and the em dash in `banner()` and `flat_note()`, the em dash in the `NEUTRALISED` replacement. Measured: `"\\u241b".encode(cp)` raises `UnicodeEncodeError` for `cp437`, `cp850`, `cp852` and `cp1252` — every Windows console codepage — and so does `"\\u27e8"`.
+
+  **The marker fails before the glyph does, and that is the half the issue did not name.** The first `UnicodeEncodeError` in the reproduction is `'\\u27e8' in position 0`: the *opening fence marker*, on a render whose body had not been reached. A fence whose edges cannot be printed is not a fence — #693 through a third door, after the typed delimiter and the erasing escape sequence.
+
+  **Under a strict stream that is a crash; under a replace-configured one it is a `?`.** Nothing in this repo sets `errors="replace"`, so the reachable failure today is the loud one — but `real line?FORGED` is the outcome the design has to exclude on principle, because it is this repo's own defect class landing inside the fix for that class: an absence produced by the tool, read by the reader as an absence in the world.
+
+  **Three states, two of which say so.** The vocabulary is now chosen per render from what `sys.stdout` declares. A stream that carries it renders **exactly as before** — that is the documented default, and a clause on every banner of every op is the wallpaper [#854](https://github.com/Digital-Process-Tools/claude-supertool/issues/854) removed. A stream that says it cannot gets ASCII markers (`<|remote a1b2c3d4|>`), ASCII prose, and the `[U+XXXX]` spelling the C1 fallback already used — with the banner naming the encoding and the spelling: `this stream is cp1252 and cannot carry the control-picture glyphs, so a control character reads as [U+001B] here`. A stream that will not declare an encoding gets the same fallback and a different sentence, because "cannot" and "could not tell" are different facts (`docs/validators.md` §"Declining instead of guessing"). `scrub()` neutralises whichever marker shape the render actually printed, so the ASCII fence cannot be closed from inside either.
+
+  **What it costs, stated rather than hidden.** `[U+001B]` is eight characters for one, so a degraded render can be inflated by a hostile field where a picture render cannot. That is the same bound C1 has always carried, it is bounded by the call site's own cap times eight rather than by anything in the helper, and it is the price of a marker the reader can see. `<|`/`|>` rather than `[[`/`]]` or `<<`/`>>` because an ASCII marker is a shape a body can actually type, and those two are typed constantly — wiki links, TOML array-of-tables headers, git conflict markers — where this pair is not.
+
+  **Not `use_utf8_stdout()`, deliberately.** Reusing `presets/git/_git_common.py`'s reconfiguration was the smaller change. On a console that is genuinely cp437 it writes UTF-8 bytes to a decoder that is not one, so the marker becomes mojibake instead of a marker — a marker-shaped absence reached by a different road — and it would change the stream for every op that prints remote text. Detection reads what the stream is; reconfiguration overwrites the answer. `./supertool` already pins `PYTHONIOENCODING=utf-8` for every preset it launches, so the common route is unaffected either way; this covers the routes that are not it.
+
+  **Method.** TDD, red before green. RED: 13 tests, **12 failing** — and the one that passed is the pin that the UTF-8 render is byte-for-byte what #854 left. Assertions are on the rendered string being `.encode()`-able with `errors="strict"` at the three codepages, not on which branch ran, so a half-fix that switched the glyphs and left the markers still fails. GREEN: 13 passing.
+
+  **Not verified on a real Windows console.** The encode failures and the absent reconfiguration are measured; nobody on this change had a `cmd.exe`. The design is the one that holds under *both* unresolved outcomes — raise or `?` — which is why it did not wait for the observation.
+
 ## [0.24.0] - 2026-08-05
 
 ### Added
