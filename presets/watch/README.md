@@ -111,6 +111,8 @@ know about means pollers keep sending what the consumer keeps refusing.
 | 2,048 chars | per attribute | one value inside `payload` |
 | 8,192 chars | per event | every attribute of one event, keys included |
 | 1,048,576 chars | per line | one NDJSON line on the socket |
+| 65,536 chars | per 60 s | everything delivered in a rolling minute, across every poller |
+| 262,144 chars | per 60 s | the hard floor under that minute |
 
 For scale: the largest payload observed across ten live watchers was **488
 characters**, its longest value **117**. A poller that stays anywhere near real
@@ -130,6 +132,17 @@ consumer does when a poller exceeds them is documented in
 the oversized attribute is withheld whole (never truncated), the event is still
 delivered, and it carries a `clamped` attribute naming what went and how big it
 really was. Nothing is silently shortened, and nothing is silently lost.
+
+**The last two rows are the one limit a poller can hit without any single event
+being large.** They are a budget on the *stream*, shared by every watcher feeding
+one session, so a chatty poller spends a quiet poller's minute too. Past 65,536
+chars in a rolling minute events keep their routing and lose their payload,
+carrying a `burst` attribute that says so; past 262,144 they are suppressed and
+counted, and the count arrives on the next delivery. Neither is reachable by real
+traffic — a ten-watcher fleet spawn is ~5 KB — but a poller that emits on every
+tick instead of on every *change* will find them, and that is the bug the budget
+makes visible rather than the budget being the bug. Emit on state change, which
+is what `is_terminal`/`poll` are shaped for.
 
 ### Reserved payload keys ([#609](https://github.com/Digital-Process-Tools/claude-supertool/issues/609))
 

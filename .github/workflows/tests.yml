@@ -189,5 +189,6 @@ jobs:
           tests/test_notifiers_claude_channel_550.py
           tests/test_notifiers_claude_channel_554.py
           tests/test_notifiers_claude_channel_605.py
+          tests/test_notifiers_claude_channel_605_burst.py
           tests/test_notifiers_claude_channel_609.py
           tests/test_notifiers_claude_channel_612.py
