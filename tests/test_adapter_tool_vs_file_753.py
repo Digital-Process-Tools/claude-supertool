@@ -478,7 +478,7 @@ def _spawn(bindir: Path, tool: str, target: Path) -> subprocess.CompletedProcess
     return subprocess.run(
         [sys.executable, str(ADAPTERS[tool]), str(target)],
         capture_output=True, text=True, env=env,
-        timeout=adapter_budget(ADAPTERS[tool]))
+        timeout=adapter_budget(ADAPTERS[tool]), encoding="utf-8", errors="replace")
 
 
 def _run(tool: str, bindir: Path, target: Path) -> dict:

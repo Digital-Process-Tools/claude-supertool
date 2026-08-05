@@ -30,7 +30,7 @@ def _clear_branch_cache():
 def _git(tmp_path: Path, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["git", "-C", str(tmp_path), *args],
-        capture_output=True, text=True, timeout=10,
+        capture_output=True, text=True, timeout=10, encoding="utf-8", errors="replace",
     )
 
 

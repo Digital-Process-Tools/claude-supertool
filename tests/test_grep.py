@@ -690,7 +690,7 @@ def test_grep_delegated_end_to_end_with_rtk_on_path(tmp_path: Path) -> None:
     env["PATH"] = str(bindir) + os.pathsep + env["PATH"]
     result = subprocess.run(
         [sys.executable, str(Path(supertool.__file__)), "grep:alpha:src:10"],
-        capture_output=True, text=True, cwd=str(proj), env=env, timeout=60,
+        capture_output=True, text=True, cwd=str(proj), env=env, timeout=60, encoding="utf-8", errors="replace",
     )
     assert result.returncode == 0, result.stderr
     assert ("(2 results in 1 files, scanned ? files — delegated to rtk, "

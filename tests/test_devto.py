@@ -646,7 +646,7 @@ def _run_comment_dryrun(*argv_parts: str) -> tuple[str, str, str | None]:
     ) % str(repo / "presets" / "devto")
     proc = subprocess.run(
         [_sys.executable, "-c", driver, *argv_parts],
-        capture_output=True, text=True, timeout=10,
+        capture_output=True, text=True, timeout=10, encoding="utf-8", errors="replace",
     )
     assert proc.returncode == 0, f"driver failed: {proc.stderr}"
     return eval(proc.stdout.strip())

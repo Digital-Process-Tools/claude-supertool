@@ -24,7 +24,7 @@ def _run(file_path: str, python: str = _PYTHON_WITH_YAML) -> tuple[dict, str]:
     result = subprocess.run(
         [python, str(ADAPTER), file_path],
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8", errors="replace",
     )
     return json.loads(result.stdout), result.stderr
 
@@ -124,7 +124,7 @@ def test_no_arg_returns_error() -> None:
     result = subprocess.run(
         [sys.executable, str(ADAPTER)],
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8", errors="replace",
     )
     out = json.loads(result.stdout)
     assert out["ok"] is False
@@ -154,7 +154,7 @@ def test_pyyaml_missing_exits_ok_with_warning(tmp_path: Path) -> None:
     result = subprocess.run(
         [sys.executable, str(shim), str(f)],
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8", errors="replace",
     )
     out = json.loads(result.stdout)
     assert out["ok"] is True

@@ -21,7 +21,7 @@ SUPERTOOL = REPO / "supertool.py"
 def _run(args: list[str], stdin: str = "") -> tuple[int, str, str]:
     proc = subprocess.run(
         [sys.executable, str(SUPERTOOL), *args],
-        input=stdin, capture_output=True, text=True, timeout=10,
+        input=stdin, capture_output=True, text=True, timeout=10, encoding="utf-8", errors="replace",
     )
     return proc.returncode, proc.stdout, proc.stderr
 

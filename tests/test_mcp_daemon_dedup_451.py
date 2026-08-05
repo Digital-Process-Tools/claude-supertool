@@ -159,7 +159,8 @@ def victim():
              "    os._exit(0)\n"
              "print(os.getpid(), flush=True)\n"
              "time.sleep(120)\n"],
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+            encoding="utf-8", errors="replace")
         pid = int(p.stdout.readline().strip())
         p.wait(timeout=10)
         pids.append(pid)

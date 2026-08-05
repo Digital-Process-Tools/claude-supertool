@@ -28,7 +28,7 @@ def _run_git_preset(
 ) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, str(PRESETS_GIT / script), *args],
-        capture_output=True, text=True, timeout=10, cwd=cwd,
+        capture_output=True, text=True, timeout=10, cwd=cwd, encoding="utf-8", errors="replace",
     )
 
 
@@ -61,7 +61,7 @@ class TestGitcliFlagSmuggling:
         assert "refusing for safety" not in r.stdout
         branch = subprocess.run(
             ["git", "-C", str(repo), "rev-parse", "--abbrev-ref", "HEAD"],
-            capture_output=True, text=True, check=True,
+            capture_output=True, text=True, check=True, encoding="utf-8", errors="replace",
         ).stdout.strip()
         assert branch == "main", f"`-` should switch to previous branch, on {branch!r}"
 

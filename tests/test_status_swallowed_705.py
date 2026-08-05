@@ -88,7 +88,7 @@ def _stalling_git_shim(d: Path, subcommand: str) -> None:
 
 def _git(repo: Path, *args: str) -> str:
     r = subprocess.run(["git", "-C", str(repo), *args], check=True,
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, encoding="utf-8", errors="replace")
     return r.stdout.strip()
 
 

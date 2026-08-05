@@ -75,7 +75,7 @@ def _message(cwd: Path) -> str:
     return subprocess.run(
         ["git", "log", "-1", "--pretty=format:%B"],
         cwd=cwd, capture_output=True, text=True,
-        encoding="utf-8", check=True,
+        encoding="utf-8", check=True, errors="replace",
     ).stdout
 
 
@@ -163,7 +163,7 @@ def test_payload_route_stages_the_listed_paths(tmp_path: Path) -> None:
     assert code == 0, f"stdout={out} stderr={err}"
     committed = subprocess.run(
         ["git", "show", "--name-only", "--format=", "HEAD"],
-        cwd=work, capture_output=True, text=True, check=True,
+        cwd=work, capture_output=True, text=True, check=True, encoding="utf-8", errors="replace",
     ).stdout.split()
     assert sorted(committed) == ["a.txt", "b.txt", "c.txt"]
 
@@ -233,7 +233,7 @@ def test_reported_mangling_is_produced_by_the_shell() -> None:
         ["bash", "-c",
          "printf '%s' \"subject (#12167)$(printf '\\n\\n')"
          "Co-Authored-By: Max <noreply>\""],
-        capture_output=True, text=True, check=True,
+        capture_output=True, text=True, check=True, encoding="utf-8", errors="replace",
     ).stdout
     assert built == MANGLED_BY_SHELL
     assert "\n" not in built

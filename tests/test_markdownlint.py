@@ -19,7 +19,7 @@ def _run(file_path: str) -> dict:
     result = subprocess.run(
         [sys.executable, str(ADAPTER), file_path],
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8", errors="replace",
     )
     return json.loads(result.stdout)
 
@@ -36,7 +36,7 @@ def test_missing_tool_graceful(tmp_path: Path) -> None:
         [sys.executable, str(ADAPTER), str(f)],
         capture_output=True,
         text=True,
-        env=empty_path_env(),
+        env=empty_path_env(), encoding="utf-8", errors="replace",
     )
     out = json.loads(result.stdout)
     assert_ok(out)
@@ -66,7 +66,7 @@ def test_no_arg_returns_error() -> None:
     result = subprocess.run(
         [sys.executable, str(ADAPTER)],
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8", errors="replace",
     )
     out = json.loads(result.stdout)
     assert_declined(out)

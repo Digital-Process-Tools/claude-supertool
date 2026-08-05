@@ -73,7 +73,7 @@ _HERMETIC_ENV = {
 
 def _run(args: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(["git"] + args, cwd=cwd, env=_HERMETIC_ENV,
-                          capture_output=True, text=True, timeout=60)
+                          capture_output=True, text=True, timeout=60, encoding="utf-8", errors="replace")
 
 
 def _commit(cwd: str, fname: str, msg: str) -> None:

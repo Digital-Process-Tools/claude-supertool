@@ -84,7 +84,7 @@ def _run_diff(repo: Path, *args: str, env_extra: dict | None = None) -> str:
         env.update(env_extra)
     res = subprocess.run(
         [sys.executable, str(DIFF), *args],
-        capture_output=True, text=True, encoding="utf-8", cwd=repo, env=env,
+        capture_output=True, text=True, encoding="utf-8", cwd=repo, env=env, errors="replace",
     )
     assert res.returncode == 0, res.stderr
     return res.stdout
@@ -288,7 +288,7 @@ def test_a_failed_stash_query_does_not_render_as_no_stashes(
         env["PATH"] = str(bindir)
         return subprocess.run([sys.executable, str(status_py)], cwd=repo,
                               capture_output=True, text=True,
-                              encoding="utf-8", env=env).stdout
+                              encoding="utf-8", env=env, errors="replace").stdout
 
     working = _status(passthrough)
     broken = _status(refusing)

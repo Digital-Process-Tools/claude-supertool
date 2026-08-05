@@ -102,7 +102,7 @@ class FakeProject:
             text=True,
             cwd=self.cwd,
             env=env,
-            timeout=15,
+            timeout=15, encoding="utf-8", errors="replace",
         )
 
 

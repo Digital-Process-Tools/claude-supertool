@@ -54,7 +54,7 @@ PRECIOUS = "PRECIOUS UNCOMMITTED WORK\n"
 def _ok(args: list[str], cwd: str) -> str:
     res = subprocess.run(["git"] + args, cwd=cwd,
                          env={**os.environ, **_HERMETIC},
-                         capture_output=True, text=True, timeout=60)
+                         capture_output=True, text=True, timeout=60, encoding="utf-8", errors="replace")
     assert res.returncode == 0, f"git {' '.join(args)} failed: {res.stderr}"
     return res.stdout.strip()
 

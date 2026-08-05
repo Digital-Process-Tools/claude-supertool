@@ -318,7 +318,7 @@ def test_a_real_adapter_spawn_answers_well_inside_the_shared_budget(tmp_path: Pa
     f.write_text("<?php\n$x = 1;\n")
     r = subprocess.run(
         [sys.executable, str(adapter), str(f)],
-        capture_output=True, text=True, timeout=budget.adapter_budget(adapter),
+        capture_output=True, text=True, timeout=budget.adapter_budget(adapter), encoding="utf-8", errors="replace",
     )
     # This fired once on windows-latest/3.10 as `assert False is True` and named
     # nothing (#725). It is not a blown budget — that raises TimeoutExpired. The

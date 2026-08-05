@@ -38,7 +38,7 @@ def _run(repo: Path, *args: str, env_extra: dict | None = None) -> str:
         env.update(env_extra)
     res = subprocess.run(
         [sys.executable, str(DIFF), *args],
-        capture_output=True, text=True, encoding="utf-8", cwd=repo, env=env,
+        capture_output=True, text=True, encoding="utf-8", cwd=repo, env=env, errors="replace",
     )
     assert res.returncode == 0, res.stderr
     return res.stdout
@@ -100,7 +100,7 @@ def _run_raw(repo: Path, *args: str) -> subprocess.CompletedProcess:
     """Like _run but without the returncode==0 assertion (guard paths return 1)."""
     return subprocess.run(
         [sys.executable, str(DIFF), *args],
-        capture_output=True, text=True, encoding="utf-8", cwd=repo, env=dict(os.environ),
+        capture_output=True, text=True, encoding="utf-8", cwd=repo, env=dict(os.environ), errors="replace",
     )
 
 
@@ -258,7 +258,7 @@ def test_default_mode_keeps_glyphs(tmp_path: Path) -> None:
 def test_not_a_git_repo(tmp_path: Path) -> None:
     res = subprocess.run(
         [sys.executable, str(DIFF), "staged"],
-        capture_output=True, text=True, encoding="utf-8", cwd=tmp_path,
+        capture_output=True, text=True, encoding="utf-8", cwd=tmp_path, errors="replace",
     )
     assert res.returncode == 1
     assert "not inside a git repository" in res.stdout

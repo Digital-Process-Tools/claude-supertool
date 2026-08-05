@@ -43,7 +43,7 @@ def _git(repo: Path, *args: str, check: bool = False) -> subprocess.CompletedPro
         cwd=repo,
         capture_output=True,
         text=True,
-        check=check,
+        check=check, encoding="utf-8", errors="replace",
     )
 
 

@@ -71,7 +71,7 @@ def test_newline_in_commit_message_produces_multiline_commit(
     # Verify the subject and body landed in git log
     log = subprocess.run(
         ["git", "log", "-1", "--format=%B"],
-        capture_output=True, text=True, cwd=tmp_path, check=True,
+        capture_output=True, text=True, cwd=tmp_path, check=True, encoding="utf-8", errors="replace",
     ).stdout.strip()
     assert "line1" in log
     assert "line2" in log
@@ -98,7 +98,7 @@ def test_special_chars_in_message_preserved(
 
     log = subprocess.run(
         ["git", "log", "-1", "--format=%s"],
-        capture_output=True, text=True, cwd=tmp_path, check=True,
+        capture_output=True, text=True, cwd=tmp_path, check=True, encoding="utf-8", errors="replace",
     ).stdout.strip()
     assert "`some code`" in log
     assert "quotes" in log
@@ -117,7 +117,7 @@ def test_commit_on_detached_head_succeeds(
     # Detach HEAD
     sha = subprocess.run(
         ["git", "rev-parse", "HEAD"],
-        capture_output=True, text=True, cwd=tmp_path, check=True,
+        capture_output=True, text=True, cwd=tmp_path, check=True, encoding="utf-8", errors="replace",
     ).stdout.strip()
     subprocess.run(["git", "checkout", "--detach", sha], check=True, cwd=tmp_path,
                    capture_output=True)
@@ -223,7 +223,7 @@ def test_staged_deletion_path_committed(
 
     files = subprocess.run(
         ["git", "show", "--name-status", "--format=", "HEAD"],
-        capture_output=True, text=True, cwd=tmp_path, check=True,
+        capture_output=True, text=True, cwd=tmp_path, check=True, encoding="utf-8", errors="replace",
     ).stdout
     assert "D\tdoomed.txt" in files, f"deletion not in commit:\n{files}"
     assert "A\tnew.txt" in files, f"new file not in commit:\n{files}"
@@ -298,7 +298,7 @@ def test_trailing_whitespace_in_message_behaviour(
 
     log_subject = subprocess.run(
         ["git", "log", "-1", "--format=%s"],
-        capture_output=True, text=True, cwd=tmp_path, check=True,
+        capture_output=True, text=True, cwd=tmp_path, check=True, encoding="utf-8", errors="replace",
     ).stdout.strip()
     # Git trims trailing whitespace from subject; core message text must survive
     assert "trailing spaces here" in log_subject

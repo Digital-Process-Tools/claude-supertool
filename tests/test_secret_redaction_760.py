@@ -116,7 +116,7 @@ def _run_in(script: str, *args: str, home: Path, cwd: Path) -> subprocess.Comple
         text=True,
         cwd=str(cwd),
         env=env,
-        timeout=15,
+        timeout=15, encoding="utf-8", errors="replace",
     )
 
 

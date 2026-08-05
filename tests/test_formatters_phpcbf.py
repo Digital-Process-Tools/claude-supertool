@@ -29,7 +29,7 @@ def _python_stub(tmp_path: Path, name: str, body: str) -> str:
 
 
 def test_no_arg_returns_schema_error() -> None:
-    r = subprocess.run([sys.executable, str(ADAPTER)], capture_output=True, text=True, timeout=10)
+    r = subprocess.run([sys.executable, str(ADAPTER)], capture_output=True, text=True, timeout=10, encoding="utf-8", errors="replace")
     assert r.returncode == 0
     data = json.loads(r.stdout.strip())
     assert data["tool"] == "phpcbf"
@@ -43,7 +43,7 @@ def test_missing_binary_returns_schema_error(tmp_path: Path) -> None:
     env = {**os.environ, "PHPCBF_BIN": "phpcbf-that-does-not-exist-xyz"}
     r = subprocess.run(
         [sys.executable, str(ADAPTER), str(f)],
-        capture_output=True, text=True, timeout=10, env=env,
+        capture_output=True, text=True, timeout=10, env=env, encoding="utf-8", errors="replace",
     )
     assert r.returncode == 0
     data = json.loads(r.stdout.strip())
@@ -62,7 +62,7 @@ def test_exit0_noop_via_stub(tmp_path: Path) -> None:
     env = {**os.environ, "PHPCBF_BIN": bin_cmd}
     r = subprocess.run(
         [sys.executable, str(ADAPTER), str(f)],
-        capture_output=True, text=True, timeout=10, env=env,
+        capture_output=True, text=True, timeout=10, env=env, encoding="utf-8", errors="replace",
     )
     assert r.returncode == 0
     data = json.loads(r.stdout.strip())
@@ -84,7 +84,7 @@ def test_exit1_fixes_applied_via_stub(tmp_path: Path) -> None:
     env = {**os.environ, "PHPCBF_BIN": bin_cmd}
     r = subprocess.run(
         [sys.executable, str(ADAPTER), str(f)],
-        capture_output=True, text=True, timeout=10, env=env,
+        capture_output=True, text=True, timeout=10, env=env, encoding="utf-8", errors="replace",
     )
     assert r.returncode == 0
     data = json.loads(r.stdout.strip())
@@ -109,7 +109,7 @@ def test_exit2_unfixable_remaining_is_not_formatter_failure(tmp_path: Path) -> N
     env = {**os.environ, "PHPCBF_BIN": bin_cmd}
     r = subprocess.run(
         [sys.executable, str(ADAPTER), str(f)],
-        capture_output=True, text=True, timeout=10, env=env,
+        capture_output=True, text=True, timeout=10, env=env, encoding="utf-8", errors="replace",
     )
     assert r.returncode == 0
     data = json.loads(r.stdout.strip())
@@ -129,7 +129,7 @@ def test_exit3_internal_error_is_failure(tmp_path: Path) -> None:
     env = {**os.environ, "PHPCBF_BIN": bin_cmd}
     r = subprocess.run(
         [sys.executable, str(ADAPTER), str(f)],
-        capture_output=True, text=True, timeout=10, env=env,
+        capture_output=True, text=True, timeout=10, env=env, encoding="utf-8", errors="replace",
     )
     assert r.returncode == 0
     data = json.loads(r.stdout.strip())
@@ -143,7 +143,7 @@ def test_live_clean_php(tmp_path: Path) -> None:
     f.write_text("<?php\nfunction add(int $a, int $b): int\n{\n    return $a + $b;\n}\n")
     r = subprocess.run(
         [sys.executable, str(ADAPTER), str(f)],
-        capture_output=True, text=True, timeout=30,
+        capture_output=True, text=True, timeout=30, encoding="utf-8", errors="replace",
     )
     assert r.returncode == 0
     data = json.loads(r.stdout.strip())

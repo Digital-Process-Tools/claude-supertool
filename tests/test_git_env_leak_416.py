@@ -63,7 +63,7 @@ def test_fixture_repo_keeps_its_own_commits(tmp_path):
 
 def _git(args, cwd, env=None):
     return subprocess.run(
-        ["git", *_ID, *args], cwd=str(cwd), env=env, capture_output=True, text=True
+        ["git", *_ID, *args], cwd=str(cwd), env=env, capture_output=True, text=True, encoding="utf-8", errors="replace"
     )
 
 
@@ -106,7 +106,7 @@ def _run_pytest_with_leaked_git_dir(project, target, git_dir):
     return subprocess.run(
         [sys.executable, "-m", "pytest", str(target), "--no-cov",
          "-p", "no:cacheprovider"],
-        cwd=str(project), capture_output=True, text=True, env=env,
+        cwd=str(project), capture_output=True, text=True, env=env, encoding="utf-8", errors="replace",
     )
 
 
@@ -182,7 +182,7 @@ def test_pre_push_hook_scrubs_before_invoking_pytest(tmp_path):
     for name in EXPECTED_VARS:
         env[name] = str(repo / ".git")
     result = subprocess.run(
-        ["bash", "pre-push"], cwd=str(repo), capture_output=True, text=True, env=env
+        ["bash", "pre-push"], cwd=str(repo), capture_output=True, text=True, env=env, encoding="utf-8", errors="replace"
     )
 
     assert result.returncode == 0, result.stderr

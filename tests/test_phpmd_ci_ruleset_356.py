@@ -58,7 +58,7 @@ def _run(php_file: Path, stub: Path, extra_env: dict | None = None) -> subproces
         env.update(extra_env)
     return subprocess.run(
         [sys.executable, str(PHPMD_PY), str(php_file)],
-        capture_output=True, text=True, timeout=adapter_budget(PHPMD_PY), env=env,
+        capture_output=True, text=True, timeout=adapter_budget(PHPMD_PY), env=env, encoding="utf-8", errors="replace",
     )
 
 

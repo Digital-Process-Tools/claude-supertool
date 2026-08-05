@@ -70,7 +70,7 @@ def test_a_declining_verdict_names_the_adapters_own_reason() -> None:
     """
     r = subprocess.run(
         [sys.executable, str(VALIDATORS / "phplint" / "phplint.py"), ""],
-        capture_output=True, text=True, timeout=60,
+        capture_output=True, text=True, timeout=60, encoding="utf-8", errors="replace",
     )
     payload = av.verdict(r)
     assert payload["ok"] is False

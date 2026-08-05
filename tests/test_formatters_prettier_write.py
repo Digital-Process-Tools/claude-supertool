@@ -25,7 +25,7 @@ def _python_stub(tmp_path: Path, name: str, body: str) -> str:
 
 
 def test_no_arg_returns_schema_error() -> None:
-    r = subprocess.run([sys.executable, str(ADAPTER)], capture_output=True, text=True, timeout=10)
+    r = subprocess.run([sys.executable, str(ADAPTER)], capture_output=True, text=True, timeout=10, encoding="utf-8", errors="replace")
     assert r.returncode == 0
     data = json.loads(r.stdout.strip())
     assert data["tool"] == "prettier-write"
@@ -39,7 +39,7 @@ def test_missing_binary_returns_schema_error(tmp_path: Path) -> None:
     env = {**os.environ, "PRETTIER_BIN": "prettier-that-does-not-exist-xyz"}
     r = subprocess.run(
         [sys.executable, str(ADAPTER), str(f)],
-        capture_output=True, text=True, timeout=10, env=env,
+        capture_output=True, text=True, timeout=10, env=env, encoding="utf-8", errors="replace",
     )
     assert r.returncode == 0
     data = json.loads(r.stdout.strip())
@@ -60,7 +60,7 @@ def test_clean_file_ok_noop_via_stub(tmp_path: Path) -> None:
     env = {**os.environ, "PRETTIER_BIN": bin_cmd}
     r = subprocess.run(
         [sys.executable, str(ADAPTER), str(f)],
-        capture_output=True, text=True, timeout=10, env=env,
+        capture_output=True, text=True, timeout=10, env=env, encoding="utf-8", errors="replace",
     )
     assert r.returncode == 0
     data = json.loads(r.stdout.strip())
@@ -78,7 +78,7 @@ def test_live_clean_file_ok(tmp_path: Path) -> None:
     f.write_text('{\n  "a": 1\n}\n')
     r = subprocess.run(
         [sys.executable, str(ADAPTER), str(f)],
-        capture_output=True, text=True, timeout=30,
+        capture_output=True, text=True, timeout=30, encoding="utf-8", errors="replace",
     )
     assert r.returncode == 0
     data = json.loads(r.stdout.strip())
@@ -99,7 +99,7 @@ def test_file_needing_format_via_stub(tmp_path: Path) -> None:
     env = {**os.environ, "PRETTIER_BIN": bin_cmd}
     r = subprocess.run(
         [sys.executable, str(ADAPTER), str(f)],
-        capture_output=True, text=True, timeout=10, env=env,
+        capture_output=True, text=True, timeout=10, env=env, encoding="utf-8", errors="replace",
     )
     assert r.returncode == 0
     data = json.loads(r.stdout.strip())

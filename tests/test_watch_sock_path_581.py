@@ -105,7 +105,7 @@ def test_a_real_child_process_under_poller_env_sees_the_override(monkeypatch) ->
             capture_output=True,
             timeout=10,
             text=True,
-            check=False,
+            check=False, encoding="utf-8", errors="replace",
         )
         assert proc.returncode == 0, f"child failed: {proc.stderr}"
         assert proc.stdout.strip() == "/tmp/supertool-watch-581-child.sock"

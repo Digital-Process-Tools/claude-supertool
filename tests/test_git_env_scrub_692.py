@@ -44,7 +44,7 @@ _ID = ["-c", "user.email=fixture@example.invalid", "-c", "user.name=fixture"]
 def _git(args, cwd, env=None):
     return subprocess.run(
         ["git", *_ID, *args], cwd=str(cwd), env=env,
-        capture_output=True, text=True, timeout=60,
+        capture_output=True, text=True, timeout=60, encoding="utf-8", errors="replace",
     )
 
 
@@ -113,7 +113,7 @@ def _run_op(op: str, cwd: Path, git_dir: Path | None = None):
         env["GIT_DIR"] = str(git_dir)
     return subprocess.run(
         [sys.executable, str(SUPERTOOL), op],
-        cwd=str(cwd), capture_output=True, text=True, timeout=180, env=env,
+        cwd=str(cwd), capture_output=True, text=True, timeout=180, env=env, encoding="utf-8", errors="replace",
     )
 
 

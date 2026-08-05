@@ -100,7 +100,7 @@ def _git(repo: Path, *args: str, when: str | None = None) -> str:
         env["GIT_AUTHOR_DATE"] = when
         env["GIT_COMMITTER_DATE"] = when
     r = subprocess.run(["git", "-C", str(repo), *args], check=True,
-                       capture_output=True, text=True, env=env)
+                       capture_output=True, text=True, env=env, encoding="utf-8", errors="replace")
     return r.stdout.strip()
 
 

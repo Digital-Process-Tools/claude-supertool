@@ -689,7 +689,7 @@ class TestDispatchEndToEnd:
                 f"xml_attr:::{CLOVER_SAMPLE}:::"
                 ".//file[contains(@name,'CommandX')]/line[@count='0']:::num",
             ],
-            capture_output=True, text=True, encoding="utf-8", timeout=10,
+            capture_output=True, text=True, encoding="utf-8", timeout=10, errors="replace",
         )
         assert result.returncode == 0, f"returncode={result.returncode} stderr={result.stderr!r} stdout={result.stdout!r}"
         assert "PASS" in result.stdout
@@ -705,7 +705,7 @@ class TestDispatchEndToEnd:
                 f"xml_attr:{CLOVER_SAMPLE}:"
                 ".//file[contains(@name,'CommandX')]/line[@count='0']:num",
             ],
-            capture_output=True, text=True, encoding="utf-8", timeout=10,
+            capture_output=True, text=True, encoding="utf-8", timeout=10, errors="replace",
         )
         assert result.returncode == 0, f"returncode={result.returncode} stderr={result.stderr!r} stdout={result.stdout!r}"
         nums = [line for line in result.stdout.splitlines() if line.strip().isdigit()]
@@ -719,7 +719,7 @@ class TestDispatchEndToEnd:
                 sys.executable, str(self._supertool()),
                 f"xml_count:::{CLOVER_SAMPLE}:::.//file",
             ],
-            capture_output=True, text=True, encoding="utf-8", timeout=10,
+            capture_output=True, text=True, encoding="utf-8", timeout=10, errors="replace",
         )
         assert result.returncode == 0, f"returncode={result.returncode} stderr={result.stderr!r} stdout={result.stdout!r}"
         # Output contains "PASS" header + integer count

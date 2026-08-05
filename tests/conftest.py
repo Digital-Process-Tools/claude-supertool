@@ -236,11 +236,11 @@ def _repo_git_dirs():
     try:
         common = subprocess.run(
             ["git", "-C", str(root), "rev-parse", "--git-common-dir"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, timeout=5, encoding="utf-8", errors="replace",
         )
         gitdir = subprocess.run(
             ["git", "-C", str(root), "rev-parse", "--git-dir"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, timeout=5, encoding="utf-8", errors="replace",
         )
         if common.returncode == 0 and gitdir.returncode == 0:
             result = (
@@ -342,7 +342,7 @@ def _other_worktree_branches():
     try:
         result = subprocess.run(
             ["git", "-C", str(root), "worktree", "list", "--porcelain"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, timeout=5, encoding="utf-8", errors="replace",
         )
     except (OSError, subprocess.SubprocessError):
         return frozenset(), False

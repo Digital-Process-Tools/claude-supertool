@@ -103,7 +103,7 @@ def test_no_edit_during_merge_uses_prepared_message(monkeypatch, capsys, tmp_pat
     subprocess.run(["git", "commit", "-q", "-m", "init"], check=True)
     # Fake a merge state: MERGE_HEAD + MERGE_MSG + a staged change
     gd = subprocess.run(["git", "rev-parse", "--git-dir"],
-                        capture_output=True, text=True, check=True).stdout.strip()
+                        capture_output=True, text=True, check=True, encoding="utf-8", errors="replace").stdout.strip()
     Path(gd, "MERGE_HEAD").write_text("0" * 40 + "\n")
     Path(gd, "MERGE_MSG").write_text("Merge fake\n")
     (tmp_path / "a.txt").write_text("hi\nmerged\n")
@@ -184,6 +184,6 @@ def test_coauthor_in_real_commit(monkeypatch, tmp_path) -> None:
     rc = commit.main()
     assert rc == 0
     body = subprocess.run(["git", "log", "-1", "--pretty=%B"],
-                          capture_output=True, text=True, check=True).stdout
+                          capture_output=True, text=True, check=True, encoding="utf-8", errors="replace").stdout
     assert "Co-Authored-By: Max <noreply>" in body
     assert body.count("Co-Authored-By:") == 1

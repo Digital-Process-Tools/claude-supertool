@@ -16,7 +16,7 @@ def _run(file: str = "", env: dict | None = None) -> dict:
     args = [sys.executable, str(GIT_STATUS_PY)]
     if file:
         args.append(file)
-    r = subprocess.run(args, capture_output=True, text=True, timeout=10, env=env or os.environ)
+    r = subprocess.run(args, capture_output=True, text=True, timeout=10, env=env or os.environ, encoding="utf-8", errors="replace")
     assert r.returncode == 0
     return json.loads(r.stdout.strip())
 
