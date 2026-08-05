@@ -15,9 +15,10 @@ A GitHub-cloned cwd, **or** a `repo:OWNER/NAME` target — see [Targeting anothe
 | `gh-issue` | `gh-issue:NUMBER[:full]` | Issue metadata, description, all comments (truncated by default), linked PRs, image download. `:full` disables truncation. A truncated body says so twice — in the header, before the reader reaches it, and again at the cut — with the exact char count withheld and `:full` named as the way to get the rest (see [A truncated body says so before you reach it](#a-truncated-body-says-so-before-you-reach-it)) |
 | `gh-pr` | `gh-pr:NUMBER_OR_BRANCH[:status\|:full]` | Full PR dashboard: branch, checks, reviews/approval state, linked issue, diff stat, comments. `:status` returns slim merge-state plus the `head -> base` branch line only (~250 bytes). The check line opens with `N total:` and every count after it sums back to N, so a state the tally does not recognise is named (`2 cancelled`) instead of dropped; the legs read are reconciled against the number the Actions run declares, so a rollup that came back short carries `⚠ INCOMPLETE — 9 of 14 legs read` and names the legs it never saw (see [The tally says how many legs it did *not* read](#the-tally-says-how-many-legs-it-did-not-read)); anything short of every-check-passed carries `⚠ NOT ALL GREEN`, and zero check runs renders as one of four states — `none yet`, `none, and none will be created`, `none until the conflict is resolved … Rebase`, or a stated `UNKNOWN` — rather than one sentence for all of them ([#585](https://github.com/Digital-Process-Tools/claude-supertool/issues/585), [#594](https://github.com/Digital-Process-Tools/claude-supertool/issues/594), see [Zero check runs](#zero-check-runs-is-four-states-not-one)). The linked issue is every issue a GitHub closing keyword binds to — all of them, plural label when there are several — and a stated `none declared` when the body names no keyword, never the first `#N` in the body ([#591](https://github.com/Digital-Process-Tools/claude-supertool/issues/591), see [The linked issue](#the-linked-issue-is-a-declared-closing-reference-not-the-first-n)). A description over `DESCRIPTION_MAX` (2000 chars) says so twice — in the header and again at the cut — naming the exact char count withheld, and `:full` returns the whole description ([#698](https://github.com/Digital-Process-Tools/claude-supertool/issues/698), see [A truncated body says so before you reach it](#a-truncated-body-says-so-before-you-reach-it)). The comment list is bounded the same way: the last 10 by default, disclosed as `## Comments (10 of 25 shown, 15 earlier truncated — use :full to fetch all)` rather than as a bare total above ten of them, with each comment body cut at 500 chars marked at the cut; `:full` returns every comment whole ([#719](https://github.com/Digital-Process-Tools/claude-supertool/issues/719), see [A capped comment list says how many it did not show](#a-capped-comment-list-says-how-many-it-did-not-show)) |
 | `gh-prs` | `gh-prs[:author=@me,reviewer=@me,state=open,failed,nopipe,iids]` | PR triage board: your open PRs sorted failing-first then stalest. Per PR: check rollup (a failure shows the failing **check name**), approval state, age, diff size, watch-state, `draft`/`conflict`/`threads` flags + footer pointing at the first failing-and-unwatched PR. The gl-mrs twin. `iids` emits a bare number list for `watch-mine.sh` |
+| `gh-issues` | `gh-issues[:author=@me,label=bug,state=open,external,stale,nopipe,iids]` | Issue triage board, **ranked** rather than listed: unrankable → external author → stale body → no linked PR → oldest. Per issue: linked PRs read off the issue timeline, an external-filer marker from GitHub's `authorAssociation`, age, comment count, labels, and a `[stale]` flag when the newest comment is newer than the last time the body was written. Enrichment is one GraphQL call per 20 issues; when it fails the derived fields render `?` and the row sorts first — see [The issue board](#the-issue-board). No default `author=@me`, unlike `gh-prs` |
 | `gh-run` | `gh-run:NUMBER` | Workflow run job list with statuses and failed step names |
 | `gh-job` | `gh-job:NUMBER[:raw[:-N\|:START[:END]]\|:grep:PATTERN]` | Job failure detail: PR context + error pattern search + log tail. `:raw` dumps the full trace; `:raw:START:END` slices lines (1-indexed, inclusive); `:raw:-N` returns the **last N lines**, and a START past the end returns the tail of the width requested with a line saying so rather than declining — see [Reading a range](gitlab.md#reading-a-range) ([#487](https://github.com/Digital-Process-Tools/claude-supertool/issues/487)); `:grep:PATTERN` runs an ad-hoc regex over the log (literal fallback on bad regex, ±context, names the pattern + tail on no-match — never silent-empty). Optional per-job `job_patterns` table in `.supertool.json` (see gitlab preset doc) maps job names to tighter patterns + a `resolution` op. Zero matches on a job GitHub calls `failure` prints `## FAILED — no error pattern matched` — patterns tried + a log tail, never silence. `## No error patterns matched` survives only for jobs that did not fail |
-| `repo:` prefix | `repo:OWNER/NAME` (leading op) | Points `gh-pr`, `gh-prs`, `gh-issue`, `gh-run`, `gh-job` at a repo other than the cwd's — see [Targeting another repo](#targeting-another-repo) |
+| `repo:` prefix | `repo:OWNER/NAME` (leading op) | Points `gh-pr`, `gh-prs`, `gh-issue`, `gh-issues`, `gh-run`, `gh-job` at a repo other than the cwd's — see [Targeting another repo](#targeting-another-repo) |
 | `gh-follow` | `gh-follow:USERNAME` | Follow a GitHub user via the authenticated session |
 | `gh-following` | `gh-following[:N]` | List users you follow (default 30) |
 | `gh-batch-follow` | `gh-batch-follow:FILE` | Follow each username from a file (one per line, `#` comments). 1s delay between calls |
@@ -26,6 +27,55 @@ A GitHub-cloned cwd, **or** a `repo:OWNER/NAME` target — see [Targeting anothe
 | `gh-batch-star` | `gh-batch-star:FILE` | Star each `OWNER/REPO` from a file (one per line, `#` comments). 1s delay between calls |
 | `gh-find-followable` | `gh-find-followable:OWNER/REPO[|N]` | Discover candidate users to follow: pulls stargazers + contributors, deduplicates, filters orgs. Pipe output to a file then review before `gh-batch-follow` |
 | `gh-find-starable` | `gh-find-starable:TOPIC[|N]` | Discover repos worth starring by topic, sorted by stars. Pipe output to a file then review before `gh-batch-star` |
+
+## The issue board
+
+`gh-issues` is not `gh issue list` with columns. A list of numbers and titles is what you have *before* triage starts; the op answers the three questions asked immediately afterwards and then sorts on the answers ([#769](https://github.com/Digital-Process-Tools/claude-supertool/issues/769)).
+
+```
+? unknown        ? 11m    0c  #777
+        A title
+✓ #761 merged +1  4d    2c  #766     [stale]
+        Another title
+· no PR          ! 69d    0c  #227    bug
+        A third
+```
+
+Columns, left to right: linked-PR state · external-filer marker · age · comment count · number · labels · flags · title.
+
+### Who filed it — membership, not identity
+
+`gh` posts as the same login for everything this repo files, so the author string separates nothing. GitHub's `authorAssociation` separates *membership*: `OWNER`/`MEMBER`/`COLLABORATOR` are inside and render blank, everything else renders `!`. There is no allowlist to keep in sync, and none was introduced — `presets/_untrusted.py` already treats all tracker text as data-not-instructions and deliberately decides nothing about who wrote it.
+
+A missing association renders `?`. Returning "inside" for it would assert the reporter is one of us, which is the single wrong claim that drops an external report to the bottom of the queue.
+
+### Whether the body has gone stale
+
+A body is written once; comments accumulate and quietly redefine the deliverable. `updatedAt` cannot see this — every comment bumps it. `lastEditedAt` can: it is the last time the *body* was written, and it is `null` on an issue nobody edited, in which case `createdAt` **is** the body-write time exactly. So the test is `newest comment > (lastEditedAt or createdAt)` and it is exact in both branches, not an approximation.
+
+Comparing against `createdAt` alone is the tempting shortcut and it is wrong in the expensive direction: it flags every discussed-then-rewritten issue as stale, firing hardest on the rows that were just brought up to date. An issue with zero comments is settled as fresh without asking GitHub anything.
+
+### The rank, and the tier that is missing
+
+Highest priority first: **unrankable**, then **external author**, then **stale body**, then **no linked PR**, then **oldest**. Age is the last tiebreak rather than the first because oldest-first is what a plain list already gives, and it is the ordering that keeps putting a destructive report behind three cosmetic fixes.
+
+#769 proposed a top tier above all of these — data-loss/destructive, driven by a label. It is not implemented, because the signal does not exist: this repo's label set is GitHub's defaults plus `security`, `audit`, `dependencies` and `github_actions`, and 2 of 33 open issues carry any label at all. A tier computed from a label nobody applies ranks nothing while reading as authoritative. Create and populate a `data-loss` label and it belongs at the top of `_rank_key`.
+
+### Unknown sorts first
+
+`authorAssociation`, the timeline and `lastEditedAt` are not in `gh issue list --json`; they come from one GraphQL call per 20 issues. A chunk that fails leaves the rows it covered unknown — `? unknown`, `?`, `[stale?]` — never `0`, never "internal", never "no PR". Those rows sort **first**, because any other position for a row whose rank inputs are unknown is invented, and the top is where the gap is visible to the person who can close it.
+
+The footer says how many rows are unknown, why, and that ranking has degraded to oldest-first — and it suppresses the counts those rows would falsify. `0 external` computed across unenriched rows reads as "nobody outside has filed anything", which is exactly the sentence this repo keeps having to un-print.
+
+`gh-issues:external` and `gh-issues:stale` **refuse** rather than filter over an unknown field. `No issues match.` is a claim, and it is the one a triage caller must not be told wrongly.
+
+### No default `author=@me`
+
+The filter grammar and row layout are shared with `gh-prs` ([#628](https://github.com/Digital-Process-Tools/claude-supertool/issues/628), `presets/_board.py`), but the defaults answer different questions. `gh-prs` means "my PRs"; `gh-issues` means "the queue". A default author filter here would hide the external reports the ranking exists to surface.
+
+### Why there is no `gl-issues` yet
+
+GitLab's issue payload carries `updated_at` and nothing else about the body, so the staleness signal has no GitLab equivalent; and it has no `authorAssociation`, so membership needs a per-author API call. A `gl-issues` today would ship with both flagship signals permanently `?` — the wrapper #769 argues earns nothing — and [#676](https://github.com/Digital-Process-Tools/claude-supertool/issues/676) also leaves it unable to target another repo, since `glab api` has no `--repo`.
 
 ## Targeting another repo
 
@@ -44,7 +94,7 @@ A leading `repo:OWNER/NAME` op supplies it:
 | Count | One per call |
 | Shape | `OWNER/NAME`, validated before anything runs |
 | Scope | The whole call. Two targets in one call is two calls |
-| Accepted by | `gh-pr`, `gh-prs`, `gh-issue`, `gh-run`, `gh-job` |
+| Accepted by | `gh-pr`, `gh-prs`, `gh-issue`, `gh-issues`, `gh-run`, `gh-job` |
 
 **Why a leading op and not a trailing `…:repo=OWNER/NAME` token.** The suffix grammar in this family is not free. `gh-job:ID:grep:PATTERN` takes an arbitrary regex in that position, so `gh-job:5:grep:repo=x` is a legitimate log search that a trailing-token scan would silently steal — and `gh-prs` already spells its filters `key=value` *inside one comma-separated token* (`gh-prs:author=@me,state=open`), so a second, colon-separated `key=` grammar would be two rules for one idea. A leading op also lands in one place in the dispatcher instead of in five presets' argument parsers.
 
