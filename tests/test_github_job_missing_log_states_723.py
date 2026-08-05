@@ -71,6 +71,11 @@ def _dispatching_run(
         url = args[2] if len(args) > 2 else ""
         if cmd == "api" and url.endswith("/logs"):
             return subprocess.CompletedProcess(args, log_rc, log_stdout, log_stderr)
+        if cmd == "api" and "/check-runs/" in url:
+            # #793: when both the job endpoint and the log 404, the op asks the
+            # checks API whether the id is a check run before it says the id
+            # names nothing. Absent here — this suite is about Actions jobs.
+            return subprocess.CompletedProcess(args, 1, "", NO_SUCH_JOB_STDERR)
         if cmd == "api" and "/actions/jobs/" in url:
             return subprocess.CompletedProcess(args, meta_rc, meta_json, meta_stderr)
         if cmd == "run" and url == "view":

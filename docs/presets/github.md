@@ -18,7 +18,8 @@ A GitHub-cloned cwd, **or** a `repo:OWNER/NAME` target — see [Targeting anothe
 | `gh-issues` | `gh-issues[:author=@me,label=bug,state=open,external,stale,nopipe,iids]` | Issue triage board, **ranked** rather than listed: unrankable → external author → stale body → no linked PR → oldest. Per issue: linked PRs read off the issue timeline, an external-filer marker from GitHub's `authorAssociation`, age, comment count, labels, and a `[stale]` flag when the newest comment is newer than the last time the body was written. Enrichment is one GraphQL call per 20 issues; when it fails the derived fields render `?` and the row sorts first — see [The issue board](#the-issue-board). No default `author=@me`, unlike `gh-prs` |
 | `gh-run` | `gh-run:NUMBER` | Workflow run job list with statuses and failed step names, under a header that sums it: `N total:` and every count after it sums back to N, so `2 cancelled` is named rather than dropped, and anything short of all-passed carries `⚠ NOT ALL GREEN`. GitHub's own run-level field stays visible as `(run-level field: queued)` but never leads — it is a run-lifecycle field, not a leg summary ([#789](https://github.com/Digital-Process-Tools/claude-supertool/issues/789), see [The header sums the table](#gh-runs-header-sums-the-table-beneath-it)). The `## Failed jobs` section below it names every **red** leg, not only the ones spelled `failure` — `timed_out`, `cancelled` and `action_required` are in it, with the state named per leg and a breakdown that reconciles against the header ([#803](https://github.com/Digital-Process-Tools/claude-supertool/issues/803), see [The failed-jobs section](#the-failed-jobs-section-is-every-red-leg-not-every-leg-spelled-failure)) |
 | `gh-job` | `gh-job:NUMBER[:raw[:-N\|:START[:END]]\|:grep:PATTERN]` | Job failure detail: PR context + error pattern search + log tail. `:raw` dumps the full trace; `:raw:START:END` slices lines (1-indexed, inclusive); `:raw:-N` returns the **last N lines**, and a START past the end returns the tail of the width requested with a line saying so rather than declining — see [Reading a range](gitlab.md#reading-a-range) ([#487](https://github.com/Digital-Process-Tools/claude-supertool/issues/487)); `:grep:PATTERN` runs an ad-hoc regex over the log (literal fallback on bad regex, ±context, names the pattern + tail on no-match — never silent-empty). Optional per-job `job_patterns` table in `.supertool.json` (see gitlab preset doc) maps job names to tighter patterns + a `resolution` op. Zero matches on a job GitHub calls `failure` prints `## FAILED — no error pattern matched` — patterns tried + a log tail, never silence. `## No error patterns matched` survives only for jobs that did not fail |
-| `repo:` prefix | `repo:OWNER/NAME` (leading op) | Points `gh-pr`, `gh-prs`, `gh-issue`, `gh-issues`, `gh-run`, `gh-job` at a repo other than the cwd's — see [Targeting another repo](#targeting-another-repo) |
+| `gh-check` | `gh-check:CHECK_RUN_ID` \| `gh-check:pr:NUMBER` | The **other** id namespace. A check run's status, output title/summary and its annotations — `path:line`, title, message, which for a scanning check (CodeQL, Dependabot, an external app) is the whole finding. Annotations are capped at `GH_CHECK_ANNOTATION_CAP` (default 5) with `+N more` in header **and** footer; a full `per_page=100` page is disclosed as a floor, not a total. Zero annotations on a non-passing check is never rendered as an all-clear, and a failed annotations fetch is never rendered as zero. `gh-check:pr:N` lists the check runs on PR N's head commit **with their ids**, because `gh-pr:N:status` names a non-Actions leg without one. Does not read the code-scanning API ([#793](https://github.com/Digital-Process-Tools/claude-supertool/issues/793), see [Two id namespaces](#two-id-namespaces-actions-jobs-and-check-runs)) |
+| `repo:` prefix | `repo:OWNER/NAME` (leading op) | Points `gh-pr`, `gh-prs`, `gh-issue`, `gh-issues`, `gh-run`, `gh-job`, `gh-check` at a repo other than the cwd's — see [Targeting another repo](#targeting-another-repo) |
 | `gh-follow` | `gh-follow:USERNAME` | Follow a GitHub user via the authenticated session |
 | `gh-following` | `gh-following[:N]` | List users you follow (default 30) |
 | `gh-batch-follow` | `gh-batch-follow:FILE` | Follow each username from a file (one per line, `#` comments). 1s delay between calls |
@@ -136,6 +137,45 @@ So the board declines rather than guesses. Rows print `?` instead of 👁 — an
 ```
 
 That clause is not decoration: it emits a command, and under a target that command would start polling *this* repo's `#N` while the board it came from was about another. An actionable suggestion that does the wrong thing is worse than no suggestion — and going quiet about it would read as "nothing needs watching". `ok`, a finding, and `skipped` are three different answers; see [Declining instead of guessing](../validators.md).
+
+## Two id namespaces: Actions jobs and check runs
+
+GitHub reports CI through two surfaces, and both hand out bare integers with nothing in the number to tell them apart ([#793](https://github.com/Digital-Process-Tools/claude-supertool/issues/793)):
+
+| Surface | Endpoint | Op | Who writes there |
+|---------|----------|----|------------------|
+| Actions job | `repos/{o}/{r}/actions/jobs/<id>` | `gh-job` | GitHub Actions workflows in this repo |
+| check run | `repos/{o}/{r}/check-runs/<id>` | `gh-check` | Any GitHub App: CodeQL default setup, Dependabot, code-scanning uploads, external CI |
+
+`gh-pr:792:status` printed `failed: CodeQL` and `gh-job:92205186236:fail` answered *"the job endpoint returned 404 for this ID too, so no such job exists in this repo. Check the ID."* The id existed. The op could not find it **by its own route** and published that as absence from the repo — and the advice it attached, "use `gh-run` to list jobs first", cannot work, because a check run is in no run's job list.
+
+**The two ops do not fall back into each other.** They are siblings. A 404 makes each one ask the other namespace **once**, and the answer only ever changes the error message — never which content gets rendered. An op printing `# Job #N` above a check run's body would be a probe that silently changed which API answered, which is a worse failure than the 404 it replaced. `gh-check` prints `Source: checks API (a check run, not an Actions job)` for the same reason: it can be handed either kind of id, so which one answered is part of the answer.
+
+**Three states, kept apart** (`docs/validators.md` §"Declining instead of guessing"):
+
+| What happened | What you get |
+|---------------|--------------|
+| The other namespace has it | `No Actions job #N — but a check run with that id does exist (CodeQL) … ./supertool 'gh-check:N'` |
+| Both returned 404 | `both returned 404 … Check the ID` — the only case where blaming the id is true |
+| The probe did not answer | `whether it is a check run instead is UNKNOWN — the checks API did not answer: <error>` — declined, not guessed |
+
+**Getting from a name to an id.** The check-run id rides on `detailsUrl` only for Actions legs, so `gh-pr:N:status` names a non-Actions leg with no id beside it. `gh-check:pr:N` closes that gap — it reads the PR's head SHA and lists the check runs attached to it, ids included:
+
+```bash
+./supertool 'gh-check:pr:792'
+# Check runs on PR #792 — head commit 4f0c…
+2 check runs on the head commit.
+  ✗ failure      CodeQL  #92205186236
+  ✓ success      tests   #92205186111
+
+./supertool 'gh-check:92205186236'
+```
+
+An empty list there says *0 check runs are attached to the head commit `<sha>`* and names the merge ref as something it did not read — not "no checks".
+
+**Zero annotations is not an all-clear, and neither is a failed fetch.** On a check whose conclusion is not `success`, an empty annotation list prints the conclusion and says the detail may live in the output summary or in a system this op does not read. If the annotations call itself fails, the op exits 1 saying whether anything was flagged is UNKNOWN — it never renders that as zero.
+
+**This family does not read the code-scanning API.** In the incident that filed #793, `code-scanning/alerts?ref=refs/pull/792/merge` came back **empty** while the finding sat in an annotation. That emptiness means "not the endpoint that knows" and reads as "no alerts on this PR", so nothing here can render it.
 
 ## Common workflows
 

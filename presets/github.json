@@ -59,6 +59,14 @@
       "error_patterns": "ERROR,FAILED,Error:,Failed,fatal:,##[error]",
       "error_context": 5
     },
+    "gh-check": {
+      "cmd": "{python} {path}github/check.py {args}",
+      "timeout": 30,
+      "description": "What did this check run say? The *other* id namespace: CodeQL, Dependabot, code-scanning uploads and external CI report through the checks API, not through Actions, so gh-job 404s on their ids. gh-check:ID prints the check run's status, output title/summary and its annotations — path:line, title, message, which for a scanning check is the whole finding — capped at GH_CHECK_ANNOTATION_CAP (default 5) with a '+N more' disclosure in header AND footer. Zero annotations on a non-passing check is never rendered as an all-clear, and a failed annotations fetch is never rendered as zero. gh-check:pr:N lists the check runs on PR N's head commit with their ids, because gh-pr:N:status names a non-Actions leg without one. A 404 probes the Actions namespace and, when the id is a job, says so and names gh-job — the probe only ever changes the message, never which content is rendered. Does not read the code-scanning API.",
+      "syntax": "gh-check:CHECK_RUN_ID | gh-check:pr:NUMBER",
+      "example": "gh-check:92205186236",
+      "repo_target": true
+    },
     "gh-follow": {
       "cmd": "{python} {path}github/follow.py {arg}",
       "timeout": 10,
