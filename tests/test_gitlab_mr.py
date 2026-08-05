@@ -569,10 +569,20 @@ def test_main_full_mode_empty_sections_always_printed(monkeypatch, capsys) -> No
         assignees=[],
         created_at="2026-05-08T10:00:00.000Z",
     )
-    monkeypatch.setattr(
-        mr.subprocess, "run",
-        lambda *a, **kw: _fake_run(payload, returncode=0),
-    )
+    # The blanket stub used elsewhere in this file answers *every* endpoint
+    # with the MR object, including `notes`, which is documented as an array.
+    # `## Comments (0)` used to print from that — a count computed from a
+    # payload the code had already rejected as unreadable, which is the #812
+    # defect rather than the empty-section behaviour this test is about. The
+    # notes endpoint answers realistically here so the assertion means what it
+    # says: zero comments, verified.
+    def _run(cmd, *a, **kw):
+        argv = list(cmd)
+        if argv and argv[0] == "glab" and "api" in argv:
+            return _fake_run("[]", returncode=0)
+        return _fake_run(payload, returncode=0)
+
+    monkeypatch.setattr(mr.subprocess, "run", _run)
     monkeypatch.setattr(sys, "argv", ["mr.py", "20881"])
     rc = mr.main()
     out = capsys.readouterr().out
