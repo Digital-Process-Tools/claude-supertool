@@ -53,7 +53,9 @@ File reading and directory listing ops. Reach for these when you know the path a
 
 Scala, lua and bash are thin samples — the per-file guard below is what protects them, not the median.
 
-**C# is in the language table and does not currently produce a map.** `.cs` maps to the grammar name `c_sharp`, which `tree-sitter-language-pack` does not answer to (it calls it `csharp`), so every `.cs` file yields zero symbols — in `map` and `between:` as well as here. The guard below catches it: a `.cs` read falls back to source with the reason stated, rather than returning an empty map.
+**C# was in the language table and did not produce a map — fixed in [#790](https://github.com/Digital-Process-Tools/claude-supertool/issues/790).** `.cs` mapped to the grammar name `c_sharp`, the name the older `tree-sitter-languages` package used; the installed `tree-sitter-language-pack` calls it `csharp` and raised `LookupError`, which a bare `except` swallowed into an empty symbol list — indistinguishable from a file with genuinely no definitions. Every `.cs` file yielded zero symbols in `map` and `between:` as well as here, on 20 of 20 real files in the corpus below.
+
+Grammar resolution now tries both spellings (`_ts_get_parser` in `supertool.py`) before giving up, so C# produces real maps again. A grammar that still can't be loaded — for C# or any other language — no longer degrades silently: the failure is cached and surfaces as an explicit note (`grammar unavailable for .ext: <reason>`) in `map`, and as a distinct `ERROR: tree-sitter grammar for '.ext' failed to load` in `between:`, rather than either reading as "this file has no symbols".
 
 **Two ways it declines.** A symbol map that is empty, or one that is no smaller than the bytes this read would otherwise emit, is a worse answer than the source. Either way the read returns the source and prints which happened — an absence produced by the tool must never read as an absence in the world (see [validators.md](../validators.md#declining-instead-of-guessing)):
 
@@ -63,7 +65,7 @@ Scala, lua and bash are thin samples — the per-file guard below is what protec
 [abstract read skipped — symbol map for gen.cpp (cpp) is 37412 bytes, not smaller than the 20000 bytes this read emits; showing raw source]
 ```
 
-Across the corpus above, 29 of 263 files declined — 20 of them C#.
+Across the corpus above, 29 of 263 files declined — 20 of them C#, before #790. With the grammar fix, those 20 now produce maps like every other language; the corpus has not been re-measured for C#'s row in the table above, so its median/worst columns are not yet in it.
 
 A successful abstract read is labelled, and says how to get the source anyway:
 
