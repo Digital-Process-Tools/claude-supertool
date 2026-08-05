@@ -357,7 +357,7 @@ def test_end_to_end_script_lists_both_trees(repo_with_worktree) -> None:
                          capture_output=True, text=True, timeout=60)
     assert res.returncode == 0, res.stdout + res.stderr
     assert "git-worktrees" in res.stdout
-    assert str(tree) in res.stdout
+    assert Path(tree).as_posix() in res.stdout.replace(chr(92), "/")
     assert "feat" in res.stdout
 
 
