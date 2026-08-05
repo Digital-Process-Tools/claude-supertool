@@ -278,6 +278,23 @@ def _row_note(row: dict[str, Any]) -> str:
     return "; ".join(notes)
 
 
+def _scan_unavailable_reason() -> str:
+    """Which kind of unavailable this is — the platform's, or this run's.
+
+    `watches` is the surface where someone is asking about the fleet on
+    purpose, so it is where the permanent version belongs. radar's board
+    carries only the one that is news (see `reap_duplicate_pollers`).
+    """
+    if not transport.ps_scan_supported():
+        return ("There is no `ps` on this platform, so an untracked or "
+                "duplicate poller can never be seen here and `radar` cannot "
+                "reap one. That is permanent, which is why radar does not "
+                "repeat it on every run — this line is the disclosure.")
+    return ("The scan could not be read this time, though `ps` is present. "
+            "Run it again; if it keeps failing, nothing is watching for "
+            "duplicate pollers.")
+
+
 def cmd_list() -> int:
     """The authoritative view of the watcher fleet.
 
@@ -294,6 +311,7 @@ def cmd_list() -> int:
         if not scan_ok:
             print("No watchers by PID file — and the process scan was "
                   "unavailable, so an untracked poller could not be ruled out.")
+            print(_scan_unavailable_reason())
             return 0
         print("No active watchers. None recorded as lost either.")
         return 0
@@ -354,6 +372,7 @@ def cmd_list() -> int:
         print()
         print("Process scan unavailable — only pidfile-tracked pollers are "
               "listed here; untracked ones were not checked.")
+        print(_scan_unavailable_reason())
     return 0
 
 
@@ -409,6 +428,17 @@ def reap_duplicate_pollers() -> list[str]:
     """
     found, scan_ok = transport.scan_poller_pids()
     if not scan_ok:
+        if not transport.ps_scan_supported():
+            # A platform with no `ps` fails this scan on every run, forever. A
+            # line that prints unconditionally is not disclosure, it is
+            # furniture: a reader learns to skim it, and then it cannot do its
+            # job on the machine where `ps` was there and genuinely did not
+            # answer. The absence is permanent, so it is stated where someone
+            # asks about the fleet on purpose — `watches`, and the docs — and
+            # not on every board. Nothing is hidden that was ever knowable
+            # here: no scan means no duplicate was ever visible on this
+            # machine, with or without this line.
+            return []
         return ["radar: reap skipped — the process scan was unavailable, so a "
                 "duplicate poller could not be ruled out. Nothing was stopped, "
                 "and an id may be emitting every event more than once."]

@@ -71,6 +71,12 @@ def fleet(tmp_path, monkeypatch):
         return why
 
     monkeypatch.setattr(dispatcher, "_stop_pid", _fake_stop)
+    # Default: a platform that *has* `ps`, so a failed scan is a failure rather
+    # than a capability that was never there. The platform case is patched
+    # explicitly by the tests that are about it.
+    state["real_ps_scan_supported"] = transport.ps_scan_supported
+    monkeypatch.setattr(transport, "ps_scan_supported", lambda: state["ps"])
+    state["ps"] = True
     state["dir"] = tmp_path
     state["monkeypatch"] = monkeypatch
     return state
@@ -225,6 +231,86 @@ def test_reap_declines_when_the_process_scan_is_unavailable(fleet):
     assert "skipped" in lines[0]
 
 
+def test_a_platform_that_cannot_scan_at_all_does_not_say_so_every_run(fleet):
+    """Windows has no `ps`, so `scan_ok` is False on every run, forever.
+
+    A line that prints unconditionally on a whole platform is not disclosure,
+    it is furniture: readers learn to skim it, and then it cannot do its job on
+    the machine where the scan *could* have worked and genuinely did not. The
+    absence is stated where a user asks about the fleet on purpose — `watches`,
+    tested below — not on every radar board.
+    """
+    _slot(fleet, "gitlab-mr", "33311", [101, 102], tracked=101)
+    fleet["scan_ok"] = False
+    fleet["ps"] = False
+
+    lines = dispatcher.reap_duplicate_pollers()
+
+    assert lines == []
+    assert fleet["killed"] == []
+
+
+def test_a_scan_that_failed_where_ps_exists_still_declines_loudly(fleet):
+    """The distinction is capability, not message-matching: `ps` is here and
+    did not answer, which is news every single time."""
+    _slot(fleet, "gitlab-mr", "33311", [101, 102], tracked=101)
+    fleet["scan_ok"] = False
+    fleet["ps"] = True
+
+    lines = dispatcher.reap_duplicate_pollers()
+
+    assert len(lines) == 1 and "skipped" in lines[0]
+    assert fleet["killed"] == []
+
+
+def test_ps_support_is_decided_by_looking_for_the_binary(fleet):
+    """Not by platform name, and not by parsing a failure message."""
+    real = fleet["real_ps_scan_supported"]
+
+    fleet["monkeypatch"].setattr(transport.shutil, "which", lambda name: None)
+    assert real() is False
+
+    fleet["monkeypatch"].setattr(transport.shutil, "which", lambda name: "/bin/ps")
+    assert real() is True
+
+
+def test_watches_says_the_platform_can_never_scan(fleet, capsys):
+    """The deliberate surface carries the permanent absence.
+
+    Someone running `watches` is asking about the fleet; that is where "this
+    machine can never see an untracked poller" belongs, and it is where a
+    Windows user already gets told the scan did not run.
+    """
+    fleet["ps"] = False
+    fleet["monkeypatch"].setattr(
+        transport, "list_watchers",
+        lambda: ([{"source": "gitlab-mr", "id": "33311", "pid": 101, "pids": [101],
+                   "extra": [], "orphan": False, "dead": False, "deaths": [],
+                   "started": "", "last_event": ""}], False))
+
+    dispatcher.cmd_list()
+    out = capsys.readouterr().out
+
+    assert "`ps`" in out
+    assert "radar" in out
+
+
+def test_watches_says_a_present_ps_failed_this_time(fleet, capsys):
+    fleet["ps"] = True
+    fleet["monkeypatch"].setattr(
+        transport, "list_watchers",
+        lambda: ([{"source": "gitlab-mr", "id": "33311", "pid": 101, "pids": [101],
+                   "extra": [], "orphan": False, "dead": False, "deaths": [],
+                   "started": "", "last_event": ""}], False))
+
+    dispatcher.cmd_list()
+    out = capsys.readouterr().out
+
+    assert "this time" in out
+    assert "no `ps` on this platform" not in out
+    assert "radar cannot" not in out
+
+
 def test_a_clean_fleet_is_silent(fleet):
     _slot(fleet, "gitlab-mr", "33311", [101], tracked=101)
     _slot(fleet, "gitlab-mr", "33312", [201], tracked=201)
@@ -294,6 +380,19 @@ def test_radar_prints_the_reap_decline(radar_env, capsys):
     out = capsys.readouterr().out
 
     assert "skipped" in out
+    assert radar_env["killed"] == []
+
+
+def test_radar_is_silent_where_the_platform_cannot_scan(radar_env, capsys):
+    """The four pre-existing exact-output tests in test_watch_radar.py are the
+    ones that caught this: on Windows they saw the decline on every board."""
+    _slot(radar_env, "gitlab-mr", "33311", [101, 102], tracked=101)
+    radar_env["scan_ok"] = False
+    radar_env["ps"] = False
+
+    radar.main([])
+
+    assert capsys.readouterr().out == ""
     assert radar_env["killed"] == []
 
 

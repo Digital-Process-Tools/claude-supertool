@@ -511,6 +511,25 @@ def _ps_rows() -> list[tuple[int, list[str]]] | None:
     return rows
 
 
+def ps_scan_supported() -> bool:
+    """Can a process scan ever answer on this machine?
+
+    False means *permanently* no — there is no `ps` here at all, which is the
+    normal case on Windows. Distinct from `scan_ok=False`, which means one
+    particular scan did not answer: a `ps` that exists and timed out, exited
+    non-zero, or could not be spawned is news; a `ps` that was never there is a
+    property of the platform and cannot be news twice.
+
+    Decided by looking for the binary, at the point where it would be run —
+    not by platform name, and not by matching a failure message. Same shape as
+    `docs/validators.md` §"Declining instead of guessing" makes at the raise
+    site: everything that happens *after* a real `ps` is found stays a loud
+    failure, because guessing towards silence there is how a genuinely broken
+    scan starts looking clean.
+    """
+    return shutil.which("ps") is not None
+
+
 def _labelled(tokens: list[str]) -> tuple[str, str] | None:
     """The (source, id) an argv announces, or None when it announces nothing.
 

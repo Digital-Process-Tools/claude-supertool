@@ -945,7 +945,8 @@ So the reap acts only on what a PID proves about itself:
 | A slot with **2+ labelled pollers** | all but one stopped, each named | Their own argv names the same slot as whole tokens, so they are duplicates *of each other* — stopping all but one provably leaves the slot covered. |
 | A slot with **one** poller, tracked or orphan | untouched | A lone orphan is the only thing polling that slot. Killing it trades a duplicate nobody has for a blind spot, which is the trade [#513](https://github.com/Digital-Process-Tools/claude-supertool/issues/513) says is the wrong way round. |
 | A poller **from before the labelling** | untouched, and invisible | It wears its parent's argv; nothing can tell it from the process that forked it. `pkill -f 'presets/watch/'` once — that call is an operator's, not the tool's. |
-| **Any**, when `ps` could not be read | untouched, and said out loud | See the decline below. |
+| **Any**, when a present `ps` did not answer | untouched, and said out loud, every time | See the decline below. |
+| **Any**, on a platform with no `ps` at all | untouched, and said by `watches` instead | The scan can never answer here, so the board would carry the same line forever. See below. |
 
 The survivor is the pidfile's PID when it is among the live ones, so the slot keeps the poller `watches` and `unwatch` already name. Otherwise it is the lowest PID — arbitrary, but *stable*, since the pollers on one slot are interchangeable and a survivor that changed every run would be.
 
@@ -956,6 +957,26 @@ radar: reap skipped — the process scan was unavailable, so a duplicate poller 
 ```
 
 A reaper that cannot see the fleet and prints nothing renders byte-identically to one that looked and found it clean — this repository's recurring defect (`docs/validators.md` §"Declining instead of guessing") with a body count attached. A PID that refuses to die is named the same way, with the `unwatch` that reaches it; it is never swallowed, and it never costs the rest of the sweep.
+
+#### "Could not this time" and "can never here" are different, and only one of them is news
+
+**On Windows there is no `ps`, so the scan fails on every run, forever.** The decline above would print on every board a Windows user ever sees. That is not disclosure — it is furniture. A reader learns to skim a line that is always there, and the skimming is what costs them the day the line means something, on the machine where `ps` *was* present and genuinely did not answer. A permanent entry in a list is how a real entry later goes unread.
+
+So the reap asks a second question before declining, and asks it the way `docs/validators.md` §"Declining instead of guessing" makes the same call — **at the point where the tool would be run, not by matching a failure message**:
+
+| | `transport.ps_scan_supported()` | radar's board | `watches` |
+|---|---|---|---|
+| `ps` present, scan failed | `True` | declines out loud, every run | says the scan failed this time |
+| no `ps` on this platform | `False` | silent | says it is permanent, and that radar cannot reap here |
+
+Nothing knowable is hidden by that silence: on a machine with no `ps` no duplicate poller was ever visible, with or without the line. What changes is *where* the absence is stated — on the surface someone reads on purpose rather than on every board. `watches` already told a Windows user its scan did not run; it now also says why, and that the reap is off:
+
+```
+Process scan unavailable — only pidfile-tracked pollers are listed here; untracked ones were not checked.
+There is no `ps` on this platform, so an untracked or duplicate poller can never be seen here and `radar` cannot reap one. That is permanent, which is why radar does not repeat it on every run — this line is the disclosure.
+```
+
+Everything after a real `ps` is found stays loud. A `ps` that exists and times out, exits non-zero, or cannot be spawned is a failure, and guessing towards silence there is how a genuinely broken scan starts looking clean.
 
 A slot whose pidfile names a dead PID while an orphan still polls it converges in two runs rather than one: this run reaps nothing (one live poller), then heals — spawning a second — and the next run reaps the older of the two. Both cover the same slot, so the intermediate state duplicates one slot for one tick and no slot goes uncovered.
 
