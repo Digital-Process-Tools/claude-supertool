@@ -5362,8 +5362,10 @@ def _sh_backslash_warning(path: str, content: str) -> str:
     return (
         f"{mark('⚠')} {path}: a line ends with `\\\\`. In bash that is an "
         f"escaped backslash, not a line continuation — it parses cleanly and "
-        f"runs differently. TOML literal strings ('''...''') preserve "
-        f"backslashes verbatim, so `\\\\` in a payload stays two.\n"
+        f"runs differently. This is a note and not a refusal: these bytes "
+        f"have no second spelling here, so blocking them would strand the "
+        f"caller who meant them. A literal payload block refuses the same "
+        f"pattern, because there a second spelling exists (#835).\n"
     )
 
 
@@ -14621,6 +14623,115 @@ def _toml_literal_backslash_refusal(raw: str) -> str:
     return ""
 
 
+def _eol_backslash_pair(text: str) -> Optional[Tuple[str, int]]:
+    r"""First line in *text* ending with an even run of backslashes, if any.
+
+    Returns `(line without the run, run length)`. Even is the whole point: bash
+    consumes backslashes pairwise from the left, so an even run is all escaped
+    backslashes and the line genuinely ends -- an odd run leaves one over and is
+    the continuation the caller thought they were writing. A run followed by
+    whitespace is skipped here and left to `_sh_backslash_warning`; see
+    `_payload_sh_eol_backslash_refusal` for why the two halves part company.
+    """
+    for m in _TRAILING_BACKSLASH_RUN.finditer(text):
+        if m.group(2) or len(m.group(1)) % 2:
+            continue
+        start = text.rfind(chr(10), 0, m.start()) + 1
+        return text[start:m.start()], len(m.group(1))
+    return None
+
+
+def _sh_eol_backslash_message(line: str, run: int) -> str:
+    """Name both spellings the refused end-of-line backslashes could have meant."""
+    q = chr(39) * 3
+    bs = chr(92)
+    arrow = mark("↳")
+    tail = line[-_TOML_LITERAL_TAIL_CHARS:]
+    lead = "…" if len(line) > len(tail) else ""
+    return (
+        "a " + q + " literal block writes a shell file whose line ends with "
+        + str(run) + " backslashes. In a literal block a backslash is content, "
+        "never an escape, so all " + str(run) + " reach the file — and in bash "
+        "an even run at end of line is an escaped backslash, not a line "
+        "continuation. It parses cleanly, `bash -n` and `bash-check` agree, and "
+        "the script runs differently." + chr(10)
+        + "  " + arrow + " to continue the line, write ONE backslash — a literal "
+        "block does not eat it:" + chr(10)
+        + "      " + lead + tail + bs + chr(10)
+        + "  " + arrow + " to write " + str(run) + " literal backslashes, say so "
+        "in a basic block, where each doubles:" + chr(10)
+        + "      " + chr(34) * 3 + lead + tail + bs * (run * 2) + chr(34) * 3
+        + chr(10)
+    )
+
+
+def _payload_dicts(node: Any) -> List[Dict[str, Any]]:
+    """Every mapping in a parsed payload -- the op itself, or each `[[ops]]`."""
+    found: List[Dict[str, Any]] = []
+    if isinstance(node, dict):
+        found.append(node)
+        for value in node.values():
+            found.extend(_payload_dicts(value))
+    elif isinstance(node, list):
+        for value in node:
+            found.extend(_payload_dicts(value))
+    return found
+
+
+def _payload_sh_eol_backslash_refusal(parsed: Any, raw: str) -> str:
+    r"""Refuse a literal block that ends a shell line with `\\` (#835).
+
+    `_sh_backslash_warning` (#380) already reads this pattern out of the bytes
+    on their way to disk, and warns. The warning is right, and the write went
+    through anyway -- which is the issue: a guard that is certain should stop
+    the write, a guard that is heuristic should warn, and mixing the two in one
+    channel costs the certain ones their authority.
+
+    The severity is not decided by how certain the pattern is. It is decided by
+    #834's rule -- refuse when every intent behind it has another spelling, warn
+    when refusing would strand one -- and that rule splits this guard rather
+    than promoting it whole:
+
+    * From a triple-single-quoted literal payload block the two backslashes are
+      **ambiguous**, and both readings have another spelling. Meant one,
+      expecting TOML to eat the other? A literal block eats nothing: write one.
+      Meant two? Say it in a basic block, where a wanted pair is spelled with
+      four. Refusing leaves nothing unwritable, so it refuses -- at parse time,
+      before any op of a batch has run.
+
+    * At the write chokepoint there is no second spelling at all. A block there
+      reads whole-file content, so one deliberate `echo \\` on line 400 would
+      make every later edit to that script impossible, and no payload field
+      fixes that for the colon CLI, which has no fields. That is the
+      intent-stranding the rule forbids, so `_sh_backslash_warning` stays a
+      warning for every other route into the same bytes.
+
+    The issue proposed `allow_literal_backslash = true`. It is not built: the
+    basic block is the opt-out, it already exists, and it says *which* of the
+    two intents was meant rather than merely silencing the question.
+
+    Provenance is read off `raw` rather than threaded through the parser. A
+    value carrying two backslashes appears in its own source verbatim only if it
+    came from a literal block -- a basic block spells the same pair with four,
+    so the parsed value is not a substring of the source it was parsed from.
+
+    The backslash-then-whitespace half of #380 is deliberately not refused: a
+    basic block writes an escaped space exactly as a literal one does, so that
+    reading has no second spelling to be sent to.
+    """
+    for item in _payload_dicts(parsed):
+        path = item.get("path")
+        if not isinstance(path, str) or not path.endswith(_SH_SUFFIXES):
+            continue
+        for key, value in item.items():
+            if key in ("path", "op") or not isinstance(value, str):
+                continue
+            found = _eol_backslash_pair(value)
+            if found and value in raw:
+                return _sh_eol_backslash_message(*found)
+    return ""
+
+
 def _load_at_file(ref: str) -> Any:
     """Load JSON or TOML from an @file reference.
 
@@ -14684,6 +14795,9 @@ def _load_at_file(ref: str) -> Any:
             f"@file TOML parse error ({source}): {_e}{_toml_delimiter_hint(raw)}"
         ) from _e
     refusal = _toml_literal_backslash_refusal(raw)
+    if refusal:
+        raise ValueError(f"@file payload refused ({source}): {refusal}")
+    refusal = _payload_sh_eol_backslash_refusal(parsed, raw)
     if refusal:
         raise ValueError(f"@file payload refused ({source}): {refusal}")
     return parsed

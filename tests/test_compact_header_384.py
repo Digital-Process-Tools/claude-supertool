@@ -167,14 +167,20 @@ def test_compact_header_helper_returns_empty_for_unknown_op() -> None:
 # ---------------------------------------------------------------------------
 
 def test_trailing_double_backslash_in_sh_is_flagged(tmp_path: Path) -> None:
-    """`bash -n` accepts it and it runs differently — only the bytes show it."""
+    """`bash -n` accepts it and it runs differently — only the bytes show it.
+
+    Driven from the colon CLI since #835: out of a `'''literal'''` payload
+    block the same bytes are now *refused* rather than warned about, because
+    there both readings have another spelling. Every other route into them —
+    this one included — still gets the warning, and that is what is pinned
+    here. `tests/test_payload_sh_eol_backslash_835.py` holds the other half.
+    """
     f = tmp_path / "deploy.sh"
-    payload = tmp_path / "p.toml"
-    payload.write_text(
-        f'path = "{f.as_posix()}"\n'
-        "content = '''FOO=$(cmd \\\\\n    --arg)\n'''\n"
-    )
-    out = supertool.dispatch(f"paste:@{payload}")
+    # Eight in the source, four in the argument, two on disk: the colon CLI
+    # halves a backslash run on its way through. That is the whole reason the
+    # payload route is where the ambiguity of #835 lives — a literal block
+    # halves nothing, so what the caller typed is what the file gets.
+    out = supertool.dispatch(f"paste:::{f}:::FOO=$(cmd \\\\\\\\\n    --arg)\n")
     assert "a line ends with" in out
     assert "escaped backslash, not a line continuation" in out
 
@@ -206,12 +212,9 @@ def test_double_backslash_outside_a_shell_script_is_not_flagged(tmp_path: Path) 
 def test_warning_does_not_leak_into_the_next_op(tmp_path: Path) -> None:
     """The queue is drained per dispatch, not accumulated for the process."""
     sh = tmp_path / "deploy.sh"
-    payload = tmp_path / "p.toml"
-    payload.write_text(
-        f'path = "{sh.as_posix()}"\n'
-        "content = '''FOO=$(cmd \\\\\n    --arg)\n'''\n"
+    assert "a line ends with" in supertool.dispatch(
+        f"paste:::{sh}:::FOO=$(cmd \\\\\\\\\n    --arg)\n"
     )
-    assert "a line ends with" in supertool.dispatch(f"paste:@{payload}")
     other = tmp_path / "y.py"
     out = supertool.dispatch(f"paste:::{other}:::x = 1")
     assert "a line ends with" not in out
