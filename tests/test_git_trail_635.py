@@ -71,7 +71,7 @@ def _run(
         if res.returncode == 0 or not _UNREADABLE_OBJECT_RE.search(res.stdout):
             break
         time.sleep(0.2 * (attempt + 1))
-    assert res.returncode == 0, res.stdout
+    assert res.returncode == 0, f"stdout:{chr(10)}{res.stdout}{chr(10)}stderr:{chr(10)}{res.stderr}"
     return res.stdout
 
 
@@ -149,17 +149,19 @@ def test_run_retries_past_a_transient_unreadable_object(
             return subprocess.CompletedProcess(
                 cmd, returncode=1,
                 stdout="ERROR: git failed searching for %r: fatal: unable "
-                       "to read %s\\n" % (TOKEN, "a" * 40),
+                       "to read %s" % (TOKEN, "a" * 40) + chr(10),
                 stderr="",
             )
-        return subprocess.CompletedProcess(cmd, returncode=0, stdout="ok\\n", stderr="")
+        return subprocess.CompletedProcess(
+            cmd, returncode=0, stdout="ok" + chr(10), stderr=""
+        )
 
     monkeypatch.setattr(subprocess, "run", _fake_run)
     monkeypatch.setattr(time, "sleep", lambda _s: None)
 
     out = _run(tmp_path, TOKEN)
 
-    assert out == "ok\\n"
+    assert out == "ok" + chr(10)
     assert len(calls) == 2, "expected exactly one retry, not a retry loop"
 
 
@@ -173,7 +175,7 @@ def test_run_does_not_retry_an_unrelated_failure(
         calls.append(cmd)
         return subprocess.CompletedProcess(
             cmd, returncode=1,
-            stdout="ERROR: not inside a git repository.\\n", stderr="",
+            stdout="ERROR: not inside a git repository." + chr(10), stderr="",
         )
 
     monkeypatch.setattr(subprocess, "run", _fake_run)
