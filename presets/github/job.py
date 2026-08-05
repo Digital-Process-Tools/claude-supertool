@@ -91,6 +91,79 @@ def _format_error(stderr: str, resource: str, identifier: str) -> str:
     return f"ERROR: gh failed for {resource} #{identifier}: {stderr.strip()}"
 
 
+def _probe_check_run(job_id: str) -> tuple[str, str, str]:
+    """Ask the *checks* namespace about an id the Actions namespace disowned.
+
+    Returns `(state, name, error)` where state is `found` / `absent` /
+    `unknown`. Called from exactly one place — the path where both the job
+    endpoint and the log endpoint have already 404'd — so it costs **no extra
+    request on any path that was working**, including the happy one. That is
+    the same trade #723 made for the metadata call it reused.
+
+    It exists to fix a message, never to produce an answer. CodeQL, Dependabot
+    and every other GitHub App reports through `check-runs/<id>`, and this op
+    reading one and rendering it under a `# Job #N` header would be a probe
+    that silently changes which API answered — the surface `gh-check` exists
+    to keep honest. So the caller gets a sentence and an op to run, and
+    `gh-job` still exits 1 having read no job.
+    """
+    try:
+        r = subprocess.run(
+            ["gh", "api", _api_repo_path(f"check-runs/{job_id}")],
+            capture_output=True, text=True, timeout=10, encoding="utf-8",
+            errors="replace",
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
+        return ("unknown", "", f"{type(exc).__name__}: {exc}")
+    if r.returncode != 0:
+        if _gh_error_kind(r.stderr) == "notfound":
+            return ("absent", "", "")
+        return ("unknown", "", r.stderr.strip() or f"gh exited {r.returncode}")
+    try:
+        data = json.loads(r.stdout or "null")
+    except (json.JSONDecodeError, ValueError) as exc:
+        return ("unknown", "", f"checks API returned unparseable JSON: {exc}")
+    name = str(data.get("name") or "?") if isinstance(data, dict) else "?"
+    return ("found", name, "")
+
+
+def _absent_job_message(job_id: str, check: tuple[str, str, str]) -> str:
+    """The 404-on-both-endpoints case, split by what the checks API said.
+
+    Before #793 this said "no such job exists in this repo. Check the ID." for
+    all three of these. For a CodeQL check run that sentence is simply false —
+    the id exists, one namespace over — and it is this repo's own defect class
+    landing in its own error path: could-not-find-it-by-my-route published as
+    absent-from-the-world (#672).
+    """
+    state, name, error = check
+    if state == "found":
+        return (
+            f"ERROR: No Actions job #{job_id} — but a **check run** with that "
+            f"id does exist ({name}). CodeQL, Dependabot and any other GitHub "
+            f"App report through the checks API, which is a separate id space "
+            f"from Actions jobs, and this op reads only the Actions one. The "
+            f"id is right; the op is not. Read it — including the annotations "
+            f"where a scanning check keeps its finding — with: "
+            f"./supertool 'gh-check:{job_id}'"
+        )
+    if state == "absent":
+        return (
+            f"ERROR: Job #{job_id} not found — the Actions job endpoint and "
+            f"the checks API both returned 404 for this ID, so it names "
+            f"neither an Actions job nor a check run in this repo. Check the "
+            f"ID. Use gh-run to list jobs first, then gh-job with the job ID; "
+            f"for a check like CodeQL use ./supertool 'gh-check:pr:NUMBER'."
+        )
+    return (
+        f"ERROR: No Actions job #{job_id}, and whether it is a **check run** "
+        f"instead is UNKNOWN — the checks API did not answer: {error}. "
+        f"A wrong id and a CodeQL/Dependabot-style check run are both still "
+        f"possible; this op is not guessing between them. Retry, or read the "
+        f"other namespace directly with: ./supertool 'gh-check:{job_id}'"
+    )
+
+
 def _missing_log_message(
     job_id: str, meta: dict | None, meta_absent: bool, meta_error: str
 ) -> str:
@@ -113,6 +186,11 @@ def _missing_log_message(
     The cancelled row is the one that saves real time: it is the only state
     whose right response is to stop looking rather than to retry.
 
+    The both-endpoints-404 row grew a second question in #793: an id can be a
+    **check run** rather than an Actions job, and saying "no such job exists"
+    of one that does is the defect this op is meant to be free of. See
+    `_absent_job_message`.
+
     When the job endpoint itself did not answer, there is nothing to decide
     from. That is the third state and it declines, rather than picking the
     likeliest of four (`docs/validators.md`, "Declining instead of
@@ -121,12 +199,7 @@ def _missing_log_message(
     """
     if meta is None:
         if meta_absent:
-            return (
-                f"ERROR: Job #{job_id} not found — the job endpoint returned "
-                f"404 for this ID too, so no such job exists in this repo. "
-                f"Check the ID. Use gh-run to list jobs first, then gh-job "
-                f"with the job ID."
-            )
+            return _absent_job_message(job_id, _probe_check_run(job_id))
         state_path = _api_repo_path("actions/jobs/" + str(job_id))
         return (
             f"ERROR: Job #{job_id} has no log (HTTP 404), and supertool "
