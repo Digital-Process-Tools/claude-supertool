@@ -194,6 +194,18 @@ backslash is the detectable mistake, and it is a **refusal** rather than a warni
 for one reason — both readings of it have another spelling, so refusing leaves
 nothing unwritable. See `docs/validators.md`, "Declining instead of guessing".
 
+The same reasoning reaches one line up. A literal block writing a **shell file** whose
+line ends with `\\` is refused too
+([#835](https://github.com/Digital-Process-Tools/claude-supertool/issues/835)): the
+block preserves both backslashes, and in bash an even run at end of line is an escaped
+backslash rather than a line continuation, so the script parses and runs differently.
+Both intents have a spelling — write **one** backslash to continue the line (a literal
+block will not eat it), or spell the pair in a `"""basic"""` block, where each doubles
+to four. No `allow_literal_backslash` field exists, deliberately: the basic block is
+the opt-out, and it says *which* intent was meant instead of only silencing the
+question. Outside a literal block the same bytes are a **warning** and still write —
+there the caller has no second spelling, and refusing would strand them.
+
 The same run rule applies to `"""` blocks, and both parsers now agree about it: the
 fallback used for Python <3.11 closed at the first three quotes and choked on the
 surplus, so the spelling this section recommends parsed on 3.11+ and failed below
