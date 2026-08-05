@@ -62,6 +62,35 @@ count is one that gets turned off. The banner is one line and states the
 convention once; each block costs an open and a close. One-line fields (titles,
 logins, labels) are not fenced at all — they are flattened, which removes the
 only thing a single line could do, namely make more lines.
+
+**A newline was never the only way to make a line (#851).** For two years the
+flattening here split on ``\\n`` and replaced ``\\r``, and the module said that
+kept a field to one line. It did not. ``\\x0b`` (VT) and ``\\x0c`` (FF) move the
+cursor down on every terminal emulator in normal use; ``\\x85`` is NEL, a line
+break in the C1 set; and ``\\x1b[2K\\x1b[1A`` erases the line above and puts the
+cursor on it, which is strictly worse than adding a line — it *removes* one the
+tool wrote. #851 found a check run whose ``output.title`` carried exactly that
+sequence, so an App with ``checks:write`` could erase the real ``failure``
+verdict off a merge gate. The gap was never in the call sites that forgot to
+call; adopting this module unchanged at those two sites would have closed the
+forged-line half and left the cursor-movement half open. So it is fixed here,
+for every caller, and the widening is what makes adopting it at a new site
+mean what the site thinks it means.
+
+**Disclosed, not stripped.** Control characters are replaced by the Unicode
+Control Pictures glyph that names them (``\\x1b`` → ``␛``), never dropped.
+Suppressing them silently converts *this text was hostile* into *this text was
+different*, which is this repo's own defect class wearing a fix's clothing: the
+reader loses the one signal that would have told them what they were looking
+at. The glyphs are outside anything a diff, a stack trace or a markdown body
+reaches for, and content writing ``␛`` literally can at worst make itself look
+more suspicious than it is — a direction that costs a reader nothing.
+
+The one exception is the newline itself in `flat()`, which stays a space. That
+predates this and is pinned by #694: a title, a login, a label and a milestone
+cannot contain one on either tracker, the space keeps the common render
+unchanged for the fifteen call sites that already flatten, and the `banner()` or
+`flat_note()` line above the render already says those fields are content.
 """
 from __future__ import annotations
 
@@ -80,6 +109,37 @@ _CLOSE_G = "⟩"
 # Fence-shaped runs in content are replaced rather than deleted, so a reader can
 # see that something was there.
 NEUTRALISED = "[fence glyph in content — neutralised]"
+
+# C0 and DEL have a glyph each in the Control Pictures block, which is the
+# whole reason to prefer it over a `<0x1B>` spelling: one code point in, one
+# code point out, so a hostile field cannot inflate a render by writing
+# hundreds of them. C1 (0x80-0x9F) has no pictures, and is rare enough that
+# naming the code point is the honest fallback rather than a second glyph
+# scheme nobody can read.
+_PICTURES = {chr(i): chr(0x2400 + i) for i in range(0x20)}
+_PICTURES[chr(0x7F)] = chr(0x2421)
+
+
+def _is_control(ch: str) -> bool:
+    o = ord(ch)
+    return o < 0x20 or o == 0x7F or 0x80 <= o <= 0x9F
+
+
+def visible(text: str, *, keep: str = "") -> str:
+    """Every control character shown as itself. `keep` is what the render emits.
+
+    A block keeps its newlines because the block *is* lines; a one-line field
+    keeps nothing, because there is no control character it could want.
+    """
+    if not any(_is_control(c) for c in text if c not in keep):
+        return text
+    out = []
+    for ch in text:
+        if ch in keep or not _is_control(ch):
+            out.append(ch)
+            continue
+        out.append(_PICTURES.get(ch) or f"[U+{ord(ch):04X}]")
+    return "".join(out)
 
 
 def open_marker() -> str:
@@ -103,11 +163,17 @@ def banner() -> str:
 
 
 def scrub(text: str) -> str:
-    """Remove the marker shape from content so a fence cannot be closed inside it."""
-    if _OPEN_G not in text and _CLOSE_G not in text:
-        return text
-    out = text.replace(_OPEN_G, NEUTRALISED).replace(_CLOSE_G, NEUTRALISED)
-    return out
+    """Remove the marker shape from content so a fence cannot be closed inside it.
+
+    And the *other* way to close a fence from inside, which #851 found: a fence
+    whose closing marker can be erased off the screen by an escape sequence in
+    the body is no more a fence than one whose delimiter can be typed. Newlines
+    stay — a block is lines.
+    """
+    out = visible(text, keep=chr(10))
+    if _OPEN_G not in out and _CLOSE_G not in out:
+        return out
+    return out.replace(_OPEN_G, NEUTRALISED).replace(_CLOSE_G, NEUTRALISED)
 
 
 def fence(text: str) -> str:
@@ -121,9 +187,10 @@ def flat(text: str) -> str:
     Titles, logins, labels and milestones are not fenced — two marker lines
     around a six-word title is the noise that gets a convention abandoned. What
     they can do is add lines to a header the reader takes as the tool's, and
-    that is what this removes. Content is otherwise untouched.
+    that is what this removes — by every route, not only by newline (#851).
+    Content is otherwise untouched.
     """
-    return " ".join(text.split("\n")).replace("\r", " ")
+    return visible(" ".join(text.split("\n")).replace("\r", " "))
 
 
 def flat_note(fields: str) -> str:

@@ -47,6 +47,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import _checks  # noqa: E402  (NAMED_CAP — the repo's disclosure cap, #605/#619)
 import _repo_target  # noqa: E402  (the repo this call is about, when not the cwd's)
+import _untrusted  # noqa: E402  (every field below is written by the check's App — #851)
 from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 
 # One page of annotations. GitHub's default is 30; asking for the maximum makes
@@ -159,7 +160,13 @@ def _not_found_message(check_id: str, probe: GhCall) -> str:
 
 
 def _clip(text: str, limit: int) -> str:
-    """Cut with the cut named. Silence at the boundary is the bug (#605)."""
+    """Cut with the cut named. Silence at the boundary is the bug (#605).
+
+    Length only. This says nothing about what is *inside* the text — #851 read
+    it as though it did, and it does not: stripping the ends and cutting the
+    tail leaves every interior newline and every escape sequence intact. The
+    boundary is `_untrusted`, applied at each sink below.
+    """
     text = (text or "").strip()
     if len(text) <= limit:
         return text
@@ -168,12 +175,23 @@ def _clip(text: str, limit: int) -> str:
 
 def _print_header(check_id: str, check: dict, routed_from: str = "",
                   mode_note: str = "") -> tuple[str, str]:
-    """Metadata block. Returns `(status, conclusion)`, which the caller branches on."""
-    name = str(check.get("name") or "?")
+    """Metadata block. Returns `(status, conclusion)`, which the caller branches on.
+
+    Every field here is written by whoever owns the check run — any GitHub App
+    with `checks:write` — so every field here is flattened (#851). The one that
+    proved it was `name`: three lines of it put a forged
+    `Status: completed / success` above the real `failure`, on the block a
+    reader uses to decide a merge.
+
+    The returned pair is the *raw* status and conclusion, not the flattened
+    ones: the caller branches on them, and a branch must compare what GitHub
+    sent, not what was safe to print.
+    """
+    name = _untrusted.flat(str(check.get("name") or "?"))
     status = str(check.get("status") or "?")
     conclusion = str(check.get("conclusion") or "")
     app = check.get("app") if isinstance(check.get("app"), dict) else {}
-    slug = str((app or {}).get("slug") or "")
+    slug = _untrusted.flat(str((app or {}).get("slug") or ""))
     print(f"# Check run #{check_id} — {name}")
     # The provenance line. This op can be handed either kind of id, so which
     # API answered is part of the answer, not an implementation detail.
@@ -191,36 +209,48 @@ def _print_header(check_id: str, check: dict, routed_from: str = "",
         # "why does this not look like what I asked for", and a reader who has
         # already started reading Output has stopped asking.
         print(mode_note)
-    print(f"Status: {status}" + (f" / {conclusion}" if conclusion else ""))
+    print(f"Status: {_untrusted.flat(status)}"
+          + (f" / {_untrusted.flat(conclusion)}" if conclusion else ""))
     if slug:
         print(f"App: {slug}")
-    head_sha = str(check.get("head_sha") or "")
+    head_sha = _untrusted.flat(str(check.get("head_sha") or ""))
     if head_sha:
         print(f"Commit: {head_sha}")
-    url = str(check.get("html_url") or "")
+    url = _untrusted.flat(str(check.get("html_url") or ""))
     if url:
         print(f"URL: {url}")
     output = check.get("output") if isinstance(check.get("output"), dict) else {}
-    title = _clip(str((output or {}).get("title") or ""), 200)
+    title = _untrusted.flat(_clip(str((output or {}).get("title") or ""), 200))
     summary = _clip(str((output or {}).get("summary") or ""), SUMMARY_MAX)
     if title or summary:
         print("\n## Output")
         if title:
             print(f"Title: {title}")
         if summary:
-            print(f"Summary: {summary}")
+            # Fenced, not flattened. A summary is where an app that publishes
+            # no annotations puts the whole finding, so it is a block and has
+            # to keep its lines — which means the only honest way to print it
+            # is inside markers, with the sections this op owns outside them.
+            print("Summary:")
+            print(_untrusted.fence(summary))
     return status, conclusion
 
 
 def _annotation_line(a: dict) -> list[str]:
-    path = str(a.get("path") or "?")
+    """One annotation, indented. Same App, same boundary (#851).
+
+    The indent is not the defence — a forged line can be indented too. Every
+    field is flattened, and the message body is flattened line by line so it
+    keeps its own shape without being able to leave the indent.
+    """
+    path = _untrusted.flat(str(a.get("path") or "?"))
     start = a.get("start_line")
     end = a.get("end_line")
     where = f"{path}:{start}" if start else path
     if end and start and end != start:
         where += f"-{end}"
-    level = str(a.get("annotation_level") or "")
-    title = str(a.get("title") or "").strip()
+    level = _untrusted.flat(str(a.get("annotation_level") or ""))
+    title = _untrusted.flat(str(a.get("title") or "").strip())
     head = f"  {where}"
     if level:
         head += f"  [{level}]"
@@ -229,10 +259,10 @@ def _annotation_line(a: dict) -> list[str]:
     lines = [head]
     message = _clip(str(a.get("message") or ""), MESSAGE_MAX)
     for part in message.splitlines():
-        lines.append(f"      {part}")
+        lines.append(f"      {_untrusted.flat(part)}")
     raw = _clip(str(a.get("raw_details") or ""), MESSAGE_MAX)
     for part in raw.splitlines():
-        lines.append(f"      | {part}")
+        lines.append(f"      | {_untrusted.flat(part)}")
     return lines
 
 
@@ -319,7 +349,13 @@ def render_check(check_id: str, check: dict, *, routed_from: str = "",
     without a second copy of this render drifting from this one. A job renders
     as a log; a check run renders as status + output + annotations, and forcing
     either into the other's template is how the output starts lying.
+
+    The banner is printed here rather than in each caller for the same reason
+    the render is shared: `gh-job` reaches this function too (#827), and a
+    disclosure that has to be repeated at every entry point is one a new entry
+    point will not carry (#851).
     """
+    print(_untrusted.banner())
     status, conclusion = _print_header(check_id, check, routed_from, mode_note)
 
     ann = _gh(["gh", "api",
@@ -380,6 +416,10 @@ def _list_pr(pr: str) -> int:
     runs = payload.get("check_runs")
     runs = runs if isinstance(runs, list) else []
     print(f"# Check runs on PR #{pr} — head commit {sha}")
+    # `flat_note` rather than `banner()` (#819): this render fences nothing, and
+    # a banner promising markers it never prints is a disclosure that teaches a
+    # reader to ignore the next one.
+    print(_untrusted.flat_note("check run names"))
     if not runs:
         print(
             f"0 check runs are attached to the head commit {sha}. That is a "
@@ -395,7 +435,10 @@ def _list_pr(pr: str) -> int:
         conclusion = str(r.get("conclusion") or r.get("status") or "?")
         mark = _MARK.get(conclusion, "?")
         rid = str(r.get("id") or "")
-        name = str(r.get("name") or "?")
+        # A name that adds a line adds a *row*, and every row here is a check
+        # someone is about to trust (#851).
+        name = _untrusted.flat(str(r.get("name") or "?"))
+        conclusion = _untrusted.flat(conclusion)
         line = f"  {mark} {conclusion:<12} {name}"
         if rid:
             line += f"  #{rid}"
