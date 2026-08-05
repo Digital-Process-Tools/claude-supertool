@@ -554,6 +554,30 @@ def main() -> int:
         print("ERROR: no branch given and the repository's default branch "
               "could not be resolved. Name one: gh-branch:BRANCH")
         return 1
+    # #852: the same guard as `git/checkout.py:80`, `git/merge.py:140`,
+    # `_git_common.py:142` and `mr.py`'s `_ORDINARY_REF` — the invariant
+    # `fix/818-git-arg-injection` established, which this file dropped. `ref`
+    # reaches `gh run list --branch <ref>` below, where `--output` or `-b` is a
+    # flag and not a branch, and quoting does not stop a shell word from being
+    # read as one.
+    #
+    # There was no exploit: `_head_commit` runs first and puts the ref in a URL
+    # path, where a leading dash is not a flag, so it 404s and returns 1 before
+    # the run list is reached. That is the reason for the guard rather than an
+    # argument against it — the safety was a property of the *call order*,
+    # invisible at the sink, and any refactor that hoisted the run list or made
+    # the head lookup lazy would have removed it without touching anything that
+    # looked security-relevant.
+    #
+    # Bare `-` is refused too, unlike in `checkout.py` where it means "the
+    # previous branch". There is no previous branch here: this op asks GitHub
+    # about a named ref, and `-` names nothing it could answer for.
+    if ref.startswith("-"):
+        print(f"ERROR: ref starts with '-' (refusing for safety): {ref!r}. "
+              f"A leading dash is read as a flag by the commands this op "
+              f"builds, not as a branch name — and git will not create a "
+              f"branch with one. Name the branch: gh-branch:BRANCH")
+        return 1
 
     sha, age, err = _head_commit(ref)
     if err:
