@@ -529,7 +529,8 @@ def _guard_repo_git_state():
         return
     if verdict == "inconclusive":
         import warnings
-        warnings.warn(GIT_STATE_INCONCLUSIVE.format(changed=", ".join(changed)))
+        warnings.warn(GIT_STATE_INCONCLUSIVE.format(changed=", ".join(changed)),
+                      stacklevel=2)
         return
     raise AssertionError(GIT_STATE_MUTATED.format(changed=", ".join(changed)))
 

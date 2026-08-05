@@ -323,7 +323,7 @@ def spawn_lock(path: str, timeout: float = LOCK_WAIT_SEC):
                     raise TimeoutError(
                         f"timed out after {timeout}s waiting for the daemon spawn lock "
                         f"({path}) — another caller is starting it"
-                    )
+                    ) from None
                 time.sleep(LOCK_POLL_SEC)
         try:
             yield True

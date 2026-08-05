@@ -33,9 +33,19 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install test deps
+        # `ruff` is here so `tests/test_validators_ruff.py` runs its ruff-present
+        # half instead of skipping into a green that proves nothing. It is NOT a
+        # lint gate: there is deliberately no `ruff check .` step in this
+        # workflow. A gate reds someone else's unrelated PR the first time the
+        # linter ships a new rule inside a category we select, and that cost is
+        # paid by whoever happens to push next rather than by whoever caused it.
+        # The validator registered in `.supertool.json` reports a finding to the
+        # person who wrote it, at the moment they wrote it, which is where the
+        # feedback belongs. Revisit if there is ever a reason to pin one ruff
+        # version repo-wide.
         run: |
           python -m pip install --upgrade pip
-          pip install pytest pytest-cov pytest-xdist pytest-timeout
+          pip install pytest pytest-cov pytest-xdist pytest-timeout ruff
       - name: Install supertool (pip entry point — cross-platform, no symlink)
         run: pip install -e .
       - name: Run tests (full suite — slow tests included)

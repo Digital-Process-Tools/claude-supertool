@@ -1727,7 +1727,7 @@ def _safe_path(p: str, *, allow_outside_cwd: Optional[bool] = None) -> str:
         # Truncate path in the error message — matches existing SecurityError
         # style of not echoing arbitrarily-large user input back verbatim.
         shown = p if len(p) <= 120 else p[:120] + "…"
-        raise SecurityError(f"path cannot be resolved: {shown!r} ({e})")
+        raise SecurityError(f"path cannot be resolved: {shown!r} ({e})") from e
     if allow_outside_cwd:
         return abs_p
     # Windows: NTFS is case-insensitive (`C:\Users` == `c:\users`) and uses
@@ -2390,7 +2390,9 @@ def op_read(path: str, offset: int = 0, limit: int = 0,
                 line_count = 0
                 try:
                     with open(path, "rb") as f:
-                        for line_count, _ in enumerate(f, 1):
+                        # B007: the binding is read *after* the loop, which is
+                        # the one shape the rule cannot see.
+                        for line_count, _ in enumerate(f, 1):  # noqa: B007
                             pass
                 except OSError:
                     pass
@@ -6313,7 +6315,7 @@ def _vim_resolve_ex_address(addr: str, cursor_line: int, total_lines: int) -> in
             try:
                 offset = int(sign + rest)
             except ValueError:
-                raise ValueError(f"bad offset {addr!r}")
+                raise ValueError(f"bad offset {addr!r}") from None
     else:
         # Find the last +/- after position 0
         split_idx = -1
@@ -6325,7 +6327,7 @@ def _vim_resolve_ex_address(addr: str, cursor_line: int, total_lines: int) -> in
             try:
                 offset = int(addr[split_idx:])
             except ValueError:
-                raise ValueError(f"bad offset {addr[split_idx:]!r}")
+                raise ValueError(f"bad offset {addr[split_idx:]!r}") from None
     if base == ".":
         line = cursor_line
     elif base == "$":
@@ -9145,7 +9147,7 @@ def _op_vim_impl(path: str, script: str) -> str:
                     try:
                         rxp = re.compile(pat)
                     except re.error as e:
-                        raise ValueError(f"bad pattern {addr!r}: {e}")
+                        raise ValueError(f"bad pattern {addr!r}: {e}") from e
                     # Search from cursor_line (1-indexed) onward.
                     for ln_idx in range(cursor_line - 1, len(body_lines_for_pat)):
                         if rxp.search(body_lines_for_pat[ln_idx]):
@@ -11626,7 +11628,7 @@ def _run_notifiers(op: str, path: str, line: Optional[int] = None,
         except OSError:
             before_file = ""
 
-    for name, spec in specs.items():
+    for _name, spec in specs.items():
         cmd = spec.get("cmd")
         if not cmd:
             continue
@@ -13564,7 +13566,8 @@ _JS_BARE_RE = re.compile(
 )
 
 
-def _parse_imports(path: str, content: str) -> List[tuple]:  # noqa: same signature, from_file is path
+# Same signature as its sibling below; `from_file` is the `path` argument.
+def _parse_imports(path: str, content: str) -> List[tuple]:
     """Return list of (symbol, alias_or_None) pairs for the file's import statements."""
     ext = os.path.splitext(path)[1].lower()
     results: List[tuple] = []
@@ -14661,7 +14664,7 @@ def _payload_int(p: Dict[str, Any], key: str, default: int) -> int:
     try:
         return int(value)
     except (TypeError, ValueError):
-        raise ValueError(f"field '{key}' must be an integer, got {value!r}")
+        raise ValueError(f"field '{key}' must be an integer, got {value!r}") from None
 
 
 def _payload_bool(p: Dict[str, Any], key: str) -> bool:
@@ -14869,7 +14872,7 @@ def _reorder_batch_for_snapshot(batch_ops: List[Any]) -> Tuple[List[Any], str]:
     if not any(len(v) > 1 for v in by_file.values()):
         return batch_ops, ""
     new_ops = list(batch_ops)
-    for path, indices in by_file.items():
+    for _path, indices in by_file.items():
         if len(indices) < 2:
             continue
         items_at = [batch_ops[i] for i in indices]
@@ -16164,7 +16167,7 @@ class MCPClient:
                             else "daemon never wrote a stderr log — check that mcp.<name>.cmd is on PATH")
                     raise MCPServerError(
                         f"MCP socket {self._sock_path} not reachable: {e}. {hint}"
-                    )
+                    ) from e
             poll = 0.5
             deadline = time.time() + budget
             spawned = False
@@ -16232,7 +16235,8 @@ class MCPClient:
                 chunk = self._sock.recv(65536)
             except socket.timeout:
                 self._dead = True
-                raise MCPTimeout(f"MCP daemon '{self.name}' read timed out after {self.timeout}s")
+                raise MCPTimeout(
+                    f"MCP daemon '{self.name}' read timed out after {self.timeout}s") from None
             if not chunk:
                 self._dead = True
                 raise MCPServerError(f"MCP daemon '{self.name}' closed connection")

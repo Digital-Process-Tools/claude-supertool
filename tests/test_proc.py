@@ -144,7 +144,9 @@ def _fake_windows(monkeypatch, **kw) -> _FakeKernel32:
 def test_the_stub_refuses_terminate_process() -> None:
     """Pins the seam's own guarantee — without it the tests above prove nothing."""
     with pytest.raises(AssertionError):
-        _FakeKernel32().TerminateProcess
+        # B018: the bare attribute access *is* the call under test — the stub
+        # raises on __getattr__, so assigning the result would test nothing new.
+        _FakeKernel32().TerminateProcess  # noqa: B018
 
 
 def test_pid_alive_rejects_a_nonpositive_pid() -> None:

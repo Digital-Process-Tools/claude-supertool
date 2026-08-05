@@ -343,16 +343,21 @@ def serve(name: str, spec: dict) -> int:
         _spawn.write_fingerprint(
             sock_name, _spawn.config_fingerprint(spec, cwd), dir_fd=dir_fd)
         try:
-            return _serve_owned(spec, sock_name, pid_name, dir_fd, sock_path)
+            return _serve_owned(spec, name, sock_name, pid_name, dir_fd, sock_path)
         finally:
             _spawn.cleanup(sock_name, pid_name, dir_fd=dir_fd)
     finally:
         os.close(dir_fd)
 
 
-def _serve_owned(spec: dict, sock_name: str, pid_name: str, dir_fd: int,
-                 sock_path: str) -> int:
+def _serve_owned(spec: dict, name: str, sock_name: str, pid_name: str,
+                 dir_fd: int, sock_path: str) -> int:
     """Run the daemon. Only ever reached by the process holding the pidfile.
+
+    `name` is the server's key under `mcp` in `.supertool.json`, carried here
+    for the one message below that names it. It used to be interpolated
+    without being a parameter, so the branch that reports a missing `cmd`
+    raised `NameError` instead of printing what was missing (#666).
 
     `sock_name` / `pid_name` are basenames against `dir_fd`. `sock_path` is
     carried alongside for **messages only** — it is what an operator types, not

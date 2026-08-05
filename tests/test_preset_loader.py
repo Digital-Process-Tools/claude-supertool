@@ -53,7 +53,7 @@ def foreign_entries() -> Iterator[list[str]]:
 
 def _loader_of(module_name: str) -> Callable[..., object]:
     """The `_load` helper of an already-collected preset test module."""
-    return getattr(importlib.import_module(module_name), "_load")
+    return importlib.import_module(module_name)._load
 
 
 # The five from #555, plus the one fixed in #552 — same construct, so the same

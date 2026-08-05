@@ -163,6 +163,7 @@ Enable any of these by copying the relevant entry from `.supertool.example.json`
 | INI                 | `inilint`        | stdlib only                        | No external dep                            |
 | Python              | `py-compile`     | stdlib only                        | Uses `py_compile` — syntax only, not type  |
 | Python (types)      | `pyright`        | `pyright` (`npm install -g pyright`)| Real type-check via `pyright --outputjson` |
+| Python (lint)       | `ruff`           | `ruff` (`pip install ruff`)        | `ruff check --output-format json`. Ruleset comes from the **project's** config, not the adapter — see below |
 | Bash                | `bash-check`     | `bash` on PATH                     | Uses `bash -n`                             |
 | JavaScript          | `node-check`     | `node` on PATH                     | Uses `node --check`                        |
 | CSS / SCSS          | `stylelint`      | `stylelint` npm package            | Config from project `.stylelintrc`         |
@@ -181,6 +182,44 @@ Enable any of these by copying the relevant entry from `.supertool.example.json`
 | Git           | `git-status`     | `git` binary                                      | Reports working-tree delta (`+N -N <state>`) post-edit |
 | Prettier — check | `prettier-check` | `prettier` binary (PATH or via `PRETTIER_BIN` env) | Env-configured read-only formatting check. See [README](../validators/prettier-check/README.md) |
 
+
+### ruff — where the ruleset lives, and why it is small
+
+The adapter passes no `--select`. `ruff check` resolves its configuration by
+walking up from the file it was handed, so **your** `pyproject.toml` or
+`ruff.toml` decides what is reported — exactly what you would get running ruff
+by hand. An adapter that hard-coded a ruleset would report findings the project
+never adopted, and the first thing anyone does about that is switch the
+validator off.
+
+This repo's own choice, in `pyproject.toml`, is `select = ["E9", "F", "B",
+"PLE"]` — syntax and IO errors, pyflakes, bugbear, and pylint's error tier. The
+numbers behind it, measured on ~150k lines across 496 files:
+
+| selection | findings |
+|---|---|
+| `--select ALL` | 40,514 |
+| ruff's own defaults (0.16) | 2,213 |
+| `E9,F,B,PLE` as shipped | 20, then 0 |
+
+The middle row is the trap. A post-edit validator that prints a wall of
+pre-existing style on an unrelated edit gets switched off, and a validator that
+is off protects nothing — so the selection is the half that can be brought to
+zero and held there. Three rules inside it are switched off with a reason
+rather than left on and half-suppressed: `F401`, `F841` and `F541` (263
+standing occurrences, whose fix is a mechanical `ruff check --fix` across half
+the repo and belongs in its own PR), and `B023`, scoped off for `supertool.py`
+alone, where all 34 occurrences are closures invoked inside the iteration that
+defines them.
+
+`rollback_on_fail` is **false**, and should stay false wherever you register
+this. A lint finding is not a broken file; reverting a good edit because it
+landed next to an unused import destroys work to fix nothing. Compare
+`py-compile`, where a failure means the file no longer parses and rollback is
+the whole point.
+
+If ruff is not installed the validator reports `skipped` with that reason — not
+`ok`. See "Graceful skip" above.
 
 ## Adding your own
 

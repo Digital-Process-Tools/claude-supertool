@@ -84,7 +84,68 @@ dev = [
     "pytest-cov",
     "pytest-xdist",
     "pytest-timeout",
+    # Not a test dependency in the usual sense: nothing imports it. It is here
+    # so `pip install -e .[dev]` gives a contributor the same linter the
+    # post-edit validator uses, and so `tests/test_validators_ruff.py` runs its
+    # ruff-present half instead of skipping into a green that proves nothing.
+    "ruff",
 ]
+
+[tool.ruff]
+# The ruleset is small on purpose, and the number that decided it is this: on
+# the tree as it stood at #666, `--select ALL` reports 40,514 findings and
+# ruff 0.16's own defaults report 2,213. Either one lands a post-edit
+# validator that prints a wall of pre-existing style on every edit, and the
+# first thing anyone does about a wall is switch the validator off — at which
+# point it protects nothing. What is selected below is the correctness half
+# and it sits at zero, so anything it ever prints was caused by the edit that
+# triggered it.
+#
+# Growing it is expected. The bar for adding a category is that the tree can
+# be brought to zero for it in a diff a reviewer can read — not that the
+# category is on by default somewhere.
+target-version = "py39"
+
+[tool.ruff.lint]
+# E9  — syntax and IO errors. The file did not parse or could not be read.
+# F   — pyflakes: undefined names, redefinitions, unused imports/variables.
+#       This is the category that found the real defect in #666 (an f-string
+#       in `presets/mcp/daemon.py` interpolating a name that does not exist,
+#       on the error path, where a NameError would replace the message it was
+#       written to print).
+# B   — bugbear: mutable default arguments, `raise` inside `except` without
+#       chaining, loop-variable capture. Behavioural traps, not layout.
+# PLE — pylint's *error* tier only. Its warning and refactor tiers are style
+#       and are deliberately not here.
+select = ["E9", "F", "B", "PLE"]
+
+# Every entry is a rule that is on in the categories above and is switched off
+# with a reason. None of them is off because it was inconvenient to satisfy.
+ignore = [
+    # F401/F841/F541 — unused imports, unused locals, f-strings with no
+    # placeholder. 263 pre-existing occurrences across ~120 files. All three
+    # are worth having and none of them is worth landing here: the fix is
+    # `ruff check --fix` across half the repo, which is a diff no one can read
+    # line by line and which would bury this validator inside it. They come
+    # back on in the PR that does that cleanup and nothing else.
+    "F401",
+    "F841",
+    "F541",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# B023 — "function definition does not bind loop variable". 34 occurrences,
+# every one of them in the vim `:s` action loop, and every one a false
+# positive: the closures there (`_run_sub`, `_resolve_d`) are called inside
+# the same iteration that defines them, which is the case B023 cannot see.
+# Suppressing it at 34 call sites would cost 34 lines of noqa to buy nothing,
+# so it is scoped off for the one file instead.
+#
+# The honest cost, stated rather than hidden: a *real* loop-capture bug newly
+# introduced in supertool.py will not be caught. That is the trade — 34
+# standing false positives against prospective coverage in one file — and it
+# is reversible the day those closures are lifted out of the loop.
+"supertool.py" = ["B023"]
 
 [tool.setuptools]
 # Single-file project — declare the top-level module explicitly so setuptools
