@@ -53,7 +53,7 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import _checks  # noqa: E402
-import _declared_legs  # noqa: E402  (the second leg count, shared with gh-run / gh-pr)  (the one check tally, shared with gh-pr / gh-run)
+import _declared_legs  # noqa: E402  (the second leg count, shared with gh-run / gh-pr)
 import _repo_target  # noqa: E402  (the repo this call is about, when not the cwd's)
 
 # The four states. Spelled as constants because the tests, the exit code and
