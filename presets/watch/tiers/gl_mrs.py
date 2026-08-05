@@ -864,6 +864,12 @@ def render(open_mrs: list[dict], covered: set[str], healed: list[str],
     if cold:
         lines.append("radar: cold start — no prior snapshot, full board")
     if shown:
+        # The radar board renders `mrs._row` directly rather than through
+        # `mrs._render_table`, so it needs its own copy of that board's one
+        # disclosure line (#819). The titles below are the MR authors' words,
+        # and radar is read by an agent that has been told to act on what it
+        # sees — which is the reader the note exists for.
+        lines.append(mrs._untrusted.flat_note("MR titles"))
         lines.extend(shown)
         lines.append("")
         lines.append(footer)

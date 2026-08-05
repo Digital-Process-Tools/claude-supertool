@@ -29,6 +29,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))  # for _board, _proc
 
 import _board  # noqa: E402
+import _untrusted  # noqa: E402  (the repo's remote-text convention)
 from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 import _checks  # noqa: E402  (the one check classifier, shared with gh-pr / gh-prs)
 import _proc  # noqa: E402  (the one liveness probe, shared with watch / gh-prs)
@@ -616,6 +617,13 @@ def main() -> int:
         print(notice)
 
     watched = _watched_iids()
+    # One disclosure line above the board, not two marker lines around each
+    # title (#819). The titles are the MR authors' words; on a fifty-row board
+    # a per-row fence is the noise that gets a convention switched off, and an
+    # unreadable board is one nobody reads. `_board.render_row` carries the
+    # structural half — after it no title can reach column 0.
+    if mrs:
+        print(_untrusted.flat_note("MR titles"))
     print(_render_table(mrs, watched, show_pipe))
     footer = _footer(mrs, watched, show_pipe, unchecked)
     if footer:
