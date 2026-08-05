@@ -2850,6 +2850,11 @@ def op_between_symbol(symbol: str, path: str) -> str:
                 "Use 'between:re:START:END:PATH' for regex line slicing.\n")
 
     found = _ts_find_node(path, lang_name, symbol)
+    if found is None and lang_name in _TS_GRAMMAR_FAILED:
+        return (f"ERROR: tree-sitter grammar for {ext!r} failed to load "
+                f"({_TS_GRAMMAR_FAILED[lang_name]}) - cannot search for "
+                f"symbols. Use 'between:re:START:END:PATH' for regex line "
+                f"slicing.\n")
     # Retry with modifiers/parens stripped so a signature pasted from source
     # resolves like the bare name would (#363). Exact match still wins.
     normalized = _normalize_symbol_query(symbol)
@@ -3443,6 +3448,61 @@ _TS_LANG_MAP: Dict[str, str] = {
     ".scala": "scala", ".lua": "lua", ".sh": "bash", ".bash": "bash",
 }
 
+# Names that differ between the two supported packages for the same
+# language. tree-sitter-languages (older) used "c_sharp"; the actively
+# maintained tree-sitter-language-pack calls it "csharp" (#790). Keyed
+# either direction — _ts_get_parser tries both the requested name and,
+# if that fails, its counterpart here.
+_TS_LANG_ALIASES: Dict[str, str] = {
+    "c_sharp": "csharp",
+}
+
+# lang_name -> reason, populated the first time a grammar fails to load
+# under either spelling. Lets callers report "grammar unavailable"
+# distinctly from "parsed fine, file has no definitions" (#790) instead
+# of a LookupError silently becoming an empty result.
+_TS_GRAMMAR_FAILED: Dict[str, str] = {}
+
+
+def _ts_get_parser(lang_name: str) -> Any:
+    """Resolve a tree-sitter parser for lang_name, trying the other
+    package's spelling before giving up (#790).
+
+    Raises LookupError, with both attempted names in the message, when
+    neither spelling resolves under the installed package. Failures are
+    cached in _TS_GRAMMAR_FAILED so repeated calls for the same language
+    (e.g. across every file of a map: run) don't re-attempt both names
+    and so callers can distinguish this from a working grammar that
+    simply found nothing.
+    """
+    if lang_name in _TS_GRAMMAR_FAILED:
+        raise LookupError(_TS_GRAMMAR_FAILED[lang_name])
+
+    if _TS_PACKAGE == "pack":
+        from tree_sitter_language_pack import get_parser
+    else:
+        from tree_sitter_languages import get_parser
+
+    try:
+        return get_parser(lang_name)
+    except LookupError as first_err:
+        alt = _TS_LANG_ALIASES.get(lang_name)
+        if alt is None:
+            alt = next(
+                (k for k, v in _TS_LANG_ALIASES.items() if v == lang_name), None)
+        if alt is not None:
+            try:
+                return get_parser(alt)
+            except LookupError as second_err:
+                reason = (f"neither {lang_name!r} nor {alt!r} recognised by "
+                          f"the installed tree-sitter package "
+                          f"({first_err}; {second_err})")
+                _TS_GRAMMAR_FAILED[lang_name] = reason
+                raise LookupError(reason) from second_err
+        reason = f"{lang_name!r} not recognised by the installed tree-sitter package ({first_err})"
+        _TS_GRAMMAR_FAILED[lang_name] = reason
+        raise LookupError(reason) from first_err
+
 # Tree-sitter node types that represent definitions, per language family
 _TS_DEF_NODES: Dict[str, Dict[str, str]] = {
     "php": {
@@ -3537,13 +3597,14 @@ def _ts_extract(path: str, lang_name: str) -> List[Tuple[str, str, int, int]]:
     Returns list of (kind, name, line, depth) tuples.
     depth: 0 = top-level, 1 = inside a class, 2 = nested deeper.
     """
-    if _TS_PACKAGE == "pack":
-        from tree_sitter_language_pack import get_parser
-    else:
-        from tree_sitter_languages import get_parser
     try:
-        parser = get_parser(lang_name)
-    except (ImportError, Exception):
+        parser = _ts_get_parser(lang_name)
+    except LookupError:
+        # Grammar could not be loaded under either known spelling — recorded
+        # in _TS_GRAMMAR_FAILED by _ts_get_parser. Returning [] keeps the
+        # existing contract (ctags/regex tiers still get a chance below
+        # this call), but the failure is now discoverable rather than
+        # silently identical to "parsed fine, no definitions" (#790).
         return []
 
     try:
@@ -3620,13 +3681,12 @@ def _ts_find_node(
 
     total_matches lets callers warn when a name resolves to multiple definitions.
     """
-    if _TS_PACKAGE == "pack":
-        from tree_sitter_language_pack import get_parser
-    else:
-        from tree_sitter_languages import get_parser
     try:
-        parser = get_parser(lang_name)
-    except (ImportError, Exception):
+        parser = _ts_get_parser(lang_name)
+    except LookupError:
+        # See _ts_extract: failure is recorded in _TS_GRAMMAR_FAILED so
+        # op_between_symbol can report it instead of a misleading
+        # "symbol not found" (#790).
         return None
 
     try:
@@ -3951,8 +4011,19 @@ def op_map(path: str, no_exclude: bool = False) -> str:
                 symbols_found = True
 
         if not symbols_found:
-            # File exists but no symbols extracted — show it as empty
-            out_files.append(f"{_fwd(fpath)} ({line_count} lines)\n  (no symbols)\n")
+            ts_lang = _TS_LANG_MAP.get(ext) if use_ts else None
+            if ts_lang and ts_lang in _TS_GRAMMAR_FAILED:
+                # Every tier came up empty AND tree-sitter's grammar never
+                # loaded for this language — say so, rather than rendering
+                # byte-identical to a file with genuinely zero definitions
+                # (#790).
+                out_files.append(
+                    f"{_fwd(fpath)} ({line_count} lines)\n"
+                    f"  (tree-sitter grammar unavailable for {ext}: "
+                    f"{_TS_GRAMMAR_FAILED[ts_lang]} - no symbols from any tier)\n")
+            else:
+                # File exists but no symbols extracted — show it as empty
+                out_files.append(f"{_fwd(fpath)} ({line_count} lines)\n  (no symbols)\n")
 
     out = [f"({len(files)} files{_hidden_suffix(len(hidden_files))}, tier: {actual_tier})\n"] + out_files
     if truncated:
