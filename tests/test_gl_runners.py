@@ -179,8 +179,18 @@ def test_untagged_jobs_only_go_to_runners_that_accept_them() -> None:
 
 
 def test_work_pinned_to_a_dead_runner_is_starved() -> None:
-    """The finding the op exists for: an exclusive tag means no fallback."""
-    dead = _runner(1, tag_list=["runner-2"], contacted_at=_iso(7200))
+    """The finding the op exists for: an exclusive tag means no fallback.
+
+    `status="offline"` is not decoration and the fixture was wrong without it:
+    GitLab flips a runner to `offline` around two hours without contact, so
+    `online` beside a 7200s `contacted_at` is a state the API does not produce.
+    It also happens to be the one state where the heartbeat is the *only*
+    demerit, which since #750 is a stated UNKNOWN rather than a finding — see
+    `tests/test_gl_runners_false_alarms_750.py`. The fixture now describes a
+    runner GitLab itself calls down, which is what this test always meant.
+    """
+    dead = _runner(1, tag_list=["runner-2"], contacted_at=_iso(7200),
+                   status="offline")
     alive = _runner(2, tag_list=["docker"], contacted_at=_iso(10))
     pending = [{"tag_list": ["runner-2"], "created_at": _iso(1800)}]
     assert runners_op.starved_tags([dead, alive], pending) == {"runner-2": 1}
@@ -194,7 +204,8 @@ def test_work_a_live_runner_can_take_is_never_starved() -> None:
 
 def test_a_job_queued_a_moment_ago_is_scheduling_delay_not_starvation() -> None:
     """Otherwise every pipeline reports starvation for its first seconds."""
-    dead = _runner(1, tag_list=["runner-2"], contacted_at=_iso(7200))
+    dead = _runner(1, tag_list=["runner-2"], contacted_at=_iso(7200),
+                   status="offline")
     pending = [{"tag_list": ["runner-2"], "created_at": _iso(5)}]
     assert runners_op.starved_tags([dead], pending) == {}
 
@@ -202,7 +213,8 @@ def test_a_job_queued_a_moment_ago_is_scheduling_delay_not_starvation() -> None:
 def test_starvation_survives_a_job_with_no_creation_timestamp() -> None:
     """Unknown age must not silently drop the job from the count — a missing
     field is not evidence that the work is fine."""
-    dead = _runner(1, tag_list=["runner-2"], contacted_at=_iso(7200))
+    dead = _runner(1, tag_list=["runner-2"], contacted_at=_iso(7200),
+                   status="offline")
     assert runners_op.starved_tags([dead], [{"tag_list": ["runner-2"]}]) == {"runner-2": 1}
 
 
@@ -237,7 +249,7 @@ def _api_stub(runners=None, pending=None, running=None, history=None, errors=Non
 
 def test_the_tier_names_the_runner_holding_the_queue(monkeypatch) -> None:
     dead = _runner(1, description="dptools-runner-2", tag_list=["runner-2"],
-                   contacted_at=_iso(7200))
+                   contacted_at=_iso(7200), status="offline")
     monkeypatch.setattr(runners_op, "_api", _api_stub(
         runners=[dead], pending=[{"tag_list": ["runner-2"], "created_at": _iso(1800)}]))
     monkeypatch.setattr(runners_op, "_fetch_details", lambda listed: {})

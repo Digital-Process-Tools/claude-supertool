@@ -1,10 +1,12 @@
 {
   "source": "gl-runners",
   "events": [
-    {"key": "runner_silent",    "label": "A runner stopped taking work while jobs no other live runner may take are queued for it, and GitLab still reports it online"},
-    {"key": "runner_recovered", "label": "A wedged runner started taking work again"},
-    {"key": "runner_starved",   "label": "Pending jobs whose tags match only wedged runners"},
-    {"key": "queue_cleared",    "label": "A starved queue drained"},
+    {"key": "runner_silent",    "label": "A runner GitLab itself calls paused, offline or stale has work queued behind it that no other live runner may take"},
+    {"key": "runner_liveness_unknown", "label": "Work is queued behind a runner GitLab still calls online whose liveness could not be established — a stated UNKNOWN, not a wedge"},
+    {"key": "runner_recovered", "label": "A wedged or unaccounted-for runner started taking work again"},
+    {"key": "runner_starved",   "label": "Pending jobs whose tags match only runners GitLab reports down, or no runner at all"},
+    {"key": "queue_liveness_unknown", "label": "Pending jobs whose only candidate runners are unaccounted for — the queue is disclosed, the verdict withheld"},
+    {"key": "queue_cleared",    "label": "A starved or unaccounted-for queue drained"},
     {"key": "runner_paused",    "label": "A runner was paused or unpaused"},
     {"key": "runner_added",     "label": "A runner joined the fleet"},
     {"key": "runner_vanished",  "label": "A runner left the fleet"}

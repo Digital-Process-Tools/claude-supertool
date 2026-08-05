@@ -121,15 +121,19 @@ def _snapshot(runner: dict, pending: list[dict], running: list[dict],
     """
     responsive = runners_op._is_responsive(runner)
     waiting = runners_op.waiting_for(runner, pending)
-    stranded = runners_op.stranded_for(runner, pending, fleet)
+    stuck, unproven = runners_op.stranded_split_for(runner, pending, fleet)
+    stranded = stuck + unproven
     return {
         "description": runner.get("description") or f"#{runner.get('id')}",
         "responsive": responsive,
         "paused": bool(runner.get("paused")),
         "tags": sorted(runner.get("tag_list") or []),
         "contacted_at": runner.get("contacted_at"),
+        "status_phrase": runners_op.status_phrase(runner),
         "waiting": waiting,
         "stranded": stranded,
+        "stuck": stuck,
+        "unproven": unproven,
         "running": sum(1 for job in running
                        if (job.get("runner") or {}).get("id") == runner.get("id")),
         "recent_jobs": runner.get("_recent_jobs", 0),
@@ -138,7 +142,12 @@ def _snapshot(runner: dict, pending: list[dict], running: list[dict],
         # fires on the whole fleet every time the pipeline goes idle. "Stuck
         # behind it" is per job and not per matching tag: jobs a live runner may
         # also take are not stuck, they are routed.
-        "blocked": (not responsive) and stranded > 0,
+        #
+        # And it is only a *wedge* when GitLab itself says the runner is down.
+        # Where the only demerit is `contacted_at` age the two are separated:
+        # `blocked` states a fault, `unconfirmed` declines to (#750).
+        "blocked": (not responsive) and stuck > 0,
+        "unconfirmed": (not responsive) and unproven > 0,
         # Quiet, tags fully covered by a live runner: a stale record somebody
         # can delete, not an incident. Recorded so the state answers "why is
         # this runner not firing" on demand, and deliberately not an event —
@@ -186,12 +195,29 @@ def _fleet_events(
                 "event": "runner_silent",
                 "payload": {"runner_id": rid, "description": name, "last_seen": age,
                             "tags": now["tags"],
-                            "stranded_for_it": now["stranded"], **counts},
-                "notify_title": f"runner {name} wedged — {now['stranded']} job(s) stuck",
+                            "stranded_for_it": now["stuck"], **counts},
+                "notify_title": f"runner {name} wedged — {now['stuck']} job(s) stuck",
+                # The reason comes off the record. Appending "GitLab still
+                # reports it online" unconditionally was false for the two
+                # states that most often reach here, and it sends the reader to
+                # audit a host when the fix is un-pausing or deleting (#750).
                 "notify_message": f"last contact {age} ago, {now['running']} running "
-                                  f"— GitLab still reports it online",
+                                  f"— {now['status_phrase']}",
             })
-        elif queue_known and was.get("blocked") and now["responsive"]:
+        elif queue_known and now["unconfirmed"] and not was.get("unconfirmed"):
+            age = runners_op._human_age(runners_op._age_seconds(now["contacted_at"]))
+            events.append({
+                "event": "runner_liveness_unknown",
+                "payload": {"runner_id": rid, "description": name, "last_seen": age,
+                            "tags": now["tags"],
+                            "unproven_for_it": now["unproven"], **counts},
+                "notify_title": f"runner {name} unaccounted for — "
+                                f"{now['unproven']} job(s) waiting on it",
+                "notify_message": f"last contact {age} ago and GitLab still reports it "
+                                  f"online; heartbeat age is throttled, so this is not "
+                                  f"a wedge — go and check the host",
+            })
+        elif queue_known and (was.get("blocked") or was.get("unconfirmed")) and now["responsive"]:
             events.append({
                 "event": "runner_recovered",
                 "payload": {"runner_id": rid, "description": name, **counts},
@@ -220,35 +246,36 @@ def _fleet_events(
     return events
 
 
+def _owners_line(runners: list[dict], tags: str) -> str:
+    who = runners_op._owner_names(runners, tags)
+    return who or "no runner carries these tags at all"
+
+
 def _queue_events(
-    previous: dict[str, int], current: dict[str, int], runners: list[dict]
+    previous: dict[str, int], current: dict[str, int],
+    previous_unknown: dict[str, int], current_unknown: dict[str, int],
+    runners: list[dict],
 ) -> list[dict]:
-    """Starvation appearing, deepening, or clearing.
+    """Starvation appearing, deepening, or clearing — and the third state.
 
     Emitted on the first tick too — see the module docstring. A deepening queue
     re-fires only when it grows, so a stuck backlog does not notify every
     minute for as long as it stays stuck.
+
+    `runner_starved` states a fault and now only fires where there is one:
+    every runner that may take the work is down by GitLab's own reckoning, or
+    no runner carries the tags. Work waiting on a runner GitLab still calls
+    online, stale only by the throttled heartbeat, gets
+    `queue_liveness_unknown` instead — the same queue, disclosed, with the
+    verdict withheld rather than invented (#750). Dropping it would trade a
+    false alarm for a false all-clear, which is the worse of the two.
     """
     events: list[dict] = []
 
     for tags, count in current.items():
-        before = previous.get(tags, 0)
-        if count <= before:
+        if count <= previous.get(tags, 0):
             continue
-
-        owners = [
-            r for r in runners
-            if runners_op._can_serve(r, [] if tags == "(untagged)" else tags.split(","))
-        ]
-        if owners:
-            who = ", ".join(
-                f"{r.get('description')} (seen "
-                f"{runners_op._human_age(runners_op._age_seconds(r.get('contacted_at')))} ago)"
-                for r in owners
-            )
-        else:
-            who = "no runner carries these tags at all"
-
+        who = _owners_line(runners, tags)
         events.append({
             "event": "runner_starved",
             "payload": {"tags": tags, "pending": count, "owners": who},
@@ -256,8 +283,23 @@ def _queue_events(
             "notify_message": who,
         })
 
-    for tags, before in previous.items():
-        if before and not current.get(tags):
+    for tags, count in current_unknown.items():
+        if count <= previous_unknown.get(tags, 0):
+            continue
+        who = _owners_line(runners, tags)
+        events.append({
+            "event": "queue_liveness_unknown",
+            "payload": {"tags": tags, "pending": count, "owners": who},
+            "notify_title": f"{count} job(s) waiting on [{tags}] — runner liveness UNKNOWN",
+            "notify_message": f"{who}; GitLab reports them online and only the "
+                              f"throttled contacted_at says otherwise",
+        })
+
+    # A tag clears when it has left both buckets. Judged on the union so a
+    # queue merely moving between them does not read as drained.
+    was_waiting = {**previous_unknown, **previous}
+    for tags, before in was_waiting.items():
+        if before and not current.get(tags) and not current_unknown.get(tags):
             events.append({
                 "event": "queue_cleared",
                 "payload": {"tags": tags, "was_pending": before},
@@ -289,11 +331,14 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
         # Queue unknown this tick — carry the last reading forward untouched so
         # an API blip cannot be read as either starvation or its resolution.
         new_state["starved"] = state.get("starved") or {}
+        new_state["unknown"] = state.get("unknown") or {}
         new_state["queue_known"] = False
     else:
-        current_starved = runners_op.starved_tags(runners, pending)
-        events += _queue_events(state.get("starved") or {}, current_starved, runners)
+        current_starved, current_unknown = runners_op.classify_queue(runners, pending)
+        events += _queue_events(state.get("starved") or {}, current_starved,
+                                state.get("unknown") or {}, current_unknown, runners)
         new_state["starved"] = current_starved
+        new_state["unknown"] = current_unknown
         new_state["queue_known"] = True
         new_state["pending_total"] = len(pending)
 
@@ -301,6 +346,8 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
     new_state["silent"] = silent
     new_state["superseded"] = [s["description"] for s in current_fleet.values()
                                if s.get("superseded")]
+    new_state["unconfirmed"] = [s["description"] for s in current_fleet.values()
+                                if s.get("unconfirmed")]
     new_state["fleet_size"] = len(current_fleet)
 
     return events, new_state

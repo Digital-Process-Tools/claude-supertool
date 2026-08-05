@@ -190,6 +190,48 @@ def _can_serve(runner: dict, job_tags: list[str]) -> bool:
     return set(job_tags).issubset(runner_tags)
 
 
+# GitLab's own verdicts that a runner is not going to pick anything up. These
+# are answers, not absences: the instance has decided, and nothing here is
+# inferring it from a field whose write policy we do not control.
+_GITLAB_DOWN_STATUSES = {"offline", "stale", "never_contacted"}
+
+
+def _demonstrably_down(runner: dict) -> bool:
+    """GitLab itself says this runner cannot take work right now.
+
+    The mirror image of `_is_responsive`, and deliberately not its negation.
+    Liveness needs positive evidence; so does death. What sits between the two
+    is the shape that produced #750 — a runner GitLab still advertises as
+    `online`, not paused, whose only demerit is `contacted_at` age. That field
+    is throttled (see `_HEARTBEAT_WARN_SECONDS`), so its age is a reason to go
+    and look, never a finding on its own. Records in that gap are UNKNOWN, and
+    the callers say so rather than picking whichever of the two answers is
+    convenient.
+    """
+    if runner.get("paused") or not runner.get("active", True):
+        return True
+    return runner.get("status") in _GITLAB_DOWN_STATUSES
+
+
+def status_phrase(runner: dict) -> str:
+    """What GitLab says about this runner, and what to do about it.
+
+    Written from the record rather than hardcoded: the watcher used to append
+    "GitLab still reports it online" to every silence event, which was false
+    for the two states that most often produce one. A reader told a `stale`
+    438-day registration is "still online" goes hunting for a wedged host
+    instead of deleting a record nobody deregistered.
+    """
+    if runner.get("paused"):
+        return "GitLab reports it paused — un-pause it, or move the tag to a live runner"
+    if not runner.get("active", True):
+        return "GitLab reports it inactive"
+    status = runner.get("status")
+    if status in _GITLAB_DOWN_STATUSES:
+        return f"GitLab reports it {status} — the registration may simply need deleting"
+    return "GitLab still reports it online"
+
+
 # Each annotator leaves a mark, so "annotated, found nothing" and "never
 # annotated" are different records rather than the same falsy zero.
 _LIVE_JOBS_MARK = "_live_jobs_checked"
@@ -338,28 +380,66 @@ def annotate_live_jobs(runners: list[dict], running: list[dict]) -> list[dict]:
     return runners
 
 
-def starved_tags(runners: list[dict], pending: list[dict]) -> dict[str, int]:
-    """{tag_key: count} for pending work no responsive runner is allowed to take.
+def classify_queue(
+    runners: list[dict], pending: list[dict]
+) -> tuple[dict[str, int], dict[str, int]]:
+    """({tag_key: count} stuck, {tag_key: count} unproven) for waiting work.
 
-    The one signal in this module that earned its keep: it correlates two facts
-    that are each meaningless alone — a runner that stopped heartbeating, and
-    work queued behind it — into a condition GitLab's own API actively denies
-    by reporting the runner `online: true, job_execution_status: idle`.
+    The one signal in this module that earned its keep — it correlates two
+    facts that are each meaningless alone, a runner that stopped heartbeating
+    and work queued behind it, into a condition GitLab's own API actively
+    denies by reporting the runner `online: true, job_execution_status: idle`.
+    It also over-claimed, because the correlation has three outcomes and it
+    published two ([#750](https://github.com/Digital-Process-Tools/claude-supertool/issues/750)).
+
+    A pending job past the queue-age floor that no responsive runner may take
+    lands in one of two buckets, decided by *why* its candidates are not
+    responsive:
+
+    **stuck** — every runner that may take it is demonstrably down: paused,
+    inactive, or `offline`/`stale`/`never_contacted` by GitLab's own reckoning;
+    or no runner in the fleet carries its tags at all. There is no uncertainty
+    in either of those and the finding is stated flatly.
+
+    **unproven** — at least one candidate is still advertised `online` and not
+    paused, and failed `_is_responsive` only on `contacted_at` age. That field
+    is throttled, which is why it is consulted last and at 30 minutes; a fleet
+    idling behind one long job routinely reads minutes stale across every row
+    at once. Calling that starvation is the fleet-wide false alarm this module
+    already learned once, arriving through the queue instead of the runner.
+
+    Unproven is disclosed, never dropped. Silence here would trade a loud false
+    alarm for a quiet false all-clear, and the queue is genuinely waiting
+    either way — see `docs/validators.md` §"Declining instead of guessing".
 
     Shared by the op, the watcher and radar so all three can never disagree
-    about what "stuck" means.
+    about what "stuck" means, or about which of the three answers they have.
     """
-    blocked: dict[str, int] = {}
+    stuck: dict[str, int] = {}
+    unproven: dict[str, int] = {}
     for job in pending:
         queued = _age_seconds(job.get("created_at"))
         if queued is not None and queued < _STARVED_MIN_QUEUE_SECONDS:
             continue
         tags = job.get("tag_list") or []
-        if any(_can_serve(r, tags) and _is_responsive(r) for r in runners):
+        candidates = [r for r in runners if _can_serve(r, tags)]
+        if any(_is_responsive(r) for r in candidates):
             continue
         key = ",".join(sorted(tags)) or "(untagged)"
-        blocked[key] = blocked.get(key, 0) + 1
-    return blocked
+        bucket = stuck if all(_demonstrably_down(r) for r in candidates) else unproven
+        bucket[key] = bucket.get(key, 0) + 1
+    return stuck, unproven
+
+
+def starved_tags(runners: list[dict], pending: list[dict]) -> dict[str, int]:
+    """{tag_key: count} for work that is stuck — the stated half of the verdict.
+
+    Kept as the name for the finding alone. Anything wanting the whole picture
+    has to ask for both buckets and decide what to do with the second, which is
+    the point: a caller cannot reach the unproven queue by accident and cannot
+    silently discard it either.
+    """
+    return classify_queue(runners, pending)[0]
 
 
 def waiting_for(runner: dict, pending: list[dict]) -> int:
@@ -391,16 +471,45 @@ def stranded_for(runner: dict, pending: list[dict], fleet: list[dict]) -> int:
     than answering, on the same terms as `_is_responsive` itself: a coverage
     check resting on the throttled field would silence real wedges.
     """
+    return sum(stranded_split_for(runner, pending, fleet))
+
+
+def stranded_split_for(
+    runner: dict, pending: list[dict], fleet: list[dict]
+) -> tuple[int, int]:
+    """(stuck, unproven) counts of the work stranded behind one runner.
+
+    `classify_queue` asked per tag-key across the whole queue; this asks the
+    same question per runner, so the fleet table can mark a row from the very
+    computation that writes the footer under it. They disagreed before #750 —
+    the row matched pending tags against any non-heartbeating runner and
+    skipped the queue-age floor entirely, so a render could carry `<! STARVED`
+    rows above "all have a responsive runner. Waiting on capacity, not
+    routing." Both were printed from the same data and only one was right;
+    a reader acting on either reached the opposite conclusion to the other.
+
+    The split follows `classify_queue` exactly: work whose every candidate is
+    demonstrably down is stuck, work with a candidate GitLab still calls online
+    is unproven.
+    """
     live = [r for r in fleet if _is_responsive(r)]
-    stranded = 0
+    stuck = 0
+    unproven = 0
     for job in pending:
+        queued = _age_seconds(job.get("created_at"))
+        if queued is not None and queued < _STARVED_MIN_QUEUE_SECONDS:
+            continue
         tags = job.get("tag_list") or []
         if not _can_serve(runner, tags):
             continue
         if any(_can_serve(candidate, tags) for candidate in live):
             continue
-        stranded += 1
-    return stranded
+        candidates = [r for r in fleet if _can_serve(r, tags)]
+        if all(_demonstrably_down(r) for r in candidates):
+            stuck += 1
+        else:
+            unproven += 1
+    return stuck, unproven
 
 
 # Options this tier understands from ops.radar.radar_tiers["gl-runners"].
@@ -470,9 +579,9 @@ def radar_report(options: dict | None = None) -> tuple[list[str], bool]:
     if pending:
         annotate_recent_work(runners, fetch_recent_finished(window)[0])
 
-    blocked = starved_tags(runners, pending)
+    blocked, unproven = classify_queue(runners, pending)
 
-    if not blocked and not pending:
+    if not blocked and not unproven and not pending:
         # The history scan was skipped just above, so these records carry no
         # throughput evidence and their liveness is not knowable from here.
         # Printing a count anyway would be #533 in miniature: a number that
@@ -481,22 +590,30 @@ def radar_report(options: dict | None = None) -> tuple[list[str], bool]:
                  f"0 pending, none blocked"], True)
 
     live = [r for r in runners if _is_responsive(r)]
-    if not blocked:
+    if not blocked and not unproven:
         return ([f"radar: fleet ok — {len(live)}/{len(runners)} runners live, "
                  f"{len(pending)} pending, none blocked"], True)
 
-    total = sum(blocked.values())
-    lines = [f"radar: FLEET — {total} pending job(s) cannot start "
-             f"({len(live)}/{len(runners)} runners live)"]
-    for tags, count in sorted(blocked.items(), key=lambda kv: -kv[1]):
-        owners = [r for r in runners
-                  if _can_serve(r, [] if tags == "(untagged)" else tags.split(","))]
-        who = ", ".join(
-            f"{r.get('description')} (seen {_human_age(_age_seconds(r.get('contacted_at')))} ago)"
-            for r in owners) or "NO runner carries these tags"
-        lines.append(f"  [{tags}] {count} job(s) -> {who}")
-    lines.append("  Pinned to an exclusive tag: no other runner may take them. "
-                 "A red board in this run may be this, not your code.")
+    lines: list[str] = []
+    if blocked:
+        total = sum(blocked.values())
+        lines.append(f"radar: FLEET — {total} pending job(s) cannot start "
+                     f"({len(live)}/{len(runners)} runners live)")
+        for tags, count in sorted(blocked.items(), key=lambda kv: -kv[1]):
+            who = _owner_names(runners, tags) or "NO runner carries these tags"
+            lines.append(f"  [{tags}] {count} job(s) -> {who}")
+        lines.append("  Pinned to an exclusive tag: no other runner may take them. "
+                     "A red board in this run may be this, not your code.")
+    if unproven:
+        # Not green. An unproven queue is the tier declining, and a decline
+        # rendered as `fleet ok` is the false all-clear one layer up.
+        total = sum(unproven.values())
+        lines.append(f"radar: FLEET UNKNOWN — {total} pending job(s) waiting on runners "
+                     f"whose liveness could not be established")
+        for tags, count in sorted(unproven.items(), key=lambda kv: -kv[1]):
+            lines.append(f"  [{tags}] {count} job(s) -> {_owner_names(runners, tags)}")
+        lines.append("  GitLab reports them online; only contacted_at age says "
+                     "otherwise, and GitLab throttles it. Check the hosts.")
     return (lines, False)
 
 
@@ -579,9 +696,16 @@ def _print_fleet(runners: list[dict], pending: list[dict], running: list[dict]) 
         responsive = _is_responsive(runner)
         waiting = waiting_by_runner.get(rid, 0)
 
+        # Written from `stranded_split_for`, which is what `_print_diagnosis`
+        # totals two lines further down. Marking the row from `waiting` — any
+        # pending job this runner is permitted to take — put `<! STARVED` above
+        # a footer reading "all have a responsive runner" in the same render.
+        stuck, unproven = stranded_split_for(runner, pending, runners)
         marker = ""
-        if not responsive and waiting:
+        if not responsive and stuck:
             marker = "  <! STARVED"
+        elif not responsive and unproven:
+            marker = "  <! UNKNOWN"
         elif not responsive:
             marker = "  <! silent"
 
@@ -607,29 +731,65 @@ def _print_fleet(runners: list[dict], pending: list[dict], running: list[dict]) 
               f"{', '.join(unreadable)}")
 
 
-def _print_diagnosis(runners: list[dict], pending: list[dict]) -> None:
-    """Name the blocked work: pending jobs no responsive runner can take."""
-    blocked = starved_tags(runners, pending)
+def _owner_names(runners: list[dict], tags: str) -> str:
+    """The runners permitted to take work carrying `tags`, with heartbeat ages."""
+    owners = [r for r in runners
+              if _can_serve(r, tags.split(",") if tags != "(untagged)" else [])]
+    return ", ".join(
+        f"{r.get('description')} (seen {_human_age(_age_seconds(r.get('contacted_at')))} ago)"
+        for r in owners
+    )
 
-    if not blocked:
-        if pending:
+
+def _print_diagnosis(runners: list[dict], pending: list[dict]) -> None:
+    """Name the waiting work, in the three states it can be in.
+
+    `ok`, a finding, and a decline. The middle one is work whose candidates
+    GitLab itself calls down; the last is work whose candidates GitLab still
+    advertises as online and whose only demerit is the throttled heartbeat.
+    Printing the second as the first is #750; printing it as the all-clear
+    sentence would be the more expensive mistake in the other direction.
+    """
+    blocked, unproven = classify_queue(runners, pending)
+
+    if not blocked and not unproven:
+        # Only jobs past the queue-age floor were routed at all, so the
+        # all-clear may only speak for those. A queue entirely below the floor
+        # sitting behind an unresponsive runner used to print "all have a
+        # responsive runner", which is the false all-clear this whole section
+        # is about, reached from the other end.
+        judged = [job for job in pending
+                  if (_age_seconds(job.get("created_at")) or float("inf"))
+                  >= _STARVED_MIN_QUEUE_SECONDS]
+        if judged:
             print(f"\nQueue: {len(pending)} pending, all have a responsive runner. Waiting on capacity, not routing.")
+        elif pending:
+            floor = _STARVED_MIN_QUEUE_SECONDS // 60
+            print(f"\nQueue: {len(pending)} pending, none waiting longer than "
+                  f"{floor}m — too soon to call it routing or capacity.")
         return
 
-    total = sum(blocked.values())
-    print(f"\n## STARVED — {total} pending job(s) no live runner can take")
-    for tags, count in sorted(blocked.items(), key=lambda kv: -kv[1]):
-        owners = [r for r in runners if _can_serve(r, tags.split(",") if tags != "(untagged)" else [])]
-        if owners:
-            names = ", ".join(
-                f"{r.get('description')} (seen {_human_age(_age_seconds(r.get('contacted_at')))} ago)"
-                for r in owners
-            )
-            print(f"  - {count} job(s) tagged [{tags}] -> only {names}")
-        else:
-            print(f"  - {count} job(s) tagged [{tags}] -> NO runner carries these tags at all")
-    print("\n  Jobs pinned to an exclusive tag cannot fall back to another runner.")
-    print("  Fix the runner host, or change the tag in .gitlab-ci.yml.")
+    if blocked:
+        total = sum(blocked.values())
+        print(f"\n## STARVED — {total} pending job(s) no live runner can take")
+        for tags, count in sorted(blocked.items(), key=lambda kv: -kv[1]):
+            names = _owner_names(runners, tags)
+            if names:
+                print(f"  - {count} job(s) tagged [{tags}] -> only {names}")
+            else:
+                print(f"  - {count} job(s) tagged [{tags}] -> NO runner carries these tags at all")
+        print("\n  Jobs pinned to an exclusive tag cannot fall back to another runner.")
+        print("  Fix the runner host, or change the tag in .gitlab-ci.yml.")
+
+    if unproven:
+        total = sum(unproven.values())
+        print(f"\n## UNKNOWN — {total} pending job(s) whose routing could not be established")
+        for tags, count in sorted(unproven.items(), key=lambda kv: -kv[1]):
+            print(f"  - {count} job(s) tagged [{tags}] -> {_owner_names(runners, tags)}")
+        print("\n  GitLab still advertises these runners as online and un-paused; they")
+        print("  fail the liveness check only on contacted_at age, which GitLab")
+        print("  throttles — a fleet idling behind one long job reads stale on every")
+        print("  row at once. Not shown stuck, and not shown fine. Check the hosts.")
 
 
 def _print_queue(runners: list[dict], pending: list[dict], running: list[dict]) -> None:
