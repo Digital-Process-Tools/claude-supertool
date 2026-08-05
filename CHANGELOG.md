@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-08-05
+
 ### Added
 
 - **`gh-branch` — "is this branch green?", answered per workflow rather than per recency** ([#615](https://github.com/Digital-Process-Tools/claude-supertool/issues/615)). `gh-pr:N` answers for a pull request. After a squash merge the ref that matters is the default branch, which no longer has one — `gh-pr:master:status` returns `ERROR: no PR found for branch 'master'` — so the post-merge check was hand-rolled every time: `gh run list --branch master --limit 1`, a second call for the run's jobs, and a jq `group_by` retyped from memory. That is the exact reflex [#454](https://github.com/Digital-Process-Tools/claude-supertool/issues/454) exists to prevent, and it stayed invisible because the fallback works every time, so the tool never appears to fail. Both default branches sat red for hours on the night the issue was filed while the board read clean; the failure was that nobody looked, and nobody looked because looking cost three calls and a remembered incantation.
