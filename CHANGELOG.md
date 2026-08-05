@@ -103,6 +103,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   **It is also faster.** The rebase hazard test drops from **7.13s to 4.27s**, because the budget no longer has to be padded against a spawn it cannot see.
 
+- **`test_git_trail_635` no longer treats a transient git object-store read failure as a `trail.py` regression** ([#810](https://github.com/Digital-Process-Tools/claude-supertool/issues/810)). Seen once, on `pytest (ubuntu-latest, 3.11)`: `git log -S` walking the fixture's own freshly-committed history hit `fatal: unable to read <sha>` for an object `git commit` had just written, and `trail.py` correctly disclosed the failure — non-zero exit, the error relayed rather than swallowed — which the test then read as a bug in the tool. Re-running the identical commit passed; the sha was readable the second time. Not reproduced on demand, on any platform, after deliberate attempts — this is recorded as an unconfirmed hypothesis about a git/OS-level race, not a proven mechanism.
+
+  **The fixture now retries past this exact signature instead of asserting it can never happen.** `_run()` recognises `unable to read [0-9a-f]{40}` in `trail.py`'s stdout — the one string a bare object-store read failure produces and a genuine `trail.py` logic bug cannot, since `trail.py` never invents a sha, only relays what git's own `log` already returned — and retries up to twice with a short backoff before failing. Any other failure (a real assertion mismatch, a real crash) is not retried and fails on the first attempt, so this cannot mask a reproducible regression in `trail.py` itself. Two new tests pin the boundary with `subprocess.run` monkeypatched: one proves the retry recovers from the exact transient signature, the other proves an unrelated failure is not retried. TDD: both tests fail against the pre-fix `_run` (the retry test on the injected transient failure, since there was nothing to retry with) and pass with it.
+
+  **Not folded in:** whether an equivalent "silent absence" hazard reaches a *product* code path was checked — `trail.py`'s own pickaxe search already disclosed the failure loudly rather than returning an empty trail, so this issue is fixture-only. No related product defect was found.
+
 ## [0.23.0] - 2026-08-05
 
 ### Added

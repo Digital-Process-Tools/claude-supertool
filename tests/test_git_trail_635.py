@@ -14,12 +14,27 @@ Two directions, both required:
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
+import time
 from pathlib import Path
+
+import pytest
 
 TRAIL = Path(__file__).parent.parent / "presets" / "git" / "trail.py"
 TOKEN = "WIDGET_TRAIL_TOKEN"
+
+# (#810) `git log -S` walks every commit's tree/blob to pickaxe-search history,
+# so it can surface "fatal: unable to read <sha>" for an object this fixture's
+# own `git commit` calls just wrote -- seen once on a GitHub Actions ubuntu
+# leg, cleared on an identical re-run, never reproduced on demand locally.
+# trail.py relays that failure into its own stdout via `_format_error` and
+# exits 1 -- it never invents a sha, only relays what git's log already
+# returned -- so the signature is specific enough that retrying past it cannot
+# hide a real trail.py regression: a genuine bug in this code does not print
+# this string.
+_UNREADABLE_OBJECT_RE = re.compile(r"unable to read [0-9a-f]{40}")
 
 
 def _init_repo(path: Path) -> None:
@@ -40,14 +55,23 @@ def _commits_touching(path: Path, n: int) -> None:
         subprocess.run(["git", "commit", "-q", "-m", f"c{i}"], check=True, cwd=path)
 
 
-def _run(repo: Path, *args: str) -> str:
+def _run(
+    repo: Path, *args: str, extra_env: dict[str, str] | None = None
+) -> str:
     env = dict(os.environ)
     env["PYTHONIOENCODING"] = "utf-8"
-    res = subprocess.run(
-        [sys.executable, str(TRAIL), *args],
-        capture_output=True, text=True, encoding="utf-8", cwd=repo, env=env,
-    )
-    assert res.returncode == 0, res.stderr
+    if extra_env:
+        env.update(extra_env)
+    res = None
+    for attempt in range(3):
+        res = subprocess.run(
+            [sys.executable, str(TRAIL), *args],
+            capture_output=True, text=True, encoding="utf-8", cwd=repo, env=env,
+        )
+        if res.returncode == 0 or not _UNREADABLE_OBJECT_RE.search(res.stdout):
+            break
+        time.sleep(0.2 * (attempt + 1))
+    assert res.returncode == 0, f"stdout:{chr(10)}{res.stdout}{chr(10)}stderr:{chr(10)}{res.stderr}"
     return res.stdout
 
 
@@ -94,15 +118,7 @@ def test_uncut_detail_section_says_nothing_extra(tmp_path: Path) -> None:
 
 def test_cap_is_raisable_and_then_says_nothing(tmp_path: Path) -> None:
     _commits_touching(tmp_path, 14)
-    env = dict(os.environ)
-    env["SUPERTOOL_TRAIL_DETAIL_CAP"] = "50"
-    env["PYTHONIOENCODING"] = "utf-8"
-    res = subprocess.run(
-        [sys.executable, str(TRAIL), TOKEN],
-        capture_output=True, text=True, encoding="utf-8", cwd=tmp_path, env=env,
-    )
-    assert res.returncode == 0, res.stderr
-    out = res.stdout
+    out = _run(tmp_path, TOKEN, extra_env={"SUPERTOOL_TRAIL_DETAIL_CAP": "50"})
     assert "## Timeline (14 commits)" in out, out
     assert _details_header(out) == "## Details", out
     assert out.count("### ") == 14, out
@@ -111,15 +127,7 @@ def test_cap_is_raisable_and_then_says_nothing(tmp_path: Path) -> None:
 def test_timeline_itself_discloses_when_max_commits_caps_it(tmp_path: Path) -> None:
     """The pool the detail cap draws from was silently bounded too (#635)."""
     _commits_touching(tmp_path, 14)
-    env = dict(os.environ)
-    env["SUPERTOOL_MAX_COMMITS"] = "5"
-    env["PYTHONIOENCODING"] = "utf-8"
-    res = subprocess.run(
-        [sys.executable, str(TRAIL), TOKEN],
-        capture_output=True, text=True, encoding="utf-8", cwd=tmp_path, env=env,
-    )
-    assert res.returncode == 0, res.stderr
-    out = res.stdout
+    out = _run(tmp_path, TOKEN, extra_env={"SUPERTOOL_MAX_COMMITS": "5"})
 
     timeline = next(l for l in out.splitlines() if l.startswith("## Timeline"))
     assert timeline.startswith("## Timeline (5 commits)"), timeline
@@ -127,6 +135,55 @@ def test_timeline_itself_discloses_when_max_commits_caps_it(tmp_path: Path) -> N
     assert "SUPERTOOL_MAX_COMMITS" in timeline, timeline
     # No invented total: the overshoot proves only that more exist.
     assert "of 14" not in out, out
+
+
+def test_run_retries_past_a_transient_unreadable_object(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The #810 retry fires only for the exact object-store read failure."""
+    calls: list[list[str]] = []
+
+    def _fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if len(calls) == 1:
+            return subprocess.CompletedProcess(
+                cmd, returncode=1,
+                stdout="ERROR: git failed searching for %r: fatal: unable "
+                       "to read %s" % (TOKEN, "a" * 40) + chr(10),
+                stderr="",
+            )
+        return subprocess.CompletedProcess(
+            cmd, returncode=0, stdout="ok" + chr(10), stderr=""
+        )
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    monkeypatch.setattr(time, "sleep", lambda _s: None)
+
+    out = _run(tmp_path, TOKEN)
+
+    assert out == "ok" + chr(10)
+    assert len(calls) == 2, "expected exactly one retry, not a retry loop"
+
+
+def test_run_does_not_retry_an_unrelated_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A real trail.py bug must fail fast, not be absorbed by the #810 retry."""
+    calls: list[list[str]] = []
+
+    def _fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(
+            cmd, returncode=1,
+            stdout="ERROR: not inside a git repository." + chr(10), stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    with pytest.raises(AssertionError):
+        _run(tmp_path, TOKEN)
+
+    assert len(calls) == 1, "an unrelated failure must not be retried"
 
 
 def test_uncapped_timeline_says_nothing_extra(tmp_path: Path) -> None:
