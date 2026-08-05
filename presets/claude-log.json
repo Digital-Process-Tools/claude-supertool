@@ -5,21 +5,21 @@
       "cmd": "{python} {path}claude-log/list.py {args}",
       "timeout": 10,
       "description": "List N recent Claude sessions for project (def 10). UUID, mtime, line count, first user msg. Values matching known secret patterns are redacted and the redaction disclosed; append :raw for verbatim",
-      "syntax": "claude-log-list[:N]",
+      "syntax": "claude-log-list[:N][:raw]",
       "example": "claude-log-list:5"
     },
     "claude-log-tail": {
       "cmd": "{python} {path}claude-log/tail.py {args}",
       "timeout": 10,
       "description": "Last N events of session in compact form. Def N=30. Use after claude-log-list. Values matching known secret patterns are redacted and the redaction disclosed; append :raw for verbatim",
-      "syntax": "claude-log-tail:UUID[:N]",
+      "syntax": "claude-log-tail:UUID[:N][:raw]",
       "example": "claude-log-tail:84397aff-4925-45fd-afc5-3641e28c993c:50"
     },
     "claude-log-summary": {
       "cmd": "{python} {path}claude-log/summary.py {args}",
       "timeout": 15,
       "description": "Session digest: tool counts, errors, final msg, total turns. Values matching known secret patterns are redacted and the redaction disclosed; append :raw for verbatim",
-      "syntax": "claude-log-summary:UUID",
+      "syntax": "claude-log-summary:UUID[:raw]",
       "example": "claude-log-summary:84397aff-4925-45fd-afc5-3641e28c993c"
     }
   }
