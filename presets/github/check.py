@@ -166,7 +166,8 @@ def _clip(text: str, limit: int) -> str:
     return text[:limit] + f"… [+{len(text) - limit} chars truncated]"
 
 
-def _print_header(check_id: str, check: dict) -> tuple[str, str]:
+def _print_header(check_id: str, check: dict, routed_from: str = "",
+                  mode_note: str = "") -> tuple[str, str]:
     """Metadata block. Returns `(status, conclusion)`, which the caller branches on."""
     name = str(check.get("name") or "?")
     status = str(check.get("status") or "?")
@@ -177,6 +178,19 @@ def _print_header(check_id: str, check: dict) -> tuple[str, str]:
     # The provenance line. This op can be handed either kind of id, so which
     # API answered is part of the answer, not an implementation detail.
     print("Source: checks API (a check run, not an Actions job)")
+    if routed_from:
+        # #827: when the reader called a *different* op, the header alone is
+        # not enough — "Check run" under a call they typed as `gh-job` reads
+        # as a bug unless the routing says so. This line is the entire licence
+        # to route: #821 declined to answer because answering would have been
+        # "a probe that silently changes which API answered", and that is
+        # right about *silently*, not about *answering*.
+        print(routed_from)
+    if mode_note:
+        # Beside the routing, not after the Output block: both sentences answer
+        # "why does this not look like what I asked for", and a reader who has
+        # already started reading Output has stopped asking.
+        print(mode_note)
     print(f"Status: {status}" + (f" / {conclusion}" if conclusion else ""))
     if slug:
         print(f"App: {slug}")
@@ -293,7 +307,20 @@ def _show_check(check_id: str) -> int:
         print(f"ERROR: could not read check run #{check_id}: {got.error}")
         return 1
     check = got.data if isinstance(got.data, dict) else {}
-    status, conclusion = _print_header(check_id, check)
+    return render_check(check_id, check)
+
+
+def render_check(check_id: str, check: dict, *, routed_from: str = "",
+                 mode_note: str = "") -> int:
+    """Render an already-fetched check-run object. The one renderer, shared.
+
+    Split out of `_show_check` for #827 so `gh-job` can route an id the Actions
+    namespace disowned *without* re-fetching the object it already probed, and
+    without a second copy of this render drifting from this one. A job renders
+    as a log; a check run renders as status + output + annotations, and forcing
+    either into the other's template is how the output starts lying.
+    """
+    status, conclusion = _print_header(check_id, check, routed_from, mode_note)
 
     ann = _gh(["gh", "api",
                _api_path(f"check-runs/{check_id}/annotations?per_page={PER_PAGE}")])

@@ -145,6 +145,22 @@ def github_states(checks: object) -> List[str]:
 
 _JOB_ID_IN_URL = re.compile(r"/job/([0-9]+)(?:[/?#]|$)")
 
+# A check run's own page: `https://<host>/<owner>/<repo>/runs/<check-run-id>`.
+# Exactly two path segments before `/runs/` — which is what keeps an Actions
+# leg's `.../<o>/<r>/actions/runs/<run>/job/<job>` out of it. The integer after
+# `/runs/` there is the *run* id, and printing it under a check run's label
+# would be a wrong id wearing a confident header, which is the defect class
+# #827 is about, manufactured fresh (#827).
+#
+# The shape is host-agnostic on purpose so GitHub Enterprise matches. The
+# residual exposure — a foreign CI whose URLs happen to be shaped
+# `host/a/b/runs/N` — is the same one `_JOB_ID_IN_URL` has always carried, and
+# it is bounded the same way: the id is only ever *offered* to the reader as
+# the next op to run, and that op 404s with a stated cause rather than
+# answering about the wrong thing.
+_CHECK_ID_IN_URL = re.compile(
+    r"^https?://[^/]+/[^/]+/[^/]+/runs/([0-9]+)(?:[/?#]|$)")
+
 
 def github_job_id(check: dict) -> str:
     """The Actions job id parsed from a CheckRun's `detailsUrl`, '' if absent.
@@ -166,21 +182,63 @@ def github_job_id(check: dict) -> str:
     return m.group(1) if m else ""
 
 
-def github_named_states(checks: object) -> List[tuple[str, str, str]]:
-    """`(name, state, job_id)` triples for a rollup — length == len(checks).
+def github_check_ref(check: dict) -> tuple[str, str]:
+    """`(kind, id)` for a rollup leg — `("job"|"check", id)`, or `("", "")`.
+
+    GitHub reports CI through two id namespaces and a rollup mixes them, so
+    "which id is this" is not answerable without also saying which namespace
+    it belongs to. Both answers ride on `detailsUrl`, a field `gh-pr` already
+    fetches, so this costs no request (#619's trade, one URL shape wider).
+
+    **The second shape was there all along and nothing read it.** #821's docs
+    state that "the check-run id rides on `detailsUrl` only for Actions legs".
+    Read against the real API on 2026-08-05, the `github-advanced-security`
+    leg of PR 821 carries
+    `detailsUrl: https://github.com/Digital-Process-Tools/claude-supertool/runs/92264897684`
+    — and `check-runs/92264897684` resolves to that same CodeQL leg. The id
+    was in the payload; the parser only knew `/job/<id>`.
+
+    An Actions URL contains `/runs/<run-id>` too, and that integer names a run
+    rather than a check run. What keeps it out is the **anchor** in
+    `_CHECK_ID_IN_URL` — exactly two path segments before `/runs/` — not the
+    order of the two branches below; a mutation run that swapped them left the
+    suite green, which is the evidence that the anchor is carrying it. The
+    order stays as defence in depth and costs nothing. A leg matching neither
+    shape — a legacy commit status pointing at someone else's server — returns
+    `("", "")` rather than a wrong id.
+    """
+    if not isinstance(check, dict):
+        return ("", "")
+    url = str(check.get("detailsUrl") or "")
+    job = _JOB_ID_IN_URL.search(url)
+    if job:
+        return ("job", job.group(1))
+    run = _CHECK_ID_IN_URL.search(url)
+    if run:
+        return ("check", run.group(1))
+    return ("", "")
+
+
+def github_named_states(checks: object) -> List[tuple[str, str, str, str]]:
+    """`(name, state, kind, id)` per leg — length == len(checks).
 
     The input `named_disclosure()` is built for: everything `summarize()`
-    already counts, plus the name and job id `summarize()` throws away.
+    already counts, plus the name and the namespaced id it throws away.
+
+    `kind` is carried rather than inferred downstream because the two
+    namespaces mint from one integer sequence — an id alone cannot say which
+    op reads it, and a default would guess.
     """
     if not isinstance(checks, list):
         return []
-    out: List[tuple[str, str, str]] = []
+    out: List[tuple[str, str, str, str]] = []
     for c in checks:
         if isinstance(c, dict):
             name = str(c.get("name") or c.get("context") or "?")
-            out.append((name, github_state(c), github_job_id(c)))
+            kind, ident = github_check_ref(c)
+            out.append((name, github_state(c), kind, ident))
         else:
-            out.append(("?", _UNKNOWN, ""))
+            out.append(("?", _UNKNOWN, "", ""))
     return out
 
 
@@ -197,7 +255,7 @@ NAMED_CAP = 5
 
 
 def named_disclosure(
-    entries: Sequence[tuple[str, str, str]], cap: int = NAMED_CAP
+    entries: Sequence[tuple[str, str, str, str]], cap: int = NAMED_CAP
 ) -> List[str]:
     """One line per non-pass/non-pending state, naming every leg (#619).
 
@@ -225,22 +283,27 @@ def named_disclosure(
 
     Each group is capped at `cap` legs, oldest-first as handed in, with a
     trailing `+N more` — this repo's established disclosure vocabulary
-    (#605) — when the group is larger. A leg carrying a job id prints
-    `name (job #id)`; one without prints its bare name.
+    (#605) — when the group is larger.
+
+    A leg carrying an id prints `name (job #id)` or `name (check #id)`; one
+    without prints its bare name. **The word is part of the answer, not
+    decoration** (#827): the reader's next move is one op on that integer, and
+    the two namespaces overlap in one direction, so a `check #` labelled `job #`
+    sends them to a 404 and reads as an absence.
     """
-    groups: dict[str, list[tuple[str, str]]] = {}
-    for name, state, job_id in entries:
+    groups: dict[str, list[tuple[str, str, str]]] = {}
+    for name, state, kind, ident in entries:
         b = bucket(state)
         if b in ("passed", "pending"):
             continue
         label = "failed" if b == "failed" else _label(state)
-        groups.setdefault(label, []).append((name, job_id))
+        groups.setdefault(label, []).append((name, kind, ident))
 
     lines: List[str] = []
     for label in sorted(groups):
         items = groups[label]
         shown = items[:cap]
-        parts = [f"{n} (job #{j})" if j else n for n, j in shown]
+        parts = [f"{n} ({k} #{i})" if i and k else n for n, k, i in shown]
         text = ", ".join(parts)
         if len(items) > cap:
             text += f", +{len(items) - cap} more"
