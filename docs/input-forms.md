@@ -141,8 +141,8 @@ Use TOML's **triple-single-quote literal strings** (`'''...'''`) when content ha
 
 ### When the content itself contains `'''`
 
-A literal block cannot carry its own delimiter, and Python source that inspects
-Python source hits this immediately:
+A literal block cannot carry a *run of three* of its own delimiter, and Python
+source that inspects Python source hits this immediately:
 
 ```
 new = '''    if stripped.startswith(("#", "'''", "*")):'''
@@ -161,6 +161,44 @@ Since [#394](https://github.com/Digital-Process-Tools/claude-supertool/issues/39
 the parse error names both, and fires the hint on an odd number of `'''` runs —
 every literal block opens and closes, so a stray one means the content carried
 its own.
+
+### Ending a block with a quote
+
+One or two apostrophes are a different matter, and they are legal. A closing
+run may be **four or five** quotes, and the surplus one or two belong to the
+content — which is the only way a literal block can end with its own delimiter
+character:
+
+```
+new = '''    kind = 'mr''''      # -> `    kind = 'mr'`
+new = '''ends in two'''''        # -> `ends in two''`
+```
+
+There is no escape inside a literal block, so that spelling is the only one.
+Reaching for a backslash is the reflex every other language rewards and here it
+is inert: `'''    kind = 'mr\''''` parses without complaint and hands the
+op `    kind = 'mr\'` — not the line that was typed, and a syntax error in
+most languages that receive it. The write went through, the validators agreed,
+and the breakage surfaced a language away from its cause.
+
+Since [#834](https://github.com/Digital-Process-Tools/claude-supertool/issues/834)
+a backslash immediately before a closing run is **refused**, and the message
+spells the caller's own line back both ways — without the backslash, and as a
+`"""basic"""` block, where a genuinely wanted backslash doubles.
+
+The issue was filed as *"a payload string ending in `'` writes broken code"*, with
+the proposed guard *refuse content ending in `'`*. That is not what shipped, because
+the premise is wrong: a value ending in an apostrophe is exactly what the correct
+spelling above produces, so the guard would have refused its own fix. The
+backslash is the detectable mistake, and it is a **refusal** rather than a warning
+for one reason — both readings of it have another spelling, so refusing leaves
+nothing unwritable. See `docs/validators.md`, "Declining instead of guessing".
+
+The same run rule applies to `"""` blocks, and both parsers now agree about it: the
+fallback used for Python <3.11 closed at the first three quotes and choked on the
+surplus, so the spelling this section recommends parsed on 3.11+ and failed below
+it — the [#684](https://github.com/Digital-Process-Tools/claude-supertool/issues/684)
+rule, one delimiter over.
 
 ### An invalid escape is an error, on every Python
 
