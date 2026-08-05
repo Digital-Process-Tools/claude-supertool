@@ -7,8 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.23.0] - 2026-08-05
-
 ### Added
 
 - **`gh-check` — the second id namespace, and the annotation the finding actually lives in** ([#793](https://github.com/Digital-Process-Tools/claude-supertool/issues/793)). `gh-pr:792:status` named the failing leg (`failed: CodeQL`) and the natural next call died: `gh-job:92205186236:fail` → *"the job endpoint returned 404 for this ID too, so no such job exists in this repo. Check the ID."* The id existed. GitHub hands out bare integers from two namespaces — Actions jobs (`actions/jobs/<id>`) and check runs (`check-runs/<id>`) — and every GitHub App that is not Actions writes to the second: CodeQL default setup, Dependabot, code-scanning uploads, external CI. `gh-job` reads only the first, so its 404 was an absence *by one route* published as an absence from the world, which is this repo's own defect class ([#672](https://github.com/Digital-Process-Tools/claude-supertool/issues/672)) arriving in its own error path. Getting the finding took three hand-written `gh api` calls, two of which returned nothing useful.
@@ -26,6 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   **Method.** TDD, red before green. RED against unmodified `master`: **20 failed / 2 passed**, the 2 being deliberate fences (the happy path makes no `check-runs` call; `gh-job` renders no check-run content). GREEN: **6459 passed / 72 skipped** across the suite. Twenty-three hand-written mutants over the changed logic — every branch of both 404 resolvers forced in each direction, the annotation cap removed, both cap disclosures deleted in turn, the page-floor boundary moved off `>=`, the zero-annotation warning forced on and off, the provenance line deleted, `PER_PAGE` and the cap default changed, and the old message restored — **23 killed, 0 survived**, over the pre-live design.
 
   **Verified live on 2026-08-05, and the live run changed the code twice.** Check run 92205186236 — the one from the incident — was read end to end: `gh-check` prints its CodeQL header, its output summary and the annotation `presets/github/issue.py:125 [failure] Incomplete URL substring sanitization`, the exact line #793 had to make three hand-written `gh api` calls to reach, and `gh-job` on the same id now names the check run instead of denying the id exists. Two things the fixtures had wrong surfaced only there. **A running check carries `status: in_progress` with an empty conclusion and zero annotations** — annotations are written *while* a check runs — and the first draft rendered that with the vocabulary of a finished clean check, which is this issue's own all-clear one state further back; it now says the count was taken mid-flight. And **the two id spaces are not disjoint**: GitHub creates a check run per Actions job sharing the integer, so an Actions job id resolves at `check-runs/<id>` too, and the overlap runs one way only. That makes `gh-check`'s point-back-at-`gh-job` branch unreachable against today's GitHub; it stays, documented as guarding an observation rather than a contract. Still fixture-only: the 404 body shapes, `raw_details`, a full 100-annotation page, and every transport-failure path.
+
+## [0.23.0] - 2026-08-05
+
+### Added
 
 - **A `ruff` validator, and a ruleset small enough to actually hold at zero** ([#666](https://github.com/Digital-Process-Tools/claude-supertool/issues/666)). Python coverage here was `py-compile` (syntax), `pyright` (types) and `lsp-diag` (semantic). Nothing linted — no unused imports, no undefined names in branches nobody executes, no mutable default arguments — in 15k lines of `supertool.py` plus 496 files of tests and presets. `validators/ruff/ruff.py` closes that: `ruff check --output-format json`, `rollback_on_fail: false`, and `skipped` with the reason when ruff is absent rather than a green nobody earned.
 
