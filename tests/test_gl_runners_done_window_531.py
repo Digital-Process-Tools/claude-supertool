@@ -65,13 +65,26 @@ def _job_on(rid: int) -> dict:
 def test_executing_but_completing_nothing_is_the_ambiguous_shape() -> None:
     """RUN>0 with DONE 0 is both a wedge and a fresh reboot. It cannot be read."""
     runner = _runner(1, _recent_jobs=0)
-    assert runners_op.done_zero_unreadable([runner], {1: 6}) == ["runner-1"]
+    assert runners_op.done_zero_unreadable([runner], {1: 6}, {}) == ["runner-1"]
 
 
 def test_a_runner_gitlab_still_calls_online_but_quiet_is_the_ambiguous_shape() -> None:
-    """Advertised healthy, heartbeat past the threshold, nothing finished."""
+    """Advertised healthy, heartbeat past the threshold, nothing finished —
+    and pending work queued that it may take.
+
+    The queued job is not decoration. This case originally asserted the caveat
+    on the heartbeat alone, which named a runner holding nothing and blocking
+    nothing, and named every row at once on an idle fleet ([#806]). The `0` is
+    still unreadable; it is only worth a line when something is waiting on it.
+    """
     runner = _runner(2, _recent_jobs=0, contacted_at=_iso(3600))
-    assert runners_op.done_zero_unreadable([runner], {}) == ["runner-2"]
+    assert runners_op.done_zero_unreadable([runner], {}, {2: 1}) == ["runner-2"]
+
+
+def test_a_quiet_runner_with_nothing_at_stake_is_not_caveated() -> None:
+    """The same record with an empty queue — no wedge reading to disclaim (#806)."""
+    runner = _runner(2, _recent_jobs=0, contacted_at=_iso(3600))
+    assert runners_op.done_zero_unreadable([runner], {}, {}) == []
 
 
 def test_a_status_that_already_explains_the_zero_gets_no_caveat() -> None:
@@ -80,19 +93,19 @@ def test_a_status_that_already_explains_the_zero_gets_no_caveat() -> None:
     wallpaper — a live fleet had two such rows and no wedge."""
     paused = _runner(5, _recent_jobs=0, paused=True)
     stale = _runner(6, _recent_jobs=0, status="stale", contacted_at=_iso(86400 * 400))
-    assert runners_op.done_zero_unreadable([paused, stale], {}) == []
+    assert runners_op.done_zero_unreadable([paused, stale], {}, {5: 1, 6: 1}) == []
 
 
 def test_a_runner_that_completed_work_is_not_ambiguous() -> None:
     """DONE>0 answers the question outright — no caveat, no line spent."""
     runner = _runner(3, _recent_jobs=4)
-    assert runners_op.done_zero_unreadable([runner], {3: 2}) == []
+    assert runners_op.done_zero_unreadable([runner], {3: 2}, {3: 1}) == []
 
 
 def test_an_idle_live_runner_with_nothing_to_do_is_not_ambiguous() -> None:
     """Otherwise the caveat is wallpaper on every quiet fleet and stops being read."""
     runner = _runner(4, _recent_jobs=0, job_execution_status="active")
-    assert runners_op.done_zero_unreadable([runner], {}) == []
+    assert runners_op.done_zero_unreadable([runner], {}, {4: 1}) == []
 
 
 # ---------------------------------------------------------------------------
