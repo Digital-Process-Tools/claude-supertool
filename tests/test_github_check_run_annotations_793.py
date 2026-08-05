@@ -244,13 +244,26 @@ def test_gh_job_never_renders_check_run_content_under_a_job_header(
     a probe that silently changed which API answered. Rendering the check run
     under `# Check run #N`, with the routing named on the next line, breaks
     nothing that sentence was protecting.
+
+    Amended again by #851: the header is no longer the first line, because the
+    remote-text banner is above it. That is the same amendment for the same
+    reason — the assertion pinned "first line" as the enforcement mechanism for
+    "the header names the API that answered", and a disclosure line the tool
+    wrote is not a header claiming a namespace. It has to come first: the check
+    run's `name` is *in* the header, so a banner printed after it would arrive
+    after the content it describes.
     """
     rc, out = _run(job, monkeypatch, capsys,
                    _fake_gh(check=_check_run(), annotations=[_annotation()]),
                    ("job.py", CHECK_ID, "fail"))
     assert rc == 0
     assert "# Job #" not in out
-    assert out.lstrip().startswith(f"# Check run #{CHECK_ID}")
+    lines = [ln for ln in out.strip().split("\n") if ln.strip()]
+    # `check.py` is loaded by path inside `job.py`, so the module object is
+    # not reachable from here — but `_untrusted` is a plain import and its
+    # nonce is per process, so this is the same banner the render printed.
+    assert lines[0] == sys.modules["_untrusted"].banner()
+    assert lines[1].startswith(f"# Check run #{CHECK_ID}")
 
 
 def test_gh_job_on_a_genuinely_unknown_id_still_blames_the_id(

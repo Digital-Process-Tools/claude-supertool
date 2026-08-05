@@ -55,6 +55,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import _checks  # noqa: E402
 import _declared_legs  # noqa: E402  (the second leg count, shared with gh-run / gh-pr)
 import _repo_target  # noqa: E402  (the repo this call is about, when not the cwd's)
+import _untrusted  # noqa: E402  (workflow and job names are remote text — #851)
 
 # The four states. Spelled as constants because the tests, the exit code and
 # the header all have to mean the same thing by them, and because `NOT GREEN`
@@ -518,6 +519,14 @@ def _reconcile(repo: str, selected: dict, fetched: dict) -> tuple:
 # ---------------------------------------------------------------------------
 
 def _row(name: str, run: dict, jobs) -> str:
+    """One workflow's row. The name is flattened because it is not ours (#851).
+
+    Weaker than the check-run half of #851 — renaming a workflow needs write
+    access to the base repo, so a fork PR does not reach it — and the same
+    missing boundary, in a fixed-width table where one extra line is one extra
+    workflow that a reader will count as having run.
+    """
+    name = _untrusted.flat(name)
     phase = run_phase(run)
     if phase == PHASE_CONCLUDED:
         outcome = str(run.get("conclusion") or "no conclusion")
@@ -574,7 +583,7 @@ def main() -> int:
                 continue
             legs[name] = [_checks.github_state(j) for j in jobs]
             for j in jobs:
-                named.append((f"{name} / {j.get('name', '?')}",
+                named.append((_untrusted.flat(f"{name} / {j.get('name', '?')}"),
                               _checks.github_state(j),
                               "job",
                               str(j.get("databaseId") or "")))
@@ -599,6 +608,12 @@ def main() -> int:
             print(line)
 
         print()
+        # `flat_note` rather than `banner()` (#819): this render fences nothing,
+        # and a banner promising markers it never prints is a disclosure that
+        # teaches a reader to skip the next one. Placed here because everything
+        # below it — the table and the previous-head list — carries names, and
+        # everything above it is this op's own arithmetic.
+        print(_untrusted.flat_note("workflow and job names"))
         print(f"{'Workflow':<32} {'Run':<14} {'Outcome':<14} Legs")
         print("-" * 96)
         for name in sorted(selected):
@@ -609,7 +624,8 @@ def main() -> int:
         print(f"Workflows on the previous head {prev_sha[:7]} with no run on "
               f"{sha[:7]}:")
         for name in missing:
-            print(f"  {name} — did NOT run on this commit. That is a different "
+            print(f"  {_untrusted.flat(name)} — did NOT run on this commit. "
+                  "That is a different "
                   "sentence from 'ran and passed'; whether a path filter "
                   "excluded it or a run is still to be created is UNKNOWN.")
 
