@@ -27,7 +27,8 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import List, Tuple
+from types import MappingProxyType
+from typing import Dict, List, Tuple
 
 import pytest
 
@@ -250,13 +251,44 @@ def _kwarg(node: ast.Call, name: str):
     return None
 
 
-def _runner_name(node: ast.Call) -> str:
+def _runner_name(node: ast.Call, aliases: "Dict[str, str]" = MappingProxyType({})) -> str:
     func = node.func
     if isinstance(func, ast.Attribute):
         return func.attr
     if isinstance(func, ast.Name):
-        return func.id
+        return aliases.get(func.id, func.id)
     return ""
+
+
+def _runner_aliases(tree: ast.Module) -> "Dict[str, str]":
+    """Names bound to a ``subprocess`` runner by assignment or aliased import.
+
+    The rule keys on the *called name*, so ``_REAL_POPEN(...)`` is invisible to
+    it — and #862 is where that stopped being hypothetical. ``tests/`` holds 21
+    such bindings, almost all of them the monkeypatch idiom that saves the real
+    callable before replacing it, and one of them was a genuine unpinned
+    ``Popen(..., text=True)`` that the scan walked straight past.
+
+    Only module-level and function-level ``name = subprocess.X`` assignments and
+    ``from subprocess import X as name`` imports are resolved. A binding built
+    through ``getattr(subprocess, name)`` still is not, which is stated rather
+    than fixed because there are none and a rule nobody exercises rots.
+    """
+    found: Dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Attribute):
+            value = node.value
+            if (value.attr in _SUBPROCESS_RUNNERS
+                    and isinstance(value.value, ast.Name)
+                    and value.value.id == "subprocess"):
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        found[target.id] = value.attr
+        elif isinstance(node, ast.ImportFrom) and node.module == "subprocess":
+            for alias in node.names:
+                if alias.name in _SUBPROCESS_RUNNERS:
+                    found[alias.asname or alias.name] = alias.name
+    return found
 
 
 def subprocess_encoding_violations(
@@ -274,27 +306,43 @@ def subprocess_encoding_violations(
     asserted on separately, because a scan that silently counted them as clean
     would be a scan whose green means less than it looks like it means.
 
+    An **aliased** runner — ``_REAL_POPEN = subprocess.Popen``, or
+    ``from subprocess import run as _r`` — is resolved by ``_runner_aliases``
+    and judged like any other call, but only when the call is one the rule can
+    read. A trampoline that forwards ``*args, **kwargs`` to the saved original
+    is the monkeypatch idiom, not a call site: it originates no kwargs of its
+    own, and the call it stands in for is judged where that call is written.
+    Flagging those would add 18 waivers for one real defect, and a guard with
+    18 waivers is a guard somebody switches off.
+
     What it still cannot see, stated so the green is read correctly:
 
-    * an aliased import (``from subprocess import run as _r``) — the rule keys
-      on the called name, so ``_r(...)`` is invisible. No occurrences today.
-    * a call built through ``getattr(subprocess, name)``. Same, none today.
-    * ``tests/``. 125 further violations live there and are deliberately out of
-      this scan's scope: a test decoding its own fixture output under a hostile
-      locale fails loudly, on a runner, as a red test — not silently, in a
-      user's hands, which is the failure this rule exists to stop. Worth its
-      own issue, not worth doubling this diff.
+    * a call built through ``getattr(subprocess, name)``. None today.
+
+    ``tests/`` was out of this scan's scope until #862, on the argument that a
+    test decoding its own fixture output fails loudly on a runner rather than
+    silently in a user's hands. #856 is the counter-example: it failed loudly,
+    on four Windows legs at once, as a ``TypeError`` about ``None`` that named
+    nothing — the decode died in ``subprocess``'s reader thread and the
+    traceback identifying it was demoted to a warning. Loud is not the same as
+    legible, and a red default branch blocked a release either way. Both trees
+    are held to one rule now.
     """
     tree = ast.parse(path.read_text(encoding="utf-8"))
+    aliases = _runner_aliases(tree)
     violations: List[Tuple[int, str, str]] = []
     undecidable: List[Tuple[int, str, str]] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
-        name = _runner_name(node)
+        aliased = isinstance(node.func, ast.Name) and node.func.id in aliases
+        name = _runner_name(node, aliases)
         if name not in _SUBPROCESS_RUNNERS:
             continue
         if any(kw.arg is None for kw in node.keywords):
+            if aliased:
+                # A monkeypatch trampoline forwarding its caller's kwargs.
+                continue
             undecidable.append(
                 (node.lineno, name, "**kwargs may carry text=/encoding=/errors="))
             continue
@@ -329,6 +377,12 @@ def test_the_subprocess_scan_catches_a_bare_text_call_and_spares_the_rest(
     Note the two half-fixes: ``errors=`` alone is still a violation, because
     the codec is still the locale's, and ``encoding=`` alone is still a
     violation, because the handler is still strict. Both halves or neither.
+
+    The last four lines pin the alias rule from #862, in both directions: a
+    direct call through a saved runner is judged and reported under the runner's
+    real name, and the trampoline forwarding ``**kw`` to the same alias is not —
+    it originates no kwargs, and flagging it would have cost 18 waivers in
+    ``tests/`` to catch the one real defect on the line above it.
     """
     fixture = tmp_path / "sample.py"
     fixture.write_text(
@@ -343,7 +397,11 @@ def test_the_subprocess_scan_catches_a_bare_text_call_and_spares_the_rest(
         "    subprocess.run(cmd, text=True, encoding=None)\n"
         "    subprocess.run(cmd, **opts)\n"
         "    subprocess.run(cmd, text=flag)\n"
-        "    print(cmd)\n",
+        "    print(cmd)\n"
+        "_REAL_POPEN = subprocess.Popen\n"
+        "def patched(cmd, **kw):\n"
+        "    _REAL_POPEN(cmd, text=True)\n"
+        "    return _REAL_POPEN(cmd, **kw)\n",
         encoding="utf-8",
     )
     violations, undecidable = subprocess_encoding_violations(fixture)
@@ -353,6 +411,7 @@ def test_the_subprocess_scan_catches_a_bare_text_call_and_spares_the_rest(
         (5, "check_output", "errors"),
         (6, "run", "encoding"),
         (9, "run", "encoding and errors"),
+        (15, "Popen", "encoding and errors"),
     ]
     assert undecidable == [
         (10, "run", "**kwargs may carry text=/encoding=/errors="),
@@ -411,6 +470,145 @@ def test_the_subprocess_scan_declines_rather_than_guessing() -> None:
         "site — a forwarded **kwargs hides the one property this rule "
         "exists to enforce:\n  " + "\n  ".join(unreadable)
     )
+
+
+def _test_files() -> List[Path]:
+    return sorted(TESTS_DIR.rglob("*.py"))
+
+
+def _subprocess_call_sites(paths: List[Path]) -> int:
+    """How many ``subprocess`` runner calls the rule actually looked at.
+
+    The enumerators below assert an empty offender list, and an empty list is
+    also what a scan returns once it has quietly stopped finding anything — a
+    renamed runner, a moved directory, an ``rglob`` that matches no file.
+    Counting the calls seen makes the difference between the two visible.
+    """
+    seen = 0
+    for path in paths:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and _runner_name(node) in _SUBPROCESS_RUNNERS:
+                seen += 1
+    return seen
+
+
+def test_no_test_subprocess_decodes_by_locale() -> None:
+    """The same rule inside ``tests/``. #862, generalising #856.
+
+    Every behavioural assertion in these files passes on a UTF-8 platform
+    whether or not the decoding is pinned, so this class of defect cannot be
+    detected here by running the suite — only by reading the source. Which is
+    what this does, and why it fails wherever it runs rather than only on the
+    one platform that can see the constraint.
+
+    The #856 trigger is worth restating because it is self-sustaining: CI
+    checks out ``--depth 1``, so the only commit present is the one under
+    test, and ``git-trail`` prints its *commit message*. The PR that
+    introduced a Control Picture put ``\\xe2\\x90\\x9b`` in its own subject line;
+    cp1252 has no mapping for ``0x90``; and a squash message is built from the
+    PR title and body, so the PR documenting the fix reintroduced it.
+    """
+    paths = _test_files()
+    seen = _subprocess_call_sites(paths)
+    assert seen > 50, (
+        f"the scan looked at {seen} subprocess calls in tests/ — it has drifted "
+        "into matching nothing, and its green would mean nothing"
+    )
+    offenders = []
+    for path in paths:
+        violations, _ = subprocess_encoding_violations(path)
+        for lineno, call, missing in violations:
+            offenders.append(
+                f"{path.relative_to(ROOT)}:{lineno}: subprocess {call}() decodes "
+                f"text but leaves {missing} to the default")
+    assert not offenders, (
+        f"{len(offenders)} test call sites decode the child's output with the "
+        "locale codec — cp1252 on the Windows runners, where the decode raises "
+        "inside subprocess's reader thread, communicate() hands back None, and "
+        "the caller's `proc.stdout + proc.stderr` fails with a TypeError that "
+        'names nothing (#856). Pass encoding="utf-8", errors="replace":\n  '
+        + "\n  ".join(offenders)
+    )
+
+
+def test_no_test_subprocess_call_is_unreadable_to_the_scan() -> None:
+    """The honesty half, applied to ``tests/`` as well as to shipped code.
+
+    A forwarded ``**kwargs`` hides the one property the rule exists to read,
+    so the enumerator above would pass a whole style of call site without ever
+    judging it. Listed here rather than silently counted as clean.
+    """
+    unreadable = []
+    for path in _test_files():
+        _, undecidable = subprocess_encoding_violations(path)
+        for lineno, call, why in undecidable:
+            unreadable.append(f"{path.relative_to(ROOT)}:{lineno}: {call}() — {why}")
+    assert not unreadable, (
+        "the encoding rule cannot judge these calls, so it declines rather "
+        "than passing them. Spell encoding=/errors= out literally at the call "
+        "site:\n  " + "\n  ".join(unreadable)
+    )
+
+
+# The child writes its own UTF-8 bytes instead of printing, so the demonstration
+# is about the *parent's* decode and nothing else — and the parents write bytes
+# back for the same reason: under an ASCII locale a bare `print` of the glyph
+# would raise UnicodeEncodeError on the way out and prove the wrong thing.
+_GLYPH_CHILD = (
+    "import sys\n"
+    "sys.stdout.buffer.write('alpha ␛ omega'.encode('utf-8'))\n"
+)
+_BARE_PARENT = (
+    "import subprocess, sys\n"
+    "r = subprocess.run([sys.executable, sys.argv[1]], capture_output=True, text=True)\n"
+    "sys.stdout.buffer.write(('OK ' + r.stdout).encode('utf-8'))\n"
+)
+_PINNED_PARENT = (
+    "import subprocess, sys\n"
+    "r = subprocess.run([sys.executable, sys.argv[1]], capture_output=True, text=True,\n"
+    "                   encoding='utf-8', errors='replace')\n"
+    "sys.stdout.buffer.write(('OK ' + r.stdout).encode('utf-8'))\n"
+)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX locale env vars")
+def test_a_bare_text_call_dies_under_an_ascii_locale_and_a_pinned_one_does_not(
+    tmp_path: Path,
+) -> None:
+    """The hazard itself, forced on a machine whose locale codec is UTF-8.
+
+    This is the part a Mac cannot otherwise see. ``LC_ALL=C`` with PEP 538 and
+    PEP 540 disabled makes ``locale.getpreferredencoding()`` ASCII, which is
+    the Windows cp1252 failure in a form that reproduces here — the codec
+    differs, the defect does not. The two spellings run side by side under it:
+    the bare one dies on the first byte of the glyph, the pinned one does not.
+
+    If the bare call ever stops raising, the forcing has stopped working and
+    the enumerators above are the only thing still holding this seam. Worth
+    knowing, which is why it is asserted rather than assumed.
+    """
+    child = tmp_path / "child.py"
+    child.write_text(_GLYPH_CHILD, encoding="utf-8")
+    env = dict(os.environ)
+    env.update(ASCII_LOCALE)
+
+    def _run_parent(source: str, name: str):
+        parent = tmp_path / name
+        parent.write_text(source, encoding="utf-8")
+        return subprocess.run(
+            [sys.executable, str(parent), str(child)],
+            capture_output=True, env=env, timeout=120)
+
+    bare = _run_parent(_BARE_PARENT, "bare.py")
+    bare_err = bare.stderr.decode("utf-8", "replace")
+    assert bare.returncode != 0, bare.stdout.decode("utf-8", "replace")
+    assert "UnicodeDecodeError" in bare_err, bare_err
+
+    pinned = _run_parent(_PINNED_PARENT, "pinned.py")
+    pinned_err = pinned.stderr.decode("utf-8", "replace")
+    assert pinned.returncode == 0, pinned_err
+    assert pinned.stdout.decode("utf-8") == "OK alpha ␛ omega", pinned_err
 
 
 GIT_PRESETS = sorted(

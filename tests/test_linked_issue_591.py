@@ -190,7 +190,7 @@ def test_the_render_helper_pluralises_and_lists_every_reference() -> None:
 # ---------------------------------------------------------------------------
 
 def _git(repo: Path, *args: str) -> str:
-    r = subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True)
+    r = subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace")
     assert r.returncode == 0, r.stderr
     return r.stdout.strip()
 

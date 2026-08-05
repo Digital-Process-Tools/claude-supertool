@@ -160,7 +160,7 @@ class TestSymlinkInvocation:
         link.symlink_to(real)
         r = subprocess.run(
             [sys.executable, str(link), "version"],
-            capture_output=True, text=True, cwd=str(tmp_path), timeout=30,
+            capture_output=True, text=True, cwd=str(tmp_path), timeout=30, encoding="utf-8", errors="replace",
         )
         assert r.returncode == 0, f"symlinked invocation crashed:\n{r.stderr}"
         assert "ModuleNotFoundError" not in r.stderr, \

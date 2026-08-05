@@ -34,7 +34,7 @@ GIT = ["git", "-c", "user.email=f@example.invalid", "-c", "user.name=f"]
 
 
 def _git(args: list[str], cwd: Path) -> None:
-    subprocess.run(GIT + args, cwd=str(cwd), capture_output=True, text=True, check=False)
+    subprocess.run(GIT + args, cwd=str(cwd), capture_output=True, text=True, check=False, encoding="utf-8", errors="replace")
 
 
 # `_GIT_IGNORED_CACHE` is per-run scratch and is listed in conftest's

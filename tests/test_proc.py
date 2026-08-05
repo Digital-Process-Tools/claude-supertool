@@ -345,6 +345,6 @@ def test_the_source_scans_do_not_decode_by_locale() -> None:
     r = subprocess.run(
         [sys.executable, "-X", "warn_default_encoding", "-W", "error::EncodingWarning",
          "-c", probe],
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     assert r.returncode == 0, r.stderr

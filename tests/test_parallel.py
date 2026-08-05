@@ -77,7 +77,7 @@ def _run(argv: list[str], parallel: bool, tmp_path: Path) -> str:
     result = subprocess.run(
         [sys.executable, str(_supertool_path()), *argv],
         capture_output=True, text=True, encoding="utf-8",
-        env=_subprocess_env(extra), cwd=str(tmp_path),
+        env=_subprocess_env(extra), cwd=str(tmp_path), errors="replace",
     )
     return result.stdout
 
@@ -125,7 +125,7 @@ def test_parallel_disabled_by_default(tmp_path: Path) -> None:
         [sys.executable, str(_supertool_path()), "read:x.txt"],
         capture_output=True, text=True, encoding="utf-8",
         env=_subprocess_env(),  # no SUPERTOOL_PARALLEL
-        cwd=str(tmp_path),
+        cwd=str(tmp_path), errors="replace",
     )
     assert "1→hi" in result.stdout
 

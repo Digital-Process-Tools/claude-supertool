@@ -56,7 +56,7 @@ needs_ruff = pytest.mark.skipif(
 def _spawn(*args: str, env: dict | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, str(ADAPTER), *args],
-        capture_output=True, text=True, env=env,
+        capture_output=True, text=True, env=env, encoding="utf-8", errors="replace",
     )
 
 

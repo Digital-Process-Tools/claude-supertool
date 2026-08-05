@@ -16,7 +16,7 @@ _spec.loader.exec_module(merge)
 
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
-        ["git"] + list(args), cwd=repo, capture_output=True, text=True, check=True
+        ["git"] + list(args), cwd=repo, capture_output=True, text=True, check=True, encoding="utf-8", errors="replace"
     )
 
 

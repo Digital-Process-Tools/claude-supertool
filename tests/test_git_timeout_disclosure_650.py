@@ -130,7 +130,7 @@ def _require_git() -> str:
 
 def _git(repo: Path, *args: str) -> str:
     r = subprocess.run(["git", "-C", str(repo), *args], check=True,
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, encoding="utf-8", errors="replace")
     return r.stdout.strip()
 
 
@@ -459,7 +459,7 @@ def _conflicted_repo(tmp_path: Path) -> Path:
     (repo / "f").write_text("ours\n")
     _git(repo, "commit", "-am", "ours")
     subprocess.run(["git", "-C", str(repo), "merge", "theirs"],
-                   capture_output=True, text=True)
+                   capture_output=True, text=True, encoding="utf-8", errors="replace")
     return repo
 
 

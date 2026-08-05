@@ -92,7 +92,7 @@ def test_default_only_carries_comment_added() -> None:
 def _run_defaults(key: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, str(WATCH_DIR / "defaults.py"), key],
-        capture_output=True, text=True, timeout=20,
+        capture_output=True, text=True, timeout=20, encoding="utf-8", errors="replace",
     )
 
 
@@ -144,7 +144,7 @@ def _run_watch_mine(tmp_path: Path, *args: str) -> list[str]:
     env = dict(os.environ, SUPERTOOL=str(stub), STUB_LOG=str(log))
     r = subprocess.run(
         ["bash", str(SCRIPT), *args],
-        capture_output=True, text=True, timeout=60, env=env,
+        capture_output=True, text=True, timeout=60, env=env, encoding="utf-8", errors="replace",
     )
     assert r.returncode == 0, r.stderr
     return log.read_text(encoding="utf-8").splitlines()

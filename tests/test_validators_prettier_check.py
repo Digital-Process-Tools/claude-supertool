@@ -23,7 +23,7 @@ def _run(args: list[str], env: dict | None = None) -> dict:
         full_env.update(env)
     result = subprocess.run(
         [sys.executable, str(ADAPTER), *args],
-        capture_output=True, text=True, env=full_env, timeout=adapter_budget(ADAPTER),
+        capture_output=True, text=True, env=full_env, timeout=adapter_budget(ADAPTER), encoding="utf-8", errors="replace",
     )
     assert result.stdout, f"adapter produced no stdout (stderr={result.stderr})"
     return json.loads(result.stdout)

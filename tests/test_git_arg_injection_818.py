@@ -69,7 +69,7 @@ HOSTILE_REF = f"--upload-pack={EVIL}"
 
 def _git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
     return subprocess.run(
-        ["git"] + list(args), cwd=repo, capture_output=True, text=True, check=check
+        ["git"] + list(args), cwd=repo, capture_output=True, text=True, check=check, encoding="utf-8", errors="replace"
     )
 
 
@@ -113,7 +113,7 @@ def _probe_rce(tmp_path: Path, monkeypatch) -> bool:
     a = _origin_repo(tmp_path)
     subprocess.run(
         ["git", "fetch", "origin", HOSTILE_REF],
-        cwd=a, capture_output=True, text=True,
+        cwd=a, capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     return sentinel.exists()
 

@@ -82,7 +82,7 @@ class Channel:
             cwd=str(CHANNEL_TS.parent),
             env={**os.environ, **(env or {}), "SUPERTOOL_WATCH_SOCK": self.sock_path},
             text=True,
-            bufsize=1,
+            bufsize=1, encoding="utf-8", errors="replace",
         )
         self.messages: "queue.Queue[dict]" = queue.Queue()
         self.stderr_lines: list[str] = []

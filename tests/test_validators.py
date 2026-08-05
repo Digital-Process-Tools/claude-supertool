@@ -731,7 +731,7 @@ def test_phplint_adapter_valid_php(tmp_path: Path) -> None:
     f = tmp_path / "ok.php"
     f.write_text("<?php\n$x = 1;\n")
     r = subprocess.run([sys.executable, str(PHPLINT), str(f)],
-                       capture_output=True, text=True, timeout=adapter_budget(PHPLINT))
+                       capture_output=True, text=True, timeout=adapter_budget(PHPLINT), encoding="utf-8", errors="replace")
     data = json.loads(r.stdout.strip())
     assert data["tool"] == "phplint"
     assert data["ok"] is True
@@ -743,7 +743,7 @@ def test_phplint_adapter_broken_php_reports_line(tmp_path: Path) -> None:
     f = tmp_path / "bad.php"
     f.write_text("<?php\nfunction broken( {\n")
     r = subprocess.run([sys.executable, str(PHPLINT), str(f)],
-                       capture_output=True, text=True, timeout=adapter_budget(PHPLINT))
+                       capture_output=True, text=True, timeout=adapter_budget(PHPLINT), encoding="utf-8", errors="replace")
     data = json.loads(r.stdout.strip())
     assert data["ok"] is False
     assert data["count"] == 1
@@ -752,7 +752,7 @@ def test_phplint_adapter_broken_php_reports_line(tmp_path: Path) -> None:
 
 def test_phplint_adapter_no_arg_returns_schema_error() -> None:
     r = subprocess.run([sys.executable, str(PHPLINT)],
-                       capture_output=True, text=True, timeout=adapter_budget(PHPLINT))
+                       capture_output=True, text=True, timeout=adapter_budget(PHPLINT), encoding="utf-8", errors="replace")
     data = json.loads(r.stdout.strip())
     assert data["tool"] == "phplint"
     assert data["ok"] is False

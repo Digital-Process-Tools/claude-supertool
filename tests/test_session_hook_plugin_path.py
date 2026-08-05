@@ -39,7 +39,7 @@ def _run_hook(cwd: Path, plugin_root: Path):
     return subprocess.run(
         ["bash", str(HOOK)],
         cwd=str(cwd), env=env,
-        capture_output=True, text=True, timeout=30,
+        capture_output=True, text=True, timeout=30, encoding="utf-8", errors="replace",
     )
 
 

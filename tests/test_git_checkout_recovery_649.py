@@ -60,7 +60,7 @@ _HERMETIC = {
 def _run(args: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(["git"] + args, cwd=cwd,
                           env={**os.environ, **_HERMETIC, "LANGUAGE": "", "LC_ALL": "C"},
-                          capture_output=True, text=True, timeout=60)
+                          capture_output=True, text=True, timeout=60, encoding="utf-8", errors="replace")
 
 
 def _ok(args: list[str], cwd: str) -> str:
@@ -85,11 +85,11 @@ def _git_speaks_french() -> bool:
     with tempfile.TemporaryDirectory(prefix="st649_probe_") as tmp:
         subprocess.run(["git", "init", "-q", "."], cwd=tmp,
                        env={**os.environ, **_HERMETIC}, capture_output=True,
-                       text=True, timeout=30)
+                       text=True, timeout=30, encoding="utf-8", errors="replace")
         env = {**os.environ, **_HERMETIC, "LANGUAGE": "fr"}
         env.pop("LC_ALL", None)  # LC_ALL=C outranks LANGUAGE and un-translates git
         res = subprocess.run(["git", "checkout", "no-such-ref"], cwd=tmp, env=env,
-                             capture_output=True, text=True, timeout=30)
+                             capture_output=True, text=True, timeout=30, encoding="utf-8", errors="replace")
         return "pathspec" not in (res.stderr + res.stdout)
 
 

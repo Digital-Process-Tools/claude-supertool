@@ -42,7 +42,7 @@ def _decode(raw: bytes | None) -> str:
     return "" if raw is None else raw.decode("utf-8", errors="replace")
 
 
-def _run_utf8(argv, *, check: bool = False, **kwargs):
+def _run_utf8(argv, *, check: bool = False, cwd=None, env=None, timeout=None):
     """Run `argv`, capture bytes, and decode them as UTF-8 — never as the locale codec.
 
     `subprocess.run(..., text=True)` with no `encoding=` decodes the child's
@@ -61,8 +61,15 @@ def _run_utf8(argv, *, check: bool = False, **kwargs):
     Decoding here takes the locale out of the question entirely, and
     `errors="replace"` means undecodable output degrades to a visible marker
     rather than taking the test down.
+
+    The keyword arguments are spelled out rather than forwarded as `**kwargs`
+    because #862 holds `tests/` to the same encoding rule as shipped code, and
+    that rule declines to judge a call whose kwargs it cannot read — a
+    forwarded `**kwargs` could carry `text=True` and hide the one property the
+    rule exists to enforce.
     """
-    proc = subprocess.run(argv, capture_output=True, **kwargs)
+    proc = subprocess.run(argv, capture_output=True,
+                          cwd=cwd, env=env, timeout=timeout)
     done = subprocess.CompletedProcess(
         proc.args, proc.returncode, _decode(proc.stdout), _decode(proc.stderr))
     if check:

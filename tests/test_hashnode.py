@@ -378,7 +378,7 @@ def _run_hn_dryrun(script: str, *argv_parts: str) -> tuple[str, str]:
     ) % (str(repo / "presets" / "hashnode"), script)
     proc = subprocess.run(
         [_sys.executable, "-c", driver, *argv_parts],
-        capture_output=True, text=True, timeout=10,
+        capture_output=True, text=True, timeout=10, encoding="utf-8", errors="replace",
     )
     assert proc.returncode == 0, f"driver failed: {proc.stderr}"
     return eval(proc.stdout.strip())
@@ -420,7 +420,7 @@ def test_argv_rejoin_hn_comments_simple() -> None:
     ) % str(repo / "presets" / "hashnode")
     proc = subprocess.run(
         [_sys.executable, "-c", driver, "my-slug", "5"],
-        capture_output=True, text=True, timeout=10,
+        capture_output=True, text=True, timeout=10, encoding="utf-8", errors="replace",
     )
     assert proc.returncode == 0, proc.stderr
     slug, n = eval(proc.stdout.strip())

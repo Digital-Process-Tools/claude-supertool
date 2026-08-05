@@ -64,21 +64,21 @@ def _run(args: list[str], cwd: Path, stdin: str = "") -> tuple[int, str, str]:
 def _head(cwd: Path) -> str:
     return subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=cwd, capture_output=True,
-        text=True, check=True,
+        text=True, check=True, encoding="utf-8", errors="replace",
     ).stdout.strip()
 
 
 def _subject(cwd: Path) -> str:
     return subprocess.run(
         ["git", "log", "-1", "--pretty=format:%s"], cwd=cwd,
-        capture_output=True, text=True, encoding="utf-8", check=True,
+        capture_output=True, text=True, encoding="utf-8", check=True, errors="replace",
     ).stdout
 
 
 def _staged(cwd: Path) -> list[str]:
     out = subprocess.run(
         ["git", "diff", "--cached", "--name-only"], cwd=cwd,
-        capture_output=True, text=True, check=True,
+        capture_output=True, text=True, check=True, encoding="utf-8", errors="replace",
     ).stdout
     return [line for line in out.splitlines() if line.strip()]
 

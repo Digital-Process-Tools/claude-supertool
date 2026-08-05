@@ -594,7 +594,7 @@ def test_an_innocent_test_while_a_sibling_agent_opens_a_worktree(tmp_path):
 
 def _git(args, cwd):
     return subprocess.run(
-        ["git", *_ID, *args], cwd=str(cwd), capture_output=True, text=True
+        ["git", *_ID, *args], cwd=str(cwd), capture_output=True, text=True, encoding="utf-8", errors="replace"
     )
 
 
@@ -642,7 +642,7 @@ def _run_guarded(repo: Path, target: Path) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, "-m", "pytest", str(target), "--no-cov",
          "-p", "no:cacheprovider"],
-        cwd=str(repo), capture_output=True, text=True, env=env,
+        cwd=str(repo), capture_output=True, text=True, env=env, encoding="utf-8", errors="replace",
     )
 
 

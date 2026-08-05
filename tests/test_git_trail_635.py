@@ -66,7 +66,7 @@ def _run(
     for attempt in range(3):
         res = subprocess.run(
             [sys.executable, str(TRAIL), *args],
-            capture_output=True, text=True, encoding="utf-8", cwd=repo, env=env,
+            capture_output=True, text=True, encoding="utf-8", cwd=repo, env=env, errors="replace",
         )
         if res.returncode == 0 or not _UNREADABLE_OBJECT_RE.search(res.stdout):
             break

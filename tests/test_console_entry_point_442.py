@@ -39,7 +39,7 @@ def test_installed_console_script_runs_and_propagates_exit_code(tmp_path: Path) 
         [str(venv_python), "-m", "pip", "install", str(REPO_ROOT)],
         check=True,
         capture_output=True,
-        encoding="utf-8",
+        encoding="utf-8", errors="replace",
     )
 
     assert installed_supertool.exists(), (
@@ -49,7 +49,7 @@ def test_installed_console_script_runs_and_propagates_exit_code(tmp_path: Path) 
     ok = subprocess.run(
         [str(installed_supertool), "version"],
         capture_output=True,
-        encoding="utf-8",
+        encoding="utf-8", errors="replace",
     )
     assert ok.returncode == 0, (
         f"installed `supertool version` should exit 0\n"
@@ -60,7 +60,7 @@ def test_installed_console_script_runs_and_propagates_exit_code(tmp_path: Path) 
     bad = subprocess.run(
         [str(installed_supertool), "not-a-real-op:whatever"],
         capture_output=True,
-        encoding="utf-8",
+        encoding="utf-8", errors="replace",
     )
     assert bad.returncode != 0, (
         f"installed supertool should propagate a non-zero exit code for a "

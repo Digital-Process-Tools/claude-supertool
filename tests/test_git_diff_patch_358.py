@@ -28,7 +28,7 @@ def _init_repo(path: Path) -> None:
 def _run(repo: Path, *args: str) -> str:
     res = subprocess.run(
         [sys.executable, str(DIFF), *args],
-        capture_output=True, text=True, encoding="utf-8", cwd=repo, env=dict(os.environ),
+        capture_output=True, text=True, encoding="utf-8", cwd=repo, env=dict(os.environ), errors="replace",
     )
     assert res.returncode == 0, res.stderr
     return res.stdout

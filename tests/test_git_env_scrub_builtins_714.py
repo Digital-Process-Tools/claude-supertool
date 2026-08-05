@@ -64,7 +64,7 @@ GIT_VARS = tuple(supertool.GIT_ENV_VARS)
 def _git(args, cwd, env=None):
     return subprocess.run(
         ["git", *_ID, *args], cwd=str(cwd), env=env,
-        capture_output=True, text=True, timeout=60,
+        capture_output=True, text=True, timeout=60, encoding="utf-8", errors="replace",
     )
 
 
@@ -117,7 +117,7 @@ def _run_op(op: str, cwd: Path, git_dir: Path | None = None):
         env["GIT_DIR"] = str(git_dir)
     return subprocess.run(
         [sys.executable, str(SUPERTOOL), op],
-        cwd=str(cwd), capture_output=True, text=True, timeout=180, env=env,
+        cwd=str(cwd), capture_output=True, text=True, timeout=180, env=env, encoding="utf-8", errors="replace",
     )
 
 
@@ -136,11 +136,11 @@ def test_control_raw_git_really_does_honour_the_leak(tmp_path):
     cmd = ["git", "status", "--porcelain", "--ignored=matching", "--", "tracked.txt"]
 
     normal = subprocess.run(cmd, cwd=str(repo_b), env=_clean_env(),
-                            capture_output=True, text=True, timeout=60)
+                            capture_output=True, text=True, timeout=60, encoding="utf-8", errors="replace")
     leaked_env = _clean_env()
     leaked_env["GIT_DIR"] = str(repo_a / ".git")
     leaked = subprocess.run(cmd, cwd=str(repo_b), env=leaked_env,
-                            capture_output=True, text=True, timeout=60)
+                            capture_output=True, text=True, timeout=60, encoding="utf-8", errors="replace")
 
     assert normal.returncode == 0 and leaked.returncode == 0, (
         "the leak must not be caught by a failure — #705's `git?` decline "
@@ -263,7 +263,7 @@ def test_the_notice_is_said_once_per_call_not_once_per_op(tmp_path):
     r = subprocess.run(
         [sys.executable, str(SUPERTOOL),
          "read:tracked.txt", "read:b.txt", "read:.supertool.json"],
-        cwd=str(repo_b), capture_output=True, text=True, timeout=180, env=env,
+        cwd=str(repo_b), capture_output=True, text=True, timeout=180, env=env, encoding="utf-8", errors="replace",
     )
 
     assert r.stdout.count("scrubbed inherited git env") == 1, r.stdout

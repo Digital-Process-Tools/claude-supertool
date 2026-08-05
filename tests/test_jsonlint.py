@@ -15,7 +15,7 @@ def _run(file_path: str) -> dict:
     result = subprocess.run(
         [sys.executable, str(ADAPTER), file_path],
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8", errors="replace",
     )
     return json.loads(result.stdout)
 
@@ -110,7 +110,7 @@ def test_no_arg_returns_error() -> None:
     result = subprocess.run(
         [sys.executable, str(ADAPTER)],
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8", errors="replace",
     )
     out = json.loads(result.stdout)
     assert out["ok"] is False

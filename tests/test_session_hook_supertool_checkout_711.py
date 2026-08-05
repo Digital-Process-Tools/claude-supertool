@@ -79,7 +79,7 @@ def _run_hook(cwd: Path, plugin_root: Path) -> subprocess.CompletedProcess:
     env.pop("SUPERTOOL_ALLOW_MIXED_TREE", None)
     return subprocess.run(
         ["bash", str(HOOK)],
-        cwd=str(cwd), env=env, capture_output=True, text=True, timeout=120,
+        cwd=str(cwd), env=env, capture_output=True, text=True, timeout=120, encoding="utf-8", errors="replace",
     )
 
 
@@ -88,7 +88,7 @@ def _run_custom_op_through(link: Path, cwd: Path) -> subprocess.CompletedProcess
     env.pop("SUPERTOOL_ALLOW_MIXED_TREE", None)
     return subprocess.run(
         [sys.executable, os.path.realpath(link), "whoami"],
-        cwd=str(cwd), env=env, capture_output=True, text=True, timeout=120,
+        cwd=str(cwd), env=env, capture_output=True, text=True, timeout=120, encoding="utf-8", errors="replace",
     )
 
 
