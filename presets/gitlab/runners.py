@@ -269,6 +269,25 @@ def _missing_annotations(runner: dict) -> list[str]:
     return missing
 
 
+def _liveness_unknown(runner: dict) -> bool:
+    """Neither predicate above will speak for this runner.
+
+    #805 gave the module three states and only two predicates: `_is_responsive`
+    for evidence of life, `_demonstrably_down` for evidence of death, and the
+    gap between them left to whichever caller happened to negate one of them.
+    A negation is not the third state — `not _is_responsive` collapses UNKNOWN
+    into "down" and `not _demonstrably_down` collapses it into "live", and both
+    readings have shipped a false alarm from this file already.
+
+    So the gap gets a name. A runner GitLab still advertises as `online` and
+    un-paused, whose only demerit is `contacted_at` age, is not silent and not
+    fine: it is unmeasured. Callers that must act on the distinction ask for it
+    by name rather than inverting a predicate that was built to answer a
+    different question.
+    """
+    return not _demonstrably_down(runner) and not _is_responsive(runner)
+
+
 def _is_responsive(runner: dict) -> bool:
     """Able to pick up queued work right now.
 
@@ -618,7 +637,8 @@ def radar_report(options: dict | None = None) -> tuple[list[str], bool]:
 
 
 def done_zero_unreadable(runners: list[dict],
-                         running_by_runner: dict[int, int]) -> list[str]:
+                         running_by_runner: dict[int, int],
+                         waiting_by_runner: dict[int, int]) -> list[str]:
     """Rows whose `DONE 0` an operator would act on but the op cannot support.
 
     `DONE/30m 0` means "wedged" only for a runner that has been up the whole
@@ -640,23 +660,42 @@ def done_zero_unreadable(runners: list[dict],
 
     Restricted to rows a reader would act on, because a caveat printed against
     every quiet runner on an idle fleet is wallpaper, and wallpaper is not
-    read. Two exclusions do that work. A runner with completed jobs has
-    answered the question outright. A runner GitLab itself calls `paused`,
-    `offline`, `stale` or `never_contacted` has a `0` its own STATUS column
-    already explains, and uptime is not the thing to go and check. What is
-    left is the shape the op exists for: a runner GitLab is still advertising
-    as healthy that has finished nothing — either executing work it is not
-    completing, or quiet past the heartbeat threshold.
+    read. Three gates do that work.
+
+    A runner with completed jobs has answered the question outright. A runner
+    GitLab itself calls `paused`, `offline`, `stale` or `never_contacted` has a
+    `0` its own STATUS column already explains, and uptime is not the thing to
+    go and check there — which is why `_demonstrably_down` excludes rather than
+    selects here, though #806 raised the opposite as a candidate.
+
+    The third gate is stake, and it is the one #806 was actually about. The
+    membership test used to be `not _is_responsive`, which after #805 reads a
+    runner in the UNKNOWN gap — advertised `online`, un-paused, stale only on
+    the throttled heartbeat — as though it were down. Live, that named
+    `docker-db-on-disk`: `RUN 0`, `WAIT 0`, holding no job and blocking no
+    queued work, sent to a reader as a host to go and check before calling a
+    wedge nobody had called. Worse, an idle fleet is exactly when every
+    heartbeat drifts stale at once, so the exclusions written to prevent
+    wallpaper produced it on the one fleet shape they were aimed at: the only
+    quiet runner they excluded was one with a *fresh* heartbeat, and a fresh
+    heartbeat is the first thing an idle fleet loses.
+
+    So the `0` is caveated where a wedge reading has something to be wedged on:
+    a runner holding running jobs and completing none, or one whose liveness is
+    UNKNOWN with pending work queued that it may take. With nothing at stake
+    there is no wedge to disclaim, the row's own marker already says the
+    heartbeat is stale, and the note stays quiet.
     """
     named = []
     for runner in runners:
         if runner.get("_recent_jobs"):
             continue
-        if runner.get("paused") or not runner.get("active", True):
+        if _demonstrably_down(runner):
             continue
-        if runner.get("status") in {"offline", "stale", "never_contacted"}:
-            continue
-        if running_by_runner.get(runner["id"], 0) > 0 or not _is_responsive(runner):
+        holding = running_by_runner.get(runner["id"], 0) > 0
+        blocking = (waiting_by_runner.get(runner["id"], 0) > 0
+                    and _liveness_unknown(runner))
+        if holding or blocking:
             named.append(runner.get("description") or f"#{runner['id']}")
     return named
 
@@ -721,7 +760,7 @@ def _print_fleet(runners: list[dict], pending: list[dict], running: list[dict]) 
             f"{waiting:<5} {tags[:34]}{marker}"
         )
 
-    unreadable = done_zero_unreadable(runners, running_by_runner)
+    unreadable = done_zero_unreadable(runners, running_by_runner, waiting_by_runner)
     if unreadable:
         print(f"\nNOTE: DONE/{window_minutes}m 0 reads as a wedge only for a runner "
               f"that has been up the whole {window_minutes}m. GitLab publishes no "
