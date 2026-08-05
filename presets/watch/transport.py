@@ -481,6 +481,14 @@ def poller_env() -> dict[str, str]:
     return env
 
 
+_SCAN_PS_ARGV = ("ps", "-axww", "-o", "pid=,args=")
+
+# Reached once per process and cached. The answer describes the machine, which
+# does not change under a running process — and the failure path must not pay
+# two subprocesses per radar tick to re-learn it.
+_ps_scan_verdict: bool | None = None
+
+
 def _ps_rows() -> list[tuple[int, list[str]]] | None:
     """[(pid, argv tokens)] for every process, or None when `ps` cannot be read.
 
@@ -490,7 +498,7 @@ def _ps_rows() -> list[tuple[int, list[str]]] | None:
     """
     try:
         proc = subprocess.run(
-            ["ps", "-axww", "-o", "pid=,args="],
+            list(_SCAN_PS_ARGV),
             capture_output=True, timeout=5, check=False,
             encoding="utf-8", errors="replace",
         )
@@ -509,6 +517,70 @@ def _ps_rows() -> list[tuple[int, list[str]]] | None:
             continue
         rows.append((pid, parts[1:]))
     return rows
+
+
+def ps_scan_supported() -> bool:
+    """Can a process scan ever answer on this machine?
+
+    False means *permanently* no: either there is no `ps` here at all, or the
+    one that is here cannot answer the scan and never will. Distinct from
+    `scan_ok=False`, which means one particular scan did not answer. A `ps`
+    that could answer and did not this time is news; a machine that can never
+    answer is a property of that machine and cannot be news twice.
+
+    Presence is not the question, and asking it that way reddened #786 twice.
+    GitHub's `windows-latest` carries a Git Bash / MSYS2 `ps` on PATH: it is
+    found, it runs, and it does not understand `-axww -o` — so a `which` check
+    said "supported" and every run took the loud branch, forever. The question
+    is not whether a binary called `ps` exists but whether *this machine's* `ps`
+    can answer *our* invocation.
+
+    So it is probed, in three steps, on exit status and spawnability only —
+    never by matching a failure message, which would be brittle in exactly the
+    way this bug was:
+
+      1. No `ps` on PATH at all — permanent, and no subprocess is spawned.
+      2. Run `_SCAN_PS_ARGV`, the same constant `_ps_rows` uses, so a future
+         change to the scan's flags cannot leave this probe testing a question
+         nothing asks. Exit 0 — supported.
+      3. It failed, so run a bare `ps` as a control. If *that* exits 0, this
+         machine's `ps` works and is refusing our invocation specifically:
+         evidenced, repeatable tomorrow, and therefore permanent.
+
+    Anything else is unclassifiable and returns True — deliberately erring
+    towards loud. A spawn error, a timeout, or a `ps` that fails both probes
+    could be a machine where scanning normally works and is broken right now,
+    and writing that off as a platform limit is how a genuinely broken scan
+    starts looking clean. Same shape as `docs/validators.md` §"Declining
+    instead of guessing" makes at the raise site: permanence has to be shown,
+    not assumed.
+    """
+    global _ps_scan_verdict
+    if _ps_scan_verdict is not None:
+        return _ps_scan_verdict
+    _ps_scan_verdict = _probe_ps_scan()
+    return _ps_scan_verdict
+
+
+def _ran(argv: tuple[str, ...] | list[str]) -> int | None:
+    """Exit status of `argv`, or None when it could not be run to completion."""
+    try:
+        proc = subprocess.run(list(argv), capture_output=True, timeout=5,
+                              check=False, encoding="utf-8", errors="replace")
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return proc.returncode
+
+
+def _probe_ps_scan() -> bool:
+    if shutil.which("ps") is None:
+        return False
+    scan = _ran(_SCAN_PS_ARGV)
+    if scan == 0:
+        return True
+    if scan is None:
+        return True
+    return _ran(("ps",)) != 0
 
 
 def _labelled(tokens: list[str]) -> tuple[str, str] | None:
