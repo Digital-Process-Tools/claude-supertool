@@ -407,7 +407,7 @@ _COMPACT_SKIP = re.compile(
     r"|^\s*/\*"        # block comment open
     r"|^\s*\*/"        # block comment close
     r"|^\s*<!--"       # XML/HTML comment open
-    r"|^\s*-->"        # XML/HTML comment close
+    r"|^\s*--!?>"      # XML/HTML comment close (--> or --!>)
 )
 
 # Config file — .supertool.json in project root (or parent dirs)
