@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.25.0] - 2026-08-06
+## [Unreleased]
 
 ### Changed
 
@@ -14,10 +14,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   **The skip is announced, and an unreadable stdin runs the suite rather than skipping it.** Three states, not two: some callers invoke a hook with stdin closed, and "the question was never answered" must not render as "feature branch, skip it" — the cost of being wrong that way is three minutes, and the other way is master. Both paths say which one they took.
 
   **What was rejected, and why it is written down.** Dropping the hook's `-m 'not benchmark'` override was considered and refused: the comment above it argues that the default `not slow` filter lets a slow test CI runs slip through, and that reasoning holds. It would also have bought nothing today — only 7 tests carry `@pytest.mark.slow` and none of them are the four that own the suite's cost ([#891](https://github.com/Digital-Process-Tools/claude-supertool/issues/891)). `-x` was refused too: on a three-minute suite it converts one run showing every failure into one run per failure, which is why `--tb=short` is there.
-
-### Added
-
-- **`validate:@payload` — the file list travels in a field nothing re-splits** ([#878](https://github.com/Digital-Process-Tools/claude-supertool/issues/878)). `validate:@-` / `validate:@file.toml` take `path` **or** `paths` (a list), plus `tools` and `verbose`. The colon list form `validate:f1,f2,…:FILTER` joins on `:` and `,` and has no escape for either. `_split_arg` rescues the common case — a Windows drive letter, per comma-segment — but not a `:` that is not followed by a separator (`x:ruff` re-points the filter) and not a `,` in a filename (`a,b.py` re-parses into two paths, neither real). Same `@file`/`@-` shape the read and mutating ops already use, dispatched straight to the op so the payload is never rebuilt into a colon string. Documented in `docs/input-forms.md`.
 
 ### Fixed
 
@@ -34,6 +30,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A test whose name asserted the general property and whose fixture only ever exercised the case that already worked** ([#895](https://github.com/Digital-Process-Tools/claude-supertool/issues/895)). `test_no_separator_a_filename_can_hold_writes_a_second_block`, new in #892, pinned `{"builtin": "python"}` — whose `msg` is `SyntaxError.msg`, a fixed English phrase that never contains the path. So it measured the header channel ten times and the row channel zero times, and stayed green on a version where nine of the ten separators forged a header. **This is the more important half of the issue.** A green test standing in for a check that did not happen is this repo's most-filed defect class, it is how #889 survived the previous gate, and a wrong test is worse than a missing one because the next auditor reads it as coverage.
 
   The fixture is now parametrised over both channels — the builtin, and a subprocess adapter whose `msg` echoes its input, which is the shape every shipped subprocess validator has. The post-condition is unchanged and still comes off **real `op_validate_multi` output with a real file on disk**, never from observing that a flattener was called: that observation passes on a version that flattens the wrong field, which is precisely the version that shipped.
+
+## [0.25.0] - 2026-08-06
+
+### Added
+
+- **`validate:@payload` — the file list travels in a field nothing re-splits** ([#878](https://github.com/Digital-Process-Tools/claude-supertool/issues/878)). `validate:@-` / `validate:@file.toml` take `path` **or** `paths` (a list), plus `tools` and `verbose`. The colon list form `validate:f1,f2,…:FILTER` joins on `:` and `,` and has no escape for either. `_split_arg` rescues the common case — a Windows drive letter, per comma-segment — but not a `:` that is not followed by a separator (`x:ruff` re-points the filter) and not a `,` in a filename (`a,b.py` re-parses into two paths, neither real). Same `@file`/`@-` shape the read and mutating ops already use, dispatched straight to the op so the payload is never rebuilt into a colon string. Documented in `docs/input-forms.md`.
+
+### Fixed
 
 - **`flat()` neutralised eight of the ten separators `str.splitlines()` splits on, so #881's forgery still worked one character over** ([#886](https://github.com/Digital-Process-Tools/claude-supertool/issues/886)). `presets/_untrusted._is_control` covered C0, DEL and C1. U+2028 LINE SEPARATOR and U+2029 PARAGRAPH SEPARATOR are Zl/Zp — neither, and unreachable by any `ord()` bound in that predicate — so a worktree file named with them emitted **three `validate:` headers for two files** on the commit that fixed #881. The two sets differed by exactly two code points and those two were the whole gap.
 
