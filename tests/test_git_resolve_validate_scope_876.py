@@ -163,7 +163,12 @@ def test_the_receiver_reads_exactly_the_paths_the_payload_named(monkeypatch) -> 
         return ""
 
     monkeypatch.setattr(supertool, "op_validate_multi", recorder)
-    monkeypatch.setattr(supertool, "_safe_path", lambda p: p)
+    # No `_safe_path` stub. It was here, set to identity, and that is why #882
+    # shipped: the containment check was switched off inside the only suite
+    # exercising the route that needed it, so a payload naming `/etc/hosts`
+    # looked fine here and ran validators in production. conftest's
+    # SUPERTOOL_ALLOW_OUTSIDE_CWD=1 already keeps these relative fixtures
+    # working; the detector stays on.
     supertool._read_op_from_payload(
         "validate", {"paths": list(AWKWARD_PATHS), "tools": "@syntax"}
     )

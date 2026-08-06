@@ -74,6 +74,8 @@ tools = "@syntax"
 EOF
 ```
 
+**Containment applies to every path in the payload, exactly as it does on the colon CLI.** `validate:@-` with `{"path": "/etc/hosts"}` is refused on the same terms `validate:/etc/hosts` is refused, and by the same code — one `_containment_error` helper, called from dispatch and from the payload route. The first version of the route guarded only the multi-file branch, so a single out-of-tree path went through and ran locally-configured validators against a file outside the project root ([#882](https://github.com/Digital-Process-Tools/claude-supertool/issues/882)). The rule to take from that: **a new route does not get its own copy of a policy** — a copy is what drifted, and the copy looked like parity while omitting the generic check every op gets for free.
+
 A read-op argument beginning with `@` is only treated as a payload when it could be one — `@-`, a file that exists, or a lone `@….toml` / `@….json`. `grep:@Override:src/` still searches for `@Override`.
 
 ### Where a relative `@payload` path resolves from
