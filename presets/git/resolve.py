@@ -508,9 +508,12 @@ def _validate_paths(paths: list[str]) -> dict[str, Optional[str]]:
         if "no validators" in out:
             return digests
         # Split the combined output into per-file blocks on the header lines.
-        # Blocks are emitted in the same order as `files` (op_validate_multi
-        # guarantees input order), so fold them back positionally — robust to any
-        # path normalization the echoed header might apply.
+        # Blocks are emitted in the same order as `files` and one per file —
+        # op_validate_multi guarantees both, the second one only since #881,
+        # where a filename containing newlines emitted three headers for two
+        # files. So fold them back positionally: robust to any path
+        # normalization the echoed header might apply, and no longer dependent
+        # on the header's *content* for anything at all.
         blocks: list[str] = []
         buf: list[str] = []
         started = False
@@ -524,6 +527,18 @@ def _validate_paths(paths: list[str]) -> dict[str, Optional[str]]:
                 buf.append(line)
         if started:
             blocks.append("\n".join(buf))
+        # A fold that cannot account for its own inputs must say so. `zip`
+        # truncates silently, and every file past the mismatch then takes some
+        # other file's verdict — which is how #881 turned a syntax error into
+        # `validate: ok`. The emitter's guarantee makes this unreachable; the
+        # check is here because "unreachable" is what the previous docstring
+        # claimed too, and the cost of being wrong is a false clean bill.
+        if len(blocks) != len(files):
+            reason = (f"validator output had {len(blocks)} block(s) "
+                      f"for {len(files)} file(s)")
+            for p in files:
+                digests[p] = _not_checked(reason)
+            return digests
         for path, block in zip(files, blocks):
             digests[path] = _digest_block(block)
         return digests

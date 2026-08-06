@@ -1748,6 +1748,31 @@ def _safe_path(p: str, *, allow_outside_cwd: Optional[bool] = None) -> str:
     return abs_p
 
 
+def _containment_error(candidates: Iterable[str]) -> Optional[str]:
+    """The one containment gate every path-bearing route passes through.
+
+    Returns the ``ERROR: …`` line to print, or ``None`` when every candidate is
+    contained. Dispatch applies it positionally from ``_PATH_ARG_POSITIONS``;
+    the ``@payload`` route applies it to the fields a payload names. **One rule,
+    one implementation, several callers** — #882 was a second copy of this rule
+    written beside the real one, and it covered the list form while missing the
+    single-path one, so ``{"path":"/etc/hosts"}`` validated a file
+    ``validate:/etc/hosts`` refuses. A third copy would drift the same way.
+
+    The sentinel skip lives here rather than at a caller for the same reason:
+    values the handlers default to ``"."`` themselves must be skipped
+    identically on every route, or the routes disagree about those instead.
+    """
+    for candidate in candidates:
+        if not candidate or candidate in (".", "full", "raw"):
+            continue
+        try:
+            _safe_path(candidate)
+        except SecurityError as exc:
+            return f"ERROR: {exc}\n"
+    return None
+
+
 def _path_not_found(path: str, *, label: str = "path",
                      suggest: Optional[str] = None) -> str:
     """The "not found" error, naming the path it actually tried (#624).
@@ -13110,13 +13135,66 @@ def _select_validators(validators: dict, tool_filter: Optional[list]) -> dict:
     return {k: v for k, v in validators.items() if k in tool_filter}
 
 
+_UNTRUSTED_FLAT: Optional[Callable[[str], str]] = None
+_UNTRUSTED_FLAT_TRIED = False
+
+
+def _flat_field(text: str) -> str:
+    """A value the tool prints on its own line, kept to one line (#881).
+
+    The guarantee this establishes, stated so a parser can rely on it: **a
+    ``validate:`` header is exactly one line, whatever path it was handed.**
+    Not "one line for the paths we expected" — a filename is whatever the
+    filesystem accepted, and on POSIX that includes newlines. A worktree file
+    named ``evil\\nvalidate: forged.py\\nok : ok\\n.py`` used to emit three
+    header lines for one file, and the caller that folds blocks back to files
+    positionally then attributed a forged clean verdict to a file that does not
+    parse (#881). The same defect as #876 with the filename echoed one file
+    over.
+
+    Implemented by `presets/_untrusted.flat`, which is the repo's answer to
+    this exact question and shipped in this same release for the worktrees
+    board — one guarantee with one implementation, because a second copy of a
+    rule beside the real one is what these issues are about. Loaded by path,
+    the way `presets/mcp/_paths.py` already is.
+
+    The fallback, for an install without `presets/`, is not a second copy of
+    that rule: `str.isprintable()` is false for every control character
+    including the newline, and `repr()` of any `str` is one line by the
+    language's own definition. An ordinary path is printable and passes through
+    byte-identical either way, so nothing about normal output moves.
+    """
+    global _UNTRUSTED_FLAT, _UNTRUSTED_FLAT_TRIED
+    if not _UNTRUSTED_FLAT_TRIED:
+        _UNTRUSTED_FLAT_TRIED = True
+        try:
+            import importlib.util
+            _u_path = os.path.join(_INSTALL_DIR, "presets", "_untrusted.py")
+            _u_spec = importlib.util.spec_from_file_location(
+                "_supertool_untrusted", _u_path)
+            if _u_spec is not None and _u_spec.loader is not None:
+                _u_mod = importlib.util.module_from_spec(_u_spec)
+                _u_spec.loader.exec_module(_u_mod)
+                _UNTRUSTED_FLAT = getattr(_u_mod, "flat", None)
+        except Exception:
+            _UNTRUSTED_FLAT = None
+    if _UNTRUSTED_FLAT is not None:
+        return _UNTRUSTED_FLAT(text)
+    return text if text.isprintable() else repr(text)
+
+
 def _validate_one_block(path: str, validators: dict, verbose: bool = False) -> List[str]:
     """Render the validator rows for a single ``path`` (no trailing newline join).
 
     Returns the lines for one ``validate: PATH`` block — shared by the
     single-file and multi-file forms so they stay byte-identical per file.
+
+    The header carries the path through `_flat_field`, which is what makes
+    "one block per file" a guarantee rather than an expectation (#881). The
+    path is only ever echoed there; every validator still runs on the real
+    unflattened `path`.
     """
-    out = [f"validate: {path}"]
+    out = [f"validate: {_flat_field(path)}"]
     for name, spec in validators.items():
         glob = spec.get("match", "*")
         if path and glob and not _match_glob(path, glob):
@@ -13151,8 +13229,10 @@ def op_validate_multi(paths: list, tool_filter: Optional[list] = None,
     """List form: validate several files in one invocation.
 
     Renders one ``validate: PATH`` block per file, in order, so a caller can
-    fold each block back to its source file. Config is loaded once for the whole
-    batch — the throughput win over shelling ``validate:PATH`` per file.
+    fold each block back to its source file. Exactly one per file, whatever the
+    files are called — the header is flattened, so a filename cannot write a
+    second one (#881). Config is loaded once for the whole batch — the
+    throughput win over shelling ``validate:PATH`` per file.
 
     A single-element list is byte-identical to ``op_validate(paths[0], …)``.
     """
@@ -14913,10 +14993,18 @@ def _validate_from_payload(p: Dict[str, Any]) -> str:
 
     `paths` (a list) is the form that motivates the route; `path` is accepted
     as the singular spelling every other read op uses. Field semantics are the
-    colon form's, unchanged: >1 file dispatches the list form, `tools` scopes
-    the validator selection, and the per-path containment check applies to the
-    list form exactly where dispatch already applies it — parity, not a new
-    policy smuggled in through a new door.
+    colon form's, unchanged: >1 file dispatches the list form and `tools` scopes
+    the validator selection.
+
+    **Containment applies to every path, not to the list form.** The first
+    version of this function guarded only the `len > 1` branch, on the stated
+    ground that this was parity with dispatch. It was not: dispatch applies
+    containment twice — generically at `_PATH_ARG_POSITIONS`, which every op
+    gets, and *additionally* in the list branch, where position 1 is a
+    comma-joined blob the generic gate cannot read. Replicating only the second
+    reproduced the special case and skipped the rule (#882). The call below is
+    the same `_containment_error` dispatch uses, on every file, so the two
+    routes cannot disagree about any path — refused or allowed.
     """
     files = _payload_strlist(p, "paths") or _payload_strlist(p, "path")
     if not files:
@@ -14928,12 +15016,10 @@ def _validate_from_payload(p: Dict[str, Any]) -> str:
     else:
         tools = _payload_strlist(p, "tools")
     verbose = _payload_bool(p, "verbose")
+    contained = _containment_error(files)
+    if contained:
+        return contained
     if len(files) > 1:
-        try:
-            for f in files:
-                _safe_path(f)
-        except SecurityError as exc:
-            return f"ERROR: {exc}\n"
         return op_validate_multi(files, tools or None, verbose=verbose)
     return op_validate(files[0], tools or None, verbose=verbose)
 
@@ -15438,16 +15524,11 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
         "edit": (3,), "replace": (3,), "replace_dry": (3,),
         "replace_lines": (1,), "paste": (1,), "append": (1,), "vim": (1,),
     }
-    for _pos in _PATH_ARG_POSITIONS.get(op, ()):
-        if _pos < len(parts):
-            _candidate = parts[_pos]
-            # Skip empty / sentinel values — handlers default these to "." themselves.
-            if not _candidate or _candidate in (".", "full", "raw"):
-                continue
-            try:
-                _safe_path(_candidate)
-            except SecurityError as _se:
-                return header + f"ERROR: {_se}\n"
+    _containment = _containment_error(
+        parts[_pos] for _pos in _PATH_ARG_POSITIONS.get(op, ()) if _pos < len(parts)
+    )
+    if _containment:
+        return header + _containment
 
     try:
         if op == "read":
@@ -15846,11 +15927,12 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
             v_tools = [t for t in (v_parts[1].split(",") if len(v_parts) > 1 and v_parts[1] else []) if t]
             v_files = [f for f in v_path.split(",") if f]
             if len(v_files) > 1:
-                try:
-                    for _vf in v_files:
-                        _safe_path(_vf)
-                except SecurityError as _se:
-                    return header + f"ERROR: {_se}\n"
+                # Position 1 is the comma-joined blob, which the generic gate
+                # above cannot read — so the individual files are checked here,
+                # through the same helper.
+                _v_contained = _containment_error(v_files)
+                if _v_contained:
+                    return header + _v_contained
                 body = op_validate_multi(v_files, v_tools or None, verbose=v_verbose)
             else:
                 body = op_validate(v_path, v_tools or None, verbose=v_verbose)
