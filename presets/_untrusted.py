@@ -103,6 +103,26 @@ about ``\\r``:
   tab is the one C0 character that can imitate the board's own structure
   without making a line. The difference is the surface, not the character.
 
+**A line is not only a C0 concern either (#886).** `flat()` exists so that a
+consumer counting lines sees one, and the consumer counts with
+`str.splitlines()`, which splits on ten separators: the eight `_is_control`
+already covers, plus U+2028 LINE SEPARATOR and U+2029 PARAGRAPH SEPARATOR.
+Those two are Zl/Zp, not controls — no `ord() < 0x20` and no C1 range reaches
+them. Eight of ten is not a guarantee; it is a guarantee about the inputs
+somebody thought of, and a worktree file named with U+2028 still wrote three
+`validate:` headers for two files after #881 was fixed. So the predicate below
+covers exactly the set the consumer splits on. Exactly, in both directions: the
+two additions are code points no path, title, login, label or milestone
+contains, so every ordinary field still passes through byte-identical, and the
+`[U+2028]` spelling they take is the one C1 has used since #863 — there is no
+Control Picture for a character outside C0.
+
+The fix is the predicate rather than the `split()` in `flat()` below, which is
+the shape #882 warned about: `visible()` is the layer both `flat()` and
+`scrub()` ask, so widening it answers for both call sites and for the next one.
+`flat()` still splits on the newline alone, which only decides whether a
+separator renders as a space or as its own name — either way it is one line.
+
 **Disclosed, not stripped.** Control characters are replaced by the Unicode
 Control Pictures glyph that names them (``\\x1b`` → ``␛``), never dropped.
 Suppressing them silently converts *this text was hostile* into *this text was
@@ -265,9 +285,18 @@ _TAB = chr(9)
 _CRLF = chr(13) + _LF
 
 
+# The two separators `str.splitlines()` splits on that are not control
+# characters at all (#886). Named as their own set rather than folded into the
+# ranges below, because they are not C0, not C1 and not DEL — writing them as
+# one more numeric bound would hide that this predicate answers a question
+# about *lines*, not a question about a code point block.
+_LINE_SEPARATORS = frozenset((chr(0x2028), chr(0x2029)))
+
+
 def _is_control(ch: str) -> bool:
     o = ord(ch)
-    return o < 0x20 or o == 0x7F or 0x80 <= o <= 0x9F
+    return (o < 0x20 or o == 0x7F or 0x80 <= o <= 0x9F
+            or ch in _LINE_SEPARATORS)
 
 
 def visible(text: str, *, keep: str = "") -> str:
