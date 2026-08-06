@@ -188,7 +188,7 @@
     },
     "validate": {
       "syntax": "validate:PATH[:tool1,tool2][:verbose]",
-      "description": "Run registered validators matching PATH (by extension). Optional tool_filter limits to named validators. Same validators that fire after every mutating op. Append `verbose` for uncapped errors + source context + raw stdout/stderr.",
+      "description": "Run registered validators matching PATH (by extension). Optional tool_filter limits to named validators. Same validators that fire after every mutating op. Append `verbose` for uncapped errors + source context + raw stdout/stderr. The list form `validate:f1,f2:FILTER` splits on ':' and ',' — both legal in a filename. Drive letters are reassembled, but `x:ruff` re-points the filter and `a,b.py` becomes two paths. Use validate:@payload.toml or validate:@- (fields: path | paths, tools, verbose) for any path a colon join cannot survive.",
       "example": "validate:supertool.py"
     },
     "gc": {

@@ -309,6 +309,41 @@ def test_validate_digest_in_receipt(monkeypatch, capsys, tmp_path) -> None:
     assert "markers: clean | validate: ok" in out
 
 
+def test_resolve_renders_a_check_that_could_not_run(monkeypatch, tmp_path, capsys) -> None:
+    """A digest that never ran is printed, not dropped by the caller's `if digest`.
+
+    `markers: clean` with no digest line is indistinguishable from a check that
+    ran and passed, which is the silence #880 is about. The render has to carry
+    the doubt.
+    """
+    import subprocess
+    f = tmp_path / "x.php"
+    f.write_text("clean php\n", encoding="utf-8")
+    calls: list[list[str]] = []
+
+    def fake_git(args, timeout=10):
+        calls.append(args)
+        if args[:2] == ["rev-parse", "--git-dir"]:
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout=".git\n", stderr="")
+        if args[:3] == ["diff", "--name-only", "--diff-filter=U"]:
+            n = len([c for c in calls if c[:3] == ["diff", "--name-only", "--diff-filter=U"]])
+            stdout = f"{f}\n" if n == 1 else ""
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout=stdout, stderr="")
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    def timing_out(cmd, *a, **k):
+        raise subprocess.TimeoutExpired(cmd, 90)
+
+    _patch_git(monkeypatch, fake_git)
+    monkeypatch.setattr(resolve.subprocess, "run", timing_out)
+    monkeypatch.setattr(resolve.sys, "argv", ["resolve.py", "ours", str(f)])
+    rc = resolve.main()
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert "not checked (timed out)" in out
+
+
 def test_validate_digest_parses_err_rows(monkeypatch) -> None:
     """_validate_paths digests validator 'N err' rows into a warn line."""
     import subprocess
@@ -327,41 +362,47 @@ def test_validate_digest_parses_err_rows(monkeypatch) -> None:
 
 def test_validate_scopes_to_syntax_validators(monkeypatch) -> None:
     """The validate call prefers the declarative @syntax filter."""
+    import json
     import subprocess
-    seen: dict[str, list] = {}
+    seen: dict[str, object] = {}
 
     def fake_run(cmd, *a, **k):
         seen["cmd"] = cmd
+        seen["payload"] = json.loads(k["input"])
         return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="validate: x\nphplint     : ok\n", stderr="")
 
     monkeypatch.setattr(resolve.subprocess, "run", fake_run)
     monkeypatch.setattr(resolve.os.path, "isfile", lambda p: True)
     resolve._validate_paths([__file__])
-    arg = seen["cmd"][-1]  # validate:PATH:FILTER
-    assert arg.startswith("validate:")
+    # The op string carries no fields at all: everything the receiver re-parses
+    # travels in the payload, which is the whole point of the route (#878).
+    assert seen["cmd"][-1] == "validate:@-"
+    payload = seen["payload"]
     # declarative scope: the @syntax sentinel keeps the scope in config, not code
-    assert arg.endswith(":@syntax")
+    assert payload["tools"] == resolve._SYNTAX_FILTER
+    assert payload["paths"] == [__file__]
     # noisy semantic/diagnostic validators must NOT be named in the request
     for noisy in ("lsp-diag", "pyright", "psr", "tsc-check", "prettier-check", "git-status"):
-        assert noisy not in arg
+        assert noisy not in json.dumps(payload)
 
 
 def test_validate_falls_back_to_name_list_when_syntax_unmatched(monkeypatch) -> None:
     """@syntax matches nothing (old config) → retry with the hardcoded list."""
+    import json
     import subprocess
-    cmds: list[list[str]] = []
+    payloads: list[dict] = []
 
     def fake_run(cmd, *a, **k):
-        cmds.append(cmd)
-        if cmd[-1].endswith(":@syntax"):
+        payloads.append(json.loads(k["input"]))
+        if payloads[-1]["tools"] == resolve._SYNTAX_FILTER:
             return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="no validators matched filter\n", stderr="")
         return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="validate: x\nphplint     : ok\n", stderr="")
 
     monkeypatch.setattr(resolve.subprocess, "run", fake_run)
     monkeypatch.setattr(resolve.os.path, "isfile", lambda p: True)
     digests = resolve._validate_paths(["x.php"])
-    assert len(cmds) == 2
-    assert cmds[1][-1].endswith(":" + ",".join(resolve._SYNTAX_VALIDATORS))
+    assert len(payloads) == 2
+    assert payloads[1]["tools"] == list(resolve._SYNTAX_VALIDATORS)
     assert digests["x.php"] == "validate: ok"
 
 
@@ -389,26 +430,28 @@ def test_validate_all_ok_returns_ok(monkeypatch) -> None:
 
 def test_validate_paths_single_supertool_call_for_many_files(monkeypatch, tmp_path) -> None:
     """The digest shells supertool ONCE for all resolved files (issue #306)."""
+    import json
     import subprocess
     files = []
     for name in ("a.php", "b.php", "c.php"):
         p = tmp_path / name
         p.write_text("x\n", encoding="utf-8")
         files.append(str(p))
-    cmds: list[list[str]] = []
+    payloads: list[dict] = []
 
     def fake_run(cmd, *a, **k):
-        cmds.append(cmd)
+        payloads.append(json.loads(k["input"]))
         blocks = "".join(f"validate: {f}\nphplint     : ok\n" for f in files)
         return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=blocks, stderr="")
 
     monkeypatch.setattr(resolve.subprocess, "run", fake_run)
     digests = resolve._validate_paths(files)
     # exactly one subprocess for the whole batch
-    assert len(cmds) == 1
-    # all files comma-joined into the single validate arg, folded back per file
-    arg = cmds[0][-1]
-    assert all(f in arg for f in files)
+    assert len(payloads) == 1
+    # every file in the one payload's list, folded back per file. tmp_path is
+    # absolute, so on Windows each of these carries a drive-letter colon — the
+    # case that broke when the sender filtered its own separators out (#878).
+    assert payloads[0]["paths"] == files
     assert set(digests) == set(files)
     assert all(d == "validate: ok" for d in digests.values())
 
