@@ -45,7 +45,7 @@ None of these guess silently — a mis-tokenized read op fails with `path not fo
 
 Mutating ops (`edit`, `replace`, `replace_lines`, `paste`, `append`, `vim`) accept a payload file instead of inline args. Pass the path with an `@` prefix; use `@-` for stdin.
 
-Read ops (`grep`, `around`, `grep_around`, `between`, `read`) accept the same route, for the reason above — a payload never has to guess where the pattern ends:
+Read ops (`grep`, `around`, `grep_around`, `between`, `read`, `validate`) accept the same route, for the reason above — a payload never has to guess where the pattern ends:
 
 ```bash
 ./supertool 'grep:@-' <<'EOF'
@@ -63,6 +63,16 @@ EOF
 | `around` | `pattern` (required), `path`, `n` |
 | `between` | `symbol` **or** `start` + `end`, plus `path` |
 | `read` | `path` (required), `offset`, `limit`, `grep`, `full` |
+| `validate` | `path` **or** `paths` (a list), plus `tools`, `verbose` |
+
+`validate` is on that list for the mirror image of the reason ([#878](https://github.com/Digital-Process-Tools/claude-supertool/issues/878)). Its ambiguous field is not the pattern but the **file list**: `validate:f1,f2,…:FILTER` joins on `:` and `,`, and has no escape for either. `_split_arg` reassembles a Windows drive letter per comma-segment, so `D:\a\x.php,D:\a\y.php` is carried correctly — but a `:` not followed by a separator is not (`x:ruff` re-points the filter), and a `,` in a filename is not (`a,b.py` re-parses into two paths, neither real). A caller cannot fix that at its own end without re-deriving the tokenizer and keeping it in sync forever; the payload is a field that is never tokenized at all:
+
+```bash
+./supertool 'validate:@-' <<'EOF'
+paths = ["x:ruff", "src/a,b.py"]
+tools = "@syntax"
+EOF
+```
 
 A read-op argument beginning with `@` is only treated as a payload when it could be one — `@-`, a file that exists, or a lone `@….toml` / `@….json`. `grep:@Override:src/` still searches for `@Override`.
 

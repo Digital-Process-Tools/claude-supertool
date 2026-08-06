@@ -14876,7 +14876,66 @@ _READ_OP_AT_FIELDS: Dict[str, Tuple[str, ...]] = {
     "grep_around": ("pattern", "path", "n", "limit"),
     "between":     ("symbol", "start", "end", "path"),
     "read":        ("path", "offset", "limit", "grep", "full"),
+    # `validate` is here for the mirror-image reason (#878). Its problem is not
+    # a pattern that may contain ':' but a *path list* that may: the colon form
+    # `validate:f1,f2,…:FILTER` joins on both ':' and ',', and a filename may
+    # legally contain either — as may every absolute path on Windows, whose
+    # drive letter is a colon. There is no escape in that form and no amount of
+    # sender-side filtering recovers one; only a channel that never re-splits
+    # does.
+    "validate":    ("path", "paths", "tools", "verbose"),
 }
+
+
+def _payload_strlist(p: Dict[str, Any], key: str) -> List[str]:
+    """A payload field that is either one string, or a list of them.
+
+    A comma-separated string is accepted for `tools` because that is what the
+    colon form already means there. It is NOT accepted for a path list: commas
+    are legal in filenames, and re-splitting on one is the defect the payload
+    route exists to avoid.
+    """
+    value = p.get(key)
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value] if value else []
+    if isinstance(value, (list, tuple)):
+        return [str(v) for v in value if str(v)]
+    raise ValueError(
+        f"field {key!r} must be a string or a list of strings, "
+        f"got {type(value).__name__}"
+    )
+
+
+def _validate_from_payload(p: Dict[str, Any]) -> str:
+    """Run the `validate` op from a payload, so a path may contain ':' or ','.
+
+    `paths` (a list) is the form that motivates the route; `path` is accepted
+    as the singular spelling every other read op uses. Field semantics are the
+    colon form's, unchanged: >1 file dispatches the list form, `tools` scopes
+    the validator selection, and the per-path containment check applies to the
+    list form exactly where dispatch already applies it — parity, not a new
+    policy smuggled in through a new door.
+    """
+    files = _payload_strlist(p, "paths") or _payload_strlist(p, "path")
+    if not files:
+        return ("ERROR: @payload for op 'validate' missing required field "
+                "'path' (or 'paths' for the list form)\n")
+    raw_tools = p.get("tools")
+    if isinstance(raw_tools, str):
+        tools = [t for t in raw_tools.split(",") if t]
+    else:
+        tools = _payload_strlist(p, "tools")
+    verbose = _payload_bool(p, "verbose")
+    if len(files) > 1:
+        try:
+            for f in files:
+                _safe_path(f)
+        except SecurityError as exc:
+            return f"ERROR: {exc}\n"
+        return op_validate_multi(files, tools or None, verbose=verbose)
+    return op_validate(files[0], tools or None, verbose=verbose)
 
 
 def _payload_int(p: Dict[str, Any], key: str, default: int) -> int:
@@ -14904,6 +14963,9 @@ def _read_op_from_payload(op: str, payload: Any, no_exclude: bool = False) -> st
     branch ends in one. The colon CLI has to guess where the pattern stops; a
     payload never has to. Same @file/@- shape the mutating ops already use, so
     it is one rule applied consistently rather than two to remember.
+
+    `validate` joins the set for the same reason read from the other end: there
+    the ambiguous field is the pattern, here it is the file list (#878).
     """
     if isinstance(payload, list) or (
         isinstance(payload, dict) and isinstance(payload.get("ops"), list)
@@ -14955,6 +15017,8 @@ def _read_op_from_payload(op: str, payload: Any, no_exclude: bool = False) -> st
                 return op_between_pattern(start, end, path)
             return ("ERROR: @payload for op 'between' needs 'symbol' (symbol "
                     "mode) or 'start' + 'end' (pattern mode)\n")
+        if op == "validate":
+            return _validate_from_payload(p)
         path = str(p.get("path", "") or "")
         if not path:
             return "ERROR: @payload for op 'read' missing required field 'path'\n"

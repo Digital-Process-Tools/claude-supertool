@@ -9,6 +9,7 @@ Receipt shows which files were resolved and how many conflicts remain.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -421,42 +422,84 @@ def _digest_block(block: str) -> Optional[str]:
     return "validate: ok"
 
 
+def _not_checked(reason: str) -> str:
+    """The digest line for a file whose syntax check never ran.
+
+    Distinct from ``None``, which means the validators ran and none of them
+    handles this file type — a real answer, and the reason the caller prints
+    nothing for it. "Could not run" is not that answer, and rendering the two
+    the same way is the defect class this repo is organised around: the caller
+    prints ``markers: clean`` and the missing digest reads exactly like a check
+    that passed (#880). So it says so, on the line, in the render.
+    """
+    return f"validate: ⚠ not checked ({reason})"
+
+
 def _validate_paths(paths: list[str]) -> dict[str, Optional[str]]:
     """Warn-only post-resolve syntax digest for every resolved file, in ONE call.
 
     Shells back into supertool's `validate` op (the single source of truth for
-    which validator runs on which file type) using the list form
-    ``validate:f1,f2,…:FILTER`` — one subprocess for the whole batch instead of
-    one per file. Scoped to syntax/parser validators via the declarative
-    ``@syntax`` filter, falling back to the hardcoded name list for older configs.
-    Output blocks are split on ``validate: PATH`` headers and folded back to each
-    path. Returns ``{path: digest_or_None}``; advisory only — never blocks the
-    resolve. Missing/timeout → every path maps to ``None``.
+    which validator runs on which file type) through its ``@payload`` route —
+    one subprocess for the whole batch instead of one per file. Scoped to
+    syntax/parser validators via the declarative ``@syntax`` filter, falling
+    back to the hardcoded name list for older configs. Output blocks are split
+    on ``validate: PATH`` headers and folded back to each path positionally.
+    Returns ``{path: digest_or_None}``; advisory only — never blocks the resolve.
 
-    That list form has no escape for a path containing its own separators, and
-    a filename may legally contain both: a conflicted file called ``x:ruff``
-    re-parses so the field the receiver reads as the filter is not the one
-    chosen here (#876). Such a path is therefore left out of the batch and
-    reported as ``None`` — the documented "did not answer" — rather than sent
-    through a string that would silently run a different scope. Argv is
-    list-form, so this was never a shell exposure; it was a scope one.
+    **The payload rather than the colon form** ``validate:f1,f2,…:FILTER``
+    (#876, #878). That form joins on ``:`` and ``,`` and has no escape for
+    either, and both are characters a real filename contains: ``x:ruff``
+    re-parses so the field the receiver reads as the filter is not the one this
+    module chose, and ``a,b.py`` re-parses into two paths, neither of them real.
+    Argv is list-form, so that was never a shell exposure — it was a scope one.
+
+    **Filtering those paths out at this end was tried first, and the shape of
+    why it failed is the lesson.** The receiver's tokenizer already reassembles
+    a Windows drive letter, per comma-segment, precisely so the list form
+    carries ``D:\\a\\x.php,D:\\a\\y.php``. A sender-side ``":" not in p`` is a
+    second, cruder copy of that rule written at the wrong end of the pipe and
+    missing its only interesting case — so it excluded exactly the paths the
+    receiver handles best, on the one platform where every absolute path has a
+    colon in it, and excluded them *silently*. Loud exotic bug, quiet universal
+    one.
+
+    The answer is not to re-derive the tokenizer here — that rule would have to
+    stay in sync forever, and every future caller would have to re-derive it
+    too. It is to hand the receiver a field it never tokenizes. Nothing is
+    excluded, and every path is digestible on every platform.
     """
-    files = [p for p in paths if os.path.isfile(p) and ":" not in p and "," not in p]
-    digests: dict[str, Optional[str]] = {p: None for p in paths}
+    digests: dict[str, Optional[str]] = {}
+    files: list[str] = []
+    for p in paths:
+        if os.path.isfile(p):
+            digests[p] = None
+            files.append(p)
+        else:
+            digests[p] = _not_checked("file not found")
     if not files:
         return digests
     st = Path(__file__).resolve().parents[2] / "supertool.py"
     if not st.is_file():
+        for p in files:
+            digests[p] = _not_checked("supertool.py not found")
         return digests
     # Prefer the declarative @syntax scope; fall back to the name allowlist so a
     # config that hasn't adopted the flag still gets the same parser-only digest.
-    for tool_filter in (_SYNTAX_FILTER, ",".join(_SYNTAX_VALIDATORS)):
+    for tool_filter in (_SYNTAX_FILTER, list(_SYNTAX_VALIDATORS)):
+        payload = json.dumps({"paths": files, "tools": tool_filter})
         try:
             res = subprocess.run(
-                [sys.executable, str(st), f"validate:{','.join(files)}:{tool_filter}"],
+                [sys.executable, str(st), "validate:@-"],
+                input=payload,
                 capture_output=True, text=True, timeout=90, encoding="utf-8", errors="replace",
             )
-        except (subprocess.TimeoutExpired, OSError):
+        except subprocess.TimeoutExpired:
+            for p in files:
+                digests[p] = _not_checked("timed out")
+            return digests
+        except OSError as exc:
+            for p in files:
+                digests[p] = _not_checked(f"could not run: {exc.__class__.__name__}")
             return digests
         out = res.stdout
         if "no validators matched filter" in out:
