@@ -79,6 +79,39 @@ if [ -z "${PYTHON:-}" ]; then
     exit 1
 fi
 
+# Which refs is this push updating? A pre-push hook is handed one line per ref
+# on stdin: `<local ref> <local sha> <remote ref> <remote sha>`. The suite is a
+# gate worth three minutes when the destination is `master`, where a red default
+# branch is a shared cost nobody opted into. Pushing a feature branch is the
+# opposite trade: the PR runs 19 checks in parallel on somebody else's machine
+# while the author keeps working, so running them here first buys nothing except
+# a serial wait. CI being slower in wall-clock does not matter when it costs the
+# author no waiting at all.
+#
+# The skip is disclosed rather than silent, and it names the way to override it —
+# a gate that quietly stops gating is worse than one that was never there.
+target_protected=0
+saw_ref=0
+while read -r _local_ref _local_sha remote_ref _remote_sha; do
+    saw_ref=1
+    case "$remote_ref" in
+        refs/heads/master|refs/heads/main) target_protected=1 ;;
+    esac
+done
+
+# Three states, not two. No refs on stdin means the question was never answered
+# — some callers invoke the hook with stdin closed — and an unanswered question
+# must not read as "feature branch, skip it". Say so, then run the suite: the
+# cost of being wrong that way is three minutes, and the other way is master.
+if [ "$saw_ref" -eq 0 ]; then
+    echo "── pre-push: could not read the push refs from stdin — running the suite ──"
+elif [ "$target_protected" -eq 0 ] && [ -z "${PREPUSH_FULL:-}" ]; then
+    echo "── pre-push: feature branch — suite NOT run here ──"
+    echo "   The PR's checks are the gate, and they run in parallel while you work."
+    echo "   Force it locally with: PREPUSH_FULL=1 git push"
+    exit 0
+fi
+
 echo "── pre-push: running full test suite (mirrors CI) ──"
 # Mirror the CI gate (.github/workflows/tests.yml): run slow tests too, and do
 # NOT gate coverage (--no-cov). CI is the authority on what's mergeable; gating
