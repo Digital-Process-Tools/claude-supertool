@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The pre-push hook runs the suite for `master`, not for feature branches** ([#893](https://github.com/Digital-Process-Tools/claude-supertool/issues/893)). It ran the full suite on every push — measured at **176.66s** on a real push — and that cost is serial and blocking, while the PR's 19 checks run in parallel on somebody else's machine and cost the author no waiting at all. CI being slower in wall-clock is not the comparison that matters. The hook now reads the refs git hands it on stdin and gates on the destination: `master`/`main` still pay for the suite, where a red default branch is a shared cost nobody opted into; a feature branch does not, because a red PR branch is what PRs are for. `PREPUSH_FULL=1 git push` forces it.
+
+  **The skip is announced, and an unreadable stdin runs the suite rather than skipping it.** Three states, not two: some callers invoke a hook with stdin closed, and "the question was never answered" must not render as "feature branch, skip it" — the cost of being wrong that way is three minutes, and the other way is master. Both paths say which one they took.
+
+  **What was rejected, and why it is written down.** Dropping the hook's `-m 'not benchmark'` override was considered and refused: the comment above it argues that the default `not slow` filter lets a slow test CI runs slip through, and that reasoning holds. It would also have bought nothing today — only 7 tests carry `@pytest.mark.slow` and none of them are the four that own the suite's cost ([#891](https://github.com/Digital-Process-Tools/claude-supertool/issues/891)). `-x` was refused too: on a three-minute suite it converts one run showing every failure into one run per failure, which is why `--tb=short` is there.
+
 ### Added
 
 - **`validate:@payload` — the file list travels in a field nothing re-splits** ([#878](https://github.com/Digital-Process-Tools/claude-supertool/issues/878)). `validate:@-` / `validate:@file.toml` take `path` **or** `paths` (a list), plus `tools` and `verbose`. The colon list form `validate:f1,f2,…:FILTER` joins on `:` and `,` and has no escape for either. `_split_arg` rescues the common case — a Windows drive letter, per comma-segment — but not a `:` that is not followed by a separator (`x:ruff` re-points the filter) and not a `,` in a filename (`a,b.py` re-parses into two paths, neither real). Same `@file`/`@-` shape the read and mutating ops already use, dispatched straight to the op so the payload is never rebuilt into a colon string. Documented in `docs/input-forms.md`.
