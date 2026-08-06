@@ -1759,12 +1759,24 @@ def _containment_error(candidates: Iterable[str]) -> Optional[str]:
     single-path one, so ``{"path":"/etc/hosts"}`` validated a file
     ``validate:/etc/hosts`` refuses. A third copy would drift the same way.
 
-    The sentinel skip lives here rather than at a caller for the same reason:
-    values the handlers default to ``"."`` themselves must be skipped
-    identically on every route, or the routes disagree about those instead.
+    ``""`` and ``"."`` are skipped because neither is a filename: one means no
+    path was given, the other *is* cwd, and ``_safe_path`` allows both anyway
+    — the skip saves a `realpath` and grants nothing.
+
+    ``"full"`` and ``"raw"`` used to sit beside them and are a different thing
+    entirely: they are names a repo can hold. They were read's mode tokens,
+    which live at ``parts[2]``/``parts[3]`` — no ``_PATH_ARG_POSITIONS`` slot
+    is ever one, so the skip never had a case to serve even on dispatch. What
+    it did have was an effect: #884 moved it from the dispatch loop into this
+    helper, and the ``@payload`` route, whose ``paths`` entries are always
+    filenames, inherited it — a symlink named ``raw`` pointing outside the root
+    then validated where an ordinary name was refused (#889). Parity held and
+    was not the property wanted; the routes agreed on the wrong rule. Deleted
+    rather than moved back or made a parameter: a skip that guards nothing and
+    opens something is only the hole.
     """
     for candidate in candidates:
-        if not candidate or candidate in (".", "full", "raw"):
+        if not candidate or candidate == ".":
             continue
         try:
             _safe_path(candidate)
@@ -13163,6 +13175,14 @@ def _flat_field(text: str) -> str:
     including the newline, and `repr()` of any `str` is one line by the
     language's own definition. An ordinary path is printable and passes through
     byte-identical either way, so nothing about normal output moves.
+
+    "One line" is measured against `str.splitlines()`, the ten separators the
+    consumer folds on — not against the newline. The preset covered eight of
+    them when this consolidation shipped and the fallback covered all ten, so
+    the install *without* `presets/` was the safe one for a release (#886).
+    Recorded because the argument for consolidating was "one guarantee, one
+    implementation", which was right in shape and unverified in fact:
+    consolidation is a win only once the survivor is the stronger of the two.
     """
     global _UNTRUSTED_FLAT, _UNTRUSTED_FLAT_TRIED
     if not _UNTRUSTED_FLAT_TRIED:
@@ -15002,9 +15022,11 @@ def _validate_from_payload(p: Dict[str, Any]) -> str:
     containment twice — generically at `_PATH_ARG_POSITIONS`, which every op
     gets, and *additionally* in the list branch, where position 1 is a
     comma-joined blob the generic gate cannot read. Replicating only the second
-    reproduced the special case and skipped the rule (#882). The call below is
-    the same `_containment_error` dispatch uses, on every file, so the two
-    routes cannot disagree about any path — refused or allowed.
+    reproduced the special case and skipped the rule (#882). The gate now sits
+    one level up, at the top of `_read_op_from_payload`, where the same call
+    covers this op's `path` and `paths` *and* the four read ops that had no
+    gate at all (#885) — one call for the whole route, so no door into it can
+    disagree with another about a path.
     """
     files = _payload_strlist(p, "paths") or _payload_strlist(p, "path")
     if not files:
@@ -15016,9 +15038,6 @@ def _validate_from_payload(p: Dict[str, Any]) -> str:
     else:
         tools = _payload_strlist(p, "tools")
     verbose = _payload_bool(p, "verbose")
-    contained = _containment_error(files)
-    if contained:
-        return contained
     if len(files) > 1:
         return op_validate_multi(files, tools or None, verbose=verbose)
     return op_validate(files[0], tools or None, verbose=verbose)
@@ -15068,6 +15087,24 @@ def _read_op_from_payload(op: str, payload: Any, no_exclude: bool = False) -> st
         return (f"ERROR: unknown field(s) {', '.join(unknown)} in {op}:@payload "
                 f"— accepted: {', '.join(allowed)}\n")
     try:
+        # Containment, before any op sees a path (#885). `op_read` is caught by
+        # the `render_file` chokepoint and `validate` gated itself, but
+        # `op_grep`, `op_around` and both `op_between_*` have no check of their
+        # own: they rely on the `_PATH_ARG_POSITIONS` gate in `_dispatch_impl`,
+        # which this route returns before ever reaching. A payload therefore
+        # returned the contents of any file on disk, with a regex the caller
+        # chose — strictly worse than #882, which was an oracle and an
+        # argument. One call here rather than a `_safe_path` beside each op:
+        # re-implementing the rule locally is what produced #882, and a fourth
+        # copy would drift the same way. Both fields are read with
+        # `_payload_strlist`, which accepts a string or a list, because
+        # `validate` accepts a list under `path` as well as under `paths` — a
+        # `str()` here stringified that list into one nonsense name that
+        # resolves under cwd, and the op then used the real one.
+        contained = _containment_error(
+            [*_payload_strlist(p, "path"), *_payload_strlist(p, "paths")])
+        if contained:
+            return contained
         if op in ("grep", "grep_around", "around"):
             pattern = str(p.get("pattern", "") or "")
             if not pattern:

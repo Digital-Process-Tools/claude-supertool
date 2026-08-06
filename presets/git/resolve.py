@@ -502,18 +502,17 @@ def _validate_paths(paths: list[str]) -> dict[str, Optional[str]]:
                 digests[p] = _not_checked(f"could not run: {exc.__class__.__name__}")
             return digests
         out = res.stdout
-        if "no validators matched filter" in out:
-            # @syntax selected nothing (older config) → retry with the name list.
-            continue
-        if "no validators" in out:
-            return digests
         # Split the combined output into per-file blocks on the header lines.
         # Blocks are emitted in the same order as `files` and one per file —
         # op_validate_multi guarantees both, the second one only since #881,
         # where a filename containing newlines emitted three headers for two
         # files. So fold them back positionally: robust to any path
-        # normalization the echoed header might apply, and no longer dependent
-        # on the header's *content* for anything at all.
+        # normalization the echoed header might apply, and not dependent on
+        # the header's *content* for anything at all. That last clause was
+        # written by #884 and was false when written — the two status
+        # substring tests below the split read the header's content, which is
+        # #888. It is true of everything above this line, and the tests are
+        # now gated on there being no header at all.
         blocks: list[str] = []
         buf: list[str] = []
         started = False
@@ -527,12 +526,39 @@ def _validate_paths(paths: list[str]) -> dict[str, Optional[str]]:
                 buf.append(line)
         if started:
             blocks.append("\n".join(buf))
+        # "Did the validator run at all?" answered structurally, by whether a
+        # block was emitted — not by substring-testing the stream (#888).
+        # `op_validate_multi` returns "no validators configured" / "no
+        # validators matched filter" *instead of* every block, never beside
+        # one, so a status message is an output with no header in it. The old
+        # test read the combined stdout, which carries one `validate: <path>`
+        # header per file, so a file named `no validators.py` answered the
+        # question for the whole batch and every neighbour came back `None` —
+        # the state meaning "no validator handles this type", which the caller
+        # renders as `markers: clean` with no digest line. A file with a real
+        # syntax error was staged and reported clean, and no crafted character
+        # was needed, only a plausible name. #881 stopped a filename adding a
+        # line to this stream; it never stopped one containing a string, and a
+        # longer or more specific substring would be the same bug with a
+        # smaller target. Gating on "no blocks" also keeps a validator that
+        # quotes file content back in a row from reaching these tests.
+        if not blocks:
+            if "no validators matched filter" in out:
+                # @syntax selected nothing (older config) → retry the name list.
+                continue
+            if "no validators configured" in out:
+                return digests
+            # Anything else with no blocks — a crash, an ERROR line — is not a
+            # clean bill. Fall through to the count check, which says so.
         # A fold that cannot account for its own inputs must say so. `zip`
         # truncates silently, and every file past the mismatch then takes some
         # other file's verdict — which is how #881 turned a syntax error into
-        # `validate: ok`. The emitter's guarantee makes this unreachable; the
-        # check is here because "unreachable" is what the previous docstring
-        # claimed too, and the cost of being wrong is a false clean bill.
+        # `validate: ok`. Not unreachable, whatever the emitter guarantees:
+        # #884 called it that and #886 reached it two code points later, with a
+        # filename separated by U+2028, which the flattener did not yet cover.
+        # This guard is the only reason that gap was a denial rather than a
+        # second forged clean. The cost of being wrong here is a false clean
+        # bill, so it stays whatever the layer above currently promises.
         if len(blocks) != len(files):
             reason = (f"validator output had {len(blocks)} block(s) "
                       f"for {len(files)} file(s)")
