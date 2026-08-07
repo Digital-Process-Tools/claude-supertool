@@ -255,7 +255,7 @@ On the corpus above that fires on about 4% of files. `read.php_abstract` — the
 
 Three ways to pass arguments. Full reference: [docs/input-forms.md](docs/input-forms.md).
 
-- **Colon-CLI** (default) — `read:PATH:OFFSET:LIMIT` (or `read:PATH:START-END` for an explicit, inclusive line range). Use `:::` when content contains colons: `edit:::OLD:::NEW:::PATH`.
+- **Colon-CLI** (default) — `read:PATH:OFFSET:LIMIT` (or `read:PATH:START-END` for an explicit, inclusive line range — prefer it, since OFFSET is a skip count and `:19:1` renders line 20; a windowed read states the lines it returned in its header). Use `:::` when content contains colons: `edit:::OLD:::NEW:::PATH`. A `grep` LIMIT of `0` is refused rather than read as "unlimited".
 - **`@file` route** — JSON payload for `edit`/`replace_lines`/`paste`/`append`/`vim` when content is multi-line or shell-hostile: `edit:@.max/my-edit.json`.
 - **`@file` for read ops** — `grep`/`around`/`grep_around`/`between`/`read` take the same payload, for patterns containing `:` (`Class::CONST`, `ERROR: …`, alternations). The colon CLI copes with `grep:PATTERN:PATH:LIMIT` but cannot when the path is omitted; a payload never has to guess. There is **no** backslash escape — `grep:A\:B` only appears to work. See [docs/input-forms.md](docs/input-forms.md).
 

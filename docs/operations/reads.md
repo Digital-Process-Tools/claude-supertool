@@ -6,7 +6,7 @@ File reading and directory listing ops. Reach for these when you know the path a
 
 | Op | Syntax | What it does |
 |----|--------|--------------|
-| `read` | `read:PATH` or `read:PATH:OFFSET:LIMIT` | 300 lines / 20KB cap. With `read.abstract` on, a file over the threshold comes back as its symbol map instead — see [Abstract read](#abstract-read) |
+| `read` | `read:PATH` or `read:PATH:OFFSET:LIMIT` | 300 lines / 20KB cap. With `read.abstract` on, a file over the threshold comes back as its symbol map instead — see [Abstract read](#abstract-read). **OFFSET is a skip count**, so `:19:1` renders line 20 — see [The window line](#the-window-line) |
 | `read` (range) | `read:PATH:START-END` | Explicit inclusive line range. Prefer over `:OFFSET:LIMIT` when you know the lines — the offset form reads like a range but is not. Composes with `:full` and `:grep=PATTERN`. |
 | `read` (filter) | `read:PATH:OFFSET:LIMIT:grep=PATTERN` | Only show lines matching PATTERN (original line numbers preserved). Use `read:PATH:::grep=PATTERN` for defaults. |
 | `head` | `head:PATH:N` | First N lines (default 20). Minified single-line files return a char-window peek instead of the whole giant line; window size via `builtin-ops.head.char_window` (default 1000, or env `SUPERTOOL_HEAD_CHAR_WINDOW`). |
@@ -17,6 +17,87 @@ File reading and directory listing ops. Reach for these when you know the path a
 | `glob` | `glob:PATTERN` | `**` supported. Patterns resolve from the repo root; an unanchored pattern that matches nothing is retried once as `**/PATTERN`, so `glob:SiBrief/**/*.php` also finds a `SiBrief/` nested deeper (the retry prints a `[mid-path retry: …]` line — a genuine zero stays zero). **Auto-reads** if PATTERN is a concrete file path (no wildcards). |
 | `tree` | `tree:PATH` or `tree:PATH:DEPTH` | Directory structure with depth limit (default 3). Hides dotfiles. Files listed before subdirectories. |
 | `diff` | `diff:PATH1:PATH2` | Unified diff between two files. |
+
+## The window line
+
+`read:PATH:OFFSET:LIMIT` takes OFFSET as a **skip count**, not a start line. So
+`read:file.py:19:1` skips nineteen lines and renders line **20** — the line the
+caller named is not in the output at all. That was silent: a shifted window, a
+window clamped short by EOF, and a window past EOF that returned nothing all
+rendered as well-formed output with nothing to distinguish them from a correct
+one, and the last of the three signed off with `[complete file — no more lines]`.
+
+Any read with a non-zero OFFSET now carries one line, immediately after the
+count header and **before the content**, naming the window asked for and the
+window returned:
+
+```
+(403 lines, 18211 bytes)
+window: offset 19 + limit 1 = lines 20-20; returning lines 20-20 of 403, stopping at line 20: the limit was reached; OFFSET is a skip count, not a start line — for lines 19-19 use read:file.py:19-19
+    20→...
+```
+
+Clamped short:
+
+```
+window: offset 8 + limit 5 = lines 9-13; returning lines 9-10 of 10, stopping at line 10: the end of the file; OFFSET is a skip count, not a start line — for lines 8-12 use read:ten.txt:8-12
+```
+
+Past EOF — no content, and the render says so instead of claiming the file was
+shown in full:
+
+```
+window: offset 99 + limit 3 = lines 100-102; returning nothing — the file has 10 lines
+```
+
+A windowed read that reaches EOF closes with `[end of file — lines 1-OFFSET not
+shown]`. `[complete file — no more lines]` is reserved for a read that started
+at line 1, where it is true.
+
+### Why the window ended — three reasons, never two
+
+The clause after `stopping at line N` names which of three things ended the
+window:
+
+| Clause                              | What happened                                          |
+| ----------------------------------- | ------------------------------------------------------ |
+| `the limit was reached`             | LIMIT lines were read; the file continues              |
+| `the end of the file`               | there was nothing after line N                         |
+| `cut short by the 20000-byte cap`   | the render hit its byte budget; the file continues     |
+
+The first version of this note knew only two of them and treated any shortfall
+against the requested end as EOF, so a capped read opened with `stopping at line
+54, the end of the file` above a body whose own footer, 20 KB further down, said
+146 lines remained. The false claim came first, and it is the one a caller
+quotes.
+
+When two of them land on the same line — LIMIT reached exactly at EOF — the note
+says so rather than choosing:
+
+```
+window: offset 40 + limit 60 = lines 41-100; returning lines 41-100 of 100, stopping at line 100: the end of the file and the limit was reached coincide here — which one ended the window cannot be told apart
+```
+
+### Compact mode
+
+Compact mode drops blanks and comments. The lines it drops are read but not
+printed, so the span the note names is wider than the count of lines in the
+body, and the note says how many were suppressed:
+
+```
+window: offset 10 + limit 50 = lines 11-60; returning lines 11-60 of 200, 25 of those 50 lines emitted (compact mode skipped 25), stopping at line 60: the limit was reached
+```
+
+Every number in the render — the window line, the `... (N more lines)` footer and
+the byte-cap footer — is taken from the last line the read **looked at**, not
+from the count of lines it printed. Those two differ under compact mode and
+under a `grep=` filter, and while they differed the same render carried two
+counts that disagreed.
+
+The semantics were not changed. `read:PATH:START-END` already spells 1-based
+inclusive addressing and is the form to prefer; re-basing OFFSET would have
+broken every caller who had it right, trading a visible wrong answer for an
+invisible one.
 
 ## Abstract read
 
