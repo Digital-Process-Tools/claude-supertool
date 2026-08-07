@@ -123,28 +123,110 @@ def collect(directory: Path) -> List[Fragment]:
     return sorted(fragments, key=lambda f: f.sort_key)
 
 
-def render(fragments: Sequence[Fragment], version: str, date: str) -> str:
-    """The release section, as text. Sections in spec order, entries in sort order."""
+def _trim(block: List[str]) -> List[str]:
+    """Drop leading and trailing blank lines, keep the ones in the middle."""
+    while block and not block[0].strip():
+        block.pop(0)
+    while block and not block[-1].strip():
+        block.pop()
+    return block
+
+
+def _subsections(body: Sequence[str]) -> Tuple[List[str], List[Tuple[str, List[str]]]]:
+    """Split a section body into loose preamble and `### Heading` -> its lines.
+
+    Indented continuation paragraphs stay with the entry above them: nothing is
+    re-wrapped or re-parsed, lines are carried across verbatim. Entries in this
+    changelog run to several paragraphs, and a fold that kept only the bullet
+    would be loss reported as success.
+    """
+    preamble: List[str] = []
+    sections: List[Tuple[str, List[str]]] = []
+    for line in body:
+        if line.startswith("### "):
+            sections.append((line.strip(), []))
+        elif sections:
+            sections[-1][1].append(line)
+        else:
+            preamble.append(line)
+    return _trim(list(preamble)), [(title, _trim(block)) for title, block in sections]
+
+
+def _merge_by_title(sections: Sequence[Tuple[str, List[str]]]) -> dict:
+    """Fold same-named `###` blocks together, keyed case-insensitively.
+
+    An `[Unreleased]` section that already carries two `### Fixed` headings is
+    the live bug (#911), and #839 is why that matters: a duplicated heading
+    reparents everything between the two copies. Emitting both again would
+    carry the defect into a tagged release, so they merge here.
+    """
+    merged: dict = {}
+    for title, block in sections:
+        key = title.lower()
+        if key in merged:
+            if block:
+                merged[key][1].extend([""] + block)
+        else:
+            merged[key] = [title, list(block)]
+    return merged
+
+
+def _entry_count(lines: Sequence[str]) -> int:
+    """Top-level `- ` bullets. Continuation paragraphs indent, so they do not count."""
+    return sum(1 for line in lines if line.startswith("- "))
+
+
+def render(fragments: Sequence[Fragment], version: str, date: str,
+           residue_preamble: Sequence[str] = (),
+           residue_sections: Sequence[Tuple[str, List[str]]] = ()) -> str:
+    """The release section, as text.
+
+    Sections in Keep a Changelog order; within each, the folded `[Unreleased]`
+    residue first (it has been pending longer), then the fragments in issue
+    order. One heading per section whichever side supplied it.
+    """
     out = ["## [{0}] - {1}".format(version, date), ""]
-    for section in SECTIONS:
-        chosen = [f for f in fragments if f.section == section]
-        if not chosen:
-            continue
-        out.append("### {0}".format(section.capitalize()))
+    if any(line.strip() for line in residue_preamble):
+        out.extend(residue_preamble)
         out.append("")
+
+    merged = _merge_by_title(residue_sections)
+    used = set()
+    for section in SECTIONS:
+        title = "### {0}".format(section.capitalize())
+        residue = merged.get(title.lower())
+        chosen = [f for f in fragments if f.section == section]
+        if not residue and not chosen:
+            continue
+        used.add(title.lower())
+        out.append(title)
+        out.append("")
+        if residue and residue[1]:
+            out.extend(residue[1])
+            out.append("")
         for frag in chosen:
             assert frag.path is not None
             out.append(frag.path.read_text(encoding="utf-8").strip("\n").rstrip())
             out.append("")
+
+    # Headings the spec does not list are content, not a parse failure. They keep
+    # their own order, after the six known ones.
+    for key, (title, block) in merged.items():
+        if key in used or not block:
+            continue
+        out.append(title)
+        out.append("")
+        out.extend(block)
+        out.append("")
     return "\n".join(out)
 
 
 def _anchor(lines: Sequence[str]) -> int:
     """Where the new release section goes: above the newest existing release.
 
-    A populated `## [Unreleased]` is left exactly where it is — #906 lands the
-    mechanism at the next boundary and does not migrate history. So the anchor
-    is the first `## [` heading that is *not* `[Unreleased]`.
+    The first `## [` heading that is *not* `[Unreleased]`. Everything between
+    the `[Unreleased]` heading and this line is residue that gets folded into
+    the release being cut — `[Unreleased]` means "goes out next", so it does.
     """
     for index, line in enumerate(lines):
         if line.startswith("## [") and not line.startswith("## [Unreleased]"):
@@ -155,19 +237,12 @@ def _anchor(lines: Sequence[str]) -> int:
     )
 
 
-def _unreleased_residue(lines: Sequence[str]) -> int:
-    """How many top-level entries the live `## [Unreleased]` section still holds."""
-    count = 0
-    inside = False
-    for line in lines:
-        if line.startswith("## ["):
-            if inside:
-                break
-            inside = line.startswith("## [Unreleased]")
-            continue
-        if inside and line.startswith("- "):
-            count += 1
-    return count
+def _unreleased_span(lines: Sequence[str], anchor: int) -> Tuple[Optional[int], List[str]]:
+    """The `## [Unreleased]` heading's index and its body, above `anchor`."""
+    for index, line in enumerate(lines[:anchor]):
+        if line.startswith("## [Unreleased]"):
+            return index, list(lines[index + 1:anchor])
+    return None, []
 
 
 def _rewrite_links(lines: List[str], version: str) -> Optional[str]:
@@ -225,9 +300,33 @@ def assemble(changelog: Path, directory: Path, version: str, date: str,
         _receipt("refused", str(exc))
         return REFUSED
 
-    residue = _unreleased_residue(lines)
-    section = render(fragments, version, date)
-    body = lines[:anchor] + section.splitlines() + lines[anchor:]
+    # `[Unreleased]` means "goes out in the next release", so it goes out in it.
+    # Leaving it behind strands the entries twice over: the tag ships silently
+    # omitting work that is in the tag, and the work still reads as pending.
+    unreleased_at, residue_body = _unreleased_span(lines, anchor)
+    preamble, residue_sections = _subsections(residue_body)
+    folded = _entry_count(residue_body)
+
+    section = render(fragments, version, date, preamble, residue_sections)
+
+    # Arithmetic, not trust: every entry on either side has to be in the result.
+    # A merge that dropped one would otherwise be indistinguishable from a clean
+    # run, which is the whole failure mode this file is built against.
+    expected = folded + sum(
+        _entry_count(f.path.read_text(encoding="utf-8").splitlines())
+        for f in fragments if f.path)
+    produced = _entry_count(section.splitlines())
+    if produced != expected:
+        _receipt("refused", "entry count does not balance: {0} folded + fragments = {1} "
+                            "expected, {2} produced — refusing to write a lossy changelog"
+                 .format(folded, expected, produced))
+        return REFUSED
+
+    if unreleased_at is None:
+        body = list(lines[:anchor]) + section.splitlines() + list(lines[anchor:])
+    else:
+        body = (list(lines[:unreleased_at + 1]) + [""] + section.splitlines()
+                + list(lines[anchor:]))
     links = _rewrite_links(body, version)
 
     details = [
@@ -241,12 +340,13 @@ def assemble(changelog: Path, directory: Path, version: str, date: str,
     else:
         details.append("links     none — no `[Unreleased]: .../compare/vX...HEAD` line found, "
                        "so the link refs were left alone")
-    if residue:
+    if folded:
         details.append(
-            "note      `## [Unreleased]` still holds {0} entr{1} not managed by fragments. "
-            "They stay where they are; move them into [{2}] by hand if they ship in it "
-            "(#906 does not migrate history)."
-            .format(residue, "y" if residue == 1 else "ies", version))
+            "folded    {0} entr{1} from `## [Unreleased]` into [{2}], above the fragments. "
+            "The heading stays as the compare-link anchor; its body is now empty."
+            .format(folded, "y" if folded == 1 else "ies", version))
+    else:
+        details.append("folded    0 — `## [Unreleased]` was already empty")
 
     if dry_run:
         _receipt("ok", "dry-run: {0} fragment(s) would become `## [{1}] - {2}`; "

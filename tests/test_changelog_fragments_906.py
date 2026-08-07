@@ -20,6 +20,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 from pathlib import Path
+from typing import List
 
 import pytest
 
@@ -78,6 +79,31 @@ def _run(capsys, *argv: str) -> tuple[int, str]:
 
 def _headings(text: str) -> list[str]:
     return [ln.strip() for ln in text.splitlines() if ln.startswith("## ")]
+
+
+def _block_of(text: str, heading: str) -> List[str]:
+    """Every line of one `## ` section, heading excluded."""
+    out: List[str] = []
+    inside = False
+    for line in text.splitlines():
+        if line.startswith("## "):
+            if inside:
+                break
+            inside = line.strip() == heading
+            continue
+        if inside:
+            out.append(line)
+    assert inside or out, f"no such section: {heading!r}"
+    return out
+
+
+def _entries(text: str, heading: str) -> List[str]:
+    """The top-level `- ` bullets of one section. Continuation paragraphs indent."""
+    return [ln for ln in _block_of(text, heading) if ln.startswith("- ")]
+
+
+def _subheadings(text: str, heading: str) -> List[str]:
+    return [ln.strip() for ln in _block_of(text, heading) if ln.startswith("### ")]
 
 
 def _section_of(text: str, needle: str) -> str:
@@ -184,8 +210,13 @@ def test_readme_is_ignored_rather_than_refused(tmp_path, capsys) -> None:
 # The document it produces
 # ---------------------------------------------------------------------------
 
-def test_pre_existing_unreleased_content_survives(tmp_path, capsys) -> None:
-    """#906 lands the mechanism at the next boundary and leaves history alone."""
+def test_pre_existing_unreleased_content_is_folded_into_the_release(tmp_path, capsys) -> None:
+    """`[Unreleased]` means "ships in the next release" — so it ships in it.
+
+    Leaving it in place strands it: the tag goes out silently omitting work that
+    is in the tag, and the entries sit under `[Unreleased]` afterwards as though
+    they were still pending.
+    """
     changelog, frag_dir = _repo(tmp_path, {"906.added.md": "- **Fragments** ([#906](x)). Body.\n"})
 
     code, out = _run(capsys, "--version", "0.24.0", "--date", "2026-08-07",
@@ -193,23 +224,145 @@ def test_pre_existing_unreleased_content_survives(tmp_path, capsys) -> None:
     text = changelog.read_text(encoding="utf-8")
 
     assert code == 0, out
-    assert _section_of(text, "A pre-existing unreleased entry") == "## [Unreleased]"
+    assert _section_of(text, "A pre-existing unreleased entry") == "## [0.24.0] - 2026-08-07"
     assert _section_of(text, "Fragments") == "## [0.24.0] - 2026-08-07"
     assert _section_of(text, "Shipped op A") == "## [0.23.0] - 2026-08-05"
     assert _headings(text) == sorted(set(_headings(text)), key=_headings(text).index), \
         "no heading may be emitted twice — the #839 failure, one layer up"
 
 
-def test_a_populated_unreleased_section_is_reported_not_swallowed(tmp_path, capsys) -> None:
-    """The migration seam is stated, because it needs a human hand exactly once."""
+def test_unreleased_survives_as_an_empty_anchor(tmp_path, capsys) -> None:
+    """The heading stays — the `[Unreleased]:` compare link points at it."""
     changelog, frag_dir = _repo(tmp_path, {"906.added.md": "- **Fragments** ([#906](x)). Body.\n"})
 
     code, out = _run(capsys, "--version", "0.24.0", "--date", "2026-08-07",
                      "--changelog", str(changelog), "--dir", str(frag_dir))
 
+    text = changelog.read_text(encoding="utf-8")
+
     assert code == 0, out
+    assert "## [Unreleased]" in _headings(text)
+    assert _entries(text, "## [Unreleased]") == []
+    assert _subheadings(text, "## [Unreleased]") == []
+
+
+def test_residue_and_a_fragment_in_the_same_section_merge_under_one_heading(
+        tmp_path, capsys) -> None:
+    """The assertion that matters: one `### Changed`, not two.
+
+    A duplicated heading is the live failure in this repo (#911), and #839 is the
+    precedent — a union that emits the heading twice reparents everything that
+    sat between the two copies.
+    """
+    changelog, frag_dir = _repo(tmp_path, {
+        "906.changed.md": "- **From a fragment** ([#906](x)). Body." + chr(10),
+        "907.added.md": "- **An added one** ([#907](x)). Body." + chr(10),
+    })
+
+    code, out = _run(capsys, "--version", "0.24.0", "--date", "2026-08-07",
+                     "--changelog", str(changelog), "--dir", str(frag_dir))
+    text = changelog.read_text(encoding="utf-8")
+    release = "## [0.24.0] - 2026-08-07"
+
+    assert code == 0, out
+    subs = _subheadings(text, release)
+    assert subs.count("### Changed") == 1, subs
+    assert subs == ["### Added", "### Changed"], subs
+    assert text.index("A pre-existing unreleased entry") < text.index("From a fragment"), \
+        "folded residue goes above the fragment entries"
+
+
+def test_no_entry_is_lost_in_the_fold(tmp_path, capsys) -> None:
+    """residue + fragments == what the release holds. Arithmetic, not vibes."""
+    changelog, frag_dir = _repo(tmp_path, {
+        "906.changed.md": "- **One** ([#906](x)). Body." + chr(10),
+        "907.added.md": "- **Two** ([#907](x)). Body." + chr(10),
+        "908.fixed.md": "- **Three** ([#908](x)). Body." + chr(10),
+    })
+    residue = len(_entries(CHANGELOG, "## [Unreleased]"))
+    assert residue == 1, "fixture drifted"
+
+    code, out = _run(capsys, "--version", "0.24.0", "--date", "2026-08-07",
+                     "--changelog", str(changelog), "--dir", str(frag_dir))
+    text = changelog.read_text(encoding="utf-8")
+
+    assert code == 0, out
+    assert len(_entries(text, "## [0.24.0] - 2026-08-07")) == residue + 3
+    assert len(_entries(text, "## [0.23.0] - 2026-08-05")) == 1, "an older release was touched"
+
+
+def test_an_indented_continuation_paragraph_is_carried_with_its_entry(
+        tmp_path, capsys) -> None:
+    """Entries here run several paragraphs. Folding a bullet without its prose is loss."""
+    rich = CHANGELOG.replace(
+        "- **A pre-existing unreleased entry** ([#893](https://example/893)). Body." + chr(10),
+        "- **A pre-existing unreleased entry** ([#893](https://example/893)). Body." + chr(10)
+        + chr(10)
+        + "  **The part that would go missing.** Second paragraph, same entry." + chr(10),
+    )
+    changelog, frag_dir = _repo(tmp_path, {"906.added.md": "- **F** ([#906](x)). Body." + chr(10)},
+                                changelog=rich)
+
+    code, out = _run(capsys, "--version", "0.24.0", "--date", "2026-08-07",
+                     "--changelog", str(changelog), "--dir", str(frag_dir))
+    text = changelog.read_text(encoding="utf-8")
+
+    assert code == 0, out
+    assert _section_of(text, "The part that would go missing") == "## [0.24.0] - 2026-08-07"
+
+
+def test_a_residue_subsection_outside_keep_a_changelog_is_carried_not_dropped(
+        tmp_path, capsys) -> None:
+    """An unrecognised heading is content, not a parse failure. Dropping it is silent."""
+    rich = CHANGELOG.replace(
+        "## [0.23.0] - 2026-08-05",
+        "### Notes" + chr(10) * 2
+        + "- **Hand-written note** under a heading the spec does not list." + chr(10) * 2
+        + "## [0.23.0] - 2026-08-05",
+    )
+    changelog, frag_dir = _repo(tmp_path, {"906.added.md": "- **F** ([#906](x)). Body." + chr(10)},
+                                changelog=rich)
+
+    code, out = _run(capsys, "--version", "0.24.0", "--date", "2026-08-07",
+                     "--changelog", str(changelog), "--dir", str(frag_dir))
+    text = changelog.read_text(encoding="utf-8")
+
+    assert code == 0, out
+    assert _section_of(text, "Hand-written note") == "## [0.24.0] - 2026-08-07"
+    assert "### Notes" in _subheadings(text, "## [0.24.0] - 2026-08-07")
+
+
+def test_the_receipt_says_what_it_folded(tmp_path, capsys) -> None:
+    """The fold is the surprising part of the run, so it is the loudest line."""
+    changelog, frag_dir = _repo(tmp_path, {"906.added.md": "- **Fragments** ([#906](x)). Body."
+                                           + chr(10)})
+
+    code, out = _run(capsys, "--version", "0.24.0", "--date", "2026-08-07",
+                     "--changelog", str(changelog), "--dir", str(frag_dir))
+
+    assert code == 0, out
+    assert "folded" in out.lower()
+    assert "1" in out, "the count of folded entries must be in the receipt"
     assert "Unreleased" in out
-    assert "1" in out, "the count of entries left behind must be in the receipt"
+
+
+def test_an_already_empty_unreleased_says_so_rather_than_going_quiet(
+        tmp_path, capsys) -> None:
+    """Three states here too: folded N, or nothing to fold — never silence."""
+    empty = CHANGELOG.replace(
+        "### Changed" + chr(10) * 2
+        + "- **A pre-existing unreleased entry** ([#893](https://example/893)). Body."
+        + chr(10) * 2,
+        "")
+    changelog, frag_dir = _repo(tmp_path, {"906.added.md": "- **F** ([#906](x)). Body." + chr(10)},
+                                changelog=empty)
+
+    code, out = _run(capsys, "--version", "0.24.0", "--date", "2026-08-07",
+                     "--changelog", str(changelog), "--dir", str(frag_dir))
+
+    assert code == 0, out
+    assert "folded" in out.lower()
+    assert "0" in out or "empty" in out.lower()
 
 
 def test_two_fragments_in_one_section_both_appear_in_a_deterministic_order(
@@ -225,6 +378,7 @@ def test_two_fragments_in_one_section_both_appear_in_a_deterministic_order(
     text = changelog.read_text(encoding="utf-8")
 
     assert code == 0, out
+    assert _subheadings(text, "## [0.24.0] - 2026-08-07").count("### Fixed") == 1
     for needle in ("Later issue", "Earlier issue", "Same issue, second entry"):
         assert _section_of(text, needle) == "## [0.24.0] - 2026-08-07"
     order = [text.index(n) for n in ("Earlier issue", "Same issue, second entry", "Later issue")]
@@ -243,10 +397,10 @@ def test_sections_are_emitted_in_keep_a_changelog_order(tmp_path, capsys) -> Non
     text = changelog.read_text(encoding="utf-8")
 
     assert code == 0, out
-    emitted = [ln.strip() for ln in text.splitlines() if ln.startswith("### ")]
-    assert emitted[:4] == ["### Changed", "### Added", "### Fixed", "### Security"], emitted
-    # ^ the first is the pre-existing Unreleased body, untouched; the next three
-    #   are the new release, in Keep a Changelog order.
+    assert _subheadings(text, "## [0.24.0] - 2026-08-07") == [
+        "### Added", "### Changed", "### Fixed", "### Security"]
+    # `### Changed` is the folded residue, and it lands in spec position rather
+    # than at the top where it happened to sit under `[Unreleased]`.
 
 
 def test_fragments_are_consumed_and_keep_preserves_them(tmp_path, capsys) -> None:
