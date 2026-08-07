@@ -333,9 +333,18 @@ def test_gl_pipeline_table_row_stays_one_row(capsys: Any) -> None:
 #: merge request. Deliberately small: every one of these is a refname and
 #: nothing else, so this list needs no exemptions to stay green — which is what
 #: separates it from a lint that gets allowlisted into reporting `ok`.
+#:
+#: `ref` joined in #970, decided on that same test rather than on it sounding
+#: like a refname: adding it names exactly the two `gl-runners:queue` sites that
+#: issue is about and nothing else in the three scanned trees, so the set still
+#: needs no exemption. That is the line between it and the `title`/`name`/
+#: `login` widening **rejected** in #968 — `name` alone adds an `mr.py` hit that
+#: is a CI job name, which is not a refname, and keeping the scan green past it
+#: would take a per-field allowlist. The allowlist is the failure mode this
+#: scanner exists to avoid, not a cost of running it wider.
 REFNAME_KEYS = frozenset({
     "headRefName", "baseRefName", "headBranch", "head_branch",
-    "source_branch", "target_branch",
+    "source_branch", "target_branch", "ref",
 })
 
 #: Anything that marks remote text before it is printed.
