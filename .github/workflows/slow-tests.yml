@@ -17,6 +17,12 @@ on:
     - cron: "0 6 * * *"
   workflow_dispatch: {}
 
+# Read-only: this job runs tests and publishes nothing. Declared rather than
+# inherited, because the repository default is what a future settings change
+# would silently widen.
+permissions:
+  contents: read
+
 jobs:
   slow:
     name: pytest -m slow (ubuntu-latest, 3.12)
