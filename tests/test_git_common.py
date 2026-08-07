@@ -70,6 +70,30 @@ def test_looks_like_success_markers() -> None:
 
 # ── query_open_mr ────────────────────────────────────────────────────────
 
+_HOSTED_REMOTE = ("origin" + chr(9) + "https://gitlab.com/acme/x.git (fetch)" +
+                  chr(10) + "origin" + chr(9) +
+                  "https://gitlab.com/acme/x.git (push)" + chr(10))
+
+
+def _runs(cli):
+    """`subprocess.run` double: git answers about the repo, the CLI about the branch.
+
+    Since #948 the lookup asks `git remote -v` first — a repo where no remote
+    names a host has no tracker, and that is knowable without a CLI that may
+    not be authenticated. `_git` shares this `subprocess.run`, so a double that
+    handed the CLI's script to the git call would answer "no remotes" and
+    short-circuit the very arm each test below is named after.
+
+    `cli` is a `CompletedProcess`-alike, or a callable taking argv.
+    """
+    def run(cmd, *_a, **_k):
+        if list(cmd[:2]) == ["git", "remote"]:
+            return _proc(_HOSTED_REMOTE)
+        # `hasattr(..., "returncode")`, not `callable(...)`: a `mock.Mock`
+        # stub result is itself callable, and calling it returns another Mock.
+        return cli if hasattr(cli, "returncode") else cli(cmd)
+    return run
+
 def test_query_empty_branch_returns_none() -> None:
     assert common.query_open_mr("") is None
     assert common.query_open_mr("HEAD") is None
@@ -77,7 +101,7 @@ def test_query_empty_branch_returns_none() -> None:
 
 def test_query_glab_match_returns_gitlab_fields() -> None:
     fake_which = mock.Mock(side_effect=lambda c: "/usr/bin/glab" if c == "glab" else None)
-    fake_run = mock.Mock(return_value=_proc(
+    fake_run = _runs(_proc(
         '[{"iid": 21816, "target_branch": "master", '
         '"pipeline": {"status": "running"}}]'))
     with mock.patch.object(common.shutil, "which", fake_which), \
@@ -91,7 +115,7 @@ def test_query_glab_match_returns_gitlab_fields() -> None:
 
 def test_query_glab_no_pipeline_yields_none_status() -> None:
     fake_which = mock.Mock(side_effect=lambda c: "/usr/bin/glab" if c == "glab" else None)
-    fake_run = mock.Mock(return_value=_proc('[{"iid": 5, "target_branch": "main"}]'))
+    fake_run = _runs(_proc('[{"iid": 5, "target_branch": "main"}]'))
     with mock.patch.object(common.shutil, "which", fake_which), \
          mock.patch.object(common.subprocess, "run", fake_run):
         mr = common.query_open_mr("feature/x")
@@ -100,7 +124,7 @@ def test_query_glab_no_pipeline_yields_none_status() -> None:
 
 def test_query_gh_fallback_returns_github_fields() -> None:
     fake_which = mock.Mock(side_effect=lambda c: "/usr/bin/gh" if c == "gh" else None)
-    fake_run = mock.Mock(return_value=_proc('[{"number": 172, "baseRefName": "main"}]'))
+    fake_run = _runs(_proc('[{"number": 172, "baseRefName": "main"}]'))
     with mock.patch.object(common.shutil, "which", fake_which), \
          mock.patch.object(common.subprocess, "run", fake_run):
         mr = common.query_open_mr("feature/x")
@@ -119,14 +143,14 @@ def test_query_glab_empty_falls_through_to_gh() -> None:
     fake_which = mock.Mock(side_effect=lambda c: f"/usr/bin/{c}" if c in ("glab", "gh") else None)
     call_count = {"n": 0}
 
-    def fake_run(*_a, **_k):
+    def fake_run(_cmd):
         call_count["n"] += 1
         if call_count["n"] == 1:
             return _proc("[]")
         return _proc('[{"number": 9, "baseRefName": "dev"}]')
 
     with mock.patch.object(common.shutil, "which", fake_which), \
-         mock.patch.object(common.subprocess, "run", side_effect=fake_run):
+         mock.patch.object(common.subprocess, "run", _runs(fake_run)):
         mr = common.query_open_mr("feature/x")
     assert mr is not None and mr["source"] == "github" and mr["iid"] == 9
 
@@ -135,14 +159,14 @@ def test_query_glab_timeout_falls_through() -> None:
     fake_which = mock.Mock(side_effect=lambda c: f"/usr/bin/{c}" if c in ("glab", "gh") else None)
     call_count = {"n": 0}
 
-    def fake_run(*_a, **_k):
+    def fake_run(_cmd):
         call_count["n"] += 1
         if call_count["n"] == 1:
             raise subprocess.TimeoutExpired(cmd="glab", timeout=5)
         return _proc('[{"number": 42, "baseRefName": "main"}]')
 
     with mock.patch.object(common.shutil, "which", fake_which), \
-         mock.patch.object(common.subprocess, "run", side_effect=fake_run):
+         mock.patch.object(common.subprocess, "run", _runs(fake_run)):
         mr = common.query_open_mr("feature/x")
     assert mr is not None and mr["iid"] == 42
 
@@ -151,13 +175,13 @@ def test_query_glab_malformed_json_falls_through() -> None:
     fake_which = mock.Mock(side_effect=lambda c: f"/usr/bin/{c}" if c in ("glab", "gh") else None)
     call_count = {"n": 0}
 
-    def fake_run(*_a, **_k):
+    def fake_run(_cmd):
         call_count["n"] += 1
         if call_count["n"] == 1:
             return _proc("[not json")
         return _proc('[{"number": 7, "baseRefName": "main"}]')
 
     with mock.patch.object(common.shutil, "which", fake_which), \
-         mock.patch.object(common.subprocess, "run", side_effect=fake_run):
+         mock.patch.object(common.subprocess, "run", _runs(fake_run)):
         mr = common.query_open_mr("feature/x")
     assert mr is not None and mr["iid"] == 7

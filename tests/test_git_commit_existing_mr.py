@@ -24,6 +24,28 @@ def _proc(stdout: str = "", returncode: int = 0):
     return mock.Mock(stdout=stdout, returncode=returncode, stderr="")
 
 
+_HOSTED_REMOTE = ("origin" + chr(9) + "https://gitlab.com/acme/x.git (fetch)" +
+                  chr(10) + "origin" + chr(9) +
+                  "https://gitlab.com/acme/x.git (push)" + chr(10))
+
+
+def _runs(cli):
+    """`subprocess.run` double: git answers about the repo, the CLI about the branch.
+
+    Since #948 the lookup asks `git remote -v` before it spends a CLI call, and
+    `_git` shares this same `subprocess.run`. Answering the git call with the
+    CLI's script would report a repo with no remotes — no tracker, no MR — and
+    each test below would stop reaching the arm it is named after.
+    """
+    def run(cmd, *_a, **_k):
+        if list(cmd[:2]) == ["git", "remote"]:
+            return _proc(_HOSTED_REMOTE)
+        # `hasattr(..., "returncode")`, not `callable(...)`: a `mock.Mock`
+        # stub result is itself callable, and calling it returns another Mock.
+        return cli if hasattr(cli, "returncode") else cli(cmd)
+    return run
+
+
 def test_empty_branch_returns_empty() -> None:
     assert commit._existing_mr_for_branch("") == ""
 
@@ -35,7 +57,7 @@ def test_detached_head_returns_empty() -> None:
 
 def test_glab_match_returns_bang_iid() -> None:
     fake_which = mock.Mock(side_effect=lambda c: "/usr/bin/glab" if c == "glab" else None)
-    fake_run = mock.Mock(return_value=_proc('[{"iid": 21816, "title": "x"}]'))
+    fake_run = _runs(_proc('[{"iid": 21816, "title": "x"}]'))
     with mock.patch.object(_common.shutil, "which", fake_which), \
          mock.patch.object(_common.subprocess, "run", fake_run):
         assert commit._existing_mr_for_branch("feature/x") == "!21816"
@@ -43,7 +65,7 @@ def test_glab_match_returns_bang_iid() -> None:
 
 def test_gh_fallback_when_no_glab() -> None:
     fake_which = mock.Mock(side_effect=lambda c: "/usr/bin/gh" if c == "gh" else None)
-    fake_run = mock.Mock(return_value=_proc('[{"number": 172}]'))
+    fake_run = _runs(_proc('[{"number": 172}]'))
     with mock.patch.object(_common.shutil, "which", fake_which), \
          mock.patch.object(_common.subprocess, "run", fake_run):
         assert commit._existing_mr_for_branch("feature/x") == "#172"
@@ -58,14 +80,14 @@ def test_glab_empty_list_falls_through_to_gh() -> None:
     fake_which = mock.Mock(side_effect=lambda c: f"/usr/bin/{c}" if c in ("glab", "gh") else None)
     call_count = {"n": 0}
 
-    def fake_run(*args, **kwargs):
+    def fake_run(_cmd):
         call_count["n"] += 1
         if call_count["n"] == 1:
             return _proc("[]")  # glab: no MR
         return _proc('[{"number": 9}]')  # gh: PR exists
 
     with mock.patch.object(_common.shutil, "which", fake_which), \
-         mock.patch.object(_common.subprocess, "run", side_effect=fake_run):
+         mock.patch.object(_common.subprocess, "run", _runs(fake_run)):
         assert commit._existing_mr_for_branch("feature/x") == "#9"
 
 
@@ -73,14 +95,14 @@ def test_glab_timeout_falls_through() -> None:
     fake_which = mock.Mock(side_effect=lambda c: f"/usr/bin/{c}" if c in ("glab", "gh") else None)
     call_count = {"n": 0}
 
-    def fake_run(*args, **kwargs):
+    def fake_run(_cmd):
         call_count["n"] += 1
         if call_count["n"] == 1:
             raise subprocess.TimeoutExpired(cmd="glab", timeout=5)
         return _proc('[{"number": 42}]')
 
     with mock.patch.object(_common.shutil, "which", fake_which), \
-         mock.patch.object(_common.subprocess, "run", side_effect=fake_run):
+         mock.patch.object(_common.subprocess, "run", _runs(fake_run)):
         assert commit._existing_mr_for_branch("feature/x") == "#42"
 
 
@@ -88,12 +110,12 @@ def test_glab_malformed_json_falls_through() -> None:
     fake_which = mock.Mock(side_effect=lambda c: f"/usr/bin/{c}" if c in ("glab", "gh") else None)
     call_count = {"n": 0}
 
-    def fake_run(*args, **kwargs):
+    def fake_run(_cmd):
         call_count["n"] += 1
         if call_count["n"] == 1:
             return _proc("[not json")
         return _proc('[{"number": 7}]')
 
     with mock.patch.object(_common.shutil, "which", fake_which), \
-         mock.patch.object(_common.subprocess, "run", side_effect=fake_run):
+         mock.patch.object(_common.subprocess, "run", _runs(fake_run)):
         assert commit._existing_mr_for_branch("feature/x") == "#7"

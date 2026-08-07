@@ -66,9 +66,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from _git_common import (  # noqa: E402
     TIMEOUT_RC,
+    MrLookup,
     _first_error_line,
     _git,
-    query_open_mr,
+    query_open_mr_result,
     reject_fetch_option,
     repo_label,
     use_utf8_stdout,
@@ -713,8 +714,18 @@ def _push_verdict(moved: bool, branch: str, remote: str, ref: str,
                 f"@ {sha}  ({note}){force_note}")
 
 
+def _mr_lookup(branch: str) -> MrLookup:
+    """The branch→MR/PR lookup, as one seam the tests can stand in for."""
+    return query_open_mr_result(branch)
+
+
 def _open_mr_line(mr: Optional[dict]) -> str:
-    """One-line MR/PR summary for the post-push receipt, or empty."""
+    """One-line MR/PR summary for the post-push receipt, or empty.
+
+    Still takes the request rather than the lookup: this line renders the MR
+    and nothing else. The "did not answer" state is `_mr_unknown_line`'s, so
+    an empty string here keeps meaning "no line to draw" at both call sites.
+    """
     if not mr:
         return ""
     if mr["source"] == "gitlab":
@@ -726,6 +737,28 @@ def _open_mr_line(mr: Optional[dict]) -> str:
             line += f"\n  {mr['pipeline_url']}"
         return line
     return f"PR #{mr['iid']} → {mr['target']} | checks triggered"
+
+
+def _mr_unknown_line(lookup: MrLookup) -> str:
+    """The disclosure for a branch→MR/PR lookup that did not answer (#948).
+
+    Empty on the healthy path — a lookup that answered prints exactly what it
+    printed before, byte for byte, because a line that appears on every call
+    stops being read on the call that needed it.
+
+    When it is not empty it is a statement of ignorance, not a refusal. This
+    runs *after* the push: a tracker that could not be reached is not a reason
+    to withhold work that is already on the remote, and blocking here would
+    trade a quiet wrong answer for a loud wrong one. Same shape and same
+    wording as the stale-base and uncommitted-changes disclosures above.
+    """
+    if lookup.answered:
+        return ""
+    return (f"⚠ MR/PR LOOKUP DID NOT RUN — {lookup.reason}" + chr(10) +
+            "  Whether this branch has an open MR/PR is UNKNOWN — this receipt "
+            "is not saying there is none, and the mergeability and stale-base "
+            "checks below are missing for the same reason. Settle it: "
+            "./supertool 'git-status'")
 
 
 def _watch_target(mr: Optional[dict]) -> Optional[tuple[str, str]]:
@@ -945,15 +978,27 @@ def _stale_base_advisory(target: str, remote: str) -> None:
               "consider rebasing (stale base under review)")
 
 
-def _watch_advisory(mr: Optional[dict], flags: set[str]) -> None:
-    """The watch line — which of four states we are in, never silence (#642/#647).
+def _watch_advisory(lookup: MrLookup, flags: set[str]) -> None:
+    """The watch line — which of five states we are in, never silence (#642/#647).
 
     `:watch` used to be unreachable (dropped by the flag parser) and, once
     reached, could fail to spawn in a worktree with the OSError swallowed. So
     a requested watcher that does not exist is now named as such, together
     with the command that does work.
+
+    The fifth state is #948's. "There is no open MR/PR for this branch yet —
+    open one" is a claim about the world, and it used to be printed out of a
+    `None` that also meant "the lookup timed out". A caller who asked to watch
+    a pipeline was told the request they had just pushed to does not exist.
     """
-    wt = _watch_target(mr)
+    if not lookup.answered and "watch" in flags:
+        print(f"⚠ :watch requested, but whether this branch has an open MR/PR "
+              f"is UNKNOWN — {lookup.reason}. Nothing is being watched, and "
+              "this is not saying there is nothing to watch.")
+        print("Once you know the number: ./supertool 'watch:gitlab-mr:<iid>' "
+              "(or watch:github-pr:<number>)")
+        return
+    wt = _watch_target(lookup.mr)
     if "watch" not in flags:
         if wt:
             print(f"Watch pipeline: ./supertool 'watch:{wt[0]}:{wt[1]}'")
@@ -973,13 +1018,25 @@ def _watch_advisory(mr: Optional[dict], flags: set[str]) -> None:
     print(f"Run it yourself: ./supertool 'watch:{source}:{iid}'")
 
 
-def _post_push_advisories(mr: Optional[dict], flags: set[str],
+def _post_push_advisories(lookup: MrLookup, flags: set[str],
                           remote: str) -> None:
     """Surface the next-decision signals: mergeability, stale base, leftovers, watch.
 
     `remote` is the branch's upstream remote — required, not defaulted, so a
     new call site cannot quietly reintroduce the hardcoded `origin` of #642.
+
+    Takes the whole `MrLookup`, not the request, because two of these signals
+    are *skipped* when there is no request and the skip was indistinguishable
+    from a pass: no target branch means no mergeability warning and no
+    stale-base check, and a lookup that timed out silently dropped both (#948).
     """
+    unknown = _mr_unknown_line(lookup)
+    if unknown:
+        # Printed here rather than at each call site: it is the disclosure for
+        # the two checks immediately below, and a call site that forgot it
+        # would silently skip both.
+        print(unknown)
+    mr = lookup.mr
     if mr and mr.get("merge_status") in ("cannot_be_merged", "conflict", "broken_status"):
         print(f"⚠ MR conflicts with {mr.get('target', 'target')} — "
               "won't merge until rebased/resolved")
@@ -1001,7 +1058,7 @@ def _post_push_advisories(mr: Optional[dict], flags: set[str],
         print(f"⚠ {len(leftovers)} change(s) NOT in this push (uncommitted) — "
               "list them: ./supertool 'git-status:full'")
 
-    _watch_advisory(mr, flags)
+    _watch_advisory(lookup, flags)
 
 
 def _report_first_seen_remote(remote_after: str, push_stdout: str, ref: str,
@@ -1166,11 +1223,11 @@ def _success_receipt(branch: str, remote_before: str, upstream: str,
 
     _ahead_behind_line()
 
-    mr = query_open_mr(branch)
-    mr_line = _open_mr_line(mr)
+    lookup = _mr_lookup(branch)
+    mr_line = _open_mr_line(lookup.mr)
     if mr_line:
         print(mr_line)
-    _post_push_advisories(mr, flags, remote_name)
+    _post_push_advisories(lookup, flags, remote_name)
     _push_verdict(moved, branch, remote_name, remote_ref, remote_after,
                   ncommits, force_note + unknown_note)
 
@@ -1189,11 +1246,11 @@ def _report_hook_pushed(head_before: str, head_after: str,
     print(f"Remote {remote}/{ref} now at {remote_sha[:7]}")
     # This IS a landed push — surface the same next-decision signals as the
     # normal success path (mergeability, stale base, leftovers, watch).
-    mr = query_open_mr(branch)
-    mr_line = _open_mr_line(mr)
+    lookup = _mr_lookup(branch)
+    mr_line = _open_mr_line(lookup.mr)
     if mr_line:
         print(mr_line)
-    _post_push_advisories(mr, flags, remote)
+    _post_push_advisories(lookup, flags, remote)
     _result(f"PUSHED  {branch} -> {remote}/{ref} @ {remote_sha[:7]}  "
             "(verified - pre-push hook pushed it, remote matches HEAD)")
 
@@ -1228,11 +1285,11 @@ def _report_push_timeout(branch: str, head_before: str,
               "this one. The two are not interchangeable — this budget has to "
               "stay strictly under that cap, or a push killed by the outer "
               "one can verify nothing (#399).")
-        mr = query_open_mr(branch)
-        mr_line = _open_mr_line(mr)
+        lookup = _mr_lookup(branch)
+        mr_line = _open_mr_line(lookup.mr)
         if mr_line:
             print(mr_line)
-        _post_push_advisories(mr, flags, remote)
+        _post_push_advisories(lookup, flags, remote)
         _result(f"PUSHED  {branch} -> {remote}/{ref} @ {live[:7]}  "
                 "(verified - push timed out locally, remote matches HEAD)")
         return 0

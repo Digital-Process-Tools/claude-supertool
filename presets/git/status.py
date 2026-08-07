@@ -28,7 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import _checks  # noqa: E402  (the one check tally, shared with gh-pr / gh-prs)
 import _untrusted  # noqa: E402  (an MR/PR title and target branch are the opener's text — #965)
 from _env import env_int  # noqa: E402  (the one numeric-knob reader)
-from _git_common import TIMEOUT_RC, use_utf8_stdout  # noqa: E402
+from _git_common import ANSWERED_NONE, TIMEOUT_RC, use_utf8_stdout  # noqa: E402
 from _git_common import _git as _spawn_git  # noqa: E402
 
 
@@ -62,17 +62,13 @@ _UNANSWERED: list[tuple[str, str]] = []
 # rather than assumed benign: being wrong in that direction costs one footer
 # line quoting the CLI's own words, which a reader can dismiss in a second;
 # being wrong the other way is the defect this list exists to prevent.
-_ANSWERED_NONE = (
-    "no open merge request",
-    "no merge request",
-    "no pull request",
-    # The other host's CLI, in a repo that is not on its host: a GitLab repo
-    # runs `gh` too, and a GitHub repo runs `glab`. Structural and permanent —
-    # nothing about it will be different on the next run.
-    "none of the git remotes",
-    "no git remotes found",
-    "no remotes found",
-)
+# Moved to `_git_common` by #948, which needed the same judgement about the
+# same two CLIs for `git-push`'s branch→MR lookup. There it is split in two:
+# `NO_REQUEST_PHRASES` (this host says there is no such request) and
+# `NOT_THIS_HOST_PHRASES` (the other host's CLI in a repo that is not on its
+# host — structural and permanent, nothing about it will differ next run).
+# This module wants the union and reads it under its own name.
+_ANSWERED_NONE = ANSWERED_NONE
 
 
 def _git_timeout(default: int | None = None) -> int:
