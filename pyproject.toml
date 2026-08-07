@@ -108,6 +108,14 @@ dev = [
     # post-edit validator uses, and so `tests/test_validators_ruff.py` runs its
     # ruff-present half instead of skipping into a green that proves nothing.
     "ruff",
+    # Same reason as ruff: nothing ships an import of it. It is the CommonMark
+    # oracle for `tests/test_changelog_fragment_whitelist_934.py`, which renders
+    # each refused and each accepted fragment and asserts on the HTML rather
+    # than on a reading of the spec. Two fragment guards in a row were confident
+    # and wrong about what CommonMark does inside a `- ` bullet (#930, #934), so
+    # that half of the file has to run rather than skip into a green that
+    # proves nothing.
+    "markdown-it-py",
 ]
 
 [tool.ruff]

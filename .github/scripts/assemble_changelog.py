@@ -66,42 +66,103 @@ _UNRELEASED_LINK_RE = re.compile(
 #: the block cannot capture the rewrite.
 _LINK_REF_RE = re.compile(r"^ {0,3}\[[^\]]+\]:\s*\S")
 
-#: The first four columns belong to the assembler (#923, #930). A fragment body
-#: is inserted into `CHANGELOG.md` verbatim, so a line here that *is* a heading
-#: or a link-reference definition becomes one in the released file: it reparents
-#: every entry below it, it is what `_anchor()` finds on the next cut, and a
-#: definition lands above the genuine link-ref block, where the *first* definition
-#: of a label is the one that resolves.
+#: The fragment format, stated as a whitelist (#934).
 #:
-#: Column 0 was the wrong boundary, and wrong in three directions (#930).
-#: CommonMark allows **0-3 leading spaces** before both constructs, so 1-3 spaces
-#: walked through — including the two-space indent the old message prescribed as
-#: the remedy. Link **labels are case-insensitive**, so `[unreleased]:` was the
-#: very definition the pattern named. And the label set is not two names: *any*
-#: `[label]:` line is a definition, and redefining `[docs]` from the top of the
-#: file is the same hijack as redefining `[Unreleased]`.
+#: Two rounds of enumerating what CommonMark can do lost to it. #927 anchored
+#: its patterns at column 0 and #930 found three bypasses; #932 widened them to
+#: `^ {0,3}` and made labels case-insensitive, and the next audit found six more
+#: — a label split across two lines, the same lowercase, label and destination
+#: both split, a `>` prefix, a four-space indent inside the list item, a tab —
+#: plus a false refusal, plus a prescribed remedy that was itself an injection.
+#: What a fragment may *be* is small and already documented; what it must not be
+#: is unbounded. So this states the accepted shape and refuses the rest, and
+#: every one of those vectors is out by construction rather than by being named.
 #:
-#: Four spaces is where it stops, and a tab is deliberately not in the set. At
-#: four columns CommonMark reads an indented code block, and `_anchor`,
-#: `_unreleased_span` and `_link_ref_block` all read something that is not a
-#: heading and not a link ref — the rule and the safety property are the same
-#: line, which is why no fence parser is needed. A leading tab advances to the
-#: next four-column tab stop, so a tab-indented line is already at or past that
-#: boundary; refusing it would cost an author a safe line and buy nothing, and
-#: every character class added here is one an author trips over writing an
-#: ordinary entry.
+#: **The shape:** one or more `- ` bullets at column 0, every other line blank or
+#: indented at least two spaces under one, and — fenced code blocks excepted —
+#: no line opening anything but a list item, a table row or ordinary prose.
 #:
-#: Still not fence-aware, for #927's reason unchanged: nothing downstream is —
-#: not `_anchor`, not `_unreleased_span`, not git's merge driver — so a fenced
-#: block buys no safety, and a half-aware fence parser would bless exactly the
-#: lines that still corrupt the file for every other reader.
+#: **Why no number appears in that rule.** CommonMark's four-column code-block
+#: threshold is relative to the containing block's content column, and a `- `
+#: bullet's is 2 — so inside a fragment, four spaces is *two* relative columns:
+#: a live paragraph, in which a heading is a heading and a link-reference
+#: definition resolves. Rendered through a real parser inside a bullet, a
+#: definition is live at 2, 4, 5 and tab indent, and the threshold is 6. #932
+#: reasoned about the top level of a document, where four is correct, and both
+#: the refusal message and `changelog.d/README.md` went on to prescribe it.
+#: Indentation cannot carry this rule, so it is not asked to.
 #:
-#: A destination is not required to call a line a definition: CommonMark lets the
-#: destination sit on the *next* line, so a bare `[label]:` is one too.
-_FORBIDDEN_LINE = (
-    (re.compile(r"^ {0,3}#{1,6}(\s|$)"), "a Markdown heading"),
-    (re.compile(r"^ {0,3}\[[^\]]+\]:"), "a link-reference definition"),
+#: **Fences are parsed, reversing #927 and #932.** Their reason was that nothing
+#: downstream understands fences, so a fence bought no safety. That was an
+#: argument about the assembler's own column-scoped scanners, and the whitelist
+#: keeps those safe by position instead: no body line ever reaches column 0
+#: except a `- ` bullet, so `_anchor` cannot see a heading whatever a fence
+#: contains. That frees the fence to do what it measurably does for the
+#: *reader's* parser — make its contents inert — which is what makes it the
+#: remedy for quoting a heading, and what makes the `# comment` inside a ```bash
+#: block that #932 refused an entry again.
+_BULLET = "- "
+
+#: A fenced code block opener or closer, once the line's indent is removed.
+_FENCE_RE = re.compile(r"^(`{3,}|~{3,})")
+
+#: A line of nothing but `-`, `=`, `_` or `*`. Under a paragraph a run of `-` or
+#: `=` is a setext heading — a heading with no `#` in it, which is how the
+#: ATX-only patterns were walked past. A single character is enough for either.
+_RULE_RE = re.compile(r"^[-=_*]+[ \t]*$")
+
+#: What a line may not open, checked wherever the line sits rather than within
+#: the first N columns — that column count is the dimension both previous rounds
+#: were beaten in. `[` covers a definition whose label runs onto the next line
+#: and one whose `]` is escaped: neither is a pattern anyone can write reliably,
+#: and both start here. `]` is such a definition's second half.
+_OPENERS = (
+    ("#", "a Markdown heading"),
+    ("<", "a raw HTML block, which renders as a heading without being one"),
+    ("[", "a link-reference definition — its label may run onto the next line"),
+    ("]", "the tail of a link-reference definition opened on an earlier line"),
 )
+
+_SHAPE = ("a fragment is `- ` bullets at column 0 plus lines indented at least "
+          "two spaces under them, and nothing in one may open a heading, a link "
+          "reference, a quote or raw HTML")
+
+_REMEDY = ("To show one in an entry, put it in a fenced code block at the "
+           "bullet's own indent (```), which is what every fenced example in "
+           "CHANGELOG.md already does. Indenting it further is not a remedy: "
+           "inside a `- ` bullet an indented line is still a live heading and a "
+           "live definition, which is exactly what the advice this message used "
+           "to give got wrong (#934).")
+
+
+def _finding(name: str, number: int, what: str, line: str) -> str:
+    """One refusal, naming the file, the line number, the shape and the remedy."""
+    return ("{0}:{1}: {2} — {3}. Inserted verbatim into CHANGELOG.md, this line "
+            "becomes one. {4} Line: {5}"
+            .format(name, number, what, _SHAPE, _REMEDY, line.strip()[:120]))
+
+
+def _opens_a_block(content: str) -> Optional[str]:
+    """What this line would open, or None if it is ordinary prose.
+
+    A `>` prefix is stripped rather than refused, and what it was hiding is
+    checked instead. Refusing the marker outright would have cost an author an
+    ordinary block quote — `tests/test_changelog_fragment_indent_bypass_930.py`
+    pins one as a legitimate line — while a quote's *contents* are a fresh block
+    context, so `> # x` and `> [x]: url` are live and are what actually needed
+    refusing. Stripping is bounded (each pass shortens the line) and needs no
+    column arithmetic, which is the part that keeps being wrong.
+    """
+    quoted = ""
+    while content.startswith(">"):
+        content = content[1:].lstrip(" ")
+        quoted = " inside a blockquote"
+    for prefix, what in _OPENERS:
+        if content.startswith(prefix):
+            return what + quoted
+    if _RULE_RE.match(content):
+        return "a setext heading underline or a thematic break" + quoted
+    return None
 
 
 def scan_fragment_body(name: str, text: str) -> List[str]:
@@ -111,17 +172,68 @@ def scan_fragment_body(name: str, text: str) -> List[str]:
     hunting, and the author is the person standing in CI when this fires.
     """
     findings: List[str] = []
+    fence: Optional[Tuple[str, int]] = None
+    fence_at, fence_line = 0, ""
+    seen_bullet = False
+
     for number, line in enumerate(text.splitlines(), 1):
-        for pattern, what in _FORBIDDEN_LINE:
-            if pattern.match(line):
-                findings.append(
-                    "{0}:{1}: {2} — the assembler owns the headings and the link "
-                    "refs of CHANGELOG.md, and this line would become one of them. "
-                    "Indent it by four spaces to quote it in prose: CommonMark reads "
-                    "0-3 spaces as no indent at all, so a two-space indent is still a "
-                    "live heading and a live link ref (#930). Line: {3}"
-                    .format(name, number, what, line.strip()[:120]))
-                break
+        if fence is not None:
+            closer = line.strip()
+            if (line.startswith("  ") and closer
+                    and set(closer) == {fence[0]} and len(closer) >= fence[1]):
+                fence = None
+                continue
+            if not line.startswith(_BULLET):
+                continue
+            # A fence has to close inside the bullet that opened it. Left open,
+            # it runs on into whatever follows in the released file.
+            findings.append(_finding(
+                name, fence_at,
+                "a fenced code block still open where the next entry begins",
+                fence_line))
+            fence = None
+
+        if not line.strip():
+            continue
+
+        indent = len(line) - len(line.lstrip(" "))
+        content = line[indent:]
+
+        if line.startswith(_BULLET):
+            seen_bullet = True
+            content = line[len(_BULLET):].lstrip(" ")
+        elif not seen_bullet:
+            # Without a bullet nothing below it means anything, so this is one
+            # verdict about the file rather than a finding per line.
+            findings.append(_finding(
+                name, number,
+                "a fragment whose first line is not a `- ` bullet", line))
+            return findings
+        elif indent < 2 or content.startswith("\t"):
+            findings.append(_finding(
+                name, number,
+                "a line that is neither a `- ` bullet nor indented under one "
+                "(a tab is not indentation here: the shipped CHANGELOG.md "
+                "contains none, and inside a bullet a tab reaches only the "
+                "second relative column, where a definition is still live)",
+                line))
+            continue
+
+        opener = _FENCE_RE.match(content)
+        if opener:
+            fence = (opener.group(1)[0], len(opener.group(1)))
+            fence_at, fence_line = number, line
+            continue
+
+        what = _opens_a_block(content)
+        if what:
+            findings.append(_finding(name, number, what, line))
+
+    if fence is not None:
+        findings.append(_finding(
+            name, fence_at,
+            "a fenced code block that is never closed, which would swallow the "
+            "rest of CHANGELOG.md into it", fence_line))
     return findings
 
 OK, SKIPPED, REFUSED = 0, 1, 2
@@ -486,12 +598,14 @@ def check(directory: Path) -> int:
         _receipt("skipped", "{0}/ holds 0 fragments — nothing to validate"
                  .format(directory.name))
         return OK
-    # Not "no body writes at column 0" (#930): that named where the pattern was
-    # anchored rather than what was checked, and it stayed literally true through
-    # three bypasses while the released file carried the injected lines. The
-    # claim has to be the property a reader is trusting the gate for.
-    _receipt("ok", "{0} fragments, all names parse and no body line would become "
-                   "a heading or a link ref of CHANGELOG.md"
+    # Not "no body writes at column 0" (#930), and no column at all this time
+    # (#934): naming where a pattern is anchored is what stayed literally true
+    # through three bypasses, and then through six more, while the released file
+    # carried the injected lines. The claim has to be the property a reader is
+    # trusting the gate for, and the property is now the accepted shape itself.
+    _receipt("ok", "{0} fragments, all names parse and every body is `- ` bullets "
+                   "plus lines indented under them — none can open a heading or a "
+                   "link ref of CHANGELOG.md, at any indent or nesting"
              .format(len(fragments)),
              ["{0}  {1}".format(f.path.name if f.path else "?", f.section) for f in fragments])
     return OK
