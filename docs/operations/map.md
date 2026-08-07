@@ -53,7 +53,8 @@ Three tiers — supertool picks the best available at first `map` call (result c
 | 2. ctags | `ctags` on PATH (universal-ctags) | JSON tags: class/method/function/constant with scope |
 | 3. regex | Always available | Pattern matching on `class`, `function`, `def`, `interface`, `trait`, `enum`, `const`, `struct`, `impl` |
 
-Fallback is automatic and silent. No configuration needed.
+Fallback between tiers is automatic and needs no configuration. Falling off the
+end of the chain, however, is stated out loud — see "When no tier can look".
 
 ### Installing for richer output
 
@@ -83,6 +84,42 @@ Without either, the regex fallback works for all supported languages — nesting
 | Rust | Full AST | functions, structs, impls | fn, struct, impl, enum, trait |
 | Java | Full AST | classes, methods | class, interface, enum |
 | Ruby | Full AST | classes, methods | class, def, module |
+| Markdown (`.md`, `.markdown`) | Heading tree (`h1`..`h6`) | headings | — |
+
+Markdown maps its headings rather than its code: `# Title` becomes `h1 Title`,
+and each level indents one step further. `read:` is deliberately not affected —
+a heading list is orientation, not a substitute for the prose beneath it, so a
+large `.md` still reads as its source. See [reads](reads.md#abstract-read).
+
+## When no tier can look
+
+`map` has three answers, not two, and the difference matters:
+
+| Render | Means |
+|--------|-------|
+| `class Foo  [12]` … | symbols found |
+| `(no symbols)` | a tier parsed the file and it defines nothing |
+| `(no symbol parser for .ext - …)` | **no tier has a grammar or pattern set for this extension** |
+
+The third used to render as the second, so `map:CHANGELOG.md` on a file with
+200 headings reported `(no symbols)` — the tool's blind spot stated as a
+property of the document (#887). It now says which it is, and names what was
+available when it declined:
+
+```
+$ ./supertool 'map:notes.rst'
+(1 files, tier: none)
+notes.rst (240 lines)
+  (no symbol parser for .rst - tree-sitter and the regex tier have no .rst grammar)
+```
+
+The report line reads `tier: none` when nothing in the run was parseable —
+naming a tier that never had a pattern to try would repeat the same mistake one
+line higher. A mixed run keeps the tier that actually produced symbols.
+
+Directory walks only visit extensions some tier claims, so this disclosure is
+reached by naming a file directly. That is exactly the case the issue was
+filed from.
 
 ## Examples per language
 
@@ -106,6 +143,20 @@ src/app/auth.py (120 lines)
     method refresh  [45]
   function create_session  [90]
 ```
+
+**Markdown — heading tree:**
+
+```
+CHANGELOG.md (2696 lines)
+  h1 Changelog  [1]
+    h2 [Unreleased]  [8]
+      h3 Fixed  [10]
+      h3 Changed  [26]
+    h2 [0.25.0] - 2026-08-06  [60]
+```
+
+Pair it with `between:` to pull one section out once you know the exact
+spelling of its heading — the workflow #887 was filed after guessing wrong at.
 
 **TypeScript — interfaces and classes:**
 

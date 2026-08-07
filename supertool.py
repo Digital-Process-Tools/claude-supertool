@@ -2365,7 +2365,15 @@ def _abstract_lang(path: str) -> str:
     The gate used to be `path.endswith(".php")` while `_TS_LANG_MAP` already
     covered eighteen extensions (#670) — so a TypeScript or Python user got the
     raw file, which is the thing they already had."""
-    return _TS_LANG_MAP.get(os.path.splitext(path)[1].lower(), "")
+    lang = _TS_LANG_MAP.get(os.path.splitext(path)[1].lower(), "")
+    return "" if lang in _ABSTRACT_READ_SKIP_LANGS else lang
+
+
+# Languages whose symbol map is not a stand-in for their source. A signature
+# list substitutes for a function body; a heading list does not substitute for
+# the prose underneath it, so `read:` on a markdown file returns the document
+# (#887). `map:` still builds the heading tree — this gate is read-only.
+_ABSTRACT_READ_SKIP_LANGS: FrozenSet[str] = frozenset({"markdown"})
 
 
 def _abstract_map(path: str, lang: str, size_bytes: int) -> Tuple[str, str]:
@@ -2385,6 +2393,7 @@ def _abstract_map(path: str, lang: str, size_bytes: int) -> Tuple[str, str]:
     """
     body = op_map(path)
     if (body.startswith("ERROR:") or "(no symbols)" in body
+            or _NO_PARSER_MARKER in body
             or "no supported files" in body):
         reason = f"no symbols found in {path} ({lang})"
         if not _has_tree_sitter():
@@ -3485,6 +3494,7 @@ _TS_LANG_MAP: Dict[str, str] = {
     ".java": "java", ".rb": "ruby", ".c": "c", ".cpp": "cpp", ".h": "c",
     ".hpp": "cpp", ".cs": "c_sharp", ".swift": "swift", ".kt": "kotlin",
     ".scala": "scala", ".lua": "lua", ".sh": "bash", ".bash": "bash",
+    ".md": "markdown", ".markdown": "markdown",
 }
 
 # Names that differ between the two supported packages for the same
@@ -3656,6 +3666,9 @@ def _ts_extract(path: str, lang_name: str) -> List[Tuple[str, str, int, int]]:
                   file=__import__("sys").stderr)
         return []
 
+    if lang_name == "markdown":
+        return _ts_extract_markdown(source, tree)
+
     def_nodes = _TS_DEF_NODES.get(lang_name, _TS_DEF_NODES_DEFAULT)
     symbols: List[Tuple[str, str, int, int, int]] = []
 
@@ -3675,6 +3688,56 @@ def _ts_extract(path: str, lang_name: str) -> List[Tuple[str, str, int, int]]:
                 _walk(child, depth)
 
     _walk(tree.root_node)
+    return symbols
+
+
+_MD_HEADING_NODES = frozenset({"atx_heading", "setext_heading"})
+
+
+def _ts_extract_markdown(source: bytes, tree: Any) -> List[Tuple[str, str, int, int, int]]:
+    """Extract the heading tree from a parsed markdown document (#887).
+
+    Headings are markdown's symbols, but they do not fit the generic walker:
+    the level lives in a marker child (`atx_h2_marker`, `setext_h1_underline`)
+    rather than in the node type, the name lives in an `inline` child rather
+    than a `name` field, and nesting is by level rather than by containment.
+
+    Returned as (kind, name, line, end_line, depth) with kind "h1".."h6" and
+    depth = level - 1, so `## Foo` renders one step in from `# Foo`.
+    """
+    symbols: List[Tuple[str, str, int, int, int]] = []
+
+    def _level(node: Any) -> int:
+        for child in node.children:
+            ctype = child.type
+            if ctype.startswith("atx_h") and ctype.endswith("_marker"):
+                return int(ctype[5:-7])
+            if ctype.startswith("setext_h") and ctype.endswith("_underline"):
+                return int(ctype[8:-10])
+        return 1
+
+    def _title(node: Any) -> str:
+        for child in node.children:
+            if child.type in ("inline", "paragraph", "heading_content"):
+                return source[child.start_byte:child.end_byte].decode(
+                    "utf-8", errors="replace").strip()
+        raw = source[node.start_byte:node.end_byte].decode(
+            "utf-8", errors="replace")
+        return raw.splitlines()[0].lstrip("#").strip(" #").strip()
+
+    def _walk(node: Any) -> None:
+        if node.type in _MD_HEADING_NODES:
+            level = _level(node)
+            name = _title(node)
+            if name:
+                line = node.start_point[0] + 1
+                symbols.append((f"h{level}", name, line, line, level - 1))
+            return
+        for child in node.children:
+            _walk(child)
+
+    _walk(tree.root_node)
+    symbols.sort(key=lambda s: s[2])
     return symbols
 
 
@@ -3985,6 +4048,45 @@ def _collect_files(
 
 MAX_MAP_FILES = 100  # Cap to prevent overwhelming output
 
+# Substring every "we could not look" render shares, so callers that key off
+# map's output (`_abstract_map`) can recognise the third state without
+# re-deriving which extensions have parsers.
+_NO_PARSER_MARKER = "no symbol parser for "
+
+
+def _map_no_parser_reason(ext: str, use_ts: bool, use_ctags: bool) -> str:
+    """Why no tier could look at EXT, or "" when at least one could (#887).
+
+    `map` had two renders for three facts: symbols, none found, and no parser
+    for this file type. The third collapsed into the second, so a markdown
+    file dense with headings reported `(no symbols)` — an absence produced by
+    the tool, stated as an absence in the document. This computes the third
+    state so the render can keep it separate; see docs/validators.md,
+    "Declining instead of guessing".
+
+    A tier counts as able to look when it has patterns or a grammar for EXT,
+    not merely when it is installed. ctags is deliberately not treated as a
+    parser here: `op_map` only consults it when tree-sitter is absent, and the
+    build on PATH may be BSD ctags, which cannot be queried for its language
+    list — so a note is appended rather than a capability claimed.
+    """
+    ts_lang = _TS_LANG_MAP.get(ext) if use_ts else None
+    if ts_lang and ts_lang not in _TS_GRAMMAR_FAILED:
+        return ""
+    if ext in _REGEX_PATTERNS:
+        return ""
+
+    if not ext:
+        ext = "(no extension)"
+    if use_ts:
+        detail = f"tree-sitter and the regex tier have no {ext} grammar"
+    else:
+        detail = (f"tree-sitter is not installed and the regex tier has no "
+                  f"{ext} patterns")
+    if use_ctags:
+        detail += "; ctags found nothing"
+    return f"{_NO_PARSER_MARKER}{ext} - {detail}"
+
 
 def op_map(path: str, no_exclude: bool = False) -> str:
     """Generate a symbol map of a file or directory.
@@ -4016,6 +4118,7 @@ def op_map(path: str, no_exclude: bool = False) -> str:
 
     # tier label is computed after extraction to reflect what actually produced symbols
     actual_tier: str = "regex"
+    unparsed = 0
 
     out_files: List[str] = []
 
@@ -4050,8 +4153,16 @@ def op_map(path: str, no_exclude: bool = False) -> str:
                 symbols_found = True
 
         if not symbols_found:
+            no_parser = _map_no_parser_reason(ext, use_ts, use_ctags)
             ts_lang = _TS_LANG_MAP.get(ext) if use_ts else None
-            if ts_lang and ts_lang in _TS_GRAMMAR_FAILED:
+            if no_parser:
+                # No tier has a grammar or a pattern set for this extension.
+                # Saying "(no symbols)" here would report the tool's blind
+                # spot as a property of the file (#887).
+                out_files.append(
+                    f"{_fwd(fpath)} ({line_count} lines)\n  ({no_parser})\n")
+                unparsed += 1
+            elif ts_lang and ts_lang in _TS_GRAMMAR_FAILED:
                 # Every tier came up empty AND tree-sitter's grammar never
                 # loaded for this language — say so, rather than rendering
                 # byte-identical to a file with genuinely zero definitions
@@ -4064,6 +4175,10 @@ def op_map(path: str, no_exclude: bool = False) -> str:
                 # File exists but no symbols extracted — show it as empty
                 out_files.append(f"{_fwd(fpath)} ({line_count} lines)\n  (no symbols)\n")
 
+    if unparsed == len(files):
+        # Naming a tier that never had a pattern to try is the report line
+        # telling the same lie the body used to (#887).
+        actual_tier = "none"
     out = [f"({len(files)} files{_hidden_suffix(len(hidden_files))}, tier: {actual_tier})\n"] + out_files
     if truncated:
         out.append(f"\n... (truncated at {MAX_MAP_FILES} files)\n")

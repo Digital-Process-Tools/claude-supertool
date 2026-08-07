@@ -73,6 +73,14 @@ A successful abstract read is labelled, and says how to get the source anyway:
 [abstract read — typescript, 1204 lines, 43001 bytes raw — use read:src/Big.ts:full for content or read:src/Big.ts:::grep=PATTERN to filter]
 ```
 
+### Markdown is exempt
+
+`.md` and `.markdown` have a tree-sitter grammar (#887), so `map:` renders their
+heading tree. Abstract read skips them anyway. The trade abstract read makes is
+that a signature stands in for the body it heads; a heading does not stand in
+for the prose it heads, and a reader who asked for a document and got its table
+of contents has been given the shape of an answer rather than one.
+
 ## Common patterns
 
 Read three files in one round-trip — parallel where safe:

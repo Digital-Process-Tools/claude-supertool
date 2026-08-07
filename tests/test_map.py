@@ -211,10 +211,13 @@ end
 
 
 def test_map_unsupported_extension(tmp_path: Path) -> None:
+    """A type no tier parses reports the missing parser, not a missing
+    structure — this assertion used to accept "(no symbols)", which is how
+    #887 shipped."""
     f = tmp_path / "data.csv"
     f.write_text("a,b,c\n1,2,3\n")
     out = supertool.op_map(str(f))
-    assert "no supported files" in out or "no symbols" in out
+    assert "no supported files" in out or "no symbol parser for .csv" in out
 
 
 def test_map_directory(tmp_path: Path) -> None:
