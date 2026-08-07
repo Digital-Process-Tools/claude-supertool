@@ -111,6 +111,28 @@ def test_the_gate_has_its_own_floor_and_not_the_bucket_average() -> None:
     assert gate.ENFORCED[own] > gate.ENFORCED[other] - 100, "sanity"
 
 
+def test_the_entry_point_shim_does_not_inherit_the_bodys_floor() -> None:
+    """`supertool.py` and `_supertool.py` are the other overlapping-ish pair.
+
+    #931/#942 moved the 17.4k-line body into `_supertool.py` and left
+    `supertool.py` an 84-line shim, so the floor moved with the code and the
+    shim went into NOT_MEASURED_PY with its reason. The two names differ by a
+    leading underscore, and prefix matching is what keeps them apart in both
+    directions: the shim must not be reached by the entry written for the body
+    — an 89% floor bounding 84 lines reports green while measuring none of
+    what it was written for — and the body must not fall through to the shim's
+    "not measured" reason, which would drop the largest enforced bucket in the
+    repository out of the gate while every section still printed.
+    """
+    assert gate.classify("_supertool.py") == "enforced"
+    assert gate._bucket_key("_supertool.py") == "_supertool.py"
+    assert gate.classify("supertool.py") == "unmeasured"
+    assert gate._bucket_key("supertool.py") is None, (
+        "the shim was totalled into a bucket; its statements are attributed "
+        "to _supertool.py by the sys.modules rebind, so counting it here "
+        "would count them twice")
+
+
 def test_the_most_specific_prefix_wins_regardless_of_declaration_order() -> None:
     """The file floor beats the directory floor because it is longer, not first.
 
@@ -275,8 +297,10 @@ def test_measure_totals_each_bucket_and_ignores_out_of_tree_files(
     config = tmp_path / "coverage_gate.ini"
     config.write_text("[run]\n", encoding="utf-8")
     (tmp_path / "coverage.json").write_text(json.dumps({"files": {
-        str(gate.REPO / "supertool.py"):
+        str(gate.REPO / "_supertool.py"):
             {"summary": {"num_statements": 100, "missing_lines": 5}},
+        str(gate.REPO / "supertool.py"):
+            {"summary": {"num_statements": 84, "missing_lines": 84}},
         str(gate.REPO / "presets" / "git" / "diff.py"):
             {"summary": {"num_statements": 200, "missing_lines": 20}},
         str(gate.REPO / "presets" / "git" / "trail.py"):
@@ -293,8 +317,11 @@ def test_measure_totals_each_bucket_and_ignores_out_of_tree_files(
 
     totals = gate.measure(config)
 
-    assert totals["supertool.py"] == (100, 5), (
+    assert totals["_supertool.py"] == (100, 5), (
         "the out-of-tree copy leaked into the enforced bucket")
+    assert "supertool.py" not in totals, (
+        "the #931 shim is declared not-measured; totalling it as a bucket of "
+        "its own prints a percentage the report says does not exist")
     assert totals["presets/"] == (300, 30), "the two preset files did not sum"
     assert totals[".github/scripts/coverage_gate.py"] == (140, 7)
     assert totals[".github/scripts/"] == (51, 3), (
