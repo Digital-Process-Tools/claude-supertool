@@ -39,14 +39,20 @@ OPERATIONS
 ----------
     read:PATH                  Read file (first 300 lines, 20KB cap)
     read:PATH:START-END        Read an explicit line range, inclusive
-    read:PATH:OFFSET:LIMIT     Read with offset and line limit
+    read:PATH:OFFSET:LIMIT     Read with offset and line limit. OFFSET is a
+                                skip count, not a start line — :19:1 returns
+                                line 20. The window it actually returned is
+                                stated in the header whenever OFFSET > 0.
+                                Prefer :START-END when you know the lines.
     grep:PATTERN:PATH          Search pattern (10 results default).
                                 Auto-reads full file if PATH is a concrete
                                 file < 20KB with a match.
     grep:PATTERN:PATH:no-auto-read
                                Suppress the single-file auto-read — only the
                                 matching line(s) are emitted (parity with glob).
-    grep:PATTERN:PATH:LIMIT    Search with custom result limit
+    grep:PATTERN:PATH:LIMIT    Search with custom result limit. LIMIT 0 is
+                                refused — it is not "unlimited" here. Omit
+                                LIMIT for the default.
     grep:PATTERN:PATH:LIMIT:CONTEXT
                                Search with context lines (like grep -C).
                                 Match lines: path:lineno:content
@@ -2325,10 +2331,67 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
         )
     elif not filter_regex and offset + printed < line_count:
         out.append(f"... ({line_count - offset - printed} more lines)\n")
+    elif not filter_regex and offset > 0:
+        # `[complete file — no more lines]` after a windowed read was a plain
+        # falsehood: lines 1-OFFSET were never emitted, and when OFFSET sits
+        # past EOF *nothing* was emitted and the render still said the whole
+        # file had been shown (#945). The empty case is left to the window
+        # note, which is the only line that can honestly describe it.
+        if printed:
+            out.append(f"[end of file — lines 1-{offset} not shown]\n")
     elif not filter_regex:
         out.append("[complete file — no more lines]\n")
+    if offset > 0:
+        # Inserted at index 1 — after the count header, before the first line
+        # of content. Construction order is not render order, and a correction
+        # the caller reads *after* paying for the wrong window is not a
+        # disclosure (#945).
+        out.insert(1, _read_window_note(
+            path, limit if apply_byte_cap else max(0, line_count - offset),
+            offset, line_count, printed))
     out.append("\n")
     return "".join(out)
+
+
+def _read_window_note(path: str, limit: int, offset: int,
+                      line_count: int, shown: int) -> str:
+    """One line naming the window the caller asked for and the window actually
+    returned, emitted for every `read` with a non-zero OFFSET (#945).
+
+    OFFSET is a *skip count*, so `read:f:19:1` renders line 20 and line 19 is
+    absent from the output entirely. Nothing in the old render distinguished
+    "here is line 19" from "here is a line near 19", so a caller quoting the
+    result into a brief or an issue quoted the wrong line with full confidence.
+
+    The window is disclosed rather than the semantics changed: `read:PATH:A-B`
+    already spells 1-based inclusive addressing, and silently re-basing OFFSET
+    would break every caller who had it right — trading a visible wrong answer
+    for an invisible one.
+
+    The `read:PATH:A-B` suggestion is withheld when LIMIT > OFFSET, because
+    that is the shape `_read_range_note` (#382) already speaks to: it reads
+    `A:B` as START:END and would name a different range. Two hints proposing
+    two different ranges is worse than one.
+    """
+    req_start = offset + 1
+    req_end = offset + limit
+    # "offset N + limit M = lines A-B" rather than "requested lines A-B":
+    # LIMIT is often the 300-line default the caller never typed, and calling
+    # that a request would be its own small untruth.
+    asked = f"offset {offset} + limit {limit} = lines {req_start}-{req_end}"
+    if shown <= 0:
+        return (f"window: {asked}; returning nothing — the file has "
+                f"{line_count} lines\n")
+    hint = ""
+    if 0 < limit <= offset:
+        hint = ("; OFFSET is a skip count, not a start line — for lines "
+                f"{offset}-{offset + limit - 1} use "
+                f"read:{path}:{offset}-{offset + limit - 1}")
+    last = offset + shown
+    stops = (f", stopping at line {last}, the end of the file"
+             if last < req_end else "")
+    return (f"window: {asked}; returning lines {req_start}-{last} "
+            f"of {line_count}{stops}{hint}\n")
 
 
 _READ_RANGE_RE = re.compile(r"\d+-\d+")
@@ -2510,6 +2573,20 @@ def _count_lines(path: str, on_error: int = 0) -> int:
         return count
     except OSError:
         return on_error
+
+
+# #945 — `0` is the near-universal spelling of "no limit", and grep accepted it,
+# ignored it, and quietly applied the default instead. Neither meaning is
+# guessed: honouring it as unlimited would hand a caller who typed one character
+# an unbounded dump into a shared output budget, and substituting the default
+# means the number that ran was never the number that was typed.
+_GREP_ZERO_LIMIT = (
+    'ERROR: grep LIMIT 0 is not "unlimited" here, and supertool will not guess '
+    "which of the two it meant. Uncapped output would land in the caller's "
+    "context before it could be declined, and silently substituting the default "
+    "would mean the LIMIT that ran was never the LIMIT that was typed. Pass a "
+    "positive LIMIT (grep:PATTERN:PATH:200) or omit it for the default." + chr(10)
+)
 
 
 def op_grep(pattern: str, path: str = ".", limit: int = 0,
@@ -15275,10 +15352,13 @@ def _read_op_from_payload(op: str, payload: Any, no_exclude: bool = False) -> st
                         f"field 'pattern'\n")
             path = str(p.get("path") or ".")
             if op == "grep":
+                p_limit = _payload_int(
+                    p, "limit",
+                    _get_op_int("grep", "max_results", MAX_GREP_RESULTS))
+                if p_limit == 0:
+                    return _GREP_ZERO_LIMIT
                 return op_grep(
-                    pattern, path,
-                    _payload_int(p, "limit",
-                                 _get_op_int("grep", "max_results", MAX_GREP_RESULTS)),
+                    pattern, path, p_limit,
                     _payload_int(p, "context", 0),
                     _payload_bool(p, "count"),
                     no_exclude=no_exclude,
@@ -15781,6 +15861,8 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
         elif op == "grep":
             pattern, path, limit, context, count_only, no_auto_read = \
                 _parse_grep_args(parts)
+            if limit == 0:
+                return header + _GREP_ZERO_LIMIT
             _hint = _colon_split_hint("grep", pattern, path)
             if _hint:
                 return header + _hint
@@ -15793,6 +15875,8 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
             ga_path = parts[2] if len(parts) > 2 and parts[2] else "."
             ga_context = int(parts[3]) if len(parts) > 3 and parts[3] else 3
             ga_limit = int(parts[4]) if len(parts) > 4 and parts[4] else 10
+            if ga_limit == 0:
+                return header + _GREP_ZERO_LIMIT
             body = op_grep(ga_pattern, ga_path, ga_limit, ga_context,
                            count_only=False, no_exclude=no_exclude)
         elif op == "wc":

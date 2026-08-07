@@ -6,7 +6,7 @@ File reading and directory listing ops. Reach for these when you know the path a
 
 | Op | Syntax | What it does |
 |----|--------|--------------|
-| `read` | `read:PATH` or `read:PATH:OFFSET:LIMIT` | 300 lines / 20KB cap. With `read.abstract` on, a file over the threshold comes back as its symbol map instead — see [Abstract read](#abstract-read) |
+| `read` | `read:PATH` or `read:PATH:OFFSET:LIMIT` | 300 lines / 20KB cap. With `read.abstract` on, a file over the threshold comes back as its symbol map instead — see [Abstract read](#abstract-read). **OFFSET is a skip count**, so `:19:1` renders line 20 — see [The window line](#the-window-line) |
 | `read` (range) | `read:PATH:START-END` | Explicit inclusive line range. Prefer over `:OFFSET:LIMIT` when you know the lines — the offset form reads like a range but is not. Composes with `:full` and `:grep=PATTERN`. |
 | `read` (filter) | `read:PATH:OFFSET:LIMIT:grep=PATTERN` | Only show lines matching PATTERN (original line numbers preserved). Use `read:PATH:::grep=PATTERN` for defaults. |
 | `head` | `head:PATH:N` | First N lines (default 20). Minified single-line files return a char-window peek instead of the whole giant line; window size via `builtin-ops.head.char_window` (default 1000, or env `SUPERTOOL_HEAD_CHAR_WINDOW`). |
@@ -17,6 +17,47 @@ File reading and directory listing ops. Reach for these when you know the path a
 | `glob` | `glob:PATTERN` | `**` supported. Patterns resolve from the repo root; an unanchored pattern that matches nothing is retried once as `**/PATTERN`, so `glob:SiBrief/**/*.php` also finds a `SiBrief/` nested deeper (the retry prints a `[mid-path retry: …]` line — a genuine zero stays zero). **Auto-reads** if PATTERN is a concrete file path (no wildcards). |
 | `tree` | `tree:PATH` or `tree:PATH:DEPTH` | Directory structure with depth limit (default 3). Hides dotfiles. Files listed before subdirectories. |
 | `diff` | `diff:PATH1:PATH2` | Unified diff between two files. |
+
+## The window line
+
+`read:PATH:OFFSET:LIMIT` takes OFFSET as a **skip count**, not a start line. So
+`read:file.py:19:1` skips nineteen lines and renders line **20** — the line the
+caller named is not in the output at all. That was silent: a shifted window, a
+window clamped short by EOF, and a window past EOF that returned nothing all
+rendered as well-formed output with nothing to distinguish them from a correct
+one, and the last of the three signed off with `[complete file — no more lines]`.
+
+Any read with a non-zero OFFSET now carries one line, immediately after the
+count header and **before the content**, naming the window asked for and the
+window returned:
+
+```
+(403 lines, 18211 bytes)
+window: offset 19 + limit 1 = lines 20-20; returning lines 20-20 of 403; OFFSET is a skip count, not a start line — for lines 19-19 use read:file.py:19-19
+    20→...
+```
+
+Clamped short:
+
+```
+window: offset 8 + limit 5 = lines 9-13; returning lines 9-10 of 10, stopping at line 10, the end of the file
+```
+
+Past EOF — no content, and the render says so instead of claiming the file was
+shown in full:
+
+```
+window: offset 99 + limit 3 = lines 100-102; returning nothing — the file has 10 lines
+```
+
+A windowed read that reaches EOF closes with `[end of file — lines 1-OFFSET not
+shown]`. `[complete file — no more lines]` is reserved for a read that started
+at line 1, where it is true.
+
+The semantics were not changed. `read:PATH:START-END` already spells 1-based
+inclusive addressing and is the form to prefer; re-basing OFFSET would have
+broken every caller who had it right, trading a visible wrong answer for an
+invisible one.
 
 ## Abstract read
 
