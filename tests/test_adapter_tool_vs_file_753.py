@@ -207,7 +207,7 @@ PARSERS = {
     "bash-check": lambda out, f: bash_check.parse_diagnostics(out, f),
     "ruby-check": lambda out, f: ruby_check.parse_diagnostics(out, f),
     "gofmt-check": lambda out, f: gofmt_check.parse_diagnostics(out, f),
-    "cargo-check": lambda out, f: cargo_check._parse_errors(out),
+    "cargo-check": lambda out, f: cargo_check._parse_errors(out, f),
 }
 
 
@@ -268,7 +268,7 @@ def test_ruby_does_not_count_its_own_summary_line_as_a_finding() -> None:
 def test_cargo_keeps_the_rustc_error_code() -> None:
     found = cargo_check._parse_errors(
         "src/main.rs:2:9: error[E0308]: mismatched types: expected `i32`\n"
-        + RS_SUMMARY_ONLY)
+        + RS_SUMMARY_ONLY, "src/main.rs")
     assert len(found) == 1
     assert found[0]["code"] == "E0308"
     assert found[0]["line"] == 2 and found[0]["col"] == 9
@@ -277,7 +277,8 @@ def test_cargo_keeps_the_rustc_error_code() -> None:
 def test_cargo_ignores_warnings() -> None:
     """A warning is not a reason to fail the file."""
     assert cargo_check._parse_errors(
-        "src/main.rs:2:9: warning[unused]: unused variable `x`\n") == []
+        "src/main.rs:2:9: warning[unused]: unused variable `x`\n",
+        "src/main.rs") == []
 
 
 # --- node-check: the location has to be matched, not merely found ----------

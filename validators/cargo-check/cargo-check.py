@@ -14,12 +14,14 @@ from __future__ import annotations
 
 import json
 import os
+import posixpath
 import re
 import shutil
 import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Callable
 import pathlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
@@ -43,9 +45,119 @@ def _find_crate_root(file: str) -> Path | None:
         p = parent
 
 
-def _parse_errors(output: str) -> list[dict]:
-    """Extract error lines from cargo --message-format=short output."""
+def _canon(path: object, normcase: Callable[[str], str] | None = None) -> str:
+    """A path in one comparable form: folded for case, separated by `/` (#754).
+
+    **The separator is normalised after the fold, never before.**
+    `os.path.normcase` is the only stdlib call that knows whether this platform
+    is case-insensitive, and on Windows it does a second thing its name does not
+    advertise: it rewrites every `/` into `\\`. The first version of this fix
+    replaced separators and then folded, so on Windows both sides came back
+    backslash-separated while the suffix rule below still looked for a `/`
+    boundary - no diagnostic could match its own file, every finding was demoted
+    to a non-verdict, and three CI legs went red on the exact regression this
+    module exists to prevent.
+
+    `normcase` is injectable for the reason `refusal.daemon_transport_reason`
+    takes `has_uds`: a platform behaviour asserted only on the platform that has
+    it is asserted only where it was already going to be noticed. Passing
+    `ntpath.normcase` reproduces Windows semantics on every runner.
+
+    Backslashes are folded to `/` on POSIX too, where a backslash is a legal
+    filename character. That is deliberate: cargo never emits one as a
+    separator, and a rule that behaves differently per platform is a rule no
+    test can pin from one platform.
+    """
+    fold = normcase or os.path.normcase
+    return fold(str(path)).replace("\\", "/")
+
+
+def _tail_match(a: str, b: str) -> bool:
+    """Do two canonical paths name the same file, one possibly a tail of the
+    other? Symmetric, because either side may be the relative one: cargo prints
+    a relative path for a workspace member and an absolute one elsewhere, and
+    the adapter is handed whatever the caller typed.
+
+    The boundary is a separator, never a substring: `src/xmain.rs` ends with the
+    characters of `main.rs` and is a different file.
+    """
+    return a == b or a.endswith("/" + b) or b.endswith("/" + a)
+
+
+def _same_file(src_file: str, target: Path, target_raw: str = "",
+               normcase: Callable[[str], str] | None = None) -> bool:
+    """Is the path cargo printed the file the adapter was asked about? (#754)
+
+    A **path-suffix match on segment boundaries**, deliberately not a join
+    against the crate root. cargo prints diagnostic paths relative to the
+    *workspace* root, which is not the directory it was invoked in: run from
+    `ws/member`, cargo 1.97 reports `member/src/sib.rs`, so `crate_root /
+    src_file` yields `ws/member/member/src/sib.rs` and matches nothing. Every
+    real finding about the file under validation would then fail the comparison
+    and be demoted to a non-verdict - the same misreport pointing the other way,
+    and the quieter of the two.
+
+    A suffix match needs no base and touches no disk, so it holds for a
+    crate-relative path, a workspace-relative one and an absolute one alike.
+
+    **Nothing here rests on two `resolve()` calls agreeing character for
+    character**, which is why `target_raw` is compared alongside the resolved
+    `target`. `os.path.abspath` and `Path.resolve()` are not the same function
+    on Windows: `abspath` joins onto the working directory, while `resolve()`
+    goes through `_getfinalpathname` and returns the canonical on-disk spelling
+    of whatever prefix exists, following `subst` and symlinked drives on the
+    way. Comparing an absolute diagnostic path against only the resolved target
+    made the answer depend on that difference; comparing against both forms
+    under one suffix rule does not.
+    """
+    src = (src_file or "").strip()
+    if not src:
+        return False
+
+    src_forms = {posixpath.normpath(_canon(src, normcase))}
+    if os.path.isabs(src):
+        try:
+            src_forms.add(_canon(Path(src).resolve(), normcase))
+        except OSError:
+            pass
+
+    tgt_forms = {_canon(target, normcase)}
+    if target_raw:
+        tgt_forms.add(posixpath.normpath(_canon(target_raw, normcase)))
+
+    return any(_tail_match(s, t) for s in src_forms for t in tgt_forms)
+
+
+def _elsewhere_in_crate(src_file: str, ln: int, col: int, code: str, msg: str) -> str:
+    """The message for a crate error this file did not cause (#754).
+
+    It is not filtered out. The crate genuinely does not build, and a caller
+    told nothing about that cannot act on it; suppressing the diagnostic would
+    trade a misreport for a silent loss, which is the worse of the two. What
+    changes is only the claim about *which* file caused it - the real location
+    goes in the text, where it can be read and acted on but never mistaken for a
+    line of the file under validation.
+    """
+    label = f"error[{code}]" if code and code != "compile" else "error"
+    return (f"cargo check reported {label} at {src_file}:{ln}:{col}, which is "
+            f"not this file - the crate does not compile, so no verdict was "
+            f"produced about this file: {msg}")
+
+
+def _parse_errors(output: str, target_file: str) -> list[dict]:
+    """Extract error lines from cargo --message-format=short output.
+
+    `cargo check` analyses the whole crate, so its output carries diagnostics
+    about every file in it. Those that name `target_file` are findings and keep
+    their line, column and rustc code. Those that name another file keep their
+    text and lose their location: `code: "adapter"`, the code reserved across
+    every adapter for "no verdict was obtained about this file", with `line` and
+    `col` null because a finding that cannot be placed here does not borrow a
+    number, and no `source_context` because there is no line of this file to
+    render (#754).
+    """
     errors = []
+    target = Path(target_file).resolve()
     # Short format: "path/to/file.rs:LINE:COL: error[EXXXX]: message"
     pattern = re.compile(r"^(.+?):(\d+):(\d+):\s+(error|warning)\[?([^\]]*)\]?:\s+(.+)$")
     for line in output.splitlines():
@@ -56,15 +168,32 @@ def _parse_errors(output: str) -> list[dict]:
                 continue
             src_file = m.group(1)
             ln = int(m.group(2))
-            err = {
-                "line": ln,
-                "col": int(m.group(3)),
-                "severity": "error",
-                "code": m.group(5) or "compile",
-                "msg": m.group(6).strip()[:300],
-                "source_context": source_context(src_file, ln),
-            }
-            errors.append(err)
+            col = int(m.group(3))
+            code = m.group(5) or "compile"
+            msg = m.group(6).strip()[:300]
+            if _same_file(src_file, target, target_file):
+                # Context is read from the target the adapter was handed, never
+                # from a path rebuilt out of cargo's output. The old code passed
+                # `src_file` straight through, so a crate-relative path was
+                # resolved against wherever the adapter happened to be running
+                # and the context came back empty for a file that was right
+                # there.
+                errors.append({
+                    "line": ln,
+                    "col": col,
+                    "severity": "error",
+                    "code": code,
+                    "msg": msg,
+                    "source_context": source_context(str(target), ln),
+                })
+            else:
+                errors.append({
+                    "line": None,
+                    "col": None,
+                    "severity": "error",
+                    "code": "adapter",
+                    "msg": _elsewhere_in_crate(src_file, ln, col, code, msg),
+                })
     return errors
 
 
@@ -118,7 +247,7 @@ def main() -> None:
         return
 
     output = r.stderr or r.stdout or ""
-    errors = _parse_errors(output)
+    errors = _parse_errors(output, file)
     if not errors:
         # cargo exited non-zero without emitting a single short-format
         # `file:line:col: error[...]` diagnostic, so nothing here is a compile
