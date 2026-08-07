@@ -63,6 +63,23 @@ Emit it whenever the tool's output does not confirm it looked at the file. Where
 
 Where a tool documents distinct exit codes, read them — `terraform fmt -check` returns `3` for "needs formatting" and `2` for "I failed" — but the located diagnostic is still the marker, because an exit code alone cannot say *which* file it is about.
 
+### A located diagnostic still has to be about *this* file (#754)
+
+Some analysers do not work per file. `cargo check` compiles the whole crate, and a per-file adapter is handed one path out of it, so "the output carries a located diagnostic" and "the output says something about the file you edited" are two different facts. `cargo-check` used to conflate them: an error in `src/sibling.rs` was published with `file` naming `src/main.rs`, `line` set to a line number belonging to the other file, and `source_context` read from a crate-relative path resolved against the adapter's own working directory — three false statements about a file that compiled fine.
+
+**A crate error caused by another file is real, and the fix is not to hide it.** Filtering it out leaves a healthy file in a crate that does not build reporting clean, or falling into the `adapter` branch above with a message that names nothing. Either trades a misreport for a silent loss, which is the worse of the two: the crate genuinely does not compile and a caller told nothing cannot act on it. So the diagnostic is kept and only the *attribution* changes:
+
+| The diagnostic names | `line` / `col` | `code`      | `source_context` | `ok` |
+|----------------------|----------------|-------------|------------------|------|
+| the file under validation | as reported | the tool's (`E0308`) | rendered from the target | `false` |
+| any other file       | `null`         | `adapter`   | absent           | `false` |
+
+`adapter` rather than a new code, because every guarantee it already carries is the one wanted here: the message names what happened, the result is never cached — a whole-project verdict is not a function of this file's content, and the cache key is a content hash — and it never triggers rollback, so `rollback_on_fail` cannot revert a good edit over a defect in a file the edit did not touch. `skipped` would be wrong for the same reason it is wrong for a tool fault: it omits `errors` entirely, so the crate error would vanish.
+
+**Compare paths by suffix on segment boundaries, not by joining onto the project root.** The obvious fix — resolve each reported path against the directory the tool was invoked in — is wrong for cargo and for anything else that reports relative to a workspace: run from `ws/member`, cargo prints `member/src/sib.rs`, so joining onto the crate root gives `ws/member/member/src/sib.rs`, and every real finding about the file under validation fails the comparison and is demoted to a non-verdict. That is the same misreport pointing the other way, and the quieter of the two. A suffix match needs no base and touches no disk, so one rule covers a project-relative path, a workspace-relative one and an absolute one. The boundary is a separator: `src/xmain.rs` ends with the characters of `main.rs` and is a different file.
+
+**Render `source_context` from the target the adapter was handed, never from a path rebuilt out of the tool's output.** Once the diagnostic is known to be about this file, its path adds nothing and its resolution can only go wrong.
+
 ### Error object
 
 | Field            | Type             | Required | Notes                                              |
