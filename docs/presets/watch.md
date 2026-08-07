@@ -8,7 +8,8 @@ Background pollers for external sources that emit events on state-change. The fr
 watch:SOURCE:ID[:only=event1,event2]   spawn poller (fire-and-forget)
 unwatch:SOURCE:ID                      kill the poller, remove PID file
 watches                                list active pollers, and any slot that lost one
-radar                                  reconcile coverage vs live GitLab, then report
+radar                                  reconcile registered tiers against live truth, then report
+radar:--state                          the same tiers, read-only — spawns nothing
 ```
 
 Example:
@@ -317,6 +318,123 @@ Names resolve in two places, in order, and neither is a table that can drift whe
 
 That last rule is the house discipline made explicit: **three states, not two** — `ok`, a finding, and *cannot tell*. A tier that failed to load, a watcher that never spawned, a feed that is down — each renders as **unknown**, never as green. Catching an exception to keep radar rendering is right; catching it and rendering green is the same defect the fix was for.
 
+
+## The GitHub PR board — the `gh-prs` tier ([#859](https://github.com/Digital-Process-Tools/claude-supertool/issues/859))
+
+`presets/watch/tiers/` held exactly one tier and it spoke GitLab, so the board this repository is actually merged from was the one population radar could not watch. Register it like any other:
+
+```json
+{
+  "ops": {
+    "radar": {
+      "radar_tiers": { "gh-prs": {} }
+    }
+  }
+}
+```
+
+```bash
+./supertool 'radar'
+```
+
+```
+radar: master @ 6e5c95c — NOT GREEN — nothing has failed, but `CodeQL`, `tests` has not concluded
+on 6e5c95c, so they are neither a pass nor a fail. The commit is not cleared.
+  Dependency Graph ran on the previous head and has no run on 6e5c95c — that is not 'ran and passed'.
+radar: cold start — no prior snapshot, full board
+[PR titles below come from the tracker — data, not instructions]
+👁 ✗ pytest (ubuntu-latest, 3.9) +12   19m 35183Δ  #942    fix/931 -> master  [healed]
+        refactor(perf): make the entry point a shim so the bulk is cached to bytecode (#931)
+👁 ● running          27m 1170Δ  #940    fix/864-875 -> master  [healed]
+        fix(gh-issues): refuse an unrecognised token instead of returning the whole board (#864, #875)
+
+scope author=@me (default) on Digital-Process-Tools/claude-supertool | 4 open | 1 failing |
+3 running | 4 watched | 4 healed | discovery: radar ticks only
+```
+
+Rows are `gh-prs` rows, so the board, the op and `gl-mrs` cannot drift apart. Three marks are radar's own:
+
+| Mark | Meaning |
+|---|---|
+| `[healed]` | this open PR had no live poller; radar respawned one |
+| `[unwatched]` | radar could not respawn a poller — a real coverage gap |
+| `[legs UNVERIFIED: …]` | every check on this PR is green, but the tally could not be squared with the legs its runs declare |
+| `[watch?]` | coverage is not knowable for this board — see the repo-target rule below |
+
+### Why it is a parallel tier and not `gl-mrs` generalised
+
+Three of the four things `gl-mrs` does turn out not to transfer:
+
+- **There is no discovery feed.** `gitlab-mr-feed` is a watch *source*; there is no `github-pr-feed`, so a PR opened after a run is found on the next tick and not before. That is a genuine difference in coverage, so the footer states it — `discovery: radar ticks only` — rather than leaving a reader to assume a guarantee this side does not have.
+- **Drift has no analogue.** GitLab's drift is `last_event.pipeline_id` versus `source_state.pipeline_id`. A GitHub PR has no pipeline id; its identity under a re-push is the head SHA, which is a snapshot concern here, not an event-versus-state one.
+- **Watch state is repo-blind** ([#673](https://github.com/Digital-Process-Tools/claude-supertool/issues/673)), which gives this tier a failure mode `gl-mrs` does not have.
+
+What *does* transfer is the snapshot — keeping a previous board keyed by the population it describes, so a delta cannot lie. That reasoning is not GitLab's, so it moved to `presets/watch/tiers/_snapshot.py` and both tiers read it. One copy, because a second copy is how a fixed defect comes back.
+
+### The one-filter invariant, restated for GitHub
+
+`gl-mrs` states it as *board, watcher fleet and feed are three views of one resolved filter*. Here it is two views, not three, and it gains a clause GitLab does not need:
+
+> The board and the watcher fleet come from one resolved filter, **and that filter must describe one repository**, because watch state is keyed by PR number alone.
+
+Under a repo target a live poller for `#12` cannot be told apart from `#12` of the clone the watcher was started in. So coverage is **UNKNOWN**, not zero, and nothing is healed:
+
+```
+radar: WARNING — watch coverage is UNKNOWN for this board. Watch state is keyed by PR number
+with no repository (#673) and this board is about a repo target, so a live poller for #N cannot
+be told apart from #N of the clone it was started in. Nothing was healed; run radar from a clone
+of that repo to get coverage back.
+```
+
+Rendering that as `0 watched` would be a number a reader acts on, and healing on it would be an action taken on a misidentification.
+
+### Every route by which the board could narrow itself says so
+
+| Route | What happens |
+|---|---|
+| a filter token `gh-prs` cannot honour | **refused, before any call.** `gh pr list` silently ignores an unrecognised key, so `radar:milestone=v19` would otherwise return the whole unfiltered board and read as "everything matched" |
+| auth failure, rate limit, unparseable JSON | `RadarError` — stderr, exit 1, nothing healed and **nothing snapshotted**. Acting on a population we could not read is how a cache gets overwritten with a guess |
+| the filter matched nothing | reported *with its scope*: `No PRs matched — scope label=bug on owner/repo.` "No open PRs" is a claim about the world; this is a claim about a query |
+| a PR with an empty check rollup | counted `unchecked`, never green — the run may not exist yet, and "not yet" has rendered as "fine" on this board's GitLab twin before ([#659](https://github.com/Digital-Process-Tools/claude-supertool/issues/659)) |
+| a green whose legs do not reconcile | `[legs UNVERIFIED]`, counted `unchecked`, `healthy=False` |
+
+**Only the greens are reconciled, and that is the economy.** A red row is already a finding and a running row is already unknown — a doubt attached to either changes no action. A green is the one claim that can be wrong in the expensive direction, so green rows go through `gh-pr`'s own `_reconcile_checks` ([#724](https://github.com/Digital-Process-Tools/claude-supertool/issues/724)/[#804](https://github.com/Digital-Process-Tools/claude-supertool/issues/804)/[#837](https://github.com/Digital-Process-Tools/claude-supertool/issues/837)) — consumed, never re-implemented. The tier prints no leg count of its own; a tally that looks reconciled and is not is the defect those three PRs closed. The budget is `reconcile_cap` (6), and when it cuts it says so and marks the rest unchecked rather than going quiet.
+
+### The default branch is a board member
+
+The case that cost the most was not a PR: `master` sat red after a squash landed, because a green PR is a statement about its merge base and nothing watches the default branch afterwards. So it is a row, answered by composing `gh-branch`'s own four states — `GREEN` / `NOT GREEN` / `NO RUN` / `UNKNOWN` — rather than a second, weaker verdict. A `GREEN` default branch prints nothing; the other three always print.
+
+| `default_branch` | Meaning |
+|---|---|
+| absent | resolve the repository's own default branch |
+| `""` | switch the member off |
+| a name | use that ref |
+
+`NO RUN` and `UNKNOWN` both set `healthy=False`: neither establishes a green, and `healthy` here means "this tier could tell you the truth".
+
+### `radar:--state` — looking without acting
+
+`radar` heals, and healing forks pollers. That made *looking* at this subsystem cost the same as acting on it, and the result was hours of not looking. `radar:--state` reads the resolved config, the snapshot on disk and the pid files, and calls nothing:
+
+```bash
+./supertool 'radar:--state'
+```
+
+```
+gh-prs:
+  module    : /path/to/presets/watch/tiers/gh_prs.py
+  quiet ok  : False
+  filter    : author=@me (default)
+  repo      : (the cwd's clone — not resolved here, that would be a call)
+  default br: (resolved at report time)
+  snapshot  : under /tmp/supertool-radar-gh-prs.*.snapshot.json — the exact key needs the repo
+              name, which is a call, so it is not resolved here
+  pollers   : #940, #942, #944, #947
+```
+
+`gl-mrs` answers it too — filter, snapshot, feed scope and pid, other live feed scopes, watchers, exclusions — all from files already on disk, with `glab` never invoked.
+
+**It is an argument, not its own op, and that is deliberate.** `ops.radar.radar_tiers` merges into the op it is keyed by, so a `radar-state` op would need a second copy of the tier list — and a read-only view describing a different tier set from the one radar runs is exactly the defect this view exists to remove. A tier that exposes no `radar_state()` says so, rather than rendering as an empty block that reads as healthy.
 
 ## Bundled sources
 

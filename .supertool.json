@@ -238,6 +238,11 @@
     }
   },
   "ops": {
+    "radar": {
+      "radar_tiers": {
+        "gh-prs": {}
+      }
+    },
     "git-diff": {
       "red_flags_extra": [
         { "pattern": "\\bbreakpoint\\s*\\(", "ext": ".py", "label": "breakpoint()" },

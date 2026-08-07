@@ -11,7 +11,8 @@ Claude Code.
 watch:SOURCE:ID[:only=event1,event2]    spawn poller (fire-and-forget)
 unwatch:SOURCE:ID                       kill poller, remove PID file
 watches                                 list active pollers (table)
-radar                                   reconcile coverage vs live GitLab, then report
+radar                                   reconcile registered tiers against live truth, report
+radar:--state                           the same tiers, read-only — spawns nothing
 ```
 
 Example:
@@ -24,6 +25,7 @@ Example:
 ./supertool 'watches'
 ./supertool 'unwatch:gitlab-mr:21803'
 ./supertool 'radar'                                 # prune, heal, report
+./supertool 'radar:--state'                         # look without healing
 ```
 
 `watches` says which pollers are alive; `radar` says what is *true*. Pollers
@@ -34,6 +36,19 @@ prunes terminal state files, flags drift where `last_event` fired on an older
 pipeline than `source_state` reports, respawns watchers for open MRs that lost
 theirs, then prints a full board (cold start) or the delta. Idempotent — run it
 on every session start. Details in [docs/presets/watch.md](../../docs/presets/watch.md).
+
+Two tiers ship: `gl-mrs` (the GitLab MR board, above) and `gh-prs` (the GitHub PR
+board, #859) — the latter adds the repository's **default branch** as a board
+member, because a green PR is a statement about its merge base and nothing else
+watches `master` after a squash lands. Neither is a default; radar refuses until
+`ops.radar.radar_tiers` names one.
+
+`radar` heals, and healing forks pollers. `radar:--state` is the same tier list
+read-only — resolved scope, snapshot file, live pollers, feed scopes — reading
+files already on disk and calling no API. It is an argument rather than a
+separate op because `ops.radar.radar_tiers` merges into the op it is keyed by,
+and a read-only view of a *different* tier list from the one radar runs is the
+defect it exists to remove.
 
 ## Sources
 
