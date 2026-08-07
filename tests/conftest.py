@@ -561,6 +561,7 @@ RESET_GLOBALS = (
     "_SKIP_COUNT",
     "_WRITE_COUNT",
     "_WRITE_WARNINGS",
+    "_PAYLOAD_WARNINGS",
 )
 
 # Not scratch, for four different reasons.

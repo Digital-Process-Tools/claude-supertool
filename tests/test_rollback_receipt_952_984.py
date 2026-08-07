@@ -150,7 +150,11 @@ def test_batch_footer_names_a_rolled_back_edit(tmp_path: Path, monkeypatch) -> N
         "premise: the validator must really have rolled the file back")
     assert a.read_text(encoding="utf-8") == "ALPHA\nBETA\n"
     assert "1 rolled back" in _result_line_of(out), out
-    assert out.count("[result] ") == 1, "one footer per call, not one per sub-op"
+    # Two since #1027 -- the leading copy and the footer. Never one per sub-op,
+    # which is asserted positionally rather than by the total alone.
+    assert out.count("[result] ") == 2, "one leading count and one footer"
+    between = out.split("--- edit:", 1)[-1].rsplit("[result] ", 1)[0]
+    assert "[result] " not in between, "no count inside the per-op results"
 
 
 def test_footer_rollback_word_is_absent_when_nothing_was_reverted(

@@ -15527,6 +15527,130 @@ def _toml_literal_backslash_refusal(raw: str) -> str:
     return ""
 
 
+# How many fields one double-backslash note names before it stops counting.
+# A note that lists nine fields is a wall nobody finishes; the first few locate
+# the mistake, and the total is carried in the count.
+_PAYLOAD_DBS_MAX_FIELDS = 3
+
+# A run of EXACTLY two backslashes. Longer runs are deliberately not matched:
+# three or four were counted, not produced by escape reflex, and firing on the
+# deliberate case is how a warning stops being read.
+_EXACT_DOUBLE_BACKSLASH = re.compile(r"(?<!\\)\\{2}(?!\\)")
+
+# The bare key immediately preceding a value, read backwards off the source.
+_PAYLOAD_KEY_BEFORE_VALUE = re.compile(r"([A-Za-z0-9_.\-]+)[ \t]*=[ \t]*$")
+
+# Notes raised while a payload was parsed, drained by dispatch at depth 1.
+# A `batch:@file` parses its payload ONCE, in the outer frame, before any
+# sub-op runs -- draining per sub-op would file the note inside an unrelated
+# op's receipt, which is the wrong place for the one line that says a write
+# may not be what its author wrote.
+_PAYLOAD_WARNINGS: List[str] = []
+
+
+def _toml_literal_double_backslashes(raw: str) -> List[Tuple[str, str, int]]:
+    r"""`(field, first line, count)` per literal block holding a lone `\\` pair.
+
+    Provenance is the whole point and it is read off the source, not the parsed
+    value: in a basic block `\\` IS one backslash and is the correct spelling,
+    so a guard that could not tell the two blocks apart would fire on its own
+    remedy. Scanning the literal blocks in `raw` directly answers the question
+    exactly rather than heuristically.
+    """
+    findings: List[Tuple[str, str, int]] = []
+    opener = chr(39) * 3
+    i = raw.find(opener)
+    while i >= 0:
+        end, run, nxt = _toml_multiline_close(raw, i + 3, chr(39), False)
+        if run < 0:
+            break
+        content = raw[i + 3:end]
+        key_m = _PAYLOAD_KEY_BEFORE_VALUE.search(raw[:i])
+        key = key_m.group(1) if key_m else "?"
+        hit = _EXACT_DOUBLE_BACKSLASH.search(content)
+        if hit and key.lower() != "op":
+            total = len(_EXACT_DOUBLE_BACKSLASH.findall(content))
+            start = content.rfind(chr(10), 0, hit.start()) + 1
+            stop = content.find(chr(10), hit.start())
+            line = content[start:] if stop < 0 else content[start:stop]
+            findings.append((key, line.strip()[:_TOML_LITERAL_TAIL_CHARS], total))
+        i = raw.find(opener, nxt)
+    return findings
+
+
+def _payload_double_backslash_note(raw: str) -> str:
+    r"""Name a `\\` inside a triple-single-quoted block -- warn, not rewrite (#1027).
+
+    The trap is that getting this wrong does not always fail to match. A
+    doubled `old` cannot match and the runner reports the skip, which is the
+    safe half. A doubled `new` matches, writes, prints `edited`, and passes
+    every validator, because two backslashes are legal in nearly every language
+    this repo edits. That is the house defect -- an absence produced by the
+    tool read as an absence in the world -- landing in the one place where it
+    changes a file instead of a report.
+
+    **It warns, and it does not rewrite.** Collapsing `\\` to `\` would guess at
+    intent, and a wrong guess in the write path is strictly worse than the bug
+    it replaces: the caller loses even the ability to read the bytes back and
+    see what they asked for. The tool's job here is to say "you wrote `\\`
+    inside a block that will not process it" and leave the decision where it
+    belongs.
+
+    **It warns rather than refusing**, which is where it parts company with
+    #834 and #835. Those fire at a FIXED position -- immediately before the
+    closing quotes, at the end of a shell line -- and at those positions every
+    reading has a second spelling, so a refusal strands nothing. This pattern
+    has no position: a payload that legitimately writes a pair does so at an
+    arbitrary offset, and refusing would make that unwritable everywhere. Same
+    rule, opposite answer, for the same reason `_sh_backslash_warning` stays a
+    warning at the write chokepoint.
+
+    The line between signal and noise is drawn at two places and nowhere else:
+
+    * **Literal blocks only.** A basic block spells one backslash with two;
+      flagging that would flag the fix.
+    * **Runs of exactly two.** Three or more were counted deliberately.
+
+    It is deliberately NOT narrowed to "escape-looking" sequences. The reported
+    cases were `\\d`, `\\302` and `\\n`; `\d` and `\302` are not TOML escapes,
+    so the reflex being caught is generic, not TOML-specific, and any escape set
+    narrow enough to be a filter would miss the report it was written for.
+    Measured instead: 710 of 208854 lines in this repository carry a `\\` --
+    0.34%, and this is the pathological corpus, since its densest files are
+    tests ABOUT backslash handling. A note at that rate is not one an author
+    learns to skip.
+    """
+    findings = _toml_literal_double_backslashes(raw)
+    if not findings:
+        return ""
+    bs = chr(92)
+    arrow = mark("↳")
+    lines = [
+        mark("⚠") + " payload: a " + chr(39) * 3 + " literal block carries `"
+        + bs * 2 + "`. A literal block processes NO escapes, so each pair reaches "
+        "the file as TWO backslashes -- if you meant one, write one." + chr(10)
+    ]
+    for key, line, total in findings[:_PAYLOAD_DBS_MAX_FIELDS]:
+        lines.append(
+            "  " + arrow + " `" + key + "` (" + str(total) + " occurrence"
+            + ("" if total == 1 else "s") + "): " + line + chr(10)
+        )
+    more = len(findings) - _PAYLOAD_DBS_MAX_FIELDS
+    if more > 0:
+        lines.append(
+            "  " + arrow + " and " + str(more) + " further field"
+            + ("" if more == 1 else "s") + chr(10)
+        )
+    lines.append(
+        "  " + arrow + " this is a note, NOT a correction -- nothing was "
+        "rewritten, because a pair is sometimes exactly what was meant and "
+        "guessing in the write path is worse than the bug. A doubled `old` "
+        "cannot match and is reported; a doubled `new` lands and reports "
+        "`edited`. (#1027)" + chr(10)
+    )
+    return "".join(lines)
+
+
 def _eol_backslash_pair(text: str) -> Optional[Tuple[str, int]]:
     r"""First line in *text* ending with an even run of backslashes, if any.
 
@@ -15636,7 +15760,24 @@ def _payload_sh_eol_backslash_refusal(parsed: Any, raw: str) -> str:
     return ""
 
 
-def _load_at_file(ref: str) -> Any:
+def _take_payload_warnings() -> str:
+    """Drain the parse-time payload notes, or "" if there are none.
+
+    Every path out of `dispatch` that follows a `_load_at_file` has to call
+    this. A note parked in a global and drained only at the bottom of the
+    function survives each early `return` in between, and then prints attached
+    to whatever op runs next -- a claim about a payload that op never had. That
+    is this repository's own defect class, produced by the fix for it, so the
+    queue is emptied at the exits rather than at one of them.
+    """
+    if not _PAYLOAD_WARNINGS:
+        return ""
+    out = "".join(_PAYLOAD_WARNINGS)
+    _PAYLOAD_WARNINGS.clear()
+    return out
+
+
+def _load_at_file(ref: str, note: bool = True) -> Any:
     """Load JSON or TOML from an @file reference.
 
     Accepts:
@@ -15704,6 +15845,14 @@ def _load_at_file(ref: str) -> Any:
     refusal = _payload_sh_eol_backslash_refusal(parsed, raw)
     if refusal:
         raise ValueError(f"@file payload refused ({source}): {refusal}")
+    # `note=False` for the read-op route: the note is about the write path, and
+    # a `grep` pattern is a regex rather than file content -- nothing lands, the
+    # doubled backslash there is a different question with a different answer,
+    # and raising it would be noise on an op that cannot misfile a byte.
+    if note:
+        text = _payload_double_backslash_note(raw)
+        if text:
+            _PAYLOAD_WARNINGS.append(text)
     return parsed
 
 
@@ -16282,11 +16431,11 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                 f"payload, not on the colon CLI.\n"
             )
         try:
-            _read_payload = _load_at_file(parts[1])
+            _read_payload = _load_at_file(parts[1], note=False)
         except ValueError as _e:
-            return header + f"ERROR: {_e}\n"
-        return header + _read_op_from_payload(op, _read_payload,
-                                              no_exclude=no_exclude)
+            return header + _take_payload_warnings() + f"ERROR: {_e}\n"
+        return header + _take_payload_warnings() + _read_op_from_payload(
+            op, _read_payload, no_exclude=no_exclude)
 
     # @file route — 'op:@path' or 'op:@-' (stdin).
     # Load JSON, rebuild parts list, then fall through to the normal handlers.
@@ -16308,7 +16457,7 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
             parts, _at_file_replace_all = _at_file_to_parts(op, payload)
             _at_file_used = True
         except ValueError as _e:
-            return header + f"ERROR: {_e}\n"
+            return header + _take_payload_warnings() + f"ERROR: {_e}\n"
 
     # When parts come from @file (JSON/TOML payload), they hold literal
     # bytes — backslashes and newlines must NOT be reinterpreted as shell-
@@ -16863,6 +17012,13 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
     except Exception:
         pass  # observation must never break the call
 
+    # Payload-parse notes lead the body: they are about bytes an op has already
+    # written, so they have to be readable without scrolling past the receipt
+    # that claims those bytes are fine. Depth-gated because a batch parses its
+    # payload once, in this frame, before any sub-op runs.
+    if _PAYLOAD_WARNINGS and getattr(_DISPATCH_STATE, "depth", 1) <= 1:
+        body = _take_payload_warnings() + body
+
     if _WRITE_WARNINGS:
         body += "".join(w[1] for w in _WRITE_WARNINGS)
         _WRITE_WARNINGS.clear()
@@ -16911,12 +17067,22 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
         _not_checked_slice = _NOT_CHECKED[_not_checked_before:]
         if (op in _OP_TARGETS or _MUTATION_ATTEMPTS[0] > _attempts_before
                 or _not_checked_slice):
-            body += _result_line(_MUTATION_ATTEMPTS[0] - _attempts_before,
-                                 _WRITE_COUNT[0] - _writes_before,
-                                 _SKIP_COUNT[0] - _skips_before,
-                                 _REAPPLY_COUNT[0] - _reapplies_before,
-                                 _not_checked_slice,
-                                 _ROLLBACK_COUNT[0] - _rollbacks_before)
+            _result = _result_line(_MUTATION_ATTEMPTS[0] - _attempts_before,
+                                   _WRITE_COUNT[0] - _writes_before,
+                                   _SKIP_COUNT[0] - _skips_before,
+                                   _REAPPLY_COUNT[0] - _reapplies_before,
+                                   _not_checked_slice,
+                                   _ROLLBACK_COUNT[0] - _rollbacks_before)
+            # A batch says its count twice, and the leading copy is the load-
+            # bearing one. The footer is separated from the per-op results by a
+            # validators block long enough that `tail` lands on `git-status :
+            # ok` and reads as success -- the exact half of #984 that #1018
+            # marked `Part of` and did not build. Only `batch`: a single op's
+            # receipt is three lines with the footer already adjacent, and a
+            # duplicate there is noise rather than a signal.
+            if op == "batch":
+                body = _result + body
+            body += _result
             body += _branch_line()
 
     return header + body
