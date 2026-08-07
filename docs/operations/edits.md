@@ -25,7 +25,25 @@ The field is **omitted** when `K` is `0`. `#680` asked for `0 skipped` on every 
 
 `K re-applied` is the fourth state (#701), and it is the one to read after **re-running a payload**. Some edits keep their own anchor — `old = "def f():"`, `new = "@decorated<newline>def f():"` — so `old` is still in the file after the edit and matches again on a second run. That is correct find-and-replace behaviour, and it applies the edit twice. What was wrong is that the two runs printed the same thing: `edited a.py (line 1-2)` then `edited a.py (line 2-3)`, both `[result] 1 op run, 1 write`, both exit 0. An identical receipt reads as "the same thing happened" when what happened is a second mutation — and the caller who re-runs a payload is by definition the caller who was already unsure whether it landed, which is how this composes with #680: the first defect makes you doubt, the second punishes checking.
 
-A re-apply is **not** a decline and **not** a failure. It wrote, the write stuck, and the call still exits `0` — an edit that legitimately applies twice exists (appending a second repeated element has exactly this shape) and refusing it would be guessing at intent. `skipped` and `re-applied` are separate words for that reason: a skipped op left the disk alone, a re-applied one did not. When `K` is non-zero and something was written, the line ends `— an edit already present in the file was applied again`; a rolled-back write keeps `— nothing changed on disk` instead, which is the stronger statement.
+A re-apply is **not** a decline and **not** a failure. It wrote, the write stuck, and the call still exits `0` — an edit that legitimately applies twice exists (appending a second repeated element has exactly this shape) and refusing it would be guessing at intent. `skipped` and `re-applied` are separate words for that reason: a skipped op left the disk alone, a re-applied one did not. When `K` is non-zero and something was written, the line ends `— an edit already present in the file was applied again`.
+
+`K rolled back` is the fifth state (#952): the op matched, wrote, failed a validator with `rollback_on_fail`, and the previous content was restored. `M writes` already excluded it, and in the single-op case that rendered as a sentence — `0 writes — nothing changed on disk`. In a **batch where other ops did write** it rendered as `3 ops run, 2 writes`, which is an arithmetic mismatch you have to notice before you can explain it, and the reverted edit had no word anywhere below the `[validators]` block.
+
+```
+[result] 3 ops run, 2 writes, 1 rolled back — 1 edit was reverted after validation and did NOT land
+```
+
+It is **not** `skipped`: a skipped op declined and left the disk alone, a rolled-back one wrote and had the write undone, and the remedies differ — a new anchor versus a fix to the code. It is not folded into `— nothing changed on disk` either, because a plain no-match prints exactly that too, and those are the two most confusable outcomes on this path. **A rollback makes the call exit non-zero**, on the same grounds as a skip: `batch:@ops && git commit` used to commit the set without that edit and exit `0`.
+
+The claim above it is retracted rather than deleted, because deleting it would make "written, then reverted" indistinguishable from "never ran":
+
+```
+edited src/Foo.php (line 40-44)
+...
+[rolled back] phplint regressed; src/Foo.php restored — retracts "edited src/Foo.php (line 40-44)"; the file was NOT edited
+```
+
+The retraction quotes the retracted line back and names the file, so `grep -E 'edited|ERROR'` — the filtered read that reported a rolled-back batch as landed — returns the undo next to the claim instead of the claim alone.
 
 The op receipt carries the same signal next to the claim it qualifies, because `edited a.py (line 2-3)` on its own is a true sentence that reads as a first application:
 
@@ -40,7 +58,16 @@ Interdependent edits are the normal case for a batch, and a half-applied set is 
 
 The per-op receipt has **not** moved: it is still printed above `[validators]`, so anything parsing output positionally is unaffected.
 
-`[branch: X]` stays the final line — right file, wrong branch is otherwise silent until commit time. A failed `edit` also reports why the anchor probably missed: doubled backslashes (TOML literal strings don't process escapes), a whitespace-only difference with its line number, or the nearest line by similarity.
+`[branch: X]` stays the final line — right file, wrong branch is otherwise silent until commit time. A failed `edit` also reports why the anchor probably missed: **the replacement text already being in the file**, doubled backslashes (TOML literal strings don't process escapes), a whitespace-only difference with its line number, or the nearest line by similarity.
+
+The first of those is the other half of the re-run problem (#984). `re-applied` covers a payload whose `new` contains its `old`; when it does not, re-running an applied payload reports `ERROR: old string not found`, which is character-for-character what a genuinely wrong anchor prints — and the two have opposite remedies. So when the replacement text is present, the receipt says where:
+
+```
+ERROR: old string not found in a.py
+  ↳ the replacement text is ALREADY present at line 12 — this looks like a re-run of an edit that already applied, not a broken anchor
+```
+
+A located fact, not a verdict. The `ERROR` stands, the op is still counted in `K skipped`, and the call still exits non-zero — downgrading a failure because it is probably benign is how a loud bug becomes a quiet one.
 
 ## Ops
 
