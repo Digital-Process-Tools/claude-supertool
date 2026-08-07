@@ -146,9 +146,15 @@ class MismatchedUpstreamTest(unittest.TestCase):
         self.assertIn("origin/master", out,
                       "must still name the phantom upstream it found")
         self.assertIn("Nothing was pushed", out)
-        self.assertIn("git push -u origin HEAD", out,
-                      "must name the one-liner that pushes under this "
+        # #879: the remedy must be runnable *here*. It used to be
+        # `git push -u origin HEAD`, which this project's hook blocks — a
+        # correct refusal handing back a forbidden command.
+        self.assertIn("git-push:set-upstream", out,
+                      "must name the in-op route that pushes under this "
                       "branch's own name")
+        self.assertNotIn("git push -u", out,
+                         "raw git push is hook-blocked in this project; a "
+                         "refusal that prescribes it is a wall")
 
         self.assertNotEqual(rc, 0, "a decline is not a success")
 
