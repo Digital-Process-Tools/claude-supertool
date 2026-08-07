@@ -5376,8 +5376,9 @@ def _branch_line() -> str:
 
 def _result_line(ops: int, writes: int, skipped: int = 0,
                  reapplied: int = 0,
-                 not_checked: Optional[Sequence[str]] = None) -> str:
-    """`[result] N ops run, M writes[, K skipped][, K re-applied]` footer (#621).
+                 not_checked: Optional[Sequence[str]] = None,
+                 rolled_back: int = 0) -> str:
+    """`[result] N ops run, M writes[, K skipped][, K rolled back][, K re-applied]` (#621).
 
     The receipt a mutating op prints sits ABOVE the `[validators]` block, and a
     long validators block is exactly when a reader reaches for `| tail -4`. So
@@ -5435,6 +5436,18 @@ def _result_line(ops: int, writes: int, skipped: int = 0,
     stop "the gate is not running" from reading as a pass read as a pass. The
     validators are named on the line rather than counted, because the line has
     to be actionable on its own for `| tail -1` to be the documented read.
+
+    `rolled_back` names a sixth state (#952): the op matched, wrote, failed a
+    validator and was reverted. `writes` already excluded it — `_retract_write`
+    decrements — but a count is only a signal when the reader is already
+    suspicious. In the single-op case the exclusion rendered as a sentence
+    (`0 writes — nothing changed on disk`); in a batch where other ops did
+    write it rendered as `3 ops run, 2 writes`, an arithmetic mismatch the
+    reader has to notice AND explain. It is not `skipped`: a skipped op
+    declined and left the disk alone, a rolled-back one wrote and had the write
+    undone, and the remedies differ (fix the anchor vs fix the code). It is not
+    folded into `nothing changed on disk` either, because a no-match prints
+    exactly that too — the two most confusable outcomes on this path.
     """
     if ops <= 0:
         return ""
@@ -5442,6 +5455,8 @@ def _result_line(ops: int, writes: int, skipped: int = 0,
             f"{writes} {'write' if writes == 1 else 'writes'}")
     if skipped > 0:
         line += f", {skipped} skipped"
+    if rolled_back > 0:
+        line += f", {rolled_back} rolled back"
     if reapplied > 0:
         line += f", {reapplied} re-applied"
     names = list(dict.fromkeys(not_checked or ()))
@@ -5455,6 +5470,11 @@ def _result_line(ops: int, writes: int, skipped: int = 0,
         tails.append("nothing changed on disk")
     elif reapplied > 0:
         tails.append("an edit already present in the file was applied again")
+    if rolled_back > 0:
+        tails.append(
+            f"{rolled_back} edit{'' if rolled_back == 1 else 's'} "
+            f"{'was' if rolled_back == 1 else 'were'} reverted after "
+            f"validation and did NOT land")
     if names:
         tails.append("those validators returned no verdict, so the file was "
                      "NOT checked")
@@ -5467,15 +5487,34 @@ def _normalise_ws(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
-def _edit_miss_diagnostic(old: str, content: str) -> str:
+def _edit_miss_diagnostic(old: str, content: str, new: str = "") -> str:
     """Why `old` didn't match (#380).
 
     `ERROR: old string not found` was the whole message, so the natural next
     move was a `read` round-trip — the one the payload route exists to save.
-    These are the three ways a payload comes back close but not exact, ranked
-    by how often each was the real cause.
+    These are the ways a payload comes back close but not exact, ranked by how
+    often each was the real cause.
     """
     hints: List[str] = []
+
+    # 0. The replacement is ALREADY in the file — a re-run of a payload that
+    #    landed. #701 covers the case where `new` contains `old` (the anchor
+    #    survives and the edit applies a second time); this is the other half,
+    #    where it does not, and the second run reports a bare no-match that is
+    #    character-for-character what a genuinely wrong anchor prints (#984).
+    #    The two have opposite remedies — one is done, the other needs a new
+    #    anchor — and the reader could not recover which from the message.
+    #
+    #    A located fact, not a verdict: the ERROR stands, the exit code stands,
+    #    the op is still counted as skipped. Downgrading a failure to a note
+    #    because it is probably benign is how a loud bug becomes a quiet one.
+    if new and new.strip() and new in content:
+        at = content.count("\n", 0, content.index(new)) + 1
+        hints.append(
+            f"the replacement text is ALREADY present at line {at} — this "
+            f"looks like a re-run of an edit that already applied, not a "
+            f"broken anchor"
+        )
 
     # 1. Doubled backslashes. TOML literal strings ('''...''') do not process
     #    escapes, so `\\302` in a payload is backslash-backslash-3-0-2 and can
@@ -5589,6 +5628,17 @@ _SKIP_COUNT: List[int] = [0]
 # honestly instead — "nothing changed on disk" is the stronger statement.
 _REAPPLY_COUNT: List[int] = [0]
 
+# Bumped where a write is REVERTED after the fact (#952): the op matched, the
+# bytes landed, a validator with `rollback_on_fail` regressed, and the previous
+# content was restored. The sixth state, and the one that had no name — see
+# `_result_line` for why it is neither `skipped` nor covered by `writes`.
+#
+# Bumped inside `_retract_write`, which is the single chokepoint both rollback
+# paths (formatter and validator) already pass through. Bumping at the two call
+# sites instead would make a third rollback path added later silently invisible,
+# which is the shape of defect this counter exists to close.
+_ROLLBACK_COUNT: List[int] = [0]
+
 # Validators that ran and returned no verdict about the file (#665). The state
 # `skipped` covers a checker that declined before running; this covers one that
 # was asked to run, could not, and had only an `adapter` error to say so with.
@@ -5619,8 +5669,45 @@ def _retract_write(path: str) -> None:
     reproducibility gap the header rule exists to avoid.
     """
     _drop_write_warnings(path)
+    _ROLLBACK_COUNT[0] += 1
     if _WRITE_COUNT[0] > 0:
         _WRITE_COUNT[0] -= 1
+
+
+def _retraction_line(name: str, verb: str, path: str, body: object) -> str:
+    """Retract a receipt's own success line where a FILTERED read will see it.
+
+    `[rolled back] <tool> regressed; file restored` shares no token with the
+    `edited <file> (line N)` printed above it, so `grep -E 'edited|ERROR'` —
+    the reported way this output is read — returned the claim and not the undo
+    (#952). Quoting the retracted line back means any filter that caught the
+    claim catches the retraction, adjacent to it and in the same stream
+    position.
+
+    Deliberately NOT by suppressing the claim. An absent line makes "written,
+    then reverted" indistinguishable from "never ran", which is the same
+    absence-read-as-fact defect wearing different clothes.
+
+    Separator-agnostic: the path is echoed as the op received it, so a Windows
+    `pkg\\x.py` renders as the caller typed it. Both interpolated strings go
+    through `_flat_cell` because this is a column-0 marker line — the rule
+    docs/validators.md states for `[validators]` rows applies verbatim here,
+    and a path is attacker-influenceable input.
+
+    Plain double quotes rather than `repr()` around the retracted line: repr
+    doubles every backslash, so a Windows receipt would retract
+    `'edited pkg\\\\x.py (line 2)'` — text that no longer matches the line it
+    is retracting, which defeats the whole point of quoting it.
+    """
+    head = ""
+    if isinstance(body, str):
+        for ln in body.splitlines():
+            if ln.strip():
+                head = _flat_cell(ln.strip())
+                break
+    quoted = f' — retracts "{head}"' if head else ""
+    return (f"[rolled back] {name} {verb}; {_flat_cell(path)} restored{quoted}"
+            f"; the file was NOT edited")
 
 
 def _elide(s: str, limit: int) -> str:
@@ -5841,7 +5928,7 @@ def op_edit(old: str, new: str, path: str) -> str:
     if count == 0:
         _SKIP_COUNT[0] += 1
         return (f"ERROR: old string not found in {path}\n"
-                + _edit_miss_diagnostic(old, content))
+                + _edit_miss_diagnostic(old, content, new))
     if count > 1:
         _SKIP_COUNT[0] += 1
         return (
@@ -13667,7 +13754,8 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
                             with open(path, "wb") as fw:
                                 fw.write(pre_content)
                             _retract_write(path)
-                            fmt_rows.append(f"[rolled back] {result_name} failed; file restored")
+                            fmt_rows.append(_retraction_line(
+                                result_name, "failed", path, body))
                         except OSError as e:
                             fmt_rows.append(f"[ROLLBACK FAILED] {result_name}: {e}")
                     else:
@@ -13721,7 +13809,8 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
                 with open(path, "wb") as f:
                     f.write(pre_content)
                 _retract_write(path)
-                diff_out += f"\n[rolled back] {name} regressed; file restored\n"
+                diff_out += ("\n" + _retraction_line(
+                    name, "regressed", path, body) + "\n")
             except OSError as e:
                 diff_out += f"\n[ROLLBACK FAILED] {name}: {e}\n"
             break
@@ -16152,6 +16241,7 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
     _attempts_before = _MUTATION_ATTEMPTS[0]
     _skips_before = _SKIP_COUNT[0]
     _reapplies_before = _REAPPLY_COUNT[0]
+    _rollbacks_before = _ROLLBACK_COUNT[0]
     _not_checked_before = len(_NOT_CHECKED)
 
     # #146: dispatch-level path containment. Each op has a known position(s)
@@ -16718,7 +16808,8 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                                  _WRITE_COUNT[0] - _writes_before,
                                  _SKIP_COUNT[0] - _skips_before,
                                  _REAPPLY_COUNT[0] - _reapplies_before,
-                                 _NOT_CHECKED[_not_checked_before:])
+                                 _NOT_CHECKED[_not_checked_before:],
+                                 _ROLLBACK_COUNT[0] - _rollbacks_before)
             body += _branch_line()
 
     return header + body
@@ -17752,6 +17843,7 @@ def _main(argv: List[str]) -> int:
     # one declined op in an early call poison the exit code of every later call
     # in the same worker (#680).
     _skips_at_entry = _SKIP_COUNT[0]
+    _rollbacks_at_entry = _ROLLBACK_COUNT[0]
     _not_checked_at_entry = len(_NOT_CHECKED)
 
     # Optional parallel execution — opt-in, only when every op is read-only.
@@ -17814,6 +17906,15 @@ def _main(argv: List[str]) -> int:
     # `batch: && git commit` committed a half-applied set and exited 0. The
     # counter is the authority here precisely because it does not read prose.
     if _SKIP_COUNT[0] > _skips_at_entry:
+        any_failure = True
+
+    # A reverted write is the same hazard one step later (#952): the op wrote,
+    # a validator rejected it, the file was restored — and `batch:@ops &&
+    # git commit` committed the set without it and exited 0. Same per-call
+    # delta as above, for the same reason: the warm daemon reuses the process,
+    # so an absolute read would let one rolled-back edit poison the exit code
+    # of every later call in the same worker.
+    if _ROLLBACK_COUNT[0] > _rollbacks_at_entry:
         any_failure = True
 
     # A validator the operator required, that could not run, is a failure of

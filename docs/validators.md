@@ -757,10 +757,28 @@ After an edit that breaks PHP syntax with `rollback_on_fail: true`:
 phplint : 0 → 1        (+1)   ✗
   + L42 parse  Parse error: syntax error, unexpected token "{" in ... on line 42
 
-[rolled back] phplint regressed; file restored
+[rolled back] phplint regressed; src/Foo.php restored — retracts "edited src/Foo.php (line 40-44)"; the file was NOT edited
+[result] 1 op run, 0 writes, 1 rolled back — nothing changed on disk; 1 edit was reverted after validation and did NOT land
 ```
 
 The model gets a clean retry surface with the exact line and error — no broken file left behind.
+
+### A rollback is its own state on the receipt
+
+A reverted write is neither `ok` nor a finding about the op, and it is not `skipped` either — the op matched and wrote, and the write was undone afterwards. It had no name until [#952](https://github.com/Digital-Process-Tools/claude-supertool/issues/952), and the two ways this output is actually read both said the edit had landed:
+
+| Read | Before | After |
+| --- | --- | --- |
+| `grep -E 'edited\|ERROR'` | `edited src/Foo.php (line 40-44)` — a positive claim about a mutation that no longer exists | the same line, **plus** the `[rolled back]` line, which quotes it back and says `the file was NOT edited` |
+| `tail -1` | `[result] 3 ops run, 2 writes` — an arithmetic mismatch the reader has to notice, then explain | `[result] 3 ops run, 2 writes, 1 rolled back — 1 edit was reverted after validation and did NOT land` |
+| exit code | `0` — so `batch:@ops && git commit` committed the set without that edit | `1`, on the same grounds as a declined op |
+
+Two decisions worth stating, because the obvious fix is wrong in both directions:
+
+- **The `edited` line is not suppressed.** Printing nothing on a rollback would make "written, then reverted" indistinguishable from "never ran" — the same absence-read-as-fact defect in different clothes. The claim stays and is retracted in place, in the same stream position, in a line that repeats the retracted text so any filter that caught the claim catches the undo.
+- **`rolled back` is not folded into `skipped`.** A skipped op left the disk alone; a rolled-back one wrote and had the write undone. The remedies differ — a new anchor versus a fix to the code — and collapsing them would degrade `skipped` into "something was odd", which is how a count stops being read.
+
+The counter is bumped inside `_retract_write`, the single chokepoint both rollback paths already pass through, so a third rollback path added later cannot be silently invisible.
 
 ## Adapter contract
 

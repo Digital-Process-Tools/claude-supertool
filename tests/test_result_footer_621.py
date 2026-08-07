@@ -247,7 +247,9 @@ def test_rolled_back_edit_reports_zero_writes(tmp_path: Path) -> None:
     assert "skipped" not in out, "the adapter must really run — a skip would test nothing"
     assert "rolled back" in out
     assert f.read_text(encoding="utf-8") == original
-    assert "[result] 1 op run, 0 writes — nothing changed on disk" in _tail(out)
+    assert ("[result] 1 op run, 0 writes, 1 rolled back — nothing changed on "
+            "disk; 1 edit was reverted after validation and did NOT land"
+            in _tail(out)), out
 
 
 # ---------------------------------------------------------------------------
