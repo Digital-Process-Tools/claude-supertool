@@ -308,7 +308,69 @@ def tier_reports(arg: str = "") -> tuple[list[str], bool, list[str]]:
     return watcher_cap_warnings(spawned) + lines, all_ok, failures
 
 
+def tier_states(arg: str = "") -> tuple[list[str], list[str]]:
+    """`(lines, failures)` — every tier's own account of itself, read-only.
+
+    Radar heals, and healing forks processes. That made *looking* at this
+    subsystem cost the same as acting on it, and the result was hours of not
+    looking (#859). `watches` is read-only about the fleet; this is the same
+    guarantee about the tiers.
+
+    Nothing here calls `radar_report`, nothing reaps, nothing spawns. A tier
+    exposing no `radar_state` says so rather than rendering as an empty,
+    healthy-looking block — a tier with nothing to show and a tier that cannot
+    show anything are two different answers.
+    """
+    tiers, lines = read_tiers()
+    failures: list[str] = []
+    for name, opts in tiers.items():
+        module = _tier_module(name)
+        if module is None:
+            failures.append(f"radar: WARNING — tier '{name}' is registered but could "
+                            f"not be resolved; it contributes nothing. Check the name.")
+            lines.append(f"{name}: UNRESOLVED — no tier module of that name")
+            continue
+        lines.append(f"{name}:")
+        lines.append(f"  module    : {getattr(module, '__file__', '?')}")
+        unknown = sorted(set(opts) - set(getattr(module, "RADAR_OPTIONS", set())))
+        if unknown:
+            lines.append(f"  UNKNOWN opt: {unknown} — ignored; check for a typo")
+        quiet = opts.get("quiet_when_healthy",
+                         getattr(module, "RADAR_QUIET_DEFAULT", True))
+        lines.append(f"  quiet ok  : {bool(quiet)}")
+        state = getattr(module, "radar_state", None)
+        if state is None:
+            lines.append("  state     : this tier exposes no radar_state(); its "
+                         "state can only be seen by running radar, which spawns")
+            continue
+        try:
+            lines.extend(state({**opts, "_arg": arg}))
+        except Exception as exc:  # noqa: BLE001 — one broken tier is not the rest
+            failures.append(f"radar: WARNING — tier '{name}' radar_state failed: "
+                            f"{exc.__class__.__name__}: {exc}")
+    return lines, failures
+
+
+def state_main(arg: str = "") -> int:
+    tiers, complaints = read_tiers()
+    if not tiers:
+        for line in complaints:
+            print(line, file=sys.stderr)
+        print(NO_TIERS, file=sys.stderr)
+        return 1
+    lines, failures = tier_states(arg)
+    if lines:
+        print("\n".join(lines))
+    for line in failures:
+        print(line, file=sys.stderr)
+    return 1 if failures else 0
+
+
 def main(argv: list[str] | None = None) -> int:
+    args = [a for a in (argv or [])[1:] if a]
+    if args and args[0] == "--state":
+        return state_main(args[1].strip() if len(args) > 1 else "")
+
     arg = argv[1].strip() if argv and len(argv) > 1 and argv[1] else ""
 
     tiers, complaints = read_tiers()

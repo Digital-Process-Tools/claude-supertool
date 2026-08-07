@@ -59,9 +59,16 @@ _FAIL_STATES = {"FAILURE", "ERROR"}
 
 # Fields pulled in the single list call — everything the board needs except
 # review threads (not exposed by `gh pr list --json`, fetched in wave 2).
+#
+# `headRefOid` is not rendered by this op. It is here because the radar
+# `gh-prs` tier keys its snapshot on it (#859): a push that lands a new head
+# commit re-runs everything, and without the SHA a "failed → failed" delta
+# across two different commits reads as *no change*. It also feeds `gh-pr`'s
+# declared-leg reconciliation, which resolves runs by head SHA. Free — one more
+# field on a response already being fetched.
 _LIST_FIELDS = (
-    "number,title,state,author,headRefName,baseRefName,labels,isDraft,"
-    "mergeable,reviewDecision,statusCheckRollup,additions,deletions,"
+    "number,title,state,author,headRefName,headRefOid,baseRefName,labels,"
+    "isDraft,mergeable,reviewDecision,statusCheckRollup,additions,deletions,"
     "changedFiles,updatedAt,createdAt,assignees,url"
 )
 

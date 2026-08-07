@@ -162,6 +162,10 @@ def _load(name: str, path: Path):
 
 
 mrs = _load("radar_gitlab_mrs", _WATCH.parent / "gitlab" / "mrs.py")
+# The snapshot store, shared with every other tier since #859: keeping a
+# previous board keyed by the population it describes is not a GitLab argument,
+# and a second copy of it in the GitHub tier is how a fixed defect comes back.
+snapshot = _load("radar_snapshot", _HERE / "_snapshot.py")
 
 SOURCE = defaults.DEFAULT_SOURCE
 FEED_SOURCE = defaults.DEFAULT_FEED_SOURCE
@@ -241,15 +245,16 @@ def filter_key(multi: dict[str, list[str]]) -> str:
 
     `author=a,author=b` and `author=b,author=a` are the same population and
     must share a snapshot; `author=a` and `author=b` must not.
+
+    The hashing itself is `_snapshot.key`; what stays here is the *filter*
+    normalisation, which is GitLab-shaped (one key may repeat, because the list
+    endpoint takes one author per query).
     """
-    norm = {k: sorted(set(v)) for k, v in sorted(multi.items())}
-    blob = json.dumps(norm, sort_keys=True).encode("utf-8")
-    return hashlib.sha1(blob).hexdigest()[:12]
+    return snapshot.key({k: sorted(set(v)) for k, v in sorted(multi.items())})
 
 
 def _snapshot_path(multi: dict[str, list[str]]) -> str:
-    return os.path.join(transport.STATE_DIR,
-                        f"{SNAPSHOT_PREFIX}.{filter_key(multi)}.snapshot.json")
+    return snapshot.path(SNAPSHOT_PREFIX, filter_key(multi))
 
 
 # ---------------------------------------------------------------------------
@@ -538,29 +543,14 @@ def read_snapshot(multi: dict[str, list[str]] | None = None) -> dict[str, Any] |
     reports every row of each as a change, which is a delta column that lies.
     """
     multi = default_filter() if multi is None else multi
-    try:
-        with open(_snapshot_path(multi), encoding="utf-8") as f:
-            loaded = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return None
-    if not isinstance(loaded, dict) or not isinstance(loaded.get("mrs"), dict):
-        return None
-    return loaded
+    return snapshot.read(SNAPSHOT_PREFIX, filter_key(multi), "mrs")
 
 
 def write_snapshot(entries: dict[str, dict],
                    multi: dict[str, list[str]] | None = None) -> None:
-    path = _snapshot_path(default_filter() if multi is None else multi)
-    tmp = f"{path}.tmp"
-    try:
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump({"mrs": entries}, f, indent=2)
-        os.replace(tmp, path)
-    except OSError:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
+    snapshot.write(SNAPSHOT_PREFIX,
+                   filter_key(default_filter() if multi is None else multi),
+                   entries, "mrs")
 
 
 def _marks(iid: str, drifted: dict[str, tuple[str, str]],
@@ -968,3 +958,40 @@ def radar_report(options: dict | None = None) -> tuple[list[str], bool]:
                    or mrs._unchecked_count(open_mrs)
                    or feed in ("failed", "capped"))
     return lines, healthy
+
+
+def radar_state(options: dict | None = None) -> list[str]:
+    """What this tier knows, without spawning or calling GitLab (#859).
+
+    `radar_report` heals: it respawns per-MR watchers and keeps the feed alive,
+    which forks processes on the operator's machine. That made *looking* at
+    this tier cost the same as acting on it, so looking did not happen. Every
+    line below comes from a file already on disk — the snapshot, the pid files,
+    the state files — and `glab` is never invoked.
+    """
+    options = options or {}
+    multi = resolve_filter(str(options.get("_arg") or ""))
+    scope = feed_scope(multi)
+    out = [f"  filter    : {filter_string(multi)}"
+           f"{' (default)' if multi == default_filter() else ''}"]
+
+    path = _snapshot_path(multi)
+    previous = read_snapshot(multi)
+    out.append(f"  snapshot  : {path} — "
+               + (f"{len((previous or {}).get('mrs') or {})} MR(s)"
+                  if previous is not None else "absent (cold start next run)"))
+
+    pid = feed_pid(scope)
+    err = feed_error(scope)
+    out.append(f"  feed      : scope {scope!r}, pid "
+               f"{pid or 'none recorded'}{f' — last error: {err}' if err else ''}")
+    for other in other_feed_scopes(scope):
+        out.append(f"  feed ALSO : scope {other!r} is live and is NOT on this board")
+
+    watched = sorted(mrs._watched_iids(transport.STATE_DIR))
+    out.append(f"  watchers  : {', '.join('!' + i for i in watched) or 'none'}")
+
+    exclusions, problems = read_exclusions()
+    out.append(f"  exclusions: {len(exclusions)} configured"
+               f"{f', {len(problems)} refused' if problems else ''}")
+    return out
