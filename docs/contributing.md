@@ -462,7 +462,7 @@ The pytest matrix is {ubuntu, macos, windows} × py3.9–3.12. For a long time t
 | Code | Where it runs | What is checked |
 | --- | --- | --- |
 | Python | all 12 pytest legs | the suite — and **no coverage floor**: every leg passes `--no-cov` |
-| Python | the `coverage` job, ubuntu + py3.12 | `.github/scripts/coverage_gate.py` — floors on `_supertool.py` and `presets/`, plus the printed inventory of what it did *not* measure |
+| Python | the `coverage` job, ubuntu + py3.12 | `.github/scripts/coverage_gate.py` — floors on `_supertool.py`, `presets/`, the gate script itself and the rest of `.github/scripts/`, plus the printed inventory of what it did *not* measure |
 | `notifiers/claude-channel/channel.ts` | `notifiers` job, ubuntu + macOS | `bunx tsc --noEmit` under the channel's own strict tsconfig, plus the two socket-level integration test files, run for real |
 | Shell (`*.sh`, `.githooks/*`) | all 12 pytest legs | `bash -n` — **syntax only**, via `tests/test_ci_non_python_coverage_557.py` |
 | `notifiers/cursor-witness/extension/src/extension.ts` | nowhere | **uncovered, knowingly** — a VS Code extension needs `npm install` of the editor's type packages to compile and an editor host to exercise |
@@ -502,9 +502,13 @@ then prints three sections and gates on the first:
 
 | State | What it means |
 | --- | --- |
-| **measured, enforced** | `_supertool.py` and `presets/` — a floor that reds the build |
-| **measured, not enforced** | `validators/`, `formatters/`, `notifiers/*.py`, `.github/scripts/` — real numbers, printed, no floor. Each is a thin `subprocess` wrapper around an external binary (phpstan, prettier, hadolint) that is absent on the runner, so the figure reports the toolchain rather than the code, and a floor could only fire for a reason nobody can act on |
+| **measured, enforced** | `_supertool.py`, `presets/`, `.github/scripts/coverage_gate.py`, and the rest of `.github/scripts/` — a floor apiece that reds the build |
+| **measured, not enforced** | `validators/`, `formatters/`, `notifiers/*.py` — real numbers, printed, no floor, **each with its own reason printed beside it**. `validators/` and `formatters/` are thin `subprocess` wrappers around external binaries (phpstan, prettier, hadolint) that are absent on the runner, so the figure reports the toolchain rather than the code; `notifiers/`'s Python half is two small files and the part that matters is the TypeScript, listed in the row below. One sentence covering all three would be true of two of them |
 | **not measured** | `tests/` itself, the TypeScript, the shell — each named with its reason and with whatever *does* check it |
+
+**The floors are per bucket, and a bucket is not always a directory** ([#991](https://github.com/Digital-Process-Tools/claude-supertool/issues/991)). `.github/scripts/coverage_gate.py` has a floor of its own, separate from the directory holding it, because the directory's 82.65% was `assemble_changelog.py` at 93.95% and `junit_summary.py` at 94.12% averaged with the gate itself at **46.43%** — and what the 46% covered for was `report()`, the function that decides pass from fail, which had no test at all. Matching is longest-prefix, so the file entry wins over the directory regardless of the order they are declared in.
+
+**Nothing here is exempt for being CI plumbing.** `.github/scripts/` sat in the middle row until #991 on the grounds that flooring the script that computes the floor is a circular, and that its failure mode is a red step rather than a silent one. Neither held: the gate's coverage is produced by the test suite rather than by the gate, and the failure that actually happens is not a crash, it is the tests going away.
 
 All three print on every run, pass or fail. A report that quietly omits a
 directory is exactly the defect [#861](https://github.com/Digital-Process-Tools/claude-supertool/issues/861)

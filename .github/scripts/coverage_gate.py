@@ -54,9 +54,11 @@ and always prints all three:
   the *reason* there is no floor is printed beside it. It differs per
   directory: the validator and formatter adapters wrap external binaries that
   are absent on the runner, so their figure reports the toolchain rather than
-  the code; `.github/scripts/` contains this gate itself. One sentence covering
-  all four would have been true of two of them, which is this issue's defect at
-  a smaller scale.
+  the code; `notifiers/` is mostly TypeScript and listed below instead. One
+  sentence covering all of them would have been true of two, which is this
+  issue's defect at a smaller scale. `.github/scripts/` used to sit here too,
+  on the grounds that flooring the script that computes the floor is a loop —
+  see #991 below for why that was wrong and what it cost.
 * **not measured** — named, with the reason, and cross-referenced to whatever
   does check them. Never left to be inferred from a green tick.
 
@@ -78,12 +80,36 @@ not something this machine can measure. Tighten them once one real run of the
 floor` advisory whenever it is more than `_SLACK` under the measurement, so the
 staleness is visible rather than remembered.
 
-Two floors and not one, because a single total hides the imbalance the issue
-named: `supertool.py` improving while `presets/` rots averages to something
-that looks fine. Two floors and not eleven (one per preset family) for the
+Several floors and not one, because a single total hides the imbalance the
+issue named: `_supertool.py` improving while `presets/` rots averages to
+something that looks fine. Not eleven either (one per preset family), for the
 reason the `timeout-minutes` comment in `tests.yml` gives about per-OS budgets —
 eleven numbers to keep in step is ten more places to drift, and the families
 are not independently owned.
+
+## The gate is not exempt from the gate (#991)
+
+`.github/scripts/` was measured, printed, and floored by nothing, under the
+reason that "enforcing a floor on the script that computes the floor is a loop
+with no useful fixed point". There is no loop: this file\'s coverage is produced
+by the test suite, not by this file, and two of the three scripts in the
+directory are not this one. The second half of that reason — "its own failure
+mode is a red CI step, not a silent one" — is true of a crash and false of the
+thing that actually happens, which is its tests quietly going away.
+
+The measurement settled it. The bucket read 82.65%: `assemble_changelog.py`
+93.95%, `junit_summary.py` 94.12%, **this file 46.43%** — the least covered
+thing the gate measured was the gate. Uncovered were `report()` in its
+entirety, `measure()`, and `main()`\'s reporting path: the function that decides
+pass from fail, the branch that turns "nothing was measured" into a failure,
+and the stale-floor advisory. `report()` could have been changed to `return 0`
+and all twelve pytest legs would have stayed green. #877\'s refusal branches, by
+contrast, were the covered part — the issue had that the wrong way round.
+
+`tests/test_coverage_gate_floor_991.py` covers the verdict function, and the
+floors are set from the measurement that followed it. Two entries and not one
+so this file cannot be subsidised by the other two; the floors are per-bucket,
+and a bucket is not always a directory.
 
 ## Where the scratch data lives (#877)
 
@@ -143,6 +169,9 @@ class GateRefusal(Exception):
     """
 
 #: Path prefixes whose coverage reds the build, and the floor each must clear.
+#: The most specific match wins, so a file entry overrides the directory that
+#: holds it — see `_longest_prefix`.
+#:
 #: Measured 2026-08-05 on macOS/py3.14 over `-m 'not benchmark'`:
 #: _supertool.py 89.90%, presets/ 84.04%.
 #:
@@ -151,9 +180,27 @@ class GateRefusal(Exception):
 #: key as `supertool.py` would have kept a 89% floor that now bounds a 53-line
 #: shim and reports green while measuring none of the 17.4k lines it was
 #: written for.
+#:
+#: The `.github/scripts` pair is #991, measured 2026-08-07 on the same machine:
+#: this file 94.20%, and 93.97% over `assemble_changelog.py` (93.95%) and
+#: `junit_summary.py` (94.12%) together. Two entries and not one because the
+#: bucket read 82.65% at 46.43% for this file against 94% for the other two,
+#: and a single floor there writes down an average in which the two tested
+#: files pay for the untested one — the same argument that gives `_supertool.py`
+#: and `presets/` separate floors, one level down. That they now sit at nearly
+#: the same number is today's coincidence, not a reason to merge them.
+#:
+#: The two pairs overlap in opposite directions and `_longest_prefix` is what
+#: keeps them apart: `.github/scripts/coverage_gate.py` must beat the directory
+#: that contains it, while `supertool.py` must *not* be reached by the
+#: `_supertool.py` entry above or the shim would inherit a floor written for
+#: 17.4k lines it no longer holds. Pinned by
+#: tests/test_coverage_gate_floor_991.py.
 ENFORCED: "dict[str, float]" = {
     "_supertool.py": 89.0,
     "presets/": 83.0,
+    ".github/scripts/coverage_gate.py": 92.0,
+    ".github/scripts/": 92.0,
 }
 
 #: Measured and printed, never a floor — each with the reason it has none, and
@@ -175,11 +222,6 @@ MEASURED_NOT_ENFORCED: "dict[str, str]" = {
         "the Python half is two small files; the part of this directory that "
         "matters is TypeScript and is listed under NOT measured below, which "
         "is where a reader should be looking rather than at this number"
-    ),
-    ".github/scripts/": (
-        "CI plumbing, including this gate itself. Enforcing a floor on the "
-        "script that computes the floor is a loop with no useful fixed point — "
-        "and its own failure mode is a red CI step, not a silent one"
     ),
 }
 
@@ -221,6 +263,24 @@ NOT_MEASURED_OTHER: "tuple[tuple[str, str], ...]" = (
 _SLACK = 3.0
 
 
+def _longest_prefix(rel: str, prefixes: "object") -> "str | None":
+    """The most specific declared prefix matching `rel`, or `None`.
+
+    Longest match, not first match. `.github/scripts/coverage_gate.py` and
+    `.github/scripts/` are both declared (#991), and under a first-match loop
+    which of them owns the file is dict insertion order — an invisible
+    dependency in the one module whose whole job is to have none. Reordering
+    the literal for readability would silently move the gate onto the
+    directory floor and print a number that looks just as convincing.
+    """
+    best: "str | None" = None
+    for prefix in prefixes:  # type: ignore[union-attr]
+        if rel == prefix or rel.startswith(prefix):
+            if best is None or len(prefix) > len(best):
+                best = prefix
+    return best
+
+
 def classify(rel: str) -> str:
     """Which bucket a repo-relative `.py` path falls in.
 
@@ -229,15 +289,12 @@ def classify(rel: str) -> str:
     turns into a red, because an unclassified file is #861 happening again.
     """
     rel = rel.replace("\\", "/")
-    for prefix in ENFORCED:
-        if rel == prefix or rel.startswith(prefix):
-            return "enforced"
-    for prefix in MEASURED_NOT_ENFORCED:
-        if rel.startswith(prefix):
-            return "measured"
-    for prefix in NOT_MEASURED_PY:
-        if rel.startswith(prefix):
-            return "unmeasured"
+    if _longest_prefix(rel, ENFORCED):
+        return "enforced"
+    if _longest_prefix(rel, MEASURED_NOT_ENFORCED):
+        return "measured"
+    if _longest_prefix(rel, NOT_MEASURED_PY):
+        return "unmeasured"
     return ""
 
 
@@ -339,13 +396,8 @@ def _relative(name: str) -> str:
 
 
 def _bucket_key(rel: str) -> "str | None":
-    for prefix in ENFORCED:
-        if rel == prefix or rel.startswith(prefix):
-            return prefix
-    for prefix in MEASURED_NOT_ENFORCED:
-        if rel.startswith(prefix):
-            return prefix
-    return None
+    return (_longest_prefix(rel, ENFORCED)
+            or _longest_prefix(rel, MEASURED_NOT_ENFORCED))
 
 
 def _pct(stmts: int, missing: int) -> float:
@@ -369,10 +421,10 @@ def report(totals: "dict[str, tuple[int, int]]") -> int:
                 f"{prefix}: nothing was measured. A scope that matches no file "
                 f"reports the same 0 as code with no tests, and #861 is what "
                 f"that costs — check `source =` in the generated config.")
-            print(f"  {prefix:<22} NOT MEASURED  (floor {floor:.0f}%)")
+            print(f"  {prefix:<34} NOT MEASURED  (floor {floor:.0f}%)")
             continue
         mark = "ok " if pct >= floor else "FAIL"
-        print(f"  {prefix:<22} {pct:6.2f}%  ({stmts - missing}/{stmts} stmts)"
+        print(f"  {prefix:<34} {pct:6.2f}%  ({stmts - missing}/{stmts} stmts)"
               f"  floor {floor:.0f}%  {mark}")
         if pct < floor:
             failures.append(
@@ -385,11 +437,11 @@ def report(totals: "dict[str, tuple[int, int]]") -> int:
     for prefix, why in MEASURED_NOT_ENFORCED.items():
         stmts, missing = totals.get(prefix, (0, 0))
         if stmts == 0:
-            print(f"  {prefix:<22} no statements measured")
+            print(f"  {prefix:<34} no statements measured")
         else:
-            print(f"  {prefix:<22} {_pct(stmts, missing):6.2f}%  "
+            print(f"  {prefix:<34} {_pct(stmts, missing):6.2f}%  "
                   f"({stmts - missing}/{stmts} stmts)  no floor")
-        print(f"  {'':<22} why: {why}")
+        print(f"  {'':<34} why: {why}")
 
     print("\n=== coverage: NOT measured ===")
     for prefix, why in NOT_MEASURED_PY.items():
