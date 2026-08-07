@@ -1,9 +1,10 @@
 """Unit tests for the gitlab-mr poller source — state diff logic."""
 from __future__ import annotations
 
+import calendar
 import importlib.util
 import sys
-from datetime import datetime, timezone
+import time
 from pathlib import Path
 from unittest import mock
 
@@ -449,6 +450,13 @@ SNAPSHOT_KEYS = {
 }
 
 
+# How far the emitted instant may sit outside a bracket read around the poll.
+# It is sized to swallow a wall-clock adjustment on a shared runner and nothing
+# else: every wrong value this test exists to catch is wrong by an epoch, not by
+# a minute (#909).
+_CLOCK_SLACK = 120.0
+
+
 def _branched(**kw):
     """An MR body carrying the branch pair and head sha a real API returns."""
     body = _mr(**kw)
@@ -476,15 +484,64 @@ def test_the_snapshot_says_when_it_was_read() -> None:
     An absolute instant, not an age: an age is computed once and is wrong from
     the next second onward, which is the exact defect this field exists to
     prevent. The consumer subtracts.
+
+    The bracket carries `_CLOCK_SLACK` and this is not the assertion being
+    weakened to stop a red (#909). It used to be a strict sandwich with no
+    tolerance at all, and on PR #908 it reported `parsed` landing a whole
+    second *before* a `before` that program order reads first — an ordering the
+    process cannot produce, so what it detected was the host stepping its wall
+    clock backwards, on two legs of a PR whose diff is one character of regex.
+    Note what that rules out: reading the same clock API the product reads
+    would not have prevented it either, because `datetime.now(timezone.utc)`
+    and `time.gmtime()` are both `CLOCK_REALTIME` and a step moves them
+    together. Only slack does.
+
+    Two minutes of it still fails everything the field is defended against — an
+    age (seconds-since-epoch parses to 1970), a hardcoded string, a wrong
+    epoch, milliseconds read as seconds, a value minutes stale. It only stops
+    failing on the second boundary and the NTP step, neither of which is a
+    statement about this code. *Which* clock is read is pinned exactly, and
+    without any tolerance, by `test_the_snapshot_is_read_off_the_utc_clock`.
+
+    It reads `time.time()` rather than `datetime.now()` for the smaller reason
+    that the product reads `time.gmtime()`: a test and the code it guards
+    disagreeing about which API they mean is one thing less to reason about
+    when this next goes red.
     """
-    before = datetime.now(timezone.utc).replace(microsecond=0)
+    before = time.time()
     with mock.patch.object(poller, "_fetch", return_value=_ok(_branched(pipeline_status="failed"))):
         events, _ = poller.poll({"pipeline_status": "running"}, {"id": "21803"})
-    after = datetime.now(timezone.utc)
+    after = time.time()
     observed_at = events[0]["payload"]["observed_at"]
     assert observed_at.endswith("Z"), observed_at
-    parsed = datetime.strptime(observed_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-    assert before <= parsed <= after, f"{observed_at} not within [{before}, {after}]"
+    parsed = calendar.timegm(time.strptime(observed_at, "%Y-%m-%dT%H:%M:%SZ"))
+    assert before - _CLOCK_SLACK <= parsed <= after + _CLOCK_SLACK, (
+        f"{observed_at} ({parsed}) is not within {_CLOCK_SLACK:.0f}s of "
+        f"[{before}, {after}]")
+
+
+def test_the_snapshot_is_read_off_the_utc_clock() -> None:
+    """The `Z` has to be earned, and only a frozen clock can prove it (#909).
+
+    `observed_at` is published as `...Z`, so a swap of `time.gmtime()` for a
+    local-time call would label an offset instant as UTC and every consumer's
+    subtraction would be wrong by the runner's zone. A bracket around the real
+    clock cannot see that at all on a host whose local zone *is* UTC, which is
+    every CI leg this repo has. Two distinguishable frozen clocks can, on every
+    host, and without a second of tolerance.
+    """
+    utc = time.struct_time((2026, 8, 7, 4, 50, 33, 4, 219, 0))
+    local = time.struct_time((2026, 8, 7, 23, 15, 7, 4, 219, 0))
+    with mock.patch("time.gmtime", return_value=utc):
+        with mock.patch("time.localtime", return_value=local):
+            with mock.patch.object(
+                    poller, "_fetch",
+                    return_value=_ok(_branched(pipeline_status="failed"))):
+                events, _ = poller.poll({"pipeline_status": "running"},
+                                        {"id": "21803"})
+    assert events[0]["payload"]["observed_at"] == "2026-08-07T04:50:33Z", (
+        "the snapshot was stamped from a clock that is not UTC — the `Z` is a "
+        "claim about which clock was read, and it is now false (#909)")
 
 
 def test_a_merge_is_tied_to_the_pipeline_that_permitted_it() -> None:
