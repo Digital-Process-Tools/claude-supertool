@@ -82,7 +82,13 @@ from _git_common import (  # noqa: E402
 # that used to `except subprocess.TimeoutExpired` now tests for the code, and
 # the `except` clauses that remain are there for `OSError`, which still raises.
 
-_KNOWN_FLAGS = ("force-with-lease", "no-verify", "watch")
+# `set-upstream` and `to-upstream` are the two intents the #787 refusal makes
+# the caller choose between, made sayable in this op's own vocabulary (#879).
+# They are deliberately not one flag with a default: they send the same commits
+# to two different refs, and a default would be the guess the refusal exists to
+# prevent.
+_KNOWN_FLAGS = ("force-with-lease", "no-verify", "watch",
+                "set-upstream", "to-upstream")
 
 # Budget for a single `git push` invocation. Must stay strictly below the
 # git-push op timeout in presets/git.json so this script — not supertool's
@@ -196,6 +202,28 @@ def _split_flags(argv: list[str]) -> tuple[set[str], list[str]]:
 def _parse_flags(argv: list[str]) -> set[str]:
     """Recognised flags only — see _split_flags for what happens to the rest."""
     return _split_flags(argv)[0]
+
+
+def _st_hint(arg: str) -> str:
+    """A runnable `supertool` invocation for `arg`. For printed remedies.
+
+    A remedy the caller cannot run is not a remedy (#879). Raw `git push` is
+    blocked by a hook in the project this op serves — a hook that exists
+    precisely *because* `git-push` is better than raw git — so a refusal
+    prescribing `git push -u origin HEAD` composed two correct rules into a
+    dead end, and the way out the caller found was `git branch
+    --unset-upstream`: git trivia that works, which is how the gap survived.
+
+    The `./supertool` wrapper is a gitignored symlink and therefore absent in
+    a git worktree, which is where agents work. The fallback is the one
+    `_watch_argv` already settled on for that exact environment (#642), not a
+    second guess at it.
+    """
+    root = _repo_root()
+    wrapper = os.path.join(root, "supertool")
+    if os.path.isfile(wrapper) and os.access(wrapper, os.X_OK):
+        return f"./supertool '{arg}'"
+    return f"python3 supertool.py '{arg}'"
 
 
 def _upstream_ref() -> tuple[str, str]:
@@ -447,6 +475,12 @@ def _refuse_mismatched_upstream(branch: str, remote_name: str,
     shape as `_refuse_unresolved_remote`: name both ways out, in the
     docs/validators.md §"Declining instead of guessing" sense — a third
     state, not a failure hidden behind a wrong one.
+
+    Both ways out are now flags on this op rather than raw `git push` lines
+    (#879). That is not a softening of the refusal — the caller still has to
+    say which intent they meant, which is the whole point of declining — it
+    just makes the answer sayable in the vocabulary the rest of the workflow
+    uses, instead of in the one command the project's hook forbids.
     """
     print(f"# git-push on {branch}")
     print(f"Upstream: {remote_name}/{remote_ref} — a different branch, "
@@ -457,14 +491,43 @@ def _refuse_mismatched_upstream(branch: str, remote_name: str,
           "current branch does not match the name of your current "
           "branch', not a remote rejection.")
     print("Nothing was pushed. Name the target once:")
-    print(f"  git push -u {remote_name} HEAD"
-          f"          # push {branch} under its own name (the usual first push)")
-    print(f"  git push {remote_name} HEAD:{remote_ref}"
-          f"   # push onto {remote_ref} on purpose, if that's the real target")
+    print(f"  {_st_hint('git-push:set-upstream')}"
+          f"   # push {branch} under its own name, tracking "
+          f"{remote_name}/{branch} (the usual first push)")
+    print(f"  {_st_hint('git-push:to-upstream')}"
+          f"    # push onto {remote_name}/{remote_ref} on purpose, if that "
+          f"is the real target")
     _result(f"NOT PUSHED - no push attempted ({branch}'s upstream is "
             f"{remote_name}/{remote_ref}, a different branch — ambiguous "
             f"target, nothing pushed)")
     return 1
+
+
+def _refuse_conflicting_targets(branch: str, remote_name: str,
+                                remote_ref: str) -> int:
+    """`:set-upstream` and `:to-upstream` together — two refs, one push (#879).
+
+    Resolving this by precedence would be worse than refusing. The two flags
+    name *different remote refs*: `{remote_name}/{branch}` and
+    `{remote_name}/{remote_ref}`. Silently honouring one would send commits
+    somewhere the caller also explicitly asked them not to go, and on the
+    `to-upstream` side that somewhere is routinely a shared base branch. A
+    contradiction the op cannot honour is refused, exactly as an unknown flag
+    is (#647) — nothing has moved yet, so the cost of stopping is a retype.
+    """
+    print(f"# git-push on {branch}")
+    print("ERROR: :set-upstream and :to-upstream name different targets — "
+          f"{remote_name}/{branch} and {remote_name}/{remote_ref}. Asking "
+          "for both is not a push this op can order by precedence.")
+    print("Nothing was pushed. Pick one:")
+    print(f"  {_st_hint('git-push:set-upstream')}"
+          f"   # push {branch} under its own name")
+    print(f"  {_st_hint('git-push:to-upstream')}"
+          f"    # push onto {remote_name}/{remote_ref}")
+    _result(f"NOT PUSHED - no push attempted (:set-upstream and :to-upstream "
+            f"name different targets: {remote_name}/{branch} vs "
+            f"{remote_name}/{remote_ref})")
+    return 2
 
 
 # Summaries git uses for "your ref diverged from the remote's" — the one
@@ -1375,6 +1438,12 @@ def _recover_by_rebase(branch: str, remote_before: str, upstream: str,
         push_args.append("--no-verify")
     if not upstream:
         push_args += ["-u", remote_name, "HEAD"]
+    elif remote_ref != branch:
+        # `:to-upstream` again — the recovery re-push has to carry the same
+        # explicit refspec, or a non-fast-forward turns a deliberate target
+        # into a bare push git will refuse for a reason unrelated to the
+        # rebase that just succeeded.
+        push_args += [remote_name, f"HEAD:{remote_ref}"]
     result = _git(push_args, timeout=_PUSH_TIMEOUT)
     if result.returncode == TIMEOUT_RC:
         return _report_push_timeout(branch, _local_head()[0],
@@ -1508,6 +1577,25 @@ def _push_op() -> int:
         return 2
 
     upstream, upstream_why = _upstream_ref()
+    # #879: the inherited-wrong upstream. `git worktree add -b <new> <base>`
+    # leaves the new branch tracking <base>, and `:set-upstream` is the
+    # caller saying "push me under my own name and retarget the tracking".
+    # Dropping `upstream` here — rather than special-casing every reader of
+    # it below — is what makes the rest of this function take the ordinary
+    # no-upstream path, including `-u` on the rebase-recovery re-push.
+    # `retarget_from` survives so the receipt can say what was retargeted;
+    # rendering this as "Upstream: none" would hide the very thing the flag
+    # authorised.
+    retarget_from = ""
+    if upstream:
+        _tracked_ref = _split_upstream(upstream, branch, "")[1]
+        if _tracked_ref != branch:
+            if {"set-upstream", "to-upstream"} <= flags:
+                return _refuse_conflicting_targets(
+                    branch, _split_upstream(upstream, branch, "")[0],
+                    _tracked_ref)
+            if "set-upstream" in flags:
+                retarget_from, upstream = upstream, ""
     has_upstream = bool(upstream)
     remote_before, before_why = (_remote_sha(upstream) if has_upstream
                                  else ("", ""))
@@ -1522,9 +1610,12 @@ def _push_op() -> int:
         if not push_remote:
             return _refuse_unresolved_remote(branch, cannot_tell)
     remote_name, remote_ref = _split_upstream(upstream, branch, push_remote)
-    if has_upstream and remote_ref != branch:
+    if has_upstream and remote_ref != branch and "to-upstream" not in flags:
         # @{upstream} resolved, but not to this branch's own name — a bare
         # push here is git's own ambiguity, not ours to guess through (#787).
+        # `:to-upstream` is the caller resolving it: they mean this ref, so
+        # the push below names it explicitly rather than leaving the target
+        # to `push.default` (which is what git refuses in the first place).
         return _refuse_mismatched_upstream(branch, remote_name, remote_ref)
     head_before, _head_before_why = _local_head()
 
@@ -1537,6 +1628,13 @@ def _push_op() -> int:
         print(f"Upstream: {upstream}" + (f" @ {remote_before}" if remote_before else ""))
         if before_why:
             print(f"⚠ Pre-push remote SHA UNKNOWN — {before_why}")
+        if remote_ref != branch:
+            print(f"  :to-upstream — pushing onto {remote_name}/{remote_ref} "
+                  f"on purpose, not onto {remote_name}/{branch}")
+    elif retarget_from:
+        print(f"Upstream: {retarget_from} — inherited, not this branch. "
+              f":set-upstream retargets it to {remote_name}/{branch} "
+              f"({chosen_how})")
     elif upstream_why:
         # Not the same as having no upstream, and the difference is load-bearing
         # on the next line: `-u <remote> HEAD` is about to be chosen from an
@@ -1561,6 +1659,11 @@ def _push_op() -> int:
         push_args.append("--no-verify")
     if not has_upstream:
         push_args += ["-u", remote_name, "HEAD"]
+    elif remote_ref != branch:
+        # `:to-upstream`. Explicit refspec, never a bare push: a bare push
+        # here is the exact input `push.default=simple` refuses, and the
+        # rendering of that refusal is what #787 was filed about.
+        push_args += [remote_name, f"HEAD:{remote_ref}"]
     _RUN.update({"phase": "attempted", "branch": branch,
                  "remote": remote_name, "ref": remote_ref,
                  "target": f"{remote_name}/{remote_ref}"})
