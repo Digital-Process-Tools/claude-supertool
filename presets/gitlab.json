@@ -45,6 +45,13 @@
       "heartbeat_warn_seconds": 300,
       "detail_workers": 8
     },
+    "gl-api": {
+      "cmd": "{python} {path}gitlab/api.py {argjoin}",
+      "timeout": 60,
+      "description": "GET any GitLab REST path when no specialised gl-* op covers it (members, access tokens, deploy keys, protected branches, events, users). GET-only by design and the method is pinned, not defaulted: the op forwards no flags and refuses a flag-shaped path, naming glab for writes. A page that came back exactly per_page long is reported INCOMPLETE with the boundary it compared against - never as the whole list - and the comparison uses min(per_page,100) because GitLab silently caps per_page at 100. :full follows every page. The whole body is fenced as remote text; a non-JSON body is labelled NOT JSON and shown verbatim rather than parsed with a shrug. Emission budgeted by GL_API_MAX_BYTES (default 65536): an array is cut by item so the JSON stays valid and says 'N of M items shown', anything else is cut by characters and says it no longer parses",
+      "syntax": "gl-api:PATH[?query][:full]",
+      "example": "gl-api:projects/:id/members/all"
+    },
     "gl-job": {
       "cmd": "{python} {path}gitlab/job.py {args}",
       "timeout": 30,

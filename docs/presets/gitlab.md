@@ -15,6 +15,47 @@ GitLab ops via the `glab` CLI. Replaces the 3-5 separate `glab` calls needed to 
 | `gl-mrs` | `gl-mrs[:filters,flags]` | MR triage board, sorted failing-first then stalest. Per MR (enriched in parallel): pipeline status (a failure shows the failed **job name** = the failure class), approval state, age, diff size, watch-state cross-reference, and `conflict`/`empty`/`draft`/`threads` flags — plus an actionable footer. "Failing" here means red, not the literal string `failed`: `canceled`, and any pipeline state GitLab adds later, sort first and are matched by the `failed` flag and the footer count. `skipped`/`neutral`/`manual` are the only non-success states treated as benign. Filters (comma-sep): `author`/`reviewer`/`assignee`/`label`/`milestone`/`state`/`per`. Flags: `nopipe` (skip enrichment), `iids` (bare id list), `failed` (only failing). Pipeline status is only known for MRs whose detail lookup actually succeeded, so an MR past `enrich_cap` — or one whose lookup timed out — is **unknown**, never "not failing". The board discloses how many it could not check (`5 of 45 MRs not checked — pipeline status unavailable, so a failing MR among them cannot appear on this board. Enrichment cap is 40; raise SUPERTOOL_ENRICH_CAP=N`) above the table and in the footer, and on `stderr` under `iids` so the id feed stays parseable. The cap is named only when the cap is what cut — below it, the escape it offers would not work. A board with nothing unchecked prints no such marker, which is what makes an empty `:failed` board a real all-clear ([#652](https://github.com/Digital-Process-Tools/claude-supertool/issues/652)) |
 | `gl-pipeline` | `gl-pipeline:NUMBER[:active\|:failed]` | Pipeline job list grouped by stage with pass/fail status and failed job IDs. The default board collapses the `manual`/`created`/`skipped` bulk to a one-line count so the running/done/failed jobs aren't buried. `:active` shows only running/pending jobs ("what's still going"); `:failed` shows only failed jobs plus their job IDs/URLs ("what broke") |
 | `gl-job` | `gl-job:NUMBER[:raw[:-N\|:START[:END]]\|:grep:PATTERN]` | Job failure detail: MR context + error pattern search + log tail. `:raw` dumps the full trace; `:raw:START:END` slices lines (1-indexed, inclusive); `:raw:-N` returns the **last N lines**; a START past the end of the log returns the tail of the width requested and says so, rather than declining (see [Reading a range](#reading-a-range)); `:grep:PATTERN` runs an ad-hoc regex over the trace (literal fallback on bad regex, ±context, names the pattern + tail on no-match — never silent-empty). Cause markers are always matched on top of the configured patterns, and a *failed* job that matches nothing is reported as unclassified with a log tail rather than as "no errors" |
+| `gl-api` | `gl-api:PATH[?query][:full]` | A **GET** of any GitLab REST path, for the rest of the API no `gl-*` op shapes — members, access tokens, deploy keys, protected branches, project and user events. Returns the JSON body fenced as remote text, plus one line saying whether it is the whole answer. `:full` follows every page. See [GET-only, and why that is the whole design](#get-only-and-why-that-is-the-whole-design) and [A full page is not a complete list](#a-full-page-is-not-a-complete-list) |
+
+### GET-only, and why that is the whole design
+
+`gl-api` sends `--method GET`, forwards no flag the caller typed, and refuses a path that is flag-shaped, contains whitespace, or is `graphql`. The refusal names the raw command instead of guessing: `glab api -X POST PATH -f key=value`.
+
+The method is **pinned rather than left to default**, and those are different claims. `glab api` switches to POST on its own as soon as a `-f`/`-F` is present, so "supertool passed no method" would not have meant "supertool sent a read". Pinning it makes the sentence true.
+
+A passthrough that accepted `-X POST` would not be a larger read op. It would be a write surface reachable from every alias, batch and worktree that can spell `gl-api`, with no validator, no rollback and no confirmation in front of it — which is the opposite of the arrangement the rest of the tool is built on: reads through supertool, writes through `glab`. The guarantee is about what supertool sends, not a claim that GitLab treats every GET as free of side effects.
+
+### A full page is not a complete list
+
+`projects/:id/members/all` returns twenty rows whether the project has twenty members or a hundred and thirty-seven, and nothing in the body distinguishes the two. Printing that as *the members* is the failure this repo keeps having — an absence produced by the tool, read as an absence in the world — and the session that motivated [#831](https://github.com/Digital-Process-Tools/claude-supertool/issues/831) was building an access review, where it is the failure that matters most.
+
+So the footer has three states and never two:
+
+```
+complete: 7 items — fewer than the page size of 20, so GitLab has no next page
+INCOMPLETE: 20 items — exactly the page size of 20, so GitLab may have more and this is not the whole list. Re-run with :full to follow every page, or add ?per_page=100&page=2.
+complete: 137 items across 2 pages (every page followed)
+```
+
+The middle one is the point. A page that came back exactly full is evidence of nothing, and any wording that resolves it to *complete* or to *truncated* is the tool inventing a fact it does not have.
+
+The boundary compared against is `min(per_page, 100)`, because **GitLab silently caps `per_page` at 100**. `?per_page=200` returning 100 rows is a full page; comparing against the 200 that was asked for would call it complete and would be the same defect one layer down. A `page=` above 1 is disclosed too — a short page 3 means there is no page 4, not that pages 1 and 2 were read.
+
+An object response carries no completeness line at all: it was never paged, and a line saying so on every single-object read is the wallpaper that gets a convention ignored.
+
+### The body is remote text, and none of it is shaped
+
+Every other op here knows which of its fields a stranger wrote. `gl-api` cannot — that is what makes it generic — so the entire body is treated as remote: fenced, control characters disclosed, fence glyphs neutralised on the way in.
+
+Inside JSON the encoder does most of the work, since re-encoding escapes every C0 back to `\\u001b`. It is not all of it: `ensure_ascii=False` is used so a non-ASCII name stays readable, and that leaves U+2028 and U+2029 — which `str.splitlines()` splits on — raw. A non-JSON body has no encoder in front of it at all. `scrub()` is what both of those rely on.
+
+A path whose body is not JSON — a raw blob, a proxy's HTML login page — is labelled `NOT JSON: N characters, shown verbatim below` and fenced. It is never parsed with a shrug and never presented as the answer.
+
+**The emission is budgeted** by `GL_API_MAX_BYTES` (default 65536), and the two shapes are cut differently on purpose. An array is cut **by item**, so what prints is a valid JSON array and the note reads `CAPPED: 41 of 4820 items shown`; cutting it by bytes would hand the reader a document that does not parse. Anything else is cut by characters, and says `TRUNCATED: … — the JSON above is cut and does not parse` rather than letting the reader discover it in a decoder.
+
+### What `gl-api` is not for
+
+It is the fallback, not the front door. `gl-mr`, `gl-mrs`, `gl-pipeline`, `gl-job`, `gl-issue` and `gl-runners` each return a shaped answer that costs one call where the raw API costs three plus the joining — `gl-runners`'s STARVED detection is a join of three endpoints that no single path exposes. Reach for `gl-api` when no op covers the path, which is what it was added for.
 
 **The local-branch check on `gl-job`** prints under the `Branch:` line and always states one of **three** things ([#850](https://github.com/Digital-Process-Tools/claude-supertool/issues/850)) — `✓` when your checkout matches; the **worktree holding the branch** when a linked worktree has it (`You are on: master — fix/900 is checked out in another worktree: ~/st-wt/900 (cd there; a checkout here would be refused)`); and `⚠ MISMATCH` only when the branch is checked out nowhere, which is the only case where switching to it is an action git will accept. A fourth line covers the case where `git worktree list` did not answer: it says the location is UNKNOWN and suggests nothing, because "checked out nowhere" is a positive claim and a failed probe is not evidence for it. On the read-only sub-ops (`:raw`, `:fail`/`:errors`, `:grep`) the mismatch is stated **without** the `git-checkout` suggestion ([#531](https://github.com/Digital-Process-Tools/claude-supertool/issues/531)): those are what a monitoring session runs, moving HEAD is the one action such a session must never take (fixes go to a worktree so the checkout stays put), and the hint fired hundreds of times a session always pointing the wrong way. Only the imperative is withheld, never the state — the line prints either way, so a missing checkout command can never be misread as "you are on the right branch". The bare `gl-job:NUMBER` view keeps the suggestion: you open a failure in order to fix it, which is exactly when it earns its line. `gl-mr:NUMBER:status` prints no branch check at all and never did. And the suggestion is withheld for a *second* reason ([#924](https://github.com/Digital-Process-Tools/claude-supertool/issues/924)): the branch name comes off the API, so it is written by whoever opened the merge request, and it used to be interpolated straight between the quotes of `./supertool 'git-checkout:<branch>'` — a name containing `'` closed them and appended its own command. A name outside the ordinary-refname set (`[A-Za-z0-9._/-]`, no leading `-`) now gets no command, and gets the name and the reason instead; see `github.md`, "The local-branch check", for why this one refuses where `gl-mr`'s conflict recipe quotes.
 
@@ -63,6 +104,13 @@ Same input, four endpoints down, before and after:
 **A fallback that is used is a fallback that is disclosed.** When the live pipelines lookup declines but the MR payload still carries a `head_pipeline`, the status prints — it is real — followed by `! live pipeline lookup declined (…) — status above comes from the MR payload and can be stale`. The same discipline covers a paginated file list whose later page failed: the shortfall is described as a fetch failure rather than re-blamed on the display cap, because `use gl-mr:N:full` is advice that cannot work for files the tool never received.
 
 ## Common workflows
+
+**Read a path no op covers:**
+```bash
+./supertool 'gl-api:projects/:id/protected_branches'
+./supertool 'gl-api:projects/:id/members/all:full'
+```
+The first prints one page and says whether it is the whole list; the second follows every page. GET-only — for a write, call `glab api -X POST` directly.
 
 **Review an MR before merging:**
 ```bash
