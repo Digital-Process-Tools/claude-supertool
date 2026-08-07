@@ -113,10 +113,12 @@ elif [ "$target_protected" -eq 0 ] && [ -z "${PREPUSH_FULL:-}" ]; then
 fi
 
 echo "── pre-push: running full test suite (mirrors CI) ──"
-# Mirror the CI gate (.github/workflows/tests.yml): run slow tests too, and do
-# NOT gate coverage (--no-cov). CI is the authority on what's mergeable; gating
-# coverage here — which CI doesn't — only produces local-only false aborts, and
-# the default 'not slow' filter would let a slow test that CI runs slip through.
+# Mirror the CI gate (.github/workflows/tests.yml): as of #891 that no longer
+# runs the `slow` marker — CI moved those tests to a scheduled workflow
+# instead of running them on every push, and this hook mirrors CI rather than
+# the local default in isolation. Do NOT gate coverage (--no-cov): CI is the
+# authority on what's mergeable, and gating coverage here — which CI
+# doesn't — only produces local-only false aborts.
 #
 # `benchmark` is the one marker excluded rather than included (#485). Those
 # tests assert on elapsed wall-clock, so they can fail because the laptop was
@@ -127,7 +129,7 @@ echo "── pre-push: running full test suite (mirrors CI) ──"
 # benchmarks in the suite read an absolute path in one maintainer's home
 # directory and skip everywhere else, so CI has never run them. Ask for them
 # deliberately, on a machine whose load you control: `pytest -m benchmark -n0`.
-if ! "$PYTHON" -m pytest -m 'not benchmark' --no-cov --tb=short; then
+if ! "$PYTHON" -m pytest -m 'not slow and not benchmark' --no-cov --tb=short; then
     echo ""
     echo "✗ Tests failed. Push aborted."
     echo "  Fix failures or run: git push --no-verify  (to bypass, discouraged)"

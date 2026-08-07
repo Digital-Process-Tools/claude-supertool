@@ -327,6 +327,7 @@ class _BudgetAfterSpawn:
 # #640 — TimeoutExpired on the rebase-recovery path
 # ===========================================================================
 
+@pytest.mark.slow
 def test_fetch_timeout_gives_a_verdict_not_a_traceback(box, monkeypatch) -> None:
     """A fetch that outlasts its budget must produce a receipt, not a stack trace.
 
@@ -386,6 +387,7 @@ def test_rebase_timeout_names_the_paused_worktree_and_the_way_out(
     assert "git rebase --abort" in out
 
 
+@pytest.mark.slow
 def test_rebase_timeout_fixture_survives_a_slow_helper_spawn(box, monkeypatch) -> None:
     """#828: the budget must not expire before the helper it exists to catch.
 

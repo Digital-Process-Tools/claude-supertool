@@ -273,8 +273,9 @@ def test_the_job_ceiling_sits_above_the_inner_budget_it_guards() -> None:
 def test_the_pytest_job_deliberately_has_no_per_test_budget() -> None:
     """Stated, not left to be inferred from its absence.
 
-    The main suite runs ~4000 tests under `-n auto`, includes the `slow` marker
-    in CI, and its windows legs are the ones this repo has repeatedly measured
+    The main suite runs ~4000 tests under `-n auto`, excludes the `slow`
+    marker in CI as of #891 (a separate scheduled workflow runs it instead),
+    and its windows legs are the ones this repo has repeatedly measured
     blowing hand-written budgets under contention (#702, #658, #650). There is
     no per-test timing data for that leg, and a per-test number guessed against
     a contended windows runner is the exact mistake those three issues are
