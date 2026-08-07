@@ -395,6 +395,82 @@ def test_the_radar_gh_prs_tier_still_names_an_unhonourable_filter() -> None:
     assert filters == {"author": "@me"} and flags == {"nopipe"} and unknown == []
 
 
+def test_the_tier_vocabulary_stays_narrower_than_the_op_it_shares_a_parser_with() -> None:
+    """Sharing the tokenizer must not import the op's wider vocabulary.
+
+    `iids` and `failed` are board *shapes* `gh-prs` offers: a bare list of
+    numbers, and only the failing rows. Either one accepted here would narrow a
+    radar board without saying so, which is the same lie as widening it. The op
+    places both as flags; the tier must place neither.
+    """
+    tier = _load("radar_gh_prs_939_narrow", "presets/watch/tiers/gh_prs.py")
+
+    for shape in ("iids", "failed"):
+        assert shape in prs._FLAGS, (
+            f"{shape!r} must be a flag the op accepts, or this test proves nothing"
+        )
+        assert prs._parse_args(shape)[2] == [], "the op accepts it"
+        with pytest.raises(tier.RadarError, match=shape):
+            tier.resolve_filter(shape)
+
+    assert tier.KNOWN_FLAGS < prs._FLAGS, "the tier's flag set is a strict subset"
+    assert tier.KNOWN_FILTERS < prs._FILTER_KEYS, "and so is its filter set"
+
+
+def test_the_tier_refusal_names_only_tokens_that_were_actually_typed() -> None:
+    """The old message joined two lists with no separator between them.
+
+        named = ", ".join(f"{k}=" for k in bad) + ", ".join(unknown_flags)
+
+    With one unknown key and one unknown flag those two joins abutted, so
+    `milestone=x,onlygreen` was refused as `'milestone=onlygreen'` and
+    `zeta,alpha=1` as `'alpha=zeta'` — a `key=value` pair the caller never
+    wrote, naming a value that came from a different token. An error that
+    misquotes the input sends the reader looking for a token that is not there.
+    """
+    tier = _load("radar_gh_prs_939_msg", "presets/watch/tiers/gh_prs.py")
+
+    with pytest.raises(tier.RadarError) as exc:
+        tier.resolve_filter("milestone=x,onlygreen")
+    msg = str(exc.value)
+    assert "milestone=, onlygreen" in msg
+    assert "milestone=onlygreen" not in msg, (
+        "the two unapplied tokens must not fuse into one invented token"
+    )
+
+    with pytest.raises(tier.RadarError) as exc:
+        tier.resolve_filter("zeta,alpha=1")
+    assert "zeta, alpha=" in str(exc.value)
+    assert "alpha=zeta" not in str(exc.value)
+
+
+def test_the_tier_accepts_and_refuses_exactly_what_it_did_before_939() -> None:
+    """Sharing the tokenizer changed the wording; it must not change the verdict.
+
+    The corpus is every shape the two implementations could disagree on: a
+    stripped key, an empty key, a flag written as `key=`, a repeated key, and
+    the two vocabularies' difference. The expected column is what the pre-#939
+    tier returned, read off dc1ab4c.
+    """
+    tier = _load("radar_gh_prs_939_corpus", "presets/watch/tiers/gh_prs.py")
+
+    accepted = {
+        "": ({}, set()),
+        "nopipe": ({}, {"nopipe"}),
+        " author = me ": ({"author": "me"}, set()),
+        "author=a,author=b": ({"author": "b"}, set()),
+        "state=open,label=bug,nopipe": (
+            {"state": "open", "label": "bug"}, {"nopipe"}),
+    }
+    for arg, expected in accepted.items():
+        assert tier.resolve_filter(arg) == expected, arg
+
+    for arg in ("milestone=v19", "per=5", "onlygreen", "iids", "failed",
+                "nopipe=1", "=x", "author=a,milestone=v19"):
+        with pytest.raises(tier.RadarError):
+            tier.resolve_filter(arg)
+
+
 def test_the_mr_feed_poller_declines_a_scope_it_cannot_apply(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
