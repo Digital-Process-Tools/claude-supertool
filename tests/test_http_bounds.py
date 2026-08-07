@@ -27,14 +27,16 @@ import importlib
 import sys
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT / "presets"))
+sys.path.insert(0, str(ROOT / "tests"))
 
+from _no_fqdn_server import NoFqdnThreadingHTTPServer  # noqa: E402
 from _preset_loader import load_preset_module  # noqa: E402
 
 # Same import discipline as tests/test_security_redirect.py: `_http` plainly, so
@@ -134,8 +136,8 @@ class _Body(BaseHTTPRequestHandler):
         pass
 
 
-def _serve(mode: str, body: bytes, delay: float = 0.0) -> ThreadingHTTPServer:
-    srv = ThreadingHTTPServer(("127.0.0.1", 0), _Body)
+def _serve(mode: str, body: bytes, delay: float = 0.0) -> NoFqdnThreadingHTTPServer:
+    srv = NoFqdnThreadingHTTPServer(("127.0.0.1", 0), _Body)
     srv.cfg = {"mode": mode, "body": body, "delay": delay}
     srv.daemon_threads = True
     threading.Thread(target=srv.serve_forever, daemon=True).start()

@@ -16,7 +16,7 @@ from __future__ import annotations
 import importlib
 import sys
 import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -24,7 +24,9 @@ import pytest
 
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT / "presets"))
+sys.path.insert(0, str(ROOT / "tests"))
 
+from _no_fqdn_server import NoFqdnHTTPServer  # noqa: E402
 from _preset_loader import load_preset_module  # noqa: E402
 
 # `_http` is the one shim shared by every preset, so it is imported plainly and
@@ -81,8 +83,8 @@ class _Recorder(BaseHTTPRequestHandler):
         pass
 
 
-def _serve() -> HTTPServer:
-    srv = HTTPServer(("127.0.0.1", 0), _Recorder)
+def _serve() -> NoFqdnHTTPServer:
+    srv = NoFqdnHTTPServer(("127.0.0.1", 0), _Recorder)
     srv.received = []
     srv.redirect_to = None
     threading.Thread(target=srv.serve_forever, daemon=True).start()
