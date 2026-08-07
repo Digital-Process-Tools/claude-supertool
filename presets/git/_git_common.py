@@ -398,6 +398,21 @@ NOT_THIS_HOST_PHRASES = (
     "no remotes found",
 )
 
+#: What `glab` / `gh` say when they mean "nobody has logged me in". A failure,
+#: not an answer — but the CLIs say it across several lines, and
+#: `_first_error_line` finds no error keyword in any of them, so it falls
+#: through to the *last* non-empty line. For `gh` inside GitHub Actions that
+#: line is `GH_TOKEN: ${{ github.token }}` — a YAML fragment out of an example
+#: block, offered to the reader as the reason their lookup did not run. The
+#: disclosure was right and unreadable, which is only half a disclosure.
+NOT_AUTHENTICATED_PHRASES = (
+    "gh_token environment variable",
+    "glab_token environment variable",
+    "auth login",
+    "not logged in",
+    "no token provided",
+)
+
 #: The union, under the name `presets/git/status.py` gave it. That module had
 #: the only copy of these phrases and now imports them (#948) — the same rule
 #: about the same two CLIs, in one place, because a second copy beside the real
@@ -458,6 +473,12 @@ def _cli_verdict(res: subprocess.CompletedProcess) -> tuple:
         return "n/a", ""
     if any(p in said for p in NO_REQUEST_PHRASES):
         return "answered", ""
+    if any(p in said for p in NOT_AUTHENTICATED_PHRASES):
+        # Checked after the two above deliberately: glab's not-this-host text
+        # also says "please use `glab auth login`", and that case is an answer.
+        return "failed", ("is not authenticated here — nothing asked the "
+                          "tracker anything (`auth login`, or a token in the "
+                          "environment)")
     blob = (res.stderr or "") + chr(10) + (res.stdout or "")
     return "failed", _first_error_line(blob) or f"exited {res.returncode}"
 
@@ -532,6 +553,63 @@ def _gh_fields(row: dict) -> dict:
     }
 
 
+def _is_local_remote(url: str) -> bool:
+    """True when this remote URL cannot possibly be a forge.
+
+    Conservative on purpose, and in one direction only: it returns True only
+    for shapes that are positively local, and False for anything it does not
+    recognise. A wrong True is the expensive mistake — it would let the
+    function below state an absence about a repo that does have a tracker.
+    """
+    u = url.strip()
+    if not u:
+        return False
+    if u.startswith("file://"):
+        return True
+    if u.startswith(("/", "./", "../", "~")) or u[:1] == chr(92):
+        return True
+    scheme, sep, rest = u.partition("://")
+    if sep and rest and scheme and scheme.replace(
+            "+", "").replace(".", "").replace("-", "").isalnum():
+        return False  # ssh:// git:// https:// … — a host is named
+    if ":" in u.split("/", 1)[0]:
+        return False  # scp-style `git@host:path`
+    return True  # a bare relative path, e.g. `../sibling.git`
+
+
+def _remotes_could_host_a_request() -> tuple[Optional[bool], str]:
+    """Can any configured remote hold an MR/PR? Three states, not two (#948).
+
+    `(True, "")` at least one remote names a host; `(False, "")` git answered
+    and every remote is a local path (or there are none), so there is no
+    tracker for a request to be open on; `(None, why)` git did not answer, and
+    nothing has been established.
+
+    This exists because the CLIs check their own credentials *before* they look
+    at the repository. `gh` with no token exits 4 saying so and never reaches
+    "none of the git remotes ... point to a known GitHub host", which is the
+    sentence `NOT_THIS_HOST_PHRASES` reads to turn that case into an answer. On
+    a CI runner — `gh` installed, no token, sandbox repo whose only remote is a
+    path under /tmp — the #948 disclosure therefore fired on a push where every
+    check had in fact run, which is the one thing it promised not to do.
+
+    The fact was local the whole time. Asking git for it costs one call and is
+    not a guess: a remote at `/tmp/x/remote.git` has no tracker, in the same
+    way and for the same reason that a GitHub repo has no GitLab MR.
+    """
+    res = _git(["remote", "-v"])
+    if res.returncode != 0:
+        return None, (res.stderr.strip() or f"git exited {res.returncode}")
+    urls = []
+    for line in res.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 2:
+            urls.append(parts[1])
+    if not urls:
+        return False, ""
+    return any(not _is_local_remote(u) for u in urls), ""
+
+
 def query_open_mr_result(branch: str) -> MrLookup:
     """Open MR/PR for `branch` as an `MrLookup` — three states, not two (#948).
 
@@ -554,6 +632,13 @@ def query_open_mr_result(branch: str) -> MrLookup:
     if not branch or branch == "HEAD":
         # A detached HEAD has no branch for a request to be open against. That
         # is a fact about the repository, not a lookup that failed.
+        return MrLookup(None)
+    could_host, _why = _remotes_could_host_a_request()
+    if could_host is False:
+        # git answered and no remote names a host. There is no tracker here, so
+        # there is no open request — established locally, without needing a CLI
+        # to survive long enough to say it. `None` (git itself did not answer)
+        # deliberately falls through to the probes rather than claiming this.
         return MrLookup(None)
     probes = []
     if shutil.which("glab"):

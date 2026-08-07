@@ -31,8 +31,11 @@ this function. The consumers are `git-push` and `git-commit`'s post-commit hint.
 from __future__ import annotations
 
 import importlib.util
+import os
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from unittest import mock
 
@@ -64,17 +67,43 @@ def _only(tool: str):
 _PR_JSON = '[{"number": 7, "baseRefName": "main", "mergeable": "MERGEABLE"}]'
 
 
+_HOSTED_REMOTE = ("origin" + chr(9) + "https://github.com/acme/x.git (fetch)" +
+                  chr(10) + "origin" + chr(9) +
+                  "https://github.com/acme/x.git (push)" + chr(10))
+
+
+def _runs(cli):
+    """`subprocess.run` double: git answers about the repo, the CLI about the branch.
+
+    Since #948 the lookup asks git which remotes exist before it spends a CLI
+    call — a repo with no forge remote has no tracker, and that is knowable
+    without one. `_git` goes through this same `subprocess.run`, so a double
+    that replied with the CLI's script to `git remote -v` would answer "no
+    remotes" and short-circuit, and the test would quietly stop exercising the
+    arm it is named after. Each test below therefore says which repo it is in.
+
+    `cli` is a `CompletedProcess`, or a callable taking argv.
+    """
+    def run(cmd, **kw):
+        if list(cmd[:2]) == ["git", "remote"]:
+            return _proc(0, stdout=_HOSTED_REMOTE)
+        # `hasattr(..., "returncode")`, not `callable(...)`: a `mock.Mock`
+        # stub result is itself callable, and calling it returns another Mock.
+        return cli if hasattr(cli, "returncode") else cli(cmd)
+    return run
+
+
 # ---------------------------------------------------------------------------
 # The lookup itself — one object, three states
 # ---------------------------------------------------------------------------
 
 def test_a_timeout_is_not_an_absence() -> None:
     """The case the issue was filed on: a slow host reported as "no PR"."""
-    def timeout(*a, **kw):
+    def timeout(cmd):
         raise subprocess.TimeoutExpired(cmd="gh", timeout=5)
 
     with mock.patch.object(common.shutil, "which", _only("gh")), \
-         mock.patch.object(common.subprocess, "run", timeout):
+         mock.patch.object(common.subprocess, "run", _runs(timeout)):
         res = common.query_open_mr_result("feature/x")
 
     assert res.answered is False, (
@@ -86,9 +115,9 @@ def test_a_timeout_is_not_an_absence() -> None:
 
 def test_an_expired_token_is_not_an_absence() -> None:
     with mock.patch.object(common.shutil, "which", _only("gh")), \
-         mock.patch.object(common.subprocess, "run", return_value=_proc(
+         mock.patch.object(common.subprocess, "run", _runs(_proc(
              4, stderr="gh: To get started with GitHub CLI, please run: "
-                       "gh auth login\n")):
+                       "gh auth login" + chr(10)))):
         res = common.query_open_mr_result("feature/x")
 
     assert res.answered is False, res.reason
@@ -98,7 +127,7 @@ def test_an_expired_token_is_not_an_absence() -> None:
 def test_output_that_is_not_json_is_not_an_absence() -> None:
     with mock.patch.object(common.shutil, "which", _only("gh")), \
          mock.patch.object(common.subprocess, "run",
-                           return_value=_proc(0, stdout="<html>proxy</html>")):
+                           _runs(_proc(0, stdout="<html>proxy</html>"))):
         res = common.query_open_mr_result("feature/x")
 
     assert res.answered is False, res.reason
@@ -108,7 +137,7 @@ def test_an_empty_list_is_an_answer() -> None:
     """The healthy "no PR yet" case has to stay a fact, or the fix is noise."""
     with mock.patch.object(common.shutil, "which", _only("gh")), \
          mock.patch.object(common.subprocess, "run",
-                           return_value=_proc(0, stdout="[]")):
+                           _runs(_proc(0, stdout="[]"))):
         res = common.query_open_mr_result("feature/x")
 
     assert res.answered is True
@@ -125,9 +154,9 @@ def test_the_other_hosts_cli_declining_is_an_answer_not_a_failure() -> None:
     being read.
     """
     with mock.patch.object(common.shutil, "which", _only("gh")), \
-         mock.patch.object(common.subprocess, "run", return_value=_proc(
+         mock.patch.object(common.subprocess, "run", _runs(_proc(
              1, stderr="none of the git remotes configured for this "
-                       "repository point to a known GitHub host\n")):
+                       "repository point to a known GitHub host" + chr(10)))):
         res = common.query_open_mr_result("feature/x")
 
     assert res.answered is True, res.reason
@@ -142,13 +171,14 @@ def test_glab_answering_none_is_not_undone_by_gh_failing_after_it() -> None:
     decline on every push of every GitLab repo with `gh` installed — the loud
     bug traded for the quiet one, in the direction that makes the tool useless.
     """
-    def run(cmd, **kw):
+    def cli(cmd):
         if cmd[0] == "glab":
             return _proc(0, stdout="[]")
-        return _proc(4, stderr="gh: could not determine base repository\n")
+        return _proc(4, stderr="gh: could not determine base repository" +
+                                chr(10))
 
     with mock.patch.object(common.shutil, "which", lambda n: f"/usr/bin/{n}"), \
-         mock.patch.object(common.subprocess, "run", run):
+         mock.patch.object(common.subprocess, "run", _runs(cli)):
         res = common.query_open_mr_result("feature/x")
 
     assert res.answered is True, res.reason
@@ -166,7 +196,7 @@ def test_no_cli_at_all_is_not_an_absence_either() -> None:
 def test_a_found_pr_is_answered() -> None:
     with mock.patch.object(common.shutil, "which", _only("gh")), \
          mock.patch.object(common.subprocess, "run",
-                           return_value=_proc(0, stdout=_PR_JSON)):
+                           _runs(_proc(0, stdout=_PR_JSON))):
         res = common.query_open_mr_result("feature/x")
 
     assert res.answered is True
@@ -178,7 +208,7 @@ def test_the_thin_wrapper_still_returns_the_dict() -> None:
     """`git-commit`'s post-commit hint keeps its old signature."""
     with mock.patch.object(common.shutil, "which", _only("gh")), \
          mock.patch.object(common.subprocess, "run",
-                           return_value=_proc(0, stdout=_PR_JSON)):
+                           _runs(_proc(0, stdout=_PR_JSON))):
         assert common.query_open_mr("feature/x") == {
             "source": "github", "iid": 7, "target": "main", "pipeline": None,
             "pipeline_id": None, "pipeline_url": None, "merge_status": None}
@@ -208,12 +238,12 @@ def test_the_glab_call_uses_flags_this_glab_actually_has() -> None:
     """
     seen = []
 
-    def run(cmd, **kw):
+    def cli(cmd):
         seen.append(cmd)
         return _proc(0, stdout="[]")
 
     with mock.patch.object(common.shutil, "which", _only("glab")), \
-         mock.patch.object(common.subprocess, "run", run):
+         mock.patch.object(common.subprocess, "run", _runs(cli)):
         common.query_open_mr_result("feature/x")
 
     assert len(seen) == 1, seen
@@ -271,3 +301,124 @@ def test_advisories_disclose_the_unknown_and_do_not_raise(capsys) -> None:
             set(), "origin")
     out = capsys.readouterr().out
     assert "UNKNOWN" in out, out
+
+
+# ---------------------------------------------------------------------------
+# A repo with no forge remote at all — the fact is local, and a CLI that dies
+# before it reads the remotes must not cost us an answer we already have
+# ---------------------------------------------------------------------------
+
+_GH_IN_ACTIONS = (
+    "gh: To use GitHub CLI in a GitHub Actions workflow, set the GH_TOKEN "
+    "environment variable. Example:" + chr(10) +
+    "  env:" + chr(10) +
+    "    GH_TOKEN: ${{ github.token }}" + chr(10))
+
+
+class _StubCli:
+    """A real executable on a real PATH that fails the way the real one does.
+
+    Not a mock: `query_open_mr_result` runs it through `subprocess.run`, and
+    the point of these two tests is what happens when the CLI exits *before*
+    looking at the repo's remotes. A patched `subprocess.run` cannot show that,
+    because `_git` needs the same function to answer honestly.
+    """
+
+    def __init__(self, name: str, stderr: str, code: int) -> None:
+        self.tmp = tempfile.mkdtemp(prefix="st948_bin_")
+        real_git = shutil.which("git")
+        assert real_git, "these tests drive real git"
+        os.symlink(real_git, os.path.join(self.tmp, "git"))
+        stub = os.path.join(self.tmp, name)
+        with open(stub, "w", encoding="utf-8") as fh:
+            # `sys.executable`, not `/usr/bin/env python3`: PATH is scrubbed to
+            # this directory for the duration of the lookup, so `env` would not
+            # find an interpreter and the stub would fail to start — a
+            # different failure wearing the same exit code.
+            fh.write(f"#!{sys.executable}" + chr(10) +
+                     "import sys" + chr(10) +
+                     f"sys.stderr.write({stderr!r})" + chr(10) +
+                     f"sys.exit({code})" + chr(10))
+        os.chmod(stub, 0o755)
+
+    def cleanup(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+
+def _repo_with_remote(url: str) -> str:
+    tmp = tempfile.mkdtemp(prefix="st948_repo_")
+    env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull,
+           "GIT_CONFIG_SYSTEM": os.devnull}
+    subprocess.run(["git", "init", "-q", "."], cwd=tmp, env=env, check=True)
+    subprocess.run(["git", "remote", "add", "origin", url],
+                   cwd=tmp, env=env, check=True)
+    return tmp
+
+
+def _lookup_in(repo: str, stub: _StubCli, branch: str = "feature"):
+    prev_cwd = os.getcwd()
+    prev_path = os.environ.get("PATH")
+    os.chdir(repo)
+    os.environ["PATH"] = stub.tmp
+    try:
+        return common.query_open_mr_result(branch)
+    finally:
+        os.chdir(prev_cwd)
+        if prev_path is None:
+            os.environ.pop("PATH", None)
+        else:
+            os.environ["PATH"] = prev_path
+
+
+def test_a_repo_whose_only_remote_is_a_local_path_has_no_request_to_find() -> None:
+    """No forge is configured, so there is no tracker a request could live on.
+
+    That is a fact about the repository, readable from `git remote` without
+    asking anyone — and it must stay readable when the CLI cannot answer. `gh`
+    checks its own credentials *before* it looks at the remotes, so on a runner
+    with `gh` installed and no token it exits 4 with a message about GH_TOKEN
+    and never reaches the "none of the git remotes ... point to a known GitHub
+    host" line that `NOT_THIS_HOST_PHRASES` was built to catch. The absence was
+    then reported as an unknown, on a push where every other check ran, which
+    is the #948 disclosure firing on the one case it was promised never to fire
+    on (the healthy path is byte-identical).
+    """
+    stub = _StubCli("gh", _GH_IN_ACTIONS, 4)
+    repo = _repo_with_remote(os.path.join(stub.tmp, "elsewhere.git"))
+    try:
+        res = _lookup_in(repo, stub)
+    finally:
+        shutil.rmtree(repo, ignore_errors=True)
+        stub.cleanup()
+
+    assert res.answered is True, (
+        "no remote of this repo points at a forge, so there is no tracker on "
+        "which an MR/PR could be open — that is an answer, and it was reported "
+        f"as an unknown: {res.reason}")
+    assert res.mr is None
+
+
+def test_a_forge_remote_whose_cli_cannot_answer_is_still_unknown() -> None:
+    """The guard against fixing the loud bug by inventing a quiet one.
+
+    Same unauthenticated `gh`, but the remote really is on GitHub. Nothing
+    local settles whether a PR is open, so the only truthful answer is that we
+    do not know. If this test ever goes green by way of the check above, the
+    check has been widened past what it can actually establish.
+    """
+    stub = _StubCli("gh", _GH_IN_ACTIONS, 4)
+    repo = _repo_with_remote("https://github.com/Digital-Process-Tools/x.git")
+    try:
+        res = _lookup_in(repo, stub)
+    finally:
+        shutil.rmtree(repo, ignore_errors=True)
+        stub.cleanup()
+
+    assert res.answered is False, (
+        "the repo is on GitHub and the only CLI that could have said whether a "
+        "PR is open exited without answering — that is not an absence")
+    assert "${{ github.token }}" not in res.reason, (
+        "the reason handed to the reader is the last line of gh's message, a "
+        "YAML fragment that names neither the tool's problem nor theirs: "
+        f"{res.reason}")
+    assert "authenticat" in res.reason.lower(), res.reason
