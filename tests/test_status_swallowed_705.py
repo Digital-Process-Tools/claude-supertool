@@ -379,7 +379,16 @@ def test_a_working_tree_that_could_not_be_read_is_disclosed(
     """`git status` failing (a held index lock is enough) drops the entire
     working-tree section, and a report with no such section reads as a repo
     with nothing to say about it. `_git` records timeouts; a refusal was
-    recorded by nobody."""
+    recorded by nobody.
+
+    #1002 finished the job. This test used to assert the section was
+    *absent* and the footer alone carried the disclosure — which pinned the
+    remaining half of the defect it was written to remove. The footer sits
+    below every other section, and a reader who scrolled to where the
+    working tree belongs, found nothing, and concluded the tree was clean
+    had already decided before reaching it. The section is now rendered in
+    place, saying it could not be read; the footer is kept alongside,
+    because it is what survives a `| tail` and what a script greps."""
     repo = _repo(tmp_path)
     (repo / "tracked.txt").write_text("changed\n")
     d = _bindir(tmp_path, "wtbin")
@@ -387,7 +396,8 @@ def test_a_working_tree_that_could_not_be_read_is_disclosed(
     monkeypatch.setenv("PATH", str(d))
     out = _run_status(repo, monkeypatch)
 
-    assert "## Working tree" not in out
+    assert "## Working tree: UNKNOWN" in out, out
+    assert "## Working tree: clean" not in out
     assert status.INCOMPLETE_MARKER in out, out
     assert "status" in out
 
@@ -401,6 +411,10 @@ def test_a_stash_list_that_could_not_be_read_is_disclosed(
     monkeypatch.setenv("PATH", str(d))
     out = _run_status(repo, monkeypatch)
 
+    # Same #1002 amendment as the working tree above: an empty stash list is
+    # silent because no stashes is the ordinary state, but a list that was
+    # never obtained is not that, and the two must not render alike.
+    assert "## Stashes: UNKNOWN" in out, out
     assert status.INCOMPLETE_MARKER in out, out
     assert "stash" in out
 

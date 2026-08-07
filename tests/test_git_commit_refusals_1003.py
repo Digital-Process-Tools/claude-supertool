@@ -66,6 +66,7 @@ def _head_subject(work: Path) -> str:
     return subprocess.run(
         ["git", "log", "-1", "--pretty=format:%s"], cwd=work,
         capture_output=True, text=True, check=True, encoding="utf-8",
+        errors="replace",
     ).stdout
 
 
