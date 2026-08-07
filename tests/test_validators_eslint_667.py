@@ -287,6 +287,86 @@ def test_no_file_arg() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Absence one, on the machine it actually happens on: npx present, eslint not
+# ---------------------------------------------------------------------------
+
+#: npm 11's real reply to `npx --no-install eslint` where eslint is not
+#: installed: exit 1, **stdout empty**, this on stderr. Older npm says
+#: "could not determine executable to run" for the same condition.
+NPX_UNKNOWN_STDERR = (
+    'Unknown command: "eslint"\n'
+    "To see a list of supported npm commands, run:\n  npm help\n"
+)
+NPX_NO_EXECUTABLE_STDERR = "npm error could not determine executable to run\n"
+
+
+def _fake_npx(tmp_path: Path, stderr: str) -> dict:
+    """`npx` on PATH and no `eslint` — the common laptop.
+
+    The bin dir is the *whole* PATH, so `shutil.which("eslint")` genuinely
+    fails and the adapter takes its documented npx fallback.
+    """
+    bindir = tmp_path / "npxbin"
+    bindir.mkdir(exist_ok=True)
+    script = bindir / "fake_npx.py"
+    script.write_text(
+        "import sys\n"
+        f"sys.stderr.write({stderr!r})\n"
+        "sys.exit(1)\n", encoding="utf-8")
+    launcher = bindir / "npx"
+    launcher.write_text(
+        "#!/bin/sh\n"
+        f"exec '{sys.executable}' '{script}' \"$@\"\n", encoding="utf-8")
+    launcher.chmod(0o755)
+    env = empty_path_env()
+    env["PATH"] = str(bindir)
+    return env
+
+
+@posix_only
+@pytest.mark.parametrize("stderr", [NPX_UNKNOWN_STDERR,
+                                    NPX_NO_EXECUTABLE_STDERR],
+                         ids=["npm11", "npm8"])
+def test_npx_without_eslint_is_an_absent_eslint_not_a_failed_one(
+        tmp_path: Path, stderr: str) -> None:
+    """Case 1 of this module's docstring, on the machine it happens on.
+
+    `shutil.which("eslint")` is false and `shutil.which("npx")` is true on
+    every laptop with node — so `_resolve_cmd` returns the npx fallback,
+    `base` is truthy, and the INSTALL_HINT branch is never reached. npx then
+    exits 1 with empty stdout, misses `_NO_CONFIG`, and lands on
+    `_adapter_error`. The reader is told eslint *failed*, which sends them to
+    debug a linter that is not installed.
+    """
+    out = _run(_js(tmp_path), env=_fake_npx(tmp_path, stderr))
+    assert "skipped" in out, describe(out)
+    assert "npm install" in out["skipped"], out["skipped"]
+
+
+@posix_only
+def test_npx_without_eslint_is_loud_when_required(tmp_path: Path) -> None:
+    """And it escalates like every other absence, naming the variable."""
+    env = _fake_npx(tmp_path, NPX_UNKNOWN_STDERR)
+    env["SUPERTOOL_REQUIRE_VALIDATORS"] = "eslint"
+    out = _run(_js(tmp_path), env=env)
+    assert "skipped" not in out, describe(out)
+    assert_declined(out, context="a required eslint that npx cannot resolve")
+    assert "SUPERTOOL_REQUIRE_VALIDATORS" in out["errors"][0]["msg"]
+    assert "npm install" in out["errors"][0]["msg"], out["errors"][0]["msg"]
+
+
+@posix_only
+def test_a_real_npx_failure_is_still_a_failure(tmp_path: Path) -> None:
+    """The narrow half. npx that fails for any other reason stays loud —
+    swallowing an unknown failure is the mistake pointing the other way."""
+    env = _fake_npx(tmp_path, "npm error code EACCES\nnpm error syscall open\n")
+    out = _run(_js(tmp_path), env=env)
+    assert "skipped" not in out, describe(out)
+    assert_declined(out, context="an npx failure that is not a missing eslint")
+    assert out["errors"][0]["code"] == "adapter", describe(out)
+
+
+# ---------------------------------------------------------------------------
 # Against a real eslint, where there is one
 # ---------------------------------------------------------------------------
 

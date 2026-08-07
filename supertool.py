@@ -108,7 +108,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, MutableMapping, NamedTuple, Optional, Tuple
+from typing import Any, Dict, Iterable, List, MutableMapping, NamedTuple, Optional, Sequence, Tuple
 
 VERSION = "0.25.0"
 
@@ -5148,7 +5148,8 @@ def _branch_line() -> str:
 
 
 def _result_line(ops: int, writes: int, skipped: int = 0,
-                 reapplied: int = 0) -> str:
+                 reapplied: int = 0,
+                 not_checked: Optional[Sequence[str]] = None) -> str:
     """`[result] N ops run, M writes[, K skipped][, K re-applied]` footer (#621).
 
     The receipt a mutating op prints sits ABOVE the `[validators]` block, and a
@@ -5197,6 +5198,16 @@ def _result_line(ops: int, writes: int, skipped: int = 0,
     stops on a half-applied batch; a re-apply is a legitimate outcome (appending
     a second repeated element has exactly this shape), so it discloses and exits
     0. Refusing would be guessing at intent, which is the line #680 drew too.
+
+    `not_checked` names a fifth state, and it IS a failure (#665). It is about
+    the checkers rather than the op: the edit landed, and a validator the
+    operator named in `$SUPERTOOL_REQUIRE_VALIDATORS` produced no verdict about
+    the file. Before this, that case reached the reader as
+    `1 err  (pre-existing — not from this edit)` in the block above and as
+    `1 op run, 1 write` here, and exited 0 — so the one knob that exists to
+    stop "the gate is not running" from reading as a pass read as a pass. The
+    validators are named on the line rather than counted, because the line has
+    to be actionable on its own for `| tail -1` to be the documented read.
     """
     if ops <= 0:
         return ""
@@ -5206,12 +5217,22 @@ def _result_line(ops: int, writes: int, skipped: int = 0,
         line += f", {skipped} skipped"
     if reapplied > 0:
         line += f", {reapplied} re-applied"
+    names = list(dict.fromkeys(not_checked or ()))
+    if names:
+        line += (f", {len(names)} validator{'' if len(names) == 1 else 's'} "
+                 f"NOT RUN ({', '.join(names)})")
+    tails = []
     if writes == 0:
         # A rolled-back write is not a second application of anything, so this
         # clause wins: the bytes complained about are no longer on disk.
-        line += " — nothing changed on disk"
+        tails.append("nothing changed on disk")
     elif reapplied > 0:
-        line += " — an edit already present in the file was applied again"
+        tails.append("an edit already present in the file was applied again")
+    if names:
+        tails.append("those validators returned no verdict, so the file was "
+                     "NOT checked")
+    if tails:
+        line += " — " + "; ".join(tails)
     return line + "\n"
 
 
@@ -5340,6 +5361,19 @@ _SKIP_COUNT: List[int] = [0]
 # disclosure. The `writes == 0` clause in `_result_line` covers that case
 # honestly instead — "nothing changed on disk" is the stronger statement.
 _REAPPLY_COUNT: List[int] = [0]
+
+# Validators that ran and returned no verdict about the file (#665). The state
+# `skipped` covers a checker that declined before running; this covers one that
+# was asked to run, could not, and had only an `adapter` error to say so with.
+#
+# Names, not a count, because the reader's next action is installing a tool:
+# `2 validators NOT RUN` alone sends them back up to the block this footer
+# exists to save them from re-reading.
+#
+# Appended where the result is rendered, and read as a per-call slice — the
+# warm daemon reuses the process, so an absolute read would let one ungated
+# edit poison the exit code of every later call in the same worker (#680).
+_NOT_CHECKED: List[str] = []
 
 
 def _drop_write_warnings(path: str) -> None:
@@ -12374,7 +12408,15 @@ def _flat_cell(value: Any, limit: Optional[int] = None) -> str:
     the second copy of a rule this docstring is about.
     """
     text = _flat_field(str(value)).strip()
-    return text[:limit] if limit else text
+    if limit and len(text) > limit:
+        # A cut with no marker is indistinguishable from a string that ended
+        # there — and the fields routed through here include the `skipped`
+        # reason and the `adapter` message, whose entire job is to disclose why
+        # nothing was checked. `apt install shellche)` and ``(`brew instal)``
+        # both shipped, reading as complete sentences. The marker stays inside
+        # `limit`, so no column widens.
+        return text[:max(limit - 1, 0)] + "…"
+    return text
 
 
 def _validator_render_row(data: Dict[str, Any], verbose: bool = False) -> list:
@@ -12400,7 +12442,9 @@ def _validator_render_row(data: Dict[str, Any], verbose: bool = False) -> list:
     ok = data.get("ok", False)
     count = data.get("count", 0)
     dur = data.get("duration_ms", 0)
-    status = "ok" if ok else f"{count} err"
+    # `1 err` about a file the adapter never opened reads as a measurement.
+    status = ("NOT CHECKED" if _validator_not_checked(data) is not None
+              else ("ok" if ok else f"{count} err"))
     line = f"{tool:12s}: {status:<10}  ({dur}ms)"
     metrics = data.get("metrics")
     if metrics and tool == "git-status":
@@ -12443,6 +12487,57 @@ def _validator_render_row(data: Dict[str, Any], verbose: bool = False) -> list:
     return out
 
 
+def _validator_not_checked(after: Optional[Dict[str, Any]]) -> Optional[str]:
+    """The adapter answered and said nothing about the file. Its reason, or None.
+
+    `skipped` is the third state for a checker that declined *before* running.
+    This is its twin for one that was asked to run, could not, and had only the
+    channel SCHEMA.md gives it to say so with — an error whose `code` is
+    `adapter`. Both are absences of information. Neither is a finding.
+
+    The distinction has to exist here because everything downstream of a result
+    treats an error as a measurement of the file, and the loudest consumer is
+    arithmetic. `_validator_render_diff` subtracts the pre-edit count from the
+    post-edit one, and `refusal.required()` emits this same error on BOTH
+    passes when the tool is absent — so the counts cancel and the row rendered
+    `1 err  (pre-existing — not from this edit)`: a sentence asserting a real
+    finding predated the edit, printed about a file nothing opened, above a
+    `[result]` line reading `1 op run, 1 write` and an exit code of 0. That is
+    the absence-read-as-a-pass the third state exists to end, arriving inside
+    the mechanism built to end it.
+
+    The test is `code == "adapter"` on **every** error, not on the first: an
+    adapter reporting four real findings plus one adapter row has still
+    measured the file, and hiding that would be this defect pointing the other
+    way. `orchestrator` codes — the core's own timeout — are deliberately not
+    included; those are already rendered as `(timeout)` and are the core's
+    statement, not the adapter's.
+    """
+    if not isinstance(after, dict) or "skipped" in after:
+        return None
+    if after.get("ok", False):
+        return None
+    errors = after.get("errors") or []
+    if not errors:
+        return None
+    if not all((e.get("code") or "") == "adapter" for e in errors):
+        return None
+    return _flat_cell(errors[0].get("msg") or "", 300) or "no reason given"
+
+
+def _note_not_checked(results: Dict[str, Any]) -> None:
+    """Record every validator in `results` that returned no verdict.
+
+    Called from the render sites, not from `_validator_run_one`: the baseline
+    pass runs the same adapters before the edit and produces the same
+    non-verdicts, and counting those would double every row. Rendered and
+    recorded are the same set by construction this way.
+    """
+    for name, data in results.items():
+        if _validator_not_checked(data) is not None:
+            _NOT_CHECKED.append(name)
+
+
 def _validator_regressed(before: Optional[Dict[str, Any]], after: Dict[str, Any]) -> bool:
     """Did this op make this validator worse? The single definition of ✗ (#406).
 
@@ -12481,6 +12576,15 @@ def _validator_render_diff(before: Optional[Dict[str, Any]], after: Dict[str, An
         return [f"{_flat_cell(after['tool']):12s}: {'skipped':<10}  "
                 f"{state_col}  {time_col:>5}"]
     tool = _flat_cell(after["tool"])
+    not_checked = _validator_not_checked(after)
+    if not_checked is not None:
+        # Never diffed. An adapter error is not a finding about the file, so
+        # subtracting one from another is arithmetic over two non-answers — and
+        # the label it produced, `pre-existing`, is a claim about the file that
+        # nothing measured. The status column says the only true thing instead.
+        return [f"{tool:12s}: {'NOT CHECKED':<10}  "
+                f"{'(no verdict about this file)'}  {time_col:>5}",
+                f"     adapter  {not_checked}"]
     b_count = before.get("count", 0) if before else 0
     a_count = after.get("count", 0)
     delta = a_count - b_count
@@ -12908,6 +13012,7 @@ def _drain_validator_queue() -> str:
         data = _validator_run_one(name, spec, path)
         if data is None:
             continue
+        _note_not_checked({name: data})
         path_rows = _validator_render_diff(None, data)
         if path_rows:
             by_path.setdefault(path, []).extend(path_rows)
@@ -13249,6 +13354,7 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
     _doc_maybe_stale = _pre_existed and not _new_file_servers
     after_results = (_validators_run_batch(applicable, path, _doc_maybe_stale)
                      if applicable else {})
+    _note_not_checked(after_results)
     diff_lines: list = []
     for name in applicable:  # stable order from config
         if name in after_results:
@@ -13385,6 +13491,7 @@ def _validate_one_block(path: str, validators: dict, verbose: bool = False) -> L
         data = _validator_run_one(name, spec, path)
         if data is None:
             continue
+        _note_not_checked({name: data})
         out.extend(_validator_render_row(data, verbose=verbose))
     return out
 
@@ -15698,6 +15805,7 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
     _attempts_before = _MUTATION_ATTEMPTS[0]
     _skips_before = _SKIP_COUNT[0]
     _reapplies_before = _REAPPLY_COUNT[0]
+    _not_checked_before = len(_NOT_CHECKED)
 
     # #146: dispatch-level path containment. Each op has a known position(s)
     # of its path arg(s) in `parts`. _safe_path enforces cwd containment
@@ -16254,7 +16362,8 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
             body += _result_line(_MUTATION_ATTEMPTS[0] - _attempts_before,
                                  _WRITE_COUNT[0] - _writes_before,
                                  _SKIP_COUNT[0] - _skips_before,
-                                 _REAPPLY_COUNT[0] - _reapplies_before)
+                                 _REAPPLY_COUNT[0] - _reapplies_before,
+                                 _NOT_CHECKED[_not_checked_before:])
             body += _branch_line()
 
     return header + body
@@ -17288,6 +17397,7 @@ def _main(argv: List[str]) -> int:
     # one declined op in an early call poison the exit code of every later call
     # in the same worker (#680).
     _skips_at_entry = _SKIP_COUNT[0]
+    _not_checked_at_entry = len(_NOT_CHECKED)
 
     # Optional parallel execution — opt-in, only when every op is read-only.
     # Custom ops are excluded (could mutate via shell). Mixed batches stay
@@ -17350,6 +17460,20 @@ def _main(argv: List[str]) -> int:
     # counter is the authority here precisely because it does not read prose.
     if _SKIP_COUNT[0] > _skips_at_entry:
         any_failure = True
+
+    # A validator the operator required, that could not run, is a failure of
+    # the same kind (#665): the op wrote and the gate did not run. Setting
+    # $SUPERTOOL_REQUIRE_VALIDATORS is the operator stating that these checkers
+    # must be present *here*, so a missing one is a configuration fault to fix,
+    # not a local inconvenience to absorb — and unset, nothing reaches this at
+    # all, because an absent tool is then the honest `skipped` it always was.
+    # Deliberately an exit code and not a refusal: the edit still lands and is
+    # still rolled back on exactly the conditions it was before. Turning "we
+    # could not check" into "we will not work" trades the quiet bug for a
+    # louder one rather than fixing it.
+    if len(_NOT_CHECKED) > _not_checked_at_entry:
+        any_failure = True
+    del _NOT_CHECKED[_not_checked_at_entry:]
 
     log_call(argv, total_out_bytes)
     return 1 if any_failure else 0

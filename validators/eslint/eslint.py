@@ -8,7 +8,15 @@ unreachable code, shadowed declarations or accidental globals.
 
 **Three absences, and each one arrives looking like a clean file.**
 
-1. *eslint not installed.* `skipped`, with the install hint.
+1. *eslint not installed.* `skipped`, with the install hint. On the machine
+   this actually happens on — a laptop with node — `shutil.which("eslint")` is
+   false and `shutil.which("npx")` is true, so the fallback below resolves and
+   the install-hint branch is never reached at all. npx then exits **1 with
+   empty stdout** and `Unknown command: "eslint"` (npm 11) or `could not
+   determine executable to run` (npm 8-10) on stderr, which is neither a
+   config problem nor a finding, and landed on `_adapter_error`: the reader
+   was told eslint *failed* and sent to debug a linter that is not installed.
+   `_NPX_ABSENT` catches exactly those two, and only on the npx route.
 2. *eslint installed, no resolvable config.* eslint exits **2 with empty
    stdout** and puts "couldn't find an eslint.config.(js|mjs|cjs) file" on
    stderr. An adapter that only counts findings publishes `ok: true,
@@ -71,6 +79,16 @@ _NO_CONFIG = (
     "couldn't find an eslint.config",
     "couldn't find a configuration file",
     "no eslint configuration found",
+)
+
+#: How npx says the package is not installed and `--no-install` forbids
+#: fetching it. Consulted only when the npx fallback was the route taken, and
+#: deliberately narrow: any other npx failure stays a loud fault, because
+#: swallowing an unknown failure is the same category mistake pointing the
+#: other way. Both spellings are live — npm 11 rewrote the message.
+_NPX_ABSENT = (
+    "could not determine executable to run",
+    'unknown command: "eslint"',
 )
 
 #: How eslint says it declined to lint a file it was handed. `ruleId` is null,
@@ -161,6 +179,7 @@ def main() -> None:
     if not base:
         _decline(file, INSTALL_HINT, int((time.time() - start) * 1000))
         return
+    via_npx = base[0] != TOOL
 
     try:
         r = subprocess.run(base + ["-f", "json", file], capture_output=True,
@@ -182,6 +201,12 @@ def main() -> None:
 
     if not body:
         lowered = stderr.lower()
+        if via_npx and any(p in lowered for p in _NPX_ABSENT):
+            # An absent eslint, reached one layer further out. The same third
+            # state as `not base`, with the same hint — the reader's next
+            # action is `npm install`, not reading an npx traceback.
+            _decline(file, INSTALL_HINT, dur)
+            return
         if any(p in lowered for p in _NO_CONFIG):
             _decline(file,
                      "eslint found no resolvable configuration "
