@@ -12,8 +12,8 @@
     "gh-issues": {
       "cmd": "{python} {path}github/issues.py {args}",
       "timeout": 90,
-      "description": "Issue triage board: list issues (no default author filter — the queue, not mine), ranked unrankable → external author → stale body → no linked PR → oldest. Per issue: linked-PR state from the timeline, external-filer marker from GitHub's authorAssociation, age, comment count, labels, stale-body flag (newest comment newer than lastEditedAt, or createdAt when the body was never edited). Enrichment is one GraphQL call per 20 issues; when it fails the derived fields render '?' and the footer names why — never 0, never 'internal', never 'no PR'. Filters (comma-sep): author/assignee/label/milestone/state. Flags: nopipe (skip enrichment), iids, external, stale.",
-      "syntax": "gh-issues[:author=@me,label=bug,state=open,external,stale,nopipe,iids]",
+      "description": "Issue triage board: list issues (no default author filter — the queue, not mine), ranked unrankable → external author → stale body → no linked PR → oldest. Per issue: linked-PR state from the timeline, external-filer marker from GitHub's authorAssociation, age, comment count, labels, stale-body flag (newest comment newer than lastEditedAt, or createdAt when the body was never edited), and the milestone as '[m:TITLE]' — no column, so a row without one costs nothing and '[m:?]' means gh did not answer rather than 'none'. Enrichment is one GraphQL call per 20 issues; when it fails the derived fields render '?' and the footer names why — never 0, never 'internal', never 'no PR'. An unrecognised token or filter key is REFUSED, never dropped: an unnarrowed board printed for a filter nobody applied reads as the answer to the question you asked. Filters (comma-sep): author/assignee/label/milestone/state/per. Flags: nopipe (skip enrichment), iids, external, stale, nomilestone (client-side, so it declines outright if any row's milestone is unknown; the --limit disclosure is measured against the fetch, not against what survived the filter).",
+      "syntax": "gh-issues[:author=@me,label=bug,milestone=v1.0,state=open,external,stale,nomilestone,nopipe,iids]",
       "repo_target": true,
       "per_page": 50
     },
@@ -27,9 +27,9 @@
     },
     "gh-pr": {
       "cmd": "{python} {path}github/pr.py {args}",
-      "timeout": 20,
-      "description": "Review a pull request: branch, checks, reviews/approval, linked issue, diff stat, comments — the full dashboard. A truncated description says so twice — in the header and at the cut — with the exact char count withheld; :full uncaps it. :status = slim merge-state only (~250B, fits hook cache).",
-      "syntax": "gh-pr:NUMBER_OR_BRANCH[:status|:full]",
+      "timeout": 90,
+      "description": "Review a pull request: branch, checks, reviews/approval, linked issue, diff stat, comments — the full dashboard. A truncated description says so twice — in the header and at the cut — with the exact char count withheld; :full uncaps it. :status = slim merge-state only (~250B, fits hook cache). :diff is the merge gate's own read, in the shape a reviewer walks rather than the whole patch: the file list with per-file +/-, heaviest first, with '[same edit xN]' noting a file whose every hunk is the identical change — a note, never a filter. :diff:PATH is that one file's hunks, fenced. A diff that could not be fetched says so and exits 1 instead of rendering an empty file list; a PATH not in the diff declines and names the paths that are; both caps (GH_PR_DIFF_MAX_FILES, default 60; GH_PR_DIFF_MAX_BYTES, default 65536) disclose exactly what they withheld. Honours repo:OWNER/NAME, which raw `gh pr diff` from the wrong directory does not.",
+      "syntax": "gh-pr:NUMBER_OR_BRANCH[:status|:full|:diff[:PATH]]",
       "repo_target": true
     },
     "gh-prs": {

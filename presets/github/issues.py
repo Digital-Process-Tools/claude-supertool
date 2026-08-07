@@ -78,7 +78,15 @@ CHUNK = 20
 REASON_NOPIPE = "skipped by nopipe"
 
 # Tokens that are flags, not key=value filters.
-_FLAGS = {"nopipe", "iids", "external", "stale"}
+_FLAGS = {"nopipe", "iids", "external", "stale", "nomilestone"}
+
+# Filter keys this op forwards. Anything else is refused rather than dropped:
+# `_build_list_cmd` ignores a key it does not know, so `milestne=v0.26.0` used
+# to render the entire queue as the contents of one milestone (#864). A filter
+# nobody applied, printed as a filtered board, is this file's own defect class
+# with the sign flipped — the tool's failure to narrow, read as a fact about
+# the world.
+_FILTER_KEYS = {"author", "assignee", "label", "milestone", "state", "per"}
 
 _STATES = {"open", "closed", "all"}
 
@@ -102,23 +110,47 @@ def _get_config() -> dict[str, int]:
     }
 
 
-def _parse_args(arg_str: str) -> tuple[dict[str, str], set[str]]:
-    """Split a comma-separated arg string into (filters, flags).
+def _parse_args(arg_str: str) -> tuple[dict[str, str], set[str], list[str]]:
+    """Split a comma-separated arg string into (filters, flags, unrecognised).
 
     Same grammar as `gh-prs` — comma-separated so the single supertool arg
     segment never collides with the ':' op tokenizer.
+
+    The third return value is the part that matters. The loop used to end with
+    an implicit `else: pass`, so a token that was neither a known flag nor a
+    supported `key=value` vanished and the call proceeded as though nobody had
+    asked for anything. On a *filter* that is not a cosmetic bug: the caller
+    asked a narrowing question and got the unnarrowed board back, with no
+    marker anywhere in the render saying the narrowing never happened.
     """
     filters: dict[str, str] = {}
     flags: set[str] = set()
+    unknown: list[str] = []
     for tok in (t.strip() for t in arg_str.split(",")):
         if not tok:
             continue
         if "=" in tok:
             key, _, val = tok.partition("=")
-            filters[key.strip()] = val.strip()
+            if key.strip() in _FILTER_KEYS:
+                filters[key.strip()] = val.strip()
+            else:
+                unknown.append(tok)
         elif tok in _FLAGS:
             flags.add(tok)
-    return filters, flags
+        else:
+            unknown.append(tok)
+    return filters, flags, unknown
+
+
+def _unknown_error(unknown: list[str]) -> str:
+    """Name every token that was not applied, and what would have been."""
+    return (
+        "ERROR: unrecognised token(s): " + ", ".join(repr(t) for t in unknown)
+        + ". Nothing was filtered by them, so the board is NOT the answer to "
+          "the question you asked — refusing rather than printing it. "
+          "Filters: " + ", ".join(sorted(_FILTER_KEYS))
+        + ". Flags: " + ", ".join(sorted(_FLAGS)) + "."
+    )
 
 
 def _build_list_cmd(filters: dict[str, str], per_page: int) -> list[str]:
@@ -177,6 +209,28 @@ def _is_stale(newest_comment: object, created_at: object,
     if not body_written:
         return None
     return str(newest_comment) > str(body_written)
+
+
+def _milestone_of(row: dict) -> str | None:
+    """The row's milestone title, `''` for none, `None` for nobody could say.
+
+    Three states, on a list field rather than an enriched one, so it is never
+    unknown by choice. `gh issue list --json milestone` returns `null` for an
+    unmilestoned issue and the key is always present — so an absent key means
+    the field did not come back, and a dict with no usable title means gh
+    answered with something this op cannot read. Both of those are unknown;
+    only an explicit null is "this issue has no milestone".
+    """
+    if "milestone" not in row:
+        return None
+    value = row["milestone"]
+    if value is None:
+        return ""
+    if isinstance(value, dict):
+        title = str(value.get("title") or "").strip()
+        return title or None
+    title = str(value).strip()
+    return title or None
 
 
 def _is_unknown(row: dict) -> bool:
@@ -416,13 +470,26 @@ def _labels_cell(row: dict) -> str:
 
 
 def _flags(row: dict) -> str:
-    """`[stale]` when the body was overtaken, `[stale?]` when nobody could say."""
+    """`[stale]` when the body was overtaken, `[stale?]` when nobody could say.
+
+    The milestone rides here rather than in a column of its own. A column costs
+    its width on every row of every board, and most issues on most repos carry
+    no milestone — so the honest split is: nothing at all when there is none,
+    `[m:TITLE]` when there is, and `[m:?]` when gh did not answer. A blank cell
+    would have made the third case indistinguishable from the second.
+    """
+    out = ""
     stale = row.get("_stale")
     if stale is True:
-        return " [stale]"
-    if stale is None:
-        return " [stale?]"
-    return ""
+        out += " [stale]"
+    elif stale is None:
+        out += " [stale?]"
+    milestone = _milestone_of(row)
+    if milestone is None:
+        out += " [m:?]"
+    elif milestone:
+        out += f" [m:{_untrusted.flat(milestone)}]"
+    return out
 
 
 def _age(iso: str) -> str:
@@ -500,7 +567,8 @@ def _render_table(rows: list[dict]) -> str:
     return "\n".join(_row(r) for r in _sorted(rows))
 
 
-def _footer(rows: list[dict], reason: str | None, per_page: int | None = None) -> str:
+def _footer(rows: list[dict], reason: str | None, per_page: int | None = None,
+            fetched: int | None = None) -> str:
     """Counts when they are earned; a named absence when they are not.
 
     Counting `_external is True` across rows that were never enriched yields
@@ -519,7 +587,13 @@ def _footer(rows: list[dict], reason: str | None, per_page: int | None = None) -
     unknown = [r for r in rows if _is_unknown(r)]
     known = [r for r in rows if not _is_unknown(r)]
     parts = [f"{len(rows)} issue(s)"]
-    if per_page is not None and len(rows) >= per_page:
+    # The cap is a fact about the *fetch*, so it is measured against what came
+    # back, not against what survived. Measured post-filter, three rows dropped
+    # by `external`/`stale`/`nomilestone` take the count under the limit and
+    # the "more may exist" line disappears — from exactly the queries that are
+    # asking for completeness (#864).
+    against = len(rows) if fetched is None else fetched
+    if per_page is not None and against >= per_page:
         parts.append(f"capped at --limit {per_page} — more may exist, raise with per=N")
     if unknown:
         parts.append(
@@ -554,7 +628,10 @@ def _decline(flag: str, field: str, reason: str | None) -> str:
 
 
 def main_with_args(arg_str: str) -> int:
-    filters, flags = _parse_args(arg_str)
+    filters, flags, unknown_tokens = _parse_args(arg_str)
+    if unknown_tokens:
+        print(_unknown_error(unknown_tokens), file=sys.stderr)
+        return 1
     cfg = _get_config()
     per_page = cfg["per_page"]
     if "per" in filters and filters["per"].isdigit():
@@ -590,6 +667,9 @@ def main_with_args(arg_str: str) -> int:
         rows = []
 
     _annotate(rows)
+    # What the fetch returned, kept before any client-side filter narrows it —
+    # the --limit disclosure is a statement about this number.
+    fetched = len(rows)
 
     # Bare number list — no enrichment needed, so none is paid for.
     if "iids" in flags:
@@ -621,6 +701,17 @@ def main_with_args(arg_str: str) -> int:
             print(_decline("stale", "body-edit time", reason), file=sys.stderr)
             return 1
         rows = [r for r in rows if r.get("_stale")]
+    if "nomilestone" in flags:
+        # `gh issue list` can name a milestone; it cannot ask for the absence
+        # of one, so this filter is client-side. Which means a row whose
+        # milestone did not come back cannot be placed: filtering it in reports
+        # a scheduled issue as unscheduled, filtering it out drops the exact
+        # kind of gap the query exists to find. Neither is reportable, so the
+        # op declines.
+        if any(_milestone_of(r) is None for r in rows):
+            print(_decline("nomilestone", "milestone", reason), file=sys.stderr)
+            return 1
+        rows = [r for r in rows if not _milestone_of(r)]
 
     # `flat_note` rather than `banner()` (#819). This render fences nothing —
     # titles and labels are one-line fields and are flattened — so the banner
@@ -630,7 +721,7 @@ def main_with_args(arg_str: str) -> int:
     if rows:
         print(_untrusted.flat_note("issue titles and labels"))
     print(_render_table(rows))
-    footer = _footer(rows, reason, per_page)
+    footer = _footer(rows, reason, per_page, fetched)
     if footer:
         print(f"\n{footer}")
     return 0
