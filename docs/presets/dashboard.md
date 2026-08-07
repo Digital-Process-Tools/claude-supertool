@@ -1,6 +1,6 @@
-# tick — "what do I do next", in one read-only call
+# dashboard — "what do I do next", in one read-only call
 
-`tick` is the join. Four reads used to answer the maintainer's standing question
+`dashboard` is the join. Four reads used to answer the maintainer's standing question
 and none of them answered it:
 
 ```bash
@@ -16,7 +16,7 @@ lanes are free**. That join was performed by hand, six times in one session,
 which is what filed [#953].
 
 ```
-supertool 'tick'
+supertool 'dashboard'
 ```
 
 Takes no arguments. Reads only. Ends on a one-line `[result]` that survives
@@ -25,7 +25,7 @@ Takes no arguments. Reads only. Ends on a one-line `[result]` that survives
 ## What it prints
 
 ```
-# tick — Digital-Process-Tools/claude-supertool
+# dashboard — Digital-Process-Tools/claude-supertool
 
 local
   branch fix/953 @ 4f1c9a2
@@ -54,7 +54,7 @@ lanes
 
 next: 1 PR is ready — review and merge it: gh-pr:947:diff
 
-[result] tick: 1 UNKNOWN, 1 WAITING, 1 MERGE · 1 lanes free, 5 occupied, 1 unknown · 0 sections unread
+[result] dashboard: 1 UNKNOWN, 1 WAITING, 1 MERGE · 1 lanes free, 5 occupied, 1 unknown · 0 sections unread
 ```
 
 ## The verdict column
@@ -130,8 +130,8 @@ whole stray set once at the top rather than repeating it under each lane.
 
 Every section prints whether or not it has data. One that could not be fetched
 renders its heading, `!! unread — <reason>`, and the sentence *"this section is
-missing, not empty"*, and is counted in the `[result]` line. A tick missing its
-board section must not be readable as a tick with an empty board — the
+missing, not empty"*, and is counted in the `[result]` line. A dashboard missing its
+board section must not be readable as a dashboard with an empty board — the
 absence-produced-by-the-tool defect this repository files more than any other.
 
 A section that *rendered* but from inputs that did not all arrive is a third
@@ -151,11 +151,11 @@ Exit code is 0 only when every section was read; 1 when any was not.
 Nothing here spawns, heals, fetches or mutates:
 
 * clone currency is `git ls-remote`, which reads the remote's ref without
-  writing yours — so `tick` is safe to run from a worktree an agent is using,
+  writing yours — so `dashboard` is safe to run from a worktree an agent is using,
   and it never performs half of the fix while answering whether one is needed;
 * every command `next:` can name is a supertool **read** op — `gh-pr:N:diff`,
   `gh-pr:N:status`, `gh-job:N:fail`, `gh-check:N`, `gh-issues:label=…`;
-* `tests/test_tick_953.py` pins that this file names no mutating verb.
+* `tests/test_dashboard_953.py` pins that this file names no mutating verb.
 
 A subsystem whose inspection was fused to its actions once stayed unobservable
 for hours. That is not recreated here.
@@ -168,22 +168,22 @@ workflow, and per open PR a run list plus up to four job lists for the leg
 reconciliation. That is the price of the arithmetic behind `MERGE`, and it is
 paid concurrently.
 
-* `SUPERTOOL_TICK_BUDGET` — wall clock for the network reads, default `90`
+* `SUPERTOOL_DASHBOARD_BUDGET` — wall clock for the network reads, default `90`
   seconds. A section that runs out says so and is counted unread.
-* `SUPERTOOL_TICK_WORKERS` — board fan-out width, default `8`.
+* `SUPERTOOL_DASHBOARD_WORKERS` — board fan-out width, default `8`.
 
 ## GitLab
 
 Out of scope, and deliberately not half-built. `gl-mrs` answers the board half
 for GitLab, but the lane vocabulary and the worktree join are GitHub-shaped
-today, and a `tick` that silently covered three of five sections on GitLab would
+today, and a `dashboard` that silently covered three of five sections on GitLab would
 be the same defect as an omitted section wearing a different hat.
 
 ## Related
 
 `gh-prs` (the board alone) · `gh-branch` (the default branch alone) ·
 `git-worktrees` (occupancy alone, with the full evidence per tree) ·
-`radar`/`watch` (event-driven and continuous; `tick` is pull-based and one-shot).
+`radar`/`watch` (event-driven and continuous; `dashboard` is pull-based and one-shot).
 
 [#953]: https://github.com/Digital-Process-Tools/claude-supertool/issues/953
 [#724]: https://github.com/Digital-Process-Tools/claude-supertool/issues/724

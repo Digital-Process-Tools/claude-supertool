@@ -10,7 +10,7 @@
     "xml",
     "mcp",
     "watch",
-    "tick"
+    "dashboard"
   ],
   "mcp": {
     "py-lsp": {

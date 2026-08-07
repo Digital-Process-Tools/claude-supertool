@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""`tick` — the join behind "what do I do next", in one read-only call (#953).
+"""`dashboard` — the join behind "what do I do next", in one read-only call (#953).
 
 Four calls used to answer this, and none of them answered it. A fetch-then-pull
 says whether the clone is current; `gh run list --branch master` says whether the
@@ -40,15 +40,15 @@ so the three states are carried all the way up:
 
 **Partial failure.** This is several network reads behind one op. A section that
 could not be fetched prints its heading, says `!! unread` with the reason, and is
-counted in the `[result]` line — because a tick missing its board section reads
-exactly like a tick with an empty board, and that misreading is this repository's
+counted in the `[result]` line — because a dashboard missing its board section reads
+exactly like a dashboard with an empty board, and that misreading is this repository's
 most-filed defect.
 
 **Read-only, permanently.** Nothing here spawns, heals, fetches or mutates. The
 clone-currency check is `git ls-remote`, which reads the remote without writing
 the local one; every command `next:` can print is a supertool read op. A
 subsystem whose inspection was fused to its actions once stayed unobservable for
-hours, and `tests/test_tick_953.py` pins that this file names no mutating verb.
+hours, and `tests/test_dashboard_953.py` pins that this file names no mutating verb.
 
 **GitHub only.** There is no GitLab equivalent and none is half-built here: the
 lane vocabulary, `gh-prs` and `git-worktrees`' PR awareness are all GitHub-shaped
@@ -97,9 +97,9 @@ def _sibling(preset: str, name: str, alias: str):
     return mod
 
 
-_gh_pr = _sibling("github", "pr", "tick_gh_pr")
-_gh_branch = _sibling("github", "branch", "tick_gh_branch")
-_worktrees = _sibling("git", "worktrees", "tick_git_worktrees")
+_gh_pr = _sibling("github", "pr", "dashboard_gh_pr")
+_gh_branch = _sibling("github", "branch", "dashboard_gh_branch")
+_worktrees = _sibling("git", "worktrees", "dashboard_git_worktrees")
 
 
 # ── vocabulary ───────────────────────────────────────────────────────────
@@ -416,7 +416,7 @@ def next_action(report: Report) -> str:
 
 def render(report: Report) -> str:
     """Every section prints. `[result]` is always the last line."""
-    out = [f"# tick — {_untrusted.flat(str(report.repo))}", ""]
+    out = [f"# dashboard — {_untrusted.flat(str(report.repo))}", ""]
 
     unread = 0
     degraded = 0
@@ -456,7 +456,7 @@ def render(report: Report) -> str:
 
     noun = "section" if unread == 1 else "sections"
     extra = f", {degraded} degraded" if degraded else ""
-    out.append(f"[result] tick: {board or 'no open PRs'} · {lanes} · "
+    out.append(f"[result] dashboard: {board or 'no open PRs'} · {lanes} · "
                f"{unread} {noun} unread{extra}")
     return "\n".join(out)
 
@@ -859,12 +859,12 @@ def build_report(budget: int, workers: int) -> Report:
 def main() -> int:
     args = [a for a in sys.argv[1:] if a]
     if args:
-        print(f"ERROR: refused — tick takes no arguments, got {args[0]!r}")
-        print("  usage: tick   (read-only; no repo target, GitHub only)")
+        print(f"ERROR: refused — dashboard takes no arguments, got {args[0]!r}")
+        print("  usage: dashboard   (read-only; no repo target, GitHub only)")
         return 2
 
-    budget = _env_int("SUPERTOOL_TICK_BUDGET", BUDGET_DEFAULT)
-    workers = _env_int("SUPERTOOL_TICK_WORKERS", WORKERS_DEFAULT)
+    budget = _env_int("SUPERTOOL_DASHBOARD_BUDGET", BUDGET_DEFAULT)
+    workers = _env_int("SUPERTOOL_DASHBOARD_WORKERS", WORKERS_DEFAULT)
     report = build_report(budget, workers)
     print(render(report))
     return 0 if not any(s.unread for s in report.sections.values()) else 1
