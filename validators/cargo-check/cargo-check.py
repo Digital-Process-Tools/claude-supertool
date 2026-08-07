@@ -21,6 +21,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Callable
 import pathlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
@@ -44,7 +45,47 @@ def _find_crate_root(file: str) -> Path | None:
         p = parent
 
 
-def _same_file(src_file: str, target: Path) -> bool:
+def _canon(path: object, normcase: Callable[[str], str] | None = None) -> str:
+    """A path in one comparable form: folded for case, separated by `/` (#754).
+
+    **The separator is normalised after the fold, never before.**
+    `os.path.normcase` is the only stdlib call that knows whether this platform
+    is case-insensitive, and on Windows it does a second thing its name does not
+    advertise: it rewrites every `/` into `\\`. The first version of this fix
+    replaced separators and then folded, so on Windows both sides came back
+    backslash-separated while the suffix rule below still looked for a `/`
+    boundary - no diagnostic could match its own file, every finding was demoted
+    to a non-verdict, and three CI legs went red on the exact regression this
+    module exists to prevent.
+
+    `normcase` is injectable for the reason `refusal.daemon_transport_reason`
+    takes `has_uds`: a platform behaviour asserted only on the platform that has
+    it is asserted only where it was already going to be noticed. Passing
+    `ntpath.normcase` reproduces Windows semantics on every runner.
+
+    Backslashes are folded to `/` on POSIX too, where a backslash is a legal
+    filename character. That is deliberate: cargo never emits one as a
+    separator, and a rule that behaves differently per platform is a rule no
+    test can pin from one platform.
+    """
+    fold = normcase or os.path.normcase
+    return fold(str(path)).replace("\\", "/")
+
+
+def _tail_match(a: str, b: str) -> bool:
+    """Do two canonical paths name the same file, one possibly a tail of the
+    other? Symmetric, because either side may be the relative one: cargo prints
+    a relative path for a workspace member and an absolute one elsewhere, and
+    the adapter is handed whatever the caller typed.
+
+    The boundary is a separator, never a substring: `src/xmain.rs` ends with the
+    characters of `main.rs` and is a different file.
+    """
+    return a == b or a.endswith("/" + b) or b.endswith("/" + a)
+
+
+def _same_file(src_file: str, target: Path, target_raw: str = "",
+               normcase: Callable[[str], str] | None = None) -> bool:
     """Is the path cargo printed the file the adapter was asked about? (#754)
 
     A **path-suffix match on segment boundaries**, deliberately not a join
@@ -57,22 +98,34 @@ def _same_file(src_file: str, target: Path) -> bool:
     and the quieter of the two.
 
     A suffix match needs no base and touches no disk, so it holds for a
-    crate-relative path, a workspace-relative one and an absolute one alike. The
-    boundary is a separator: `src/xmain.rs` ends with the characters of
-    `main.rs` and is a different file.
+    crate-relative path, a workspace-relative one and an absolute one alike.
+
+    **Nothing here rests on two `resolve()` calls agreeing character for
+    character**, which is why `target_raw` is compared alongside the resolved
+    `target`. `os.path.abspath` and `Path.resolve()` are not the same function
+    on Windows: `abspath` joins onto the working directory, while `resolve()`
+    goes through `_getfinalpathname` and returns the canonical on-disk spelling
+    of whatever prefix exists, following `subst` and symlinked drives on the
+    way. Comparing an absolute diagnostic path against only the resolved target
+    made the answer depend on that difference; comparing against both forms
+    under one suffix rule does not.
     """
-    src = (src_file or "").strip().replace("\\", "/")
+    src = (src_file or "").strip()
     if not src:
         return False
-    if os.path.isabs(src_file):
+
+    src_forms = {posixpath.normpath(_canon(src, normcase))}
+    if os.path.isabs(src):
         try:
-            return (os.path.normcase(str(Path(src_file).resolve()))
-                    == os.path.normcase(str(target)))
+            src_forms.add(_canon(Path(src).resolve(), normcase))
         except OSError:
-            return False
-    src = os.path.normcase(posixpath.normpath(src))
-    tgt = os.path.normcase(target.as_posix())
-    return tgt == src or tgt.endswith("/" + src)
+            pass
+
+    tgt_forms = {_canon(target, normcase)}
+    if target_raw:
+        tgt_forms.add(posixpath.normpath(_canon(target_raw, normcase)))
+
+    return any(_tail_match(s, t) for s in src_forms for t in tgt_forms)
 
 
 def _elsewhere_in_crate(src_file: str, ln: int, col: int, code: str, msg: str) -> str:
@@ -118,7 +171,7 @@ def _parse_errors(output: str, target_file: str) -> list[dict]:
             col = int(m.group(3))
             code = m.group(5) or "compile"
             msg = m.group(6).strip()[:300]
-            if _same_file(src_file, target):
+            if _same_file(src_file, target, target_file):
                 # Context is read from the target the adapter was handed, never
                 # from a path rebuilt out of cargo's output. The old code passed
                 # `src_file` straight through, so a crate-relative path was

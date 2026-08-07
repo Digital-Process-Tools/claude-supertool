@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import ntpath
 import os
 import shutil
 import subprocess
@@ -202,6 +203,68 @@ def test_source_context_is_read_from_the_target_not_from_the_cwd(tmp_path: Path)
     assert err["source_context"], "no context was rendered for a readable target"
     assert any("nope();" in line and "→" in line for line in err["source_context"]), \
         f"context is not centred on the error line: {err['source_context']!r}"
+
+
+# --- the same rule under Windows path semantics, on every platform ---------
+#
+# `os.path.normcase` is the only stdlib call that knows whether a platform folds
+# case, and on Windows it also rewrites a forward slash into a backslash. The
+# first version of this fix normalised the separator and then called `normcase`,
+# which un-normalised it, while the suffix rule still tested for a `/` boundary
+# - so on Windows no diagnostic ever matched its own file and every finding was
+# demoted to a non-verdict. Three CI legs went red and nothing here could have
+# caught it, because the fold belongs to the platform.
+#
+# So the fold is injectable, the way `refusal.daemon_transport_reason` takes
+# `has_uds`: the contract is asserted on every platform rather than only on the
+# runners that happen to have the behaviour. `ntpath.normcase` is the real
+# Windows implementation, imported and called directly.
+
+WIN_TARGET = "D:\\a\\claude-supertool\\claude-supertool\\src\\main.rs"
+
+
+@pytest.mark.parametrize("src", [
+    "src\\main.rs",                    # crate-relative, as Windows cargo prints it
+    "src/main.rs",                     # forward slashes are valid on Windows too
+    WIN_TARGET,                        # absolute, as cargo prints it for some targets
+    "Src\\Main.rs",                    # the fold is a fold: Windows ignores case
+])
+def test_a_windows_path_matches_its_own_file_on_every_platform(src: str) -> None:
+    """The regression that reached CI. Each of these IS the file under
+    validation and has to stay a finding."""
+    assert cargo_check._same_file(src, Path(WIN_TARGET), WIN_TARGET,
+                                  normcase=ntpath.normcase) is True, src
+
+
+@pytest.mark.parametrize("src", [
+    "src\\sibling.rs",
+    "src\\xmain.rs",                   # a character-suffix that is not a segment
+    "D:\\other\\src\\main.rs",
+])
+def test_a_windows_sibling_is_still_not_this_file(src: str) -> None:
+    assert cargo_check._same_file(src, Path(WIN_TARGET), WIN_TARGET,
+                                  normcase=ntpath.normcase) is False, src
+
+
+def test_windows_semantics_end_to_end_keep_the_files_own_finding(monkeypatch) -> None:
+    """`test_validators_tier2.py::test_cargo_check_source_context_on_error` is
+    a pre-existing test and it failed as `assert None is not None` - the file's
+    own error arrived carrying no line at all. This drives the whole parse."""
+    monkeypatch.setattr(cargo_check.os.path, "normcase", ntpath.normcase)
+    err = _only(cargo_check._parse_errors(
+        "src\\main.rs:5:5: error[E0425]: cannot find function `nope` in this scope\n",
+        WIN_TARGET))
+    assert err["code"] == "E0425", f"the file's own error was demoted: {err!r}"
+    assert err["line"] == 5 and err["col"] == 5
+    assert "source_context" in err, f"a finding lost its context key: {err!r}"
+
+
+def test_windows_semantics_end_to_end_still_disown_a_sibling(monkeypatch) -> None:
+    monkeypatch.setattr(cargo_check.os.path, "normcase", ntpath.normcase)
+    err = _only(cargo_check._parse_errors(
+        "src\\sibling.rs:1:29: error[E0308]: mismatched types\n", WIN_TARGET))
+    assert err["code"] == "adapter", f"a sibling was attributed here: {err!r}"
+    assert err["line"] is None
 
 
 def test_warnings_are_still_ignored_wherever_they_come_from() -> None:
