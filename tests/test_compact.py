@@ -37,3 +37,51 @@ def test_compact_disabled_when_grep_filter(tmp_path: Path) -> None:
     supertool._CONFIG = {"compact": True}
     out = supertool.op_read(str(f), grep_filter="comment")
     assert "// comment" in out
+
+
+def test_compact_strips_bang_form_html_comment_close(tmp_path: Path) -> None:
+    """`--!>` closes an HTML comment exactly as `-->` does.
+
+    Verified against Python's spec-compliant `html.parser`: both
+    `<!-- x --!>` and `<!-- x -->` yield one comment token and no stray
+    data. `_COMPACT_SKIP` recognised only the `-->` spelling, so a
+    comment-only line closing a comment the `--!>` way survived
+    compaction while its `-->` twin did not.
+
+    The post-condition is the rendered `read` output, not the regex.
+    """
+    f = tmp_path / "page.html"
+    f.write_text("<div>\n<!--\n  a note\n--!>\n</div>\n")
+    supertool._CONFIG = {"compact": True}
+    out = supertool.op_read(str(f))
+    assert "<div>" in out
+    assert "a note" in out
+    assert "--!>" not in out
+
+
+def test_compact_still_strips_plain_html_comment_close(tmp_path: Path) -> None:
+    """Guard against overshoot: the `-->` spelling keeps working.
+
+    Green before the fix as well as after — it exists to catch a change
+    that widens the branch by breaking the case that already worked.
+    """
+    f = tmp_path / "page.html"
+    f.write_text("<div>\n<!--\n  a note\n-->\n</div>\n")
+    supertool._CONFIG = {"compact": True}
+    out = supertool.op_read(str(f))
+    assert "<div>" in out
+    assert "-->" not in out
+
+
+def test_compact_keeps_lines_that_merely_start_with_dashes(tmp_path: Path) -> None:
+    """`--!?>` must not become "any line opening with two dashes".
+
+    A YAML document marker carries content the reader asked for; only
+    the comment-*close* spellings are droppable.
+    """
+    f = tmp_path / "doc.yml"
+    f.write_text("---\nkey: value\n--- second doc\n")
+    supertool._CONFIG = {"compact": True}
+    out = supertool.op_read(str(f))
+    assert "key: value" in out
+    assert "second doc" in out
