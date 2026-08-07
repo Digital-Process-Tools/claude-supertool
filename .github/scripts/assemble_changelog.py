@@ -18,7 +18,7 @@ Stdlib only, deliberately. `towncrier` and `scriv` both solve this and both are
 dependencies; this repo ships one file and no install step.
 
     python3 .github/scripts/assemble_changelog.py --version 0.24.0
-    python3 .github/scripts/assemble_changelog.py --check     # CI: do all names parse?
+    python3 .github/scripts/assemble_changelog.py --check     # CI: names *and* bodies
     python3 .github/scripts/assemble_changelog.py --count     # exact fragment count
 
 Exit codes: 0 ok, 1 skipped (nothing to do, stated), 2 refused (a finding).
@@ -53,6 +53,44 @@ _IGNORED = {"README.md", ".gitkeep", ".gitignore"}
 _UNRELEASED_LINK_RE = re.compile(
     r"^\[Unreleased\]:\s*(?P<base>\S+?)/compare/v(?P<prev>[0-9][^.\s]*(?:\.[^.\s]+)*)\.\.\.HEAD\s*$"
 )
+
+#: Any link-reference definition, used to find the block of them at the bottom.
+_LINK_REF_RE = re.compile(r"^\[[^\]]+\]:\s*\S")
+
+#: Column 0 belongs to the assembler (#923). A fragment body is inserted into
+#: `CHANGELOG.md` verbatim, so a line here that *is* a heading or a link-ref
+#: definition becomes one in the released file: it reparents every entry below
+#: it, it is what `_anchor()` finds on the next cut, and an `[Unreleased]:` line
+#: lands above the genuine link refs. Nothing downstream — not `_anchor`, not
+#: `_unreleased_span`, not git's merge driver — is fence-aware, so a fenced
+#: block buys no safety and this rule deliberately is not fence-aware either.
+#: Indenting is both the remedy and the fix: an indented line is not a heading
+#: to any of those readers, and indentation is what the fragment format already
+#: asks for — one `- ` bullet plus its indented paragraphs.
+_FORBIDDEN_LINE = (
+    (re.compile(r"^#{1,6}(\s|$)"), "a Markdown heading at column 0"),
+    (re.compile(r"^\[Unreleased\]:"), "an `[Unreleased]:` link reference at column 0"),
+    (re.compile(r"^\[\d+\.\d+\.\d+\]:"), "a release link reference at column 0"),
+)
+
+
+def scan_fragment_body(name: str, text: str) -> List[str]:
+    """Findings for one fragment's content, each naming the file and the line.
+
+    A finding is a line, not a file: "invalid fragment" leaves the author
+    hunting, and the author is the person standing in CI when this fires.
+    """
+    findings: List[str] = []
+    for number, line in enumerate(text.splitlines(), 1):
+        for pattern, what in _FORBIDDEN_LINE:
+            if pattern.match(line):
+                findings.append(
+                    "{0}:{1}: {2} — the assembler owns the headings and the link "
+                    "refs of CHANGELOG.md, and this line would become one of them. "
+                    "Indent it by two spaces to quote it in prose: {3}"
+                    .format(name, number, what, line.strip()[:120]))
+                break
+    return findings
 
 OK, SKIPPED, REFUSED = 0, 1, 2
 
@@ -113,8 +151,13 @@ def collect(directory: Path) -> List[Fragment]:
         except BadFragment as exc:
             findings.append(str(exc))
             continue
-        if not path.read_text(encoding="utf-8").strip():
+        text = path.read_text(encoding="utf-8")
+        if not text.strip():
             findings.append(f"{path.name}: fragment is empty — an entry nobody would ever read")
+            continue
+        body_findings = scan_fragment_body(path.name, text)
+        if body_findings:
+            findings.extend(body_findings)
             continue
         fragments.append(Fragment(frag.issue, frag.section, frag.slug, path))
 
@@ -245,9 +288,38 @@ def _unreleased_span(lines: Sequence[str], anchor: int) -> Tuple[Optional[int], 
     return None, []
 
 
+def _link_ref_block(lines: Sequence[str]) -> Optional[Tuple[int, int]]:
+    """The trailing run of link-reference definitions, inclusive, or None.
+
+    The link refs of a Keep a Changelog document are one block at the bottom.
+    Anything above it that looks like one is prose — a quoted example, a
+    previous bad cut's residue, an entry about link refs — and prose is not
+    where a release writes.
+    """
+    index = len(lines) - 1
+    while index >= 0 and not lines[index].strip():
+        index -= 1
+    end = index
+    while index >= 0 and _LINK_REF_RE.match(lines[index]):
+        index -= 1
+    return (index + 1, end) if index + 1 <= end else None
+
+
 def _rewrite_links(lines: List[str], version: str) -> Optional[str]:
-    """Point `[Unreleased]` at the new tag and add the new version's link ref."""
-    for index, line in enumerate(lines):
+    """Point `[Unreleased]` at the new tag and add the new version's link ref.
+
+    Scoped to the bottom link-ref block (#923): this used to return on its first
+    match anywhere in the file, and fragment bodies land near the top, so one
+    `[Unreleased]: .../compare/v...HEAD` line inside an entry decided the base
+    URL of the tag ref the release shipped — durably, since the line is still
+    there and still matched first on the next cut.
+    """
+    span = _link_ref_block(lines)
+    if span is None:
+        return None
+    start, end = span
+    for index in range(start, end + 1):
+        line = lines[index]
         match = _UNRELEASED_LINK_RE.match(line)
         if not match:
             continue
@@ -382,7 +454,8 @@ def check(directory: Path) -> int:
         _receipt("skipped", "{0}/ holds 0 fragments — nothing to validate"
                  .format(directory.name))
         return OK
-    _receipt("ok", "{0} fragments, all names parse".format(len(fragments)),
+    _receipt("ok", "{0} fragments, all names parse and no body writes at column 0"
+             .format(len(fragments)),
              ["{0}  {1}".format(f.path.name if f.path else "?", f.section) for f in fragments])
     return OK
 
@@ -397,7 +470,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--dry-run", action="store_true", help="report, write nothing")
     parser.add_argument("--keep", action="store_true", help="do not delete consumed fragments")
     parser.add_argument("--check", action="store_true",
-                        help="validate every fragment name; write nothing")
+                        help="validate every fragment name and body; write nothing")
     parser.add_argument("--count", action="store_true",
                         help="print the fragment count as a bare integer, and nothing else")
     args = parser.parse_args(list(argv) if argv is not None else None)
