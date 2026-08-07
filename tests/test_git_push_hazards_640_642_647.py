@@ -616,8 +616,13 @@ def test_watch_spawns_through_supertool_py_when_the_wrapper_is_missing(
         tmp_path, monkeypatch) -> None:
     """The gitignored `./supertool` symlink does not exist in a worktree.
 
-    `python3 supertool.py` does, and it is the working invocation there. Real
-    Popen, real child process, real sentinel — no mock of the spawn.
+    `sys.executable supertool.py` does, and it is the working invocation
+    there. Real Popen, real child process, real sentinel — no mock of the spawn.
+
+    The sentinel is read the moment the spawn answers, with no polling: the
+    spawn does not get to say `started` before the child it started has run
+    (#1010). The wait this used to do was on the file *existing*, which on
+    Windows is true from CreateFile — before a byte of the payload lands.
     """
     root = tmp_path / "root"
     root.mkdir()
@@ -631,11 +636,7 @@ def test_watch_spawns_through_supertool_py_when_the_wrapper_is_missing(
 
     ok, how = push._spawn_watch("gitlab-mr", "42")
 
-    assert ok, how
-    for _ in range(200):
-        if sentinel.exists():
-            break
-        __import__("time").sleep(0.05)
+    assert ok is True, how
     assert sentinel.exists(), "the watcher was reported spawned but never ran"
     assert sentinel.read_text(encoding="utf-8").strip() == "watch:gitlab-mr:42"
 
@@ -687,3 +688,115 @@ def test_watch_spawn_oserror_is_reported_not_claimed_as_started(
 
     assert started is False
     assert "Exec format error" in how
+
+
+def test_the_spawn_returns_only_once_the_child_has_had_its_say(
+        tmp_path, monkeypatch) -> None:
+    """A child that takes its time is the Windows failure, made deterministic.
+
+    On CI the sentinel was created and read before its bytes landed, so the
+    assertion received `''` — indistinguishable from a watcher that ran and
+    found nothing to report (#1010). The delay here reproduces that window on
+    any platform: the spawn is not allowed to answer before the child has.
+    """
+    root = tmp_path / "root"
+    root.mkdir()
+    sentinel = tmp_path / "slow"
+    (root / "supertool.py").write_text(
+        "import pathlib, sys, time" + NL +
+        "p = pathlib.Path(%r)" % str(sentinel) + NL +
+        "p.write_text('')" + NL +
+        "time.sleep(0.3)" + NL +
+        "p.write_text(' '.join(sys.argv[1:]))" + NL,
+        encoding="utf-8")
+    monkeypatch.setattr(push, "_repo_root", lambda: str(root))
+
+    started, how = push._spawn_watch("gitlab-mr", "42")
+
+    assert started is True, how
+    assert sentinel.read_text(encoding="utf-8").strip() == "watch:gitlab-mr:42"
+
+
+def test_a_watch_op_that_refused_is_not_reported_as_a_running_watcher(
+        tmp_path, monkeypatch) -> None:
+    """The child's own refusal used to go to DEVNULL under a `Watching →` line.
+
+    `watch` names its refusals — an unknown source, a pid-file slot it could
+    not claim, and on Windows an `os.fork` that does not exist — on stdout and
+    in its exit code. Fire-and-forget discarded both and returned `True`, so
+    the receipt announced coverage that was never established (#1010).
+    """
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "supertool.py").write_text(
+        "import sys" + NL +
+        "print('ERROR: unknown source')" + NL +
+        "sys.exit(1)" + NL,
+        encoding="utf-8")
+    monkeypatch.setattr(push, "_repo_root", lambda: str(root))
+
+    started, how = push._spawn_watch("gitlab-mr", "42")
+
+    assert started is False, (
+        "a watch op that refused was reported as a running watcher: " + how)
+    assert "unknown source" in how, how
+    assert "exited 1" in how, how
+
+
+def test_a_watch_op_that_fails_silently_is_still_a_failure(
+        tmp_path, monkeypatch) -> None:
+    """Non-zero and mute is the worst of the two, so it must not read as mute alone."""
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "supertool.py").write_text(
+        "import sys" + NL + "sys.exit(2)" + NL, encoding="utf-8")
+    monkeypatch.setattr(push, "_repo_root", lambda: str(root))
+
+    started, how = push._spawn_watch("gitlab-mr", "42")
+
+    assert started is False, how
+    assert "exited 2" in how, how
+    assert "nothing" in how.lower(), (
+        "an exit code with no message must say the message was absent: " + how)
+
+
+def test_a_spawn_whose_outcome_is_unknown_is_neither_started_nor_failed(
+        tmp_path, monkeypatch) -> None:
+    """The third state (#1010; docs/validators.md "Declining instead of guessing").
+
+    Popen is stubbed because the boundary being faked is the OS call itself: a
+    child still running past the budget may already have detached a poller, so
+    `False` would be as much a guess as `True`.
+    """
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "supertool.py").write_text("", encoding="utf-8")
+    monkeypatch.setattr(push, "_repo_root", lambda: str(root))
+    proc = mock.Mock()
+    proc.communicate.side_effect = subprocess.TimeoutExpired(cmd="watch", timeout=1)
+    monkeypatch.setattr(push.subprocess, "Popen", mock.Mock(return_value=proc))
+
+    started, how = push._spawn_watch("gitlab-mr", "42")
+
+    assert started is None, how
+    assert "unknown" in how.lower(), how
+
+
+def test_watch_advisory_does_not_claim_a_watcher_it_could_not_confirm(
+        capsys) -> None:
+    """`None` used to render as "could not be started" — a claim the other way.
+
+    Saying a watcher failed when it may be running sends the caller to start a
+    second one, which `watch` then refuses as a duplicate.
+    """
+    mr = {"source": "gitlab", "iid": 42, "target": "master"}
+    with mock.patch.object(push, "_spawn_watch",
+                           return_value=(None, "still running after 20s")):
+        push._watch_advisory(push.MrLookup(mr), {"watch"})
+    out = capsys.readouterr().out
+
+    assert "unknown" in out.lower(), out
+    assert "could not be started" not in out.lower(), out
+    assert "Watching →" not in out, out
+    assert "watch:gitlab-mr:42" in out, "must still hand back the manual command"
+    assert "watches" in out, "must name the op that settles it: " + out

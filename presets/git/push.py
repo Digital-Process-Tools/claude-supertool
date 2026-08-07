@@ -793,21 +793,56 @@ def _watch_argv(source: str, iid: str) -> tuple[list[str], str]:
     return [], f"no runnable supertool at {root} (neither ./supertool nor supertool.py)"
 
 
-def _spawn_watch(source: str, iid: str) -> tuple[bool, str]:
-    """Fire-and-forget a background watch poller. (started?, how-or-why-not).
+_WATCH_START_BUDGET = 20.0
 
-    The reason is returned rather than dropped: `:watch` is an explicit
-    request, and the caller who is told nothing walks away believing a
-    watcher exists.
+
+def _spawn_watch(source: str, iid: str) -> tuple[Optional[bool], str]:
+    """Start a background watch poller. `(True|False|None, how-or-why-not)`.
+
+    Three states, not two (#1010; docs/validators.md "Declining instead of
+    guessing"):
+
+      `(True,  how)`  the `watch` op ran, exited 0, and claimed the watcher
+      `(False, why)`  nothing is watching, and this is the reason
+      `(None,  why)`  the spawn was made and its outcome is not known
+
+    This used to be fire-and-forget: `Popen` with both streams on `DEVNULL`,
+    and `True` returned the instant the call did not raise. But `watch` reports
+    its own refusals — an unknown source, a pid-file slot it could not claim,
+    and on Windows an `os.fork` that does not exist — by exiting non-zero and
+    naming them on stdout, and both went into `DEVNULL` while this receipt
+    printed "Watching →". An absence manufactured by discarding the answer is
+    not evidence that a watcher exists.
+
+    Waiting is affordable because the process being waited on is not the
+    poller. `watch` claims the slot, double-forks a detached grandchild whose
+    stdio it has already silenced, and exits — so this is one process startup,
+    the pipe cannot be held open by the surviving grandchild, and the budget
+    bounds the case where that stops being true. The timed-out child is left
+    alone rather than killed: it may already have detached a working poller,
+    and killing it to make the answer tidy would destroy the thing the caller
+    asked for.
     """
     argv, how = _watch_argv(source, iid)
     if not argv:
         return False, how
     try:
-        subprocess.Popen(argv, cwd=_repo_root(),
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        proc = subprocess.Popen(argv, cwd=_repo_root(),
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT,
+                                text=True, errors="replace")
     except OSError as exc:
         return False, f"{how} ({exc})"
+    try:
+        out, _ = proc.communicate(timeout=_WATCH_START_BUDGET)
+    except subprocess.TimeoutExpired:
+        return None, (f"{how} had not finished after {_WATCH_START_BUDGET:g}s "
+                      f"and was left running — whether it started a watcher "
+                      f"is UNKNOWN")
+    if proc.returncode != 0:
+        said = next((ln.strip() for ln in (out or "").splitlines() if ln.strip()),
+                    "and said nothing")
+        return False, f"{how} exited {proc.returncode}: {said}"
     return True, how
 
 
@@ -979,17 +1014,24 @@ def _stale_base_advisory(target: str, remote: str) -> None:
 
 
 def _watch_advisory(lookup: MrLookup, flags: set[str]) -> None:
-    """The watch line — which of five states we are in, never silence (#642/#647).
+    """The watch line — which state we are in, never silence (#642/#647/#1010).
 
     `:watch` used to be unreachable (dropped by the flag parser) and, once
     reached, could fail to spawn in a worktree with the OSError swallowed. So
     a requested watcher that does not exist is now named as such, together
     with the command that does work.
 
-    The fifth state is #948's. "There is no open MR/PR for this branch yet —
+    #948's state is the lookup's: "There is no open MR/PR for this branch yet —
     open one" is a claim about the world, and it used to be printed out of a
     `None` that also meant "the lookup timed out". A caller who asked to watch
     a pipeline was told the request they had just pushed to does not exist.
+
+    #1010's is the spawn's: an outcome that is unknown gets its own line rather
+    than borrowing the failure one. "The watcher could not be started" is a
+    claim, and made about a watcher that may well be running it sends the
+    caller to start a second — which `watch` then refuses as a duplicate,
+    leaving them with two contradicting messages and no way to tell which was
+    true.
     """
     if not lookup.answered and "watch" in flags:
         print(f"⚠ :watch requested, but whether this branch has an open MR/PR "
@@ -1010,9 +1052,16 @@ def _watch_advisory(lookup: MrLookup, flags: set[str]) -> None:
         return
     source, iid = wt
     started, how = _spawn_watch(source, iid)
-    if started:
+    if started is True:
         print(f"Watching → notifies on pipeline finish/fail "
               f"(unwatch: ./supertool 'unwatch:{source}:{iid}')")
+        return
+    if started is None:
+        print(f"⚠ :watch requested — whether a watcher is running is UNKNOWN "
+              f"— {how}")
+        print("  This receipt is not saying one exists, and not saying one "
+              "does not. Settle it: ./supertool 'watches'")
+        print(f"If none is listed: ./supertool 'watch:{source}:{iid}'")
         return
     print(f"⚠ :watch requested but the watcher could not be started — {how}")
     print(f"Run it yourself: ./supertool 'watch:{source}:{iid}'")
