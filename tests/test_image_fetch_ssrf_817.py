@@ -34,14 +34,16 @@ import re
 import socket
 import sys
 import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT / "presets"))
+sys.path.insert(0, str(ROOT / "tests"))
 
+from _no_fqdn_server import NoFqdnThreadingHTTPServer  # noqa: E402
 from _preset_loader import load_preset_module  # noqa: E402
 
 _http = importlib.import_module("_http")
@@ -255,13 +257,13 @@ class _Handler(BaseHTTPRequestHandler):
         pass
 
 
-def _serve(cls: type) -> ThreadingHTTPServer:
-    srv = ThreadingHTTPServer(("127.0.0.1", 0), cls)
+def _serve(cls: type) -> NoFqdnThreadingHTTPServer:
+    srv = NoFqdnThreadingHTTPServer(("127.0.0.1", 0), cls)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     return srv
 
 
-def _stop(srv: ThreadingHTTPServer) -> None:
+def _stop(srv: NoFqdnThreadingHTTPServer) -> None:
     """Stop a test server so that its port is dead.
 
     Both calls, in this order, and neither is optional. `shutdown()` ends the
