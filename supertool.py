@@ -2240,7 +2240,8 @@ def _resolve_alias(op: str, parts: List[str]) -> str | None:
 # ---------------------------------------------------------------------------
 
 def render_file(path: str, offset: int = 0, limit: int = 0,
-                grep_filter: str = "", force_full: bool = False) -> str:
+                grep_filter: str = "", force_full: bool = False,
+                range_form: bool = False) -> str:
     """Emit a file's contents with line numbers, truncated at caps.
 
     Shared by read: and by grep/glob auto-promote branches.
@@ -2362,6 +2363,7 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
             last_scanned=last_scanned, capped=capped,
             byte_cap=byte_cap if apply_byte_cap else 0,
             limit_synthetic=not apply_byte_cap,
+            range_form=range_form,
             skipped_by=("the grep= filter" if filter_regex
                         else "compact mode" if compact else "")))
     out.append("\n")
@@ -2372,6 +2374,7 @@ def _read_window_note(path: str, limit: int, offset: int,
                       line_count: int, shown: int, last_scanned: int = 0,
                       capped: bool = False, byte_cap: int = 0,
                       limit_synthetic: bool = False,
+                      range_form: bool = False,
                       skipped_by: str = "") -> str:
     """One line naming the window the caller asked for and the window actually
     returned, emitted for every `read` with a non-zero OFFSET (#945).
@@ -2418,7 +2421,13 @@ def _read_window_note(path: str, limit: int, offset: int,
         return (f"window: {asked}; returning nothing — the file has "
                 f"{line_count} lines\n")
     hint = ""
-    if 0 < limit <= offset:
+    # `range_form` says the caller typed `read:PATH:A-B`, whose OFFSET this
+    # function only ever sees after the range was converted to one. Telling
+    # that caller "OFFSET is a skip count" corrects a form they did not use,
+    # and names A-1..B-1 — off by one against the lines they asked for. A
+    # correct call being told it was wrong is why the range form reads as
+    # non-existent even though it shipped in 0.19.0 (#983).
+    if not range_form and 0 < limit <= offset:
         hint = ("; OFFSET is a skip count, not a start line — for lines "
                 f"{offset}-{offset + limit - 1} use "
                 f"read:{path}:{offset}-{offset + limit - 1}")
@@ -2523,7 +2532,8 @@ def _abstract_map(path: str, lang: str, size_bytes: int) -> Tuple[str, str]:
 
 
 def op_read(path: str, offset: int = 0, limit: int = 0,
-            grep_filter: str = "", force_full: bool = False) -> str:
+            grep_filter: str = "", force_full: bool = False,
+            range_form: bool = False) -> str:
     # Abstract mode — when enabled, read:PATH on a file in a language
     # tree-sitter knows, with no offset/limit/grep, returns the symbol map
     # (measured 3-18% of the source bytes, median ~5%). Skipped when:
@@ -2566,7 +2576,8 @@ def op_read(path: str, offset: int = 0, limit: int = 0,
                          f"showing raw source]\n")
     if limit <= 0:
         limit = _get_op_int("read", "max_lines", MAX_READ_LINES)
-    body = render_file(path, offset, limit, grep_filter, force_full)
+    body = render_file(path, offset, limit, grep_filter, force_full,
+                       range_form)
     return skip_note + body + _read_edit_hint(path, body)
 
 
@@ -2686,7 +2697,8 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
         # Could be a glob pattern — check if it expands to anything
         from glob import glob as _glob
         if not _glob(path, recursive=True):
-            return _path_not_found(path)
+            return _path_not_found(
+                path, suggest=_comma_path_list_suggest("grep", path) or None)
 
     excl = _get_exclude_paths("grep", no_exclude)
 
@@ -4947,6 +4959,84 @@ def _parse_around_args(parts: List[str]) -> tuple:
         path = ""
 
     return (pattern, path, n)
+
+
+def _between_numeric_hint(parts: List[str]) -> str:
+    """Error text for `between:PATH:START:END` and `between:PATH:LINE` (#983).
+
+    `between` is SYMBOL:PATH, so a trailing line number is tokenized as the
+    path and the call fails with `path not found: '20'` — a filesystem
+    complaint about a number, which is the tool's own mis-split wearing the
+    shape of an absence on disk. Three agents in one evening read that as
+    "supertool cannot do this" and fell back to `sed` or the harness Read.
+
+    The redirect names the op that already answers, rather than growing a
+    fourth spelling of the same read: `read:PATH:START-END` is an inclusive
+    1-based range and has been since 0.19.0, and `around_line:PATH:LINE[:N]`
+    covers the single-line case. `between` is left doing exactly one thing.
+
+    Returns "" whenever the shape is not unambiguously a line range — the
+    numeric token must not name a real path (a file called `12` is a range
+    nobody asked for), and the path in front of it must resolve, or this
+    would be guessing at a plain typo.
+    """
+    if len(parts) not in (3, 4):
+        return ""
+    nums = parts[2:]
+    if not all(t.isdigit() and not os.path.exists(t) for t in nums):
+        return ""
+    path = parts[1]
+    if not path or not os.path.isfile(path):
+        return ""
+    lines = [
+        f"ERROR: between does not take line ranges — it is between:SYMBOL:PATH"
+        f" (or between:re:START:END:PATH), and {nums[-1]!r} was read as the"
+        f" path.",
+    ]
+    if len(nums) == 2:
+        start, end = int(nums[0]), int(nums[1])
+        if end < start:
+            start, end = end, start
+        lines.append(f"  For lines {start}-{end} use: read:{path}:{start}-{end}"
+                     f"  (inclusive, 1-based)")
+    else:
+        line = int(nums[0])
+        lines.append(f"  For the lines around {line} use: "
+                     f"around_line:{path}:{line}[:N]")
+        lines.append(f"  For an explicit span use: read:{path}:START-END"
+                     f"  (inclusive, 1-based)")
+    return chr(10).join(lines) + chr(10)
+
+
+def _comma_path_list_suggest(op: str, path: str) -> str:
+    """Hint for a `PATH,PATH,...` list handed to an op that takes one path.
+
+    `git-resolve` accepts a comma list, so reaching for it elsewhere is the
+    spelling the operator was already taught. Joined into one filename it
+    fails, and the generic `wrong CWD?` advice then names the one thing that
+    provably did not cause it: every entry resolves from the current
+    directory. Following it produces the same error a second time (#921).
+
+    Returns "" unless at least one entry exists — a path with a literal comma
+    that is simply absent is an ordinary typo, and inventing a list there
+    would trade one misreport for another. The count is stated rather than
+    implied, so the caller can tell "all of these exist" from "some do".
+    """
+    if "," not in path:
+        return ""
+    entries = [e for e in path.split(",") if e]
+    if len(entries) < 2:
+        return ""
+    found = [e for e in entries if os.path.exists(e)]
+    if not found:
+        return ""
+    tally = (f"all {len(entries)}" if len(found) == len(entries)
+             else f"{len(found)} of {len(entries)}")
+    return (f"a comma-separated list is not accepted here — {op} takes ONE "
+            f"path, and the whole list was read as a single filename "
+            f"({tally} of its entries exist, so the cwd is not the problem). "
+            f"Pass one path, a directory, or one {op} op per file — several "
+            f"ops batch into a single call.")
 
 
 def _looks_like_path(tok: str) -> bool:
@@ -16015,7 +16105,8 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                 if _tok.startswith("grep="):
                     grep_filter = _tok[5:]
                     break
-            body = op_read(path, offset, limit, grep_filter, force_full)
+            body = op_read(path, offset, limit, grep_filter, force_full,
+                           range_form)
             if not range_form:
                 body += _read_range_note(path, offset, limit, body)
         elif op == "grep":
@@ -16118,6 +16209,9 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                 # Join middle parts on ':' so PHP Foo::bar style names work.
                 symbol = ":".join(parts[1:-1])
                 path = parts[-1]
+                _range_hint = _between_numeric_hint(parts)
+                if _range_hint:
+                    return header + _range_hint
                 _hint = _colon_split_hint("between", symbol, path,
                                           keys=("symbol",))
                 if _hint:
