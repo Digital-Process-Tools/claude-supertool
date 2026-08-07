@@ -181,9 +181,120 @@ Enable any of these by copying the relevant entry from `.supertool.example.json`
 | PHP — style   | `psr`            | `phpcs` binary (PATH or via `PSR_BIN` env)        | Env-configured. See [README](../validators/psr/README.md)  |
 | Git           | `git-status`     | `git` binary                                      | Reports working-tree delta (`+N -N <state>`) post-edit |
 | Prettier — check | `prettier-check` | `prettier` binary (PATH or via `PRETTIER_BIN` env) | Env-configured read-only formatting check. See [README](../validators/prettier-check/README.md) |
+| Shell — semantics | `shellcheck`    | `shellcheck` on PATH               | `shellcheck -f json`. Ruleset from the project's `.shellcheckrc`. Complements `bash-check`, which answers a different question. See below |
+| JavaScript — lint | `eslint`        | `eslint` on PATH or resolvable via `npx --no-install` | `eslint -f json`. **Declines when no `eslint.config.js` resolves** — no fallback ruleset is invented. See below |
+| Secrets           | `gitleaks`      | `gitleaks` on PATH                 | `gitleaks detect --no-git --redact`. Matches every path, not one language. Never prints the matched value. See [README](../validators/gitleaks/README.md) |
 
 
-### ruff — where the ruleset lives, and why it is small
+### The tool is not installed — `skipped` locally, loud in CI on request
+
+`shellcheck`, `eslint` and `gitleaks` are external binaries most machines do
+not have, which makes the same question three times: what does a validator
+report when its tool is absent?
+
+Reporting `ok` is the defect this repository has filed more than any other, so
+it is `skipped`, with the reason and the install command on the row. That is
+the honest local answer — a laptop that never installed shellcheck genuinely
+holds no information about the file, and reddening every unrelated edit over it
+would get the validator switched off within a day.
+
+But a `skipped` that appears on every run of every job is how a validator
+becomes decorative, and in CI "not installed" does not mean "no information",
+it means **the gate is not running**. So the escalation is opt-in, and only
+ever turns quiet into loud:
+
+```bash
+SUPERTOOL_REQUIRE_VALIDATORS=shellcheck,gitleaks
+```
+
+Comma- or `os.pathsep`-separated, case-insensitive, `*` for all. Named there, a
+tool that could not run becomes an `adapter` error whose message names the
+variable — so the reader is sent to the CI image rather than to the file. There
+is deliberately **no** value that turns a finding into a skip: that would be a
+mute button, and this repository declines those. `refusal.required()` is the
+one implementation, shared by all three adapters.
+
+The recommendation is to leave it unset locally and set it in CI for whichever
+of the three that pipeline installs. Setting it for a tool the image does not
+install produces a red on every edit, which is the same noise problem from the
+other end.
+
+### shellcheck — and the bug in the issue that asked for it
+
+`bash-check` runs `bash -n` and answers "does this parse". `shellcheck`
+answers the next question, and both stay: `bash -n` is in-process-cheap and is
+what still runs where shellcheck is absent.
+
+**The receipt in [#665](https://github.com/Digital-Process-Tools/claude-supertool/issues/665)
+does not hold, and it is worth stating here so it is not repeated.** The issue
+justifies the validator with `claude-remember#251` —
+
+```sh
+[ -n "$LAST_LINE" ] && tail -n +"$LAST_LINE" "$MEMORY_FILE" > "$TMP" || echo "(no previous entry)" > "$TMP"
+```
+
+— and calls it "SC2015 verbatim". Measured against ShellCheck 0.11.0, **SC2015
+does not fire on that line**, at any severity, with `-o all -S style` (which
+returns only SC2292/SC2250 notes about brackets and braces). SC2015 carries a
+deliberate carve-out: it stays silent when the `|| C` branch is an `echo` or a
+`printf`, because `cmd && x || echo failed` is an idiom people mean. The
+redirect on that `echo` — the part that made #251 destructive, since `C`'s `>`
+truncated what `B` had written — is not something the check looks at.
+
+So this validator would **not** have caught the bug it was filed for. It is
+still worth having, on rules that do fire and that these repos hit: SC2164
+(`cd` without `|| exit`), SC2086 (unquoted expansion), SC2181 (`$?` instead of
+testing directly) and SC2155 (`local x=$(cmd)` masking an exit code). Each is
+exercised on a real file in `tests/test_validators_shellcheck_665.py`, and so
+is the gap — a red on `test_the_issues_own_receipt_is_not_caught` means a
+future ShellCheck closed the carve-out and this paragraph needs deleting.
+
+No `--severity` floor and no `-o all` are passed: the ruleset walks up from the
+file into the project's own `.shellcheckrc`, for the reason spelled out under
+ruff below. `rollback_on_fail` is `false` — SC2086 is a style finding, and
+reverting a good edit over one destroys work to fix nothing.
+
+The `match` glob is `*.{sh,bash,ksh}`. It deliberately misses the
+extensionless, shebang-carrying hooks that make up most of `claude-remember` —
+a `match` that fired on every extensionless file would run shellcheck on
+binaries and READMEs. The adapter itself has no such limit: point it at such a
+file (`validate:hooks.d/after_save/50-git-backup`) and shellcheck reads the
+shebang. A repo of extensionless hooks should add a second entry globbing the
+directory.
+
+### eslint — declining beats inventing a config
+
+JS/TS coverage was `node-check` (syntax), `tsc-check` (types, TS only),
+`prettier-check` (formatting) and `stylelint` (CSS). No linter. `eslint` fills
+that, and it has **three** ways of saying nothing, each of which arrives
+looking like a clean file:
+
+| what happened | what eslint does | what the adapter reports |
+|---|---|---|
+| eslint not installed | nothing runs | `skipped` |
+| installed, no resolvable config | exit **2**, stdout empty, message on stderr | `skipped` |
+| the file matched an ignore pattern | exit **0**, one `ruleId: null` message, no findings | `skipped` |
+
+The second is the trap [#667](https://github.com/Digital-Process-Tools/claude-supertool/issues/667)
+names, and it is #263's shape exactly: an adapter that only counts findings
+reads an empty stdout as `count: 0`. The third is not in the issue and is
+worse, because the exit code is **zero** — verified against eslint 10.8.0,
+where a file under `node_modules/` returns one `File ignored by default …`
+message and nothing else.
+
+**No fallback config is shipped, and that is the judgment call.** Inventing one
+makes the validator enforce opinions the repo never chose, and the first thing
+anyone does about findings they did not opt into is switch the validator off.
+It would also be actively misleading for the case that motivated the issue:
+DVSI's "never `var`" rule mostly governs JS inside XML templates, `js-onMe`,
+`js-onInit` and inline handlers, none of which eslint can reach — so a fallback
+config would produce a green that says nothing about the rule it was configured
+for. A repo that wants JS linted adds `eslint.config.js`; until then the row
+says nobody checked, on every edit.
+
+Resolution order is a global `eslint`, then `npx --no-install eslint` for a
+project-local one. `--no-install` is not optional: without it a post-edit
+validator can reach the network mid-edit.
 
 The adapter passes no `--select`. `ruff check` resolves its configuration by
 walking up from the file it was handed, so **your** `pyproject.toml` or

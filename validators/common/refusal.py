@@ -182,6 +182,48 @@ def tool_fault(tool: str, returncode: int, output: str, limit: int = 300) -> str
             f"{body}")
 
 
+#: Env var naming the validators whose tool must be installed. Comma- or
+#: `os.pathsep`-separated, case-insensitive, `*` for all.
+REQUIRE_VAR = "SUPERTOOL_REQUIRE_VALIDATORS"
+
+
+def required(tool: str) -> bool:
+    """Is `tool` named by $SUPERTOOL_REQUIRE_VALIDATORS? (#665/#667/#668)
+
+    The answer to "a `skipped` on every machine that lacks the binary is how a
+    validator becomes decorative". A skip is the right *local* verdict — a
+    laptop that never installed shellcheck genuinely has no information about
+    the file, and escalating that to a red would make every unrelated edit
+    fail. In CI the same skip means the gate is not running, and a gate that
+    is not running is the absence-read-as-a-pass this whole module exists for,
+    one level up: nobody reads a validator row that says `skipped` on every
+    run of every job.
+
+    So the escalation is **opt-in and one-directional**. Unset, nothing
+    changes. Set, an absent tool becomes an `adapter` error naming this
+    variable, so the fix points at the CI image rather than at the file. It
+    can only turn quiet into loud; there is deliberately no value that turns a
+    finding into a skip, because that would be a mute button and this repo
+    declines those.
+
+    It does **not** make a *clean* result louder and does not touch findings.
+    The only thing it changes is what an adapter does when it has nothing to
+    say.
+    """
+    raw = os.environ.get(REQUIRE_VAR, "")
+    if not raw.strip():
+        return False
+    names = [n.strip().lower()
+             for part in raw.split(os.pathsep) for n in part.split(",")]
+    return "*" in names or tool.lower() in names
+
+
+def required_but_absent(tool: str, reason: str) -> str:
+    """The message for a tool that is required by config and not installed."""
+    return (f"{tool} is named in ${REQUIRE_VAR} but could not run, so this "
+            f"file was NOT checked: {reason}")
+
+
 def skipped(tool: str, file_path: str, reason: str, dur_ms: int) -> dict:
     """A SCHEMA.md result in the third state: not clean, not broken, not looked at.
 
