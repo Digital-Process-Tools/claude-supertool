@@ -219,6 +219,43 @@ of the three that pipeline installs. Setting it for a tool the image does not
 install produces a red on every edit, which is the same noise problem from the
 other end.
 
+**An escalated absence is not diffed, is named on `[result]`, and exits 1.**
+The `adapter` error above is not a finding about the file — nothing opened it —
+so it never enters the before/after subtraction that the rest of the block is.
+It shipped inside that subtraction once, and the result read as a pass in three
+places at once: the tool is absent for the pre-edit snapshot as well, the counts
+cancel, and the row rendered
+
+```text
+shellcheck  : 1 err       (pre-existing — not from this edit)
+gitleaks    : 1 err       (pre-existing — not from this edit)
+[result] 1 op run, 1 write
+```
+
+with exit 0 — a claim that a real finding predated the edit, about a file no
+checker read, under the one line documented to survive `| tail -1`, in the one
+mechanism that exists to stop "the gate is not running" reading as a pass. It
+now renders as its own state and says so where a script looks:
+
+```text
+shellcheck  : NOT CHECKED  (no verdict about this file)   0.2s
+     adapter  shellcheck is named in $SUPERTOOL_REQUIRE_VALIDATORS but could not run, so this file was NOT checked: shellcheck not found on PATH — `brew install shellcheck` / `apt install shellcheck`
+[result] 1 op run, 1 write, 1 validator NOT RUN (shellcheck) — those validators returned no verdict, so the file was NOT checked
+```
+
+Exit code 1. **Naming a validator in the variable is a statement that it must
+be present here**, so one that is not is a configuration fault to fix, in the
+image or in the variable — not a local inconvenience to absorb. Leave it unset
+and none of this is reachable: an absent tool is the honest `skipped` it always
+was, and exit stays 0. That is why the escalation is opt-in and why there is no
+CI auto-detection; a tool that decided for you which absences are fatal would be
+guessing at the thing only the operator knows.
+
+It is an exit code, **not a refusal**. The edit still lands and still rolls back
+on exactly the conditions it did before. Converting "we could not check" into
+"we will not work" would trade the quiet failure for a louder one rather than
+removing it.
+
 ### shellcheck — and the bug in the issue that asked for it
 
 `bash-check` runs `bash -n` and answers "does this parse". `shellcheck`
@@ -295,6 +332,18 @@ says nobody checked, on every edit.
 Resolution order is a global `eslint`, then `npx --no-install eslint` for a
 project-local one. `--no-install` is not optional: without it a post-edit
 validator can reach the network mid-edit.
+
+**The fallback is also how row one of that table used to be unreachable.** On
+any laptop with node, `eslint` is absent from `PATH` and `npx` is not — so the
+fallback resolves, the install-hint branch is never taken, and npx exits 1 with
+empty stdout and `Unknown command: "eslint"` (npm 11) or `could not determine
+executable to run` (npm 8-10) on stderr. Neither matches the no-config
+signature, so it landed on an `adapter` error: the reader was told eslint
+*failed* and sent to debug a linter that was never installed. Those two
+messages, and only those two, and only when the npx route was the one taken,
+are now the same `skipped` with the same `npm install --save-dev eslint` hint.
+Any other npx failure stays loud — swallowing an unknown failure is the same
+category mistake pointing the other way.
 
 The adapter passes no `--select`. `ruff check` resolves its configuration by
 walking up from the file it was handed, so **your** `pyproject.toml` or
@@ -468,6 +517,10 @@ Paths that don't exist contribute nothing rather than failing the lookup — a m
 ## Declining instead of guessing
 
 A validator has three states, not two: `ok`, a finding, and **`skipped`** — an absence of information. A skip never renders a ✗, never triggers `rollback_on_fail`, and is never written to the cache. It exists so that a checker which *cannot* answer says so, rather than emitting a verdict that looks exactly like one it worked out.
+
+**`NOT CHECKED` is the same absence arriving through the error channel.** A `skipped` is a checker that declined *before* running and had a field to say so with. An adapter that was asked to run, could not, and holds only an `adapter`-coded error has produced exactly as little information — and every consumer downstream of a result treats an error as a measurement of the file. So a result whose errors are *all* `code: "adapter"` is rendered as `NOT CHECKED`, is never subtracted from a baseline, and is named on the `[result]` line. All of them, not the first: an adapter reporting four real findings alongside one adapter row has still measured the file, and hiding that would be this defect pointing the other way.
+
+Whether it exits non-zero is decided by `$SUPERTOOL_REQUIRE_VALIDATORS`, one section up — that variable is the only place an operator states which absences are unacceptable *here*.
 
 **Daemon not installed — the checker that cannot run declines** ([#531](https://github.com/Digital-Process-Tools/claude-supertool/issues/531)). The four warm-process adapters (`phpstan-mcp`, `rector-mcp`, `phpmd-mcp`, `phpunit-mcp`) resolve their daemon binary before spawning it. When it is absent — the normal case for any `cwd:` pointed at a git worktree, where `composer install` never ran — that used to surface as a finding:
 
