@@ -404,25 +404,67 @@ _SYNTAX_VALIDATORS = (
 _SYNTAX_FILTER = "@syntax"
 
 
+#: A validator that matched the file and then declined to run — the row
+#: `_validator_render_row` emits for `{"skipped": reason}`. Its own vocabulary
+#: for the third state, arriving inside a batch that otherwise succeeded.
+_SKIPPED_ROW = re.compile(r"^([\w-]+)\s*:\s*skipped\b\s*[—-]*\s*(.*)$")
+_RESULT_ROW = re.compile(r"^([\w-]+)\s*:\s*(ok|(\d+) err)\b")
+
+
+def _skip_summary(skipped: list) -> str:
+    """`tool (why)` for each declined validator, bounded to one short cell."""
+    parts = [f"{tool} ({why})" if why else tool for tool, why in skipped]
+    text = ", ".join(parts)
+    if len(text) > _CHILD_DETAIL_MAX:
+        text = text[:_CHILD_DETAIL_MAX - 1] + "…"
+    return text
+
+
 def _digest_block(block: str) -> Optional[str]:
     """Condense one file's validator rows into a single receipt line.
 
-    Returns ``None`` when no syntax validator ran for this file type.
+    Returns ``None`` when no syntax validator ran for this file type — a real
+    answer about the world, which the caller deliberately renders as nothing.
+
+    A validator that *matched* this file and then declined is a fourth row
+    shape, and until #880 this function did not match it: `phplint : skipped —
+    php not installed` set neither `ran` nor `fails`, so the file digested to
+    the same `None`, and a `.php` conflict staged on a machine without php
+    reported ``markers: clean`` with nothing beside it. Byte-identical to a
+    file whose parser ran and passed.
+
+    That route survived #883, which put every *batch*-level decline behind
+    `_not_checked` — the child crashed, timed out, was never found, folded to
+    the wrong block count. Here the child ran fine and emitted a well-formed
+    block; the decline is one row inside it. It is also the likeliest of the
+    four to be met in practice, because it needs no crash, only a missing
+    interpreter.
+
+    A skip beside a pass still costs a word: the reader takes this line as the
+    verdict for the file, and half-checked may not render as checked.
     """
     fails: list[str] = []
+    skipped: list = []
     ran = False
     for line in block.splitlines():
-        m = re.match(r"^([\w-]+)\s*:\s*(ok|(\d+) err)\b", line)
+        s = _SKIPPED_ROW.match(line)
+        if s:
+            skipped.append((s.group(1), s.group(2).strip()))
+            continue
+        m = _RESULT_ROW.match(line)
         if not m:
             continue
         ran = True
         if m.group(3):
             fails.append(f"{m.group(1)} {m.group(3)} err")
     if not ran:
+        if skipped:
+            return _not_checked(_skip_summary(skipped))
         return None
-    if fails:
-        return "validate: ⚠ " + ", ".join(fails)
-    return "validate: ok"
+    base = ("validate: ⚠ " + ", ".join(fails)) if fails else "validate: ok"
+    if skipped:
+        base += f" | ⚠ not checked by {_skip_summary(skipped)}"
+    return base
 
 
 def _not_checked(reason: str) -> str:

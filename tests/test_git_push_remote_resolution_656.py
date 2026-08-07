@@ -6,7 +6,7 @@ stubbing, because the thing under test is *which name git is handed* — a fake
 So each box is a real bare remote (or two, or none) plus a real clone whose
 remote is named whatever the case needs, on a real branch with no upstream.
 
-The only stubbed boundary is `query_open_mr` — a network call to glab/gh, API
+The only stubbed boundary is `_mr_lookup` — a network call to glab/gh, API
 metadata rather than a git fact, and a sandbox has no MR.
 
 The refusal cases assert the remote refs afterwards, not only the exit code.
@@ -159,7 +159,7 @@ def remoteless_box():
 
 
 def _no_mr():
-    return mock.patch.object(push, "query_open_mr", return_value=None)
+    return mock.patch.object(push, "_mr_lookup", return_value=push.MrLookup(None))
 
 
 def _last_result(out: str) -> str:

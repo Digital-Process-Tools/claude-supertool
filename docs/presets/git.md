@@ -99,6 +99,21 @@ style ones (lsp-diag, pyright, prettier), since only a parse break is something 
 side-pick can introduce — and it is omitted entirely when no syntax validator is
 configured for that file type (you'll just see `markers: clean`).
 
+**`markers: clean` on its own means the parser had nothing to say, never that it
+did not run** ([#880](https://github.com/Digital-Process-Tools/claude-supertool/issues/880)).
+A validator that matched the file and then declined — `php` not installed, an
+adapter that timed out — says so on the same line, and a decline beside a pass
+still costs a word:
+```text
+  ✓ src/app/Config.php
+      markers: clean | validate: ⚠ not checked (phplint (php not installed))
+  ✓ src/app/other.php
+      markers: clean | validate: ok | ⚠ not checked by phpstan (php not installed)
+```
+Nothing is blocked either way — the digest is advisory — but `markers: clean` is
+the phrase a reader uses to decide not to look, so it may not stand alone over a
+file nobody parsed.
+
 **Resolve specific conflict blocks (per-hunk side selection):**
 ```bash
 ./supertool 'git-conflicts'                          # blocks are numbered per file
@@ -377,6 +392,33 @@ The line appears last, and only when there is something to disclose — a clean 
 The reason travels with the command because "did not answer" alone sends a reader to raise `SUPERTOOL_GIT_TIMEOUT` for what is actually an expired token.
 
 **"There is no MR on this branch" stays silent, and that is deliberate.** `glab` and `gh` exit `1` both for that and for an expired token, so the exit code cannot separate them and the message has to. The phrases meaning a genuine absence — *no open merge request*, *no pull requests found*, and the other host's CLI reporting *none of the git remotes … point to a known GitLab host* — render as silence, because a branch with no MR yet is the most ordinary state a branch can be in and a footer on every such run is one nobody reads on the run that needs it. Anything unrecognised is disclosed instead of assumed benign: that costs one footer line quoting the CLI, which a reader dismisses in a second, where the opposite error is the defect itself. A CLI that is not installed stays silent — nothing on that machine was going to answer, and a decline that can never resolve is noise on every run.
+
+### `git-push`'s MR/PR line has the same three states, and got them last
+
+`git-status` learned this in [#705](https://github.com/Digital-Process-Tools/claude-supertool/issues/705); the shared branch→MR lookup `git-push` uses did not, until [#948](https://github.com/Digital-Process-Tools/claude-supertool/issues/948). It returned `None` for *there is no open MR/PR* and for *the lookup did not happen*, and swallowed every exception on the way — on the op a person reads immediately before and after the one irreversible thing supertool does.
+
+Three consumers read that `None`, and all three took it as an absence:
+
+| what the receipt did | with a real absence | with a lookup that failed |
+|---|---|---|
+| the `MR !42 → master` line | correctly absent | absent — reads as "no MR yet, open one" |
+| the mergeability warning and the stale-base check | correctly skipped (no target branch) | skipped, silently — a conflicting MR raised nothing |
+| `:watch` | *"there is no open MR/PR for this branch yet — nothing to watch. Open one"* | the same sentence, about a request that may well exist |
+
+Now the lookup answers with a fact or with the reason there is no fact:
+
+```
+⚠ MR/PR LOOKUP DID NOT RUN — `gh` timed out after 5s
+  Whether this branch has an open MR/PR is UNKNOWN — this receipt is not saying
+  there is none, and the mergeability and stale-base checks below are missing
+  for the same reason. Settle it: ./supertool 'git-status'
+```
+
+**It does not block the push, and that is the deliberate half.** This runs after the ref has moved. A tracker that cannot be reached is not a reason to withhold work already on the remote, and refusing there would trade a quiet wrong answer for a loud one that is worse. Degrading to a stated unknown is the whole fix.
+
+The first thing it disclosed was a defect of its own: `glab mr list --state opened` is rejected by glab 1.86 (`Unknown flag: --state.`, exit 1), so the GitLab arm had been failing at argument parsing on every call and falling through to `gh`, which cannot answer on a GitLab repo either. Both failures were swallowed, so nothing said so. Open is `mr list`'s default, and the flag is gone.
+
+**The healthy path is byte-identical to before.** A lookup that answered prints exactly what it printed, and a branch that genuinely has no MR still says nothing — a line on every call is a line nobody reads on the call that needed it. Two cases are answers rather than failures, on the same reading `git-status` uses: a CLI reporting *no open merge request* / *no pull request*, and the other host's CLI reporting *none of the git remotes … point to a known GitHub host*. The second is structural and permanent, so it must not decline — otherwise every push in every GitLab repo with `gh` installed carries a warning. An answer already given is never downgraded by the fallback either: `glab` saying "no MR" on a GitLab repo stands, whatever `gh` does a moment later.
 
 ### What `git-status`'s `Checks:` line is about
 

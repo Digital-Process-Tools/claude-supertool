@@ -4,11 +4,13 @@
 Holds the bits that were drifting across commit.py / push.py:
   - _git            : thin subprocess wrapper
   - _first_error_line: pick the salient line out of git/hook output
-  - query_open_mr   : open MR/PR for a branch, as structured fields
+  - query_open_mr_result : open MR/PR for a branch, or why that is unknown
   - use_utf8_stdout : stop the ✓/✗ glyphs crashing a cp1252 console
 
-Each script formats query_open_mr's output its own way — the lookup
-(glab → gh fallback, all failures swallowed) lives here once.
+Each script formats the lookup's output its own way — the lookup itself
+(glab → gh fallback) lives here once, and since #948 it reports which of
+three things happened rather than returning the same `None` for "no MR"
+and "the lookup did not happen".
 """
 from __future__ import annotations
 
@@ -369,68 +371,233 @@ def _repo_target_args() -> list:
     return _repo_target.gh_args()
 
 
-def query_open_mr(branch: str) -> Optional[dict]:
-    """Open MR/PR for `branch`, or None when none / no tool available.
+#: Budget for one branch→MR/PR lookup. Advisory output hanging off an
+#: otherwise local op, so it stays short — but since #948 a lookup that
+#: outlasts it is `unknown`, never "no MR".
+MR_LOOKUP_TIMEOUT = 5
+
+#: What `glab` / `gh` say when they mean "there is no such request here". That
+#: is an answer about the world, and the branch has no MR — rendered as
+#: silence, because a branch with no MR yet is the most ordinary state a branch
+#: can be in. Both CLIs exit non-zero for this *and* for an expired token, so
+#: the exit code cannot tell them apart and the sentence has to.
+NO_REQUEST_PHRASES = (
+    "no open merge request",
+    "no merge request",
+    "no pull request",
+)
+
+#: The other host's CLI, in a repo that is not on its host: a GitLab repo runs
+#: `gh` too, and a GitHub repo runs `glab`. Neither an answer about this branch
+#: nor a failure worth recording — structural and permanent, so counting it as
+#: "could not answer" would put a decline on every push of every GitLab repo
+#: with `gh` installed, and a line that appears on every call stops being read.
+NOT_THIS_HOST_PHRASES = (
+    "none of the git remotes",
+    "no git remotes found",
+    "no remotes found",
+)
+
+#: The union, under the name `presets/git/status.py` gave it. That module had
+#: the only copy of these phrases and now imports them (#948) — the same rule
+#: about the same two CLIs, in one place, because a second copy beside the real
+#: one is what this repo's issue tracker is largely made of.
+ANSWERED_NONE = NO_REQUEST_PHRASES + NOT_THIS_HOST_PHRASES
+
+
+class MrLookup:
+    """The open MR/PR for a branch — or a stated reason for not knowing (#948).
+
+    `query_open_mr` used to return `None` for *both* "there is no open MR/PR
+    for this branch" and "the lookup did not happen", and swallowed every
+    exception on the way. Its callers are `git-push` and `git-commit`, so the
+    ambiguity was resolved — as an absence, every time — at the moment somebody
+    reads the output to decide whether to open a request. `git-push` then told
+    a caller who asked for `:watch` that the branch has no MR/PR *yet* and to
+    open one, out of a lookup that never completed.
+
+    Two objects, not one value:
+
+    * `MrLookup(mr)` / `MrLookup(None)` — a CLI answered. `mr` is the request,
+      or `None` meaning there genuinely is none.
+    * `MrLookup(None, why)` — nothing answered, and `why` says what stopped it.
+      Nothing at all is known about this branch.
+
+    Deliberately *not* a blocking condition. A tracker that cannot be reached
+    is not a reason to refuse to publish work — the receipt degrades to a
+    stated unknown and the push proceeds (see `push.py::_mr_unknown_line`).
+    """
+
+    __slots__ = ("mr", "reason")
+
+    def __init__(self, mr: Optional[dict] = None, reason: str = "") -> None:
+        self.mr = mr
+        self.reason = reason
+
+    @property
+    def answered(self) -> bool:
+        return not self.reason
+
+    def __repr__(self) -> str:
+        if self.reason:
+            return f"MrLookup(unanswered, {self.reason!r})"
+        return f"MrLookup({self.mr!r})"
+
+
+def _cli_verdict(res: subprocess.CompletedProcess) -> tuple:
+    """(state, why) for a CLI that exited non-zero — the three-way read.
+
+    `answered` — it said there is no such request. `n/a` — it said this repo is
+    not on its host, which establishes nothing and never will. `failed` —
+    anything else, including every authentication and network error, carried
+    with the CLI's own first line so the reader is not sent to fix the wrong
+    thing.
+    """
+    said = ((res.stderr or "") + (res.stdout or "")).lower()
+    if any(p in said for p in NOT_THIS_HOST_PHRASES):
+        return "n/a", ""
+    if any(p in said for p in NO_REQUEST_PHRASES):
+        return "answered", ""
+    blob = (res.stderr or "") + chr(10) + (res.stdout or "")
+    return "failed", _first_error_line(blob) or f"exited {res.returncode}"
+
+
+def _probe_open_request(argv: list, parse) -> tuple:
+    """One CLI list call. Returns (mr, state, why) — never raises.
+
+    Every route that used to fall into a bare `except … : pass` now names
+    itself. The exceptions are still caught — this is advisory output and must
+    not take a push receipt with it — but catching is not the same as
+    discarding what was caught.
+    """
+    tool = argv[0]
+    try:
+        res = subprocess.run(argv, capture_output=True, text=True,
+                             timeout=MR_LOOKUP_TIMEOUT, encoding="utf-8",
+                             errors="replace")
+    except subprocess.TimeoutExpired:
+        return None, "failed", f"`{tool}` timed out after {MR_LOOKUP_TIMEOUT}s"
+    except FileNotFoundError:
+        # Vanished between `which` and here. Nothing on this machine was going
+        # to answer through it, so it is the not-installed case, not a failure.
+        return None, "n/a", ""
+    except OSError as exc:
+        return None, "failed", f"`{tool}` could not be run ({exc})"
+    if res.returncode != 0:
+        state, why = _cli_verdict(res)
+        return None, state, (f"`{tool}` {why}" if why else "")
+    body = (res.stdout or "").strip()
+    if not body.startswith("["):
+        return None, "failed", f"`{tool}` answered with output that is not JSON"
+    try:
+        rows = json.loads(body)
+    except (json.JSONDecodeError, ValueError):
+        return None, "failed", f"`{tool}` answered with output that is not JSON"
+    if not isinstance(rows, list):
+        return None, "failed", f"`{tool}` answered with JSON that is not a list"
+    if not rows:
+        return None, "answered", ""
+    if not isinstance(rows[0], dict):
+        return None, "failed", f"`{tool}` answered with an entry that is not an object"
+    return parse(rows[0]), "answered", ""
+
+
+def _glab_fields(row: dict) -> dict:
+    pipeline = row.get("pipeline") or row.get("head_pipeline") or {}
+    if not isinstance(pipeline, dict):
+        pipeline = {}
+    return {
+        "source": "gitlab",
+        "iid": row.get("iid") or row.get("number") or "?",
+        "target": row.get("target_branch", "?"),
+        "pipeline": pipeline.get("status"),
+        "pipeline_id": pipeline.get("id"),
+        "pipeline_url": pipeline.get("web_url"),
+        "merge_status": row.get("detailed_merge_status")
+        or row.get("merge_status"),
+    }
+
+
+def _gh_fields(row: dict) -> dict:
+    # gh: mergeable is CONFLICTING / MERGEABLE / UNKNOWN
+    gh_merge = row.get("mergeable")
+    return {
+        "source": "github",
+        "iid": row.get("number", "?"),
+        "target": row.get("baseRefName", "?"),
+        "pipeline": None,
+        "pipeline_id": None,
+        "pipeline_url": None,
+        "merge_status": "cannot_be_merged" if gh_merge == "CONFLICTING" else None,
+    }
+
+
+def query_open_mr_result(branch: str) -> MrLookup:
+    """Open MR/PR for `branch` as an `MrLookup` — three states, not two (#948).
 
     Returns {source, iid, target, pipeline, pipeline_id, pipeline_url,
-    merge_status}. `pipeline` is the GitLab pipeline status when known, else
-    None (gh list carries no cheap check state). `merge_status` is the
-    server's view of mergeability ('can_be_merged' / 'cannot_be_merged' /
-    None). The extra fields ride the same call — no added round-trip — and
-    are best-effort: absent on a glab version that doesn't emit them. Tries
-    glab (GitLab) first, falls back to gh (GitHub). All failures swallowed —
-    this is advisory output, never blocking.
+    merge_status} in `.mr` when a request was found. `pipeline` is the GitLab
+    pipeline status when known, else None (gh list carries no cheap check
+    state). `merge_status` is the server's view of mergeability
+    ('can_be_merged' / 'cannot_be_merged' / None). The extra fields ride the
+    same call — no added round-trip — and are best-effort: absent on a glab
+    version that doesn't emit them. Tries glab (GitLab) first, falls back to
+    gh (GitHub).
+
+    **An answer already given is never downgraded by the fallback.** glab
+    saying "no MR" on a GitLab repo is a fact; `gh` failing a moment later
+    because the repo is not on GitHub says nothing about it. Getting that
+    backwards would decline on every push of every GitLab repo with `gh`
+    installed — the loud bug traded for the quiet one, in the direction that
+    makes the disclosure worthless.
     """
     if not branch or branch == "HEAD":
-        return None
+        # A detached HEAD has no branch for a request to be open against. That
+        # is a fact about the repository, not a lookup that failed.
+        return MrLookup(None)
+    probes = []
     if shutil.which("glab"):
-        try:
-            res = subprocess.run(
-                ["glab", "mr", "list", "--source-branch", branch, "--state",
-                 "opened", "--output", "json"],
-                capture_output=True, text=True, timeout=5, encoding="utf-8", errors="replace",
-            )
-            if res.returncode == 0 and res.stdout.strip().startswith("["):
-                mrs = json.loads(res.stdout)
-                if mrs:
-                    mr = mrs[0]
-                    pipeline = mr.get("pipeline") or mr.get("head_pipeline") or {}
-                    return {
-                        "source": "gitlab",
-                        "iid": mr.get("iid") or mr.get("number") or "?",
-                        "target": mr.get("target_branch", "?"),
-                        "pipeline": pipeline.get("status"),
-                        "pipeline_id": pipeline.get("id"),
-                        "pipeline_url": pipeline.get("web_url"),
-                        "merge_status": mr.get("detailed_merge_status")
-                        or mr.get("merge_status"),
-                    }
-        except (subprocess.TimeoutExpired, OSError, json.JSONDecodeError):
-            pass
+        # No `--state opened`: glab has no such flag (1.86 exits 1 with
+        # `Unknown flag: --state.`) and open is `mr list`'s default anyway —
+        # `--closed` is the opt-out. This arm therefore failed at argument
+        # parsing on every call, and the swallowed exit code meant nobody
+        # found out for as long as the fallback to `gh` also said nothing
+        # (#948). Found by the disclosure above, on its first run.
+        probes.append((
+            ["glab", "mr", "list", "--source-branch", branch,
+             "--output", "json"], _glab_fields))
     if shutil.which("gh"):
-        try:
-            res = subprocess.run(
-                ["gh", "pr", "list", "--head", branch, "--state", "open",
-                 "--json", "number,baseRefName,mergeable", "--limit", "1"],
-                capture_output=True, text=True, timeout=5, encoding="utf-8", errors="replace",
-            )
-            if res.returncode == 0 and res.stdout.strip().startswith("["):
-                prs = json.loads(res.stdout)
-                if prs:
-                    pr = prs[0]
-                    # gh: mergeable is CONFLICTING / MERGEABLE / UNKNOWN
-                    gh_merge = pr.get("mergeable")
-                    merge_status = ("cannot_be_merged"
-                                    if gh_merge == "CONFLICTING" else None)
-                    return {
-                        "source": "github",
-                        "iid": pr.get("number", "?"),
-                        "target": pr.get("baseRefName", "?"),
-                        "pipeline": None,
-                        "pipeline_id": None,
-                        "pipeline_url": None,
-                        "merge_status": merge_status,
-                    }
-        except (subprocess.TimeoutExpired, OSError, json.JSONDecodeError):
-            pass
-    return None
+        probes.append((
+            ["gh", "pr", "list", "--head", branch, "--state", "open",
+             "--json", "number,baseRefName,mergeable", "--limit", "1"],
+            _gh_fields))
+    if not probes:
+        return MrLookup(None, "neither `glab` nor `gh` is installed, so no "
+                              "tracker can be read from here")
+    answered = False
+    reasons: list = []
+    for argv, parse in probes:
+        mr, state, why = _probe_open_request(argv, parse)
+        if mr is not None:
+            return MrLookup(mr)
+        if state == "answered":
+            answered = True
+        elif state == "failed" and why:
+            reasons.append(why)
+    if answered or not reasons:
+        # `not reasons` is the all-`n/a` case: every CLI present said this repo
+        # is not on its host, so there is no tracker on which a request could
+        # exist. That is an answer, and the same one status.py gives it.
+        return MrLookup(None)
+    return MrLookup(None, "; ".join(reasons))
+
+
+def query_open_mr(branch: str) -> Optional[dict]:
+    """The request itself, discarding why it might be unknown.
+
+    Kept for `git-commit`'s post-commit hint, which appends `(!42)` to a line
+    when there is a request and says nothing when there is not — a caller with
+    no third thing to render. Anything that shows the reader a verdict should
+    call `query_open_mr_result` and disclose the unknown.
+    """
+    return query_open_mr_result(branch).mr

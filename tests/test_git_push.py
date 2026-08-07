@@ -149,7 +149,7 @@ def test_main_non_ff_rebase_clean_pushes(capsys) -> None:
         return _proc("", 0)
 
     with mock.patch.object(push, "_git", side_effect=fake_git), \
-         mock.patch.object(push, "query_open_mr", return_value=None):
+         mock.patch.object(push, "_mr_lookup", return_value=push.MrLookup(None)):
         rc = push.main()
     out = capsys.readouterr().out
     assert rc == 0
@@ -259,7 +259,7 @@ def test_main_up_to_date_when_remote_unchanged(capsys) -> None:
         return _proc("", 0)
 
     with mock.patch.object(push, "_git", side_effect=fake_git), \
-         mock.patch.object(push, "query_open_mr", return_value=None):
+         mock.patch.object(push, "_mr_lookup", return_value=push.MrLookup(None)):
         rc = push.main()
     out = capsys.readouterr().out
     assert rc == 0
@@ -288,8 +288,8 @@ def test_main_success_receipt_with_mr(capsys) -> None:
         return _proc("", 0)
 
     with mock.patch.object(push, "_git", side_effect=fake_git), \
-         mock.patch.object(push, "query_open_mr", return_value={
-             "source": "gitlab", "iid": 99, "target": "master", "pipeline": "created"}):
+         mock.patch.object(push, "_mr_lookup", return_value=push.MrLookup({
+             "source": "gitlab", "iid": 99, "target": "master", "pipeline": "created"})):
         rc = push.main()
     out = capsys.readouterr().out
     assert rc == 0
@@ -363,7 +363,7 @@ def test_main_hook_amended_head_reports_pushed(capsys) -> None:
         return _proc("", 0)
 
     with mock.patch.object(push, "_git", side_effect=fake_git), \
-         mock.patch.object(push, "query_open_mr", return_value=None):
+         mock.patch.object(push, "_mr_lookup", return_value=push.MrLookup(None)):
         rc = push.main()
     out = capsys.readouterr().out
     assert rc == 0
@@ -393,7 +393,7 @@ def test_main_hook_pushed_without_amend_reports_pushed(capsys) -> None:
         return _proc("", 0)
 
     with mock.patch.object(push, "_git", side_effect=fake_git), \
-         mock.patch.object(push, "query_open_mr", return_value=None):
+         mock.patch.object(push, "_mr_lookup", return_value=push.MrLookup(None)):
         rc = push.main()
     out = capsys.readouterr().out
     assert rc == 0
@@ -425,7 +425,7 @@ def test_main_force_with_lease_and_no_verify_flags(capsys) -> None:
         return _proc("", 0)
 
     with mock.patch.object(push, "_git", side_effect=fake_git), \
-         mock.patch.object(push, "query_open_mr", return_value=None), \
+         mock.patch.object(push, "_mr_lookup", return_value=push.MrLookup(None)), \
          mock.patch.object(push.sys, "argv",
                            ["push.py", "force-with-lease", "no-verify"]):
         rc = push.main()
@@ -470,7 +470,7 @@ def test_main_first_push_sets_upstream(capsys) -> None:
         return _proc("", 0)
 
     with mock.patch.object(push, "_git", side_effect=fake_git), \
-         mock.patch.object(push, "query_open_mr", return_value=None):
+         mock.patch.object(push, "_mr_lookup", return_value=push.MrLookup(None)):
         rc = push.main()
     out = capsys.readouterr().out
     assert rc == 0
@@ -503,7 +503,7 @@ def test_main_first_push_without_a_per_ref_line_declines(capsys) -> None:
         return _proc("", 0)
 
     with mock.patch.object(push, "_git", side_effect=fake_git), \
-         mock.patch.object(push, "query_open_mr", return_value=None), \
+         mock.patch.object(push, "_mr_lookup", return_value=push.MrLookup(None)), \
          mock.patch.object(push, "_upstream_ref",
                            side_effect=[("", ""), ("origin/feat", "")]):
         rc = push.main()
@@ -577,7 +577,7 @@ def test_advisories_mergeability_warn(capsys) -> None:
     mr = {"source": "gitlab", "iid": 42, "target": "master",
           "merge_status": "cannot_be_merged"}
     with mock.patch.object(push, "_git", side_effect=_advisory_git()):
-        push._post_push_advisories(mr, set(), "origin")
+        push._post_push_advisories(push.MrLookup(mr), set(), "origin")
     out = capsys.readouterr().out
     assert "conflicts with master" in out
     assert "Watch pipeline: ./supertool 'watch:gitlab-mr:42'" in out
@@ -587,7 +587,7 @@ def test_advisories_behind_target_warn(capsys) -> None:
     mr = {"source": "gitlab", "iid": 42, "target": "master"}
     with mock.patch.object(push, "_git",
                            side_effect=_advisory_git(rev_list_count="3\n")):
-        push._post_push_advisories(mr, set(), "origin")
+        push._post_push_advisories(push.MrLookup(mr), set(), "origin")
     out = capsys.readouterr().out
     assert "3 commit(s) behind origin/master" in out
 
@@ -597,7 +597,7 @@ def test_advisories_behind_target_follows_the_upstream_remote(capsys) -> None:
     mr = {"source": "gitlab", "iid": 42, "target": "master"}
     with mock.patch.object(push, "_git",
                            side_effect=_advisory_git(rev_list_count="3" + chr(10))):
-        push._post_push_advisories(mr, set(), "upstream")
+        push._post_push_advisories(push.MrLookup(mr), set(), "upstream")
     assert "3 commit(s) behind upstream/master" in capsys.readouterr().out
 
 
@@ -605,7 +605,7 @@ def test_advisories_uncommitted_leftovers_warn(capsys) -> None:
     mr = {"source": "gitlab", "iid": 42, "target": "master"}
     with mock.patch.object(push, "_git",
                            side_effect=_advisory_git(porcelain=" M x.py\n?? y.py\n")):
-        push._post_push_advisories(mr, set(), "origin")
+        push._post_push_advisories(push.MrLookup(mr), set(), "origin")
     out = capsys.readouterr().out
     assert "2 change(s) NOT in this push" in out
     # #623: the count is the signal; the listing used to bury the push verdict
@@ -619,7 +619,7 @@ def test_advisories_autowatch_flag_spawns(capsys) -> None:
     with mock.patch.object(push, "_git", side_effect=_advisory_git()), \
          mock.patch.object(push, "_spawn_watch",
                            return_value=(True, "./supertool")) as sp:
-        push._post_push_advisories(mr, {"watch"}, "origin")
+        push._post_push_advisories(push.MrLookup(mr), {"watch"}, "origin")
     out = capsys.readouterr().out
     sp.assert_called_once_with("gitlab-mr", "42")
     assert "Watching →" in out
@@ -761,9 +761,9 @@ def test_main_hook_amended_head_surfaces_advisories(capsys) -> None:
         return _proc("", 0)
 
     with mock.patch.object(push, "_git", side_effect=fake_git), \
-         mock.patch.object(push, "query_open_mr", return_value={
+         mock.patch.object(push, "_mr_lookup", return_value=push.MrLookup({
              "source": "gitlab", "iid": 42, "target": "master",
-             "merge_status": "cannot_be_merged"}):
+             "merge_status": "cannot_be_merged"})):
         rc = push.main()
     out = capsys.readouterr().out
     assert rc == 0
@@ -800,7 +800,7 @@ def test_main_force_aftermath_lists_discarded(capsys) -> None:
         return _proc("", 0)
 
     with mock.patch.object(push, "_git", side_effect=fake_git), \
-         mock.patch.object(push, "query_open_mr", return_value=None), \
+         mock.patch.object(push, "_mr_lookup", return_value=push.MrLookup(None)), \
          mock.patch.object(push.sys, "argv", ["push.py", "force-with-lease"]):
         rc = push.main()
     out = capsys.readouterr().out
@@ -846,7 +846,7 @@ def test_main_push_timeout_with_remote_at_head_reports_pushed(capsys) -> None:
     already landed.
     """
     with mock.patch.object(push, "_git", side_effect=_timeout_git("head000aaaa")), \
-         mock.patch.object(push, "query_open_mr", return_value=None):
+         mock.patch.object(push, "_mr_lookup", return_value=push.MrLookup(None)):
         rc = push.main()
     out = capsys.readouterr().out
     assert rc == 0
@@ -861,7 +861,7 @@ def test_main_push_timeout_after_hook_amend_reports_rewritten_head(capsys) -> No
     heads = iter(["old0000aaaa", "new1111bbbb"])  # before, after-amend
     with mock.patch.object(push, "_git",
                            side_effect=_timeout_git("new1111bbbb", heads=heads)), \
-         mock.patch.object(push, "query_open_mr", return_value=None):
+         mock.patch.object(push, "_mr_lookup", return_value=push.MrLookup(None)):
         rc = push.main()
     out = capsys.readouterr().out
     assert rc == 0
@@ -873,7 +873,7 @@ def test_main_push_timeout_after_hook_amend_reports_rewritten_head(capsys) -> No
 def test_main_push_timeout_with_remote_behind_reports_timeout_not_pushed(capsys) -> None:
     """Remote did NOT move → honest 'timed out, unverified', never a clean success."""
     with mock.patch.object(push, "_git", side_effect=_timeout_git("stale999ccc")), \
-         mock.patch.object(push, "query_open_mr", return_value=None):
+         mock.patch.object(push, "_mr_lookup", return_value=push.MrLookup(None)):
         rc = push.main()
     out = capsys.readouterr().out
     assert rc == 1
@@ -886,7 +886,7 @@ def test_main_push_timeout_with_remote_behind_reports_timeout_not_pushed(capsys)
 def test_main_push_timeout_unreadable_remote_reports_unknown(capsys) -> None:
     """ls-remote itself fails → say the remote state is unknown, don't guess."""
     with mock.patch.object(push, "_git", side_effect=_timeout_git("")), \
-         mock.patch.object(push, "query_open_mr", return_value=None):
+         mock.patch.object(push, "_mr_lookup", return_value=push.MrLookup(None)):
         rc = push.main()
     out = capsys.readouterr().out
     assert rc == 1

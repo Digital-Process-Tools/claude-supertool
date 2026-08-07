@@ -20,7 +20,7 @@ rather than a number of seconds: a plain budget starts its clock when *git*
 starts, which makes the test a statement about how fast the runner reaches the
 helper, and on `windows-latest, 3.11` that statement came out false (#828).
 
-The only stubbed boundary is `query_open_mr` — the network call to glab/gh.
+The only stubbed boundary is `_mr_lookup` — the network call to glab/gh.
 Its return value is API metadata, not a git fact, and a sandbox has no MR.
 """
 from __future__ import annotations
@@ -277,14 +277,14 @@ def fork_box():
 
 
 def _no_mr():
-    return mock.patch.object(push, "query_open_mr", return_value=None)
+    return mock.patch.object(push, "_mr_lookup", return_value=push.MrLookup(None))
 
 
 def _mr(target: str = "master", iid: int = 7):
-    return mock.patch.object(push, "query_open_mr", return_value={
+    return mock.patch.object(push, "_mr_lookup", return_value=push.MrLookup({
         "source": "gitlab", "iid": iid, "target": target,
         "pipeline": None, "pipeline_id": None, "pipeline_url": None,
-        "merge_status": "can_be_merged"})
+        "merge_status": "can_be_merged"}))
 
 
 def _last_result(out: str) -> str:
@@ -650,7 +650,7 @@ def test_watch_spawn_failure_is_reported_not_swallowed(tmp_path,
     with mock.patch.object(push, "_git",
                            return_value=mock.Mock(stdout="", stderr="", returncode=1)):
         push._post_push_advisories(
-            {"source": "gitlab", "iid": 42, "target": "master"},
+            push.MrLookup({"source": "gitlab", "iid": 42, "target": "master"}),
             {"watch"}, "origin")
     out = capsys.readouterr().out
 
@@ -663,7 +663,7 @@ def test_watch_requested_with_no_open_mr_still_says_so(capsys, monkeypatch) -> N
     """Nothing to watch is a state; silence is not a way to report it."""
     with mock.patch.object(push, "_git",
                            return_value=mock.Mock(stdout="", stderr="", returncode=1)):
-        push._post_push_advisories(None, {"watch"}, "origin")
+        push._post_push_advisories(push.MrLookup(None), {"watch"}, "origin")
     out = capsys.readouterr().out
     assert "watch" in out.lower(), out
     assert "no open" in out.lower() or "no mr" in out.lower(), out
