@@ -16180,6 +16180,40 @@ def _at_file_fields(op: str) -> List[str]:
     return [name for name, _opt, _var in _at_file_specs(op)]
 
 
+def _at_file_payload_hint(op: str) -> str:
+    """Name the payload keys *op* wants, and show a call that would work.
+
+    An error that names the fault but not the remedy is on this tracker's own
+    list. Three agents in one evening met either a bare TOML line/column or
+    "takes the @reference as the only argument", and each of them guessed the
+    key names from scratch; one mangled its own commit message to get past the
+    shell instead, which is permanent in that history (#1003).
+
+    The keys come from the same registry that drives the route, so this can
+    never drift into describing a payload shape the loader would reject.
+    Returns "" for an op with no @file route, leaving its error untouched.
+    """
+    specs = _at_file_specs(op)
+    if not specs:
+        return ""
+    quote = "'" * 3
+    names = ", ".join(
+        name + ("[]" if variadic else "") + (" (optional)" if optional else "")
+        for name, optional, variadic in specs
+    )
+    lines = [
+        f"  {op}:@... reads its fields from the payload. Keys: {names}",
+        f"    ./supertool '{op}:@-' <<'EOF'",
+    ]
+    for name, _optional, variadic in specs:
+        if variadic:
+            lines.append(f'    {name} = ["path/to/file"]')
+        else:
+            lines.append(f"    {name} = {quote}...{quote}")
+    lines.append("    EOF")
+    return chr(10) + chr(10).join(lines)
+
+
 def _reorder_batch_for_snapshot(batch_ops: List[Any]) -> Tuple[List[Any], str]:
     """Reorder replace_lines ops within a batch so line numbers refer to the
     original file state (snapshot semantics), not the file as mutated by
@@ -16450,14 +16484,23 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
             return header + (
                 f"ERROR: {op}:@... takes the @reference as the only argument "
                 f"(e.g. {op}:@payload.json or {op}:@-). Put fields in the "
-                f"JSON/TOML payload, not on the colon CLI.\n"
+                f"JSON/TOML payload, not on the colon CLI."
+                + _at_file_payload_hint(op) + chr(10)
             )
         try:
             payload = _load_at_file(parts[1])
             parts, _at_file_replace_all = _at_file_to_parts(op, payload)
             _at_file_used = True
         except ValueError as _e:
-            return header + _take_payload_warnings() + f"ERROR: {_e}\n"
+            # A payload that would not load, or one that loaded without the
+            # fields the op needs. Both leave the caller knowing their call was
+            # wrong and not what a right one looks like — #1003 for the whole
+            # reasoning, and for the commit message that was mangled instead.
+            # The payload warnings drain first (#1027): a doubled backslash is
+            # a plausible cause of the very failure being reported, so it
+            # belongs above the error rather than after the remedy.
+            return (header + _take_payload_warnings() + f"ERROR: {_e}"
+                    + _at_file_payload_hint(op) + chr(10))
 
     # When parts come from @file (JSON/TOML payload), they hold literal
     # bytes — backslashes and newlines must NOT be reinterpreted as shell-

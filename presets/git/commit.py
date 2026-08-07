@@ -178,6 +178,118 @@ def _colon_split_refusal(msg, paths, spilled):
     return "\n".join(lines)
 
 
+def _worktree_changes(git_fn=None):
+    """One `git status -z` read, split three ways (#1003, #1016).
+
+    Returns `(modified_tracked, untracked, why_unknown)`. `why_unknown` is
+    non-empty exactly when git did not answer, and the two lists are then
+    meaningless — a caller must render the reason, never the empty lists,
+    because empty lists print as "nothing to report" (docs/validators.md,
+    "Declining instead of guessing").
+
+    `-z` rather than the default porcelain: git *quotes* a path containing a
+    space or a non-ASCII byte in the newline-terminated form, and a quoted
+    path pasted back into `git-commit:::MSG:::PATH` is not that path. The `-z`
+    stream is unquoted and NUL-separated on every platform, Windows included,
+    and it always uses '/' — no separator normalisation is needed or wanted.
+
+    A rename or copy carries its source as a *second* record; that record is
+    consumed here rather than parsed as a status line of its own, which would
+    invent a modified file out of a path that no longer exists.
+    """
+    run = _git if git_fn is None else git_fn
+    r = run(["status", "--porcelain=v1", "-z"])
+    if r.returncode != 0:
+        said = " ".join((r.stderr or "").split())[:120]
+        return [], [], said or f"exit {r.returncode}"
+    modified, untracked = [], []
+    skip_next = False
+    for rec in r.stdout.split(chr(0)):
+        if not rec:
+            continue
+        if skip_next:
+            skip_next = False
+            continue
+        if len(rec) < 4:
+            continue
+        x, y, path = rec[0], rec[1], rec[3:]
+        if x in ("R", "C"):
+            skip_next = True
+        if x == "?":
+            untracked.append(path)
+        elif y in ("M", "D", "T"):
+            modified.append(path)
+    return modified, untracked, ""
+
+
+def _sample(paths, cap=20):
+    """First *cap* paths, indented, plus a count line when there are more."""
+    lines = ["    " + p for p in paths[:cap]]
+    if len(paths) > cap:
+        lines.append(f"    … {len(paths) - cap} more")
+    return lines
+
+
+def _left_behind_lines(git_fn=None):
+    """What the commit did not include — named, counted, or declined (#1016).
+
+    `[]` means "this run looked and there was nothing to say". It is never
+    returned for a check that could not run: silence there is byte-for-byte
+    the receipt of a complete commit, printed under a ✓ that already argues
+    nothing was left out. That is the same defect one layer along.
+
+    Untracked files are counted, not listed. Nearly every worktree carries
+    some, and a list of them under every commit is a list nobody reads on the
+    commit that needed it. A modified *tracked* file is the one that means
+    "you edited this and did not commit it".
+    """
+    modified, untracked, unknown = _worktree_changes(git_fn)
+    if unknown:
+        return [
+            f"⚠ Left-behind check SKIPPED — `git status` did not answer ({unknown}).",
+            "  This receipt does not say whether anything was left uncommitted.",
+        ]
+    if not modified:
+        return []
+    extra = f"  ({len(untracked)} untracked, not listed)" if untracked else ""
+    lines = [f"⚠ {len(modified)} modified tracked file(s) were NOT included:{extra}"]
+    lines += _sample(modified)
+    lines.append("  Intentional? If not: git-commit:::MESSAGE:::"
+                 + ":::".join(modified[:3])
+                 + ("…" if len(modified) > 3 else ""))
+    return lines
+
+
+def _nothing_staged_lines():
+    """The refusal, with the list the op was already holding (#1003).
+
+    The refusal itself stays: committing files the caller did not name is not
+    a default anyone wants. What changes is that the remedy stops being a raw
+    `git add -A` guessed from an empty error.
+    """
+    modified, untracked, unknown = _worktree_changes()
+    lines = ["ERROR: nothing staged."]
+    if unknown:
+        lines.append(f"  What is unstaged is UNKNOWN — `git status` did not "
+                     f"answer ({unknown}).")
+        lines.append("  Stage explicitly: git-commit:::MESSAGE:::PATHS")
+        return lines
+    if not modified and not untracked:
+        lines.append("  Working tree is clean — there is nothing to stage.")
+        return lines
+    if modified:
+        lines.append(f"  Modified tracked ({len(modified)}):")
+        lines += _sample(modified)
+    if untracked:
+        lines.append(f"  Untracked ({len(untracked)}):")
+        lines += _sample(untracked)
+    picks = (modified + untracked)[:3]
+    lines.append("  Commit the ones you mean, by name:")
+    lines.append("    ./supertool " + chr(39) + "git-commit:::MESSAGE:::"
+                 + ":::".join(picks) + chr(39))
+    return lines
+
+
 def main() -> int:
     use_utf8_stdout()
     if len(sys.argv) < 2:
@@ -244,7 +356,8 @@ def main() -> int:
     # Pre-commit staged check
     staged = _git(["diff", "--cached", "--name-only"])
     if staged.returncode != 0 or not staged.stdout.strip():
-        print("ERROR: nothing staged. Use `git-commit:::MESSAGE:::PATHS` or stage manually first.")
+        for line in _nothing_staged_lines():
+            print(line)
         return 1
     staged_files = [l for l in staged.stdout.splitlines() if l.strip()]
 
@@ -268,6 +381,10 @@ def main() -> int:
             print(f"  {f}")
         if len(staged_files) > 20:
             print(f"  … {len(staged_files) - 20} more")
+        # #1016 — the tick above argues nothing was left out. Say so only when
+        # that is established, and say the opposite when it is not.
+        for line in _left_behind_lines():
+            print(line)
         # Next-step hint
         upstream_res = _git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"])
         if upstream_res.returncode == 0 and upstream_res.stdout.strip():

@@ -364,6 +364,17 @@ def main() -> int:
     status_cmd = ["status", "--porcelain=v1"]
     status_result = _git(status_cmd)
     _note_failed(status_cmd, status_result)
+    if status_result.returncode != 0:
+        # Three states, not two (#1002). Omitting the section leaves, at the
+        # place the reader is looking, exactly the shape of a clean tree — an
+        # absence produced by the tool, read as an absence in the world. The
+        # footer at the bottom already discloses that *something* was skipped;
+        # it does not say which section, and a reader who scrolled to the
+        # working tree and found nothing has already drawn the conclusion.
+        print(f"\n## Working tree: UNKNOWN — `git {' '.join(status_cmd)}` did "
+              f"not answer "
+              f"({_reason(status_result.returncode, status_result.stderr)}). "
+              f"This run did not look — it is not 'clean'.")
     if status_result.returncode == 0:
         lines = [l for l in status_result.stdout.splitlines() if l.strip()]
         staged = [l for l in lines if l[0] != " " and l[0] != "?"]
@@ -397,6 +408,13 @@ def main() -> int:
     stash_cmd = ["stash", "list"]
     stash_result = _git(stash_cmd)
     _note_failed(stash_cmd, stash_result)
+    if stash_result.returncode != 0:
+        # Same hole, same file (#1002). An answered empty list stays silent —
+        # no stashes is the ordinary state and a header on every run is one
+        # nobody reads — but a list that was never obtained is not that.
+        print(f"\n## Stashes: UNKNOWN — `git {' '.join(stash_cmd)}` did not "
+              f"answer "
+              f"({_reason(stash_result.returncode, stash_result.stderr)}).")
     if stash_result.returncode == 0 and stash_result.stdout.strip():
         stashes = stash_result.stdout.strip().splitlines()
         print(f"\n## Stashes ({len(stashes)})")
