@@ -60,7 +60,7 @@ jobs:
           # What a user could notice. Docs and tests are excluded on purpose:
           # requiring a fragment for a typo fix is how the discipline decays
           # into a reflex-added empty file.
-          shipped=$(printf '%s\n' "$changed" | grep -E '^(supertool\.py|presets/|validators/|formatters/|notifiers/|\.claude-plugin/)' || true)
+          shipped=$(printf '%s\n' "$changed" | grep -E '^(_?supertool\.py|presets/|validators/|formatters/|notifiers/|\.claude-plugin/)' || true)
           if [ -z "$shipped" ]; then
             echo "changelog   : skipped     (no user-visible paths changed — nothing to announce)"
             exit 0

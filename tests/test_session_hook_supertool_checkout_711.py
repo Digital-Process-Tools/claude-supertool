@@ -33,6 +33,8 @@ import pytest
 REPO = Path(__file__).parent.parent
 HOOK = REPO / "hooks" / "session-start.sh"
 CORE = REPO / "supertool.py"
+#: `supertool.py` is an entry-point shim since #931 and cannot run without this.
+CORE_IMPL = REPO / "_supertool.py"
 
 # Same reason as tests/test_session_hook_plugin_path.py: a bare `bash` on the
 # Windows runner is the WSL launcher stub, so the hook never executes and every
@@ -62,6 +64,7 @@ def _supertool_checkout(d: Path) -> Path:
     """
     d.mkdir(parents=True, exist_ok=True)
     shutil.copy(CORE, d / "supertool.py")
+    shutil.copy(CORE_IMPL, d / "_supertool.py")
     _write_config(d)
     return d
 

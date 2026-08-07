@@ -656,7 +656,7 @@ See [docs/contributing.md](docs/contributing.md) — custom ops, presets, valida
 
 ## Design decisions
 
-- **One file.** `supertool.py` is ~980 LoC (16 ops, 3 integration tiers). No package, no `setup.py`, no required deps. Drop in and use.
+- **Two files, one of them a shim.** `supertool.py` is the entry point everything invokes and is ~80 lines; the tool itself is `_supertool.py` beside it. The split exists so CPython caches the bytecode: a script named on the command line is recompiled from source on every run, an imported module is not, and that recompile measured ~145ms per invocation on ubuntu and windows runners ([#931](https://github.com/Digital-Process-Tools/claude-supertool/issues/931)). Still no package layout, no required deps — clone or `pip install`, both work.
 - **Python 3.9+.** macOS ships 3.9 via CommandLineTools; we don't force upgrades.
 - **Supertool isn't an MCP server.** For the ops supertool ships (run a script, return output), MCP would be ceremony — Bash-invoked binaries are simpler, faster, and plug into Claude Code's existing `--allowedTools`/`--disallowedTools` flow. But supertool *consumes* MCP servers when you want LSP-grade accuracy on `resolve`/`refs`/`workspace` — see the [MCP integration](#mcp-integration--warm-lsp-for-resolve--refs--workspace) above.
 - **Trade Python work for LLM tokens.** LLM compute is expensive; local CPU is cheap. Any time the model would spend tokens computing, parsing, formatting, or finding — supertool should spend milliseconds instead. Richer op output (state hints, guards, semantic anchors, auto-formatting, syntax checks) is not feature creep — it's the whole thesis. Heavy Python is fine if it shaves tokens off the model side.

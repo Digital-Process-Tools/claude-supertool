@@ -144,9 +144,15 @@ class GateRefusal(Exception):
 
 #: Path prefixes whose coverage reds the build, and the floor each must clear.
 #: Measured 2026-08-05 on macOS/py3.14 over `-m 'not benchmark'`:
-#: supertool.py 89.90%, presets/ 84.04%.
+#: _supertool.py 89.90%, presets/ 84.04%.
+#:
+#: `_supertool.py` is the file that was `supertool.py` until #931 split the
+#: entry point off it. The floor moved with the code, deliberately: leaving the
+#: key as `supertool.py` would have kept a 89% floor that now bounds a 53-line
+#: shim and reports green while measuring none of the 17.4k lines it was
+#: written for.
 ENFORCED: "dict[str, float]" = {
-    "supertool.py": 89.0,
+    "_supertool.py": 89.0,
     "presets/": 83.0,
 }
 
@@ -180,6 +186,13 @@ MEASURED_NOT_ENFORCED: "dict[str, str]" = {
 #: Not measured, with the reason. Coverage of a test file answers "did the suite
 #: run itself", which is what the pass/fail count already says.
 NOT_MEASURED_PY: "dict[str, str]" = {
+    "supertool.py": (
+        "the #931 entry-point shim. `source` resolves `supertool` by module "
+        "name, and the shim rebinds that entry in sys.modules to the module it "
+        "delegates to, so coverage attributes the import to `_supertool.py` and "
+        "there is no separate number here to floor. Both of its branches are "
+        "executed as subprocesses instead, by tests/test_entry_point_shim_931.py"
+    ),
     "tests/": (
         "the suite measuring itself — the pass/fail count is the same fact, "
         "and a floor here rewards writing tests for tests"
@@ -239,7 +252,7 @@ def _source_lines() -> "list[str]":
     editable install), and a file path there is rejected with
     `module-not-imported`.
     """
-    out = ["supertool"]
+    out = ["supertool", "_supertool"]
     for prefix in list(ENFORCED) + list(MEASURED_NOT_ENFORCED):
         if prefix.endswith("/"):
             out.append(str(REPO / prefix.rstrip("/")))

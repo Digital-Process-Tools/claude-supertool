@@ -683,7 +683,8 @@ _BARE_PARSE = re.compile(r"(?:int|float)\(\s*os\.(?:environ\.get|getenv)\(")
 
 def _scan_bare_parses():
     hits = {}
-    for path in sorted(REPO_ROOT.glob("presets/**/*.py")) + [REPO_ROOT / "supertool.py"]:
+    for path in (sorted(REPO_ROOT.glob("presets/**/*.py"))
+                 + [REPO_ROOT / "supertool.py", REPO_ROOT / "_supertool.py"]):
         rel = path.relative_to(REPO_ROOT).as_posix()
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
         found = [i + 1 for i, ln in enumerate(lines) if _BARE_PARSE.search(ln)]
