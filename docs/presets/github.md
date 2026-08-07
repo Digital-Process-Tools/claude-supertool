@@ -461,6 +461,43 @@ The word before the `#` is part of the answer rather than decoration. Both names
 
 **Bounded at 5 legs per group**, then `+N more` — this repo's disclosure vocabulary ([#605](https://github.com/Digital-Process-Tools/claude-supertool/issues/605)) — so a wide matrix cannot turn the answer to "which" into a second output-budget problem.
 
+### The pending count carries an age
+
+`checks: 18 total: 14 passed, 0 failed, 4 pending` is byte-identical whether four macOS legs are queued behind runner availability and will merge in five minutes, or the run wedged an hour ago and nothing further is arriving ([#801](https://github.com/Digital-Process-Tools/claude-supertool/issues/801)). Two opposite situations, one line, in the merge gate.
+
+`gh-pr:N` and `gh-pr:N:status` now age the pending set:
+
+```
+checks: 18 total: 14 passed, 0 failed, 4 pending ⚠ NOT ALL GREEN — oldest pending 41m
+checks: 18 total: 14 passed, 0 failed, 4 pending ⚠ NOT ALL GREEN — oldest pending 2m
+```
+
+The age sits **after** the tally, outside the comma-separated term list, and that placement is load-bearing rather than cosmetic. `N total:` and terms that sum to `N` are audited by parsing the terms back out of the rendered line ([#454](https://github.com/Digital-Process-Tools/claude-supertool/issues/454), `tests/test_check_tally_454.py`). A parenthetical spliced into the pending term put prose where that parser reads counts: the `pending` term vanished from the parse, and a `2 of 4` before a comma would have been read back as a *term worth 2* and quietly corrupted the sum. The check was right and the decoration was wrong.
+
+**The age is the oldest still-pending leg**, and the choice is not arbitrary. Two other ages were available from the same payload and both answer a different question:
+
+| Candidate | What it answers | Why not |
+| --- | --- | --- |
+| the run's `startedAt` | how long CI has been going | Diluted by every leg that already finished — a long matrix with a leg thirty seconds old reads as alarming and is not |
+| time since the last leg changed state | is the run progressing | Wrong in exactly #801's case: sixteen legs finish, two stay queued behind a busy pool, so the last change is as old as the sixteenth completion and a *normal* queue renders as a *dead* one |
+| the oldest still-pending leg | how long the thing I am waiting for has been outstanding | Scoped to the pending set and nothing else |
+
+**It is not a staleness alarm and will not become one.** Nothing here prints `STALLED`. A runner with nothing to do is indistinguishable from a runner that cannot work, and this repo went 0-for-12 on that inference ([#750](https://github.com/Digital-Process-Tools/claude-supertool/issues/750)). The clock is reported; the reader compares it against a matrix duration they already know. The tool knows the clock, not the intent.
+
+**A pending leg with no readable start time is disclosed, never dropped.** `gh` renders an unset timestamp as `0001-01-01T00:00:00Z` rather than null, which parses fine and yields an age of about two thousand years, so it is refused along with an absent or unparseable one. Dropping such a leg from the maximum would make the reported age *younger* — the reassuring direction, and so the dangerous one:
+
+```
+checks: 4 total: 1 passed, 0 failed, 3 pending ⚠ NOT ALL GREEN — oldest pending 41m
+  pending: 2 of 3 pending legs carry no start time, so the age above is a floor — the true oldest may be older, and by how much is UNKNOWN.
+
+checks: 2 total: 1 passed, 0 failed, 1 pending ⚠ NOT ALL GREEN — oldest pending age UNKNOWN
+  pending: no pending leg carries a start time, so how long the pending set has been outstanding is UNKNOWN. The PR's Checks tab has the timestamps.
+```
+
+Anything carrying a digit or a comma goes on its own line under the tally — the shape `shortfall()` and the red-leg disclosure already use for everything that is not a count.
+
+No extra request: `startedAt` was already in the payload `gh pr view --json statusCheckRollup` returns. The boards (`gh-prs`, the dashboard) stay one line wide and do not carry the age — `summarize_github(..., with_age=True)` is opt-in.
+
 ### The tally says how many legs it did *not* read
 
 `N total:` and terms that sum to `N` ([#454](https://github.com/Digital-Process-Tools/claude-supertool/issues/454)) audit the tally against itself. That cannot detect a missing *input*. On PR #715, mid-way through a partial re-run, `statusCheckRollup` came back with nine of the run's fourteen legs and the op printed `9 total: 8 passed, 0 failed, 1 pending` — internally consistent, and wrong by five ([#724](https://github.com/Digital-Process-Tools/claude-supertool/issues/724)). Had the ninth leg been green, the line would have read `9 total: 9 passed, 0 failed, 0 pending` with **no** `⚠` at all: five legs invisible rather than pending, in the line a merge gate reads.
@@ -688,6 +725,33 @@ What actually discriminates, verified against this repo: `closedByPullRequestsRe
 Three states, unchanged from before: a failed lookup prints `Linked PRs: unknown — could not query (...)`, never nothing and never "none". The switch to GraphQL added one new way to fail — no owner/repo to put in the query text, since `gh api` (unlike `gh pr list`) takes no `--repo` flag — and that failure gets the same "unknown" treatment rather than a silent "none".
 
 The lookup asks for the first 20 closing PRs, not the 5 `gh-issues` caps its board rows to: a board multiplies its cap across every row per call, but this op is answering about the one issue a reader named, and likely wants the complete list. Hitting the cap prints a note (`showing the first 20 — there may be more`) rather than truncating silently.
+
+### A linked PR says whether it is green, not only that it exists
+
+`gh-issue:803` printed `#808 (OPEN)` at a moment when #808 had a failed leg ([#815](https://github.com/Digital-Process-Tools/claude-supertool/issues/815)). `OPEN` was true and it was the whole story: a triage reader concludes "the fix is in flight" and moves on, when the fix is in flight *and red* — one says wait, the other says go look.
+
+```
+Linked PRs: 1
+  #808 (OPEN) fix(gh-run): the failed-jobs section asks a predicate, not a string (#803)
+    branch: fix/803-run-red-state-predicate
+    checks: 18 total: 13 passed, 1 failed, 4 pending ⚠ NOT ALL GREEN
+```
+
+**It costs nothing.** The obvious objection is one extra API call per linked PR, on a tracker where most issues have one. There is no extra call: `closedByPullRequestsReferences` is already fetched over GraphQL and `commits(last: 1) { commit { statusCheckRollup } }` hangs off the same selection set. That is why the tally is default-on rather than gated behind `:full` — there is no per-PR cost to gate. The arithmetic is `_checks.summarize`, the same function `gh-pr:N:status` renders, so the two ops cannot drift ([#454](https://github.com/Digital-Process-Tools/claude-supertool/issues/454)).
+
+Three states, and the two that are not a tally are different sentences:
+
+| Situation | Rendered |
+| --- | --- |
+| legs read | `18 total: 13 passed, 1 failed, 4 pending ⚠ NOT ALL GREEN` |
+| `statusCheckRollup` is null — no run at all | `no check runs on this commit — whether one is still coming is UNKNOWN; ``gh-pr:808`` classifies it` |
+| the tally was not in the response | `UNKNOWN — the check tally was not in the response; ``gh-pr:808:status`` asks for it directly` |
+
+A PR with no run must not render like one whose run is pending: this tracker has already had a PR whose workflow never triggered read as "not yet" for its entire first life, which is what [`gh-pr`'s four-state absence](#zero-check-runs-is-four-states-not-one) exists for. That classification needs the head commit's age and mergeable state, so the line names the op that buys them rather than re-fetching them here. And a tally that could not be read says UNKNOWN, because an omitted tally reads as "nothing to report".
+
+The leg list is fetched a page at a time; a matrix wider than 100 legs is disclosed with `⚠ INCOMPLETE — 100 of 137 legs read` rather than summed short under a confident `100 total`.
+
+`gl-issue`'s related-MR section answers the same question — see [gitlab.md](gitlab.md).
 
 ### `gh-job:...:grep:` bounds its own output, and says when it did
 

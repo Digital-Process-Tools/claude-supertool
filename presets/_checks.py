@@ -404,7 +404,139 @@ def shortfall(found: int, declared: int | None,
     ])
 
 
-def summarize(states: Sequence[str] | Iterable[str]) -> str:
+# gh renders "this timestamp is not set" as a zero time rather than as null —
+# `"completedAt": "0001-01-01T00:00:00Z"` on every still-running leg, observed
+# on PR #1023 on 2026-08-07. It parses perfectly well, which is the problem:
+# an age computed from it is about two thousand years and would be printed
+# under a caption saying how long CI has been waiting.
+ZERO_TIME_YEAR = 1970
+
+
+def parse_ts(value: object) -> float | None:
+    """An ISO-8601 instant as epoch seconds — `None` when not establishable.
+
+    `None` for every unusable input, and the sentinel above is one of them:
+    an unparseable stamp and a zero-time stamp are both "this leg does not
+    carry a start time", and neither may become a number.
+
+    `Z` is rewritten rather than passed through because
+    `datetime.fromisoformat` only learned to accept it in 3.11 and this repo
+    is tested down to 3.9 — a silent `ValueError` there would turn every
+    pending age into UNKNOWN on the two oldest legs of the matrix and nowhere
+    else, which is the shape of bug a local run cannot see.
+    """
+    from datetime import datetime, timezone
+
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    if dt.year < ZERO_TIME_YEAR:
+        return None
+    return dt.timestamp()
+
+
+def pending_disclosure(stamps: Sequence[object],
+                       now_epoch: float | None = None) -> tuple[str, List[str]]:
+    """`(note, lines)` for how old the pending set is (#801).
+
+    `18 total: 16 passed, 0 failed, 2 pending` is byte-identical whether those
+    two legs were queued ninety seconds ago or an hour ago behind a starved
+    runner pool. Both readings are consistent with the same line, and only one
+    of them means "go look".
+
+    **Which age, and why this one.** Three were available from the payload
+    `gh pr view` already returns:
+
+    * *the run's age* — how long CI has been going. Diluted by every leg that
+      already finished, so a long-running matrix with a leg that started
+      thirty seconds ago reads as alarming and is not.
+    * *time since the last leg changed state* — the tempting one, and wrong in
+      exactly the case #801 was filed from. Sixteen legs finish, two stay
+      queued behind a busy pool: the last state change is as old as the
+      sixteenth leg's completion, so a normal queue renders identically to a
+      dead run *and renders as dead*. It replaces an ambiguous line with a
+      confidently misleading one.
+    * *the oldest still-pending leg* — scoped to the thing the reader is
+      waiting for and nothing else. This is it.
+
+    None of the three decides queued-from-wedged, and this one does not try:
+    #801 is explicit that a `STALLED` threshold would be #750 again, where a
+    runner with nothing to do is indistinguishable from a runner that cannot
+    work and the inference went 0-for-12. The age is stated; the reader
+    compares it against a matrix duration they already know.
+
+    Three states, not two. A pending leg whose start time cannot be
+    established is *disclosed*, never dropped from the maximum — dropping it
+    makes the reported age **younger**, which is the reassuring direction and
+    so the dangerous one. `("", [])` only ever means "there is no pending set".
+
+    **The note is short and lives outside the term list on purpose.**
+    `summarize()` promises that every `k <label>` term sums to `N total`, and
+    `tests/test_check_tally_454.py` audits exactly that by parsing the terms
+    back out of the rendered line. A parenthetical spliced into the pending
+    term — `4 pending (oldest 41m; 2 of 4 carry no start time)` — puts prose
+    where that parser reads counts: it lost the `pending` term entirely, and a
+    stray `2 of 4` before a comma would have been read as a *term* worth 2 and
+    quietly corrupted the sum. The check was right and the decoration was
+    wrong, so the note goes after the whole tally and anything needing a digit
+    or a comma goes on its own line, which is the shape `shortfall()` and
+    `named_disclosure()` already use for everything that is not a count.
+    """
+    if not stamps:
+        return ("", [])
+
+    import time
+
+    now = time.time() if now_epoch is None else now_epoch
+    ages = [now - ts for ts in (parse_ts(s) for s in stamps) if ts is not None]
+    unreadable = len(stamps) - len(ages)
+    total = len(stamps)
+
+    if not ages:
+        return ("oldest pending age UNKNOWN", [
+            f"  pending: no pending {_legs(total)} carries a start time, so "
+            "how long the pending set has been outstanding is UNKNOWN. The "
+            "PR's Checks tab has the timestamps."
+        ])
+
+    note = f"oldest pending {_duration(int(max(ages)))}"
+    if unreadable:
+        return (note, [
+            f"  pending: {unreadable} of {total} pending {_legs(total)} carry "
+            "no start time, so the age above is a floor — the true oldest may "
+            "be older, and by how much is UNKNOWN."
+        ])
+    return (note, [])
+
+
+def github_pending_stamps(checks: object) -> List[object]:
+    """`startedAt` for each rollup leg in the pending bucket — one per leg.
+
+    The value is carried through unvalidated, including absent and
+    zero-time. `pending_note` is what decides whether it is readable, so a leg
+    with no usable stamp still occupies a slot in the list and still gets
+    counted in the disclosure. Filtering here is how it would silently
+    disappear.
+    """
+    if not isinstance(checks, list):
+        return []
+    out: List[object] = []
+    for c in checks:
+        if not isinstance(c, dict):
+            continue
+        if bucket(github_state(c)) == "pending":
+            out.append(c.get("startedAt"))
+    return out
+
+
+def summarize(states: Sequence[str] | Iterable[str],
+              pending_note: str = "") -> str:
     """Render the summary that follows `Checks: `.
 
     Always opens with `N total` and every count after it sums to N, so the
@@ -414,6 +546,15 @@ def summarize(states: Sequence[str] | Iterable[str]) -> str:
         12 total: 0 passed, 0 failed, 12 pending ⚠ NOT ALL GREEN
         3 total: 3 passed, 0 failed, 0 pending
         none reported — no check runs on this commit
+
+    `pending_note` (#801) is appended after the whole line, past the marker —
+    deliberately *outside* the comma-separated term list, because the promise
+    above is about the terms and an age is not a count of anything. Splicing
+    it into the pending term put prose where `test_check_tally_454`'s parser
+    reads counts and broke the audit that is this module's reason to exist.
+    It is dropped when nothing is pending, so a settled run cannot grow one::
+
+        18 total: 14 passed, 0 failed, 4 pending ⚠ NOT ALL GREEN — oldest pending 41m
     """
     tokens = [normalize(s) for s in states]
     total = len(tokens)
@@ -421,10 +562,11 @@ def summarize(states: Sequence[str] | Iterable[str]) -> str:
         return NO_CHECKS
 
     buckets = Counter(bucket(t) for t in tokens)
+    n_pending = buckets.get('pending', 0)
     parts = [
         f"{buckets.get('passed', 0)} passed",
         f"{buckets.get('failed', 0)} failed",
-        f"{buckets.get('pending', 0)} pending",
+        f"{n_pending} pending",
     ]
     leftovers = Counter(_label(t) for t in tokens if bucket(t) == "other")
     for label, count in sorted(leftovers.items(), key=lambda kv: (-kv[1], kv[0])):
@@ -433,12 +575,34 @@ def summarize(states: Sequence[str] | Iterable[str]) -> str:
     line = f"{total} total: " + ", ".join(parts)
     if buckets.get("passed", 0) != total:
         line += f" {NOT_GREEN}"
+    if n_pending and pending_note:
+        line += f" — {pending_note}"
     return line
 
 
-def summarize_github(checks: object) -> str:
-    """`summarize()` over a raw `statusCheckRollup` list."""
-    return summarize(github_states(checks))
+def summarize_github(checks: object, with_age: bool = False) -> str:
+    """`summarize()` over a raw `statusCheckRollup` list.
+
+    `with_age` opts into #801's pending age. Off by default so the boards that
+    render one tally per row stay one line wide; the ops answering about a
+    single PR turn it on.
+    """
+    note = ""
+    if with_age:
+        note, _lines = pending_disclosure(github_pending_stamps(checks))
+    return summarize(github_states(checks), note)
+
+
+def github_pending_lines(checks: object) -> List[str]:
+    """The disclosure lines for #801's pending age — `[]` when there is none.
+
+    Separate from `summarize_github` because they are separate outputs: the
+    note rides on the tally line, and anything carrying a digit or a comma has
+    to go under it rather than inside the term list — see
+    `pending_disclosure`.
+    """
+    _note, lines = pending_disclosure(github_pending_stamps(checks))
+    return lines
 
 
 def all_green(states: Sequence[str] | Iterable[str]) -> bool:

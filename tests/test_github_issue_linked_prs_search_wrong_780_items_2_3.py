@@ -45,13 +45,27 @@ _spec.loader.exec_module(issue)
 WEB_URL = "https://github.com/Digital-Process-Tools/claude-supertool/issues/42"
 
 
+# The rollup subtree the query asks for since #815. Attached to every node
+# below rather than left out: a node without it is a *partial* response, and
+# the op is required to render the tally as UNKNOWN there, so omitting it
+# would make these fixtures model a failure while claiming to model success.
+_GREEN_ROLLUP = {"nodes": [{"commit": {"statusCheckRollup": {"contexts": {
+    "totalCount": 1,
+    "nodes": [{"__typename": "CheckRun", "name": "pytest",
+               "status": "COMPLETED", "conclusion": "SUCCESS"}],
+}}}}]}
+
+
 def _graphql_payload(nodes: list[dict]) -> str:
     """The envelope `gh api graphql` returns for the closing-PRs query."""
     return json.dumps({
         "data": {
             "repository": {
                 "issue": {
-                    "closedByPullRequestsReferences": {"nodes": nodes}
+                    "closedByPullRequestsReferences": {
+                        "nodes": [dict({"commits": _GREEN_ROLLUP}, **n)
+                                  for n in nodes]
+                    }
                 }
             }
         }

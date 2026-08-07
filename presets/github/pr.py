@@ -535,13 +535,19 @@ def main() -> int:
               f"{_untrusted.flat(d.get('baseRefName') or '?')}")
         shortfall_lines: list[str] = []
         if check_states:
-            checks_text = _checks.summarize(check_states)
+            # `with_age` is #801: a pending count with no age reads the same
+            # whether the legs are queued and progressing or wedged, and this
+            # is the line read on a poll loop.
+            checks_text = _checks.summarize_github(
+                d.get("statusCheckRollup"), with_age=True)
             marker, shortfall_lines = _reconcile_checks(d)
             if marker:
                 checks_text += f" {marker}"
         else:
             checks_text, _ = _absence_lines(d, iid)
         print(f"checks: {checks_text}")
+        for line in _checks.github_pending_lines(d.get("statusCheckRollup")):
+            print(line)
         for line in shortfall_lines:
             print(line)
         for line in _checks.named_disclosure(
@@ -636,7 +642,9 @@ def main() -> int:
     check_states = _checks.github_states(d.get("statusCheckRollup"))
     shortfall_lines: list[str] = []
     if check_states:
-        checks_text = _checks.summarize(check_states)
+        # `with_age` is #801 — see the `:status` branch above.
+        checks_text = _checks.summarize_github(
+            d.get("statusCheckRollup"), with_age=True)
         merge_note = "" if _checks.all_green(check_states) else (
             f" — checks {_checks.NOT_GREEN}, see Checks above"
         )
@@ -652,6 +660,8 @@ def main() -> int:
     else:
         checks_text, merge_note = _absence_lines(d, iid)
     print(f"Checks: {checks_text}")
+    for line in _checks.github_pending_lines(d.get("statusCheckRollup")):
+        print(line)
     for line in shortfall_lines:
         print(line)
     for line in _checks.named_disclosure(

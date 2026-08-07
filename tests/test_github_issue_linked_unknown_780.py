@@ -117,11 +117,22 @@ def test_a_genuine_empty_result_still_says_none(monkeypatch) -> None:
     assert "unknown" not in out.lower()
 
 
+# The rollup subtree the linked-PR query asks for since #815. A node without
+# it is a *partial* response, and the op is required to say the tally is
+# UNKNOWN there — so a fixture omitting it no longer models a happy path.
+_GREEN_ROLLUP = {"nodes": [{"commit": {"statusCheckRollup": {"contexts": {
+    "totalCount": 1,
+    "nodes": [{"__typename": "CheckRun", "name": "pytest",
+               "status": "COMPLETED", "conclusion": "SUCCESS"}],
+}}}}]}
+
+
 def test_a_populated_result_still_lists_the_prs(monkeypatch) -> None:
     """The other control: the happy path is unchanged."""
     payload = json.dumps({"data": {"repository": {"issue": {
         "closedByPullRequestsReferences": {"nodes": [
-            {"number": 99, "title": "a fix", "state": "OPEN", "headRefName": "b"},
+            {"number": 99, "title": "a fix", "state": "OPEN", "headRefName": "b",
+             "commits": _GREEN_ROLLUP},
         ]}
     }}}})
     out = _linked_section(

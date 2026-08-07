@@ -14,6 +14,7 @@ from typing import NamedTuple, Optional
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import _body  # noqa: E402  (the one body cap + disclosure — #698)
+import _checks  # noqa: E402  (the one check tally, shared with gh-pr — #815)
 import _http  # noqa: E402  (the destination policy and the bounded fetch — #817)
 import _repo_target  # noqa: E402  (the repo this call is about, when not the cwd's)
 import _untrusted  # noqa: E402  (the fence around tracker text — #694)
@@ -302,8 +303,98 @@ def _closing_prs_query(owner: str, name: str, number: object) -> str:
         f'query {{ repository(owner: "{owner}", name: "{name}") {{ '
         f'issue(number: {number}) {{ '
         f'closedByPullRequestsReferences(first: {CLOSING_PR_LIMIT}, includeClosedPrs: true) '
-        '{ nodes { number title state headRefName } } } } }'
+        '{ nodes { number title state headRefName ' + _ROLLUP_SELECTION +
+        ' } } } } }'
     )
+
+
+# How many rollup legs one linked PR's tally is built from. GitHub's own page
+# size; a matrix larger than this is disclosed rather than silently summed
+# short — see `_check_tally`.
+CONTEXT_LIMIT = 100
+
+# The check tally, hung off the linked-PR selection set (#815).
+#
+# **This is the whole cost answer, and it is "nothing".** The issue asks
+# whether the tally should be default-on or behind `:full` because it might be
+# one API call per linked PR. It is not: `closedByPullRequestsReferences` is
+# already fetched over GraphQL and this rides in the same request. Measured
+# against the live API on 2026-08-07 — issues 1007, 803 and 969 returned 20,
+# 18 and 20 contexts respectively, one request each. There is no per-PR cost
+# to gate, so there is no gate.
+#
+# `startedAt` is here for #801's pending age, which the shared tally renders
+# from the same field on the `gh-pr` side. Both fragments are spelled out
+# because a rollup mixes CheckRuns with legacy commit statuses and
+# `_checks.github_state` reads `conclusion`/`status` off one and `state` off
+# the other; omitting the second would make an externally-checked PR read as
+# having no legs.
+_ROLLUP_SELECTION = (
+    "commits(last: 1) { nodes { commit { statusCheckRollup { "
+    "contexts(first: 100) { totalCount nodes { __typename "
+    "... on CheckRun { name status conclusion startedAt } "
+    "... on StatusContext { context state createdAt } "
+    "} } } } } }"
+)
+
+
+def _check_tally(node: dict, number: object) -> str:
+    """The `checks:` line for one linked PR — three states, never two (#815).
+
+    `#808 (OPEN)` was the whole story the op told about a PR that was open
+    *and red*. `OPEN` says a fix is in flight; the tally says whether to wait
+    for it or go look at it. Those are different decisions and only one line
+    was being printed for both.
+
+    The arithmetic is `_checks.summarize_github`, the same call `gh-pr:N:status`
+    renders, so the two ops cannot drift — #445/#454 is the whole reason that
+    module exists, and a second hand-rolled sum here would reintroduce it.
+
+    Three outcomes, and the two that are not a tally are deliberately
+    different sentences:
+
+    * **no run at all** — `statusCheckRollup` is null. Not rendered as a zero
+      tally: `0 passed, 0 failed, 0 pending` reads as "accounted for, nothing
+      outstanding" (#452), and not rendered as pending either, because a PR
+      whose workflow never triggered has already been read as "not yet" for
+      its whole first life on this tracker. Whether a run is still *coming*
+      needs the head commit's age and the mergeable state, which is
+      `_checks.absence()`'s job on the `gh-pr` side; that op is named rather
+      than its evidence re-fetched here.
+    * **not in the response** — the `commits` subtree is missing or shaped
+      unexpectedly, which is what a partial GraphQL result looks like. Says
+      UNKNOWN. An omitted tally reads as "nothing to report", and that reading
+      is the defect this issue is about.
+    * **the tally**, with `⚠ INCOMPLETE` when the leg list was cut at the page
+      size — a tally over 100 of 137 legs is not a merge signal, and
+      `summarize` would otherwise open with a confident `100 total`.
+    """
+    commits = node.get("commits")
+    nodes = commits.get("nodes") if isinstance(commits, dict) else None
+    first = nodes[0] if isinstance(nodes, list) and nodes else None
+    commit = first.get("commit") if isinstance(first, dict) else None
+    if not isinstance(commit, dict) or "statusCheckRollup" not in commit:
+        return (f"UNKNOWN — the check tally was not in the response; "
+                f"`gh-pr:{number}:status` asks for it directly")
+
+    rollup = commit.get("statusCheckRollup")
+    if rollup is None:
+        return ("no check runs on this commit — whether one is still coming "
+                f"is UNKNOWN; `gh-pr:{number}` classifies it")
+
+    contexts = rollup.get("contexts") if isinstance(rollup, dict) else None
+    legs = contexts.get("nodes") if isinstance(contexts, dict) else None
+    if not isinstance(legs, list):
+        return (f"UNKNOWN — the check tally was not in the response; "
+                f"`gh-pr:{number}:status` asks for it directly")
+
+    text = _checks.summarize_github(legs, with_age=True)
+    total = contexts.get("totalCount")
+    if isinstance(total, int) and total > len(legs):
+        text += (f" {_checks.INCOMPLETE_MARK} — {len(legs)} of {total} "
+                 f"legs read (page size {CONTEXT_LIMIT}); "
+                 f"`gh-pr:{number}:status` reads them all")
+    return text
 
 
 def _closing_pr_nodes(payload: object) -> list[dict] | None:
@@ -353,6 +444,17 @@ def _print_linked_prs(iid: object, web_url: str = "") -> None:
     except json.JSONDecodeError:
         _linked_prs_unknown(["gh api graphql returned output that is not JSON"])
         return
+    except OSError as exc:
+        # `main()` catches FileNotFoundError around its own `gh` call and this
+        # arm did not, so on a machine without `gh` on PATH the linked-PR
+        # section raised through a function whose entire purpose is to say "I
+        # could not ask". Windows raises `FileNotFoundError [WinError 2]` from
+        # `subprocess.run` where a POSIX shell can resolve differently, and
+        # `PermissionError` where POSIX raises `IsADirectoryError` — so the
+        # base class is caught rather than the one spelling that reproduces
+        # locally (#997, #618/#627).
+        _linked_prs_unknown([f"gh could not be run: {type(exc).__name__}"])
+        return
 
     nodes = _closing_pr_nodes(payload)
     if nodes is None:
@@ -371,6 +473,7 @@ def _print_linked_prs(iid: object, web_url: str = "") -> None:
         pr_branch = pr.get("headRefName", "?")
         print(f"  #{pr_num} ({pr_state}) {_untrusted.flat(pr_title)}")
         print(f"    branch: {_untrusted.flat(pr_branch)}")
+        print(f"    checks: {_check_tally(pr, pr_num)}")
     if len(nodes) == CLOSING_PR_LIMIT:
         print(f"    (showing the first {CLOSING_PR_LIMIT} — there may be more)")
 
