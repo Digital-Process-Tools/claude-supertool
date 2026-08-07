@@ -20,6 +20,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import _repo_target  # noqa: E402  (the repo this call is about, when not the cwd's)
+import _branch_locale  # noqa: E402  (where the branch is checked out — shared by all five #850)
 from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 
 
@@ -37,25 +38,11 @@ def _api_repo_path(suffix: str) -> str:
 def _local_branch_check(source: str) -> str:
     """Return a one-line local-branch-vs-source check for output.
 
-    Empty string when not in a git repo, detached HEAD, or source is empty.
+    Delegated to `_branch_locale` (#850): a branch held by a linked worktree is
+    neither a match nor a MISMATCH, and saying MISMATCH there prescribed a
+    checkout git refuses.
     """
-    if not source:
-        return ""
-    try:
-        r = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            capture_output=True, text=True, timeout=3, encoding="utf-8", errors="replace",
-        )
-        if r.returncode != 0:
-            return ""
-        local = r.stdout.strip()
-        if not local or local == "HEAD":
-            return ""
-        if local == source:
-            return f"You are on: {local} ✓"
-        return f"You are on: {local} ⚠ MISMATCH — switch with: ./supertool 'git-checkout:{source}'"
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        return ""
+    return _branch_locale.check(source)
 
 
 def _gh_error_kind(stderr: str) -> str:
