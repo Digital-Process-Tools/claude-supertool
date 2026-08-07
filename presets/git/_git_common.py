@@ -242,6 +242,133 @@ def _first_error_line(text: str) -> str:
     return ""
 
 
+#: One page of open PRs is enough for every worktree a fleet realistically
+#: holds, and the cap is remembered so a page that *hit* it can decline for the
+#: branches it did not name (see `PrIndex.truncated`).
+PR_INDEX_LIMIT = 100
+
+#: The batched lookup is one network call on an otherwise local op, so it gets
+#: a short budget. A slow answer is `unknown`, never "no PR".
+PR_INDEX_TIMEOUT = 8
+
+#: Fields the index needs. `statusCheckRollup` rides the same call, which is
+#: what makes the tally free — the alternative was a per-PR fetch, i.e. the N
+#: calls this function exists to avoid.
+PR_INDEX_FIELDS = ("number,headRefName,baseRefName,isDraft,mergeable,"
+                   "statusCheckRollup,url")
+
+
+class PrIndex:
+    """Open PRs keyed by head branch — or a stated reason for not knowing.
+
+    `by_branch is None` is the whole point of the class. `query_open_mr` below
+    returns `None` for *both* "there is no PR" and "the lookup never ran", and
+    a caller cannot tell those apart — which is fine for an advisory line under
+    a push and wrong for a board somebody reads to decide where to work. Here
+    the two are different objects:
+
+    * `PrIndex({...})`      — GitHub answered; a branch absent from the map has
+      no open PR, and that is a fact about the world.
+    * `PrIndex(None, why)`  — GitHub did not answer; nothing at all is known
+      about any branch, and `why` says what stopped it.
+
+    `truncated` is the third case and the sneaky one: the page came back but
+    hit its own limit, so it is authoritative for the branches it *names* and
+    establishes nothing about the ones it does not.
+    """
+
+    __slots__ = ("by_branch", "reason", "truncated", "limit")
+
+    def __init__(self, by_branch: Optional[dict], reason: str = "",
+                 truncated: bool = False, limit: int = PR_INDEX_LIMIT) -> None:
+        self.by_branch = by_branch
+        self.reason = reason
+        self.truncated = truncated
+        self.limit = limit
+
+    @property
+    def answered(self) -> bool:
+        return self.by_branch is not None
+
+    def get(self, branch: str) -> Optional[dict]:
+        """The open PR for `branch`, or None. Only meaningful when `answered`."""
+        if not self.by_branch or not branch:
+            return None
+        return self.by_branch.get(branch)
+
+    def __repr__(self) -> str:
+        if self.by_branch is None:
+            return f"PrIndex(None, {self.reason!r})"
+        return f"PrIndex({len(self.by_branch)} branches, truncated={self.truncated})"
+
+
+def _run_gh_pr_list(args: list) -> subprocess.CompletedProcess:
+    return subprocess.run(["gh"] + args, capture_output=True, text=True,
+                          timeout=PR_INDEX_TIMEOUT, encoding="utf-8",
+                          errors="replace")
+
+
+def query_open_prs_by_branch(limit: int = PR_INDEX_LIMIT, runner=None) -> PrIndex:
+    """Every open PR of this repo, keyed by head branch, in **one** call.
+
+    N worktrees must not mean N lookups: `gh pr list` already returns the head
+    ref of every open PR, so the join is a dict build, not a fan-out. The
+    caller passes a `runner` in tests; the default shells out to `gh`.
+
+    Every failure route ends in `PrIndex(None, reason)` — a missing binary, a
+    non-GitHub remote, an expired token, a rate limit, a timeout, output that
+    is not the JSON array it should be. None of them return an empty map,
+    because an empty map is a claim.
+    """
+    run = runner or _run_gh_pr_list
+    args = ["pr", "list", "--state", "open", "--json", PR_INDEX_FIELDS,
+            "--limit", str(limit)] + _repo_target_args()
+    try:
+        res = run(args)
+    except subprocess.TimeoutExpired:
+        return PrIndex(None, f"gh pr list did not answer within {PR_INDEX_TIMEOUT}s",
+                       limit=limit)
+    except FileNotFoundError:
+        return PrIndex(None, "gh is not installed — the tracker cannot be read here",
+                       limit=limit)
+    except OSError as exc:
+        return PrIndex(None, f"gh could not be run ({exc})", limit=limit)
+
+    if res.returncode != 0:
+        blob = (res.stderr or "") + chr(10) + (res.stdout or "")
+        why = _first_error_line(blob) or f"gh pr list exited {res.returncode}"
+        return PrIndex(None, why, limit=limit)
+    try:
+        prs = json.loads(res.stdout or "")
+    except (json.JSONDecodeError, ValueError):
+        return PrIndex(None, "gh pr list returned output that is not JSON", limit=limit)
+    if not isinstance(prs, list):
+        return PrIndex(None, "gh pr list returned JSON that is not a list", limit=limit)
+
+    by_branch: dict = {}
+    for pr in prs:
+        if not isinstance(pr, dict):
+            continue
+        head = pr.get("headRefName")
+        if isinstance(head, str) and head and head not in by_branch:
+            by_branch[head] = pr
+    return PrIndex(by_branch, truncated=len(prs) >= limit, limit=limit)
+
+
+def _repo_target_args() -> list:
+    """`--repo OWNER/NAME` when a repo target is set, else nothing (#673).
+
+    Imported lazily: `_git_common` is loaded by presets that have no business
+    depending on the gh family, and an import error there must not break a
+    commit.
+    """
+    try:
+        import _repo_target  # noqa: PLC0415  (deliberately lazy — see docstring)
+    except ImportError:
+        return []
+    return _repo_target.gh_args()
+
+
 def query_open_mr(branch: str) -> Optional[dict]:
     """Open MR/PR for `branch`, or None when none / no tool available.
 

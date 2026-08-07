@@ -60,8 +60,11 @@ if _HERE not in sys.path:
 if os.path.dirname(_HERE) not in sys.path:
     sys.path.insert(0, os.path.dirname(_HERE))
 
-from _git_common import _git, use_utf8_stdout  # noqa: E402
+from _git_common import (  # noqa: E402
+    _git, use_utf8_stdout, query_open_prs_by_branch,
+)
 from _env import env_int  # noqa: E402
+import _checks  # noqa: E402  (the one check tally, shared with gh-pr / gh-prs)
 import _untrusted  # noqa: E402  (filenames in a worktree are not our text — #876)
 
 STATE_OCCUPIED = "occupied"
@@ -133,6 +136,34 @@ class CwdScan:
 
     def __repr__(self) -> str:
         return f"CwdScan({self.answer!r}, {self.detail!r}, pids={self.pids!r})"
+
+
+#: Tracker states. Four, for the same reason occupancy has three.
+#:
+#: `TRACKER_NONE` and `TRACKER_UNKNOWN` are the pair that must never merge:
+#: the first says GitHub was asked and holds no open PR for this branch, the
+#: second says GitHub was not reached. Printed as one state they read as "this
+#: work is unpublished" — an invitation to take the tree — when the truth may
+#: be a live PR behind a dropped connection.
+TRACKER_PR = "pr"
+TRACKER_NONE = "none"
+TRACKER_NO_REMOTE = "no-remote-ref"
+TRACKER_UNKNOWN = "unknown"
+TRACKER_NA = "n/a"
+
+
+class Tracker:
+    """A worktree's tracker state: a short token for the row, plus the reason."""
+
+    __slots__ = ("state", "token", "detail")
+
+    def __init__(self, state: str, token: str, detail: str) -> None:
+        self.state = state
+        self.token = token
+        self.detail = detail
+
+    def __repr__(self) -> str:
+        return f"Tracker({self.state!r}, {self.token!r}, {self.detail!r})"
 
 
 class Assessment:
@@ -485,6 +516,93 @@ def assess(entry: dict, *, now: float | None = None, window: int | None = None,
     return Assessment(STATE_UNKNOWN, reasons + quiet[-1:])
 
 
+# ── the tracker column ───────────────────────────────────────────────────
+
+def remote_branch_names():
+    """Branch names that exist on some remote, as `(names, why)`.
+
+    `(None, why)` when git did not answer — and that `None` is not allowed to
+    turn into "never pushed", which is the local half of the same mistake this
+    column is about.
+
+    Even when it answers, this is *local* knowledge: remote-tracking refs are
+    written by fetch and push, so a branch pushed from another clone since the
+    last fetch here looks unpushed. The wording in `tracker_for` says so rather
+    than pretending the ref set is the remote.
+    """
+    res = _git(["for-each-ref", "--format=%(refname:strip=3)", "refs/remotes/"])
+    if res.returncode != 0:
+        why = (res.stderr or "").strip().splitlines()
+        return None, (why[0] if why else f"git for-each-ref exited {res.returncode}")
+    return {line.strip() for line in res.stdout.splitlines() if line.strip()}, ""
+
+
+def _pr_detail(pr: dict) -> str:
+    number = pr.get("number", "?")
+    base = pr.get("baseRefName") or "?"
+    tally = _checks.summarize_github(pr.get("statusCheckRollup"))
+    bits = [f"PR #{number} → {base}", tally]
+    mergeable = pr.get("mergeable")
+    if isinstance(mergeable, str) and mergeable:
+        bits.append(mergeable)
+    if pr.get("isDraft"):
+        bits.append("DRAFT")
+    return " · ".join(bits)
+
+
+def tracker_for(branch: str, index, remote_branches, remote_why: str = "") -> Tracker:
+    """Which of the four answers holds for this worktree's branch.
+
+    Order matters. The lookup's own failure is consulted **first**, because
+    every question below it is a question about a map that does not exist —
+    and answering one from local state is precisely how a dropped connection
+    gets printed as "nothing is published here".
+    """
+    if not branch:
+        return Tracker(TRACKER_NA, "PR n/a",
+                       "no branch checked out here (detached or bare) — "
+                       "there is nothing to look a PR up by")
+
+    if index is None or not index.answered:
+        why = (index.reason if index is not None else "the lookup was not run")
+        return Tracker(TRACKER_UNKNOWN, "PR unknown",
+                       f"PR unknown — the lookup did not answer ({why}). This is the "
+                       "tool failing to look, NOT a finding that no PR exists")
+
+    pr = index.get(branch)
+    if pr is not None:
+        return Tracker(TRACKER_PR, f"PR #{pr.get('number', '?')}", _pr_detail(pr))
+
+    if index.truncated:
+        return Tracker(TRACKER_UNKNOWN, "PR unknown",
+                       f"PR unknown — the open-PR page hit its {index.limit}-item cap, "
+                       "so this branch's absence from it establishes nothing")
+
+    if remote_branches is None:
+        return Tracker(TRACKER_NONE, "no open PR",
+                       "no open PR tracks this branch. Whether it has been pushed at "
+                       f"all is UNKNOWN ({remote_why or 'the remote refs were not read'})")
+
+    if branch not in remote_branches:
+        # Deliberately NOT "never pushed". Run live against the fleet, this leg
+        # first said exactly that about four branches carrying `[merged]` —
+        # every one of them pushed, merged and then deleted on the remote. A
+        # deleted remote branch and a never-published one leave the identical
+        # local trace, and `branch.<name>.merge` does not separate them either:
+        # `git worktree add -b X … master` writes an upstream of origin/master
+        # for a branch that has never left the machine. So the observation is
+        # reported and both readings are named.
+        return Tracker(TRACKER_NO_REMOTE, "no remote ref",
+                       "no remote-tracking ref for this branch here — it was either "
+                       "never pushed, or its remote branch has been deleted (the usual "
+                       "state after a merge). Either way there is no open PR to find. "
+                       "(Local knowledge: remote refs are only as fresh as the last fetch.)")
+
+    return Tracker(TRACKER_NONE, "no open PR",
+                   "the branch is pushed and no open PR tracks it — the work is "
+                   "published but unproposed")
+
+
 # ── rendering ────────────────────────────────────────────────────────────
 
 def render(rows: list, merged=None, merged_why: str = "") -> str:
@@ -511,7 +629,9 @@ def render(rows: list, merged=None, merged_why: str = "") -> str:
            _untrusted.flat_note("Branch names, paths and the filenames in the evidence",
                                 source="the filesystem"),
            ""]
-    for entry, verdict in rows:
+    for row in rows:
+        entry, verdict = row[0], row[1]
+        tracker = row[2] if len(row) > 2 else None
         branch = entry.get("branch") or ("(detached)" if entry.get("detached") else "?")
         tags = []
         if merged is not None and entry.get("branch") in merged:
@@ -519,10 +639,13 @@ def render(rows: list, merged=None, merged_why: str = "") -> str:
         if entry.get("prunable"):
             tags.append("prunable")
         suffix = f"  [{', '.join(tags)}]" if tags else ""
+        token = f"  {flat(tracker.token)}" if tracker is not None else ""
         out.append(f"{verdict.state:<12} {flat(str(branch)):<26} "
-                   f"{flat(str(entry.get('path', '?')))}{suffix}")
+                   f"{flat(str(entry.get('path', '?')))}{suffix}{token}")
         for item in verdict.evidence:
             out.append(f"             · {flat(str(item))}")
+        if tracker is not None:
+            out.append(f"             · {flat(tracker.detail)}")
         out.append("")
 
     if merged is None:
@@ -530,12 +653,24 @@ def render(rows: list, merged=None, merged_why: str = "") -> str:
         out.append("")
 
     tally = {STATE_OCCUPIED: 0, STATE_IDLE: 0, STATE_UNKNOWN: 0}
-    for _entry, verdict in rows:
+    unknown_trackers = 0
+    for row in rows:
+        verdict = row[1]
         tally[verdict.state] = tally.get(verdict.state, 0) + 1
+        tracker = row[2] if len(row) > 2 else None
+        if tracker is not None and tracker.state == TRACKER_UNKNOWN:
+            unknown_trackers += 1
+    # The tracker count rides the one line that survives `| tail -1`. A row
+    # whose PR state was never read has to be visible from there, or the
+    # summary is the place the missing answer disappears.
+    tracker_part = (f", {unknown_trackers} tracker unknown"
+                    if unknown_trackers else "")
     out.append(
         f"[result] {tally[STATE_OCCUPIED]} occupied, {tally[STATE_IDLE]} idle, "
-        f"{tally[STATE_UNKNOWN]} cannot tell — 'cannot tell' is NOT 'idle': "
-        "nothing answered, so treat that tree as occupied until something does"
+        f"{tally[STATE_UNKNOWN]} cannot tell{tracker_part} — 'cannot tell' is NOT "
+        "'idle': nothing answered, so treat that tree as occupied until something does"
+        + (" · a tracker 'unknown' is the lookup failing, not an absent PR"
+           if unknown_trackers else "")
     )
     return "\n".join(out)
 
@@ -551,9 +686,39 @@ def _merged_branches():
     return None, "neither master nor main resolves here — no base to measure against"
 
 
+#: Tokens that are flags rather than a PATH.
+_FLAGS = {"nopr"}
+
+#: Values of SUPERTOOL_WORKTREE_PR that turn the tracker column off.
+_OFF = {"0", "false", "no", "off"}
+
+
+def parse_args(argv: list) -> tuple:
+    """`(path, want_pr)` from the op's arguments.
+
+    The tracker column is **on by default**, with `nopr` and
+    `SUPERTOOL_WORKTREE_PR=0` to turn it off. On rather than opt-in because the
+    friction #941 reports is a join done in the reader's head, and a suffix
+    only helps the reader who already knows the suffix exists — which is not
+    the one reaching for this board at speed. The cost is bounded and stated:
+    exactly one `gh` call per run, whatever the tree count, on a short timeout,
+    and a call that fails degrades to `PR unknown` rather than to a wrong
+    answer or a slower op.
+    """
+    path = ""
+    want_pr = (os.environ.get("SUPERTOOL_WORKTREE_PR", "").strip().lower()
+               not in _OFF)
+    for arg in argv:
+        if arg in _FLAGS:
+            want_pr = False
+        elif not path:
+            path = arg
+    return path, want_pr
+
+
 def main() -> int:
     use_utf8_stdout()
-    wanted = sys.argv[1] if len(sys.argv) > 1 else ""
+    wanted, want_pr = parse_args(sys.argv[1:])
     if wanted.startswith("-"):
         print(f"ERROR: refused — PATH must name a worktree, not an option: {wanted!r}")
         print("  usage: worktrees.py [PATH]   (inspection only; nothing is removed)")
@@ -578,13 +743,22 @@ def main() -> int:
             return EXIT_UNKNOWN
 
     merged, merged_why = _merged_branches()
+    index = query_open_prs_by_branch() if want_pr else None
+    remote_names, remote_why = remote_branch_names() if want_pr else (None, "")
     memo: dict = {}
-    rows = [(entry, assess(entry, scan=_cwd_scan(entry["path"], memo)))
+    rows = [(entry,
+             assess(entry, scan=_cwd_scan(entry["path"], memo)),
+             tracker_for(entry.get("branch") or "", index, remote_names, remote_why)
+             if want_pr else None)
             for entry in entries]
     print(render(rows, merged=merged, merged_why=merged_why))
 
     if wanted and len(rows) == 1:
         state = rows[0][1].state
+        # The exit code stays a statement about *occupancy* only. A tracker
+        # that did not answer says nothing about whether the tree is safe to
+        # enter, and folding it in here would make `git-worktrees:PATH` refuse
+        # a free worktree because GitHub was down.
         return {STATE_IDLE: EXIT_IDLE, STATE_OCCUPIED: EXIT_OCCUPIED}.get(state, EXIT_UNKNOWN)
     return EXIT_IDLE
 
