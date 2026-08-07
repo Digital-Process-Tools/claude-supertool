@@ -356,3 +356,199 @@ def test_markdown_extensions_have_no_regex_patterns() -> None:
     inside fenced code blocks. This fails if someone adds them later."""
     assert ".md" not in supertool._REGEX_PATTERNS
     assert ".markdown" not in supertool._REGEX_PATTERNS
+
+
+# ---------------------------------------------------------------------------
+# 5. The heading walker, exercised without the grammar
+#
+# Sections 2 and 3 skip entirely on CI, which is not merely a coverage gap: it
+# means the walker in `_ts_extract_markdown` — the actual new logic — executes
+# nowhere the project measures. The floor in `.github/scripts/coverage_gate.py`
+# is what turned that from invisible into red, and the honest answer is to test
+# the thing rather than exempt it.
+#
+# `_ts_extract_markdown` takes (source, tree) and touches only `.root_node`,
+# `.type`, `.children`, `.start_point` and `.start_byte`/`.end_byte`, so a
+# replay object satisfies it. The danger with any hand-built tree is that it
+# asserts the author's idea of the grammar instead of the grammar — so this one
+# is not hand-built. It is a recording of what tree-sitter actually emitted for
+# `_MD_TREE_SOURCE`, and two guards below re-derive it from the real parser
+# wherever the grammar exists. If the recording ever stops matching, they fail
+# rather than letting the replay drift quietly into fiction.
+# ---------------------------------------------------------------------------
+
+_MD_TREE_SOURCE = (
+    b"# Changelog\n\nSome prose that is not a heading.\n\n## [Unreleased]\n\n"
+    b"### Added\n\n```python\n# not a heading\n```\n\nSetext Title\n============\n\n"
+    b"Setext Sub\n----------\n\n####### seven hashes is not a heading\n"
+)
+
+#: (type, start_row, end_row, start_byte, end_byte, children) — recorded from
+#: tree_sitter_language_pack's `markdown` grammar, not composed by hand.
+_RECORDED_MD_TREE = (
+    ("document", 0, 19, 0, 195, (
+        ("section", 0, 19, 0, 195, (
+            ("atx_heading", 0, 1, 0, 12, (
+                ("atx_h1_marker", 0, 0, 0, 1, ()),
+                ("inline", 0, 0, 2, 11, ()),
+            )),
+            ("paragraph", 2, 3, 13, 47, (
+                ("inline", 2, 2, 13, 46, (
+                    (".", 2, 2, 45, 46, ()),
+                )),
+            )),
+            ("section", 4, 19, 48, 195, (
+                ("atx_heading", 4, 5, 48, 64, (
+                    ("atx_h2_marker", 4, 4, 48, 50, ()),
+                    ("inline", 4, 4, 51, 63, (
+                        ("[", 4, 4, 51, 52, ()),
+                        ("]", 4, 4, 62, 63, ()),
+                    )),
+                )),
+                ("section", 6, 19, 65, 195, (
+                    ("atx_heading", 6, 7, 65, 75, (
+                        ("atx_h3_marker", 6, 6, 65, 68, ()),
+                        ("inline", 6, 6, 69, 74, ()),
+                    )),
+                    ("fenced_code_block", 8, 11, 76, 106, (
+                        ("fenced_code_block_delimiter", 8, 8, 76, 79, ()),
+                        ("info_string", 8, 8, 79, 85, (
+                            ("language", 8, 8, 79, 85, ()),
+                        )),
+                        ("block_continuation", 9, 9, 86, 86, ()),
+                        ("code_fence_content", 9, 10, 86, 102, (
+                            ("#", 9, 9, 86, 87, ()),
+                            ("block_continuation", 10, 10, 102, 102, ()),
+                        )),
+                        ("fenced_code_block_delimiter", 10, 10, 102, 105, ()),
+                    )),
+                    ("setext_heading", 12, 14, 107, 133, (
+                        ("paragraph", 12, 13, 107, 120, (
+                            ("inline", 12, 12, 107, 119, ()),
+                        )),
+                        ("setext_h1_underline", 13, 13, 120, 132, ()),
+                    )),
+                    ("setext_heading", 15, 17, 134, 156, (
+                        ("paragraph", 15, 16, 134, 145, (
+                            ("inline", 15, 15, 134, 144, ()),
+                        )),
+                        ("setext_h2_underline", 16, 16, 145, 155, ()),
+                    )),
+                    ("paragraph", 18, 19, 157, 195, (
+                        ("inline", 18, 18, 157, 194, (
+                            ("#", 18, 18, 157, 158, ()),
+                            ("#", 18, 18, 158, 159, ()),
+                            ("#", 18, 18, 159, 160, ()),
+                            ("#", 18, 18, 160, 161, ()),
+                            ("#", 18, 18, 161, 162, ()),
+                            ("#", 18, 18, 162, 163, ()),
+                            ("#", 18, 18, 163, 164, ()),
+                        )),
+                    )),
+                )),
+            )),
+        )),
+    ))
+)
+
+
+class _ReplayNode:
+    """The subset of tree-sitter's node API `_ts_extract_markdown` consults."""
+
+    __slots__ = ("type", "start_point", "end_point", "start_byte", "end_byte",
+                 "children")
+
+    def __init__(self, spec: tuple) -> None:
+        node_type, start_row, end_row, start_byte, end_byte, children = spec
+        self.type = node_type
+        self.start_point = (start_row, 0)
+        self.end_point = (end_row, 0)
+        self.start_byte = start_byte
+        self.end_byte = end_byte
+        self.children = [_ReplayNode(c) for c in children]
+
+
+class _ReplayTree:
+    def __init__(self, spec: tuple) -> None:
+        self.root_node = _ReplayNode(spec)
+
+
+def _node_types(node) -> set:
+    out = {node.type}
+    for child in node.children:
+        out |= _node_types(child)
+    return out
+
+
+#: What the walker must return for _MD_TREE_SOURCE: (kind, name, line, end, depth).
+_EXPECTED_MD_SYMBOLS = [
+    ("h1", "Changelog", 1, 1, 0),
+    ("h2", "[Unreleased]", 5, 5, 1),
+    ("h3", "Added", 7, 7, 2),
+    ("h1", "Setext Title", 13, 13, 0),
+    ("h2", "Setext Sub", 16, 16, 1),
+]
+
+
+def test_markdown_walker_extracts_every_heading_kind() -> None:
+    """Runs on every leg, grammar or not. atx h1/h2/h3 and setext h1/h2, with
+    names taken from the inline child and depth derived from the level."""
+    symbols = supertool._ts_extract_markdown(
+        _MD_TREE_SOURCE, _ReplayTree(_RECORDED_MD_TREE))
+    assert symbols == _EXPECTED_MD_SYMBOLS
+
+
+def test_markdown_walker_ignores_hashes_that_are_not_headings() -> None:
+    """The `#` inside the fenced block and the seven-hash line are `#` tokens
+    under `code_fence_content` and `paragraph` in the recorded tree — the
+    grammar already ruled them out, and the walker must not re-admit them."""
+    names = [s[1] for s in supertool._ts_extract_markdown(
+        _MD_TREE_SOURCE, _ReplayTree(_RECORDED_MD_TREE))]
+    assert "not a heading" not in names
+    assert "seven hashes is not a heading" not in names
+
+
+def test_markdown_walker_returns_symbols_in_line_order() -> None:
+    lines = [s[2] for s in supertool._ts_extract_markdown(
+        _MD_TREE_SOURCE, _ReplayTree(_RECORDED_MD_TREE))]
+    assert lines == sorted(lines)
+
+
+@_needs_markdown
+def test_recorded_tree_still_matches_the_real_grammar() -> None:
+    """The anti-fiction guard. Re-parses `_MD_TREE_SOURCE` with the real
+    grammar and compares the whole shape against the recording, so a grammar
+    upgrade that changes node types or spans fails here — loudly, on a machine
+    that has the grammar — instead of leaving CI green against a fixture that
+    no longer describes anything real."""
+    from tree_sitter_language_pack import get_parser
+    tree = get_parser("markdown").parse(_MD_TREE_SOURCE)
+
+    def ser(node):
+        return (node.type, node.start_point[0], node.end_point[0],
+                node.start_byte, node.end_byte,
+                tuple(ser(c) for c in node.children))
+
+    assert ser(tree.root_node) == _RECORDED_MD_TREE
+
+
+@_needs_markdown
+def test_replay_and_real_grammar_extract_identically() -> None:
+    """The property that actually matters, stated directly: the walker cannot
+    tell the replay from the parser. Weaker than the shape comparison above and
+    kept anyway — it is the one that stays meaningful if the recording is ever
+    deliberately trimmed."""
+    from tree_sitter_language_pack import get_parser
+    real = get_parser("markdown").parse(_MD_TREE_SOURCE)
+    assert (supertool._ts_extract_markdown(_MD_TREE_SOURCE, real)
+            == supertool._ts_extract_markdown(
+                _MD_TREE_SOURCE, _ReplayTree(_RECORDED_MD_TREE)))
+
+
+@_needs_markdown
+def test_replay_invents_no_node_types() -> None:
+    """A recording can only shrink toward fiction by adding vocabulary the
+    grammar never emits; this forbids that independently of the shape guard."""
+    from tree_sitter_language_pack import get_parser
+    real = get_parser("markdown").parse(_MD_TREE_SOURCE)
+    assert _node_types(_ReplayNode(_RECORDED_MD_TREE)) <= _node_types(real.root_node)
