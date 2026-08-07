@@ -85,6 +85,35 @@ reason the `timeout-minutes` comment in `tests.yml` gives about per-OS budgets �
 eleven numbers to keep in step is ten more places to drift, and the families
 are not independently owned.
 
+## Where the scratch data lives (#877)
+
+Under the repository, at `.coverage-gate/`, mode 0700 — not at a fixed name in
+`tempfile.gettempdir()`, which is what it was. Three reasons, in the order they
+bite:
+
+* The rcfile written there is handed to `coverage run --rcfile=` *and* exported
+  as `COVERAGE_PROCESS_START` to every child. A coverage rcfile may declare
+  `plugins =`, which coverage imports. Whoever controls that file executes code
+  inside the process that decides whether the release passes.
+* On Linux `gettempdir()` is `/tmp`. A fixed name there can be pre-created, or
+  symlinked, by any local process before `mkdir(exist_ok=True)` accepts it
+  without comment — and `main()` then unlinks `.coverage*` inside whatever that
+  turned out to be.
+* One fixed name is shared by every checkout on the machine. Two worktrees
+  running the gate at once interleave their `parallel = true` data files under
+  one path and `--report` reads the mixture, which is a wrong number out of the
+  release gate with nothing printed anywhere. That one arrives far more often
+  than the attacker does.
+
+`--report` still works, which is why this is not a `TemporaryDirectory`: the
+path is stable per checkout, just not guessable by another user.
+
+**And it refuses rather than degrading.** If the directory cannot be created, or
+is a symlink, or the config cannot be written, `main()` prints `REFUSED` and
+exits 2 — it never reaches `report()`. With no config there is no data, every
+bucket totals zero statements, and "nothing was measured" sits one branch away
+from printing as a pass. Three states: 0 pass, 1 a floor failed, 2 refused.
+
 Usage:
 
     python3 .github/scripts/coverage_gate.py            # run suite, report, gate
@@ -96,10 +125,22 @@ import json
 import os
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
+
+#: Scratch directory, repo-relative. Kept in sync with `.gitignore` by
+#: `tests/test_coverage_gate_workdir_877.py`.
+WORK_DIRNAME = ".coverage-gate"
+
+
+class GateRefusal(Exception):
+    """The gate cannot measure, and says so instead of reporting a number.
+
+    Distinct from a floor failure on purpose. A floor failure means the code was
+    measured and came up short; this means nothing was measured at all, and the
+    two must not share an exit status or a reader will act on the wrong one.
+    """
 
 #: Path prefixes whose coverage reds the build, and the floor each must clear.
 #: Measured 2026-08-05 on macOS/py3.14 over `-m 'not benchmark'`:
@@ -212,7 +253,15 @@ def write_config(data_file: Path) -> Path:
     body += [f"    {line}" for line in _source_lines()]
     body += ["omit =", "    */tests/*", "    */node_modules/*",
              "    */__pycache__/*", "", "[report]", "skip_empty = true", ""]
-    path.write_text("\n".join(body), encoding="utf-8")
+    try:
+        path.write_text("\n".join(body), encoding="utf-8")
+        # 0600: coverage imports any `plugins =` this file declares, in the
+        # parent and in every child that reads COVERAGE_PROCESS_START. Nobody
+        # else needs to be able to write it.
+        os.chmod(path, 0o600)
+    except OSError as exc:
+        raise GateRefusal(
+            f"could not write the coverage config at {path}: {exc}") from None
     return path
 
 
@@ -345,21 +394,57 @@ def report(totals: "dict[str, tuple[int, int]]") -> int:
 
 
 def _work_dir() -> Path:
-    """A stable scratch directory, deliberately not a `TemporaryDirectory`.
+    """A stable *and private* scratch directory (#877).
 
-    `--report` exists to re-print the disclosure without paying six minutes for
-    the suite again, and it cannot do that if the data was deleted on the way
-    out of the run that produced it. Outside the repo, so nothing here needs a
-    `.gitignore` entry; emptied by the next real run rather than accumulated.
+    Stable, deliberately not a `TemporaryDirectory`: `--report` exists to
+    re-print the disclosure without paying six minutes for the suite again, and
+    it cannot do that if the data was deleted on the way out of the run that
+    produced it.
+
+    Private, and this is the half that was missing: under the repository at mode
+    0700 rather than at a fixed, world-guessable name in the shared temp root.
+    The file written here is fed to `coverage run --rcfile=` and exported as
+    `COVERAGE_PROCESS_START`, and a coverage rcfile can declare `plugins =`,
+    which coverage imports — so control of this directory is code execution
+    inside the release gate. Under the repository it is also per-checkout, which
+    is what stops two worktrees combining each other's data files into one
+    number.
+
+    Raises `GateRefusal` rather than pressing on. `mkdir(exist_ok=True)` accepts
+    an existing directory of any ownership and follows a symlink to one without
+    a word, and that silence is the whole vulnerability.
     """
-    work = Path(tempfile.gettempdir()) / "supertool-coverage-gate"
-    work.mkdir(parents=True, exist_ok=True)
+    work = REPO / WORK_DIRNAME
+    if work.is_symlink():
+        raise GateRefusal(
+            f"{work} is a symlink. `mkdir(exist_ok=True)` would follow it and "
+            f"the gate would go on to execute the rcfile at the far end — "
+            f"remove the link rather than repointing it")
+    if work.exists() and not work.is_dir():
+        raise GateRefusal(
+            f"{work} exists and is not a directory, so the gate has nowhere to "
+            f"put its coverage config")
+    try:
+        work.mkdir(parents=True, exist_ok=True)
+        os.chmod(work, 0o700)
+    except OSError as exc:
+        raise GateRefusal(
+            f"could not create the scratch directory {work}: {exc}") from None
     return work
 
 
 def main(argv: "list[str]") -> int:
-    work = _work_dir()
-    config = write_config(work / ".coverage")
+    try:
+        work = _work_dir()
+        config = write_config(work / ".coverage")
+    except GateRefusal as exc:
+        print(f"\ncoverage gate: REFUSED — {exc}")
+        print("Nothing was measured, and that is reported as a refusal rather "
+              "than as a result: with no config there is no coverage data, "
+              "every bucket totals zero statements, and a zero prints the same "
+              "as a directory that genuinely holds no code. Exit 2 — distinct "
+              "from 1, which means a floor was measured and missed.")
+        return 2
     if "--report" not in argv:
         for stale in work.glob(".coverage*"):
             stale.unlink()

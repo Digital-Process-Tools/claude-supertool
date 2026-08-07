@@ -5,6 +5,14 @@ on:
     branches: [master]
   pull_request:
 
+# Read-only: nothing in this workflow publishes, comments, or uses a secret —
+# the jobs check out, install, and run tests. Declared rather than inherited,
+# because what is inherited is the repository default, and a settings change
+# would widen it here without touching this file (#877). Same two lines, same
+# reasoning, as slow-tests.yml.
+permissions:
+  contents: read
+
 jobs:
   pytest:
     runs-on: ${{ matrix.os }}
