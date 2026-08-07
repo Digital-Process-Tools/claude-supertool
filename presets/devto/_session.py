@@ -54,9 +54,23 @@ _AUTH_TOKEN_RE = re.compile(r'name="authenticity_token"[^>]*value="([^"]+)"')
 
 
 def fetch_csrf_token(cookie: str, timeout: int = 15) -> str:
-    """Scrape a real authenticity_token from /settings (server-renders Rails forms)."""
+    """Scrape a real authenticity_token from /settings (server-renders Rails forms).
+
+    Three outcomes, not two (#766). A missing token used to produce one message
+    -- "Dev.to layout may have changed" -- for a condition this function had
+    never checked, and the overwhelmingly common cause is the other one: dev.to
+    answers /settings with a same-origin 302 to /enter once the session cookie
+    expires, `_http.urlopen` follows it, and the login page has no
+    authenticity_token in it. So the token is absent either because the page
+    that answered was not the page asked for (the cookie is dead, and
+    `resp.url` says so), or because /settings itself answered without one --
+    which is genuinely unexplained and keeps saying so rather than being
+    reassigned to the cookie. Guessing in the other direction is the same
+    defect facing the other way.
+    """
+    requested = f"{WEB_BASE}/settings"
     req = urllib.request.Request(
-        f"{WEB_BASE}/settings",
+        requested,
         headers={
             "Cookie": cookie,
             "User-Agent": "Mozilla/5.0 (claude-supertool/devto-session)",
@@ -65,6 +79,7 @@ def fetch_csrf_token(cookie: str, timeout: int = 15) -> str:
     )
     try:
         with urlopen(req, timeout=timeout) as resp:
+            answered = getattr(resp, "url", None) or requested
             html = read_capped(resp).decode("utf-8", errors="replace")
     except RedirectRefused as e:
         print(f"ERROR: {e}", file=sys.stderr)
@@ -82,7 +97,21 @@ def fetch_csrf_token(cookie: str, timeout: int = 15) -> str:
         sys.exit(1)
     tokens = [t for t in _AUTH_TOKEN_RE.findall(html) if t != "NOTHING"]
     if not tokens:
-        sys.stderr.write("ERROR: authenticity_token not found in /settings HTML — Dev.to layout may have changed\n")
+        if answered != requested:
+            # `answered` comes from a remote Location header — `!r` for the same
+            # reason `_http` reprs both ends of its redirect disclosure.
+            sys.stderr.write(
+                f"ERROR: no authenticity_token in the response: {requested!r} was answered by "
+                f"{answered!r}, a different page than the one requested. On dev.to that is the "
+                "expired-session redirect (/settings -> /enter), so the session cookie is dead. "
+                "Re-copy it from your browser devtools — they last about 30 days.\n"
+            )
+        else:
+            sys.stderr.write(
+                f"ERROR: authenticity_token not found in {requested!r} HTML, which answered the "
+                "request itself with no redirect — the session cookie is live, so the cause is "
+                "not an expired session. Dev.to layout may have changed.\n"
+            )
         sys.exit(1)
     return tokens[0]
 
