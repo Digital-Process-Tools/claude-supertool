@@ -55,6 +55,10 @@ import supertool
 
 SUITE_ROOT = Path(__file__).resolve().parent.parent
 SUPERTOOL = SUITE_ROOT / "supertool.py"
+# The source-shape assertion below reads the file the code is *in*, which since
+# #931 is not the file the tests spawn. Reading the shim would count zero call
+# sites and pass by looking at the wrong 50 lines.
+SUPERTOOL_SRC = SUITE_ROOT / "_supertool.py"
 
 _ID = ["-c", "user.email=fixture@example.invalid", "-c", "user.name=fixture"]
 
@@ -284,7 +288,7 @@ def test_the_scrub_has_exactly_one_call_site_and_it_is_the_launcher():
     A proxy assertion, and labelled as one: the behavioural tests above are the
     post-condition. This one guards the shape of the answer, not the answer.
     """
-    src = SUPERTOOL.read_text(encoding="utf-8")
+    src = SUPERTOOL_SRC.read_text(encoding="utf-8")
     call_lines = [
         i + 1 for i, line in enumerate(src.splitlines())
         if "scrub_git_env(" in line and not line.lstrip().startswith("def ")

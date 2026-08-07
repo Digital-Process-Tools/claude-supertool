@@ -219,14 +219,14 @@ changelog.d/878.fixed.second-entry.md
 
 **`merge=union` is not the shortcut it looks like.** A one-line `.gitattributes` entry would make git union the file automatically — and `tests/test_git_resolve_heading_dup_839.py` exists because that is wrong on this document. When both sides of a hunk carry the same `## [x.y.z]` heading the union emits it twice, and every unreleased line between the two copies is now parented under a tagged release. A correctness bug in the changelog, reported as `markers: clean`.
 
-**CI asks for a fragment, and says when it does not.** `.github/workflows/changelog.yml` requires one from any PR touching `supertool.py`, `presets/`, `validators/`, `formatters/`, `notifiers/` or `.claude-plugin/`. Docs-only and tests-only PRs are exempt by design — requiring a fragment for a typo fix is how the discipline decays into a reflex-added empty file — and a `no-changelog` label is the stated way out for anything else. The job prints which of the three it did on every run.
+**CI asks for a fragment, and says when it does not.** `.github/workflows/changelog.yml` requires one from any PR touching `supertool.py`, `_supertool.py`, `presets/`, `validators/`, `formatters/`, `notifiers/` or `.claude-plugin/`. Docs-only and tests-only PRs are exempt by design — requiring a fragment for a typo fix is how the discipline decays into a reflex-added empty file — and a `no-changelog` label is the stated way out for anything else. The job prints which of the three it did on every run.
 
 ### Cutting a release
 
 The release already edits four files, and `test_plugin_manifest_version_matches_code` plus `test_pyproject_version_522` guard three of them against each other:
 
 1. `.claude-plugin/plugin.json` — `version`
-2. `supertool.py` — `VERSION` (~line 113)
+2. `_supertool.py` — `VERSION` (~line 113). Not `supertool.py`: since [#931](https://github.com/Digital-Process-Tools/claude-supertool/issues/931) that is an 80-line entry-point shim and the constant lives with the code.
 3. `pyproject.toml` — `version`
 4. `CHANGELOG.md` — **written by the assembler, not by hand:**
 
@@ -365,7 +365,7 @@ open(path, "rb")                          # yes — binary decodes nothing
 path.read_text()                          # no  — decodes with the locale
 ```
 
-Without `encoding=`, Python decodes with `locale.getpreferredencoding()`: **cp1252** on a Windows console, **ASCII** under the C/POSIX locale that a great many cron jobs, containers and CI runners default to. Any file holding a `—` or a `✓` — which includes `presets/git.json`, shipped in this repo — then raises `UnicodeDecodeError`. A static AST scan over `supertool.py`, `presets/`, `hooks/`, `validators/`, `formatters/` and `notifiers/` fails the suite on a new one and names the file and line.
+Without `encoding=`, Python decodes with `locale.getpreferredencoding()`: **cp1252** on a Windows console, **ASCII** under the C/POSIX locale that a great many cron jobs, containers and CI runners default to. Any file holding a `—` or a `✓` — which includes `presets/git.json`, shipped in this repo — then raises `UnicodeDecodeError`. A static AST scan over `supertool.py`, `_supertool.py`, `presets/`, `hooks/`, `validators/`, `formatters/` and `notifiers/` fails the suite on a new one and names the file and line.
 
 **The read half of the rule applies inside `tests/` too** ([#461](https://github.com/Digital-Process-Tools/claude-supertool/issues/461)). A test that reads a real repository file as data — source, docs, a manifest — decodes whatever non-ASCII the project has accumulated, so it passes on your machine and dies on the Windows leg the day that file acquires an em dash. That happened twice in one day ([#431](https://github.com/Digital-Process-Tools/claude-supertool/pull/431) scanning preset source, [#460](https://github.com/Digital-Process-Tools/claude-supertool/pull/460) reading `docs/presets/watch.md`), both in tests written after the rule existed.
 
@@ -448,7 +448,7 @@ The pytest matrix is {ubuntu, macos, windows} × py3.9–3.12. For a long time t
 | Code | Where it runs | What is checked |
 | --- | --- | --- |
 | Python | all 12 pytest legs | the suite — and **no coverage floor**: every leg passes `--no-cov` |
-| Python | the `coverage` job, ubuntu + py3.12 | `.github/scripts/coverage_gate.py` — floors on `supertool.py` and `presets/`, plus the printed inventory of what it did *not* measure |
+| Python | the `coverage` job, ubuntu + py3.12 | `.github/scripts/coverage_gate.py` — floors on `_supertool.py` and `presets/`, plus the printed inventory of what it did *not* measure |
 | `notifiers/claude-channel/channel.ts` | `notifiers` job, ubuntu + macOS | `bunx tsc --noEmit` under the channel's own strict tsconfig, plus the two socket-level integration test files, run for real |
 | Shell (`*.sh`, `.githooks/*`) | all 12 pytest legs | `bash -n` — **syntax only**, via `tests/test_ci_non_python_coverage_557.py` |
 | `notifiers/cursor-witness/extension/src/extension.ts` | nowhere | **uncovered, knowingly** — a VS Code extension needs `npm install` of the editor's type packages to compile and an editor host to exercise |
@@ -488,7 +488,7 @@ then prints three sections and gates on the first:
 
 | State | What it means |
 | --- | --- |
-| **measured, enforced** | `supertool.py` and `presets/` — a floor that reds the build |
+| **measured, enforced** | `_supertool.py` and `presets/` — a floor that reds the build |
 | **measured, not enforced** | `validators/`, `formatters/`, `notifiers/*.py`, `.github/scripts/` — real numbers, printed, no floor. Each is a thin `subprocess` wrapper around an external binary (phpstan, prettier, hadolint) that is absent on the runner, so the figure reports the toolchain rather than the code, and a floor could only fire for a reason nobody can act on |
 | **not measured** | `tests/` itself, the TypeScript, the shell — each named with its reason and with whatever *does* check it |
 

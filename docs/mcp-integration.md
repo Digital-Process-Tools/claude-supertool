@@ -47,7 +47,7 @@ Components:
 
 | Piece | Lives in | Role |
 |---|---|---|
-| `MCPClient` | `supertool.py` | UDS client; connects to daemon, auto-spawns one on first call |
+| `MCPClient` | `_supertool.py` | UDS client; connects to daemon, auto-spawns one on first call |
 | `presets/mcp/daemon.py` | preset | Daemon: owns MCP subprocess + bridges UDS↔stdio |
 | `presets/mcp/status.py` | preset | List running daemons |
 | `presets/mcp/stop.py` | preset | Graceful stop (SIGTERM, SIGKILL fallback); exit status carries the outcome |

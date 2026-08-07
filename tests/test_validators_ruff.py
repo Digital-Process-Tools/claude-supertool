@@ -155,13 +155,19 @@ def test_ignored_rules_stay_silent(project: Path) -> None:
 
 
 @needs_ruff
-def test_b023_is_scoped_to_supertool_and_nothing_else(project: Path) -> None:
+def test_b023_is_scoped_to_the_bulk_module_and_nothing_else(project: Path) -> None:
     """The `per-file-ignores` entry is a filename, and it is meant to be narrow.
 
-    The same source is written twice under two names. `supertool.py` is
-    exempt — its 34 occurrences are closures invoked inside the iteration that
-    defines them, which B023 cannot see. Any other file is not exempt, and
-    this is what stops the exemption from quietly widening into the whole repo.
+    The same source is written three times under three names. `_supertool.py`
+    is exempt — its 34 occurrences are closures invoked inside the iteration
+    that defines them, which B023 cannot see. Nothing else is, and that is what
+    stops the exemption from quietly widening into the whole repo.
+
+    `supertool.py` is in that "nothing else" on purpose since #931 split it: it
+    is a ~80-line entry point with no loop in it, so it has no claim on an
+    exemption written for 34 call sites that all live in the other file. Left
+    keyed to the old name, the exemption would have been protecting the shim
+    and nothing at all.
     """
     body = (
         "def outer(items):\n"
@@ -170,11 +176,15 @@ def test_b023_is_scoped_to_supertool_and_nothing_else(project: Path) -> None:
         "        out.append(lambda: i)\n"
         "    return out\n"
     )
-    exempt = _run(_write(project, "supertool.py", body))
-    assert_ok(exempt, context="B023 inside supertool.py")
+    exempt = _run(_write(project, "_supertool.py", body))
+    assert_ok(exempt, context="B023 inside _supertool.py")
+
+    shim = _run(_write(project, "supertool.py", body))
+    assert_declined(shim, context="B023 inside the supertool.py entry-point shim")
+    assert "B023" in _codes(shim)
 
     ordinary = _run(_write(project, "other_module.py", body))
-    assert_declined(ordinary, context="B023 outside supertool.py")
+    assert_declined(ordinary, context="B023 outside _supertool.py")
     assert "B023" in _codes(ordinary)
 
 

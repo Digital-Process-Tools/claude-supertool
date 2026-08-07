@@ -327,6 +327,7 @@ def test_the_scan_reaches_shipping_code_and_not_only_tests():
     # dot-prefixed component, so the one Python file this repo ships inside a
     # dot-directory — and runs on all twelve CI legs — was never scanned.
     for required in ("supertool.py",
+                     "_supertool.py",
                      "presets/mcp/_spawn.py",
                      "presets/watch/transport.py",
                      "validators/common/refusal.py",

@@ -227,12 +227,13 @@ The call exits non-zero (the decline is counted as a skip, per
 
 | | |
 | --- | --- |
-| **What triggers it** | the resolved project root is *itself a different supertool checkout* — it holds a `supertool.py` whose `realpath` is not the invoked one |
+| **What triggers it** | the resolved project root is *itself a different supertool checkout* — it holds a `supertool.py` that resolves into a directory other than the invoked install's. Compared by directory rather than by file since [#931](https://github.com/Digital-Process-Tools/claude-supertool/issues/931), which moved the code out of `supertool.py` and into `_supertool.py` beside it. |
 | **What does not** | the ordinary install: a clone symlinked onto `$PATH` and used from any project root. Those roots are not supertool checkouts, so nothing is mixed. A project shipping its own `presets/` override is not a mix either. |
 | **Built-in ops** | still run — `read`, `grep`, `edit` come from the core that was invoked. A one-line disclosure goes to stderr so the operator knows whose validators and formatters are loaded. |
 | **The remedy** | run from the checkout you meant, or make `cwd:<that checkout>` the first op |
 | **The session hook** | does not manufacture the case: starting a session inside a supertool checkout used to leave a `./supertool` pointing at the plugin install, i.e. a wrapper every custom op declined. It now creates none and names `python3 supertool.py` ([#711](https://github.com/Digital-Process-Tools/claude-supertool/issues/711)). |
 | **Deliberate mixing** | `SUPERTOOL_ALLOW_MIXED_TREE=1`. Config ops then run, and the verdict line carries the pairing — `PASS (0.42s) [mixed supertool trees: core=… presets=…]` — so it is never a bare `PASS`. |
+| **A second, earlier case** | the entry point checks the same thing about *itself*. `supertool.py` loads the `_supertool.py` sitting beside it; if the name resolves to some other tree first — a `sys.meta_path` finder from an editable install outranks `sys.path` — it says so on stderr and runs on. If there is no `_supertool.py` beside it at all, it refuses with exit 2 rather than importing whichever copy the environment offers. |
 
 ## Numeric environment knobs, and what happens when one is wrong
 

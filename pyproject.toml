@@ -56,7 +56,7 @@ testpaths = ["tests"]
 # the `coverage` job in `tests.yml`, which sets that environment up and reports
 # what it measured *and what it did not*. One number, one owner. Run it locally
 # with `python3 .github/scripts/coverage_gate.py`.
-addopts = "-n auto --cov=supertool --cov=presets --cov-report=term-missing -m 'not slow and not benchmark'"
+addopts = "-n auto --cov=supertool --cov=_supertool --cov=presets --cov-report=term-missing -m 'not slow and not benchmark'"
 markers = [
     "slow: opt-in heavy tests (>5s). Run with `pytest -m slow` or `pytest -m ''` to include.",
     # `benchmark` is not a synonym for `slow`. A slow test is heavy and still
@@ -174,10 +174,16 @@ ignore = [
 # introduced in supertool.py will not be caught. That is the trade — 34
 # standing false positives against prospective coverage in one file — and it
 # is reversible the day those closures are lifted out of the loop.
-"supertool.py" = ["B023"]
+"_supertool.py" = ["B023"]
 
 [tool.setuptools]
-# Single-file project — declare the top-level module explicitly so setuptools
-# doesn't try to flat-layout-autodiscover (hooks/, presets/, notifiers/, etc.
-# are tool dirs, not Python packages).
-py-modules = ["supertool"]
+# Two top-level modules, declared explicitly so setuptools doesn't try to
+# flat-layout-autodiscover (hooks/, presets/, notifiers/, etc. are tool dirs,
+# not Python packages).
+#
+# `_supertool` is not optional here and its absence would not be loud: the
+# console script imports `supertool`, which imports `_supertool`, so a wheel
+# missing it installs cleanly and dies on first use. Only the non-editable
+# install test catches that, and it is marked `slow` — outside the default
+# run. tests/test_entry_point_shim_931.py pins the list against the tree.
+py-modules = ["supertool", "_supertool"]

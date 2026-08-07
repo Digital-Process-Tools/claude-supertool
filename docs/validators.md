@@ -401,7 +401,7 @@ is off protects nothing — so the selection is the half that can be brought to
 zero and held there. Three rules inside it are switched off with a reason
 rather than left on and half-suppressed: `F401`, `F841` and `F541` (263
 standing occurrences, whose fix is a mechanical `ruff check --fix` across half
-the repo and belongs in its own PR), and `B023`, scoped off for `supertool.py`
+the repo and belongs in its own PR), and `B023`, scoped off for `_supertool.py`
 alone, where all 34 occurrences are closures invoked inside the iteration that
 defines them.
 

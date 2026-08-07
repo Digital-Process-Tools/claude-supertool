@@ -37,7 +37,8 @@ SUPERTOOL = ROOT / "supertool.py"
 
 # Shipped code — what a user runs. Held to both halves of the rule, reads and
 # writes.
-SHIPPED = ("supertool.py", "presets", "hooks", "validators", "formatters", "notifiers")
+SHIPPED = ("supertool.py", "_supertool.py", "presets", "hooks", "validators",
+           "formatters", "notifiers")
 
 # `tests/` is scanned too, but for **reads only** (#461). The ~1670 `write_text()`
 # fixture calls are the noise that made #418's blanket exclusion correct; the

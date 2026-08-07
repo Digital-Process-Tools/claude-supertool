@@ -128,8 +128,14 @@ def test_the_security_boundary_is_enforced() -> None:
 
 
 def test_supertool_itself_is_still_enforced() -> None:
-    """Widening the scope must not have dropped what the old gate did cover."""
-    assert gate.classify("supertool.py") == "enforced"
+    """Widening the scope must not have dropped what the old gate did cover.
+
+    The floor follows the code, not the filename: since #931 `supertool.py` is a
+    ~50-line entry-point shim and the 17k lines live in `_supertool.py`. A floor
+    left on the shim would have kept printing 89%-and-green over nothing.
+    """
+    assert gate.classify("_supertool.py") == "enforced"
+    assert gate.classify("supertool.py") == "unmeasured"
 
 
 def test_every_bucket_without_a_floor_states_why() -> None:
@@ -180,9 +186,10 @@ def test_the_measured_paths_are_absolute() -> None:
     the issue itself.
     """
     lines = gate._source_lines()
-    assert "supertool" in lines, (
-        "supertool goes in by module name; `source` rejects a file path there")
-    paths = [line for line in lines if line != "supertool"]
+    assert "supertool" in lines and "_supertool" in lines, (
+        "both top-level modules go in by module name; `source` rejects a file "
+        "path there. `_supertool` is where the code lives since #931")
+    paths = [line for line in lines if line not in ("supertool", "_supertool")]
     assert paths, "no directory sources at all — the scope collapsed"
     for line in paths:
         assert Path(line).is_absolute(), (
