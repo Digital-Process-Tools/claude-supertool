@@ -28,6 +28,8 @@ from __future__ import annotations
 import importlib.util
 import io
 import os
+import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -89,7 +91,7 @@ def repo():
     made: list[str] = []
 
     def make() -> str:
-        tmp = tempfile.mkdtemp(prefix="st900_")
+        tmp = tempfile.mkdtemp(prefix="st900 dir_")
         made.append(tmp)
         work = os.path.join(tmp, "repo")
         os.makedirs(work)
@@ -105,25 +107,56 @@ def repo():
 
     yield make
     for tmp in made:
-        subprocess.run(["rm", "-rf", tmp], check=False)
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
-def _sequence_editor(tmp: str, transform: str) -> dict[str, str]:
+def _shell_word(path: str) -> str:
+    """Quote one path for the shell git runs `GIT_SEQUENCE_EDITOR` through.
+
+    git does not exec the editor itself — it hands the whole string to a shell,
+    so an interpolated path is shell source, not an argument. Unquoted, any
+    space in it splits into two arguments, which is reason enough on every
+    platform.
+
+    Windows adds a sharper failure on top: the shell there is git's bundled sh,
+    which reads the backslashes of a native path as escapes and eats them, so
+    `C:\\hostedtoolcache\\...\\python.exe` reaches exec as `C:hostedtoolcache...`
+    and the rebase dies with "command not found". Quoting does not change that
+    reading — forward slashes do, and Windows accepts them anywhere it takes a
+    path. POSIX keeps its backslashes untouched, where they are ordinary
+    filename characters rather than separators, so converting there would
+    corrupt a legitimate path instead of repairing one.
+    """
+    if os.name == "nt":
+        path = path.replace("\\", "/")
+    return shlex.quote(path)
+
+
+def _sequence_editor(tmp: str, transform: str) -> "tuple[dict[str, str], str]":
     """A GIT_SEQUENCE_EDITOR that rewrites the todo list with `transform`.
 
     `transform` is python source operating on `t` (the todo text) and assigning
     the result back to `t`.
+
+    Returns the env overlay *and* the path of a sentinel the editor writes on
+    its way out. Callers assert on the sentinel because every other evidence of
+    the editor having run is downstream: when it fails to launch, git still
+    exits somewhere and the case surfaces as a missing `rebase-merge/`, which
+    names the symptom two steps from the cause.
     """
     script = os.path.join(tmp, "seq_editor.py")
+    sentinel = os.path.join(tmp, "seq_editor.ran")
     Path(script).write_text(
         "import sys\n"
         "p = sys.argv[1]\n"
         "t = open(p).read()\n"
         f"{transform}\n"
-        "open(p, 'w').write(t)\n",
+        "open(p, 'w').write(t)\n"
+        f"open({sentinel!r}, 'w').write('ran')\n",
         encoding="utf-8",
     )
-    return {"GIT_SEQUENCE_EDITOR": f"{sys.executable} {script}"}
+    editor = f"{_shell_word(sys.executable)} {_shell_word(script)}"
+    return {"GIT_SEQUENCE_EDITOR": editor}, sentinel
 
 
 def _resolve_to_head(work: str) -> None:
@@ -273,9 +306,12 @@ def test_interactive_break_stop_warns(repo, monkeypatch) -> None:
     """
     work = repo()
     tmp = os.path.dirname(work)
-    env = _sequence_editor(tmp, "t = 'break\\n' + t")
+    env, sentinel = _sequence_editor(tmp, "t = 'break\\n' + t")
     res = _run(["rebase", "-i", "master"], work, env)
     assert res.returncode == 0, res.stderr
+    assert os.path.exists(sentinel), (
+        f"the sequence editor never ran, so the todo list was never rewritten "
+        f"and this case tested nothing: {res.stderr}")
     assert os.path.exists(os.path.join(work, ".git", "rebase-merge"))
     assert not os.path.exists(os.path.join(work, ".git", "REBASE_HEAD")), (
         f"expected no REBASE_HEAD at a break stop, got {_state(work)}")
@@ -288,8 +324,12 @@ def test_interactive_edit_stop_warns(repo, monkeypatch) -> None:
     """Stopped at `edit`: conflict-free, clean tree, rebase still in progress."""
     work = repo()
     tmp = os.path.dirname(work)
-    env = _sequence_editor(tmp, "t = t.replace('pick', 'edit', 1)")
-    _run(["rebase", "-i", "other"], work, env)
+    env, sentinel = _sequence_editor(tmp, "t = t.replace('pick', 'edit', 1)")
+    res = _run(["rebase", "-i", "other"], work, env)
+    assert res.returncode == 0, res.stderr
+    assert os.path.exists(sentinel), (
+        f"the sequence editor never ran, so the todo list was never rewritten "
+        f"and this case tested nothing: {res.stderr}")
     assert os.path.exists(os.path.join(work, ".git", "rebase-merge"))
 
     out = _checkout(work, "master", monkeypatch)
