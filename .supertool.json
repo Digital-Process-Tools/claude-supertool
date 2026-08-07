@@ -9,7 +9,8 @@
     "git",
     "xml",
     "mcp",
-    "watch"
+    "watch",
+    "dashboard"
   ],
   "mcp": {
     "py-lsp": {

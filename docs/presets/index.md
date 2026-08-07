@@ -21,6 +21,7 @@ Supertool merges preset ops at startup — project-level ops always override on 
 | `bluesky` | Post, read, and engage on Bluesky | [bluesky.md](bluesky.md) | `python3`, `BLUESKY_HANDLE` + `BLUESKY_APP_PASSWORD` |
 | `xml` | Read-only XPath queries over XML files | [xml.md](xml.md) | `python3` |
 | `watch` | Background pollers + async wake on external events (PRs, MRs, pipelines) | [watch.md](watch.md) | `gh` and/or `glab` per source |
+| `dashboard` | "What do I do next" — one read-only join over clone, CI, board, worktrees and lanes | [dashboard.md](dashboard.md) | `gh` CLI |
 
 ## Remote text is fenced
 
