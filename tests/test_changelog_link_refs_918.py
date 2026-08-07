@@ -61,6 +61,93 @@ def _unreleased(version: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# `--check-links`, the arm that turns the audit into an exit status (#991)
+# ---------------------------------------------------------------------------
+#
+# `audit_link_refs` is covered above in every way a release can leave the table
+# wrong. `check_links` — the function the CI step actually invokes, which turns
+# those findings into a receipt and one of three exit statuses — was not
+# covered at all, which is how the #991 floor on `.github/scripts/` found it on
+# its first real run. The audit being right is worth nothing if the arm that
+# reports it returns OK regardless, and that is the same asymmetry #918 filed
+# one level up: a link that resolves and states the opposite of the truth.
+#
+# Would these pass if the code did nothing? No — each asserts a distinct exit
+# status, and `_receipt` prints a distinct word for each. A `check_links` that
+# returned OK unconditionally fails three of the four.
+
+def _write(tmp_path, body: str) -> Path:
+    path = tmp_path / "CHANGELOG.md"
+    path.write_text(body, encoding="utf-8")
+    return path
+
+
+def test_check_links_returns_ok_on_a_table_with_nothing_wrong(
+        tmp_path: Path, capsys) -> None:
+    """Clean means every declared untagged release is present too.
+
+    A document that simply omits them is not clean — a stale declaration is
+    its own finding — so the fixture carries them, which is also the only way
+    to reach the branch that lists them in the receipt.
+    """
+    untagged = sorted(asm.UNTAGGED_RELEASES)
+    rc = asm.check_links(_write(tmp_path, _doc(
+        ["[Unreleased]", "[0.26.0] - 2026-08-07"]
+        + ["[{0}] - 2026-01-01".format(v) for v in untagged],
+        [_unreleased("0.26.0"), _tag("0.26.0")])))
+    out = capsys.readouterr().out
+    assert rc == asm.OK, "a clean table did not report ok: " + out
+    assert "ok" in out
+    if untagged:
+        assert "untagged" in out, (
+            "the declared-untagged releases were not disclosed in the receipt")
+
+
+def test_check_links_refuses_and_names_the_findings(
+        tmp_path: Path, capsys) -> None:
+    """A finding must reach the exit status, not only the audit's return value."""
+    rc = asm.check_links(_write(tmp_path, _doc(
+        ["[Unreleased]", "[0.26.0] - 2026-08-07", "[0.25.0] - 2026-08-06"],
+        [_unreleased("0.26.0"), _tag("0.26.0")])))
+    out = capsys.readouterr().out
+    assert rc == asm.REFUSED, (
+        "a release heading with no link ref did not red the step")
+    assert "0.25.0" in out, "the receipt did not name the offending version"
+
+
+def test_check_links_declines_when_the_file_cannot_be_read(
+        tmp_path: Path, capsys) -> None:
+    """Unreadable is `skipped`, never `ok`.
+
+    A missing file read as a pass is the whole defect class: nothing was
+    audited, and nothing-audited renders identically to nothing-wrong.
+    """
+    rc = asm.check_links(tmp_path / "no-such-changelog.md")
+    out = capsys.readouterr().out
+    assert rc == asm.SKIPPED, (
+        "an unreadable changelog was not distinguished from a clean one")
+    assert "skipped" in out and "nothing was audited" in out
+
+
+def test_check_links_declines_when_there_is_nothing_to_audit(
+        tmp_path: Path, capsys) -> None:
+    """A document with no release sections cannot answer the question."""
+    rc = asm.check_links(_write(tmp_path, "# Changelog\\n\\nnothing here yet.\\n"))
+    assert rc == asm.SKIPPED
+    assert "skipped" in capsys.readouterr().out
+
+
+def test_the_three_exit_statuses_are_distinct() -> None:
+    """Three states, not two — and not two spellings of one number.
+
+    `ok`, `refused` and `skipped` collapsing onto a shared status is how a
+    caller ends up acting on the wrong one; the distinction is the point of
+    the receipt.
+    """
+    assert len({asm.OK, asm.REFUSED, asm.SKIPPED}) == 3
+
+
+# ---------------------------------------------------------------------------
 # the audit, against documents wrong in each way a release can leave them
 # ---------------------------------------------------------------------------
 
