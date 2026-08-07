@@ -77,7 +77,8 @@ def _collect_under_slow() -> str:
     result = subprocess.run(
         [sys.executable, "-m", "pytest", "--collect-only", "-q", "-m", "slow",
          "--no-cov", "-p", "no:cacheprovider", *_TARGET_TEST_FILES],
-        cwd=REPO, capture_output=True, text=True, timeout=60,
+        cwd=REPO, capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=60,
     )
     return result.stdout + result.stderr
 
