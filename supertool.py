@@ -2301,7 +2301,17 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
 
     compact = not filter_regex and _is_compact()
     matched_any = False
+    # `printed` counts *emitted* lines; the two `continue`s below advance the
+    # read without incrementing it. `offset + printed` is therefore neither
+    # where reading stopped nor how much of the file is left, and every count
+    # in this render that was derived from it named a line that was not the
+    # last one shown (#945). `last_scanned` is the 1-based index of the last
+    # line the loop actually looked at, which is the only honest answer to
+    # both questions.
+    last_scanned = offset
+    capped = False
     for i in range(offset, end):
+        last_scanned = i + 1
         try:
             line = raw_lines[i].decode("utf-8", errors="replace")
         except Exception:
@@ -2316,21 +2326,21 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
         bytes_emitted += len(numbered)
         printed += 1
         if apply_byte_cap and bytes_emitted >= byte_cap:
+            capped = True
             break
 
     if filter_regex and not matched_any:
         out.append(f"(no lines matching {grep_filter!r})\n")
-    elif apply_byte_cap and bytes_emitted >= byte_cap:
-        last_line = offset + printed
-        remaining = line_count - last_line
+    elif capped:
+        remaining = line_count - last_scanned
         out.append(
             f"... (truncated at {_get_op_int('read', 'max_bytes', MAX_READ_BYTES)} bytes "
-            f"— showed lines {offset + 1}-{last_line} of {line_count} "
+            f"— showed lines {offset + 1}-{last_scanned} of {line_count} "
             f"({remaining} more line{'s' if remaining != 1 else ''}) — "
             f"use read:PATH:OFFSET:LIMIT to get more)\n"
         )
-    elif not filter_regex and offset + printed < line_count:
-        out.append(f"... ({line_count - offset - printed} more lines)\n")
+    elif not filter_regex and last_scanned < line_count:
+        out.append(f"... ({line_count - last_scanned} more lines)\n")
     elif not filter_regex and offset > 0:
         # `[complete file — no more lines]` after a windowed read was a plain
         # falsehood: lines 1-OFFSET were never emitted, and when OFFSET sits
@@ -2348,13 +2358,21 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
         # disclosure (#945).
         out.insert(1, _read_window_note(
             path, limit if apply_byte_cap else max(0, line_count - offset),
-            offset, line_count, printed))
+            offset, line_count, printed,
+            last_scanned=last_scanned, capped=capped,
+            byte_cap=byte_cap if apply_byte_cap else 0,
+            limit_synthetic=not apply_byte_cap,
+            skipped_by=("the grep= filter" if filter_regex
+                        else "compact mode" if compact else "")))
     out.append("\n")
     return "".join(out)
 
 
 def _read_window_note(path: str, limit: int, offset: int,
-                      line_count: int, shown: int) -> str:
+                      line_count: int, shown: int, last_scanned: int = 0,
+                      capped: bool = False, byte_cap: int = 0,
+                      limit_synthetic: bool = False,
+                      skipped_by: str = "") -> str:
     """One line naming the window the caller asked for and the window actually
     returned, emitted for every `read` with a non-zero OFFSET (#945).
 
@@ -2372,14 +2390,31 @@ def _read_window_note(path: str, limit: int, offset: int,
     that is the shape `_read_range_note` (#382) already speaks to: it reads
     `A:B` as START:END and would name a different range. Two hints proposing
     two different ranges is worse than one.
+
+    A window ends for one of three reasons and the note names which: the LIMIT
+    was reached, the file ended, or the byte cap cut it short. The first
+    version of this note computed the shortfall against the requested end and
+    attributed all of it to EOF, so a 20KB truncation was announced as "the end
+    of the file" at the top of a render whose own footer said 146 lines
+    remained. When two reasons land on the same line the note says they
+    coincide rather than picking the flattering one — an end it cannot
+    attribute is declined, not guessed.
     """
     req_start = offset + 1
     req_end = offset + limit
+    if last_scanned < offset:
+        last_scanned = offset + shown
     # "offset N + limit M = lines A-B" rather than "requested lines A-B":
     # LIMIT is often the 300-line default the caller never typed, and calling
     # that a request would be its own small untruth.
     asked = f"offset {offset} + limit {limit} = lines {req_start}-{req_end}"
     if shown <= 0:
+        if last_scanned > offset:
+            skipped = last_scanned - offset
+            by = f"{skipped_by} suppressed" if skipped_by else "nothing matched"
+            return (f"window: {asked}; scanned lines {req_start}-"
+                    f"{last_scanned} of {line_count} and emitted none — "
+                    f"{by} all {skipped}\n")
         return (f"window: {asked}; returning nothing — the file has "
                 f"{line_count} lines\n")
     hint = ""
@@ -2387,11 +2422,28 @@ def _read_window_note(path: str, limit: int, offset: int,
         hint = ("; OFFSET is a skip count, not a start line — for lines "
                 f"{offset}-{offset + limit - 1} use "
                 f"read:{path}:{offset}-{offset + limit - 1}")
-    last = offset + shown
-    stops = (f", stopping at line {last}, the end of the file"
-             if last < req_end else "")
-    return (f"window: {asked}; returning lines {req_start}-{last} "
-            f"of {line_count}{stops}{hint}\n")
+    suppressed = (last_scanned - offset) - shown
+    held = ""
+    if suppressed > 0:
+        held = (f", {shown} of those {last_scanned - offset} lines emitted "
+                f"({skipped_by or 'a filter'} skipped {suppressed})")
+    reasons = []
+    if capped:
+        reasons.append(f"cut short by the {byte_cap}-byte cap")
+    if last_scanned >= line_count:
+        reasons.append("the end of the file")
+    if not limit_synthetic and limit > 0 and last_scanned >= req_end:
+        reasons.append("the limit was reached")
+    if not reasons:
+        stops = f", stopping at line {last_scanned} for no reason this op can name"
+    elif len(reasons) == 1:
+        stops = f", stopping at line {last_scanned}: {reasons[0]}"
+    else:
+        stops = (f", stopping at line {last_scanned}: "
+                 + " and ".join(reasons)
+                 + " coincide here — which one ended the window cannot be told apart")
+    return (f"window: {asked}; returning lines {req_start}-{last_scanned} "
+            f"of {line_count}{held}{stops}{hint}\n")
 
 
 _READ_RANGE_RE = re.compile(r"\d+-\d+")
