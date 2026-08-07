@@ -325,6 +325,10 @@
       "enrich_cap": 40,
       "per_page": 50
     },
+    "dashboard": {
+      "_doc": "The lane board's label vocabulary. There is NO default: with lane_prefix absent, dashboard prints the lanes section as `!! unread` and names this key, because a prefix nobody chose selects zero labels and renders byte-identically to a repository with no work in flight (#1007, the same property as radar_tiers/#528). Spell it exactly as your labels do — claude-supertool uses `lane-` (lane-watch, lane-release), while claude-remember spells the sibling namespace `priority:high` with a colon. When a configured prefix matches nothing, the section says so and names the labels that share its stem behind another separator; it never silently tries the other one. Passes through as SUPERTOOL_DASHBOARD_LANE_PREFIX.",
+      "lane_prefix": "lane-"
+    },
     "radar": {
       "_doc": "Radar reconciles registered tiers against live truth. There is NO default tier: with radar_tiers absent or empty, radar refuses and names the fix, because an unconfigured radar that prints nothing is byte-identical to a healthy one. 'gl-mrs' is the GitLab MR board (the whole of radar before #528); 'gl-runners' adds the runner fleet and needs Maintainer to read project runners. Registration order is render order. Both keys pass through as SUPERTOOL_RADAR_TIERS / SUPERTOOL_RADAR_EXCLUSIONS.",
       "radar_tiers": {

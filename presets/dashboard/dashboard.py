@@ -119,7 +119,33 @@ LANE_OCCUPIED = "occupied"
 LANE_FREE = "free"
 LANE_UNKNOWN = "unknown"
 
-LANE_PREFIX = "lane:"
+#: The lane vocabulary is **configuration, never a literal** (#1007). `lane:`
+#: was hardcoded here out of the *title* of #964 — an issue whose whole subject
+#: is a colon that appears in no label name — and selected none of this
+#: repository's seven `lane-*` labels, so every lane resolved to unplaced and
+#: this section reported nothing. There is no prefix that is right everywhere:
+#: `claude-supertool` spells lanes `lane-watch`, `claude-remember` spells
+#: priorities `priority:high` — same organisation, one repository apart, opposite
+#: convention. Radar's property therefore applies (#528): **unconfigured refuses**
+#: rather than silently matching nothing, because a prefix that selects zero
+#: labels renders byte-identically to a healthy board with no work on it. There
+#: is deliberately no default — a default makes this repository green and hands
+#: the next one the identical defect, minus the evidence that filed it.
+#: `ops.dashboard.lane_prefix` reaches a preset as `SUPERTOOL_<KEY>` — the op
+#: runner uppercases the config key alone and does not namespace it by op, the
+#: same route `ops.radar.radar_tiers` and `ops.git-diff.red_flags_extra` take.
+#: Naming a variable the runner never sets makes a fully configured repository
+#: refuse, and every unit test below passes either way, so
+#: `test_the_config_key_reaches_the_preset_under_the_name_it_reads` pins it.
+LANE_PREFIX_ENV = "SUPERTOOL_LANE_PREFIX"
+
+NO_LANE_PREFIX = (
+    "no lane vocabulary configured, so the lane board is not built rather than "
+    "built from a guess. Add ops.dashboard.lane_prefix to .supertool.json — "
+    'e.g. {"ops": {"dashboard": {"lane_prefix": "lane-"}}} where the labels are '
+    "lane-watch, lane-release. There is no default on purpose: a prefix nobody "
+    "chose would select zero labels and print as a lane board with nothing on it"
+)
 
 #: Worktree states that count as a live occupancy. `cannot tell` is here on
 #: purpose — an undecidable tree is an occupancy for attribution purposes, and
@@ -210,14 +236,19 @@ class Section:
 
 
 class Report:
-    __slots__ = ("repo", "sections", "prs", "lanes")
+    __slots__ = ("repo", "sections", "prs", "lanes", "lane_prefix")
 
-    def __init__(self, repo, sections=None, prs=None, lanes=None):
+    def __init__(self, repo, sections=None, prs=None, lanes=None,
+                 lane_prefix=""):
         self.repo = repo
         self.sections = dict(sections or {})
         self.prs = list(prs or [])
-        #: `None` when the lane universe could not be read.
+        #: `None` when the lane universe could not be read, `{}` when it was
+        #: read and came back empty. Those are different states and #1007 is
+        #: what happens when they render the same.
         self.lanes = lanes
+        #: The configured vocabulary, or `None` when nothing configured one.
+        self.lane_prefix = lane_prefix
 
 
 # ── the verdict ──────────────────────────────────────────────────────────
@@ -286,6 +317,78 @@ def pr_verdict(pr: PullRequest) -> tuple:
 
 
 # ── lane occupancy ───────────────────────────────────────────────────────
+
+def read_lane_prefix(raw=None):
+    """`(prefix, complaint)` from `ops.dashboard.lane_prefix`, which may refuse.
+
+    Nothing here raises and nothing here guesses. Absent or blank yields `None`
+    plus the sentence naming the key, and the lanes section prints that as
+    `!! unread` — the third state. The alternative, which is what #1007 was, is
+    a prefix that matches nothing rendering as a tally of zeroes.
+    """
+    raw = os.environ.get(LANE_PREFIX_ENV, "") if raw is None else raw
+    raw = str(raw).strip()
+    if not raw:
+        return None, NO_LANE_PREFIX
+    return raw, ""
+
+
+def _lane_stem(prefix: str) -> str:
+    """`lane:` and `lane-` both stem to `lane` — the separator is the variable."""
+    return re.sub(r"[^0-9A-Za-z]+$", "", str(prefix))
+
+
+def select_lane_universe(labels, prefix: str):
+    """`(lanes, near_misses, error)` — what this prefix selects, and what it nearly did.
+
+    `near_misses` is the field that makes an empty universe actionable instead
+    of mysterious: the same stem behind a different separator is the exact shape
+    of #1007. It is reported as a suggestion the reader applies, never as a
+    fallback the op applies for them — silently trying the other separator would
+    rebuild the guess this whole change removes.
+    """
+    if not isinstance(labels, list):
+        return None, [], "gh label list did not return a list"
+    names = [str(item.get("name")) for item in labels if isinstance(item, dict)]
+    lanes = sorted(name for name in names if name.startswith(prefix))
+    stem = _lane_stem(prefix)
+    near = sorted(name for name in names
+                  if stem and not name.startswith(prefix)
+                  and name.startswith(stem) and len(name) > len(stem)
+                  and not name[len(stem)].isalnum())
+    return lanes, near, ""
+
+
+def lane_universe_note(prefix: str, lanes, near) -> str:
+    """An empty lane universe, said as its own state rather than as `0, 0, 0` (#1007).
+
+    "No label matched my prefix" and "this repository declares no lanes" are
+    different worlds — the first is a defect, the second is fine — and
+    `0 free, 0 occupied, 0 unknown` is the same sentence for both. This is the
+    sentence that would have made #1007 self-reporting on its first run instead
+    of needing someone to grep the source.
+    """
+    if lanes:
+        return ""
+    if near:
+        shown = ", ".join(_untrusted.flat(name) for name in near[:4])
+        more = f", +{len(near) - 4} more" if len(near) > 4 else ""
+        other = near[0][:len(_lane_stem(prefix)) + 1]
+        return (f"no label matches {prefix!r}, so the lane universe is empty and "
+                f"no lane can be reported free. {len(near)} label(s) share its "
+                f"stem behind a different separator ({shown}{more}) — if the "
+                f"vocabulary here is {other!r}, set ops.dashboard.lane_prefix to "
+                "it; nothing is assumed on your behalf")
+    return (f"no label matches {prefix!r}, and nothing resembling it exists "
+            "either. Either this repository declares no lanes — which is fine — "
+            "or the prefix belongs to a different repository. Nothing here "
+            "distinguishes those, so no lane is reported free")
+
+
+def render_lane_refusal(complaint: str) -> Section:
+    """The unconfigured case, as an unread section rather than an empty one."""
+    return Section("lanes", error=complaint)
+
 
 def stray_worktrees(worktrees, default_branch: str = "") -> list:
     """Live worktrees that could not be placed in any lane.
@@ -400,15 +503,24 @@ def next_action(report: Report) -> str:
                 "UNKNOWN — resolve the doubt before anything else: "
                 f"gh-pr:{unsure[0].number}:status")
 
+    prefix = report.lane_prefix
     free = sorted(lane for lane, (state, _e) in (report.lanes or {}).items()
                   if state == LANE_FREE)
     if free:
-        shown = ", ".join(name[len(LANE_PREFIX):] for name in free)
+        shown = ", ".join(name[len(prefix or ""):] for name in free)
         return (f"next: nothing ready on the board — {len(free)} lane(s) free "
                 f"({shown}); pick work for one: gh-issues:label={free[0]}")
+    if prefix is None:
+        return ("next: nothing ready on the board, and the lane vocabulary is "
+                "unconfigured (ops.dashboard.lane_prefix), so whether a lane is "
+                "free is UNKNOWN")
     if report.lanes is None:
         return ("next: nothing ready on the board, and the lane board is unread, "
                 "so whether a lane is free is UNKNOWN")
+    if not report.lanes:
+        return ("next: nothing ready on the board, and the lane universe is "
+                f"empty — no label matches {prefix!r}, so no lane can be "
+                "reported free")
     return "next: nothing ready — no PR is mergeable and no lane is free"
 
 
@@ -445,8 +557,12 @@ def render(report: Report) -> str:
         tally[pr_verdict(pr)[0]] = tally.get(pr_verdict(pr)[0], 0) + 1
     board = ", ".join(f"{tally[w]} {w}" for w in VERDICT_ORDER if tally.get(w))
 
-    if report.lanes is None:
+    if report.lane_prefix is None:
+        lanes = "lanes UNCONFIGURED (ops.dashboard.lane_prefix)"
+    elif report.lanes is None:
         lanes = "lanes UNREAD"
+    elif not report.lanes:
+        lanes = f"lane universe EMPTY — no label matches {report.lane_prefix!r}"
     else:
         counts = {LANE_FREE: 0, LANE_OCCUPIED: 0, LANE_UNKNOWN: 0}
         for state, _evidence in report.lanes.values():
@@ -605,14 +721,14 @@ def _red_ref(rollup) -> object:
     return None
 
 
-def _build_pr(payload: dict, issue_lanes: dict) -> PullRequest:
+def _build_pr(payload: dict, issue_lanes: dict, prefix: str) -> PullRequest:
     rollup = payload.get("statusCheckRollup")
     states = _checks.github_states(rollup) if isinstance(rollup, list) else None
     marker, _lines = _gh_pr._reconcile_checks(payload)
 
     lanes = {label.get("name") for label in (payload.get("labels") or [])
              if isinstance(label, dict)
-             and str(label.get("name") or "").startswith(LANE_PREFIX)}
+             and str(label.get("name") or "").startswith(prefix)}
     for ref in _checks.closing_issue_refs(payload.get("body")):
         if ref.startswith("#"):
             lanes.update(issue_lanes.get(ref[1:], ()))
@@ -632,7 +748,7 @@ def _build_pr(payload: dict, issue_lanes: dict) -> PullRequest:
     )
 
 
-def collect_board(issue_lanes: dict, workers: int):
+def collect_board(issue_lanes: dict, workers: int, prefix: str = ""):
     """`(Section, prs)` — the open PRs, each with its verdict derived.
 
     The per-PR reconciliation is the fan-out: one run list plus up to four job
@@ -649,14 +765,14 @@ def collect_board(issue_lanes: dict, workers: int):
         return Section("board", ["no open PRs"]), []
 
     with _futures.ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        prs = list(pool.map(lambda d: _build_pr(d, issue_lanes), data))
+        prs = list(pool.map(lambda d: _build_pr(d, issue_lanes, prefix), data))
 
     prs.sort(key=lambda p: (VERDICT_ORDER.index(pr_verdict(p)[0]),
                             -int(p.number or 0)))
     lines = []
     for pr in prs:
         word, why = pr_verdict(pr)
-        lanes = " ".join(name[len(LANE_PREFIX):] for name in pr.lanes) or "lane ?"
+        lanes = " ".join(name[len(prefix):] for name in pr.lanes) or "lane ?"
         lines.append(f"{word:<8} #{pr.number:<5} "
                      f"{_untrusted.flat(pr.branch):<20} {lanes:<14} {why}")
     return Section("board", lines), prs
@@ -678,7 +794,7 @@ def _branch_lanes(branch: str, issue_lanes: dict, pr_by_branch: dict) -> list:
     return sorted(lanes)
 
 
-def collect_worktrees(issue_lanes: dict, pr_by_branch: dict):
+def collect_worktrees(issue_lanes: dict, pr_by_branch: dict, prefix: str = ""):
     """`(Section, worktrees)` — `git-worktrees`' own assessment, one line each.
 
     The evidence lines are `git-worktrees`' to print; here the verdict word
@@ -709,7 +825,7 @@ def collect_worktrees(issue_lanes: dict, pr_by_branch: dict):
     lines = []
     for tree in sorted(trees, key=lambda t: (t.state != _worktrees.STATE_OCCUPIED,
                                              t.path)):
-        lanes = " ".join(name[len(LANE_PREFIX):] for name in tree.lanes) or "lane ?"
+        lanes = " ".join(name[len(prefix):] for name in tree.lanes) or "lane ?"
         lines.append(f"{tree.state:<12} {_untrusted.flat(tree.path):<40} "
                      f"{_untrusted.flat(tree.branch):<22} {lanes}")
     lines.append("'cannot tell' is NOT 'idle' — expand one with "
@@ -719,34 +835,36 @@ def collect_worktrees(issue_lanes: dict, pr_by_branch: dict):
 
 # ── section: lanes ───────────────────────────────────────────────────────
 
-def collect_lane_universe():
-    """`(lanes, error)` — every `lane:*` label the repository declares.
+def collect_lane_universe(prefix: str):
+    """`(lanes, near_misses, error)` — every lane label the repository declares.
 
     Read from the label list rather than from the labels in use, so a lane
     nobody has filed against still appears. Derived from usage it would simply
     not exist, and a lane that does not exist cannot be reported free — which
     sounds safe and is the opposite: it silently shrinks the delegation menu.
+
+    The selection itself is `select_lane_universe`, which also reports what the
+    prefix nearly matched — see `lane_universe_note` for why an empty answer
+    here has to arrive with an explanation attached.
     """
     data, err = _json_cmd(["gh", "label", "list", "--limit", "200", "--json",
                            "name"], timeout=30)
     if err:
-        return None, err
-    if not isinstance(data, list):
-        return None, "gh label list did not return a list"
-    return sorted(str(item.get("name")) for item in data
-                  if isinstance(item, dict)
-                  and str(item.get("name") or "").startswith(LANE_PREFIX)), ""
+        return None, [], err
+    return select_lane_universe(data, prefix)
 
 
-def collect_issue_lanes():
+def collect_issue_lanes(prefix: str):
     """`({issue number: [lanes]}, error)` — the label lives on the issue.
 
-    Measured on this repository on 2026-08-07: 7 `lane:*` labels exist, 54 of
-    65 open issues carry one, and **no open PR carries one at all**. A lane
-    board built from PR labels would therefore have rendered all seven lanes
-    free while six PRs and thirteen worktrees were live — the exact wrong
-    answer, printed confidently. The PR reaches its lane through its closing
-    reference, and a worktree through the issue number in its branch name.
+    Measured on this repository on 2026-08-07: seven lane labels exist (spelled
+    `lane-watch`, `lane-release`, … — dash-separated, which is why the prefix is
+    configuration and not a literal, #1007), 54 of 65 open issues carry one, and
+    **no open PR carries one at all**. A lane board built from PR labels would
+    therefore have rendered all seven lanes free while six PRs and thirteen
+    worktrees were live — the exact wrong answer, printed confidently. The PR
+    reaches its lane through its closing reference, and a worktree through the
+    issue number in its branch name.
     """
     data, err = _json_cmd(["gh", "issue", "list", "--state", "all", "--limit",
                            "400", "--json", "number,labels"], timeout=60)
@@ -760,15 +878,21 @@ def collect_issue_lanes():
             continue
         lanes = [str(label.get("name")) for label in (item.get("labels") or [])
                  if isinstance(label, dict)
-                 and str(label.get("name") or "").startswith(LANE_PREFIX)]
+                 and str(label.get("name") or "").startswith(prefix)]
         if lanes:
             out[str(item.get("number"))] = lanes
     return out, ""
 
 
-def render_lanes(states, strays=()) -> Section:
+def render_lanes(states, strays=(), prefix: str = "", note: str = "") -> Section:
     if states is None:
         return Section("lanes", error="the lane label universe could not be read")
+    if not states:
+        # Read, and empty. Degraded rather than `(none)`: an empty section reads
+        # as "nothing to report", and #1007 is what that sentence costs when the
+        # truth is "nothing was selectable".
+        return Section("lanes", lines=[],
+                       warning=note or lane_universe_note(prefix, [], []))
     lines = []
     if strays:
         named = ", ".join(_untrusted.flat(f"{w.path} ({w.branch})")
@@ -780,7 +904,7 @@ def render_lanes(states, strays=()) -> Section:
     order = {LANE_OCCUPIED: 0, LANE_UNKNOWN: 1, LANE_FREE: 2}
     for lane in sorted(states, key=lambda name: (order[states[name][0]], name)):
         state, evidence = states[lane]
-        lines.append(f"{state:<10} {lane[len(LANE_PREFIX):]:<14} "
+        lines.append(f"{state:<10} {lane[len(prefix):]:<14} "
                      f"{' · '.join(evidence)}")
     lines.append("'unknown' is NOT 'free' — an undecidable or unplaced "
                  "occupancy could be in it")
@@ -801,22 +925,30 @@ def build_report(budget: int, workers: int) -> Report:
     def _left():
         return max(1, int(budget - (time.monotonic() - started)))
 
+    # Refused before any label read, not after: an unconfigured prefix has no
+    # right answer to fetch, and "matched 0 of 54 labels" is not a finding about
+    # this repository.
+    prefix, prefix_complaint = read_lane_prefix()
+
     sections: dict = {}
     with _futures.ThreadPoolExecutor(max_workers=4) as pool:
-        f_issues = pool.submit(collect_issue_lanes)
-        f_labels = pool.submit(collect_lane_universe)
+        f_issues = pool.submit(collect_issue_lanes, prefix) if prefix else None
+        f_labels = pool.submit(collect_lane_universe, prefix) if prefix else None
         f_local = pool.submit(collect_local, default_branch)
         f_default = pool.submit(collect_default, repo, default_branch)
 
-        try:
-            issue_lanes, issue_err = f_issues.result(timeout=_left())
-        except _futures.TimeoutError:
-            issue_lanes, issue_err = None, f"budget of {budget}s ran out"
+        if f_issues is None:
+            issue_lanes, issue_err = {}, ""
+        else:
+            try:
+                issue_lanes, issue_err = f_issues.result(timeout=_left())
+            except _futures.TimeoutError:
+                issue_lanes, issue_err = None, f"budget of {budget}s ran out"
 
-        board, prs = collect_board(issue_lanes or {}, workers)
+        board, prs = collect_board(issue_lanes or {}, workers, prefix or "")
         pr_by_branch = {pr.branch: pr.lanes for pr in prs}
         worktrees_section, trees = collect_worktrees(issue_lanes or {},
-                                                     pr_by_branch)
+                                                     pr_by_branch, prefix or "")
 
         for key, future in (("local", f_local), ("default", f_default)):
             try:
@@ -826,20 +958,26 @@ def build_report(budget: int, workers: int) -> Report:
             except Exception as exc:  # noqa: BLE001 - a section, not the render
                 sections[key] = Section(key, error=f"{type(exc).__name__}: {exc}")
 
-        try:
-            lanes, lane_err = f_labels.result(timeout=_left())
-        except _futures.TimeoutError:
-            lanes, lane_err = None, f"budget of {budget}s ran out"
+        if f_labels is None:
+            lanes, near, lane_err = None, [], ""
+        else:
+            try:
+                lanes, near, lane_err = f_labels.result(timeout=_left())
+            except _futures.TimeoutError:
+                lanes, near, lane_err = None, [], f"budget of {budget}s ran out"
 
     sections["board"] = board
     sections["worktrees"] = worktrees_section
 
     states = lane_states(lanes, prs, trees, default_branch=default_branch)
-    if lanes is None:
+    if prefix is None:
+        lane_section = render_lane_refusal(prefix_complaint)
+    elif lanes is None:
         lane_section = Section("lanes", error=lane_err or "unread")
     else:
         lane_section = render_lanes(
-            states, stray_worktrees(trees, default_branch))
+            states, stray_worktrees(trees, default_branch), prefix=prefix,
+            note=lane_universe_note(prefix, lanes, near))
         if issue_lanes is None:
             lane_section.warning = (
                 f"the issue labels could not be read ({issue_err}), so no PR or "
@@ -850,7 +988,8 @@ def build_report(budget: int, workers: int) -> Report:
     ordered = {name: sections[name] for name in
                ("local", "default", "board", "worktrees", "lanes")
                if name in sections}
-    report = Report(repo=repo or "?", sections=ordered, prs=prs, lanes=states)
+    report = Report(repo=repo or "?", sections=ordered, prs=prs, lanes=states,
+                    lane_prefix=prefix)
     if repo_err:
         report.sections["local"] = Section("local", error=repo_err)
     return report
