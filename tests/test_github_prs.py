@@ -23,29 +23,32 @@ _spec.loader.exec_module(prs)
 # ---------------------------------------------------------------------------
 
 def test_parse_args_empty_is_defaults() -> None:
-    assert prs._parse_args("") == ({}, set())
+    assert prs._parse_args("") == ({}, set(), [])
 
 
 def test_parse_args_filters_and_flags() -> None:
-    filters, flags = prs._parse_args("author=@me,state=merged,nopipe")
+    filters, flags, unknown = prs._parse_args("author=@me,state=merged,nopipe")
     assert filters == {"author": "@me", "state": "merged"}
     assert flags == {"nopipe"}
+    assert unknown == []
 
 
 def test_parse_args_iids_flag() -> None:
-    _, flags = prs._parse_args("author=@me,iids")
+    _, flags, _unknown = prs._parse_args("author=@me,iids")
     assert "iids" in flags
 
 
 def test_parse_args_failed_flag() -> None:
-    _, flags = prs._parse_args("failed")
+    _, flags, _unknown = prs._parse_args("failed")
     assert flags == {"failed"}
 
 
-def test_parse_args_ignores_unknown_bare_token() -> None:
-    filters, flags = prs._parse_args("author=@me,bogus")
+def test_parse_args_returns_an_unknown_bare_token() -> None:
+    """This test used to assert the drop. The drop was the bug (#939)."""
+    filters, flags, unknown = prs._parse_args("author=@me,bogus")
     assert flags == set()
     assert filters == {"author": "@me"}
+    assert unknown == ["bogus"]
 
 
 # ---------------------------------------------------------------------------

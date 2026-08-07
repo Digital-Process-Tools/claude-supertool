@@ -29,6 +29,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))  # for _board, _proc
 
 import _board  # noqa: E402
+import _filter_tokens  # noqa: E402  (the one tokenizer + refusal, shared with gh-issues / gh-prs)
 import _untrusted  # noqa: E402  (the repo's remote-text convention)
 from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 import _checks  # noqa: E402  (the one check classifier, shared with gh-pr / gh-prs)
@@ -75,8 +76,27 @@ _FILTER_FLAG = {
     "target-branch": "--target-branch",
 }
 
+# opened is glab's default and therefore has no flag, which is exactly why a
+# value with no mapping is dangerous: it emits nothing and the default board
+# renders as the filtered one.
+_STATES = {"opened"} | set(_STATE_FLAG)
 
-def _parse_multi(arg_str: str) -> tuple[dict[str, list[str]], set[str]]:
+# Filter keys this op forwards. Anything else is refused rather than dropped —
+# `_build_list_cmd` skips a key it does not know, so `milestne=v18.9` used to
+# return the whole board as that milestone's contents (#939). GitLab's filter
+# surface is wider than GitHub's (milestone and the branch pair have list flags
+# here and do not on `gh pr list`), so the vocabularies differ per op even
+# though the grammar and the refusal are shared (#628).
+_FILTER_KEYS = set(_FILTER_FLAG) | {"state", "per"}
+
+# Keys whose value this op maps rather than forwards.
+_VALUE_DOMAINS: dict[str, object] = {
+    "state": _STATES,
+    "per": _filter_tokens.POSITIVE_INT,
+}
+
+
+def _parse_multi(arg_str: str) -> tuple[dict[str, list[str]], set[str], list[str]]:
     """Tokenise a comma-separated arg string, keeping every value of a key.
 
     Comma-separated so the single supertool arg segment never collides with
@@ -85,29 +105,32 @@ def _parse_multi(arg_str: str) -> tuple[dict[str, list[str]], set[str]]:
     endpoint takes one `author_username`, so `author=a,author=b` is two
     queries unioned, not one. `_parse_args` is the scalar view of this, so
     both readings of an arg string come from one tokenizer.
+
+    The third return value is every token that was placed nowhere. It used to
+    be discarded here, which is how a typo'd key produced the unfiltered board
+    with nothing said (#939).
     """
-    filters: dict[str, list[str]] = {}
-    flags: set[str] = set()
-    for tok in (t.strip() for t in arg_str.split(",")):
-        if not tok:
-            continue
-        if "=" in tok:
-            key, _, val = tok.partition("=")
-            filters.setdefault(key.strip(), []).append(val.strip())
-        elif tok in _FLAGS:
-            flags.add(tok)
-    return filters, flags
+    return _filter_tokens.parse_multi(arg_str, _FILTER_KEYS, _FLAGS)
 
 
-def _parse_args(arg_str: str) -> tuple[dict[str, str], set[str]]:
-    """Split a comma-separated arg string into (filters, flags).
+def _parse_args(arg_str: str) -> tuple[dict[str, str], set[str], list[str]]:
+    """Split a comma-separated arg string into (filters, flags, unrecognised).
 
     'author=@me,state=merged,nopipe' becomes
-    ({'author': '@me', 'state': 'merged'}, {'nopipe'}).
+    ({'author': '@me', 'state': 'merged'}, {'nopipe'}, []).
     A repeated key resolves to its last value — one query, one value.
     """
-    multi, flags = _parse_multi(arg_str)
-    return {k: v[-1] for k, v in multi.items()}, flags
+    return _filter_tokens.parse(arg_str, _FILTER_KEYS, _FLAGS)
+
+
+def _unknown_error(unknown: list[str]) -> str:
+    """Name every token that was not applied, and what would have been."""
+    return _filter_tokens.unknown_error(unknown, _FILTER_KEYS, _FLAGS)
+
+
+def _bad_values(filters: dict[str, str]) -> list[tuple[str, str, str]]:
+    """Known keys carrying a value this op has no mapping for."""
+    return _filter_tokens.bad_values(filters, _VALUE_DOMAINS)
 
 
 def _expand_filters(multi: dict[str, list[str]]) -> list[dict[str, str]]:
@@ -556,7 +579,14 @@ def _footer(mrs: list[dict], watched: set[str], show_pipe: bool, unchecked: int 
 
 def main() -> int:
     arg_str = sys.argv[1] if len(sys.argv) > 1 else ""
-    filters, flags = _parse_args(arg_str)
+    filters, flags, unknown_tokens = _parse_args(arg_str)
+    if unknown_tokens:
+        print(_unknown_error(unknown_tokens), file=sys.stderr)
+        return 1
+    bad = _bad_values(filters)
+    if bad:
+        print(_filter_tokens.value_error(bad), file=sys.stderr)
+        return 1
     iids_only = "iids" in flags
     failed_only = "failed" in flags
     # failed-only needs pipeline data to filter on, so it overrides nopipe.
@@ -564,7 +594,7 @@ def main() -> int:
 
     cfg = _get_config()
     per_page = cfg["per_page"]
-    if "per" in filters and filters["per"].isdigit():
+    if "per" in filters:
         per_page = int(filters.pop("per"))
 
     try:

@@ -65,6 +65,7 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import _board  # noqa: E402  (the board layout shared with gh-prs / gl-mrs)
+import _filter_tokens  # noqa: E402  (the one tokenizer + refusal, shared with gh-prs / gl-mrs)
 import _repo_target  # noqa: E402  (the repo this call is about, when not the cwd's)
 import _untrusted  # noqa: E402  (where tracker text starts and stops)
 from _env import env_int  # noqa: E402
@@ -89,6 +90,15 @@ _FLAGS = {"nopipe", "iids", "external", "stale", "nomilestone"}
 _FILTER_KEYS = {"author", "assignee", "label", "milestone", "state", "per"}
 
 _STATES = {"open", "closed", "all"}
+
+# Keys whose value this op maps rather than forwards. A value with no mapping
+# is dropped when the argv is built, so `state=opne` used to return the *open*
+# board — the same silent-drop defect as an unknown key, on a key that is
+# known (#939).
+_VALUE_DOMAINS: dict[str, object] = {
+    "state": _STATES,
+    "per": _filter_tokens.POSITIVE_INT,
+}
 
 # GitHub's own answer to "is this person one of us". Everything else — NONE,
 # CONTRIBUTOR, FIRST_TIME_CONTRIBUTOR, MANNEQUIN — is outside. Listing the
@@ -123,34 +133,17 @@ def _parse_args(arg_str: str) -> tuple[dict[str, str], set[str], list[str]]:
     asked a narrowing question and got the unnarrowed board back, with no
     marker anywhere in the render saying the narrowing never happened.
     """
-    filters: dict[str, str] = {}
-    flags: set[str] = set()
-    unknown: list[str] = []
-    for tok in (t.strip() for t in arg_str.split(",")):
-        if not tok:
-            continue
-        if "=" in tok:
-            key, _, val = tok.partition("=")
-            if key.strip() in _FILTER_KEYS:
-                filters[key.strip()] = val.strip()
-            else:
-                unknown.append(tok)
-        elif tok in _FLAGS:
-            flags.add(tok)
-        else:
-            unknown.append(tok)
-    return filters, flags, unknown
+    return _filter_tokens.parse(arg_str, _FILTER_KEYS, _FLAGS)
 
 
 def _unknown_error(unknown: list[str]) -> str:
     """Name every token that was not applied, and what would have been."""
-    return (
-        "ERROR: unrecognised token(s): " + ", ".join(repr(t) for t in unknown)
-        + ". Nothing was filtered by them, so the board is NOT the answer to "
-          "the question you asked — refusing rather than printing it. "
-          "Filters: " + ", ".join(sorted(_FILTER_KEYS))
-        + ". Flags: " + ", ".join(sorted(_FLAGS)) + "."
-    )
+    return _filter_tokens.unknown_error(unknown, _FILTER_KEYS, _FLAGS)
+
+
+def _bad_values(filters: dict[str, str]) -> list[tuple[str, str, str]]:
+    """Known keys carrying a value this op has no mapping for."""
+    return _filter_tokens.bad_values(filters, _VALUE_DOMAINS)
 
 
 def _build_list_cmd(filters: dict[str, str], per_page: int) -> list[str]:
@@ -632,9 +625,13 @@ def main_with_args(arg_str: str) -> int:
     if unknown_tokens:
         print(_unknown_error(unknown_tokens), file=sys.stderr)
         return 1
+    bad = _bad_values(filters)
+    if bad:
+        print(_filter_tokens.value_error(bad), file=sys.stderr)
+        return 1
     cfg = _get_config()
     per_page = cfg["per_page"]
-    if "per" in filters and filters["per"].isdigit():
+    if "per" in filters:
         per_page = int(filters.pop("per"))
 
     try:

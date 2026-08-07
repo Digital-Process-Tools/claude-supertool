@@ -124,6 +124,7 @@ import transport  # noqa: E402
 
 sys.path.insert(0, str(_WATCH.parent))
 import _checks  # noqa: E402
+import _filter_tokens  # noqa: E402  (the one tokenizer the boards share)
 import _repo_target  # noqa: E402
 import _untrusted  # noqa: E402
 
@@ -176,21 +177,24 @@ class RadarError(RuntimeError):
 def resolve_filter(arg: str = "") -> tuple[dict[str, str], set[str]]:
     """`(filters, flags)` in `gh-prs` vocabulary, or `RadarError`.
 
-    Refusing is the whole point. `gh-prs` drops a key it does not recognise and
-    runs the command without it, so `milestone=v19` returns every open PR and
-    the reader believes they filtered. On a triage board that reads as "all of
-    these matched", which is an absence produced by the tool rendered as a fact
-    about the world.
+    Refusing is the whole point. `gh-prs` used to drop a key it did not
+    recognise and run the command without it, so `milestone=v19` returned every
+    open PR and the reader believed they filtered. On a triage board that reads
+    as "all of these matched", which is an absence produced by the tool rendered
+    as a fact about the world.
+
+    The op refuses that itself now (#939) — but this tier still parses against
+    its *own* vocabulary, which is deliberately narrower: `iids` and `failed`
+    are board shapes `gh-prs` offers and a radar board must not silently take.
+    So the check stays here; only the token-splitting is shared, because a
+    second hand-rolled scan of the arg string is how the two answers drift.
     """
     arg = (arg or "").strip()
-    filters, flags = prs._parse_args(arg)
-    bad = sorted(set(filters) - KNOWN_FILTERS)
-    unknown_flags = sorted(
-        t.strip() for t in arg.split(",")
-        if t.strip() and "=" not in t and t.strip() not in KNOWN_FLAGS
-    )
-    if bad or unknown_flags:
-        named = ", ".join(f"{k}=" for k in bad) + ", ".join(unknown_flags)
+    filters, flags, unknown = _filter_tokens.parse(arg, KNOWN_FILTERS, KNOWN_FLAGS)
+    if unknown:
+        named = ", ".join(
+            f"{t.partition('=')[0]}=" if "=" in t else t for t in unknown
+        )
         raise RadarError(
             f"radar: gh-prs tier cannot honour {named!r}. Known filters: "
             f"{', '.join(sorted(KNOWN_FILTERS))}; known flags: "

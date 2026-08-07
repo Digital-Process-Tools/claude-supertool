@@ -209,6 +209,46 @@ Both fail before any op runs. A target that quietly applied to part of a call is
 
 The third one used to read *not found in this repo … verify you're in the right repo*, which under a target sends the reader to inspect a working directory that took no part in the request.
 
+### A token `gh-prs` cannot apply is refused, not dropped
+
+`gh-prs` had the same silent-drop loop `gh-issues` had, and kept it for one release after [#864](https://github.com/Digital-Process-Tools/claude-supertool/issues/864) fixed the sibling — so the two ops in one family disagreed about whether a typo was an error or a full board ([#939](https://github.com/Digital-Process-Tools/claude-supertool/issues/939)). Reproduced live against this repo:
+
+```
+gh-prs:milestone=nonexistent   -> all 5 open PRs, exit 0, no warning
+gh-prs:onlygreen               -> all 5 open PRs, exit 0, no warning
+```
+
+`milestone=` is not a typo — `gh pr list` has no milestone flag at all, so the key was accepted by the parser and dropped when the argv was built. `gh-prs:state=open` is the tick's own board call, so a filter dropped there is wrong at the moment a merge decision is made.
+
+Both now refuse, and so does a value the op has no mapping for:
+
+```
+$ supertool 'gh-prs:onlygreen'
+ERROR: unrecognised token(s): 'onlygreen'. Nothing was filtered by them, so the
+board is NOT the answer to the question you asked — refusing rather than
+printing it. Filters: assignee, author, label, per, reviewer, state.
+Flags: failed, iids, nopipe.
+
+$ supertool 'gh-prs:state=mergd'
+ERROR: value(s) this op cannot apply: state='mergd' (accepted: all, closed,
+merged, open). The request would have been dropped when the query was built and
+the default answered in its place, so it is refused instead.
+```
+
+Three cases, deliberately not one:
+
+| Token | Answer |
+|---|---|
+| `onlygreen`, `milestone=x` | Refused — never heard of it, nothing downstream would have seen it |
+| `state=mergd`, `per=abc` | Refused — the key is known, the value has no mapping, so the *default* board would have rendered as the filtered one |
+| `label=nosuchlabel` | Forwarded — GitHub answers, and an empty board there is the truth |
+
+The last row is the line this fix deliberately does not cross. Pre-judging a value the op forwards would build a client-side vocabulary that drifts from the server's, and would turn a real empty result into an error.
+
+`gh-issues` gained the second case here too: `state=opne` used to return the open board.
+
+**One tokenizer, not three.** The parser, the vocabulary check and the wording of both refusals live in `presets/_filter_tokens.py`, shared by `gh-issues`, `gh-prs` and `gl-mrs`. Two independently written refusal paths in one preset family is how they drifted apart in the first place ([#628](https://github.com/Digital-Process-Tools/claude-supertool/issues/628)).
+
 ### `gh-prs` declines its watch column under a target
 
 Watch pollers write `supertool-watch-github-pr__{number}.pid` — keyed by PR number, with no repo in the key. Under a repo target that key is ambiguous: a live poller for `#12` of the repo you are standing in cannot be told apart from `#12` of the repo the board is about.
