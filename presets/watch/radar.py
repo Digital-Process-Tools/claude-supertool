@@ -236,21 +236,41 @@ def _tier_module(name: str):
     return None
 
 
-def _spawner() -> tuple[Callable[..., str], dict[str, str]]:
-    """A `_watch` callable plus the ledger of every slot it was asked for.
+def _spawner() -> tuple[Callable[..., str], dict[str, str], list[str]]:
+    """A `_watch` callable, the ledger of every slot it was asked for, and the
+    reap that guards the first spawn.
 
     The tier chooses when to spawn; radar keeps the bound and the record. A
     slot radar refused is a slot nobody is polling, and the ledger is what lets
     it say so on the same run.
+
+    The reap hangs off the first spawn rather than off `main()` (#957). Radar
+    heals, and stopping a duplicate is part of healing — but a run that
+    established no coverage cannot have contributed a duplicate, and charging it
+    for one made *looking* cost the same as acting. That fusion is the thing
+    this repository keeps paying for: a tier that raised before it could spawn,
+    or a fleet tier that keeps no watchers at all, would still stop somebody's
+    process on the way past, disclosed nowhere the caller was looking.
+
+    Still *before* the first spawn, never after: a reap that ran afterwards
+    would be judging this run's own new pollers, and a radar that never reaped
+    is how #749's 36 processes accumulated behind 18 tracked slots. Once per
+    run, however many slots a tier asks for.
     """
     seen: dict[str, str] = {}
+    reaped: list[str] = []
+    done = False
 
     def watch(source: str, scope: str, only: list[str] | None = None) -> str:
+        nonlocal done
+        if not done:
+            done = True
+            reaped.extend(dispatcher.reap_duplicate_pollers())
         status = ensure_watcher(source, scope, only)
         seen[f"{source}:{scope}"] = status
         return status
 
-    return watch, seen
+    return watch, seen, reaped
 
 
 def tier_reports(arg: str = "") -> tuple[list[str], bool, list[str]]:
@@ -272,7 +292,7 @@ def tier_reports(arg: str = "") -> tuple[list[str], bool, list[str]]:
     about position, and only the person who wrote the config can settle it.
     """
     tiers, lines = read_tiers()
-    watch, spawned = _spawner()
+    watch, spawned, reaped = _spawner()
     all_ok = True
     failures: list[str] = []
 
@@ -305,7 +325,7 @@ def tier_reports(arg: str = "") -> tuple[list[str], bool, list[str]]:
             continue
         lines.extend(tier_lines)
 
-    return watcher_cap_warnings(spawned) + lines, all_ok, failures
+    return reaped + watcher_cap_warnings(spawned) + lines, all_ok, failures
 
 
 def tier_states(arg: str = "") -> tuple[list[str], list[str]]:
@@ -380,16 +400,11 @@ def main(argv: list[str] | None = None) -> int:
         print(NO_TIERS, file=sys.stderr)
         return 1
 
-    # Before anything spawns, not after: a reap that ran last would be judging
-    # this run's own new pollers, and a radar that never reaps is how #749's 36
-    # processes accumulated behind 18 tracked slots — every session restart
-    # added emitters and nothing ever removed one. Bounded to slots carrying
-    # more than one *labelled* poller, so it can only ever remove a copy, never
-    # coverage. See `dispatcher.reap_duplicate_pollers`.
-    reaped = dispatcher.reap_duplicate_pollers()
-
+    # The reap lives in `_spawner`, guarding the first spawn of this run — not
+    # here, where it ran on every invocation including the ones that spawned
+    # nothing at all (#957). See `_spawner` for the bound and `dispatcher.
+    # reap_duplicate_pollers` for what it may act on.
     lines, _all_ok, failures = tier_reports(arg)
-    lines = reaped + lines
     for line in failures:
         print(line, file=sys.stderr)
     if lines:

@@ -114,6 +114,11 @@ def env(tmp_path, monkeypatch):
         return os.getpid()
 
     monkeypatch.setattr(radar.dispatcher, "_spawn_poller", _fake_spawn)
+    # Radar reaps on the spawn path (#957), and this fixture spawns. The real
+    # reap reads the machine's own `ps` and signals PIDs, so an unpatched run
+    # of this suite could stop a developer's live pollers; the reap's own
+    # behaviour is pinned in test_watch_radar_reap_749.py against a fake fleet.
+    monkeypatch.setattr(radar.dispatcher, "reap_duplicate_pollers", lambda: [])
     # The MR board is a registered tier since #528, so every board test has to
     # register it — a bare radar refuses. Resolution is pinned to the module
     # loaded above rather than left to `_tier_module`, which would exec a fresh

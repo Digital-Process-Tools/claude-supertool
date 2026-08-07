@@ -72,8 +72,9 @@ Events also cannot survive a session boundary: the transport is fire-and-forget 
 
 ```
 0. reap         stop every surplus poller on a slot that has more than one,
-                before anything spawns. Bounded to labelled duplicates, so it
-                can only remove a copy, never coverage.
+                before anything spawns — and only on a run that spawns at all.
+                Bounded to labelled duplicates, so it can only remove a copy,
+                never coverage.
 1. live truth   one gl-mrs query for open MRs — authoritative. State files are
                 cache and may be absent or hours stale.
 2. reconcile    prune state files whose watcher reached a terminal state; flag
@@ -1162,6 +1163,19 @@ radar: reaped 2 duplicate poller(s) on gitlab-mr:33311 — stopped 26952, 26977;
 ```
 
 **Before the tiers spawn, not after** — a reap that ran last would be judging this run's own new pollers.
+
+**And only on a run that spawns** ([#957](https://github.com/Digital-Process-Tools/claude-supertool/issues/957)). The reap used to sit in `main()`, above every tier, so *every* `radar:*` invocation stopped processes — including ones that established no coverage at all: a tier that raised before it could spawn (GitLab unreachable, exit 1, no board), or a fleet tier like `gl-runners` that keeps no watchers. Those runs cannot have contributed a duplicate, and charging them for one made *looking* at this subsystem cost the same as acting on it, which is the fusion `radar:--state` exists to break.
+
+It now hangs off the first spawn of the run: the first time a tier calls radar's `_watch`, the reap runs, once, before that spawn. Nothing else changes for the tick you run every session — `radar` heals, healing spawns, so it still reaps first and still says so. What is gone is the reap on a run that heals nothing.
+
+| Invocation | Reaps? |
+|---|---|
+| `radar` with a healing tier (`gl-mrs`, `gh-prs`) | yes — once, before its first spawn |
+| `radar` whose tier raised before spawning | no |
+| `radar` with only a tier that keeps no watchers | no |
+| `radar:--state` | no, and never did — it returns above all of this |
+
+A run that reaps still prints it, at the top of the board; a run that reaped nothing still says nothing (see the three states below). "This invocation did not reap" is not a line, because "reaped nothing" and "did not reap" are both *no process of yours was stopped*, and a line on every board is furniture by the same argument as the Windows decline.
 
 The bound is the one thing worth reading twice, because an over-eager reap is strictly worse than the duplicates it prevents. #511 is the precedent: three `ps` rows were *inferred* to be duplicate feed pollers and two were killed, and they were the watchers for two different MRs, one of them the MR that most needed watching.
 
