@@ -7,7 +7,7 @@ File reading and directory listing ops. Reach for these when you know the path a
 | Op | Syntax | What it does |
 |----|--------|--------------|
 | `read` | `read:PATH` or `read:PATH:OFFSET:LIMIT` | 300 lines / 20KB cap. With `read.abstract` on, a file over the threshold comes back as its symbol map instead — see [Abstract read](#abstract-read). **OFFSET is a skip count**, so `:19:1` renders line 20 — see [The window line](#the-window-line) |
-| `read` (range) | `read:PATH:START-END` | Explicit inclusive line range. Prefer over `:OFFSET:LIMIT` when you know the lines — the offset form reads like a range but is not. Composes with `:full` and `:grep=PATTERN`. |
+| `read` (range) | `read:PATH:START-END` | Explicit inclusive line range. Prefer over `:OFFSET:LIMIT` when you know the lines — the offset form reads like a range but is not. Composes with `:full` and `:grep=PATTERN`. This is also where `between:PATH:START:END` is redirected: `between` is SYMBOL:PATH and does not take ranges. |
 | `read` (filter) | `read:PATH:OFFSET:LIMIT:grep=PATTERN` | Only show lines matching PATTERN (original line numbers preserved). Use `read:PATH:::grep=PATTERN` for defaults. |
 | `head` | `head:PATH:N` | First N lines (default 20). Minified single-line files return a char-window peek instead of the whole giant line; window size via `builtin-ops.head.char_window` (default 1000, or env `SUPERTOOL_HEAD_CHAR_WINDOW`). |
 | `tail` | `tail:PATH:N` | Last N lines (default 20). Minified single-line files return a char-window peek; window size via `builtin-ops.tail.char_window` (default 1000, or env `SUPERTOOL_TAIL_CHAR_WINDOW`). |
@@ -17,6 +17,12 @@ File reading and directory listing ops. Reach for these when you know the path a
 | `glob` | `glob:PATTERN` | `**` supported. Patterns resolve from the repo root; an unanchored pattern that matches nothing is retried once as `**/PATTERN`, so `glob:SiBrief/**/*.php` also finds a `SiBrief/` nested deeper (the retry prints a `[mid-path retry: …]` line — a genuine zero stays zero). **Auto-reads** if PATTERN is a concrete file path (no wildcards). |
 | `tree` | `tree:PATH` or `tree:PATH:DEPTH` | Directory structure with depth limit (default 3). Hides dotfiles. Files listed before subdirectories. |
 | `diff` | `diff:PATH1:PATH2` | Unified diff between two files. |
+
+The window line is not shown as a correction when the range form was used: a
+`read:PATH:120-124` states the window it returned, and stops there. It used to
+add "OFFSET is a skip count, not a start line — for lines 119-123 use
+read:PATH:119-123", which corrects a form the caller did not type and names a
+span one line off from the one they asked for ([#983](https://github.com/Digital-Process-Tools/claude-supertool/issues/983)).
 
 ## The window line
 
