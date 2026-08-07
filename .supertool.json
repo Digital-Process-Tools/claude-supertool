@@ -239,6 +239,9 @@
     }
   },
   "ops": {
+    "dashboard": {
+      "lane_prefix": "lane-"
+    },
     "radar": {
       "radar_tiers": {
         "gh-prs": {}
