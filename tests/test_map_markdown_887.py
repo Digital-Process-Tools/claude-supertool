@@ -125,25 +125,67 @@ def test_map_unparsed_extension_reports_tier_none(tmp_path: Path) -> None:
     assert "tier: regex" not in out
 
 
-def test_map_disclosure_says_tree_sitter_is_absent_when_it_is(
-        tmp_path: Path) -> None:
-    """Without tree-sitter the reason is different in a way the reader can
-    act on: installing a package might fix it."""
+@pytest.mark.parametrize("ts_installed, expected", [
+    (True, "tree-sitter and the regex tier have no .rst grammar"),
+    (False, "tree-sitter is not installed and the regex tier has no .rst patterns"),
+])
+def test_map_disclosure_wording_tracks_tree_sitter_presence(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        ts_installed: bool, expected: str) -> None:
+    """Two different facts, two different sentences. "Not installed" is
+    actionable by the reader — install a package and the answer changes —
+    and "no grammar for this type" is not. Collapsing them into one string
+    would buy a green by deleting a real signal.
+
+    tree-sitter presence is stubbed rather than detected. The first version
+    of this test called the real detector and asserted the installed wording,
+    so it passed on a laptop with the package and failed on all thirteen CI
+    legs without it — pinning the environment instead of the behaviour. The
+    stub is honest here because this path consults nothing but the boolean:
+    ".rst" is absent from _TS_LANG_MAP, so no grammar is ever loaded, and
+    test_map_disclosure_distinguishes_the_two_reasons proves the boolean is
+    read rather than assumed.
+    """
+    monkeypatch.setattr(supertool, "_TS_CHECKED", True)
+    monkeypatch.setattr(supertool, "_TS_AVAILABLE", ts_installed)
     f = tmp_path / "guide.rst"
     f.write_text("Title\n=====\n")
     out = supertool.op_map(str(f))
-    assert "tree-sitter is not installed" in out
+    assert expected in out
 
 
-def test_map_disclosure_names_the_tiers_that_were_available(
-        tmp_path: Path, enable_tree_sitter: None) -> None:
-    """With tree-sitter present the disclosure must say so — a reader who
-    installs the package and sees the same sentence learns nothing."""
+def test_map_disclosure_distinguishes_the_two_reasons(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Same file, same extension, one variable — the renders must differ.
+    Without this, a disclosure that ignored use_ts entirely could satisfy
+    one half of the parametrised test above and never be caught."""
+    f = tmp_path / "guide.rst"
+    f.write_text("Title\n=====\n")
+    monkeypatch.setattr(supertool, "_TS_CHECKED", True)
+
+    monkeypatch.setattr(supertool, "_TS_AVAILABLE", True)
+    with_ts = supertool.op_map(str(f))
+    monkeypatch.setattr(supertool, "_TS_AVAILABLE", False)
+    without_ts = supertool.op_map(str(f))
+
+    assert with_ts != without_ts
+
+
+@pytest.mark.parametrize("ts_installed", [True, False])
+def test_map_disclosure_invariant_holds_in_every_environment(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        ts_installed: bool) -> None:
+    """What must be true whatever is installed: the render names the
+    extension nothing could parse, and never claims the file has no
+    symbols. This is the part of #887 that is not environment-dependent."""
+    monkeypatch.setattr(supertool, "_TS_CHECKED", True)
+    monkeypatch.setattr(supertool, "_TS_AVAILABLE", ts_installed)
     f = tmp_path / "guide.rst"
     f.write_text("Title\n=====\n")
     out = supertool.op_map(str(f))
     assert "no symbol parser for .rst" in out
-    assert "tree-sitter and the regex tier have no .rst grammar" in out
+    assert "(no symbols)" not in out
+    assert "tier: none" in out
 
 
 def test_map_mixed_directory_keeps_the_parsed_tier_label(
@@ -268,10 +310,49 @@ def test_read_of_markdown_returns_prose_not_the_heading_map(
     assert "prose line with real content" in out
 
 
-@_needs_markdown
-def test_read_abstract_still_applies_to_code(
-        tmp_path: Path, enable_tree_sitter: None) -> None:
+def test_read_abstract_still_applies_to_code() -> None:
     """The markdown exemption must be an exemption, not a switch that turned
-    abstract reads off for everyone."""
+    abstract reads off for everyone.
+
+    Deliberately ungated: it reads the maps, never the grammar, so unlike the
+    tests above it runs on CI — where tree_sitter_language_pack is not
+    installed and every markdown test skips."""
     assert supertool._abstract_lang("x.py") == "python"
     assert supertool._abstract_lang("x.md") == ""
+    assert supertool._abstract_lang("x.markdown") == ""
+
+
+# ---------------------------------------------------------------------------
+# 4. Wiring, checkable without the grammar
+#
+# CI installs no tree-sitter package, so every test in section 2 skips there
+# and the markdown feature would ship on local greens alone. These assert the
+# parts that are just data — the extension maps and the dispatch — so the way
+# markdown is plugged in stays covered on every leg.
+# ---------------------------------------------------------------------------
+
+def test_markdown_extensions_are_registered() -> None:
+    assert supertool._TS_LANG_MAP[".md"] == "markdown"
+    assert supertool._TS_LANG_MAP[".markdown"] == "markdown"
+
+
+def test_markdown_is_walked_in_directory_maps() -> None:
+    """_MAP_EXTENSIONS is what _collect_files filters directory walks by; if
+    .md fell out of it, map:docs/ would silently list nothing."""
+    assert ".md" in supertool._MAP_EXTENSIONS
+    assert ".markdown" in supertool._MAP_EXTENSIONS
+
+
+def test_markdown_is_the_only_abstract_read_exemption() -> None:
+    """A guard on the blast radius of the exemption itself: if another
+    language were added here, large files in it would quietly stop being
+    abstracted and nobody would see a failing test."""
+    assert supertool._ABSTRACT_READ_SKIP_LANGS == frozenset({"markdown"})
+
+
+def test_markdown_extensions_have_no_regex_patterns() -> None:
+    """The fix is a grammar entry, not a fourth hand-written pattern set —
+    #887 rejected regex headings because a hand-rolled version counts '#'
+    inside fenced code blocks. This fails if someone adds them later."""
+    assert ".md" not in supertool._REGEX_PATTERNS
+    assert ".markdown" not in supertool._REGEX_PATTERNS
