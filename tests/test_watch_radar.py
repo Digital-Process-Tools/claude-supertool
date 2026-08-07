@@ -12,6 +12,7 @@ import datetime
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -26,6 +27,24 @@ def _module(name: str, path: Path):
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
+
+
+def _row_iids(out: str) -> set[str]:
+    """iids of the board rows actually printed.
+
+    Not `"!33172" in out`. Since #1022 a delta board *names* the rows it
+    elided, so a bare substring search finds the disclosure and reports it as
+    a row — which would make "this row was suppressed" and "this row was
+    suppressed silently" the same assertion, and the second is the defect.
+    """
+    iids = set()
+    for line in out.splitlines():
+        if line.startswith(("radar:", "[")) or " | " in line:
+            continue
+        found = re.search(r"!(\d+)\s", line)
+        if found:
+            iids.add(found.group(1))
+    return iids
 
 
 radar = _module("watch_radar", WATCH_DIR / "radar.py")
@@ -341,7 +360,8 @@ def test_second_run_with_nothing_moved_is_one_summary_line(env, capsys) -> None:
     _run(env, capsys)
     out = _run(env, capsys)
     assert out == ("radar: no change | scope author=@me,state=opened (default) | "
-                   "1 open | 1 green | 1 watched | feed ok\n")
+                   "1 open | 1 green | 1 watched | 1 unchanged not shown | "
+                   "feed ok\n")
 
 
 def test_nothing_moved_still_reports_coverage_rather_than_silence(env, capsys) -> None:
@@ -381,8 +401,12 @@ def test_unchanged_green_mr_is_suppressed_next_to_a_standing_red(env, capsys) ->
     ])
     _run(env, capsys)
     out = _run(env, capsys)
-    assert "!33161" in out
-    assert "!33172" not in out
+    assert _row_iids(out) == {"33161"}
+    # Suppressed, and said so (#1022): the footer counts both MRs, so a board
+    # that printed one row and no accounting is one a reader takes for the
+    # whole population.
+    assert "1 unchanged not shown" in out
+    assert "!33172" in out, "the elided row must be named, not merely counted"
 
 
 def test_new_open_mr_appears_on_the_next_run(env, capsys) -> None:
@@ -392,8 +416,8 @@ def test_new_open_mr_appears_on_the_next_run(env, capsys) -> None:
     _live_pid_file(env["dir"], "33199")
     _set_live(env, [_mr(33172, "success"), _mr(33199, "success")])
     out = _run(env, capsys)
-    assert "!33199" in out
-    assert "!33172" not in out
+    assert _row_iids(out) == {"33199"}
+    assert "1 unchanged not shown" in out
 
 
 def test_merged_mr_is_counted_as_no_longer_open(env, capsys) -> None:

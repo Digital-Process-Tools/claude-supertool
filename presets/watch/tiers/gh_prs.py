@@ -497,12 +497,22 @@ def _is_standing_problem(p: dict) -> bool:
 
 def _footer(open_prs: list[dict], covered: set[str] | None, healed: list[str],
             uncovered: list[str], gone: int, label: str,
-            unchecked_n: int) -> str:
+            unchecked_n: int, elided_n: int = 0) -> str:
+    """Tallies over the whole open population, plus what the delta held back.
+
+    `elided_n` is the token that makes the footer checkable against the rows
+    above it (#1022): every other count here describes all `len(open_prs)` PRs
+    while the board prints only those that moved, so without it a reader has
+    `6 open | 4 running` over three rows and no way to tell a suppressed row
+    from a merged one.
+    """
     counts: dict[str, int] = {}
     for p in open_prs:
         key = str(p.get("_checks") or "none")
         counts[key] = counts.get(key, 0) + 1
     parts = [label, f"{len(open_prs)} open"]
+    if elided_n:
+        parts.append(f"{elided_n} unchanged not shown")
     if counts.get("failed"):
         parts.append(f"{counts['failed']} failing")
     if counts.get("running"):
@@ -556,7 +566,18 @@ def _unchecked_warning(numbers: list[str], total: int) -> list[str]:
 def render(open_prs: list[dict], covered: set[str] | None, healed: list[str],
            uncovered: list[str], previous: dict | None, label: str,
            notes: list[str] | None = None) -> list[str]:
-    """Full board on cold start; changed + standing-problem rows afterwards."""
+    """Full board on cold start; changed + standing-problem rows afterwards.
+
+    Every open PR lands in exactly one of `shown` and `elided`, and both are
+    reported (#1022). The partition is the fix: the footer counts the whole
+    population and the loop prints a subset, so the two were free to disagree,
+    and a board that quietly prints three of six rows is byte-identical to a
+    board with three PRs on it.
+
+    The elision itself is kept. A running PR that has not moved since the last
+    tick is genuinely no news, and re-printing it every tick is how a board
+    trains its reader to skim. What was wrong was the silence, not the choice.
+    """
     cold = previous is None
     prev_entries: dict[str, Any] = (previous or {}).get("prs", {}) or {}
     healed_set, uncovered_set = set(healed), set(uncovered)
@@ -564,6 +585,7 @@ def render(open_prs: list[dict], covered: set[str] | None, healed: list[str],
     unchecked_numbers = unchecked(open_prs)
 
     shown = []
+    elided: list[str] = []
     for p in sorted(open_prs, key=prs._sort_key):
         number = str(p.get("number", "?"))
         moved = prev_entries.get(number) != snap_entry(p)
@@ -572,14 +594,25 @@ def render(open_prs: list[dict], covered: set[str] | None, healed: list[str],
             shown.append(prs._row(p, covered,
                                   _marks(p, healed_set, uncovered_set,
                                          coverage_known)))
+        else:
+            elided.append(number)
 
     live = {str(p.get("number")) for p in open_prs}
     gone = len([n for n in prev_entries if n not in live])
     footer = _footer(open_prs, covered, healed, uncovered, gone, label,
-                     len(unchecked_numbers))
+                     len(unchecked_numbers), len(elided))
+
+    # Named only when the board is *partial*. A board where everything was
+    # elided already says so unambiguously on its `radar: no change` line, and
+    # the footer token still carries the arithmetic; listing every number there
+    # would print the whole population back on a board whose entire claim is
+    # that there is nothing to look at.
+    elision = (snapshot.elided_note(elided, len(open_prs), "PRs", "#", "gh-prs")
+               if shown else [])
 
     lines = (_coverage_warning(covered)
              + _unchecked_warning(unchecked_numbers, len(open_prs))
+             + elision
              + list(notes or []))
     if cold:
         lines.append("radar: cold start — no prior snapshot, full board")
