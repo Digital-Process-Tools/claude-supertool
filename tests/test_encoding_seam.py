@@ -50,6 +50,13 @@ TESTS_DIR = Path(__file__).resolve().parent
 # omitted. `os.open` takes no encoding (raw fd) and is excluded by name below.
 _PATH_TEXT_METHODS = frozenset({"read_text", "write_text"})
 
+# Every keyword `open`, `os.fdopen` and `Path.open` declare, unioned. A call
+# naming anything else cannot be one of them, however it is spelled (#766) --
+# `OpenerDirector.open(req, timeout=...)` opens no file and decodes nothing.
+_OPEN_KEYWORDS = frozenset(
+    {"file", "fd", "mode", "buffering", "encoding", "errors", "newline", "closefd", "opener"}
+)
+
 
 def _literal_mode(node: ast.Call, positional_index: int) -> str:
     """The call's mode as a literal, or "" when absent/non-literal."""
@@ -71,6 +78,15 @@ def _call_kind(node: ast.Call) -> Tuple[str, str]:
     decoding happens) and so is ``os.open``, which returns a raw fd. A
     non-literal mode counts as a read, because the answer is unknown and the
     unknown answer that keeps a guard honest is the one that flags.
+
+    A call is also not one of these when it names a keyword none of them
+    declares (#766). That is a fact about the signatures rather than a guess
+    about the receiver, which is why it can be trusted where the receiver's type
+    cannot: `presets/_http.py` calls `OpenerDirector.open(req, timeout=...)`,
+    and reading `timeout=` as a text-file open reported a codec defect in a line
+    that touches no file -- the same confident-report-about-something-unchecked
+    this scan exists to prevent. `**kwargs` names nothing at parse time and so
+    keeps flagging, on the rule above.
     """
     func = node.func
     is_attr = isinstance(func, ast.Attribute)
@@ -89,6 +105,8 @@ def _call_kind(node: ast.Call) -> Tuple[str, str]:
     # os.open(path, flags) — a raw fd, no codec involved.
     if (is_attr and isinstance(func.value, ast.Name)
             and func.value.id == "os" and name == "open"):
+        return "", ""
+    if any(kw.arg is not None and kw.arg not in _OPEN_KEYWORDS for kw in node.keywords):
         return "", ""
     # `Path.open(mode)` puts mode first; `open(path, mode)` puts it second.
     mode = _literal_mode(node, 0 if (is_attr and name == "open") else 1)
@@ -210,6 +228,38 @@ def test_the_tests_scan_catches_a_read_and_spares_the_rest(tmp_path: Path) -> No
     assert encoding_violations(fixture, kinds=("read",)) == [
         (4, "read_text"), (5, "open"),
     ]
+
+
+def test_a_call_naming_a_keyword_open_does_not_take_is_not_an_open(tmp_path: Path) -> None:
+    """`.open()` on something that is not a path is not a text-file open (#766).
+
+    The scan reads every `X.open(...)` as `Path.open` with one carve-out for
+    `os.open`, so `OPENER.open(req, timeout=timeout)` in `presets/_http.py` --
+    no file, no codec, no I/O -- was reported as `open() without encoding=`.
+    That is this repo's own defect class pointed at itself: a confident finding
+    about a property that was never checked.
+
+    The discriminator is not a heuristic. A call passing a keyword that neither
+    `open` nor `Path.open` declares cannot be either of them; `timeout=` is in
+    neither signature. Every keyword they *do* declare stays flagged, so the
+    escape hatch cannot be widened by accident, and `**kwargs` -- where the
+    names are unknown at parse time -- stays flagged too, on the same rule the
+    non-literal mode already follows: the unknown answer is the one that flags.
+    """
+    fixture = tmp_path / "test_open_lookalikes.py"
+    fixture.write_text(
+        "import urllib.request\n"
+        "from pathlib import Path\n"
+        "def f(p, req, opener, kw):\n"
+        "    a = opener.open(req, timeout=30)\n"
+        "    b = urllib.request.build_opener().open(req, timeout=30)\n"
+        "    c = p.open()\n"
+        "    d = p.open(buffering=1)\n"
+        "    e = open(p, closefd=True)\n"
+        "    g = p.open(**kw)\n",
+        encoding="utf-8",
+    )
+    assert encoding_violations(fixture) == [(6, "open"), (7, "open"), (8, "open"), (9, "open")]
 
 
 # ── the subprocess half (#501) ────────────────────────────────────────────

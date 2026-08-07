@@ -98,3 +98,14 @@ Preset JSON: `presets/devto.json`. Helper scripts: `presets/devto/` — one Pyth
 Both the API-key calls and the opt-in session-cookie calls go through `presets/_http.py`, so neither the `api-key` header nor the full logged-in `Cookie` is carried across a redirect that leaves `dev.to`. A redirect off-origin stops the op with `refused off-origin redirect: ...` naming the destination. See [contributing.md](../contributing.md#http-requests-go-through-presets_httppy).
 
 Redirects that stay on `dev.to` are still followed, and are now announced. This matters for the session-cookie path: once the cookie expires, `dev.to` answers `/settings` with a same-origin 302 to `/enter`, and the op used to report `authenticity_token not found in /settings HTML — Dev.to layout may have changed`. The HTML it had was `/enter`, the layout was fine, and the cookie was dead. A `NOTE: the request was redirected ...` line now precedes that message, so the login bounce is visible instead of being read as a dev.to redesign.
+
+The message itself no longer guesses either ([#766](https://github.com/Digital-Process-Tools/claude-supertool/issues/766)). A missing `authenticity_token` has two causes and the op can tell them apart, because it knows which URL answered:
+
+```text
+ERROR: no authenticity_token in the response: 'https://dev.to/settings' was answered by
+'https://dev.to/enter', a different page than the one requested. On dev.to that is the
+expired-session redirect (/settings -> /enter), so the session cookie is dead. Re-copy it
+from your browser devtools — they last about 30 days.
+```
+
+When `/settings` answers `/settings` and the token is still absent, the cookie is demonstrably live and the cause really is unknown, so that case keeps the layout wording and says which check ruled the cookie out. The one thing it will not do is pick a cause it did not check.

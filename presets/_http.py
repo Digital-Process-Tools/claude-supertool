@@ -584,10 +584,15 @@ class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
 
 _OPENER = urllib.request.build_opener(SafeRedirectHandler())
 
-# Bound once, and called as a plain name rather than `_OPENER.open(...)`, so the
-# shipped-code scan in tests/test_encoding_seam.py does not read an
-# OpenerDirector.open call as a locale-decoded `Path.open`. There is no file I/O
-# in this module at all.
+# Bound once so that every preset shares a single patchable seam — the redirect
+# and cap tests replace `_http._OPEN` and expect all four clients to see it.
+#
+# It originally existed for a second reason that no longer holds: the shipped-code
+# scan in tests/test_encoding_seam.py read any `X.open(...)` as a locale-decoded
+# `Path.open` and flagged `_OPENER.open(req, timeout=...)`, which touches no file.
+# That scan now excludes a call naming a keyword `open`/`Path.open` do not declare
+# (#766), so the plain-name binding is a test seam by choice rather than a
+# contortion of shipped source to satisfy a false positive.
 _OPEN = _OPENER.open
 
 
@@ -715,10 +720,8 @@ def urlopen(
     # deadline, the hop disclosure, the caps — is identical, and duplicating this
     # function to change one handler is how the two copies drift apart.
     #
-    # Bound to a plain name before it is called, for the reason given where
-    # `_OPEN` is defined: `tests/test_encoding_seam.py` reads a literal
-    # `something.open(...)` as a locale-decoded `Path.open` and fails the build.
-    # It caught this line on the first full run.
+    # `_OPEN` rather than `_OPENER.open` so the tests have one seam to patch;
+    # see where it is defined.
     do_open = _OPEN if opener is None else opener.open
     resp = do_open(req, timeout=timeout)
     final = getattr(resp, "url", None)
