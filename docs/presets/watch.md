@@ -217,10 +217,38 @@ A blocked MR is now labelled by *what* blocks it:
 **"Nothing moved"** means the set of open MRs is unchanged, no MR changed pipeline status / pipeline id / draft / conflict flag, and radar took no action. Then radar prints one summary line — not nothing:
 
 ```
-radar: no change | scope author=@me,state=opened (default) | 7 open | 7 watched
+radar: no change | scope author=@me,state=opened (default) | 7 open | 7 watched | 7 unchanged not shown | feed ok
 ```
 
 Total silence would be indistinguishable from a radar that failed to run, which is the failure this op exists to remove. For the same reason an unreachable GitLab is a hard error (exit 1, no board, nothing pruned or healed) rather than an empty green board. Standing failures and conflicts are re-printed even when unchanged — an unfixed red is a current fact, not history.
+
+### A delta board accounts for the rows it did not print ([#1022](https://github.com/Digital-Process-Tools/claude-supertool/issues/1022))
+
+The line above is the *easy* case: everything was elided, and `radar: no change` says so plainly. The dangerous case is the partial board, and it is why every count in the footer describes the whole open population while the rows above it are a subset.
+
+Observed live on the GitHub tier: three rendered rows under `6 open | 2 failing | 4 running`. Nothing was lost in the fetch — `gh-prs`, seconds later, returned all six. Two of the three failing PRs were standing problems and a third had just picked up a conflict; the other three were ordinary running PRs that had not changed since the previous tick, so the delta dropped them. A partial board is strictly harder to notice than an empty one, because it looks like a working board, and a maintainer who reads three rows merges as though three were all there was.
+
+**Rendered rows plus elided rows equal the population the footer prints.** The footer carries the missing token, so the arithmetic is checkable on the board itself:
+
+```
+scope author=@me (default) on Digital-Process-Tools/claude-supertool | 6 open |
+3 unchanged not shown | 2 failing | 4 running | 6 watched | 2 no longer open |
+discovery: radar ticks only
+```
+
+and a partial board names what it held back, because a count a reader cannot resolve back to a row is not a disclosure:
+
+```
+radar: NOTE — 3 of 6 open PRs are not on the board: unchanged since the previous
+run and not a standing problem (#1004, #956, #1018). The footer counts all 6, so
+rows plus 'unchanged not shown' is the whole population; `gh-prs` prints every row.
+```
+
+Capped at twelve identifiers, with the remainder counted. Both tiers do this and the sentence lives once, in `presets/watch/tiers/_snapshot.py`.
+
+**On a board where nothing was elided the line is absent, and the absence is the claim.** A disclosure printed unconditionally is one the reader learns to skip, which is the same failure one level up — the reason `_unchecked_warning` returns `[]` on a fully-checked board.
+
+**The elision is kept.** A running MR or PR that has not moved since the last tick is genuinely no news, and re-printing it every tick trains a reader to skim the board — exactly what [standing exclusions](#standing-exclusions) exist to prevent. What was wrong was the silence, not the choice.
 
 ### Standing exclusions
 
@@ -433,6 +461,7 @@ Rendering that as `0 watched` would be a number a reader acts on, and healing on
 | the filter matched nothing | reported *with its scope*: `No PRs matched — scope label=bug on owner/repo.` "No open PRs" is a claim about the world; this is a claim about a query |
 | a PR with an empty check rollup | counted `unchecked`, never green — the run may not exist yet, and "not yet" has rendered as "fine" on this board's GitLab twin before ([#659](https://github.com/Digital-Process-Tools/claude-supertool/issues/659)) |
 | a green whose legs do not reconcile | `[legs UNVERIFIED]`, counted `unchecked`, `healthy=False` |
+| a row the delta elided as unchanged | counted in the footer as `N unchanged not shown` and named on a `radar: NOTE` line ([#1022](https://github.com/Digital-Process-Tools/claude-supertool/issues/1022)) — see [A delta board accounts for the rows it did not print](#a-delta-board-accounts-for-the-rows-it-did-not-print-1022) |
 
 **Only the greens are reconciled, and that is the economy.** A red row is already a finding and a running row is already unknown — a doubt attached to either changes no action. A green is the one claim that can be wrong in the expensive direction, so green rows go through `gh-pr`'s own `_reconcile_checks` ([#724](https://github.com/Digital-Process-Tools/claude-supertool/issues/724)/[#804](https://github.com/Digital-Process-Tools/claude-supertool/issues/804)/[#837](https://github.com/Digital-Process-Tools/claude-supertool/issues/837)) — consumed, never re-implemented. The tier prints no leg count of its own; a tally that looks reconciled and is not is the defect those three PRs closed. The budget is `reconcile_cap` (6), and when it cuts it says so and marks the rest unchecked rather than going quiet.
 

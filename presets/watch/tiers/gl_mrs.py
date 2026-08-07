@@ -775,8 +775,13 @@ def resolve_exclusions(open_mrs: list[dict], exclusions: dict[str, dict[str, str
 def _footer(open_mrs: list[dict], covered: set[str], healed: list[str],
             drifted: dict[str, tuple[str, str]], pruned: list[str],
             uncovered: list[str], gone: int, feed: str, label: str = "",
-            excluded: int = 0) -> str:
+            excluded: int = 0, elided: int = 0) -> str:
     """Tallies over the board that was printed, plus what was kept off it.
+
+    `elided` is the delta's own withholding, disclosed for the same reason the
+    exclusion total is (#1022). Every count below describes all `open_mrs`
+    while `render` prints only the rows that moved, so without this token the
+    footer and the rows disagree by construction and nothing says so.
 
     `open_mrs` here is the *shown* population. A footer counting the full one
     would report a failure with no row behind it, which sends the reader
@@ -819,6 +824,8 @@ def _footer(open_mrs: list[dict], covered: set[str], healed: list[str],
         parts.append(f"{gone} no longer open")
     if excluded:
         parts.append(f"{excluded} excluded")
+    if elided:
+        parts.append(f"{elided} unchanged not shown")
     parts.append(FEED_LABEL.get(feed, feed))
     return " | ".join(parts)
 
@@ -915,6 +922,7 @@ def render(open_mrs: list[dict], covered: set[str], healed: list[str],
     board_mrs = [m for m in open_mrs if str(m.get("iid", "?")) not in excluded]
 
     shown = []
+    elided: list[str] = []
     for m in sorted(board_mrs, key=mrs._sort_key):
         iid = str(m.get("iid", "?"))
         moved = prev_entries.get(iid) != _snap_entry(m)
@@ -922,13 +930,23 @@ def render(open_mrs: list[dict], covered: set[str], healed: list[str],
         if cold or moved or notable or _is_standing_problem(m):
             marks = _marks(iid, drifted, healed_set, uncovered_set)
             shown.append(mrs._row(m, covered, True, marks))
+        else:
+            elided.append(iid)
 
     gone = len([i for i in prev_entries if i not in {str(m.get("iid")) for m in open_mrs}])
     footer = _footer(board_mrs, covered, healed, drifted, pruned, uncovered, gone,
-                     feed, label, len(excluded))
+                     feed, label, len(excluded), len(elided))
+
+    # Partial boards only — see the same call in `gh_prs.render`. `excluded` is
+    # a different withholding with its own `notes`, and the two are counted
+    # separately because one is the operator's standing decision and this one
+    # is this tick's delta.
+    elision = (snapshot.elided_note(elided, len(board_mrs), "MRs", "!", "gl-mrs")
+               if shown else [])
 
     lines = (_feed_warnings(feed, feed_err, other_scopes)
              + _unchecked_warning(mrs._unchecked_count(open_mrs), len(open_mrs))
+             + elision
              + list(losses or []))
     if cold:
         lines.append("radar: cold start — no prior snapshot, full board")
