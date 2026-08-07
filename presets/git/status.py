@@ -26,6 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import _checks  # noqa: E402  (the one check tally, shared with gh-pr / gh-prs)
+import _untrusted  # noqa: E402  (an MR/PR title and target branch are the opener's text — #965)
 from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 from _git_common import TIMEOUT_RC, use_utf8_stdout  # noqa: E402
 from _git_common import _git as _spawn_git  # noqa: E402
@@ -412,9 +413,9 @@ def main() -> int:
     mr = _hosted_request(["glab", "mr", "view", branch_name, "--output", "json"])
     if mr is not None:
         mr_iid = mr.get("iid", "?")
-        mr_title = mr.get("title", "?")
+        mr_title = _untrusted.flat(str(mr.get("title", "?")))
         mr_state = mr.get("state", "?")
-        mr_target = mr.get("target_branch", "?")
+        mr_target = _untrusted.flat(str(mr.get("target_branch", "?")))
         pipeline = mr.get("pipeline") or mr.get("head_pipeline") or {}
         if not isinstance(pipeline, dict):
             pipeline = {}
@@ -462,9 +463,9 @@ def main() -> int:
              "additions,deletions,changedFiles,headRefOid,mergeable"])
         if pr is not None:
             pr_num = pr.get("number", "?")
-            pr_title = pr.get("title", "?")
+            pr_title = _untrusted.flat(str(pr.get("title", "?")))
             pr_state = pr.get("state", "?")
-            pr_target = pr.get("baseRefName", "?")
+            pr_target = _untrusted.flat(str(pr.get("baseRefName", "?")))
             # `headRefOid` rides along in the single `gh pr view` call
             # already being made — the field costs nothing extra.
             pr_head = str(pr.get("headRefOid") or "")

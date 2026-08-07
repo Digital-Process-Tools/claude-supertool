@@ -531,7 +531,8 @@ def main() -> int:
         web_url = d.get("url", "")
         conflicts = "yes" if mergeable == "CONFLICTING" else "no"
         print(f"#{iid} | state: {state} | mergeable: {mergeable} | conflicts: {conflicts}")
-        print(f"branch: {d.get('headRefName') or '?'} -> {d.get('baseRefName') or '?'}")
+        print(f"branch: {_untrusted.flat(d.get('headRefName') or '?')} -> "
+              f"{_untrusted.flat(d.get('baseRefName') or '?')}")
         shortfall_lines: list[str] = []
         if check_states:
             checks_text = _checks.summarize(check_states)

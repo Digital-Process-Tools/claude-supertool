@@ -15,6 +15,7 @@ import _checks  # noqa: E402  (the one check tally, shared with gh-pr / gh-prs)
 import _declared_legs  # noqa: E402  (the second leg count, shared with gh-pr / gh-branch)
 import _repo_target  # noqa: E402  (the repo this call is about, when not the cwd's)
 import _branch_locale  # noqa: E402  (where the branch is checked out — shared by all five #850)
+import _untrusted  # noqa: E402  (a run's branch and its workflow/job names are remote text — #851/#965)
 
 # Parenthetical that keeps GitHub's own run-level field visible next to the
 # computed tally (#789). Visible, but never leading: `Status: queued` was
@@ -324,12 +325,12 @@ def main() -> int:
         marker, shortfall_lines = _checks.shortfall(
             len(states), declared, missing)
 
-    print(f"# Run #{run_id} — {name}")
+    print(f"# Run #{run_id} — {_untrusted.flat(name)}")
     line = status_line(status, conclusion, states, declared)
     print(f"Status: {line}{' ' + marker if marker else ''}")
     for text in shortfall_lines:
         print(text)
-    print(f"Event: {event} | Branch: {branch}")
+    print(f"Event: {event} | Branch: {_untrusted.flat(branch)}")
     local_check = _local_branch_check(branch)
     if local_check:
         print(local_check)
@@ -363,7 +364,8 @@ def main() -> int:
                 marker = " <!"
                 failed.append((job, state))
 
-            print(f"{j_name:<40} {j_status:<12} {j_conclusion:<12} {duration_str:<10}{marker}")
+            print(f"{_untrusted.flat(j_name):<40} {j_status:<12} "
+                  f"{j_conclusion:<12} {duration_str:<10}{marker}")
 
         if failed:
             breakdown = red_breakdown([s for _, s in failed])
@@ -374,7 +376,8 @@ def main() -> int:
                 # The state is named per leg because the heading says
                 # "Failed": a CANCELLED leg belongs in this section, and
                 # letting it read as a test failure is its own wrong answer.
-                print(f"  - {j_name} (job #{j_id}) — {_checks.label(state)}")
+                print(f"  - {_untrusted.flat(j_name)} (job #{j_id}) — "
+                      f"{_checks.label(state)}")
                 names = red_steps(job)
                 for step_name in names[:_STEP_CAP]:
                     print(f"    step: {step_name}")

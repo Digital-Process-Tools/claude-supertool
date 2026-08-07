@@ -369,8 +369,8 @@ def _print_linked_prs(iid: object, web_url: str = "") -> None:
         pr_title = pr.get("title", "?")
         pr_state = pr.get("state", "?")
         pr_branch = pr.get("headRefName", "?")
-        print(f"  #{pr_num} ({pr_state}) {pr_title}")
-        print(f"    branch: {pr_branch}")
+        print(f"  #{pr_num} ({pr_state}) {_untrusted.flat(pr_title)}")
+        print(f"    branch: {_untrusted.flat(pr_branch)}")
     if len(nodes) == CLOSING_PR_LIMIT:
         print(f"    (showing the first {CLOSING_PR_LIMIT} — there may be more)")
 

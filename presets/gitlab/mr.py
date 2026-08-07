@@ -894,7 +894,8 @@ def main() -> int:
         merge_commit = d.get("merge_commit_sha") or d.get("squash_commit_sha") or ""
         web_url = d.get("web_url", "")
         print(f"!{iid} | state: {state} | merge_status: {merge_status} | conflicts: {'yes' if has_conflicts else 'no'}")
-        print(f"branch: {d.get('source_branch') or '?'} -> {d.get('target_branch') or '?'}")
+        print(f"branch: {_untrusted.flat(d.get('source_branch') or '?')} -> "
+              f"{_untrusted.flat(d.get('target_branch') or '?')}")
         if pipe_reason is not None and not pipeline:
             # Slim is the poll-loop render — read most often, looked at least
             # closely — so it is the one where `pipeline: none` from a failed

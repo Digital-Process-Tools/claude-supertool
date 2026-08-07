@@ -21,6 +21,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 import _branch_locale  # noqa: E402  (where the branch is checked out — shared by all five #850)
+import _untrusted  # noqa: E402  (an MR's branch, title and author are the opener's text — #965)
 
 
 def _local_branch_check(source: str, actionable: bool = True) -> str:
@@ -504,8 +505,9 @@ def main() -> int:
 
     # Header
     duration_str = f"{job_duration:.0f}s" if job_duration else "?"
-    print(f"# Job #{job_id} — {job_name}")
-    print(f"Stage: {job_stage} | Status: {job_status} | Duration: {duration_str}")
+    print(f"# Job #{job_id} — {_untrusted.flat(job_name)}")
+    print(f"Stage: {_untrusted.flat(job_stage)} | Status: {job_status} | "
+          f"Duration: {duration_str}")
 
     # Parse ref to show branch or MR (with details)
     if ref:
@@ -539,20 +541,24 @@ def main() -> int:
             issue_match = re.search(r'#(\d{4,})', mr_desc)
             issue_ref = f"#{issue_match.group(1)}" if issue_match else ""
 
-            print(f"\n## MR !{mr_iid} — {mr_title}")
-            print(f"State: {mr_state} | Author: {mr_author}")
-            print(f"Branch: {mr_branch} -> {mr_target}")
+            print(f"\n## MR !{mr_iid} — {_untrusted.flat(mr_title)}")
+            print(f"State: {mr_state} | Author: {_untrusted.flat(mr_author)}")
+            # Raw `mr_branch` still goes to `_local_branch_check` below: it
+            # applies its own `flat` and #924's refname rule, and a rewritten
+            # name would name a ref that does not exist.
+            print(f"Branch: {_untrusted.flat(mr_branch)} -> "
+                  f"{_untrusted.flat(mr_target)}")
             local_check = _local_branch_check(mr_branch, branch_actionable)
             if local_check:
                 print(local_check)
             if mr_labels:
-                print(f"Labels: {mr_labels}")
+                print(f"Labels: {_untrusted.flat(mr_labels)}")
             print(f"Changes: {mr_changes} files, +{mr_additions} -{mr_deletions}")
             if issue_ref:
                 print(f"Issue: {issue_ref}")
             print(f"Pipeline: #{pipeline_id}")
         else:
-            print(f"Branch: {ref} | Pipeline: #{pipeline_id}")
+            print(f"Branch: {_untrusted.flat(ref)} | Pipeline: #{pipeline_id}")
             local_check = _local_branch_check(ref, branch_actionable)
             if local_check:
                 print(local_check)

@@ -21,6 +21,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import _repo_target  # noqa: E402  (the repo this call is about, when not the cwd's)
 import _branch_locale  # noqa: E402  (where the branch is checked out — shared by all five #850)
+import _untrusted  # noqa: E402  (a PR's branch, title and author are the opener's text — #965)
 from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 
 
@@ -665,15 +666,19 @@ def main() -> int:
 
     # Header
     display_status = job_conclusion if job_conclusion != "in_progress" else job_status
-    print(f"# Job #{job_id} — {job_name}")
+    print(f"# Job #{job_id} — {_untrusted.flat(job_name)}")
     print(f"Status: {display_status}")
 
     if pr_number:
-        print(f"\n## PR #{pr_number} — {pr_title}")
+        print(f"\n## PR #{pr_number} — {_untrusted.flat(pr_title)}")
         if pr_author:
-            print(f"Author: {pr_author}")
+            print(f"Author: {_untrusted.flat(pr_author)}")
         if pr_branch:
-            print(f"Branch: {pr_branch}")
+            # Flattened for the render; `_local_branch_check` below is handed
+            # the raw name on purpose — it applies its own `flat` and the #924
+            # ordinary-refname rule, and comparing a rewritten name against the
+            # local branch would answer about a ref that does not exist.
+            print(f"Branch: {_untrusted.flat(pr_branch)}")
             local_check = _local_branch_check(pr_branch)
             if local_check:
                 print(local_check)

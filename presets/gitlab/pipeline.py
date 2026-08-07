@@ -13,9 +13,13 @@ Two filter modes cover the only questions you actually ask mid-pipeline:
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from collections import Counter
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import _untrusted  # noqa: E402  (a job name is CI-config text, and this is a column-aligned table — #965)
 
 # Statuses that answer "what's still going on right now".
 _ACTIVE_STATUSES = {"running", "pending"}
@@ -70,8 +74,8 @@ def _print_table(jobs: list[dict]) -> None:
     print(f"{'Job':<40} {'Stage':<20} {'Status':<12} {'Duration':<10}")
     print("-" * 82)
     for job in jobs:
-        name = job.get("name", "?")
-        stage = job.get("stage", "?")
+        name = _untrusted.flat(str(job.get("name", "?")))
+        stage = _untrusted.flat(str(job.get("stage", "?")))
         status = job.get("status", "?")
         duration = job.get("duration")
         duration_str = f"{duration:.0f}s" if duration else "-"
@@ -89,7 +93,7 @@ def _print_failed_detail(failed: list[dict]) -> None:
     """The failed-job names with job IDs + web URLs — the 'what broke' answer."""
     print(f"\n## Failed jobs ({len(failed)})")
     for job in failed:
-        name = job.get("name", "?")
+        name = _untrusted.flat(str(job.get("name", "?")))
         job_id = job.get("id", "?")
         web_url = job.get("web_url", "")
         print(f"  - {name} (job #{job_id})")
