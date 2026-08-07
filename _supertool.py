@@ -5437,6 +5437,14 @@ def _result_line(ops: int, writes: int, skipped: int = 0,
     validators are named on the line rather than counted, because the line has
     to be actionable on its own for `| tail -1` to be the documented read.
 
+    It is also the one state that can reach a reader with `ops == 0`, and so it
+    is the one exception to the bail below (#969). `validate:` mutates nothing,
+    so it had no footer at all: its non-verdict was visible in the row and in
+    the exit code, and absent from the line the docs tell readers to trust. The
+    counts stay off that line — there was no op to count — and the word still
+    appears only when a checker declined, for the reason `skipped` does: a `0`
+    a reader learns to skip is how this failed the first time.
+
     `rolled_back` names a sixth state (#952): the op matched, wrote, failed a
     validator and was reverted. `writes` already excluded it — `_retract_write`
     decrements — but a count is only a signal when the reader is already
@@ -5450,7 +5458,12 @@ def _result_line(ops: int, writes: int, skipped: int = 0,
     exactly that too — the two most confusable outcomes on this path.
     """
     if ops <= 0:
-        return ""
+        names = list(dict.fromkeys(not_checked or ()))
+        if not names:
+            return ""
+        return (f"[result] {len(names)} validator{'' if len(names) == 1 else 's'} "
+                f"NOT RUN ({', '.join(names)}) — those validators returned no "
+                f"verdict, so the file was NOT checked" + chr(10))
     line = (f"[result] {ops} {'op' if ops == 1 else 'ops'} run, "
             f"{writes} {'write' if writes == 1 else 'writes'}")
     if skipped > 0:
@@ -12767,8 +12780,8 @@ def _validator_render_row(data: Dict[str, Any], verbose: bool = False) -> list:
     count = data.get("count", 0)
     dur = data.get("duration_ms", 0)
     # `1 err` about a file the adapter never opened reads as a measurement.
-    # So does `(timeout)` on a required gate (#975).
-    status = ("NOT CHECKED" if (_validator_not_checked(data) is not None
+    # So does `(timeout)` — on a required gate (#975) and on any other (#969).
+    status = ("NOT CHECKED" if (_validator_no_verdict(data) is not None
                                 or _validator_gate_did_not_run(data) is not None)
               else ("ok" if ok else f"{count} err"))
     line = f"{tool:12s}: {status:<10}  ({dur}ms)"
@@ -12851,6 +12864,64 @@ def _validator_not_checked(after: Optional[Dict[str, Any]]) -> Optional[str]:
     return _flat_cell(errors[0].get("msg") or "", 300) or "no reason given"
 
 
+def _validator_no_verdict(data: Optional[Dict[str, Any]]) -> Optional[str]:
+    """No opinion about the file was obtained, by any route. Its reason, or None.
+
+    `_validator_not_checked` is the *adapter* saying it could not answer (#967).
+    This adds the *core* saying the same thing: the `TimeoutExpired` arm of
+    `_validator_run_one`, which fabricates `ok: false, count: 1` with an
+    `orchestrator` code because SCHEMA.md gives an absence no other channel.
+
+    The distinction between the two mattered for rendering — one is the
+    adapter's statement, one is the core's — and does not matter at all to the
+    consumer that reads a count as a measurement. `_validator_regressed`
+    subtracts these fabricated counts and, on a `rollback_on_fail` validator,
+    rewrote the file with its pre-edit bytes: an edit deleted by a checker that
+    formed no opinion about it, which is the one failure on this tracker that
+    destroys work rather than misinforming (#969). A timeout needs no exotic
+    config to reach it — a loaded machine and a 10s budget will do.
+
+    Distinct from `_validator_gate_did_not_run`, which answers a narrower
+    question — did a gate the operator *required* break down — and is consulted
+    only where an exit code is at stake. This one is unconditional, because the
+    arithmetic it guards runs whether or not anyone required anything.
+
+    `skipped` is deliberately NOT folded in, though it is the same absence. It
+    is the third state for a checker that declined *before* running, every
+    consumer already tests for it by key, and routing it here would make an
+    optional tool nobody installed report `NOT RUN` and exit 1 — the quiet bug
+    traded for a tool nobody can run, which is the trade #665 refused.
+    """
+    if not isinstance(data, dict) or "skipped" in data:
+        return None
+    if data.get("timeout"):
+        errors = data.get("errors") or []
+        msg = _flat_cell((errors[0].get("msg") if errors else "") or "", 300)
+        return msg or "timed out"
+    return _validator_not_checked(data)
+
+
+def _validator_baseline(before: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """The pre-op result, or None when it holds no verdict to subtract from.
+
+    The `before` side is this defect pointing the other way, and it is the
+    quieter half (#969). A baseline that could not run also carries
+    `count: 1`, so a real finding introduced by the edit cancels against it:
+    the row read `1 err  (pre-existing — not from this edit)` about an error
+    this edit had just created, no rollback fired, and the call exited 0.
+
+    A baseline nothing measured is not a clean baseline and it is not a count.
+    It is the absence of a baseline, which is the case `before is None` already
+    covers — the one #832 taught the renderer to print as `?` rather than `0`.
+    So it folds into that one rather than being given a fourth meaning.
+    """
+    if not isinstance(before, dict):
+        return None
+    if "skipped" in before or _validator_no_verdict(before) is not None:
+        return None
+    return before
+
+
 def _validator_required(name: str) -> bool:
     """Is `name` named by $SUPERTOOL_REQUIRE_VALIDATORS? The core's own read.
 
@@ -12926,7 +12997,7 @@ def _note_not_checked(results: Dict[str, Any]) -> None:
     recorded are the same set by construction this way.
     """
     for name, data in results.items():
-        if (_validator_not_checked(data) is not None
+        if (_validator_no_verdict(data) is not None
                 or _validator_gate_did_not_run(data) is not None):
             _NOT_CHECKED.append(name)
 
@@ -12940,11 +13011,21 @@ def _validator_regressed(before: Optional[Dict[str, Any]], after: Dict[str, Any]
     Three states, not two: a `skipped` result is an absence of information, not
     a finding, so it can never regress — and must never roll back an edit.
     A failure that was already there before the op is not a regression either.
+
+    `_validator_no_verdict` extends that to the other two ways a checker can
+    fail to form an opinion — an adapter that could not run, and the core's own
+    timeout (#969). Both sides are guarded, because both sides are arithmetic:
+    a non-verdict *after* the op was read as a new failure and, on a
+    `rollback_on_fail` validator, reverted the edit; a non-verdict *before* it
+    was read as a pre-existing one and excused a real regression.
     """
     if "skipped" in after:
         return False
+    if _validator_no_verdict(after) is not None:
+        return False
     if after.get("ok", False):
         return False
+    before = _validator_baseline(before)
     b_count = before.get("count", 0) if before else 0
     a_count = after.get("count", 0)
     b_ok = before.get("ok", True) if before else True
@@ -12968,9 +13049,15 @@ def _validator_render_diff(before: Optional[Dict[str, Any]], after: Dict[str, An
         # honest third state for a checker nobody required, and it is what four
         # of these five printed while the run exited 0 (#975). The row now
         # reads the way the exit code does.
-        code_col = "orchestrator" if after.get("timeout") else "adapter"
+        # Same wording as the unrequired path below (#969). Naming a validator
+        # in the variable changes the exit code, not what went wrong, and two
+        # spellings of one failure is a distinction no reader can act on.
+        timed_out = bool(after.get("timeout"))
+        why = ("(timed out — no verdict about this file)" if timed_out
+               else "(no verdict about this file)")
+        code_col = "orchestrator" if timed_out else "adapter"
         return [f"{_flat_cell(after.get('tool', '?')):12s}: {'NOT CHECKED':<10}  "
-                f"(no verdict about this file)  {time_col:>5}",
+                f"{why}  {time_col:>5}",
                 f"     {code_col}  {gate_missed}"]
     if "skipped" in after:
         # Name the reason. "skipped" alone sends the reader back to the config
@@ -12980,15 +13067,20 @@ def _validator_render_diff(before: Optional[Dict[str, Any]], after: Dict[str, An
         return [f"{_flat_cell(after['tool']):12s}: {'skipped':<10}  "
                 f"{state_col}  {time_col:>5}"]
     tool = _flat_cell(after["tool"])
-    not_checked = _validator_not_checked(after)
-    if not_checked is not None:
-        # Never diffed. An adapter error is not a finding about the file, so
+    no_verdict = _validator_no_verdict(after)
+    if no_verdict is not None:
+        # Never diffed. A non-verdict is not a finding about the file, so
         # subtracting one from another is arithmetic over two non-answers — and
         # the label it produced, `pre-existing`, is a claim about the file that
         # nothing measured. The status column says the only true thing instead.
-        return [f"{tool:12s}: {'NOT CHECKED':<10}  "
-                f"{'(no verdict about this file)'}  {time_col:>5}",
-                f"     adapter  {not_checked}"]
+        # A timeout lands here too (#969): it used to render `1 err (timeout)`,
+        # which is a count about a file the checker never finished reading.
+        timed_out = bool(after.get("timeout"))
+        why = ("(timed out — no verdict about this file)" if timed_out
+               else "(no verdict about this file)")
+        code_col = "orchestrator" if timed_out else "adapter"
+        return [f"{tool:12s}: {'NOT CHECKED':<10}  {why}  {time_col:>5}",
+                f"     {code_col}  {no_verdict}"]
     # Nothing measured the pre-op state (#832). `before` is None from exactly
     # two callers and both mean that: `_drain_validator_queue`, where the slow
     # tier by design never runs a baseline pass, and the inline site when the
@@ -12997,7 +13089,15 @@ def _validator_render_diff(before: Optional[Dict[str, Any]], after: Dict[str, An
     # reported `0 → 7  (+7) ✗` about seven tests that were already failing for
     # an environment reason, and the reader nearly reverted a correct edit.
     # Every slow-tier validator did this on every run.
-    b_unknown = before is None
+    #
+    # #969 folds in the second route to the same absence: a baseline that ran
+    # and returned no verdict is not a baseline either, and its fabricated
+    # `count: 1` cancelled a real finding this edit had just introduced. That
+    # is `before is None` reached by a different road, so it takes the same
+    # road out rather than a fourth meaning of its own.
+    baseline = _validator_baseline(before)
+    b_unknown = baseline is None
+    before = baseline
     b_count = before.get("count", 0) if before else 0
     a_count = after.get("count", 0)
     delta = a_count - b_count
@@ -13041,12 +13141,13 @@ def _validator_render_diff(before: Optional[Dict[str, Any]], after: Dict[str, An
             # the opposite of what just happened. This column reports the delta in
             # the validator's own result (#380).
             marker_col = "(no new errors)"
-        elif after.get("timeout"):
-            marker_col = "(timeout)"
         else:
+            # No `(timeout)` arm: a timed-out result returned above as a
+            # non-verdict (#969), so reaching here with one is impossible, and
+            # the arm it used to take printed `1 err` beside it.
             marker_col = "(pre-existing — not from this edit)"
         out = [f"{tool:12s}: {status:<10}  {marker_col}  {time_col:>5}"]
-        if not a_ok and not after.get("timeout"):
+        if not a_ok:
             for e in (after.get("errors") or [])[:5]:
                 line_n = f"L{e['line']}" if e.get("line") else "  "
                 code = e.get("code") or ""
@@ -16803,12 +16904,18 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
     # that only appears when a branch happens to exist would go missing outside
     # a repo — which is the exact shape #621 is about.
     if getattr(_DISPATCH_STATE, "depth", 1) <= 1:
-        if op in _OP_TARGETS or _MUTATION_ATTEMPTS[0] > _attempts_before:
+        # A read-only op that ran validators can still carry the one thing the
+        # footer exists to carry: a checker that did not check (#969).
+        # `validate` is not in `_OP_TARGETS` and mutates nothing, so it was
+        # gated out of the summary line entirely.
+        _not_checked_slice = _NOT_CHECKED[_not_checked_before:]
+        if (op in _OP_TARGETS or _MUTATION_ATTEMPTS[0] > _attempts_before
+                or _not_checked_slice):
             body += _result_line(_MUTATION_ATTEMPTS[0] - _attempts_before,
                                  _WRITE_COUNT[0] - _writes_before,
                                  _SKIP_COUNT[0] - _skips_before,
                                  _REAPPLY_COUNT[0] - _reapplies_before,
-                                 _NOT_CHECKED[_not_checked_before:],
+                                 _not_checked_slice,
                                  _ROLLBACK_COUNT[0] - _rollbacks_before)
             body += _branch_line()
 

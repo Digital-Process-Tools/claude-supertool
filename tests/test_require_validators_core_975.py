@@ -164,19 +164,50 @@ def test_the_write_still_happens_and_is_not_rolled_back(
 # What must not regress — the escalation is opt-in and one-directional
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("case", sorted(BROKEN_ADAPTERS))
-def test_unset_leaves_every_case_a_quiet_skip(
+@pytest.mark.parametrize("case",
+                         sorted(set(BROKEN_ADAPTERS) - {"times_out"}))
+def test_unset_leaves_an_adapter_breakdown_a_quiet_skip(
         case: str, tmp_path: Path, capsys, monkeypatch) -> None:
     """A laptop that never installed the tool has no information, and says so.
 
     Escalating this unconditionally is the trade #665 refused: every unrelated
     edit would fail because one optional checker is not installed.
+
+    `times_out` was a fifth parameter here and is asserted separately below
+    (#969). These four route through `_validator_unusable_reply` and become a
+    `skipped` — the state #665 is about, and the one a missing optional tool
+    actually produces. A timeout is not reachable that way, so the rationale in
+    this docstring never covered it.
     """
     monkeypatch.delenv("SUPERTOOL_REQUIRE_VALIDATORS", raising=False)
     _set_one(tmp_path, BROKEN_ADAPTERS[case], timeout=1)
     rc, out = _edit(tmp_path, capsys)
     assert rc == 0, out
     assert "NOT RUN" not in out, out
+
+
+def test_unset_still_escalates_a_core_timeout(
+        tmp_path: Path, capsys, monkeypatch) -> None:
+    """A timeout is a non-verdict whether or not anyone required the gate (#969).
+
+    Reaching one needs the adapter present, spawned, and still running when the
+    budget expired — so the checker this run cannot vouch for is a checker the
+    operator configured and expects, not an optional tool nobody installed.
+    Keeping it quiet protects none of #665's case and costs the whole of this
+    one: the row read `NOT CHECKED` while the footer read `1 op run, 1 write`
+    and the exit code read 0, which is the half `edit:... && git commit` reads.
+
+    Symmetry decides the rest. An `adapter`-coded absence (#967) already
+    escalates here with the variable unset. A core timeout is the same absence
+    seen from the core's side of the pipe, and rendering the two identically
+    while exiting differently is a distinction no consumer can act on.
+    """
+    monkeypatch.delenv("SUPERTOOL_REQUIRE_VALIDATORS", raising=False)
+    _set_one(tmp_path, BROKEN_ADAPTERS["times_out"], timeout=1)
+    rc, out = _edit(tmp_path, capsys)
+    assert rc == 1, out
+    assert "NOT CHECKED" in out, out
+    assert "1 validator NOT RUN (fake)" in _result_line(out), out
 
 
 def test_a_validator_not_named_is_not_escalated(

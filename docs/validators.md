@@ -246,8 +246,12 @@ shellcheck  : NOT CHECKED  (no verdict about this file)   0.2s
 Exit code 1. **Naming a validator in the variable is a statement that it must
 be present here**, so one that is not is a configuration fault to fix, in the
 image or in the variable — not a local inconvenience to absorb. Leave it unset
-and none of this is reachable: an absent tool is the honest `skipped` it always
-was, and exit stays 0. That is why the escalation is opt-in and why there is no
+and almost none of this is reachable: an absent tool is the honest `skipped` it
+always was, and exit stays 0. The one absence that escalates without being named
+is the core's own timeout, for the reason under "Declining instead of guessing"
+below — it needs the adapter present and running, so it is never the optional
+tool nobody installed that this opt-in exists to protect. That is why the rest of
+the escalation is opt-in and why there is no
 CI auto-detection; a tool that decided for you which absences are fatal would be
 guessing at the thing only the operator knows.
 
@@ -263,9 +267,13 @@ adapter is too broken to reach that code exited 0 for a release
 ([#975](https://github.com/Digital-Process-Tools/claude-supertool/issues/975)) —
 it printed nothing, printed something that is not JSON, crashed, replied with
 no verdict key, or hung until the timeout. The first four became a `skipped`
-and the fifth rendered `1 err (timeout)`. In every one of them the row already
-said the file was not checked and the run still exited 0, so
-`supertool 'edit:...' && git commit` committed past an ungated edit.
+and the fifth rendered `1 err (timeout)` — since
+[#969](https://github.com/Digital-Process-Tools/claude-supertool/issues/969) it
+renders `NOT CHECKED (timed out — no verdict about this file)` and escalates
+whether or not it was named, so only the first four still depend on the
+variable. In every one of them the row already said the file was not checked and
+the run still exited 0, so `supertool 'edit:...' && git commit` committed past an
+ungated edit.
 
 The core watched all five happen, so the core decides. Under an escalation they
 render like any other non-verdict:
@@ -562,7 +570,13 @@ A validator has three states, not two: `ok`, a finding, and **`skipped`** — an
 
 **`NOT CHECKED` is the same absence arriving through the error channel.** A `skipped` is a checker that declined *before* running and had a field to say so with. An adapter that was asked to run, could not, and holds only an `adapter`-coded error has produced exactly as little information — and every consumer downstream of a result treats an error as a measurement of the file. So a result whose errors are *all* `code: "adapter"` is rendered as `NOT CHECKED`, is never subtracted from a baseline, and is named on the `[result]` line. All of them, not the first: an adapter reporting four real findings alongside one adapter row has still measured the file, and hiding that would be this defect pointing the other way.
 
-Whether it exits non-zero is decided by `$SUPERTOOL_REQUIRE_VALIDATORS`, one section up — that variable is the only place an operator states which absences are unacceptable *here*.
+**A timeout is the third route to the same absence, and it needs no config to happen.** When the core's own budget expires it writes `ok: false, count: 1` with an `orchestrator` code — the same fabricated count, reached by a slow machine rather than a missing binary. It is now rendered `NOT CHECKED (timed out — no verdict about this file)`, is excluded from the delta, and exits non-zero, where it used to read `1 err (timeout)`: a count about a file the checker never finished reading.
+
+**No verdict never rolls back an edit** ([#969](https://github.com/Digital-Process-Tools/claude-supertool/issues/969)). `rollback_on_fail` restores the pre-edit bytes when a validator *regressed*, and all three absences above carry `count: 1`, so a checker that went from answering to not answering across an edit scored `0 → 1` and reverted it. The edit was fine and nothing had checked it. The judgment is the one #665 made for the exit code: keep the edit, say loudly that the gate did not run, exit non-zero. Refusing to write would trade losing the work for refusing to work, and the pre-edit bytes it would preserve were never checked either — a revert here buys no safety, it only deletes.
+
+**The `before` side counts too.** A baseline that produced no verdict is not a clean baseline and is not a `0` — it is the absence of a baseline, and is now folded into the `before is None` case. Subtracting it cancelled real findings: an edit that introduced an error read `1 err (pre-existing — not from this edit)`, did not roll back, and exited 0. The row for that case shows `? → 1`, never `0 → 1`.
+
+Whether an *adapter*-coded absence exits non-zero is decided by `$SUPERTOOL_REQUIRE_VALIDATORS`, one section up — that variable is the only place an operator states which absences are unacceptable *here*. It does not gate timeouts: the core did not decline to look, it ran out of time doing so, and no operator opted into that.
 
 **Daemon not installed — the checker that cannot run declines** ([#531](https://github.com/Digital-Process-Tools/claude-supertool/issues/531)). The four warm-process adapters (`phpstan-mcp`, `rector-mcp`, `phpmd-mcp`, `phpunit-mcp`) resolve their daemon binary before spawning it. When it is absent — the normal case for any `cwd:` pointed at a git worktree, where `composer install` never ran — that used to surface as a finding:
 
