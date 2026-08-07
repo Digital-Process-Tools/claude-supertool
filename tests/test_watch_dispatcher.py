@@ -4,7 +4,10 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import signal
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -179,7 +182,39 @@ class _EmittingPoller(_StubPoller):
         return False
 
 
-def _run_loop_in_child(monkeypatch, tmp_path, poller, only=None) -> None:
+#: How long a forked child gets to exit before it is killed and reported.
+#:
+#: Not a performance budget. Every child here runs a stubbed poller and exits in
+#: milliseconds, so a value this large can only ever be reached by a child that
+#: is not going to finish at all — the #702 trade, the same one the two
+#: `timeout-minutes` figures in `tests.yml` take.
+#:
+#: It exists because `os.waitpid(pid, 0)` has none, and this fork happens inside
+#: an xdist worker: a multi-threaded process, which is a documented deadlock
+#: hazard for the child (CPython raises `DeprecationWarning: This process is
+#: multi-threaded, use of fork() may lead to deadlocks in the child`). A wedged
+#: child does not merely fail its own test. It holds the descriptors it
+#: inherited from the worker, including the execnet channel back to the xdist
+#: controller, so the controller never sees the worker close and the entire run
+#: stops with no test named and no failure reported (#914).
+_CHILD_BUDGET_S = 30.0
+
+
+def _reap(pid: int, budget: float) -> "int | None":
+    """Wait for `pid` up to `budget`; kill it and return None past that."""
+    deadline = time.monotonic() + budget
+    while time.monotonic() < deadline:
+        done, status = os.waitpid(pid, os.WNOHANG)
+        if done == pid:
+            return status
+        time.sleep(0.01)
+    os.kill(pid, signal.SIGKILL)
+    os.waitpid(pid, 0)
+    return None
+
+
+def _run_loop_in_child(monkeypatch, tmp_path, poller, only=None,
+                       budget: float = _CHILD_BUDGET_S) -> None:
     """Run _run_poll_loop in a forked child.
 
     The loop redirects fds 0/1/2 to /dev/null, so it must not run in the
@@ -193,8 +228,72 @@ def _run_loop_in_child(monkeypatch, tmp_path, poller, only=None) -> None:
             dispatcher._run_poll_loop("gitlab-mr", "33136", only or [])
         finally:
             os._exit(0)
-    _, status = os.waitpid(pid, 0)
+    status = _reap(pid, budget)
+    assert status is not None, (
+        f"the forked child {pid} did not exit within {budget}s and was "
+        f"killed. A fork from a multi-threaded process inherits every lock in "
+        f"whatever state it was in, owned by threads the child does not have, so "
+        f"the usual cause is a deadlock on one of them rather than a slow poll."
+    )
     assert os.WIFEXITED(status)
+
+
+#: A lock held, at fork time, by a thread that will not exist in the child.
+_FORK_HAZARD_LOCK = threading.Lock()
+
+
+class _LockTakingPoller(_StubPoller):
+    """Takes a lock another thread was holding when the fork happened.
+
+    `os.fork()` copies the memory of the calling thread only. A lock some other
+    thread held at that instant is inherited *locked*, by an owner the child
+    does not have, so nothing can ever release it — which is the whole content
+    of CPython's `DeprecationWarning: This process is multi-threaded, use of
+    fork() may lead to deadlocks in the child`.
+    """
+
+    @staticmethod
+    def poll(state, ctx):
+        with _FORK_HAZARD_LOCK:
+            pass
+        raise SystemExit(0)
+
+    @staticmethod
+    def is_terminal(state):
+        return False
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="requires os.fork")
+@pytest.mark.timeout(60)
+def test_a_child_that_deadlocks_is_reported_rather_than_waited_on(
+        monkeypatch, tmp_path) -> None:
+    """A wedged child must end this test, not the whole run.
+
+    `os.waitpid(pid, 0)` has no deadline, and this fork happens inside an xdist
+    worker — a process with execnet's receiver thread in it, plus coverage's,
+    plus whatever the tests before this one left running. When the child wedges,
+    the parent parks in `waitpid` forever *and the child keeps the worker's
+    inherited channel descriptors open*, so the controller never sees the worker
+    close either. The run stops emitting progress and no test is ever named:
+    exactly the `coverage` job's 20-minute cancellations in #914.
+
+    pytest-timeout cannot rescue that. It fires per test item, and by the time
+    the controller is the thing that is stuck there is no item left to fail.
+    So the deadline belongs here, next to the fork that needs it.
+    """
+    parked = threading.Event()
+    holder = threading.Thread(
+        target=lambda: (_FORK_HAZARD_LOCK.acquire(), parked.set(), None),
+        daemon=True,
+    )
+    holder.start()
+    assert parked.wait(5), "the fixture never took the lock — nothing would deadlock"
+
+    with pytest.raises(AssertionError, match="did not exit"):
+        # A budget this test can wait out, through the argv every other test
+        # uses. Appending its own guard instead would let it supply the very
+        # deadline it exists to check for.
+        _run_loop_in_child(monkeypatch, tmp_path, _LockTakingPoller, budget=3.0)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="requires os.fork")
