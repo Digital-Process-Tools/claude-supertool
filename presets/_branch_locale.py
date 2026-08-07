@@ -32,6 +32,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _untrusted  # noqa: E402  (branch names and worktree paths are not our text — #851/#876)
+import _refname  # noqa: E402  (the ordinary-refname rule this line prints into — #694/#924)
 
 #: `git worktree list` is a local read of one file; a slow answer means
 #: something is wrong with the repo, not that we should wait longer.
@@ -134,4 +135,29 @@ def check(source: str, actionable: bool = True) -> str:
     if not actionable:
         return (f"You are on: {local} ⚠ MISMATCH — this is {named}; "
                 f"read-only op, HEAD left alone")
+    if not _refname.ordinary(source):
+        # #924: `source` is the head branch of a pull/merge request, named by
+        # whoever opened it — a fork PR needs no permission here. Below, it is
+        # interpolated between two single quotes in a line whose whole form is
+        # the tool saying what to run next, and `flat()` above removes line
+        # separators, not `'`. A partial sanitiser reads as a complete one.
+        #
+        # Not quoted, refused — the third state, same vocabulary as the UNKNOWN
+        # branch above. Quoting is what `_refname.shell_ref` is for and it is
+        # right where the command is the deliverable (`mr.py`'s conflict
+        # recipe). Here the command is a convenience, and for a name outside
+        # the set it would be wrong as well as unsafe: this suggestion is read
+        # back through supertool's colon CLI, which splits `git-checkout:REF`
+        # on `:`, so a ref holding one cannot be delivered by any quoting; and
+        # `flat()` has already rewritten the name, so the quoted command would
+        # faithfully name a ref that does not exist. A safe command that
+        # silently does the wrong thing is the trade this repo does not make.
+        #
+        # The name is still stated, and so is the reason — a suggestion that
+        # simply vanished would read as "you are on the right branch", which is
+        # the #531 failure at this same line.
+        return (f"You are on: {local} ⚠ MISMATCH — this is {named}, a name "
+                f"outside the ordinary-refname set (letters, digits, "
+                f"`. _ / -`, no leading `-`), so no switch command is "
+                f"suggested — check it out yourself, deliberately")
     return f"You are on: {local} ⚠ MISMATCH — switch with: ./supertool 'git-checkout:{named}'"
