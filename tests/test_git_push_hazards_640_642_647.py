@@ -145,21 +145,23 @@ class _Sandbox:
         """
         script = os.path.join(self.tmp, name)
         Path(script).write_text(
-            "import pathlib, time" + NL +
+            "import io, time" + NL +
             "time.sleep(%d)" % spawn_delay + NL +
-            "pathlib.Path(%r).write_text('ran')" % self.sentinel + NL +
+            "fh = io.open(%r, 'a', encoding='utf-8')" % self.sentinel + NL +
+            "fh.write(%r + chr(10))" % name + NL +
+            "fh.close()" + NL +
             "time.sleep(%d)" % seconds + NL,
             encoding="utf-8")
         return script
 
-    def make_fetch_hang(self) -> None:
+    def make_fetch_hang(self, spawn_delay: int = 0) -> None:
         """Route *fetch* through a sleeping `ext::` helper; push stays real.
 
         `remote.<name>.pushurl` keeps `git push` on the real bare repo, so the
         non-fast-forward rejection that opens the recovery path is genuine.
         Only the fetch inside `_recover_by_rebase` hits the stalling transport.
         """
-        script = self._sleeper("slow_transport.py")
+        script = self._sleeper("slow_transport.py", spawn_delay=spawn_delay)
         assert _run(["config", f"remote.{self.remote_name}.pushurl",
                      Path(self.remote).as_posix()], self.mine).returncode == 0
         assert _run(["config", f"remote.{self.remote_name}.url",
@@ -201,6 +203,22 @@ class _Sandbox:
     @property
     def fixture_ran(self) -> bool:
         return os.path.exists(self.sentinel)
+
+    def spawn_count(self) -> int:
+        """How many times a fixture helper has announced itself.
+
+        `fixture_ran` cannot answer the question the timeout tests actually
+        ask — did *this* git call reach *its* helper. `make_fetch_hang` stalls
+        the whole `remote.<name>.url`, and `_push_op` reads that URL with
+        `git ls-remote` (push.py:1580) before the recovery fetch is issued, so
+        on the fetch path the first announcement on record belongs to a call no
+        assertion is about (#844). A count distinguishes them; an existence
+        check cannot, and read the preflight's spawn as the fetch's.
+        """
+        if not os.path.exists(self.sentinel):
+            return 0
+        lines = Path(self.sentinel).read_text(encoding="utf-8").splitlines()
+        return len([ln for ln in lines if ln.strip()])
 
     def rebase_in_progress(self) -> bool:
         g = Path(self.mine, ".git")
@@ -301,27 +319,49 @@ class _BudgetAfterSpawn:
     announces itself the wait gives up after `cap` and the test fails on its own
     precondition exactly as it does today: this removes the race, not the
     assertion.
+
+    `spawns` is how many announcements have to be on record before the clock
+    may start, and it exists because "the sentinel is there" and "the call I am
+    guarding reached its helper" are not the same statement (#844). On the fetch
+    path they came apart: `make_fetch_hang` stalls the whole
+    `remote.<name>.url`, and `_push_op` reads that URL with `git ls-remote`
+    (push.py:1580) before it ever issues the recovery fetch. The preflight's
+    helper announced first, so the barrier saw an existing sentinel and returned
+    in ~60us — a wall-clock budget again, on the one path #828 was written to
+    take a wall clock off. Counting the announcements is what tells the fetch's
+    spawn from somebody else's; an existence check cannot, and silently read the
+    preflight's as the fetch's.
     """
 
     def __init__(self, sentinel: str, stage: int, budget: int = 2,
-                 lead: int = 60, cap: float = 30.0) -> None:
+                 lead: int = 60, cap: float = 30.0, spawns: int = 1) -> None:
         self.sentinel = sentinel
         self.stage = stage
         self.budget = budget
         self.lead = lead
         self.cap = cap
+        self.spawns = spawns
         self.uses = 0
         self.waited = 0.0
+        self.observed = 0
+
+    def _announced(self) -> int:
+        try:
+            lines = Path(self.sentinel).read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return 0
+        return len([ln for ln in lines if ln.strip()])
 
     def __radd__(self, started: float) -> float:
         self.uses += 1
         if self.uses < self.stage:
             return started + self.lead
         begin = time.monotonic()
-        while not os.path.exists(self.sentinel):
+        while self._announced() < self.spawns:
             if time.monotonic() - begin >= self.cap:
                 break
             time.sleep(0.01)
+        self.observed = self._announced()
         self.waited = time.monotonic() - begin
         return started + self.waited + self.budget
 
@@ -342,7 +382,7 @@ def test_fetch_timeout_gives_a_verdict_not_a_traceback(box, monkeypatch) -> None
     """
     box.advance_remote_feature()
     box.make_fetch_hang()
-    budget = _BudgetAfterSpawn(box.sentinel, stage=1)
+    budget = _BudgetAfterSpawn(box.sentinel, stage=1, spawns=2)
     monkeypatch.setattr(push, "_RECOVER_TIMEOUT", budget, raising=False)
     before = box.head()
 
@@ -352,8 +392,10 @@ def test_fetch_timeout_gives_a_verdict_not_a_traceback(box, monkeypatch) -> None
     assert budget.uses == budget.stage, (
         "the recovery budget was consumed at a different git call than the "
         "barrier arms on — the wait is guarding the wrong stage")
-    assert box.fixture_ran, (
-        "the ext:: transport helper never spawned — this test would prove nothing")
+    assert box.spawn_count() >= 2, (
+        "the *fetch's* ext:: transport helper never spawned — only the "
+        "preflight `ls-remote` did, and `fixture_ran` cannot tell them apart, "
+        "so this test would prove nothing (#844)")
     assert rc != 0
     assert not box.rebase_in_progress()
     assert box.head() == before
@@ -362,6 +404,46 @@ def test_fetch_timeout_gives_a_verdict_not_a_traceback(box, monkeypatch) -> None
     assert "fetch" in verdict.lower()
     # The one thing the caller needs: is my worktree ok?
     assert "not started" in verdict.lower() or "unchanged" in verdict.lower(), verdict
+
+
+@pytest.mark.slow
+def test_fetch_timeout_fixture_survives_a_slow_helper_spawn(
+        box, monkeypatch) -> None:
+    """#844: the fetch side of #828, which the fetch side never got.
+
+    `make_fetch_hang` stalls the whole `remote.<name>.url`, and the recovery
+    fetch is not the first git call to read it — `_push_op` verifies the
+    rejected push with `git ls-remote` first (push.py:1580), through the same
+    sleeping helper. That preflight announces itself, so the sentinel already
+    exists when the fetch arms its budget and the barrier returns in ~60us:
+    the #828 guarantee that the clock starts when *this* call reaches *its*
+    helper is not in force on this path, and `fixture_ran` is satisfied by a
+    spawn the assertion is not about.
+
+    `spawn_delay` makes git slow to reach the *fetch's* helper, which is the
+    #828 shape. With a barrier armed by mere existence the budget expires
+    before that helper announces, the fetch never stalls at the hazard, and the
+    test passes anyway — a red turned quiet, which is worse than the red.
+    """
+    delay = 6
+    box.advance_remote_feature()
+    box.make_fetch_hang(spawn_delay=delay)
+    budget = _BudgetAfterSpawn(box.sentinel, stage=1, spawns=2)
+    monkeypatch.setattr(push, "_RECOVER_TIMEOUT", budget, raising=False)
+
+    with _no_mr():
+        rc, out = box.drive_push()
+
+    assert box.spawn_count() >= 2, (
+        "only the preflight `ls-remote` reached the helper: the recovery fetch "
+        "was cut off before its own transport announced itself, so the hazard "
+        "this test exists for never happened and `fixture_ran` said yes anyway "
+        "(#844)")
+    assert budget.waited >= delay, (
+        f"the barrier waited {budget.waited:.2f}s for a helper that needs "
+        f"{delay}s to spawn — it armed on somebody else's spawn (#844)")
+    assert rc != 0
+    assert "TIMED OUT" in _last_result(out)
 
 
 def test_rebase_timeout_names_the_paused_worktree_and_the_way_out(

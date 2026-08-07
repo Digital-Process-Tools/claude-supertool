@@ -824,6 +824,56 @@ assert "I-AM-THE-FAKE" in json.dumps(data), describe(data)
 Worked examples: `tests/test_phplint_tool_vs_file_745.py` (one adapter) and
 `tests/test_adapter_tool_vs_file_753.py` (seven, parametrised).
 
+### Never write a formatter's fixture with `write_text`
+
+A fixture for a formatting check goes to disk as bytes:
+
+```python
+path.write_bytes(text.encode("utf-8"))
+```
+
+`Path.write_text` translates every newline to `os.linesep`, so on Windows the
+fixture arrives at the tool as CRLF — and a formatter rewrites CRLF. `gofmt -l`
+prints the filename of a CRLF file whatever else is in it, so the *correctly
+formatted* fixture is reported as needing formatting, on Windows only.
+
+This is worth a rule because of how it was read the first time. The failure was
+recorded as `reason="gofmt adapter has encoding issues on Windows"` and the test
+was skipped there — so the adapter carried the blame for three occurrences, the
+phrase in that skip reason was the entire diagnosis on file, and Windows lost
+its only check that a clean Go file is reported clean
+([#777](https://github.com/Digital-Process-Tools/claude-supertool/issues/777)).
+The mechanism is pinned on every platform by
+`test_gofmt_reads_a_crlf_file_as_needing_formatting`, because the platform a
+newline defect appears on is the one nobody here can run a local check against.
+
+The terraform and cargo fixtures in `tests/test_validators_tier2.py` still use
+`write_text`; they are guarded by a `which()` skip that keeps them off the
+Windows legs today, which is luck rather than design.
+
+### Never bracket a timestamp with zero tolerance
+
+A test that reads a clock before and after a call and demands the emitted value
+land between them is asserting that the host does not adjust its wall clock. It
+does: `test_the_snapshot_says_when_it_was_read` reported a value a full second
+*earlier* than a bound read before it, which program order cannot produce, and
+reddened two legs of a pull request whose diff was one character of regex
+([#909](https://github.com/Digital-Process-Tools/claude-supertool/issues/909)).
+
+Reading the same clock API the product reads does not fix it — `datetime.now(
+timezone.utc)` and `time.gmtime()` are both `CLOCK_REALTIME`, and a step moves
+them together. Two things do, and the split is the point:
+
+1. **Slack on the bracket**, sized so that everything the assertion exists to
+   catch is still caught. An age, a hardcoded string, a wrong epoch and
+   milliseconds-read-as-seconds are all wrong by an epoch, not by a minute, so
+   two minutes of tolerance costs the test nothing.
+2. **A second test with the clock frozen**, for the part slack would blur.
+   Patch both `time.gmtime` and `time.localtime` to distinguishable values and
+   assert the exact string: that is what pins a `Z` suffix as a claim about
+   *which* clock was read, and a real-clock bracket cannot see a local-time
+   swap at all on a runner whose zone is already UTC.
+
 ### Never write a subprocess timeout by hand
 
 If a test spawns a validator adapter, its budget comes from
