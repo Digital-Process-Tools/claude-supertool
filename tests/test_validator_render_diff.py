@@ -55,7 +55,15 @@ def test_render_diff_metric_bv_non_numeric_coerced_to_zero() -> None:
 
 
 def test_render_diff_unchanged_timeout_marker() -> None:
-    """Issue #228 — timeout-induced 'err' should render '(timeout)', not '(unchanged)'."""
+    """Issue #228 — a timeout must not render as '(unchanged)'.
+
+    #969 strengthened what it renders as instead. `(timeout)` sat next to a
+    status column reading `1 err`, which is a count about a file the checker
+    never finished reading — #228's own complaint, one column over. A timeout
+    is now the same NOT CHECKED non-verdict an unrunnable adapter is, so the
+    literal moved; the invariant #228 pinned is asserted below unchanged, and
+    the absence of `1 err` is asserted with it.
+    """
     before = {"tool": "lsp-diag", "count": 1, "ok": False,
               "errors": [{"code": "orchestrator", "msg": "timeout after 3s"}],
               "timeout": True, "elapsed_s": 3.0}
@@ -64,8 +72,10 @@ def test_render_diff_unchanged_timeout_marker() -> None:
              "timeout": True, "elapsed_s": 3.0}
     rows = supertool._validator_render_diff(before, after)
     joined = "".join(rows)
-    assert "(timeout)" in joined
+    assert "timed out" in joined
     assert "(no new errors)" not in joined
+    assert "(unchanged)" not in joined
+    assert "1 err" not in joined
 
 
 def test_render_diff_unchanged_real_err_labelled_pre_existing() -> None:

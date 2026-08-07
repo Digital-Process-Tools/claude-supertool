@@ -51,6 +51,7 @@ Two consequences a consumer can rely on:
 
 - **The message names what failed**, including the exit code and the tool's raw output when there is any, and says so explicitly when there is none.
 - **The result is never cached.** `adapter` is in the core's `_NONDETERMINISTIC_ERROR_CODES`: a verdict that was never obtained is not a function of the file's content, and the cache key is a content hash, so caching one replays it until the file changes.
+- **The result never triggers rollback, whatever `rollback_on_fail` says** — the same guarantee `skipped` carries above. `count: 1` is the channel this schema gives an absence, not a measurement of the file, so the core never subtracts it from a baseline in either direction and never reverts an edit over it (#969). The core's own timeout (`code: "orchestrator"`) is treated identically.
 
 Emit it whenever the tool's output does not confirm it looked at the file. Where the boundary is genuinely unclear, prefer the finding: an `adapter` result is fully legible to a reader, while a real finding relabelled `adapter` sends them to the wrong place. See `docs/validators.md`, "Declining instead of guessing".
 
