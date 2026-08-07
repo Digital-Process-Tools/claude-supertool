@@ -55,22 +55,52 @@ _UNRELEASED_LINK_RE = re.compile(
 )
 
 #: Any link-reference definition, used to find the block of them at the bottom.
-_LINK_REF_RE = re.compile(r"^\[[^\]]+\]:\s*\S")
+#: 0-3 leading spaces, like everything else CommonMark calls a link ref (#930).
+#: This pattern decides where the trailing block *starts*, and anchored at column
+#: 0 it stopped its backward walk at an indented definition — truncating the block
+#: or missing it entirely, so the release advanced no link at all and shipped a
+#: `## [x.y.z]` heading whose link resolves to nothing, under a receipt that said
+#: only "no compare line found". Recognising an indented line as part of the block
+#: is not permission to write it: `_UNRELEASED_LINK_RE` stays anchored at column
+#: 0, which is where the assembler's own line is, so an indented look-alike inside
+#: the block cannot capture the rewrite.
+_LINK_REF_RE = re.compile(r"^ {0,3}\[[^\]]+\]:\s*\S")
 
-#: Column 0 belongs to the assembler (#923). A fragment body is inserted into
-#: `CHANGELOG.md` verbatim, so a line here that *is* a heading or a link-ref
-#: definition becomes one in the released file: it reparents every entry below
-#: it, it is what `_anchor()` finds on the next cut, and an `[Unreleased]:` line
-#: lands above the genuine link refs. Nothing downstream — not `_anchor`, not
-#: `_unreleased_span`, not git's merge driver — is fence-aware, so a fenced
-#: block buys no safety and this rule deliberately is not fence-aware either.
-#: Indenting is both the remedy and the fix: an indented line is not a heading
-#: to any of those readers, and indentation is what the fragment format already
-#: asks for — one `- ` bullet plus its indented paragraphs.
+#: The first four columns belong to the assembler (#923, #930). A fragment body
+#: is inserted into `CHANGELOG.md` verbatim, so a line here that *is* a heading
+#: or a link-reference definition becomes one in the released file: it reparents
+#: every entry below it, it is what `_anchor()` finds on the next cut, and a
+#: definition lands above the genuine link-ref block, where the *first* definition
+#: of a label is the one that resolves.
+#:
+#: Column 0 was the wrong boundary, and wrong in three directions (#930).
+#: CommonMark allows **0-3 leading spaces** before both constructs, so 1-3 spaces
+#: walked through — including the two-space indent the old message prescribed as
+#: the remedy. Link **labels are case-insensitive**, so `[unreleased]:` was the
+#: very definition the pattern named. And the label set is not two names: *any*
+#: `[label]:` line is a definition, and redefining `[docs]` from the top of the
+#: file is the same hijack as redefining `[Unreleased]`.
+#:
+#: Four spaces is where it stops, and a tab is deliberately not in the set. At
+#: four columns CommonMark reads an indented code block, and `_anchor`,
+#: `_unreleased_span` and `_link_ref_block` all read something that is not a
+#: heading and not a link ref — the rule and the safety property are the same
+#: line, which is why no fence parser is needed. A leading tab advances to the
+#: next four-column tab stop, so a tab-indented line is already at or past that
+#: boundary; refusing it would cost an author a safe line and buy nothing, and
+#: every character class added here is one an author trips over writing an
+#: ordinary entry.
+#:
+#: Still not fence-aware, for #927's reason unchanged: nothing downstream is —
+#: not `_anchor`, not `_unreleased_span`, not git's merge driver — so a fenced
+#: block buys no safety, and a half-aware fence parser would bless exactly the
+#: lines that still corrupt the file for every other reader.
+#:
+#: A destination is not required to call a line a definition: CommonMark lets the
+#: destination sit on the *next* line, so a bare `[label]:` is one too.
 _FORBIDDEN_LINE = (
-    (re.compile(r"^#{1,6}(\s|$)"), "a Markdown heading at column 0"),
-    (re.compile(r"^\[Unreleased\]:"), "an `[Unreleased]:` link reference at column 0"),
-    (re.compile(r"^\[\d+\.\d+\.\d+\]:"), "a release link reference at column 0"),
+    (re.compile(r"^ {0,3}#{1,6}(\s|$)"), "a Markdown heading"),
+    (re.compile(r"^ {0,3}\[[^\]]+\]:"), "a link-reference definition"),
 )
 
 
@@ -87,7 +117,9 @@ def scan_fragment_body(name: str, text: str) -> List[str]:
                 findings.append(
                     "{0}:{1}: {2} — the assembler owns the headings and the link "
                     "refs of CHANGELOG.md, and this line would become one of them. "
-                    "Indent it by two spaces to quote it in prose: {3}"
+                    "Indent it by four spaces to quote it in prose: CommonMark reads "
+                    "0-3 spaces as no indent at all, so a two-space indent is still a "
+                    "live heading and a live link ref (#930). Line: {3}"
                     .format(name, number, what, line.strip()[:120]))
                 break
     return findings
@@ -454,7 +486,12 @@ def check(directory: Path) -> int:
         _receipt("skipped", "{0}/ holds 0 fragments — nothing to validate"
                  .format(directory.name))
         return OK
-    _receipt("ok", "{0} fragments, all names parse and no body writes at column 0"
+    # Not "no body writes at column 0" (#930): that named where the pattern was
+    # anchored rather than what was checked, and it stayed literally true through
+    # three bypasses while the released file carried the injected lines. The
+    # claim has to be the property a reader is trusting the gate for.
+    _receipt("ok", "{0} fragments, all names parse and no body line would become "
+                   "a heading or a link ref of CHANGELOG.md"
              .format(len(fragments)),
              ["{0}  {1}".format(f.path.name if f.path else "?", f.section) for f in fragments])
     return OK

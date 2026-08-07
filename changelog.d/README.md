@@ -18,24 +18,38 @@ The **content is the entry exactly as it would appear** under that heading
 today — a `- **Bold summary** ([#906](link)). Prose.` bullet, with as many
 indented paragraphs after it as the change deserves. Nothing is reformatted.
 
-**Column 0 belongs to the assembler.** A fragment is inserted into
-`CHANGELOG.md` verbatim, so a line here that starts at column 0 with `#`,
-`[Unreleased]:` or `[1.2.3]:` becomes a heading or a link reference of the
-released file — it reparents the entries below it and can capture the release
-link rewrite ([#923](https://github.com/Digital-Process-Tools/claude-supertool/issues/923)).
-`--check` refuses those, naming the file and the line, so it fails on your PR
-rather than at release time.
+**The first four columns belong to the assembler.** A fragment is inserted into
+`CHANGELOG.md` verbatim, so a line here that CommonMark would read as a heading
+or a link-reference definition becomes one in the released file — it reparents
+the entries below it, and a definition planted here sits above the genuine
+link-ref block at the bottom, where the *first* definition of a label is the one
+that resolves
+([#923](https://github.com/Digital-Process-Tools/claude-supertool/issues/923),
+[#930](https://github.com/Digital-Process-Tools/claude-supertool/issues/930)).
 
-To quote a heading in prose — which entries here do all the time — **indent
-it**, which is what the bullet-plus-indented-paragraphs format asks for anyway:
+Refused, therefore: a `#` heading or a `[label]:` definition in the leftmost
+**four columns** — **0 to 3 leading spaces**, **any case** (`[unreleased]:` is
+the same label as `[Unreleased]:`), **any label** (redefining `[docs]` from the
+top of the file is the same hijack). `--check` refuses those, naming the file
+and the line, so it fails on your PR rather than at release time.
+
+To quote a heading in prose — which entries here do all the time — **indent it
+by four spaces**, inside the indented paragraphs the bullet format already asks
+for:
 
 ```
 - **Renamed the release heading** ([#923](link)). It now reads:
 
-  ```markdown
-  ## [Unreleased]
-  ```
+    ```markdown
+    ## [Unreleased]
+    ```
 ```
+
+**Four, not two.** At four columns CommonMark reads an indented code block, and
+so does every scanner in the assembler; at one to three it reads a heading, which
+is what made the old two-space advice a bypass rather than a remedy. A leading
+tab is already four columns or more by CommonMark's tab-stop rule, so a
+tab-indented line is allowed.
 
 The rule is positional, not fence-aware, and that is on purpose: nothing that
 reads `CHANGELOG.md` afterwards understands fences either, so an unindented

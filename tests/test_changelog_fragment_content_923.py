@@ -23,8 +23,14 @@ so. There is no fence tracking anywhere in `_anchor` / `_unreleased_span` /
 `_rewrite_links`, and adding it here would only teach this one reader about
 fences while every other consumer of the file (git's merge driver included)
 still reads column 0 as a heading. So the contract is positional, not semantic:
-**column 0 belongs to the assembler; a fragment's own lines are indented.**
-Which is what `changelog.d/README.md` already asked for.
+**the first four columns belong to the assembler; a fragment's own lines are
+indented past them.** Which is what `changelog.d/README.md` already asked for.
+
+The boundary in this file was originally column 0 and two spaces of remedy, and
+both were wrong by CommonMark's own rules — see #930 and
+`tests/test_changelog_fragment_indent_bypass_930.py`, which pins 0-3 spaces as
+refused and four as the escape hatch. The tests here are unchanged apart from
+that indent.
 
 Would these tests pass if the code did nothing? No. Each either asserts a
 refusal naming a file *and a line number*, or reads back a `CHANGELOG.md` and
@@ -297,15 +303,22 @@ def test_the_remedy_is_indentation_and_it_ships(tmp_path, capsys) -> None:
     indented paragraphs — and indented is what `_anchor`, `_unreleased_span` and
     `_rewrite_links` all agree is not a heading and not a link ref. The rule and
     the safety property are the same line, which is why no fence parser is needed.
+
+    **Four spaces, not the two this test used to assert** (#930). CommonMark
+    allows 0-3 leading spaces before a heading and before a link-reference
+    definition, so the two-space escape hatch this file blessed was itself a
+    live heading and a live link ref — the hole again, written down as the
+    remedy. `tests/test_changelog_fragment_indent_bypass_930.py` pins the
+    boundary from both sides.
     """
     changelog, frag_dir = _repo(tmp_path, {
         "918.fixed.md": (
             "- **Backfilled the historical link refs** ([#918](x)). The file now ends with:\n"
             "\n"
-            "  ```markdown\n"
-            "  ## [Unreleased]\n"
-            "  [Unreleased]: " + EVIL + "/compare/v0.0.1...HEAD\n"
-            "  ```\n"
+            "    ```markdown\n"
+            "    ## [Unreleased]\n"
+            "    [Unreleased]: " + EVIL + "/compare/v0.0.1...HEAD\n"
+            "    ```\n"
         ),
     })
 
@@ -313,7 +326,7 @@ def test_the_remedy_is_indentation_and_it_ships(tmp_path, capsys) -> None:
     text = changelog.read_text(encoding="utf-8")
 
     assert code == asm.OK, out
-    assert "  ## [Unreleased]" in text, "the quoted example must survive into the release"
+    assert "    ## [Unreleased]" in text, "the quoted example must survive into the release"
     assert _release_headings(text) == ["## [0.24.0] - 2026-08-07", "## [0.23.0] - 2026-08-05"]
     assert "[Unreleased]: " + GENUINE + "/compare/v0.24.0...HEAD" in text
     assert "[0.24.0]: " + GENUINE + "/releases/tag/v0.24.0" in text, \
