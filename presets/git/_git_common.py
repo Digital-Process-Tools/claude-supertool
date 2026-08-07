@@ -568,6 +568,14 @@ def _is_local_remote(url: str) -> bool:
         return True
     if u.startswith(("/", "./", "../", "~")) or u[:1] == chr(92):
         return True
+    if len(u) > 1 and u[1] == ":" and u[0].isalpha() and u[0].isascii():
+        # A Windows drive letter, and the reason this function has a test per
+        # shape. `C:/Users/…/remote.git` has a colon before the first slash, so
+        # the scp-style rule below reads `C` as a hostname and calls a temp
+        # directory a forge — which is exactly what happened, on the Windows
+        # leg only, after the POSIX legs went green. One character before the
+        # colon is the discriminator: a real host name is never one letter.
+        return True
     scheme, sep, rest = u.partition("://")
     if sep and rest and scheme and scheme.replace(
             "+", "").replace(".", "").replace("-", "").isalnum():
@@ -597,7 +605,15 @@ def _remotes_could_host_a_request() -> tuple[Optional[bool], str]:
     not a guess: a remote at `/tmp/x/remote.git` has no tracker, in the same
     way and for the same reason that a GitHub repo has no GitLab MR.
     """
-    res = _git(["remote", "-v"])
+    try:
+        res = _git(["remote", "-v"])
+    except OSError as exc:
+        # `_git` lets an OSError escape by design — `push.py` guards each of its
+        # own calls and #675 pins that. This call site is inside an advisory
+        # lookup that must never take a receipt with it, and a machine with no
+        # `git` on PATH is precisely the "git did not answer" state below, not
+        # a traceback out of a push that already succeeded.
+        return None, f"`git remote` could not be run ({exc})"
     if res.returncode != 0:
         return None, (res.stderr.strip() or f"git exited {res.returncode}")
     urls = []
@@ -633,7 +649,7 @@ def query_open_mr_result(branch: str) -> MrLookup:
         # A detached HEAD has no branch for a request to be open against. That
         # is a fact about the repository, not a lookup that failed.
         return MrLookup(None)
-    could_host, _why = _remotes_could_host_a_request()
+    could_host, repo_why = _remotes_could_host_a_request()
     if could_host is False:
         # git answered and no remote names a host. There is no tracker here, so
         # there is no open request — established locally, without needing a CLI
@@ -657,10 +673,15 @@ def query_open_mr_result(branch: str) -> MrLookup:
              "--json", "number,baseRefName,mergeable", "--limit", "1"],
             _gh_fields))
     if not probes:
-        return MrLookup(None, "neither `glab` nor `gh` is installed, so no "
-                              "tracker can be read from here")
+        why = ("neither `glab` nor `gh` is installed, so no tracker can be "
+               "read from here")
+        return MrLookup(None, f"{repo_why}; {why}" if repo_why else why)
     answered = False
-    reasons: list = []
+    # A git that did not answer is carried, not dropped: it is the first thing
+    # that failed and the most likely thing to explain the rest, and naming
+    # only the CLI would send the reader to fix the wrong tool. It does not
+    # outrank a CLI that *did* answer — `answered` still wins below.
+    reasons: list = [repo_why] if repo_why else []
     for argv, parse in probes:
         mr, state, why = _probe_open_request(argv, parse)
         if mr is not None:

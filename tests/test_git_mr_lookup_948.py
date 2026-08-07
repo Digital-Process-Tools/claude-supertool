@@ -39,8 +39,10 @@ import tempfile
 from pathlib import Path
 from unittest import mock
 
+import pytest
 
-_COMMON = Path(__file__).parent.parent / "presets" / "git" / "_git_common.py"
+
+_COMMON =Path(__file__).parent.parent / "presets" / "git" / "_git_common.py"
 _cspec = importlib.util.spec_from_file_location("_git_common", _COMMON)
 assert _cspec is not None and _cspec.loader is not None
 common = importlib.util.module_from_spec(_cspec)
@@ -315,62 +317,49 @@ _GH_IN_ACTIONS = (
     "    GH_TOKEN: ${{ github.token }}" + chr(10))
 
 
-class _StubCli:
-    """A real executable on a real PATH that fails the way the real one does.
+def _remote_v(url: str) -> str:
+    """What `git remote -v` prints for a repo with one remote named origin."""
+    return ("origin" + chr(9) + url + " (fetch)" + chr(10) +
+            "origin" + chr(9) + url + " (push)" + chr(10))
 
-    Not a mock: `query_open_mr_result` runs it through `subprocess.run`, and
-    the point of these two tests is what happens when the CLI exits *before*
-    looking at the repo's remotes. A patched `subprocess.run` cannot show that,
-    because `_git` needs the same function to answer honestly.
+
+def _lookup_against(url: str, cli):
+    """The lookup, in a repo whose one remote is `url`, with `cli` for the CLI.
+
+    Parametrised over the *shape* of the remote rather than driven through a
+    real repo, because the shape is the whole subject: a Windows checkout puts
+    its sandbox at `C:/Users/.../remote.git`, and the drive letter is why this
+    is a test rather than a comment. Building a real repo would have pinned
+    only the path shape of whichever machine ran it — which is exactly how the
+    first version of this test passed on Linux and macOS and failed on Windows.
     """
-
-    def __init__(self, name: str, stderr: str, code: int) -> None:
-        self.tmp = tempfile.mkdtemp(prefix="st948_bin_")
-        real_git = shutil.which("git")
-        assert real_git, "these tests drive real git"
-        os.symlink(real_git, os.path.join(self.tmp, "git"))
-        stub = os.path.join(self.tmp, name)
-        with open(stub, "w", encoding="utf-8") as fh:
-            # `sys.executable`, not `/usr/bin/env python3`: PATH is scrubbed to
-            # this directory for the duration of the lookup, so `env` would not
-            # find an interpreter and the stub would fail to start — a
-            # different failure wearing the same exit code.
-            fh.write(f"#!{sys.executable}" + chr(10) +
-                     "import sys" + chr(10) +
-                     f"sys.stderr.write({stderr!r})" + chr(10) +
-                     f"sys.exit({code})" + chr(10))
-        os.chmod(stub, 0o755)
-
-    def cleanup(self) -> None:
-        shutil.rmtree(self.tmp, ignore_errors=True)
+    with mock.patch.object(common.shutil, "which", _only("gh")), \
+         mock.patch.object(common.subprocess, "run",
+                           _runs_in_repo(url, cli)):
+        return common.query_open_mr_result("feature")
 
 
-def _repo_with_remote(url: str) -> str:
-    tmp = tempfile.mkdtemp(prefix="st948_repo_")
-    env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull,
-           "GIT_CONFIG_SYSTEM": os.devnull}
-    subprocess.run(["git", "init", "-q", "."], cwd=tmp, env=env, check=True)
-    subprocess.run(["git", "remote", "add", "origin", url],
-                   cwd=tmp, env=env, check=True)
-    return tmp
+def _runs_in_repo(url: str, cli):
+    def run(cmd, *_a, **_k):
+        if list(cmd[:2]) == ["git", "remote"]:
+            return _proc(0, stdout=_remote_v(url))
+        return cli if hasattr(cli, "returncode") else cli(cmd)
+    return run
 
 
-def _lookup_in(repo: str, stub: _StubCli, branch: str = "feature"):
-    prev_cwd = os.getcwd()
-    prev_path = os.environ.get("PATH")
-    os.chdir(repo)
-    os.environ["PATH"] = stub.tmp
-    try:
-        return common.query_open_mr_result(branch)
-    finally:
-        os.chdir(prev_cwd)
-        if prev_path is None:
-            os.environ.pop("PATH", None)
-        else:
-            os.environ["PATH"] = prev_path
-
-
-def test_a_repo_whose_only_remote_is_a_local_path_has_no_request_to_find() -> None:
+@pytest.mark.parametrize("url", [
+    "/tmp/st675_a6npf0jw/remote.git",
+    "file:///tmp/st675_a6npf0jw/remote.git",
+    "../sibling.git",
+    "./remote.git",
+    # The two the first version of this fix got wrong. A Windows sandbox repo
+    # is at `C:/Users/runneradmin/AppData/Local/Temp/st675_.../remote.git`, and
+    # a naive scp-style test — "a colon before the first slash means
+    # `host:path`" — reads the drive letter as a hostname and calls it a forge.
+    "C:/Users/runneradmin/AppData/Local/Temp/st675_l2gyyhvv/remote.git",
+    "C:" + chr(92) + "Users" + chr(92) + "runneradmin" + chr(92) + "remote.git",
+])
+def test_a_repo_whose_only_remote_is_a_local_path_has_no_request_to_find(url) -> None:
     """No forge is configured, so there is no tracker a request could live on.
 
     That is a fact about the repository, readable from `git remote` without
@@ -383,42 +372,72 @@ def test_a_repo_whose_only_remote_is_a_local_path_has_no_request_to_find() -> No
     is the #948 disclosure firing on the one case it was promised never to fire
     on (the healthy path is byte-identical).
     """
-    stub = _StubCli("gh", _GH_IN_ACTIONS, 4)
-    repo = _repo_with_remote(os.path.join(stub.tmp, "elsewhere.git"))
-    try:
-        res = _lookup_in(repo, stub)
-    finally:
-        shutil.rmtree(repo, ignore_errors=True)
-        stub.cleanup()
+    res = _lookup_against(url, _proc(4, stderr=_GH_IN_ACTIONS))
 
     assert res.answered is True, (
-        "no remote of this repo points at a forge, so there is no tracker on "
-        "which an MR/PR could be open — that is an answer, and it was reported "
-        f"as an unknown: {res.reason}")
+        f"no remote of this repo points at a forge ({url}), so there is no "
+        "tracker on which an MR/PR could be open — that is an answer, and it "
+        f"was reported as an unknown: {res.reason}")
     assert res.mr is None
 
 
-def test_a_forge_remote_whose_cli_cannot_answer_is_still_unknown() -> None:
+@pytest.mark.parametrize("url", [
+    "https://github.com/Digital-Process-Tools/x.git",
+    "ssh://git@github.com/Digital-Process-Tools/x.git",
+    "git@github.com:Digital-Process-Tools/x.git",
+    "git://gitlab.com/acme/x.git",
+])
+def test_a_forge_remote_whose_cli_cannot_answer_is_still_unknown(url) -> None:
     """The guard against fixing the loud bug by inventing a quiet one.
 
-    Same unauthenticated `gh`, but the remote really is on GitHub. Nothing
+    Same unauthenticated `gh`, but the remote really is on a forge. Nothing
     local settles whether a PR is open, so the only truthful answer is that we
-    do not know. If this test ever goes green by way of the check above, the
-    check has been widened past what it can actually establish.
+    do not know. If this ever goes green by way of the check above, that check
+    has been widened past what it can actually establish — and widening it is
+    the tempting way to make a Windows path stop being read as `host:path`.
     """
-    stub = _StubCli("gh", _GH_IN_ACTIONS, 4)
-    repo = _repo_with_remote("https://github.com/Digital-Process-Tools/x.git")
-    try:
-        res = _lookup_in(repo, stub)
-    finally:
-        shutil.rmtree(repo, ignore_errors=True)
-        stub.cleanup()
+    res = _lookup_against(url, _proc(4, stderr=_GH_IN_ACTIONS))
 
     assert res.answered is False, (
-        "the repo is on GitHub and the only CLI that could have said whether a "
-        "PR is open exited without answering — that is not an absence")
+        f"the repo is on a forge ({url}) and the only CLI that could have said "
+        "whether a PR is open exited without answering — that is not an "
+        "absence")
     assert "${{ github.token }}" not in res.reason, (
         "the reason handed to the reader is the last line of gh's message, a "
         "YAML fragment that names neither the tool's problem nor theirs: "
         f"{res.reason}")
     assert "authenticat" in res.reason.lower(), res.reason
+
+
+def test_a_git_that_cannot_be_spawned_is_an_unknown_not_a_traceback() -> None:
+    """A machine with no `git` on PATH must degrade, not crash (#948).
+
+    The lookup asks `git remote -v` before it spends a CLI call, and `_git`
+    deliberately lets an `OSError` escape — `presets/git/push.py` guards each of
+    its own calls and pins that in #675. This call site did not, so on a PATH
+    with no git the branch→MR lookup raised `FileNotFoundError` out of a
+    receipt for a push that had already succeeded. That is #399/#640 again:
+    losing the receipt is losing the answer.
+
+    Not mocked. PATH is scrubbed to an empty directory, so `subprocess.run`
+    really fails to start a process — the same interpreter-level failure #675
+    uses, and the one shape that behaves identically on Windows and POSIX.
+    """
+    empty = tempfile.mkdtemp(prefix="st948_nopath_")
+    prev = os.environ.get("PATH")
+    try:
+        os.environ["PATH"] = empty
+        res = common.query_open_mr_result("feature")
+    finally:
+        if prev is None:
+            os.environ.pop("PATH", None)
+        else:
+            os.environ["PATH"] = prev
+        shutil.rmtree(empty, ignore_errors=True)
+
+    assert res.answered is False, (
+        "git could not be started, so nothing was established about this "
+        "branch — reporting that as an answer would be the #948 collapse "
+        "rebuilt one layer up")
+    assert res.mr is None
+    assert "git" in res.reason.lower(), res.reason
