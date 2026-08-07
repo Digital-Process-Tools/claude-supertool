@@ -212,6 +212,17 @@ def test_rewrite_links_anchors_to_the_bottom_link_ref_block(tmp_path, capsys) ->
     line above the link-ref block — a previous bad cut, a hand edit, a quoted
     example — steered the whole rewrite. The link refs live in one block at the
     bottom of the file; that block is the only place this may write.
+
+    **The verdict changed in #936 and the mechanism did not.** `_rewrite_links`
+    still writes only to the bottom block, and that is asserted directly below.
+    What the *release* now does is refuse, because the assembled file is
+    re-parsed and its `[Unreleased]` still resolves to the stray line: first
+    definition of a label wins, and the stray one is above the block. Exiting 0
+    here used to print `links [Unreleased] → compare/v0.24.0...HEAD` over a
+    document where that link goes somewhere else — which is the sentence #923
+    opened with, "every disclosure surface says it worked". A document this
+    shape is already corrupt, and a release is the wrong moment to find that
+    out quietly.
     """
     poisoned = CHANGELOG.replace(
         "## [0.23.0] - 2026-08-05",
@@ -225,9 +236,18 @@ def test_rewrite_links_anchors_to_the_bottom_link_ref_block(tmp_path, capsys) ->
                                 changelog=poisoned)
 
     code, out = _cut(capsys, changelog, frag_dir)
-    text = changelog.read_text(encoding="utf-8")
 
-    assert code == asm.OK, out
+    assert code == asm.REFUSED, out
+    assert "UNRELEASED" in out and EVIL in out, \
+        "the refusal does not say which label resolves where:\n" + out
+    assert changelog.read_text(encoding="utf-8") == poisoned, \
+        "CHANGELOG.md was written by a cut whose link rewrite did not take effect"
+
+    # The layer #923 added, exercised directly now that the release refuses
+    # before reaching it: the rewrite lands in the bottom block and nowhere else.
+    lines = poisoned.splitlines()
+    assert asm._rewrite_links(lines, "0.24.0") is not None
+    text = "\n".join(lines)
     assert "[Unreleased]: " + GENUINE + "/compare/v0.24.0...HEAD" in text, \
         "the genuine compare link is the one that must advance"
     assert "[0.24.0]: " + GENUINE + "/releases/tag/v0.24.0" in text
@@ -278,6 +298,16 @@ def test_a_fenced_code_block_quoting_a_heading_at_column_0_is_refused(
     This is the likely real-world trigger: an entry documenting a change *to* a
     heading, shown in a fenced example. Nothing about it is hostile, and the
     published document is corrupted exactly as hard.
+
+    **Still refused after #936, on a stated reason rather than the old one.**
+    The fence itself is honoured now — `_anchor` reads a parse, so a fenced
+    `## [Unreleased]` in the released file really is inert, which the old
+    docstring above could not say. What is refused is the *shape*: a fence at
+    column 0 is a second top-level block, and a fragment is one bullet list.
+    The finding therefore names line 3 (the fence) instead of line 4 (the
+    heading inside it), and the remedy is unchanged — the fence goes at the
+    bullet's own indent, which is what `changelog.d/README.md` prescribes and
+    what every fenced example in the shipped CHANGELOG.md does.
     """
     changelog, frag_dir = _repo(tmp_path, {
         "918.fixed.md": (
@@ -292,8 +322,30 @@ def test_a_fenced_code_block_quoting_a_heading_at_column_0_is_refused(
     code, out = _cut(capsys, changelog, frag_dir)
 
     assert code == asm.REFUSED, out
-    assert "918.fixed.md:4" in out, out
+    assert "918.fixed.md:3" in out, out
     assert "indent" in out.lower(), "a refusal without the remedy makes the author guess"
+
+
+def test_the_same_entry_with_the_fence_at_the_bullets_indent_ships(
+        tmp_path, capsys) -> None:
+    """The remedy for the case above, in the container it is prescribed for.
+
+    Two spaces, and the quoted heading reaches the released file still quoted
+    — verified by the assembler's own re-parse of what it wrote, which is
+    where "the fence buys no safety" stopped being true (#936).
+    """
+    changelog, frag_dir = _repo(tmp_path, {
+        "918.fixed.md": (
+            "- **Backfilled the historical link refs** ([#918](x)). It now ends with:\n"
+            "\n"
+            "  ```markdown\n"
+            "  ## [Unreleased]\n"
+            "  ```\n"
+        ),
+    })
+    code, out = _cut(capsys, changelog, frag_dir)
+    assert code == asm.OK, out
+    assert "  ## [Unreleased]" in changelog.read_text(encoding="utf-8")
 
 
 def test_the_remedy_is_indentation_and_it_ships(tmp_path, capsys) -> None:

@@ -14,14 +14,17 @@ An assembler that finds no fragments and exits 0 has reported "released" when
 what happened is "nothing to release", which is the defect class this tracker
 is full of: an absence produced by a tool read as an absence in the world.
 
-Stdlib only, deliberately. `towncrier` and `scriv` both solve this and both are
-dependencies; this repo ships one file and no install step.
+Stdlib plus `markdown-it-py`, which is the one dependency and is the point
+(#936). `towncrier` and `scriv` both solve the assembling half and both are
+dependencies; this repo still ships one file and no install step, and nothing
+a user installs imports this — it is a repo-internal release tool.
 
     python3 .github/scripts/assemble_changelog.py --version 0.24.0
     python3 .github/scripts/assemble_changelog.py --check     # CI: names *and* bodies
     python3 .github/scripts/assemble_changelog.py --count     # exact fragment count
 
-Exit codes: 0 ok, 1 skipped (nothing to do, stated), 2 refused (a finding).
+Exit codes: 0 ok, 1 skipped (nothing to do, or nothing *provable* — stated
+either way), 2 refused (a finding).
 """
 from __future__ import annotations
 
@@ -29,9 +32,22 @@ import argparse
 import datetime
 import re
 import sys
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple
+from typing import Dict, Iterator, List, Optional, Sequence, Set, Tuple
+
+try:
+    import markdown_it as _markdown_it
+    from markdown_it import MarkdownIt as _MarkdownIt
+except Exception as _import_error:  # pragma: no cover - exercised by monkeypatch
+    _markdown_it = None
+    _MarkdownIt = None
+    _MD_IMPORT_ERROR = "{0}: {1}".format(type(_import_error).__name__, _import_error)
+else:
+    _MD_IMPORT_ERROR = None
+
+_MD_VERSION = getattr(_markdown_it, "__version__", "unknown")
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -66,73 +82,107 @@ _UNRELEASED_LINK_RE = re.compile(
 #: the block cannot capture the rewrite.
 _LINK_REF_RE = re.compile(r"^ {0,3}\[[^\]]+\]:\s*\S")
 
-#: The fragment format, stated as a whitelist (#934).
+#: The guard and the reader are the same parser now (#936).
 #:
-#: Two rounds of enumerating what CommonMark can do lost to it. #927 anchored
-#: its patterns at column 0 and #930 found three bypasses; #932 widened them to
-#: `^ {0,3}` and made labels case-insensitive, and the next audit found six more
-#: — a label split across two lines, the same lowercase, label and destination
-#: both split, a `>` prefix, a four-space indent inside the list item, a tab —
-#: plus a false refusal, plus a prescribed remedy that was itself an injection.
-#: What a fragment may *be* is small and already documented; what it must not be
-#: is unbounded. So this states the accepted shape and refuses the rest, and
-#: every one of those vectors is out by construction rather than by being named.
+#: Three rounds of hand-written Markdown scanning produced three bypasses, and
+#: each fix opened the next hole. #927 anchored its patterns at column 0 and
+#: #930 found three ways past. #932 widened them to `^ {0,3}` and made labels
+#: case-insensitive, and the next audit found six more plus a false refusal
+#: plus a prescribed remedy that was itself an injection. #934 inverted to a
+#: whitelist resting on a positional guarantee and its own fence state
+#: machine, and #936 walked straight through the fence: a column-0 line inside
+#: an open fence was `continue`d with no indent check and no opener check, so
+#: `# INJECTED HEADING` and `[Unreleased]: https://evil.example/pwned` were
+#: copied verbatim into the released file under a receipt that said `ok`.
 #:
-#: **The shape:** one or more `- ` bullets at column 0, every other line blank or
-#: indented at least two spaces under one, and — fenced code blocks excepted —
-#: no line opening anything but a list item, a table row or ordinary prose.
+#: Every one of those is the same shape — **our scanner disagreed with
+#: CommonMark.** Column 0 versus 0-3 leading spaces; ATX versus setext; our
+#: fence state machine versus the real one; our info-string handling versus
+#: the spec's, which forbids a backtick inside a backtick fence's info string,
+#: so ``` `x` is an ordinary paragraph to a reader and was an open fence here.
+#: That race is not winnable by patching patterns, and the fourth attempt at
+#: patterns would have lost it the same way, so this stops running it.
 #:
-#: **Why no number appears in that rule.** CommonMark's four-column code-block
-#: threshold is relative to the containing block's content column, and a `- `
-#: bullet's is 2 — so inside a fragment, four spaces is *two* relative columns:
-#: a live paragraph, in which a heading is a heading and a link-reference
-#: definition resolves. Rendered through a real parser inside a bullet, a
-#: definition is live at 2, 4, 5 and tab indent, and the threshold is 6. #932
-#: reasoned about the top level of a document, where four is correct, and both
-#: the refusal message and `changelog.d/README.md` went on to prescribe it.
-#: Indentation cannot carry this rule, so it is not asked to.
+#: `markdown-it-py` is a CommonMark reference implementation and was already
+#: this file's test oracle. It is the guard itself now. The guard and the
+#: reader agree by construction, which is the only property that closes the
+#: class rather than the instance.
 #:
-#: **Fences are parsed, reversing #927 and #932.** Their reason was that nothing
-#: downstream understands fences, so a fence bought no safety. That was an
-#: argument about the assembler's own column-scoped scanners, and the whitelist
-#: keeps those safe by position instead: no body line ever reaches column 0
-#: except a `- ` bullet, so `_anchor` cannot see a heading whatever a fence
-#: contains. That frees the fence to do what it measurably does for the
-#: *reader's* parser — make its contents inert — which is what makes it the
-#: remedy for quoting a heading, and what makes the `# comment` inside a ```bash
-#: block that #932 refused an entry again.
+#: **What the guard establishes**, which is also everything it claims: parsed
+#: as CommonMark, the fragment produces no heading, no link-reference
+#: definition and no raw HTML at any depth; every fence it opens closes inside
+#: it; and its top level is one `-` bullet list, which is what `_entry_count`
+#: is counting when the balance guard proves nothing was lost.
+#:
+#: **What it does not establish** is that the released file is sound, because
+#: a fragment is validated alone and inserted into a document. So the write is
+#: verified separately, against the assembled text — see `_verify_written`.
+#: One guard has now been wrong three times; the second layer is what makes
+#: the fourth time survivable.
 _BULLET = "- "
 
-#: A fenced code block opener or closer, once the line's indent is removed.
-_FENCE_RE = re.compile(r"^(`{3,}|~{3,})")
+#: Token types that restructure a document, at any depth. `heading_open`
+#: covers ATX and setext alike because the parser has already resolved which
+#: is which. `html_inline` is here because `<h1>` mid-paragraph is not an
+#: `html_block` and renders the same heading — the previous guard refused a
+#: line *starting* with `<` and said so in its message, and put the same tag
+#: after a word to sail past. Link-reference definitions are not tokens at
+#: all; they are collected into the parse environment, which is checked
+#: alongside these.
+_REFUSABLE = {
+    "heading_open": "a Markdown heading",
+    "html_block": "a raw HTML block, which renders as a heading without being one",
+    "html_inline": "raw HTML inside a paragraph, which renders a heading tag",
+}
 
-#: A line of nothing but `-`, `=`, `_` or `*`. Under a paragraph a run of `-` or
-#: `=` is a setext heading — a heading with no `#` in it, which is how the
-#: ATX-only patterns were walked past. A single character is enough for either.
-_RULE_RE = re.compile(r"^[-=_*]+[ \t]*$")
-
-#: What a line may not open, checked wherever the line sits rather than within
-#: the first N columns — that column count is the dimension both previous rounds
-#: were beaten in. `[` covers a definition whose label runs onto the next line
-#: and one whose `]` is escaped: neither is a pattern anyone can write reliably,
-#: and both start here. `]` is such a definition's second half.
-_OPENERS = (
-    ("#", "a Markdown heading"),
-    ("<", "a raw HTML block, which renders as a heading without being one"),
-    ("[", "a link-reference definition — its label may run onto the next line"),
-    ("]", "the tail of a link-reference definition opened on an earlier line"),
-)
-
-_SHAPE = ("a fragment is `- ` bullets at column 0 plus lines indented at least "
-          "two spaces under them, and nothing in one may open a heading, a link "
-          "reference, a quote or raw HTML")
+_SHAPE = ("a fragment is `- ` bullets at column 0 plus lines indented under "
+          "them, and parsed as CommonMark it may hold no heading, no link ref "
+          "definition and no raw HTML at any depth")
 
 _REMEDY = ("To show one in an entry, put it in a fenced code block at the "
            "bullet's own indent (```), which is what every fenced example in "
-           "CHANGELOG.md already does. Indenting it further is not a remedy: "
-           "inside a `- ` bullet an indented line is still a live heading and a "
-           "live definition, which is exactly what the advice this message used "
-           "to give got wrong (#934).")
+           "CHANGELOG.md already does — and close the fence at that same "
+           "indent, because a line reaching column 0 ends the bullet, the "
+           "fence and the list, whatever the fence was meant to be hiding "
+           "(#936). Indenting further is not a remedy: inside a `- ` bullet an "
+           "indented line is still a live heading and a live definition, which "
+           "is what the advice this message used to give got wrong (#934).")
+
+#: Said in full wherever a run cannot validate, because the alternative is a
+#: receipt with nothing behind it — which is the thing this file exists to
+#: stop being possible.
+_NO_PARSER = (
+    "markdown-it-py is not importable ({0}), so nothing can be established "
+    "about these fragments and nothing is claimed. Install it — "
+    "`pip install markdown-it-py`, or `pip install -e .[dev]` — and run again. "
+    "There is deliberately no text-scanning fallback: three of them shipped "
+    "and all three were bypassed within one audit (#930, #934, #936), so a "
+    "fallback here would be the same bug wearing a receipt.")
+
+
+class CannotValidate(Exception):
+    """The tool cannot answer. Not a finding, and emphatically not an `ok`."""
+
+
+def _parser():
+    if _MD_IMPORT_ERROR is not None or _MarkdownIt is None:
+        raise CannotValidate(_NO_PARSER.format(_MD_IMPORT_ERROR or "unavailable"))
+    return _MarkdownIt("commonmark")
+
+
+def _flatten(tokens: Sequence, line: Optional[int] = None) -> Iterator[Tuple[object, int]]:
+    """Every token in document order, each with the nearest line it maps to.
+
+    Inline tokens carry no map of their own, so they inherit their block's.
+    A finding without a line number sends the author hunting, and the author
+    is the person standing in CI when this fires.
+    """
+    for token in tokens:
+        at = token.map[0] if token.map else line
+        yield token, (at if at is not None else 0)
+        if token.children:
+            for pair in _flatten(token.children, at):
+                yield pair
 
 
 def _finding(name: str, number: int, what: str, line: str) -> str:
@@ -142,99 +192,128 @@ def _finding(name: str, number: int, what: str, line: str) -> str:
             .format(name, number, what, _SHAPE, _REMEDY, line.strip()[:120]))
 
 
-def _opens_a_block(content: str) -> Optional[str]:
-    """What this line would open, or None if it is ordinary prose.
+def _line_of_reference(md, lines: Sequence[str], label: str) -> int:
+    """The first line at which `label` becomes a definition, per the parser.
 
-    A `>` prefix is stripped rather than refused, and what it was hiding is
-    checked instead. Refusing the marker outright would have cost an author an
-    ordinary block quote — `tests/test_changelog_fragment_indent_bypass_930.py`
-    pins one as a legitimate line — while a quote's *contents* are a fresh block
-    context, so `> # x` and `> [x]: url` are live and are what actually needed
-    refusing. Stripping is bounded (each pass shortens the line) and needs no
-    column arithmetic, which is the part that keeps being wrong.
+    Bisecting the parse rather than matching a pattern: a definition's label
+    may run across lines and may carry escaped brackets, and every regex this
+    file has owned for that shape has been wrong. Fragments are a handful of
+    lines, so the cost of re-parsing prefixes is not worth a cleverer answer.
     """
-    quoted = ""
-    while content.startswith(">"):
-        content = content[1:].lstrip(" ")
-        quoted = " inside a blockquote"
-    for prefix, what in _OPENERS:
-        if content.startswith(prefix):
-            return what + quoted
-    if _RULE_RE.match(content):
-        return "a setext heading underline or a thematic break" + quoted
-    return None
+    for count in range(1, len(lines) + 1):
+        env: Dict = {}
+        md.parse("\n".join(lines[:count]) + "\n", env)
+        if label not in env.get("references", {}):
+            continue
+        # `count` is where it *ends*. Its own first line is the largest start
+        # whose slice still defines the label, so a definition split across
+        # lines is reported where the author began writing it rather than
+        # where the parser happened to finish reading it.
+        for start in range(count, 0, -1):
+            env = {}
+            md.parse("\n".join(lines[start - 1:count]) + "\n", env)
+            if label in env.get("references", {}):
+                return start
+        return count
+    return 1
+
+
+def _fence_is_closed(lines: Sequence[str], token) -> bool:
+    """Whether a fence token's own last line is its closer.
+
+    markdown-it closes an unterminated fence at the end of its container and
+    reports no error, so a fence that runs on is indistinguishable from one
+    that closed unless the source is consulted. A one-line fence never closed;
+    otherwise the last line of the token's span has to be a bare run of the
+    opening character, at least as long as the opener.
+    """
+    if not token.map or token.map[1] - token.map[0] < 2:
+        return False
+    closer = lines[token.map[1] - 1].strip()
+    marker = (token.markup or "`")[0]
+    return bool(closer) and set(closer) == {marker} and len(closer) >= len(token.markup)
+
+
+def _structure_findings(name: str, lines: Sequence[str], tokens: Sequence) -> List[str]:
+    """The shape rule, derived from the parse instead of from line prefixes.
+
+    `_entry_count` counts lines beginning `- ` and the balance guard trusts
+    that count to prove the cut lost nothing. So the top level has to be one
+    `-` bullet list whose items start at column 0, or the arithmetic and the
+    document disagree and a lossy cut reports as a clean one. Asking the
+    parser rather than the first two characters is what now catches an ordered
+    list and a bare table, which the prefix test waved through.
+    """
+    findings: List[str] = []
+    # `nesting >= 0` is openers *and* leaf blocks. A fenced code block is a
+    # leaf — `nesting == 0`, no closing token — so counting openers alone
+    # counted a column-0 fence as no block at all, which is the shape #923
+    # named as the likely accidental trigger.
+    top = [t for t in tokens if t.level == 0 and t.nesting >= 0]
+    if len(top) != 1 or top[0].type != "bullet_list_open":
+        at = top[1].map[0] + 1 if len(top) > 1 and top[1].map else 1
+        return [_finding(name, at,
+                         "a fragment whose top level is not a single `- ` bullet list",
+                         lines[at - 1] if at <= len(lines) else "")]
+    if top[0].markup != "-":
+        return [_finding(name, (top[0].map[0] + 1) if top[0].map else 1,
+                         "a list marked `{0}`, which `_entry_count` does not count"
+                         .format(top[0].markup),
+                         lines[top[0].map[0]] if top[0].map else "")]
+    for token in tokens:
+        if token.type == "list_item_open" and token.level == 1 and token.map:
+            if not lines[token.map[0]].startswith(_BULLET):
+                findings.append(_finding(
+                    name, token.map[0] + 1,
+                    "a top-level list item that does not begin `- `",
+                    lines[token.map[0]]))
+    return findings
 
 
 def scan_fragment_body(name: str, text: str) -> List[str]:
     """Findings for one fragment's content, each naming the file and the line.
 
-    A finding is a line, not a file: "invalid fragment" leaves the author
-    hunting, and the author is the person standing in CI when this fires.
+    Raises `CannotValidate` when the parser is absent. It does not return an
+    empty list in that case: an empty list means "looked, found nothing", and
+    conflating that with "did not look" is the defect this tracker is full of.
     """
-    findings: List[str] = []
-    fence: Optional[Tuple[str, int]] = None
-    fence_at, fence_line = 0, ""
-    seen_bullet = False
+    md = _parser()
+    lines = text.splitlines()
+    env: Dict = {}
+    tokens = md.parse(text, env)
 
-    for number, line in enumerate(text.splitlines(), 1):
-        if fence is not None:
-            closer = line.strip()
-            if (line.startswith("  ") and closer
-                    and set(closer) == {fence[0]} and len(closer) >= fence[1]):
-                fence = None
-                continue
-            if not line.startswith(_BULLET):
-                continue
-            # A fence has to close inside the bullet that opened it. Left open,
-            # it runs on into whatever follows in the released file.
-            findings.append(_finding(
-                name, fence_at,
-                "a fenced code block still open where the next entry begins",
-                fence_line))
-            fence = None
+    findings = _structure_findings(name, lines, tokens)
 
-        if not line.strip():
-            continue
-
-        indent = len(line) - len(line.lstrip(" "))
-        content = line[indent:]
-
-        if line.startswith(_BULLET):
-            seen_bullet = True
-            content = line[len(_BULLET):].lstrip(" ")
-        elif not seen_bullet:
-            # Without a bullet nothing below it means anything, so this is one
-            # verdict about the file rather than a finding per line.
-            findings.append(_finding(
-                name, number,
-                "a fragment whose first line is not a `- ` bullet", line))
-            return findings
-        elif indent < 2 or content.startswith("\t"):
-            findings.append(_finding(
-                name, number,
-                "a line that is neither a `- ` bullet nor indented under one "
-                "(a tab is not indentation here: the shipped CHANGELOG.md "
-                "contains none, and inside a bullet a tab reaches only the "
-                "second relative column, where a definition is still live)",
-                line))
-            continue
-
-        opener = _FENCE_RE.match(content)
-        if opener:
-            fence = (opener.group(1)[0], len(opener.group(1)))
-            fence_at, fence_line = number, line
-            continue
-
-        what = _opens_a_block(content)
-        if what:
-            findings.append(_finding(name, number, what, line))
-
-    if fence is not None:
+    if "\t" in text:
+        at = next(i for i, line in enumerate(lines) if "\t" in line)
         findings.append(_finding(
-            name, fence_at,
-            "a fenced code block that is never closed, which would swallow the "
-            "rest of CHANGELOG.md into it", fence_line))
-    return findings
+            name, at + 1,
+            "a tab, which the shipped CHANGELOG.md contains none of and which "
+            "reaches a different column in every renderer",
+            lines[at]))
+
+    for token, at in _flatten(tokens):
+        what = _REFUSABLE.get(token.type)
+        if what is not None:
+            findings.append(_finding(name, at + 1, what,
+                                     lines[at] if at < len(lines) else ""))
+        elif token.type == "fence" and not _fence_is_closed(lines, token):
+            findings.append(_finding(
+                name, at + 1,
+                "a fenced code block that is never closed at the indent it "
+                "opened, which swallows what follows it in CHANGELOG.md",
+                lines[at] if at < len(lines) else ""))
+
+    for label in env.get("references", {}):
+        at = _line_of_reference(md, lines, label)
+        findings.append(_finding(
+            name, at,
+            "a link ref definition of `[{0}]` — the first definition of a "
+            "label is the one that resolves, and a fragment lands above the "
+            "genuine block at the bottom of the file".format(label),
+            lines[at - 1] if at <= len(lines) else ""))
+
+    return sorted(set(findings), key=findings.index)
 
 OK, SKIPPED, REFUSED = 0, 1, 2
 
@@ -365,14 +444,22 @@ def _entry_count(lines: Sequence[str]) -> int:
 
 def render(fragments: Sequence[Fragment], version: str, date: str,
            residue_preamble: Sequence[str] = (),
-           residue_sections: Sequence[Tuple[str, List[str]]] = ()) -> str:
-    """The release section, as text.
+           residue_sections: Sequence[Tuple[str, List[str]]] = ()
+           ) -> Tuple[str, List[str]]:
+    """The release section as text, and the heading lines it wrote.
 
     Sections in Keep a Changelog order; within each, the folded `[Unreleased]`
     residue first (it has been pending longer), then the fragments in issue
     order. One heading per section whichever side supplied it.
+
+    The second return value is the point of the signature: `_verify_written`
+    re-parses the assembled file and needs to know which headings this
+    function is *entitled* to have added, so that anything else in the result
+    is a finding. Deriving that list by pattern-matching the output would put
+    the verifier back on the same footing as the guard it exists to backstop.
     """
     out = ["## [{0}] - {1}".format(version, date), ""]
+    emitted = [out[0]]
     if any(line.strip() for line in residue_preamble):
         out.extend(residue_preamble)
         out.append("")
@@ -387,6 +474,7 @@ def render(fragments: Sequence[Fragment], version: str, date: str,
             continue
         used.add(title.lower())
         out.append(title)
+        emitted.append(title)
         out.append("")
         if residue and residue[1]:
             out.extend(residue[1])
@@ -402,21 +490,76 @@ def render(fragments: Sequence[Fragment], version: str, date: str,
         if key in used or not block:
             continue
         out.append(title)
+        emitted.append(title)
         out.append("")
         out.extend(block)
         out.append("")
-    return "\n".join(out)
+    return "\n".join(out), emitted
 
 
-def _anchor(lines: Sequence[str]) -> int:
+def _document_facts(text: str) -> Tuple[Counter, Dict[str, str], int]:
+    """(heading multiset, label -> destination, raw-HTML count) of a document.
+
+    The three properties a fragment can forge, read off a real parse of the
+    whole file rather than inferred from the fragment that went into it.
+    """
+    md = _parser()
+    env: Dict = {}
+    flat = [token for token, _ in _flatten(md.parse(text, env))]
+    headings: Counter = Counter()
+    for index, token in enumerate(flat):
+        if token.type == "heading_open":
+            title = flat[index + 1].content if index + 1 < len(flat) else ""
+            headings[(token.tag, title)] += 1
+    refs = {label: value.get("href")
+            for label, value in env.get("references", {}).items()}
+    raw = sum(1 for token in flat if token.type in ("html_block", "html_inline"))
+    return headings, refs, raw
+
+
+def _headings(text: str) -> List[Tuple[int, str, str]]:
+    """(line index, tag, title) for every heading the parser actually sees.
+
+    `line.startswith("## [")` was the old test and #936 disproved it: a
+    fenced example of a release heading is inert to a reader and was an
+    anchor to this file. `changelog.d/README.md` prescribes exactly that fence
+    as *the* way to quote a heading in an entry, so CHANGELOG.md acquires such
+    lines by design, not by attack.
+    """
+    md = _parser()
+    flat = [token for token, _ in _flatten(md.parse(text, {}))]
+    found = []
+    for index, token in enumerate(flat):
+        if token.type == "heading_open" and token.map:
+            found.append((token.map[0], token.tag,
+                          flat[index + 1].content if index + 1 < len(flat) else ""))
+    return found
+
+
+def _inert_lines(text: str) -> Set[int]:
+    """Line indices inside a code block or raw HTML block, per the parser.
+
+    Every positional scanner in this file used to read these lines as live.
+    They are the lines a reader's parser will not act on, so they are the
+    lines a release must not act on either.
+    """
+    inert: Set[int] = set()
+    for token, _ in _flatten(_parser().parse(text, {})):
+        if token.type in ("fence", "code_block", "html_block") and token.map:
+            inert.update(range(token.map[0], token.map[1]))
+    return inert
+
+
+def _anchor(headings: Sequence[Tuple[int, str, str]]) -> int:
     """Where the new release section goes: above the newest existing release.
 
-    The first `## [` heading that is *not* `[Unreleased]`. Everything between
-    the `[Unreleased]` heading and this line is residue that gets folded into
-    the release being cut — `[Unreleased]` means "goes out next", so it does.
+    The first `h2` whose title opens `[` and is not `[Unreleased]`. Everything
+    between the `[Unreleased]` heading and this line is residue that gets
+    folded into the release being cut — `[Unreleased]` means "goes out next",
+    so it does.
     """
-    for index, line in enumerate(lines):
-        if line.startswith("## [") and not line.startswith("## [Unreleased]"):
+    for index, tag, title in headings:
+        if tag == "h2" and title.startswith("[") and not title.startswith("[Unreleased]"):
             return index
     raise BadFragment(
         "CHANGELOG.md has no `## [x.y.z]` release heading to insert above — "
@@ -424,41 +567,52 @@ def _anchor(lines: Sequence[str]) -> int:
     )
 
 
-def _unreleased_span(lines: Sequence[str], anchor: int) -> Tuple[Optional[int], List[str]]:
+def _unreleased_span(lines: Sequence[str], headings: Sequence[Tuple[int, str, str]],
+                     anchor: int) -> Tuple[Optional[int], List[str]]:
     """The `## [Unreleased]` heading's index and its body, above `anchor`."""
-    for index, line in enumerate(lines[:anchor]):
-        if line.startswith("## [Unreleased]"):
+    for index, tag, title in headings:
+        if index < anchor and tag == "h2" and title.startswith("[Unreleased]"):
             return index, list(lines[index + 1:anchor])
     return None, []
 
 
-def _link_ref_block(lines: Sequence[str]) -> Optional[Tuple[int, int]]:
+def _link_ref_block(lines: Sequence[str], inert: Set[int]) -> Optional[Tuple[int, int]]:
     """The trailing run of link-reference definitions, inclusive, or None.
 
     The link refs of a Keep a Changelog document are one block at the bottom.
     Anything above it that looks like one is prose — a quoted example, a
     previous bad cut's residue, an entry about link refs — and prose is not
     where a release writes.
+
+    Fenced lines are stepped over rather than stopped at. An entry that ends
+    the file with a fenced example of a link-ref block used to end the walk on
+    the closing fence, so the block was never found and the release advanced
+    no link at all while reporting `links none — ... left alone`: a receipt
+    that named the absence and not the reason for it.
     """
     index = len(lines) - 1
-    while index >= 0 and not lines[index].strip():
+    while index >= 0 and (not lines[index].strip() or index in inert):
         index -= 1
     end = index
-    while index >= 0 and _LINK_REF_RE.match(lines[index]):
+    while index >= 0 and index not in inert and _LINK_REF_RE.match(lines[index]):
         index -= 1
     return (index + 1, end) if index + 1 <= end else None
 
 
-def _rewrite_links(lines: List[str], version: str) -> Optional[str]:
+def _rewrite_links(lines: List[str], version: str
+                   ) -> Optional[Tuple[str, List[str]]]:
     """Point `[Unreleased]` at the new tag and add the new version's link ref.
 
-    Scoped to the bottom link-ref block (#923): this used to return on its first
-    match anywhere in the file, and fragment bodies land near the top, so one
-    `[Unreleased]: .../compare/v...HEAD` line inside an entry decided the base
-    URL of the tag ref the release shipped — durably, since the line is still
-    there and still matched first on the next cut.
+    Scoped to the bottom link-ref block (#923): this used to return on its
+    first match anywhere in the file, and fragment bodies land near the top, so
+    one `[Unreleased]: .../compare/v...HEAD` line inside an entry decided the
+    base URL of the tag ref the release shipped — durably, since the line is
+    still there and still matched first on the next cut.
+
+    Returns the summary and the definition lines it wrote, which is what
+    `_verify_written` compares the released file's own link table against.
     """
-    span = _link_ref_block(lines)
+    span = _link_ref_block(lines, _inert_lines("\n".join(lines)))
     if span is None:
         return None
     start, end = span
@@ -470,9 +624,67 @@ def _rewrite_links(lines: List[str], version: str) -> Optional[str]:
         base = match.group("base")
         lines[index] = "[Unreleased]: {0}/compare/v{1}...HEAD".format(base, version)
         lines.insert(index + 1, "[{0}]: {1}/releases/tag/v{0}".format(version, base))
-        return "[Unreleased] → compare/v{0}...HEAD, added [{0}] tag ref".format(version)
+        return ("[Unreleased] → compare/v{0}...HEAD, added [{0}] tag ref".format(version),
+                [lines[index], lines[index + 1]])
     return None
 
+
+def _verify_written(before: str, after: str, emitted: Sequence[str],
+                    written_refs: Sequence[str]) -> List[str]:
+    """Re-parse the file about to be written and report what it gained.
+
+    The second layer, and the reason there is one: a fragment is validated
+    alone and inserted into a document, and one guard over this file has now
+    been wrong three times running. This does not consult the fragments at
+    all. It asks the parser what the assembled document *is*, and refuses
+    unless its heading table is the old one plus exactly the headings `render`
+    reports writing, its link-reference table is the old one plus exactly the
+    definitions `_rewrite_links` reports writing, and it gained no raw HTML.
+
+    That holds whatever the per-fragment guard missed, which is the property
+    the previous three rounds each shipped a receipt for without having.
+    """
+    before_headings, before_refs, before_raw = _document_facts(before)
+    after_headings, after_refs, after_raw = _document_facts(after)
+    allowed, _, _ = _document_facts("\n".join(emitted) + "\n")
+
+    expected_refs = dict(before_refs)
+    if written_refs:
+        _, added, _ = _document_facts("\n".join(written_refs) + "\n")
+        expected_refs.update(added)
+
+    findings: List[str] = []
+    surplus = after_headings - (before_headings + allowed)
+    if surplus:
+        findings.append(
+            "re-parse of the assembled file found {0} heading(s) this release "
+            "did not write: {1}".format(
+                sum(surplus.values()),
+                ", ".join("<{0}>{1}".format(tag, title[:60])
+                          for tag, title in sorted(surplus))))
+    if after_refs != expected_refs:
+        differing = sorted(set(after_refs) ^ set(expected_refs)) or sorted(
+            label for label in after_refs if after_refs[label] != expected_refs.get(label))
+        pre_existing = all(after_refs.get(label) == before_refs.get(label)
+                           for label in differing)
+        findings.append(
+            "re-parse of the assembled file found a link ref table this release "
+            "did not write — label(s) {0}. First definition of a label wins, so a "
+            "definition earlier in the file beats the block at the bottom that "
+            "this release rewrites: {1}. {2}".format(
+                ", ".join(differing),
+                "; ".join("[{0}] resolves to {1}, this release wrote {2}".format(
+                    label, after_refs.get(label, "nothing"),
+                    expected_refs.get(label, "nothing")) for label in differing),
+                "That earlier definition is already in CHANGELOG.md and no "
+                "fragment introduced it — fix the file, then cut."
+                if pre_existing else
+                "A fragment consumed by this run introduced it."))
+    if after_raw > before_raw:
+        findings.append(
+            "re-parse of the assembled file found {0} new raw HTML token(s), "
+            "which render as structure a reader will trust".format(after_raw - before_raw))
+    return findings
 
 def _receipt(state: str, summary: str, details: Sequence[str] = ()) -> None:
     print("assemble    : {0:<11} ({1})".format(state, summary))
@@ -488,6 +700,9 @@ def assemble(changelog: Path, directory: Path, version: str, date: str,
 
     try:
         fragments = collect(directory)
+    except CannotValidate as exc:
+        _receipt("skipped", "{0} CHANGELOG.md untouched, nothing consumed".format(exc))
+        return SKIPPED
     except BadFragment as exc:
         findings = str(exc).splitlines()
         _receipt("refused", "{0} finding(s) — CHANGELOG.md untouched, nothing consumed"
@@ -502,16 +717,27 @@ def assemble(changelog: Path, directory: Path, version: str, date: str,
 
     text = changelog.read_text(encoding="utf-8")
     lines = text.splitlines()
-    # A *heading*, not the substring. Entries in this file quote headings
-    # (#839's whole subject is one), and `"## [x]" in text` cannot tell an
-    # entry about a release from the release — #731, one file over.
-    if any(ln.startswith("## [{0}]".format(version)) for ln in lines):
+
+    try:
+        headings = _headings(text)
+    except CannotValidate as exc:
+        _receipt("skipped", "{0} CHANGELOG.md untouched".format(exc))
+        return SKIPPED
+
+    # A *heading*, not the substring, and not a line that looks like one either
+    # (#936). Entries in this file quote release headings — #839's whole
+    # subject is one, and changelog.d/README.md prescribes a fenced block as
+    # the way to do it — so `"## [x]" in text` and `line.startswith("## [")`
+    # both answer a question about characters when the question is about
+    # structure. The parser is asked instead.
+    if any(tag == "h2" and title.startswith("[{0}]".format(version))
+           for _, tag, title in headings):
         _receipt("refused", "CHANGELOG.md already has a `## [{0}]` section — "
                             "assembling again would duplicate a release heading".format(version))
         return REFUSED
 
     try:
-        anchor = _anchor(lines)
+        anchor = _anchor(headings)
     except BadFragment as exc:
         _receipt("refused", str(exc))
         return REFUSED
@@ -519,11 +745,11 @@ def assemble(changelog: Path, directory: Path, version: str, date: str,
     # `[Unreleased]` means "goes out in the next release", so it goes out in it.
     # Leaving it behind strands the entries twice over: the tag ships silently
     # omitting work that is in the tag, and the work still reads as pending.
-    unreleased_at, residue_body = _unreleased_span(lines, anchor)
+    unreleased_at, residue_body = _unreleased_span(lines, headings, anchor)
     preamble, residue_sections = _subsections(residue_body)
     folded = _entry_count(residue_body)
 
-    section = render(fragments, version, date, preamble, residue_sections)
+    section, emitted = render(fragments, version, date, preamble, residue_sections)
 
     # Arithmetic, not trust: every entry on either side has to be in the result.
     # A merge that dropped one would otherwise be indistinguishable from a clean
@@ -543,7 +769,20 @@ def assemble(changelog: Path, directory: Path, version: str, date: str,
     else:
         body = (list(lines[:unreleased_at + 1]) + [""] + section.splitlines()
                 + list(lines[anchor:]))
-    links = _rewrite_links(body, version)
+    rewritten = _rewrite_links(body, version)
+    links, written_refs = rewritten if rewritten else (None, [])
+
+    assembled = "\n".join(body) + "\n"
+    try:
+        structural = _verify_written(text, assembled, emitted, written_refs)
+    except CannotValidate as exc:
+        _receipt("skipped", "{0} CHANGELOG.md untouched".format(exc))
+        return SKIPPED
+    if structural:
+        _receipt("refused", "{0} finding(s) in the assembled file — CHANGELOG.md "
+                            "untouched, nothing consumed".format(len(structural)),
+                 structural)
+        return REFUSED
 
     details = [
         "consumed  " + ", ".join(f.path.name for f in fragments if f.path),
@@ -554,8 +793,8 @@ def assemble(changelog: Path, directory: Path, version: str, date: str,
     if links:
         details.append("links     " + links)
     else:
-        details.append("links     none — no `[Unreleased]: .../compare/vX...HEAD` line found, "
-                       "so the link refs were left alone")
+        details.append("links     none — no `[Unreleased]: .../compare/vX...HEAD` line found "
+                       "in the trailing definition block, so the link refs were left alone")
     if folded:
         details.append(
             "folded    {0} entr{1} from `## [Unreleased]` into [{2}], above the fragments. "
@@ -563,13 +802,18 @@ def assemble(changelog: Path, directory: Path, version: str, date: str,
             .format(folded, "y" if folded == 1 else "ies", version))
     else:
         details.append("folded    0 — `## [Unreleased]` was already empty")
+    details.append(
+        "verified  the assembled file was re-parsed with markdown-it-py {0}: its "
+        "headings are the ones already there plus the {1} this run wrote, its link "
+        "ref table is the one already there plus what this run wrote, and it gained "
+        "no raw HTML".format(_MD_VERSION, len(emitted)))
 
     if dry_run:
         _receipt("ok", "dry-run: {0} fragment(s) would become `## [{1}] - {2}`; "
                        "nothing written".format(len(fragments), version, date), details)
         return OK
 
-    changelog.write_text("\n".join(body) + "\n", encoding="utf-8")
+    changelog.write_text(assembled, encoding="utf-8")
     if not keep:
         for frag in fragments:
             if frag.path:
@@ -589,6 +833,14 @@ def assemble(changelog: Path, directory: Path, version: str, date: str,
 def check(directory: Path) -> int:
     try:
         fragments = collect(directory)
+    except CannotValidate as exc:
+        # Three states, applied to the gate itself. `--check` is what a
+        # reviewer trusts *instead of* reading the fragment, so a run that
+        # established nothing has to say nothing was established — and exit
+        # non-zero, because a green CI leg that validated nothing is the same
+        # false assurance three rounds of this file already shipped.
+        _receipt("skipped", str(exc))
+        return SKIPPED
     except BadFragment as exc:
         findings = str(exc).splitlines()
         _receipt("refused", "{0} fragment(s) will not assemble".format(len(findings)),
@@ -598,15 +850,18 @@ def check(directory: Path) -> int:
         _receipt("skipped", "{0}/ holds 0 fragments — nothing to validate"
                  .format(directory.name))
         return OK
-    # Not "no body writes at column 0" (#930), and no column at all this time
-    # (#934): naming where a pattern is anchored is what stayed literally true
-    # through three bypasses, and then through six more, while the released file
-    # carried the injected lines. The claim has to be the property a reader is
-    # trusting the gate for, and the property is now the accepted shape itself.
-    _receipt("ok", "{0} fragments, all names parse and every body is `- ` bullets "
-                   "plus lines indented under them — none can open a heading or a "
-                   "link ref of CHANGELOG.md, at any indent or nesting"
-             .format(len(fragments)),
+    # The receipt states what was established and names what established it,
+    # which the last three did not. "no body writes at column 0" stayed
+    # literally true through three bypasses; "none can open a heading or a
+    # link ref, at any indent or nesting" was true of the scanner's own model
+    # of CommonMark and false of CommonMark. This claim is checkable by the
+    # person reading it: it is what markdown-it-py saw.
+    _receipt("ok", "{0} fragments, all names parse; each body parsed with "
+                   "markdown-it-py {1}, whose token stream holds no heading, no "
+                   "link ref definition and no raw HTML at any depth, whose "
+                   "fences all close inside the fragment, and whose top level is "
+                   "one `- ` bullet list"
+             .format(len(fragments), _MD_VERSION),
              ["{0}  {1}".format(f.path.name if f.path else "?", f.section) for f in fragments])
     return OK
 
@@ -631,6 +886,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.count:
         try:
             print(len(collect(directory)))
+        except CannotValidate as exc:
+            # Not a count of 0 on stdout. A caller piping this into arithmetic
+            # would read "nothing pending" from "could not look".
+            print(exc, file=sys.stderr)
+            return SKIPPED
         except BadFragment as exc:
             print(exc, file=sys.stderr)
             return REFUSED
@@ -646,7 +906,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     return assemble(Path(args.changelog), directory, args.version, args.date,
                     dry_run=args.dry_run, keep=args.keep)
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

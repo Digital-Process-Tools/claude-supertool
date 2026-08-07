@@ -413,6 +413,15 @@ def test_an_indented_decoy_inside_the_block_does_not_capture_the_rewrite(
     The assembler emits its compare line at column 0; `_UNRELEASED_LINK_RE`
     stays anchored there, so widening the block bounds cannot hand the rewrite
     to an indented line that merely looks like the one it wrote.
+
+    **The verdict changed in #936, the mechanism did not.** The rewrite still
+    lands on the genuine line and nowhere else — asserted directly below. What
+    the *release* now does is refuse, because it re-parses the file it is about
+    to write and the decoy is a live definition sitting above the genuine one:
+    first definition wins, so `[Unreleased]` in the released document resolves
+    to `evil.example` whatever this rewrite did. Exiting 0 printed
+    `links [Unreleased] → compare/v0.24.0...HEAD` over a file where it does
+    not. The decoy is pre-existing in CHANGELOG.md and the refusal says so.
     """
     decoyed = CHANGELOG.replace(
         "[Unreleased]: " + GENUINE + "/compare/v0.23.0...HEAD",
@@ -423,9 +432,15 @@ def test_an_indented_decoy_inside_the_block_does_not_capture_the_rewrite(
                                 changelog=decoyed)
 
     code, out = _cut(capsys, changelog, frag_dir)
-    text = changelog.read_text(encoding="utf-8")
 
-    assert code == asm.OK, out
+    assert code == asm.REFUSED, out
+    assert "no fragment introduced it" in out, \
+        "the refusal blames the fragments for a line already in the file:\n" + out
+    assert changelog.read_text(encoding="utf-8") == decoyed
+
+    lines = decoyed.splitlines()
+    assert asm._rewrite_links(lines, "0.24.0") is not None
+    text = "\n".join(lines)
     assert "[0.24.0]: " + GENUINE + "/releases/tag/v0.24.0" in text
     assert EVIL + "/releases/tag/v0.24.0" not in text
     assert "[Unreleased]: " + GENUINE + "/compare/v0.24.0...HEAD" in text

@@ -108,13 +108,15 @@ dev = [
     # post-edit validator uses, and so `tests/test_validators_ruff.py` runs its
     # ruff-present half instead of skipping into a green that proves nothing.
     "ruff",
-    # Same reason as ruff: nothing ships an import of it. It is the CommonMark
-    # oracle for `tests/test_changelog_fragment_whitelist_934.py`, which renders
-    # each refused and each accepted fragment and asserts on the HTML rather
-    # than on a reading of the spec. Two fragment guards in a row were confident
-    # and wrong about what CommonMark does inside a `- ` bullet (#930, #934), so
-    # that half of the file has to run rather than skip into a green that
-    # proves nothing.
+    # Not the same reason as ruff any more. This was the CommonMark oracle for
+    # `tests/test_changelog_fragment_whitelist_934.py`; since #936 it is also
+    # the fragment guard itself, imported by
+    # `.github/scripts/assemble_changelog.py`. Three hand-written scanners in a
+    # row disagreed with CommonMark and all three were bypassed, so the guard
+    # and the reader are one parser now. Without it that script can no longer
+    # claim anything: it reports `skipped`, names what is missing and writes
+    # nothing. Nothing a *user* installs imports it — the script is a
+    # repo-internal release tool, and `supertool.py` is still stdlib-only.
     "markdown-it-py",
 ]
 
