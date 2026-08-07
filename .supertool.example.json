@@ -462,6 +462,44 @@
       "timeout": 60,
       "tier": "slow"
     },
+    "shellcheck": {
+      "cmd": "{python} {supertool_dir}/validators/shellcheck/shellcheck.py {file}",
+      "match": "*.{sh,bash,ksh}",
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste", "append",
+        "vim"
+      ],
+      "rollback_on_fail": false,
+      "timeout": 30
+    },
+    "eslint": {
+      "cmd": "{python} {supertool_dir}/validators/eslint/eslint.py {file}",
+      "match": "*.{js,jsx,mjs,cjs}",
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste", "append",
+        "vim"
+      ],
+      "rollback_on_fail": false,
+      "timeout": 60
+    },
+    "gitleaks": {
+      "cmd": "{python} {supertool_dir}/validators/gitleaks/gitleaks.py {file}",
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste", "append",
+        "vim"
+      ],
+      "rollback_on_fail": false,
+      "timeout": 60
+    },
     "bash-check": {
       "cmd": "{python} {supertool_dir}/validators/bash-check/bash-check.py {file}",
       "match": "*.sh",
