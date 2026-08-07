@@ -830,7 +830,7 @@ def _spawn_watch(source: str, iid: str) -> tuple[Optional[bool], str]:
         proc = subprocess.Popen(argv, cwd=_repo_root(),
                                 stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT,
-                                text=True, errors="replace")
+                                encoding="utf-8", errors="replace")
     except OSError as exc:
         return False, f"{how} ({exc})"
     try:
