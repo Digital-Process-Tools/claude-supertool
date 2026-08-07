@@ -89,8 +89,14 @@ def test_git_checkout_refuses_the_command_the_line_prescribes(
 ) -> None:
     """The advice is not merely imprecise, it is an action git rejects."""
     main, _sibling = repo_with_sibling_worktree
+    # Named explicitly, like every other child process in this repo (#856):
+    # `text=True` alone decodes by the locale codec, which is cp1252 on the
+    # Windows runners and raises inside subprocess's reader thread. The module
+    # under test gets this right; this helper did not, and the meta-test that
+    # guards the seam caught it.
     r = subprocess.run(["git", "checkout", BRANCH], cwd=str(main),
-                       capture_output=True, text=True)
+                       capture_output=True, text=True,
+                       encoding="utf-8", errors="replace")
     assert r.returncode != 0, "premise broken: git allowed the checkout"
     said = r.stderr + r.stdout
     assert "worktree" in said, f"premise broken: git refused for another reason: {said!r}"

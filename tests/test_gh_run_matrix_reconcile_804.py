@@ -87,11 +87,18 @@ class _Gh:
         self.api_rc = api_rc
         self.api_calls: list[list[str]] = []
         self.view_argv: list[str] = []
+        self.argvs: list[list[str]] = []
 
     def __call__(self, argv, *a, **kw):
         argv = list(argv)
+        self.argvs.append(argv)
         if argv[:2] == ["git", "rev-parse"]:
             return _Completed("master\n")
+        if argv[:3] == ["git", "worktree", "list"]:
+            # `_branch_locale` asks where the run's branch is checked out
+            # (#850). Empty porcelain = held by no worktree, which is the
+            # shape these fixtures already assumed.
+            return _Completed("")
         if argv[:2] == ["gh", "api"]:
             self.api_calls.append(argv)
             if self.api_rc:
@@ -99,8 +106,15 @@ class _Gh:
             jobs = [{"name": n} for n in (self.all_names or [])]
             return _Completed(json.dumps({"total_count": len(jobs),
                                           "jobs": jobs}))
-        self.view_argv = argv
-        return _Completed(json.dumps(self.payload))
+        if argv[:3] == ["gh", "run", "view"]:
+            self.view_argv = argv
+            return _Completed(json.dumps(self.payload))
+        # Anything else is a command this fixture has not been taught. The
+        # fall-through used to answer it with the run payload *and* record it
+        # as the view call — which is how #850's `git worktree list` came to be
+        # parsed as run JSON and then reported as "the fields fetched". An
+        # unstubbed command is a failure now, not a wrong answer.
+        raise AssertionError(f"unstubbed command: {argv!r}")
 
 
 def _render(monkeypatch, capsys, gh: _Gh) -> str:
