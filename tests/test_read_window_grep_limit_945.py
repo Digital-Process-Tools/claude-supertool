@@ -30,6 +30,19 @@ def _ten(tmp_path: Path) -> Path:
     return f
 
 
+def _toml_literal(value: str) -> str:
+    """A TOML triple-single-quote literal block around `value`.
+
+    Built rather than written out, because a payload carrying this test's own
+    source cannot itself contain `'''`. A basic string is not an option: a
+    Windows `tmp_path` is `C:\\Users\\runneradmin\\AppData\\Local\\Temp\\...`
+    and `\\U`, `\\A`, `\\T` are escapes there, which refuses the payload before
+    any argument check runs.
+    """
+    q = "'" * 3
+    return q + value + q
+
+
 # --- read: the returned window must be named, never merely rendered ---------
 
 
@@ -154,9 +167,61 @@ def test_grep_payload_limit_zero_is_refused(tmp_path: Path) -> None:
     hay.write_bytes(b"needle\n" * 40)
     payload.write_text(
         'pattern = "needle"\n'
-        f'path = "{hay}"\n'
+        f"path = {_toml_literal(str(hay))}\n"
         "limit = 0\n"
     )
     out = supertool.dispatch(f"grep:@{payload}")
     assert "ERROR:" in out
+    assert "unlimited" in out
+
+
+# --- the fixture's own constraint, pinned where it is invisible -------------
+# A POSIX temp path holds no backslash, so the platform these fixtures were
+# written on is the one that cannot see why the payload above uses a literal
+# block. Both halves run everywhere, on a hardcoded Windows-shaped path: the
+# file need not exist, because the TOML parse fails before the path is read.
+
+_WINDOWS_SHAPED_PATH = "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\hay.txt"
+
+
+def test_grep_payload_basic_string_path_with_backslashes_never_reaches_limit(
+    tmp_path: Path,
+) -> None:
+    """A basic string cannot carry a Windows path, and the refusal for that
+    arrives *before* any argument check — so a payload fixture that interpolates
+    a path into a basic string asserts nothing on Windows.
+
+    The message differs by Python version: supertool's own parser stands in for
+    `tomllib` below 3.11 and names both spellings in prose, while stdlib raises
+    "Invalid hex value". The assertion is therefore on the behaviour — refused,
+    and refused for the backslashes rather than for the limit.
+    """
+    payload = tmp_path / "g.toml"
+    payload.write_text(
+        'pattern = "needle"\n'
+        f'path = "{_WINDOWS_SHAPED_PATH}"\n'
+        "limit = 0\n"
+    )
+    out = supertool.dispatch(f"grep:@{payload}")
+    assert "ERROR:" in out
+    assert "unlimited" not in out, (
+        "refused for LIMIT 0, so this payload shape is safe after all and the "
+        "sibling test's literal block is unnecessary — check before deleting "
+        f"it:\n{out}"
+    )
+
+
+def test_grep_payload_literal_block_path_with_backslashes_reaches_limit(
+    tmp_path: Path,
+) -> None:
+    """The other half: the same backslash path in a literal block survives the
+    parse, so the LIMIT 0 refusal is what comes back. This is the spelling the
+    payload fixture above uses."""
+    payload = tmp_path / "g.toml"
+    payload.write_text(
+        'pattern = "needle"\n'
+        f"path = {_toml_literal(_WINDOWS_SHAPED_PATH)}\n"
+        "limit = 0\n"
+    )
+    out = supertool.dispatch(f"grep:@{payload}")
     assert "unlimited" in out
