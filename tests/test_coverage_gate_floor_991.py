@@ -263,22 +263,29 @@ def test_measure_totals_each_bucket_and_ignores_out_of_tree_files(
     The foreign path is not hypothetical: several tests copy `supertool.py`
     into a `tmp_path` and run it there, and `source = supertool` resolves by
     module name, so the child measures that copy. Counted into `supertool.py`
-    it would inflate the very number the gate enforces.
+    it would inflate the very number the gate enforces. `tmp_path` is the
+    foreign path here for the same reason it is the real one — outside the
+    repository, and native on whichever platform is running.
+
+    Keys are built with `/` rather than written with `/`: `coverage json`
+    emits `C:\\...\\supertool.py` on Windows, and a fixture that only ever
+    spells them the POSIX way would pass there while testing a shape the
+    runner never produces.
     """
     config = tmp_path / "coverage_gate.ini"
     config.write_text("[run]\n", encoding="utf-8")
     (tmp_path / "coverage.json").write_text(json.dumps({"files": {
-        f"{gate.REPO}/supertool.py":
+        str(gate.REPO / "supertool.py"):
             {"summary": {"num_statements": 100, "missing_lines": 5}},
-        f"{gate.REPO}/presets/git/diff.py":
+        str(gate.REPO / "presets" / "git" / "diff.py"):
             {"summary": {"num_statements": 200, "missing_lines": 20}},
-        f"{gate.REPO}/presets/git/trail.py":
+        str(gate.REPO / "presets" / "git" / "trail.py"):
             {"summary": {"num_statements": 100, "missing_lines": 10}},
-        f"{gate.REPO}/.github/scripts/coverage_gate.py":
+        str(gate.REPO / ".github" / "scripts" / "coverage_gate.py"):
             {"summary": {"num_statements": 140, "missing_lines": 7}},
-        f"{gate.REPO}/.github/scripts/junit_summary.py":
+        str(gate.REPO / ".github" / "scripts" / "junit_summary.py"):
             {"summary": {"num_statements": 51, "missing_lines": 3}},
-        "/somewhere/else/tmp0000/supertool.py":
+        str(tmp_path / "foreign" / "supertool.py"):
             {"summary": {"num_statements": 999, "missing_lines": 999}},
     }}), encoding="utf-8")
     monkeypatch.setattr(gate.subprocess, "run",
@@ -294,12 +301,21 @@ def test_measure_totals_each_bucket_and_ignores_out_of_tree_files(
         "the gate's own file was counted into the directory bucket as well")
 
 
-def test_run_suite_exports_the_child_attribution_variable(monkeypatch) -> None:
+def test_run_suite_exports_the_child_attribution_variable(
+        tmp_path: Path, monkeypatch) -> None:
     """`COVERAGE_PROCESS_START`, or the subprocess-driven presets read untested.
 
     Dropping it does not fail anything: the run still completes, the numbers
     just fall by tens of points in the files with the most tests, and the fix
     somebody reaches for is lowering a floor.
+
+    The expected value is derived from the `Path` handed in rather than
+    written out, because `run_suite` passes it through `str()` and that is
+    `\\tmp\\x\\...` on Windows and `/tmp/x/...` everywhere else. Both are the
+    same file, and the native one is the correct one: coverage's `.pth` opens
+    this value as a filename in every child, so a POSIX spelling on Windows
+    would be the defect rather than the fix. Asserted as a `Path` equality —
+    the question is which file was named, not how it was spelled.
     """
     seen: "dict[str, object]" = {}
 
@@ -308,14 +324,21 @@ def test_run_suite_exports_the_child_attribution_variable(monkeypatch) -> None:
         seen["env"] = kw.get("env", {})
         return subprocess.CompletedProcess(cmd, 3)
 
+    config = tmp_path / "coverage_gate.ini"
     monkeypatch.setattr(gate.subprocess, "run", fake_run)
-    rc = gate.run_suite(Path("/tmp/x/coverage_gate.ini"))
+    rc = gate.run_suite(config)
 
     assert rc == 3, "the suite's exit status is not passed through"
-    assert seen["env"]["COVERAGE_PROCESS_START"] == "/tmp/x/coverage_gate.ini"
+    exported = seen["env"].get("COVERAGE_PROCESS_START")  # type: ignore[union-attr]
+    assert exported is not None, (
+        "COVERAGE_PROCESS_START was not exported at all — the ~900 spawned "
+        "children measure nothing and the report reads as a coverage drop")
+    assert Path(exported) == config, (
+        f"the children were pointed at {exported}, not at {config}")
     assert "--no-cov" in seen["cmd"], (
         "pytest-cov left on gives a second collector and a mixed number")
-    assert f"--rcfile=/tmp/x/coverage_gate.ini" in seen["cmd"]
+    assert f"--rcfile={config}" in seen["cmd"], (
+        "the parent process is not reading the same config as its children")
 
 
 def test_a_red_suite_is_not_reported_as_a_coverage_number(
