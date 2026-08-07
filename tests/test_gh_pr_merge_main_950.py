@@ -27,6 +27,22 @@ m = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(m)
 
 
+def _load_sibling(filename: str, name: str):
+    """Import another test module by path.
+
+    By path rather than by bare name: `tests/` is not guaranteed to be on
+    `sys.path` under every invocation (`pytest tests/x.py` from the repo root
+    and `python -m pytest` do not agree), and a plain import that works on one
+    of them is a collection error on the other.
+    """
+    spec = importlib.util.spec_from_file_location(
+        name, Path(__file__).parent / filename)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 # ---------------------------------------------------------------------------
 # fixtures
 # ---------------------------------------------------------------------------
@@ -551,3 +567,70 @@ def test_repo_identity_declines_rather_than_inventing_a_repo(monkeypatch):
     monkeypatch.setattr(m, "_gh_json", lambda a, timeout=30: (None, "no auth"))
     repo, branch, err = m._repo_identity()
     assert repo == "" and branch == "" and err == "no auth"
+
+
+# ===========================================================================
+# The head branch is named by whoever opened the PR (#965, #694)
+#
+# Both halves of that rule reach this op and they are not the same half:
+# the `Merge:` header *displays* the ref, so it is flattened; the cleanup
+# block *prints a command the reader runs*, so it is quoted. Applying either
+# rule at the other site is wrong in a way local tests would not show — a
+# flattened ref inside `gh api -X DELETE` is a command that silently targets
+# a different branch.
+# ===========================================================================
+
+_forged = _load_sibling("test_forged_branch_line_965.py", "forged_965_for_merge")
+HOSTILE_BRANCH = _forged.HOSTILE_BRANCH
+
+
+def test_a_hostile_head_branch_cannot_forge_a_line_in_the_receipt(monkeypatch,
+                                                                  capsys):
+    """#965's shape, at the op that asserts a merge verdict."""
+    h = _Harness(_pr(headRefName=HOSTILE_BRANCH))
+    _install(monkeypatch, h, argv=["944"])
+    m.main()
+    out = capsys.readouterr().out
+    _forged.assert_no_forged_line(out)
+    _forged.assert_nothing_censored(out, "evil")
+
+
+@pytest.mark.parametrize("hostile,ids", [
+    ("fix/924; rm -rf ~", "shell metacharacter"),
+    (HOSTILE_BRANCH, "line separator"),
+    ("-B", "option-shaped"),
+], ids=["shell", "separator", "option"])
+def test_a_hostile_head_branch_gets_no_delete_command_at_all(monkeypatch,
+                                                             capsys, hostile,
+                                                             ids):
+    """The cleanup block is a command the *reader* runs, and neither treatment
+    makes this one both correct and safe — so it is declined, not emitted.
+
+    Quoting stops the shell and leaves a U+2028 rendering three lines;
+    flattening fixes the render and re-points the delete at a branch that does
+    not exist. `_refname` calls this the convenience case, and a convenience
+    that might be wrong is worth less than saying so.
+    """
+    h = _Harness(_pr(headRefName=hostile))
+    _install(monkeypatch, h, argv=["944"])
+    m.main()
+    cleanup = capsys.readouterr().out.split("## Cleanup")[1]
+    assert "gh api -X DELETE" not in cleanup, cleanup
+    assert "git branch -d" not in cleanup, cleanup
+    assert "No delete command is printed" in cleanup, cleanup
+    assert "Delete it from the PR page" in cleanup, cleanup
+    # Declined, not censored: the reader still gets the name, on one line.
+    _forged.assert_no_forged_line(cleanup)
+    assert "still exists" in cleanup, cleanup
+
+
+def test_an_ordinary_head_branch_still_gets_its_commands(monkeypatch, capsys):
+    """The common case is untouched — a refusal on every PR is one nobody reads."""
+    h = _Harness(_pr())
+    _install(monkeypatch, h, argv=["944"])
+    m.main()
+    cleanup = capsys.readouterr().out.split("## Cleanup")[1]
+    assert "git branch -d fix/924" in cleanup, cleanup
+    assert "gh api -X DELETE" in cleanup, cleanup
+    assert "'fix/924'" not in cleanup, cleanup
+    assert "No delete command is printed" not in cleanup, cleanup

@@ -842,6 +842,21 @@ deleted the branch and auto-closed the PR when the merge had actually failed on
 a conflict, so the delete command is printed and, when the merge is not
 confirmed, it is not even printed.
 
+**A head branch that is not an ordinary refname gets no delete command at
+all** — a third state, not a quieter version of the second. The head branch of
+a fork PR is named by whoever opened it, and neither treatment of a hostile
+name makes a printed command both correct and safe: shell-quoting stops the
+shell acting on it but leaves a U+2028 inside the quotes, so the line still
+renders as three ([#965](https://github.com/Digital-Process-Tools/claude-supertool/issues/965));
+flattening fixes the render and changes the ref, which is a delete aimed at a
+branch that does not exist. `presets/_refname.py` already draws this line — a
+command that is the *deliverable* is quoted, a command that is a *convenience*
+is withheld, because there a hostile name makes the suggestion wrong as well as
+unsafe. Deleting a merged branch is the convenience case: it has a button on
+the PR page. So the op prints the name, flattened and in full, says no command
+is printed and why, and names the manual route. Ordinary names — the whole
+common case — are unaffected and print bare.
+
 Exit 0 requires a verified merge **and** every linked issue verified closed.
 
 ## Configuration

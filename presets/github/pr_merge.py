@@ -51,6 +51,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import _checks  # noqa: E402
 import _declared_legs  # noqa: E402
 import _publish_safety  # noqa: E402
+import _refname  # noqa: E402
 import _repo_target  # noqa: E402
 import _untrusted  # noqa: E402
 
@@ -632,7 +633,8 @@ def main() -> int:
 
     print(f"# gh-pr-merge #{number} — {repo or '?'}")
     print(f"PR:     {title}")
-    print(f"Merge:  {head} -> {base}  (method: {method})")
+    print(f"Merge:  {_untrusted.flat(head)} -> {_untrusted.flat(base)}  "
+          f"(method: {method})")
     print(f"URL:    {pr.get('url', '?')}")
     print()
 
@@ -716,18 +718,36 @@ def main() -> int:
 
     # ---- cleanup, named and NOT run -------------------------------------
     print("## Cleanup — not run by this op")
-    if m_state == MERGED and head:
-        print(f"  Head branch `{head}` still exists. Delete it when you are "
-              f"done: gh api -X DELETE "
-              f"{_repo_target.api_path(f'git/refs/heads/{head}')}")
+    if m_state != MERGED or not head:
+        print("  Skipped — the merge is not confirmed, so nothing about this "
+              "branch is safe to delete.")
+    elif not _refname.ordinary(head):
+        # A printed command is run by the reader, not by this op, and neither
+        # available treatment makes this one both correct and safe: shell
+        # quoting stops the shell acting on the name but leaves a U+2028 in it,
+        # so the line still renders as three (#965); flattening fixes the render
+        # and changes the ref, which is a delete command aimed at a branch that
+        # is not this one. `_refname` calls this the convenience case — the
+        # branch has a delete button on the PR page — so the op declines the
+        # command rather than emitting a wrong or unsafe one, and says which.
+        print(f"  Head branch {_untrusted.flat(_refname.shell_ref(head))} "
+              f"still exists.")
+        print("  No delete command is printed for it: the name contains "
+              "characters a shell acts on or a terminal breaks a line at, and "
+              "a command that is safe to paste would no longer name this "
+              "branch. Delete it from the PR page, or by hand after reading "
+              "the name above.")
+    else:
+        safe_head = _refname.shell_ref(head)
+        ref_path = _refname.shell_ref(
+            _repo_target.api_path("git/refs/heads/" + head))
+        print(f"  Head branch `{safe_head}` still exists. "
+              f"Delete it when you are done: gh api -X DELETE {ref_path}")
         print(f"  Local worktree, if any: git worktree remove <path> && "
-              f"git branch -d {head}")
+              f"git branch -d {safe_head}")
         print("  Deliberately not chained: a merge and a delete in one command "
               "once deleted the branch and auto-closed the PR after the merge "
               "had failed on a conflict.")
-    else:
-        print("  Skipped — the merge is not confirmed, so nothing about this "
-              "branch is safe to delete.")
     print()
 
     print(result_line(m_state, issue_overall, branch_state))
