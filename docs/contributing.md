@@ -405,7 +405,7 @@ Four things about that table are load-bearing:
 
 The `.ts` inventory in `tests/test_ci_non_python_coverage_557.py` is asserted against `git ls-files`, so a new TypeScript file fails the suite until somebody classifies it as executed, uncovered or a fixture. That is the durable half of "accept the gap explicitly": a gap nobody can add to silently.
 
-Both jobs also carry a `timeout-minutes` — 30 for `pytest`, 10 for `notifiers` — and the channel integration step runs under a `--timeout=30` per-test budget. See §"Never leave a CI job without a wall-clock budget" for the sizing and for why the two numbers differ.
+Every job also carries a `timeout-minutes` — 30 for `pytest`, 10 for `notifiers`, 20 for `coverage` — and two of them arm an inner per-test budget as well: the channel integration step at `--timeout=30`, and the `coverage` job at `--timeout=300` ([#914]). See §"Never leave a CI job without a wall-clock budget" for the sizing and for why the numbers differ.
 
 ---
 
@@ -425,8 +425,9 @@ python3 .github/scripts/coverage_gate.py
 ```
 
 One script, run by the `coverage` job in CI and by you locally, producing the
-same number both places. It runs the suite with child-process attribution on,
-then prints three sections and gates on the first:
+same number both places. It runs the suite with child-process attribution on and
+a `PER_TEST_TIMEOUT_S` per-test budget ([#914] — see §"Never leave a CI job
+without a wall-clock budget"), then prints three sections and gates on the first:
 
 | State | What it means |
 | --- | --- |
@@ -913,6 +914,7 @@ observations across five master runs:
 | --- | --- | --- |
 | `pytest` (windows 483-574s, macos 128-197s, ubuntu 93-125s) | worst 574s | 30 min — 3.1x |
 | `notifiers` | worst 37s | 10 min — 16x |
+| `coverage` | worst 216s | 20 min — 5.6x |
 
 The multiple on `notifiers` is large because its base is 37s and three of its
 steps are package-manager installs (npm, pip, bun), whose tail latency against a
@@ -940,6 +942,38 @@ three times measured blowing a hand-written number under contention ([#702],
 from, and guessing it is precisely those three incidents one layer up. The job
 ceiling bounds it; the finer guard waits for evidence.
 
+**The `coverage` job gets one, at `--timeout=300`** ([#914]). It was cancelled at
+its ceiling three times on 2026-08-07 — `21a7969`, `8b14b9b` and `0c08cd1`, three
+unrelated branches — against 3.0-3.6 minutes on the other sixteen runs that day,
+and all three logs end with a progress bar, 12 to 17 minutes of silence, `The
+operation was canceled.`, and six `Terminate orphan process: pid (N) (python)`
+lines. No test named, nothing to act on. The flag lives in
+`coverage_gate.PER_TEST_TIMEOUT_S` rather than in the workflow, because this job's
+pytest invocation is built by the script, not by a `run:` block.
+
+The reasoning that excuses the `pytest` job does not reach here: this is one leg,
+ubuntu, py3.12, and its per-test timings *are* measured — the slowest test under
+its own instrumentation is 50.2s
+(`TestHugeBatch::test_batch_at_cap_runs_to_completion`), so 300s is ~6x the worst
+and a quarter of the job ceiling.
+
+`faulthandler.dump_traceback_later` was the alternative and is rejected on the
+constraint that decides between them: **the output has to survive to the log, and
+the runner cancels rather than tearing down.** A faulthandler dump leaves the hang
+in place, so the leg still runs to the ceiling and is still killed, and whether a
+dump written minutes earlier reached the log stream is exactly what cannot be
+established. Under `-n auto` it is worse than uncertain — a dump on a *worker's*
+stderr is relayed by execnet, not written to the job's own fd 2. A per-test budget
+has no such race: the hang becomes an ordinary pytest failure, the run finishes in
+its usual three minutes, and the log is written because the job was never
+cancelled. Raising the ceiling was rejected outright; it trades a loud failure for
+a quiet one.
+
+`tests/test_ci_coverage_hang_disclosure_914.py` asserts the post-condition rather
+than the config: it runs the real `suite_argv` over a fixture that blocks reading
+a pipe a grandchild still holds open, and requires the run to end by itself with
+the hung test named.
+
 [#454]: https://github.com/Digital-Process-Tools/claude-supertool/issues/454
 [#485]: https://github.com/Digital-Process-Tools/claude-supertool/issues/485
 [#553]: https://github.com/Digital-Process-Tools/claude-supertool/issues/553
@@ -954,6 +988,7 @@ ceiling bounds it; the finer guard waits for evidence.
 [#722]: https://github.com/Digital-Process-Tools/claude-supertool/issues/722
 [#727]: https://github.com/Digital-Process-Tools/claude-supertool/issues/727
 [#794]: https://github.com/Digital-Process-Tools/claude-supertool/issues/794
+[#914]: https://github.com/Digital-Process-Tools/claude-supertool/issues/914
 
 ### Never assert a property of a workflow by grepping the workflow
 

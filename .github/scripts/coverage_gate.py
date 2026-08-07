@@ -216,6 +216,47 @@ def write_config(data_file: Path) -> Path:
     return path
 
 
+#: Per-test wall-clock budget, in seconds, armed via pytest-timeout (#914).
+#:
+#: This job was cancelled at its `timeout-minutes: 20` ceiling three times on
+#: 2026-08-07 — `21a7969`, `8b14b9b`, `0c08cd1`, three unrelated branches —
+#: against a 3.0-3.6 minute baseline across the other sixteen runs that day.
+#: Every one of those logs ends with a progress bar, a silence of 12 to 17
+#: minutes, and `The operation was canceled.` A job ceiling can only ever say
+#: "this leg did not finish"; a per-test budget names the test and dumps the
+#: stack of the thread stuck in it, which is the only artefact that makes the
+#: next occurrence worth more than the last one.
+#:
+#: 300 is ~6x the slowest test measured under this job's own instrumentation
+#: (50.2s, `TestHugeBatch::test_batch_at_cap_runs_to_completion`), so it can
+#: only fire for a hang and not for a slow runner — the #702 trade, taken the
+#: same way the two `timeout-minutes` budgets in the workflow take it. It is
+#: also a quarter of the job ceiling, so the inner guard always fires first and
+#: the leg still finishes and writes its log: the ordering
+#: `tests/_adapter_budget.py` insists on, here between a script and its job.
+#:
+#: Pinned, with the reasoning, by `tests/test_ci_coverage_hang_disclosure_914.py`.
+PER_TEST_TIMEOUT_S = 300
+
+
+def suite_argv(config: Path, *targets: str,
+               timeout_s: int = PER_TEST_TIMEOUT_S) -> "list[str]":
+    """The exact argv this job runs pytest with.
+
+    Extracted from ``run_suite`` so a test can run *this* command line over a
+    fixture of its own instead of a copy of it that drifts.
+
+    ``timeout_s`` is a parameter rather than a literal so that the test which
+    induces a real hang can use a budget it can wait out, while still going
+    through the argv the job builds. Appending its own ``--timeout`` instead
+    would let the test supply the very guard it exists to check for, and that
+    version passed against a ``suite_argv`` that armed nothing.
+    """
+    return [sys.executable, "-X", "utf8", "-m", "coverage", "run",
+            f"--rcfile={config}", "-m", "pytest", "-m", "not benchmark",
+            "--no-cov", "--tb=short", "-q", f"--timeout={timeout_s}", *targets]
+
+
 def run_suite(config: Path) -> int:
     """Run the suite under coverage, with child processes attributed.
 
@@ -226,12 +267,7 @@ def run_suite(config: Path) -> int:
     exactly one collector and one set of data files.
     """
     env = dict(os.environ, COVERAGE_PROCESS_START=str(config))
-    return subprocess.run(
-        [sys.executable, "-X", "utf8", "-m", "coverage", "run",
-         f"--rcfile={config}", "-m", "pytest", "-m", "not benchmark",
-         "--no-cov", "--tb=short", "-q"],
-        cwd=str(REPO), env=env,
-    ).returncode
+    return subprocess.run(suite_argv(config), cwd=str(REPO), env=env).returncode
 
 
 def measure(config: Path) -> "dict[str, tuple[int, int]]":
