@@ -40,7 +40,14 @@ handled repo-wide. To find the surfaces, look for what reads a remote API —
 never for what imports this module.
 
 **Where remote text is still unmarked.** Job logs and runner metadata reach the
-reader raw; #820 tracks them. Everything else known is routed: the read ops
+reader raw; #820 tracks them. The one class that is checked rather than trusted
+to be remembered is the refname: `gh-pr:N:status` printed a fork PR's head
+branch raw, so a U+2028 in it forged a green check tally above the real red one
+(#965), and `tests/test_forged_branch_line_965.py` now walks the AST of
+`presets/github`, `presets/gitlab` and `presets/git` and fails when a refname
+field reaches `print()` without passing through here. That scanner answers for
+the six refname keys only — the paragraph above is still the rule for
+everything else. Everything else known is routed: the read ops
 fence bodies and comments; `_board.render_row` flattens every cell it is
 handed, so no board row can become two; `transport.emit_event` flattens every
 string leaving a poller, so no `<channel>` attribute and no desktop

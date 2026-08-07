@@ -220,8 +220,8 @@ def main() -> int:
                     mr_title = mr.get("title", "?")
                     mr_state = mr.get("state", "?")
                     mr_branch = mr.get("source_branch", "?")
-                    print(f"  !{mr_iid} ({mr_state}) {mr_title}")
-                    print(f"    branch: {mr_branch}")
+                    print(f"  !{mr_iid} ({mr_state}) {_untrusted.flat(mr_title)}")
+                    print(f"    branch: {_untrusted.flat(mr_branch)}")
                 if hidden_mrs:
                     print(
                         f"  ... ({hidden_mrs} more related MR(s) not shown — "
