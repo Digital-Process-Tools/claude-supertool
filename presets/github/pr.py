@@ -19,8 +19,14 @@ import _declared_legs  # noqa: E402  (the second leg count, shared with gh-run /
 import _repo_target  # noqa: E402  (the repo this call is about, when not the cwd's)
 import _branch_locale  # noqa: E402  (where the branch is checked out — shared by all five #850)
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _pr_diff  # noqa: E402  (the review shape of a PR's diff — #875)
+
 DESCRIPTION_MAX = 2000
 COMMENT_MAX = 500
+# `gh pr diff` streams a whole patch; the dashboard's 10s is sized for JSON
+# metadata and an 80-file diff routinely outruns it.
+DIFF_TIMEOUT = 60
 
 
 def _relative_age(iso: str) -> str:
@@ -373,9 +379,75 @@ def _format_error(stderr: str, resource: str, identifier: str) -> str:
     return f"ERROR: gh failed for {resource} #{identifier}: {stderr.strip()}"
 
 
+def _diff_header(number: str) -> list[str]:
+    """The two lines a diff needs for context, and never a reason to fail.
+
+    The diff is the load-bearing read; the title and branch pair are context.
+    So a metadata call that does not come back degrades those to `?` rather
+    than aborting — blocking the review read on the decorative one would be
+    this repo's defect class wearing a helpful face.
+    """
+    head = [_untrusted.banner()]
+    try:
+        meta = _gh(["pr", "view", number, "--json",
+                    "number,title,headRefName,baseRefName,url"])
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+        head.append(f"# PR #{number} (title unavailable: {exc})")
+        return head
+    if meta.returncode != 0:
+        head.append(f"# PR #{number} (title unavailable: "
+                    f"{(meta.stderr or '').strip()[:80] or 'gh pr view failed'})")
+        return head
+    try:
+        d = json.loads(meta.stdout)
+    except json.JSONDecodeError:
+        head.append(f"# PR #{number} (title unavailable: unparseable JSON)")
+        return head
+    head.append(f"# PR #{d.get('number', number)} "
+                f"{_untrusted.flat(str(d.get('title') or '?'))}")
+    head.append(f"Branch: {_untrusted.flat(str(d.get('headRefName') or '?'))} "
+                f"-> {_untrusted.flat(str(d.get('baseRefName') or '?'))}")
+    if d.get("url"):
+        head.append(f"URL: {d['url']}")
+    return head
+
+
+def _run_diff(number: str, path: str | None) -> int:
+    """`gh-pr:N:diff[:PATH]` — the merge gate's read, in a reviewable shape.
+
+    `gh pr diff` carries `--repo` through `_gh`, so a call made from the wrong
+    directory answers about the repo the caller named rather than about
+    whatever the cwd's remote happens to be (#677/#678).
+
+    Every failure route hands `_pr_diff.render` a `None` file list with the
+    cause attached. An exception, a non-zero exit and an unreadable patch are
+    three different reasons and none of them is "this PR changes nothing".
+    """
+    header = _diff_header(number)
+    files: list[dict] | None
+    reason: str | None = None
+    try:
+        result = _gh(["pr", "diff", number, "--patch"], timeout=DIFF_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        files, reason = None, f"gh pr diff timed out after {DIFF_TIMEOUT}s"
+    except (FileNotFoundError, OSError) as exc:
+        files, reason = None, f"gh pr diff could not run: {exc}"
+    else:
+        if result.returncode != 0:
+            files = None
+            reason = (f"gh pr diff exited {result.returncode}: "
+                      f"{(result.stderr or '').strip()[:200] or 'no stderr'}")
+        else:
+            files = _pr_diff.parse(result.stdout)
+    text, code = _pr_diff.render(files, header=header, path=path,
+                                 reason=reason, number=str(number))
+    print(text)
+    return code
+
+
 def main() -> int:
     if len(sys.argv) < 2:
-        print("ERROR: usage: pr.py NUMBER_OR_BRANCH [status|full]")
+        print("ERROR: usage: pr.py NUMBER_OR_BRANCH [status|full|diff[:PATH]]")
         return 1
 
     arg = sys.argv[1]
@@ -416,6 +488,12 @@ def main() -> int:
         except (subprocess.TimeoutExpired, json.JSONDecodeError) as e:
             print(f"ERROR: branch lookup failed: {e}")
             return 1
+
+    # The diff route runs before the dashboard fetch: it needs none of those
+    # fields and the dashboard call is ~20x the payload.
+    if "diff" in flags:
+        rest = flags[flags.index("diff") + 1:]
+        return _run_diff(arg, rest[0] if rest else None)
 
     # Fetch PR with all needed fields
     try:

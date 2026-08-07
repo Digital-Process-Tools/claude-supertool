@@ -63,24 +63,37 @@ def _issue(number: int, **kw: object) -> dict:
 # ---------------------------------------------------------------------------
 
 def test_parse_args_empty_is_defaults() -> None:
-    assert issues._parse_args("") == ({}, set())
+    assert issues._parse_args("") == ({}, set(), [])
 
 
 def test_parse_args_filters_and_flags() -> None:
-    filters, flags = issues._parse_args("author=@me,state=closed,nopipe")
+    filters, flags, unknown = issues._parse_args("author=@me,state=closed,nopipe")
     assert filters == {"author": "@me", "state": "closed"}
     assert flags == {"nopipe"}
+    assert unknown == []
 
 
-def test_parse_args_ignores_unknown_bare_token() -> None:
-    filters, flags = issues._parse_args("label=bug,bogus")
+def test_parse_args_reports_an_unknown_bare_token(
+) -> None:
+    """This test asserted the opposite until [#864].
+
+    It was written as `test_parse_args_ignores_unknown_bare_token` and it
+    pinned the discard as intended behaviour — which is how a board that
+    printed the whole unfiltered queue for `gh-issues:nomilestone` stayed green
+    through three releases. A token nobody could place is now returned so
+    `main_with_args` can refuse; see `tests/test_gh_issues_milestone_864.py`
+    for the behavioural half.
+    """
+    filters, flags, unknown = issues._parse_args("label=bug,bogus")
     assert flags == set()
     assert filters == {"label": "bug"}
+    assert unknown == ["bogus"]
 
 
 def test_parse_args_knows_the_board_flags() -> None:
-    _, flags = issues._parse_args("iids,external,stale")
+    _, flags, unknown = issues._parse_args("iids,external,stale")
     assert flags == {"iids", "external", "stale"}
+    assert unknown == []
 
 
 # ---------------------------------------------------------------------------
@@ -217,9 +230,20 @@ def test_comments_cell_unknown_is_not_zero() -> None:
 
 
 def test_stale_flag_marks_unknown_separately() -> None:
-    assert issues._flags(_issue(1, _stale=True)) == " [stale]"
-    assert issues._flags(_issue(1, _stale=None)) == " [stale?]"
-    assert issues._flags(_issue(1, _stale=False)) == ""
+    """`milestone=None` on the fixture: gh always returns the key, explicitly
+    null for an unscheduled issue, so that is the row shape under test. A row
+    with the key *missing* is a different state and is asserted below."""
+    assert issues._flags(_issue(1, _stale=True, milestone=None)) == " [stale]"
+    assert issues._flags(_issue(1, _stale=None, milestone=None)) == " [stale?]"
+    assert issues._flags(_issue(1, _stale=False, milestone=None)) == ""
+
+
+def test_milestone_flag_keeps_none_and_unknown_apart() -> None:
+    """[#864]. An absent key means gh did not answer; blank would claim it did."""
+    ms = {"title": "v0.26.0"}
+    assert issues._flags(_issue(1, _stale=False, milestone=ms)) == " [m:v0.26.0]"
+    assert issues._flags(_issue(1, _stale=False, milestone=None)) == ""
+    assert issues._flags(_issue(1, _stale=False)) == " [m:?]"
 
 
 # ---------------------------------------------------------------------------
