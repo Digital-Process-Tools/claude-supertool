@@ -27,10 +27,14 @@ runner is allowed to take them, and nothing in the GitLab UI says so.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import _untrusted  # noqa: E402  (a runner description and a CI tag are remote text, and these are hand-padded tables — #970)
 
 # GitLab does not write contacted_at on every poll — it throttles the update.
 # Measured on a live fleet: one runner's contacted_at stayed frozen at the same
@@ -620,7 +624,7 @@ def radar_report(options: dict | None = None) -> tuple[list[str], bool]:
                      f"({len(live)}/{len(runners)} runners live)")
         for tags, count in sorted(blocked.items(), key=lambda kv: -kv[1]):
             who = _owner_names(runners, tags) or "NO runner carries these tags"
-            lines.append(f"  [{tags}] {count} job(s) -> {who}")
+            lines.append(f"  [{_untrusted.flat(tags)}] {count} job(s) -> {who}")
         lines.append("  Pinned to an exclusive tag: no other runner may take them. "
                      "A red board in this run may be this, not your code.")
     if unproven:
@@ -630,7 +634,8 @@ def radar_report(options: dict | None = None) -> tuple[list[str], bool]:
         lines.append(f"radar: FLEET UNKNOWN — {total} pending job(s) waiting on runners "
                      f"whose liveness could not be established")
         for tags, count in sorted(unproven.items(), key=lambda kv: -kv[1]):
-            lines.append(f"  [{tags}] {count} job(s) -> {_owner_names(runners, tags)}")
+            lines.append(f"  [{_untrusted.flat(tags)}] {count} job(s) "
+                         f"-> {_owner_names(runners, tags)}")
         lines.append("  GitLab reports them online; only contacted_at age says "
                      "otherwise, and GitLab throttles it. Check the hosts.")
     return (lines, False)
@@ -761,8 +766,15 @@ def _print_fleet(runners: list[dict], pending: list[dict], running: list[dict]) 
             status = "paused"
 
         tags = ",".join(runner.get("tag_list") or []) or ("untagged-ok" if runner.get("run_untagged") else "-")
+        # Flatten *before* slicing, not after. `flat()` can widen a field — a
+        # stream that cannot carry U+2028 spells it `[U+2028]`, eight characters
+        # for one (#863) — so flattening a cell already cut to its column width
+        # trades a row that splits for a row that overflows into the next
+        # column. Truncation last is what keeps `:<22` a width and not a floor.
+        description = _untrusted.flat(runner.get("description") or "?")
+        tags = _untrusted.flat(tags)
         print(
-            f"{rid:<5} {(runner.get('description') or '?')[:22]:<22} {_runner_type(runner):<8} "
+            f"{rid:<5} {description[:22]:<22} {_runner_type(runner):<8} "
             f"{status:<9} {(runner.get('job_execution_status') or '-'):<7} {_human_age(age):<7} "
             f"{running_by_runner.get(rid, 0):<4} {runner.get('_recent_jobs', 0):<9} "
             f"{waiting:<5} {tags[:34]}{marker}"
@@ -775,7 +787,7 @@ def _print_fleet(runners: list[dict], pending: list[dict], running: list[dict]) 
               f"runner uptime (created_at is registration, contacted_at is last "
               f"seen), so a host that rebooted inside the window looks identical "
               f"here. Check host uptime before calling a wedge: "
-              f"{', '.join(unreadable)}")
+              f"{', '.join(_untrusted.flat(name) for name in unreadable)}")
 
 
 def _owner_names(runners: list[dict], tags: str) -> str:
@@ -783,7 +795,8 @@ def _owner_names(runners: list[dict], tags: str) -> str:
     owners = [r for r in runners
               if _can_serve(r, tags.split(",") if tags != "(untagged)" else [])]
     return ", ".join(
-        f"{r.get('description')} (seen {_human_age(_age_seconds(r.get('contacted_at')))} ago)"
+        f"{_untrusted.flat(str(r.get('description')))} "
+        f"(seen {_human_age(_age_seconds(r.get('contacted_at')))} ago)"
         for r in owners
     )
 
@@ -821,10 +834,11 @@ def _print_diagnosis(runners: list[dict], pending: list[dict]) -> None:
         print(f"\n## STARVED — {total} pending job(s) no live runner can take")
         for tags, count in sorted(blocked.items(), key=lambda kv: -kv[1]):
             names = _owner_names(runners, tags)
+            shown = _untrusted.flat(tags)
             if names:
-                print(f"  - {count} job(s) tagged [{tags}] -> only {names}")
+                print(f"  - {count} job(s) tagged [{shown}] -> only {names}")
             else:
-                print(f"  - {count} job(s) tagged [{tags}] -> NO runner carries these tags at all")
+                print(f"  - {count} job(s) tagged [{shown}] -> NO runner carries these tags at all")
         print("\n  Jobs pinned to an exclusive tag cannot fall back to another runner.")
         print("  Fix the runner host, or change the tag in .gitlab-ci.yml.")
 
@@ -832,7 +846,8 @@ def _print_diagnosis(runners: list[dict], pending: list[dict]) -> None:
         total = sum(unproven.values())
         print(f"\n## UNKNOWN — {total} pending job(s) whose routing could not be established")
         for tags, count in sorted(unproven.items(), key=lambda kv: -kv[1]):
-            print(f"  - {count} job(s) tagged [{tags}] -> {_owner_names(runners, tags)}")
+            print(f"  - {count} job(s) tagged [{_untrusted.flat(tags)}] "
+                  f"-> {_owner_names(runners, tags)}")
         print("\n  GitLab still advertises these runners as online and un-paused; they")
         print("  fail the liveness check only on contacted_at age, which GitLab")
         print("  throttles — a fleet idling behind one long job reads stale on every")
@@ -843,8 +858,10 @@ def _print_queue(runners: list[dict], pending: list[dict], running: list[dict]) 
     """Queue-focused view: what is waiting and what is executing, by tag."""
     print(f"## Running ({len(running)})")
     for job in sorted(running, key=lambda j: j.get("name", "")):
-        runner = (job.get("runner") or {}).get("description", "-")
-        print(f"  {job.get('name', '?'):<44} {job.get('ref', '?'):<24} on {runner}")
+        runner = _untrusted.flat(str((job.get("runner") or {}).get("description", "-")))
+        name = _untrusted.flat(str(job.get("name", "?")))
+        ref = _untrusted.flat(str(job.get("ref", "?")))
+        print(f"  {name:<44} {ref:<24} on {runner}")
 
     print(f"\n## Pending ({len(pending)})")
     by_tags: dict[str, list[dict]] = {}
@@ -853,9 +870,10 @@ def _print_queue(runners: list[dict], pending: list[dict], running: list[dict]) 
     for tags, jobs in sorted(by_tags.items(), key=lambda kv: -len(kv[1])):
         live = [r for r in runners if _can_serve(r, tags.split(",") if tags != "(untagged)" else []) and _is_responsive(r)]
         verdict = f"{len(live)} live runner(s)" if live else "NO live runner  <!"
-        print(f"  [{tags}] {len(jobs)} job(s) -> {verdict}")
+        print(f"  [{_untrusted.flat(tags)}] {len(jobs)} job(s) -> {verdict}")
         for job in jobs[:5]:
-            print(f"      {job.get('name', '?'):<40} {job.get('ref', '?')}")
+            name = _untrusted.flat(str(job.get("name", "?")))
+            print(f"      {name:<40} {_untrusted.flat(str(job.get('ref', '?')))}")
         if len(jobs) > 5:
             print(f"      ... and {len(jobs) - 5} more")
 
@@ -864,21 +882,29 @@ def _print_full(runners: list[dict]) -> None:
     """Extra per-runner detail that does not fit the table."""
     print("\n## Detail")
     for runner in sorted(runners, key=lambda r: r["id"]):
-        print(f"\n  #{runner['id']} {runner.get('description') or '?'}")
+        print(f"\n  #{runner['id']} "
+              f"{_untrusted.flat(runner.get('description') or '?')}")
         print(f"    type        : {_runner_type(runner)}  (locked={runner.get('locked')}, paused={runner.get('paused')})")
-        print(f"    tags        : {', '.join(runner.get('tag_list') or []) or '-'}")
+        print(f"    tags        : "
+              f"{_untrusted.flat(', '.join(runner.get('tag_list') or []) or '-')}")
         print(f"    run_untagged: {runner.get('run_untagged')}")
         print(f"    contacted   : {runner.get('contacted_at') or '-'}")
         timeout = runner.get("maximum_timeout")
         print(f"    max timeout : {f'{timeout}s' if timeout else 'project default'}")
         projects = runner.get("projects") or []
         if projects:
-            names = ", ".join(p.get("path_with_namespace", "?") for p in projects[:6])
+            names = ", ".join(_untrusted.flat(str(p.get("path_with_namespace", "?")))
+                              for p in projects[:6])
             more = f" (+{len(projects) - 6})" if len(projects) > 6 else ""
             print(f"    projects    : {names}{more}")
         version = runner.get("version")
         if version:
-            print(f"    version     : {version}  {runner.get('platform') or ''} {runner.get('architecture') or ''}".rstrip())
+            # Version, platform and architecture are self-reported by the runner
+            # binary at registration, so they are the host's text and not
+            # GitLab's — same trust as the description two lines up.
+            print(f"    version     : {_untrusted.flat(str(version))}  "
+                  f"{_untrusted.flat(str(runner.get('platform') or ''))} "
+                  f"{_untrusted.flat(str(runner.get('architecture') or ''))}".rstrip())
 
 
 def main() -> int:

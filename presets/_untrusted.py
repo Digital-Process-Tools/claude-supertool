@@ -39,8 +39,12 @@ appeared in the count, and a maintainer reading it concluded remote text was
 handled repo-wide. To find the surfaces, look for what reads a remote API —
 never for what imports this module.
 
-**Where remote text is still unmarked.** Job logs and runner metadata reach the
-reader raw; #820 tracks them. The one class that is checked rather than trusted
+**Where remote text is still unmarked.** Job logs reach the reader raw; #820
+tracks them. Runner metadata was named here too until #970, which marked the
+descriptions, tags and refs `gl-runners` renders into three hand-padded blocks
+that `_board.render_row` never sees — so #820 is narrower now, not closed, and
+this sentence is a pointer to an open issue rather than an inventory of one.
+The one class that is checked rather than trusted
 to be remembered is the refname: `gh-pr:N:status` printed a fork PR's head
 branch raw, so a U+2028 in it forged a green check tally above the real red one
 (#965), and `tests/test_forged_branch_line_965.py` now walks the AST of
