@@ -57,8 +57,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
+import urllib.parse
 from typing import Any
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -76,6 +78,26 @@ MAX_PER_PAGE = 100
 MODE_FULL = "full"
 
 _TIMEOUT = 45
+
+#: A URL scheme at the front of the value: `http:`, `HtTpS://`, `file:`, and
+#: anything else RFC 3986 spells the same way. Case-insensitive by construction
+#: rather than by lowercasing the value, which would also have to be undone
+#: before the value is quoted back to the caller.
+_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
+
+#: What a GitLab API path may contain: RFC 3986 `pchar` plus `/`. `:` is in
+#: because glab's own placeholders need it (`projects/:id`), `@` because npm
+#: scoped packages are spelled `packages/npm/@scope/name`, `%` because a group
+#: path arrives percent-encoded. Everything else — control bytes, `#`, `<`,
+#: `\\` — is out, and out is a refusal rather than a strip.
+_PATH_CHARS = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+    "-._~%!$&'()*+,;=:@/"
+)
+
+#: The query may additionally carry `?` and the brackets GitLab's own filter
+#: syntax uses (`?not[labels]=bug`).
+_QUERY_CHARS = _PATH_CHARS | frozenset("?[]")
 
 
 def parse_args(raw: str) -> tuple[str, bool]:
@@ -97,12 +119,44 @@ def parse_args(raw: str) -> tuple[str, bool]:
     return ":".join(tokens), False
 
 
+def host_naming_reason(candidate: str) -> str:
+    """Why this string names a host of its own, or ``""`` (#1035).
+
+    Three structural facts, in the order that gives the clearest sentence. Each
+    one is a thing only an authority needs, and none of them appears in a
+    GitLab API path:
+
+    * a backslash — not a path separator here, and folded into ``/`` by the
+      WHATWG URL parsing that a good deal of software does;
+    * a scheme at the front, with or without the ``//`` after it (``http:host``
+      is opaque-but-absolute and glab takes it);
+    * a ``//`` anywhere in the path portion, which is what a protocol-relative
+      ``//evil.host/x`` and a userinfo ``//gitlab.com@evil.host/x`` both need.
+
+    The query is exempt from the ``//`` rule and only from that one: by the
+    time a ``?`` has been seen the host is already decided, and
+    ``?url=http://x`` is an ordinary search value.
+    """
+    head = candidate.split("?", 1)[0]
+    if "\\" in candidate:
+        return ("a backslash is not a path separator, and the parsers that "
+                "disagree read it as one")
+    if _SCHEME.match(head):
+        return "it opens with a URL scheme, so it names its own host"
+    if "//" in head:
+        return "a // in the path opens an authority, not a path segment"
+    return ""
+
+
 def path_refusal(path: str) -> str:
     """Why this path is not something the op will send, or ``""``.
 
     Refusals rather than sanitisation: quietly stripping a `-X POST` off a path
     would send *a* request, and the caller would read the answer as the one
-    they asked for.
+    they asked for. The same reasoning is what makes the URL check below a
+    refusal — trimming `http://evil.host/` off the front would leave a path
+    that resolves against the configured instance and answers with something,
+    and the caller would read that answer as the one they asked for too.
     """
     if not path.strip():
         return ("ERROR: gl-api needs a path — gl-api:projects/:id/members/all. "
@@ -121,6 +175,36 @@ def path_refusal(path: str) -> str:
             f"disguise: {path!r}. Percent-encode a literal space as %20. For a "
             "write, call glab directly: glab api -X POST PATH -f key=value."
         )
+    # A path may not name a host (#1035). `glab api` accepts an absolute URL as
+    # its endpoint and attaches the instance's Private-Token to it, so a value
+    # carrying a scheme or an authority does not read the API — it hands a live
+    # credential to whoever the value names. The check runs on the value and
+    # again on its percent-decoded form, because `http%3A%2F%2F` and `%2F%2F`
+    # are the same two shapes wearing an encoder.
+    reason = (host_naming_reason(path)
+              or host_naming_reason(urllib.parse.unquote(path)))
+    if reason:
+        return (
+            f"ERROR: gl-api takes a GitLab API path, not a URL — {path!r} is "
+            f"not a path: {reason}. glab attaches your GitLab token to "
+            f"whatever host the endpoint names, so this is refused and not "
+            f"rewritten: a stripped-down version would send a request you did "
+            f"not ask for, and its answer would read as the one you did. Pass "
+            f"the path alone — gl-api:projects/:id/members/all. To reach "
+            f"another host, call glab yourself with credentials scoped to it."
+        )
+    head, _, query = path.partition("?")
+    for label, part, allowed in (("path", head, _PATH_CHARS),
+                                 ("query", query, _QUERY_CHARS)):
+        for char in part:
+            if char not in allowed:
+                return (
+                    f"ERROR: gl-api takes a GitLab API path and {char!r} "
+                    f"cannot appear in the {label} of one: {path!r}. "
+                    f"Percent-encode it as %XX if it is part of a name; a "
+                    f"literal one is a typo or an attempt to reach past the "
+                    f"API path, and neither is worth guessing between."
+                )
     if path.split("?", 1)[0].strip("/") == "graphql":
         return (
             "ERROR: gl-api is GET-only and glab's graphql endpoint needs a "
