@@ -407,14 +407,29 @@ def test_validate_falls_back_to_name_list_when_syntax_unmatched(monkeypatch) -> 
 
 
 def test_validate_no_matching_validator_returns_none(monkeypatch) -> None:
-    """No syntax validator for this file type → None (no false 'ok' line)."""
+    """No syntax validator for this file type → None (no false 'ok' line).
+
+    A block with no rows is that answer. `no validators configured` was the
+    fixture here and is a different fact — see the case below (#883).
+    """
+    import subprocess
+    monkeypatch.setattr(
+        resolve.subprocess, "run",
+        lambda *a, **k: subprocess.CompletedProcess(args=a, returncode=0, stdout="validate: x\n", stderr=""),
+    )
+    monkeypatch.setattr(resolve.os.path, "isfile", lambda p: True)
+    assert resolve._validate_paths([__file__])[__file__] is None
+
+
+def test_validate_no_validators_configured_is_not_checked(monkeypatch) -> None:
+    """Nothing ran, so nothing may render as a pass (#883)."""
     import subprocess
     monkeypatch.setattr(
         resolve.subprocess, "run",
         lambda *a, **k: subprocess.CompletedProcess(args=a, returncode=0, stdout="no validators configured\n", stderr=""),
     )
     monkeypatch.setattr(resolve.os.path, "isfile", lambda p: True)
-    assert resolve._validate_paths([__file__])[__file__] is None
+    assert "not checked" in resolve._validate_paths([__file__])[__file__]
 
 
 def test_validate_all_ok_returns_ok(monkeypatch) -> None:

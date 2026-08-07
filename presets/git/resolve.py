@@ -21,7 +21,10 @@ from typing import Optional
 # loads scripts via importlib (no dir on path), so add it explicitly.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from _git_common import _git, _list_conflicts, use_utf8_stdout  # noqa: E402
+import _untrusted  # noqa: E402  (a failed child's stderr is untrusted text — #883)
 
 
 # Unambiguous conflict markers — `<<<<<<<` / `>>>>>>>` at line start. A bare row
@@ -435,6 +438,39 @@ def _not_checked(reason: str) -> str:
     return f"validate: ⚠ not checked ({reason})"
 
 
+#: Cap on how much of a failed child's stderr reaches the receipt. This line is
+#: one cell of a resolve report, not a log viewer: it has to distinguish *could
+#: not run* from *nothing to say*, and the first line of stderr does that. It
+#: does not have to diagnose, and a traceback pasted whole would push the
+#: `markers: clean` it hangs off out of view.
+_CHILD_DETAIL_MAX = 120
+
+
+def _child_failed(res: "subprocess.CompletedProcess[str]") -> str:
+    """Why the validate child did not answer — one bounded, one-line cell.
+
+    A negative returncode is a POSIX signal, and that case is named separately
+    because it is the one that arrives *with* a complete-looking reply on
+    stdout: an OOM kill after the last block was flushed.
+
+    stderr is a child's text and the digest is interpolated into a line this
+    tool owns at column 0, so it goes through ``_untrusted.flat`` — the same
+    one-line rule ``_flat_cell`` applies in ``supertool.py`` (#895), covering
+    exactly the ten separators ``str.splitlines()`` splits on plus the cursor
+    movement that removes a line rather than adding one (#851). This is the
+    call to that rule, deliberately not a second copy of it.
+    """
+    how = (f"killed by signal {-res.returncode}" if res.returncode < 0
+           else f"exited {res.returncode}")
+    first = next((ln for ln in (res.stderr or "").splitlines() if ln.strip()), "")
+    if not first:
+        return f"validator {how}"
+    detail = _untrusted.flat(first.strip())
+    if len(detail) > _CHILD_DETAIL_MAX:
+        detail = detail[:_CHILD_DETAIL_MAX - 1] + "…"
+    return f"validator {how}: {detail}"
+
+
 def _validate_paths(paths: list[str]) -> dict[str, Optional[str]]:
     """Warn-only post-resolve syntax digest for every resolved file, in ONE call.
 
@@ -501,6 +537,21 @@ def _validate_paths(paths: list[str]) -> dict[str, Optional[str]]:
             for p in files:
                 digests[p] = _not_checked(f"could not run: {exc.__class__.__name__}")
             return digests
+        # The exit status is a fact this function already had in hand and threw
+        # away (#883). Two shapes, one state. A child that died before writing
+        # anything lands zero blocks, and the count guard below then reported it
+        # as a *fold* problem — the wrong actor, and without the one line of
+        # stderr that says what broke. A child killed *after* a complete reply
+        # passes that guard entirely and digests to `validate: ok`, which is the
+        # strongest claim this tool can make about a run that did not finish.
+        # No retry on the second filter pass either: a non-zero exit is not
+        # "that filter selected nothing", so retrying would run the failure
+        # twice and report the second one.
+        if res.returncode != 0:
+            reason = _child_failed(res)
+            for p in files:
+                digests[p] = _not_checked(reason)
+            return digests
         out = res.stdout
         # Split the combined output into per-file blocks on the header lines.
         # Blocks are emitted in the same order as `files` and one per file —
@@ -547,6 +598,14 @@ def _validate_paths(paths: list[str]) -> dict[str, Optional[str]]:
                 # @syntax selected nothing (older config) → retry the name list.
                 continue
             if "no validators configured" in out:
+                # Not an error — the child ran fine — but not the answer `None`
+                # encodes either. `None` means the validators ran and none of
+                # them handles this file type, which the render deliberately
+                # prints as nothing. Here none was ever *considered*, so
+                # leaving it silent lets a config with no validators at all
+                # report every resolved conflict as clean.
+                for p in files:
+                    digests[p] = _not_checked("no validators configured")
                 return digests
             # Anything else with no blocks — a crash, an ERROR line — is not a
             # clean bill. Fall through to the count check, which says so.
@@ -568,6 +627,11 @@ def _validate_paths(paths: list[str]) -> dict[str, Optional[str]]:
         for path, block in zip(files, blocks):
             digests[path] = _digest_block(block)
         return digests
+    # Both passes declined: `@syntax` selected nothing and neither did the
+    # fallback name list. Same argument as "no validators configured" one branch
+    # up — nothing ran, so nothing may render as a pass.
+    for p in files:
+        digests[p] = _not_checked("no syntax validator selected")
     return digests
 
 
