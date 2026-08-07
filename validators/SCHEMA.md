@@ -54,6 +54,8 @@ Two consequences a consumer can rely on:
 
 Emit it whenever the tool's output does not confirm it looked at the file. Where the boundary is genuinely unclear, prefer the finding: an `adapter` result is fully legible to a reader, while a real finding relabelled `adapter` sends them to the wrong place. See `docs/validators.md`, "Declining instead of guessing".
 
+**`no_verdict` is core-internal — an adapter must never set it.** The core adds it to the `skipped` result *it* synthesises when an adapter produced nothing it could read (no output, non-JSON, a crash, a reply with neither `ok` nor `skipped`). It is the one signal separating "the core watched this adapter break down" from "a healthy adapter declined on its own terms", and under `$SUPERTOOL_REQUIRE_VALIDATORS` the first exits 1 while the second does not (#975). An adapter that sets it would be asking for its own scope decisions to be read as a broken gate. An adapter that is genuinely unable to run says so through `refusal.required()` and the `adapter` code above.
+
 **What confirms it looked at the file is per-tool, and it is a located diagnostic, not the exit code** (#753). An adapter picks the marker out of its own tool's output format — `file:LINE:` (xmllint, ruby), `: line N:` (bash), a resolved-path header (node), `path:line:col:` (gofmt, cargo short format), `on <file> line N` (terraform). Two rules generalise from that sweep:
 
 - **Never take a location from the output at large.** Search anchored to the diagnostic, and where the tool prints the path it resolved, check it against the file. `node --check` reports a missing module by printing `node:internal/modules/cjs/loader:1386` first, and a bare `:(\d+)` search turned that into the file's syntax-error line.

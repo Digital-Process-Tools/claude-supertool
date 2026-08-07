@@ -256,6 +256,39 @@ on exactly the conditions it did before. Converting "we could not check" into
 "we will not work" would trade the quiet failure for a louder one rather than
 removing it.
 
+**The adapter does not have to be well enough to report its own failure.** The
+escalation above is the adapter's self-report: it ran, `refusal.required()`
+found the binary missing, and it emitted an `adapter` error. Five ways the
+adapter is too broken to reach that code exited 0 for a release
+([#975](https://github.com/Digital-Process-Tools/claude-supertool/issues/975)) —
+it printed nothing, printed something that is not JSON, crashed, replied with
+no verdict key, or hung until the timeout. The first four became a `skipped`
+and the fifth rendered `1 err (timeout)`. In every one of them the row already
+said the file was not checked and the run still exited 0, so
+`supertool 'edit:...' && git commit` committed past an ungated edit.
+
+The core watched all five happen, so the core decides. Under an escalation they
+render like any other non-verdict:
+
+```text
+fake        : NOT CHECKED  (no verdict about this file)   0.0s
+     adapter  fake adapter produced no output — this file was not checked
+[result] 1 op run, 1 write, 1 validator NOT RUN (fake) — those validators returned no verdict, so the file was NOT checked
+```
+
+A timeout carries `orchestrator` in that second column instead of `adapter`,
+because it is the core's own statement rather than the adapter's.
+
+**Only the breakdowns the core observed escalate — not every `skipped`.** An
+adapter that ran and declined on its own terms has said something true about
+applicability: `warm_unsafe`, a path outside the analyser's scope, a `resolve`
+command that maps this file to nothing. Nothing in the reason string separates
+those from a broken adapter, so the core marks the skips *it* constructed and
+keys on that. Escalating every skip under `'*'` would redden ordinary edits
+nobody meant to gate, and a gate that cries wolf is the quiet bug traded for a
+louder one rather than fixed — the same trade this whole section declines. A
+tool that is genuinely absent still escalates through `refusal.required()`.
+
 ### shellcheck — and the bug in the issue that asked for it
 
 `bash-check` runs `bash -n` and answers "does this parse". `shellcheck`
@@ -476,6 +509,15 @@ Behavior:
 - **Failures don't roll back prior ops.** Slow-tier results arrive after every op has already committed; mirrors the deferred-formatter contract. Keep `rollback_on_fail: false` on slow validators.
 - **Output appears under a `[validators-deferred]` header**, separate from the per-op `[validators]` block, so it's clear which results came from the dedup pass.
 - **Default is `"fast"`** — omitting the field preserves the original per-op behavior. Zero change for users who don't opt in.
+- **There is no baseline, and the row says so.** A slow-tier validator runs once, on the final bytes. Nothing measured the pre-op state, so the left of the arrow is `?`:
+
+  ```text
+  phpunit-mcp : ? → 7       ✗ (baseline not measured)   4.1s
+  ```
+
+  It used to read `0 → 7  (+7) ✗`, which asserts a pre-edit measurement that returned zero and reads as "this edit introduced seven failures" ([#832](https://github.com/Digital-Process-Tools/claude-supertool/issues/832)). In the report that produced this, all seven were already failing because a table was missing from the local test database, and the reader nearly reverted a correct edit. Every slow-tier validator did this for every pre-existing failure, on every run. The `(+N)` and the per-error `+ ` prefix are gone with it — both are the same subtraction one column over. A clean run reads `? → 0` rather than `(no new errors)`, which was the same fabrication with the sign flipped.
+
+  The marker is unchanged: the file does have those errors now, and reporting them as a shrug because the baseline is unknown would be the opposite mistake. What is gone is the number that was never measured, not the alarm. To get a real before/after on a heavy checker, run its cold op (`phpunit:PATH`, `phpstan:PATH`) before and after the edit, or set `"tier": "fast"` and pay for the baseline pass.
 
 Use `slow` for anything where a single analysis pass on the final file content is enough. Use `fast` (default) when you want per-op rollback semantics (syntax linters, json/yaml/xml parsers — these are cheap anyway).
 

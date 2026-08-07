@@ -12379,8 +12379,18 @@ def _validator_unusable_reply(name: str, target: str, what: str,
     Only exits where nothing ran, or ran and said nothing readable, come here.
     A timeout does not: the binary exists and was invoked, and a tool that hangs
     is a validator failure that must stay loud.
+
+    `no_verdict` marks the skip as one the **core** produced by watching the
+    adapter fail, as opposed to one the adapter chose (#975). Every skip is an
+    absence, but only some are a broken gate: `warm_unsafe` (#345), an
+    out-of-scope path (#263) and a resolver that maps a file to nothing are a
+    healthy adapter declining, and escalating those under
+    `$SUPERTOOL_REQUIRE_VALIDATORS='*'` would fire on edits nobody meant to
+    gate. Nothing in the string tells the two apart, so the key does. It is
+    core-internal: no adapter sets it, and a skip is never cached.
     """
     return {"tool": name, "file": target, "elapsed_s": elapsed,
+            "no_verdict": True,
             "skipped": f"{name} adapter {what} — this file was not checked"}
 
 
@@ -12572,7 +12582,9 @@ def _validator_render_row(data: Dict[str, Any], verbose: bool = False) -> list:
     count = data.get("count", 0)
     dur = data.get("duration_ms", 0)
     # `1 err` about a file the adapter never opened reads as a measurement.
-    status = ("NOT CHECKED" if _validator_not_checked(data) is not None
+    # So does `(timeout)` on a required gate (#975).
+    status = ("NOT CHECKED" if (_validator_not_checked(data) is not None
+                                or _validator_gate_did_not_run(data) is not None)
               else ("ok" if ok else f"{count} err"))
     line = f"{tool:12s}: {status:<10}  ({dur}ms)"
     metrics = data.get("metrics")
@@ -12654,6 +12666,72 @@ def _validator_not_checked(after: Optional[Dict[str, Any]]) -> Optional[str]:
     return _flat_cell(errors[0].get("msg") or "", 300) or "no reason given"
 
 
+def _validator_required(name: str) -> bool:
+    """Is `name` named by $SUPERTOOL_REQUIRE_VALIDATORS? The core's own read.
+
+    A deliberate second implementation of `validators/common/refusal.required()`,
+    and `tests/test_require_validators_core_975.py` pins the two to the same
+    answers on the same table because a second copy of a rule is how #895
+    happened. It is a copy rather than an import because the twin lives in the
+    package the *adapters* import, inside a subprocess with its own interpreter
+    and its own sys.path; reaching into it from the core would mean the gate
+    stops working whenever that path resolution does.
+
+    The duplication is the price of the fix. #967 could key on the adapter's
+    self-report because the adapter was healthy enough to make one. The five
+    failures in #975 are the adapter being too broken to run its own Python at
+    all — no output, non-JSON output, a crash, a reply with no verdict key, a
+    timeout. The core watched every one of them happen and must be able to
+    reach the same conclusion without the adapter's cooperation.
+    """
+    raw = os.environ.get("SUPERTOOL_REQUIRE_VALIDATORS", "")
+    if not raw.strip():
+        return False
+    names = [n.strip().lower()
+             for part in raw.split(os.pathsep) for n in part.split(",")]
+    return "*" in names or name.lower() in names
+
+
+def _validator_gate_did_not_run(data: Optional[Dict[str, Any]]) -> Optional[str]:
+    """A gate the operator required, that the core watched break down. Reason, or None.
+
+    #966/#967 stopped `$SUPERTOOL_REQUIRE_VALIDATORS` reading as a pass for the
+    one case the adapter can report about itself: it ran, found its binary
+    missing, and emitted an `adapter` error. `_validator_not_checked` keys on
+    that self-report, which requires the adapter to be healthy.
+
+    Five ways it is not lands elsewhere and exited 0 (#975). Four route into
+    `_validator_unusable_reply` and become a `skipped`; the fifth is the core's
+    own `TimeoutExpired` arm, which renders `1 err (timeout)`. In all five the
+    row text was already honest — it says the file was not checked. Only the
+    exit code lied, which is the half `supertool 'edit:...' && git commit`
+    reads, and that chain is the entire reason the variable exists.
+
+    Scope is deliberately the breakdowns the *core* observed, not every skip.
+    An adapter that ran and declined on its own terms has said something true
+    about applicability; turning that into a red under `'*'` would make the
+    mechanism fire on ordinary edits, and a gate that cries wolf is the quiet
+    bug traded for a louder one rather than fixed (#665's refusal, #966's
+    judgment call). An adapter that is genuinely absent already escalates
+    through `refusal.required()`.
+    """
+    if not isinstance(data, dict):
+        return None
+    if data.get("no_verdict"):
+        reason = data.get("skipped") or ""
+    elif data.get("timeout"):
+        errors = data.get("errors") or []
+        reason = (errors[0].get("msg") if errors else "") or "timed out"
+    else:
+        return None
+    # `tool` is core-set on both of these dicts, so this is the config name and
+    # not something an adapter chose — which matters, because the answer here
+    # decides an exit code.
+    if not _validator_required(str(data.get("tool") or "")):
+        return None
+    return _flat_cell(reason, 300) or "no reason given"
+
+
 def _note_not_checked(results: Dict[str, Any]) -> None:
     """Record every validator in `results` that returned no verdict.
 
@@ -12663,7 +12741,8 @@ def _note_not_checked(results: Dict[str, Any]) -> None:
     recorded are the same set by construction this way.
     """
     for name, data in results.items():
-        if _validator_not_checked(data) is not None:
+        if (_validator_not_checked(data) is not None
+                or _validator_gate_did_not_run(data) is not None):
             _NOT_CHECKED.append(name)
 
 
@@ -12697,6 +12776,17 @@ def _validator_render_diff(before: Optional[Dict[str, Any]], after: Dict[str, An
     # Skipped path never started a timer, so elapsed_s is absent — `-` rendered in time col.
     elapsed = after.get("elapsed_s")
     time_col = f"{elapsed:.1f}s" if elapsed is not None else "-"
+    gate_missed = _validator_gate_did_not_run(after)
+    if gate_missed is not None:
+        # Checked before the `skipped` branch below, and before the arithmetic:
+        # under an escalation the word `skipped` is the wrong one. It is the
+        # honest third state for a checker nobody required, and it is what four
+        # of these five printed while the run exited 0 (#975). The row now
+        # reads the way the exit code does.
+        code_col = "orchestrator" if after.get("timeout") else "adapter"
+        return [f"{_flat_cell(after.get('tool', '?')):12s}: {'NOT CHECKED':<10}  "
+                f"(no verdict about this file)  {time_col:>5}",
+                f"     {code_col}  {gate_missed}"]
     if "skipped" in after:
         # Name the reason. "skipped" alone sends the reader back to the config
         # to work out which of a dozen reasons applied (#406).
@@ -12714,12 +12804,25 @@ def _validator_render_diff(before: Optional[Dict[str, Any]], after: Dict[str, An
         return [f"{tool:12s}: {'NOT CHECKED':<10}  "
                 f"{'(no verdict about this file)'}  {time_col:>5}",
                 f"     adapter  {not_checked}"]
+    # Nothing measured the pre-op state (#832). `before` is None from exactly
+    # two callers and both mean that: `_drain_validator_queue`, where the slow
+    # tier by design never runs a baseline pass, and the inline site when the
+    # baseline produced no result for this validator at all. Falling through
+    # `if before else 0` turned that into a literal zero, so `phpunit-mcp`
+    # reported `0 → 7  (+7) ✗` about seven tests that were already failing for
+    # an environment reason, and the reader nearly reverted a correct edit.
+    # Every slow-tier validator did this on every run.
+    b_unknown = before is None
     b_count = before.get("count", 0) if before else 0
     a_count = after.get("count", 0)
     delta = a_count - b_count
     b_ok = before.get("ok", True) if before else True
     a_ok = after.get("ok", False)
-    if b_count == a_count and b_ok == a_ok:
+    # `not b_unknown` guards the whole equal-counts branch, not just the arrow:
+    # a clean unbaselined run took it and printed `(no new errors)`, which is
+    # the same fabricated comparison with the sign flipped, and quiet enough to
+    # have been left behind by a fix aimed only at the loud one.
+    if not b_unknown and b_count == a_count and b_ok == a_ok:
         # Count/ok unchanged — surface metric deltas (e.g. tests_total) so the LLM
         # knows whether scope actually changed (7 tests → 10 tests, both pass).
         b_metrics = (before or {}).get("metrics") or {}
@@ -12769,20 +12872,34 @@ def _validator_render_diff(before: Optional[Dict[str, Any]], after: Dict[str, An
         return out
     marker = (mark("✗") if _validator_regressed(before, after)
               else (mark("✓") if a_ok else mark("⚠")))
-    arrow = f"{b_count} → {a_count}"
-    sign = f"({'+' if delta >= 0 else ''}{delta})"
-    state_col = f"{sign} {marker}"
+    if b_unknown:
+        # `?`, not `0`. And no `(+N)`: N minus an unmeasured baseline is not N,
+        # so fixing the arrow and keeping the delta would move the false number
+        # one column rather than remove it. The marker stays as computed — the
+        # file does have these errors now, and softening that would trade this
+        # bug for the one where a real regression reads as a shrug.
+        arrow = f"? → {a_count}"
+        state_col = f"{marker} (baseline not measured)"
+    else:
+        arrow = f"{b_count} → {a_count}"
+        sign = f"({'+' if delta >= 0 else ''}{delta})"
+        state_col = f"{sign} {marker}"
     out = [f"{tool:12s}: {arrow:<10}  {state_col:<11}  {time_col:>5}"]
     if not a_ok:
         before_msgs = {e.get("msg") for e in (before.get("errors") or [])} if before else set()
         new = [e for e in (after.get("errors") or []) if e.get("msg") not in before_msgs]
+        # The `+` prefix means "introduced by this op". With no baseline,
+        # `before_msgs` is empty and every finding qualifies — the third place
+        # on this line where the absence is read as a measurement.
+        bullet = " " if b_unknown else "+"
         for e in new[:5]:
             line_n = f"L{e['line']}" if e.get("line") else "  "
             code = e.get("code") or ""
             msg = _flat_cell(e.get("msg") or "", 120)
-            out.append(f"  + {line_n} {code}  {msg}")
+            out.append(f"  {bullet} {line_n} {code}  {msg}")
         if len(new) > 5:
-            out.append(f"  + ... +{len(new) - 5} more new")
+            out.append(f"  {bullet} ... +{len(new) - 5} more"
+                       f"{'' if b_unknown else ' new'}")
     return out
 
 
