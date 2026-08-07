@@ -152,6 +152,9 @@ import defaults  # noqa: E402
 import dispatcher  # noqa: E402
 import transport  # noqa: E402
 
+sys.path.insert(0, str(_WATCH.parent))
+import _filter_tokens  # noqa: E402  (the one tokenizer the boards share)
+
 
 def _load(name: str, path: Path):
     spec = importlib.util.spec_from_file_location(name, path)
@@ -191,29 +194,105 @@ RADAR_OPTIONS = {"quiet_when_healthy"}
 # failed to run, which is #486 with the failure moved one level up.
 RADAR_QUIET_DEFAULT = False
 
+# Filter keys this tier can actually apply, and they are its own — deliberately
+# neither the op's set nor the GitHub tier's (#961).
+#
+# Narrower than `gl-mrs`: `per=` is a page size `live_open_mrs` reads from
+# config and never from the arg, so accepting it would drop it in silence one
+# level down.
+#
+# Wider than `tiers/gh_prs.py`: `glab mr list` has `--milestone`,
+# `--source-branch` and `--target-branch` and `gh pr list` has none of them.
+# Copying the GitHub tier's vocabulary would refuse three filters this tier can
+# honour — the opposite error, and just as wrong.
+KNOWN_FILTERS = set(mrs._FILTER_FLAG) | {"state"}
+
+# Tokens that are flags rather than key=value. `iids` and `failed` are board
+# *shapes* the op offers and this tier does not: a radar board silently narrowed
+# to a bare id list, or to only the failing rows, is the same lie as a widened
+# one — and `iids` is the payload the feed hands the watcher spawner.
+KNOWN_FLAGS = {"nopipe"}
+
+# Keys whose value this tier maps rather than forwards. `state=mergd` is in
+# KNOWN_FILTERS, so it survives the unknown-token check — and then
+# `_build_list_cmd` finds no entry in `_STATE_FLAG`, emits no flag, and glab
+# answers with its default, `opened`. The merged board renders as the open one
+# and radar heals watchers onto it.
+VALUE_DOMAINS: dict[str, object] = {"state": mrs._STATES}
+
 
 class RadarError(RuntimeError):
     """Live GitLab could not be reached. Never degrade to 'all green'."""
+
+
+def _parse(arg: str) -> dict[str, list[str]]:
+    """Tokenise against *this tier's* vocabulary, or raise. See `resolve_filter`."""
+    multi, _flags, unknown = _filter_tokens.parse_multi(
+        arg, KNOWN_FILTERS, KNOWN_FLAGS)
+    if unknown:
+        raise RadarError(
+            "radar: gl-mrs tier " + _filter_tokens.unknown_error(
+                unknown, KNOWN_FILTERS, KNOWN_FLAGS)
+            + " Radar does not just print this population, it watches it: an "
+              "unapplied token widens the scope, and the fleet then spawns over "
+              "MRs nobody asked about."
+        )
+    bad = [b for key, vals in multi.items() for v in vals
+           for b in _filter_tokens.bad_values({key: v}, VALUE_DOMAINS)]
+    if bad:
+        raise RadarError("radar: gl-mrs tier " + _filter_tokens.value_error(bad))
+    return multi
 
 
 def default_filter() -> dict[str, list[str]]:
     """The population a bare `radar` covers, read from defaults.py.
 
     Not a literal here: the whole point of that module is that the shell
-    supervisor and this tier cannot describe different populations.
+    supervisor and this tier cannot describe different populations. Parsed
+    through the same check as a typed arg, so a `DEFAULT_FILTER` this tier
+    could not honour is loud rather than quietly reduced.
     """
-    return mrs._parse_multi(defaults.DEFAULT_FILTER)[0]
+    return _parse(defaults.DEFAULT_FILTER)
 
 
 def resolve_filter(arg: str = "") -> dict[str, list[str]]:
-    """The one filter every other step reads. gl-mrs vocabulary, or default.
+    """The one filter every other step reads. Tier vocabulary, or `RadarError`.
 
     A key may repeat — `author=@me,author=modular.system` — because GitLab
     takes one author per query and the union is the population the caller
     described.
+
+    Refusing is the whole point (#961). This used to read
+    `mrs._parse_multi(arg)[0]`, discarding the tokenizer's third element — the
+    tokens it could not place — so an unapplied token widened the population
+    two different ways and said nothing about either:
+
+        radar:milestne=x            -> {} -> `multi or default_filter()`, i.e.
+                                       every open MR of mine.
+        radar:author=@me,milestne=x -> {"author": ["@me"]}, labelled
+                                       `scope author=@me` — a scope line true
+                                       about the query and false about the
+                                       question.
+
+    Worse here than at the op level, which is why it is refused before anything
+    else runs. `gh-prs` printing an unfiltered board wastes a read; this tier
+    resolves a *population* and then spawns over it — `heal()` starts a per-MR
+    watcher per iid and `feed_scope()` names the discovery feed, so a widened
+    scope fires `mr_opened` for strangers' MRs. The mr-feed poller already
+    declines exactly this by returning `None` (#939).
+
+    **Refuse, not decline.** The poller returns `None` because it has no reader:
+    it runs in a loop and its only channel is the events it emits, so the safe
+    answer is to emit nothing. A tier has a reader, and radar's `tier_reports`
+    already isolates one — a `RadarError` lands in the `failures` channel
+    (stderr, exit 1) while every other tier still renders its board. So refusal
+    here costs nothing that declining would have saved and buys the one thing
+    an unattended run needs: somebody finds out. `radar_state` is the exception
+    and says `REFUSED` in place, because a read-only view that raises is the
+    view you cannot open.
     """
     arg = (arg or "").strip()
-    multi = mrs._parse_multi(arg)[0] if arg else {}
+    multi = _parse(arg) if arg else {}
     return multi or default_filter()
 
 
@@ -970,7 +1049,13 @@ def radar_state(options: dict | None = None) -> list[str]:
     the state files — and `glab` is never invoked.
     """
     options = options or {}
-    multi = resolve_filter(str(options.get("_arg") or ""))
+    try:
+        multi = resolve_filter(str(options.get("_arg") or ""))
+    except RadarError as exc:
+        # Inspection must stay openable. Everything below is keyed on the
+        # filter, so there is nothing honest to print — but raising would make
+        # the one view that never spawns the one view you cannot look at.
+        return [f"  filter    : REFUSED — {exc}"]
     scope = feed_scope(multi)
     out = [f"  filter    : {filter_string(multi)}"
            f"{' (default)' if multi == default_filter() else ''}"]

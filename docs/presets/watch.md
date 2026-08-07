@@ -159,6 +159,41 @@ Named, **not killed**. Two populations at once is a legitimate arrangement — t
 
 **What this does not do.** It gives visibility, not continuity: a bare `radar` after a wide one still covers the default, and re-widening still means re-typing the filter. That is deliberate. Persisting the filter would mean a board whose population comes from a file nobody in the session chose, which is the same hidden state that produced the split scope in the first place.
 
+### A token the tier cannot apply is refused ([#961](https://github.com/Digital-Process-Tools/claude-supertool/issues/961))
+
+`radar:milestne=v19` used to render every open MR of yours, exit 0 and say nothing — the tier discarded the tokenizer's unrecognised-token list, so the typo widened the population instead of narrowing it. Beside a good key it was quieter still: `radar:author=@me,milestne=v19` dropped the typo and labelled the board `scope author=@me`, which is true about the query and false about the question.
+
+That matters more here than on `gl-mrs` itself, because a board is printed and a **scope is watched**. Radar heals a per-MR watcher onto every iid the scope resolves and names the discovery feed after it, so a silently widened scope starts firing `mr_opened` for other people's MRs.
+
+Both tiers now refuse, before any `glab`/`gh` call and before anything is spawned:
+
+```
+radar: gl-mrs tier ERROR: unrecognised token(s): 'milestne=v19'. Nothing was
+filtered by them, so the board is NOT the answer to the question you asked —
+refusing rather than printing it. Filters: assignee, author, label, milestone,
+reviewer, source-branch, state, target-branch. Flags: nopipe. Radar does not
+just print this population, it watches it: an unapplied token widens the scope,
+and the fleet then spawns over MRs nobody asked about.
+```
+
+A refusal is per tier: it goes to stderr and radar exits 1, and every **other** registered tier still renders its board. `radar:--state` never raises — it prints `filter : REFUSED — …` in place, because a read-only view that throws is the one view you cannot open.
+
+**The vocabulary is the tier's own, and it is deliberately not the op's.**
+
+| | `gl-mrs` op | `gl-mrs` tier | `gh-prs` tier |
+| --- | --- | --- | --- |
+| `author` `assignee` `reviewer` `label` `state` | yes | yes | yes |
+| `milestone` `source-branch` `target-branch` | yes | yes | **no** — `gh pr list` has no such flag |
+| `per=` | yes | **no** — the tier reads the page size from config | no |
+| `iids` `failed` | yes | **no** — board *shapes*, not populations | no |
+| `nopipe` | yes | yes | yes |
+
+`iids` and `failed` are refused rather than accepted because a radar board silently narrowed to a bare id list, or to only the failing rows, is the same lie as a widened one. `per=` is refused because `live_open_mrs` takes its page size from `ops.gl-mrs`, so honouring it in the arg would be a knob dropped one level down.
+
+A **known key with a value that maps to nothing** is refused on the same path. `state=mergd` survives the key check and then emits no `--merged`, so glab answers with its default `opened` — the merged board renders as the open one, and radar watches it. The refusal names the accepted values.
+
+Not refused: a value the backend rejects or matches nothing. `milestone=nosuchmilestone` is forwarded verbatim, and an empty board there is the truth.
+
 ### `[conflict]` vs `[empty]` ([#471](https://github.com/Digital-Process-Tools/claude-supertool/issues/471))
 
 `has_conflicts` is **not** a conflict field — it is an alias for `cannot_be_merged?`, which GitLab annotates as also covering `has_no_commits?` and `branch_missing?`. Rendering it as `[conflict]` claimed a merge conflict on MRs that have no diff at all, which is [#465](https://github.com/Digital-Process-Tools/claude-supertool/issues/465)'s false positive on a second surface.
