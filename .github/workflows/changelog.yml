@@ -41,6 +41,12 @@ jobs:
       - name: Every fragment name and body parses
         run: python3 .github/scripts/assemble_changelog.py --check
 
+      # Repo-wide and every PR, not at release time. The refs are the surface
+      # a release leaves behind rather than one it reads, so the run that finds
+      # them stale must not be the run cutting the tag (#918).
+      - name: CHANGELOG.md's link refs agree with its release headings
+        run: python3 .github/scripts/assemble_changelog.py --check-links
+
       - name: A user-visible change carries a fragment
         env:
           BASE: ${{ github.base_ref }}

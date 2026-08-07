@@ -35,7 +35,8 @@ import sys
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional, Sequence, Set, Tuple
+from typing import (AbstractSet, Dict, Iterator, List, Optional, Sequence, Set,
+                    Tuple)
 
 try:
     import markdown_it as _markdown_it
@@ -629,6 +630,131 @@ def _rewrite_links(lines: List[str], version: str
     return None
 
 
+# Versions with a `## [x.y.z]` section and no tag anywhere — nothing was ever
+# pushed for them, so there is no release page to link to and a
+# `releases/tag/vX.Y.Z` URL invented for one is a 404 that renders as a working
+# link. This is the audit's third state made explicit: not "ok", not a finding,
+# but "there is no answer to give". It is closed by construction — every version
+# from 0.20.0 on is cut by the assembler, which writes the ref as it goes — and
+# `tests/test_changelog_link_refs_918.py` refuses anything at or above that floor
+# being added here.
+UNTAGGED_RELEASES = frozenset({
+    "0.19.0", "0.18.0", "0.17.0", "0.16.0", "0.15.0", "0.14.0", "0.11.0",
+})
+
+_COMPARE_HREF_RE = re.compile(r"/compare/v(?P<version>\d+\.\d+\.\d+)\.\.\.HEAD$")
+
+
+def release_versions(text: str) -> List[str]:
+    """Every `## [x.y.z]` release version, newest first, off a real parse.
+
+    A parse and not a line prefix, for the reason #936 cost three rounds: this
+    file quotes release headings inside fenced blocks by house style, so the
+    characters `## [` appear in it without a heading being there.
+    """
+    versions = []
+    for _, tag, title in _headings(text):
+        if tag != "h2" or not title.startswith("[") or "]" not in title:
+            continue
+        label = title[1:title.index("]")]
+        if _VERSION_RE.match(label):
+            versions.append(label)
+    return versions
+
+
+def audit_link_refs(text: str,
+                    untagged: Optional[AbstractSet[str]] = None) -> List[str]:
+    """What the link-ref table at the bottom disagrees with the file about.
+
+    The assembler writes one definition per cut, which keeps the *next* release
+    honest and says nothing about the state it inherited — `[0.24.0]` and
+    `[0.25.0]` shipped with none, and `[Unreleased]` sat two tags behind twice
+    (#918). Both are the same defect: a link that resolves, returns a real page,
+    and answers a different question than the one the reader asked.
+
+    Raises rather than returning `[]` when there is no release heading at all.
+    An empty finding list from a document that could not be audited is the
+    absence-read-as-an-all-clear this file exists to not do.
+    """
+    declared = UNTAGGED_RELEASES if untagged is None else untagged
+    versions = release_versions(text)
+    if not versions:
+        raise CannotValidate(
+            "no `## [x.y.z]` release heading was found, so there is nothing to "
+            "audit the link refs against — 0 findings here would read as a "
+            "clean table rather than as a table nobody looked at.")
+    _, refs, _ = _document_facts(text)
+
+    findings: List[str] = []
+    for version in versions:
+        href = refs.get(version.upper())
+        if version in declared and href:
+            findings.append(
+                "[{0}] is declared as never tagged but has a link ref ({1}) — "
+                "one of the two is wrong, and a `releases/tag/v{0}` for a tag "
+                "that was never pushed is a 404 that reads as a working link"
+                .format(version, href))
+        elif version not in declared and not href:
+            findings.append(
+                "`## [{0}]` has no link ref, so it renders as literal bracketed "
+                "text instead of a link to the release — add "
+                "`[{0}]: <repo>/releases/tag/v{0}` to the block at the bottom"
+                .format(version))
+
+    present = set(versions)
+    for version in sorted(declared - present):
+        findings.append(
+            "[{0}] is declared as never tagged but has no `## [{0}]` section in "
+            "the file — a stale declaration is where a genuinely missing ref "
+            "gets filed away without anyone deciding to".format(version))
+
+    unreleased = refs.get("UNRELEASED")
+    if not unreleased:
+        findings.append(
+            "[Unreleased] has no link ref — the heading a reader clicks to see "
+            "what is pending links nowhere")
+    else:
+        match = _COMPARE_HREF_RE.search(unreleased)
+        if not match:
+            findings.append(
+                "[Unreleased] does not resolve to a `compare/vX.Y.Z...HEAD` "
+                "link: {0}".format(unreleased))
+        elif match.group("version") != versions[0]:
+            findings.append(
+                "[Unreleased] compares from v{0} but the newest release section "
+                "is [{1}] — that link resolves and shows everything released "
+                "since v{0} as unreleased work".format(
+                    match.group("version"), versions[0]))
+    return findings
+
+
+def check_links(changelog: Path) -> int:
+    """`--check-links`: audit the table, and say which of the three it did."""
+    try:
+        text = changelog.read_text(encoding="utf-8")
+    except OSError as exc:
+        _receipt("skipped", "cannot read {0}: {1} — nothing was audited"
+                 .format(changelog, exc))
+        return SKIPPED
+    try:
+        findings = audit_link_refs(text)
+    except CannotValidate as exc:
+        _receipt("skipped", "{0}".format(exc))
+        return SKIPPED
+    if findings:
+        _receipt("refused", "{0} finding(s) in {1}'s link ref table"
+                 .format(len(findings), changelog.name), findings)
+        return REFUSED
+    versions = release_versions(text)
+    _receipt("ok", "{0} release section(s) in {1}, parsed with markdown-it-py "
+                   "{2}: each has a link ref or is declared untagged, and "
+                   "[Unreleased] compares from v{3}"
+             .format(len(versions), changelog.name, _MD_VERSION, versions[0]),
+             ["untagged  " + ", ".join(sorted(UNTAGGED_RELEASES & set(versions)))]
+             if UNTAGGED_RELEASES & set(versions) else [])
+    return OK
+
+
 def _verify_written(before: str, after: str, emitted: Sequence[str],
                     written_refs: Sequence[str]) -> List[str]:
     """Re-parse the file about to be written and report what it gained.
@@ -877,6 +1003,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--keep", action="store_true", help="do not delete consumed fragments")
     parser.add_argument("--check", action="store_true",
                         help="validate every fragment name and body; write nothing")
+    parser.add_argument("--check-links", dest="check_links", action="store_true",
+                        help="audit CHANGELOG.md's link ref table; write nothing")
     parser.add_argument("--count", action="store_true",
                         help="print the fragment count as a bare integer, and nothing else")
     args = parser.parse_args(list(argv) if argv is not None else None)
@@ -895,6 +1023,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print(exc, file=sys.stderr)
             return REFUSED
         return OK
+
+    if args.check_links:
+        return check_links(Path(args.changelog))
 
     if args.check:
         return check(directory)

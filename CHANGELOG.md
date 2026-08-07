@@ -3091,9 +3091,11 @@ Initial public changelog. See git history for prior versions.
 
 [Unreleased]: https://github.com/Digital-Process-Tools/claude-supertool/compare/v0.26.0...HEAD
 [0.26.0]: https://github.com/Digital-Process-Tools/claude-supertool/releases/tag/v0.26.0
+[0.25.0]: https://github.com/Digital-Process-Tools/claude-supertool/releases/tag/v0.25.0
+[0.24.0]: https://github.com/Digital-Process-Tools/claude-supertool/releases/tag/v0.24.0
 [0.23.0]: https://github.com/Digital-Process-Tools/claude-supertool/releases/tag/v0.23.0
 [0.22.0]: https://github.com/Digital-Process-Tools/claude-supertool/releases/tag/v0.22.0
 [0.21.0]: https://github.com/Digital-Process-Tools/claude-supertool/releases/tag/v0.21.0
 [0.20.0]: https://github.com/Digital-Process-Tools/claude-supertool/releases/tag/v0.20.0
+[0.13.1]: https://github.com/Digital-Process-Tools/claude-supertool/releases/tag/v0.13.1
 [0.13.0]: https://github.com/Digital-Process-Tools/claude-supertool/releases/tag/v0.13.0
-[0.11.0]: https://github.com/Digital-Process-Tools/claude-supertool/releases/tag/v0.11.0

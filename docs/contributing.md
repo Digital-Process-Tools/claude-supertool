@@ -223,7 +223,7 @@ changelog.d/878.fixed.second-entry.md
 
 ### Cutting a release
 
-The release already edits four files, and `test_plugin_manifest_version_matches_code` plus `test_pyproject_version_522` guard three of them against each other:
+The release edits four files, and `test_plugin_manifest_version_matches_code`, `test_pyproject_version_522` and `test_the_newest_release_section_is_the_version_that_ships` guard all four against each other:
 
 1. `.claude-plugin/plugin.json` — `version`
 2. `supertool.py` — `VERSION` (~line 113)
@@ -244,6 +244,18 @@ It inserts `## [0.26.0] - <today>` above the newest existing release, folds ever
 **`## [Unreleased]` is `changelog.d/` now.** The heading stays in `CHANGELOG.md` — the `[Unreleased]:` compare link points at it — but nothing accumulates under it any more. Anything that *is* under it when a release is cut (the entries that predate this mechanism, or a hand-edit somebody made anyway) is **folded into the release being cut**, above the fragment-derived entries, with same-named `###` subsections merged rather than duplicated. `[Unreleased]` means "goes out in the next release", so it goes out in it: leaving it behind would ship a tag that silently omits real work while that work still reads as pending.
 
 Nothing is trusted about that merge. The assembler counts the entries on both sides, counts the entries it produced, and **refuses to write** if the two do not balance — a merge that dropped a line would otherwise be indistinguishable from a clean run. The receipt says how many it folded, including when the answer is zero.
+
+**The link-ref table at the bottom is audited on every pull request**, not at release time ([#918](https://github.com/Digital-Process-Tools/claude-supertool/issues/918)):
+
+```bash
+python3 .github/scripts/assemble_changelog.py --check-links
+```
+
+The assembler writes one definition per cut, which keeps the *next* release honest and says nothing about the state it inherited — `[0.24.0]` and `[0.25.0]` shipped with no definition at all, so those headings rendered as literal bracketed text, and `[Unreleased]` sat comparing from `v0.23.0` while two tagged releases had shipped, which is a link that resolves, returns a real diff, and shows released work as pending. So the audit reads the whole table: every `## [x.y.z]` heading has a definition, `[Unreleased]` compares from the newest section, and no definition names a version the file does not document.
+
+**A version that was never tagged is the third state, and it is declared rather than inferred.** `0.11.0` and `0.14.0`–`0.19.0` have sections here and no tag anywhere, so there is no release page to link to, and a `releases/tag/vX.Y.Z` invented for one is a 404 that renders as a working link. They are listed in `assemble_changelog.UNTAGGED_RELEASES`, the list is audited too — a declared version that *has* a definition, or that is not in the file, is a finding — and `tests/test_changelog_link_refs_918.py` refuses anything from 0.20.0 on being added to it, so the declaration cannot become somewhere a real regression gets filed away.
+
+`test_the_newest_release_section_is_the_version_that_ships` closes the fourth file into the ring above: the newest `## [x.y.z]` section must be `supertool.VERSION`, so a bump that moves three files and not this one is red.
 
 **Counting what is pending** is a file count, not a grep: `python3 .github/scripts/assemble_changelog.py --count` prints a bare integer, and refuses if any name would fail to assemble. Counting `- **` lines under a heading answered a question about line prefixes and was read as an answer about pending work.
 
