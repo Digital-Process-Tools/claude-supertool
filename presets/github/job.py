@@ -397,6 +397,51 @@ def _print_unmatched_failure(
     )
 
 
+# `:fail` fits exactly one conclusion. Stated as the complement rather than a
+# list of the others (`cancelled`, `timed_out`, `skipped`, ...) so a conclusion
+# GitHub adds later, or an in-progress job whose display status is `queued`,
+# lands on the disclosure by default instead of on the silent overclaim.
+_FAIL_SELECTOR_FITS = "failure"
+
+
+def _selection_mismatch(display_status: str, job_id: str) -> str:
+    """Say that error-block selection cannot answer for this job, and what can.
+
+    #916: `:fail` had the job's conclusion in hand — it prints it two lines
+    above — and applied the error-block selector anyway, then headlined the
+    result as complete. A reader acting reasonably on `All error blocks (11
+    lines matched, no tail truncation)` concludes the log holds nothing; on the
+    job in the issue the log held six `Terminate orphan process` lines that were
+    the strongest available evidence about a hang, and no error pattern could
+    ever have matched them.
+
+    Disclosure rather than widening the pattern set, deliberately. Widening
+    fixes one log: the next cancelled job's tell is some other unmarked line,
+    and a larger set that still misses it produces a longer and more
+    confident-looking block. A pattern set cannot be complete, so the honest
+    output is that these N lines matched AND that this selector is not where the
+    cause lives here — the third state, said out loud rather than implied by an
+    empty result.
+
+    Not suppression: the matched lines are still printed. Trading a loud wrong
+    answer for no answer is the same defect pointed the other way.
+    """
+    if display_status == _FAIL_SELECTOR_FITS:
+        return ""
+    return (
+        f"\n> NOTE: this job's conclusion is `{display_status}`, not `failure`, so "
+        f"error-block selection is a poor fit — it can only find lines an error "
+        f"pattern marks, and a job that produced no failure puts its diagnostics "
+        f"outside them (teardown, orphan processes, the tail). Treat the above as "
+        f"the lines that MATCHED, not as what the log contains.\n"
+        f"> Read it instead with:\n"
+        f">   ./supertool 'gh-job:{job_id}:raw:-80'          # tail, where a "
+        f"cancellation's evidence usually sits\n"
+        f">   ./supertool 'gh-job:{job_id}:grep:orphan'      # processes alive at "
+        f"teardown = a hang, not a slow suite"
+    )
+
+
 def _find_error_sections(lines: list[str], patterns: list[str], context: int) -> list[tuple[int, str]]:
     """Find lines matching error patterns and return them with context."""
     matches: set[int] = set()
@@ -774,19 +819,34 @@ def main() -> int:
 
     # fail/errors mode — dump ALL matched blocks, no tail cap
     if errors_mode:
+        mismatch = _selection_mismatch(display_status, job_id)
         if not error_sections:
             if display_status == "failure":
                 _print_unmatched_failure(job_id, display_status, patterns, lines, total)
             else:
                 print("\n## No error patterns matched")
+                if mismatch:
+                    print(mismatch)
             return 0
         matched_count = len([e for e in error_sections if e[0] > 0])
-        print(f"\n## All error blocks ({matched_count} lines matched, no tail truncation)")
+        if mismatch:
+            # #916. The old header read `All error blocks (N lines matched, no
+            # tail truncation)` on a cancelled job — two claims true of the
+            # SELECTOR and false of the LOG. A cancellation writes exactly one
+            # error line and puts everything diagnostic outside it, so "all" is
+            # a statement about a filter that could not have reached the cause.
+            # The op already knows: `Status: cancelled` is printed above from
+            # this same value.
+            print(f"\n## Error blocks ({matched_count} lines matched) — but see below")
+        else:
+            print(f"\n## All error blocks ({matched_count} lines matched, no tail truncation)")
         for line_num, text in error_sections:
             if line_num == -1:
                 print(text)
             else:
                 print(f"  {line_num:>5} | {text}")
+        if mismatch:
+            print(mismatch)
         if resolution_line:
             print(f"\n{resolution_line}")
         return 0

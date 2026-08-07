@@ -138,6 +138,47 @@ def bad_values(
     return bad
 
 
+def extra_segments_error(argv: list[str], op: str) -> str | None:
+    """Refuse when the `:` tokenizer split an arg the board only reads once.
+
+    A board op's whole grammar is ONE comma-separated segment, so `main()` reads
+    `sys.argv[1]` and nothing else. But supertool hands every `:`-segment to the
+    preset as its own argv entry, so `gh-issues:state=open:GARBAGE` arrives as
+    `['state=open', 'GARBAGE']` and the second half is dropped in silence — the
+    full board printed as the answer to a question it does not answer.
+
+    That is #864 one layer up. #864 taught the *tokenizer* to refuse a token it
+    could not place; nothing guarded the argv the tokenizer is handed, so the
+    refusal is not bypassed by a mangled token, it is bypassed by never being
+    shown the token at all (#964).
+
+    The colon-in-a-value case is one instance: `label=lane:tracker-ops` splits
+    into a perfectly valid `label=lane` plus an orphan, so every value-level
+    check passes and the wrong label is queried. There is no escape (`\\:`
+    splits identically, and #806 declined to promote it), so this refuses and
+    names the one form that survives the tokenizer.
+
+    Returns None for the ordinary single-segment call. Ops with a genuinely
+    positional grammar — `gh-job:ID:raw:START:END` — must NOT call this.
+    """
+    extra = [a for a in argv[2:]]
+    if not extra:
+        return None
+    return (
+        "ERROR: extra ':' segment(s) that were never applied: "
+        + ", ".join(repr(t) for t in extra)
+        + f". `{op}` takes its filters as ONE comma-separated segment, and "
+          "supertool splits the op argument on ':' — so everything after the "
+          "first ':' was dropped before any filter was parsed. The board would "
+          "have been built from a partly-applied filter and is NOT the answer "
+          "to the question you asked, so it is refused rather than printed. "
+          f"Write it as one segment: {op}:key=value,key=value. A value that "
+          "itself contains ':' cannot be expressed here at all — there is no "
+          "escape — so query it with the backend CLI directly and file the "
+          "gap."
+    )
+
+
 def value_error(bad: list[tuple[str, str, str]]) -> str:
     """The refusal for a key that is known and a value that is not."""
     parts = [

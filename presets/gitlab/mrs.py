@@ -578,6 +578,10 @@ def _footer(mrs: list[dict], watched: set[str], show_pipe: bool, unchecked: int 
 
 
 def main() -> int:
+    extra = _filter_tokens.extra_segments_error(sys.argv, "gl-mrs")
+    if extra:
+        print(extra, file=sys.stderr)
+        return 1
     arg_str = sys.argv[1] if len(sys.argv) > 1 else ""
     filters, flags, unknown_tokens = _parse_args(arg_str)
     if unknown_tokens:
