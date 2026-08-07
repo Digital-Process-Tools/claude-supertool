@@ -50,6 +50,7 @@ class TestHugeBatch:
         # Cap rejection is O(1) — must be near-instant.
         assert elapsed < 5, f"Cap rejection took {elapsed:.1f}s — should be near-instant"
 
+    @pytest.mark.slow
     def test_batch_at_cap_runs_to_completion(self, tmp_path: Path) -> None:
         """A batch exactly at MAX_BATCH_OPS runs without rejection (cap is exclusive
         of the threshold)."""

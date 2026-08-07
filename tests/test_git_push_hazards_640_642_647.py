@@ -130,8 +130,14 @@ class _Sandbox:
 
     # -- hazard fixtures ---------------------------------------------------
 
-    def _sleeper(self, name: str, seconds: int = 90, spawn_delay: int = 0) -> str:
+    def _sleeper(self, name: str, seconds: int = 5, spawn_delay: int = 0) -> str:
         """A real python script that records it ran, then sleeps past a budget.
+
+        `seconds` only has to outlast `_BudgetAfterSpawn.budget` (2s), whose
+        clock starts at the sentinel — so 5s carries a 2.5x margin. It used to
+        be 90s, which no assertion needed and which the runners paid in full:
+        this test cost 91.63s of wall clock on ubuntu 3.9 while taking 4.59s
+        locally, because the orphaned helper is only waited on there.
 
         `spawn_delay` sleeps *before* the sentinel is written, standing in for a
         runner on which git is simply slow to reach the helper at all — the #828
@@ -327,6 +333,7 @@ class _BudgetAfterSpawn:
 # #640 — TimeoutExpired on the rebase-recovery path
 # ===========================================================================
 
+@pytest.mark.slow
 def test_fetch_timeout_gives_a_verdict_not_a_traceback(box, monkeypatch) -> None:
     """A fetch that outlasts its budget must produce a receipt, not a stack trace.
 
@@ -386,6 +393,7 @@ def test_rebase_timeout_names_the_paused_worktree_and_the_way_out(
     assert "git rebase --abort" in out
 
 
+@pytest.mark.slow
 def test_rebase_timeout_fixture_survives_a_slow_helper_spawn(box, monkeypatch) -> None:
     """#828: the budget must not expire before the helper it exists to catch.
 

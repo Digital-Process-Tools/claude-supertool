@@ -1,0 +1,52 @@
+name: slow tests
+
+# #891: `slow` is excluded from the main `tests` workflow's twelve legs (see
+# .github/workflows/tests.yml) so a full-duration timeout/hang/disclosure
+# test does not run on every push. Excluding it from CI entirely would mean
+# these tests run *nowhere* — they are this repo's most-filed defect class —
+# so this workflow keeps them running, just less often than every push. On a
+# cron rather than per-push: the whole point of #891 was to take these tests
+# off the per-push critical path, and a per-push run here would put them
+# right back.
+
+on:
+  schedule:
+    # 06:00 UTC daily. No particular significance to the hour — anything
+    # that runs at least once a day catches a regression before it has been
+    # live a week.
+    - cron: "0 6 * * *"
+  workflow_dispatch: {}
+
+# Read-only: this job runs tests and publishes nothing. Declared rather than
+# inherited, because the repository default is what a future settings change
+# would silently widen.
+permissions:
+  contents: read
+
+jobs:
+  slow:
+    name: pytest -m slow (ubuntu-latest, 3.12)
+    runs-on: ubuntu-latest
+    # Sized like the main pytest job's floor
+    # (tests/test_ci_job_timeouts_722.py MIN_BUDGET_MIN["pytest"] = 20)
+    # rather than tightly: this is a hang-guard, not a benchmark, and firing
+    # on a slow runner instead of a real hang is the #702 trade repeated
+    # here.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install supertool + test deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev]
+      - name: Run slow tests
+        # -n auto: these tests are individually heavy, not numerous, so
+        # parallelism still helps. --no-cov: this job measures nothing about
+        # coverage, only whether the disclosure paths still pass.
+        shell: bash
+        run: python -X utf8 -m pytest -m 'slow' -n auto --tb=short --no-cov --durations=25 -q

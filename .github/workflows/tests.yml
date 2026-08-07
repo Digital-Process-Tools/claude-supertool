@@ -56,12 +56,28 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e .[dev]
-      - name: Run tests (full suite — slow tests included)
-        # Override pyproject addopts default so CI exercises the slow
-        # MCP-fallback and batch-stress paths the dev inner loop skips —
-        # everything except `benchmark`, whose wall-clock assertions on a
-        # shared runner report on the runner (#485). A red CI row has to mean
-        # "this diff is wrong" or it stops being read.
+      - name: Run tests (excludes slow and benchmark — see #891)
+        # Override pyproject addopts default. Until #891 this ran the `slow`
+        # marker on all twelve legs, on every push — marking a test `slow`
+        # changed the local inner loop and nothing else. `slow` is excluded
+        # here too now, same as the local default; `benchmark` stays
+        # excluded because its wall-clock assertions on a shared runner
+        # report on the runner (#485). A red CI row has to mean "this diff
+        # is wrong" or it stops being read.
+        #
+        # `slow` tests still run — on a schedule, in
+        # .github/workflows/slow-tests.yml — rather than nowhere: they are
+        # timeout/hang/network-failure disclosure tests, this repo's
+        # most-filed defect class, and a test that runs nowhere is deleted
+        # with extra steps.
+        #
+        # `--durations=25` (#891 scope item 3): every measurement behind
+        # #891/#917 was taken on macOS, and nobody had identified which
+        # tests are actually slow on Windows — ~7 of a Windows leg's ~10.5
+        # minutes are spent between 98% and 99% of the progress bar with
+        # nothing in the log to say which test is running there. This makes
+        # the tail name itself instead of being guessed at.
+        #
         # bash shell forced so `|| true` works on Windows (PowerShell default
         # exits on pytest's non-zero status, skipping the junit-xml parser).
         # The Python step parses junit-xml and re-emits the failures with their
@@ -82,7 +98,7 @@ jobs:
         # whose blast radius includes the tests that would catch its own
         # regression is not a fix. Pinned by `tests/test_ci_encoding_546.py`.
         shell: bash
-        run: python -X utf8 -m pytest -m 'not benchmark' --tb=no --no-cov --junit-xml=junit.xml -q
+        run: python -X utf8 -m pytest -m 'not slow and not benchmark' --tb=no --no-cov --durations=25 --junit-xml=junit.xml -q
       - name: Show failing tests with full messages (always runs)
         # `--tb=no` above means the one-line summary is all there is, and pytest
         # elides the middle of a long one to fit the terminal width — on one real

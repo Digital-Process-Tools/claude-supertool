@@ -541,8 +541,8 @@ symlink or an install-time artifact) and is absent from every worktree, since
 tests fail, you're on a stale checkout of this doc's advice, not a real
 regression — check out master and re-run before assuming your change broke it.
 
-Enable the pre-push hook (slow tests included, coverage not gated, as CI runs
-them):
+Enable the pre-push hook (mirrors CI: excludes `slow` and `benchmark`,
+coverage not gated):
 
 ```bash
 git config core.hooksPath .githooks
