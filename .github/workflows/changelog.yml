@@ -24,11 +24,21 @@ jobs:
         with:
           fetch-depth: 0
 
+      # The guard is a CommonMark parser now (#936), so this leg has to have
+      # one. It did not: this job was `actions/checkout` and a bare `python3`,
+      # and the assembler was stdlib-only to match. Without the install the
+      # check would report `skipped` on every pull request and exit non-zero —
+      # a red leg that pins nothing, which is one step better than a green leg
+      # that pins nothing and no more than that. Pinned by
+      # `tests/test_changelog_fragment_parser_936.py`.
+      - name: Install the CommonMark parser the fragment guard is
+        run: python3 -m pip install --disable-pip-version-check markdown-it-py
+
       # Names must parse before anything else is claimed about them. This is
       # repo-wide, not diff-scoped: a fragment somebody else merged with a bad
       # name is a release that will refuse, and the PR that has to find out is
       # not the one cutting the tag.
-      - name: Every fragment name parses
+      - name: Every fragment name and body parses
         run: python3 .github/scripts/assemble_changelog.py --check
 
       - name: A user-visible change carries a fragment
