@@ -118,6 +118,29 @@ The first prints one page and says whether it is the whole list; the second foll
 ```
 Returns approval state, pipeline status, diff stat, and the comments in one call — bounded, and saying where it bounded them (see [A truncated description says so before you reach it](#a-truncated-description-says-so-before-you-reach-it)).
 
+### A related MR says whether its pipeline passed
+
+`gl-issue` printed an MR's state, title and branch and nothing about its CI — the same gap [#815](https://github.com/Digital-Process-Tools/claude-supertool/issues/815) was filed against `gh-issue`, verified on the GitLab side before building so the fix would not become the parity gap it was meant to close.
+
+```
+Related MRs: 1
+  !32848 jimmy-dev: #12634 feat(asset): add is_draft column (merged)
+    branch: jimmy-dev-12634-feat-asset-add-is_draft-column
+    pipeline: failed (#154290) ⚠ NOT ALL GREEN
+```
+
+**A status, not a leg tally, and the asymmetry with `gh-issue` is deliberate.** `head_pipeline` is already in the payload this op fetches, so the status costs no extra request. GitLab puts no per-job breakdown in an MR, so matching the GitHub side's `13 passed, 1 failed` would mean `projects/:id/pipelines/N/jobs` once per related MR — a real, per-MR, uncapped request on a list that holds up to ten. A status GitLab already handed us beats a tally bought at N requests; `gl-mr:!N` is one call away for a reader who wants the legs.
+
+A missing or null `head_pipeline` declines rather than reporting an absence. GitLab creates a pipeline at push time, so "no pipeline" is equally "no job matched this ref", "the head was just pushed", and "this payload does not carry it" — the same sentence `gl-mr` prints for the same state, so the two ops cannot drift into two words for one thing.
+
+### A failed related-MR lookup no longer vanishes the section
+
+Found while building the above, and worse than what #815 reported. `if mr_result.returncode == 0:` had no `else`, and the enclosing `except (TimeoutExpired, JSONDecodeError): pass` swallowed the rest — so a related-MR query that failed printed **no section at all**. A missing `Related MRs` line reads as "this issue has no MRs", which is the signal that an issue is unclaimed, and the action that invites is delegating work that is already done. That is [#780](https://github.com/Digital-Process-Tools/claude-supertool/issues/780) item 1, fixed on the GitHub side, still live here; GitHub at least printed `Linked PRs: unknown`.
+
+It now prints `Related MRs: unknown — could not query (...)` on a non-zero exit, a timeout, unparseable output, an unexpected shape, and on a spawn failure — `glab` absent from `PATH` raises `FileNotFoundError` (`[WinError 2]` on Windows) and escaped the old handler entirely, so the op crashed instead of reaching its own "the tool failed" arm.
+
+`Related MRs: none` still means an answered zero, and nothing else does.
+
 ### A truncated description says so before you reach it
 
 `gl-issue` caps the description at `DESCRIPTION_MAX` (3000 chars) and `gl-mr` at 2000. Both used to cut with a raw `description[:DESCRIPTION_MAX]` — no marker, no count, and the cut landing wherever the byte count ran out, which in [#681](https://github.com/Digital-Process-Tools/claude-supertool/issues/681)'s repro on the sibling GitHub op was three characters into a heading, printed as `## The` with the next section starting right after. Read top to bottom, a truncated issue looked like a complete one ([#698](https://github.com/Digital-Process-Tools/claude-supertool/issues/698)).

@@ -16,6 +16,7 @@ import urllib.parse
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import _body  # noqa: E402  (the one body cap + disclosure — #698)
+import _checks  # noqa: E402  (the shared CI vocabulary, incl. NO_PIPELINE — #815)
 import _untrusted  # noqa: E402  (the fence around tracker text — #694)
 
 DESCRIPTION_MAX = 3000
@@ -53,6 +54,118 @@ def _glab_api(endpoint: str, timeout: int = 10) -> subprocess.CompletedProcess[s
         ["glab", "api", endpoint],
         capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace",
     )
+
+
+def _pipeline_line(mr: dict) -> str:
+    """One MR's pipeline verdict — three states, never two (#815).
+
+    #815 was filed against `gh-issue` printing a linked PR's state and nothing
+    about its CI; its second comment verified the identical gap here, and asks
+    for both families in one change or the fix becomes the parity gap it was
+    meant to close.
+
+    **A status, not a leg tally, and that asymmetry is deliberate.**
+    `head_pipeline` is already in the payload this op fetches — verified live
+    on 2026-08-07 against `projects/:id/issues/12634/related_merge_requests`,
+    which returns the MR *detail* representation. GitLab puts no per-job
+    breakdown in it, so matching `gh-issue`'s `13 passed, 1 failed` shape here
+    would mean `projects/:id/pipelines/N/jobs` once per related MR. That is a
+    real, uncapped, per-MR request on a list that can hold ten of them —
+    exactly the cost #815 says not to incur without saying so. A status GitLab
+    already handed us beats a tally bought at N requests; `gl-mr:!N` is one
+    call away for the reader who wants the legs.
+
+    A missing or null `head_pipeline` declines rather than reporting an
+    absence. GitLab creates a pipeline at push time, so "no pipeline" is
+    equally "no job matched this ref" and "the head was just pushed" and "this
+    payload does not carry it" — `_checks.NO_PIPELINE` is the sentence this
+    repo already settled on for that, and reusing it is what keeps `gl-mr` and
+    `gl-issue` from drifting into two different words for one state.
+    """
+    pipeline = mr.get("head_pipeline")
+    status = pipeline.get("status") if isinstance(pipeline, dict) else None
+    if not status:
+        return f"pipeline: {_checks.NO_PIPELINE}"
+    pid = pipeline.get("id")
+    marker = "" if _checks.bucket(status) == "passed" else f" {_checks.NOT_GREEN}"
+    ref = f" (#{pid})" if pid else ""
+    return f"pipeline: {_untrusted.flat(str(status))}{ref}{marker}"
+
+
+def _related_mrs_unknown(reason: str) -> None:
+    """Say the lookup could not be answered, rather than printing nothing.
+
+    **This is a second defect, on the same lines, and it is worse than the one
+    #815 was filed about.** `if mr_result.returncode == 0:` had no `else` and
+    the enclosing `except (TimeoutExpired, JSONDecodeError): pass` swallowed
+    the rest, so a failed related-MR query printed *no section at all* — and a
+    missing `Related MRs` line reads as "this issue has no MRs", which is the
+    signal that an issue is unclaimed and the action that invites is
+    delegating work already done. That is #780 item 1, fixed on the GitHub
+    side, still live here; GitHub at least printed `Linked PRs: unknown`.
+
+    #815's second comment states that neither family omits the section. That
+    is true at *zero*, which is what was tested there. It was not true on
+    failure.
+    """
+    print(f"{chr(10)}Related MRs: unknown — could not query "
+          f"({_untrusted.flat(reason) or 'no detail from glab'})")
+
+
+def _print_related_mrs(iid: object, full: bool) -> None:
+    """Render the related-MR section, pipeline included."""
+    try:
+        mr_result = _glab_api(
+            f"projects/:id/issues/{iid}/related_merge_requests"
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        _related_mrs_unknown(f"glab api failed: {type(exc).__name__}")
+        return
+
+    if mr_result.returncode != 0:
+        reason = (mr_result.stderr or "").strip().splitlines()
+        _related_mrs_unknown(reason[0] if reason else "glab api exited non-zero")
+        return
+
+    try:
+        mrs = json.loads(mr_result.stdout)
+    except json.JSONDecodeError:
+        _related_mrs_unknown("glab api returned output that is not JSON")
+        return
+
+    if not isinstance(mrs, list):
+        _related_mrs_unknown("glab api returned an unexpected shape")
+        return
+
+    if not mrs:
+        print(f"{chr(10)}Related MRs: none")
+        return
+
+    shown_mrs = mrs if full else mrs[:RELATED_MRS_MAX]
+    hidden_mrs = len(mrs) - len(shown_mrs)
+    if hidden_mrs:
+        print(
+            f"{chr(10)}Related MRs: {len(shown_mrs)} of {len(mrs)} shown "
+            f"({hidden_mrs} not listed — count limit of "
+            f"{RELATED_MRS_MAX}; use :full for all)"
+        )
+    else:
+        print(f"{chr(10)}Related MRs: {len(mrs)}")
+    for mr in shown_mrs:
+        if not isinstance(mr, dict):
+            continue
+        mr_iid = mr.get("iid", "?")
+        mr_title = mr.get("title", "?")
+        mr_state = mr.get("state", "?")
+        mr_branch = mr.get("source_branch", "?")
+        print(f"  !{mr_iid} ({mr_state}) {_untrusted.flat(mr_title)}")
+        print(f"    branch: {_untrusted.flat(mr_branch)}")
+        print(f"    {_pipeline_line(mr)}")
+    if hidden_mrs:
+        print(
+            f"  ... ({hidden_mrs} more related MR(s) not shown — "
+            f"use :full)"
+        )
 
 
 def _extract_image_urls(text: str) -> list[str]:
@@ -197,40 +310,8 @@ def main() -> int:
         print(_body.header_notice(
             description, description_total, description_withheld))
 
-    # 2. Fetch related MRs via API
-    try:
-        mr_result = _glab_api(
-            f"projects/:id/issues/{iid}/related_merge_requests"
-        )
-        if mr_result.returncode == 0:
-            mrs = json.loads(mr_result.stdout)
-            if isinstance(mrs, list) and mrs:
-                shown_mrs = mrs if full else mrs[:RELATED_MRS_MAX]
-                hidden_mrs = len(mrs) - len(shown_mrs)
-                if hidden_mrs:
-                    print(
-                        f"\nRelated MRs: {len(shown_mrs)} of {len(mrs)} shown "
-                        f"({hidden_mrs} not listed — count limit of "
-                        f"{RELATED_MRS_MAX}; use :full for all)"
-                    )
-                else:
-                    print(f"\nRelated MRs: {len(mrs)}")
-                for mr in shown_mrs:
-                    mr_iid = mr.get("iid", "?")
-                    mr_title = mr.get("title", "?")
-                    mr_state = mr.get("state", "?")
-                    mr_branch = mr.get("source_branch", "?")
-                    print(f"  !{mr_iid} ({mr_state}) {_untrusted.flat(mr_title)}")
-                    print(f"    branch: {_untrusted.flat(mr_branch)}")
-                if hidden_mrs:
-                    print(
-                        f"  ... ({hidden_mrs} more related MR(s) not shown — "
-                        f"use :full)"
-                    )
-            else:
-                print("\nRelated MRs: none")
-    except (subprocess.TimeoutExpired, json.JSONDecodeError):
-        pass
+    # 2. Related MRs, with each one's pipeline (#815)
+    _print_related_mrs(iid, full)
 
     # 3. Description (markdown attributes already stripped, above the cap)
     if description:
