@@ -191,6 +191,48 @@ Validators are post-write hooks — they run after a file is written and report 
 
 ---
 
+## Changelog fragments
+
+**Do not edit `CHANGELOG.md` in a pull request.** Add a file to `changelog.d/` instead:
+
+```
+changelog.d/906.added.md
+changelog.d/895.fixed.md
+changelog.d/878.fixed.second-entry.md
+```
+
+`<issue>.<section>[.<slug>].md`. The section is one of the Keep a Changelog headings — `added`, `changed`, `deprecated`, `removed`, `fixed`, `security` — and the optional slug lets one issue file two entries in one section. The content is the entry exactly as it would appear under that heading: a `- **Bold summary** ([#906](link)). Prose.` bullet, plus as many indented paragraphs as the change earns. Nothing is reformatted at assembly.
+
+**Why, measured.** 55 of the last 60 merged PRs touched `CHANGELOG.md`, all of them at the top of the same 2,670-line file. With N open PRs each merge re-conflicts the other N-1, so an eight-PR release cycle pays closer to eighteen rebase-and-resolve rounds than eight ([#906](https://github.com/Digital-Process-Tools/claude-supertool/issues/906)). Two PRs never touch the same path in `changelog.d/`, so the conflict class disappears rather than being merged around.
+
+**`merge=union` is not the shortcut it looks like.** A one-line `.gitattributes` entry would make git union the file automatically — and `tests/test_git_resolve_heading_dup_839.py` exists because that is wrong on this document. When both sides of a hunk carry the same `## [x.y.z]` heading the union emits it twice, and every unreleased line between the two copies is now parented under a tagged release. A correctness bug in the changelog, reported as `markers: clean`.
+
+**CI asks for a fragment, and says when it does not.** `.github/workflows/changelog.yml` requires one from any PR touching `supertool.py`, `presets/`, `validators/`, `formatters/`, `notifiers/` or `.claude-plugin/`. Docs-only and tests-only PRs are exempt by design — requiring a fragment for a typo fix is how the discipline decays into a reflex-added empty file — and a `no-changelog` label is the stated way out for anything else. The job prints which of the three it did on every run.
+
+### Cutting a release
+
+The release already edits four files, and `test_plugin_manifest_version_matches_code` plus `test_pyproject_version_522` guard three of them against each other:
+
+1. `.claude-plugin/plugin.json` — `version`
+2. `supertool.py` — `VERSION` (~line 113)
+3. `pyproject.toml` — `version`
+4. `CHANGELOG.md` — **written by the assembler, not by hand:**
+
+```bash
+python3 .github/scripts/assemble_changelog.py --version 0.26.0 --dry-run   # read it first
+python3 .github/scripts/assemble_changelog.py --version 0.26.0
+```
+
+It inserts `## [0.26.0] - <today>` above the newest existing release, folds every fragment in under its Keep a Changelog heading in spec order, rewrites the `[Unreleased]` compare link, adds the new tag's link ref, and deletes the fragments it consumed. `--keep` leaves them; `--date` overrides today.
+
+**It has three outcomes and states which one it took**, every run — `ok` naming every fragment it consumed, `skipped` when `changelog.d/` is empty (exit 1: nothing was assembled, and a release tool that exits 0 there has reported "released" for "nothing to release"), or `refused` (exit 2) naming the file it will not guess about. A filename that does not parse is refused rather than skipped, because a fragment the release quietly passed over is an entry that never ships and that nobody is told about.
+
+**`## [Unreleased]` is `changelog.d/` now.** The heading stays in `CHANGELOG.md` as the anchor for the compare link, and the entries that were under it when the mechanism landed were deliberately left there rather than migrated. The assembler never moves them, and reports how many it left, so the one hand-move needed at the boundary is visible instead of implied.
+
+**Counting what is pending** is a file count, not a grep: `python3 .github/scripts/assemble_changelog.py --count` prints a bare integer, and refuses if any name would fail to assemble. Counting `- **` lines under a heading answered a question about line prefixes and was read as an answer about pending work.
+
+---
+
 ## Helper script conventions
 
 - **Python stdlib preferred.** No third-party dependencies. If an op needs `requests`, reconsider the design.
@@ -493,14 +535,33 @@ symlink or an install-time artifact) and is absent from every worktree, since
 tests fail, you're on a stale checkout of this doc's advice, not a real
 regression — check out master and re-run before assuming your change broke it.
 
-Enable the pre-push hook (runs the full suite — slow tests included, coverage
-not gated — as CI does, before every push):
+Enable the pre-push hook (slow tests included, coverage not gated, as CI runs
+them):
 
 ```bash
 git config core.hooksPath .githooks
 ```
 
-The hook is in `.githooks/pre-push`, committed to the repo. Bypass with `git push --no-verify` (discouraged).
+**It does not run on every push, and which pushes it covers is the point**
+([#893](https://github.com/Digital-Process-Tools/claude-supertool/issues/893)).
+The hook reads the refs git hands it on stdin and gates on the *destination*:
+a push to `master`/`main` pays for the suite, where a red default branch is a
+shared cost nobody opted into; a push to a feature branch does not, because a
+red PR branch is what PRs are for and the PR's checks run in parallel on
+somebody else's machine. The measured cost it removes from a feature push is
+**176.66s**, serial and blocking.
+
+Three states, not two, and each announces itself: destination is master → run;
+destination is a feature branch → skip, and say so; **stdin unreadable → run
+the suite**, because "the question was never answered" must not render as
+"feature branch, skip it". Being wrong that way costs three minutes; being
+wrong the other way costs master.
+
+- `PREPUSH_FULL=1 git push` — force the suite on a feature branch.
+- `git push --no-verify` — the blunt instrument: skips this hook and every
+  other one. Discouraged, and not the right tool for "I want the suite here".
+
+The hook is in `.githooks/pre-push`, committed to the repo.
 
 **Which interpreter the hook runs (#572).** Never the bare name `python3`: on Windows that name can resolve to the App Execution Alias stub, which *blocks* instead of erroring, and inside `git push` a block reads as a slow remote rather than as a broken hook. Resolution order:
 

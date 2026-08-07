@@ -17,4 +17,6 @@ What does this PR change and why?
 
 - [ ] Docs updated if a new op or alias was added (README, `./supertool 'ops'`)
 - [ ] Version bumped in `.claude-plugin/plugin.json` if shipping a release
-- [ ] CHANGELOG entry added
+- [ ] Changelog fragment added: `changelog.d/<issue>.<section>.md` — **not** an
+      edit to `CHANGELOG.md`, which is assembled at release
+      (see `changelog.d/README.md`). Label `no-changelog` if it announces nothing.

@@ -1,0 +1,67 @@
+name: changelog
+
+# Deliberately not a job inside `tests.yml`. "Did this PR add a changelog
+# fragment" is not a test — it is a policy read of the PR's diff — and putting
+# it in its own file also means the file every contributor edits at once is not
+# the file this check lives in.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+jobs:
+  fragment:
+    runs-on: ubuntu-latest
+    # Every job gets a wall-clock budget (#722). Without one GitHub's default
+    # ceiling is six hours, which is not a budget, it is an absence of one.
+    timeout-minutes: 5
+    steps:
+      # Full history: the diff is taken against the base branch, and
+      # actions/checkout clones at depth 1 by default.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Names must parse before anything else is claimed about them. This is
+      # repo-wide, not diff-scoped: a fragment somebody else merged with a bad
+      # name is a release that will refuse, and the PR that has to find out is
+      # not the one cutting the tag.
+      - name: Every fragment name parses
+        run: python3 .github/scripts/assemble_changelog.py --check
+
+      - name: A user-visible change carries a fragment
+        env:
+          BASE: ${{ github.base_ref }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: |
+          set -euo pipefail
+          changed=$(git diff --name-only "origin/${BASE}...HEAD")
+          if [ -z "$changed" ]; then
+            echo "changelog   : skipped     (no files changed against origin/${BASE})"
+            exit 0
+          fi
+          case ",${LABELS}," in
+            *,no-changelog,*)
+              echo "changelog   : skipped     (label 'no-changelog' set on this PR)"
+              exit 0 ;;
+          esac
+          # What a user could notice. Docs and tests are excluded on purpose:
+          # requiring a fragment for a typo fix is how the discipline decays
+          # into a reflex-added empty file.
+          shipped=$(printf '%s\n' "$changed" | grep -E '^(supertool\.py|presets/|validators/|formatters/|notifiers/|\.claude-plugin/)' || true)
+          if [ -z "$shipped" ]; then
+            echo "changelog   : skipped     (no user-visible paths changed — nothing to announce)"
+            exit 0
+          fi
+          added=$(printf '%s\n' "$changed" | grep -E '^changelog\.d/[0-9]+\.[a-z]+.*\.md$' || true)
+          if [ -z "$added" ]; then
+            echo "changelog   : finding     (user-visible change with no changelog.d/ fragment)"
+            echo "  changed   $(printf '%s\n' "$shipped" | head -5 | tr '\n' ' ')"
+            echo "  fix       add changelog.d/<issue>.<section>.md — see docs/contributing.md"
+            echo "  or        label the PR 'no-changelog' if it genuinely announces nothing"
+            exit 1
+          fi
+          echo "changelog   : ok          ($(printf '%s\n' "$added" | wc -l | tr -d ' ') fragment(s))"
+          printf '%s\n' "$added" | sed 's/^/  /'
