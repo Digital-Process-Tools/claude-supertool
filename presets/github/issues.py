@@ -725,6 +725,10 @@ def main_with_args(arg_str: str) -> int:
 
 
 def main() -> int:
+    extra = _filter_tokens.extra_segments_error(sys.argv, "gh-issues")
+    if extra:
+        print(extra, file=sys.stderr)
+        return 1
     return main_with_args(sys.argv[1] if len(sys.argv) > 1 else "")
 
 
