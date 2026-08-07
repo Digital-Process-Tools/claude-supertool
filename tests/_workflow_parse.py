@@ -120,10 +120,13 @@ class Step:
     uses: str = ""
     run: str = ""
     env: dict[str, str] | None = None
+    with_: dict[str, str] | None = None
 
     def __post_init__(self) -> None:
         if self.env is None:
             object.__setattr__(self, "env", {})
+        if self.with_ is None:
+            object.__setattr__(self, "with_", {})
 
 
 def job_steps(block: str) -> list[Step]:
@@ -172,6 +175,8 @@ def _parse_step(lines: list[str]) -> Step:
         body, index = _value_body(lines, index, inline)
         if key == "env":
             fields["env"] = _mapping(body)
+        elif key == "with":
+            fields["with_"] = _mapping(body)
         elif key in ("name", "uses", "run"):
             fields[key] = body if key == "run" else body.strip()
     return Step(**fields)
