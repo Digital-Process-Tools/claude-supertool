@@ -53,6 +53,26 @@ MODULES = {op: _load(rel, f"site_850_{op.replace('-', '_')}")
 BRANCH = "fix/900"
 
 
+def _as_git_path(p: Path) -> str:
+    """The path as *git* spells it, which is not how the OS spells it.
+
+    `git worktree list --porcelain` emits POSIX separators on every platform —
+    `C:/Users/runneradmin/...` on the Windows runners, where `str(WindowsPath)`
+    gives `C:\\Users\\runneradmin\\...`. The render prints git's form verbatim
+    and should: `presets/git/checkout.py` answers the very same situation with
+    `Switch with: cd <path>` straight out of git's stderr, so normalising to
+    `os.sep` in one of the two would make the pair disagree about one path —
+    and Git Bash, the shell on those runners, takes the forward-slash form.
+
+    So the assertions below compare in git's terms. Using `str()` made the
+    location tests fail on Windows for a spelling difference, and — worse —
+    made the detached-worktree test pass there **vacuously**: a backslash
+    string can never appear in a forward-slash render, so the assertion it was
+    named for could not fail.
+    """
+    return p.as_posix()
+
+
 def _git(*args: str, cwd: Path) -> subprocess.CompletedProcess:
     r = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True,
                        text=True, encoding="utf-8", errors="replace")
@@ -119,9 +139,39 @@ def test_a_sibling_worktree_is_not_rendered_as_a_mismatch(
         f"the repository and is false there"
     )
     assert BRANCH in line, f"{op}: the branch must still be named"
-    assert str(sibling) in line, (
+    assert _as_git_path(sibling) in line, (
         f"{op}: the worktree holding the branch is the whole answer and is "
         f"absent from: {line!r}"
+    )
+
+
+@pytest.mark.parametrize("op", sorted(SITES))
+def test_the_rendered_path_is_the_one_git_itself_printed(
+    monkeypatch, repo_with_sibling_worktree: tuple[Path, Path], op: str
+) -> None:
+    """Character-identical to git's porcelain — the one platform-free check.
+
+    Everything else here compares against a path this test built, which is a
+    claim about `pathlib` as much as about the render. This compares the render
+    against the bytes `git worktree list --porcelain` actually emitted, so it
+    holds the same on POSIX and on Windows, where the two spellings diverge.
+    It is the assertion that would have caught the `str()`/`as_posix()` slip
+    without a Windows runner to find it.
+    """
+    main, _sibling = repo_with_sibling_worktree
+    monkeypatch.chdir(main)
+    porcelain = _git("worktree", "list", "--porcelain", cwd=main).stdout
+    holder = ""
+    for block in porcelain.split("\n\n"):
+        fields = dict(ln.partition(" ")[::2] for ln in block.splitlines() if ln)
+        if fields.get("branch", "").replace("refs/heads/", "", 1) == BRANCH:
+            holder = fields.get("worktree", "")
+    assert holder, f"premise broken: git named no worktree for {BRANCH}"
+
+    line = MODULES[op]._local_branch_check(BRANCH)
+    assert holder in line, (
+        f"{op}: the render spells the path differently from git, which wrote "
+        f"it. git said {holder!r}; the line is {line!r}"
     )
 
 
@@ -199,10 +249,13 @@ def test_a_detached_worktree_is_not_mistaken_for_holding_the_branch(
 
     monkeypatch.chdir(main)
     line = MODULES[op]._local_branch_check(BRANCH)
-    assert str(detached) not in line, (
-        f"{op}: a worktree sitting on the same commit does not hold the "
-        f"branch — conflating them reintroduces the confusion"
-    )
+    # Both spellings, so this cannot go vacuous on a platform where only one
+    # of them was ever renderable.
+    for spelling in (_as_git_path(detached), str(detached)):
+        assert spelling not in line, (
+            f"{op}: a worktree sitting on the same commit does not hold the "
+            f"branch — conflating them reintroduces the confusion: {line!r}"
+        )
     assert "MISMATCH" in line, f"{op}: the branch is held nowhere; warn"
 
 
@@ -267,5 +320,6 @@ def test_gl_job_prints_the_worktree_location_in_its_output(
     monkeypatch.setattr(sys, "argv", ["job.py", "123"])
     assert job.main() == 0
     out = capsys.readouterr().out
-    assert str(sibling) in out, f"the location never reached stdout:\n{out}"
+    assert _as_git_path(sibling) in out, (
+        f"the location never reached stdout:\n{out}")
     assert "MISMATCH" not in out
