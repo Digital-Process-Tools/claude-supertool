@@ -23,6 +23,7 @@ from mrs import _conflict_label  # noqa: E402
 import _body  # noqa: E402  (the one body cap + disclosure — #698)
 import _untrusted  # noqa: E402  (the fence around tracker text — #694)
 import _checks  # noqa: E402  (named_disclosure/NAMED_CAP — shared with gh-pr, #619)
+import _branch_locale  # noqa: E402  (where the branch is checked out — shared by all five #850)
 
 DESCRIPTION_MAX = 2000
 COMMENT_MAX = 500
@@ -338,24 +339,12 @@ def _named_gl_jobs(pipe_id: str | int, cap: int = _checks.NAMED_CAP) -> list[str
 def _local_branch_check(source: str) -> str:
     """Return a one-line local-branch-vs-MR-source check.
 
-    Empty string when not in a git repo or detached HEAD. Used after the
-    'Branch:' line to flag when the user is editing on the wrong branch.
+    Delegated to `_branch_locale` (#850): a branch held by a linked worktree is
+    neither a match nor a MISMATCH, and saying MISMATCH there prescribed a
+    checkout git refuses. The DVSI project this op targets is worktree-capable,
+    so the defect was latent here rather than absent.
     """
-    try:
-        r = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            capture_output=True, text=True, timeout=3, encoding="utf-8", errors="replace",
-        )
-        if r.returncode != 0:
-            return ""
-        local = r.stdout.strip()
-        if not local or local == "HEAD":
-            return ""
-        if local == source:
-            return f"You are on: {local} ✓"
-        return f"You are on: {local} ⚠ MISMATCH — switch with: ./supertool 'git-checkout:{source}'"
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        return ""
+    return _branch_locale.check(source)
 
 
 _MERGE_TREE_NOISE_PREFIXES = (

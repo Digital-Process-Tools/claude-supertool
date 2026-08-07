@@ -17,6 +17,7 @@ import _untrusted  # noqa: E402  (the fence around tracker text — #694)
 import _checks  # noqa: E402  (the one check tally, shared with gh-prs / git-status)
 import _declared_legs  # noqa: E402  (the second leg count, shared with gh-run / gh-branch)
 import _repo_target  # noqa: E402  (the repo this call is about, when not the cwd's)
+import _branch_locale  # noqa: E402  (where the branch is checked out — shared by all five #850)
 
 DESCRIPTION_MAX = 2000
 COMMENT_MAX = 500
@@ -250,25 +251,11 @@ def _reconcile_checks(d: dict) -> tuple[str, list[str]]:
 def _local_branch_check(source: str) -> str:
     """Return a one-line local-branch-vs-PR-source check.
 
-    Empty string when not in a git repo, detached HEAD, or source is empty.
+    Delegated to `_branch_locale` (#850): a branch held by a linked worktree is
+    neither a match nor a MISMATCH, and saying MISMATCH there prescribed a
+    checkout git refuses.
     """
-    if not source:
-        return ""
-    try:
-        r = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            capture_output=True, text=True, timeout=3, encoding="utf-8", errors="replace",
-        )
-        if r.returncode != 0:
-            return ""
-        local = r.stdout.strip()
-        if not local or local == "HEAD":
-            return ""
-        if local == source:
-            return f"You are on: {local} ✓"
-        return f"You are on: {local} ⚠ MISMATCH — switch with: ./supertool 'git-checkout:{source}'"
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        return ""
+    return _branch_locale.check(source)
 
 
 def _fetch_review_threads(url: str, number: int | str) -> list[dict]:

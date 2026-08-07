@@ -20,6 +20,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from _env import env_int  # noqa: E402  (the one numeric-knob reader)
+import _branch_locale  # noqa: E402  (where the branch is checked out — shared by all five #850)
 
 
 def _local_branch_check(source: str, actionable: bool = True) -> str:
@@ -42,27 +43,12 @@ def _local_branch_check(source: str, actionable: bool = True) -> str:
     Defaults to True: a caller that has not thought about it gets the hint,
     because the cost of an unwanted suggestion is smaller than the cost of a
     silently missing one.
+
+    Delegated to `_branch_locale` (#850), which adds the third state #531 could
+    not see: a branch held by a linked worktree is neither a match nor a
+    MISMATCH. `actionable` still governs only the imperative.
     """
-    if not source:
-        return ""
-    try:
-        r = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            capture_output=True, text=True, timeout=3, encoding="utf-8", errors="replace",
-        )
-        if r.returncode != 0:
-            return ""
-        local = r.stdout.strip()
-        if not local or local == "HEAD":
-            return ""
-        if local == source:
-            return f"You are on: {local} ✓"
-        if not actionable:
-            return (f"You are on: {local} ⚠ MISMATCH — this is {source}; "
-                    f"read-only op, HEAD left alone")
-        return f"You are on: {local} ⚠ MISMATCH — switch with: ./supertool 'git-checkout:{source}'"
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        return ""
+    return _branch_locale.check(source, actionable)
 
 
 def _format_error(stderr: str, resource: str, identifier: str) -> str:
