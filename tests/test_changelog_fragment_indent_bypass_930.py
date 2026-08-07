@@ -281,8 +281,12 @@ def test_the_refusal_prescribes_a_remedy_that_is_one(tmp_path, capsys) -> None:
     code, out = _cut(capsys, changelog, frag_dir)
 
     assert code == asm.REFUSED, out
-    assert "two spaces" not in out, "two spaces is a live heading and a live link ref"
-    assert "four spaces" in out, out
+    # This asserted "four spaces" once, and "two spaces" before that. Both are
+    # live headings and live link refs inside a `- ` bullet, which is the only
+    # container a fragment has (#934) — so the message must prescribe no indent
+    # at all. It names a fence, which a real parser agrees is inert.
+    assert "Indent it by" not in out, "the message prescribes an indent again"
+    assert "fenced code block" in out, out
 
 
 # ---------------------------------------------------------------------------
@@ -313,13 +317,22 @@ def test_four_spaces_is_the_remedy_and_it_ships(tmp_path, capsys) -> None:
         "the indented decoy must not have captured the rewrite"
 
 
-def test_a_leading_tab_is_already_the_remedy(tmp_path, capsys) -> None:
-    """Checked before deciding, not assumed: a tab is not added to the pattern.
+def test_a_leading_tab_is_refused_because_it_was_never_the_remedy(tmp_path, capsys) -> None:
+    """This test asserted the opposite, and it was wrong (#934).
 
-    A tab advances to the next four-column tab stop, so a tab-indented line is
-    at four columns or more before its first character — an indented code block
-    to CommonMark, and not a `## [` prefix to `_anchor`. Refusing it would cost
-    an author a legitimate line and buy nothing.
+    The reasoning was that a tab advances to the next four-column tab stop, so a
+    tab-indented line is at four columns or more — an indented code block. The
+    arithmetic is right and the frame is not: four columns is the threshold at
+    the *top level* of a document, and CommonMark measures it relative to the
+    containing block's content column. Every fragment is a `- ` bullet, content
+    column 2, so a tab reaches the second relative column: a live paragraph.
+
+    Rendered through markdown-it-py, the exact body below produces an `<h1>`,
+    and the tab-indented `[Unreleased]:` variant resolves the label to the
+    attacker's URL. `tests/test_changelog_fragment_whitelist_934.py` renders
+    both. So the pin is inverted rather than deleted — a test that blessed a
+    live heading is the record of how this was missed — and the whitelist
+    refuses tabs outright.
     """
     changelog, frag_dir = _repo(tmp_path, {
         "918.fixed.md": (
@@ -330,12 +343,11 @@ def test_a_leading_tab_is_already_the_remedy(tmp_path, capsys) -> None:
     })
 
     code, out = _cut(capsys, changelog, frag_dir)
-    text = changelog.read_text(encoding="utf-8")
 
-    assert code == asm.OK, out
-    assert "\t## [0.26.0] - 2020-01-01" in text
-    assert _release_headings(text) == ["## [0.24.0] - 2026-08-07", "## [0.23.0] - 2026-08-05"], \
-        "a tab-indented line is not a heading to any reader of this file"
+    assert code == asm.REFUSED, out
+    assert "918.fixed.md:3" in out, out
+    assert changelog.read_text(encoding="utf-8") == CHANGELOG, \
+        "a refused cut must leave CHANGELOG.md alone"
 
 
 def test_ordinary_entries_are_not_refused(tmp_path, capsys) -> None:
