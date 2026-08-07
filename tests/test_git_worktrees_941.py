@@ -317,5 +317,23 @@ def test_the_four_states_are_documented() -> None:
 
 
 def test_a_changelog_fragment_exists() -> None:
+    """#941 is documented — as a pending fragment, or as a released entry.
+
+    The fragment form only holds between the merge and the release that
+    consumes it: `assemble_changelog.py` deletes every fragment it folds into
+    a version heading. Asserting the fragment alone made this test unable to
+    survive its own release, and it reddened five legs on the v0.26.0 release
+    commit — a guard that fails on the one event it should be indifferent to.
+
+    What the section heading above actually claims is that the change is
+    findable. Both states satisfy that, and exactly one of them is true at any
+    moment, so accepting either loses no coverage.
+    """
     fragments = list((ROOT / "changelog.d").glob("941.*.md"))
-    assert fragments, "no changelog.d/941.<section>.md fragment"
+    if fragments:
+        return
+    changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    assert "941" in changelog, (
+        "#941 is neither a pending changelog.d/941.<section>.md fragment nor "
+        "an entry in CHANGELOG.md — the change is not findable in either place"
+    )
