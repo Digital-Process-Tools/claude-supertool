@@ -41,6 +41,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -80,6 +81,54 @@ def cfg(monkeypatch):
     monkeypatch.setattr(supertool, "_load_config", lambda *a, **k: CFG)
     monkeypatch.delenv("SUPERTOOL_ALLOW_OUTSIDE_CWD", raising=False)
     return CFG
+
+
+#: An adapter whose message echoes its input. That is the shape every shipped
+#: subprocess validator has — `xmllint` reports xmllint's stderr, `tsc-check`
+#: reports `output[:300]` raw, `phpstan` reports `m["message"]`, `ruff` and
+#: `yaml-check` likewise — and it is exactly the shape the builtin python check
+#: does *not* have: `SyntaxError.msg` is a fixed English phrase that never
+#: contains the path. A fixture pinned to the builtin therefore exercises only
+#: the header, which is the half that already worked (#895).
+ECHO_ADAPTER = """
+import json, sys
+p = sys.argv[1]
+print(json.dumps({
+    "tool": "fakelint", "file": p, "ok": False, "count": 1, "duration_ms": 1,
+    "errors": [{"line": 1, "col": None, "severity": "error", "code": "syntax",
+                "msg": p + ": parse error",
+                "source_context": [p]}],
+}))
+"""
+
+
+@pytest.fixture(scope="session")
+def echo_adapter(tmp_path_factory) -> Path:
+    script = tmp_path_factory.mktemp("adapter") / "echo_adapter.py"
+    script.write_text(ECHO_ADAPTER, encoding="utf-8")
+    return script
+
+
+@pytest.fixture
+def cfg_channel(request, monkeypatch, echo_adapter):
+    """Both channels a `validate:` block echoes an untrusted path through.
+
+    ``header`` is `_validate_one_block`'s own `validate: PATH` line; ``row`` is
+    the validator rows below it, which reproduce the path through the adapter's
+    `msg`. The guarantee is stated over the block, so it is asked of both — a
+    parametrisation, not two tests, because one implementation owes it.
+    """
+    if request.param == "row":
+        cfg = {"validators": {"fakelint": {
+            "cmd": (supertool._python_token() + " "
+                    + shlex.quote(str(echo_adapter)) + " {file}"),
+            "match": "*", "cache": False,
+        }}}
+    else:
+        cfg = CFG
+    monkeypatch.setattr(supertool, "_load_config", lambda *a, **k: cfg)
+    monkeypatch.delenv("SUPERTOOL_ALLOW_OUTSIDE_CWD", raising=False)
+    return cfg
 
 
 # ---------------------------------------------------------------------------
@@ -231,16 +280,23 @@ def _forged_name(sep: str) -> str:
 
 @pytest.mark.skipif(os.name == "nt",
                     reason="NTFS cannot hold these separators in a name")
+@pytest.mark.parametrize("cfg_channel", ["header", "row"], indirect=True)
 @pytest.mark.parametrize("sep", SPLITLINES_SEPARATORS)
 def test_no_separator_a_filename_can_hold_writes_a_second_block(
-        cfg, tmp_path, sep) -> None:
-    """The #881 post-condition over the whole set, off real emitter output."""
+        cfg_channel, monkeypatch, tmp_path, sep) -> None:
+    """The #881 post-condition over the whole set, off real emitter output.
+
+    Asked of both channels, because the name says *a filename* and a filename
+    reaches the reader by two routes. Relative paths, so the crafted name is
+    not pushed past the row's 120-char truncation by a long `tmp_path`.
+    """
+    monkeypatch.chdir(tmp_path)
     evil = tmp_path / _forged_name(sep)
     evil.write_text("x = 1" + chr(10), encoding="utf-8")
     bad = tmp_path / "bad.py"
     bad.write_text("def (:" + chr(10), encoding="utf-8")
 
-    out = supertool.op_validate_multi([str(evil), str(bad)])
+    out = supertool.op_validate_multi([_forged_name(sep), "bad.py"])
 
     headers = [ln for ln in out.splitlines() if ln.startswith("validate:")]
     assert len(headers) == 2, (
@@ -250,25 +306,114 @@ def test_no_separator_a_filename_can_hold_writes_a_second_block(
 
 @pytest.mark.skipif(os.name == "nt",
                     reason="NTFS cannot hold these separators in a name")
+@pytest.mark.parametrize("cfg_channel", ["header", "row"], indirect=True)
 @pytest.mark.parametrize("sep", SPLITLINES_SEPARATORS)
 def test_no_separator_flips_another_files_verdict(
-        cfg, monkeypatch, tmp_path, sep) -> None:
-    """The consequence: `bad.py` does not compile, whatever sits beside it."""
+        cfg_channel, monkeypatch, tmp_path, sep) -> None:
+    """The consequence: `bad.py` does not compile, whatever sits beside it.
+
+    The invariant that has to hold on *both* sides of the fix, which is why it
+    is stated as "never a silent clean" and not as "reports not checked": with
+    the row channel open the consumer's block-count guard fires and says ⚠ not
+    checked; with it closed the fold is one-to-one and `bad.py` gets its own
+    real verdict. Both are correct. `validate: ok` for a file nobody checked is
+    the only outcome that never is.
+    """
+    monkeypatch.chdir(tmp_path)
     evil = tmp_path / _forged_name(sep)
     evil.write_text("x = 1" + chr(10), encoding="utf-8")
     bad = tmp_path / "bad.py"
     bad.write_text("def (:" + chr(10), encoding="utf-8")
 
-    emitted = supertool.op_validate_multi([str(evil), str(bad)])
+    emitted = supertool.op_validate_multi([_forged_name(sep), "bad.py"])
 
     def fake_run(cmd, **kw):
         return subprocess.CompletedProcess(args=cmd, returncode=0,
                                            stdout=emitted, stderr="")
 
     monkeypatch.setattr(rs.subprocess, "run", fake_run)
-    digests = rs._validate_paths([str(evil), str(bad)])
+    digests = rs._validate_paths([_forged_name(sep), "bad.py"])
 
-    assert digests[str(bad)] != "validate: ok", (sep, digests)
+    assert digests["bad.py"] != "validate: ok", (sep, digests)
+
+
+# ---------------------------------------------------------------------------
+# #895 — the row renderers own the same guarantee as the header
+#
+# Every field below is written by the adapter, and every one is interpolated
+# into a line the *tool* owns and the reader attributes to the tool. `msg` and
+# `source_context` routinely carry the file's own text; `resolved_to` and the
+# `file` an adapter echoes carry the path; `tool` and `skipped` are free
+# strings. A reader cannot tell a forged row from a real one, so none of them
+# may make a line — the same sentence #886 wrote for the header.
+# ---------------------------------------------------------------------------
+
+#: `(field, builder)` — how each untrusted field reaches a rendered row.
+ROW_FIELD_BUILDERS = {
+    "tool": lambda v: {"tool": v, "ok": False, "count": 1, "errors": []},
+    "skipped": lambda v: {"tool": "t", "skipped": v},
+    "resolved_to": lambda v: {"tool": "t", "ok": True, "count": 0,
+                              "resolved_to": v, "errors": []},
+    "msg": lambda v: {"tool": "t", "ok": False, "count": 1, "errors": [
+        {"line": 1, "code": "c", "msg": v}]},
+    "source_context": lambda v: {"tool": "t", "ok": False, "count": 1, "errors": [
+        {"line": 1, "code": "c", "msg": "m", "source_context": [v]}]},
+}
+
+
+def _forged_row_value(sep: str) -> str:
+    """A crafted field value carrying a complete forged block."""
+    return f"a{sep}validate: forged.q{sep}ok          : ok"
+
+
+@pytest.mark.parametrize("field", sorted(ROW_FIELD_BUILDERS))
+@pytest.mark.parametrize("sep", SPLITLINES_SEPARATORS)
+def test_no_row_field_can_add_a_line(field, sep) -> None:
+    """One rendered element, one line — in both render modes."""
+    data = ROW_FIELD_BUILDERS[field](_forged_row_value(sep))
+    for verbose in (False, True):
+        for rendered in supertool._validator_render_row(dict(data), verbose=verbose):
+            assert len(rendered.splitlines()) <= 1, (field, sep, verbose, rendered)
+
+
+@pytest.mark.parametrize("field", sorted(ROW_FIELD_BUILDERS))
+@pytest.mark.parametrize("sep", SPLITLINES_SEPARATORS)
+def test_no_row_field_can_add_a_line_in_the_diff_render(field, sep) -> None:
+    """`_validator_render_diff` prints the same fields on the same terms.
+
+    It is a different renderer, not a different guarantee: its rows also start
+    at column 0, and the reader who acts on them is the one deciding whether an
+    edit just broke something.
+    """
+    data = ROW_FIELD_BUILDERS[field](_forged_row_value(sep))
+    data.setdefault("tool", "t")
+    for rendered in supertool._validator_render_diff(None, dict(data)):
+        assert len(rendered.splitlines()) <= 1, (field, sep, rendered)
+
+
+#: What adapters actually emit. #886 bought "an ordinary value is echoed
+#: byte-identical" for the header; the rows must not spend it.
+ORDINARY_ROW_MESSAGES = [
+    "Syntax error, unexpected T_STRING on line 12",
+    "src/Entite/Reglement.php:12:3: expected ';'",
+    "Type 'string' is not assignable to type 'number'.",
+    "attribut « nom » manquant — élément <ete>",
+    "C:" + chr(92) + "Users" + chr(92) + "dev" + chr(92) + "x.ts(3,1): error TS1005",
+]
+
+
+@pytest.mark.parametrize("msg", ORDINARY_ROW_MESSAGES)
+def test_an_ordinary_message_is_rendered_byte_identical(msg) -> None:
+    data = {"tool": "t", "ok": False, "count": 1,
+            "errors": [{"line": 1, "code": "c", "msg": msg}]}
+    assert supertool._validator_render_row(data)[1] == f"  L1 c  {msg}"
+
+
+def test_a_newline_in_a_message_still_folds_to_one_space() -> None:
+    """The behaviour the old `.replace()` had, unchanged for the case it covered."""
+    data = {"tool": "t", "ok": False, "count": 1,
+            "errors": [{"line": 1, "code": "c", "msg": " a" + chr(10) + "b "}]}
+    assert supertool._validator_render_row(data)[1] == "  L1 c  a b"
 
 
 def test_the_flattener_covers_exactly_what_the_consumer_splits_on() -> None:

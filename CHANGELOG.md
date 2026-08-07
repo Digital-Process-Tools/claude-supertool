@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.25.0] - 2026-08-06
+## [Unreleased]
 
 ### Changed
 
@@ -14,6 +14,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   **The skip is announced, and an unreadable stdin runs the suite rather than skipping it.** Three states, not two: some callers invoke a hook with stdin closed, and "the question was never answered" must not render as "feature branch, skip it" — the cost of being wrong that way is three minutes, and the other way is master. Both paths say which one they took.
 
   **What was rejected, and why it is written down.** Dropping the hook's `-m 'not benchmark'` override was considered and refused: the comment above it argues that the default `not slow` filter lets a slow test CI runs slip through, and that reasoning holds. It would also have bought nothing today — only 7 tests carry `@pytest.mark.slow` and none of them are the four that own the suite's cost ([#891](https://github.com/Digital-Process-Tools/claude-supertool/issues/891)). `-x` was refused too: on a three-minute suite it converts one run showing every failure into one run per failure, which is why `--tb=short` is there.
+
+### Fixed
+
+- **#886's guarantee stopped at the header: the validator rows still flattened one separator out of ten** ([#895](https://github.com/Digital-Process-Tools/claude-supertool/issues/895)). #886 established that a `validate:` header is one line at column 0, one per file, whatever the files are called, and implemented it in `_flat_field`. The rows underneath never got it. `_validator_render_row` sanitised an adapter's `msg` with `.replace("\n", " ")` — **the same one-of-ten mistake #886 had just fixed one layer up** — and appended `resolved_to`, a path, with no flattening at all. Fourth continuation of the #876 → #878 → #881 → #886 chain, and the first one a layer down rather than a character over.
+
+  **It is exploitable because the shipped adapters echo their input.** `xmllint` reports xmllint's stderr, `tsc-check` reports `output[:300]` raw, `phpstan` reports `m["message"]`, `ruff` and `yaml-check` likewise — so a crafted *filename* reaches the reader through the row as well as through the header. A real file named `a<U+2028>validate: forged.q` emitted a correctly flattened header and then a forged second header out of the row below it, on 9 of the 10 separators; `\n` was the one that already worked, which is exactly the shape of the defect.
+
+  **Fixed as a property of the renderers, at one helper.** `_flat_cell` is `_flat_field` — the same one implementation the header uses — plus the two things a row does to a field that a header does not: strip it, and bound its width. Applied to every adapter-supplied string `_validator_render_row` and `_validator_render_diff` interpolate into a line of their own: `msg`, `resolved_to`, `source_context`, and also `tool` and `skipped`, which the report did not name. **Deliberately wider than the three fields reported**, because `tool` is the leftmost field on the row and `skipped` was the only one with no sanitising at all; fixing `msg` and leaving those is this defect one field over. `_validator_render_diff` is included on the same argument — a different renderer, not a different guarantee, and its rows are the ones a reader acts on when deciding whether an edit broke something.
+
+  **`raw_stdout`, `raw_stderr` and `diff` are deliberately left alone.** They are blocks, not fields: the reader asked for the tool's output verbatim, every line is emitted indented, and none can produce a column-0 header. `presets/_untrusted.py` already draws that line as `scrub()` versus `flat()`; drawing it differently here would be the second copy of a rule this whole chain is about.
+
+  **Impact, split honestly.** In-tree this was **not** exploitable: `presets/git/resolve.py`'s block-count guard caught the extra header and rendered `validate: ⚠ not checked (validator output had 3 block(s) for 2 file(s))` for the batch — verified before and after, and the same guard #884 called unreachable and #886 then reached. The exposure is a human or an agent reading `validate:` / `op_validate_multi` output directly. An ordinary path and an ordinary adapter message are still rendered byte-identical — the property #884 paid for and this had to not spend.
+
+- **A test whose name asserted the general property and whose fixture only ever exercised the case that already worked** ([#895](https://github.com/Digital-Process-Tools/claude-supertool/issues/895)). `test_no_separator_a_filename_can_hold_writes_a_second_block`, new in #892, pinned `{"builtin": "python"}` — whose `msg` is `SyntaxError.msg`, a fixed English phrase that never contains the path. So it measured the header channel ten times and the row channel zero times, and stayed green on a version where nine of the ten separators forged a header. **This is the more important half of the issue.** A green test standing in for a check that did not happen is this repo's most-filed defect class, it is how #889 survived the previous gate, and a wrong test is worse than a missing one because the next auditor reads it as coverage.
+
+  The fixture is now parametrised over both channels — the builtin, and a subprocess adapter whose `msg` echoes its input, which is the shape every shipped subprocess validator has. The post-condition is unchanged and still comes off **real `op_validate_multi` output with a real file on disk**, never from observing that a flattener was called: that observation passes on a version that flattens the wrong field, which is precisely the version that shipped.
+
+## [0.25.0] - 2026-08-06
 
 ### Added
 

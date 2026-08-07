@@ -12228,6 +12228,40 @@ def _validator_run_one(name: str, spec: Dict[str, Any], file: str,
             _elapsed_since(_t0))
 
 
+def _flat_cell(value: Any, limit: Optional[int] = None) -> str:
+    """An adapter-supplied value, rendered into a line the *tool* owns (#895).
+
+    #886 stated the guarantee for `validate:` output — **one line at column 0,
+    one block per file, whatever the files are called** — and implemented it in
+    `_flat_field` for the block header. The rows underneath were still written
+    against ``.replace(chr(10), " ")``, one separator out of the ten
+    `str.splitlines()` splits on, and `resolved_to` had no flattening at all.
+    A file named ``a<U+2028>validate: forged.q`` therefore got a correctly
+    flattened header and then wrote a second, forged one out of the row below
+    it, because the shipped subprocess adapters echo their input: `xmllint`
+    reports xmllint's stderr, `tsc-check` reports `output[:300]` raw, `phpstan`
+    reports `m["message"]`, `ruff` and `yaml-check` likewise.
+
+    So this is not a second copy of the rule — it is `_flat_field`, the same
+    one implementation, plus the two things a row does to a field that a header
+    does not: strip it, and bound its width. Applied to *every* adapter-supplied
+    string these renderers interpolate into a line of their own, not only to the
+    three the report named. `tool` is the leftmost field on the row and `skipped`
+    was the only one with no sanitising whatsoever; fixing `msg` and leaving
+    those would be this very defect one field over, which is the shape of the
+    #876 → #878 → #881 → #886 chain.
+
+    What is deliberately *not* routed here: `raw_stdout`, `raw_stderr` and
+    `diff` in verbose mode. Those are blocks, not fields — the reader asked for
+    the tool's output verbatim, every line of them is emitted indented, and so
+    none can produce a column-0 header. `presets/_untrusted.py` already draws
+    that line as `scrub()` versus `flat()`; drawing it differently here would be
+    the second copy of a rule this docstring is about.
+    """
+    text = _flat_field(str(value)).strip()
+    return text[:limit] if limit else text
+
+
 def _validator_render_row(data: Dict[str, Any], verbose: bool = False) -> list:
     """Render a single validator result as a list of display lines.
 
@@ -12240,10 +12274,14 @@ def _validator_render_row(data: Dict[str, Any], verbose: bool = False) -> list:
 
     The ``"raw_stdout"`` / ``"raw_stderr"`` keys are optional; adapters that
     want verbose output to include their full output should populate them.
+
+    Every field the adapter supplies goes through `_flat_cell`, so a row is one
+    line for the same reason the block header is (#895).
     """
     if "skipped" in data:
-        return [f"{data['tool']:12s}: skipped — {data['skipped']}"]
-    tool = data.get("tool", "?")
+        return [f"{_flat_cell(data['tool']):12s}: skipped — "
+                f"{_flat_cell(data['skipped'])}"]
+    tool = _flat_cell(data.get("tool", "?"))
     ok = data.get("ok", False)
     count = data.get("count", 0)
     dur = data.get("duration_ms", 0)
@@ -12256,17 +12294,17 @@ def _validator_render_row(data: Dict[str, Any], verbose: bool = False) -> list:
         state = metrics.get("state", "")
         line += f"  +{added} -{removed} {state}"
     if data.get("resolved_to"):
-        line += f"  → {data['resolved_to']}"
+        line += f"  → {_flat_cell(data['resolved_to'])}"
     out = [line]
     errors = data.get("errors") or []
     if verbose:
         for e in errors:
             line_n = f"L{e['line']}" if e.get("line") else "  "
             code = e.get("code") or ""
-            msg = (e.get("msg") or "").strip().replace("\n", " ")
+            msg = _flat_cell(e.get("msg") or "")
             out.append(f"  {line_n} {code}  {msg}")
             for ctx_line in (e.get("source_context") or []):
-                out.append(f"    {ctx_line}")
+                out.append(f"    {_flat_cell(ctx_line)}")
         for key, label in (("raw_stdout", "stdout"), ("raw_stderr", "stderr")):
             raw = (data.get(key) or "").strip()
             if raw:
@@ -12283,7 +12321,7 @@ def _validator_render_row(data: Dict[str, Any], verbose: bool = False) -> list:
         for e in errors[:5]:
             line_n = f"L{e['line']}" if e.get("line") else "  "
             code = e.get("code") or ""
-            msg = (e.get("msg") or "").strip().replace("\n", " ")[:120]
+            msg = _flat_cell(e.get("msg") or "", 120)
             out.append(f"  {line_n} {code}  {msg}")
         if len(errors) > 5:
             out.append(f"  ... +{len(errors) - 5} more")
@@ -12313,16 +12351,21 @@ def _validator_regressed(before: Optional[Dict[str, Any]], after: Dict[str, Any]
 
 
 def _validator_render_diff(before: Optional[Dict[str, Any]], after: Dict[str, Any]) -> list:
+    # Every adapter-supplied field goes through `_flat_cell`, for the reason
+    # `_validator_render_row` does (#895). A different renderer, not a different
+    # guarantee: these rows also start at column 0, and the reader acting on them
+    # is deciding whether the edit that just ran broke something.
     # Skipped path never started a timer, so elapsed_s is absent — `-` rendered in time col.
     elapsed = after.get("elapsed_s")
     time_col = f"{elapsed:.1f}s" if elapsed is not None else "-"
     if "skipped" in after:
         # Name the reason. "skipped" alone sends the reader back to the config
         # to work out which of a dozen reasons applied (#406).
-        reason = str(after["skipped"]).strip().replace("\n", " ")[:80]
+        reason = _flat_cell(after["skipped"], 80)
         state_col = f"({reason})" if reason else ""
-        return [f"{after['tool']:12s}: {'skipped':<10}  {state_col}  {time_col:>5}"]
-    tool = after["tool"]
+        return [f"{_flat_cell(after['tool']):12s}: {'skipped':<10}  "
+                f"{state_col}  {time_col:>5}"]
+    tool = _flat_cell(after["tool"])
     b_count = before.get("count", 0) if before else 0
     a_count = after.get("count", 0)
     delta = a_count - b_count
@@ -12371,7 +12414,7 @@ def _validator_render_diff(before: Optional[Dict[str, Any]], after: Dict[str, An
             for e in (after.get("errors") or [])[:5]:
                 line_n = f"L{e['line']}" if e.get("line") else "  "
                 code = e.get("code") or ""
-                msg = (e.get("msg") or "").strip().replace("\n", " ")[:120]
+                msg = _flat_cell(e.get("msg") or "", 120)
                 out.append(f"  {line_n} {code}  {msg}")
             if len(after.get("errors") or []) > 5:
                 out.append(f"  ... +{len(after['errors']) - 5} more")
@@ -12388,7 +12431,7 @@ def _validator_render_diff(before: Optional[Dict[str, Any]], after: Dict[str, An
         for e in new[:5]:
             line_n = f"L{e['line']}" if e.get("line") else "  "
             code = e.get("code") or ""
-            msg = (e.get("msg") or "").strip().replace("\n", " ")[:120]
+            msg = _flat_cell(e.get("msg") or "", 120)
             out.append(f"  + {line_n} {code}  {msg}")
         if len(new) > 5:
             out.append(f"  + ... +{len(new) - 5} more new")
@@ -13210,9 +13253,14 @@ def _validate_one_block(path: str, validators: dict, verbose: bool = False) -> L
     single-file and multi-file forms so they stay byte-identical per file.
 
     The header carries the path through `_flat_field`, which is what makes
-    "one block per file" a guarantee rather than an expectation (#881). The
-    path is only ever echoed there; every validator still runs on the real
-    unflattened `path`.
+    "one block per file" a guarantee rather than an expectation (#881). Every
+    validator still runs on the real unflattened `path`.
+
+    The header is not the only place the path is echoed, and this docstring
+    used to say it was (#895). `_validator_render_row` prints it back through
+    `resolved_to`, and every shipped subprocess adapter reproduces it inside
+    `msg` — so the rows carry the same guarantee, via `_flat_cell`. Stated
+    here because a reader who believes the sentence above stops looking.
     """
     out = [f"validate: {_flat_field(path)}"]
     for name, spec in validators.items():
