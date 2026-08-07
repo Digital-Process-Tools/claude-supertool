@@ -659,8 +659,16 @@ def test_a_filename_cannot_suppress_the_batchs_verdict(resolve_tree, name) -> No
     assert digests["bad.py"] != "validate: ok", (name, digests)
 
 
-def test_a_real_empty_validator_set_is_still_silent(monkeypatch, tmp_path) -> None:
-    """The emitter's own status still reaches the caller when it is the truth."""
+def test_a_real_empty_validator_set_reaches_the_caller_as_not_checked(
+        monkeypatch, tmp_path) -> None:
+    """The emitter's own status still reaches the caller — as the state it is.
+
+    This case was asserted as `None` until #883, and `bad.py` is the argument
+    against that: a file that does not compile, a config with no validators,
+    and a receipt reading `markers: clean`. `None` is the answer "the
+    validators ran and none handles this file type", which the render prints
+    as nothing on purpose. None ran here, so the render may not say nothing.
+    """
     (tmp_path / ".supertool.json").write_text(
         json.dumps({"validators": {}}), encoding="utf-8")
     (tmp_path / "bad.py").write_text("def (:" + chr(10), encoding="utf-8")
@@ -668,7 +676,9 @@ def test_a_real_empty_validator_set_is_still_silent(monkeypatch, tmp_path) -> No
 
     digests = rs._validate_paths(["bad.py"])
 
-    assert digests == {"bad.py": None}, digests
+    assert "not checked" in (digests["bad.py"] or ""), digests
+    assert digests["bad.py"] != "validate: ok", digests
+
 
 def test_a_list_valued_path_field_is_contained_too(cfg) -> None:
     """`path` accepts a list wherever `paths` does — the gate must read both.

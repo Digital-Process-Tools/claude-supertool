@@ -235,10 +235,34 @@ def test_no_matching_validator_is_still_a_quiet_none(monkeypatch) -> None:
 
     Otherwise every resolved `.txt` and `.md` grows a warning line, and a
     receipt that warns about everything warns about nothing.
+
+    The fixture is the emitted **block with no rows** — the shape that actually
+    means it. It used to be the string `no validators configured`, which does
+    not (#883): that is a whole-config state, not this file's answer, and the
+    two were being asserted to render the same. The case below keeps them
+    apart, and the guard this test exists for is unchanged and still live.
+    """
+    def answered(argv, **kw):
+        return subprocess.CompletedProcess(argv, 0, stdout="validate: notes.txt\n", stderr="")
+
+    monkeypatch.setattr(rs.subprocess, "run", answered)
+    monkeypatch.setattr(rs.os.path, "isfile", lambda p: True)
+    assert rs._validate_paths(["notes.txt"])["notes.txt"] is None
+
+
+def test_a_config_with_no_validators_is_not_that_quiet_none(monkeypatch) -> None:
+    """Zero validators considered is not "none of them handles .txt" (#883).
+
+    The noise this trades against is bounded and the trade is deliberate: this
+    fires only for a config with no validators at all, where every digest cell
+    is meaningless and saying so once per file beats a column of blanks that
+    reads as a column of passes.
     """
     def answered(argv, **kw):
         return subprocess.CompletedProcess(argv, 0, stdout="no validators configured\n", stderr="")
 
     monkeypatch.setattr(rs.subprocess, "run", answered)
     monkeypatch.setattr(rs.os.path, "isfile", lambda p: True)
-    assert rs._validate_paths(["notes.txt"])["notes.txt"] is None
+    digest = rs._validate_paths(["notes.txt"])["notes.txt"]
+
+    assert digest and "not checked" in digest, digest
