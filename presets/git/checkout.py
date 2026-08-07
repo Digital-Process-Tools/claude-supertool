@@ -304,7 +304,25 @@ def main() -> int:
         gd = state_res.stdout.strip()
         if exists(join(gd, "MERGE_HEAD")):
             print("⚠ Merge in progress — resolve or `git merge --abort`")
-        if exists(join(gd, "REBASE_HEAD")) or exists(join(gd, "rebase-merge")) or exists(join(gd, "rebase-apply")):
+        # #900: these two directories are the whole signal, deliberately.
+        # `REBASE_HEAD` used to be ORed in here and must not come back. It is a
+        # ref git writes while replaying a commit, not a state marker: on the
+        # conflict -> `--continue` -> completion path git never unlinks it. The
+        # rebase is over, both directories are gone, `git status` reports
+        # nothing and `git rebase --abort` answers "no rebase in progress" — so
+        # the warning fired on every later checkout in that repo with no remedy
+        # a user could apply. Same on git 2.39.5 and 2.46.2.
+        #
+        # Dropping it also costs no detection, which is the part worth checking
+        # before touching this line again: the directories are what git's own
+        # status reads to decide it is mid-rebase, and they are present for
+        # every backend and every stop — merge backend, am backend (`--apply`),
+        # `--rebase-merges`, and the interactive `break` and `edit` stops. The
+        # `break` stop is the proof in the other direction: it carries no
+        # `REBASE_HEAD` at all, so a check leaning on the ref goes blind exactly
+        # where a rebase really is in progress. All of it is pinned in
+        # tests/test_git_checkout_rebase_state_900.py.
+        if exists(join(gd, "rebase-merge")) or exists(join(gd, "rebase-apply")):
             print("⚠ Rebase in progress — resolve or `git rebase --abort`")
 
     # Recent commits
