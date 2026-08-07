@@ -36,6 +36,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pr import _gh, _fetch_review_threads  # noqa: E402  (reuse the gh-pr helpers)
 import _board  # noqa: E402  (the board layout shared with gl-mrs / radar)
+import _filter_tokens  # noqa: E402  (the one tokenizer + refusal, shared with gh-issues / gl-mrs)
 import _untrusted  # noqa: E402  (the repo's remote-text convention)
 from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 import _checks  # noqa: E402  (the one check classifier, shared with gh-pr / gl-mrs)
@@ -50,6 +51,15 @@ ENRICH_WORKERS = 8  # parallel thread fetches
 
 # Tokens that are flags, not key=value filters.
 _FLAGS = {"nopipe", "iids", "failed"}
+
+# Filter keys this op forwards. Anything else is refused rather than dropped:
+# `_build_list_cmd` builds its argv from a ladder with no `else`, so
+# `milestone=nonexistent` — a key `gh pr list` has no flag for at all — used to
+# return every open PR, rendered exactly as though that were one milestone's
+# contents (#939). `gh-issues` grew this refusal in #864; the two sibling ops
+# then disagreed about whether a typo was an error or a silent full board,
+# which is worse than the original bug.
+_FILTER_KEYS = {"author", "assignee", "label", "reviewer", "state", "per"}
 
 # Check conclusions that mean "this PR is red".
 _FAIL_CONCLUSIONS = {
@@ -93,25 +103,40 @@ def _get_config() -> dict[str, int]:
 # state=X maps to a gh list flag value. open is gh's default.
 _STATES = {"open", "closed", "merged", "all"}
 
+# Keys whose value this op maps rather than forwards. An unmapped value is the
+# same defect on a key that is known: `state=mergd` fails the `val in _STATES`
+# test below, emits no `--state`, and the *open* board renders as the merged
+# one (#939).
+_VALUE_DOMAINS: dict[str, object] = {
+    "state": _STATES,
+    "per": _filter_tokens.POSITIVE_INT,
+}
 
-def _parse_args(arg_str: str) -> tuple[dict[str, str], set[str]]:
-    """Split a comma-separated arg string into (filters, flags).
+
+def _parse_args(arg_str: str) -> tuple[dict[str, str], set[str], list[str]]:
+    """Split a comma-separated arg string into (filters, flags, unrecognised).
 
     Comma-separated so the single supertool arg segment never collides with
     the ':' op tokenizer. 'author=@me,state=merged,nopipe' becomes
-    ({'author': '@me', 'state': 'merged'}, {'nopipe'}).
+    ({'author': '@me', 'state': 'merged'}, {'nopipe'}, []).
+
+    The third return value is the one that matters, and it is why the tokenizer
+    now lives in `_filter_tokens` rather than here: a token this op cannot place
+    is handed back so `main` can refuse, instead of falling off the end of the
+    loop and leaving the caller reading an unnarrowed board as the answer to a
+    narrowing question.
     """
-    filters: dict[str, str] = {}
-    flags: set[str] = set()
-    for tok in (t.strip() for t in arg_str.split(",")):
-        if not tok:
-            continue
-        if "=" in tok:
-            key, _, val = tok.partition("=")
-            filters[key.strip()] = val.strip()
-        elif tok in _FLAGS:
-            flags.add(tok)
-    return filters, flags
+    return _filter_tokens.parse(arg_str, _FILTER_KEYS, _FLAGS)
+
+
+def _unknown_error(unknown: list[str]) -> str:
+    """Name every token that was not applied, and what would have been."""
+    return _filter_tokens.unknown_error(unknown, _FILTER_KEYS, _FLAGS)
+
+
+def _bad_values(filters: dict[str, str]) -> list[tuple[str, str, str]]:
+    """Known keys carrying a value this op has no mapping for."""
+    return _filter_tokens.bad_values(filters, _VALUE_DOMAINS)
 
 
 def _build_list_cmd(filters: dict[str, str], per_page: int) -> list[str]:
@@ -416,14 +441,21 @@ def _footer(prs: list[dict], watched: set[str] | None) -> str:
 
 def main() -> int:
     arg_str = sys.argv[1] if len(sys.argv) > 1 else ""
-    filters, flags = _parse_args(arg_str)
+    filters, flags, unknown_tokens = _parse_args(arg_str)
+    if unknown_tokens:
+        print(_unknown_error(unknown_tokens), file=sys.stderr)
+        return 1
+    bad = _bad_values(filters)
+    if bad:
+        print(_filter_tokens.value_error(bad), file=sys.stderr)
+        return 1
     iids_only = "iids" in flags
     failed_only = "failed" in flags
     enrich = "nopipe" not in flags
 
     cfg = _get_config()
     per_page = cfg["per_page"]
-    if "per" in filters and filters["per"].isdigit():
+    if "per" in filters:
         per_page = int(filters.pop("per"))
 
     try:

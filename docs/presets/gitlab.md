@@ -356,6 +356,16 @@ Gets the full issue context and checks whether an MR already exists for the bran
 ```
 The last form feeds the [`watch`](watch.md) supervisor: pipe failing-MR ids straight into background pollers.
 
+### A token `gl-mrs` cannot apply is refused, not dropped
+
+Same defect and same fix as `gh-prs` — see [A token `gh-prs` cannot apply is refused](github.md#a-token-gh-prs-cannot-apply-is-refused-not-dropped) for the reasoning ([#939](https://github.com/Digital-Process-Tools/claude-supertool/issues/939)). `gl-mrs:milestne=v18.9` returned the whole board as that milestone's contents; it now refuses and names what would have been accepted.
+
+The vocabulary is **not** `gh-prs`'s, and was checked rather than assumed: `glab mr list` has flags for `milestone`, `source-branch` and `target-branch` that `gh pr list` does not, and its states are `opened`/`merged`/`closed`/`all` — so `gl-mrs:state=open` is now refused and names `opened`. The grammar and the refusal are shared; the accepted keys are per op.
+
+`_parse_multi` — the plural reading the [`radar`](watch.md) GitLab tier shares — reports unrecognised tokens too, so the two cannot disagree about what an arg string said.
+
+**Not verified against a live GitLab.** `glab` is unauthenticated in the environment this was written in, so the GitLab half is covered by stubbed tests only; the GitHub half was reproduced and re-checked against real GitHub.
+
 ### Text from the tracker is fenced
 
 Issue and MR descriptions and every comment are wrapped in `⟨remote NONCE⟩ … ⟨/remote NONCE⟩` markers, and one-line fields (titles, usernames, labels, branch names) are flattened to a single line. See [Remote text is fenced](index.md#remote-text-is-fenced) for the convention, what it costs, and why the fence cannot be closed from inside ([#694](https://github.com/Digital-Process-Tools/claude-supertool/issues/694)).

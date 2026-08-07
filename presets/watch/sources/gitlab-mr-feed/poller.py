@@ -111,7 +111,14 @@ def fetch_population(scope: str) -> dict[str, dict[str, str]] | None:
     of those calls failing fails the whole poll — a partial population reads
     as a departure for everything the missing query would have returned.
     """
-    multi, _flags = mrs._parse_multi(resolve_filter(scope))
+    multi, _flags, unknown = mrs._parse_multi(resolve_filter(scope))
+    if unknown:
+        # A scope carrying a token gl-mrs cannot apply describes a *wider*
+        # population than the caller asked for, so building it anyway would
+        # spawn watchers over strangers' MRs and fire an mr_opened for each.
+        # None is this function's "could not establish the population", and it
+        # is the safe direction: no events either way (#939).
+        return None
     cfg = mrs._get_config()
     out: dict[str, dict[str, str]] = {}
     for filters in mrs._expand_filters(multi):

@@ -35,8 +35,8 @@
     "gh-prs": {
       "cmd": "{python} {path}github/prs.py {args}",
       "timeout": 60,
-      "description": "PR triage board: list PRs (default author=@me), sorted failing-first. Per PR: check rollup (failed\u2192check name), approval (reviewDecision), age, diff size, watch-state, draft/conflict/threads flags + actionable footer. Filters (comma-sep): author/reviewer/assignee/label/state. Flags: nopipe (skip review-thread enrichment), iids, failed. The core board is one gh call; review threads enrich in parallel.",
-      "syntax": "gh-prs[:author=@me,reviewer=@me,state=open,failed,nopipe,iids]",
+      "description": "PR triage board: list PRs (default author=@me), sorted failing-first. Per PR: check rollup (failed\u2192check name), approval (reviewDecision), age, diff size, watch-state, draft/conflict/threads flags + actionable footer. Filters (comma-sep): author/reviewer/assignee/label/state/per. Flags: nopipe (skip review-thread enrichment), iids, failed. A token outside those two lists, or a state outside open/closed/merged/all, is REFUSED (exit 1, no board) rather than dropped. The core board is one gh call; review threads enrich in parallel.",
+      "syntax": "gh-prs[:author=@me,assignee=@me,reviewer=@me,label=bug,state=open,per=50,failed,nopipe,iids]",
       "repo_target": true,
       "enrich_workers": 8,
       "enrich_cap": 40,

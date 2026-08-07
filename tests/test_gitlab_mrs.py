@@ -24,32 +24,40 @@ _spec.loader.exec_module(mrs)
 # ---------------------------------------------------------------------------
 
 def test_parse_args_empty_is_defaults() -> None:
-    assert mrs._parse_args("") == ({}, set())
+    assert mrs._parse_args("") == ({}, set(), [])
 
 
 def test_parse_args_filters_and_flags() -> None:
-    filters, flags = mrs._parse_args("author=@me,state=merged,nopipe")
+    filters, flags, unknown = mrs._parse_args("author=@me,state=merged,nopipe")
     assert filters == {"author": "@me", "state": "merged"}
     assert flags == {"nopipe"}
+    assert unknown == []
 
 
 def test_parse_args_iids_flag() -> None:
-    filters, flags = mrs._parse_args("reviewer=@me,iids")
+    filters, flags, _unknown = mrs._parse_args("reviewer=@me,iids")
     assert filters == {"reviewer": "@me"}
     assert flags == {"iids"}
 
 
 def test_parse_args_failed_flag() -> None:
-    filters, flags = mrs._parse_args("author=@me,failed,iids")
+    filters, flags, _unknown = mrs._parse_args("author=@me,failed,iids")
     assert filters == {"author": "@me"}
     assert flags == {"failed", "iids"}
 
 
-def test_parse_args_ignores_unknown_bare_token() -> None:
-    """A bare token that isn't a known flag is dropped, not treated as filter."""
-    filters, flags = mrs._parse_args("bogus,author=x")
+def test_parse_args_returns_an_unknown_bare_token(
+) -> None:
+    """This test used to assert the drop. The drop was the bug (#939).
+
+    A bare token that is not a known flag is handed back so `main` can refuse;
+    keeping it out of both `filters` and `flags` while saying nothing is how
+    `gl-mrs:onlygreen` returned the whole board as the green subset.
+    """
+    filters, flags, unknown = mrs._parse_args("bogus,author=x")
     assert filters == {"author": "x"}
     assert flags == set()
+    assert unknown == ["bogus"]
 
 
 # ---------------------------------------------------------------------------
@@ -536,9 +544,11 @@ def test_main_bad_json_returns_1(monkeypatch) -> None:
 # ---------------------------------------------------------------------------
 
 def test_parse_multi_keeps_every_value_of_a_repeated_key() -> None:
-    filters, flags = mrs._parse_multi("author=@me,author=modular.system,state=opened")
+    filters, flags, unknown = mrs._parse_multi(
+        "author=@me,author=modular.system,state=opened")
     assert filters == {"author": ["@me", "modular.system"], "state": ["opened"]}
     assert flags == set()
+    assert unknown == []
 
 
 def test_parse_multi_agrees_with_parse_args_on_flags() -> None:
@@ -547,12 +557,13 @@ def test_parse_multi_agrees_with_parse_args_on_flags() -> None:
 
 def test_parse_args_resolves_a_repeated_key_to_one_value() -> None:
     """gl-mrs issues one query, so its view of a repeated key stays scalar."""
-    filters, _flags = mrs._parse_args("author=@me,author=modular.system")
+    filters, _flags, _unknown = mrs._parse_args("author=@me,author=modular.system")
     assert filters == {"author": "modular.system"}
 
 
 def test_expand_filters_fans_a_repeated_key_into_one_dict_per_value() -> None:
-    multi, _flags = mrs._parse_multi("author=@me,author=modular.system,state=opened")
+    multi, _flags, _unknown = mrs._parse_multi(
+        "author=@me,author=modular.system,state=opened")
     assert mrs._expand_filters(multi) == [
         {"author": "@me", "state": "opened"},
         {"author": "modular.system", "state": "opened"},
@@ -563,8 +574,8 @@ def test_expand_filters_leaves_a_scalar_filter_exactly_as_parse_args_saw_it() ->
     """The single-query path must produce byte-identical argv, or every caller
     of the plural parser quietly changes the command it was already sending."""
     arg = "author=@me,state=opened"
-    scalar, _f = mrs._parse_args(arg)
-    multi, _g = mrs._parse_multi(arg)
+    scalar, _f, _u = mrs._parse_args(arg)
+    multi, _g, _v = mrs._parse_multi(arg)
     assert mrs._expand_filters(multi) == [scalar]
     assert (mrs._build_list_cmd(mrs._expand_filters(multi)[0], 50)
             == mrs._build_list_cmd(scalar, 50))
