@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import importlib
 import re
+import socket
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -260,6 +261,40 @@ def _serve(cls: type) -> ThreadingHTTPServer:
     return srv
 
 
+def _stop(srv: ThreadingHTTPServer) -> None:
+    """Stop a test server so that its port is dead.
+
+    Both calls, in this order, and neither is optional. `shutdown()` ends the
+    `serve_forever` loop; `server_close()` closes the listening socket. Only
+    the second one makes the port refuse — without it the socket stays bound
+    and the kernel keeps completing handshakes into a backlog nothing accepts
+    from, so a client connects and then blocks waiting for a reply that will
+    never be written.
+    """
+    srv.shutdown()
+    srv.server_close()
+
+
+def test_a_stopped_test_server_leaves_nothing_listening() -> None:
+    """`_stop` has to make the port refuse, not merely stop answering.
+
+    `shutdown()` ends the `serve_forever` loop and nothing else: the listening
+    socket stays bound, so the kernel goes on completing handshakes into a
+    backlog no one accepts from. A client connects — successfully — and then
+    waits for a reply that is never coming, for the whole of its request
+    timeout where it has one and forever where it does not. That is the shape
+    of a suite that stalls near the end and never names a test, so the property
+    is asserted here rather than assumed in a comment at each call site.
+    """
+    srv = _serve(_Handler)
+    port = srv.server_port
+    _stop(srv)
+    with socket.socket() as sock:
+        sock.settimeout(5)
+        with pytest.raises(ConnectionRefusedError):
+            sock.connect(("127.0.0.1", port))
+
+
 @pytest.fixture
 def origin():
     class H(_Handler):
@@ -267,7 +302,7 @@ def origin():
     srv = _serve(H)
     H.base = f"http://127.0.0.1:{srv.server_port}"  # type: ignore[attr-defined]
     yield H
-    srv.shutdown()
+    _stop(srv)
 
 
 # Loopback is exactly what the policy refuses, so the transport tests opt out of
@@ -317,7 +352,7 @@ def test_download_refuses_a_non_image_content_type(origin, tmp_path) -> None:
                 timeout=5, content_types=("image/",),
             )
     finally:
-        srv.shutdown()
+        _stop(srv)
     assert "text/plain" in str(exc.value)
     assert not dest.exists()
     assert b"SECRET" not in b"".join(p.read_bytes() for p in tmp_path.iterdir())
@@ -339,8 +374,8 @@ def test_download_refuses_a_redirect_off_the_allowlist(origin, tmp_path) -> None
                 limit=1 << 20, timeout=5,
             )
     finally:
-        rsrv.shutdown()
-        target.shutdown()
+        _stop(rsrv)
+        _stop(target)
     assert not dest.exists()
     assert _Handler.hits == [], "the redirect destination was contacted"
 
@@ -369,8 +404,8 @@ def test_a_redirect_off_the_allowlist_is_refused_at_the_hop(tmp_path) -> None:
                 limit=1 << 20, timeout=5,
             )
     finally:
-        rsrv.shutdown()
-        target.shutdown()
+        _stop(rsrv)
+        _stop(target)
     assert "localhost" in str(exc.value)
     assert R.hits == ["/x.png"], "the first hop should have happened"
     assert _Handler.hits == [], "the redirect destination was contacted"
@@ -434,7 +469,7 @@ def test_download_refuses_the_target_before_it_connects(tmp_path) -> None:
                 allowed_hosts=_gh_hosts(), limit=1 << 20, timeout=5,
             )
     finally:
-        srv.shutdown()
+        _stop(srv)
     assert _Handler.hits == [], "the refused target was contacted anyway"
     assert not dest.exists()
 
@@ -485,7 +520,7 @@ def test_a_redirect_toward_the_metadata_service_is_refused(tmp_path, monkeypatch
     try:
         results = issue._download_images([f"http://127.0.0.1:{srv.server_port}/x.png"], "817")
     finally:
-        srv.shutdown()
+        _stop(srv)
     assert [r.state for r in results] == [issue.IMAGE_REFUSED]
 
 
@@ -533,7 +568,7 @@ def test_a_network_failure_is_not_reported_as_a_refusal(capsys, tmp_path, monkey
     monkeypatch.setattr(issue, "IMAGE_DIR", str(tmp_path / "img"))
     srv = _serve(_Handler)
     port = srv.server_port
-    srv.shutdown()  # nothing is listening now
+    _stop(srv)  # the port is dead now, and the test above proves it
     monkeypatch.setattr(issue, "IMAGE_HOSTS", ("127.0.0.1",))
     monkeypatch.setattr(issue, "IMAGE_ALLOW_PRIVATE", True)
     results = issue._download_images([f"http://127.0.0.1:{port}/x.png"], "817")
