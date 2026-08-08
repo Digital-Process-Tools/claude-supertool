@@ -79,10 +79,16 @@ import _branch_locale  # noqa: E402
 
 # Every op that prints this line. A fix landing on the helper but not reaching
 # one of these wrappers leaves that op's readers with the imperative.
+#
+# `gh-run` left this set with #1056: it now renders `_branch_locale.describe`,
+# which builds no command at all, so "the imperative was withheld and said so"
+# is not a claim it can make. The injection question still has to be answered
+# for that op and is, in
+# `tests/test_gh_run_read_only_branch_line_1056.py` — a hostile name there must
+# be flattened, stay on one line, and never appear inside a command.
 SITES = {
     "gh-pr": "presets/github/pr.py",
     "gh-job": "presets/github/job.py",
-    "gh-run": "presets/github/run.py",
     "gl-mr": "presets/gitlab/mr.py",
     "gl-job": "presets/gitlab/job.py",
 }

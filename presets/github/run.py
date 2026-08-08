@@ -242,13 +242,17 @@ def status_line(run_status: object, conclusion: object,
 
 
 def _local_branch_check(source: str) -> str:
-    """Return a one-line local-branch-vs-source check for output.
+    """Return a one-line local-branch-vs-source line for output.
 
-    Delegated to `_branch_locale` (#850): a branch held by a linked worktree is
-    neither a match nor a MISMATCH, and saying MISMATCH there prescribed a
-    checkout git refuses.
+    `describe`, not `check` (#1056). Reading a run is not a claim about wanting
+    its branch: the run you need to read is routinely one you are not on and
+    should not switch to, so the `⚠ MISMATCH — switch with: …` form framed the
+    ordinary case as an error and prescribed an action that moves `HEAD` in a
+    worktree mid-work. The state is still stated; only the imperative is gone.
+
+    The other four sites of #850 keep `check` — see that issue, still open.
     """
-    return _branch_locale.check(source)
+    return _branch_locale.describe(source)
 
 
 def _format_error(stderr: str, resource: str, identifier: str) -> str:

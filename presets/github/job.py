@@ -631,6 +631,11 @@ def gap_marker(n_lines: int) -> str:
 
     The log is never described as incomplete — it is not. What is incomplete is
     this selection of it.
+
+    `presets/gitlab/job.py` carries a byte-identical copy, because the two ops
+    are read interchangeably and one wording for one idea is the whole point
+    (#1066). `tests/test_gl_job_gap_marker_twins_1066.py` compares them, so a
+    change to this string that does not reach the twin fails there.
     """
     unit = "line" if n_lines == 1 else "lines"
     return (f"... ({n_lines} {unit} elided by this op — no error pattern "

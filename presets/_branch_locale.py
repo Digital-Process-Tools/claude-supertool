@@ -161,3 +161,46 @@ def check(source: str, actionable: bool = True) -> str:
                 f"`. _ / -`, no leading `-`), so no switch command is "
                 f"suggested — check it out yourself, deliberately")
     return f"You are on: {local} ⚠ MISMATCH — switch with: ./supertool 'git-checkout:{named}'"
+
+
+def describe(source: str) -> str:
+    """The same field, stated rather than prescribed — for `gh-run` (#1056).
+
+    `check()` above answers "you are not where you should be, here is how to
+    get there". That premise holds for `gh-pr`: you often read a pull request
+    *because* you are about to work on it. It is the opposite of true for a CI
+    run. Runs are read when something is red, and the run you most need to read
+    is routinely one you are not on and must not switch to — the report came
+    from an agent in a branch worktree with uncommitted work in it, being told
+    to move `HEAD`.
+
+    Three faults were stacked in that one line and all three are premise, not
+    phrasing: `⚠ MISMATCH` frames the ordinary case as an error; the prescribed
+    action is destructive exactly where it is most often printed; and it names
+    `./supertool`, a relative path that need not exist in the cwd (#905).
+
+    So this renders no imperative at all, and therefore needs no
+    `holding_worktree` lookup and no `_refname` gate — there is no command for
+    a hostile branch name to escape out of. What survives is the pair of facts:
+    where you are, and where the run is from.
+
+    **Not deleted.** A field that simply vanished would read as "you are on the
+    right branch", which is #531's failure at this same function. And the
+    branch a run came from is genuinely useful context when the run is red.
+
+    Deliberately not applied to the other four sites of #850. That issue
+    governs all five together and is still open; this is the one op where the
+    premise itself is wrong.
+    """
+    if not source or source == "?":
+        return ""
+    raw_local = current_branch()
+    if raw_local is None:
+        return ""
+    if raw_local == source:
+        return f"You are on: {_untrusted.flat(raw_local)} ✓"
+    # Both names come off the API or the filesystem, not from us — `flat` for
+    # the reason #851 gives, and it is sufficient here precisely because the
+    # line contains no command for a quote glyph to close.
+    return (f"You are on: {_untrusted.flat(raw_local)} — this run is from "
+            f"{_untrusted.flat(source)}; reading a run needs no checkout")
