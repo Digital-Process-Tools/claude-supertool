@@ -311,9 +311,19 @@ def test_validate_footer_does_not_count_ops_it_never_ran(
     assert "writes" not in line, line
 
 
-def test_a_clean_validate_gains_no_footer(tmp_path: Path, capsys) -> None:
-    """The word appears when a checker declined and never otherwise (#621)."""
+def test_a_clean_validate_says_NOT_RUN_about_nothing(tmp_path: Path, capsys) -> None:
+    """Superseded in shape by #990, unchanged in what it protects.
+
+    This asserted `[result]` was absent entirely from a clean `validate:`. #990
+    settled the question that left open — what a whole-run verdict means when
+    the run covers many files — and gave the op an unconditional count footer,
+    so the line is present now. What must not come back is the *word*: rendering
+    `0 validators NOT RUN` on a green run is #621's zero-nobody-reads attached
+    to the token consumers grep for. `tests/test_validate_footer_counts_990.py`
+    owns the footer's shape; this keeps the guarantee that motivated the gate.
+    """
     _configure(_two_pass_adapter(tmp_path, CLEAN, CLEAN))
     rc, out = _validate(tmp_path, capsys)
-    assert "[result]" not in out, out
+    assert "NOT RUN" not in out, out
+    assert "[result] 1 file, 0 with findings, 0 not checked" in out, out
     assert rc == 0, out

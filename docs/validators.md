@@ -531,9 +531,20 @@ Use `slow` for anything where a single analysis pass on the final file content i
 
 ## Caching
 
-Results are auto-cached at `~/.cache/supertool/validators/`, keyed on `sha256(file_content) + name + cmd + tool fingerprint`. Validators skip re-running when neither the file nor the tools behind them have changed.
+Results are auto-cached at `~/.cache/supertool/validators/`, keyed on `sha256(file_content) + name + cmd + tool fingerprint + meaning version`. Validators skip re-running when neither the file, nor the tools behind them, nor the core's reading of what they returned has changed.
 
 Disable caching per-call with the `SUPERTOOL_NO_VALIDATOR_CACHE=1` env var, or per-project with `"validator_cache": false` in `.supertool.json`.
+
+**Meaning version.** The key also carries a hash of what the stored fields *mean* ([#1048](https://github.com/Digital-Process-Tools/claude-supertool/issues/1048)). The parts above describe what was analysed and which build of the analyser did it; none of them describes how the core interprets the result it reads back. So when the core changes its own reading of a field it owns — a `count` that starts excluding a category, an `ok` that starts implying something narrower, a key that becomes core-only — entries written under the previous meaning verify, sit inside the TTL, and are read under the new rules. Nothing is forged: the bytes were correct when they were written and are wrong when they are read.
+
+The component is derived rather than declared, from the two places that meaning actually lives:
+
+| source | why |
+|--------|-----|
+| the content of `validators/SCHEMA.md` | this repo's canonical statement of what each field means; a meaning change that does not touch it is already a contract violation |
+| the sorted core-only key set | the half of the contract that lives in code, where the doc can lag by a commit |
+
+Hashed by **content**, not by `stat` — a fresh clone rewrites identical bytes at a new mtime, and keying on that would cold-invalidate every validator cache on every checkout. That cost is exactly why "just put the release version in the fingerprint" was refused: it is paid every release whether or not any meaning moved. An install where `validators/SCHEMA.md` cannot be read gets its own key space rather than defaulting into the readable one — it cannot say which meaning its entries were written under, and that is the third state, applied to the key itself.
 
 **Tool fingerprint.** The key describes what did the analysing, not only what was analysed — otherwise a result computed by a buggy analyser keeps being replayed after the analyser is fixed. (Found the hard way: `mcp-phpstan-warm` 0.6.0 → 0.7.0 fixed two staleness bugs, and the very next run still served 0.6.0's wrong answers, in 0.2s, doing no work at all.) The fingerprint is a hash of `stat` signatures — `size` + `mtime_ns` — from two sources:
 
@@ -576,7 +587,24 @@ A validator has three states, not two: `ok`, a finding, and **`skipped`** — an
 
 **The `before` side counts too.** A baseline that produced no verdict is not a clean baseline and is not a `0` — it is the absence of a baseline, and is now folded into the `before is None` case. Subtracting it cancelled real findings: an edit that introduced an error read `1 err (pre-existing — not from this edit)`, did not roll back, and exited 0. The row for that case shows `? → 1`, never `0 → 1`.
 
-Whether an *adapter*-coded absence exits non-zero is decided by `$SUPERTOOL_REQUIRE_VALIDATORS`, one section up — that variable is the only place an operator states which absences are unacceptable *here*. It does not gate timeouts: the core did not decline to look, it ran out of time doing so, and no operator opted into that.
+### What `$SUPERTOOL_REQUIRE_VALIDATORS` controls, and what escalates without it
+
+The section one up introduces `$SUPERTOOL_REQUIRE_VALIDATORS` as the place an operator states which absences are unacceptable *here*, and it is easy to read that as the single switch on every non-verdict. It is not, and a reader who assumes it is concludes they can suppress escalation by leaving the variable unset — then sees a non-zero exit and reads it as the tool ignoring their configuration ([#989](https://github.com/Digital-Process-Tools/claude-supertool/issues/989)).
+
+**The variable gates exactly one thing: a checker the operator named that the *core watched break down*.** That is `_validator_gate_did_not_run` — an adapter that produced no output, non-JSON output, a crash, or a reply with no verdict key. Those become a `skipped`, and a `skipped` from an unnamed validator stays quiet, because escalating it unconditionally would fail every unrelated edit on a laptop that never installed an optional tool ([#665](https://github.com/Digital-Process-Tools/claude-supertool/issues/665)).
+
+**Two absences escalate whatever the variable says**, because `_note_not_checked` records them through `_validator_no_verdict`, which never consults it:
+
+| case | what it looks like | variable unset |
+|------|--------------------|----------------|
+| the adapter ran and reported only `code: "adapter"` errors | `NOT CHECKED (<the adapter's reason>)` | **exits 1** |
+| the core's own budget expired | `NOT CHECKED (timed out — no verdict about this file)` | **exits 1** |
+| the adapter broke down — no output, non-JSON, crash, no verdict key | `skipped` | exits 0 unless named |
+| the adapter declined on its own terms — `warm_unsafe`, daemon absent, unsupported platform | `skipped` | exits 0, never escalates |
+
+The first two are the same fact seen from two sides of the same pipe: a checker that was asked about this file and produced no opinion about it. The adapter was healthy enough to say so in the first row and not in the third, which is the whole distinction — a self-report the core can trust, versus a breakdown where the core has only its own observation and the operator's stated expectations to go on. A timeout in particular needs no configuration at all to happen: the core did not decline to look, it ran out of time doing so, and nobody opted into that.
+
+`tests/test_require_validators_core_975.py` pins every row of that table, including the two that escalate with the variable deleted.
 
 **Daemon not installed — the checker that cannot run declines** ([#531](https://github.com/Digital-Process-Tools/claude-supertool/issues/531)). The four warm-process adapters (`phpstan-mcp`, `rector-mcp`, `phpmd-mcp`, `phpunit-mcp`) resolve their daemon binary before spawning it. When it is absent — the normal case for any `cwd:` pointed at a git worktree, where `composer install` never ran — that used to surface as a finding:
 
@@ -743,6 +771,18 @@ Useful for a pre-commit sweep or spot-checking a file you didn't edit this sessi
 **List form** — pass a comma-separated path list (`validate:f1,f2,…[:tool_filter]`) to validate several files in one invocation; the config is loaded once for the whole batch and each path is independently security-checked at dispatch. Single-file `validate:PATH` is unchanged.
 
 **`@syntax` filter** — the special filter `@syntax` selects only validators that declare `"syntax": true` in their spec (the parser/compiler tier), keeping that scope in config rather than a hardcoded caller list. Falls back to the bundled name list for older configs that predate the flag.
+
+**Every `validate:` run ends with a count, not with a file** ([#990](https://github.com/Digital-Process-Tools/claude-supertool/issues/990)):
+
+```text
+[result] 3 files, 1 with findings, 0 not checked
+```
+
+Before this, the footer was emitted only when a checker declined, so a clean multi-file run *ended* on whichever file sorted last — a per-file verdict standing where a whole-run one belongs, which is the defect class this subsystem keeps having. The three numbers are file counts and they do not partition: one file can hold both a finding and a checker that declined. `not checked` counts a file where at least one validator returned no verdict, `skipped` included, and it is printed as `0` rather than suppressed — on a line whose entire content is counts, the not-checked slice is the one a reader must be able to find without knowing in advance whether it fired.
+
+`NOT RUN` stays off a clean run. It is the token consumers grep for, and `0 validators NOT RUN` would put it in the output of every green validate. When a required checker does return no verdict, the [#979](https://github.com/Digital-Process-Tools/claude-supertool/issues/979) clause is appended after the counts rather than replacing them, and the exit code is unchanged — this line discloses, it does not gate.
+
+**It does not make `| tail -1` a verdict, and the issue that asked for it assumed it would.** [#381](https://github.com/Digital-Process-Tools/claude-supertool/issues/381) requires `[branch: …]` to be the last line whenever a footer prints, so inside a repo `tail -1` lands there. The footer is owed regardless: a run whose final line is one file's row has no line describing the run at all, wherever the reader looks. Read the tail of the output, not its last line.
 
 ### What `validate:` output guarantees
 
