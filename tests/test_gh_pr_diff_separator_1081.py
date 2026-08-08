@@ -22,7 +22,15 @@ as `[U+2028]` in the hunk body, so once the line is one line the reader sees the
 whole of it with the separator named - a second announcement at the parse layer
 would be noise about something already said.
 
-Every assertion below is on behaviour that does not exist yet.
+Not every test here was red before the fix, and which is which matters. The
+separator tests were - they are the defect. Three were green already and are
+guards, not pins: `test_a_real_two_file_diff_still_parses_both_files` exists
+so nobody implements the issue's second half and breaks multi-file diffs,
+`test_a_crlf_patch_parses_identically_and_carries_no_stray_cr` pins the
+behaviour a bare `split("\\n")` would have broken, and
+`test_a_trailing_newline_does_not_append_an_empty_hunk_line` pins the other
+thing it would have broken. All three would pass if the fix did nothing, on
+purpose: they describe what the fix must not cost.
 """
 from __future__ import annotations
 
