@@ -391,8 +391,13 @@ def test_the_radar_gh_prs_tier_still_names_an_unhonourable_filter() -> None:
         "radar board silently narrowed to the failing rows is the defect"
     )
 
-    filters, flags, unknown = (*tier.resolve_filter("author=@me,nopipe"), [])
-    assert filters == {"author": "@me"} and flags == {"nopipe"} and unknown == []
+    # `nopipe` used to be accepted here and applied nowhere; #973 moved it into
+    # the refused column beside `failed`, on both tiers at once.
+    with pytest.raises(tier.RadarError) as exc:
+        tier.resolve_filter("author=@me,nopipe")
+    assert "nopipe" in str(exc.value)
+
+    assert tier.resolve_filter("author=@me") == {"author": "@me"}
 
 
 def test_the_tier_vocabulary_stays_narrower_than_the_op_it_shares_a_parser_with() -> None:
@@ -451,21 +456,25 @@ def test_the_tier_accepts_and_refuses_exactly_what_it_did_before_939() -> None:
     stripped key, an empty key, a flag written as `key=`, a repeated key, and
     the two vocabularies' difference. The expected column is what the pre-#939
     tier returned, read off dc1ab4c.
+
+    One row moved deliberately since, and it is called out rather than quietly
+    edited: `nopipe` was accepted and never applied, so #973 refused it and
+    dropped the flag half of the return value with it. Everything else must
+    still answer exactly as it did.
     """
     tier = _load("radar_gh_prs_939_corpus", "presets/watch/tiers/gh_prs.py")
 
     accepted = {
-        "": ({}, set()),
-        "nopipe": ({}, {"nopipe"}),
-        " author = me ": ({"author": "me"}, set()),
-        "author=a,author=b": ({"author": "b"}, set()),
-        "state=open,label=bug,nopipe": (
-            {"state": "open", "label": "bug"}, {"nopipe"}),
+        "": {},
+        " author = me ": {"author": "me"},
+        "author=a,author=b": {"author": "b"},
+        "state=open,label=bug": {"state": "open", "label": "bug"},
     }
     for arg, expected in accepted.items():
         assert tier.resolve_filter(arg) == expected, arg
 
     for arg in ("milestone=v19", "per=5", "onlygreen", "iids", "failed",
+                "nopipe", "state=open,label=bug,nopipe",
                 "nopipe=1", "=x", "author=a,milestone=v19"):
         with pytest.raises(tier.RadarError):
             tier.resolve_filter(arg)

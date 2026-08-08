@@ -812,16 +812,31 @@ def test_a_filter_matching_a_feed_alias_reuses_that_alias(env, capsys) -> None:
     assert _feed_ids(env) == ["@reviewer"]
 
 
-def test_an_arg_carrying_only_flags_is_still_the_default_population(env, capsys) -> None:
-    """`radar:nopipe` names no filter. Resolving it to an empty dict would mint
-    an empty feed scope — a third poller over the population `@me` already
-    covers, and therefore duplicate discovery events."""
+def test_an_arg_naming_no_filter_is_still_the_default_population(env, capsys) -> None:
+    """An arg that resolves to an empty dict must not mint an empty feed scope
+    — a third poller over the population `@me` already covers, and therefore
+    duplicate discovery events.
+
+    This used to be spelled `radar:nopipe`, the only arg that could carry a
+    token and name no filter. #973 refused that flag, so the case is now
+    reached the way it will be reached in practice: an arg of separators and
+    whitespace, which the tokenizer skips rather than places.
+    """
     _glab(env, {"@me": [_mr(33161)]})
-    assert radar.main(["radar", "nopipe"]) == 0
+    assert radar.main(["radar", " , "]) == 0
     out = capsys.readouterr().out
     assert "!33161" in out
     assert _feed_ids(env) == ["@me"]
-    assert mr_tier.resolve_filter("nopipe") == mr_tier.default_filter()
+    assert mr_tier.resolve_filter(" , ") == mr_tier.default_filter()
+
+
+def test_a_flag_only_arg_is_now_refused_rather_than_widened_to_the_default(env, capsys) -> None:
+    """The replacement for `radar:nopipe` (#973). Refusing is strictly stronger
+    than resolving to the default: nothing is printed, nothing is spawned, and
+    the caller finds out the token did nothing."""
+    _glab(env, {"@me": [_mr(33161)]})
+    assert radar.main(["radar", "nopipe"]) == 1
+    assert _feed_ids(env) == []
 
 
 def test_editing_the_shared_default_moves_radar_too(env, capsys) -> None:

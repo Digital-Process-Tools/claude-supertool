@@ -609,6 +609,13 @@ def radar_report(options: dict | None = None) -> tuple[list[str], bool]:
         # throughput evidence and their liveness is not knowable from here.
         # Printing a count anyway would be #533 in miniature: a number that
         # reads as measured and was inferred from the throttled field.
+        #
+        # This return is load-bearing, not cosmetic (#807). The `_is_responsive`
+        # count below raises on an unannotated record, and the only thing that
+        # keeps it from being asked is that it sits under this branch. Hoisting
+        # it, merging the two arms or adding an early return below it crashes a
+        # live radar run; `tests/test_radar_runners_unannotated_count_807.py`
+        # is what says so, since the invariant is invisible from either site.
         return ([f"radar: fleet ok — {len(runners)} runners, "
                  f"0 pending, none blocked"], True)
 

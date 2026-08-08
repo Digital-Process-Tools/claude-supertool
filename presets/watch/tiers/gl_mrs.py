@@ -218,11 +218,20 @@ RADAR_QUIET_DEFAULT = False
 # honour — the opposite error, and just as wrong.
 KNOWN_FILTERS = set(mrs._FILTER_FLAG) | {"state"}
 
-# Tokens that are flags rather than key=value. `iids` and `failed` are board
-# *shapes* the op offers and this tier does not: a radar board silently narrowed
-# to a bare id list, or to only the failing rows, is the same lie as a widened
-# one — and `iids` is the payload the feed hands the watcher spawner.
-KNOWN_FLAGS = {"nopipe"}
+# Tokens that are flags rather than key=value — and this tier takes none of
+# them (#973). `iids` and `failed` are board *shapes* the op offers and this
+# tier does not: a radar board silently narrowed to a bare id list, or to only
+# the failing rows, is the same lie as a widened one — and `iids` is the payload
+# the feed hands the watcher spawner.
+#
+# `nopipe` was accepted and never reached `live_open_mrs`, so the board came
+# back pipeline-enriched and the caller who asked for a cheaper one was not
+# told they had not got it. Refused rather than honoured, and the argument is
+# not the GitHub tier's: here it *is* expressible, and what it would produce is
+# not a cheaper board but a board with no answer in it. The verdict, the drift
+# check against `source_state.pipeline_id` and the heal decision are all read
+# off the enrichment `nopipe` removes.
+KNOWN_FLAGS: set[str] = set()
 
 # Keys whose value this tier maps rather than forwards. `state=mergd` is in
 # KNOWN_FILTERS, so it survives the unknown-token check — and then
