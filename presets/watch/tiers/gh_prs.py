@@ -159,7 +159,17 @@ KNOWN_FLAGS = {"nopipe"}
 # needs proving, so the budget is small and its edge is disclosed.
 RECONCILE_CAP = 6
 
-RADAR_OPTIONS = {"quiet_when_healthy", "default_branch", "reconcile_cap"}
+# A `running` PR whose reported facts have not moved for this long comes back
+# onto the delta board with the reason on the row (#1025). Four hours, because
+# the false positive it must clear is a genuinely queued matrix: eight PRs sat
+# at "18 passed, 2 pending" for the better part of an hour while the macOS
+# runners were starved, and every one of them eventually landed. A threshold
+# that names those trains its reader to skim, which costs more than the wedge
+# it catches. Raise or lower it per board; 0 turns it off.
+STALE_RUNNING_MINUTES = 240
+
+RADAR_OPTIONS = {"quiet_when_healthy", "default_branch", "reconcile_cap",
+                 "stale_running_minutes"}
 
 # A healthy PR board still speaks: a board that prints nothing on a quiet day
 # is byte-identical to a radar that failed to run.
@@ -502,10 +512,12 @@ def snapshot_path(filters: dict[str, str], repo: str) -> str:
 
 
 def _marks(p: dict, healed: set[str], uncovered: set[str],
-           coverage_known: bool) -> str:
+           coverage_known: bool, stale_minutes: float = 0.0) -> str:
     out = []
     if p.get("_unverified"):
         out.append(f"[legs UNVERIFIED: {p['_unverified']}]")
+    if stale_minutes:
+        out.append(f"[{snapshot.unchanged_label(stale_minutes, str(p.get('_checks') or ''))}]")
     number = str(p.get("number", "?"))
     if not coverage_known:
         out.append("[watch?]")
@@ -522,6 +534,34 @@ def _is_standing_problem(p: dict) -> bool:
             or p.get("mergeable") == "CONFLICTING"
             or bool(p.get("_unverified"))
             or not str(p.get("_checks") or ""))
+
+
+def _stale_running(p: dict, previous_entry: Any, threshold: float,
+                   now: str | None = None) -> float:
+    """Minutes a `running` PR has been unchanged, past `threshold`. Else 0.
+
+    `running` is deliberately *not* a standing problem: a pipeline in progress
+    is the ordinary state of a PR that was just pushed, and reprinting it every
+    tick is exactly what the delta exists to prevent. It is also the only state
+    that can persist indefinitely **while being wrong** — a wedged leg, a
+    runner that never picks the job up, a workflow waiting on an approval
+    nobody will give. None of those ever changes, so the snapshot never
+    mismatches and the row is suppressed on every tick after the first (#1025).
+
+    So the elision is kept and given an expiry, rather than removed. Under the
+    threshold this returns 0 and the row stays off the board.
+
+    `None` from `unchanged_minutes` is *unknown*, and unknown is not stale: a
+    board that flagged every row it could not date would train its reader to
+    skim, which is the failure this whole surface is built against. The unknown
+    resolves itself on the next write — see `_snapshot.unchanged_minutes`.
+    """
+    if threshold <= 0 or str(p.get("_checks") or "") != "running":
+        return 0.0
+    mins = snapshot.unchanged_minutes(previous_entry, now)
+    if mins is None or mins < threshold:
+        return 0.0
+    return mins
 
 
 def _footer(open_prs: list[dict], covered: set[str] | None, healed: list[str],
@@ -612,7 +652,9 @@ def _departed(previous: dict | None, open_prs: list[dict]) -> list[str]:
 def render(open_prs: list[dict], covered: set[str] | None, healed: list[str],
            uncovered: list[str], previous: dict | None, label: str,
            notes: list[str] | None = None,
-           page_capped: bool = False) -> list[str]:
+           page_capped: bool = False,
+           now: str | None = None,
+           stale_running_minutes: float = STALE_RUNNING_MINUTES) -> list[str]:
     """Full board on cold start; changed + standing-problem rows afterwards.
 
     Every open PR lands in exactly one of `shown` and `elided`, and both are
@@ -635,12 +677,16 @@ def render(open_prs: list[dict], covered: set[str] | None, healed: list[str],
     elided: list[str] = []
     for p in sorted(open_prs, key=prs._sort_key):
         number = str(p.get("number", "?"))
-        moved = prev_entries.get(number) != snap_entry(p)
+        prev_entry = prev_entries.get(number)
+        # `facts`, not the raw entry: the entry also carries `_since`, which
+        # changes shape between versions and must never read as a move.
+        moved = snapshot.facts(prev_entry) != snap_entry(p)
         notable = number in healed_set or number in uncovered_set
-        if cold or moved or notable or _is_standing_problem(p):
+        stale = _stale_running(p, prev_entry, stale_running_minutes, now)
+        if cold or moved or notable or _is_standing_problem(p) or stale:
             shown.append(prs._row(p, covered,
                                   _marks(p, healed_set, uncovered_set,
-                                         coverage_known)))
+                                         coverage_known, stale)))
         else:
             elided.append(number)
 
@@ -738,10 +784,22 @@ def radar_report(options: dict | None = None) -> tuple[list[str], bool]:
     per_page = int(prs._get_config().get("per_page") or 0)
     page_capped = bool(per_page) and len(open_prs) >= per_page
     departed = _departed(previous, open_prs)
+    stale_after = options.get("stale_running_minutes", STALE_RUNNING_MINUTES)
+    try:
+        stale_after = float(stale_after)
+    except (TypeError, ValueError):
+        stale_after = STALE_RUNNING_MINUTES
+    stamped_at = snapshot.now_iso()
     lines = branch_lines + render(open_prs, covered, healed, uncovered,
-                                  previous, label, notes, page_capped)
+                                  previous, label, notes, page_capped,
+                                  now=stamped_at,
+                                  stale_running_minutes=stale_after)
+    prev_entries: dict[str, Any] = (previous or {}).get("prs", {}) or {}
     snapshot.write(SNAPSHOT_PREFIX, key,
-                   {str(p.get("number")): snap_entry(p) for p in open_prs},
+                   {str(p.get("number")): snapshot.stamp(
+                       snap_entry(p), prev_entries.get(str(p.get("number"))),
+                       stamped_at)
+                    for p in open_prs},
                    "prs")
 
     # `departed` counts against health because `healthy` has one consumer —

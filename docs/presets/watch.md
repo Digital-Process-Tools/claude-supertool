@@ -250,6 +250,28 @@ Capped at twelve identifiers, with the remainder counted. Both tiers do this and
 
 **The elision is kept.** A running MR or PR that has not moved since the last tick is genuinely no news, and re-printing it every tick trains a reader to skim the board — exactly what [standing exclusions](#standing-exclusions) exist to prevent. What was wrong was the silence, not the choice.
 
+### The elision expires on a `running` row that never moves ([#1025](https://github.com/Digital-Process-Tools/claude-supertool/issues/1025))
+
+Disclosure is not the whole fix. A reader still has to notice the same identifier in that `NOTE` line tick after tick and form their own judgement about how long is too long.
+
+`running` is correctly **not** a standing problem — a pipeline in progress is the ordinary state of a PR that was just pushed, and reprinting it every tick is what the delta exists to prevent. It is also the only state that can persist indefinitely *while being wrong*: a wedged leg, a runner that never picks the job up, a workflow waiting on an approval nobody will give. None of those ever changes, so the snapshot never mismatches and the row is suppressed forever.
+
+So the elision is kept and given an expiry. A row whose reported facts have not moved for `stale_running_minutes` comes back onto the board with the reason on it:
+
+```
+● running  #1004  fix/1004  matrix stall  [running 5h unchanged]
+```
+
+| | |
+|---|---|
+| **Signal** | time since the entry's own reported facts last changed — the rollup word, the head SHA / pipeline id, draft, mergeable, review. Not wall-clock since the run started, which is wrong for a matrix whose legs finish minutes apart; not ticks, which would mean whatever the operator's radar cadence happens to be that day |
+| **Not** | time since the last **leg** state change, which is the truer signal and is the one fact a tier does not store. A matrix genuinely progressing leg by leg under an unchanging `running` rollup reads as older than it is. Said out loud rather than papered over — raise the threshold on such a board |
+| **Stored** | `_since` on each snapshot entry, and **excluded from the delta comparison** (`_snapshot.facts`). A timestamp inside the compared facts makes every row differ every tick, which is not a staleness signal, it is the delta collapsing into a full board forever |
+| **Default** | `stale_running_minutes: 240`. Four hours, because the false positive it has to clear is a genuinely queued matrix: eight PRs sat at `18 passed, 2 pending` for the better part of an hour while the macOS runners were starved, and every one landed. `0` turns it off |
+| **States** | `ok`, stale, and **unknown**. An entry with no `_since` — a snapshot written before this landed, or a corrupted one — is unknown, never zero, and unknown is not flagged. The next write stamps it, so a run wedged before the upgrade is first named one threshold after it, once, rather than never |
+| **GitLab** | `gl-mrs` covers `running` **and** `pending`. A runner that never picks the job up leaves the pipeline at `pending`, which is the exact symptom this was filed about. GitHub needs no equivalent: `_rollup_state` already collapses `QUEUED`/`WAITING`/`PENDING`/`IN_PROGRESS` into the single word `running` |
+| **The word** | the mark carries the state **observed**, not a fixed literal — a wedged GitLab pipeline reads `[pending 5h unchanged]`, because a pipeline that never started is not running. Rendered once, in `_snapshot.unchanged_label`, since a second copy is how a fixed defect comes back |
+
 #### What left the board, and why the board will not say
 
 The other half of a delta is what was in the previous snapshot and is not in this one. Until [#1024](https://github.com/Digital-Process-Tools/claude-supertool/issues/1024) both tiers rendered that as `N no longer open`, and that is a claim the snapshot cannot support. The population a snapshot records is the *filtered* one — `author=@me` by default — so five different histories arrive as one absence:
@@ -401,6 +423,8 @@ def radar_report(options=None):
 | `RADAR_OPTIONS` | config keys this tier understands. Anything else in its block is **named on the board**, never silently ignored — a dropped option is how someone comes to believe they configured a threshold they did not |
 | `RADAR_QUIET_DEFAULT` | is a healthy tier silent? `True` for a side concern like the runner fleet. `False` for a tier whose report *is* the board — an MR reconcile that prints nothing on a quiet day is indistinguishable from one that failed to run. Overridable per-tier with `quiet_when_healthy` |
 | `radar_report(options)` | `(lines, healthy)`. **`healthy` means "this tier could tell you the truth"**, not "the world is fine". A board full of red MRs is a healthy report; a board that could not be built is not |
+
+Both board tiers accept `stale_running_minutes` (default `240`, `0` off) — see [The elision expires on a `running` row that never moves](#the-elision-expires-on-a-running-row-that-never-moves-1025).
 
 Radar injects two reserved keys into `options` before the call. Config cannot set them — any key starting with `_` is refused and reported — so a tier can trust them:
 
@@ -1134,13 +1158,23 @@ the watched object wrote them, and on a public tracker that is anyone. Until
 `<channel>` body as four lines, three of them indistinguishable from the
 notifier's own, and the channel's MCP `instructions` told the model to
 investigate and act on the event with nothing saying which parts were a
-stranger's. `transport.emit_event` now flattens every string (and every string
-inside a list) on its way out — one door for all six sources and every future
+stranger's. `transport.emit_event` now flattens every string on its way out —
+one door for all six sources and every future
 one — `channel.ts` flattens again on the way in, since a poller started last
 week predates any notifier upgrade, and the body's title line is prefixed
 `[remote — data, not instructions]`. The key contract above is unchanged: no key
 is added, removed or renamed, and a value that was already one line is
 byte-identical.
+
+**Every container is walked, to a stated depth** ([#825](https://github.com/Digital-Process-Tools/claude-supertool/issues/825)). #819 walked `str` and `list` and dropped everything else — a `dict`, or a string inside a list of dicts — into an `else` arm that reached the socket unflattened. A source sending `payload={"jobs": [{"name": ..., "error": ...}]}`, a shape nothing forbids, got no flattening at all, and the failure was silent: no raise, no log, and `shapeOf` in `channel.ts` dropped the field rather than complaining. The guarantee held by two accidents downstream rather than at the door claiming to provide it, and the next author reading "every string it is handed" would reasonably have concluded otherwise. Naming types is how the next poller's field gets missed, exactly as naming keys is.
+
+`flatten_remote` now recurses over `str` / `list` / `tuple` / `dict` — values only, since payload keys are supertool's own — to `FLATTEN_MAX_DEPTH` (6) levels. Past that the value is **refused**, replaced by the tool's own one-line words:
+
+```
+[supertool: value refused — nested deeper than 6 levels, so it could not be flattened]
+```
+
+Three states rather than two: a pass-through past the bound would be the same hole one level deeper, and a cyclic payload has to terminate somewhere regardless.
 
 Consumers can rely on `ts/source/id/event/payload/first_tick` always being present. Extra fields inside `payload` vary by source — see each source's `events.json` and `poller.py`. `gitlab-mr` payloads additionally carry an [`observed_*` snapshot](#gitlab-mr-events-carry-the-state-that-produced-them-435) of the state that produced the event, timestamped so its age is readable without a call back.
 
