@@ -462,6 +462,11 @@ so a status GitLab adds later — or a job still `running` — lands on the disc
 rather than on the silent overclaim. The `failed` path is unchanged and pinned by a
 test.
 
+This one is `:fail` only, and deliberately: the default view already prints nothing
+but a tail for a job that is not `failed`, so there is no completeness claim there
+to degrade. The boilerplate rule above applies to both views, because both print a
+header over the selection.
+
 A shared helper across the two presets was considered and rejected: two of the four
 disclosure lines are forge-specific (the op name, the status vocabulary), so the
 shared core would be an f-string with three parameters, and what actually drifted

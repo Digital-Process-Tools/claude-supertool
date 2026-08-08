@@ -191,9 +191,16 @@ def test_boilerplate_only_still_shows_the_lines_it_discounted(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Disclosure, not suppression — hiding the matches would be the same
-    defect pointed the other way."""
+    defect pointed the other way.
+
+    Asserted against the *discounted* section, not against stdout at large:
+    the pre-fix code also printed this line, inside the block whose header is
+    the bug, so a bare substring check would pass either way.
+    """
     _, out = _run_gl(monkeypatch, capsys, "failed", LOG_BOILERPLATE_ONLY)
-    assert "ERROR: Job failed: exit code 1" in out
+    assert "Shown, not hidden:" in out
+    shown = out.split("Shown, not hidden:", 1)[1].split("## Log tail", 1)[0]
+    assert "ERROR: Job failed: exit code 1" in shown
 
 
 def test_a_system_failure_line_is_a_cause_and_not_boilerplate(

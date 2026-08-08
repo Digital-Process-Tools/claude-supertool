@@ -7,8 +7,12 @@ Shows job metadata + smart log output:
 
 Config via SUPERTOOL_ env vars (set from .supertool.json):
   SUPERTOOL_LINES           — tail lines (default 80)
-  SUPERTOOL_ERROR_PATTERNS  — comma-separated patterns to search (default: ERROR,FAIL,Fatal,------)
-  SUPERTOOL_ERROR_CONTEXT   — lines of context around each error match (default 5)
+  SUPERTOOL_ERROR_PATTERNS  — comma-separated substrings to search. Default:
+                              ERROR,FAILURES!,Fatal,Failed asserting,🪪,
+                              notSubtype,argument.type,return.type — the bare
+                              `ERROR` there is why GitLab's own terminal line
+                              needs discounting (see _BOILERPLATE).
+  SUPERTOOL_ERROR_CONTEXT   — lines of context around each error match (default 8)
 """
 from __future__ import annotations
 
@@ -166,10 +170,16 @@ def _last_section(lines: list[str]) -> str | None:
 
 # Lines GitLab or its runner writes on **every** failed job. The default
 # `error_patterns` contain the bare substring `ERROR`, so the terminal line
-# alone is enough to produce a block; with `error_context` pulling in the
-# section markers and the cleanup line around it, the result is the six-line
+# alone is enough to anchor a block; `error_context` then drew the section
+# markers and the cleanup line in around it, and the result was the six-line
 # "All error blocks" that job 7021139 produced while the real cause — a
 # Playwright assertion — never appeared (#1097).
+#
+# Only the first entry can fire under the default patterns: classification
+# looks at anchors, and nothing in the default set matches a bare
+# `section_start:` or `Cleaning up project directory`. The other two are for a
+# project whose `error_patterns` do — someone hunting teardown by name gets the
+# same overclaim otherwise — and are inert, not dead, until then.
 #
 # Only `exit code N`. `ERROR: Job failed (system failure): ...` and
 # `ERROR: Job failed: execution took longer than ...` DO say why the job died,
