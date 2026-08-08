@@ -63,7 +63,9 @@ from typing import Optional
 # Sibling import: runtime puts this dir on sys.path[0]; the test harness
 # loads scripts via importlib (no dir on path), so add it explicitly.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import _untrusted  # noqa: E402  (an MR/PR target branch is the opener's text — #1038)
 from _git_common import (  # noqa: E402
     TIMEOUT_RC,
     MrLookup,
@@ -730,15 +732,32 @@ def _open_mr_line(mr: Optional[dict]) -> str:
     """
     if not mr:
         return ""
+    target = _untrusted.flat(str(mr.get("target", "?")))
     if mr["source"] == "gitlab":
         pipe = mr.get("pipeline") or "triggered"
         if mr.get("pipeline_id"):
             pipe += f" #{mr['pipeline_id']}"
-        line = f"MR !{mr['iid']} → {mr['target']} | pipeline: {pipe}"
+        line = f"MR !{mr['iid']} → {target} | pipeline: {pipe}"
         if mr.get("pipeline_url"):
             line += f"\n  {mr['pipeline_url']}"
         return line
-    return f"PR #{mr['iid']} → {mr['target']} | checks triggered"
+    return f"PR #{mr['iid']} → {target} | checks triggered"
+
+
+def _mr_conflict_line(mr: Optional[dict]) -> str:
+    """The mergeability warning, or empty — one function, so it has a test.
+
+    Lifted out of `_post_push_advisories` for #1038: inline, the only way to
+    exercise it was to drive the whole post-push path, so the branch name it
+    renders had never been asserted against a hostile value. The target is the
+    opener's text here exactly as it is in `_open_mr_line`.
+    """
+    if not mr or mr.get("merge_status") not in (
+            "cannot_be_merged", "conflict", "broken_status"):
+        return ""
+    target = _untrusted.flat(str(mr.get("target") or "target"))
+    return (f"⚠ MR conflicts with {target} — "
+            f"won't merge until rebased/resolved")
 
 
 def _mr_unknown_line(lookup: MrLookup) -> str:
@@ -1092,9 +1111,9 @@ def _post_push_advisories(lookup: MrLookup, flags: set[str],
         # would silently skip both.
         print(unknown)
     mr = lookup.mr
-    if mr and mr.get("merge_status") in ("cannot_be_merged", "conflict", "broken_status"):
-        print(f"⚠ MR conflicts with {mr.get('target', 'target')} — "
-              "won't merge until rebased/resolved")
+    conflict = _mr_conflict_line(mr)
+    if conflict:
+        print(conflict)
 
     target = mr.get("target") if mr else ""
     if target and target != "?":

@@ -129,8 +129,8 @@ def gate(pr: dict, declared: int | None = None,
     if mergeable == "CONFLICTING":
         return (False, [
             f"REFUSED: PR #{num} has conflicts with "
-            f"{pr.get('baseRefName', 'its base')} — GitHub reports "
-            f"mergeable=CONFLICTING. Rebase, push, and re-run.",
+            f"{_untrusted.flat(str(pr.get('baseRefName') or 'its base'))} — "
+            f"GitHub reports mergeable=CONFLICTING. Rebase, push, and re-run.",
         ])
     if mergeable != "MERGEABLE":
         return (False, [
@@ -182,8 +182,9 @@ def _check_findings(pr: dict, declared: int | None,
         return [
             f"REFUSED: zero check runs on {sha} — {_checks.NO_CHECKS}. Nothing "
             f"has passed and nothing has failed; a commit no workflow ran on is "
-            f"not a green one. `gh-branch:{pr.get('headRefName', '')}` says "
-            f"whether a run is still expected.",
+            f"not a green one. "
+            f"`gh-branch:{_untrusted.flat(str(pr.get('headRefName') or ''))}` "
+            f"says whether a run is still expected.",
         ]
 
     states = _checks.github_states(rollup)
