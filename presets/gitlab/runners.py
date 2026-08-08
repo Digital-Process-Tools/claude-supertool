@@ -60,6 +60,27 @@ _STARVED_MIN_QUEUE_SECONDS = 300
 # "is one of these doing all the work" actually means.
 _THROUGHPUT_WINDOW_SECONDS = 1800
 
+# Every age in this module is GitLab's clock subtracted from ours, and nothing
+# measures the gap between the two. When ours runs behind, ages come out
+# NEGATIVE, and every threshold here is a `<`/`<=` a negative satisfies — so a
+# heartbeat two hours in the future passed as *fresh*, a job history dated in
+# the future counted as work finished just now, and the queue-age floor dropped
+# every pending job as "queued too recently". That is a false ALIVE over an
+# empty-looking board, on every runner at once, because skew belongs to the
+# host and not to any runner: a silent all-clear over a genuinely wedged fleet,
+# which `docs/validators.md` ranks above a false alarm as the more expensive
+# trade. All four sites are guarded — `_is_responsive`'s heartbeat rung,
+# `fetch_recent_finished`'s window, and the floor in both `classify_queue` and
+# `stranded_split_for`, which are one question asked twice.
+#
+# A tolerance rather than a sign test, and the tolerance is the load-bearing
+# half. Two NTP-synced hosts disagree by milliseconds, and a heartbeat written
+# a few seconds ahead of us is the freshest reading there is; refusing every
+# negative age would withdraw the evidence from an entire healthy fleet on
+# ordinary jitter, which is the #750 failure rebuilt from the other side. Only
+# a gap too large to be jitter means the comparison is unusable.
+_CLOCK_SKEW_TOLERANCE_SECONDS = 60
+
 # The jobs endpoint returns newest-first by id, which orders by created_at —
 # and finished_at is NOT monotonic with it. A test job created 09:17 and still
 # running at 11:45 finishes long after jobs created an hour later. Stopping the
@@ -155,10 +176,28 @@ def _age_seconds(timestamp: str | None) -> float | None:
     return (datetime.now(timezone.utc) - parsed).total_seconds()
 
 
+def _usable_age(seconds: float | None) -> bool:
+    """Is this age a measurement, or a statement about our own clock?
+
+    Separated from the comparisons it guards because it has to be applied at
+    every one of them, and there are four. Guarding only the rung that produced
+    the report leaves the others forging the same false answer: the first cut of
+    this fix covered `_is_responsive` and `fetch_recent_finished` and left the
+    queue-age floor, so a skewed fleet still rendered an empty board — the
+    liveness verdict was honest and the queue it was about had vanished.
+    """
+    return seconds is not None and seconds >= -_CLOCK_SKEW_TOLERANCE_SECONDS
+
+
 def _human_age(seconds: float | None) -> str:
-    """Compact age: 45s, 12m, 3h, 5d."""
+    """Compact age: 45s, 12m, 3h, 5d — or the reason there is no age to give."""
     if seconds is None:
         return "-"
+    if not _usable_age(seconds):
+        # Printing `-3600s` renders a runner as seen minus-one-hour ago, which
+        # reads as a very odd measurement rather than as the absence of one.
+        # This row is the only place an operator can learn their clock is wrong.
+        return "ahead of our clock"
     if seconds < 60:
         return f"{seconds:.0f}s"
     if seconds < 3600:
@@ -336,7 +375,9 @@ def _is_responsive(runner: dict) -> bool:
     if runner.get("job_execution_status") == "active":
         return True
     age = _age_seconds(runner.get("contacted_at"))
-    return age is not None and age <= _HEARTBEAT_WARN_SECONDS
+    # `_usable_age` before the ceiling, not folded into it: an age we cannot
+    # interpret is not a fresh one, and `age <= ceiling` says yes to both.
+    return _usable_age(age) and age <= _HEARTBEAT_WARN_SECONDS
 
 
 def fetch_recent_finished(
@@ -369,6 +410,7 @@ def fetch_recent_finished(
         [
             job for job in collected
             if job.get("finished_at")
+            and _usable_age(_age_seconds(job["finished_at"]))
             and (_age_seconds(job["finished_at"]) or float("inf")) <= window_seconds
         ],
         truncated,
@@ -387,14 +429,27 @@ def annotate_recent_work(runners: list[dict], finished: list[dict]) -> list[dict
     return runners
 
 
-def annotate_live_jobs(runners: list[dict], running: list[dict]) -> list[dict]:
+def annotate_live_jobs(runners: list[dict],
+                       running: list[dict] | None) -> list[dict]:
     """Mark runners the job list shows executing work as active, in place.
 
     Belt and braces over `job_execution_status`: the runner object and the job
     list are two independent reads, and a runner named as owning a running job
     is alive whatever its own record claims. Cheap, and it closes the window
     where the runner detail is a moment staler than the queue.
+
+    `running=None` means the list was not read — an API error, a timeout — and
+    is deliberately not `[]`. `[]` is an observation: nobody is executing. None
+    is the absence of one, and the two produce opposite verdicts about a busy
+    runner. So None leaves the annotation mark unset and every later liveness
+    question about these records raises `UnannotatedFleetError` rather than
+    falling through onto `contacted_at`, the throttled field. A caller that
+    coerces its own error to `[]` here re-creates #1112: `hercule` was reported
+    `runner_liveness_unknown` with `running_on_it="0"` while executing two jobs,
+    because one failed read answered both the count and the verdict.
     """
+    if running is None:
+        return runners
     busy = {(job.get("runner") or {}).get("id") for job in running}
     for runner in runners:
         runner[_LIVE_JOBS_MARK] = True
@@ -442,7 +497,14 @@ def classify_queue(
     unproven: dict[str, int] = {}
     for job in pending:
         queued = _age_seconds(job.get("created_at"))
-        if queued is not None and queued < _STARVED_MIN_QUEUE_SECONDS:
+        # `_usable_age` guards the floor for the same reason it guards the two
+        # rungs in `_is_responsive`: the floor exists to dismiss work that has
+        # not waited long enough to be stuck, and a negative age is not evidence
+        # the job is fresh — it is our clock disagreeing with GitLab's. Skew is
+        # host-wide, so `created_at` goes ahead exactly when `contacted_at`
+        # does, and an unguarded floor empties the whole board at the moment the
+        # heartbeat evidence disappears too. Unusable means classify it.
+        if _usable_age(queued) and queued < _STARVED_MIN_QUEUE_SECONDS:
             continue
         tags = job.get("tag_list") or []
         candidates = [r for r in runners if _can_serve(r, tags)]
@@ -520,7 +582,10 @@ def stranded_split_for(
     unproven = 0
     for job in pending:
         queued = _age_seconds(job.get("created_at"))
-        if queued is not None and queued < _STARVED_MIN_QUEUE_SECONDS:
+        # Same floor, same guard — see `classify_queue`. The row and the footer
+        # are one question asked twice and the docs promise they cannot
+        # disagree; guarding only one of them is how they start to.
+        if _usable_age(queued) and queued < _STARVED_MIN_QUEUE_SECONDS:
             continue
         tags = job.get("tag_list") or []
         if not _can_serve(runner, tags):
@@ -595,7 +660,15 @@ def radar_report(options: dict | None = None) -> tuple[list[str], bool]:
     pending = pending or []
 
     running, err_running = _api("projects/:id/jobs?scope[]=running&per_page=100", paginate=True)
-    annotate_live_jobs(runners, [] if err_running else (running or []))
+    if err_running:
+        # Same refusal as the pending read above, and for a stronger reason: a
+        # job executing is the best liveness proof this module has, so losing
+        # the list drops every verdict below onto the throttled contacted_at.
+        # Coercing the error to `[]` is what shipped #1112.
+        return ([f"radar: WARNING — the running-jobs list is unreadable "
+                 f"({err_running}). It is the strongest liveness evidence there "
+                 f"is, so runner health is UNKNOWN, not green."], False)
+    annotate_live_jobs(runners, running or [])
     # The history scan only buys evidence about work that is waiting. With an
     # empty queue there is no starvation question, so five pages of job history
     # answer nothing — skip them and keep a registered tier cheap.
@@ -933,8 +1006,19 @@ def main() -> int:
 
     pending, err_pending = _api("projects/:id/jobs?scope[]=pending&per_page=100", paginate=True)
     running, err_running = _api("projects/:id/jobs?scope[]=running&per_page=100", paginate=True)
-    # A queue read failing is not fatal — the fleet table is still worth printing.
-    queue_warning = err_pending or err_running
+    if err_running:
+        # Not the same call as the pending one below it. Every liveness marker
+        # in the table — and the whole of `:queue`'s Running section — is
+        # derived from this list, so printing without it states verdicts built
+        # on the throttled contacted_at alone and renders busy runners as idle
+        # (#1112). Refusing is the honest outcome; the note is not enough.
+        print(f"ERROR: the running-jobs list is unreadable — {err_running}. "
+              f"Every liveness verdict in this view is derived from it. Printing "
+              f"the fleet without it would report runners executing jobs as "
+              f"unaccounted for.")
+        return 1
+    # A pending read failing is not fatal — the fleet table is still worth printing.
+    queue_warning = err_pending
     pending = pending or []
     running = running or []
 

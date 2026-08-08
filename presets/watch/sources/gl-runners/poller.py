@@ -82,6 +82,16 @@ def _fetch_fleet() -> tuple[list[dict], list[dict] | None, list[dict]] | None:
     The running list is fetched before anything is judged, because a runner
     executing a job is alive regardless of what its throttled contacted_at
     says — `annotate_live_jobs` folds that proof into the runner records.
+
+    So a running list that could not be read fails the whole tick, and is not
+    coerced to `[]` the way the pending list is coerced to None. Two things
+    hang off that one call and both break together: `_is_responsive` loses its
+    strongest evidence and drops onto the throttled heartbeat, and the
+    `running_on_it` count that rides on every event becomes a fabricated zero.
+    That is #1112 — `hercule` reported `runner_liveness_unknown` with
+    `running_on_it="0"` while executing two jobs of a live MR pipeline, and
+    retracted 69 seconds later with nothing about the fleet having changed.
+    A tick that could not look has not observed a quiet fleet.
     """
     listed, err = runners_op._api("projects/:id/runners?per_page=100", paginate=True)
     if err or listed is None:
@@ -92,7 +102,9 @@ def _fetch_fleet() -> tuple[list[dict], list[dict] | None, list[dict]] | None:
 
     running, err_running = runners_op._api(
         "projects/:id/jobs?scope[]=running&per_page=100", paginate=True)
-    running = [] if err_running else (running or [])
+    if err_running:
+        return None
+    running = running or []
     runners_op.annotate_live_jobs(merged, running)
     runners_op.annotate_recent_work(merged, runners_op.fetch_recent_finished()[0])
 
@@ -178,11 +190,18 @@ def _fleet_events(
 
         counts = {"pending_for_it": now["waiting"], "running_on_it": now["running"],
                   "completed_recently": now.get("recent_jobs", 0)}
+        # The transport carries strings, booleans and finite numbers, and
+        # refuses anything else out loud — so a list reached the channel as
+        # `unsendable="tags (array)"` on every single runner event, which is
+        # the one field telling an operator which jobs this runner can take.
+        # Joined in `classify_queue`'s key format, so a runner event and a
+        # queue event name the same tag set the same way (#1112).
+        tagkey = ",".join(now["tags"]) or "(untagged)"
 
         if was is None:
             events.append({
                 "event": "runner_added",
-                "payload": {"runner_id": rid, "description": name, "tags": now["tags"],
+                "payload": {"runner_id": rid, "description": name, "tags": tagkey,
                             **counts},
                 "notify_title": f"runner {name} joined",
                 "notify_message": ", ".join(now["tags"]) or "untagged",
@@ -194,7 +213,7 @@ def _fleet_events(
             events.append({
                 "event": "runner_silent",
                 "payload": {"runner_id": rid, "description": name, "last_seen": age,
-                            "tags": now["tags"],
+                            "tags": tagkey,
                             "stranded_for_it": now["stuck"], **counts},
                 "notify_title": f"runner {name} wedged — {now['stuck']} job(s) stuck",
                 # The reason comes off the record. Appending "GitLab still
@@ -209,7 +228,7 @@ def _fleet_events(
             events.append({
                 "event": "runner_liveness_unknown",
                 "payload": {"runner_id": rid, "description": name, "last_seen": age,
-                            "tags": now["tags"],
+                            "tags": tagkey,
                             "unproven_for_it": now["unproven"], **counts},
                 "notify_title": f"runner {name} unaccounted for — "
                                 f"{now['unproven']} job(s) waiting on it",

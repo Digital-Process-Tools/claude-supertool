@@ -730,6 +730,18 @@ So the correlation has **three** outcomes and it was publishing two:
 | no runner in the fleet carries the tags at all | stuck | `runner_starved` |
 | at least one still advertised `online` and un-paused, failing only on `contacted_at` age | **UNKNOWN** | `runner_liveness_unknown`, `queue_liveness_unknown` |
 
+**A fourth row was hiding inside the third: the running-jobs list did not answer, so nobody was graded** ([#1112](https://github.com/Digital-Process-Tools/claude-supertool/issues/1112)). `hercule` was executing two jobs of a live merge-request pipeline when the watcher called it `runner_liveness_unknown` with `running_on_it="0"`, and `gl-runners:queue` — reading the same API seconds later — listed both. One failed read produced both halves of that event. `_fetch_fleet` coerced the error to `[]`, `annotate_live_jobs` stamped its "evidence gathered" mark anyway, `UnannotatedFleetError` therefore never fired, and liveness fell through past both throughput tests onto the throttled `contacted_at` — the exact fallback that guard exists to prevent, arriving through the fetch layer rather than through a missing call.
+
+So `annotate_live_jobs(runners, None)` now annotates nothing, and an unread running list is not an empty one. The watcher fails the whole tick and retries in a minute — the pending list's own handling one call below it, adopted at last; radar returns `WARNING — the running-jobs list is unreadable`, which is a statement about our read rather than about the fleet; and `gl-runners` refuses to print a table whose every liveness marker comes off a list it does not have. Note what does **not** change: the third row above still fires when the running list was genuinely read and genuinely empty. Executing a job is the strongest proof of life this preset has, and losing the ability to check for it is not the same as checking and finding none.
+
+**A negative age is a statement about our clock, and it was being read as the freshest possible heartbeat** ([#1112](https://github.com/Digital-Process-Tools/claude-supertool/issues/1112), from auditing the above for timing dependencies). `contacted_at` is GitLab's clock; `now` is ours; nothing measures the gap. Run ours behind and `_age_seconds` goes negative — and every threshold in the module is a `<`/`<=` that a negative satisfies. A heartbeat two hours in the future read as fresh, a job history dated in the future counted as work finished just now, and the queue-age floor dropped every pending job as "queued too recently", so the board came back empty.
+
+Four sites, not two, and the fourth is the one worth remembering. Skew belongs to the **host**, so `created_at` goes ahead exactly when `contacted_at` does — a fix that guards only the liveness rungs produces an honest UNKNOWN verdict about a queue that has silently vanished from the same render. A test that skews only the runner passes over that gap, because it describes a state the world cannot be in. `classify_queue` and `stranded_split_for` share the floor, and this section already promises the row and the footer cannot disagree by construction, so guarding one of them would have been the first way they could.
+
+That is the opposite direction to the rest of this section and the worse one. A false `runner_liveness_unknown` is a loud alarm about a healthy runner; a false *alive* is a silent all-clear over a wedged one, and it arrives on every row at once, because skew belongs to the host and not to any runner. Ages further ahead than `_CLOCK_SKEW_TOLERANCE_SECONDS` are now evidence of nothing and the row lands in UNKNOWN, where it belongs. The tolerance is the load-bearing half: NTP-synced hosts disagree by milliseconds and a heartbeat written a few seconds ahead of us is the freshest reading there is, so a sign test rather than a tolerance would withdraw the evidence from an entire healthy fleet on ordinary jitter — #750 rebuilt from the other side.
+
+**What is *not* a timing dependency, checked rather than assumed:** the tool's own elapsed time. A slow poll, a slow link, five pages of job history — every one of those makes the timestamps it is judging look *older*, never newer. Under this ladder that can only subtract evidence of life, which lands on the disclosed UNKNOWN and can never assert a wedge or a false alive. Latency here is fails-safe by construction; clock skew is the one that is not, because it is the only input that can move an age the other way.
+
 `_demonstrably_down` is deliberately **not** the negation of `_is_responsive`. Life needs positive evidence; so does death. What sits between them is a record nobody can grade, and the third state is `docs/validators.md` [§Declining instead of guessing](../validators.md#declining-instead-of-guessing) applied to a fleet.
 
 **The decline is disclosed, never dropped, and that is the load-bearing half.** Every suppression rule trades a false alarm for a possible missed real one, and this repo's most-filed defect class arrives through the fix rather than the bug. So the queue is still reported — same tag, same count, same runners named with their heartbeat ages, same "go and check the host" — with only the certainty claim withdrawn. Radar renders it and is **not green**. A reader loses nothing they could have acted on; they stop being told a wedge has been established when it has not.
@@ -1146,7 +1158,15 @@ Until #612 that refusal was silent, so a producer whose key was dropped for
 **shape** (`object`, `array`, `null`, …), never its contents — quoting is
 precisely what the refusal exists to avoid. Send a pre-serialised string
 (`tags: sorted(...)` → `tags: ",".join(...)`) rather than relying on the
-structure arriving.
+structure arriving. That example was not hypothetical and went unadopted for as
+long as it stood here: every `gl-runners` event shipped `tags` as a list and
+carried `unsendable="1 payload key refused — tags (array)"` back, so the one
+field naming which jobs a runner can take never reached the channel
+([#1112](https://github.com/Digital-Process-Tools/claude-supertool/issues/1112)).
+It is joined at the emit site now, in `classify_queue`'s key format, so a runner
+event and a queue event name the same tag set the same way. A standing
+`unsendable` notice for a field nobody chose to omit is a decision that was
+never taken, not a working disclosure.
 
 The three disclosures share one vocabulary and one bound: each names up to five
 keys and then `+N more`, and each is applied *after* the size clamp, so a clamp
