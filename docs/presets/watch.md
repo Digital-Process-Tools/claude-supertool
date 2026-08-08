@@ -232,7 +232,7 @@ Observed live on the GitHub tier: three rendered rows under `6 open | 2 failing 
 
 ```
 scope author=@me (default) on Digital-Process-Tools/claude-supertool | 6 open |
-3 unchanged not shown | 2 failing | 4 running | 6 watched | 2 no longer open |
+3 unchanged not shown | 2 failing | 4 running | 6 watched | 2 left this board |
 discovery: radar ticks only
 ```
 
@@ -249,6 +249,31 @@ Capped at twelve identifiers, with the remainder counted. Both tiers do this and
 **On a board where nothing was elided the line is absent, and the absence is the claim.** A disclosure printed unconditionally is one the reader learns to skip, which is the same failure one level up — the reason `_unchecked_warning` returns `[]` on a fully-checked board.
 
 **The elision is kept.** A running MR or PR that has not moved since the last tick is genuinely no news, and re-printing it every tick trains a reader to skim the board — exactly what [standing exclusions](#standing-exclusions) exist to prevent. What was wrong was the silence, not the choice.
+
+#### What left the board, and why the board will not say
+
+The other half of a delta is what was in the previous snapshot and is not in this one. Until [#1024](https://github.com/Digital-Process-Tools/claude-supertool/issues/1024) both tiers rendered that as `N no longer open`, and that is a claim the snapshot cannot support. The population a snapshot records is the *filtered* one — `author=@me` by default — so five different histories arrive as one absence:
+
+| What happened                              | Still open? |
+| ------------------------------------------ | ----------- |
+| merged                                     | no          |
+| closed without merging                     | no          |
+| author reassigned                          | **yes**     |
+| a label the filter selects on was removed  | **yes**     |
+| the filter itself changed between runs     | **yes**     |
+
+Three of the five are open and still need work, and `no longer open` tells the reader they landed. So the board reports the observation and declines the verdict — `N left this board` in the footer, and the identifiers named:
+
+```
+radar: NOTE — 1 PR left this board since the previous run (#1013): merged, closed,
+or still open and no longer matching this board's filter. The snapshot records
+membership, not how it ended, so this board does not guess — `gh-pr:<number>` says
+which.
+```
+
+Reading back each departure's live state would name it exactly, at one API call per departure — and that call can itself fail, which needs this same three-state sentence for its own third arm. The sentence alone costs no call and cannot be wrong, and the named identifier is what makes the lookup one command rather than a hunt. Same cap of twelve, same shared implementation, and on a board where nothing departed the line is absent.
+
+An **excluded** MR is not a departure. The GitLab tier computes the departed set against the whole open population rather than the printed board, so a row the operator chose to suppress is never reported back to them as one that left.
 
 ### Standing exclusions
 

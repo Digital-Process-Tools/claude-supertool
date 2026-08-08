@@ -300,6 +300,10 @@ def test_no_drift_when_event_and_source_agree(env, capsys) -> None:
                 event_pipeline_id="154180")
     _set_live(env, [_mr(33173, "running", "154180")])
     out = _run(env, capsys)
+    # The board first, then its content (#800). Without the row assertion this
+    # passes on an empty board — including one radar produced by being broken —
+    # which reads as "agreement confirmed" when nothing was ever compared.
+    assert "!33173" in out
     assert "drift" not in out
 
 
@@ -308,6 +312,11 @@ def test_pruned_state_file_does_not_report_drift(env, capsys) -> None:
                 source_pipeline_id="154180", event_pipeline_id="154177")
     _set_live(env, [_mr(33161)])
     out = _run(env, capsys)
+    # Two pins, because the absence has two innocent explanations (#800): a
+    # board that never rendered, and a state file that was never read. Only the
+    # second is the claim — the drift is absent *because* the file was pruned.
+    assert "!33161" in out
+    assert "1 pruned" in out
     assert "drift" not in out
 
 
@@ -420,14 +429,19 @@ def test_new_open_mr_appears_on_the_next_run(env, capsys) -> None:
     assert "1 unchanged not shown" in out
 
 
-def test_merged_mr_is_counted_as_no_longer_open(env, capsys) -> None:
+def test_an_mr_that_leaves_the_population_is_counted_without_a_verdict(
+        env, capsys) -> None:
+    """It may have merged; the snapshot cannot say so (#1024). `live` is
+    filter-scoped, so leaving it and closing are one observation here."""
     _live_pid_file(env["dir"], "33172")
     _live_pid_file(env["dir"], "33136")
     _set_live(env, [_mr(33172, "success"), _mr(33136, "success")])
     _run(env, capsys)
     _set_live(env, [_mr(33172, "success")])
     out = _run(env, capsys)
-    assert "1 no longer open" in out
+    assert "1 left this board" in out
+    assert "!33136" in out
+    assert "no longer open" not in out
 
 
 # ---------------------------------------------------------------------------
@@ -692,6 +706,10 @@ def test_a_healthy_feed_produces_no_warning(env, capsys) -> None:
     _feed_state(env["dir"], {"source_state": {"known": {"33161": {}}}})
     _set_live(env, [_mr(33161)])
     out = _run(env, capsys)
+    # A board with no warning on it, not the absence of a board (#800). Radar
+    # printing nothing at all is the loudest possible failure and used to
+    # satisfy this test.
+    assert "!33161" in out
     assert "WARNING" not in out
 
 
@@ -908,7 +926,11 @@ def test_no_other_scope_note_when_the_only_live_feed_is_this_one(env, capsys) ->
     _glab(env, {"@me": [_mr(33161)]})
     _live_feed(env["dir"])
     assert radar.main([]) == 0
-    assert "not on this board" not in capsys.readouterr().out
+    out = capsys.readouterr().out
+    # #800: the note is absent from a board that exists. Reading the absence off
+    # empty output would make this test agree with a radar that prints nothing.
+    assert "!33161" in out
+    assert "not on this board" not in out
 
 
 def test_other_feed_scopes_lists_only_live_pollers_for_other_scopes(env) -> None:
@@ -948,12 +970,12 @@ def test_a_second_population_does_not_read_as_everything_new_and_everything_gone
     assert radar.main(["radar", "author=modular.system"]) == 0
     kevin = capsys.readouterr().out
     assert "cold start" in kevin
-    assert "no longer open" not in kevin
+    assert "left this board" not in kevin
 
     assert radar.main([]) == 0
     mine = capsys.readouterr().out
     assert "radar: no change" in mine
-    assert "no longer open" not in mine
+    assert "left this board" not in mine
 
 
 def test_a_filtered_run_writes_only_its_own_snapshot(env, capsys) -> None:

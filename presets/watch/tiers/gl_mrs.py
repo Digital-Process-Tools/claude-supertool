@@ -821,7 +821,9 @@ def _footer(open_mrs: list[dict], covered: set[str], healed: list[str],
     if pruned:
         parts.append(f"{len(pruned)} pruned")
     if gone:
-        parts.append(f"{gone} no longer open")
+        # See gh_prs._footer (#1024). `open_mrs` is filter-scoped and leaving a
+        # filter is not merging.
+        parts.append(f"{gone} left this board")
     if excluded:
         parts.append(f"{excluded} excluded")
     if elided:
@@ -933,9 +935,13 @@ def render(open_mrs: list[dict], covered: set[str], healed: list[str],
         else:
             elided.append(iid)
 
-    gone = len([i for i in prev_entries if i not in {str(m.get("iid")) for m in open_mrs}])
-    footer = _footer(board_mrs, covered, healed, drifted, pruned, uncovered, gone,
-                     feed, label, len(excluded), len(elided))
+    # Against `open_mrs`, never `board_mrs`: an exclusion removes a row and not
+    # a member, and counting one as departed reports the operator's own standing
+    # decision back to them as a merge.
+    departed = [i for i in prev_entries
+                if i not in {str(m.get("iid")) for m in open_mrs}]
+    footer = _footer(board_mrs, covered, healed, drifted, pruned, uncovered,
+                     len(departed), feed, label, len(excluded), len(elided))
 
     # Partial boards only — see the same call in `gh_prs.render`. `excluded` is
     # a different withholding with its own `notes`, and the two are counted
@@ -947,6 +953,7 @@ def render(open_mrs: list[dict], covered: set[str], healed: list[str],
     lines = (_feed_warnings(feed, feed_err, other_scopes)
              + _unchecked_warning(mrs._unchecked_count(open_mrs), len(open_mrs))
              + elision
+             + snapshot.departed_note(departed, "MR", "!", "gl-mr:<iid>")
              + list(losses or []))
     if cold:
         lines.append("radar: cold start — no prior snapshot, full board")

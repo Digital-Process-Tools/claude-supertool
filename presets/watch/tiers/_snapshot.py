@@ -101,6 +101,41 @@ def elided_note(elided: list[str], total: int, noun: str, sigil: str,
             f"every row."]
 
 
+def departed_note(departed: list[str], noun: str, sigil: str,
+                  lookup: str) -> list[str]:
+    """Name what left the board, and refuse to say why. `[]` when nothing did.
+
+    The mirror of `elided_note`, and a harder case (#1024). A delta board knows
+    exactly why it elided a row — it did the eliding. It does not know why a row
+    left, because the snapshot records *membership in the filtered population*
+    and nothing about how that membership ended. Merged, closed unmerged,
+    reassigned to someone else, stripped of the label the filter selects on, or
+    the filter itself changed between runs: all five arrive as the same absence.
+
+    Both tiers used to render that absence as `N no longer open`, which is true
+    for the first two and the opposite of the truth for the last three — the PR
+    is open, still needs work, and the board just told the reader it landed.
+    Distinguishing them costs a live lookup per departure that can itself fail,
+    so it would need this three-state sentence anyway; the sentence alone costs
+    no call and cannot be wrong.
+
+    The identifiers are the actionable half: the reader who needs to know which
+    of the five it was can run `lookup` on a named id, which they could not do
+    against a bare count.
+    """
+    if not departed:
+        return []
+    named = ", ".join(f"{sigil}{n}" for n in departed[:12])
+    if len(departed) > 12:
+        named += f", +{len(departed) - 12} more"
+    plural = noun if len(departed) == 1 else f"{noun}s"
+    return [f"radar: NOTE — {len(departed)} {plural} left this board since the "
+            f"previous run ({named}): merged, closed, or still open and no "
+            f"longer matching this board's filter. The snapshot records "
+            f"membership, not how it ended, so this board does not guess — "
+            f"`{lookup}` says which."]
+
+
 def write(prefix: str, digest: str, entries: dict[str, Any], member: str) -> None:
     """Replace the snapshot atomically, or leave the old one in place.
 

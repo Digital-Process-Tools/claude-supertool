@@ -532,7 +532,9 @@ def _footer(open_prs: list[dict], covered: set[str] | None, healed: list[str],
     if uncovered:
         parts.append(f"{len(uncovered)} unwatched")
     if gone:
-        parts.append(f"{gone} no longer open")
+        # Not "no longer open" (#1024): `open_prs` is filter-scoped, so a PR
+        # that was reassigned away is gone from here and still open there.
+        parts.append(f"{gone} left this board")
     # Stated on every board: this tier has no discovery feed, so a PR opened
     # after this run is not seen until the next tick. An unstated guarantee is
     # one a reader assumes.
@@ -598,8 +600,8 @@ def render(open_prs: list[dict], covered: set[str] | None, healed: list[str],
             elided.append(number)
 
     live = {str(p.get("number")) for p in open_prs}
-    gone = len([n for n in prev_entries if n not in live])
-    footer = _footer(open_prs, covered, healed, uncovered, gone, label,
+    departed = [n for n in prev_entries if n not in live]
+    footer = _footer(open_prs, covered, healed, uncovered, len(departed), label,
                      len(unchecked_numbers), len(elided))
 
     # Named only when the board is *partial*. A board where everything was
@@ -613,6 +615,7 @@ def render(open_prs: list[dict], covered: set[str] | None, healed: list[str],
     lines = (_coverage_warning(covered)
              + _unchecked_warning(unchecked_numbers, len(open_prs))
              + elision
+             + snapshot.departed_note(departed, "PR", "#", "gh-pr:<number>")
              + list(notes or []))
     if cold:
         lines.append("radar: cold start — no prior snapshot, full board")
