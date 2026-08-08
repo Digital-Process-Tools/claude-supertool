@@ -376,17 +376,34 @@ def test_a_heartbeat_from_the_future_is_not_evidence_of_life(monkeypatch) -> Non
 def test_a_skewed_clock_does_not_silently_clear_a_stranded_queue(
         monkeypatch) -> None:
     """The consequence, at the level an operator sees. Work is queued behind the
-    only runner that may take it, and that runner's heartbeat is unusable. The
-    board must disclose the queue as unproven rather than return empty."""
+    only runner that may take it, and nothing about the timestamps is usable.
+
+    **Both timestamps are skewed, because that is the only way it happens.**
+    Skew belongs to the host: `contacted_at` and the job's `created_at` are both
+    written by GitLab and read against the same local clock, so they move ahead
+    together. Skewing only the runner describes a state the world cannot be in,
+    and it passes while the queue-age floor — an `_age_seconds` compared against
+    a threshold exactly like the two rungs above — still drops every job as
+    "queued too recently" on a negative age. An age we cannot interpret is not
+    grounds to dismiss work from the board."""
     tags = ["dptools-runner-2"]
     skewed = _runner(25, tags, contacted_at=_iso(-7200))
+    queued_under_skew = {"tag_list": tags, "created_at": _iso(-7200),
+                         "name": "phpstan2", "ref": "master"}
     runners_op.annotate_live_jobs([skewed], [])
     runners_op.annotate_recent_work([skewed], [])
 
-    stuck, unproven = runners_op.classify_queue([skewed], [_pending_job(tags)])
+    stuck, unproven = runners_op.classify_queue([skewed], [queued_under_skew])
 
     assert stuck == {}
     assert unproven == {"dptools-runner-2": 1}
+
+    # The per-runner row is a second implementation of the same question, and
+    # the docs promise the two cannot disagree by construction. They share the
+    # floor, so they shared the gap.
+    row_stuck, row_unproven = runners_op.stranded_split_for(
+        skewed, [queued_under_skew], [skewed])
+    assert (row_stuck, row_unproven) == (0, 1)
 
 
 def test_future_dated_finished_jobs_are_not_counted_as_recent_work(

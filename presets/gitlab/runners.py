@@ -62,12 +62,16 @@ _THROUGHPUT_WINDOW_SECONDS = 1800
 
 # Every age in this module is GitLab's clock subtracted from ours, and nothing
 # measures the gap between the two. When ours runs behind, ages come out
-# NEGATIVE, and every temporal test here is a `<=` against a ceiling — so a
-# heartbeat two hours in the future passed as *fresh*, and a job history dated
-# in the future counted as work finished just now. That is a false ALIVE, on
-# every runner at once, because skew belongs to the host and not to any runner:
-# a silent all-clear over a genuinely wedged fleet, which `docs/validators.md`
-# ranks above a false alarm as the more expensive trade.
+# NEGATIVE, and every threshold here is a `<`/`<=` a negative satisfies — so a
+# heartbeat two hours in the future passed as *fresh*, a job history dated in
+# the future counted as work finished just now, and the queue-age floor dropped
+# every pending job as "queued too recently". That is a false ALIVE over an
+# empty-looking board, on every runner at once, because skew belongs to the
+# host and not to any runner: a silent all-clear over a genuinely wedged fleet,
+# which `docs/validators.md` ranks above a false alarm as the more expensive
+# trade. All four sites are guarded — `_is_responsive`'s heartbeat rung,
+# `fetch_recent_finished`'s window, and the floor in both `classify_queue` and
+# `stranded_split_for`, which are one question asked twice.
 #
 # A tolerance rather than a sign test, and the tolerance is the load-bearing
 # half. Two NTP-synced hosts disagree by milliseconds, and a heartbeat written
@@ -176,10 +180,11 @@ def _usable_age(seconds: float | None) -> bool:
     """Is this age a measurement, or a statement about our own clock?
 
     Separated from the comparisons it guards because it has to be applied at
-    every one of them. `_is_responsive` and `fetch_recent_finished` both test an
-    age against a ceiling, and a negative age satisfies a ceiling — so guarding
-    only the one that produced the report leaves the other rung forging the same
-    false alive from the other direction.
+    every one of them, and there are four. Guarding only the rung that produced
+    the report leaves the others forging the same false answer: the first cut of
+    this fix covered `_is_responsive` and `fetch_recent_finished` and left the
+    queue-age floor, so a skewed fleet still rendered an empty board — the
+    liveness verdict was honest and the queue it was about had vanished.
     """
     return seconds is not None and seconds >= -_CLOCK_SKEW_TOLERANCE_SECONDS
 
@@ -492,7 +497,14 @@ def classify_queue(
     unproven: dict[str, int] = {}
     for job in pending:
         queued = _age_seconds(job.get("created_at"))
-        if queued is not None and queued < _STARVED_MIN_QUEUE_SECONDS:
+        # `_usable_age` guards the floor for the same reason it guards the two
+        # rungs in `_is_responsive`: the floor exists to dismiss work that has
+        # not waited long enough to be stuck, and a negative age is not evidence
+        # the job is fresh — it is our clock disagreeing with GitLab's. Skew is
+        # host-wide, so `created_at` goes ahead exactly when `contacted_at`
+        # does, and an unguarded floor empties the whole board at the moment the
+        # heartbeat evidence disappears too. Unusable means classify it.
+        if _usable_age(queued) and queued < _STARVED_MIN_QUEUE_SECONDS:
             continue
         tags = job.get("tag_list") or []
         candidates = [r for r in runners if _can_serve(r, tags)]
@@ -570,7 +582,10 @@ def stranded_split_for(
     unproven = 0
     for job in pending:
         queued = _age_seconds(job.get("created_at"))
-        if queued is not None and queued < _STARVED_MIN_QUEUE_SECONDS:
+        # Same floor, same guard — see `classify_queue`. The row and the footer
+        # are one question asked twice and the docs promise they cannot
+        # disagree; guarding only one of them is how they start to.
+        if _usable_age(queued) and queued < _STARVED_MIN_QUEUE_SECONDS:
             continue
         tags = job.get("tag_list") or []
         if not _can_serve(runner, tags):
