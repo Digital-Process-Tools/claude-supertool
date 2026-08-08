@@ -204,6 +204,55 @@ def test_end_tag_junk_does_not_swallow_the_next_block(tmp_path: Path) -> None:
     assert out["count"] == 0
 
 
+def test_close_inside_a_js_string_is_a_close_because_the_tokenizer_says_so(tmp_path: Path) -> None:
+    """`</script ...>` inside a JS string ends the script. It really does.
+
+    This looks like a false positive and is not one. HTML's script-data state
+    ends at `</script` followed by whitespace, a slash, or `>`; it has no
+    concept of JS string literals, which is why the only way to carry that
+    text in a script is to escape the slash. Measured against the stdlib
+    tokenizer, which is spec-conformant here, the page below emits the data
+    `const s = "` and then an end tag -- so the script a browser actually runs
+    is a truncated, unterminated string, and reporting a syntax error is the
+    correct answer rather than an over-match. Pinned because it is the first
+    objection a reader will raise against the `[^>]*` in SCRIPT_TAG.
+    """
+    f = tmp_path / "strclose.html"
+    f.write_text(
+        "<html><body>\n"
+        "<script>\n"
+        'const s = "</script data-x>";\n'
+        "const z = 1;\n"
+        "</script>\n"
+        "</body></html>\n"
+    )
+    out = _run(str(f))
+    assert_declined(out)
+    assert out["count"] == 1
+
+
+def test_scriptfoo_inside_a_js_string_is_not_a_close(tmp_path: Path) -> None:
+    """The other side of the word boundary: `</scriptfoo>` is a different tag.
+
+    No whitespace, slash or `>` follows `</script`, so the tokenizer stays in
+    script data and so must this pattern. Dropping the boundary anchor would
+    cut the block here, hand node an unterminated string, and invent an error
+    in a page that is fine.
+    """
+    f = tmp_path / "scriptfoo.html"
+    f.write_text(
+        "<html><body>\n"
+        "<script>\n"
+        'const s = "</scriptfoo>";\n'
+        "const z = 1;\n"
+        "</script>\n"
+        "</body></html>\n"
+    )
+    out = _run(str(f))
+    assert_ok(out)
+    assert out["count"] == 0
+
+
 # ---------------------------------------------------------------------------
 # A strict HTML parser would reject a page a browser renders fine — this
 # adapter must not (judgment call: script-extraction, not well-formedness).

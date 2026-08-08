@@ -58,6 +58,21 @@ TIMEOUT_S = 30
 # broken JS still in it. That is the silent gap #833 exists to close, arriving
 # through the one pattern that decides what gets looked at. `\b` keeps
 # `</scriptfoo>` out: it is a different tag, not this one with junk on it.
+#
+# This deliberately closes on a `</script ...>` that sits inside a JS string
+# or template literal, and that is not a false positive -- it is the HTML
+# tokenizer's own rule. Script data ends at `</script` followed by whitespace,
+# `/` or `>`, with no idea that JS strings exist, which is why the way to put
+# that text in a script is `<\/script>`. Measured against the stdlib
+# tokenizer, which is spec-conformant here:
+#
+#   <script>const s = "</script data-x>"; const z = 1;</script>
+#   html.parser -> data 'const s = "' then endtag script
+#
+# So a page written that way really does have its script cut off at that
+# point in a browser, really is broken, and saying so is the job. The old
+# `</script\s*>` agreed with the tokenizer on the bare form and disagreed on
+# the form carrying attributes -- one rule, applied to half the cases.
 SCRIPT_TAG = re.compile(r"<script\b([^>]*)>(.*?)</script\b[^>]*>", re.IGNORECASE | re.DOTALL)
 # Anchored on whitespace/start-of-attrs, not `\b`: a bare word boundary also
 # fires on the hyphen in `data-src=` / `data-type=` (the exact attribute
