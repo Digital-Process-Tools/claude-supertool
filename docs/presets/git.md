@@ -137,6 +137,24 @@ whole-file resolve.
 ```
 `git-commit` shows HEAD before/after; `git-push` updates the remote and reports the open MR + the pipeline the push just triggered — no raw `git push` fallback.
 
+### What `git-commit` did not do
+
+Two renders on this op used to stop one line short of the thing the reader needed, both in the direction where silence reads as completeness.
+
+**A partial commit now names what it left behind** ([#1016](https://github.com/Digital-Process-Tools/claude-supertool/issues/1016)). `git-commit:::MSG:::PATHS` prints a `✓` and `Files committed: N`, which argues nothing was omitted. When modified tracked files are still uncommitted afterwards, they are listed:
+
+```
+Files committed: 5
+⚠ 2 modified tracked file(s) were NOT included:  (3 untracked, not listed)
+    presets/git/commit.py
+    tests/test_commit.py
+  Intentional? If not: git-commit:::MESSAGE:::presets/git/commit.py:::tests/test_commit.py
+```
+
+Named, not counted: "2 not included" costs a second call to find out which, and a reader who has to make that call usually does not. Untracked files are counted only — nearly every worktree has some, and a list of them under every commit is a list nobody reads on the commit that needed it. A run that left nothing behind prints none of this, and a check that could not run says `SKIPPED` rather than nothing.
+
+**A refusal on an unstaged tree now names what is unstaged** ([#1003](https://github.com/Digital-Process-Tools/claude-supertool/issues/1003)). `ERROR: nothing staged.` was correct and unhelpful: the op had just read the working tree and the caller's only remaining move was a raw `git add -A`, i.e. the command this op exists to replace. The refusal itself stays — committing files you did not name is not a default anyone wants — but it now lists the modified tracked and untracked paths separately, and hands back a `git-commit:::MESSAGE:::…` call naming the first few. A genuinely clean tree says so instead, and a `git status` that did not answer says *that*, rather than printing an empty list that reads as clean.
+
 ### Which repository an op acted on
 
 ### A commit message containing `:` needs the triple-colon or `@payload` route
@@ -161,6 +179,14 @@ Co-Authored-By: Max <noreply>'''
 paths = ["src/importer.py"]
 EOF
 ```
+
+When a payload will not load — a plain message file, a mistyped key, an `@`
+reference left in the colon slot — the refusal now names the keys the op wants
+and prints a call that would work, derived from the same registry that drives
+the route ([#1003](https://github.com/Digital-Process-Tools/claude-supertool/issues/1003)).
+Three agents in one evening each guessed `message` and `paths` from scratch off
+a bare TOML line-and-column, and one mangled its commit message past the shell
+instead — permanently, in that history.
 
 Since [#751](https://github.com/Digital-Process-Tools/claude-supertool/issues/751)
 the split shape is **refused before anything is staged**, with the reconstructed
@@ -368,6 +394,16 @@ A call that does not come back inside its budget is abandoned rather than waited
 That fix landed in `git-status` and nowhere else, because the wrapper existed ten times ([#704](https://github.com/Digital-Process-Tools/claude-supertool/issues/704)). `git-conflicts` kept the defect for two more releases and printed `No conflicted files.` and exit 0 over live `<<<<<<<` markers. Every op listed on this page now behaves the way the paragraph above describes.
 
 An abandoned call is never rendered as a git that succeeded and printed nothing. It carries exit code `124` (the shell convention for "killed by a timeout"), so every call site's existing "did this work?" branch skips its section exactly as it would for a git that failed. Without that, an empty `rev-list --left-right --count` reads as `0 ahead — branch has no own commits!` and an empty `rev-parse --abbrev-ref HEAD` prints `Branch:` with nothing after it — a false alarm about the branch manufactured out of a fact about the machine.
+
+**A skipped section says so where the section belongs, not only in the footer** ([#1002](https://github.com/Digital-Process-Tools/claude-supertool/issues/1002)). `git-status`'s working-tree and stash sections used to be omitted entirely when their call did not answer, and the footer below carried the only disclosure. A reader who scrolls to where the working tree should be and finds nothing has already concluded the tree is clean — the footer arrives after the decision. Both sections now render three states, and the third is a marker in place:
+
+```
+## Working tree: clean
+## Working tree (7 changes)
+## Working tree: UNKNOWN — `git status --porcelain=v1` did not answer (exit 128: fatal: unable to read index). This run did not look — it is not 'clean'.
+```
+
+The footer stays as well, deliberately. The marker is where the eye is; the footer is the line that survives a `| tail` and the one a script greps. Neither is printed on a run where every call answered, so the common case gains nothing to skim past.
 
 The missing sections are then named rather than left to look like nothing-to-report, each with the reason it could not answer:
 
