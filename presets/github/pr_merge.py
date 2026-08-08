@@ -533,8 +533,13 @@ def _default_branch_report(default_branch: str, repo: str,
 
     script = str(Path(__file__).resolve().parent / "branch.py")
     try:
+        # 120s, raised from 90 with #846's enrichment (#1064 review). That
+        # enrichment bounds itself to `_declared_workflows.BUDGET_SECS` and
+        # declines past it, so this raise is headroom rather than the thing
+        # keeping the call inside its budget — a timeout here still publishes
+        # UNKNOWN, which is the safe direction but is not an answer.
         r = subprocess.run([sys.executable, script, default_branch],
-                           capture_output=True, text=True, timeout=90,
+                           capture_output=True, text=True, timeout=120,
                            encoding="utf-8", errors="replace")
     except (subprocess.TimeoutExpired, OSError) as e:
         return (UNKNOWN, [
@@ -544,10 +549,22 @@ def _default_branch_report(default_branch: str, repo: str,
 
     state = UNKNOWN
     lines: List[str] = []
+    # #846: the scope block is carried too, not only the four header lines. The
+    # `Verdict:` clause names the un-covered workflows itself, so this report is
+    # correct without the block — but the block adds each one's triggers, which
+    # is what tells a reader whether an absence is expected. Captured as a
+    # region rather than by prefix: its continuation lines are indented and a
+    # fifth prefix would have missed them exactly as the first four did.
+    in_scope_block = False
     for line in (r.stdout or "").splitlines():
         if line.startswith(f"Branch {default_branch}: "):
             state = line.split(": ", 1)[1].strip()
-        if line.startswith(("Branch ", "Head: ", "Verdict: ", "Legs: ")):
+        if line.startswith("Declared "):
+            in_scope_block = True
+        elif not line.strip():
+            in_scope_block = False
+        if in_scope_block or line.startswith(
+                ("Branch ", "Head: ", "Verdict: ", "Legs: ")):
             lines.append(f"  {line}")
     if not lines:
         return (UNKNOWN, [

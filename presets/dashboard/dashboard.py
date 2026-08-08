@@ -695,8 +695,13 @@ def collect_default(repo: str, default_branch: str) -> Section:
     marker, detail = _gh_branch._reconcile(repo, selected, fetched)
     _prev_sha, prev_names = _gh_branch.previous_head(runs, sha)
     missing = sorted(prev_names - set(selected)) if prev_names else []
+    # #846: the scope of the green, not only the green. This section is the
+    # board a human reads immediately before tagging a release, and it was
+    # printing "every workflow on X concluded and every leg passed" over a
+    # commit three of whose four declared workflows had produced no run.
+    scope, scope_lines = _gh_branch.scope_for(repo, sha, selected)
     state, sentence = _gh_branch.verdict(selected, legs, missing, sha, age,
-                                         unreconciled=marker)
+                                         unreconciled=marker, scope=scope)
 
     read = [s for group in legs.values() if group is not None for s in group]
     lines = [f"{default_branch} {sha[:7]} — {sentence}",
@@ -704,6 +709,7 @@ def collect_default(repo: str, default_branch: str) -> Section:
     if marker:
         lines.append(marker)
         lines.extend(line.strip() for line in detail)
+    lines.extend(line.strip() for line in scope_lines)
     return Section("default", lines)
 
 
