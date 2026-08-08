@@ -421,6 +421,27 @@ def _hunk_timeout(file_count: int) -> int:
     return min(HUNK_TIMEOUT_MAX, max(HUNK_TIMEOUT_BASE, HUNK_TIMEOUT_PER_FILE * file_count))
 
 
+def _hunk_display_lines(block: str) -> list[str]:
+    """A conflict hunk as the rows the render prints under `  `.
+
+    The other half of #1119's narrowing, and the reason it is a fix rather than
+    a quieter bug. `_get_conflict_hunks` no longer consumes the eight
+    separators `str.splitlines()` honours, so they arrive alive in the block —
+    deliberately, because a caller of that function wants the conflicted file's
+    own bytes. They are disclosed here instead, one step before they would
+    move the terminal to a fresh row with no `  ` indent and produce a line the
+    reader attributes to supertool (#851).
+
+    Called after `_is_binary_hunk`, never before: a mangled blob is labelled
+    and skipped rather than pictured character by character.
+
+    Tabs are kept — a hunk is a block and its indentation is the file's
+    content, the same call `presets/gitlab/job.py:_log_lines` makes.
+    """
+    return [_untrusted.visible(line, keep=chr(9))
+            for line in _untrusted.split_lines(block)]
+
+
 def _is_binary_hunk(block: str) -> bool:
     """True when a hunk block came from a non-text blob.
 
@@ -509,7 +530,26 @@ def _get_conflict_hunks(
         if current_path:
             blocks.setdefault(current_path, []).extend(current_lines)
 
-    for line in result.stdout.splitlines():
+    # `_untrusted.split_lines`, never `str.splitlines()` (#1119, the audit that
+    # issue asked for rather than the site it named). This stream is not
+    # porcelain: it is the two branches' CONFLICTED FILE CONTENT, verbatim,
+    # decoded with errors="replace". Both readers below anchor at column 0, and
+    # a `_MERGE_TREE_HEADER_RE` match calls `_flush()` and clears
+    # `current_path` — so a line of a conflicted file carrying U+2028 before
+    # the text `changed in both` ended that file's hunk early and dropped every
+    # line after it. The render then printed a conflict preview under a heading
+    # naming the file, with the conflict itself missing: an absence produced by
+    # the tool, read as an absence in the world (docs/validators.md).
+    #
+    # Verified against real `git merge-tree` output, not reasoned about. The
+    # sibling `_get_conflicting_files` is deliberately NOT changed: git
+    # octal-quotes non-ASCII bytes in any path it prints, so a filename cannot
+    # carry a separator into that split, and narrowing it would assert a
+    # guarantee that call does not need.
+    #
+    # `visible()` is applied at the render (`  {line}` under `### path`), not
+    # here, because a caller of this function wants the file's own bytes.
+    for line in _untrusted.split_lines(result.stdout):
         if _MERGE_TREE_HEADER_RE.match(line):
             _flush()
             current_path = None
@@ -1144,7 +1184,7 @@ def main() -> int:
                 print(f"\n### {path}")
                 print(f"  {BINARY_HUNK_NOTE}")
                 continue
-            lines = block.splitlines()
+            lines = _hunk_display_lines(block)
             truncated = ""
             if len(lines) > HUNK_LINES_PER_FILE:
                 extra = len(lines) - HUNK_LINES_PER_FILE
