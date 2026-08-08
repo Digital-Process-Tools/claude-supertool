@@ -39,6 +39,7 @@ from _git_common import (  # noqa: E402
     _git,
     query_open_mr,
     repo_label,
+    st_hint,
     use_utf8_stdout,
 )
 
@@ -444,6 +445,24 @@ def _left_behind_lines(git_fn=None):
     some, and a list of them under every commit is a list nobody reads on the
     commit that needed it. A modified *tracked* file is the one that means
     "you edited this and did not commit it".
+
+    Counted is not the same as accounted for, which is #1070. Two shapes were
+    wrong here, both in the direction that reads as "nothing was left":
+
+    * with modified files present, the count appeared in the header and the
+      pasteable remedy one line below named only the modified paths. Pasted,
+      it commits a strict subset of what the receipt just accounted for and
+      prints its own green tick over that. The remedy now says so — a subset
+      is fine, a subset presented as the whole is the #963 defect.
+    * with *only* untracked files left, this returned `[]`. A brand-new test
+      file, never committed, under `Files committed: N ✓` and no mention of it
+      anywhere. Silence is byte-for-byte the render of "nothing was left
+      behind", and the drop stays invisible until CI runs a file that is not
+      in the tree.
+
+    The fix is disclosure, not a listing: the counted-not-listed decision of
+    #1016 is deliberately kept, because a scratch-file dump under every commit
+    is how a warning stops being read.
     """
     modified, untracked, unknown = _worktree_changes(git_fn)
     if unknown:
@@ -451,13 +470,23 @@ def _left_behind_lines(git_fn=None):
             f"⚠ Left-behind check SKIPPED — `git status` did not answer ({unknown}).",
             "  This receipt does not say whether anything was left uncommitted.",
         ]
-    if not modified:
+    if not modified and not untracked:
         return []
+    if not modified:
+        return [
+            f"⚠ {len(untracked)} untracked file(s) were NOT included "
+            f"(new files are never staged unless you name them).",
+            "  Not listed here — see them with: " + st_hint("git-status:full"),
+        ]
     extra = f"  ({len(untracked)} untracked, not listed)" if untracked else ""
     lines = [f"⚠ {len(modified)} modified tracked file(s) were NOT included:{extra}"]
     lines += _sample(modified)
     lines.append("  Intentional? If not:")
     lines += _colon_remedy(modified[:_LIST_CAP], len(modified))
+    if untracked:
+        lines.append(
+            f"  The {len(untracked)} untracked file(s) are NOT in the command "
+            f"above — name them too if you meant to commit them.")
     return lines
 
 

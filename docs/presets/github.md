@@ -985,6 +985,18 @@ the PR page. So the op prints the name, flattened and in full, says no command
 is printed and why, and names the manual route. Ordinary names — the whole
 common case — are unaffected and print bare.
 
+**The same rule now covers the `gh-branch:` pointer in the zero-checks refusal**
+([#1038](https://github.com/Digital-Process-Tools/claude-supertool/issues/1038)).
+That refusal ends by suggesting `gh-branch:<head>` to find out whether a run is
+still expected — the same convenience shape, on the same attacker-chosen field,
+and it was rendering the name raw. Flattening it alone would have produced
+exactly the safe-but-wrong command the paragraph above refuses, so it is gated
+on `_refname.ordinary()` like the delete command: an ordinary name gets the op,
+an unordinary one gets the name in full plus a sentence saying no command is
+offered and why. The two REFUSED strings in this op that merely *display* a
+refname — the CONFLICTING message's base branch, and this one's head branch —
+are flattened, which is the right treatment for prose.
+
 Exit 0 requires a verified merge **and** every linked issue verified closed.
 
 ## Configuration

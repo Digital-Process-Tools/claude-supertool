@@ -342,9 +342,17 @@ def test_gl_pipeline_table_row_stays_one_row(capsys: Any) -> None:
 #: is a CI job name, which is not a refname, and keeping the scan green past it
 #: would take a per-field allowlist. The allowlist is the failure mode this
 #: scanner exists to avoid, not a cost of running it wider.
+#: `target` joined in #1038, and it is the reason the set alone was never the
+#: guard. `_git_common._glab_fields` / `_gh_fields` *normalise* `target_branch`
+#: and `baseRefName` into a key named `target`, so every consumer downstream of
+#: the normaliser reads a name this list had never heard of. The scan went
+#: green on a tainted print and reported that it had — a coverage claim that
+#: was not true, which is this repo's own defect class arriving inside the
+#: detector built for it. It still needs no exemption: the only `target` reads
+#: in the three scanned trees are that normalised refname.
 REFNAME_KEYS = frozenset({
     "headRefName", "baseRefName", "headBranch", "head_branch",
-    "source_branch", "target_branch", "ref",
+    "source_branch", "target_branch", "ref", "target",
 })
 
 #: Anything that marks remote text before it is printed.
@@ -366,14 +374,26 @@ def _call_names(node: ast.AST) -> set[str]:
 
 
 def _refnames_in(node: ast.AST) -> set[str]:
+    """Both read shapes, because the dict does not care which you use.
+
+    `d.get("target")` and `d["target"]` are the same read. The first draft
+    matched only `.get`, so `push.py`'s `mr['target']` was invisible to it —
+    a second way the same value walked past the same scan (#1038).
+    """
     keys = set()
     for sub in ast.walk(node):
+        name = None
         if (isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute)
                 and sub.func.attr == "get" and sub.args):
             first = sub.args[0]
-            if (isinstance(first, ast.Constant) and isinstance(first.value, str)
-                    and first.value in REFNAME_KEYS):
-                keys.add(first.value)
+            if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                name = first.value
+        elif (isinstance(sub, ast.Subscript)
+              and isinstance(sub.slice, ast.Constant)
+              and isinstance(sub.slice.value, str)):
+            name = sub.slice.value
+        if name in REFNAME_KEYS:
+            keys.add(name)
     return keys
 
 
@@ -382,13 +402,46 @@ def _unmarked_refnames(node: ast.AST) -> set[str]:
     return set() if MARKERS & _call_names(node) else keys
 
 
-def _raw_refname_prints(path: Path) -> list[str]:
-    tree = ast.parse(path.read_text(encoding="utf-8"))
+def _is_sink(node: ast.AST) -> bool:
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+        return node.func.id == "print"
+    return isinstance(node, ast.Return) and node.value is not None
+
+
+def _sink_args(node: ast.AST) -> list:
+    if isinstance(node, ast.Call):
+        return list(node.args)
+    assert isinstance(node, ast.Return) and node.value is not None
+    return [node.value]
+
+
+_FUNC = (ast.FunctionDef, ast.AsyncFunctionDef)
+
+
+def _scopes(tree: ast.AST) -> list:
+    """Every function body, plus module level — each on its own.
+
+    One taint dict per *file* was survivable while the keys were rare words.
+    `target` is not rare: `_open_mr_line` binds it from `mr['target']` and six
+    unrelated functions bind a local of the same name from `f"{remote}/{ref}"`,
+    which the tool composed itself. A file-wide dict reported all six, and a
+    scanner with six false findings is one somebody adds an allowlist to —
+    which is the failure mode this scan exists to avoid, arriving from the
+    other side. Scoping is not a softening: closure semantics are preserved,
+    because a nested function is also walked with its parent's dict.
+    """
+    out = [f for f in ast.walk(tree) if isinstance(f, _FUNC)]
+    inner = {id(n) for f in out for n in ast.walk(f) if n is not f}
+    out.append(tree)
+    return [(s, inner if s is tree else set()) for s in out]
+
+
+def _scan_scope(path: Path, scope: ast.AST, skip: set) -> list[str]:
     # Source order, not `ast.walk` order: a name is tainted or cleaned by the
     # last assignment *above* the print, and walking breadth-first reads those
     # assignments in the wrong order — which made the first draft of this
     # scanner both miss `job.py` and invent a finding in `check.py`.
-    nodes = sorted(ast.walk(tree),
+    nodes = sorted((n for n in ast.walk(scope) if id(n) not in skip),
                    key=lambda n: (getattr(n, "lineno", 0),
                                   getattr(n, "col_offset", 0)))
     tainted: dict[str, str] = {}
@@ -405,23 +458,41 @@ def _raw_refname_prints(path: Path) -> list[str]:
                     tainted[target.id] = sorted(keys)[0]
                 else:
                     tainted.pop(target.id, None)
-        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-                and node.func.id == "print"):
-            for arg in node.args:
-                for sub in ast.walk(arg):
-                    if not isinstance(sub, ast.FormattedValue):
-                        continue
-                    marked = bool(MARKERS & _call_names(sub.value))
-                    for key in sorted(_unmarked_refnames(sub.value)):
-                        found.append(f"{path.name}:{node.lineno} {key}")
-                    if marked:
-                        continue
-                    for name in ast.walk(sub.value):
-                        if isinstance(name, ast.Name) and name.id in tainted:
-                            found.append(
-                                f"{path.name}:{node.lineno} "
-                                f"{tainted[name.id]} (via {name.id})")
+        # `print(...)` is not the only sink. `push._open_mr_line` *returns*
+        # the f-string its caller prints, so keying on print() alone certified
+        # a line that reaches a terminal one frame up (#1038). A returned
+        # f-string in a preset is rendered text by construction.
+        if not _is_sink(node):
+            continue
+        for arg in _sink_args(node):
+            # `return line`, where `line` was built from a refname two lines
+            # up. No FormattedValue of its own, so the loop below never sees
+            # it — and that bare name is the exact shape #1038 shipped.
+            if isinstance(arg, ast.Name) and arg.id in tainted:
+                found.append(f"{path.name}:{node.lineno} "
+                             f"{tainted[arg.id]} (via {arg.id})")
+            for sub in ast.walk(arg):
+                if not isinstance(sub, ast.FormattedValue):
+                    continue
+                marked = bool(MARKERS & _call_names(sub.value))
+                for key in sorted(_unmarked_refnames(sub.value)):
+                    found.append(f"{path.name}:{node.lineno} {key}")
+                if marked:
+                    continue
+                for name in ast.walk(sub.value):
+                    if isinstance(name, ast.Name) and name.id in tainted:
+                        found.append(
+                            f"{path.name}:{node.lineno} "
+                            f"{tainted[name.id]} (via {name.id})")
     return found
+
+
+def _raw_refname_prints(path: Path) -> list[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    found: list[str] = []
+    for scope, skip in _scopes(tree):
+        found.extend(_scan_scope(path, scope, skip))
+    return sorted(set(found))
 
 
 def test_no_preset_prints_a_refname_raw() -> None:

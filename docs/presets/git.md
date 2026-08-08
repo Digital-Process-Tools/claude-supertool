@@ -153,6 +153,18 @@ Files committed: 5
 
 Named, not counted: "2 not included" costs a second call to find out which, and a reader who has to make that call usually does not. Untracked files are counted only — nearly every worktree has some, and a list of them under every commit is a list nobody reads on the commit that needed it. A run that left nothing behind prints none of this, and a check that could not run says `SKIPPED` rather than nothing.
 
+**Counted is not the same as accounted for** ([#1070](https://github.com/Digital-Process-Tools/claude-supertool/issues/1070)). Two follow-on gaps, same direction:
+
+- the pasteable `Intentional? If not:` line names only the **modified** paths. It is a subset of what the receipt just counted, so it now says so — `The 3 untracked file(s) are NOT in the command above`. A subset is fine; a subset presented as the whole is the defect.
+- when the *only* thing left behind was untracked, this whole block was **absent**. A brand-new test file, never committed, under `Files committed: N ✓` and no mention of it anywhere — invisible until CI runs a file that is not in the tree. That case now prints its own line:
+
+```
+⚠ 1 untracked file(s) were NOT included (new files are never staged unless you name them).
+  Not listed here — see them with: ./supertool 'git-status:full'
+```
+
+Still counted, still not listed: the fix is disclosure, not a scratch-file dump.
+
 **A refusal on an unstaged tree now names what is unstaged** ([#1003](https://github.com/Digital-Process-Tools/claude-supertool/issues/1003)). `ERROR: nothing staged.` was correct and unhelpful: the op had just read the working tree and the caller's only remaining move was a raw `git add -A`, i.e. the command this op exists to replace. The refusal itself stays — committing files you did not name is not a default anyone wants — but it now lists the modified tracked and untracked paths separately, and hands back a `git-commit:::MESSAGE:::…` call naming the first few. A genuinely clean tree says so instead, and a `git status` that did not answer says *that*, rather than printing an empty list that reads as clean.
 
 ### Which repository an op acted on
@@ -489,6 +501,18 @@ Now the lookup answers with a fact or with the reason there is no fact:
 The first thing it disclosed was a defect of its own: `glab mr list --state opened` is rejected by glab 1.86 (`Unknown flag: --state.`, exit 1), so the GitLab arm had been failing at argument parsing on every call and falling through to `gh`, which cannot answer on a GitLab repo either. Both failures were swallowed, so nothing said so. Open is `mr list`'s default, and the flag is gone.
 
 **The healthy path is byte-identical to before.** A lookup that answered prints exactly what it printed, and a branch that genuinely has no MR still says nothing — a line on every call is a line nobody reads on the call that needed it. Three cases are answers rather than failures, the first two on the same reading `git-status` uses: a CLI reporting *no open merge request* / *no pull request*; the other host's CLI reporting *none of the git remotes … point to a known GitHub host*; and — read from `git remote -v` rather than from a CLI — a repo where no remote names a host at all, so there is no tracker a request could be open on. That last one is checked first and locally, because both CLIs verify their own credentials before they look at the remotes: an unauthenticated `gh` exits `4` about `GH_TOKEN` and never gets as far as the sentence that would have made this an answer. The second is structural and permanent, so it must not decline — otherwise every push in every GitLab repo with `gh` installed carries a warning. An answer already given is never downgraded by the fallback either: `glab` saying "no MR" on a GitLab repo stands, whatever `gh` does a moment later.
+
+### The target branch on that line is the opener's text
+
+`git-push` renders `MR !42 → master` and `⚠ MR conflicts with master` from the request the tracker returned. On any repo that accepts contributions the target — like the source — is a refname chosen by whoever opened the request, and git accepts characters `str.splitlines()` breaks on. Both lines now go through `_untrusted.flat`, so a forged name is one line, in full, unchanged in meaning ([#1038](https://github.com/Digital-Process-Tools/claude-supertool/issues/1038)). `presets/git/status.py` had done this since [#965](https://github.com/Digital-Process-Tools/claude-supertool/issues/965); `push.py` imported `_untrusted` at all for the first time here.
+
+**The more interesting half is why the guard said the file was clean.** `test_forged_branch_line_965.py` walks `presets/git*` for a refname reaching a sink unflattened, keyed on a small set of field names. `presets/git/_git_common.py` *normalises* GitLab's `target_branch` and GitHub's `baseRefName` into one key called `target`, which was not in the set — and two further shapes were invisible to it: `mr['target']` is a subscript where it matched `.get(...)`, and `_open_mr_line` **returns** the f-string its caller prints where it matched `print(...)`. Any one of the three alone was enough for the scan to pass, and report that it had passed, on a tainted render. That is this repo's own defect class — an absence produced by the check, read as an absence in the world — arriving inside the detector built for it.
+
+All three are closed, and the taint tracking is now per function scope rather than per file: `target` is a common local name (`f"{remote}/{ref}"`), and a file-wide dict reported six false findings. A scanner with six false findings is one somebody adds an allowlist to, which is the failure mode this scan exists to avoid, arriving from the other side.
+
+**A third consumer of the same value, one call-hop away, and the scan cannot see it either.** `_post_push_advisories` also hands `target` to `_stale_base_advisory`, which builds `{remote}/{target}` and prints it at column 0 in four places. The value leaves as a *call argument* rather than a print or a return, and the scanner has no interprocedural taint tracking — so it went green over those four lines while the two beside them were being fixed. They are flattened now, but only on the **echo**: `git rev-list` still counts against the real, unflattened ref, because flattening on the way in would change which ref is measured and trade a loud forgery for a quiet wrong answer about how stale the base is (`docs/validators.md`, "the flattening is on the echo only").
+
+So the scan's coverage claim is still not a general one. It sees `print(f"…")` and `return f"…"` of a literal-keyed dict read within one function, in three preset trees. It does not see `%`, `.format()`, string concatenation, `sys.stdout.write`, a value passed to a helper that prints it, or a non-literal key. Keying on the *sink* rather than the source — every f-string interpolating a dict lookup not known-safe — is the version that would have caught this one, and it is not built.
 
 ### What `git-status`'s `Checks:` line is about
 
