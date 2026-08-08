@@ -221,6 +221,17 @@ changelog.d/878.fixed.second-entry.md
 
 **CI asks for a fragment, and says when it does not.** `.github/workflows/changelog.yml` requires one from any PR touching `supertool.py`, `_supertool.py`, `presets/`, `validators/`, `formatters/`, `notifiers/` or `.claude-plugin/`. Docs-only and tests-only PRs are exempt by design — requiring a fragment for a typo fix is how the discipline decays into a reflex-added empty file — and a `no-changelog` label is the stated way out for anything else. The job prints which of the three it did on every run.
 
+**Never assert that a fragment file exists.** `assert (root / "changelog.d" / "1053.added.md").is_file()` looks completely reasonable and passes for as long as no release happens — then the release *consumes* the fragment and the test reddens every leg on the release commit, blocking the cut with a failure that says nothing about the cut. It shipped three times ([#941](https://github.com/Digital-Process-Tools/claude-supertool/issues/941) took five legs on v0.26.0, [#953](https://github.com/Digital-Process-Tools/claude-supertool/issues/953) thirteen of twenty on v0.27.0, [#1053](https://github.com/Digital-Process-Tools/claude-supertool/issues/1053) is the third). What such a test actually claims is that the change is *findable*, and a pending fragment and a released `CHANGELOG.md` entry both satisfy that — exactly one is true at any moment. Write it as one call:
+
+```python
+from _changelog_findable import assert_change_is_findable
+
+def test_a_changelog_fragment_exists() -> None:
+    assert_change_is_findable(1053)
+```
+
+`tests/test_changelog_findable_1053.py` additionally parses every module of the suite and refuses any `assert` that tests a `changelog.d` path's existence — directly, or through a local name bound to such a lookup — naming the file, the line and the accepted form. It reads the asserted expression and never the failure message, because the accepted form names `changelog.d/<n>.<section>.md` in its own message. It does not claim to catch a release-fragile test that reaches the directory by some other route; it closes the shape that shipped three times.
+
 ### Cutting a release
 
 The release edits four files, and `test_plugin_manifest_version_matches_code`, `test_pyproject_version_522` and `test_the_newest_release_section_is_the_version_that_ships` guard all four against each other:
@@ -244,6 +255,8 @@ It inserts `## [0.26.0] - <today>` above the newest existing release, folds ever
 **`## [Unreleased]` is `changelog.d/` now.** The heading stays in `CHANGELOG.md` — the `[Unreleased]:` compare link points at it — but nothing accumulates under it any more. Anything that *is* under it when a release is cut (the entries that predate this mechanism, or a hand-edit somebody made anyway) is **folded into the release being cut**, above the fragment-derived entries, with same-named `###` subsections merged rather than duplicated. `[Unreleased]` means "goes out in the next release", so it goes out in it: leaving it behind would ship a tag that silently omits real work while that work still reads as pending.
 
 Nothing is trusted about that merge. The assembler counts the entries on both sides, counts the entries it produced, and **refuses to write** if the two do not balance — a merge that dropped a line would otherwise be indistinguishable from a clean run. The receipt says how many it folded, including when the answer is zero.
+
+**A release section ends with a blank line, and the re-parse now refuses one that does not** ([#1113](https://github.com/Digital-Process-Tools/claude-supertool/issues/1113)). `render` builds its section ending in a blank line and the splice passed the joined text through `str.splitlines()`, which drops the empty field a terminal newline produces — so the last body line landed directly against the `## [x.y.z]` heading below, on 0.25.0 through 0.29.0. CommonMark lets an ATX heading interrupt a paragraph, so GitHub rendered it as a heading anyway and nothing looked wrong; a stricter or older parser folds it into the paragraph before, in the one artefact users read to decide whether to upgrade. Only *new* instances are refused: the ones already in the file shipped inside tags and GitHub release notes, and rewriting them would make `CHANGELOG.md` stop matching what was published.
 
 **The link-ref table at the bottom is audited on every pull request**, not at release time ([#918](https://github.com/Digital-Process-Tools/claude-supertool/issues/918)):
 

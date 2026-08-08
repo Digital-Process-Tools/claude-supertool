@@ -551,6 +551,48 @@ def _inert_lines(text: str) -> Set[int]:
     return inert
 
 
+def _crowded_headings(text: str) -> Set[str]:
+    """Titles of headings written directly against the line above them (#1113).
+
+    CommonMark lets an ATX heading interrupt a paragraph, so GitHub renders
+    one of these correctly and nothing looks wrong; it is only wrong in the
+    source, and only to a stricter parser, which folds the heading into the
+    paragraph before it. The artefact that breaks is the one users read to
+    decide whether to upgrade.
+
+    Keyed by title rather than by line, because the caller subtracts the
+    before-set from the after-set. The four instances already in the file
+    shipped inside tags and GitHub release notes; repairing them would make
+    CHANGELOG.md stop matching what was published, so they are carried
+    forward and only a *new* one is a finding.
+
+    Positional on purpose: the blank line is a property of the bytes, which is
+    what the stricter parser reads. The *set of headings* still comes from the
+    parser, so a fenced example of a release heading is not one of these.
+    """
+    lines = text.splitlines()
+    return {title for index, _, title in _headings(text)
+            if index and lines[index - 1].strip()}
+
+
+def _section_lines(section: str) -> List[str]:
+    """A rendered release section as lines, ending in exactly one blank.
+
+    `render` builds its list ending in `""` and joins it, so the text ends in
+    a newline — and `str.splitlines()` drops the empty field that newline
+    produces. The section's last body line then landed directly against the
+    `## [x.y.z]` heading it was spliced above, on every release since 0.25.0.
+    `split("\n")` keeps that field; the normalisation below states the
+    invariant the splice depends on rather than inheriting it from `render`.
+    """
+    lines = section.split("\n")
+    while len(lines) > 1 and not lines[-1] and not lines[-2]:
+        lines.pop()
+    if not lines or lines[-1]:
+        lines.append("")
+    return lines
+
+
 def _anchor(headings: Sequence[Tuple[int, str, str]]) -> int:
     """Where the new release section goes: above the newest existing release.
 
@@ -810,6 +852,14 @@ def _verify_written(before: str, after: str, emitted: Sequence[str],
         findings.append(
             "re-parse of the assembled file found {0} new raw HTML token(s), "
             "which render as structure a reader will trust".format(after_raw - before_raw))
+    crowded = sorted(_crowded_headings(after) - _crowded_headings(before))
+    if crowded:
+        findings.append(
+            "the assembled file writes {0} heading(s) with no blank line above "
+            "them, which a stricter Markdown parser folds into the paragraph "
+            "before rather than rendering as a heading: {1}. The ones already "
+            "in CHANGELOG.md are carried forward untouched — they shipped in "
+            "tags (#1113)".format(len(crowded), ", ".join(crowded)))
     return findings
 
 def _receipt(state: str, summary: str, details: Sequence[str] = ()) -> None:
@@ -891,9 +941,9 @@ def assemble(changelog: Path, directory: Path, version: str, date: str,
         return REFUSED
 
     if unreleased_at is None:
-        body = list(lines[:anchor]) + section.splitlines() + list(lines[anchor:])
+        body = list(lines[:anchor]) + _section_lines(section) + list(lines[anchor:])
     else:
-        body = (list(lines[:unreleased_at + 1]) + [""] + section.splitlines()
+        body = (list(lines[:unreleased_at + 1]) + [""] + _section_lines(section)
                 + list(lines[anchor:]))
     rewritten = _rewrite_links(body, version)
     links, written_refs = rewritten if rewritten else (None, [])
