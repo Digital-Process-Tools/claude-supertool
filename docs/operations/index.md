@@ -9,9 +9,9 @@
 | **Reads** | `read`, `read-grep`, `head`, `tail`, `wc`, `stat`, `ls`, `glob`, `tree`, `diff` | [reads.md](reads.md) |
 | **Search** | `grep`, `grep-count`, `grep_around`, `around`, `around_line`, `between` | [search.md](search.md) |
 | **Symbol map** | `map` | [map.md](map.md) |
-| **Edits** | `edit`, `replace`, `replace_dry`, `replace_lines`, `paste`, `append`, `vim` | [edits.md](edits.md) |
+| **Edits** | `edit`, `replace`, `replace_dry`, `replace_lines`, `paste`, `append`, `vim`, `batch` | [edits.md](edits.md) |
 | **Validate / Format** | `validate`, `format`, `validate_staged`, `format_staged` | — |
-| **Meta** | `cwd`, `introduction`, `output-format`, `ops`, `version`, `gc` | [meta.md](meta.md) |
+| **Meta** | `cwd`, `introduction`, `output-format`, `ops`, `help`, `version`, `gc` | [meta.md](meta.md) |
 
 ## Full op table
 
@@ -40,6 +40,7 @@
 | `between` | `between:SYMBOL:PATH` or `between:re:START:END:PATH` | Return a chunk of a file. **Symbol mode (default):** full body of a named function/method/class via tree-sitter (PHP, Python, JS, TS, Go, Rust, Java, Ruby — symbols with `::` like PHP `Foo::bar` work). SYMBOL tolerates source-shaped input (`async function foo`, `public static function bar`, `foo(...)`). **Pattern mode (`re:` prefix):** inclusive line slice from first line matching START regex to first line after matching END regex (language-agnostic). |
 | `tree` | `tree:PATH` or `tree:PATH:DEPTH` | Directory structure with depth limit (default 3). Hides dotfiles. Files listed before subdirectories. |
 | `blame` | `blame:PATH:LINE` or `blame:PATH:LINE:N` | Git blame for N lines (default 5) around a specific line number. Requires git repo. |
+| `help` | `help:OP` | Full reference for one op — the same `.supertool.json` metadata `ops` lists, scoped and never compacted. An op the dispatcher accepts but no config describes says so, rather than reporting itself unknown. |
 | `version` | `version` | Show supertool version. |
 | `gc` | `gc`, `gc:dry`, `gc:run`, `gc:run:KIND` | Prune supertool's own caches under `~/.cache/supertool`. Bare `gc` and `gc:dry` **preview** — per-kind counts and bytes, nothing deleted. `gc:run` deletes. Optional KIND scopes to `vim-cursor`, `vim-undo`, `vi-cursor` or `validators`. See [meta.md](meta.md#gc--cache-retention). |
 | `cwd` | `cwd:PATH` | Set the working dir for the whole call. **Must be the first op** — chdir's once before any dispatch (so every following op resolves against `PATH`), then is stripped. Mirrors `cd PATH && …` without the `cd` (which trips the use-supertool hook and risks stale-cwd path poisoning). `~`/`$VAR` expanded; non-directory or non-first → error before any op runs. |
@@ -49,6 +50,7 @@
 | `append` | `append:::PATH:::CONTENT` | Append CONTENT to the end of a file, creating it if missing. No `wc` round-trip, no inverted-range `replace_lines` trick. Adds a missing trailing newline first so the block starts on its own line. |
 | `vim` | `vim:::PATH:::SCRIPT` | vim-flavored cursor-based multi-action edit. SCRIPT is parsed like a real vim macro. **DEFAULT EDIT OP** for any pattern-based edit. See [edits.md](edits.md) for full syntax reference. |
 | `replace` / `replace_dry` | `replace:::OLD:::NEW:::PATH` | Recursive find/replace across PATH (`replace_dry` = preview). Use `:::` separator when content has `:`. |
+| `batch` | `batch:@FILE` or `batch:@-` | Run N ops from one payload — a TOML `[[ops]]` array or a JSON array of `{"op": …}` objects, each entry taking that op's own `@payload` fields. The only way to put several mutations in one call, since a call carries just one `@-` (#341). Reads and greps mix in freely. Per-op validators, per-op rollback; **not** atomic by default — see [edits.md](edits.md#batchfile--mixed-ops-in-one-round-trip). |
 | `validate` | `validate:PATH[:tool1,tool2][:verbose]` | Run registered validators matching PATH (by file extension). Optional `tool_filter` limits to named validators. Append `verbose` for uncapped errors + source context + raw stdout/stderr. Same validators that fire after every mutating op. |
 | `format` | `format:PATH[:tool1,tool2][:verbose]` | Run registered formatters matching PATH (writes file in place). Optional `tool_filter`. Append `verbose` for full per-file details. |
 | `validate_staged` | `validate_staged[::tool1,tool2][:verbose]` | Run validators on all files in `git diff --cached --name-only`. Optional `tool_filter`. Append `verbose` for full per-file details. Useful as a pre-commit check. |

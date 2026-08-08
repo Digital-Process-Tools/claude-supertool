@@ -45,7 +45,7 @@ def shipped_config(monkeypatch: pytest.MonkeyPatch):
     the mirror image of a test that passes when the code does nothing, and it
     cost this file one rewrite before the RED output was believable.
     """
-    cfg = json.loads((REPO_ROOT / ".supertool.json").read_text())
+    cfg = json.loads((REPO_ROOT / ".supertool.json").read_text(encoding="utf-8"))
     monkeypatch.setattr(supertool, "_CONFIG", cfg)
     monkeypatch.setattr(supertool, "_CONFIG_CHECKED", True)
     monkeypatch.setattr(supertool, "_CONFIG_PATH", str(REPO_ROOT / ".supertool.json"))
@@ -94,8 +94,11 @@ class TestOpsAccountsForEveryDispatchableOp:
         """
         monkeypatch.chdir(tmp_path)
         cfg = tmp_path / ".supertool.json"
-        cfg.write_text(json.dumps({"builtin-ops": {"read": {"syntax": "read:PATH"}}}))
-        monkeypatch.setattr(supertool, "_CONFIG", json.loads(cfg.read_text()))
+        cfg.write_text(
+            json.dumps({"builtin-ops": {"read": {"syntax": "read:PATH"}}}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(supertool, "_CONFIG", json.loads(cfg.read_text(encoding="utf-8")))
         monkeypatch.setattr(supertool, "_CONFIG_CHECKED", True)
         monkeypatch.setattr(supertool, "_CONFIG_PATH", str(cfg))
         listing = supertool.op_ops()
@@ -117,8 +120,8 @@ class TestOpsAccountsForEveryDispatchableOp:
         cfg.write_text(json.dumps({"builtin-ops": {
             "read": {"syntax": "read:PATH", "status": 1},
             "map": {"syntax": "map:PATH", "status": 0},
-        }}))
-        monkeypatch.setattr(supertool, "_CONFIG", json.loads(cfg.read_text()))
+        }}), encoding="utf-8")
+        monkeypatch.setattr(supertool, "_CONFIG", json.loads(cfg.read_text(encoding="utf-8")))
         monkeypatch.setattr(supertool, "_CONFIG_CHECKED", True)
         monkeypatch.setattr(supertool, "_CONFIG_PATH", str(cfg))
         assert "map" not in supertool.op_ops()
@@ -129,7 +132,17 @@ class TestOpsAccountsForEveryDispatchableOp:
         """Under the SessionStart cap the accounting must cost a line, not a page."""
         listing = supertool.op_ops(compact=True)
         disclosure = [ln for ln in listing.splitlines() if ln.startswith("Also accepted")]
-        assert len(disclosure) <= 1, f"disclosure bloated to {len(disclosure)} lines"
+        assert len(disclosure) == 1, (
+            f"expected exactly one disclosure line, got {len(disclosure)}. "
+            f"This repo's config leaves five ops undescribed, so zero means the "
+            f"disclosure stopped being emitted and the bound `<= 1` would have "
+            f"passed on that — the weak form of this assertion."
+        )
+        head = listing.encode("utf-8")[: supertool._HOOK_OUTPUT_CAP_BYTES]
+        assert "Also accepted" in head.decode("utf-8", "ignore"), (
+            "compact output is already over the hook cap and truncates from the "
+            "tail — a disclosure below the cut is a disclosure nobody reads."
+        )
 
 
 class TestHelpDoesNotDenyADispatchableOp:
@@ -166,13 +179,13 @@ class TestBatchIsReachableFromTheTool:
         """
         monkeypatch.chdir(tmp_path)
         target = tmp_path / "sample.txt"
-        target.write_text("alpha\nbeta\ngamma\n")
+        target.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
         (tmp_path / "ops.json").write_text(json.dumps([
             {"op": "edit", "path": "sample.txt", "old": "alpha", "new": "ALPHA"},
             {"op": "edit", "path": "sample.txt", "old": "gamma", "new": "GAMMA"},
-        ]))
+        ]), encoding="utf-8")
         supertool.dispatch("batch:@ops.json")
-        assert target.read_text() == "ALPHA\nbeta\nGAMMA\n", (
+        assert target.read_text(encoding="utf-8") == "ALPHA\nbeta\nGAMMA\n", (
             "two mutations in one call is the property the listing will now "
             "advertise; if it does not hold, do not advertise it."
         )
@@ -180,7 +193,7 @@ class TestBatchIsReachableFromTheTool:
 
 class TestBatchEntryIsInTheShippedConfig:
     def test_supertool_json_carries_a_batch_entry(self) -> None:
-        cfg = json.loads((REPO_ROOT / ".supertool.json").read_text())
+        cfg = json.loads((REPO_ROOT / ".supertool.json").read_text(encoding="utf-8"))
         entry = cfg.get("builtin-ops", {}).get("batch")
         assert isinstance(entry, dict), "batch has no builtin-ops entry"
         assert entry.get("syntax"), "batch entry has no syntax"

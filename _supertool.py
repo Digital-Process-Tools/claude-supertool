@@ -12305,18 +12305,6 @@ def op_ops(compact: bool = False) -> str:
             if _emit_example(info):
                 lines.append(f"  Example: `{info['example']}`")
 
-    # Three states, not two (#1124). An op the dispatcher accepts but that no
-    # config section describes was omitted outright, so `ops` — the tool's own
-    # answer to "what can you do?" — read as a complete capability list while
-    # hiding `batch`: the one op that collapses N mutations into a single call,
-    # and the only escape from #341's one-payload-per-call cap. Measured over
-    # 232 agent transcripts, 70% of supertool calls carried a single op, and
-    # every agent that used `batch` had learned it from an out-of-band brief.
-    #
-    # Derived from the dispatcher's own sets rather than hand-maintained, for
-    # the same reason `_valid_op_names` exists (#614): the next op added without
-    # a .supertool.json entry has to disclose itself. One line, not a second
-    # listing — an op with a real entry never reaches here.
     if has_ops:
         lines.append("")
 
