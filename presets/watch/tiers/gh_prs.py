@@ -384,11 +384,15 @@ def heal(numbers: list[str], watched: set[str] | None,
 def default_branch_report(ref: str | None, repo: str) -> tuple[list[str], bool]:
     """`(lines, could_tell)` for the branch nothing else watches.
 
-    Composed from `gh-branch`'s own selection, verdict and reconciliation, so
-    the answer here and the answer from `gh-branch:master` are the same
-    arithmetic rather than two renderings that agree today. `could_tell` is
+    Composed from `gh-branch`'s own selection, verdict, reconciliation **and
+    scope**, so the answer here and the answer from `gh-branch:master` are the
+    same arithmetic rather than two renderings that agree today. `could_tell` is
     False for `UNKNOWN` and for `NO RUN` — neither establishes a green, and
-    this tier's `healthy` is a claim about what it could see.
+    this tier's `healthy` is a claim about what it could see — and, since
+    #1077, for a green whose scope is unresolved: a declared set that could not
+    be read, or a push-triggered workflow that produced no run on the head
+    commit. Those are greens over a universe of unknown size, which is the same
+    claim-about-what-it-could-see failing.
 
     `ref is None` means "not configured" and resolves the repo's own default
     branch; `""` means the operator switched the member off. Two different
@@ -425,17 +429,42 @@ def default_branch_report(ref: str | None, repo: str) -> tuple[list[str], bool]:
             for name, jobs in fetched.items()}
 
     marker, shortfall = branch._reconcile(repo, selected, fetched)
+    # #1077: `scope_for` says a caller that has to remember this will not, and
+    # this was the caller that did not. Without it the tier published the same
+    # unscoped green #846 exists to stop — on the one board that reports master
+    # on every tick.
+    scope, scope_lines, unresolved = branch.scope_for(repo, sha, selected)
     state, sentence = branch.verdict(selected, legs, missing, sha, age,
-                                     branch._GRACE, marker)
+                                     branch._GRACE, marker, scope=scope)
 
     lines = [f"radar: {ref} @ {sha[:7]} — {sentence}"]
     lines.extend(f"  {line}" for line in shortfall)
     for name in missing:
         lines.append(f"  {_untrusted.flat(name)} ran on the previous head and "
                      f"has no run on {sha[:7]} — that is not 'ran and passed'.")
-    if state == branch.GREEN:
+    lines.extend(f"  {line}" for line in scope_lines)
+    # The blank-on-green is what made the disclosure unreachable, and removing
+    # it outright would be the opposite mistake: on this repo `slow tests`
+    # (schedule) and `changelog` (pull_request) produce no run on any master
+    # push, forever, so an unconditional clause is two permanent lines on every
+    # tick — the render nobody reads by the time it matters. `unresolved` is
+    # the narrower question: a green this tier cannot account for, because a
+    # push-triggered workflow produced no run or the declared set could not be
+    # read at all. Those it says out loud.
+    if state == branch.GREEN and not unresolved:
         lines = []
-    return lines, state in (branch.GREEN, branch.NOT_GREEN)
+    # `could_tell`, not just the lines. Radar's `quiet_when_healthy` drops a
+    # healthy tier's whole output, so lines emitted under a healthy verdict go
+    # nowhere — un-blanking them without moving this would have looked fixed
+    # and disclosed nothing to an operator running quiet.
+    #
+    # Only against the green, deliberately, and for the same reason `verdict()`
+    # tests `unreconciled` last: every other state here is a *finding*, and a
+    # finding is something this tier could tell. A green is a clearance, and a
+    # clearance over a set of unknown size is not one.
+    could_tell = (state == branch.NOT_GREEN
+                  or (state == branch.GREEN and not unresolved))
+    return lines, could_tell
 
 
 # ---------------------------------------------------------------------------
