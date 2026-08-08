@@ -261,6 +261,59 @@ modified rather than counted or dropped.
 assumes `\n` throughout, and half-adopting this would produce scattered mixed
 endings rather than a clean whole-file one.
 
+## Bytes that are not valid UTF-8
+
+Every edit op — `edit`, `replace`, `replace_lines`, `append` and, since #1059,
+`vim` — reads with `errors="surrogateescape"`, so a byte that is not valid UTF-8
+comes back out of `_atomic_write` as the same byte. A stray latin-1 byte in a
+comment, a file with mixed encodings, partial binary content: the bytes your op
+never named are the bytes that were there before.
+
+`vim` alone read with `errors="replace"` until #1059. That turns every such byte
+into U+FFFD **in memory**, and `vim` writes the whole buffer back — so a single
+`cc` on line 1 destroyed a byte on line 40, permanently, under a receipt that
+named line 1 and reported nothing wrong. The same read mode was live on `:r FILE`
+(which splices a second file into the buffer) and on the two re-reads inside
+`:norm`. All four now use `surrogateescape`.
+
+The refusal-shaped fix — decline to open a file holding non-UTF-8 bytes — was
+considered and rejected: it trades destruction for an outage on files that work
+today, which is the loud-for-quiet trade pointed the wrong way.
+
+Receipts echo the buffer (context lines, a diff hunk), and a lone surrogate
+cannot be encoded to a UTF-8 stream. Those are rendered as U+FFFD **in the
+receipt only** — mojibake on screen, exact bytes on disk. Ops that turn decoded
+text back into bytes or into a path still refuse rather than guess.
+
+`vim` still does not take `newline=""`, deliberately, for the reason above.
+
+## What counts as a line
+
+`read` and `replace_lines` used to disagree. `read` split the file's bytes
+(LF, CR, CRLF); `replace_lines` split the decoded string, and `str.splitlines()`
+also breaks on U+000B, U+000C, U+001C, U+001D, U+001E, U+0085, U+2028 and
+U+2029. A file holding any of those had two line numberings, and the ops that
+read sat on the opposite side from the ops that write: you read your target at
+line N, asked for line N, and the write landed somewhere else. Nothing reported
+a problem (#1060).
+
+One function owns the definition now and every line-numbering op uses it. The
+definition is the **conservative** one — LF, CR and CRLF only — because that is
+what a caller counting lines in an editor, in `wc -l`, or in any line-oriented
+CLI will have counted. This is a contract change for `replace_lines` on files
+containing those eight characters, and it is stated rather than picked by
+whichever function was easier to edit.
+
+Where the two definitions genuinely differ, a `read` says so rather than
+silently choosing:
+
+```
+(412 lines, 18022 bytes)
+note: contains U+2028 — supertool numbers lines by LF / CRLF / CR only, so a tool that also breaks on these (Python's str.splitlines, some editors) numbers this file differently. supertool's reads and its line-addressed edits agree with each other.
+```
+
+An ordinary file says nothing.
+
 ## See also
 
 - [docs/validators.md](../validators.md) — full validator reference: bundled list, rollback behavior, adding your own
