@@ -232,7 +232,7 @@ Observed live on the GitHub tier: three rendered rows under `6 open | 2 failing 
 
 ```
 scope author=@me (default) on Digital-Process-Tools/claude-supertool | 6 open |
-3 unchanged not shown | 2 failing | 4 running | 6 watched | 2 no longer open |
+3 unchanged not shown | 2 failing | 4 running | 6 watched | 2 left this board |
 discovery: radar ticks only
 ```
 
@@ -249,6 +249,51 @@ Capped at twelve identifiers, with the remainder counted. Both tiers do this and
 **On a board where nothing was elided the line is absent, and the absence is the claim.** A disclosure printed unconditionally is one the reader learns to skip, which is the same failure one level up — the reason `_unchecked_warning` returns `[]` on a fully-checked board.
 
 **The elision is kept.** A running MR or PR that has not moved since the last tick is genuinely no news, and re-printing it every tick trains a reader to skim the board — exactly what [standing exclusions](#standing-exclusions) exist to prevent. What was wrong was the silence, not the choice.
+
+#### What left the board, and why the board will not say
+
+The other half of a delta is what was in the previous snapshot and is not in this one. Until [#1024](https://github.com/Digital-Process-Tools/claude-supertool/issues/1024) both tiers rendered that as `N no longer open`, and that is a claim the snapshot cannot support. The population a snapshot records is the *filtered* one — `author=@me` by default — so five different histories arrive as one absence:
+
+| What happened                                   | Still open? |
+| ----------------------------------------------- | ----------- |
+| merged                                          | no          |
+| closed without merging                          | no          |
+| author reassigned                               | **yes**     |
+| a label the filter selects on was removed       | **yes**     |
+| pushed off the fetch's single page by newer ones | **yes**     |
+
+A changed filter is *not* on that list, though it looks like it belongs: the snapshot is keyed by filter, so widening one is a cold start with no previous entries to depart from.
+
+Three of the five are open and still need work, and `no longer open` tells the reader they landed. So the board reports the observation and declines the verdict — `N left this board` in the footer, and the identifiers named:
+
+```
+radar: NOTE — 1 PR left this board since the previous run (#1013): merged, closed,
+or still open and no longer matching this board's filter. The snapshot records
+membership, not how it ended, so this board does not guess — `gh-pr:<number>` says
+which.
+```
+
+Reading back each departure's live state would name it exactly, at one API call per departure — and that call can itself fail, which needs this same three-state sentence for its own third arm. The sentence alone costs no call and cannot be wrong, and the named identifier is what makes the lookup one command rather than a hunt. Same cap of twelve, same shared implementation, and on a board where nothing departed the line is absent.
+
+An **excluded** MR is not a departure. The GitLab tier computes the departed set against the whole open population rather than the printed board, so a row the operator chose to suppress is never reported back to them as one that left.
+
+**A tick whose only event is a departure says `radar: no rows changed`, not `radar: no change`.** The departed entry is gone, so there is no row to print and every surviving row legitimately elides — which used to land on the `no change` arm, announcing that nothing happened on the exact tick something fell off the board. `no change` is the token this board is skimmed by, so it now means what it says.
+
+The named identifiers are sorted. The cap makes *which* ids get named load-bearing, and the snapshot is written in the order the upstream page came back, so an unsorted list can name different halves of the same departures on two runs.
+
+**On a full page the board will not call it a departure at all.** `live_open_prs` and `live_open_mrs` fetch one page — `per_page`, 50 by default — with no pagination loop, so on a busy board an entry pushed past the page limit by newer ones is absent from the live population while being open and still matching. That is the fifth row of the table, and it breaks the sentence rather than extending it: a reader told `!900 left this board` runs `gl-mr:900`, sees it open, and concludes the filter stopped matching — a second wrong conclusion, reached by doing exactly what the board said. So when the population reaches the page size the footer says `N off this page` and the disclosure is a WARNING that names the page limit as one of the four possibilities:
+
+```
+radar: WARNING — 1 MR on the previous snapshot is not on this one (!900), and
+this board cannot call that a departure: the live query returned a full page, so
+an entry pushed past the page limit by newer ones looks exactly like one that
+left. Merged, closed, no longer matching this board's filter, or simply past the
+page limit — `gl-mr:<iid>` says which.
+```
+
+The GitLab tier unions several queries, so its population can reach `per_page` without any single query having filled a page. It declines anyway: over-declining costs a reader one lookup, and under-declining turns a page limit into a claim that something merged.
+
+**A departure makes the tier report unhealthy.** `healthy` has one consumer — `quiet_when_healthy`, which drops the tier's whole output — and a departure-only tick is every surviving row elided plus one summary line. A healthy verdict there suppresses the notice that something left the board, which is the same silence one level up from the one this section is about.
 
 ### Standing exclusions
 

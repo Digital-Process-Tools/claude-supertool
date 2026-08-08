@@ -497,7 +497,8 @@ def _is_standing_problem(p: dict) -> bool:
 
 def _footer(open_prs: list[dict], covered: set[str] | None, healed: list[str],
             uncovered: list[str], gone: int, label: str,
-            unchecked_n: int, elided_n: int = 0) -> str:
+            unchecked_n: int, elided_n: int = 0,
+            departed_capped: bool = False) -> str:
     """Tallies over the whole open population, plus what the delta held back.
 
     `elided_n` is the token that makes the footer checkable against the rows
@@ -532,7 +533,11 @@ def _footer(open_prs: list[dict], covered: set[str] | None, healed: list[str],
     if uncovered:
         parts.append(f"{len(uncovered)} unwatched")
     if gone:
-        parts.append(f"{gone} no longer open")
+        # Not "no longer open" (#1024): `open_prs` is filter-scoped, so a PR
+        # that was reassigned away is gone from here and still open there. And
+        # on a full page not even "left" is established — see `departed_note`.
+        parts.append(f"{gone} off this page" if departed_capped
+                     else f"{gone} left this board")
     # Stated on every board: this tier has no discovery feed, so a PR opened
     # after this run is not seen until the next tick. An unstated guarantee is
     # one a reader assumes.
@@ -563,9 +568,22 @@ def _unchecked_warning(numbers: list[str], total: int) -> list[str]:
             f"here."]
 
 
+def _departed(previous: dict | None, open_prs: list[dict]) -> list[str]:
+    """Numbers in the previous snapshot and not in the live population.
+
+    A function rather than two lines inside `render`, because `radar_report`
+    needs the same answer for `healthy` and a second derivation is how the two
+    come to disagree (#1024).
+    """
+    prev_entries: dict[str, Any] = (previous or {}).get("prs", {}) or {}
+    live = {str(p.get("number")) for p in open_prs}
+    return [n for n in prev_entries if n not in live]
+
+
 def render(open_prs: list[dict], covered: set[str] | None, healed: list[str],
            uncovered: list[str], previous: dict | None, label: str,
-           notes: list[str] | None = None) -> list[str]:
+           notes: list[str] | None = None,
+           page_capped: bool = False) -> list[str]:
     """Full board on cold start; changed + standing-problem rows afterwards.
 
     Every open PR lands in exactly one of `shown` and `elided`, and both are
@@ -597,10 +615,9 @@ def render(open_prs: list[dict], covered: set[str] | None, healed: list[str],
         else:
             elided.append(number)
 
-    live = {str(p.get("number")) for p in open_prs}
-    gone = len([n for n in prev_entries if n not in live])
-    footer = _footer(open_prs, covered, healed, uncovered, gone, label,
-                     len(unchecked_numbers), len(elided))
+    departed = _departed(previous, open_prs)
+    footer = _footer(open_prs, covered, healed, uncovered, len(departed), label,
+                     len(unchecked_numbers), len(elided), page_capped)
 
     # Named only when the board is *partial*. A board where everything was
     # elided already says so unambiguously on its `radar: no change` line, and
@@ -613,6 +630,8 @@ def render(open_prs: list[dict], covered: set[str] | None, healed: list[str],
     lines = (_coverage_warning(covered)
              + _unchecked_warning(unchecked_numbers, len(open_prs))
              + elision
+             + snapshot.departed_note(departed, "PR", "#", "gh-pr:<number>",
+                                      page_capped)
              + list(notes or []))
     if cold:
         lines.append("radar: cold start — no prior snapshot, full board")
@@ -628,6 +647,13 @@ def render(open_prs: list[dict], covered: set[str] | None, healed: list[str],
         lines.append(f"No PRs matched — {label}.")
         lines.append("")
         lines.append(footer)
+    elif departed:
+        # A departure is a change, and the only one this board can never print
+        # as a row — the entry is gone, so there is nothing left to render and
+        # every surviving row legitimately elided. Taking the `no change` arm
+        # here announces that nothing happened on the one tick where something
+        # fell off the board, which is the token a reader skims by (#1024).
+        lines.append(f"radar: no rows changed | {footer}")
     else:
         lines.append(f"radar: no change | {footer}")
     return lines
@@ -677,14 +703,24 @@ def radar_report(options: dict | None = None) -> tuple[list[str], bool]:
     label = scope_label(filters, repo)
     key = snapshot_key(filters, repo)
     previous = snapshot.read(SNAPSHOT_PREFIX, key, "prs")
+    # One page, no pagination loop. A full page means the population may be
+    # truncated, and a truncated population cannot establish which of its
+    # previous members left (#1024).
+    per_page = int(prs._get_config().get("per_page") or 0)
+    page_capped = bool(per_page) and len(open_prs) >= per_page
+    departed = _departed(previous, open_prs)
     lines = branch_lines + render(open_prs, covered, healed, uncovered,
-                                  previous, label, notes)
+                                  previous, label, notes, page_capped)
     snapshot.write(SNAPSHOT_PREFIX, key,
                    {str(p.get("number")): snap_entry(p) for p in open_prs},
                    "prs")
 
+    # `departed` counts against health because `healthy` has one consumer —
+    # `quiet_when_healthy`, which drops this tier's whole output. A
+    # departure-only tick is every row elided plus one summary line, so a
+    # healthy verdict there suppresses the only notice that something left.
     healthy = bool(branch_ok) and not uncovered and covered is not None \
-        and not unchecked(open_prs)
+        and not unchecked(open_prs) and not departed
     return lines, healthy
 
 

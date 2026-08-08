@@ -632,6 +632,19 @@ def write_snapshot(entries: dict[str, dict],
                    entries, "mrs")
 
 
+def _departed(previous: dict[str, Any] | None,
+              open_mrs: list[dict]) -> list[str]:
+    """Iids in the previous snapshot and not in the live population.
+
+    Against the whole population, never the printed board: an exclusion removes
+    a row and not a member. Shared with `radar_report`, which needs the same
+    answer for `healthy` (#1024).
+    """
+    prev_entries: dict[str, Any] = (previous or {}).get("mrs", {}) or {}
+    live = {str(m.get("iid")) for m in open_mrs}
+    return [i for i in prev_entries if i not in live]
+
+
 def _marks(iid: str, drifted: dict[str, tuple[str, str]],
            healed: set[str], uncovered: set[str]) -> str:
     """The two novel signals, appended to the shared gl-mrs row format."""
@@ -775,7 +788,8 @@ def resolve_exclusions(open_mrs: list[dict], exclusions: dict[str, dict[str, str
 def _footer(open_mrs: list[dict], covered: set[str], healed: list[str],
             drifted: dict[str, tuple[str, str]], pruned: list[str],
             uncovered: list[str], gone: int, feed: str, label: str = "",
-            excluded: int = 0, elided: int = 0) -> str:
+            excluded: int = 0, elided: int = 0,
+            departed_capped: bool = False) -> str:
     """Tallies over the board that was printed, plus what was kept off it.
 
     `elided` is the delta's own withholding, disclosed for the same reason the
@@ -821,7 +835,10 @@ def _footer(open_mrs: list[dict], covered: set[str], healed: list[str],
     if pruned:
         parts.append(f"{len(pruned)} pruned")
     if gone:
-        parts.append(f"{gone} no longer open")
+        # See gh_prs._footer (#1024). `open_mrs` is filter-scoped and leaving a
+        # filter is not merging; on a full page not even leaving is established.
+        parts.append(f"{gone} off this page" if departed_capped
+                     else f"{gone} left this board")
     if excluded:
         parts.append(f"{excluded} excluded")
     if elided:
@@ -896,7 +913,8 @@ def render(open_mrs: list[dict], covered: set[str], healed: list[str],
            feed: str = "alive", feed_err: str = "", label: str = "",
            excluded: set[str] | None = None, notes: list[str] | None = None,
            other_scopes: list[str] | None = None,
-           losses: list[str] | None = None) -> list[str]:
+           losses: list[str] | None = None,
+           page_capped: bool = False) -> list[str]:
     """Full board on cold start; changed + standing-problem rows afterwards.
 
     `label` names the population on every board, the default one included
@@ -933,9 +951,13 @@ def render(open_mrs: list[dict], covered: set[str], healed: list[str],
         else:
             elided.append(iid)
 
-    gone = len([i for i in prev_entries if i not in {str(m.get("iid")) for m in open_mrs}])
-    footer = _footer(board_mrs, covered, healed, drifted, pruned, uncovered, gone,
-                     feed, label, len(excluded), len(elided))
+    # Against `open_mrs`, never `board_mrs`: an exclusion removes a row and not
+    # a member, and counting one as departed reports the operator's own standing
+    # decision back to them as a merge.
+    departed = _departed(previous, open_mrs)
+    footer = _footer(board_mrs, covered, healed, drifted, pruned, uncovered,
+                     len(departed), feed, label, len(excluded), len(elided),
+                     page_capped)
 
     # Partial boards only — see the same call in `gh_prs.render`. `excluded` is
     # a different withholding with its own `notes`, and the two are counted
@@ -947,6 +969,8 @@ def render(open_mrs: list[dict], covered: set[str], healed: list[str],
     lines = (_feed_warnings(feed, feed_err, other_scopes)
              + _unchecked_warning(mrs._unchecked_count(open_mrs), len(open_mrs))
              + elision
+             + snapshot.departed_note(departed, "MR", "!", "gl-mr:<iid>",
+                                      page_capped)
              + list(losses or []))
     if cold:
         lines.append("radar: cold start — no prior snapshot, full board")
@@ -968,6 +992,9 @@ def render(open_mrs: list[dict], covered: set[str], healed: list[str],
                      if excluded else "No open MRs.")
         lines.append("")
         lines.append(footer)
+    elif departed:
+        # See gh_prs.render (#1024): a departure is the one change with no row.
+        lines.append(f"radar: no rows changed | {footer}")
     else:
         lines.append(f"radar: no change | {footer}")
     lines.extend(notes or [])
@@ -1040,9 +1067,18 @@ def radar_report(options: dict | None = None) -> tuple[list[str], bool]:
         label += " (default)"
     previous = read_snapshot(multi)
     other_scopes = other_feed_scopes(scope)
+    # `_query` fetches one page per filter expansion with no pagination loop, so
+    # a population that reached the page size may be truncated and cannot
+    # establish which of its previous members left (#1024). The union of two
+    # expansions can reach `per_page` without either query being full, so this
+    # over-declines rather than under-declines — the direction that never turns
+    # a page limit into a claim about a merge.
+    per_page = int(mrs._get_config().get("per_page") or 0)
+    page_capped = bool(per_page) and len(open_mrs) >= per_page
+    departed = _departed(previous, open_mrs)
     lines = render(open_mrs, covered, healed, drifted, pruned, uncovered, previous,
                    feed, feed_err, label, excluded, excl_problems + excl_lines,
-                   other_scopes, loss_warnings(healed, refused))
+                   other_scopes, loss_warnings(healed, refused), page_capped)
     # The snapshot records the whole population, excluded rows included:
     # keyed on what is true, not on what was printed. Otherwise the run after
     # an exclusion is lifted reports a months-old MR as new.
@@ -1051,7 +1087,10 @@ def radar_report(options: dict | None = None) -> tuple[list[str], bool]:
         multi,
     )
 
-    healthy = not (uncovered or other_scopes or feed_err
+    # `departed` counts against health for the reason spelled out on the
+    # docstring above: `quiet_when_healthy` drops `lines` wholesale, and a
+    # departure-only tick is entirely elided rows plus one summary line.
+    healthy = not (uncovered or other_scopes or feed_err or departed
                    or mrs._unchecked_count(open_mrs)
                    or feed in ("failed", "capped"))
     return lines, healthy
