@@ -387,14 +387,27 @@ def annotate_recent_work(runners: list[dict], finished: list[dict]) -> list[dict
     return runners
 
 
-def annotate_live_jobs(runners: list[dict], running: list[dict]) -> list[dict]:
+def annotate_live_jobs(runners: list[dict],
+                       running: list[dict] | None) -> list[dict]:
     """Mark runners the job list shows executing work as active, in place.
 
     Belt and braces over `job_execution_status`: the runner object and the job
     list are two independent reads, and a runner named as owning a running job
     is alive whatever its own record claims. Cheap, and it closes the window
     where the runner detail is a moment staler than the queue.
+
+    `running=None` means the list was not read — an API error, a timeout — and
+    is deliberately not `[]`. `[]` is an observation: nobody is executing. None
+    is the absence of one, and the two produce opposite verdicts about a busy
+    runner. So None leaves the annotation mark unset and every later liveness
+    question about these records raises `UnannotatedFleetError` rather than
+    falling through onto `contacted_at`, the throttled field. A caller that
+    coerces its own error to `[]` here re-creates #1112: `hercule` was reported
+    `runner_liveness_unknown` with `running_on_it="0"` while executing two jobs,
+    because one failed read answered both the count and the verdict.
     """
+    if running is None:
+        return runners
     busy = {(job.get("runner") or {}).get("id") for job in running}
     for runner in runners:
         runner[_LIVE_JOBS_MARK] = True
@@ -595,7 +608,15 @@ def radar_report(options: dict | None = None) -> tuple[list[str], bool]:
     pending = pending or []
 
     running, err_running = _api("projects/:id/jobs?scope[]=running&per_page=100", paginate=True)
-    annotate_live_jobs(runners, [] if err_running else (running or []))
+    if err_running:
+        # Same refusal as the pending read above, and for a stronger reason: a
+        # job executing is the best liveness proof this module has, so losing
+        # the list drops every verdict below onto the throttled contacted_at.
+        # Coercing the error to `[]` is what shipped #1112.
+        return ([f"radar: WARNING — the running-jobs list is unreadable "
+                 f"({err_running}). It is the strongest liveness evidence there "
+                 f"is, so runner health is UNKNOWN, not green."], False)
+    annotate_live_jobs(runners, running or [])
     # The history scan only buys evidence about work that is waiting. With an
     # empty queue there is no starvation question, so five pages of job history
     # answer nothing — skip them and keep a registered tier cheap.
@@ -933,8 +954,19 @@ def main() -> int:
 
     pending, err_pending = _api("projects/:id/jobs?scope[]=pending&per_page=100", paginate=True)
     running, err_running = _api("projects/:id/jobs?scope[]=running&per_page=100", paginate=True)
-    # A queue read failing is not fatal — the fleet table is still worth printing.
-    queue_warning = err_pending or err_running
+    if err_running:
+        # Not the same call as the pending one below it. Every liveness marker
+        # in the table — and the whole of `:queue`'s Running section — is
+        # derived from this list, so printing without it states verdicts built
+        # on the throttled contacted_at alone and renders busy runners as idle
+        # (#1112). Refusing is the honest outcome; the note is not enough.
+        print(f"ERROR: the running-jobs list is unreadable — {err_running}. "
+              f"Every liveness verdict in this view is derived from it. Printing "
+              f"the fleet without it would report runners executing jobs as "
+              f"unaccounted for.")
+        return 1
+    # A pending read failing is not fatal — the fleet table is still worth printing.
+    queue_warning = err_pending
     pending = pending or []
     running = running or []
 
