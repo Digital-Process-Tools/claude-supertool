@@ -216,7 +216,8 @@ that takes the ending of the line it lands on rather than a file-wide majority,
 which on a mixed file would rewrite your own line to the other convention.
 
 The receipt speaks only where the ending used had more than one defensible
-answer — a mixed file, or your own text re-terminated to match:
+answer — a mixed file, or your own text re-terminated to match. For `edit` and
+`replace_lines`, one file, one line:
 
 ```
 edited src/main.rs (line 12-13)
@@ -224,8 +225,21 @@ edited src/main.rs (line 12-13)
   ↳ line endings: file is mixed (2 CRLF / 2 LF / 0 CR) — every line this op did not touch kept its own; text this op supplied uses LF
 ```
 
-A clean edit of a uniform CRLF file says nothing: nothing was decided, and on
-Windows every file is CRLF, so a note there would fire on every call ever made.
+`replace` is multi-file and the answer differs per file, so it marks the
+convention on each file's own line and says the sentence once. A file that
+matched byte for byte is not marked — one line of the receipt below is a
+statement about `src/win.rs` and not about `src/nix.rs`:
+
+```
+(2 replacements in 2 files)
+  src/nix.rs (1)
+  src/win.rs (1) [CRLF]
+  ↳ line endings: the text you supplied did not match 1 of these files byte for byte and was re-terminated to the convention marked above to make it match — every untouched line is unchanged
+```
+
+A clean edit or replace of a uniform CRLF file says nothing: nothing was
+decided, and on Windows every file is CRLF, so a note there would fire on every
+call ever made.
 
 `replace` resolves the convention once, in the pass that scans for matches, and
 carries it to the pass that writes. The two used to read the same file with

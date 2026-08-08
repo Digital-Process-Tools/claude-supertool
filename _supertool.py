@@ -5282,9 +5282,40 @@ def op_replace(old: str, new: str, path: str = ".", dry: bool = False) -> str:
             return f"ERROR: failed to write {file_path}: {e}\n"
 
     total = sum(files_modified.values())
+    # `_newline_note` states the invariant this discloses: "re-writing the
+    # caller's own endings is always disclosed". `op_edit` and
+    # `op_replace_lines` call it; `replace` did the same `_newline_variants`
+    # re-termination and said nothing, so a CRLF replace rewrote the caller's
+    # block in silence (#1049, third pass).
+    #
+    # `_newline_note` itself is not reusable here and is deliberately not
+    # called: it writes one sentence about one file, and `replace` is
+    # multi-file with a different answer per file — a summary line true of the
+    # run would be false of every file that matched literally. So the fact goes
+    # on the file's own line and the sentence is said once.
+    #
+    # Derived from `eff_old`, not carried out of the scan: `_newline_variants`
+    # drops any candidate equal to the literal, so `eff_old != old` is exactly
+    # "a re-terminated variant matched", and the resolved scan/write pair above
+    # stays untouched.
+    retermed: Dict[str, str] = {}
+    for _fp, _positions, _eff_old, _eff_new in file_matches:
+        if _fp in files_modified and _eff_old != old:
+            retermed[_fp] = ("CRLF" if "\r\n" in _eff_old
+                             else "CR" if "\r" in _eff_old else "LF")
     out = [f"({total} replacements in {len(files_modified)} files)\n"]
     for fp, cnt in sorted(files_modified.items()):
-        out.append(f"  {_fwd(fp)} ({cnt})\n")
+        tag = f" [{retermed[fp]}]" if fp in retermed else ""
+        out.append(f"  {_fwd(fp)} ({cnt}){tag}\n")
+    if retermed:
+        # Only where a choice was made. A uniform file whose `old` matched
+        # literally is not marked and produces no line at all — on Windows
+        # every file is CRLF, and a note that fires on every call is the noise
+        # #1049's second pass removed.
+        out.append(f"  {mark('↳')} line endings: the text you supplied did not "
+                   f"match {len(retermed)} of these files byte for byte and "
+                   f"was re-terminated to the convention marked above to make "
+                   f"it match — every untouched line is unchanged\n")
     if vanished:
         # Matched during the scan, gone by the time the write read it back.
         # Dropping these silently is how the count and the disk disagree.

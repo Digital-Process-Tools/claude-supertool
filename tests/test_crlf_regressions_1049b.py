@@ -152,3 +152,75 @@ def test_a_re_terminated_edit_still_says_so(tmp_path: Path) -> None:
     assert not out.startswith("ERROR"), out
     assert f.read_bytes() == b"a = 9\r\nb = 8\r\n"
     assert "CRLF" in out, out
+
+
+# --- 4. `replace` re-terminates too, and owes the same disclosure ----------
+#
+# `_newline_note` states the invariant: "re-writing the caller's own endings is
+# always disclosed". `op_edit` and `op_replace_lines` call it; `op_replace` did
+# not, while doing the same `_newline_variants` re-termination. A CRLF replace
+# rewrote the caller's block and the receipt said nothing.
+#
+# The disclosure cannot be `op_edit`'s single line copied across: `replace` is
+# multi-file, and the answer differs per file — one CRLF file re-terminated,
+# one LF file matched literally, in the same call.
+
+
+def _line_for(out: str, name: str) -> str:
+    """The receipt line naming `name`. Matched on the basename, not on a path
+    literal: Windows receipts and POSIX ones do not share a separator, and an
+    assertion on '/tmp/x/c.ini' is a platform assumption, not a test."""
+    hits = [ln for ln in out.splitlines()
+            if ln.startswith("  ")
+            and ln.strip().split(" ")[0].replace("\\", "/").rsplit("/", 1)[-1]
+            == name]
+    assert len(hits) == 1, f"expected one line for {name} in:\n{out}"
+    return hits[0]
+
+
+def test_replace_that_re_terminates_the_callers_text_discloses_it(
+    tmp_path: Path,
+) -> None:
+    """The bytes were already right (#1049). What was missing is the receipt
+    saying the caller's LF block went in as CRLF."""
+    f = tmp_path / "c.ini"
+    f.write_bytes(b"[fr_all]\r\n[es_all]\r\n")
+    out = _supertool.op_replace("[fr_all]\n[es_all]",
+                                "[fr_all]\n[de_all]\n[es_all]", str(f))
+    assert "ERROR" not in out, out
+    assert f.read_bytes() == b"[fr_all]\r\n[de_all]\r\n[es_all]\r\n"
+    assert "line endings" in out, out
+    assert "CRLF" in out, out
+
+
+def test_replace_marks_the_re_terminated_files_and_only_those(
+    tmp_path: Path,
+) -> None:
+    """One call, two files, two different answers. A single summary line would
+    be a true sentence about the run and a false one about `lf.ini`."""
+    (tmp_path / "crlf.ini").write_bytes(b"[fr_all]\r\n[es_all]\r\n")
+    (tmp_path / "lf.ini").write_bytes(b"[fr_all]\n[es_all]\n")
+    out = _supertool.op_replace("[fr_all]\n[es_all]",
+                                "[fr_all]\n[de_all]\n[es_all]", str(tmp_path))
+    assert "ERROR" not in out, out
+    assert (tmp_path / "crlf.ini").read_bytes() == (
+        b"[fr_all]\r\n[de_all]\r\n[es_all]\r\n")
+    assert (tmp_path / "lf.ini").read_bytes() == (
+        b"[fr_all]\n[de_all]\n[es_all]\n")
+    assert "CRLF" in _line_for(out, "crlf.ini"), out
+    assert "CRLF" not in _line_for(out, "lf.ini"), out
+
+
+def test_a_clean_replace_of_a_crlf_file_says_nothing_about_line_endings(
+    tmp_path: Path,
+) -> None:
+    """The narrowing #1049's second pass bought must survive this. The `old`
+    matched literally, nothing was re-terminated, and on Windows every file is
+    CRLF — a note here fires on every replace ever made."""
+    f = tmp_path / "x.py"
+    f.write_bytes(b"a = 1\r\nb = 2\r\n")
+    out = _supertool.op_replace("a = 1", "a = 9", str(tmp_path))
+    assert "ERROR" not in out, out
+    assert f.read_bytes() == b"a = 9\r\nb = 2\r\n"
+    assert "line endings" not in out, out
+    assert _supertool.mark("↳") not in out, out
