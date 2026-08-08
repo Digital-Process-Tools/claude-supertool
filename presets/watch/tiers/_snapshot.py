@@ -21,10 +21,12 @@ whose consequence it is.
 """
 from __future__ import annotations
 
+import calendar
 import hashlib
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -165,6 +167,84 @@ def departed_note(departed: list[str], noun: str, sigil: str,
             f"longer matching this board's filter. The snapshot records "
             f"membership, not how it ended, so this board does not guess — "
             f"`{lookup}` says which."]
+
+
+# ---------------------------------------------------------------------------
+# how long has this entry held still? (#1025)
+# ---------------------------------------------------------------------------
+
+SINCE_KEY = "_since"
+
+_TS_FMT = "%Y-%m-%dT%H:%M:%SZ"
+
+
+def now_iso() -> str:
+    """UTC, to the second, in the shape every other timestamp here wears."""
+    return time.strftime(_TS_FMT, time.gmtime())
+
+
+def facts(entry: Any) -> Any:
+    """An entry without the bookkeeping the delta must not compare.
+
+    Load-bearing, and the reason `SINCE_KEY` is a key on the entry rather than
+    a second store: a timestamp inside the compared facts makes *every* row
+    differ from its predecessor on *every* tick, which is not a staleness
+    signal, it is the delta collapsing into a full board forever.
+    """
+    if not isinstance(entry, dict):
+        return entry
+    return {k: v for k, v in entry.items() if k != SINCE_KEY}
+
+
+def stamp(entry: dict[str, Any], previous: Any, now: str | None = None
+          ) -> dict[str, Any]:
+    """`entry`, carrying when its facts were last observed to change.
+
+    Carried forward while the facts hold still, re-stamped when any of them
+    moves. So the age this yields is "unchanged for", measured from the last
+    change this tier could see — not wall-clock since a run started, which is
+    wrong for a matrix whose legs finish minutes apart, and not ticks, which
+    would mean whatever the operator's radar cadence happens to be that day.
+
+    What it is *not* is time since the last **leg** state change, which #1025
+    argues is the truer signal. A tier stores a rollup word, not legs, so that
+    fact is not available here; the difference matters when a matrix is
+    genuinely progressing leg by leg under an unchanging `running` rollup, and
+    such a board will read as older than it is. Said out loud rather than
+    papered over — the threshold is the operator's to raise.
+    """
+    out = dict(entry)
+    prior = previous.get(SINCE_KEY) if isinstance(previous, dict) else None
+    held = bool(prior) and isinstance(prior, str) and facts(previous) == facts(entry)
+    out[SINCE_KEY] = prior if held else (now or now_iso())
+    return out
+
+
+def unchanged_minutes(entry: Any, now: str | None = None) -> float | None:
+    """Minutes this entry's facts have held still, or `None` when unknowable.
+
+    `None` is a third state and stays one. An entry written before #1025
+    landed carries no `SINCE_KEY`, and a corrupted one may carry something that
+    is not a timestamp: both are "cannot tell", never zero. Reporting 0 there
+    would be the house defect — an absence the tool produced rendered as an
+    absence in the world, on the one board that exists to catch a PR nothing
+    else is reporting.
+
+    Self-heals in one write: the next `stamp` puts a real timestamp on it. So
+    the cost of the unknown state is that a run wedged before the upgrade is
+    first named one threshold after it, once, rather than never.
+    """
+    if not isinstance(entry, dict):
+        return None
+    raw = entry.get(SINCE_KEY)
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        then = calendar.timegm(time.strptime(raw, _TS_FMT))
+        current = calendar.timegm(time.strptime(now or now_iso(), _TS_FMT))
+    except ValueError:
+        return None
+    return max(0.0, (current - then) / 60.0)
 
 
 def write(prefix: str, digest: str, entries: dict[str, Any], member: str) -> None:

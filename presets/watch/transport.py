@@ -339,6 +339,28 @@ def desktop_notify(title: str, message: str) -> None:
         return
 
 
+FLATTEN_MAX_DEPTH = 6
+
+FLATTEN_TOO_DEEP = ("[supertool: value refused — nested deeper than "
+                    f"{FLATTEN_MAX_DEPTH} levels, so it could not be flattened]")
+
+
+def _flatten_value(value: Any, depth: int) -> Any:
+    """One payload value, walked. `depth` is what is left of the bound."""
+    if isinstance(value, str):
+        return _untrusted.flat(value)
+    if not isinstance(value, (dict, list, tuple)):
+        return value
+    if depth <= 0:
+        return FLATTEN_TOO_DEEP
+    if isinstance(value, dict):
+        # Values only. Keys on a payload are supertool's own — a source names
+        # them in its own code — so walking them would flatten nothing remote
+        # and would silently merge two keys that differ only by a newline.
+        return {k: _flatten_value(v, depth - 1) for k, v in value.items()}
+    return [_flatten_value(v, depth - 1) for v in value]
+
+
 def flatten_remote(payload: dict[str, Any]) -> dict[str, Any]:
     """Every string a poller sends, kept to one line (#819).
 
@@ -353,19 +375,29 @@ def flatten_remote(payload: dict[str, Any]) -> dict[str, Any]:
     Done here rather than in the six sources because this is the single door
     every event leaves through — including the sources nobody has written yet,
     which is precisely the property the eight fenced read ops did not have and
-    the reason this gap opened at all. Lists are walked one level for the same
-    reason (`gl-runners` sends `tags` as `list[str]`); no key is named, because
-    naming keys is how the next poller's field gets missed.
+    the reason this gap opened at all. No key is named, because naming keys is
+    how the next poller's field gets missed.
+
+    And no *type* is named either, which is #825: that argument applies to
+    types exactly as much as to keys, and this used to walk `str` and `list`
+    and drop everything else — including `dict`, and including a string inside
+    a list of dicts — into an `else` arm that reached the socket unflattened. A
+    source sending `payload={"jobs": [{"name": ..., "error": ...}]}`, a shape
+    nothing forbids, got no flattening at all, and the failure was silent: it
+    did not raise, it did not log, and `channel.ts::shapeOf` dropped the field
+    rather than complaining. The guarantee held by two accidents downstream
+    rather than at the door claiming to provide it.
+
+    So containers are recursed, to a bound of `FLATTEN_MAX_DEPTH` levels, and
+    the bound is stated here because a bound that is not disclosed is the class
+    this tracker keeps filing. Past it the value is **refused** — replaced by
+    `FLATTEN_TOO_DEEP`, the tool's own one-line words — rather than passed
+    through: three states, not two. A pass-through past the bound is exactly
+    the hole this closes, one level deeper, and a cyclic payload has to
+    terminate somewhere regardless.
     """
-    out: dict[str, Any] = {}
-    for key, value in payload.items():
-        if isinstance(value, str):
-            out[key] = _untrusted.flat(value)
-        elif isinstance(value, list):
-            out[key] = [_untrusted.flat(v) if isinstance(v, str) else v for v in value]
-        else:
-            out[key] = value
-    return out
+    return {key: _flatten_value(value, FLATTEN_MAX_DEPTH)
+            for key, value in payload.items()}
 
 
 def emit_event(

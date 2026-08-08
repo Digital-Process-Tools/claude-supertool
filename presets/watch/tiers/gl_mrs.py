@@ -187,7 +187,18 @@ FEED_LABEL = {"alive": "feed ok", "spawned": "feed respawned", "failed": "feed D
 # Config keys this tier understands. `quiet_when_healthy` is accepted for
 # symmetry with every other tier and defaults to False below — see
 # RADAR_QUIET_DEFAULT.
-RADAR_OPTIONS = {"quiet_when_healthy"}
+RADAR_OPTIONS = {"quiet_when_healthy", "stale_running_minutes"}
+
+# An in-progress MR whose reported facts have not moved for this long comes
+# back onto the delta board with the reason on the row (#1025). Same number and
+# same reasoning as `gh_prs.STALE_RUNNING_MINUTES`; 0 turns it off.
+STALE_RUNNING_MINUTES = 240
+
+# The pipeline words that can persist indefinitely *while being wrong*. Both,
+# not just `running`: a runner that never picks the job up leaves the pipeline
+# at `pending`, and that is the exact symptom #1025 was filed about. Every
+# other word is either terminal or a state a human is deliberately sitting on.
+IN_PROGRESS_PIPELINES = frozenset({"running", "pending"})
 
 # A healthy MR board still speaks. Silence is what this tier exists to remove:
 # a board that prints nothing on a quiet day is byte-identical to a radar that
@@ -646,12 +657,15 @@ def _departed(previous: dict[str, Any] | None,
 
 
 def _marks(iid: str, drifted: dict[str, tuple[str, str]],
-           healed: set[str], uncovered: set[str]) -> str:
+           healed: set[str], uncovered: set[str],
+           stale_minutes: float = 0.0) -> str:
     """The two novel signals, appended to the shared gl-mrs row format."""
     out = []
     if iid in drifted:
         was, now = drifted[iid]
         out.append(f"[drift: {was}→{now}]")
+    if stale_minutes:
+        out.append(f"[{stale_running_label(stale_minutes)}]")
     if iid in healed:
         out.append("[healed]")
     elif iid in uncovered:
@@ -662,6 +676,35 @@ def _marks(iid: str, drifted: dict[str, tuple[str, str]],
 def _is_standing_problem(m: dict) -> bool:
     """Unresolved red or conflict — a current fact, so never delta-suppressed."""
     return bool(_problem_label(m))
+
+
+def _stale_running(m: dict, previous_entry: Any, threshold: float,
+                   now: str | None = None) -> float:
+    """Minutes an in-progress MR has been unchanged, past `threshold`. Else 0.
+
+    The same omission `gh_prs._stale_running` documents, in the same predicate
+    one file over (#1025). An in-progress pipeline is correctly not a standing
+    problem — it is the ordinary state of an MR that was just pushed — and it
+    is also the only state that can sit still forever while being wrong. So the
+    elision is kept and given an expiry.
+
+    `None` from `unchanged_minutes` is unknown, and unknown is not stale.
+    """
+    if threshold <= 0:
+        return 0.0
+    if str(m.get("_pipeline") or "") not in IN_PROGRESS_PIPELINES:
+        return 0.0
+    mins = snapshot.unchanged_minutes(previous_entry, now)
+    if mins is None or mins < threshold:
+        return 0.0
+    return mins
+
+
+def stale_running_label(minutes: float) -> str:
+    """`running 5h unchanged` — the reason a suppressed row came back."""
+    if minutes >= 120:
+        return f"running {int(minutes // 60)}h unchanged"
+    return f"running {int(minutes)}m unchanged"
 
 
 def _problem_label(m: dict) -> str:
@@ -914,7 +957,9 @@ def render(open_mrs: list[dict], covered: set[str], healed: list[str],
            excluded: set[str] | None = None, notes: list[str] | None = None,
            other_scopes: list[str] | None = None,
            losses: list[str] | None = None,
-           page_capped: bool = False) -> list[str]:
+           page_capped: bool = False,
+           now: str | None = None,
+           stale_running_minutes: float = STALE_RUNNING_MINUTES) -> list[str]:
     """Full board on cold start; changed + standing-problem rows afterwards.
 
     `label` names the population on every board, the default one included
@@ -943,10 +988,14 @@ def render(open_mrs: list[dict], covered: set[str], healed: list[str],
     elided: list[str] = []
     for m in sorted(board_mrs, key=mrs._sort_key):
         iid = str(m.get("iid", "?"))
-        moved = prev_entries.get(iid) != _snap_entry(m)
+        prev_entry = prev_entries.get(iid)
+        # `facts`, not the raw entry: the entry also carries `_since`, which
+        # must never read as a move — see `_snapshot.facts`.
+        moved = snapshot.facts(prev_entry) != _snap_entry(m)
         notable = iid in drifted or iid in healed_set or iid in uncovered_set
-        if cold or moved or notable or _is_standing_problem(m):
-            marks = _marks(iid, drifted, healed_set, uncovered_set)
+        stale = _stale_running(m, prev_entry, stale_running_minutes, now)
+        if cold or moved or notable or _is_standing_problem(m) or stale:
+            marks = _marks(iid, drifted, healed_set, uncovered_set, stale)
             shown.append(mrs._row(m, covered, True, marks))
         else:
             elided.append(iid)
@@ -1076,14 +1125,25 @@ def radar_report(options: dict | None = None) -> tuple[list[str], bool]:
     per_page = int(mrs._get_config().get("per_page") or 0)
     page_capped = bool(per_page) and len(open_mrs) >= per_page
     departed = _departed(previous, open_mrs)
+    stale_after = options.get("stale_running_minutes", STALE_RUNNING_MINUTES)
+    try:
+        stale_after = float(stale_after)
+    except (TypeError, ValueError):
+        stale_after = STALE_RUNNING_MINUTES
+    stamped_at = snapshot.now_iso()
     lines = render(open_mrs, covered, healed, drifted, pruned, uncovered, previous,
                    feed, feed_err, label, excluded, excl_problems + excl_lines,
-                   other_scopes, loss_warnings(healed, refused), page_capped)
+                   other_scopes, loss_warnings(healed, refused), page_capped,
+                   now=stamped_at, stale_running_minutes=stale_after)
     # The snapshot records the whole population, excluded rows included:
     # keyed on what is true, not on what was printed. Otherwise the run after
     # an exclusion is lifted reports a months-old MR as new.
+    prev_entries: dict[str, Any] = (previous or {}).get("mrs", {}) or {}
     write_snapshot(
-        {str(m.get("iid")): _snap_entry(m) for m in open_mrs if m.get("iid") is not None},
+        {str(m.get("iid")): snapshot.stamp(_snap_entry(m),
+                                           prev_entries.get(str(m.get("iid"))),
+                                           stamped_at)
+         for m in open_mrs if m.get("iid") is not None},
         multi,
     )
 
