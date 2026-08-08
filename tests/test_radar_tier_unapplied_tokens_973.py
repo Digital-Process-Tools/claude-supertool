@@ -131,6 +131,23 @@ def test_the_refusal_says_no_flags_rather_than_printing_an_empty_list() -> None:
         assert "Flags: ." not in msg and "flags: ." not in msg, msg
 
 
+@pytest.mark.parametrize("tier_name", ["gh", "gl"])
+def test_the_no_flags_clause_is_derived_and_not_a_hardcoded_sentence(
+    monkeypatch: pytest.MonkeyPatch, tier_name: str
+) -> None:
+    """A refusal that misdescribes the vocabulary is this defect in the error
+    message. Both tiers word the flag clause off `KNOWN_FLAGS`, so re-adding a
+    flag re-adds it to the message rather than leaving a sentence that says
+    none are accepted while one is."""
+    tier = gh_tier if tier_name == "gh" else gl_tier
+    monkeypatch.setattr(tier, "KNOWN_FLAGS", {"someflag"})
+    with pytest.raises(tier.RadarError) as exc:
+        tier.resolve_filter("onlygreen")
+    msg = str(exc.value)
+    assert "someflag" in msg, msg
+    assert "no flags" not in msg.lower(), msg
+
+
 def test_the_github_tier_stops_handing_back_a_flag_set_nobody_reads() -> None:
     """`radar_report` bound `filters, _flags` and discarded the second half.
     An always-empty channel is one a future caller re-populates and re-drops,

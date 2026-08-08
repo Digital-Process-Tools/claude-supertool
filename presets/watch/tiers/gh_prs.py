@@ -219,10 +219,17 @@ def resolve_filter(arg: str = "") -> dict[str, str]:
     as a fact about the world.
 
     The op refuses that itself now (#939) — but this tier still parses against
-    its *own* vocabulary, which is deliberately narrower: `iids` and `failed`
-    are board shapes `gh-prs` offers and a radar board must not silently take.
-    So the check stays here; only the token-splitting is shared, because a
-    second hand-rolled scan of the arg string is how the two answers drift.
+    its *own* vocabulary, which is deliberately narrower: `iids`, `failed` and
+    `nopipe` are board shapes and enrichment knobs `gh-prs` offers and a radar
+    board must not silently take. So the check stays here; only the
+    token-splitting is shared, because a second hand-rolled scan of the arg
+    string is how the two answers drift.
+
+    The *wording* is deliberately not shared, unlike `gl_mrs`'s. #939 pinned
+    this message's shape after the old one fused two unapplied tokens into a
+    `key=value` the caller never typed, and `_filter_tokens.unknown_error`
+    words the same refusal differently. Routing through it would change this
+    tier's error format for a reason unrelated to the token being refused.
 
     Two refusals now, and the second is the quieter one (#973). A token this
     tier cannot place at all is named; so is a *known* key carrying a value the
@@ -244,12 +251,20 @@ def resolve_filter(arg: str = "") -> dict[str, str]:
         named = ", ".join(
             f"{t.partition('=')[0]}=" if "=" in t else t for t in unknown
         )
+        # The flag clause is derived from KNOWN_FLAGS rather than written out,
+        # even though that set is empty today. A sentence hardcoded to "no
+        # flags" is a refusal that would misdescribe the vocabulary the moment
+        # a flag is added back — which is the same defect as the token this
+        # refusal exists for, wearing the error message instead of the board.
+        flag_clause = (
+            f"known flags: {', '.join(sorted(KNOWN_FLAGS))}"
+            if KNOWN_FLAGS else "this tier accepts no flags at all"
+        )
         raise RadarError(
             f"radar: gh-prs tier cannot honour {named!r}. Known filters: "
-            f"{', '.join(sorted(KNOWN_FILTERS))}; this tier accepts no flags "
-            f"at all. Refusing rather than running the query without it — an "
-            f"ignored filter returns the whole board and reads as though "
-            f"everything matched."
+            f"{', '.join(sorted(KNOWN_FILTERS))}; {flag_clause}. Refusing "
+            f"rather than running the query without it — an ignored filter "
+            f"returns the whole board and reads as though everything matched."
         )
     bad = _filter_tokens.bad_values(filters, VALUE_DOMAINS)
     if bad:
