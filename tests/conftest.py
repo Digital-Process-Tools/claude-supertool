@@ -557,12 +557,18 @@ RESET_GLOBALS = (
     "_VALIDATOR_FINGERPRINT_CACHE",
     "_NOT_CHECKED",
     # `_NOT_CHECKED`'s twin, and classified from the same reasoning (#990). It
-    # accumulates one entry per file a `validate:` block rendered and is read as
-    # a per-call SLICE, so a leak across calls in one process would make one
-    # run's footer count another run's files — which is the defect class the
-    # footer was added to close. `main` truncates it back to its entry length,
-    # but a test that drives `op_validate` or `_validate_one_block` directly
-    # never reaches that, which is exactly what this tuple is for.
+    # accumulates one entry per file a `validate:` block rendered, one whole
+    # CALL at a time, so a leak across calls in one process would make one run's
+    # footer count another run's files — which is the defect class the footer
+    # was added to close. `main` truncates it back to its entry length, but a
+    # test that drives `op_validate` or `_validate_one_block` directly never
+    # reaches that, which is exactly what this tuple is for.
+    #
+    # The reasoning in that first sentence was right and its reach was one door
+    # short: production had the same leak between two ops of the SAME call, via
+    # the `len()`-snapshot the footer used to be sliced out of, and #1109 is
+    # that bug with `SUPERTOOL_PARALLEL` set. The footer now reads the dispatch
+    # frame; this tuple still guards the per-call list.
     "_VALIDATED_FILES",
     "_REAPPLY_COUNT",
     "_ROLLBACK_COUNT",

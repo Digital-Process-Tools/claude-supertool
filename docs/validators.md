@@ -786,6 +786,8 @@ A file that **no** validator's `match` glob selected counts towards `not checked
 
 A `validate:` inside a `batch:` that also mutated something gets its counts appended to the mutating footer instead, as `validated N files (M with findings, K not checked)` — an inner op runs at dispatch depth > 1 and renders no footer of its own.
 
+**Each footer describes its own op, including under `SUPERTOOL_PARALLEL`.** `validate` is dispatched in parallel with the other read-only ops of the same call, and until [#1109](https://github.com/Digital-Process-Tools/claude-supertool/issues/1109) the counts were sliced out of a process-global list by a `len()` snapshot taken at op entry — arithmetic that is per-op only while exactly one op is appending. Six single-file `validate:` ops printed 1/2/3/4/5/6 files, and one file's finding was claimed by five footers that never opened it. The rows now accumulate on the dispatch frame, which is thread-local, so the scope is structural rather than arithmetic. What is still process-wide is the *call*: `$SUPERTOOL_REQUIRE_VALIDATORS` gates on every checker that did not run anywhere in the invocation, and it has to, because that is the question the operator asked.
+
 **It does not make `| tail -1` a verdict, and the issue that asked for it assumed it would.** [#381](https://github.com/Digital-Process-Tools/claude-supertool/issues/381) requires `[branch: …]` to be the last line whenever a footer prints, so inside a repo `tail -1` lands there. The footer is owed regardless: a run whose final line is one file's row has no line describing the run at all, wherever the reader looks. Read the tail of the output, not its last line.
 
 ### What `validate:` output guarantees
