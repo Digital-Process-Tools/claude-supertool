@@ -222,7 +222,10 @@ def test_a_bare_error_prefix_is_a_cause_marker(
 ) -> None:
     _, out = _run_gl(monkeypatch, capsys, "failed", LOG_BARE_ERROR, PHPUNIT_ONLY)
     assert "JS errors detected" in out
-    assert "no error pattern matched" not in out
+    # The refusal HEADER, not the phrase: #1091's gap marker reads "... (N lines
+    # elided by this op — no error pattern matched them; the log itself is
+    # intact)", so the bare phrase now appears in a perfectly healthy render.
+    assert "## FAILED —" not in out
 
 
 def test_the_mysql_clients_error_line_is_a_cause_marker(
@@ -230,7 +233,10 @@ def test_the_mysql_clients_error_line_is_a_cause_marker(
 ) -> None:
     _, out = _run_gl(monkeypatch, capsys, "failed", LOG_MYSQL, PHPUNIT_ONLY)
     assert "TLS/SSL error" in out
-    assert "no error pattern matched" not in out
+    # The refusal HEADER, not the phrase: #1091's gap marker reads "... (N lines
+    # elided by this op — no error pattern matched them; the log itself is
+    # intact)", so the bare phrase now appears in a perfectly healthy render.
+    assert "## FAILED —" not in out
 
 
 # ---------------------------------------------------------------------------
