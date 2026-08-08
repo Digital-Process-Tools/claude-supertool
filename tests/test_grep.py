@@ -265,7 +265,8 @@ def test_grep_count_single_file(tmp_path: Path) -> None:
     f.write_text("import os\nimport sys\ndef main():\n    pass\n")
     out = supertool.op_grep("import", str(f), count_only=True)
     assert "2 total matches across 1 files" in out
-    assert f"{str(f).replace(os.sep, '/')}:2" in out
+    # `PATH:2` would read as a match at line 2 (#988).
+    assert f"{str(f).replace(os.sep, '/')}: 2 matches" in out
 
 
 def test_grep_count_multiple_files(tmp_path: Path) -> None:
@@ -580,7 +581,9 @@ def test_rtk_fixture_reaches_the_delegated_branch(tmp_path: Path, rtk: _RtkStub)
     assert rtk.calls, "op_grep never called _rtk_run — delegated branch skipped"
     # limit + 1 — the over-fetch #448 uses to tell "exactly N" from "stopped
     # at N". rtk is asked for 11 and the 11th is trimmed before output.
-    assert rtk.calls[0][:4] == ["grep", "-rn", "-m", "11"]
+    # -E since #987: the system grep behind rtk reads a BRE without it, where
+    # `|`, `+`, `?` and `(` are ordinary characters.
+    assert rtk.calls[0][:5] == ["grep", "-rn", "-E", "-m", "11"]
     assert rtk.calls[0][-2:] == ["alpha", str(tmp_path)]
 
 
@@ -799,7 +802,8 @@ def test_grep_delegated_marks_truncation(tmp_path: Path, rtk: _RtkStub) -> None:
     rtk.output = "".join(f"{a}:{i}:alpha\n" for i in range(1, 5))
     out = supertool.op_grep("alpha", str(tmp_path), limit=3)
     assert rtk.calls, "delegated branch not taken — this test pins nothing"
-    assert rtk.calls[0][:4] == ["grep", "-rn", "-m", "4"], "no over-fetch requested"
+    assert rtk.calls[0][:5] == ["grep", "-rn", "-E", "-m", "4"], (
+        "no over-fetch requested")
     # rtk answers without a candidate list, so there is no total to state and
     # the report says which of the three states it is in (#1073).
     assert ("(3 results in 1 files, scanned ? files — delegated to rtk, "

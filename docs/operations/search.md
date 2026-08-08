@@ -10,7 +10,7 @@ Pattern-based ops for finding content across files or zooming into a known locat
 | `grep` (path list) | `grep:PATTERN:A.py,B.py` | **Refused.** PATH is one path — a comma list is joined into a single filename. `git-resolve` accepts `PATH[,PATH...]`; `grep` does not, and now says so instead of blaming the CWD. Pass a directory, or one `grep` op per file (ops batch into one call). |
 | `grep` (LIMIT 0) | `grep:PATTERN:PATH:0` | **Refused.** `0` = unlimited is the usual convention and supertool declines to guess between that and the default it used to substitute silently. Omit LIMIT, or pass a positive one. |
 | `grep` (context) | `grep:PATTERN:PATH:LIMIT:CONTEXT` | Show CONTEXT lines before/after each match (like `grep -C`). Match lines: `path:lineno:content`. Context lines: `path-lineno-content`. Non-adjacent groups separated by `--`. |
-| `grep` (count) | `grep:PATTERN:PATH:LIMIT:CONTEXT:count` | Return match counts per file instead of content. Output: `filepath:COUNT` per line. |
+| `grep` (count) | `grep:PATTERN:PATH:LIMIT:CONTEXT:count` | Return match counts per file instead of content. Output: `filepath: N matches` per line. |
 | `grep_around` | `grep_around:PATTERN:PATH` or `grep_around:PATTERN:PATH:N:LIMIT` | Every match across files with N lines context (default N=3, LIMIT=10). Alias for `grep:PATTERN:PATH:LIMIT:CONTEXT` with sane defaults — useful for "show me how everyone uses this". Output capped at ~16KB (see below). |
 | `around` | `around:PATTERN:PATH` or `around:PATTERN:PATH:N` | Show N lines (default 10) before and after the **first** match of PATTERN in a single file. Uses line-numbered output like `read`. Output capped at ~16KB (see below). |
 | `around_line` | `around_line:PATH:LINE` or `around_line:PATH:LINE:N` | Show N lines (default 10) of context around a specific line number. Target line marked with `→`. |
@@ -72,6 +72,23 @@ The rule is **noise versus credential**, not file versus directory. Those two lo
 A project's own `exclude-paths` entries always count, whatever they match. Supertool cannot know whether one is noise or a credential; over-disclosure is the safe direction, and whoever added the pattern is the person most likely to want to know it fired.
 
 `grep:…:count` has no marker because it has no cap — it counts every match in every file, and its header (`N total matches across M files`) never claims a limit.
+
+Its per-file lines carry a unit — `supertool.py: 30 matches` — because `PATH:NUMBER` is what every grep-like tool prints for `PATH:LINE`, so the bare `supertool.py:30` read as *one* match at line 30 ([#988](https://github.com/Digital-Process-Tools/claude-supertool/issues/988)). That is the opposite of what the op said, in the op you call before deciding whether to look at all.
+
+## The pattern is a Python regex, always
+
+There is no `re:` prefix on `grep`. Every pattern is already a regex, so a leading `re:` is literal text — and since `|` binds looser than concatenation, `grep:re:Checks|failed:PATH` searches for `re:Checks` **or** `failed`, and the first branch matches nothing ([#1065](https://github.com/Digital-Process-Tools/claude-supertool/issues/1065)). `between:re:START:END:PATH` is the op that has such a prefix, which is where the spelling comes from.
+
+Because the colon CLI cannot tell where a pattern containing `:` ends, the tokens left of the path are rejoined with `:`. That is deterministic and documented, but it used to be invisible; a pattern containing a `:` now has the effective pattern echoed above the report line:
+
+```
+(pattern read as 're:Checks|failed' — the ':' is part of the regex, not a separator. …)
+(3 results in 1 files, scanned 1 files, limit 40)
+```
+
+Use `grep:@-` with a `pattern` key when the split should fall somewhere else.
+
+**Delegation does not change the dialect.** When rtk is installed and enabled, a plain `grep` (no context, no count) is delegated to it. The system grep behind rtk reads a POSIX **BRE** unless told otherwise, where `|`, `+`, `?`, `(` and `{` are ordinary characters — so `ab+c` matched a literal plus rather than `abbc`, and only when that reading happened to match at all ([#987](https://github.com/Digital-Process-Tools/claude-supertool/issues/987)). Supertool passes `-E` and declines to delegate what ERE cannot express: Python-only escapes (`\d`, `\w`, `\b`, backreferences), lookaround and inline flags (`(?...`), non-greedy quantifiers, and POSIX character classes (`[[:alpha:]]`) all run on the native walker instead.
 
 ## Gitignored directories are skipped
 
