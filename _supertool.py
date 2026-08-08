@@ -12592,6 +12592,47 @@ def _validator_unusable_reply(name: str, target: str, what: str,
             "skipped": f"{name} adapter {what} — this file was not checked"}
 
 
+_VALIDATOR_CORE_ONLY_KEYS = frozenset({
+    "no_verdict", "timeout", "elapsed_s", "resolved_to",
+})
+
+
+def _validator_strip_core_keys(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Drop every key the *core* owns from an adapter's parsed payload (#1036).
+
+    The core and an adapter both describe the same run, and two of the core's
+    words decide things no adapter is entitled to decide. `timeout` is the flag
+    `_validator_run_one`'s `TimeoutExpired` arm stamps on the result it
+    fabricates; `_validator_no_verdict` reads it, and `_validator_regressed`
+    returns False for any non-verdict. So an adapter that printed
+    `"timeout": true` beside a real finding switched off `rollback_on_fail`
+    entirely: the row said `NOT CHECKED`, the guard never ran, and a bad edit
+    stood on the one setting configured to revert it.
+
+    **The core's timeout and an adapter's claim of one are different facts, and
+    only the first is evidence.** The adapter is a subprocess reporting on a
+    tool; whether it answered inside its budget is something only the process
+    holding the budget observed.
+
+    Dropped, not refused. Refusing — turning the whole result into a skip or an
+    unusable reply — would give the same adapter the same bypass through the
+    other door, because a skip is also a non-verdict and also never rolls back.
+    Dropping keeps the adapter's own verdict (`ok`, `count`, `errors`) exactly
+    as it was written and removes only the claims it had no standing to make,
+    so a forged key costs the adapter nothing and buys it nothing.
+
+    It is a set rather than two `pop` calls because the defect is the class:
+    `no_verdict` was already forbidden in prose by `validators/SCHEMA.md` and
+    `timeout` was not, and nothing enforced either. Any key a core-only decision
+    reads belongs in here, and
+    `tests/test_adapter_cannot_forge_core_keys_1036.py` fails if one is added to
+    a decision and not to this set.
+    """
+    for key in _VALIDATOR_CORE_ONLY_KEYS:
+        data.pop(key, None)
+    return data
+
+
 def _validator_run_one(name: str, spec: Dict[str, Any], file: str,
                        doc_maybe_stale: bool = False) -> Optional[Dict[str, Any]]:
     """Run one validator adapter on `file`. Returns SCHEMA.md-compliant dict.
@@ -12687,6 +12728,9 @@ def _validator_run_one(name: str, spec: Dict[str, Any], file: str,
             return _validator_unusable_reply(
                 name, target, "replied without a verdict "
                 "(no 'ok' and no 'skipped' key)", _elapsed)
+        # Before anything reads it: the payload crosses from the adapter's
+        # authority into the core's here, and this is the only door (#1036).
+        _validator_strip_core_keys(data)
         data["elapsed_s"] = _elapsed
         if target != file:
             data["resolved_to"] = target

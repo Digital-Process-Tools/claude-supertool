@@ -13,6 +13,7 @@ Usage:  cargo-check.py <file>
 from __future__ import annotations
 
 import json
+import ntpath
 import os
 import posixpath
 import re
@@ -72,16 +73,51 @@ def _canon(path: object, normcase: Callable[[str], str] | None = None) -> str:
     return fold(str(path)).replace("\\", "/")
 
 
+MIN_MATCH_SEGMENTS = 2
+
+
+def _is_abs(path: str) -> bool:
+    """Absolute under either platform's rules, whichever one we are running on.
+
+    `os.path.isabs` answers for the host, and the host is not always the
+    platform the path came from: a Windows-shaped `D:\\ws\\src\\main.rs` reaches
+    these tests, and cargo's own output, from a runner this file also has to
+    pass on. Both spellings are asked, for the same reason `_canon` takes an
+    injectable fold - a rule that behaves differently per platform is a rule no
+    test can pin from one platform.
+    """
+    return ntpath.isabs(path) or posixpath.isabs(path)
+
+
 def _tail_match(a: str, b: str) -> bool:
     """Do two canonical paths name the same file, one possibly a tail of the
     other? Symmetric, because either side may be the relative one: cargo prints
-    a relative path for a workspace member and an absolute one elsewhere, and
-    the adapter is handed whatever the caller typed.
+    a relative path for a workspace member and an absolute one elsewhere.
 
-    The boundary is a separator, never a substring: `src/xmain.rs` ends with the
-    characters of `main.rs` and is a different file.
+    Two rules, and #1037 is the second one missing:
+
+    * The boundary is a separator, never a substring: `src/xmain.rs` ends with
+      the characters of `main.rs` and is a different file.
+    * **A tail has to be long enough to identify something.** One segment is a
+      basename, and a basename names a file in every directory of the tree at
+      once. `main.rs` matched `crates/other/src/main.rs`, the diagnostic kept
+      its rustc code - so it was a finding, not a non-verdict - and
+      `rollback_on_fail` reverted a correct edit over another crate's
+      pre-existing error.
+
+    The floor costs a verdict only where the diagnostic genuinely cannot be
+    placed: a one-segment cargo path means a file directly in the workspace
+    root, and nothing in the output says whether that root is the directory
+    holding the target. Declining there is the third state doing its job; the
+    diagnostic is still printed in full by `_elsewhere_in_crate`, and a
+    non-verdict never deletes an edit.
     """
-    return a == b or a.endswith("/" + b) or b.endswith("/" + a)
+    if a == b:
+        return True
+    shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
+    if not longer.endswith("/" + shorter):
+        return False
+    return shorter.count("/") + 1 >= MIN_MATCH_SEGMENTS
 
 
 def _same_file(src_file: str, target: Path, target_raw: str = "",
@@ -121,11 +157,49 @@ def _same_file(src_file: str, target: Path, target_raw: str = "",
         except OSError:
             pass
 
-    tgt_forms = {_canon(target, normcase)}
-    if target_raw:
-        tgt_forms.add(posixpath.normpath(_canon(target_raw, normcase)))
+    return any(_tail_match(s, t)
+               for s in src_forms
+               for t in _target_forms(target, target_raw, normcase))
 
-    return any(_tail_match(s, t) for s in src_forms for t in tgt_forms)
+
+def _target_forms(target: Path | str, target_raw: str = "",
+                  normcase: Callable[[str], str] | None = None) -> set:
+    """Every spelling of the file under validation - all of them absolute (#1037).
+
+    The suffix rule has one side that may be relative, and it is cargo's, whose
+    base is the workspace root. The *target* side has no such excuse: the
+    adapter knows the working directory it was invoked in, so a relative
+    argument can be anchored to it rather than compared as a floating tail.
+
+    Compared as a floating tail is what #1037 was. `target_raw` went in exactly
+    as the caller typed it, so two relative paths were suffix-matched against
+    each other with no common base at all:
+    `vendor/crates/foo/src/main.rs` "was" `crates/foo/src/main.rs`, and
+    `/abs/elsewhere/src/lib.rs` "was" `src/lib.rs` - a foreign file's error
+    charged to this one, with a real error code, on a `rollback_on_fail`
+    validator.
+
+    Anchoring is not the join #754 refused. That join put `crate_root` in front
+    of *cargo's* path, whose base is the workspace root, and so double-counted
+    the member directory and demoted every real finding. This puts the working
+    directory in front of the *caller's* path, whose base is the working
+    directory, and changes no comparison that was previously right.
+
+    Both forms are kept for the reason #754 gave: `os.path.abspath` joins onto
+    the working directory while `Path.resolve()` goes through
+    `_getfinalpathname` on Windows and returns the canonical on-disk spelling,
+    following `subst` and symlinked drives. They disagree, and the answer must
+    not depend on which one a caller happened to produce.
+    """
+    forms = set()
+    for raw in (target, target_raw):
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        if not _is_abs(text):
+            text = os.path.abspath(text)
+        forms.add(posixpath.normpath(_canon(text, normcase)))
+    return forms
 
 
 def _elsewhere_in_crate(src_file: str, ln: int, col: int, code: str, msg: str) -> str:
