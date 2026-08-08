@@ -332,4 +332,20 @@ def test_dashboard_is_registered_and_documented():
     assert "dashboard" in preset["ops"]
     assert "dashboard" in json.loads((root / ".supertool.json").read_text(encoding="utf-8"))["presets"]
     assert (root / "docs" / "presets" / "dashboard.md").is_file()
-    assert (root / "changelog.d" / "953.added.md").is_file()
+    # A fragment is CONSUMED by the release that ships it, so asserting its
+    # continued existence is a guard that cannot survive its own release — it
+    # fails on the one event it should be indifferent to. #941 hit exactly this
+    # on the v0.26.0 release commit and fixed its own instance; this is the same
+    # bug, one test over, found on the v0.27.0 release commit.
+    #
+    # What this test claims is that the change is *findable*. A pending fragment
+    # and a released CHANGELOG entry both satisfy that, and exactly one of them
+    # is true at any moment, so accepting either loses no coverage.
+    fragments = list((root / "changelog.d").glob("953.*.md"))
+    if fragments:
+        return
+    changelog = (root / "CHANGELOG.md").read_text(encoding="utf-8")
+    assert "953" in changelog, (
+        "#953 is neither a pending changelog.d/953.<section>.md fragment nor "
+        "an entry in CHANGELOG.md — the change is not findable in either place"
+    )
