@@ -207,6 +207,19 @@ A PR that genuinely changes no files gets a different sentence, saying the diff 
 
 Both caps disclose what they withheld, in the render they truncated: `GH_PR_DIFF_MAX_FILES` (default 60) appends `... N more file(s) not shown` while the header keeps the *real* total, and `GH_PR_DIFF_MAX_BYTES` (default 65536) names the byte counts above and below the fenced hunks and states that what you are reading is not the whole file's diff.
 
+**The net diff, not a per-commit replay** ([#1068](https://github.com/Digital-Process-Tools/claude-supertool/issues/1068)). The fetch is `gh pr diff N`, deliberately without `--patch`. `--patch` is format-patch — one section per commit — so a file touched by three commits arrives three times, and the hunks route served the first section and stopped without saying so. Superseded code then read as current, and a fix landed in a later commit was invisible: a reviewer either bounces a correct PR or approves a change they never saw. The bare `gh pr diff` is merge-base-to-head, one entry per path, which is what is being merged and therefore what is under review. A per-commit view is a different question — *what changed since I last looked* — and it needs a since-ref rather than a flag, so it is not this op.
+
+Records are coalesced per path before either render, so a first-of-N cannot be served even if a source repeats a path again. When one does, every entry is shown, oldest first, under a line naming the count:
+
+```
+## _supertool.py  (M, +484 -72)
+Assembled from 2 entries for this path in the fetched diff — all of them are
+below, oldest first, so a line changed twice appears twice and the LAST
+occurrence is the current one. A net diff has one entry per path.
+```
+
+The file list sums those entries into a single row, because one file rendered as two rows totalling `2 files` is the same misreport one level up.
+
 Hunks are fenced as untrusted text — a diff is a stranger's branch content and can contain a line at column 0 saying anything. And because the route goes through `_gh()`, it honours `repo:OWNER/NAME`: a raw `gh pr diff` run from the wrong directory answers about the wrong repository, silently and well-formedly.
 
 ## Targeting another repo
