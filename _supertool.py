@@ -17311,11 +17311,15 @@ def _acc_pop(prev: Tuple[Optional[List[str]],
     prev_not_checked, prev_validated = prev
     _DISPATCH_STATE.acc_not_checked = prev_not_checked
     _DISPATCH_STATE.acc_validated = prev_validated
-    # The lock is for the outermost hand-off only. A parent frame's list is
-    # thread-local and cannot be contended; the process-global is shared by
-    # every worker thread of a parallel dispatch, and `list.extend` is not a
-    # promise the free-threaded build makes (3.13t+, the same reason the depth
-    # counter above is thread-local).
+    # Taken unconditionally, and only the outermost hand-off needs it: a parent
+    # frame's list is thread-local and cannot be contended, while the
+    # process-global is shared by every worker thread of a parallel dispatch,
+    # and `list.extend` is not a promise the free-threaded build makes (3.13t+,
+    # the same reason the depth counter above is thread-local). Skipping it on
+    # the nested path would save an uncontended acquire — tens of nanoseconds,
+    # once per frame — in exchange for a branch deciding whether this list is
+    # the shared one, which is the kind of thing a later refactor gets wrong
+    # silently. Cheap and unconditional beats clever and conditional here.
     with _ACC_FLUSH_LOCK:
         (_NOT_CHECKED if prev_not_checked is None
          else prev_not_checked).extend(mine_not_checked)
