@@ -204,20 +204,36 @@ to a Windows-authored file rewrote every line to LF, under a receipt naming one
 line.
 
 You still write payloads in LF. If an `old` string does not match a CRLF file
-byte for byte, the op retries it re-terminated to the file's convention and
-re-terminates the replacement to match — a file that matches exactly is never
-reinterpreted. `replace_lines` gives the block it writes the ending of the line
-it replaces (for an insert, the line above it) rather than a file-wide majority,
-because on a mixed file a majority rewrites the caller's own line to the other
-convention.
+byte for byte, `edit` and `replace` retry it re-terminated to the file's
+convention and re-terminate the replacement to match — a file that matches
+exactly is never reinterpreted.
 
-Whenever the file is not plain LF, the receipt says which convention was used:
+`replace_lines` passes your content through **verbatim**, mixed endings and all:
+the endings inside a block you typed are your choice, and rewriting an explicit
+choice is the same silent normalisation pointed the other way. The one ending it
+invents is the trailing newline, when your block does not end a line at all;
+that takes the ending of the line it lands on rather than a file-wide majority,
+which on a mixed file would rewrite your own line to the other convention.
+
+The receipt speaks only where the ending used had more than one defensible
+answer — a mixed file, or your own text re-terminated to match:
 
 ```
-edited src/main.rs (line 12)
-  ↳ line endings: file is CRLF and stayed CRLF throughout; text this op wrote uses CRLF
-  ↳ line endings: file is mixed (2 CRLF / 2 LF / 0 CR) — every line this op did not touch kept its own
+edited src/main.rs (line 12-13)
+  ↳ line endings: file is CRLF, so the text you wrote with LF was re-terminated to CRLF to match — every untouched line is unchanged
+  ↳ line endings: file is mixed (2 CRLF / 2 LF / 0 CR) — every line this op did not touch kept its own; text this op supplied uses LF
 ```
+
+A clean edit of a uniform CRLF file says nothing: nothing was decided, and on
+Windows every file is CRLF, so a note there would fire on every call ever made.
+
+`replace` resolves the convention once, in the pass that scans for matches, and
+carries it to the pass that writes. The two used to read the same file with
+different newline settings: on a CRLF file the scan found an LF `old` and the
+write did not, so the write was a no-op and the receipt reported the scan's
+number. Its count now comes from the bytes it is about to write, and a file that
+matched during the scan but no longer matches at write time is named as not
+modified rather than counted or dropped.
 
 `vim` is the exception and does not yet preserve endings — its line model
 assumes `\n` throughout, and half-adopting this would produce scattered mixed

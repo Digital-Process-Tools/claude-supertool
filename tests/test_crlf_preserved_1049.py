@@ -66,13 +66,17 @@ def test_edit_of_a_mixed_file_preserves_the_lines_it_did_not_touch(
     tmp_path: Path,
 ) -> None:
     """No global convention is imposed: the CRLF lines stay CRLF and the LF
-    lines stay LF, because neither is the file's answer."""
+    lines stay LF, because neither is the file's answer.
+
+    And no note. The `old` matched literally and the op supplied no ending of
+    its own, so nothing was chosen and there is nothing to disclose — see
+    `_newline_note`."""
     f = tmp_path / "m.txt"
     f.write_bytes(b"one\r\ntwo\nthree\r\nfour\n")
     out = _supertool.op_edit("two", "TWO", str(f))
     assert not out.startswith("ERROR"), out
     assert f.read_bytes() == b"one\r\nTWO\nthree\r\nfour\n"
-    assert "mixed" in out, out
+    assert "line endings" not in out, out
 
 
 # --- op_replace ------------------------------------------------------------
