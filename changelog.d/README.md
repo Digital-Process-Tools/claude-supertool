@@ -29,6 +29,12 @@ label is the one that resolves
 [#934](https://github.com/Digital-Process-Tools/claude-supertool/issues/934),
 [#936](https://github.com/Digital-Process-Tools/claude-supertool/issues/936)).
 
+**A `paste` or `edit` into this directory now runs that same check** and prints
+the same message, so you find out at write time instead of from a 20-leg CI run
+twenty minutes later ([#1132](https://github.com/Digital-Process-Tools/claude-supertool/issues/1132)).
+The receipt truncates long messages; `supertool 'validate:changelog.d/<file>:verbose'`
+prints one in full.
+
 `--check` parses your fragment with `markdown-it-py` and refuses it if the token
 stream holds any of these, **at any depth**:
 
