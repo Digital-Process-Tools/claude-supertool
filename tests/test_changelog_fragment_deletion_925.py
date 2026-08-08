@@ -61,7 +61,8 @@ def gate_script() -> str:
 
 def git(repo: Path, *args: str) -> None:
     subprocess.run(["git", *args], cwd=repo, check=True,
-                   capture_output=True, text=True)
+                   capture_output=True, text=True,
+                   encoding="utf-8", errors="replace")
 
 
 def base_repo(tmp_path: Path) -> Path:
@@ -86,6 +87,7 @@ def run_gate(repo: Path, labels: str = "") -> "subprocess.CompletedProcess[str]"
     return subprocess.run(
         ["bash", "-c", gate_script()],
         cwd=repo, capture_output=True, text=True,
+        encoding="utf-8", errors="replace",
         env={"PATH": os.environ["PATH"], "BASE": "master", "LABELS": labels},
     )
 
