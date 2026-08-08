@@ -165,3 +165,22 @@ def test_the_writer_and_the_rollback_ask_one_function() -> None:
             where + " re-inlined the resolution instead of calling the shared "
             "helper -- that is the drift this bug came from")
     assert supertool._write_target("no/such/plain/path.py") == "no/such/plain/path.py"
+
+
+def test_the_refusal_names_the_object_it_refused_to_touch(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The refuse arm is the one that reports without acting, so its only output
+    IS the fix. Naming the link there while the arm beside it names the target
+    would describe two files as one."""
+    monkeypatch.setattr(supertool, "_rollback_action", lambda pre, content: "refuse")
+    link = tmp_path / "link.py"
+    target = tmp_path / "target.py"
+    target.write_text("y = 2" + NL, encoding="utf-8")
+    _symlink(link, "target.py")
+    out = _paste(tmp_path, link, BROKEN)
+    assert "ROLLBACK NOT POSSIBLE" in out, out
+    assert "target.py (which the symlink" in out, (
+        "the refusal names the symlink, not the file it declined to undo:"
+        + NL + out)
+    assert "resolves to), whose pre-edit bytes could not be read" in out, out

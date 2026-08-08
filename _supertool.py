@@ -15008,6 +15008,12 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
     # filesystem the write has already changed.
     _target = _write_target(path)
     _pre_existed = os.path.isfile(_target)
+    # Every rollback arm reports on the object it acted on, refuse included: a
+    # refusal that names the link while the restore beside it names the target
+    # would describe two different files as one.
+    _target_cell = _flat_cell(_target)
+    if os.path.abspath(_target) != os.path.abspath(path):
+        _target_cell += f" (which the symlink {_flat_cell(path)} resolves to)"
     applicable_fmt = _applicable_formatters(op, path)
     applicable_all = _applicable_validators(op, path)
     applicable_notif = _applicable_notifiers(op, path)
@@ -15112,7 +15118,7 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
                             fmt_rows.append(row)
                         fmt_rows.append(
                             f"[ROLLBACK NOT POSSIBLE] {result_name} failed on "
-                            f"{_flat_cell(path)}, whose pre-edit bytes could "
+                            f"{_target_cell}, whose pre-edit bytes could "
                             f"not be read. The write STANDS (#1088).")
                     else:
                         try:
@@ -15188,7 +15194,7 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
             if action == "refuse":
                 diff_out += (
                     f"\n[ROLLBACK NOT POSSIBLE] {name} regressed on "
-                    f"{_flat_cell(path)}, whose pre-edit bytes could not be "
+                    f"{_target_cell}, whose pre-edit bytes could not be "
                     f"read. The file existed before this op, so removing it "
                     f"would delete content this call never wrote. The write "
                     f"STANDS and the file is NOT what it was (#1088).\n"
