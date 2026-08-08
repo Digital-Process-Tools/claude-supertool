@@ -158,7 +158,7 @@ A TOML triple-single-quoted block processes **no** escapes. Whatever you type is
 new = '''PAT = re.compile("\\d+")'''
 ```
 
-writes `\\d+`, not `\d+`. Same for a newline: `\n` inside a literal block is the two characters `\` and `n`, never a line break — the ops listing points at `chr(10)`, and a real newline in the block works too.
+writes `\\d+`, not `\d+`. Same for a newline: `\n` inside a literal block is the two characters `\` and `n`, never a line break — type a real newline instead. Nothing on this route evaluates an expression, so a function call written into payload content lands as its own characters; when you need an escape sequence processed, use a basic block, where TOML escapes do apply. An ESC is spelled `\u001b` there; `\x1b` is not a TOML escape at all, so it is refused at parse time rather than landing wrong.
 
 The safe half is `old`: a doubled anchor cannot match, the op declines, and the skip is counted. The half that is not is `new` — the anchor matches, the bytes land, the receipt says `edited`, and the validators agree, because two backslashes are legal in nearly every language this repo edits. So a payload whose literal block carries a lone `\\` is named before any op runs:
 
