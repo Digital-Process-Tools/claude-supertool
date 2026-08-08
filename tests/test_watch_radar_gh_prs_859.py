@@ -205,6 +205,9 @@ def test_new_head_sha_with_the_same_rollup_is_a_change(state_dir, monkeypatch):
     _fake_gh(monkeypatch, [_pr(1, [GREEN_LEG], sha="b" * 40)])
     lines, _ = tier.radar_report({"_arg": "", "_watch": lambda *a, **k: "alive"})
 
+    # The row first (#800): an empty board satisfies the absence below, so
+    # without this the test agrees with a radar that printed nothing at all.
+    assert any("#1" in line for line in lines), lines
     assert not any(line.startswith("radar: no change") for line in lines), (
         "a push that landed a new head commit is a change even when the "
         "rollup state word is identical"

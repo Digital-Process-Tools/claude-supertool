@@ -9,7 +9,10 @@ branch and render as one sentence:
     closed unmerged            -> "no longer open"  true
     author reassigned          -> "no longer open"  FALSE, still open
     a selected-on label pulled -> "no longer open"  FALSE, still open
-    the filter itself changed  -> "no longer open"  FALSE, still open
+    pushed off the fetch page  -> "no longer open"  FALSE, still open
+
+(A changed filter looks like a sixth and is not one: the snapshot is keyed by
+filter, so widening one is a cold start with nothing to depart from.)
 
 A maintainer reading `1 no longer open` concludes a PR landed and stops
 tracking it. In three of those five rows the PR is open and still needs work,
@@ -52,6 +55,8 @@ RUN_LEG = {"name": "pytest", "status": "IN_PROGRESS", "conclusion": None,
 RED_LEG = {"name": "pytest (windows-latest, 3.12)", "status": "COMPLETED",
            "conclusion": "FAILURE",
            "detailsUrl": "https://github.com/o/r/actions/runs/1/job/9"}
+GREEN_LEG = {"name": "pytest", "status": "COMPLETED", "conclusion": "SUCCESS",
+             "detailsUrl": "https://github.com/o/r/actions/runs/1/job/9"}
 
 
 def _pr(number: int, rollup, sha: str = "a" * 40, **kw) -> dict:
@@ -136,6 +141,10 @@ def test_gh_prs_does_not_call_a_departure_no_longer_open(state_dir, monkeypatch)
     lines = _board(monkeypatch, [_pr(1005, [RED_LEG])], {"1005"})
     text = "\n".join(lines)
 
+    # The board first. Without this the central claim of #1024 is carried by an
+    # assertion a radar printing nothing satisfies — the #800 defect, in the
+    # file that exists to fix #800's sibling.
+    assert "#1005" in text, f"no board was printed at all.\n\n{text}"
     assert "no longer open" not in text, (
         "#1013 left the *filtered* population; it is still open and still needs "
         "work. A reader acting on this line stops tracking a live PR.\n\n" + text)
@@ -221,6 +230,8 @@ def test_gh_prs_says_nothing_when_nothing_departed(state_dir, monkeypatch):
     _board(monkeypatch, rows, {"1005", "1013"})
     lines = _board(monkeypatch, rows, {"1005", "1013"})
     text = "\n".join(lines)
+    # "The absence is the claim" only holds over a board that exists.
+    assert "2 open" in text, f"no board was printed at all.\n\n{text}"
     assert "left this board" not in text, text
     assert "no longer open" not in text, text
 
@@ -259,8 +270,88 @@ def test_gl_mrs_says_nothing_when_nothing_departed(monkeypatch):
     lines = gl_tier.render(mrs, {"1", "2"}, [], {}, [], [], previous,
                            label="scope author=@me")
     text = "\n".join(lines)
+    assert "2 open" in text, f"no board was printed at all.\n\n{text}"
     assert "left this board" not in text, text
     assert "no longer open" not in text, text
+
+
+# ---------------------------------------------------------------------------
+# the fourth history the note had no arm for
+# ---------------------------------------------------------------------------
+
+def test_a_full_page_cannot_establish_a_departure(state_dir, monkeypatch):
+    """`live_open_prs` fetches ONE page, `per_page` default 50, no pagination.
+
+    So `previous - live` has a fourth member the note did not name: an entry
+    pushed off page 1 by newer ones. It is open, it still matches the filter,
+    and every one of the three histories offered is false about it. The reader
+    who follows the note and runs the lookup sees it open and concludes the
+    filter stopped matching — a second wrong conclusion, reached by doing
+    exactly what the board said.
+    """
+    monkeypatch.setattr(tier.prs, "_get_config", lambda: {"per_page": 2})
+    _board(monkeypatch, [_pr(900, [RUN_LEG]), _pr(1005, [RUN_LEG])],
+           {"900", "1005"})
+    # Two newer PRs open; the page cuts at 2 and #900 falls off it.
+    lines = _board(monkeypatch, [_pr(1100, [RUN_LEG]), _pr(1005, [RUN_LEG])],
+                   {"1100", "1005"})
+    text = "\n".join(lines)
+
+    assert "#1005" in text, f"no board was printed at all.\n\n{text}"
+    assert "left this board" not in text, (
+        "#900 is open and still matches; the fetch simply did not reach it. "
+        f"The board cannot call that a departure.\n\n{text}")
+    assert "#900" in text, (
+        f"#900 fell off the page and nothing on the board says so.\n\n{text}")
+    assert "page" in text, (
+        f"the page limit is the cause and is never named.\n\n{text}")
+
+
+def test_gl_mrs_declines_departures_on_a_capped_page(monkeypatch):
+    mrs = [_mr(1, "running"), _mr(2, "running")]
+    previous = {"mrs": {str(m["iid"]): gl_tier._snap_entry(m) for m in mrs}}
+    lines = gl_tier.render([mrs[0]], {"1"}, [], {}, [], [], previous,
+                           label="scope author=@me", page_capped=True)
+    text = "\n".join(lines)
+
+    assert "left this board" not in text, text
+    assert "!2" in text, f"!2 vanished and nothing says so.\n\n{text}"
+    assert "page" in text, text
+
+
+def test_a_departure_makes_the_tier_unhealthy(state_dir, monkeypatch):
+    """`healthy` has one consumer — `quiet_when_healthy`, which drops the
+    tier's whole output. A departure-only tick is entirely elided rows plus the
+    summary line, so a healthy verdict there suppresses the one arm added so a
+    departure is not read as nothing happening. The board never reaches stdout.
+    """
+    monkeypatch.setattr(tier, "default_branch_report", lambda *a, **k: ([], True))
+    monkeypatch.setattr(tier, "repo_name", lambda: "o/r")
+    monkeypatch.setattr(tier, "watch_coverage", lambda: {"1005", "1013"})
+    monkeypatch.setattr(tier.subprocess, "run",
+                        lambda cmd, *a, **k: _Result(json.dumps(
+                            [_pr(1005, [GREEN_LEG]), _pr(1013, [GREEN_LEG])])))
+    _, first = tier.radar_report({"_arg": "", "_watch": lambda *a, **k: "alive"})
+    assert first is True, "fixture drifted — the cold board must be healthy"
+
+    monkeypatch.setattr(tier, "watch_coverage", lambda: {"1005"})
+    monkeypatch.setattr(tier.subprocess, "run",
+                        lambda cmd, *a, **k: _Result(json.dumps(
+                            [_pr(1005, [GREEN_LEG])])))
+    _, healthy = tier.radar_report({"_arg": "", "_watch": lambda *a, **k: "alive"})
+
+    assert healthy is False, (
+        "#1013 left the board and the tier still reports healthy, so "
+        "quiet_when_healthy drops the departure notice entirely")
+
+
+def test_departed_note_survives_a_non_decimal_id(monkeypatch):
+    """`isdigit()` is True for superscripts and other non-decimal digits, where
+    `int()` raises. Unreachable from a real iid, reachable from a snapshot file
+    that was corrupted — and a board that crashes on reading its own state is
+    a worse outcome than one that sorts an odd id lexically."""
+    note = tier.snapshot.departed_note(["²", "12"], "PR", "#", "gh-pr:<n>")
+    assert note and "12" in note[0]
 
 
 def test_an_excluded_mr_is_not_a_departure(monkeypatch):
@@ -271,4 +362,8 @@ def test_an_excluded_mr_is_not_a_departure(monkeypatch):
     lines = gl_tier.render(mrs, {"1", "2"}, [], {}, [], [], previous,
                            label="scope author=@me", excluded={"2"})
     text = "\n".join(lines)
+    # Two pins, same reason as the pruning case in test_watch_radar.py: the
+    # absence has an innocent explanation (no board) and a second one (the
+    # exclusion never applied), and only the third is the claim.
+    assert "1 excluded" in text, f"the exclusion never applied.\n\n{text}"
     assert "left this board" not in text, text
