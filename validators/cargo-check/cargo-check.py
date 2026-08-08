@@ -73,9 +73,6 @@ def _canon(path: object, normcase: Callable[[str], str] | None = None) -> str:
     return fold(str(path)).replace("\\", "/")
 
 
-MIN_MATCH_SEGMENTS = 2
-
-
 def _is_abs(path: str) -> bool:
     """Absolute under either platform's rules, whichever one we are running on.
 
@@ -89,87 +86,130 @@ def _is_abs(path: str) -> bool:
     return ntpath.isabs(path) or posixpath.isabs(path)
 
 
-def _tail_match(a: str, b: str) -> bool:
-    """Do two canonical paths name the same file, one possibly a tail of the
-    other? Symmetric, because either side may be the relative one: cargo prints
-    a relative path for a workspace member and an absolute one elsewhere.
+def _workspace_root(crate_root: Path,
+                    run: Callable[..., object] | None = None) -> tuple[str | None, str]:
+    """The base cargo's relative diagnostic paths are relative to (#1045).
 
-    Two rules, and #1037 is the second one missing:
+    Asked of cargo rather than guessed, because cargo is the only thing that
+    knows: the root of a workspace is not the nearest `Cargo.toml` above the
+    file, and `[workspace] members` may name a directory anywhere under it.
+    `cargo metadata --no-deps` answers without resolving the dependency graph,
+    so it neither touches the network nor pays for a build.
 
-    * The boundary is a separator, never a substring: `src/xmain.rs` ends with
-      the characters of `main.rs` and is a different file.
-    * **A tail has to be long enough to identify something.** One segment is a
-      basename, and a basename names a file in every directory of the tree at
-      once. `main.rs` matched `crates/other/src/main.rs`, the diagnostic kept
-      its rustc code - so it was a finding, not a non-verdict - and
-      `rollback_on_fail` reverted a correct edit over another crate's
-      pre-existing error.
-
-    The floor costs a verdict only where the diagnostic genuinely cannot be
-    placed: a one-segment cargo path means a file directly in the workspace
-    root, and nothing in the output says whether that root is the directory
-    holding the target. Declining there is the third state doing its job; the
-    diagnostic is still printed in full by `_elsewhere_in_crate`, and a
-    non-verdict never deletes an edit.
+    Returns `(root, "")` or `(None, reason)` - exactly one of the two, so a
+    caller that cannot get an answer is handed the words to say why. Every way
+    the call can fail to produce a root is a reason, including the ones that are
+    not this platform's: `FileNotFoundError [WinError 2]` on a Windows runner
+    where the PATH lookup failed is the shape that escaped `git remote -v` in
+    #997 and took out the whole validator instead of reaching its own "the tool
+    could not answer" arm.
     """
-    if a == b:
-        return True
-    shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
-    if not longer.endswith("/" + shorter):
-        return False
-    return shorter.count("/") + 1 >= MIN_MATCH_SEGMENTS
+    runner = run or subprocess.run
+    try:
+        r = runner(["cargo", "metadata", "--no-deps", "--format-version", "1"],
+                   capture_output=True, text=True, timeout=30,
+                   cwd=str(crate_root), encoding="utf-8", errors="replace")
+    except subprocess.TimeoutExpired:
+        return None, "cargo metadata timed out after 30s"
+    except OSError as exc:
+        return None, f"cargo metadata could not be run ({type(exc).__name__})"
+
+    if getattr(r, "returncode", 1) != 0:
+        return None, f"cargo metadata exited {r.returncode}"
+    try:
+        root = json.loads(r.stdout or "")["workspace_root"]
+    except (ValueError, TypeError, KeyError):
+        return None, "cargo metadata output was unreadable"
+    if not isinstance(root, str) or not root.strip():
+        return None, "cargo metadata output was unreadable"
+    return root, ""
 
 
-def _same_file(src_file: str, target: Path, target_raw: str = "",
-               normcase: Callable[[str], str] | None = None) -> bool:
-    """Is the path cargo printed the file the adapter was asked about? (#754)
+def _attribute(src_file: str, target: Path, target_raw: str = "",
+               ws_root: str | None = None,
+               normcase: Callable[[str], str] | None = None) -> str:
+    """Which file did cargo name - this one, another one, or unanswerable?
 
-    A **path-suffix match on segment boundaries**, deliberately not a join
-    against the crate root. cargo prints diagnostic paths relative to the
-    *workspace* root, which is not the directory it was invoked in: run from
-    `ws/member`, cargo 1.97 reports `member/src/sib.rs`, so `crate_root /
-    src_file` yields `ws/member/member/src/sib.rs` and matches nothing. Every
-    real finding about the file under validation would then fail the comparison
-    and be demoted to a non-verdict - the same misreport pointing the other way,
-    and the quieter of the two.
+    `"this"` / `"other"` / `"unknown"`, and the third one is the point (#1045).
 
-    A suffix match needs no base and touches no disk, so it holds for a
-    crate-relative path, a workspace-relative one and an absolute one alike.
+    **The comparison is equality between two absolute paths.** It used to be a
+    suffix match, because the adapter had one absolute path and one relative one
+    and no base to close the gap with. A suffix match cannot tell a short path
+    that is a tail of the target from a short path that is a different file
+    higher up the tree, so #1037 put a floor of two segments under it - and a
+    package at the *workspace root* prints exactly two: `src/lib.rs`, which
+    every member's absolute path also ends with. The root package's pre-existing
+    error was charged to the member under validation, with a real rustc code, on
+    a `rollback_on_fail` validator. No floor fixes that; the two strings are
+    identical and what separates them is the workspace layout.
 
-    **Nothing here rests on two `resolve()` calls agreeing character for
-    character**, which is why `target_raw` is compared alongside the resolved
-    `target`. `os.path.abspath` and `Path.resolve()` are not the same function
-    on Windows: `abspath` joins onto the working directory, while `resolve()`
-    goes through `_getfinalpathname` and returns the canonical on-disk spelling
-    of whatever prefix exists, following `subst` and symlinked drives on the
-    way. Comparing an absolute diagnostic path against only the resolved target
-    made the answer depend on that difference; comparing against both forms
-    under one suffix rule does not.
+    So the base is fetched instead of guessed. Measured against cargo 1.97: a
+    relative diagnostic path is relative to the workspace root, and to that root
+    whichever directory cargo was invoked from; a file outside the workspace
+    root is printed absolute rather than reached with `../`. Anchoring the
+    relative case to `ws_root` therefore resolves every diagnostic path to one
+    absolute file, and equality decides it with nothing left over.
+
+    This is not the join #754 refused. That one put the *crate* root in front of
+    cargo's path, double-counting the member directory and demoting every real
+    finding to a non-verdict. The base here is the one cargo actually used.
+
+    **Without `ws_root`, a relative path names no file** - `src/lib.rs` is a
+    real path in every package in the tree - and the answer is `"unknown"`
+    rather than a pick between them. An absolute path needs no base and is still
+    decided.
+
+    Both target spellings are compared for the reason #754 gave: `abspath` joins
+    onto the working directory while `resolve()` goes through
+    `_getfinalpathname` on Windows and returns the canonical on-disk name,
+    following `subst` and symlinked drives. They disagree, and the answer must
+    not depend on which one a caller produced.
     """
     src = (src_file or "").strip()
     if not src:
-        return False
+        return "unknown"
 
-    src_forms = {posixpath.normpath(_canon(src, normcase))}
-    if os.path.isabs(src):
-        try:
-            src_forms.add(_canon(Path(src).resolve(), normcase))
-        except OSError:
-            pass
+    canon = posixpath.normpath(_canon(src, normcase))
+    if _is_abs(src):
+        src_forms = {canon}
+        if os.path.isabs(src):
+            try:
+                src_forms.add(_canon(Path(src).resolve(), normcase))
+            except OSError:
+                pass
+    else:
+        if not (ws_root or "").strip():
+            return "unknown"
+        base = posixpath.normpath(_canon(ws_root, normcase))
+        src_forms = {posixpath.normpath(posixpath.join(base, canon))}
 
-    return any(_tail_match(s, t)
-               for s in src_forms
-               for t in _target_forms(target, target_raw, normcase))
+    if src_forms & _target_forms(target, target_raw, normcase):
+        return "this"
+    return "other"
+
+
+def _same_file(src_file: str, target: Path, target_raw: str = "",
+               normcase: Callable[[str], str] | None = None,
+               ws_root: str | None = None) -> bool:
+    """Is the path cargo printed the file the adapter was asked about? (#754)
+
+    The predicate, for callers that need only the finding / not-a-finding half.
+    `_attribute` is the whole answer and `_parse_errors` uses that one: "not
+    this file" and "no way to tell which file" are different sentences, and only
+    one of them is entitled to name another file.
+    """
+    return _attribute(src_file, target, target_raw, ws_root, normcase) == "this"
 
 
 def _target_forms(target: Path | str, target_raw: str = "",
                   normcase: Callable[[str], str] | None = None) -> set:
     """Every spelling of the file under validation - all of them absolute (#1037).
 
-    The suffix rule has one side that may be relative, and it is cargo's, whose
-    base is the workspace root. The *target* side has no such excuse: the
-    adapter knows the working directory it was invoked in, so a relative
-    argument can be anchored to it rather than compared as a floating tail.
+    The comparison has one side that arrives relative, and it is cargo's, whose
+    base is the workspace root and is anchored to it by `_attribute` (#1045).
+    The *target* side has no such excuse: the adapter knows the working
+    directory it was invoked in, so a relative argument is anchored to that
+    rather than compared as a floating tail.
 
     Compared as a floating tail is what #1037 was. `target_raw` went in exactly
     as the caller typed it, so two relative paths were suffix-matched against
@@ -218,7 +258,26 @@ def _elsewhere_in_crate(src_file: str, ln: int, col: int, code: str, msg: str) -
             f"produced about this file: {msg}")
 
 
-def _parse_errors(output: str, target_file: str) -> list[dict]:
+def _unplaceable(src_file: str, ln: int, col: int, code: str, msg: str,
+                 reason: str) -> str:
+    """The message for a diagnostic whose file could not be identified (#1045).
+
+    Distinct from `_elsewhere_in_crate`, which asserts the diagnostic belongs to
+    *another* file - a claim this arm cannot make. `src/lib.rs` is a real path
+    relative to the workspace root and a real path relative to every package in
+    it; without the root, saying "not this file" would be the same guess as
+    saying "this file", just quieter. What is known is printed: the path cargo
+    gave, its location in that path, and why the root could not be read.
+    """
+    label = f"error[{code}]" if code and code != "compile" else "error"
+    return (f"cargo check reported {label} at {src_file}:{ln}:{col}, a path "
+            f"relative to the workspace root, and the workspace root could not "
+            f"be read ({reason}) - so which file it names is unknown and no "
+            f"verdict was produced about this file: {msg}")
+
+
+def _parse_errors(output: str, target_file: str, ws_root: str | None = None,
+                  ws_reason: str = "") -> list[dict]:
     """Extract error lines from cargo --message-format=short output.
 
     `cargo check` analyses the whole crate, so its output carries diagnostics
@@ -229,6 +288,12 @@ def _parse_errors(output: str, target_file: str) -> list[dict]:
     `col` null because a finding that cannot be placed here does not borrow a
     number, and no `source_context` because there is no line of this file to
     render (#754).
+
+    Those whose file cannot be identified at all - a relative path with no
+    workspace root to anchor it to - are non-verdicts too, but say a different
+    thing: `_unplaceable` reports that the path could not be placed, where
+    `_elsewhere_in_crate` reports that it was placed elsewhere. Collapsing the
+    two would publish a guess about another file in the words of a fact (#1045).
     """
     errors = []
     target = Path(target_file).resolve()
@@ -245,7 +310,8 @@ def _parse_errors(output: str, target_file: str) -> list[dict]:
             col = int(m.group(3))
             code = m.group(5) or "compile"
             msg = m.group(6).strip()[:300]
-            if _same_file(src_file, target, target_file):
+            verdict = _attribute(src_file, target, target_file, ws_root)
+            if verdict == "this":
                 # Context is read from the target the adapter was handed, never
                 # from a path rebuilt out of cargo's output. The old code passed
                 # `src_file` straight through, so a crate-relative path was
@@ -261,12 +327,16 @@ def _parse_errors(output: str, target_file: str) -> list[dict]:
                     "source_context": source_context(str(target), ln),
                 })
             else:
+                where = (_elsewhere_in_crate(src_file, ln, col, code, msg)
+                         if verdict == "other"
+                         else _unplaceable(src_file, ln, col, code, msg,
+                                           ws_reason or "reason not recorded"))
                 errors.append({
                     "line": None,
                     "col": None,
                     "severity": "error",
                     "code": "adapter",
-                    "msg": _elsewhere_in_crate(src_file, ln, col, code, msg),
+                    "msg": where,
                 })
     return errors
 
@@ -321,7 +391,11 @@ def main() -> None:
         return
 
     output = r.stderr or r.stdout or ""
-    errors = _parse_errors(output, file)
+    # Only on the failing path: the base is needed to attribute diagnostics, and
+    # a run with no diagnostics has nothing to attribute. A clean check pays
+    # nothing for it.
+    ws_root, ws_reason = _workspace_root(crate_root)
+    errors = _parse_errors(output, file, ws_root=ws_root, ws_reason=ws_reason)
     if not errors:
         # cargo exited non-zero without emitting a single short-format
         # `file:line:col: error[...]` diagnostic, so nothing here is a compile

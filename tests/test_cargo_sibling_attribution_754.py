@@ -101,6 +101,16 @@ DEP_ERROR = ("/home/u/.cargo/registry/src/index.crates.io-1/foo-0.1.0/src/lib.rs
              ":9:1: error[E0432]: unresolved import `bar`\n")
 
 
+def _parse(output: str, target: str, ws_root: str | None = None) -> list[dict]:
+    """The adapter's call shape after #1045: cargo's relative paths are relative
+    to the workspace root, so the root is passed in rather than guessed at by a
+    suffix rule. Every case below whose target is written relative to the
+    process cwd has that cwd for its workspace root - which is what the old
+    suffix match was silently assuming, and had no way to check."""
+    return cargo_check._parse_errors(
+        output, target, ws_root=os.getcwd() if ws_root is None else ws_root)
+
+
 def _only(errors: list[dict]) -> dict:
     assert len(errors) == 1, f"expected one error, got {errors!r}"
     return errors[0]
@@ -113,7 +123,7 @@ def _only(errors: list[dict]) -> dict:
 def test_a_sibling_diagnostic_is_not_reported_as_this_files_error() -> None:
     """The filed bug. main.rs is one line of `mod sibling;`; the reported
     location was line 1 column 29 of it, taken from a different file."""
-    err = _only(cargo_check._parse_errors(SIBLING_ERROR + SUMMARY, "src/main.rs"))
+    err = _only(_parse(SIBLING_ERROR + SUMMARY, "src/main.rs"))
     assert err["line"] is None, f"a location in another file was attributed here: {err!r}"
     assert err["col"] is None, f"a column in another file was attributed here: {err!r}"
     assert err["code"] == "adapter", f"a crate error was published as this file's finding: {err!r}"
@@ -122,7 +132,7 @@ def test_a_sibling_diagnostic_is_not_reported_as_this_files_error() -> None:
 def test_the_sibling_diagnostic_is_still_reported_in_full() -> None:
     """Not a filter. The crate does not build and the caller has to see it,
     with enough in the message to open the file that actually broke."""
-    err = _only(cargo_check._parse_errors(SIBLING_ERROR + SUMMARY, "src/main.rs"))
+    err = _only(_parse(SIBLING_ERROR + SUMMARY, "src/main.rs"))
     for needle in ("src/sibling.rs", "1", "29", "E0308", "mismatched types"):
         assert needle in err["msg"], f"{needle!r} missing from: {err['msg']!r}"
     assert err["severity"] == "error"
@@ -131,12 +141,12 @@ def test_the_sibling_diagnostic_is_still_reported_in_full() -> None:
 def test_an_unattributed_diagnostic_carries_no_source_context() -> None:
     """`source_context: []` read as "this file has no line 1", which is false.
     The key is absent, as it is for every other non-verdict."""
-    err = _only(cargo_check._parse_errors(SIBLING_ERROR + SUMMARY, "src/main.rs"))
+    err = _only(_parse(SIBLING_ERROR + SUMMARY, "src/main.rs"))
     assert "source_context" not in err, f"context was rendered for another file: {err!r}"
 
 
 def test_the_files_own_diagnostic_is_still_a_finding() -> None:
-    err = _only(cargo_check._parse_errors(OWN_ERROR + SUMMARY, "src/main.rs"))
+    err = _only(_parse(OWN_ERROR + SUMMARY, "src/main.rs"))
     assert err["code"] == "E0425", describe(err)
     assert err["line"] == 4 and err["col"] == 5
 
@@ -145,13 +155,13 @@ def test_a_workspace_relative_path_still_matches_the_file() -> None:
     """cargo prints paths relative to the *workspace* root. Resolving against
     the crate root — what the issue proposes — demotes this real finding to a
     non-verdict, which is the same defect pointing the other way."""
-    err = _only(cargo_check._parse_errors(WS_OWN_ERROR, "member/src/main.rs"))
+    err = _only(_parse(WS_OWN_ERROR, "member/src/main.rs"))
     assert err["code"] == "E0425", f"a real finding was demoted: {err!r}"
     assert err["line"] == 4 and err["col"] == 5
 
 
 def test_a_workspace_sibling_is_still_not_this_file() -> None:
-    err = _only(cargo_check._parse_errors(WS_SIBLING_ERROR, "member/src/main.rs"))
+    err = _only(_parse(WS_SIBLING_ERROR, "member/src/main.rs"))
     assert err["code"] == "adapter", f"a workspace sibling was attributed here: {err!r}"
     assert err["line"] is None
 
@@ -159,13 +169,13 @@ def test_a_workspace_sibling_is_still_not_this_file() -> None:
 def test_an_absolute_diagnostic_path_matches_the_same_file() -> None:
     target = os.path.abspath(os.path.join("src", "main.rs"))
     out = f"{target}:4:5: error[E0425]: cannot find function `nope` in this scope\n"
-    err = _only(cargo_check._parse_errors(out, os.path.join("src", "main.rs")))
+    err = _only(_parse(out, os.path.join("src", "main.rs")))
     assert err["code"] == "E0425", f"an absolute path failed to match: {err!r}"
     assert err["line"] == 4
 
 
 def test_a_dependency_source_is_not_this_file() -> None:
-    err = _only(cargo_check._parse_errors(DEP_ERROR, "src/main.rs"))
+    err = _only(_parse(DEP_ERROR, "src/main.rs"))
     assert err["code"] == "adapter", f"a registry source was attributed here: {err!r}"
     assert ".cargo/registry" in err["msg"]
 
@@ -174,14 +184,14 @@ def test_a_suffix_that_is_not_a_path_segment_does_not_match() -> None:
     """`src/xmain.rs` ends with the characters of `main.rs` and is another
     file. The boundary is a separator, not a substring."""
     out = "src/xmain.rs:4:5: error[E0425]: cannot find function `nope`\n"
-    err = _only(cargo_check._parse_errors(out, "src/main.rs"))
+    err = _only(_parse(out, "src/main.rs"))
     assert err["code"] == "adapter", f"a substring match attributed the wrong file: {err!r}"
 
 
 def test_both_are_reported_and_only_the_local_one_is_attributed() -> None:
     """A caller keeps their own error and still learns the crate is broken
     elsewhere. Nothing is collapsed and nothing is dropped."""
-    found = cargo_check._parse_errors(OWN_ERROR + SIBLING_ERROR + SUMMARY, "src/main.rs")
+    found = _parse(OWN_ERROR + SIBLING_ERROR + SUMMARY, "src/main.rs")
     assert len(found) == 2, f"an error was lost: {found!r}"
     mine, theirs = found
     assert mine["code"] == "E0425" and mine["line"] == 4
@@ -197,9 +207,9 @@ def test_source_context_is_read_from_the_target_not_from_the_cwd(tmp_path: Path)
     target = src / "main.rs"
     target.write_text("fn main() {\n    let a = 1;\n    let b = 2;\n    nope();\n}\n",
                       encoding="utf-8")
-    err = _only(cargo_check._parse_errors(
+    err = _only(_parse(
         "src/main.rs:4:5: error[E0425]: cannot find function `nope` in this scope\n",
-        str(target)))
+        str(target), ws_root=str(tmp_path)))
     assert err["source_context"], "no context was rendered for a readable target"
     assert any("nope();" in line and "→" in line for line in err["source_context"]), \
         f"context is not centred on the error line: {err['source_context']!r}"
@@ -221,6 +231,7 @@ def test_source_context_is_read_from_the_target_not_from_the_cwd(tmp_path: Path)
 # Windows implementation, imported and called directly.
 
 WIN_TARGET = "D:\\a\\claude-supertool\\claude-supertool\\src\\main.rs"
+WIN_WS = "D:\\a\\claude-supertool\\claude-supertool"
 
 
 @pytest.mark.parametrize("src", [
@@ -233,7 +244,8 @@ def test_a_windows_path_matches_its_own_file_on_every_platform(src: str) -> None
     """The regression that reached CI. Each of these IS the file under
     validation and has to stay a finding."""
     assert cargo_check._same_file(src, Path(WIN_TARGET), WIN_TARGET,
-                                  normcase=ntpath.normcase) is True, src
+                                  normcase=ntpath.normcase,
+                                  ws_root=WIN_WS) is True, src
 
 
 @pytest.mark.parametrize("src", [
@@ -243,7 +255,8 @@ def test_a_windows_path_matches_its_own_file_on_every_platform(src: str) -> None
 ])
 def test_a_windows_sibling_is_still_not_this_file(src: str) -> None:
     assert cargo_check._same_file(src, Path(WIN_TARGET), WIN_TARGET,
-                                  normcase=ntpath.normcase) is False, src
+                                  normcase=ntpath.normcase,
+                                  ws_root=WIN_WS) is False, src
 
 
 def test_windows_semantics_end_to_end_keep_the_files_own_finding(monkeypatch) -> None:
@@ -251,9 +264,9 @@ def test_windows_semantics_end_to_end_keep_the_files_own_finding(monkeypatch) ->
     a pre-existing test and it failed as `assert None is not None` - the file's
     own error arrived carrying no line at all. This drives the whole parse."""
     monkeypatch.setattr(cargo_check.os.path, "normcase", ntpath.normcase)
-    err = _only(cargo_check._parse_errors(
+    err = _only(_parse(
         "src\\main.rs:5:5: error[E0425]: cannot find function `nope` in this scope\n",
-        WIN_TARGET))
+        WIN_TARGET, ws_root=WIN_WS))
     assert err["code"] == "E0425", f"the file's own error was demoted: {err!r}"
     assert err["line"] == 5 and err["col"] == 5
     assert "source_context" in err, f"a finding lost its context key: {err!r}"
@@ -261,14 +274,15 @@ def test_windows_semantics_end_to_end_keep_the_files_own_finding(monkeypatch) ->
 
 def test_windows_semantics_end_to_end_still_disown_a_sibling(monkeypatch) -> None:
     monkeypatch.setattr(cargo_check.os.path, "normcase", ntpath.normcase)
-    err = _only(cargo_check._parse_errors(
-        "src\\sibling.rs:1:29: error[E0308]: mismatched types\n", WIN_TARGET))
+    err = _only(_parse(
+        "src\\sibling.rs:1:29: error[E0308]: mismatched types\n", WIN_TARGET,
+        ws_root=WIN_WS))
     assert err["code"] == "adapter", f"a sibling was attributed here: {err!r}"
     assert err["line"] is None
 
 
 def test_warnings_are_still_ignored_wherever_they_come_from() -> None:
-    assert cargo_check._parse_errors(
+    assert _parse(
         "src/sibling.rs:1:9: warning[unused]: unused variable `x`\n"
         "src/main.rs:2:9: warning[unused]: unused variable `y`\n",
         "src/main.rs") == []
@@ -278,7 +292,7 @@ def test_output_with_no_located_diagnostic_is_still_not_a_verdict() -> None:
     """#753's branch, unchanged: nothing here may start matching."""
     for out in ("", SUMMARY,
                 "error: unclosed table, expected `]`\n --> Cargo.toml:1:9\n"):
-        assert cargo_check._parse_errors(out, "src/main.rs") == [], out
+        assert _parse(out, "src/main.rs") == [], out
 
 
 # ===========================================================================
