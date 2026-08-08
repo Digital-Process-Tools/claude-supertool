@@ -253,7 +253,12 @@ def test_a_clean_family_says_the_check_ran(monkeypatch, capsys) -> None:
     """The complement matters: silence about the multi-label check reads as
     'no offenders' and as 'not checked' identically."""
     out = _render(monkeypatch, capsys, ["tally=cohort-"], _Gh())
+    # Not just the phrase: both branches say "more than one", so matching on it
+    # alone passes whether the clean case is reported or the two branches are
+    # swapped. The word that distinguishes them is the one to assert.
+    assert "none of" in out.lower()
     assert "more than one" in out.lower()
+    assert "#" not in out.split("Multi-label:")[1]
 
 
 def test_an_unreadable_issue_list_does_not_claim_a_clean_family(

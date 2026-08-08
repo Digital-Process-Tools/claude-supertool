@@ -102,11 +102,18 @@ MIN_GROUP = 2
 
 _UNKNOWN = "?"
 
-# Two search calls per label plus two for the NONE bucket, against an API
-# limited to 30 requests a minute. Past this the honest answer is a refusal
-# naming the knob — a board whose second half is `?` because the limiter cut in
-# is a partial read wearing the shape of a complete one.
-DEFAULT_TALLY_MAX = 30
+# Labels per family, not calls: a family costs `2N + 2` search calls and
+# GitHub's search API allows 30 a minute, so 14 labels is 30 calls and the
+# bound is arithmetic rather than taste. It was 30 for one commit, which is 62
+# calls — the op rate-limiting itself into a board whose second half reads `?`,
+# which is a partial read wearing the shape of a complete one and the exact
+# failure the refusal exists to prevent. Raise it knowing what it buys.
+DEFAULT_TALLY_MAX = 14
+
+# What the bound is really about. Named so the refusal can show its working
+# instead of asserting a number.
+SEARCH_CALLS_PER_LABEL = 2
+NONE_BUCKET_CALLS = 2
 
 # Small on purpose, for the same limiter. The realistic family is three to
 # seven labels.
@@ -448,13 +455,16 @@ def tally_main(prefix: str, rows: list[dict], target: str) -> int:
 
     cap = _env_int("GH_LABELS_TALLY_MAX", DEFAULT_TALLY_MAX)
     if len(members) > cap:
+        calls = len(members) * SEARCH_CALLS_PER_LABEL + NONE_BUCKET_CALLS
         print(f"ERROR: {len(members)} labels start with "
               f"`{_untrusted.flat(prefix)}`, past the {cap} this op will "
-              f"query. Each label costs two search calls and GitHub's search "
-              f"API allows 30 a minute, so past the bound the second half of "
-              f"the board would read `?` because the limiter cut in — which "
-              f"is a partial read in the shape of a complete one. Narrow the "
-              f"prefix, or raise GH_LABELS_TALLY_MAX={len(members)}.")
+              f"query. That family would cost {calls} search calls "
+              f"({SEARCH_CALLS_PER_LABEL} per label plus "
+              f"{NONE_BUCKET_CALLS} for the NONE bucket) against an API that "
+              f"allows 30 a minute, so the board's later cells would read `?` "
+              f"because the limiter cut in — a partial read in the shape of a "
+              f"complete one. Narrow the prefix, or raise "
+              f"GH_LABELS_TALLY_MAX={len(members)} accepting that cost.")
         return 1
 
     # Keyed by a `(label, state)` tuple rather than a joined string: a label

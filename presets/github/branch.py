@@ -530,7 +530,7 @@ def _gh(argv: list, timeout: int = 20):
                           timeout=timeout, encoding="utf-8", errors="replace")
 
 
-def _format_error(stderr: str, what: str) -> str:
+def _format_error(stderr: str, what: str, commit: bool = False) -> str:
     s = (stderr or "").lower()
     if "github host" in s or "not a git repository" in s or "git remotes" in s:
         return _repo_target.no_repo_error("gh-branch:master")
@@ -550,7 +550,13 @@ def _format_error(stderr: str, what: str) -> str:
         # response for an unknown name and one too short to be unambiguous
         # (#1083). Naming the branch hint at it sends the reader to check a
         # spelling that was never the problem.
-        if what.startswith("commit "):
+        #
+        # Flagged by the caller rather than sniffed out of `what`: sniffing is
+        # what the first version did, and `_run_list`'s "workflow runs for X"
+        # never started with `commit `, so commit mode reached the branch hint
+        # anyway — the leak this whole change exists to close, reintroduced one
+        # function along.
+        if commit:
             return (f"ERROR: {what} not found "
                     f"{_repo_target.not_found_scope()}. GitHub answers the "
                     f"same way for an object name that does not exist, one "
@@ -597,7 +603,12 @@ def _repo_identity():
 
 
 def _head_commit(ref: str):
-    """`(sha, age_secs, error)` for the branch's head commit.
+    """`(sha, age_secs, error)` for the commit this ref names.
+
+    A branch's head, or — since #1083 — the commit itself, because `gh api
+    commits/<ref>` resolves both and the *mode* is decided from what comes
+    back. So this runs before anything knows which question was asked, and its
+    answer is what decides.
 
     Resolved from the *ref*, never from the run list. Deriving the SHA from the
     newest run would make "no run exists for this commit" — the state #615's
@@ -614,8 +625,10 @@ def _head_commit(ref: str):
         # The mode is not established yet — that needs the resolved SHA this
         # call is failing to produce. The *shape* is all there is, and it is
         # enough to pick the right hint.
-        kind = "commit" if _HEX_REF.match(str(ref or "")) else "branch"
-        return "", None, _format_error(r.stderr, f"{kind} {ref!r}")
+        is_commit = bool(_HEX_REF.match(str(ref or "")))
+        kind = "commit" if is_commit else "branch"
+        return "", None, _format_error(r.stderr, f"{kind} {ref!r}",
+                                       commit=is_commit)
     try:
         d = json.loads(r.stdout)
     except json.JSONDecodeError:
@@ -659,7 +672,9 @@ def _run_list(ref: str, sha: str = ""):
     except subprocess.TimeoutExpired:
         return None, f"ERROR: gh timed out listing runs for {ref!r}"
     if r.returncode != 0:
-        return None, _format_error(r.stderr, f"workflow runs for {ref!r}")
+        what = (f"workflow runs on commit {sha[:7]}" if sha
+                else f"workflow runs for {ref!r}")
+        return None, _format_error(r.stderr, what, commit=bool(sha))
     try:
         return json.loads(r.stdout or "[]"), ""
     except json.JSONDecodeError:
