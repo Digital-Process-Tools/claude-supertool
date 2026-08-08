@@ -3047,11 +3047,20 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
         out.append("\n")
         return _cap_context_window("".join(out), "grep_around")
 
-    # limit + 1 (#448): a count that equals the limit is ambiguous between
-    # "exactly N matches" and "stopped at N", and only looking one past the cap
-    # settles it. The walk itself is already paid for — `candidates` above
-    # traversed the whole tree to produce `scanned` — so the extra cost is
-    # reading file *contents* until one more match turns up, not another walk.
+    # ceiling + 1 (#448, #1073): a count that equals the limit is ambiguous
+    # between "exactly N matches" and "stopped at N", and only looking past the
+    # cap settles it. #448 looked exactly one past, which settled the yes/no and
+    # left the scope unknown; the bound is the counting ceiling now, so the same
+    # walk answers "how many" as well as "were there more".
+    #
+    # The walk itself is still already paid for — `candidates` above traversed
+    # the whole tree to produce `scanned` — so this is never a second walk. What
+    # it costs is reading file *contents* further: to the (limit+1)th match
+    # before, to the (ceiling+1)th now. Measured on a 67,855-file tree, dense
+    # pattern, limit 20: 0.0103s then, 0.05s now, against 10.3s for counting
+    # everything and 4.3s for the traversal both of them sit on top of. On an
+    # exact result neither stops early at all, which is what proving exactness
+    # has always meant here.
     ceiling = _grep_count_ceiling(limit)
     hits = _grep_recursive(pattern, path, ceiling + 1, excl, candidates=candidates)
     literal = False

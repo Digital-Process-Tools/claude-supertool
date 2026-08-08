@@ -118,6 +118,43 @@ def test_context_mode_complete_answer_has_no_total(tmp_path: Path) -> None:
     assert "matches total" not in head, head
 
 
+def test_context_mode_ceiling_is_the_ceiling_not_whatever_it_overshot_to(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one path `_grep_total`'s clamp exists for, and the only one that can
+    reach it.
+
+    Context mode collects a window at a time and only checks the bound between
+    windows, so overlapping matches in one file blow straight past it: measured
+    at `seen == 30` against a ceiling of 4. Unclamped, the render is
+    `30+ matches total (count capped at 4)` — or worse, `capped at 30`, naming a
+    ceiling that is not the ceiling and a floor the walk never proved.
+
+    Plain mode cannot produce this: it breaks on the match, so `seen` is
+    `ceiling + 1` exactly and a missing clamp is off by one rather than by 26.
+    """
+    monkeypatch.setenv("SUPERTOOL_GREP_COUNT_CEILING", "4")
+    head = _header(_supertool.op_grep("needle", _tree(tmp_path, 30), limit=2,
+                                      context=1, no_auto_read=True))
+    assert "4+ matches total" in head, head
+    assert "count capped at 4" in head, head
+    assert "30" not in head, head
+
+
+def test_context_mode_overshoots_the_ceiling_so_the_clamp_is_load_bearing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The premise of the test above, pinned separately: if the collector ever
+    stops overshooting, that test would still pass while proving nothing."""
+    monkeypatch.setenv("SUPERTOOL_GREP_COUNT_CEILING", "4")
+    ceiling = _supertool._grep_count_ceiling(2)
+    groups = _supertool._grep_recursive_context(
+        "needle", _tree(tmp_path, 30), ceiling + 1, 1, ())
+    seen = sum(1 for g in groups for line in g if line[2] == "match")
+    assert seen > ceiling + 1, f"no overshoot ({seen}) — clamp is untested"
+    assert _supertool._grep_total(seen, ceiling) == (4, True)
+
+
 def test_delegated_report_says_the_total_was_not_counted() -> None:
     """rtk answers without a candidate list, so there is nothing to count over.
     Not-counted is a third state, not a quiet version of counted."""
