@@ -358,6 +358,29 @@ def _select_job_patterns(
     return default_patterns, None
 
 
+# The refusal header, named rather than spelled inline (#1106). It used to
+# read `## FAILED — no error pattern matched`, which is word-for-word the
+# clause `gap_marker` uses about the lines it elided *inside a successful
+# classification*. One phrase, two renders, opposite meanings: a reader who
+# greps it — or a watch rule, or a test asserting `not in out` — cannot tell
+# "supertool could not classify this job" from "these lines sat between two
+# anchors". #1099 lost two tests to exactly that after rebasing onto #1091.
+#
+# #1091's wording wins, deliberately: `the log itself is intact` is the only
+# clause separating *this op cut lines* from *the log was truncated*, and
+# #1014 was filed on that misread. So the refusal moved instead, to a phrase
+# that cannot occur inside a normal render.
+#
+# NOT hoisted into a shared module. A preset runs with `presets/` on
+# `sys.path` and cannot import the core, and the two job presets are private
+# twins by design — `gap_marker` is duplicated for the same reason. The
+# mechanism that keeps them honest is a test, not an import:
+# `tests/test_job_refusal_header_collision_1106.py` pins the twins equal to
+# each other AND disjoint from `gap_marker`, so the next collision is a red
+# build rather than a coincidence two people have to notice.
+UNCLASSIFIED_HEADER = "## FAILED — supertool could not classify this job"
+
+
 def _print_unmatched_failure(
     job_id: str, status_label: str, patterns: list[str], lines: list[str], total: int
 ) -> None:
@@ -376,7 +399,7 @@ def _print_unmatched_failure(
     mislead rather than help.
     """
     tail_n = env_int("GH_JOB_UNMATCHED_TAIL_LINES", 40, minimum=1)
-    print("\n## FAILED — no error pattern matched")
+    print("\n" + UNCLASSIFIED_HEADER)
     print(
         f"Job status is `{status_label}`: something did go wrong. supertool "
         "could not classify it, which means a pattern is missing here — "
@@ -611,6 +634,35 @@ def suite_line(summary: str, n_summaries: int, job_conclusion: str) -> str:
             f"is the pull request's own code, so this is what that log claims "
             f"and not a count supertool made. These count TESTS; a check tally "
             f"counts LEGS.{several}{conflict}")
+
+
+def _log_lines(log: str) -> list[str]:
+    """The log's own lines — LF / CR / CRLF — with nothing else honoured.
+
+    #1105, the same forged-boundary class as #1081 one preset over.
+    `str.splitlines()` breaks on eight separators a CI log does not define,
+    and everything below this anchors at column 0. `_SUITE_SUMMARY_RE` does so
+    deliberately: the comment above it says a `.match(line.strip())` could not
+    tell the job's own pytest summary from one echoed inside captured
+    subprocess output. On a pull request the code writing this log is the pull
+    request's code, so `str.splitlines()` handed that anchor to the log's
+    author — a `print` carrying U+2028 opened a column-0 line mid-sentence, and
+    `Suite:` is read from exactly there. That is the one number in the render
+    claiming to count TESTS.
+
+    Narrowing the split alone would trade the forged parse boundary for a
+    forged *render* line: the separator would survive into `  1234 | ...` and
+    move the terminal's cursor to a fresh row with no gutter, which reads as a
+    line supertool wrote (#851, one surface over). So the separators this split
+    no longer honours are disclosed as pictures on the way through, and that
+    pairing is what makes the narrowing a fix rather than a quieter version of
+    the same bug.
+
+    Tabs are kept: a log line is a block and its indentation is the author's
+    content, which is the same call `_untrusted.scrub` makes for a fence.
+    """
+    return [_untrusted.visible(line, keep=chr(9))
+            for line in _untrusted.split_lines(log)]
 
 
 def gap_marker(n_lines: int) -> str:
@@ -936,7 +988,7 @@ def main() -> int:
     # GitHub Actions prepends timestamps like "2024-01-15T10:30:00.1234567Z "
     log = re.sub(r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z ', '', log, flags=re.MULTILINE)
 
-    lines = log.splitlines()
+    lines = _log_lines(log)
     total = len(lines)
 
     # Header

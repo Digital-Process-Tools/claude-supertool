@@ -572,7 +572,15 @@ def _default_branch_report(default_branch: str, repo: str,
     # region rather than by prefix: its continuation lines are indented and a
     # fifth prefix would have missed them exactly as the first four did.
     in_scope_block = False
-    for line in (r.stdout or "").splitlines():
+    # `_untrusted.split_lines`, never `str.splitlines()` (#1105). Every branch
+    # below anchors at column 0, and one of them — `Branch <default>: ` — is
+    # what sets the state this whole report publishes about the branch after
+    # the merge. `gh-branch` flattens the workflow names, paths and triggers it
+    # prints, so nothing reaches here today that could open a second record;
+    # this is the structural half of that guarantee rather than a restatement
+    # of it, because the two live in different files and only one of them is
+    # in the merge path.
+    for line in _untrusted.split_lines(r.stdout or ""):
         if line.startswith(f"Branch {default_branch}: "):
             state = line.split(": ", 1)[1].strip()
         if line.startswith("Declared "):

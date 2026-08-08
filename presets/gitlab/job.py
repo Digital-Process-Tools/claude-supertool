@@ -246,6 +246,17 @@ def _selection_mismatch(job_status: str, job_id: str) -> str:
     )
 
 
+# The refusal headers, named rather than spelled inline (#1106). The first
+# used to read `## FAILED — no error pattern matched`, which is word-for-word
+# the clause `gap_marker` uses about the lines it elided *inside a successful
+# classification* — one phrase, two renders, opposite meanings. See the twin
+# in `presets/github/job.py` for the full argument and for why this is a
+# duplicated constant pinned by a test rather than a shared import.
+UNCLASSIFIED_HEADER = "## FAILED — supertool could not classify this job"
+BOILERPLATE_ONLY_HEADER = (
+    "## FAILED — only boilerplate matched, no cause identified")
+
+
 def _print_unmatched_failure(
     job_id: str, job_status: str, patterns: list[str], lines: list[str], total: int,
     discounted: list[tuple[int, str]] | None = None,
@@ -259,9 +270,9 @@ def _print_unmatched_failure(
     """
     tail_n = env_int("GL_JOB_UNMATCHED_TAIL_LINES", 40, minimum=1)
     if discounted:
-        print("\n## FAILED — only boilerplate matched, no cause identified")
+        print("\n" + BOILERPLATE_ONLY_HEADER)
     else:
-        print("\n## FAILED — no error pattern matched")
+        print("\n" + UNCLASSIFIED_HEADER)
     print(
         f"Job status is `{job_status}`: something did go wrong. supertool "
         "could not classify it, which means a pattern is missing here — "

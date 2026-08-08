@@ -372,7 +372,7 @@ to change the leading context.
 GitLab says a job `failed` and nothing matched, the output says so instead:
 
 ```
-## FAILED — no error pattern matched
+## FAILED — supertool could not classify this job
 Job status is `failed`: something did go wrong. supertool could not classify it,
 which means a pattern is missing here — not that the log is clean. …
 Patterns tried: ERROR, FAILURES!, Fatal, … (+ built-in cause markers)
@@ -388,6 +388,20 @@ output has to read that way rather than as silence — a crashed job reporting n
 errors reads as green, which is the worst output a failure tool can produce. The
 tail length is `GL_JOB_UNMATCHED_TAIL_LINES` (default 40). This applies to `:fail`
 and to the default view alike.
+
+That header read `## FAILED — no error pattern matched` until
+[#1106](https://github.com/Digital-Process-Tools/claude-supertool/issues/1106), which
+is word-for-word the clause the gap marker below uses about the lines it elided
+**inside a successful classification**. One phrase, two renders, opposite meanings:
+the elision notice can appear many times in one render, the refusal appears once at
+the top, and a grep — or a watch rule, or a test asserting `not in out` — sees a
+string rather than a section. #1099 lost two tests to exactly that after rebasing
+onto #1091, red against entirely correct code. The marker's wording won, because
+`the log itself is intact` is the only thing separating *this op cut lines* from
+*the log was truncated* and [#1014](https://github.com/Digital-Process-Tools/claude-supertool/issues/1014)
+was filed on that misread — so the refusal moved instead. `gh-job` refuses in the
+same words; `tests/test_job_refusal_header_collision_1106.py` pins the twins equal
+to each other and disjoint from `gap_marker`, so the next collision is a red build.
 
 ### A block of pure boilerplate is not a classification
 
