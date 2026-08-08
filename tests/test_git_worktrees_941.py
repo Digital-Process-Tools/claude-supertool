@@ -29,6 +29,8 @@ from pathlib import Path
 
 import pytest
 
+sys.path.insert(0, str(Path(__file__).parent))
+from _changelog_findable import assert_change_is_findable  # noqa: E402
 
 ROOT = Path(__file__).parent.parent
 PRESET = ROOT / "presets" / "git" / "worktrees.py"
@@ -325,15 +327,8 @@ def test_a_changelog_fragment_exists() -> None:
     survive its own release, and it reddened five legs on the v0.26.0 release
     commit — a guard that fails on the one event it should be indifferent to.
 
-    What the section heading above actually claims is that the change is
-    findable. Both states satisfy that, and exactly one of them is true at any
-    moment, so accepting either loses no coverage.
+    The rule this used to spell out inline now lives in
+    `tests/_changelog_findable.py`, because spelling it out inline is what let
+    #953 and #1053 be written the wrong way after this one was fixed.
     """
-    fragments = list((ROOT / "changelog.d").glob("941.*.md"))
-    if fragments:
-        return
-    changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    assert "941" in changelog, (
-        "#941 is neither a pending changelog.d/941.<section>.md fragment nor "
-        "an entry in CHANGELOG.md — the change is not findable in either place"
-    )
+    assert_change_is_findable(941, ROOT)
