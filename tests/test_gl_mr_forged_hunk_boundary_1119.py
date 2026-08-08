@@ -125,6 +125,45 @@ def test_a_surviving_separator_is_disclosed_before_the_render() -> None:
         )
 
 
+def test_the_stderr_extractions_consume_the_separator_they_are_left_on(
+    monkeypatch,
+) -> None:
+    """Why the neighbouring `str.splitlines()` calls are LEFT ALONE.
+
+    #1119 narrows the two structural parses and deliberately keeps six splits
+    that lift one line out of a subprocess's stderr and print it. The stated
+    reason is that narrowing those would be worse - it would leave a forged
+    break INSIDE the extracted string instead of consuming it. That reason is
+    a claim about behaviour, so it is pinned here rather than asserted in a
+    comment: taking `[0]` of a `str.splitlines()` is itself the disclosure for
+    the separator class, and these decline lines print with no gutter to break.
+
+    The complementary half is git's, and it is why nothing further is needed
+    here: `git check-ref-format` REJECTS every ASCII control character in a
+    refname (verified) while accepting U+2028 - so the character git lets into
+    this stderr is exactly the one the split consumes, and the characters the
+    split would pass through are the ones git refuses to carry.
+    """
+    def run(args: list[str], **kw: Any) -> subprocess.CompletedProcess:
+        if len(args) > 1 and args[1] == "merge-base":
+            return subprocess.CompletedProcess(args, 0, BASE_SHA + LF, "")
+        return subprocess.CompletedProcess(
+            args, 128, "", "fatal: not a valid object" + chr(0x2028) + "forged" + LF
+        )
+
+    monkeypatch.setattr(mr.subprocess, "run", run)
+    _, reason = mr._get_conflict_hunks("feature", "master", 1)
+    assert reason is not None
+    assert chr(0x2028) not in reason, reason
+    assert "forged" not in reason, reason
+
+    detail = mr._glab_fail_detail(subprocess.CompletedProcess(
+        ["glab"], 1, "", "ERROR" + LF + "boom" + chr(0x2028) + "forged" + LF
+    ))
+    assert chr(0x2028) not in detail, detail
+    assert "forged" not in detail, detail
+
+
 def test_a_hunks_indentation_is_kept() -> None:
     """A hunk is a block; the leading space of a context line is content."""
     assert mr._hunk_display_lines(" l1" + chr(9) + "x") == [" l1" + chr(9) + "x"]

@@ -80,7 +80,10 @@ REGISTER: dict[str, str] = {
     "presets/gitlab/mr.py::_get_conflict_hunks":
         "git's stderr, first line as a decline detail. The hunk-content split "
         "in this same function was narrowed by #1119; this one is the "
-        "stderr-extraction kind and stays.",
+        "stderr-extraction kind and stays - and taking [0] of the split is "
+        "itself the disclosure, since git check-ref-format rejects every "
+        "ASCII control character in a refname while accepting U+2028. Pinned "
+        "by test_the_stderr_extractions_consume_the_separator_they_are_left_on.",
 }
 
 
