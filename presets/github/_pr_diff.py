@@ -30,7 +30,11 @@ empty file list, which reads as "this PR changes nothing" at the moment someone
 is deciding whether to merge it. A path that is not in the diff is a refusal
 too, naming the paths that are, because "not in this PR" and "in this PR and
 unchanged" are the same silence otherwise. Both caps — files and bytes —
-disclose exactly what they withheld, in the render they truncated.
+disclose exactly what they withheld, in the render they truncated, and every
+sentence written *above* a body takes the truncation state as an argument: a
+note saying `all hunks follow` one line above the cap's own `this is NOT the
+whole file's diff` is two opposite claims in one output, so the complete-case
+wording exists only in the branch where it is true (#1078).
 
 **Net, not per commit (#1068).** The fetch is `gh pr diff N` without
 `--patch`: format-patch repeats a file once per commit, and the hunks route
@@ -326,6 +330,45 @@ def _summary(files: list[dict], header: list[str], number: str | None,
     return "\n".join(out), 0
 
 
+def _entries_sentence(entries: int, *, truncated: bool) -> str:
+    """The multi-entry disclosure (#1068), worded for what the reader can see.
+
+    Oldest-first assembly means the current version of a twice-changed line is
+    at the BOTTOM of the body — which is precisely the part the byte cap
+    removes. Pointing a reader at it in a render that does not contain it is
+    the same completeness claim `all hunks follow` was (#1078), so the
+    truncated branch names the assembly rather than the render.
+    """
+    head = (f"Assembled from {entries} entries for this path in the fetched "
+            f"diff — concatenated in source order, oldest first, so a line "
+            f"changed twice appears twice")
+    if truncated:
+        tail = (" and the current version of it is the last occurrence in the "
+                "assembly, which the byte cap below may not have reached")
+    else:
+        tail = " below and the LAST occurrence is the current one"
+    return head + tail + ". A net diff has one entry per path."
+
+
+def _mechanical_sentence(note: str, *, truncated: bool) -> str:
+    """The `same edit xN` note, worded for whether the body below is whole.
+
+    `all hunks follow` exists only in the untruncated branch, and there is no
+    other route to that wording. The note describes every hunk that was
+    parsed; when the byte cap fires, the render holds fewer than that, and the
+    unconditional sentence sat one line above the cap's own statement that
+    this is not the whole file's diff — two opposite claims in one output,
+    with nothing telling the reader which to believe (#1078).
+    """
+    if truncated:
+        tail = ("the note covers every hunk parsed, but the byte cap below "
+                "withheld part of the body, so not all of them follow")
+    else:
+        tail = "all hunks follow"
+    return (f"Note: every hunk in this file is the same edit ({note}) — "
+            f"a heuristic, not a filter; {tail}.")
+
+
 def _one_file(files: list[dict], path: str, header: list[str],
               max_bytes: int) -> tuple[str, int]:
     match = next((f for f in files if str(f.get("path", "")) == path), None)
@@ -344,6 +387,22 @@ def _one_file(files: list[dict], path: str, header: list[str],
             out.append(f"  ... {len(files) - MAX_FILES} more")
         return "\n".join(out), 1
 
+    # The cap is decided before anything is said about the body. Every
+    # sentence below describes what the reader can see, and only this
+    # measurement knows what that is — computing it afterwards is how one
+    # render came to carry `all hunks follow` two lines above `this is NOT the
+    # whole file's diff` (#1078). `truncated` is the single flag both
+    # sentences take, and the complete-case wording lives nowhere else.
+    renders_hunks = not match.get("binary") and bool(match.get("hunks"))
+    body = "\n".join(match["hunks"]) if renders_hunks else ""
+    total_bytes = len(body.encode("utf-8", errors="replace"))
+    cut = 0
+    if renders_hunks and total_bytes > max_bytes:
+        body = body.encode("utf-8", errors="replace")[:max_bytes].decode(
+            "utf-8", errors="ignore")
+        cut = total_bytes - len(body.encode("utf-8", errors="replace"))
+    truncated = cut > 0
+
     out = list(header)
     out.append(f"## {_untrusted.flat(path)}  "
                f"({match.get('status', '?')}, {_stat_cell(match)})")
@@ -353,15 +412,10 @@ def _one_file(files: list[dict], path: str, header: list[str],
         # diff replayed the file per commit, and a reader shown the assembly
         # without being told where the seams are cannot tell a superseded
         # line from a current one (#1068).
-        out.append(f"Assembled from {entries} entries for this path in the "
-                   f"fetched diff — concatenated below in source order, oldest "
-                   f"first, so a line changed twice appears twice and the LAST "
-                   f"occurrence is the current one. A net diff has one entry "
-                   f"per path.")
+        out.append(_entries_sentence(entries, truncated=truncated))
     note = mechanical_note(match)
     if note:
-        out.append(f"Note: every hunk in this file is the same edit "
-                   f"({note}) — a heuristic, not a filter; all hunks follow.")
+        out.append(_mechanical_sentence(note, truncated=truncated))
     if match.get("binary"):
         out.append("Binary file — no textual hunks to show.")
         return "\n".join(out), 0
@@ -370,17 +424,11 @@ def _one_file(files: list[dict], path: str, header: list[str],
                    "(mode change or rename with no content change).")
         return "\n".join(out), 0
 
-    body = "\n".join(match["hunks"])
-    total_bytes = len(body.encode("utf-8", errors="replace"))
-    cut = 0
-    if total_bytes > max_bytes:
-        body = body.encode("utf-8", errors="replace")[:max_bytes].decode(
-            "utf-8", errors="ignore")
-        cut = total_bytes - len(body.encode("utf-8", errors="replace"))
+    if truncated:
         out.append(f"Showing the first {max_bytes} bytes of {total_bytes} — "
                    f"{cut} bytes withheld; raise with GH_PR_DIFF_MAX_BYTES=N")
     out.append(_untrusted.fence(body))
-    if cut:
+    if truncated:
         out.append(f"{cut} bytes withheld above (cap {max_bytes} bytes of "
                    f"{total_bytes}) — this is NOT the whole file's diff.")
     return "\n".join(out), 0

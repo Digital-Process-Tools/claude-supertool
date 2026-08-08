@@ -194,6 +194,8 @@ One file's hunks: gh-pr:935:diff:PATH
 
 **`[same edit xN]` is a note and never a filter.** A file whose every hunk is byte-identical after stripping whitespace is flagged so attention goes elsewhere. It is never removed from the list and never shortened, and the test is exact equality rather than similarity: under-flagging is the deliberate direction, because a wrong "mechanical" verdict is an invitation to skim the file that needed reading.
 
+The note describes every hunk that was *parsed*, and `GH_PR_DIFF_MAX_BYTES` decides how many of them the render *holds*, so the two are worded together ([#1078](https://github.com/Digital-Process-Tools/claude-supertool/issues/1078)). `all hunks follow` is written only when nothing was withheld; a capped render says instead that the note covers every hunk parsed but the cap withheld part of the body, so not all of them follow. The multi-entry sentence is the same shape — oldest-first assembly puts the current version of a twice-changed line at the bottom, which is exactly what a cap removes — so it too stops pointing at a body it cannot promise.
+
 **Three states, because this renders inside the merge gate.** A diff nobody could fetch prints a named refusal and exits 1 — never an empty file list, which reads as "this PR changes nothing" at the exact moment someone is deciding whether to merge it:
 
 ```

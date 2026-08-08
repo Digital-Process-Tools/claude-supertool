@@ -19,12 +19,14 @@ schemes:
   in any casing and with or without the `//`;
 * no `//` inside the path portion, which is what a protocol-relative
   `//evil.host/x` and a userinfo `//gitlab.com@evil.host/x` both need;
-* no backslash, which some URL parsers fold into `/`;
+* no literal backslash, which some URL parsers fold into `/`;
 * only characters a real API path or query can contain — no control bytes, no
   `#`, no `<`/`>`;
-* and the same structural checks again on the percent-decoded form, so
+* and the authority checks again on the percent-decoded form, so
   `http%3A%2F%2Fevil.host` and `%2F%2Fevil.host` cannot smuggle past the first
-  pass.
+  pass. On that pass a backslash is folded into `/` and checked rather than
+  refused outright, so `%5C%5Cevil.host` is still caught and a filename
+  spelled `src%5Cmain.rs` is not (#1043, pinned in its own file).
 
 Refused, never sanitised: stripping the scheme would send *a* request, and the
 caller would read the answer as the one they asked for.
@@ -89,6 +91,7 @@ NAMES_A_HOST = [
     "/\\evil.example/x",
     "http%3A%2F%2Fevil.example/x",            # percent-encoded scheme
     "%2F%2Fevil.example/x",                   # percent-encoded //
+    "%5C%5Cevil.example/x",                   # percent-encoded backslashes fold to //
     "projects/1/issues#https://evil.example", # a fragment is not path syntax
     "projects/1/issues\x00",                  # NUL is not whitespace
     "projects/1/\x1b[31missues",              # nor is an escape sequence
@@ -142,6 +145,7 @@ REAL_PATHS = [
     "/projects/1/issues",                       # a leading slash is fine
     "projects/group%2Fsubgroup%2Fproject/issues",
     "projects/1/repository/files/src%2Fmain.rs/raw?ref=main",
+    "projects/1/repository/files/src%5Cmain.rs/raw?ref=main",   # #1043
     "projects/1/issues?not[labels]=bug&scope=all",
     "users/1/events?after=2026-08-01&sort=desc",
     "projects/1/issues?updated_after=2026-08-01T00:00:00Z",
