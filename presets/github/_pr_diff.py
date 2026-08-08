@@ -340,13 +340,16 @@ def _entries_sentence(entries: int, *, truncated: bool) -> str:
     truncated branch names the assembly rather than the render.
     """
     head = (f"Assembled from {entries} entries for this path in the fetched "
-            f"diff — concatenated in source order, oldest first, so a line "
-            f"changed twice appears twice")
+            f"diff — concatenated")
     if truncated:
-        tail = (" and the current version of it is the last occurrence in the "
-                "assembly, which the byte cap below may not have reached")
+        tail = (" in source order, oldest first, so a line changed twice "
+                "appears twice, and the current version of it is the last "
+                "occurrence in the assembly — which the byte cap below may "
+                "not have reached")
     else:
-        tail = " below and the LAST occurrence is the current one"
+        tail = (" below in source order, oldest first, so a line changed "
+                "twice appears twice and the LAST occurrence is the current "
+                "one")
     return head + tail + ". A net diff has one entry per path."
 
 

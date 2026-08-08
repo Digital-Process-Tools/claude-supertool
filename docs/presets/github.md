@@ -215,9 +215,19 @@ Records are coalesced per path before either render, so a first-of-N cannot be s
 
 ```
 ## _supertool.py  (M, +484 -72)
-Assembled from 2 entries for this path in the fetched diff — all of them are
-below, oldest first, so a line changed twice appears twice and the LAST
-occurrence is the current one. A net diff has one entry per path.
+Assembled from 2 entries for this path in the fetched diff — concatenated
+below in source order, oldest first, so a line changed twice appears twice and
+the LAST occurrence is the current one. A net diff has one entry per path.
+```
+
+That render assumes the byte cap did not fire. When it does, the sentence stops pointing at a body it cannot promise, because the current version of a twice-changed line is at the bottom and the bottom is what was cut ([#1078](https://github.com/Digital-Process-Tools/claude-supertool/issues/1078)):
+
+```
+## _supertool.py  (M, +484 -72)
+Assembled from 2 entries for this path in the fetched diff — concatenated in
+source order, oldest first, so a line changed twice appears twice, and the
+current version of it is the last occurrence in the assembly — which the byte
+cap below may not have reached. A net diff has one entry per path.
 ```
 
 The file list sums those entries into a single row, because one file rendered as two rows totalling `2 files` is the same misreport one level up.

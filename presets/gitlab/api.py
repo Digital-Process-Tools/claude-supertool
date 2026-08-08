@@ -179,6 +179,12 @@ def decoded_host_naming_reason(candidate: str) -> str:
     than the character refused: backslashes become slashes and the authority
     rules run on the result. A filename keeps its segment; an authority does
     not get to hide behind an encoder.
+
+    The boundary that follows from the fold, stated rather than implied: a
+    lone ``%5C`` with no adjoining slash is accepted, because it folds to a
+    single ``/``. ``%5Cevil.host/x`` becomes ``/evil.host/x``, which is a path
+    with a leading slash — the op already accepts those, and one slash has
+    never opened an authority. It takes two.
     """
     folded = candidate.replace("\\", "/")
     return _authority_reason(folded.split("?", 1)[0])

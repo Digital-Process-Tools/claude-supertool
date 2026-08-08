@@ -123,6 +123,18 @@ def test_a_literal_backslash_is_still_refused(path: str) -> None:
     assert api.path_refusal(path).startswith("ERROR")
 
 
+def test_a_lone_encoded_backslash_folds_to_one_slash_and_is_accepted() -> None:
+    """The boundary the fold creates, asserted rather than implied.
+
+    `%5Cevil.example/x` decodes to a single backslash and folds to a single
+    slash — a leading-slash path, which the op has always accepted. One slash
+    does not open an authority; it takes two, and that is the case above.
+    """
+    assert api.path_refusal("%5Cevil.example/x") == ""
+    assert api.decoded_host_naming_reason("/evil.example/x") == ""
+    assert api.decoded_host_naming_reason("//evil.example/x") != ""
+
+
 def test_the_raw_rule_is_what_refuses_a_literal_backslash() -> None:
     """The flat rule stays on the raw pass, where it is the right rule."""
     assert api.host_naming_reason("src\\main.rs") != ""

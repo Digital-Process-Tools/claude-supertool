@@ -49,6 +49,7 @@ So on the decoded pass backslashes are **folded into slashes** and the two autho
 | `files/src%5Cmain.rs/raw?ref=main` → `files/src\main.rs/raw` | `files/src/main.rs/raw` | accepted — a filename, no authority |
 | `%5C%5Cevil.host/x` → `\\evil.host/x` | `//evil.host/x` | refused — protocol-relative, and the `//` rule alone never sees it |
 | `/%5Cevil.host/x` → `/\evil.host/x` | `//evil.host/x` | refused |
+| `%5Cevil.host/x` → `\evil.host/x` | `/evil.host/x` | accepted — one slash is a leading slash, not an authority; it takes two |
 
 Dropping the rule from the decoded pass outright would have re-opened that middle row, which is the shape the decoded pass exists for.
 
