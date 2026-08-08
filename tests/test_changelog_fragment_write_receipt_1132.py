@@ -68,7 +68,8 @@ def _run(target: Path, env_extra: dict | None = None) -> dict:
     env.pop("SUPERTOOL_REQUIRE_VALIDATORS", None)
     env.update(env_extra or {})
     proc = subprocess.run([sys.executable, str(ADAPTER), str(target)],
-                          capture_output=True, text=True, env=env)
+                          capture_output=True, text=True, env=env,
+                          encoding="utf-8", errors="replace")
     assert proc.returncode == 0, proc.stderr
     return json.loads(proc.stdout)
 
@@ -138,7 +139,7 @@ def test_a_file_bad_in_two_ways_reports_what_ci_reports(tmp_path):
     proc = subprocess.run(
         [sys.executable, str(project / ".github" / "scripts" / "assemble_changelog.py"),
          "--check", "--dir", str(project / "changelog.d")],
-        capture_output=True, text=True)
+        capture_output=True, text=True, encoding="utf-8", errors="replace")
     ci_output = proc.stdout + proc.stderr
     assert "unknown section" in ci_output, ci_output
     assert "not a single `- ` bullet list" not in ci_output, ci_output
@@ -236,7 +237,8 @@ def test_a_paste_of_a_bad_fragment_no_longer_returns_a_green_receipt(tmp_path):
     payload = "path = {0}\ncontent = {1}{2}{1}\n".format(
         json.dumps(str(target)), quote, BARE_PARAGRAPH)
     proc = subprocess.run([sys.executable, str(SUPERTOOL), "paste:@-"],
-                          input=payload, capture_output=True, text=True, cwd=str(REPO))
+                          input=payload, capture_output=True, text=True,
+                          encoding="utf-8", errors="replace", cwd=str(REPO))
     receipt = proc.stdout + proc.stderr
     assert "changelog-fragment" in receipt, receipt
     assert "not a single `- ` bullet list" in receipt, receipt
