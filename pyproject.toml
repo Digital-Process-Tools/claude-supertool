@@ -1,6 +1,6 @@
 [project]
 name = "claude-supertool"
-version = "0.27.0"
+version = "0.28.0"
 description = "Batched file operations for autonomous Claude Code runs. Collapses N reads/greps/globs into one Bash round-trip."
 readme = "README.md"
 requires-python = ">=3.9"
