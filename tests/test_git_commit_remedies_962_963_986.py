@@ -406,6 +406,97 @@ def test_an_apostrophe_path_survives_the_whole_refusal(tmp_path: Path) -> None:
     assert argv[1] == "git-commit:::MESSAGE:::it's.txt", argv
 
 
+# --------------------------------------------------------------------------
+# Second review of PR #1062 — the call sites the two fixes above did not reach
+# --------------------------------------------------------------------------
+
+def test_comma_split_remedy_caps_like_every_other_remedy(tmp_path: Path) -> None:
+    """The comma-guess remedy is a remedy, so the same honesty bar applies.
+
+    `_colon_remedy` grew a `total` parameter and two of its three call sites
+    were updated to pass one. This one kept calling it with a single argument,
+    which defaults `total` to `len(shown)` — so the cap/placeholder branch is
+    unreachable here and the list it is handed is built unbounded from the
+    comma split. 25 guessed paths went into one pasteable line with nothing
+    saying anything had been left out, which is the state the docstring three
+    lines above the call asserts cannot happen.
+    """
+    work = _repo(tmp_path)
+    lots = [f"h{i:03d}.txt" for i in range(1, 26)]
+    out = _run(["git-commit:::fix stuff:::" + ",".join(lots)], cwd=work)
+    remedy = [l for l in out.splitlines() if "git-commit:::MESSAGE:::" in l]
+    assert remedy, out
+    line = remedy[0]
+    named = [p for p in lots if p in line]
+    assert not named, f"a partial path list reads as complete: {line}"
+    assert "PATH" in line, line
+    assert "25 paths in all, 20 shown and 5 not shown" in out, out
+
+
+def test_a_short_comma_split_still_names_every_path(tmp_path: Path) -> None:
+    """The cap must not swallow the case the comma guess exists to answer."""
+    work = _repo(tmp_path)
+    out = _run(["git-commit:::fix stuff:::x.txt,y.txt"], cwd=work)
+    assert "git-commit:::MESSAGE:::x.txt:::y.txt" in out, out
+
+
+def test_colon_split_refusal_escapes_a_quote_for_toml() -> None:
+    """#751's `paths = [...]` never adopted `_toml_basic` either.
+
+    Same defect as _payload_remedy's, in the other refusal that prints a
+    payload example — raw `'"%s"' % p` quoting, so a `"` closes the string
+    and a `\\` is read as an escape. Built in-process, not on disk: `"` is
+    illegal in a Windows filename, so a fixture would assert nothing on the
+    platform whose separator makes the backslash case routine.
+    """
+    lines = commit._colon_split_refusal(
+        "fix", ["some prose", 'weird"note.txt', "back\\slash.txt"],
+        ["some prose"],
+    ).splitlines()
+    arr = [l for l in lines if l.strip().startswith("paths = [")]
+    assert arr, lines
+    assert arr[0].strip() == (
+        'paths = ["weird\\"note.txt", "back\\\\slash.txt"]'
+    ), arr[0]
+
+
+def test_colon_split_refusal_paths_round_trip_through_a_toml_parser() -> None:
+    """`src\\new\\tab.py` is the quiet half: it parses, as the wrong path.
+
+    `\\n` and `\\t` are both legal TOML escapes, so a Windows-shaped path
+    produced a payload that loads without complaint and stages something
+    that was never named.
+    """
+    tomllib = pytest.importorskip("tomllib")
+    paths = ['weird"note.txt', "src\\new\\tab.py", "sub/plain.txt"]
+    body = "\n".join(
+        l.strip() for l in commit._colon_split_refusal(
+            "fix", ["some prose"] + paths, ["some prose"]
+        ).splitlines()
+        if l.strip().startswith("paths = [")
+    )
+    assert tomllib.loads(body)["paths"] == paths
+
+
+def test_colon_split_refusal_suggestion_survives_an_apostrophe() -> None:
+    """The third site `_sh_quote` did not reach, and the likeliest to be hit.
+
+    The reconstructed subject is the caller's own prose, so an apostrophe in
+    it is ordinary English rather than an exotic filename — and it closes the
+    single-quoted shell word this line wraps the op in.
+    """
+    out = commit._colon_split_refusal(
+        "fix", ["it's a mess", "a.txt"], ["it's a mess"],
+    )
+    sug = [l.strip() for l in out.splitlines()
+           if l.strip().startswith("./supertool ")]
+    assert sug, out
+    argv = shlex.split(sug[0])
+    assert argv == [
+        "./supertool", "git-commit:::fix:it's a mess:::a.txt",
+    ], argv
+
+
 def test_the_amend_refusal_stamps_the_repo_it_refused_in(tmp_path: Path) -> None:
     """#692 — every refusal path names the repo and branch it happened in.
 

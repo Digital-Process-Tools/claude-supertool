@@ -154,6 +154,12 @@ def _colon_split_refusal(msg, paths, spilled):
     Reconstructs the message the caller almost certainly typed — the leading
     run of spilled segments, rejoined on ':' — and hands back both routes that
     carry a ':' intact. Nothing is staged and nothing is committed.
+
+    Both routes are quoted by the helpers rather than by hand. The subject
+    here is the caller's own prose, so an apostrophe in it is ordinary
+    English and it closed the single-quoted shell word; and `"%s"` is not
+    TOML quoting, so a path holding a `"` produced an unparseable payload and
+    one holding a `\\` produced a payload that parses as a different path.
     """
     rest = list(paths)
     head = []
@@ -175,11 +181,13 @@ def _colon_split_refusal(msg, paths, spilled):
     lines += [
         "  supertool's single-colon CLI splits on every ':', so a Conventional",
         "  Commits subject cannot survive it. Use a route that does not tokenize:",
-        "    ./supertool '%s'" % (suggestion,),
+        "    ./supertool " + _sh_quote(suggestion),
         "  or, for paths with spaces or a multi-line body:",
         "    ./supertool 'git-commit:@-' <<'EOF'",
         "    message = " + _TRIPLE + rebuilt + _TRIPLE,
-        "    paths = [" + ", ".join('"%s"' % p for p in rest or ["path/to/file"]) + "]",
+        "    paths = ["
+        + ", ".join(_toml_basic(p) for p in rest or ["path/to/file"])
+        + "]",
         "    EOF",
     ]
     return "\n".join(lines)
@@ -243,6 +251,14 @@ def _add_failure_lines(add, to_add):
 
     The comma split is offered as a question, not applied as a fact: `a,b.txt`
     is a legal filename, so a token git already knows is never taken apart.
+
+    The split is unbounded — one argument can hold any number of commas — so
+    it goes through the same cap as every other remedy in this file. Passing
+    only *shown* and letting *total* default made the placeholder branch
+    unreachable here, which is how 25 guessed pathspecs went into one
+    pasteable line under a docstring promising that cannot happen. Past the
+    cap the guesses are listed as well, because the count line claims what
+    the reader saw and nothing above it had shown them.
     """
     lines = [
         "ERROR: git add failed: %s"
@@ -259,7 +275,9 @@ def _add_failure_lines(add, to_add):
             split.append(p)
     if guessed:
         lines.append("  A ',' above is not a separator here. Did you mean:")
-        lines += _colon_remedy(split)
+        if len(split) > _LIST_CAP:
+            lines += _sample(split)
+        lines += _colon_remedy(split[:_LIST_CAP], len(split))
     return lines
 
 
