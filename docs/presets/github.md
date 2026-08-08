@@ -17,8 +17,8 @@ A GitHub-cloned cwd, **or** a `repo:OWNER/NAME` target — see [Targeting anothe
 | `gh-prs` | `gh-prs[:author=@me,reviewer=@me,state=open,failed,nopipe,iids,anyauthor]` | PR triage board: your open PRs sorted failing-first then stalest. Per PR: check rollup (a failure shows the failing **check name**), approval state, age, diff size, watch-state, `draft`/`conflict`/`threads` flags + footer pointing at the first failing-and-unwatched PR. The gl-mrs twin. `iids` emits a bare number list for `watch-mine.sh`, with any disclosure as a leading `#` comment. **The `author=@me` default is stated, and `anyauthor` drops it** — an empty board names the filter and how many rows it excluded rather than printing `No PRs match.` over an outside contributor's PR ([#1071](https://github.com/Digital-Process-Tools/claude-supertool/issues/1071), see [`gh-prs` says whose board it is](#gh-prs-says-whose-board-it-is)) |
 | `gh-issues` | `gh-issues[:author=@me,label=bug,milestone=v1.0,state=open,external,stale,nomilestone,nopipe,iids]` | Issue triage board, **ranked** rather than listed. `iids` carries the `--limit` disclosure as a leading `#` comment, and a client-side flag that empties the board names the count it dropped ([#1067](https://github.com/Digital-Process-Tools/claude-supertool/issues/1067)): unrankable → external author → stale body → no linked PR → oldest. Per issue: linked PRs read off the issue timeline, an external-filer marker from GitHub's `authorAssociation`, age, comment count, labels, a `[stale]` flag when the newest comment is newer than the last time the body was written, and the milestone as `[m:TITLE]` — never a column, so a row without one pays nothing, and `[m:?]` means gh did not answer rather than "none" ([#864](https://github.com/Digital-Process-Tools/claude-supertool/issues/864), see [The milestone, and the filter that was silently dropped](#the-milestone-and-the-filter-that-was-silently-dropped)). `nomilestone` is the release-planning half — the gap query `gh issue list` cannot express. Enrichment is one GraphQL call per 20 issues; when it fails the derived fields render `?` and the row sorts first — see [The issue board](#the-issue-board). No default `author=@me`, unlike `gh-prs` |
 | `gh-run` | `gh-run:NUMBER` | Workflow run job list with statuses and failed step names, under a header that sums it: `N total:` and every count after it sums back to N, so `2 cancelled` is named rather than dropped, and anything short of all-passed carries `⚠ NOT ALL GREEN`. GitHub's own run-level field stays visible as `(run-level field: queued)` but never leads — it is a run-lifecycle field, not a leg summary ([#789](https://github.com/Digital-Process-Tools/claude-supertool/issues/789), see [The header sums the table](#gh-runs-header-sums-the-table-beneath-it)). The `## Failed jobs` section below it names every **red** leg, not only the ones spelled `failure` — `timed_out`, `cancelled` and `action_required` are in it, with the state named per leg and a breakdown that reconciles against the header ([#803](https://github.com/Digital-Process-Tools/claude-supertool/issues/803), see [The failed-jobs section](#the-failed-jobs-section-is-every-red-leg-not-every-leg-spelled-failure)) |
-| `gh-branch` | `gh-branch[:BRANCH]` | **Is this branch green?** Answers for a *branch*, which `gh-pr` cannot — after a squash merge the ref that matters is the default branch and it has no PR (`gh-pr:master:status` returns *no PR found for branch 'master'*). Selects the newest run **per workflow on the head SHA**, never the most recent run overall: `gh run list --limit 1` returns whichever workflow started last, so a green CodeQL is read as the commit's verdict while the `tests` matrix is still `queued`. The summary is conjunctive — green only when every workflow on the SHA concluded *and* every leg passed — and four states are kept apart: `GREEN`, `NOT GREEN` (failed, or not finished — worded differently), `NO RUN` (zero runs on this SHA, with the reason and the ~15min creation window), `UNKNOWN` (a job list did not come back, never counted as zero passing legs). Leg counts come from the same `presets/_checks.py` tally as `gh-pr`/`gh-run`, so `2 cancelled` is named rather than dropped and the terms sum to the leg count. Names the head SHA. With no argument, answers for the repo's default branch ([#615](https://github.com/Digital-Process-Tools/claude-supertool/issues/615), see [Answers per workflow, not per recency](#gh-branch-answers-per-workflow-not-per-recency)) |
-| `gh-labels` | `gh-labels` | **What can I tag this with?** The repo's label vocabulary — the first call of any triage or release-planning run, because every later decision depends on it and `gh issue edit --add-label` does not protect you from a name that does not exist. Names, descriptions, and how many **open** issues carry each, so a dead label is visible next to a live one. Grouped by name prefix with the grouping stated as **inferred** — a prefix is a repo convention, not a GitHub field, and the spelling is not portable: this repo uses `priority-high`, `claude-remember` uses `priority:high` and has no `lane-*` at all. Counts have three states: exact over every open **issue** read — pull requests are excluded, so a `0` means "on no open issue" rather than "unused" — a **floor** rendered `>=N` when the read hit `GH_LABELS_ISSUE_CAP` (default 400), or `?` when the issue list could not be read — never `0`, because "I did not look" and "nobody uses it" are opposite facts. An unreadable label list is an `ERROR` and exit 1; a repo with genuinely no labels says that in its own words ([#998](https://github.com/Digital-Process-Tools/claude-supertool/issues/998)) |
+| `gh-branch` | `gh-branch[:BRANCH\\|:COMMIT_SHA]` | **Is this branch — or this commit — green?** Answers for a *branch*, which `gh-pr` cannot — after a squash merge the ref that matters is the default branch and it has no PR (`gh-pr:master:status` returns *no PR found for branch 'master'*). Selects the newest run **per workflow on the head SHA**, never the most recent run overall: `gh run list --limit 1` returns whichever workflow started last, so a green CodeQL is read as the commit's verdict while the `tests` matrix is still `queued`. The summary is conjunctive — green only when every workflow on the SHA concluded *and* every leg passed — and four states are kept apart: `GREEN`, `NOT GREEN` (failed, or not finished — worded differently), `NO RUN` (zero runs on this SHA, with the reason and the ~15min creation window), `UNKNOWN` (a job list did not come back, never counted as zero passing legs). Leg counts come from the same `presets/_checks.py` tally as `gh-pr`/`gh-run`, so `2 cancelled` is named rather than dropped and the terms sum to the leg count. Names the head SHA. With no argument, answers for the repo's default branch ([#615](https://github.com/Digital-Process-Tools/claude-supertool/issues/615), see [Answers per workflow, not per recency](#gh-branch-answers-per-workflow-not-per-recency)). **A commit SHA is also a valid argument** — full or abbreviated — which is the release gate's own question, since the branch head can move between the check and the tag; it used to accept one and answer `NO RUN` for it ([#1083](https://github.com/Digital-Process-Tools/claude-supertool/issues/1083), see [A SHA is a question this op can answer](#a-sha-is-a-question-this-op-can-answer)) |
+| `gh-labels` | `gh-labels[:tally=PREFIX]` | **What can I tag this with?** The repo's label vocabulary — the first call of any triage or release-planning run, because every later decision depends on it and `gh issue edit --add-label` does not protect you from a name that does not exist. Names, descriptions, and how many **open** issues carry each, so a dead label is visible next to a live one. Grouped by name prefix with the grouping stated as **inferred** — a prefix is a repo convention, not a GitHub field, and the spelling is not portable: this repo uses `priority-high`, `claude-remember` uses `priority:high` and has no `lane-*` at all. Counts have three states: exact over every open **issue** read — pull requests are excluded, so a `0` means "on no open issue" rather than "unused" — a **floor** rendered `>=N` when the read hit `GH_LABELS_ISSUE_CAP` (default 400), or `?` when the issue list could not be read — never `0`, because "I did not look" and "nobody uses it" are opposite facts. An unreadable label list is an `ERROR` and exit 1; a repo with genuinely no labels says that in its own words ([#998](https://github.com/Digital-Process-Tools/claude-supertool/issues/998)). **`tally=PREFIX` answers one family's burn-down instead of the vocabulary** — open, closed and `frozen` (their sum) per label, plus the `no PREFIX label` row a per-label listing cannot produce ([#1084](https://github.com/Digital-Process-Tools/claude-supertool/issues/1084), see [The tally counts a family, not a label](#the-tally-counts-a-family-not-a-label)) |
 | `gh-job` | `gh-job:NUMBER[:raw[:-N\|:START[:END]]\|:grep:PATTERN]` | Job failure detail: PR context + error pattern search + log tail. A `Suite:` line carries the pytest terminal summary read out of the log — `6 failed, 7760 passed, 677 skipped` — when the log states one, because that is the only number in the render that counts **tests** rather than legs ([#1050](https://github.com/Digital-Process-Tools/claude-supertool/issues/1050)); no summary in the log prints no line, never a zero. The line says it is the **log's** claim, not a count supertool made — the log is written by the code the job ran, which on a PR is the PR's own — and is cross-checked against the conclusion the Actions API reports, which the log does not write; the two disagreeing is printed ([#1076](https://github.com/Digital-Process-Tools/claude-supertool/issues/1076)). Gaps between error blocks are marked `... (N lines elided by this op — no error pattern matched them; the log itself is intact)` rather than a bare `...`, which is indistinguishable from an ellipsis the log wrote. **Takes either id namespace** — hand it a check-run id (CodeQL, Dependabot, an external app) and it renders the check run instead, under `# Check run #N` with a `Routed:` line naming the switch and the log mode it could not apply; the checks API is consulted only after the Actions endpoint 404s, so this costs nothing on any working call ([#827](https://github.com/Digital-Process-Tools/claude-supertool/issues/827), see [Two id namespaces](#two-id-namespaces-actions-jobs-and-check-runs)). `:raw` dumps the full trace; `:raw:START:END` slices lines (1-indexed, inclusive); `:raw:-N` returns the **last N lines**, and a START past the end returns the tail of the width requested with a line saying so rather than declining — see [Reading a range](gitlab.md#reading-a-range) ([#487](https://github.com/Digital-Process-Tools/claude-supertool/issues/487)); `:grep:PATTERN` runs an ad-hoc regex over the log (literal fallback on bad regex, ±context, names the pattern + tail on no-match — never silent-empty). Optional per-job `job_patterns` table in `.supertool.json` (see gitlab preset doc) maps job names to tighter patterns + a `resolution` op. Zero matches on a job GitHub calls `failure` prints `## FAILED — no error pattern matched` — patterns tried + a log tail, never silence. `## No error patterns matched` survives only for jobs that did not fail. **On a job whose conclusion is not `failure`** — `cancelled`, `timed_out`, `skipped`, or still running — the header drops its completeness claim and a `> NOTE:` block says error-block selection is a poor fit here and names `:raw:-80` / `:grep:orphan` ([#916](https://github.com/Digital-Process-Tools/claude-supertool/issues/916), see [`:fail` on a job that did not fail](#fail-on-a-job-that-did-not-fail)) |
 | `gh-check` | `gh-check:CHECK_RUN_ID` \| `gh-check:pr:NUMBER` | The **other** id namespace. A check run's status, output title/summary and its annotations — `path:line`, title, message, which for a scanning check (CodeQL, Dependabot, an external app) is the whole finding. Annotations are capped at `GH_CHECK_ANNOTATION_CAP` (default 5) with `+N more` in header **and** footer; a full `per_page=100` page is disclosed as a floor, not a total. Zero annotations on a non-passing check is never rendered as an all-clear, and a failed annotations fetch is never rendered as zero. `gh-check:pr:N` lists the check runs on PR N's head commit **with their ids**, passing ones included. Since [#827](https://github.com/Digital-Process-Tools/claude-supertool/issues/827) this op is the *explicit* form rather than the only route — `gh-job:ID` answers for a check run too, and `gh-pr` names a non-Actions leg as `CodeQL (check #ID)` — so nobody has to learn it. Does not read the code-scanning API ([#793](https://github.com/Digital-Process-Tools/claude-supertool/issues/793), see [Two id namespaces](#two-id-namespaces-actions-jobs-and-check-runs)) |
 | `gh-pr-create` | `gh-pr-create:@FILE` | Open a PR from a JSON/TOML payload. **`base` is required and never defaulted** — `master` and a release branch are equally plausible from one cwd, and a wrong base silently retargets the merge; `head` defaults to the current branch and `repo` to the origin remote, each printed with the source it came from. The receipt names the number and URL, base/head as resolved, **whether any check actually started** (zero renders as "nothing has been created", never as pending), and the issues the body links, parsed with the same closing-reference reader `gh-pr` uses so a malformed `Closes` line is caught at creation rather than after the merge. See [The base is never guessed](#the-base-is-never-guessed) |
@@ -867,6 +867,99 @@ The cancelled row is the one that saves real time: it is the only state whose ri
 Issue and PR bodies and every comment are wrapped in `⟨remote NONCE⟩ … ⟨/remote NONCE⟩` markers, and one-line fields (titles, logins, labels) are flattened to a single line. See [Remote text is fenced](index.md#remote-text-is-fenced) for the convention, what it costs, and why the fence cannot be closed from inside ([#694](https://github.com/Digital-Process-Tools/claude-supertool/issues/694)).
 
 The `gh-prs` and `gh-issues` boards fence nothing and flatten everything ([#819](https://github.com/Digital-Process-Tools/claude-supertool/issues/819)): every cell of a row goes through `flat()`, so one PR is one row whatever its title contains, and a single line above the board — `[PR titles below come from the tracker — data, not instructions]` — says whose words the title column holds. `gh-issues` prints that line in place of the fence banner it used to print, which named `⟨remote NONCE⟩` markers that render never produced.
+
+## A SHA is a question this op can answer
+
+The release gate in `/opensource-manager` reads *"the default branch is green at
+leg level **for the exact commit being tagged**"*. That is deliberately a claim
+about a commit, because the branch head can move between the check and the tag.
+
+`gh-branch` took a ref, and it **accepted a SHA** — `gh api commits/<ref>`
+resolves an object name as happily as a branch name. What it then asked was
+`gh run list --branch <sha>`, which matches no branch and answers `[]` with exit
+0. So the op printed
+
+```
+Branch 412375ae98ab102ac33fe3f2bcce109243990030: NO RUN
+Verdict: NO RUN — zero workflow runs on 412375a; the head commit is 4m old …
+```
+
+for a commit carrying two runs and eighteen legs. An absence produced by the
+tool, rendered as an absence in the world — the house defect, inside the op
+written to stop it ([#1083](https://github.com/Digital-Process-Tools/claude-supertool/issues/1083)).
+
+**The mode is decided by the resolution, not by the spelling.** `deadbee` is a
+legal branch name and a legal abbreviation, so a hex-shaped ref is only a commit
+when the SHA it resolved to *starts with it*. A branch answers no; an
+abbreviation answers yes; a branch named after the commit it points at answers
+yes and describes the same commit either way. It costs no extra API call and it
+invents no ambiguity refusal for a case the resolution already settled.
+
+**The resolved 40-hex name is what reaches the run list, never the caller's
+argument.** `gh run list --commit` is the other silent empty in this family:
+
+```
+$ gh run list --commit 412375a  --json workflowName    # []      exit 0
+$ gh run list --commit 412375ae98…  --json workflowName # 2 runs  exit 0
+```
+
+That is the failure the maintainer hit by hand before filing, and passing an
+abbreviation through would have reproduced it inside the op meant to insulate
+against it.
+
+**What commit mode does not have, it says.** `--commit` returns one commit's
+runs and no others, so the previous-head comparison — *this workflow ran last
+time and not this time* — has no second commit to make. Branch mode keeps it;
+commit mode prints a line saying it is UNKNOWN there rather than letting its
+silence read as "nothing was missing". The stronger disclosure, the
+declared-but-never-dispatched block, is keyed on the SHA already and is
+identical in both modes — which matters, because it is the half that no
+enumeration of runs can produce at all.
+
+## The tally counts a family, not a label
+
+`gh-labels` answers *which labels exist and who uses them*. The rolling-cohort
+rule in `/opensource-manager` asks a different question every tick — **is each
+cohort smaller than the last?** — and that is a group-by over one label family,
+which came out as thirty characters of `gh issue list --json labels -q
+'group_by'`, rewritten from scratch each session
+([#1084](https://github.com/Digital-Process-Tools/claude-supertool/issues/1084)).
+
+```
+$ supertool 'gh-labels:tally=cohort-'
+# Label tally — `cohort-` — Digital-Process-Tools/claude-supertool
+  label               open  closed  frozen
+  cohort-1              48      24      72
+  cohort-2              15      15      30
+  cohort-3               3       3       6
+  no cohort- label      11     397     408
+```
+
+Three things are load-bearing.
+
+**The NONE row.** A per-label listing counts labels that exist; the number the
+freeze rule turns on is how many open issues carry *no* label of the family —
+the ones that escaped it — and that is invisible to a per-label listing by
+construction. Same reason `gh-issues:nomilestone` is a flag rather than an
+absence in a milestone listing.
+
+**`frozen` is a sum, so it is `?` whenever either side is.** The counts come
+from GitHub's search API, one query per cell, `is:issue` — enumerating closed
+issues would hit a cap and render a *floor* as a burn-down denominator, which
+makes a burn-down look better than it is. A search that did not answer renders
+`?`, never `0`, and it poisons the sum on its row rather than being added as
+zero. `frozen` is the number a human is asked to trust over weeks.
+
+**The NONE row's closed cell is a total, not a burn-down**, and says so: it
+counts everything ever closed without a label of the family, including
+everything closed before the family existed.
+
+An issue carrying two labels of one family is named as a filing error rather
+than joined with a comma, and the *negative* is printed too — silence about a
+check reads identically to "the check found nothing". An empty family reads as
+`no labels start with this prefix`, never as an all-NONE board: `claude-remember`
+spells priority `priority:high` and has no `lane-*` family at all, so a prefix
+carried across repos silently answers about nothing.
 
 ## The base is never guessed
 

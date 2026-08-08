@@ -46,6 +46,7 @@ from __future__ import annotations
 import concurrent.futures
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -132,6 +133,43 @@ def _run_id(run: object) -> int:
         return int(run.get("databaseId"))  # type: ignore[union-attr]
     except (AttributeError, TypeError, ValueError):
         return -1
+
+
+# A ref that could abbreviate an object name. Seven is git's own floor for an
+# abbreviation and the length every tool prints; below it `gh api commits/<x>`
+# refuses anyway. Upper bound is a full name.
+_HEX_REF = re.compile(r"^[0-9a-fA-F]{7,40}$")
+
+MODE_BRANCH = "branch"
+MODE_COMMIT = "commit"
+
+
+def ref_mode(ref: str, resolved_sha: str) -> str:
+    """`commit` or `branch` — decided by the resolution, not by the spelling.
+
+    `gh-branch` has always taken a ref, and `gh api commits/<ref>` resolves a
+    branch name and an object name alike. So the op *accepted* a SHA and then
+    asked `gh run list --branch <sha>`, which matches no branch and answers
+    `[]` with exit 0 — and zero runs rendered as `NO RUN — zero workflow runs
+    on 412375a` for a commit carrying two runs and eighteen legs (#1083). An
+    absence produced by the tool, printed as an absence in the world, inside
+    the op written to stop exactly that.
+
+    The discriminator is free. Anything hex-shaped *might* abbreviate an object
+    name, but `deadbee` is also a legal branch name — so the question is
+    whether what the ref resolved to **starts with the ref**. A branch answers
+    no; an abbreviation answers yes; and a branch that happens to be named
+    after the commit it points at answers yes and is right either way, because
+    both readings describe the same commit. No second API call, and no
+    ambiguity refusal invented for a case the resolution already decided:
+    GitHub 422s an abbreviation it cannot resolve, and that is an error, not a
+    guess.
+    """
+    ref = str(ref or "").strip()
+    sha = str(resolved_sha or "").strip().lower()
+    if not ref or not _HEX_REF.match(ref):
+        return MODE_BRANCH
+    return MODE_COMMIT if sha.startswith(ref.lower()) else MODE_BRANCH
 
 
 def previous_head(runs: object, sha: str) -> tuple[str, set]:
@@ -492,7 +530,7 @@ def _gh(argv: list, timeout: int = 20):
                           timeout=timeout, encoding="utf-8", errors="replace")
 
 
-def _format_error(stderr: str, what: str) -> str:
+def _format_error(stderr: str, what: str, commit: bool = False) -> str:
     s = (stderr or "").lower()
     if "github host" in s or "not a git repository" in s or "git remotes" in s:
         return _repo_target.no_repo_error("gh-branch:master")
@@ -507,6 +545,24 @@ def _format_error(stderr: str, what: str) -> str:
         # written for and wrong for a ref the caller typed as a name.
         target = _repo_target.target()
         where = f" (gh repo view {target})" if target else ""
+        # A hex-shaped ref that does not resolve is a different mistake from a
+        # misspelled branch, and 422 `No commit found for SHA` is the same
+        # response for an unknown name and one too short to be unambiguous
+        # (#1083). Naming the branch hint at it sends the reader to check a
+        # spelling that was never the problem.
+        #
+        # Flagged by the caller rather than sniffed out of `what`: sniffing is
+        # what the first version did, and `_run_list`'s "workflow runs for X"
+        # never started with `commit `, so commit mode reached the branch hint
+        # anyway — the leak this whole change exists to close, reintroduced one
+        # function along.
+        if commit:
+            return (f"ERROR: {what} not found "
+                    f"{_repo_target.not_found_scope()}. GitHub answers the "
+                    f"same way for an object name that does not exist, one "
+                    f"that is not pushed, and one too short to be "
+                    f"unambiguous — which of those it is is UNKNOWN from "
+                    f"here. Try the full 40-character name{where}.")
         return (f"ERROR: {what} not found {_repo_target.not_found_scope()}. "
                 f"Check the spelling, or that the branch is pushed"
                 f"{where}.")
@@ -547,7 +603,12 @@ def _repo_identity():
 
 
 def _head_commit(ref: str):
-    """`(sha, age_secs, error)` for the branch's head commit.
+    """`(sha, age_secs, error)` for the commit this ref names.
+
+    A branch's head, or — since #1083 — the commit itself, because `gh api
+    commits/<ref>` resolves both and the *mode* is decided from what comes
+    back. So this runs before anything knows which question was asked, and its
+    answer is what decides.
 
     Resolved from the *ref*, never from the run list. Deriving the SHA from the
     newest run would make "no run exists for this commit" — the state #615's
@@ -559,9 +620,15 @@ def _head_commit(ref: str):
     except FileNotFoundError:
         return "", None, "ERROR: gh not found — install from https://cli.github.com"
     except subprocess.TimeoutExpired:
-        return "", None, f"ERROR: gh timed out resolving branch {ref!r}"
+        return "", None, f"ERROR: gh timed out resolving ref {ref!r}"
     if r.returncode != 0:
-        return "", None, _format_error(r.stderr, f"branch {ref!r}")
+        # The mode is not established yet — that needs the resolved SHA this
+        # call is failing to produce. The *shape* is all there is, and it is
+        # enough to pick the right hint.
+        is_commit = bool(_HEX_REF.match(str(ref or "")))
+        kind = "commit" if is_commit else "branch"
+        return "", None, _format_error(r.stderr, f"{kind} {ref!r}",
+                                       commit=is_commit)
     try:
         d = json.loads(r.stdout)
     except json.JSONDecodeError:
@@ -584,9 +651,19 @@ def _age_secs(committer: dict):
     return int((datetime.now(timezone.utc) - when).total_seconds())
 
 
-def _run_list(ref: str):
+def _run_list(ref: str, sha: str = ""):
+    """The runs to select from, asked for by whichever key can answer.
+
+    `sha` switches the selector to `--commit`, and the caller passes the
+    **resolved 40-hex name**, never the ref it was typed as. `gh run list
+    --commit 412375a` returns `[]` with exit 0; `--commit 412375ae98…` returns
+    the two runs on it (measured 2026-08-08). That silent empty is the failure
+    the maintainer hit by hand in #1083, and passing an abbreviation here would
+    reproduce it inside the op meant to insulate against it.
+    """
+    selector = ["--commit", sha] if sha else ["--branch", ref]
     try:
-        r = _gh(["gh", "run", "list", "--branch", ref, "--limit",
+        r = _gh(["gh", "run", "list", *selector, "--limit",
                  str(RUN_LIST_LIMIT), "--json",
                  "workflowName,headSha,databaseId,status,conclusion,event,"
                  "createdAt,attempt"] + _repo_target.gh_args())
@@ -595,7 +672,9 @@ def _run_list(ref: str):
     except subprocess.TimeoutExpired:
         return None, f"ERROR: gh timed out listing runs for {ref!r}"
     if r.returncode != 0:
-        return None, _format_error(r.stderr, f"workflow runs for {ref!r}")
+        what = (f"workflow runs on commit {sha[:7]}" if sha
+                else f"workflow runs for {ref!r}")
+        return None, _format_error(r.stderr, what, commit=bool(sha))
     try:
         return json.loads(r.stdout or "[]"), ""
     except json.JSONDecodeError:
@@ -742,13 +821,22 @@ def main() -> int:
         print(err)
         return 1
 
-    runs, err = _run_list(ref)
+    mode = ref_mode(ref, sha)
+    runs, err = _run_list(ref, sha if mode == MODE_COMMIT else "")
     if err:
         print(err)
         return 1
 
     selected = latest_per_workflow(runs, sha)
-    prev_sha, prev_names = previous_head(runs, sha)
+    if mode == MODE_COMMIT:
+        # `--commit` returns one commit's runs, so there is no second commit in
+        # the list to be the previous head. Branch mode's "ran last time and
+        # not this time" evidence is simply not available here — and silence
+        # about a check that did not run reads as the check passing, which is
+        # the defect this op exists for. Said out loud, below the table.
+        prev_sha, prev_names = "", set()
+    else:
+        prev_sha, prev_names = previous_head(runs, sha)
     missing = sorted(prev_names - set(selected))
 
     legs: dict = {}
@@ -781,9 +869,14 @@ def main() -> int:
     state, sentence = verdict(selected, legs, missing, sha, age, _GRACE,
                               marker, scope=scope)
 
-    print(f"# Is `{ref}` green? — {repo}")
-    print(f"Branch {ref}: {state}")
-    print(f"Head: {sha[:7]} ({sha}) — {_duration(age)} old")
+    if mode == MODE_COMMIT:
+        print(f"# Is commit `{sha[:7]}` green? — {repo}")
+        print(f"Commit {sha[:7]}: {state}")
+        print(f"Commit: {sha[:7]} ({sha}) — {_duration(age)} old")
+    else:
+        print(f"# Is `{ref}` green? — {repo}")
+        print(f"Branch {ref}: {state}")
+        print(f"Head: {sha[:7]} ({sha}) — {_duration(age)} old")
     print(f"Verdict: {sentence}")
 
     if selected:
@@ -811,6 +904,15 @@ def main() -> int:
         print()
         for line in scope_lines:
             print(line)
+
+    if mode == MODE_COMMIT:
+        print()
+        print("Previous head: not read in commit mode — `gh run list --commit` "
+              "returns this commit's runs and no others, so which workflows "
+              "ran on the commit before this one is UNKNOWN here. `gh-branch:"
+              "BRANCH` carries that comparison. What IS covered is the "
+              f"declared set at {sha[:7]}, above, which is the stronger of the "
+              "two and does not depend on history.")
 
     if missing:
         print()
