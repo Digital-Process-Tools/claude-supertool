@@ -61,6 +61,57 @@ def test_it_is_documented():
     assert (ROOT / "changelog.d" / "1053.fixed.md").exists(), "no fragment"
 """
 
+# The directory is bound on one line and looked up on the next, so neither
+# statement alone carries both halves of the shape.
+SHAPE_SPLIT_STATEMENT = """
+def test_it_is_documented():
+    frag_dir = ROOT / "changelog.d"
+    assert frag_dir.glob("1053.*.md")
+"""
+
+SHAPE_SPLIT_IS_FILE = """
+def test_it_is_documented():
+    frag_dir = ROOT / "changelog.d"
+    assert (frag_dir / "1053.added.md").is_file()
+"""
+
+# Binds a name from a path that names the directory and looks nothing up.
+# `tests/test_changelog_fragment_whitelist_934.py` does exactly this and its
+# assertion is correct and release-proof; a detector that merged the two taint
+# sets would refuse it.
+READS_THE_README = """
+def test_the_readme_prescribes_the_indent():
+    readme = (REPO / "changelog.d" / "README.md").read_text(encoding="utf-8")
+    assert "four-space" not in readme, "still prescribes the old injection"
+"""
+
+# The assembler's own suites, in shape: a module-level helper names the
+# directory under `tmp_path`, and the tests then assert what a refused or a
+# `--keep` run left there. Nothing in that survives a release badly, because
+# nothing in it is the repository's own `changelog.d`. Seven real assertions
+# across four files have this shape, and a scope-insensitive detector refuses
+# every one of them.
+ASSEMBLER_FIXTURE = """
+def test_readme_is_ignored_rather_than_refused(tmp_path, capsys):
+    changelog, frag_dir = _repo(tmp_path, {
+        "README.md": "# changelog.d\\n\\nHow this works.\\n",
+        "906.added.md": "- x\\n",
+    })
+    assert (frag_dir / "README.md").exists(), "the directory's doc must survive"
+
+
+def _repo(tmp_path, fragments):
+    root = tmp_path / "repo"
+    frag_dir = root / "changelog.d"
+    frag_dir.mkdir(parents=True)
+    return root / "CHANGELOG.md", frag_dir
+
+
+def test_a_refused_run_consumes_nothing(tmp_path, capsys):
+    changelog, frag_dir = _repo(tmp_path, {"906.added.md": "- x\\n"})
+    assert (frag_dir / "906.added.md").exists(), "a refused run must consume nothing"
+"""
+
 ACCEPTED_941 = """
 def test_a_changelog_fragment_exists() -> None:
     fragments = list((ROOT / "changelog.d").glob("941.*.md"))
@@ -88,6 +139,8 @@ def test_the_directory_is_mentioned(capsys):
     (SHAPE_GLOB, "glob asserted inline"),
     (SHAPE_GLOB_VIA_NAME, "glob bound to a name, then asserted"),
     (SHAPE_EXISTS, "exists() with a message"),
+    (SHAPE_SPLIT_STATEMENT, "directory bound on one line, globbed on the next"),
+    (SHAPE_SPLIT_IS_FILE, "directory bound on one line, is_file() on the next"),
 ])
 def test_the_detector_refuses_every_shipped_and_near_shape(source, label):
     findings = fragment_existence_assertions(source, "tests/test_example.py")
@@ -101,6 +154,8 @@ def test_the_detector_refuses_every_shipped_and_near_shape(source, label):
 @pytest.mark.parametrize("source,label", [
     (ACCEPTED_941, "#941's accepted fragment-or-CHANGELOG shape"),
     (UNRELATED, "an unrelated existence assertion and a substring check"),
+    (READS_THE_README, "a name bound to a changelog.d path that looks nothing up"),
+    (ASSEMBLER_FIXTURE, "a tmp_path fixture directory bound by a sibling helper"),
     ("", "an empty module"),
 ])
 def test_the_detector_accepts_what_survives_a_release(source, label):
@@ -139,7 +194,11 @@ def test_the_sweep_covers_every_test_module():
     found = {path.name for path in suite_modules(REPO)}
     assert Path(__file__).name in found
     assert "test_changelog_blank_before_heading_1113.py" in found
-    assert len(found) > 100, len(found)
+    # 474 at the time of writing. The floor is close to the real number on
+    # purpose: `> 100` also passes with three quarters of the suite silently
+    # unscanned, which is the shape of the bug this test exists to catch.
+    # Raise it when it starts failing for the boring reason.
+    assert len(found) >= 450, len(found)
 
 
 # ── the helper ───────────────────────────────────────────────────────────
@@ -166,6 +225,14 @@ def test_the_helper_accepts_any_section_and_any_slug(tmp_path):
 def test_the_helper_accepts_a_released_entry_after_the_fragment_is_consumed(tmp_path):
     root = _tree(tmp_path, changelog="# Changelog\n\n- entry ([#1053](x)). Body.\n")
     assert_change_is_findable(1053, root)
+
+
+def test_the_helper_does_not_accept_another_issues_fragment(tmp_path):
+    """A `return` for anything, or a glob loose enough to match a neighbour,
+    both pass every accepting test above. This is what rules them out."""
+    root = _tree(tmp_path, fragments=["999.added.md", "10530.added.md"])
+    with pytest.raises(AssertionError, match="#1053"):
+        assert_change_is_findable(1053, root)
 
 
 def test_the_helper_refuses_when_the_change_is_findable_in_neither(tmp_path):

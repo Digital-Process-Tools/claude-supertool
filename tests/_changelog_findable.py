@@ -37,9 +37,11 @@ Python, no `assert` in the suite tests an expression that both names
 a local name bound to such an expression. It reads the asserted expression and
 never the failure message, because the accepted form names
 `changelog.d/941.<section>.md` in its own message and refusing that would refuse
-the shape this file prescribes. It is deliberately scope-insensitive: a name
-bound anywhere in a module taints that name everywhere in it, which over-reports
-rather than under-reports, and over-reporting here is a sentence someone reads.
+the shape this file prescribes. A name is tracked in the scope that binds it —
+the module, or the function — and not beyond, because the assembler's own suites
+have a module-level `_repo()` helper that binds `frag_dir = root / "changelog.d"`
+under `tmp_path`, and seven correct assertions about what a *refused* run leaves
+on disk are made against that fixture in other functions.
 
 **What it does not establish** is that no test can be broken by a release by
 some other route — an indirection through a helper, a fixture, a path built from
@@ -105,7 +107,20 @@ def _string_constants(node: ast.AST) -> List[str]:
 
 
 def _names_the_fragment_dir(node: ast.AST) -> bool:
-    return any(FRAGMENT_DIR in text for text in _string_constants(node))
+    """Whether any string under `node` spells the directory *as a path*.
+
+    A path component (`root / "changelog.d"`) or a path prefix
+    (`"changelog.d/906.added.md"`, either separator, because a Windows-spelled
+    literal is still a path). Not a mere mention: `tests/test_changelog_
+    fragments_906.py` stages a fixture whose *content* is
+    `"# changelog.d\\n\\nHow this works.\\n"`, and a substring test read that as
+    the test naming the directory and refused a correct assertion two lines
+    below it.
+    """
+    return any(text == FRAGMENT_DIR
+               or FRAGMENT_DIR + "/" in text
+               or FRAGMENT_DIR + "\\" in text
+               for text in _string_constants(node))
 
 
 def _existence_calls(node: ast.AST) -> List[str]:
@@ -119,39 +134,93 @@ def _referenced_names(node: ast.AST) -> Set[str]:
     return {child.id for child in ast.walk(node) if isinstance(child, ast.Name)}
 
 
-def fragment_existence_assertions(source: str, filename: str) -> List[str]:
-    """Findings for one module's source, each naming the file and the line.
+#: A `lambda` binds no name a later statement can assert on, so it is a barrier
+#: for the walk but never a scope to descend into.
+_BARRIERS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
 
-    A finding is an `assert` whose *tested expression* both names
-    `changelog.d` and calls an existence operation on it — or asserts a local
-    name bound to such an expression somewhere in the module.
+
+def _own_nodes(scope: ast.AST) -> List[ast.AST]:
+    """Every node under `scope` that is not inside a nested function."""
+    out: List[ast.AST] = []
+    stack = list(ast.iter_child_nodes(scope))
+    while stack:
+        node = stack.pop()
+        out.append(node)
+        if not isinstance(node, _BARRIERS):
+            stack.extend(ast.iter_child_nodes(node))
+    return out
+
+
+def _nested_functions(scope: ast.AST) -> List[ast.AST]:
+    """The function definitions immediately inside `scope`, at any block depth."""
+    return [node for node in _own_nodes(scope)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
+
+
+def _scan_scope(scope: ast.AST, filename: str, dir_names: Set[str],
+                lookup_names: Set[str]) -> List[str]:
+    """Findings in one scope and every scope nested in it.
+
+    Two name sets, because the shape splits across statements in two different
+    places. `dir_names` is every local bound to an expression that *names* the
+    directory — the assertion may then do the looking (`frag = ROOT /
+    "changelog.d"` … `assert frag.glob("1053.*.md")`). `lookup_names` is the
+    narrower set that also did the looking, for a bare `assert fragments`.
+
+    The two are deliberately not one set. `readme = (REPO / "changelog.d" /
+    "README.md").read_text(...)` binds a name that *names* the directory and
+    looks nothing up, and `tests/test_changelog_fragment_whitelist_934.py` then
+    asserts a substring of it — a correct, release-proof assertion that a single
+    merged set would refuse.
     """
-    tree = ast.parse(source, filename=filename)
+    dir_names = set(dir_names)
+    lookup_names = set(lookup_names)
+    own = _own_nodes(scope)
 
-    tainted: Set[str] = set()
-    for node in ast.walk(tree):
+    for node in own:
         if not isinstance(node, (ast.Assign, ast.AnnAssign)) or node.value is None:
             continue
-        if not (_names_the_fragment_dir(node.value) and _existence_calls(node.value)):
+        if not _names_the_fragment_dir(node.value):
             continue
+        bound: Set[str] = set()
         for target in (node.targets if isinstance(node, ast.Assign) else [node.target]):
-            tainted.update(_referenced_names(target))
+            bound |= _referenced_names(target)
+        dir_names |= bound
+        if _existence_calls(node.value):
+            lookup_names |= bound
 
     findings: List[str] = []
-    for node in ast.walk(tree):
+    for node in own:
         if not isinstance(node, ast.Assert):
             continue
         calls = _existence_calls(node.test)
-        if _names_the_fragment_dir(node.test) and calls:
+        names = _referenced_names(node.test)
+        if calls and (_names_the_fragment_dir(node.test) or names & dir_names):
             how = "calls " + ", ".join(name + "()" for name in calls)
-        elif _referenced_names(node.test) & tainted:
+        elif names & lookup_names:
             how = "asserts a name bound to a " + FRAGMENT_DIR + " lookup"
         else:
             continue
         findings.append(
             "{0}:{1}: this assertion tests that a {2} path exists ({3}) — {4}"
             .format(filename, node.lineno, FRAGMENT_DIR, how, _REMEDY))
+
+    for nested in _nested_functions(scope):
+        findings.extend(_scan_scope(nested, filename, dir_names, lookup_names))
     return findings
+
+
+def fragment_existence_assertions(source: str, filename: str) -> List[str]:
+    """Findings for one module's source, each naming the file and the line.
+
+    A finding is an `assert` that calls an existence operation on something
+    that names `changelog.d` — spelled inline, or reached through a name bound
+    in the same scope or an enclosing one — or that asserts a name bound to a
+    `changelog.d` existence lookup.
+    """
+    tree = ast.parse(source, filename=filename)
+    return sorted(_scan_scope(tree, filename, set(), set()),
+                  key=lambda line: int(line.split(":")[1]))
 
 
 def suite_modules(root: Path = REPO_ROOT) -> List[Path]:

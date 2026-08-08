@@ -57,6 +57,10 @@ EMPTY_UNRELEASED = CHANGELOG.replace(
 
 """, "")
 
+# No `## [Unreleased]` heading at all — the other splice in `assemble`, which
+# inserts against `lines[:anchor]` with no `[""]` of its own.
+NO_UNRELEASED = EMPTY_UNRELEASED.replace("## [Unreleased]\n\n", "")
+
 FIX_FRAGMENT = "- **A fix** ([#1113](https://example/1113)). Body.\n"
 ADD_FRAGMENT = "- **A second change** ([#1053](https://example/1053)). Body.\n"
 
@@ -95,10 +99,25 @@ def test_assembled_release_is_separated_from_the_heading_below_it(tmp_path, caps
         + repr(crowded_headings(text)))
 
 
-def test_it_holds_with_an_empty_unreleased_section(tmp_path, capsys):
-    """The other insertion branch — `unreleased_at is None` has its own splice."""
+def test_it_holds_when_unreleased_is_present_but_empty(tmp_path, capsys):
+    """The heading is still there, so this is the same splice with nothing to
+    fold — not the `unreleased_at is None` branch, which is below."""
     changelog, frag_dir = _repo(tmp_path, {"1113.fixed.md": FIX_FRAGMENT},
                                 changelog=EMPTY_UNRELEASED)
+    code = asm.main(["--version", "0.24.0", "--date", "2026-08-08",
+                     "--changelog", str(changelog), "--dir", str(frag_dir)])
+    capsys.readouterr()
+    assert code == asm.OK
+    text = changelog.read_text(encoding="utf-8")
+    assert crowded_headings(text) == [], repr(crowded_headings(text))
+
+
+def test_it_holds_with_no_unreleased_heading_at_all(tmp_path, capsys):
+    """`unreleased_at is None` — the branch that splices with no `[""]` of its
+    own, and the one a file predating `## [Unreleased]` would take."""
+    changelog, frag_dir = _repo(tmp_path, {"1113.fixed.md": FIX_FRAGMENT},
+                                changelog=NO_UNRELEASED)
+    assert "## [Unreleased]" not in NO_UNRELEASED
     code = asm.main(["--version", "0.24.0", "--date", "2026-08-08",
                      "--changelog", str(changelog), "--dir", str(frag_dir)])
     capsys.readouterr()
