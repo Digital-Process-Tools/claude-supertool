@@ -307,12 +307,39 @@ def _worktree_changes(git_fn=None):
     return modified, untracked, ""
 
 
-# How many paths a listing prints before it starts counting instead. Shared
-# with _colon_remedy, which needs to know whether the list above it was the
-# whole set: a remedy is honest only in reference to what was actually shown.
+# How many paths a *single* listing prints before it starts counting instead.
+# A caller that prints two capped lists has shown up to 2*_LIST_CAP paths, so
+# neither remedy below re-derives "how many did the reader see" from this
+# constant: both are handed the list that was actually printed, plus the true
+# total. Deriving it was the #963 defect surviving inside the #963 fix.
 _LIST_CAP = 20
 
 _SEPARATOR_NOTE = "Paths are separated by ':::' — not by commas, not by spaces."
+
+
+def _sh_quote(word):
+    """One POSIX shell word, safe for a path containing an apostrophe.
+
+    The suggestion lines wrap the op in single quotes, so `it's.txt` closed
+    the string early and the pasted command was a shell syntax error. Always
+    quoting (rather than `shlex.quote`, which leaves ordinary words bare)
+    keeps every existing line byte-identical while fixing this one.
+    """
+    return chr(39) + word.replace(chr(39), chr(39) + chr(34) + chr(39) + chr(34) + chr(39)) + chr(39)
+
+
+def _toml_basic(value):
+    """One TOML basic string — the `paths = [...]` array is real TOML.
+
+    Paths came out of `git status -z` unquoted on purpose, so that spaces and
+    non-ASCII bytes survive (#1003); a `"` or a `\\\\` in one of them then made
+    the payload this op suggests unparseable by the payload route it suggests
+    it to.
+    """
+    out = value.replace(chr(92), chr(92) * 2).replace(chr(34), chr(92) + chr(34))
+    for raw, esc in ((chr(10), "n"), (chr(13), "r"), (chr(9), "t")):
+        out = out.replace(raw, chr(92) + esc)
+    return chr(34) + out + chr(34)
 
 
 def _sample(paths, cap=_LIST_CAP):
@@ -323,44 +350,61 @@ def _sample(paths, cap=_LIST_CAP):
     return lines
 
 
-def _colon_remedy(paths, message="MESSAGE"):
-    """The whole path list, or a visible placeholder — never a subset (#963).
+def _colon_remedy(shown, total=None, message="MESSAGE"):
+    """Every path that was printed, or a visible placeholder — never a subset.
 
     A remedy naming the first three of fifteen paths the reader was *just
     shown* is not an abbreviation. Pasted, it stages three, commits, and
     prints a success receipt; nothing in the line itself says the other
     twelve were dropped. That is a remedy which produces the wrong commit
     while carrying the tool authority a refusal lends it — the same failure
-    as a checker reporting ok when it never ran, one layer along.
+    as a checker reporting ok when it never ran, one layer along (#963).
 
-    Past _LIST_CAP the list above is itself truncated, so naming "all of it"
-    is not available: dumping 200 pathspecs into a suggestion is its own
-    defect, and dumping the first 20 of 200 is the original one. The third
-    state is a placeholder that cannot be mistaken for an answer.
+    *shown* is the list the caller actually printed and *total* how many
+    there were; when they differ, naming "all of it" is not available and the
+    third state is a placeholder that cannot be mistaken for an answer.
+    Dumping 200 pathspecs into a suggestion is its own defect, and dumping
+    the first 20 of 200 is the original one.
+
+    Both are parameters rather than something re-derived from _LIST_CAP,
+    because a caller printing *two* capped lists has shown up to twice the
+    cap. Computing it here announced `20 shown and 10 not shown` over two
+    complete lists of 15 — a false claim about the tool's own output, in the
+    line that exists to stop exactly that.
     """
-    head = "    ./supertool " + chr(39) + "git-commit:::" + message + ":::"
-    if len(paths) <= _LIST_CAP:
-        return [head + ":::".join(paths) + chr(39), "  " + _SEPARATOR_NOTE]
+    total = len(shown) if total is None else total
+    head = "    ./supertool "
+    stem = "git-commit:::" + message + ":::"
+    if total <= len(shown):
+        return [
+            head + _sh_quote(stem + ":::".join(shown)),
+            "  " + _SEPARATOR_NOTE,
+        ]
     return [
-        head + "PATH[:::PATH...]" + chr(39),
-        f"  {len(paths)} paths in all, {_LIST_CAP} shown and "
-        f"{len(paths) - _LIST_CAP} not shown — name the ones you mean.",
+        head + _sh_quote(stem + "PATH[:::PATH...]"),
+        f"  {total} paths in all, {len(shown)} shown and "
+        f"{total - len(shown)} not shown — name the ones you mean.",
         "  " + _SEPARATOR_NOTE,
     ]
 
 
-def _payload_remedy(paths):
+def _payload_remedy(shown, total=None):
     """The `@-` form, spelled with its `paths` key (#986).
 
     Pointing only at the colon form answers a caller who may be on the
     payload route precisely *because* their message will not survive
     ':'-tokenization. Both routes stage; both are named here, so the reader
     picks rather than being told they used the wrong one.
+
+    Same *shown*/*total* contract as _colon_remedy, and for the same reason:
+    a `paths = [...]` array holding a subset of what was listed is the #963
+    defect in TOML.
     """
-    if paths and len(paths) <= _LIST_CAP:
-        arr = ", ".join(chr(34) + p + chr(34) for p in paths)
+    total = len(shown) if total is None else total
+    if shown and total <= len(shown):
+        arr = ", ".join(_toml_basic(p) for p in shown)
     else:
-        arr = chr(34) + "path/to/file" + chr(34)
+        arr = _toml_basic("path/to/file")
     return [
         "  or, for a multi-line message — this route stages too, via `paths`:",
         "    ./supertool " + chr(39) + "git-commit:@-" + chr(39) + " <<" + chr(39) + "EOF" + chr(39),
@@ -395,7 +439,7 @@ def _left_behind_lines(git_fn=None):
     lines = [f"⚠ {len(modified)} modified tracked file(s) were NOT included:{extra}"]
     lines += _sample(modified)
     lines.append("  Intentional? If not:")
-    lines += _colon_remedy(modified)
+    lines += _colon_remedy(modified[:_LIST_CAP], len(modified))
     return lines
 
 
@@ -422,10 +466,14 @@ def _nothing_staged_lines():
     if untracked:
         lines.append(f"  Untracked ({len(untracked)}):")
         lines += _sample(untracked)
-    candidates = modified + untracked
+    # The two lists above are capped independently, so what the reader saw is
+    # not min(_LIST_CAP, len(modified) + len(untracked)). Hand both remedies
+    # the printed list and the true total rather than letting them guess.
+    shown = modified[:_LIST_CAP] + untracked[:_LIST_CAP]
+    total = len(modified) + len(untracked)
     lines.append("  Commit the ones you mean, by name:")
-    lines += _colon_remedy(candidates)
-    lines += _payload_remedy(candidates)
+    lines += _colon_remedy(shown, total)
+    lines += _payload_remedy(shown, total)
     return lines
 
 
@@ -443,13 +491,6 @@ def main() -> int:
         print("ERROR: commit message is empty.")
         return 1
 
-    # #962 — before anything is staged and before the header is printed, so a
-    # refused call leaves no trace and reads as the non-event it is.
-    if (not no_edit and msg.strip().lower() in _AMEND_WORDS
-            and not _literal_amend_allowed()):
-        for line in _amend_refusal(msg):
-            print(line)
-        return 1
 
     if _git(["rev-parse", "--git-dir"]).returncode != 0:
         print("ERROR: not inside a git repository.")
@@ -474,6 +515,16 @@ def main() -> int:
     # commit lands, is refused by a hook, or finds nothing staged (#692).
     print(f"Repo: {repo_label()}")
     print(f"HEAD before: {head_before}")
+
+    # #962, under #692's contract: every refusal path stamps repo and branch
+    # first. This one sends the reader to a raw `git commit --amend`, so which
+    # checkout and which branch is the first thing they need and the one thing
+    # this op knows and they may not. Still before anything is staged.
+    if (not no_edit and msg.strip().lower() in _AMEND_WORDS
+            and not _literal_amend_allowed()):
+        for line in _amend_refusal(msg):
+            print(line)
+        return 1
 
     # Stage PATHS if given. A path that's already a staged deletion (gone from
     # disk after `git rm`) would make `git add` abort with "pathspec did not

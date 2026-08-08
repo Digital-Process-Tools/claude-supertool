@@ -41,9 +41,12 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 REPO = Path(__file__).parent.parent
 SUPERTOOL = REPO / "supertool.py"
@@ -301,6 +304,120 @@ def test_963_the_reconstructed_colon_form_commits_the_intended_subject(
     op = suggested[0].split("'", 1)[1].rsplit("'", 1)[0]
     _run([op], cwd=work)
     assert _subject(work) == "test(gh-prs tier): pin the vocabulary (#939)"
+
+
+# --------------------------------------------------------------------------
+# Review of PR #1062 — the #963 fix reintroduced #963 on the two-list path,
+# and neither remedy survived a path containing a quote.
+# --------------------------------------------------------------------------
+
+def test_two_full_lists_are_not_reported_as_a_truncated_one(
+    tmp_path: Path,
+) -> None:
+    """15 modified + 15 untracked: 30 shown, 0 hidden, and the remedy said 10.
+
+    `_sample` caps each list at 20 *independently*, so the count of what the
+    reader actually saw is not `min(cap, len(a) + len(b))`. Deriving it that
+    way announced `20 shown and 10 not shown` under two lists that had both
+    printed in full — a false claim about the tool's own output, which is
+    the defect the remedy was rewritten to remove.
+    """
+    tracked = tuple(f"t{i:02d}.txt" for i in range(1, 16))
+    work = _repo(tmp_path, names=tracked)
+    _touch(work, tracked)
+    untracked = [f"u{i:02d}.txt" for i in range(1, 16)]
+    for name in untracked:
+        (work / name).write_text("new\n", encoding="utf-8")
+    out = _run(["git-commit:::MESSAGE"], cwd=work)
+    assert "not shown" not in out.lower(), out
+    remedy = [l for l in out.splitlines() if "git-commit:::MESSAGE:::" in l]
+    assert remedy, out
+    missing = [p for p in list(tracked) + untracked if p not in remedy[0]]
+    assert not missing, f"remedy omits {missing}"
+
+
+def test_the_hidden_count_is_measured_against_what_was_printed() -> None:
+    """25 + 25: the cap hides 5 from each list, so 40 shown and 10 hidden."""
+    modified = [f"m{i:02d}.txt" for i in range(1, 26)]
+    untracked = [f"u{i:02d}.txt" for i in range(1, 26)]
+    shown = modified[:commit._LIST_CAP] + untracked[:commit._LIST_CAP]
+    body = "\n".join(
+        commit._colon_remedy(shown, total=len(modified) + len(untracked))
+    )
+    assert "50 paths in all, 40 shown and 10 not shown" in body, body
+    assert "PATH[:::PATH...]" in body
+
+
+def test_colon_remedy_survives_an_apostrophe_in_a_path() -> None:
+    """The suggestion is a single-quoted shell word; a path can close it.
+
+    Asserted by parsing the emitted line the way a shell would rather than
+    by matching text — the claim is that pasting it runs the intended op,
+    and only a round-trip can make that claim.
+    """
+    lines = commit._colon_remedy(["it's.txt", "plain.txt"])
+    argv = shlex.split(lines[0].strip())
+    assert argv == [
+        "./supertool", "git-commit:::MESSAGE:::it's.txt:::plain.txt",
+    ], argv
+
+
+def test_colon_remedy_is_byte_identical_for_ordinary_paths() -> None:
+    """The quote fix must not re-quote every line that was already correct."""
+    lines = commit._colon_remedy(["a.txt", "sub/b.txt"])
+    assert lines[0] == (
+        "    ./supertool 'git-commit:::MESSAGE:::a.txt:::sub/b.txt'"
+    ), lines[0]
+
+
+def test_payload_remedy_escapes_a_quote_for_toml() -> None:
+    """A raw `"` in a path made the suggested payload unparseable TOML.
+
+    The filename is built in-process, not on disk: `"` is illegal in a
+    Windows filename, so a fixture-based test here would assert nothing on
+    the platform that most needs it.
+    """
+    lines = commit._payload_remedy(['weird"note.txt', "back\\slash.txt"])
+    arr = [l for l in lines if l.strip().startswith("paths = [")]
+    assert arr, lines
+    assert arr[0].strip() == (
+        'paths = ["weird\\"note.txt", "back\\\\slash.txt"]'
+    ), arr[0]
+
+
+def test_payload_remedy_round_trips_through_a_toml_parser() -> None:
+    tomllib = pytest.importorskip("tomllib")
+    paths = ['weird"note.txt', "it's.txt", "sub/plain.txt"]
+    body = "\n".join(
+        l.strip() for l in commit._payload_remedy(paths)
+        if l.strip().startswith("paths = [")
+    )
+    assert tomllib.loads(body)["paths"] == paths
+
+
+def test_an_apostrophe_path_survives_the_whole_refusal(tmp_path: Path) -> None:
+    """End to end, on the one quote a Windows filename may legally contain."""
+    work = _repo(tmp_path, names=("it's.txt",))
+    _touch(work, ["it's.txt"])
+    out = _run(["git-commit:::MESSAGE"], cwd=work)
+    remedy = [l for l in out.splitlines() if "git-commit:::MESSAGE:::" in l]
+    assert remedy, out
+    argv = shlex.split(remedy[0].strip())
+    assert argv[1] == "git-commit:::MESSAGE:::it's.txt", argv
+
+
+def test_the_amend_refusal_stamps_the_repo_it_refused_in(tmp_path: Path) -> None:
+    """#692 — every refusal path names the repo and branch it happened in.
+
+    The refusal sends the reader to raw `git commit --amend`, so *which*
+    checkout and *which* branch is the first thing they need and the one
+    thing the op knows and they may not.
+    """
+    work = _repo(tmp_path)
+    _touch(work, ["a.txt"])
+    out = _run(["git-commit:::amend:::a.txt"], cwd=work)
+    assert "# git-commit on main" in out, out
+    assert "Repo:" in out and "HEAD before:" in out, out
 
 
 def test_986_the_payload_route_can_stage(tmp_path: Path) -> None:
