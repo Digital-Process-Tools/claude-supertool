@@ -443,6 +443,15 @@ def _run_diff(number: str, path: str | None) -> int:
     directory answers about the repo the caller named rather than about
     whatever the cwd's remote happens to be (#677/#678).
 
+    **No `--patch` (#1068).** `--patch` is format-patch: one section per
+    commit, so a file touched by three commits arrives three times and the
+    hunks route served the first and stopped. The bare `gh pr diff` is the net
+    three-dot diff — merge-base to head, one entry per path — which is the
+    thing being merged and therefore the thing under review. GitHub computes
+    it, so nothing here reassembles anything. A per-commit view is a different
+    question ("what changed since I last looked") and needs a since-ref rather
+    than a flag; it is not this op.
+
     Every failure route hands `_pr_diff.render` a `None` file list with the
     cause attached. An exception, a non-zero exit and an unreadable patch are
     three different reasons and none of them is "this PR changes nothing".
@@ -451,7 +460,7 @@ def _run_diff(number: str, path: str | None) -> int:
     files: list[dict] | None
     reason: str | None = None
     try:
-        result = _gh(["pr", "diff", number, "--patch"], timeout=DIFF_TIMEOUT)
+        result = _gh(["pr", "diff", number], timeout=DIFF_TIMEOUT)
     except subprocess.TimeoutExpired:
         files, reason = None, f"gh pr diff timed out after {DIFF_TIMEOUT}s"
     except (FileNotFoundError, OSError) as exc:

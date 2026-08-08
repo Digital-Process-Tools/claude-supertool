@@ -31,6 +31,14 @@ is deciding whether to merge it. A path that is not in the diff is a refusal
 too, naming the paths that are, because "not in this PR" and "in this PR and
 unchanged" are the same silence otherwise. Both caps — files and bytes —
 disclose exactly what they withheld, in the render they truncated.
+
+**Net, not per commit (#1068).** The fetch is `gh pr diff N` without
+`--patch`: format-patch repeats a file once per commit, and the hunks route
+used to serve the first section and stop, silently, so superseded code read as
+current inside the merge gate. Records are coalesced by path here as well, so
+serving a first-of-N is structurally impossible rather than merely unlikely —
+and a path that does arrive more than once has every entry shown under a line
+naming the count and which end of it is current.
 """
 from __future__ import annotations
 
@@ -148,6 +156,66 @@ def parse(patch: str) -> list[dict]:
     return files
 
 
+def _net_status(prev: str, nxt: str) -> str:
+    """The status of a file across several entries for it.
+
+    Added-then-modified is still an addition; whatever the last entry deletes
+    is deleted however it got there. A file deleted and re-added inside one PR
+    is neither, so it is called a modification rather than guessed either way.
+    """
+    if nxt == "D":
+        return "D"
+    if prev == "D":
+        return "M"
+    if "A" in (prev, nxt):
+        return "A"
+    if "R" in (prev, nxt):
+        return "R"
+    return "M"
+
+
+def coalesce(files: list[dict]) -> list[dict]:
+    """One record per path, first-seen order, with an `entries` count (#1068).
+
+    A source that repeats a path — `gh pr diff --patch` is format-patch, one
+    section per commit — used to reach `_one_file`, which took `next(...)` and
+    rendered the FIRST entry as the whole file. Superseded code then read as
+    current, and a fix landed in a later commit was invisible, inside the merge
+    gate's own reading tool.
+
+    The fetch no longer asks for that shape, so in practice every path arrives
+    once. This is the belt: it makes serving a first-of-N structurally
+    impossible rather than merely unlikely, and it keeps the file list from
+    printing one file as two rows and calling it `2 files`.
+
+    Order is the source's own. For a per-commit patch that is oldest first, so
+    the LAST entry for a path is the current one — which is what `_one_file`
+    tells the reader when it discloses the count.
+    """
+    merged: dict[str, dict] = {}
+    order: list[str] = []
+    for entry in files:
+        path = str(entry.get("path", ""))
+        if path not in merged:
+            first = dict(entry)
+            first["hunks"] = list(entry.get("hunks") or [])
+            first["entries"] = 1
+            merged[path] = first
+            order.append(path)
+            continue
+        acc = merged[path]
+        acc["entries"] = int(acc.get("entries", 1)) + 1
+        acc["added"] = int(acc.get("added", 0)) + int(entry.get("added", 0))
+        acc["removed"] = int(acc.get("removed", 0)) + int(entry.get("removed", 0))
+        acc["hunks"].extend(entry.get("hunks") or [])
+        acc["binary"] = bool(acc.get("binary")) or bool(entry.get("binary"))
+        if acc.get("old_path") is None:
+            acc["old_path"] = entry.get("old_path")
+        acc["status"] = _net_status(str(acc.get("status", "M")),
+                                    str(entry.get("status", "M")))
+    return [merged[p] for p in order]
+
+
 def _hunk_signature(hunk: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """A hunk reduced to what it actually changes, whitespace-normalised.
 
@@ -256,6 +324,16 @@ def _one_file(files: list[dict], path: str, header: list[str],
     out = list(header)
     out.append(f"## {_untrusted.flat(path)}  "
                f"({match.get('status', '?')}, {_stat_cell(match)})")
+    entries = int(match.get("entries", 1) or 1)
+    if entries > 1:
+        # Never silence. A path with more than one entry means the fetched
+        # diff replayed the file per commit, and a reader shown the assembly
+        # without being told where the seams are cannot tell a superseded
+        # line from a current one (#1068).
+        out.append(f"Assembled from {entries} entries for this path in the "
+                   f"fetched diff — all of them are below, oldest first, so a "
+                   f"line changed twice appears twice and the LAST occurrence "
+                   f"is the current one. A net diff has one entry per path.")
     note = mechanical_note(match)
     if note:
         out.append(f"Note: every hunk in this file is the same edit "
@@ -308,6 +386,8 @@ def render(files: list[dict] | None, *, header: list[str],
         out.append(f"Reason: {reason or 'unknown'}")
         out.append("Do not treat this as a reviewed diff.")
         return "\n".join(out), 1
+
+    files = coalesce(files)
 
     if path:
         return _one_file(files, path, header, max_bytes)
