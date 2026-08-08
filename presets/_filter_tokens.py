@@ -177,7 +177,8 @@ def unknown_error(
           "the question you asked — refusing rather than printing it."
         + widening
         + " Filters: " + ", ".join(sorted(filter_keys))
-        + ". Flags: " + ", ".join(sorted(flag_names)) + "."
+        + (". Flags: " + ", ".join(sorted(flag_names)) + "."
+           if flag_names else ". This op accepts no flags at all.")
     )
 
 

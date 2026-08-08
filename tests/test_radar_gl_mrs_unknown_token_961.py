@@ -105,7 +105,10 @@ def test_the_refusal_names_every_bad_token_and_what_would_have_worked() -> None:
     )
     for accepted in ("author", "reviewer", "label", "milestone", "state"):
         assert accepted in msg, f"the accepted filters must be listed: {msg}"
-    assert "nopipe" in msg, f"the accepted flags must be listed: {msg}"
+    assert "no flags" in msg.lower(), (
+        f"a tier that accepts no flags must say so, not print an empty "
+        f"list (#973): {msg}"
+    )
 
 
 def test_the_refusal_does_not_fuse_two_unapplied_tokens_into_an_invented_one() -> None:
@@ -243,7 +246,7 @@ def test_the_repo_wide_default_filter_is_not_refused() -> None:
     "author=@me",
     "author=@me,state=opened",
     "author=@me,author=other",
-    "reviewer=@me,nopipe",
+    "reviewer=@me",
     "assignee=@me",
     "label=bug",
     "milestone=v18.9",

@@ -149,10 +149,35 @@ SNAPSHOT_PREFIX = "supertool-radar-gh-prs"
 # Anything else is refused rather than dropped — see the module docstring.
 KNOWN_FILTERS = {"author", "assignee", "reviewer", "label", "state"}
 
-# Tokens that are flags rather than key=value. `iids` and `failed` are board
-# *shapes* the op offers and this tier does not: a radar board that silently
-# printed only the failing rows would be the narrowing this file is against.
-KNOWN_FLAGS = {"nopipe"}
+# Tokens that are flags rather than key=value — and this tier takes none of
+# them (#973). `iids` and `failed` are board *shapes* the op offers and this
+# tier does not: a radar board that silently printed only the failing rows
+# would be the narrowing this file is against.
+#
+# `nopipe` was accepted here and applied nowhere. On the op it gates
+# `prs._enrich`, the review-thread pass — and `live_open_prs` does not run that
+# pass at all, deliberately, so there was nothing for the flag to turn off and
+# no way to tell a tier that honoured it from one that ignored it. An accepted
+# token that cannot change the answer is the same lie as an ignored one.
+#
+# Refused on both tiers rather than one, because #939 closed an asymmetry here
+# and #961 declined to re-open it; a tier that unilaterally kept the flag would
+# be that asymmetry a third time.
+KNOWN_FLAGS: set[str] = set()
+
+# Keys whose value this tier maps rather than forwards (#973). `state=opne` is
+# in KNOWN_FILTERS, so it survives the unknown-token check — and then
+# `_build_list_cmd` tests `val in _STATES`, emits no `--state`, and gh answers
+# with its default. The board renders as the default one and radar heals
+# watchers onto it. The known-key/unmappable-value case is the quieter half of
+# #939's defect: the token *is* recognised, so every vocabulary check passes,
+# and only the argv builder knows the request was dropped.
+#
+# The op's own domain, never a second copy — two hand-written lists of GitHub's
+# PR states is how they disagree. `per` is absent because this tier refuses
+# that key outright, and a domain for a token that can never arrive is dead
+# weight that reads as coverage.
+VALUE_DOMAINS: dict[str, object] = {"state": prs._STATES}
 
 # How many green PRs are reconciled against their runs' declared legs per tick.
 # Each costs one call for the commit's runs plus one per run, and only a green
@@ -184,8 +209,8 @@ class RadarError(RuntimeError):
 # the one filter
 # ---------------------------------------------------------------------------
 
-def resolve_filter(arg: str = "") -> tuple[dict[str, str], set[str]]:
-    """`(filters, flags)` in `gh-prs` vocabulary, or `RadarError`.
+def resolve_filter(arg: str = "") -> dict[str, str]:
+    """The filter every other step reads, in `gh-prs` vocabulary, or `RadarError`.
 
     Refusing is the whole point. `gh-prs` used to drop a key it did not
     recognise and run the command without it, so `milestone=v19` returned every
@@ -198,21 +223,38 @@ def resolve_filter(arg: str = "") -> tuple[dict[str, str], set[str]]:
     are board shapes `gh-prs` offers and a radar board must not silently take.
     So the check stays here; only the token-splitting is shared, because a
     second hand-rolled scan of the arg string is how the two answers drift.
+
+    Two refusals now, and the second is the quieter one (#973). A token this
+    tier cannot place at all is named; so is a *known* key carrying a value the
+    argv builder has no mapping for. `state=opne` passes every vocabulary check
+    and then reaches no command line, so the default board comes back and every
+    layer above reads it as the filtered one. #939 added the key check here and
+    left the value check to `gh-prs` itself; #961 built the value check for the
+    GitLab tier; this is its twin.
+
+    The return value is the filter alone. It used to be `(filters, flags)` and
+    both callers bound the flag set and discarded it — an always-empty channel
+    is one a future caller re-populates and re-drops, which is the defect this
+    issue is about rather than a tidy-up.
     """
     arg = (arg or "").strip()
-    filters, flags, unknown = _filter_tokens.parse(arg, KNOWN_FILTERS, KNOWN_FLAGS)
+    filters, _flags, unknown = _filter_tokens.parse(
+        arg, KNOWN_FILTERS, KNOWN_FLAGS)
     if unknown:
         named = ", ".join(
             f"{t.partition('=')[0]}=" if "=" in t else t for t in unknown
         )
         raise RadarError(
             f"radar: gh-prs tier cannot honour {named!r}. Known filters: "
-            f"{', '.join(sorted(KNOWN_FILTERS))}; known flags: "
-            f"{', '.join(sorted(KNOWN_FLAGS))}. Refusing rather than running "
-            f"the query without it — an ignored filter returns the whole board "
-            f"and reads as though everything matched."
+            f"{', '.join(sorted(KNOWN_FILTERS))}; this tier accepts no flags "
+            f"at all. Refusing rather than running the query without it — an "
+            f"ignored filter returns the whole board and reads as though "
+            f"everything matched."
         )
-    return filters, flags
+    bad = _filter_tokens.bad_values(filters, VALUE_DOMAINS)
+    if bad:
+        raise RadarError("radar: gh-prs tier " + _filter_tokens.value_error(bad))
+    return filters
 
 
 def filter_string(filters: dict[str, str]) -> str:
@@ -754,7 +796,7 @@ def radar_report(options: dict | None = None) -> tuple[list[str], bool]:
     """
     options = options or {}
     watch = options.get("_watch") or _no_watch
-    filters, _flags = resolve_filter(str(options.get("_arg") or ""))
+    filters = resolve_filter(str(options.get("_arg") or ""))
 
     repo = repo_name()
     open_prs = live_open_prs(filters)
@@ -826,15 +868,14 @@ def radar_state(options: dict | None = None) -> list[str]:
     options = options or {}
     out: list[str] = []
     try:
-        filters, flags = resolve_filter(str(options.get("_arg") or ""))
+        filters = resolve_filter(str(options.get("_arg") or ""))
     except RadarError as exc:
         return [f"  filter    : REFUSED — {exc}"]
 
     target = _repo_target.target()
     repo = str(target) if target else "(the cwd's clone — not resolved here, "\
                                      "that would be a call)"
-    out.append(f"  filter    : {filter_string(filters) or 'author=@me (default)'}"
-               f"{(' +' + ','.join(sorted(flags))) if flags else ''}")
+    out.append(f"  filter    : {filter_string(filters) or 'author=@me (default)'}")
     out.append(f"  repo      : {repo}")
 
     raw_ref = options.get("default_branch")

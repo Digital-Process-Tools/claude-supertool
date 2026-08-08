@@ -172,9 +172,9 @@ Both tiers now refuse, before any `glab`/`gh` call and before anything is spawne
 radar: gl-mrs tier ERROR: unrecognised token(s): 'milestne=v19'. Nothing was
 filtered by them, so the board is NOT the answer to the question you asked —
 refusing rather than printing it. Filters: assignee, author, label, milestone,
-reviewer, source-branch, state, target-branch. Flags: nopipe. Radar does not
-just print this population, it watches it: an unapplied token widens the scope,
-and the fleet then spawns over MRs nobody asked about.
+reviewer, source-branch, state, target-branch. This op accepts no flags at all.
+Radar does not just print this population, it watches it: an unapplied token
+widens the scope, and the fleet then spawns over MRs nobody asked about.
 ```
 
 A refusal is per tier: it goes to stderr and radar exits 1, and every **other** registered tier still renders its board. `radar:--state` never raises — it prints `filter : REFUSED — …` in place, because a read-only view that throws is the one view you cannot open.
@@ -187,11 +187,15 @@ A refusal is per tier: it goes to stderr and radar exits 1, and every **other** 
 | `milestone` `source-branch` `target-branch` | yes | yes | **no** — `gh pr list` has no such flag |
 | `per=` | yes | **no** — the tier reads the page size from config | no |
 | `iids` `failed` | yes | **no** — board *shapes*, not populations | no |
-| `nopipe` | yes | yes | yes |
+| `nopipe` | yes | **no** — accepted and applied nowhere ([#973](https://github.com/Digital-Process-Tools/claude-supertool/issues/973)) | **no** |
+
+Neither tier accepts any flag at all, and the refusals list nothing rather than printing an empty one.
 
 `iids` and `failed` are refused rather than accepted because a radar board silently narrowed to a bare id list, or to only the failing rows, is the same lie as a widened one. `per=` is refused because `live_open_mrs` takes its page size from `ops.gl-mrs`, so honouring it in the arg would be a knob dropped one level down.
 
-A **known key with a value that maps to nothing** is refused on the same path. `state=mergd` survives the key check and then emits no `--merged`, so glab answers with its default `opened` — the merged board renders as the open one, and radar watches it. The refusal names the accepted values.
+`nopipe` was accepted by both tiers and honoured by neither: `radar:nopipe` exited 0 and the board was enriched anyway, so a caller who asked for a cheaper board was not told they had not got one. It is refused rather than honoured, and the two halves of that are different arguments. On the `gh-prs` tier honouring it is not expressible — it skips the review-thread pass, and the tier never runs that pass, so a tier that honoured the flag would be byte-identical to one that ignored it. On the `gl-mrs` tier it *is* expressible and what it would produce is not a cheaper board but a board with no verdict in it: the pipeline status, the drift check against `source_state.pipeline_id` and the heal decision all read off the enrichment it removes.
+
+A **known key with a value that maps to nothing** is refused on the same path, on both tiers. `state=mergd` survives the key check and then emits no `--merged`, so glab answers with its default `opened` — the merged board renders as the open one, and radar watches it. `state=opne` on the GitHub tier does the same against gh's default. The refusal names the accepted values. This half reached the `gh-prs` tier in [#973](https://github.com/Digital-Process-Tools/claude-supertool/issues/973); #939 had added the key check there and left the value check behind.
 
 Not refused: a value the backend rejects or matches nothing. `milestone=nosuchmilestone` is forwarded verbatim, and an empty board there is the truth.
 
