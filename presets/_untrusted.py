@@ -191,6 +191,7 @@ unchanged for the fifteen call sites that already flatten, and the `banner()` or
 """
 from __future__ import annotations
 
+import re
 import secrets
 import sys
 from functools import lru_cache
@@ -293,7 +294,8 @@ def _degraded_note(mode: str, enc: str) -> str:
 # lone CR is neither and is disclosed like any other cursor movement.
 _LF = chr(10)
 _TAB = chr(9)
-_CRLF = chr(13) + _LF
+_CR = chr(13)
+_CRLF = _CR + _LF
 
 
 # The two separators `str.splitlines()` splits on that are not control
@@ -302,6 +304,43 @@ _CRLF = chr(13) + _LF
 # one more numeric bound would hide that this predicate answers a question
 # about *lines*, not a question about a code point block.
 _LINE_SEPARATORS = frozenset((chr(0x2028), chr(0x2029)))
+
+# The other direction of the same question, for presets that PARSE rather than
+# render (#1081). `visible()` above covers every separator a *consumer* might
+# split on, because anything in that set can forge a line in text we print. A
+# parser needs the opposite set: the separators the protocol it is reading
+# actually defines, which for every line-oriented format this repo touches --
+# a unified diff, a CI log, a `git` porcelain stream -- is LF, CR and CRLF and
+# nothing else.
+#
+# `str.splitlines()` is not that set. It breaks on eight more, and in
+# `_pr_diff.parse` a U+2028 inside an added line produced a fragment at column
+# 0 that opened a new file record: the diff's own content chose where the file
+# boundary fell, and every added line after it disappeared from the render the
+# merge gate reads. Neutralising the separator at render time cannot help,
+# because the structural parse has already run.
+#
+# The pattern is `_supertool._LINE_BREAK_PATTERN` restated. A preset runs with
+# `presets/` on `sys.path`, not the repo root, so it cannot import the core and
+# the definition is stated twice by necessity -- pinned equal by
+# `test_split_lines_matches_the_core_conservative_definition` (#1081).
+_LINE_BREAK_RE = re.compile("|".join((_CRLF, _CR, _LF)))
+
+
+def split_lines(text: str) -> list[str]:
+    """`text` into lines on LF / CR / CRLF only, endings stripped.
+
+    Deliberately not `str.splitlines()`. Use this for anything being parsed as
+    a line-oriented protocol; `str.splitlines()` is right only when the
+    question is "what would some other tool call a line", which is what
+    `visible()` and `flat()` answer.
+    """
+    if not text:
+        return []
+    parts = _LINE_BREAK_RE.split(text)
+    if parts and parts[-1] == "":
+        parts.pop()
+    return parts
 
 
 def _is_control(ch: str) -> bool:

@@ -220,6 +220,14 @@ occurrence is the current one. A net diff has one entry per path.
 
 The file list sums those entries into a single row, because one file rendered as two rows totalling `2 files` is the same misreport one level up.
 
+**A line of the diff cannot decide where a file starts** ([#1081](https://github.com/Digital-Process-Tools/claude-supertool/issues/1081)). The parse used `str.splitlines()`, which breaks on eight separators — U+000B, U+000C, U+001C, U+001D, U+001E, U+0085, U+2028, U+2029 — that a unified diff does not recognise. One of them inside an added line produced a fragment at column 0; the `diff --git ` branch opened a new file record from that fragment; and every added line after the separator disappeared, with a file the PR never touched listed as changed. Inside the merge gate's own reading tool, that lets a contributor who controls one added line control what the reviewer is shown.
+
+The split is `_untrusted.split_lines()` now — LF, CR and CRLF, the same conservative definition the core has owned since [#1060](https://github.com/Digital-Process-Tools/claude-supertool/issues/1060), restated in `presets/` because a preset runs with `presets/` on `sys.path` and cannot import the core, and pinned equal to it by test. CRLF patches are unaffected: CRLF is a line ending under that definition and is consumed like LF.
+
+Nothing new is announced at the parse. `_untrusted.fence()` already discloses the separator inside the hunk body — as a Control Picture glyph, or as `[U+2028]` for the three that have none — so once the line is one line the reader sees the smuggled header in full, on the line it was smuggled into. What the flattener could not do was protect a parse that ran before it, which is the layer this fixed.
+
+The `diff --git ` branch is still allowed to fire mid-hunk, and deliberately: git emits the next file's header immediately after the previous file's last hunk line with no terminator, so a header at column 0 inside a hunk is the ordinary multi-file case. Refusing it would break every diff with two files in it. The forgery was the fragment, not the branch.
+
 Hunks are fenced as untrusted text — a diff is a stranger's branch content and can contain a line at column 0 saying anything. And because the route goes through `_gh()`, it honours `repo:OWNER/NAME`: a raw `gh pr diff` run from the wrong directory answers about the wrong repository, silently and well-formedly.
 
 ## Targeting another repo
