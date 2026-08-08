@@ -167,6 +167,54 @@ def test_gh_prs_names_the_departed_pr_and_what_it_cannot_tell(
         f"nothing on the board says how to find out which it was.\n\n{text}")
 
 
+def test_a_departure_only_tick_is_not_reported_as_no_change(state_dir, monkeypatch):
+    """A departure *is* a change, and it is the one the delta cannot re-print.
+
+    Every remaining row is unchanged, so the whole board elides and the summary
+    line takes the `no change` arm — while the footer on that same line counts a
+    departure and a NOTE names it. `radar: no change` is the token this board is
+    skimmed by, so the tick where something silently fell off the board is
+    exactly the tick that announces nothing happened.
+    """
+    _board(monkeypatch, [_pr(1005, [RUN_LEG]), _pr(1013, [RUN_LEG])],
+           {"1005", "1013"})
+    lines = _board(monkeypatch, [_pr(1005, [RUN_LEG])], {"1005"})
+    text = chr(10).join(lines)
+
+    assert "left this board" in text, f"fixture drifted: {text}"
+    assert not any(ln.startswith("radar: no change") for ln in lines), (
+        "#1013 left the board on this tick and the summary line says nothing "
+        f"changed.{chr(10)}{chr(10)}{text}")
+
+
+def test_gl_mrs_departure_only_tick_is_not_reported_as_no_change(monkeypatch):
+    mrs = [_mr(1, "running"), _mr(2, "running")]
+    previous = {"mrs": {str(m["iid"]): gl_tier._snap_entry(m) for m in mrs}}
+    lines = gl_tier.render([mrs[0]], {"1"}, [], {}, [], [], previous,
+                           label="scope author=@me")
+    text = chr(10).join(lines)
+
+    assert "left this board" in text, f"fixture drifted: {text}"
+    assert not any(ln.startswith("radar: no change") for ln in lines), text
+
+
+def test_departed_identifiers_are_named_in_a_stable_order(state_dir, monkeypatch):
+    """The cap at twelve makes *which* ids get named load-bearing.
+
+    Snapshot entries are written in the order the API returned them, so an
+    unsorted departed list truncates arbitrarily and differently between two
+    runs over the same departures — a disclosure whose content depends on
+    upstream ordering is one a reader cannot check.
+    """
+    first = [_pr(n, [RUN_LEG]) for n in (1300, 900, 1005, 1100)]
+    _board(monkeypatch, first, {str(p["number"]) for p in first})
+    lines = _board(monkeypatch, [_pr(1005, [RUN_LEG])], {"1005"})
+
+    note = next(ln for ln in lines if "left this board" in ln)
+    order = re.findall(r"#(\d+)", note)
+    assert order == ["900", "1100", "1300"], note
+
+
 def test_gh_prs_says_nothing_when_nothing_departed(state_dir, monkeypatch):
     """The absence of the line is the positive claim, exactly as for elision."""
     rows = [_pr(1005, [RED_LEG]), _pr(1013, [RUN_LEG])]

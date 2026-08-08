@@ -938,8 +938,8 @@ def render(open_mrs: list[dict], covered: set[str], healed: list[str],
     # Against `open_mrs`, never `board_mrs`: an exclusion removes a row and not
     # a member, and counting one as departed reports the operator's own standing
     # decision back to them as a merge.
-    departed = [i for i in prev_entries
-                if i not in {str(m.get("iid")) for m in open_mrs}]
+    live = {str(m.get("iid")) for m in open_mrs}
+    departed = [i for i in prev_entries if i not in live]
     footer = _footer(board_mrs, covered, healed, drifted, pruned, uncovered,
                      len(departed), feed, label, len(excluded), len(elided))
 
@@ -975,6 +975,9 @@ def render(open_mrs: list[dict], covered: set[str], healed: list[str],
                      if excluded else "No open MRs.")
         lines.append("")
         lines.append(footer)
+    elif departed:
+        # See gh_prs.render (#1024): a departure is the one change with no row.
+        lines.append(f"radar: no rows changed | {footer}")
     else:
         lines.append(f"radar: no change | {footer}")
     lines.extend(notes or [])

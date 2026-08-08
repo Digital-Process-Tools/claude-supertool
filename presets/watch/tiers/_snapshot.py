@@ -125,6 +125,13 @@ def departed_note(departed: list[str], noun: str, sigil: str,
     """
     if not departed:
         return []
+    # Sorted, because the cap makes *which* ids get named load-bearing and the
+    # snapshot is written in the order the API returned its page. Unsorted, two
+    # runs over the same departures can name different halves of them, and a
+    # disclosure whose content depends on upstream ordering is one the reader
+    # cannot check against anything.
+    departed = sorted(departed,
+                      key=lambda n: (0, int(n), "") if n.isdigit() else (1, 0, n))
     named = ", ".join(f"{sigil}{n}" for n in departed[:12])
     if len(departed) > 12:
         named += f", +{len(departed) - 12} more"

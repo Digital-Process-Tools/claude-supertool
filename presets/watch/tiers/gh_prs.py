@@ -631,6 +631,13 @@ def render(open_prs: list[dict], covered: set[str] | None, healed: list[str],
         lines.append(f"No PRs matched — {label}.")
         lines.append("")
         lines.append(footer)
+    elif departed:
+        # A departure is a change, and the only one this board can never print
+        # as a row — the entry is gone, so there is nothing left to render and
+        # every surviving row legitimately elided. Taking the `no change` arm
+        # here announces that nothing happened on the one tick where something
+        # fell off the board, which is the token a reader skims by (#1024).
+        lines.append(f"radar: no rows changed | {footer}")
     else:
         lines.append(f"radar: no change | {footer}")
     return lines

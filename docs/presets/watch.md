@@ -275,6 +275,10 @@ Reading back each departure's live state would name it exactly, at one API call 
 
 An **excluded** MR is not a departure. The GitLab tier computes the departed set against the whole open population rather than the printed board, so a row the operator chose to suppress is never reported back to them as one that left.
 
+**A tick whose only event is a departure says `radar: no rows changed`, not `radar: no change`.** The departed entry is gone, so there is no row to print and every surviving row legitimately elides — which used to land on the `no change` arm, announcing that nothing happened on the exact tick something fell off the board. `no change` is the token this board is skimmed by, so it now means what it says.
+
+The named identifiers are sorted. The cap makes *which* ids get named load-bearing, and the snapshot is written in the order the upstream page came back, so an unsorted list can name different halves of the same departures on two runs.
+
 ### Standing exclusions
 
 That last rule has a cost. An MR that is red for a reason nobody intends to fix soon — a long-lived branch, an infra-only pipeline failure, an experiment — reprints on every render and every session start. Suppressing it by *remembering* to ignore it is the worst available option: a permanently-red row that must be mentally filtered is what trains a reader to skim the board, and skimming is how a real red gets missed.
