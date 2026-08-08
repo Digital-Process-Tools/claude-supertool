@@ -47,8 +47,18 @@ from refusal import tool_fault, skipped
 
 TIMEOUT_S = 30
 
-# <script ATTRS>BODY</script>, case-insensitive, BODY may span lines.
-SCRIPT_TAG = re.compile(r"<script\b([^>]*)>(.*?)</script\s*>", re.IGNORECASE | re.DOTALL)
+# <script ATTRS>BODY</script ANYTHING>, case-insensitive, BODY may span lines.
+#
+# The end tag is `\b[^>]*>` and not `\s*>`: an HTML end tag may carry
+# whitespace and junk attributes before its `>` (`</script bar>`), and every
+# parser ignores the junk and closes the element. Matching only whitespace
+# meant the closing tag was not found at all -- so the non-greedy body either
+# paired with the *next* block's close and handed node a slab of markup, or
+# found no close and dropped the block entirely, leaving the file `ok` with
+# broken JS still in it. That is the silent gap #833 exists to close, arriving
+# through the one pattern that decides what gets looked at. `\b` keeps
+# `</scriptfoo>` out: it is a different tag, not this one with junk on it.
+SCRIPT_TAG = re.compile(r"<script\b([^>]*)>(.*?)</script\b[^>]*>", re.IGNORECASE | re.DOTALL)
 # Anchored on whitespace/start-of-attrs, not `\b`: a bare word boundary also
 # fires on the hyphen in `data-src=` / `data-type=` (the exact attribute
 # names consent-management scripts like OneTrust/Cookiebot use to stash the
