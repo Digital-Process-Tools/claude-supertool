@@ -90,3 +90,30 @@ def test_an_unusable_regex_is_not_reported_as_an_absence(tmp_path: Path) -> None
     out = supertool.dispatch(f"read:{f}:::grep=alpha(")
     assert "no lines matching" in out
     assert "literal" in out, out
+
+
+def test_a_zero_from_an_offset_past_eof_does_not_invent_a_backwards_range(
+    tmp_path: Path,
+) -> None:
+    """Review finding on the #1052 disclosure itself (PR #1057).
+
+    `last_scanned` starts at `offset` and only advances inside the scan loop.
+    When the offset is past the end the loop body never runs, so the new
+    three-state zero rendered `lines 1001-1000` — a range whose start is after
+    its end. The count of unsearched lines was right; the range naming them was
+    not, and a disclosure that reads as nonsense is not read at all."""
+    f = tmp_path / "f.txt"
+    f.write_text("".join(f"line {i}\n" for i in range(1, 21)))
+    out = _supertool.op_read(str(f), offset=1000, limit=0, grep_filter="line")
+    zero = [ln for ln in out.splitlines() if ln.startswith("(no lines")]
+    assert len(zero) == 1, out
+    # Scoped to the zero, not the whole receipt: the `window:` note above it
+    # also prints `lines 1001-1000`, but that one is #945's, it is on master,
+    # and it corrects itself in the same breath ("returning nothing — the file
+    # has 20 lines"). Asserting over the whole output would fail on a line this
+    # branch never touched.
+    assert "1001-1000" not in zero[0], zero[0]
+    # The whole phrase, not a bare "20": the tmp_path name is in this receipt
+    # too, and a digit assertion would pass on the directory.
+    assert "20-line file" in zero[0], zero[0]
+    assert "no line was searched" in zero[0], zero[0]

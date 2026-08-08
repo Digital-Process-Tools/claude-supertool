@@ -224,3 +224,98 @@ def test_a_clean_replace_of_a_crlf_file_says_nothing_about_line_endings(
     assert f.read_bytes() == b"a = 9\r\nb = 2\r\n"
     assert "line endings" not in out, out
     assert _supertool.mark("↳") not in out, out
+
+
+# --- 5. review findings on the three passes above (PR #1057) ---------------
+#
+# The three fixes below are regressions this branch introduced against
+# `master`, not old bugs it declined to fix. Each was checked by running the
+# same input against `git archive master`: master gets all three right, because
+# universal-newline translation was flattening the file before any of this code
+# saw it. Turning that translation off (`newline=""`) is what exposed them.
+
+
+def test_edit_of_a_cr_only_file_reports_the_line_the_match_is_on(
+    tmp_path: Path,
+) -> None:
+    """`pre.count("\\n")` is zero for every position in a CR-only file, so the
+    receipt said line 1 whatever line the edit landed on. The write was always
+    correct — this is the receipt lying about where it happened."""
+    f = tmp_path / "mac.txt"
+    f.write_bytes(b"alpha\rbeta\rgamma\rdelta\r")
+    out = _supertool.op_edit("gamma", "GAMMA", str(f))
+    assert not out.startswith("ERROR"), out
+    assert f.read_bytes() == b"alpha\rbeta\rGAMMA\rdelta\r"
+    assert "(line 3)" in out, out
+
+
+def test_replace_dry_run_on_a_cr_only_file_reports_the_right_line(
+    tmp_path: Path,
+) -> None:
+    """Same arithmetic, second call site."""
+    f = tmp_path / "mac.txt"
+    f.write_bytes(b"alpha\rbeta\rgamma\rdelta\r")
+    out = _supertool.op_replace("gamma", "GAMMA", str(f), dry=True)
+    assert "ERROR" not in out, out
+    assert f.read_bytes() == b"alpha\rbeta\rgamma\rdelta\r"
+    assert "L3" in out, out
+
+
+def test_replace_lines_preview_carries_no_bare_carriage_return(
+    tmp_path: Path,
+) -> None:
+    """`rstrip("\\n")` leaves the `\\r` of a CRLF line ending inside the
+    receipt, so every context line shipped a stray CR into the caller's
+    terminal and logs. The file bytes were never wrong."""
+    f = tmp_path / "c.txt"
+    f.write_bytes(b"alpha\r\nbeta\r\ngamma\r\ndelta\r\n")
+    out = _supertool.op_replace_lines(str(f), 2, 2, "BETA")
+    assert "ERROR" not in out, out
+    assert f.read_bytes() == b"alpha\r\nBETA\r\ngamma\r\ndelta\r\n"
+    assert "\r" not in out, repr(out)
+
+
+def test_edit_does_not_splice_lf_into_a_uniform_crlf_file(
+    tmp_path: Path,
+) -> None:
+    """The re-termination of `new` was conditional on `old` having needed it.
+    A single-line `old` matches literally, so a multi-line `new` went in
+    verbatim and left a mixed file — and `_newline_note` said nothing, because
+    from its side nothing had been decided.
+
+    Two edits expressing the same intent must not produce different bytes
+    depending on whether `old` happened to span a line boundary."""
+    f = tmp_path / "c.txt"
+    f.write_bytes(b"alpha\r\nbeta\r\ngamma\r\ndelta\r\n")
+    out = _supertool.op_edit("beta", "BETA\nGAMMA", str(f))
+    assert not out.startswith("ERROR"), out
+    assert f.read_bytes() == (
+        b"alpha\r\nBETA\r\nGAMMA\r\ngamma\r\ndelta\r\n")
+    assert "line endings" in out, out
+
+
+def test_edit_leaves_a_mixed_file_alone_and_says_so(tmp_path: Path) -> None:
+    """A mixed file has no convention to re-terminate to, so the caller's text
+    goes in as typed — but that is a decision, and it is disclosed."""
+    f = tmp_path / "m.txt"
+    f.write_bytes(b"alpha\r\nbeta\ngamma\r\n")
+    out = _supertool.op_edit("beta", "BETA\nGAMMA", str(f))
+    assert not out.startswith("ERROR"), out
+    assert f.read_bytes() == b"alpha\r\nBETA\nGAMMA\ngamma\r\n"
+    # Not a bare "mixed": pytest names tmp_path after the test function, so
+    # `test_edit_leaves_a_mixed_file_alo0` is in the receipt's path and the
+    # substring passes with the bug fully present. Assert the sentence.
+    assert "line endings: file is mixed" in out, out
+
+
+def test_a_single_line_edit_of_a_crlf_file_is_still_silent(
+    tmp_path: Path,
+) -> None:
+    """The narrowing stays narrow: `new` with no newline in it decides
+    nothing, so the disclosure must not fire."""
+    f = tmp_path / "c.txt"
+    f.write_bytes(b"alpha\r\nbeta\r\ngamma\r\n")
+    out = _supertool.op_edit("beta", "BETA", str(f))
+    assert not out.startswith("ERROR"), out
+    assert f.read_bytes() == b"alpha\r\nBETA\r\ngamma\r\n"
+    assert "line endings" not in out, out

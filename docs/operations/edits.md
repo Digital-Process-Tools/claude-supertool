@@ -241,6 +241,14 @@ A clean edit or replace of a uniform CRLF file says nothing: nothing was
 decided, and on Windows every file is CRLF, so a note there would fire on every
 call ever made.
 
+`edit` re-terminates the text you supply to match a file that uses one
+convention throughout, whether or not your `old` needed re-terminating to
+match. The two are one rule, not two: an `old` spanning a line boundary and a
+single-line `old` must not write different bytes for the same `new`. So
+replacing `beta` with `BETA\nGAMMA` in a CRLF file inserts two CRLF-terminated
+lines, and says so. On a *mixed* file there is no convention to match, your
+bytes go in exactly as typed, and the mixed note says that instead.
+
 `replace` resolves the convention once, in the pass that scans for matches, and
 carries it to the pass that writes. The two used to read the same file with
 different newline settings: on a CRLF file the scan found an LF `old` and the

@@ -2368,7 +2368,18 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
                 f"{filter_literal_why}; searched for it as a literal "
                 f"string instead)\n")
     if filter_regex and not matched_any:
-        if unsearched > 0:
+        if unsearched > 0 and last_scanned <= offset:
+            # The loop never ran, so `last_scanned` is still `offset` and the
+            # range below would read `1001-1000` -- a span whose start is past
+            # its end. The count was right and the range naming it was not, and
+            # a disclosure that reads as nonsense is not read (PR #1057
+            # review).
+            out.append(
+                f"(no lines matching {grep_filter!r} -- offset "
+                f"{offset + 1} is past the end of this {line_count}-line "
+                f"file, so no line was searched and this is not an answer "
+                f"about the file)\n")
+        elif unsearched > 0:
             # Three states, not two: found, not found, and did-not-look. The
             # old single line said the second when it meant the third (#1052).
             plural = "s" if unsearched != 1 else ""
@@ -5241,7 +5252,7 @@ def op_replace(old: str, new: str, path: str = ".", dry: bool = False) -> str:
             except OSError:
                 continue
             for pos in positions:
-                start_line = content.count("\n", 0, pos) + 1
+                start_line = _line_number_at(content, pos)
                 end_line = start_line + len(old_lines) - 1
                 label = f"L{start_line}" if start_line == end_line else f"L{start_line}-L{end_line}"
                 out.append(f"  {label}:\n")
@@ -6110,6 +6121,23 @@ def _retermed(text: str, nl: str) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n").replace("\n", nl)
 
 
+def _line_number_at(text: str, end: Optional[int] = None) -> int:
+    """1-based line number of position `end`, counting CR, LF and CRLF alike.
+
+    `text.count("\\n")` is zero at *every* position in a CR-only file, so a
+    receipt built on it named line 1 wherever the match actually was. That
+    arithmetic was correct only because the read used to translate `\\r` to
+    `\\n` before it ran; `newline=""` removed the translation and left the
+    count behind (PR #1057 review).
+
+    Counted rather than sliced: `count` takes a range, so this stays
+    allocation-free on the dry-run path that calls it once per match.
+    """
+    return (text.count("\n", 0, end)
+            + text.count("\r", 0, end)
+            - text.count("\r\n", 0, end)) + 1
+
+
 def _local_newline(lines: List[str], idx: int) -> str:
     """The line ending in force at `lines[idx]`, scanning backwards for one.
 
@@ -6182,6 +6210,33 @@ def op_edit(old: str, new: str, path: str) -> str:
             f"replace_all semantics.\n"
         )
 
+    retermed = bool(wrote)
+    if not wrote and ("\n" in new or "\r" in new):
+        # `old` matched literally, so nothing above resolved a convention --
+        # but `new` carries one of its own, and writing it verbatim splices LF
+        # into a CRLF file and leaves it mixed, silently.
+        #
+        # The defect this closes is an inconsistency, not just a silence: an
+        # `old` that spanned a line boundary went through `_newline_variants`
+        # and had `new` re-terminated with whatever matched, while a
+        # single-line `old` did not. Two edits expressing the same intent
+        # produced different bytes depending on that accident (PR #1057
+        # review). Only reachable since this branch stopped flattening every
+        # write to LF, which is why it is this branch's regression to fix.
+        crlf, lf, cr = _newline_census(content)
+        used = [n for n, c in (("\r\n", crlf), ("\n", lf), ("\r", cr)) if c]
+        if len(used) == 1 and _retermed(new, used[0]) != new:
+            # One convention, and `new` disagrees: match the file and say so.
+            # This is the caller's own text rewritten, which `_newline_note`
+            # promises is never silent.
+            new, wrote, retermed = _retermed(new, used[0]), used[0], True
+        elif len(used) > 1:
+            # Mixed: no single convention to match, so the caller's bytes stand
+            # as typed -- the same answer `replace_lines` gives. Still a
+            # decision, and `_newline_note`'s mixed branch discloses it.
+            wrote = ("\r\n" if "\r\n" in new
+                     else "\r" if "\r" in new else "\n")
+
     idx = content.index(old)
     reapplied = _edit_already_applied(content, old, new, idx)
 
@@ -6195,10 +6250,9 @@ def op_edit(old: str, new: str, path: str) -> str:
         _REAPPLY_COUNT[0] += 1
 
     # Receipt — locate the change and show ±2 lines context
-    pre = content[:idx]
-    start_line = pre.count("\n") + 1
+    start_line = _line_number_at(content, idx)
     new_lines = new_content.splitlines()
-    new_block_line_count = new.count("\n") + 1
+    new_block_line_count = _line_number_at(new)
     end_line = start_line + new_block_line_count - 1
     ctx_start = max(1, start_line - 2)
     ctx_end = min(len(new_lines), end_line + 2)
@@ -6207,7 +6261,7 @@ def op_edit(old: str, new: str, path: str) -> str:
     if end_line != start_line:
         out.append(f"-{end_line}")
     out.append(")\n")
-    _nl_note = _newline_note(content, wrote, retermed=bool(wrote))
+    _nl_note = _newline_note(content, wrote, retermed=retermed)
     if _nl_note:
         out.append(_nl_note)
     # Attached to the claim it qualifies, not only to the footer: `edited a.py
@@ -6457,7 +6511,10 @@ def op_replace_lines(path: str, start: int, end: int, content: str) -> str:
     ctx_end = min(len(new_lines), max(new_end, new_start) + 2)
     for ln in range(ctx_start, ctx_end + 1):
         marker = "→" if added > 0 and new_start <= ln <= new_end else " "
-        text = new_lines[ln - 1].rstrip("\n")
+        # rstrip("\r\n"), not rstrip("\n"): on a CRLF file the latter leaves
+        # the carriage return inside the receipt, shipping a stray CR into the
+        # caller's terminal and logs on every context line (PR #1057 review).
+        text = new_lines[ln - 1].rstrip("\r\n")
         out.append(f"  {ln:>5} {marker} {text}\n")
     return "".join(out)
 
