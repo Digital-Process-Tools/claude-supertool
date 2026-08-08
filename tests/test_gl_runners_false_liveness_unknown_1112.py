@@ -57,6 +57,27 @@ runners_op = poller.runners_op
 
 _FAILED_READ = "ERROR: glab timed out reading projects/:id/jobs?scope[]=running"
 
+# Every age below is derived from the threshold it is meant to sit clear of,
+# never written as a literal. The first cut of this file used `_iso(1800)` for a
+# "30 minutes stale" heartbeat, and `_HEARTBEAT_WARN_SECONDS` is 1800 — so the
+# fixture landed exactly on the `age <= threshold` boundary, and the verdict was
+# decided by whether the wall clock advanced by one microsecond between building
+# the record and grading it. Linux and macOS advanced; one Windows leg did not,
+# and three tests went red on the runner having been graded alive. A test may
+# not depend on clock resolution, and a margin written as a literal beside a
+# constant somebody may later change is the same trap with a longer fuse.
+_CLEAR_OF_THRESHOLD = 120
+
+
+def _stale_heartbeat_seconds() -> int:
+    """An age unambiguously past the heartbeat threshold, whatever it is set to."""
+    return runners_op._HEARTBEAT_WARN_SECONDS + _CLEAR_OF_THRESHOLD
+
+
+def _queued_long_enough_seconds() -> int:
+    """A pending age unambiguously past the queue-age floor."""
+    return runners_op._STARVED_MIN_QUEUE_SECONDS + _CLEAR_OF_THRESHOLD
+
 
 def _iso(seconds_ago: float) -> str:
     moment = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(
@@ -83,14 +104,14 @@ def _runner(rid: int, tags: list[str], **over) -> dict:
 
 
 def _hercule(**over) -> dict:
-    """The filed runner: GitLab says online, heartbeat is 30 minutes old."""
+    """The filed runner: GitLab says online, the heartbeat is the only demerit."""
     return _runner(25, ["dptools-runner-2"], description="hercule",
-                   contacted_at=_iso(1800), **over)
+                   contacted_at=_iso(_stale_heartbeat_seconds()), **over)
 
 
 def _pending_job(tags: list[str]) -> dict:
-    return {"tag_list": tags, "created_at": _iso(1800), "name": "phpstan2",
-            "ref": "refs/merge-requests/33743/head"}
+    return {"tag_list": tags, "created_at": _iso(_queued_long_enough_seconds()),
+            "name": "phpstan2", "ref": "refs/merge-requests/33743/head"}
 
 
 def _running_job(rid: int, name: str) -> dict:
@@ -296,3 +317,118 @@ def test_runner_tags_reach_the_channel_instead_of_being_refused(
     assert fleet_events, _names(events)
     for event in fleet_events:
         assert event["payload"]["tags"] == "docker,dptools-runner-2", event["event"]
+
+# ---------------------------------------------------------------------------
+# the threshold itself: pinned from both sides, from neither boundary
+# ---------------------------------------------------------------------------
+
+def test_the_heartbeat_threshold_is_pinned_without_standing_on_it() -> None:
+    """What the fixtures above stopped asserting, asserted deliberately.
+
+    Moving the fixtures clear of `_HEARTBEAT_WARN_SECONDS` would otherwise
+    delete the only coverage of which side of it means alive, so the semantics
+    are pinned here instead — from a safe margin on each side, where the answer
+    does not depend on how fast the clock ticks."""
+    def probe(age_seconds: float) -> bool:
+        return runners_op._is_responsive({
+            "id": 25, "active": True, "paused": False, "status": "online",
+            "job_execution_status": "idle", "_recent_jobs": 0,
+            runners_op._LIVE_JOBS_MARK: True,
+            "contacted_at": _iso(age_seconds),
+        })
+
+    threshold = runners_op._HEARTBEAT_WARN_SECONDS
+    assert probe(threshold - _CLEAR_OF_THRESHOLD) is True
+    assert probe(threshold + _CLEAR_OF_THRESHOLD) is False
+
+
+# ---------------------------------------------------------------------------
+# second finding, from auditing the liveness read for timing dependencies
+# ---------------------------------------------------------------------------
+
+def test_a_heartbeat_from_the_future_is_not_evidence_of_life(monkeypatch) -> None:
+    """`contacted_at` is GitLab's clock; `now` is ours. Nothing measures the gap.
+
+    When ours runs behind, `_age_seconds` returns a NEGATIVE number and every
+    temporal test in `_is_responsive` is a `<=` against a ceiling — so a
+    heartbeat two hours in the future passes as *fresh*, the strongest verdict
+    the rung can give, off a number that is evidence our clock is wrong rather
+    than evidence of life.
+
+    The direction is what makes this worse than #1112 rather than the same size.
+    A false `runner_liveness_unknown` is a loud alarm about a healthy runner. A
+    false *alive* is a silent all-clear over a genuinely wedged one, and it
+    lands on every runner at once, because clock skew is a property of the host
+    and not of any runner. `docs/validators.md` calls that the more expensive of
+    the two trades, and it is the one the tool currently makes."""
+    skewed = _runner(25, ["dptools-runner-2"], description="hercule",
+                     contacted_at=_iso(-7200))
+    runners_op.annotate_live_jobs([skewed], [])
+    runners_op.annotate_recent_work([skewed], [])
+
+    assert runners_op._is_responsive(skewed) is False
+    # And it must land in the third state, not in the death state: a skewed
+    # clock says nothing about whether GitLab thinks the runner is up.
+    assert runners_op._demonstrably_down(skewed) is False
+    assert runners_op._liveness_unknown(skewed) is True
+
+
+def test_a_skewed_clock_does_not_silently_clear_a_stranded_queue(
+        monkeypatch) -> None:
+    """The consequence, at the level an operator sees. Work is queued behind the
+    only runner that may take it, and that runner's heartbeat is unusable. The
+    board must disclose the queue as unproven rather than return empty."""
+    tags = ["dptools-runner-2"]
+    skewed = _runner(25, tags, contacted_at=_iso(-7200))
+    runners_op.annotate_live_jobs([skewed], [])
+    runners_op.annotate_recent_work([skewed], [])
+
+    stuck, unproven = runners_op.classify_queue([skewed], [_pending_job(tags)])
+
+    assert stuck == {}
+    assert unproven == {"dptools-runner-2": 1}
+
+
+def test_future_dated_finished_jobs_are_not_counted_as_recent_work(
+        monkeypatch) -> None:
+    """The same skew, one rung up the evidence ladder. `fetch_recent_finished`
+    keeps a job whose `finished_at` age is `<= window`, and a negative age
+    satisfies that too — so under a behind-running clock the whole job history
+    reads as "finished just now" and every runner in it scores throughput
+    evidence it did not earn. Fixing only the heartbeat rung would leave the
+    strongest rung of the three still forging the same false alive."""
+    monkeypatch.setattr(
+        runners_op, "_api",
+        lambda endpoint, paginate=False, timeout=20: (
+            [{"finished_at": _iso(-7200), "created_at": _iso(-7200),
+              "runner": {"id": 25}}], None))
+
+    kept, _truncated = runners_op.fetch_recent_finished()
+
+    assert kept == []
+
+
+def test_ordinary_sub_minute_skew_between_two_hosts_still_reads_fresh() -> None:
+    """The fence, and the reason this is a tolerance rather than a sign test.
+
+    Two NTP-synced hosts disagree by milliseconds, and a heartbeat written a few
+    seconds "in the future" is definitionally the freshest reading there is.
+    Refusing every negative age would turn that into a fleet-wide UNKNOWN — a
+    false alarm on every runner at once, which is the failure #750 exists to
+    stop. Only a skew too large to be jitter withdraws the evidence."""
+    jittered = _runner(25, ["dptools-runner-2"], contacted_at=_iso(-5))
+    runners_op.annotate_live_jobs([jittered], [])
+    runners_op.annotate_recent_work([jittered], [])
+
+    assert runners_op._is_responsive(jittered) is True
+
+
+def test_a_future_heartbeat_is_not_rendered_as_an_age() -> None:
+    """`_human_age(-3600)` returned `'-3600s'`, which reads as a runner seen
+    minus-one-hour ago. The renderer has to say the reading is unusable, because
+    a negative age is the one thing on that row an operator can act on — it is
+    about their clock, not about the fleet."""
+    rendered = runners_op._human_age(-7200)
+
+    assert not rendered.startswith("-")
+    assert "-7200" not in rendered

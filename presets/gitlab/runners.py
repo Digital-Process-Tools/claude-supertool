@@ -60,6 +60,23 @@ _STARVED_MIN_QUEUE_SECONDS = 300
 # "is one of these doing all the work" actually means.
 _THROUGHPUT_WINDOW_SECONDS = 1800
 
+# Every age in this module is GitLab's clock subtracted from ours, and nothing
+# measures the gap between the two. When ours runs behind, ages come out
+# NEGATIVE, and every temporal test here is a `<=` against a ceiling — so a
+# heartbeat two hours in the future passed as *fresh*, and a job history dated
+# in the future counted as work finished just now. That is a false ALIVE, on
+# every runner at once, because skew belongs to the host and not to any runner:
+# a silent all-clear over a genuinely wedged fleet, which `docs/validators.md`
+# ranks above a false alarm as the more expensive trade.
+#
+# A tolerance rather than a sign test, and the tolerance is the load-bearing
+# half. Two NTP-synced hosts disagree by milliseconds, and a heartbeat written
+# a few seconds ahead of us is the freshest reading there is; refusing every
+# negative age would withdraw the evidence from an entire healthy fleet on
+# ordinary jitter, which is the #750 failure rebuilt from the other side. Only
+# a gap too large to be jitter means the comparison is unusable.
+_CLOCK_SKEW_TOLERANCE_SECONDS = 60
+
 # The jobs endpoint returns newest-first by id, which orders by created_at —
 # and finished_at is NOT monotonic with it. A test job created 09:17 and still
 # running at 11:45 finishes long after jobs created an hour later. Stopping the
@@ -155,10 +172,27 @@ def _age_seconds(timestamp: str | None) -> float | None:
     return (datetime.now(timezone.utc) - parsed).total_seconds()
 
 
+def _usable_age(seconds: float | None) -> bool:
+    """Is this age a measurement, or a statement about our own clock?
+
+    Separated from the comparisons it guards because it has to be applied at
+    every one of them. `_is_responsive` and `fetch_recent_finished` both test an
+    age against a ceiling, and a negative age satisfies a ceiling — so guarding
+    only the one that produced the report leaves the other rung forging the same
+    false alive from the other direction.
+    """
+    return seconds is not None and seconds >= -_CLOCK_SKEW_TOLERANCE_SECONDS
+
+
 def _human_age(seconds: float | None) -> str:
-    """Compact age: 45s, 12m, 3h, 5d."""
+    """Compact age: 45s, 12m, 3h, 5d — or the reason there is no age to give."""
     if seconds is None:
         return "-"
+    if not _usable_age(seconds):
+        # Printing `-3600s` renders a runner as seen minus-one-hour ago, which
+        # reads as a very odd measurement rather than as the absence of one.
+        # This row is the only place an operator can learn their clock is wrong.
+        return "ahead of our clock"
     if seconds < 60:
         return f"{seconds:.0f}s"
     if seconds < 3600:
@@ -336,7 +370,9 @@ def _is_responsive(runner: dict) -> bool:
     if runner.get("job_execution_status") == "active":
         return True
     age = _age_seconds(runner.get("contacted_at"))
-    return age is not None and age <= _HEARTBEAT_WARN_SECONDS
+    # `_usable_age` before the ceiling, not folded into it: an age we cannot
+    # interpret is not a fresh one, and `age <= ceiling` says yes to both.
+    return _usable_age(age) and age <= _HEARTBEAT_WARN_SECONDS
 
 
 def fetch_recent_finished(
@@ -369,6 +405,7 @@ def fetch_recent_finished(
         [
             job for job in collected
             if job.get("finished_at")
+            and _usable_age(_age_seconds(job["finished_at"]))
             and (_age_seconds(job["finished_at"]) or float("inf")) <= window_seconds
         ],
         truncated,
