@@ -400,8 +400,12 @@ def test_fail_gap_marker_states_how_many_lines_were_elided(monkeypatch, capsys) 
     assert "ERROR: second boom" in out
     shown = _shown_line_numbers(out)
     assert shown == list(range(1, 10)) + list(range(54, 63))
-    assert "... (44 lines elided)" in out
-    assert "..." not in out.replace("... (44 lines elided)", "")
+    # The wording is the GitHub twin's, verbatim, since #1066 — one vocabulary
+    # for one concept across two ops a reader uses interchangeably.
+    marker = ("... (44 lines elided by this op — no error pattern matched "
+              "them; the log itself is intact)")
+    assert marker in out
+    assert "..." not in out.replace(marker, "")
 
 
 def test_fail_no_gap_marker_when_nothing_is_dropped(monkeypatch, capsys) -> None:
@@ -436,7 +440,7 @@ def test_fail_oversize_phpunit_block_elides_visibly(monkeypatch, capsys) -> None
     assert "' does not contain \"needle\"." in out
     assert "/builds/tests/FooTest.php:99" in out
     assert "<div>row 50</div>" not in out
-    assert "lines elided)" in out
+    assert "lines elided by this op" in out
 
 
 def _failure_block(n: int) -> list[str]:

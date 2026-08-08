@@ -260,10 +260,47 @@ def _expand_phpunit_blocks(
     return dropped, len(touched)
 
 
-def _find_error_sections(lines: list[str], patterns: list[str], context: int) -> list[tuple[int, str]]:
+def gap_marker(n_lines: int) -> str:
+    """The line that stands where the op cut, saying so and saying how much.
+
+    Byte-identical to `presets/github/job.py:gap_marker`, and that is the
+    point (#1066). These two files are private twins: the GitLab side got a
+    counted marker in #409 and the GitHub side rediscovered the same defect
+    640 issues later as #1050, fixing it with different words. Two vocabularies
+    for one idea, in two ops a reader uses interchangeably depending on which
+    forge they are looking at, is worse than either wording alone — someone who
+    learns one and meets the other has to work out whether the difference means
+    something.
+
+    The longer GitHub wording won because its extra clause is the one that was
+    being misread: `... ` alone does not distinguish *this op elided lines*
+    from *the log itself was truncated*, and a whole issue (#1014) was filed
+    against the second reading of the first fact. The cost is a longer line
+    when a render carries several markers; that is the trade, taken knowingly.
+
+    `tests/test_gl_job_gap_marker_twins_1066.py` compares the twins directly,
+    so the next divergence fails loudly instead of sitting unmirrored.
+    """
+    unit = "line" if n_lines == 1 else "lines"
+    return (f"... ({n_lines} {unit} elided by this op — no error pattern "
+            f"matched them; the log itself is intact)")
+
+
+def _find_error_sections(lines: list[str], patterns: list[str], context: int,
+                         trailing_gap: bool = False) -> list[tuple[int, str]]:
     """Find lines matching error patterns and return them with context.
 
     Returns list of (line_number, line_text) tuples, deduplicated and sorted.
+
+    Gaps carry `gap_marker`, so every withheld line is accounted for by exactly
+    one marker — including, when `trailing_gap` is set, the run after the last
+    shown line (#1066).
+
+    `trailing_gap` is off by default and **must stay that way for the default
+    render**, for the reason the GitHub twin gives: that path prints these
+    sections and then `## Tail (last N lines)` immediately below, which holds
+    most of the very lines a trailing marker would have declared elided. Only
+    `:fail`, which prints blocks and nothing else, can truthfully claim it.
     """
     matches: set[int] = set()
     for i, line in enumerate(lines):
@@ -302,10 +339,16 @@ def _find_error_sections(lines: list[str], patterns: list[str], context: int) ->
     for idx in sorted_matches:
         gap = idx - prev - 1
         if gap > 0:
-            plural = "" if gap == 1 else "s"
-            result.append((-1, f"... ({gap} line{plural} elided)"))
+            result.append((-1, gap_marker(gap)))
         result.append((idx + 1, lines[idx]))  # 1-indexed line numbers
         prev = idx
+
+    # Anything after the last shown line is withheld too, and the reader
+    # deciding whether to call `:raw` needs that number as much as the middle
+    # ones. Only `:fail` may say it — see the docstring.
+    trailing = len(lines) - 1 - prev
+    if trailing_gap and trailing > 0:
+        result.append((-1, gap_marker(trailing)))
 
     if dropped:
         plural = "" if dropped == 1 else "s"
@@ -364,10 +407,15 @@ def _emit_grep_hits(
     planned: list[str] = []
     emitted = 0
     shown_matches = 0
-    prev = -2
+    # `-1`, not `-2`. At `-2` the first hit (index 0) satisfies `idx > prev + 1`
+    # and the render opened with an elision marker covering zero lines, above a
+    # line printed directly beneath it — an absence the op invented. The GitHub
+    # twin was corrected by #1050; this copy was not, and sat that way for 640
+    # issues because nothing compared them (#1066).
+    prev = -1
     cut = False
     for idx in hit_indexes:
-        chunk = "...\n" if idx > prev + 1 else ""
+        chunk = (gap_marker(idx - prev - 1) + "\n") if idx > prev + 1 else ""
         chunk += f"  {idx + 1:>5} | {lines[idx]}\n"
         size = len(chunk.encode("utf-8", "replace"))
         # The first hit always goes out whole, however fat: a bound that can
@@ -658,7 +706,9 @@ def main() -> int:
         f"Resolve:  ./supertool '{resolution.replace('{id}', job_id)}'"
         if resolution else ""
     )
-    error_sections = _find_error_sections(lines, patterns, config["error_context"])
+    error_sections = _find_error_sections(lines, patterns,
+                                          config["error_context"],
+                                          trailing_gap=errors_mode)
 
     # errors mode — dump ALL matched blocks, no tail cap
     if errors_mode:

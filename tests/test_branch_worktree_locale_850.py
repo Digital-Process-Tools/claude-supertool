@@ -39,10 +39,17 @@ def _load(rel: str, name: str):
 
 # Every site the issue names. A fix that lands on one and not the others leaves
 # the surface everyone else reads.
+#
+# `gh-run` was one of the five and is no longer here: #1056 removed the
+# prescription from that op entirely, on the ground that reading a run is not a
+# claim about wanting its branch, so there is no checkout advice left for these
+# tests to be about. Its replacement line is pinned by
+# `tests/test_gh_run_read_only_branch_line_1056.py`, which also asserts these
+# four still carry the imperative — dropping it here does not drop the
+# coverage, it moves the four-vs-one boundary somewhere a reader can see it.
 SITES = {
     "gh-pr": "presets/github/pr.py",
     "gh-job": "presets/github/job.py",
-    "gh-run": "presets/github/run.py",
     "gl-mr": "presets/gitlab/mr.py",
     "gl-job": "presets/gitlab/job.py",
 }

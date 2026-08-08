@@ -389,8 +389,8 @@ just `Failed asserting that '` and `does not contain "X"`. So a failure block, f
 its `N) Class::method` header to the trailing `/path/File.php:LINE` frames, is never
 elided in the middle: touching it anywhere pulls in the whole block. Blocks longer
 than `GL_JOB_PHPUNIT_BLOCK_MAX_LINES` (default 500) keep their head and tail, and
-every gap marker states the count — `... (44 lines elided)` — so a trimmed view can
-never be mistaken for a complete one.
+every gap marker states the count — so a trimmed view can never be mistaken for a
+complete one.
 
 Expansion is budgeted across the whole log by `GL_JOB_PHPUNIT_TOTAL_MAX_LINES`
 (default 2000), because one broken shared component fails dozens of tests at once.
@@ -398,6 +398,36 @@ Past the budget whole failures are dropped in file order rather than gutted — 
 dropped failure falls back to its ordinary pattern window, so nothing disappears —
 and the view ends with `... (3 of 21 PHPUnit failures not shown in full — raise
 GL_JOB_PHPUNIT_TOTAL_MAX_LINES=N)`.
+
+### The gap marker is worded exactly as `gh-job`'s
+
+`gl-job` and `gh-job` are read interchangeably depending on which forge you are
+looking at, and until
+[#1066](https://github.com/Digital-Process-Tools/claude-supertool/issues/1066)
+they described the same elision with two different strings — `gl-job` said
+`... (44 lines elided)`, `gh-job` said the longer form. A reader who learns one
+and meets the other has to work out whether the difference means something. One
+concept, one wording, on both:
+
+```
+... (44 lines elided by this op — no error pattern matched them; the log itself is intact)
+```
+
+The extra clause is the load-bearing part: a bare `...` does not distinguish
+*this op elided lines* from *the log itself was truncated*, and an issue was
+filed against the second reading of the first fact. The cost is a longer line
+when a render carries several markers — that is the trade, taken knowingly.
+`tests/test_gl_job_gap_marker_twins_1066.py` compares the two ops directly, so
+the next divergence fails there instead of sitting unmirrored for 640 issues.
+
+Two bugs went with the wording. `:grep:` printed a phantom marker above line 1
+whenever the first hit was at index 0, covering nothing at all — the same
+off-by-one the GitHub twin had fixed in #1050 and this copy never received. And
+`:fail` now accounts for the lines *after* the last shown block, so every
+withheld line is covered by exactly one marker. That trailing marker is
+deliberately **not** printed in the default view, which follows the blocks with
+`## Tail (last N lines)` — most of the lines it would declare elided are printed
+three lines later.
 
 ### `:grep:` bounds its own output, and says when it did
 
