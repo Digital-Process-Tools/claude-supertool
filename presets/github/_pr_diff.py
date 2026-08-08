@@ -39,6 +39,17 @@ current inside the merge gate. Records are coalesced by path here as well, so
 serving a first-of-N is structurally impossible rather than merely unlikely —
 and a path that does arrive more than once has every entry shown under a line
 naming the count and which end of it is current.
+
+**A line of the diff does not get to say where a file starts (#1081).** The
+parse splits with `_untrusted.split_lines` — LF, CR, CRLF — not
+`str.splitlines()`, which breaks on eight more separators a unified diff does
+not define. One of those inside an added line used to produce a fragment at
+column 0, `diff --git ` opened a file record from it, and the rest of the
+file's additions vanished behind a phantom second file. `flat()` neutralises
+the separator in a field it renders; it cannot protect a structural parse that
+already ran, which is why this is fixed at the split rather than at the
+render. The separator is still disclosed — `fence()` does that in the hunk
+body, so a `parse()` that announced it too would be repeating itself.
 """
 from __future__ import annotations
 
@@ -96,7 +107,18 @@ def parse(patch: str) -> list[dict]:
             current["hunks"].append("\n".join(hunk))
         hunk = None
 
-    for line in (patch or "").splitlines():
+    # `_untrusted.split_lines`, never `str.splitlines()`: a patch is a byte
+    # protocol whose only line boundaries are LF, CR and CRLF, and the branch
+    # below opens a file record from any line at column 0. Splitting on the
+    # eight extra separators let a contributor's own added line forge that
+    # boundary and drop every added line after it (#1081).
+    #
+    # The `diff --git ` branch stays OUTSIDE the `hunk is None` gate on
+    # purpose. Git emits the next file's header immediately after the previous
+    # file's last hunk line with no terminator, so firing mid-hunk is the
+    # ordinary multi-file case, not the anomaly -- gating it would break every
+    # diff with two files in it. The forgery was the fragment, not the branch.
+    for line in _untrusted.split_lines(patch or ""):
         if line.startswith("diff --git "):
             close_hunk()
             current = {
@@ -223,8 +245,9 @@ def _hunk_signature(hunk: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
     edit applied at line 3 and at line 40 has different headers and different
     neighbours and is still the same edit.
     """
-    removed = tuple(l[1:].strip() for l in hunk.splitlines()[1:] if l.startswith("-"))
-    added = tuple(l[1:].strip() for l in hunk.splitlines()[1:] if l.startswith("+"))
+    body = _untrusted.split_lines(hunk)[1:]
+    removed = tuple(l[1:].strip() for l in body if l.startswith("-"))
+    added = tuple(l[1:].strip() for l in body if l.startswith("+"))
     return removed, added
 
 
