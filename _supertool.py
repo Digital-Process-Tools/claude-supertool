@@ -6141,9 +6141,15 @@ _ROLLBACK_COUNT: List[int] = [0]
 # `2 validators NOT RUN` alone sends them back up to the block this footer
 # exists to save them from re-reading.
 #
-# Appended where the result is rendered, and read as a per-call slice — the
-# warm daemon reuses the process, so an absolute read would let one ungated
-# edit poison the exit code of every later call in the same worker (#680).
+# Appended through `_acc_not_checked()`, which routes to the running op's own
+# dispatch frame and reaches this list only when the frame unwinds (#1109). So
+# what accumulates here is the whole CALL, which is exactly the scope the exit
+# code below wants: the warm daemon reuses the process, so `main` reads a
+# per-call delta and truncates back, or one ungated edit would poison the exit
+# code of every later call in the same worker (#680). The FOOTER's scope is one
+# op, and it is built from the frame instead — a `len()` snapshot here was only
+# ever per-op while a single op was appending, which stopped being true the day
+# `validate` joined `_PARALLEL_SAFE_OPS`.
 _NOT_CHECKED: List[str] = []
 
 # One entry per file a `validate:` op rendered a block for, as
@@ -6155,8 +6161,9 @@ _NOT_CHECKED: List[str] = []
 # is summarising can only ever agree with the prose, which is exactly the thing
 # under suspicion when a reader reaches for it.
 #
-# Read as a per-call slice, like `_NOT_CHECKED` above and for the same reason —
-# the warm daemon reuses the process.
+# Per-call, and reached through the dispatch frame, like `_NOT_CHECKED` above
+# and for the same two reasons — the warm daemon reuses the process, and the
+# footer's scope is one op rather than one call (#1109).
 _VALIDATED_FILES: List[Tuple[str, bool, bool]] = []
 
 
@@ -13866,7 +13873,7 @@ def _note_not_checked(results: Dict[str, Any]) -> None:
     for name, data in results.items():
         if (_validator_no_verdict(data) is not None
                 or _validator_gate_did_not_run(data) is not None):
-            _NOT_CHECKED.append(name)
+            _acc_not_checked().append(name)
 
 
 def _validator_regressed(before: Optional[Dict[str, Any]], after: Dict[str, Any]) -> bool:
@@ -14913,7 +14920,7 @@ def _validate_one_block(path: str, validators: dict, verbose: bool = False) -> L
     # presence defect the footer exists to prevent. `presets/git/resolve.py`
     # already distinguishes the two (an empty block digests to `None`, rendered
     # as nothing); the count has to agree with it.
-    _VALIDATED_FILES.append((path, had_finding, had_non_verdict or not ran_any))
+    _acc_validated().append((path, had_finding, had_non_verdict or not ran_any))
     return out
 
 
@@ -17237,6 +17244,83 @@ def _at_file_to_parts(op: str, payload: Any) -> Tuple[List[str], bool]:
 
 import threading as _threading
 _DISPATCH_STATE = _threading.local()
+
+# Per-op accumulators live on the dispatch frame, not in the process-global
+# (#1109). `validate` is in `_PARALLEL_SAFE_OPS`, so under SUPERTOOL_PARALLEL
+# six ops append to `_VALIDATED_FILES` / `_NOT_CHECKED` at once — and the footer
+# used to be built by snapshotting `len()` at op entry and slicing `[before:]`
+# at op exit. That arithmetic is per-op only while exactly one op is appending;
+# with six in flight, every footer but one claimed files its op never opened,
+# and `with findings` travelled the same way. A lock around the appends would
+# have made them orderly and left the slices exactly as wrong — the defect is
+# not a missing lock, it is per-op state kept somewhere per-op does not exist.
+#
+# Two scopes, deliberately, because two readers want two different answers:
+#
+#   * the FOOTER describes one op. It reads this frame's own list, which is
+#     exact by construction — there is no snapshot left to get wrong.
+#   * the EXIT CODE describes the whole call. `main` still reads the
+#     process-global, so `$SUPERTOOL_REQUIRE_VALIDATORS` keeps firing under
+#     parallel dispatch. Giving each op its own list and stopping there would
+#     have traded a miscount for a gate that silently stopped gating, which is
+#     the louder-bug-for-quieter-bug trade docs/validators.md warns about.
+#
+# `_acc_pop` is what joins them: every frame flushes into the frame that
+# displaced it, and the outermost frame's parent is the process-global. A
+# batch's sub-ops append one frame deeper and roll up into the batch's own
+# footer, which is what they did before.
+_ACC_FLUSH_LOCK = _threading.Lock()
+
+
+def _acc_not_checked() -> List[str]:
+    """This dispatch frame's not-checked names — the call's, outside one.
+
+    The fallback is not decoration: `_drain_validator_queue` runs in `main`
+    after every op has returned, with no frame installed, and what it records
+    still belongs to the call's exit code.
+    """
+    buf = getattr(_DISPATCH_STATE, "acc_not_checked", None)
+    return _NOT_CHECKED if buf is None else buf
+
+
+def _acc_validated() -> List[Tuple[str, bool, bool]]:
+    """This dispatch frame's validated-file rows — the call's, outside one."""
+    buf = getattr(_DISPATCH_STATE, "acc_validated", None)
+    return _VALIDATED_FILES if buf is None else buf
+
+
+def _acc_push() -> Tuple[Optional[List[str]],
+                         Optional[List[Tuple[str, bool, bool]]]]:
+    """Install fresh per-op lists, returning the ones they displace."""
+    prev = (getattr(_DISPATCH_STATE, "acc_not_checked", None),
+            getattr(_DISPATCH_STATE, "acc_validated", None))
+    _DISPATCH_STATE.acc_not_checked = []
+    _DISPATCH_STATE.acc_validated = []
+    return prev
+
+
+def _acc_pop(prev: Tuple[Optional[List[str]],
+                         Optional[List[Tuple[str, bool, bool]]]]) -> None:
+    """Restore `prev` and flush this frame's rows into it, or into the globals.
+
+    Called from `dispatch`'s `finally`, so an op that raised still hands its
+    rows upward instead of stranding them on a thread a pool will reuse.
+    """
+    mine_not_checked = getattr(_DISPATCH_STATE, "acc_not_checked", None) or []
+    mine_validated = getattr(_DISPATCH_STATE, "acc_validated", None) or []
+    prev_not_checked, prev_validated = prev
+    _DISPATCH_STATE.acc_not_checked = prev_not_checked
+    _DISPATCH_STATE.acc_validated = prev_validated
+    # The lock is for the outermost hand-off only. A parent frame's list is
+    # thread-local and cannot be contended; the process-global is shared by
+    # every worker thread of a parallel dispatch, and `list.extend` is not a
+    # promise the free-threaded build makes (3.13t+, the same reason the depth
+    # counter above is thread-local).
+    with _ACC_FLUSH_LOCK:
+        (_NOT_CHECKED if prev_not_checked is None
+         else prev_not_checked).extend(mine_not_checked)
+        (_VALIDATED_FILES if prev_validated is None
+         else prev_validated).extend(mine_validated)
 # Parsed at module scope, so a bad value here used to raise during *import* and
 # take down every op in the tool, most of which have nothing to do with dispatch
 # depth. The widest blast radius of the #654 class, for the smallest knob.
@@ -17279,6 +17363,7 @@ def dispatch(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = None) ->
             f"— check for a self-referencing batch payload\n"
         )
     _DISPATCH_STATE.depth = depth + 1
+    _acc_prev = _acc_push()
     try:
         out = _dispatch_impl(arg, pre_parsed)
         # The edit ops read with surrogateescape and echo the buffer in their
@@ -17289,6 +17374,7 @@ def dispatch(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = None) ->
         return _display_safe(out) if depth == 0 else out
     finally:
         _DISPATCH_STATE.depth = depth
+        _acc_pop(_acc_prev)
         # _FORMATTER_SKIPS is module-level and drained on the normal return
         # path. An exception escaping _dispatch_impl skips that drain, and the
         # next top-level call would report skips belonging to a call that
@@ -17440,8 +17526,6 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
     _skips_before = _SKIP_COUNT[0]
     _reapplies_before = _REAPPLY_COUNT[0]
     _rollbacks_before = _ROLLBACK_COUNT[0]
-    _not_checked_before = len(_NOT_CHECKED)
-    _validated_before = len(_VALIDATED_FILES)
 
     # #146: dispatch-level path containment. Each op has a known position(s)
     # of its path arg(s) in `parts`. _safe_path enforces cwd containment
@@ -18013,8 +18097,15 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
         # footer exists to carry: a checker that did not check (#969).
         # `validate` is not in `_OP_TARGETS` and mutates nothing, so it was
         # gated out of the summary line entirely.
-        _not_checked_slice = _NOT_CHECKED[_not_checked_before:]
-        _validated_slice = _VALIDATED_FILES[_validated_before:]
+        # This frame's own rows (#1109), not a slice of the process-global.
+        # `dispatch` installed them before `_dispatch_impl` ran, so the lists
+        # are always present here; `or ()` declines to fall back to the global,
+        # because a footer built from every op's rows is the defect, not a
+        # degraded reading of it.
+        _not_checked_slice = list(
+            getattr(_DISPATCH_STATE, "acc_not_checked", None) or ())
+        _validated_slice = list(
+            getattr(_DISPATCH_STATE, "acc_validated", None) or ())
         if (op in _OP_TARGETS or _MUTATION_ATTEMPTS[0] > _attempts_before
                 or _not_checked_slice or _validated_slice):
             _result = _result_line(_MUTATION_ATTEMPTS[0] - _attempts_before,
