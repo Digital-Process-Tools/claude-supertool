@@ -410,6 +410,10 @@ _SYNTAX_FILTER = "@syntax"
 _SKIPPED_ROW = re.compile(r"^([\w-]+)\s*:\s*skipped\b\s*[—-]*\s*(.*)$")
 _RESULT_ROW = re.compile(r"^([\w-]+)\s*:\s*(ok|(\d+) err)\b")
 
+#: supertool's own per-call footers, which follow the last file's block and
+#: belong to no file. See the fold loop in `_validate_paths`.
+_CALL_FOOTER = re.compile(r"^\[(result|branch)\b")
+
 
 def _skip_summary(skipped: list) -> str:
     """`tool (why)` for each declined validator, bounded to one short cell."""
@@ -615,6 +619,18 @@ def _validate_paths(paths: list[str]) -> dict[str, Optional[str]]:
                     blocks.append("\n".join(buf))
                 buf = []
                 started = True
+            elif _CALL_FOOTER.match(line):
+                # Not this file's rows. `[result] ...` and `[branch: ...]`
+                # describe the whole call and print after the last block with no
+                # header of their own, so the splitter above folds them into
+                # whichever file sorted last. Inert today only because
+                # `_RESULT_ROW` and `_SKIPPED_ROW` both anchor on a word
+                # character and these open with `[` -- an accident, not a
+                # guarantee, and #990 turned it from a decline-only case into
+                # every run. Dropped explicitly, so the invariant this file is
+                # built on -- a block holds that file's own content -- is
+                # enforced rather than lucky.
+                continue
             elif started:
                 buf.append(line)
         if started:

@@ -5810,7 +5810,9 @@ def _result_line(ops: int, writes: int, skipped: int = 0,
                  not_checked: Optional[Sequence[str]] = None,
                  rolled_back: int = 0,
                  validated: Optional[Sequence[Tuple[str, bool, bool]]] = None) -> str:
-    """`[result] N ops run, M writes[, K skipped][, K rolled back][, K re-applied]` (#621).
+    """`[result] N ops run, M writes[, K skipped][, K rolled back][, K re-applied]` (#621),
+    or, for a read-only `validate:` run, `[result] N files, M with findings,
+    K not checked` (#990).
 
     The receipt a mutating op prints sits ABOVE the `[validators]` block, and a
     long validators block is exactly when a reader reaches for `| tail -4`. So
@@ -5941,6 +5943,16 @@ def _result_line(ops: int, writes: int, skipped: int = 0,
         line += f", {rolled_back} rolled back"
     if reapplied > 0:
         line += f", {reapplied} re-applied"
+    files = list(validated or ())
+    if files:
+        # A `validate:` op inside a batch that also mutated something. Its
+        # counts have nowhere else to go — an inner op is at dispatch depth > 1
+        # and never renders a footer of its own — so #990's guarantee would
+        # have a hole exactly where a reader is least likely to notice it.
+        line += (f", validated {len(files)} file"
+                 f"{'' if len(files) == 1 else 's'} "
+                 f"({sum(1 for _p, f, _nv in files if f)} with findings, "
+                 f"{sum(1 for _p, _f, nv in files if nv)} not checked)")
     names = list(dict.fromkeys(not_checked or ()))
     if names:
         line += (f", {len(names)} validator{'' if len(names) == 1 else 's'} "
@@ -13052,7 +13064,7 @@ def _validator_meaning_version() -> str:
     entries cross the boundary in the one direction this exists to prevent. The
     three-state contract, applied to the key itself.
 
-    Memoised for the process: one read of a small file per invocation.
+    Memoised: the file is read once per process, not once per cache lookup.
     """
     global _VALIDATOR_MEANING_VERSION
     if _VALIDATOR_MEANING_VERSION is not None:
@@ -14875,6 +14887,7 @@ def _validate_one_block(path: str, validators: dict, verbose: bool = False) -> L
     out = [f"validate: {_flat_field(path)}"]
     had_finding = False
     had_non_verdict = False
+    ran_any = False
     for name, spec in validators.items():
         glob = spec.get("match", "*")
         if path and glob and not _match_glob(path, glob):
@@ -14886,13 +14899,21 @@ def _validate_one_block(path: str, validators: dict, verbose: bool = False) -> L
         # counts towards "not checked" here even though #665 refused to
         # ESCALATE it: an optional tool nobody installed still checked nothing,
         # and saying so on a count line does not gate anything on it.
+        ran_any = True
         if "skipped" in data or _validator_no_verdict(data) is not None:
             had_non_verdict = True
         elif data.get("ok") is False:
             had_finding = True
         _note_not_checked({name: data})
         out.extend(_validator_render_row(data, verbose=verbose))
-    _VALIDATED_FILES.append((path, had_finding, had_non_verdict))
+    # A file no validator's `match` glob selected is NOT a clean file. It is the
+    # emptiest block this function can emit — no rows at all — and counting it
+    # towards `0 not checked` would make "we own no checker for this type" and
+    # "every checker passed" the same number, which is the absence-read-as-
+    # presence defect the footer exists to prevent. `presets/git/resolve.py`
+    # already distinguishes the two (an empty block digests to `None`, rendered
+    # as nothing); the count has to agree with it.
+    _VALIDATED_FILES.append((path, had_finding, had_non_verdict or not ran_any))
     return out
 
 

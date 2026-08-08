@@ -780,7 +780,11 @@ Useful for a pre-commit sweep or spot-checking a file you didn't edit this sessi
 
 Before this, the footer was emitted only when a checker declined, so a clean multi-file run *ended* on whichever file sorted last — a per-file verdict standing where a whole-run one belongs, which is the defect class this subsystem keeps having. The three numbers are file counts and they do not partition: one file can hold both a finding and a checker that declined. `not checked` counts a file where at least one validator returned no verdict, `skipped` included, and it is printed as `0` rather than suppressed — on a line whose entire content is counts, the not-checked slice is the one a reader must be able to find without knowing in advance whether it fired.
 
+A file that **no** validator's `match` glob selected counts towards `not checked`. Its block holds no rows at all, and folding that into the clean total would make "we own no checker for this type" and "every checker passed" the same number, on the one line whose job is telling them apart.
+
 `NOT RUN` stays off a clean run. It is the token consumers grep for, and `0 validators NOT RUN` would put it in the output of every green validate. When a required checker does return no verdict, the [#979](https://github.com/Digital-Process-Tools/claude-supertool/issues/979) clause is appended after the counts rather than replacing them, and the exit code is unchanged — this line discloses, it does not gate.
+
+A `validate:` inside a `batch:` that also mutated something gets its counts appended to the mutating footer instead, as `validated N files (M with findings, K not checked)` — an inner op runs at dispatch depth > 1 and renders no footer of its own.
 
 **It does not make `| tail -1` a verdict, and the issue that asked for it assumed it would.** [#381](https://github.com/Digital-Process-Tools/claude-supertool/issues/381) requires `[branch: …]` to be the last line whenever a footer prints, so inside a repo `tail -1` lands there. The footer is owed regardless: a run whose final line is one file's row has no line describing the run at all, wherever the reader looks. Read the tail of the output, not its last line.
 

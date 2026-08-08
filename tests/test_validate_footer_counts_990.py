@@ -183,3 +183,76 @@ def test_the_footer_terminates(tmp_path, capsys, monkeypatch) -> None:
     _rc, out = _run(_files(tmp_path, "a.json"), capsys, monkeypatch, tmp_path)
     assert chr(92) + "n" not in out, out
     assert out.endswith(chr(10)), repr(out[-40:])
+
+# ---------------------------------------------------------------------------
+# Raised by the independent review of the first commit
+# ---------------------------------------------------------------------------
+
+def test_a_file_no_validator_matched_is_not_counted_as_clean(
+        tmp_path, capsys, monkeypatch) -> None:
+    """`0 not checked` must not cover "we own no checker for this type".
+
+    The `fake` validator matches `*.json` only. A `.md` in the same run gets an
+    empty block — no rows at all — and folding that into the clean count makes
+    "every checker passed" and "nothing looked" the same number, on the line
+    whose entire job is telling those apart.
+    """
+    _configure(_adapter(tmp_path, {}))
+    (tmp_path / "notes.md").write_text("# x" + chr(10), encoding="utf-8")
+    _rc, out = _run(_files(tmp_path, "a.json") + ["notes.md"], capsys,
+                    monkeypatch, tmp_path)
+    assert _result_line(out) == "[result] 2 files, 0 with findings, 1 not checked", out
+
+
+def test_a_validate_inside_a_mutating_batch_still_reports_its_counts(
+        tmp_path, capsys, monkeypatch) -> None:
+    """An inner op is at dispatch depth > 1 and renders no footer of its own.
+
+    So a `validate:` bundled with an edit had its counts computed and dropped —
+    #990's guarantee with a hole in exactly the call shape where a reader is
+    least likely to go looking for it.
+    """
+    _configure(_adapter(tmp_path, {"b.json": REAL_FINDING}))
+    _files(tmp_path, "a.json", "b.json")
+    ops = tmp_path / "ops.toml"
+    ops.write_text(
+        "[[ops]]" + chr(10)
+        + 'op = "append"' + chr(10)
+        + 'path = "a.json"' + chr(10)
+        + 'content = ""' + chr(10)
+        + chr(10)
+        + "[[ops]]" + chr(10)
+        + 'op = "validate"' + chr(10)
+        + 'paths = ["a.json", "b.json"]' + chr(10),
+        encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    supertool.main(["batch:@ops.toml"])
+    line = _result_line(capsys.readouterr().out)
+    assert "validated 2 files (1 with findings, 0 not checked)" in line, line
+    assert "1 op run" in line, "the mutating counts must survive beside them"
+
+
+def test_the_call_footer_is_not_folded_into_the_last_files_block() -> None:
+    """`presets/git/resolve.py` splits validate output into per-file blocks.
+
+    It splits on `validate: PATH` headers, so a footer printed after the last
+    block with no header of its own lands inside that file's block. It was inert
+    only because the row regexes anchor on a word character and these open with
+    `[` — an accident, and #990 turned it from a decline-only case into every
+    run. The fold drops them explicitly now.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "_resolve_under_test", "presets/git/resolve.py")
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    for footer in ("[result] 3 files, 0 with findings, 0 not checked",
+                   "[result] 1 validator NOT RUN (fake) — those validators "
+                   "returned no verdict, so the file was NOT checked",
+                   "[branch: fix/1048]"):
+        assert mod._CALL_FOOTER.match(footer), footer
+        assert not mod._RESULT_ROW.match(footer), footer
+        assert not mod._SKIPPED_ROW.match(footer), footer
