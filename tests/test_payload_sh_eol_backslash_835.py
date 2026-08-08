@@ -42,9 +42,19 @@ BS = chr(92)
 NL = chr(10)
 
 
-def _payload(tmp_path: Path, target: Path, new_field: str) -> str:
+# #1087 refuses a doubled backslash in `new` regardless of the target language,
+# so the tests below that assert #835's SHELL scope have to say the pair is
+# deliberate or they would be measuring the wrong guard. That is what the flag
+# is for, and it is also the honest statement of the trade: a LaTeX line break
+# and a Markdown hard break are correct content that now costs one key.
+OPT_IN = "literal_backslashes = true" + NL
+
+
+def _payload(tmp_path: Path, target: Path, new_field: str,
+             opt_in: bool = False) -> str:
     body = (
-        'path = "' + str(target).replace(BS, BS * 2) + '"' + NL
+        (OPT_IN if opt_in else "")
+        + 'path = "' + str(target).replace(BS, BS * 2) + '"' + NL
         + 'old = "OLD"' + NL
         + new_field + NL
     )
@@ -143,9 +153,15 @@ def test_a_non_shell_target_is_not_refused(tmp_path: Path) -> None:
     """`\\\\` at end of line is a line break in LaTeX and content in Markdown.
 
     The guard is scoped to the files whose language makes the pattern a bug.
+
+    The payload declares the pair deliberate because #1087's refusal is NOT
+    language-scoped -- it reads the payload's escape reflex, not the target's
+    grammar. Without the flag this would be measuring that guard instead of
+    this one.
     """
     target = _target(tmp_path, "s.txt")
-    out = supertool.dispatch("edit:" + _payload(tmp_path, target, LITERAL_DOUBLE))
+    out = supertool.dispatch(
+        "edit:" + _payload(tmp_path, target, LITERAL_DOUBLE, opt_in=True))
     assert "ERROR" not in out, out
     assert target.read_text(encoding="utf-8") == (
         "echo one " + BS * 2 + NL + "echo two" + NL
@@ -177,7 +193,8 @@ def test_a_batch_refuses_only_for_the_shell_op(tmp_path: Path) -> None:
     sh = _target(tmp_path, "a.sh")
     txt = _target(tmp_path, "b.txt")
     body = (
-        "[[ops]]" + NL
+        OPT_IN
+        + "[[ops]]" + NL
         + 'op = "edit"' + NL
         + 'path = "' + str(sh).replace(BS, BS * 2) + '"' + NL
         + 'old = "OLD"' + NL

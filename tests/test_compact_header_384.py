@@ -115,7 +115,14 @@ def test_batch_sub_op_header_is_compact(tmp_path: Path) -> None:
 
 
 def test_long_paste_header_drops_the_content(tmp_path: Path) -> None:
-    f = tmp_path / "x.py"
+    # `.txt`, not `.py`: `_long` emits indented lines, so as Python it is an
+    # IndentationError, and since #1088 a CREATED file that fails a rollback
+    # validator is unlinked. The write is then retracted, and the compact
+    # header is gated on a write having landed -- a change that did not stick
+    # leaves no diff to read the elided content back from. This test is about
+    # header elision and nothing here is Python-specific, so the fixture stops
+    # depending on a broken file surviving its own validation.
+    f = tmp_path / "x.txt"
     content = _long("pasted")
     out = supertool.dispatch(f"paste:::{f}:::{content}")
     head = out.splitlines()[0]

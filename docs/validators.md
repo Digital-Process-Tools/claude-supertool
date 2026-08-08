@@ -16,11 +16,27 @@ So `py-syntax` is not a configured validator — it is built into supertool and 
 |---|---|
 | Runs on | `*.py`, for `edit`, `replace`, `replace_lines`, `paste`, `append`, `vim` |
 | How | `compile()` in supertool's own process — no subprocess, no daemon, no cache, microseconds |
-| Rolls back | Yes, when the file parsed *before* the op and does not parse after |
+| Rolls back | Yes — restores the pre-edit bytes, or **removes the file** if this op created it |
 | Config needed | None. It runs in a repo with no `.supertool.json` at all |
 | Deferred to | A configured validator matching the same file that declares `"syntax": true` |
 
-It reverts **regressions only**. A file that was already unparseable can still be edited, a broken file can be repaired, and a new file created broken is reported red but not deleted — there is no pre-edit state to restore. Anything it cannot answer (unreadable file, unknown builtin) comes back as `skipped`, never as ok.
+It reverts **regressions only**. A file that was already unparseable can still be edited, and a broken file can be repaired.
+
+A file the op **created** is removed ([#1088](https://github.com/Digital-Process-Tools/claude-supertool/issues/1088)). It used to be reported red and left behind, on the reasoning that there is no pre-edit state to restore — but "nothing to restore" and "nothing to undo" are different questions, and the create path has an undo: unlink. The old behaviour inverted the contract in the worst direction, because the receipt said the write had not survived validation while the filesystem said it had, and the next `read` or `pytest` saw a file the caller believed did not exist.
+
+Undoing a create is a **delete**, so it is decided on provenance rather than on the absence of a baseline. Three states:
+
+| The op | Undo |
+|---|---|
+| overwrote an existing file whose bytes were captured | restore them |
+| created the path | `unlink` |
+| touched an existing file whose bytes could **not** be read | **refuse** — `[ROLLBACK NOT POSSIBLE]`, the write stands, and the receipt says so |
+
+The third row is the one that matters. Removing a file that existed before the call would turn a rollback into destruction of content this tool never wrote, so where provenance cannot be established the caller is told rather than guessed at.
+
+It also names what it did **not** check. A green `py-syntax` row reads `ok (parsed; not imported)` ([#1100](https://github.com/Digital-Process-Tools/claude-supertool/issues/1100)): `compile()` answers "does this parse", and everything that only fails at import — a regex compiled at module level, an undefined name at class-body scope, a circular import — sits outside it. The validator does not import the file, and that is deliberate rather than pending: importing executes module-level code, and running arbitrary just-edited bytes is a containment decision. The row states the limit instead, so the pass cannot be read as "this module works".
+
+Anything it cannot answer (unreadable file, unknown builtin) comes back as `skipped`, never as ok.
 
 **It is Python-only, and that is a real limit, not an oversight.** The interpreter running supertool can parse Python for free; it cannot parse PHP, TypeScript or Go without a toolchain that may not be installed. For those, declare a parse check in `.supertool.json` with `rollback_on_fail: true` (see the bundled list below) — and add `"syntax": true` to it so the backstop stands down where you have your own.
 

@@ -6188,7 +6188,36 @@ def _retract_write(path: str) -> None:
         _WRITE_COUNT[0] -= 1
 
 
-def _retraction_line(name: str, verb: str, path: str, body: object) -> str:
+def _rollback_action(pre_existed: bool, pre_content: Optional[bytes]) -> str:
+    """`restore` | `unlink` | `refuse` — what undoing this write actually means.
+
+    Three states, because the two the rollback loop used to have were "we have
+    prior bytes" and "we do not", and it read the second as "there is nothing to
+    do" (#1088). A created file has no prior bytes and still has an undo: unlink.
+    So a `paste` of a new file whose content did not parse printed the red row,
+    printed no retraction, and left the artifact — the receipt saying the write
+    did not survive validation while the filesystem said it had.
+
+    `unlink` is a delete, so it is gated on provenance rather than on the
+    absence of a baseline. `pre_existed` is sampled before the op runs and is
+    the only thing that can tell "a path this call brought into being" from "a
+    path that was here and got overwritten". Deleting the second would turn a
+    rollback into destruction of work the call never wrote, which is the one
+    outcome this repository ranks below misreporting.
+
+    The third state is the file that existed and whose bytes could not be read.
+    Neither undo is available and there is no safe guess, so the caller is told
+    rather than left with a silent skip that reads as "nothing needed doing".
+    """
+    if not pre_existed:
+        return "unlink"
+    if pre_content is not None:
+        return "restore"
+    return "refuse"
+
+
+def _retraction_line(name: str, verb: str, path: str, body: object,
+                     created: bool = False) -> str:
     """Retract a receipt's own success line where a FILTERED read will see it.
 
     `[rolled back] <tool> regressed; file restored` shares no token with the
@@ -6220,8 +6249,14 @@ def _retraction_line(name: str, verb: str, path: str, body: object) -> str:
                 head = _flat_cell(ln.strip())
                 break
     quoted = f' — retracts "{head}"' if head else ""
-    return (f"[rolled back] {name} {verb}; {_flat_cell(path)} restored{quoted}"
-            f"; the file was NOT edited")
+    # `removed` / `NOT created` on the create path (#1088). "restored" names an
+    # earlier state, and a file this call brought into being has none — a reader
+    # deciding what to do next needs to know the path is now absent, not that it
+    # went back to something.
+    undo = "removed" if created else "restored"
+    tail = "created" if created else "edited"
+    return (f"[rolled back] {name} {verb}; {_flat_cell(path)} {undo}{quoted}"
+            f"; the file was NOT {tail}")
 
 
 def _elide(s: str, limit: int) -> str:
@@ -12304,6 +12339,24 @@ _BUILTIN_SYNTAX_VALIDATORS: Dict[str, Dict[str, Any]] = {
 }
 
 
+# What a green from the builtin parse check does NOT cover (#1100). `py-syntax`
+# answers "does this parse"; it is read as "is this a working module", because
+# that is the question a caller who has just written a file actually has.
+# Between the two sits everything that only fails at import — a regex compiled
+# at module level, an undefined name at class-body scope, a circular import.
+# One such write landed in `_supertool.py` itself: it parsed, it could not be
+# imported, and every subsequent supertool call in that worktree died behind
+# this validator's green.
+#
+# The validator is not made to import the file. Import EXECUTES module-level
+# code, and running arbitrary just-edited bytes is a containment decision, not
+# a coverage one — the file that produced the report was this tool's own core,
+# being edited by this tool. So the green states its own limit instead, in the
+# column that already exists: it costs no line, and it cannot drift out of date
+# the way a docs note would.
+_PY_SYNTAX_SCOPE = "parsed; not imported"
+
+
 def _builtin_syntax_run(name: str, kind: str, file: str) -> Dict[str, Any]:
     """In-process parse check. SCHEMA.md-shaped, same as a subprocess adapter.
 
@@ -12340,7 +12393,7 @@ def _builtin_syntax_run(name: str, kind: str, file: str) -> Dict[str, Any]:
                             "code": "syntax", "msg": str(e)[:300]}],
                 "elapsed_s": _elapsed_since(_t0)}
     return {"tool": name, "file": file, "ok": True, "count": 0, "errors": [],
-            "elapsed_s": _elapsed_since(_t0)}
+            "scope": _PY_SYNTAX_SCOPE, "elapsed_s": _elapsed_since(_t0)}
 
 
 # --- The syntax floor (#478) ------------------------------------------------
@@ -13908,6 +13961,25 @@ def _validator_regressed(before: Optional[Dict[str, Any]], after: Dict[str, Any]
     return a_count - b_count >= 0
 
 
+def _validator_scope_col(after: Dict[str, Any]) -> str:
+    """`(scope)` for a PASSING validator that declares one, else "" (#1100).
+
+    Only on a pass. On a red row the finding is the line the reader has to act
+    on, and a hedge next to it dilutes the one thing that matters; the limit is
+    about what a green does not cover, so that is the only place it belongs.
+
+    `_flat_cell` because this lands in a column-0 marker line, same rule as
+    every other adapter-supplied string on these rows (#895) — a `scope` can
+    come from a configured validator, not only from the builtin.
+    """
+    if not after.get("ok", False):
+        return ""
+    scope = after.get("scope")
+    if not isinstance(scope, str) or not scope.strip():
+        return ""
+    return "(" + _flat_cell(scope.strip(), 40) + ")"
+
+
 def _validator_render_diff(before: Optional[Dict[str, Any]], after: Dict[str, Any]) -> list:
     # Every adapter-supplied field goes through `_flat_cell`, for the reason
     # `_validator_render_row` does (#895). A different renderer, not a different
@@ -13999,7 +14071,14 @@ def _validator_render_diff(before: Optional[Dict[str, Any]], after: Dict[str, An
             metric_parts.append(f"{k} {bv}\u2192{av} ({'+' if d > 0 else ''}{d})")
         if metric_parts:
             marker = mark("\u2713") if a_ok else mark("\u2717")
-            return [f"{tool:12s}: {', '.join(metric_parts)} {marker}  {'':<11}  {time_col:>5}"]
+            # The third green branch, so it carries the scope too (#1100). A
+            # validator declaring one and also reporting metrics would otherwise
+            # have its limit dropped on this row alone, and a contract that
+            # holds on two rows out of three is the absence this repo keeps
+            # filing about.
+            scope = _validator_scope_col(after)
+            return [f"{tool:12s}: {', '.join(metric_parts)} {marker}"
+                    f"{' ' + scope if scope else ''}  {'':<11}  {time_col:>5}"]
         # Truly unchanged — fold the most relevant absolute metric into the row.
         if a_ok and a_metrics:
             primary = None
@@ -14008,13 +14087,23 @@ def _validator_render_diff(before: Optional[Dict[str, Any]], after: Dict[str, An
                     primary = (k, a_metrics[k]); break
             if primary is not None:
                 status = f"ok {primary[0]}={primary[1]}"
-                return [f"{tool:12s}: {status:<10}  {'(no new errors)':<15}  {time_col:>5}"]
+                # Same substitution as the branch below (#1100) — one green row
+                # carrying `(no new errors)` and another carrying the scope would
+                # leave the over-readable reading available on half the rows.
+                col = _validator_scope_col(after) or "(no new errors)"
+                return [f"{tool:12s}: {status:<10}  {col:<15}  {time_col:>5}"]
         status = "ok" if a_ok else f"{a_count} err"
         if a_ok:
             # Not "(unchanged)" — that reads as "the file is unchanged", which is
             # the opposite of what just happened. This column reports the delta in
             # the validator's own result (#380).
-            marker_col = "(no new errors)"
+            #
+            # A validator that declares a `scope` spends this column on its own
+            # limit instead (#1100). `(no new errors)` is the string that got
+            # over-read as "this module works", so the scope REPLACES it rather
+            # than sitting beside it — leaving both would leave the old reading
+            # available on the same row.
+            marker_col = _validator_scope_col(after) or "(no new errors)"
         else:
             # No `(timeout)` arm: a timed-out result returned above as a
             # non-verdict (#969), so reaching here with one is impossible, and
@@ -14032,6 +14121,7 @@ def _validator_render_diff(before: Optional[Dict[str, Any]], after: Dict[str, An
         return out
     marker = (mark("✗") if _validator_regressed(before, after)
               else (mark("✓") if a_ok else mark("⚠")))
+    scope_col = _validator_scope_col(after)
     if b_unknown:
         # `?`, not `0`. And no `(+N)`: N minus an unmeasured baseline is not N,
         # so fixing the arrow and keeping the delta would move the false number
@@ -14039,11 +14129,16 @@ def _validator_render_diff(before: Optional[Dict[str, Any]], after: Dict[str, An
         # file does have these errors now, and softening that would trade this
         # bug for the one where a real regression reads as a shrug.
         arrow = f"? → {a_count}"
+        # Both, not one: `(baseline not measured)` is a statement about the
+        # DELTA and the scope is a statement about the CHECK, and dropping
+        # either for the other loses a signal the reader is entitled to (#1100).
         state_col = f"{marker} (baseline not measured)"
+        if scope_col:
+            state_col += f" {scope_col}"
     else:
         arrow = f"{b_count} → {a_count}"
         sign = f"({'+' if delta >= 0 else ''}{delta})"
-        state_col = f"{sign} {marker}"
+        state_col = f"{sign} {marker}{' ' + scope_col if scope_col else ''}"
     out = [f"{tool:12s}: {arrow:<10}  {state_col:<11}  {time_col:>5}"]
     if not a_ok:
         before_msgs = {e.get("msg") for e in (before.get("errors") or [])} if before else set()
@@ -14718,25 +14813,46 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
 
     # Run formatters after the edit, before validators.
     fmt_rows: list = []
+    # Set when the formatter loop below has already undone the write. The
+    # validator loop then has nothing left to undo, and on the create path
+    # "nothing left" is not a no-op: a second `os.unlink` of a path the first
+    # one removed raises FileNotFoundError, which would print `[ROLLBACK
+    # FAILED]` under a rollback that had in fact succeeded (#1088). Restoring
+    # bytes twice was idempotent, so this only became reachable when unlink
+    # joined the set of undos.
+    already_undone = False
     if applicable_fmt:
         fmt_results = _formatters_run_batch(applicable_fmt, path)
         for result in fmt_results:
             if not result["ok"]:
                 result_name = result.get("name", "")
                 if result_name in applicable_fmt and applicable_fmt[result_name].get("rollback_on_fail"):
-                    if pre_content is not None:
-                        try:
-                            with open(path, "wb") as fw:
-                                fw.write(pre_content)
-                            _retract_write(path)
-                            fmt_rows.append(_retraction_line(
-                                result_name, "failed", path, body))
-                        except OSError as e:
-                            fmt_rows.append(f"[ROLLBACK FAILED] {result_name}: {e}")
-                    else:
+                    # Same three states as the validator loop below (#1088): a
+                    # formatter that fails on a file this op created has an undo
+                    # too, and it is unlink rather than "nothing to do".
+                    fmt_action = _rollback_action(_pre_existed, pre_content)
+                    if fmt_action == "refuse":
                         row = _formatter_render_row(result)
                         if row:
                             fmt_rows.append(row)
+                        fmt_rows.append(
+                            f"[ROLLBACK NOT POSSIBLE] {result_name} failed on "
+                            f"{_flat_cell(path)}, whose pre-edit bytes could "
+                            f"not be read. The write STANDS (#1088).")
+                    else:
+                        try:
+                            if fmt_action == "unlink":
+                                os.unlink(path)
+                            elif pre_content is not None:
+                                with open(path, "wb") as fw:
+                                    fw.write(pre_content)
+                            _retract_write(path)
+                            already_undone = True
+                            fmt_rows.append(_retraction_line(
+                                result_name, "failed", path, body,
+                                created=fmt_action == "unlink"))
+                        except OSError as e:
+                            fmt_rows.append(f"[ROLLBACK FAILED] {result_name}: {e}")
                 else:
                     row = _formatter_render_row(result)
                     if row:
@@ -14769,23 +14885,49 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
 
     diff_out = "\n".join(diff_lines) + ("\n" if diff_lines else "")
 
-    if needs_rollback and pre_content is not None:
+    if needs_rollback:
         # Decided from the result dicts, not from the rendered rows: a scan for
         # a ✗ on a line starting with the validator's name reverted `phpstan`
         # whenever `phpstan-mcp` went red, and could not tell a skip from a
         # finding at all (#406).
+        #
+        # NOT gated on `pre_content is not None` any more (#1088). That gate
+        # conflated "there is something to restore" with "there is something to
+        # undo", so a file this op CREATED — which has the second and not the
+        # first — skipped the loop entirely and survived its own failed
+        # validation, with the red row printed above it.
         for name, spec in applicable.items():
             if not spec.get("rollback_on_fail"):
                 continue
             after_data = after_results.get(name)
             if after_data is None or not _validator_regressed(before.get(name), after_data):
                 continue
+            if already_undone:
+                # A formatter already retracted this write. Reporting the
+                # validator's finding is still right; undoing a second time is
+                # not, and on the create path it would fail loudly against a
+                # path that is already gone.
+                break
+            action = _rollback_action(_pre_existed, pre_content)
+            if action == "refuse":
+                diff_out += (
+                    f"\n[ROLLBACK NOT POSSIBLE] {name} regressed on "
+                    f"{_flat_cell(path)}, whose pre-edit bytes could not be "
+                    f"read. The file existed before this op, so removing it "
+                    f"would delete content this call never wrote. The write "
+                    f"STANDS and the file is NOT what it was (#1088).\n"
+                )
+                break
             try:
-                with open(path, "wb") as f:
-                    f.write(pre_content)
+                if action == "unlink":
+                    os.unlink(path)
+                elif pre_content is not None:
+                    with open(path, "wb") as f:
+                        f.write(pre_content)
                 _retract_write(path)
                 diff_out += ("\n" + _retraction_line(
-                    name, "regressed", path, body) + "\n")
+                    name, "regressed", path, body,
+                    created=action == "unlink") + "\n")
             except OSError as e:
                 diff_out += f"\n[ROLLBACK FAILED] {name}: {e}\n"
             break
@@ -16454,16 +16596,27 @@ _PAYLOAD_KEY_BEFORE_VALUE = re.compile(r"([A-Za-z0-9_.\-]+)[ \t]*=[ \t]*$")
 _PAYLOAD_WARNINGS: List[str] = []
 
 
-def _toml_literal_double_backslashes(raw: str) -> List[Tuple[str, str, int]]:
-    r"""`(field, first line, count)` per literal block holding a lone `\\` pair.
+# A `[[ops]]` table header, at the start of a line. Counted before a finding's
+# offset to name WHICH op a field belongs to (#1087): a batch of six that
+# reported a bare `new` cost the reader a hand re-derivation of which op it
+# meant -- the one fact the scanner already had.
+_TOML_OPS_HEADER = re.compile(r"(?m)^[ \t]*\[\[[ \t]*ops[ \t]*\]\]")
+
+
+def _toml_literal_double_backslashes(raw: str) -> List[Tuple[str, str, str, int]]:
+    r"""`(key, label, first line, count)` per literal block holding a `\\` pair.
 
     Provenance is the whole point and it is read off the source, not the parsed
     value: in a basic block `\\` IS one backslash and is the correct spelling,
     so a guard that could not tell the two blocks apart would fire on its own
     remedy. Scanning the literal blocks in `raw` directly answers the question
     exactly rather than heuristically.
+
+    `key` is the bare field name, which is what decides whether the pair is
+    write-bound. `label` is what a human is shown -- `ops[2].new` inside a
+    batch, and the bare key outside one.
     """
-    findings: List[Tuple[str, str, int]] = []
+    findings: List[Tuple[str, str, str, int]] = []
     opener = chr(39) * 3
     i = raw.find(opener)
     while i >= 0:
@@ -16479,7 +16632,10 @@ def _toml_literal_double_backslashes(raw: str) -> List[Tuple[str, str, int]]:
             start = content.rfind(chr(10), 0, hit.start()) + 1
             stop = content.find(chr(10), hit.start())
             line = content[start:] if stop < 0 else content[start:stop]
-            findings.append((key, line.strip()[:_TOML_LITERAL_TAIL_CHARS], total))
+            seen = len(_TOML_OPS_HEADER.findall(raw[:i]))
+            label = key if seen == 0 else "ops[" + str(seen - 1) + "]." + key
+            findings.append(
+                (key, label, line.strip()[:_TOML_LITERAL_TAIL_CHARS], total))
         i = raw.find(opener, nxt)
     return findings
 
@@ -16487,29 +16643,39 @@ def _toml_literal_double_backslashes(raw: str) -> List[Tuple[str, str, int]]:
 def _payload_double_backslash_note(raw: str) -> str:
     r"""Name a `\\` inside a triple-single-quoted block -- warn, not rewrite (#1027).
 
-    The trap is that getting this wrong does not always fail to match. A
-    doubled `old` cannot match and the runner reports the skip, which is the
-    safe half. A doubled `new` matches, writes, prints `edited`, and passes
-    every validator, because two backslashes are legal in nearly every language
-    this repo edits. That is the house defect -- an absence produced by the
-    tool read as an absence in the world -- landing in the one place where it
-    changes a file instead of a report.
+    What is left here after #1087 is the half that never reaches disk. A
+    doubled `old` cannot match, so the runner reports the skip -- but only
+    AFTER the anchor has missed, and only in the language of a failed match.
+    This says the same thing one call earlier and in the words that name the
+    cause. The half that DID land bytes -- `new`, `content` -- is refused by
+    `_payload_double_backslash_refusal` and never reaches this function.
 
     **It warns, and it does not rewrite.** Collapsing `\\` to `\` would guess at
-    intent, and a wrong guess in the write path is strictly worse than the bug
-    it replaces: the caller loses even the ability to read the bytes back and
-    see what they asked for. The tool's job here is to say "you wrote `\\`
-    inside a block that will not process it" and leave the decision where it
-    belongs.
+    intent, and a wrong guess is strictly worse than the bug it replaces: the
+    caller loses even the ability to read back what they asked for. The tool's
+    job here is to say "you wrote `\\` inside a block that will not process it"
+    and leave the decision where it belongs.
 
-    **It warns rather than refusing**, which is where it parts company with
-    #834 and #835. Those fire at a FIXED position -- immediately before the
-    closing quotes, at the end of a shell line -- and at those positions every
-    reading has a second spelling, so a refusal strands nothing. This pattern
-    has no position: a payload that legitimately writes a pair does so at an
-    arbitrary offset, and refusing would make that unwritable everywhere. Same
-    rule, opposite answer, for the same reason `_sh_backslash_warning` stays a
-    warning at the write chokepoint.
+    **It warns only for fields that are NOT written** (#1087). The write-bound
+    ones -- `_PAYLOAD_DBS_WRITE_KEYS` -- go to
+    `_payload_double_backslash_refusal` instead, because the note fired after
+    the bytes had landed and every validator passed them.
+
+    The reason this started as a warning was real: #834 and #835 fire at a
+    FIXED position, immediately before the closing quotes and at the end of a
+    shell line, where every reading has a second spelling, so a refusal strands
+    nothing. This pattern has no position, and refusing it with no way out would
+    make a payload that legitimately writes a pair unwritable at every offset.
+    What changed is that there is now a way out: `literal_backslashes = true`
+    (#1096). A suppressible refusal is strictly better than an unsuppressible
+    warning -- the suppression is a decision the author records in the payload
+    rather than one the tool makes for them.
+
+    What is left here is the half that was always safe: `old` is an anchor, a
+    doubled one cannot match, the runner reports the skip, and nothing reaches
+    disk. `vim`'s `script` is also left as a note -- it is an instruction
+    language, and the tool cannot say from a payload what bytes the file ends
+    up holding.
 
     The line between signal and noise is drawn at two places and nowhere else:
 
@@ -16526,7 +16692,8 @@ def _payload_double_backslash_note(raw: str) -> str:
     tests ABOUT backslash handling. A note at that rate is not one an author
     learns to skip.
     """
-    findings = _toml_literal_double_backslashes(raw)
+    findings = [f for f in _toml_literal_double_backslashes(raw)
+                if f[0].lower() not in _PAYLOAD_DBS_WRITE_KEYS]
     if not findings:
         return ""
     bs = chr(92)
@@ -16536,25 +16703,130 @@ def _payload_double_backslash_note(raw: str) -> str:
         + bs * 2 + "`. A literal block processes NO escapes, so each pair reaches "
         "the file as TWO backslashes -- if you meant one, write one." + chr(10)
     ]
-    for key, line, total in findings[:_PAYLOAD_DBS_MAX_FIELDS]:
+    for _key, label, line, total in findings[:_PAYLOAD_DBS_MAX_FIELDS]:
         lines.append(
-            "  " + arrow + " `" + key + "` (" + str(total) + " occurrence"
+            "  " + arrow + " `" + label + "` (" + str(total) + " occurrence"
             + ("" if total == 1 else "s") + "): " + line + chr(10)
         )
-    more = len(findings) - _PAYLOAD_DBS_MAX_FIELDS
-    if more > 0:
+    rest = findings[_PAYLOAD_DBS_MAX_FIELDS:]
+    if rest:
+        # Named, not counted (#1087). `and 1 further field` withholds exactly
+        # the identifier the reader needs and sends them back to re-derive by
+        # hand which of six ops it meant -- a warning that costs a manual
+        # reconstruction is close to no warning at all.
         lines.append(
-            "  " + arrow + " and " + str(more) + " further field"
-            + ("" if more == 1 else "s") + chr(10)
+            "  " + arrow + " and " + str(len(rest)) + " more: "
+            + ", ".join("`" + f[1] + "`" for f in rest) + chr(10)
         )
     lines.append(
         "  " + arrow + " this is a note, NOT a correction -- nothing was "
         "rewritten, because a pair is sometimes exactly what was meant and "
-        "guessing in the write path is worse than the bug. A doubled `old` "
-        "cannot match and is reported; a doubled `new` lands and reports "
-        "`edited`. (#1027)" + chr(10)
+        "guessing here is worse than the bug. None of the fields above is "
+        "written to a file: a doubled `old` cannot match and is reported as a "
+        "skip. The write-bound fields (" + ", ".join(sorted(_PAYLOAD_DBS_WRITE_KEYS))
+        + ") are refused instead. (#1027, #1087)" + chr(10)
     )
     return "".join(lines)
+
+
+# Fields whose value lands verbatim as file bytes. A doubled backslash here is
+# the only half of #1027 that reaches disk -- `old` is an anchor that cannot
+# match, and `vim`'s `script` is an instruction language where the tool cannot
+# say what the file ends up holding, so neither is refused.
+#
+# Kept as a set rather than derived from the @file registry: the registry knows
+# a field's POSITION, not whether its bytes are written, and a rule that
+# refused every non-`old` field would refuse `path` -- where a Windows payload
+# spells a separator with exactly two backslashes and is correct.
+_PAYLOAD_DBS_WRITE_KEYS = frozenset({"new", "content"})
+
+# The one key that says "I meant two characters" (#1096).
+_PAYLOAD_LITERAL_BS_KEY = "literal_backslashes"
+
+
+def _payload_literal_backslashes_optin(parsed: Any) -> bool:
+    """True if the payload declares its doubled backslashes deliberate (#1096).
+
+    Top level only, and payload-wide. A per-field key multiplies with every
+    content field an op has; a key inside an `[[ops]]` table READS as scoped to
+    that op and could not be -- the detector works off the raw source, where op
+    boundaries are a line-counting heuristic rather than a fact. Shipping a flag
+    whose apparent scope is not its real scope would be a worse lie than the
+    one being fixed, so a payload whose ops genuinely differ in intent is two
+    payloads. `_payload_literal_backslashes_misplaced` says so out loud.
+    """
+    return isinstance(parsed, dict) and parsed.get(_PAYLOAD_LITERAL_BS_KEY) is True
+
+
+def _payload_literal_backslashes_misplaced(parsed: Any) -> str:
+    """Refuse `literal_backslashes` set inside an `[[ops]]` table (#1096).
+
+    An author who set it there stated an intent, and honouring it at a scope the
+    tool cannot implement is not an option -- but neither is ignoring it. A
+    silently dropped flag refuses the write while the payload says it was
+    allowed, which is this tracker's own defect class: the receipt and the
+    payload disagreeing about what was asked for.
+    """
+    if not isinstance(parsed, dict):
+        return ""
+    ops = parsed.get("ops")
+    if not isinstance(ops, list):
+        return ""
+    for idx, entry in enumerate(ops):
+        if isinstance(entry, dict) and _PAYLOAD_LITERAL_BS_KEY in entry:
+            return (
+                "`" + _PAYLOAD_LITERAL_BS_KEY + "` is set inside `ops[" + str(idx)
+                + "]`, where it does nothing. It is read at the TOP LEVEL of the "
+                "payload only, and it applies to every op the payload carries -- "
+                "the doubled-backslash scan runs once, over the raw source, "
+                "before any op does. Move it to the top level if that is what "
+                "you meant; split the payload if the ops differ. (#1096)"
+            )
+    return ""
+
+
+def _payload_double_backslash_refusal(parsed: Any, raw: str) -> str:
+    """Refuse a payload that would WRITE a doubled backslash (#1087).
+
+    #1027 made this a note and gave a good reason: the pattern has no fixed
+    position, so refusing it would make a payload that legitimately writes two
+    characters unwritable at every offset -- the loud-for-quiet trade this repo
+    rules out by name. The reason held only while there was no way to say "I
+    meant two". `literal_backslashes` (#1096) is that way, so the refusal is
+    suppressible, and a suppressible refusal is strictly better than an
+    unsuppressible warning: the suppression is a decision the author records in
+    the payload rather than one the tool makes on their behalf.
+
+    Scoped to the fields whose bytes land. `old` keeps the note -- a doubled
+    anchor cannot match, the runner reports the skip, and nothing reaches disk,
+    so refusing it would cost a round-trip on a call that was already safe.
+
+    Fires at parse time, before any op runs. That is why a `batch` is covered
+    by construction and why nothing has to be rolled back: on the reported
+    `paste` the file was created, every validator passed (two backslashes are
+    legal in every language this repo edits), and the author found out from
+    behaviour a CI round later.
+    """
+    if _payload_literal_backslashes_optin(parsed):
+        return ""
+    findings = [f for f in _toml_literal_double_backslashes(raw)
+                if f[0].lower() in _PAYLOAD_DBS_WRITE_KEYS]
+    if not findings:
+        return ""
+    bs = chr(92)
+    named = "; ".join(
+        "`" + label + "` (" + str(total) + "x): " + line
+        for _key, label, line, total in findings
+    )
+    return (
+        "a " + chr(39) * 3 + " literal block carries `" + bs * 2 + "` in a field "
+        "that is WRITTEN to the file, and a literal block processes NO escapes "
+        "-- each pair would reach disk as TWO backslashes, pass every validator, "
+        "and be wrong only in string contents. " + named + ". If you meant one "
+        "backslash, write one. If you meant two, add `"
+        + _PAYLOAD_LITERAL_BS_KEY + " = true` at the top level of the payload "
+        "and this refusal becomes a decision you recorded. (#1087, #1096)"
+    )
 
 
 def _eol_backslash_pair(text: str) -> Optional[Tuple[str, int]]:
@@ -16754,8 +17026,15 @@ def _load_at_file(ref: str, note: bool = True) -> Any:
     # `note=False` for the read-op route: the note is about the write path, and
     # a `grep` pattern is a regex rather than file content -- nothing lands, the
     # doubled backslash there is a different question with a different answer,
-    # and raising it would be noise on an op that cannot misfile a byte.
+    # and raising it would be noise on an op that cannot misfile a byte. The
+    # refusals below are scoped the same way and for the same reason (#1087).
     if note:
+        refusal = _payload_literal_backslashes_misplaced(parsed)
+        if refusal:
+            raise ValueError(f"@file payload refused ({source}): {refusal}")
+        refusal = _payload_double_backslash_refusal(parsed, raw)
+        if refusal:
+            raise ValueError(f"@file payload refused ({source}): {refusal}")
         text = _payload_double_backslash_note(raw)
         if text:
             _PAYLOAD_WARNINGS.append(text)

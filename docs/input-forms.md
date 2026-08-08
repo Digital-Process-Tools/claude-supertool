@@ -217,10 +217,51 @@ block preserves both backslashes, and in bash an even run at end of line is an e
 backslash rather than a line continuation, so the script parses and runs differently.
 Both intents have a spelling — write **one** backslash to continue the line (a literal
 block will not eat it), or spell the pair in a `"""basic"""` block, where each doubles
-to four. No `allow_literal_backslash` field exists, deliberately: the basic block is
-the opt-out, and it says *which* intent was meant instead of only silencing the
-question. Outside a literal block the same bytes are a **warning** and still write —
-there the caller has no second spelling, and refusing would strand them.
+to four.
+
+### A doubled backslash in a field that gets written is refused
+
+A `'''` literal block carrying `\\` in a field whose bytes land on disk — `new`
+and `content` — is refused before any op runs
+([#1087](https://github.com/Digital-Process-Tools/claude-supertool/issues/1087)).
+A literal block processes no escapes, so each pair reaches the file as two
+characters, and that file then passes every validator: two backslashes are legal
+in nearly every language this repo edits. The write is wrong only in string
+contents, so nothing downstream fires and the author finds out from behaviour,
+usually a CI round later.
+
+`old` is **not** refused, only noted. It is an anchor rather than content: a
+doubled `old` cannot match, the runner reports the skip, and nothing reaches
+disk. Same detector, different consequence, decided by whether the bytes land.
+
+**If you meant two backslashes, say so:**
+
+```
+./supertool 'edit:@-' <<'EOF'
+literal_backslashes = true
+path = "src/win.py"
+old = '''ROOT = ""'''
+new = '''ROOT = "C:\\Users"'''
+EOF
+```
+
+`literal_backslashes` is read at the **top level** of the payload and applies to
+every op it carries — the scan runs once, over the raw source, before any op
+does. Setting it inside an `[[ops]]` table is refused rather than ignored: a flag
+whose apparent scope is not its real scope is a worse lie than the one being
+fixed, and a payload whose ops differ in intent is two payloads.
+
+This replaces the earlier note that no such field existed. That was right while
+the alternative was a post-write warning and a `"""basic"""` block; it stopped
+being right once the pattern was refused, because a refusal with no way out
+makes correct content — a LaTeX line break, a Markdown hard break, a Windows
+path in a non-raw Python string — unwritable at every offset. A suppressible
+refusal records the decision in the payload; an unsuppressible warning makes it
+on the author's behalf.
+
+Outside a literal block the same bytes are never flagged at all: in a
+`"""basic"""` block `\\` **is** one backslash and is the correct spelling, so a
+guard firing there would fire on its own remedy.
 
 The same run rule applies to `"""` blocks, and both parsers now agree about it: the
 fallback used for Python <3.11 closed at the first three quotes and choked on the
