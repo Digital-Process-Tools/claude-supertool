@@ -2858,6 +2858,48 @@ def _literal_note(pattern: str, count: int) -> str:
             f"match(es) for {pattern!r})\n")
 
 
+# Patterns whose meaning differs between Python's `re` and POSIX ERE (#987).
+# The delegated path hands the pattern to the system grep, so anything matching
+# this never leaves the native walker:
+#   \X  — every escape EXCEPT the punctuation both dialects agree on
+#         (`\. \$ \* \+ \? \( \) \[ \] \{ \} \| \\ \/ \-`). That covers Python-only
+#         classes (\d \w \s \b \A) and backreferences, and also GNU's word
+#         boundaries \< \>, which ERE honours and Python reads as `<` and `>`
+#         — a divergence a `\<alnum>` rule silently let through.
+#   (?  — lookaround, non-capturing groups, inline flags: Python only
+#   *? +? ??  — non-greedy; ERE reads a second, stray quantifier
+#   [: [. [=  — POSIX bracket classes, which Python reads literally
+_ERE_UNSAFE = re.compile(r"\\[^.^$*+?()\[\]{}|\\/-]|\\$|\(\?|[*+?}]\?|\[[:.=]")
+
+
+def _grep_pattern_note(pattern: str) -> str:
+    """Name the pattern grep actually ran, when a ':' made that a choice (#1065).
+
+    `grep:re:Checks|failed:PATH` tokenizes to the pattern `re:Checks|failed`,
+    and `|` binds looser than concatenation, so the first alternation branch is
+    the literal `re:Checks` — which matches nothing. The op then reports three
+    confident results for a question nobody asked, and `scanned 1 files` is
+    both true and useless: it did look, at someone else's pattern.
+
+    Nothing is refused here, because the tokenization is not ambiguous — it is
+    documented, deterministic, and the payload route already covers what the
+    colon CLI cannot express. What was missing is the disclosure. A ':' in the
+    pattern is exactly the condition under which the rejoin happened, so that
+    is when the effective pattern is echoed back.
+    """
+    if ":" not in pattern:
+        return ""
+    note = (f"(pattern read as {pattern!r} — the ':' is part of the regex, not "
+            "a separator. Use grep:@- with a `pattern` key if the split was "
+            "meant to fall elsewhere.)" + chr(10))
+    if pattern.startswith("re:"):
+        note += ("(grep has no `re:` prefix — every grep pattern is already a "
+                 "regex, so `re:` is literal text and forms part of the first "
+                 "alternation branch. `between:re:START:END:PATH` is the op "
+                 "that has one.)" + chr(10))
+    return note
+
+
 def _count_lines(path: str, on_error: int = 0) -> int:
     """Count lines in a file cheaply, streaming in binary (#362).
 
@@ -2902,6 +2944,14 @@ _GREP_ZERO_LIMIT = (
 def op_grep(pattern: str, path: str = ".", limit: int = 0,
             context: int = 0, count_only: bool = False,
             no_exclude: bool = False, no_auto_read: bool = False) -> str:
+    """grep, prefixed by #1065's disclosure of the pattern that actually ran."""
+    return _grep_pattern_note(pattern) + _op_grep(
+        pattern, path, limit, context, count_only, no_exclude, no_auto_read)
+
+
+def _op_grep(pattern: str, path: str = ".", limit: int = 0,
+             context: int = 0, count_only: bool = False,
+             no_exclude: bool = False, no_auto_read: bool = False) -> str:
     """Search pattern recursively. Auto-reads small single file on match.
 
     When context > 0, emits N lines before/after each match in grep -C style:
@@ -2954,12 +3004,22 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
     # node_modules/, .env/) and re-applied to whatever comes back. Multi-segment
     # prefixes (e.g. "Dvsi/dvsi-private/libs/") can't be expressed as either;
     # fall through to the native walker in that case.
-    if not count_only and context == 0 and _rtk_enabled() and _has_rtk():
+    # `-E` and the _ERE_UNSAFE gate together (#987). rtk shells out to the
+    # system grep, which without `-E` reads a POSIX *BRE*: `|`, `+`, `?`, `(`
+    # and `{` are ordinary characters there. `cc|dd` therefore came back as the
+    # one line containing a literal pipe — a smaller, confident, wrong answer,
+    # and only when the BRE reading happened to match at all, which is why it
+    # survived (a BRE that matches nothing exits non-zero and falls through to
+    # the native walker, where the result is right). `-E` closes the gap for
+    # alternation, groups and quantifiers; the gate declines delegation for the
+    # constructs ERE still cannot express, rather than translating them.
+    if (not count_only and context == 0 and _rtk_enabled() and _has_rtk()
+            and not _ERE_UNSAFE.search(pattern)):
         _, multi = _split_exclude_prefixes(excl)
         if not multi and not _gitignore_residual(path, excl):
             # limit + 1 so the report can tell "exactly N" from "stopped at N"
             # (#448). The extra line is trimmed off before output.
-            rtk_args = ["grep", "-rn", "-m", str(limit + 1)]
+            rtk_args = ["grep", "-rn", "-E", "-m", str(limit + 1)]
             rtk_args.extend(_grep_exclude_flags(excl))
             rtk_args.extend([pattern, path])
             rtk_out = _rtk_run(rtk_args)
@@ -3002,8 +3062,12 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
         file_count = len(counts)
         out = [literal_note,
                f"({total} total matches across {file_count} files{_scanned_suffix(scanned)}{hidden})\n"]
+        # `PATH:N` is the shape every grep-like tool uses for PATH:LINE, so a
+        # count of 30 read as "one match, at line 30" — the opposite of what
+        # the op said, in the op you call *before* deciding whether to look
+        # (#988). The unit makes the two unconfusable.
         for fp, cnt in sorted(counts.items()):
-            out.append(f"{_fwd(fp)}:{cnt}\n")
+            out.append(f"{_fwd(fp)}: {cnt} match{'' if cnt == 1 else 'es'}" + chr(10))
         out.append("\n")
         return "".join(out)
 
