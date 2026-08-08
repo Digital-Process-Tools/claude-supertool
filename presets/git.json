@@ -5,8 +5,8 @@
     "git-status": {
       "cmd": "{python} {path}git/status.py {args}",
       "timeout": 10,
-      "description": "Branch, commits + base divergence, changes, stashes, open MR/PR with diff size. `:full` (alias `:porcelain`) uncaps every file/branch/stash list — full untruncated view for driving precise staging",
-      "syntax": "git-status[:full]"
+      "description": "Branch, commits + base divergence, changes, stashes, open MR/PR with diff size. A two-sided `ahead N, behind M` gains a `Diverged:` line saying which kind it is — REBASED (every remote commit is patch-equivalent to one you already have; nothing lost, force-with-lease) vs a genuine divergence naming how many remote commits are not in your history, or a stated UNKNOWN when that check did not answer. `:full` (alias `:porcelain`) uncaps every file/branch/stash list — full untruncated view for driving precise staging. `:brief` drops the local-branch inventory and the commit log so the working tree and the MR/PR block sit at the top; a section that could not be read is never dropped. An unrecognised mode is reported, not ignored",
+      "syntax": "git-status[:full|:brief]"
     },
     "git-investigate": {
       "cmd": "{python} {path}git/investigate.py {arg}",

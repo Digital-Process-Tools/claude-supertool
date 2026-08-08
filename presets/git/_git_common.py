@@ -196,6 +196,47 @@ def repo_label() -> str:
     return "unknown"
 
 
+def install_dir() -> str:
+    """Directory holding the `supertool` wrapper and `supertool.py`.
+
+    Two levels above `presets/git/`. Named rather than inlined because every
+    printed remedy depends on it and a test has to be able to stand a fake
+    install somewhere else; `push.py` carried its own copy as `_repo_root`.
+    """
+    return os.path.dirname(os.path.dirname(_HERE))
+
+
+def st_hint(arg: str) -> str:
+    """A runnable supertool invocation for `arg`, for printed remedies.
+
+    A printed command is a claim about the environment it will be pasted into,
+    and every one of these was written from the environment of whoever wrote
+    it (#1012). `./supertool` is a gitignored symlink: present in a clone,
+    absent in a linked worktree — which is where agents work. In *this* repo it
+    is worse than absent there, because the global `supertool` on PATH then
+    resolves to the live clone and runs master's core against the branch's
+    presets, the mixed tree #678 discloses after the fact and the repo's own
+    rule forbids in advance. So the hint is decided by what is on disk beside
+    the presets, never by what the author had.
+
+    That matters most where it is printed. A rule in a docs page is consulted;
+    a command in an error is pasted, by a reader who is mid-conflict and least
+    likely to second-guess it.
+
+    Three states. With neither route present the invocation is unknown, and an
+    invented one would be a remedy that cannot be run — the defect one layer
+    down. Grown out of `push.py::_st_hint` (#879), which had the first two.
+    """
+    root = install_dir()
+    wrapper = os.path.join(root, "supertool")
+    if os.path.isfile(wrapper) and os.access(wrapper, os.X_OK):
+        return "./supertool " + chr(39) + arg + chr(39)
+    if os.path.isfile(os.path.join(root, "supertool.py")):
+        return "python3 supertool.py " + chr(39) + arg + chr(39)
+    return ("(no runnable supertool found in " + root + " — the op is "
+            + chr(39) + arg + chr(39) + ")")
+
+
 def _looks_like_success(line: str) -> bool:
     """True for lines that report success — must never be picked as an error.
 

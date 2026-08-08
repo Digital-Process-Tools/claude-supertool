@@ -61,7 +61,94 @@ if not os.path.isfile(_IMPL):  # pragma: no cover - exercised as a subprocess
     )
     raise SystemExit(2)
 
-import _supertool  # noqa: E402
+#: The three markers git writes into a conflicted file, at line start.
+_CONFLICT_MARKERS = ("<" * 7, "=" * 7, ">" * 7)
+
+
+def _marker_lines(path):  # pragma: no cover - exercised as a subprocess
+    """1-indexed lines of `path` that open, split or close a conflict block.
+
+    Read as text, deliberately. The file is by definition not parseable at
+    this point, and a scan that needs the parser to succeed cannot run in the
+    only situation it exists for.
+    """
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            return [i for i, line in enumerate(fh, 1)
+                    if line.startswith(_CONFLICT_MARKERS)]
+    except OSError:
+        return None
+
+
+def _refuse_unimportable_core(exc):  # pragma: no cover - exercised as a subprocess
+    """Name why no op can run, and a recovery that avoids the broken module.
+
+    A rebase that touches this tool's own core leaves `_supertool.py`
+    conflicted, and a file carrying live `<<<<<<<` markers is not Python. The
+    import above then died with
+
+        File ".../_supertool.py", line 17095
+            >>>>>>> 4c5cfa8 (fix(payload): ...)
+        SyntaxError: invalid decimal literal
+
+    which reads as *the tool is broken* rather than *the tool cannot describe
+    this state* — and it is the whole tool, not one op, for exactly as long as
+    the conflict exists (#1015). What that traceback cost in practice was the
+    operator falling back to raw `git diff --diff-filter=U` plus `awk`, i.e.
+    the hand-rolled resolver `git-conflicts` exists to replace, or to the
+    global `supertool`, which inside a branch worktree runs another checkout's
+    core against this tree's presets (#1012).
+
+    So the refusal carries a recovery that does not go through the module
+    under conflict. `presets/git/conflicts.py` and `presets/git/resolve.py`
+    import only `_git_common` and `_env`; they run standalone against *this*
+    tree, which `tests/test_core_unimportable_1015.py` proves by running one.
+
+    It refuses rather than working around the conflict on purpose. Guessing
+    which side of an unresolved block to run would be picking a resolution
+    nobody asked for, which is worse than either arm of the judgement.
+
+    `sys.executable` rather than a literal `python3`: the interpreter running
+    this line is the one that works here, and on Windows the name is `python`
+    or `py` (#1017).
+    """
+    lines = _marker_lines(_IMPL)
+    w = sys.stderr.write
+    w("supertool: the core is unimportable, so NO OP CAN RUN — not this one, "
+      "not `read`, not `git-status`." + chr(10))
+    if lines:
+        shown = ", ".join(str(n) for n in lines[:6])
+        more = " (+%d more)" % (len(lines) - 6) if len(lines) > 6 else ""
+        w("  Cause: %s still contains git conflict markers, at line(s) %s%s."
+          % (_IMPL, shown, more) + chr(10))
+    elif lines is None:
+        w("  Cause: %s could not be read, and Python could not parse it: %s"
+          % (_IMPL, exc) + chr(10))
+    else:
+        w("  Cause: %s is not valid Python (no conflict markers in it): %s"
+          % (_IMPL, exc) + chr(10))
+    w("  This is a statement about that file only. It is NOT saying your tree "
+      "is clean, and it is not a report of what is conflicted." + chr(10))
+    w("  Recovery, without the broken core and without borrowing another "
+      "checkout's (#1012) — run this tree's presets directly:" + chr(10))
+    for cmd, what in (
+        (os.path.join("presets", "git", "conflicts.py"),
+         "every conflicted file + every block"),
+        (os.path.join("presets", "git", "resolve.py") + " ours PATH",
+         "or theirs / both"),
+    ):
+        w("    %s %s   # %s"
+          % (sys.executable, os.path.join(_INSTALL_DIR, cmd), what) + chr(10))
+    w("  Do not run the global `supertool` here: it resolves to whichever "
+      "checkout is on PATH and would run that tree's core against this "
+      "tree's presets." + chr(10))
+    raise SystemExit(2)
+
+
+try:
+    import _supertool  # noqa: E402
+except SyntaxError as _exc:  # pragma: no cover - exercised as a subprocess
+    _refuse_unimportable_core(_exc)
 
 # `_INSTALL_DIR` is first on `sys.path`, so the sibling wins over anything the
 # path offers. It does not outrank a `sys.meta_path` finder, though, and those
