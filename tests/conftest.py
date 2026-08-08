@@ -549,6 +549,11 @@ RESET_GLOBALS = (
     "_FORMAT_QUEUE",
     "_GIT_IGNORED_CACHE",
     "_LEAKED_GIT_ENV",
+    # Per-process `git status` snapshot behind the read marker (#1126). It is
+    # scratch in exactly the sense this list means: correct for the call that
+    # built it, and a stale answer for the next test, which would see another
+    # test's tmp_path repo described as its own.
+    "_PATH_META_BULK",
     "_MUTATION_ATTEMPTS",
     "_REPO_ROOT_WALK_CACHE",
     "_TS_GRAMMAR_FAILED",

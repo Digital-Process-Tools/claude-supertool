@@ -218,6 +218,14 @@ def main() -> int:
             print(f"ERROR: checkout failed: {stderr}")
         return 1
 
+    # NOT a duplicate of the `rev-parse --abbrev-ref HEAD` at the top of this
+    # function, and must not be deduplicated into one (#1126 listed it as one;
+    # it is not). That one is `prev_branch`, read before the `git checkout` at
+    # line 134; this one is where we landed. They are the same command asking
+    # two different questions with a branch switch in between — the exact shape
+    # #1126 refuses a rev-parse cache over, one file away from the merge.py
+    # head_before/head_after pair it names. Sharing an answer here would print a
+    # receipt claiming the checkout was a no-op every single time.
     branch_res = _git(["rev-parse", "--abbrev-ref", "HEAD"])
     branch = branch_res.stdout.strip() if branch_res.returncode == 0 else "?"
 

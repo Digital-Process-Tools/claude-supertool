@@ -3883,6 +3883,103 @@ _NOT_A_REPO = "not a git repository"
 PATH_META_UNKNOWN = "git?"
 
 
+# One `git status` answer per repo root, reused across the paths rendered in a
+# single process (#1126). The filed shape was a memo keyed by path; that cannot
+# help, because the case it exists for — a batched `read` of seven files — asks
+# about seven *different* paths and every lookup would miss. What repeats is the
+# spawn, not the question, so this coalesces the query instead of remembering
+# the answer: 6 paths cost 2 spawns rather than 6.
+#
+# Values, three states rather than two, so "we did not look" stays distinct from
+# "we looked and it was clean" (docs/validators.md, "Declining instead of
+# guessing"):
+#
+#   "primed"    one per-path query has been paid here; the next path escalates.
+#               A lone `read` — the overwhelmingly common call — therefore costs
+#               exactly what it always did, with no bulk query bolted on.
+#   "declined"  the repo-wide query timed out or failed. Stay on the per-path
+#               route forever in this process rather than reading its silence
+#               as a clean tree. A repo with a very large ignored subtree is the
+#               expected way to land here.
+#   dict        {"codes": …, "taken_ns": …} — servable.
+#
+# Three things invalidate it, and they are the whole answer to "what is the
+# correct lifetime":
+#
+#   1. `_atomic_write` clears it — every mutating op passes through there, so an
+#      `edit` between two `read`s cannot be answered from the older snapshot.
+#   2. `dispatch` clears it after any op outside `_PARALLEL_SAFE_OPS` — that is
+#      what catches an index change from a preset (`git-commit`), which moves no
+#      file mtime and so is invisible to (3).
+#   3. A path whose mtime is at or after the snapshot instant is not served from
+#      it. This is the one that covers a writer outside supertool entirely.
+#
+# Residual: a file rewritten by another process within the same filesystem mtime
+# tick as the snapshot. Accepted knowingly, and it is a marker one call stale,
+# not a marker computed against the wrong repository.
+_PATH_META_BULK: Dict[str, Any] = {}
+
+
+def _path_meta_bulk_fill(root: str) -> Optional[Dict[str, Any]]:
+    """One repo-wide `git status`, parsed into {relpath: XY}. None = declined.
+
+    `-z` rather than the quoting `--porcelain` default: with NUL separators git
+    emits path bytes verbatim, so a filename with a quote, a newline or a
+    non-UTF-8 byte survives instead of arriving backslash-escaped and failing to
+    match the path we were asked about.
+
+    `taken_ns` is sampled *before* the spawn, so a file written while git was
+    still walking the tree compares as newer than the snapshot and is refused by
+    the caller's mtime check rather than answered from it.
+    """
+    taken_ns = time.time_ns()
+    try:
+        r = subprocess.run(
+            ["git", "status", "--porcelain", "-z", "--ignored=matching"],
+            capture_output=True, timeout=2, cwd=root,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if r.returncode != 0:
+        return None
+    codes: Dict[str, str] = {}
+    fields = r.stdout.split(b"\x00")
+    i = 0
+    while i < len(fields):
+        record = fields[i]
+        i += 1
+        if len(record) < 4:
+            continue
+        xy = record[:2].decode("ascii", errors="replace")
+        name = record[3:].decode("utf-8", errors="surrogateescape")
+        if xy[:1] in ("R", "C"):
+            # A rename or copy is two fields: the new name, then the original.
+            i += 1
+        codes[name.rstrip("/")] = xy
+    return {"codes": codes, "taken_ns": taken_ns}
+
+
+def _path_meta_bulk_code(codes: Dict[str, str], rel: str) -> str:
+    """This path's status letters from a repo-wide snapshot, or "" for clean.
+
+    Ancestors are consulted because a repo-wide `git status` collapses whole
+    directories: an ignore rule of `build/` yields one `!! build/` record and
+    nothing for the files under it, and an untracked directory collapses the
+    same way. Asked per-path, git names the file itself — so without this walk
+    a `read` of an ignored file would lose its `!` marker the moment the query
+    was coalesced, which is a cheaper answer that is not the same answer.
+    """
+    code = codes.get(rel)
+    if code:
+        return code
+    parts = rel.split("/")
+    for depth in range(len(parts) - 1, 0, -1):
+        code = codes.get("/".join(parts[:depth]))
+        if code in ("!!", "??"):
+            return code
+    return ""
+
+
 def _path_meta_suffix(path: str, sample: bytes = b"") -> str:
     """Compact suffix for read/workspace meta line. Empty when nothing notable.
     Tokens: ->target [broken] | bin | non-utf8 | ? | ! | m | x | crlf | Nd|Nw|Nmo
@@ -3909,8 +4006,10 @@ def _path_meta_suffix(path: str, sample: bytes = b"") -> str:
             target = "?"
         broken = " broken" if not os.path.exists(path) else ""
         parts.append(f"->{target}{broken}")
+    mtime_ns = None
     try:
         st = os.lstat(path)
+        mtime_ns = st.st_mtime_ns
         if st.st_mode & 0o111 and not os.path.isdir(path):
             parts.append("x")
         age_sec = max(0, int(time.time() - st.st_mtime))
@@ -3925,30 +4024,64 @@ def _path_meta_suffix(path: str, sample: bytes = b"") -> str:
                 parts.append(f"{days // 30}mo")
     except OSError:
         pass
-    try:
-        r = subprocess.run(
-            ["git", "status", "--porcelain", "--ignored=matching", "--", path],
-            capture_output=True, text=True, timeout=2,
-            cwd=os.path.dirname(os.path.abspath(path)) or ".", encoding="utf-8", errors="replace",
+
+    # Answer from this process's repo-wide snapshot when there is one and it is
+    # old enough to speak for this file (#1126). `code` stays None until
+    # something has actually looked, so the per-path spawn below is skipped only
+    # on a real answer and never on a missing one.
+    code = None
+    dirs = _dirs_up_to_repo_root(path)
+    root = dirs[-1] if dirs and os.path.exists(os.path.join(dirs[-1], ".git")) else ""
+    if root:
+        entry = _PATH_META_BULK.get(root)
+        if entry is None:
+            _PATH_META_BULK[root] = "primed"
+        elif entry == "primed":
+            filled = _path_meta_bulk_fill(root)
+            entry = filled if filled is not None else "declined"
+            _PATH_META_BULK[root] = entry
+        servable = (
+            isinstance(entry, dict)
+            and mtime_ns is not None
+            and mtime_ns < entry["taken_ns"]
         )
-        if r.returncode == 0:
-            code = r.stdout[:2]
-            if code == "??":
-                parts.append("?")
-            elif code == "!!":
-                parts.append("!")
-            elif "M" in code or "A" in code:
-                parts.append("m")
-        elif _NOT_A_REPO not in r.stderr.lower():
+        if servable:
+            try:
+                rel = os.path.relpath(os.path.realpath(path), root)
+            except ValueError:
+                # Different drives on Windows. The walk said this path is under
+                # `root`, so this should not happen; if it does, re-ask git
+                # rather than invent a relative path.
+                rel = ""
+            if rel and not rel.startswith(os.pardir):
+                code = _path_meta_bulk_code(entry["codes"], rel.replace(os.sep, "/"))
+
+    if code is None:
+        try:
+            r = subprocess.run(
+                ["git", "status", "--porcelain", "--ignored=matching", "--", path],
+                capture_output=True, text=True, timeout=2,
+                cwd=os.path.dirname(os.path.abspath(path)) or ".", encoding="utf-8", errors="replace",
+            )
+            if r.returncode == 0:
+                code = r.stdout[:2]
+            elif _NOT_A_REPO not in r.stderr.lower():
+                parts.append(PATH_META_UNKNOWN)
+        except subprocess.TimeoutExpired:
             parts.append(PATH_META_UNKNOWN)
-    except subprocess.TimeoutExpired:
-        parts.append(PATH_META_UNKNOWN)
-    except OSError:
-        # No git on this machine, or the file's directory went away under us.
-        # Nothing here was ever going to answer, so a decline that can never
-        # resolve would be noise on every read (docs/validators.md,
-        # "Declining instead of guessing").
-        pass
+        except OSError:
+            # No git on this machine, or the file's directory went away under us.
+            # Nothing here was ever going to answer, so a decline that can never
+            # resolve would be noise on every read (docs/validators.md,
+            # "Declining instead of guessing").
+            pass
+
+    if code == "??":
+        parts.append("?")
+    elif code == "!!":
+        parts.append("!")
+    elif code and ("M" in code or "A" in code):
+        parts.append("m")
     return (" " + " ".join(parts)) if parts else ""
 
 
@@ -5842,6 +5975,12 @@ def _atomic_write(path: str, content: str) -> None:
     # Containment check happens against the symlink target (real path) so a
     # symlinked write doesn't escape cwd via the symlink itself.
     _safe_path(path)
+    # Every mutating op passes through here, which makes it the one place that
+    # can promise a coalesced `git status` snapshot never outlives a write
+    # (#1126). Cleared before the write rather than after: an exception on the
+    # way out would otherwise leave a snapshot describing a tree that has
+    # already partly moved.
+    _PATH_META_BULK.clear()
     # Byte-pattern warnings a syntax validator structurally cannot catch, raised
     # at the one place every mutating op passes through (#380).
     _warn = _sh_backslash_warning(path, content)
@@ -17885,6 +18024,13 @@ def dispatch(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = None) ->
     finally:
         _DISPATCH_STATE.depth = depth
         _acc_pop(_acc_prev)
+        # An op outside the read-only set may have moved the index without
+        # moving any file's mtime — `git-commit` is the everyday case — so the
+        # repo-wide status snapshot cannot speak for the next op (#1126).
+        # Keyed off the same predicate as parallel dispatch because it asks the
+        # same question, and an unrecognised or custom op is unsafe by default.
+        if not _is_parallel_safe(arg):
+            _PATH_META_BULK.clear()
         # _FORMATTER_SKIPS is module-level and drained on the normal return
         # path. An exception escaping _dispatch_impl skips that drain, and the
         # next top-level call would report skips belonging to a call that
