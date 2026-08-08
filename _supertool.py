@@ -2861,11 +2861,15 @@ def _literal_note(pattern: str, count: int) -> str:
 # Patterns whose meaning differs between Python's `re` and POSIX ERE (#987).
 # The delegated path hands the pattern to the system grep, so anything matching
 # this never leaves the native walker:
-#   \<alnum>  — \d \w \s \b \A \1 have no ERE spelling ('d', 'w', … literal)
-#   (?        — lookaround, non-capturing groups, inline flags: Python only
+#   \X  — every escape EXCEPT the punctuation both dialects agree on
+#         (`\. \$ \* \+ \? \( \) \[ \] \{ \} \| \\ \/ \-`). That covers Python-only
+#         classes (\d \w \s \b \A) and backreferences, and also GNU's word
+#         boundaries \< \>, which ERE honours and Python reads as `<` and `>`
+#         — a divergence a `\<alnum>` rule silently let through.
+#   (?  — lookaround, non-capturing groups, inline flags: Python only
 #   *? +? ??  — non-greedy; ERE reads a second, stray quantifier
-#   [:        — POSIX character classes, which Python reads literally
-_ERE_UNSAFE = re.compile(r"\\[A-Za-z0-9]|\(\?|[*+?}]\?|\[:")
+#   [: [. [=  — POSIX bracket classes, which Python reads literally
+_ERE_UNSAFE = re.compile(r"\\[^.^$*+?()\[\]{}|\\/-]|\\$|\(\?|[*+?}]\?|\[[:.=]")
 
 
 def _grep_pattern_note(pattern: str) -> str:

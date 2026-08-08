@@ -85,7 +85,8 @@ class _FakeRtk:
         if "-E" not in args:
             pattern = re.sub(r"([|+?(){}])", r"\\\1", pattern)
         out = []
-        for i, line in enumerate(Path(path).read_text().splitlines(), 1):
+        text = Path(path).read_text(encoding="utf-8")
+        for i, line in enumerate(text.splitlines(), 1):
             if re.search(pattern, line):
                 out.append(path + ":" + str(i) + ":" + line)
         return "\n".join(out) + "\n" if out else None
@@ -153,6 +154,41 @@ def test_posix_class_is_not_delegated(tmp_path: Path, rtk_on: _FakeRtk) -> None:
     f.write_text("abc\n[:alpha:]\n")
     supertool.op_grep("[[:alpha:]]", str(f), limit=10)
     assert rtk_on.greps() == []
+
+
+def test_gnu_word_boundary_escape_is_not_delegated(
+        tmp_path: Path, rtk_on: _FakeRtk) -> None:
+    """`\\<` and `\\>` are GNU word boundaries and Python literals.
+
+    `grep -E '\\<cat\\>'` matches `cat` and not `concatenate`; Python reads the
+    same pattern as the literal text `<cat>` and matches neither. Backslash
+    followed by punctuation is not automatically shared, so the gate keys off
+    the escapes ERE and Python agree on rather than off `\\<alnum>`.
+    """
+    f = tmp_path / "code.py"
+    f.write_text("cat\nconcatenate\n<cat>\n")
+    out = supertool.op_grep(r"\<cat\>", str(f), limit=10)
+    assert rtk_on.greps() == [], (
+        "GNU word boundaries mean something in ERE and nothing in Python")
+    assert "3:<cat>" in out, repr(out)
+
+
+def test_posix_equivalence_class_is_not_delegated(
+        tmp_path: Path, rtk_on: _FakeRtk) -> None:
+    """`[[=a=]]` and `[[.a.]]` are POSIX bracket constructs, like `[[:alpha:]]`."""
+    f = tmp_path / "code.py"
+    f.write_text("abc\n")
+    supertool.op_grep("[[=a=]]", str(f), limit=10)
+    assert rtk_on.greps() == []
+
+
+def test_dispatch_discloses_the_pattern_it_rejoined(tmp_path: Path) -> None:
+    """#1065 was filed against the colon CLI, so pin the tokenizer end to end."""
+    f = tmp_path / "code.py"
+    f.write_text("alpha\nbeta\n")
+    out = supertool.dispatch("grep:re:alpha|beta:" + str(f) + ":10:0")
+    assert "pattern read as 're:alpha|beta'" in out, repr(out)
+    assert "no `re:` prefix" in out
 
 
 def test_plain_literal_still_delegates(tmp_path: Path, rtk_on: _FakeRtk) -> None:
