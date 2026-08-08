@@ -346,9 +346,18 @@ A stack trace is the *consequence* of a failure; the line that says why sits abo
 it. So alongside `error_patterns`, `gl-job` always matches a built-in set of **cause
 markers** — lines that state a reason rather than show its fallout:
 
-`Caused by` · an FQCN-shaped `…Exception: ` / `…Error: ` message · `SQLSTATE[` ·
+`Caused by` · an `…Exception: ` / `…Error: ` message, **including a bare `Error: `
+with nothing in front of it** · a MySQL-client `ERROR 2026 (HY000):` · `SQLSTATE[` ·
 `In <File>.php line N:` · `Exit Code: N` · `Fatal error:` · `Segmentation
 fault/violation` · `Allowed memory size … exhausted` · `…CrashedException`
+
+The bare `Error: ` and the MySQL shape are
+[#1097](https://github.com/Digital-Process-Tools/claude-supertool/issues/1097).
+The `…Error: ` marker used to require at least one word character before it, which
+is the FQCN shape and not node's or Playwright's — `Error: JS errors detected:`
+opens the line, so on job 7021139 the marker that exists precisely to survive a
+narrowed `job_patterns` table did not fire. The MySQL client's `ERROR NNNN (SQLSTATE):`
+was the cause on job 7125000 and matched nothing at all.
 
 Their window leans downward — 2 lines above, `error_context` below — because a cause
 is followed by its message body. Cause markers are matched **in addition to** the
@@ -379,6 +388,86 @@ output has to read that way rather than as silence — a crashed job reporting n
 errors reads as green, which is the worst output a failure tool can produce. The
 tail length is `GL_JOB_UNMATCHED_TAIL_LINES` (default 40). This applies to `:fail`
 and to the default view alike.
+
+### A block of pure boilerplate is not a classification
+
+[#1097](https://github.com/Digital-Process-Tools/claude-supertool/issues/1097).
+The default `error_patterns` contain the bare substring `ERROR`, and GitLab ends
+**every** failed job with `ERROR: Job failed: exit code N`. That one line was
+enough to produce a block, and `error_context` drew the section markers and the
+cleanup line in around it — which is how job 7021139 returned
+
+```
+## All error blocks (6 lines matched, no tail truncation)
+```
+
+where all six lines were teardown and the real cause never appeared. A header
+claiming completeness over six contentless lines is worse than the honest refusal
+next to it, because a reader has no way to tell it from a real answer.
+
+`:fail` and the default view now look at what the selector **anchored on**, not at
+the window it drew: if every anchor is a line GitLab writes on every failed job,
+that is not a classification and the output says so — the same
+`## FAILED — …` refusal, retitled, with the discounted lines printed underneath
+rather than hidden:
+
+```
+## FAILED — only boilerplate matched, no cause identified
+Job status is `failed`: something did go wrong. supertool could not classify it,
+which means a pattern is missing here — not that the log is clean. …
+
+The one line that matched is a line GitLab writes on every failed job — no cause
+is named, so this is not a classification. Shown, not hidden:
+    129 | ERROR: Job failed: exit code 1
+
+## Log tail (last 40 lines of 129)
+```
+
+Three lines are boilerplate: `ERROR: Job failed: exit code N`, `section_start:` /
+`section_end:`, and `Cleaning up project directory`. Deliberately **not** on that
+list: `ERROR: Job failed (system failure): …` and `ERROR: Job failed: execution
+took longer than …`, which do say why the job died. Discounting those would trade
+this loud bug for a quiet one.
+
+Nothing was added to any pattern set to fix this. Adding `ERROR: Job failed: exit
+code 1` as a *pattern* would have flipped every honest refusal into a confident,
+useless block — the opposite of the fix.
+
+### `:fail` says when the selector does not fit the job's status
+
+[#1095](https://github.com/Digital-Process-Tools/claude-supertool/issues/1095), the
+GitLab half of [#916](https://github.com/Digital-Process-Tools/claude-supertool/issues/916).
+`## All error blocks (N lines matched, no tail truncation)` makes two claims — the
+selector found everything, and nothing was cut. Both are true of the *selector* and
+neither is true of the *log* on a job that was stopped before it produced the
+failure. On any status other than `failed`, the header degrades and the render says
+what to run instead:
+
+```
+## Error blocks (3 lines matched) — but see below
+  …
+> NOTE: this job's status is `canceled`, not `failed`, so error-block selection is
+> a poor fit — it can only find lines an error pattern marks, and a job that
+> produced no failure puts its diagnostics outside them (teardown, the point it was
+> stopped, the tail). Treat the above as the lines that MATCHED, not as what the
+> log contains.
+> Read it instead with:
+>   ./supertool 'gl-job:7125000:raw:-80'          # tail, …
+>   ./supertool 'gl-job:7125000:grep:PATTERN'     # the whole trace is still searchable
+```
+
+**Keyed on the complement**, like the GitHub twin: the condition is
+`job_status != "failed"`, not membership in `("canceled", "skipped", "manual", …)`,
+so a status GitLab adds later — or a job still `running` — lands on the disclosure
+rather than on the silent overclaim. The `failed` path is unchanged and pinned by a
+test.
+
+A shared helper across the two presets was considered and rejected: two of the four
+disclosure lines are forge-specific (the op name, the status vocabulary), so the
+shared core would be an f-string with three parameters, and what actually drifted
+here was a *missing call* — which sharing cannot prevent and
+`tests/test_gl_job_fail_honesty_1095_1097.py` does catch, by driving both twins
+through a non-fitting status in one test.
 
 ### PHPUnit failures are kept whole
 

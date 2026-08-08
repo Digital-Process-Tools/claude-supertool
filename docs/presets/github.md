@@ -70,7 +70,7 @@ The op already had the fact it needed: `Status: cancelled` is printed two lines 
 
 **Keyed on the complement, not on a list.** The condition is `display_status != "failure"`, not membership in `("cancelled", "timed_out", …)`, so a conclusion GitHub adds later lands on the disclosure rather than on the silent overclaim. The `failure` path is unchanged and pinned by a test.
 
-**Not fixed here: the sibling.** `gl-job:N:fail`'s pattern set does not match Playwright's `Error: JS errors detected:`, and on job 7021139 it reported `All error blocks (6 lines matched)` where all six were teardown boilerplate. Same symptom — but there the conclusion *is* `failure`, so there is no signal to key a disclosure on, and pretending this fix reaches it would be the same overclaim one repo over.
+**The sibling, fixed separately.** `gl-job:N:fail` had the same symptom on job 7021139 — `All error blocks (6 lines matched)` where all six were teardown boilerplate — but with the conclusion genuinely `failure`, so this disclosure's trigger could not reach it. [#1097](https://github.com/Digital-Process-Tools/claude-supertool/issues/1097) found the signal that could: whether the lines the selector **anchored on** say anything, or are only what GitLab writes on every failed job. [#1095](https://github.com/Digital-Process-Tools/claude-supertool/issues/1095) then gave `gl-job` this file's status-based disclosure as well. Both are in `docs/presets/gitlab.md`, and one test drives the two presets together so the next divergence is caught rather than filed.
 
 ## The issue board
 

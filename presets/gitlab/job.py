@@ -124,7 +124,15 @@ def _select_job_patterns(
 # Set GL_JOB_CAUSE_MARKERS=0 to disable.
 _CAUSE_MARKERS = [
     re.compile(r"^\s*Caused by\b"),
-    re.compile(r"[\w\\]+(?:Exception|Error):\s"),
+    # `[\w\\]*`, not `+`: a bare `Error: ...` has nothing before it, and that is
+    # node's and Playwright's usual shape. The `+` form is why job 7021139's
+    # `Error: JS errors detected:` was invisible on a job whose per-job pattern
+    # table had narrowed the set to PHPUnit (#1097) — the marker list is the
+    # floor that narrowing cannot remove, so a hole in it is a hole in the floor.
+    re.compile(r"[\w\\]*(?:Exception|Error):\s"),
+    # The MySQL client: `ERROR 2026 (HY000): TLS/SSL error: ...`, the cause on
+    # line 108 of job 7125000 and the shape of no configured pattern.
+    re.compile(r"\bERROR \d+ \(\w+\):"),
     re.compile(r"SQLSTATE\["),
     re.compile(r"^\s*In \S+\.php line \d+:"),
     re.compile(r"Exit Code:\s*\d+"),
@@ -156,8 +164,81 @@ def _last_section(lines: list[str]) -> str | None:
     return None
 
 
+# Lines GitLab or its runner writes on **every** failed job. The default
+# `error_patterns` contain the bare substring `ERROR`, so the terminal line
+# alone is enough to produce a block; with `error_context` pulling in the
+# section markers and the cleanup line around it, the result is the six-line
+# "All error blocks" that job 7021139 produced while the real cause — a
+# Playwright assertion — never appeared (#1097).
+#
+# Only `exit code N`. `ERROR: Job failed (system failure): ...` and
+# `ERROR: Job failed: execution took longer than ...` DO say why the job died,
+# and discounting those would trade this loud bug for a quiet one.
+#
+# `search`, not `match`: the trace on job 7125000 carries a stream prefix
+# (`00O `) ahead of the line which the ANSI cleanup above does not remove, so
+# anchoring at the start of the line would miss it on exactly the log this was
+# filed from.
+_BOILERPLATE = [
+    re.compile(r"\bERROR: Job failed: exit code \d+\s*$"),
+    re.compile(r"\bsection_(?:start|end):\d+:"),
+    re.compile(r"\bCleaning up project directory"),
+]
+
+
+def _is_boilerplate(line: str) -> bool:
+    """True for a line that is present because the job ended, not because it failed."""
+    return any(rx.search(line) for rx in _BOILERPLATE)
+
+
+# `:fail` fits exactly one status. Written as the complement rather than as a
+# list of the others (`canceled`, `skipped`, `manual`, ...) so a status GitLab
+# adds later, or a job still `running`, lands on the disclosure by default
+# instead of on the silent overclaim. The GitHub twin holds the same constant
+# with the value `failure` (#916): the vocabularies differ, the rule does not,
+# and `tests/test_gl_job_fail_honesty_1095_1097.py` drives both to keep it that
+# way.
+_FAIL_SELECTOR_FITS = "failed"
+
+
+def _selection_mismatch(job_status: str, job_id: str) -> str:
+    """Say that error-block selection cannot answer for this job, and what can.
+
+    #1095. `## All error blocks (N lines matched, no tail truncation)` is a
+    claim of completeness: the reader is told the selector found everything
+    there was and that nothing was cut. Both are true of the *selector* and
+    neither is true of the *log* on a job that was killed before it produced
+    the failure it was killed during — its diagnostics sit in teardown and in
+    the tail, where no error pattern can reach them.
+
+    The op already knows: `Status: canceled` is printed from this same value
+    nine lines above the header that contradicts it.
+
+    Disclosure rather than a wider pattern set, deliberately — a pattern set
+    cannot be complete, so a wider one that still misses produces a longer and
+    more confident-looking block. And the matched lines are still printed:
+    trading a loud wrong answer for no answer is the same defect reversed.
+    """
+    if job_status == _FAIL_SELECTOR_FITS:
+        return ""
+    return (
+        f"\n> NOTE: this job's status is `{job_status}`, not `failed`, so "
+        f"error-block selection is a poor fit — it can only find lines an error "
+        f"pattern marks, and a job that produced no failure puts its "
+        f"diagnostics outside them (teardown, the point it was stopped, the "
+        f"tail). Treat the above as the lines that MATCHED, not as what the log "
+        f"contains.\n"
+        f"> Read it instead with:\n"
+        f">   ./supertool 'gl-job:{job_id}:raw:-80'          # tail, where a "
+        f"cancellation's evidence usually sits\n"
+        f">   ./supertool 'gl-job:{job_id}:grep:PATTERN'     # the whole trace "
+        f"is still searchable\n"
+    )
+
+
 def _print_unmatched_failure(
-    job_id: str, job_status: str, patterns: list[str], lines: list[str], total: int
+    job_id: str, job_status: str, patterns: list[str], lines: list[str], total: int,
+    discounted: list[tuple[int, str]] | None = None,
 ) -> None:
     """Report a failed job the patterns could not classify — never as silence.
 
@@ -167,7 +248,10 @@ def _print_unmatched_failure(
     says exactly that and hands back the raw evidence.
     """
     tail_n = env_int("GL_JOB_UNMATCHED_TAIL_LINES", 40, minimum=1)
-    print("\n## FAILED — no error pattern matched")
+    if discounted:
+        print("\n## FAILED — only boilerplate matched, no cause identified")
+    else:
+        print("\n## FAILED — no error pattern matched")
     print(
         f"Job status is `{job_status}`: something did go wrong. supertool "
         "could not classify it, which means a pattern is missing here — "
@@ -177,6 +261,19 @@ def _print_unmatched_failure(
     shown = ", ".join(p.strip() for p in patterns if p.strip())
     if shown:
         print(f"Patterns tried: {shown} (+ built-in cause markers)")
+    if discounted:
+        head = (
+            "The one line that matched is a line GitLab writes on every failed job"
+            if len(discounted) == 1
+            else f"All {len(discounted)} lines that matched are lines GitLab "
+                 f"writes on every failed job"
+        )
+        print(
+            f"\n{head} — no cause is named, so this is not a classification. "
+            f"Shown, not hidden:"
+        )
+        for line_num, text in discounted:
+            print(f"  {line_num:>5} | {text}")
     section = _last_section(lines)
     if section:
         print(f"Last step entered: {section}")
@@ -286,6 +383,24 @@ def gap_marker(n_lines: int) -> str:
             f"matched them; the log itself is intact)")
 
 
+def _pattern_anchors(lines: list[str], patterns: list[str]) -> list[int]:
+    """Indices of lines a configured error pattern matched directly.
+
+    The anchors, not the context windows drawn around them: what the selector
+    *found*, as against what it decided to print. #1097 needs the distinction —
+    a block of eight lines can rest on one anchor, and whether that anchor says
+    anything is the question the header answers wrongly today.
+    """
+    anchors: list[int] = []
+    for i, line in enumerate(lines):
+        for pattern in patterns:
+            pattern = pattern.strip()
+            if pattern and pattern in line:
+                anchors.append(i)
+                break
+    return anchors
+
+
 def _find_error_sections(lines: list[str], patterns: list[str], context: int,
                          trailing_gap: bool = False) -> list[tuple[int, str]]:
     """Find lines matching error patterns and return them with context.
@@ -303,16 +418,10 @@ def _find_error_sections(lines: list[str], patterns: list[str], context: int,
     `:fail`, which prints blocks and nothing else, can truthfully claim it.
     """
     matches: set[int] = set()
-    for i, line in enumerate(lines):
-        for pattern in patterns:
-            pattern = pattern.strip()
-            if not pattern:
-                continue
-            if pattern in line:
-                # Add the match and surrounding context
-                for j in range(max(0, i - context), min(len(lines), i + context + 1)):
-                    matches.add(j)
-                break
+    for i in _pattern_anchors(lines, patterns):
+        # Add the match and surrounding context
+        for j in range(max(0, i - context), min(len(lines), i + context + 1)):
+            matches.add(j)
 
     # Cause markers anchor on the line that states *why*, not on the wreckage it
     # produced. They run whatever the configured patterns are, and get their
@@ -710,26 +819,48 @@ def main() -> int:
                                           config["error_context"],
                                           trailing_gap=errors_mode)
 
+    # What the selector landed on, as against the windows it drew around it. A
+    # selection whose every anchor is a line GitLab writes on every failed job
+    # is not a classification (#1097) — it is the same absence the empty case
+    # already reports honestly, wearing a header that claims otherwise.
+    anchors = sorted(set(_pattern_anchors(lines, patterns)) | set(_cause_lines(lines)))
+    boilerplate_only = bool(anchors) and all(_is_boilerplate(lines[i]) for i in anchors)
+    discounted = [(i + 1, lines[i]) for i in anchors] if boilerplate_only else None
+
     # errors mode — dump ALL matched blocks, no tail cap
     if errors_mode:
-        if not error_sections:
+        mismatch = _selection_mismatch(job_status, job_id)
+        if not error_sections or (job_status == "failed" and boilerplate_only):
             if job_status == "failed":
-                _print_unmatched_failure(job_id, job_status, patterns, lines, total)
+                _print_unmatched_failure(job_id, job_status, patterns, lines,
+                                         total, discounted)
             else:
                 print("\n## No error patterns matched")
+                if mismatch:
+                    print(mismatch)
             return 0
         matched_count = len([e for e in error_sections if e[0] > 0])
-        print(f"\n## All error blocks ({matched_count} lines matched, no tail truncation)")
+        if mismatch:
+            # #1095. The old header read `All error blocks (N lines matched, no
+            # tail truncation)` on a canceled job — two claims true of the
+            # SELECTOR and false of the LOG. `Status: canceled` is printed above
+            # from this same value, so the op held the fact and applied the
+            # selector anyway.
+            print(f"\n## Error blocks ({matched_count} lines matched) — but see below")
+        else:
+            print(f"\n## All error blocks ({matched_count} lines matched, no tail truncation)")
         for line_num, text in error_sections:
             if line_num == -1:
                 print(text)
             else:
                 print(f"  {line_num:>5} | {text}")
+        if mismatch:
+            print(mismatch)
         if resolution_line:
             print(f"\n{resolution_line}")
         return 0
 
-    if error_sections and job_status == "failed":
+    if error_sections and job_status == "failed" and not boilerplate_only:
         print(f"\n## Error context ({len([e for e in error_sections if e[0] > 0])} lines matched)")
         for line_num, text in error_sections:
             if line_num == -1:
@@ -748,8 +879,11 @@ def main() -> int:
             print(f"  {start + i:>5} | {line}")
     elif job_status == "failed":
         # Nothing matched on a job that failed — say so, do not just print a tail
-        # and let the reader infer the log was clean (#445).
-        _print_unmatched_failure(job_id, job_status, patterns, lines, total)
+        # and let the reader infer the log was clean (#445). Reached now also
+        # when every anchor was boilerplate (#1097) — same absence, and the
+        # discounted lines travel with it.
+        _print_unmatched_failure(job_id, job_status, patterns, lines, total,
+                                 discounted)
     else:
         # Job didn't fail — just show tail
         shown = lines[-tail_lines:] if len(lines) > tail_lines else lines
