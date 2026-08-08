@@ -64,6 +64,9 @@ OPERATIONS
     read:PATH:OFFSET:LIMIT:grep=PATTERN
                                Read with inline filter — only show lines matching
                                 PATTERN (original line numbers preserved).
+                                read:PATH:::grep=P searches the WHOLE file; give
+                                an OFFSET/LIMIT and the zero names what it did
+                                not search.
     glob:PATTERN               Find files matching pattern (** supported).
                                 Auto-reads if PATTERN is a concrete file
                                 path with no wildcards.
@@ -2266,6 +2269,10 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
         _safe_path(path)
     except SecurityError as e:
         return f"ERROR: {e}\n"
+    # A caller who names no LIMIT alongside `grep=` is asking about the file,
+    # not about the file's first `read.max_lines` lines (#1052). Recorded here,
+    # before the default lands, because afterwards the two are indistinguishable.
+    filter_scan_all = bool(grep_filter) and limit <= 0
     if limit <= 0:
         limit = _get_op_int("read", "max_lines", MAX_READ_LINES)
     if not path or not os.path.isfile(path):
@@ -2289,6 +2296,14 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
         return f"ERROR: could not read {path}: {e}\n"
 
     line_count = len(raw_lines)
+    if filter_scan_all:
+        # A filter is not a window. `read.max_lines` bounds how much is
+        # *emitted*; applying it to how much is *searched* made the inline
+        # filter answer `(no lines matching X)` about a file whose only match
+        # sat at line 328 of 351 — a confident negative produced by the default
+        # LIMIT, not by the file (#1052). The byte cap below still bounds the
+        # output, and a filtered read emits only the lines that matched.
+        limit = max(0, line_count - offset)
     out = [f"({line_count} lines, {size} bytes){_path_meta_suffix(path, b''.join(raw_lines[:64]))}\n"]
     bytes_emitted = 0
     printed = 0
@@ -2302,11 +2317,17 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
         end = line_count  # ignore line cap too when human asks for full file
 
     filter_regex = None
+    filter_literal_why = ""
     if grep_filter:
         try:
             filter_regex = re.compile(grep_filter)
-        except re.error:
+        except re.error as e:
+            # The fallback is right — an unusable regex should not fail a read.
+            # The silence was not: the literal search's zero was rendered in the
+            # same words as a real absence, so a rejected pattern read as a
+            # missing string (#1052).
             filter_regex = re.compile(re.escape(grep_filter))
+            filter_literal_why = str(e)
 
     compact = not filter_regex and _is_compact()
     matched_any = False
@@ -2338,8 +2359,75 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
             capped = True
             break
 
+    unsearched = 0
+    # Collected rather than appended: every line in here is a note *about* the
+    # scan, and it is inserted above the content at the end of this function.
+    # See the insert below for why.
+    filter_notes: List[str] = []
+    if filter_regex:
+        unsearched = line_count - (last_scanned - offset)
+        if filter_literal_why:
+            filter_notes.append(
+                f"(the grep= pattern is not a usable regex — "
+                f"{filter_literal_why}; searched for it as a literal "
+                f"string instead)\n")
     if filter_regex and not matched_any:
-        out.append(f"(no lines matching {grep_filter!r})\n")
+        if unsearched > 0 and last_scanned <= offset:
+            # The loop never ran, so `last_scanned` is still `offset` and the
+            # range below would read `1001-1000` -- a span whose start is past
+            # its end. The count was right and the range naming it was not, and
+            # a disclosure that reads as nonsense is not read (PR #1057
+            # review).
+            filter_notes.append(
+                f"(no lines matching {grep_filter!r} -- offset "
+                f"{offset + 1} is past the end of this {line_count}-line "
+                f"file, so no line was searched and this is not an answer "
+                f"about the file)\n")
+        elif unsearched > 0:
+            # Three states, not two: found, not found, and did-not-look. The
+            # old single line said the second when it meant the third (#1052).
+            plural = "s" if unsearched != 1 else ""
+            verb = "were" if unsearched != 1 else "was"
+            filter_notes.append(
+                f"(no lines matching {grep_filter!r} in lines "
+                f"{offset + 1}-{last_scanned} of {line_count} — the other "
+                f"{unsearched} line{plural} {verb} NOT searched, so this is "
+                f"not an answer about the whole file)\n")
+        else:
+            filter_notes.append(
+                f"(no lines matching {grep_filter!r} in any of "
+                f"{line_count} lines)\n")
+    elif filter_regex and capped:
+        # The byte cap breaks the scan loop, not just the emission: a filtered
+        # read that matched and *then* hit the cap has stopped looking. This
+        # used to fall through to the generic `elif capped:` wording below,
+        # which offers `(R more lines)` — a phrase a reader can only take as
+        # "R lines that did not match". That is the same absence-read-as-
+        # presence #1052 was filed to remove, left standing in the one case
+        # where the file is large enough for it to cost something (PR #1057
+        # review).
+        plural = "s" if unsearched != 1 else ""
+        verb = "were" if unsearched != 1 else "was"
+        if unsearched > 0:
+            filter_notes.append(
+                f"(the grep= filter searched lines {offset + 1}-"
+                f"{last_scanned} of {line_count} and stopped there — the "
+                f"output reached the {byte_cap}-byte cap, so the other "
+                f"{unsearched} line{plural} {verb} NOT searched and this is "
+                f"not an answer about the whole file — continue with "
+                f"read:PATH:{last_scanned}:LIMIT:grep=PATTERN)\n")
+        else:
+            filter_notes.append(
+                f"(the grep= filter searched all {line_count} lines; the "
+                f"output reached the {byte_cap}-byte cap on line "
+                f"{last_scanned}, the last line of the file)\n")
+    elif filter_regex and unsearched > 0:
+        plural = "s" if unsearched != 1 else ""
+        verb = "were" if unsearched != 1 else "was"
+        filter_notes.append(
+            f"(the grep= filter searched lines {offset + 1}-{last_scanned} "
+            f"of {line_count} — {unsearched} line{plural} outside that range "
+            f"{verb} NOT searched)\n")
     elif capped:
         remaining = line_count - last_scanned
         out.append(
@@ -2360,6 +2448,18 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
             out.append(f"[end of file — lines 1-{offset} not shown]\n")
     elif not filter_regex:
         out.append("[complete file — no more lines]\n")
+    if filter_notes:
+        # Header position, above the content, for #955's reason rather than by
+        # analogy with it: "Construction order is not render order, and a note
+        # that arrives after the wrong window has already been paid for is
+        # barely a note." That is an argument about what the reader has spent
+        # by the time the correction reaches them, and it was made about this
+        # same `out` list in this same function. A filtered read that emits
+        # 20 KB of matches and only then admits 308 lines were never searched
+        # charges for the wrong answer first and corrects it afterwards
+        # (PR #1057 review).
+        for note in reversed(filter_notes):
+            out.insert(1, note)
     if offset > 0:
         # Inserted at index 1 — after the count header, before the first line
         # of content. Construction order is not render order, and a correction
@@ -2582,7 +2682,12 @@ def op_read(path: str, offset: int = 0, limit: int = 0,
                           f"or read:{path}:::grep=PATTERN to filter]\n")
             skip_note = (f"[abstract read skipped — {reason}; "
                          f"showing raw source]\n")
-    if limit <= 0:
+    # `grep=` with no LIMIT is left at 0 so render_file can tell "the caller
+    # named no window" from "the caller asked for 300 lines". Applying the
+    # default here made the two identical, and the filter then searched only
+    # the first 300 lines while reporting its zero as a fact about the file
+    # (#1052).
+    if limit <= 0 and not grep_filter:
         limit = _get_op_int("read", "max_lines", MAX_READ_LINES)
     body = render_file(path, offset, limit, grep_filter, force_full,
                        range_form)
@@ -5121,7 +5226,13 @@ def op_replace(old: str, new: str, path: str = ".", dry: bool = False) -> str:
 
     # Collect matches via whole-file scan so multi-line `old` patterns work.
     # Line-by-line matching would silently miss any pattern containing '\n'.
-    file_matches: List[Tuple[str, List[int]]] = []  # (filepath, [match_start_offsets])
+    # (filepath, [match_start_offsets], effective_old, effective_new). The two
+    # effective strings are carried rather than recomputed: this pass and the
+    # write pass below used to read the same file with different newline
+    # settings, so on a CRLF file one found an LF `old` and the other did not.
+    # The write became a no-op and the receipt reported *this* pass's number —
+    # `(2 replacements in 2 files)` over two unchanged files (#1049).
+    file_matches: List[Tuple[str, List[int], str, str]] = []
     total_count = 0
     for file_path in candidates:
         try:
@@ -5132,20 +5243,29 @@ def op_replace(old: str, new: str, path: str = ".", dry: bool = False) -> str:
                 # images, compiled blobs, etc. (recovered cost: a `.git/index`
                 # walked into by a stray relative path arg.)
                 continue
-            with open(file_path, "r", encoding="utf-8", errors="surrogateescape") as f:
+            with open(file_path, "r", encoding="utf-8",
+                      errors="surrogateescape", newline="") as f:
                 content = f.read()
         except OSError:
             continue
         positions: List[int] = []
-        start = 0
-        while True:
-            idx = content.find(old, start)
-            if idx == -1:
+        eff_old, eff_new = old, new
+        for nl, cand in _newline_variants(old):
+            start = 0
+            found: List[int] = []
+            while True:
+                idx = content.find(cand, start)
+                if idx == -1:
+                    break
+                found.append(idx)
+                start = idx + len(cand)
+            if found:
+                positions = found
+                eff_old = cand
+                eff_new = _retermed(new, nl) if nl else new
                 break
-            positions.append(idx)
-            start = idx + len(old)
         if positions:
-            file_matches.append((file_path, positions))
+            file_matches.append((file_path, positions, eff_old, eff_new))
             total_count += len(positions)
 
     if total_count == 0:
@@ -5158,17 +5278,21 @@ def op_replace(old: str, new: str, path: str = ".", dry: bool = False) -> str:
 
     if dry:
         out: List[str] = [f"({total_count} occurrences in {len(file_matches)} files)\n"]
-        old_lines = old.split("\n")
-        new_lines = new.split("\n")
-        for filepath, positions in file_matches:
+        for filepath, positions, eff_old, eff_new in file_matches:
+            # splitlines, not split("\n"): the effective strings may be CRLF or
+            # CR terminated, and a split on "\n" leaves a trailing \r on every
+            # preview line.
+            old_lines = eff_old.splitlines() or [eff_old]
+            new_lines = eff_new.splitlines() or [eff_new]
             out.append(f"\n{_fwd(filepath)}\n")
             try:
-                with open(filepath, "r", encoding="utf-8", errors="surrogateescape") as f:
+                with open(filepath, "r", encoding="utf-8",
+                          errors="surrogateescape", newline="") as f:
                     content = f.read()
             except OSError:
                 continue
             for pos in positions:
-                start_line = content.count("\n", 0, pos) + 1
+                start_line = _line_number_at(content, pos)
                 end_line = start_line + len(old_lines) - 1
                 label = f"L{start_line}" if start_line == end_line else f"L{start_line}-L{end_line}"
                 out.append(f"  {label}:\n")
@@ -5181,23 +5305,76 @@ def op_replace(old: str, new: str, path: str = ".", dry: bool = False) -> str:
 
     # Execute mode
     files_modified: Dict[str, int] = {}
-    for file_path, positions in file_matches:
+    vanished: List[str] = []
+    for file_path, _scan_positions, eff_old, eff_new in file_matches:
         try:
-            with open(file_path, "r", encoding="utf-8", errors="surrogateescape") as f:
+            # newline="": see op_edit / op_append. Without it every line of a
+            # CRLF file was rewritten to LF by a replace that matched one
+            # string (#1049). The scan's positions are deliberately unused
+            # here — recounting against the bytes about to be written is the
+            # whole point.
+            with open(file_path, "r", encoding="utf-8",
+                      errors="surrogateescape", newline="") as f:
                 content = f.read()
         except OSError:
             continue
-        new_content = content.replace(old, new)
+        # Counted here, from the bytes about to be written, never from the scan
+        # pass. A number taken from the scan survived the write matching
+        # nothing and reported replacements that had not happened (#1049).
+        hits = content.count(eff_old)
+        if not hits:
+            vanished.append(file_path)
+            continue
+        new_content = content.replace(eff_old, eff_new)
         try:
             _atomic_write(file_path, new_content)
-            files_modified[file_path] = len(positions)
+            files_modified[file_path] = hits
         except OSError as e:
             return f"ERROR: failed to write {file_path}: {e}\n"
 
     total = sum(files_modified.values())
+    # `_newline_note` states the invariant this discloses: "re-writing the
+    # caller's own endings is always disclosed". `op_edit` and
+    # `op_replace_lines` call it; `replace` did the same `_newline_variants`
+    # re-termination and said nothing, so a CRLF replace rewrote the caller's
+    # block in silence (#1049, third pass).
+    #
+    # `_newline_note` itself is not reusable here and is deliberately not
+    # called: it writes one sentence about one file, and `replace` is
+    # multi-file with a different answer per file — a summary line true of the
+    # run would be false of every file that matched literally. So the fact goes
+    # on the file's own line and the sentence is said once.
+    #
+    # Derived from `eff_old`, not carried out of the scan: `_newline_variants`
+    # drops any candidate equal to the literal, so `eff_old != old` is exactly
+    # "a re-terminated variant matched", and the resolved scan/write pair above
+    # stays untouched.
+    retermed: Dict[str, str] = {}
+    for _fp, _positions, _eff_old, _eff_new in file_matches:
+        if _fp in files_modified and _eff_old != old:
+            retermed[_fp] = ("CRLF" if "\r\n" in _eff_old
+                             else "CR" if "\r" in _eff_old else "LF")
     out = [f"({total} replacements in {len(files_modified)} files)\n"]
     for fp, cnt in sorted(files_modified.items()):
-        out.append(f"  {_fwd(fp)} ({cnt})\n")
+        tag = f" [{retermed[fp]}]" if fp in retermed else ""
+        out.append(f"  {_fwd(fp)} ({cnt}){tag}\n")
+    if retermed:
+        # Only where a choice was made. A uniform file whose `old` matched
+        # literally is not marked and produces no line at all — on Windows
+        # every file is CRLF, and a note that fires on every call is the noise
+        # #1049's second pass removed.
+        out.append(f"  {mark('↳')} line endings: the text you supplied did not "
+                   f"match {len(retermed)} of these files byte for byte and "
+                   f"was re-terminated to the convention marked above to make "
+                   f"it match — every untouched line is unchanged\n")
+    if vanished:
+        # Matched during the scan, gone by the time the write read it back.
+        # Dropping these silently is how the count and the disk disagree.
+        out.append(f"\n{len(vanished)} file(s) matched during the scan and no "
+                   f"longer matched when the write read them back — NOT "
+                   f"modified:\n")
+        for fp in sorted(vanished):
+            out.append(f"  {_fwd(fp)}\n")
     out.append(f"\nDone: '{old}' → '{new}'\n")
     return "".join(out)
 
@@ -5912,6 +6089,122 @@ def _edit_already_applied(content: str, old: str, new: str, idx: int) -> bool:
     return False
 
 
+def _newline_census(text: str) -> Tuple[int, int, int]:
+    """`(crlf, lf, cr)` — how many of each line ending the text actually has.
+
+    Bare counts, not a verdict. Callers that need one say in their own receipt
+    what they did with it; nothing here decides on their behalf (#1049).
+    """
+    crlf = text.count("\r\n")
+    lf = text.count("\n") - crlf
+    cr = text.count("\r") - crlf
+    return crlf, lf, cr
+
+
+def _newline_note(content: str, wrote: str = "", retermed: bool = False) -> str:
+    """One receipt line, emitted only where the ending used had more than one
+    defensible answer.
+
+    `wrote` is the convention the op used for text it supplied, "" when it
+    supplied none. `retermed` says that text was the *caller's own*, rewritten
+    to match the file.
+
+    The first cut of this fired on every successful edit of a CRLF file — where
+    nothing had been decided, every byte outside the match was unchanged, and
+    the line said so at length. On Windows every file is CRLF, so a marker
+    meaning "I made a choice you did not" appeared on every call ever made,
+    which is how a disclosure becomes noise and then becomes ignored. It also
+    collided with `test_successful_edit_has_no_diagnostic`, which reads `↳` as
+    "a diagnostic was emitted" and was right to.
+
+    So: a mixed file has no single answer and is always disclosed; re-writing
+    the caller's own endings is always disclosed; supplying a trailing newline
+    in the one convention a uniform file uses is not a choice and is silent.
+    """
+    if not wrote:
+        return ""
+    names = {"\r\n": "CRLF", "\n": "LF", "\r": "CR"}
+    name = names.get(wrote, repr(wrote))
+    crlf, lf, cr = _newline_census(content)
+    if len([n for n in (crlf, lf, cr) if n]) > 1:
+        return (f"  {mark('↳')} line endings: file is mixed ({crlf} CRLF / "
+                f"{lf} LF / {cr} CR) — every line this op did not touch kept "
+                f"its own; text this op supplied uses {name}\n")
+    if not retermed:
+        return ""
+    return (f"  {mark('↳')} line endings: file is {name}, so the text you "
+            f"wrote with LF was re-terminated to {name} to match — every "
+            f"untouched line is unchanged\n")
+
+
+def _newline_variants(text: str) -> List[Tuple[str, str]]:
+    """`(newline, text)` candidates for a match, most faithful first.
+
+    A caller composing a payload types LF, so an `old` string describing lines
+    of a CRLF file arrives LF-terminated and matches nothing once the read
+    stops flattening the file. Refusing there would trade a silent whole-file
+    rewrite for a hard `old string not found` — a different bug, not a fix. The
+    literal text is therefore tried first and the re-terminated forms only
+    after it, so a file that matches exactly is never reinterpreted.
+    """
+    flat = text.replace("\r\n", "\n").replace("\r", "\n")
+    out: List[Tuple[str, str]] = [("", text)]
+    for nl in ("\r\n", "\r", "\n"):
+        cand = flat.replace("\n", nl)
+        if cand != text:
+            out.append((nl, cand))
+    return out
+
+
+def _retermed(text: str, nl: str) -> str:
+    """`text` with every line ending replaced by `nl`."""
+    return text.replace("\r\n", "\n").replace("\r", "\n").replace("\n", nl)
+
+
+def _line_number_at(text: str, end: Optional[int] = None) -> int:
+    """1-based line number of position `end`, counting CR, LF and CRLF alike.
+
+    `text.count("\\n")` is zero at *every* position in a CR-only file, so a
+    receipt built on it named line 1 wherever the match actually was. That
+    arithmetic was correct only because the read used to translate `\\r` to
+    `\\n` before it ran; `newline=""` removed the translation and left the
+    count behind (PR #1057 review).
+
+    Counted rather than sliced: `count` takes a range, so this stays
+    allocation-free on the dry-run path that calls it once per match.
+    """
+    return (text.count("\n", 0, end)
+            + text.count("\r", 0, end)
+            - text.count("\r\n", 0, end)) + 1
+
+
+def _local_newline(lines: List[str], idx: int) -> str:
+    """The line ending in force at `lines[idx]`, scanning backwards for one.
+
+    A mixed file has no single answer, so `replace_lines` does not vote on the
+    whole file: the block it writes takes the ending of the line it replaces
+    (or, for an insert, of the line above it). A file-wide majority would
+    rewrite the caller's own line to the other convention, which is the same
+    silent normalisation one line wide.
+
+    The backwards scan is the answer whenever it finds one. When it does not —
+    `idx` is at or past the only terminated line, or every line above it is
+    unterminated — the search continues *forwards* over the whole file, so a
+    file whose endings all sit below `idx` still gets its own convention.
+    Falls back to LF only when no line anywhere in the file is terminated.
+    """
+    for i in range(min(idx, len(lines) - 1), -1, -1):
+        line = lines[i]
+        for nl in ("\r\n", "\r", "\n"):
+            if line.endswith(nl):
+                return nl
+    for line in lines:
+        for nl in ("\r\n", "\r", "\n"):
+            if line.endswith(nl):
+                return nl
+    return "\n"
+
+
 def op_edit(old: str, new: str, path: str) -> str:
     """Single-file, single-occurrence edit — mirrors native Edit semantics.
 
@@ -5932,12 +6225,24 @@ def op_edit(old: str, new: str, path: str) -> str:
         # _atomic_write back to their original byte values. Prevents silent
         # corruption of bytes outside the match window (CVE-class data loss
         # on files with mixed encodings or partial binary content).
-        with open(path, "r", encoding="utf-8", errors="surrogateescape") as f:
+        # newline="": no universal-newline translation, so a CRLF file is not
+        # silently rewritten to LF throughout — the contract op_append already
+        # states. Without it a one-line edit changed every line in the file,
+        # under a receipt that named one (#1049).
+        with open(path, "r", encoding="utf-8", errors="surrogateescape",
+                  newline="") as f:
             content = f.read()
     except OSError as e:
         return f"ERROR: failed to read {path}: {e}\n"
 
+    wrote = ""
     count = content.count(old)
+    if count == 0:
+        for nl, cand in _newline_variants(old)[1:]:
+            n = content.count(cand)
+            if n:
+                old, new, wrote, count = cand, _retermed(new, nl), nl, n
+                break
     if count == 0:
         _SKIP_COUNT[0] += 1
         return (f"ERROR: old string not found in {path}\n"
@@ -5949,6 +6254,33 @@ def op_edit(old: str, new: str, path: str) -> str:
             f"Use a larger snippet to make it unique, or use replace for "
             f"replace_all semantics.\n"
         )
+
+    retermed = bool(wrote)
+    if not wrote and ("\n" in new or "\r" in new):
+        # `old` matched literally, so nothing above resolved a convention --
+        # but `new` carries one of its own, and writing it verbatim splices LF
+        # into a CRLF file and leaves it mixed, silently.
+        #
+        # The defect this closes is an inconsistency, not just a silence: an
+        # `old` that spanned a line boundary went through `_newline_variants`
+        # and had `new` re-terminated with whatever matched, while a
+        # single-line `old` did not. Two edits expressing the same intent
+        # produced different bytes depending on that accident (PR #1057
+        # review). Only reachable since this branch stopped flattening every
+        # write to LF, which is why it is this branch's regression to fix.
+        crlf, lf, cr = _newline_census(content)
+        used = [n for n, c in (("\r\n", crlf), ("\n", lf), ("\r", cr)) if c]
+        if len(used) == 1 and _retermed(new, used[0]) != new:
+            # One convention, and `new` disagrees: match the file and say so.
+            # This is the caller's own text rewritten, which `_newline_note`
+            # promises is never silent.
+            new, wrote, retermed = _retermed(new, used[0]), used[0], True
+        elif len(used) > 1:
+            # Mixed: no single convention to match, so the caller's bytes stand
+            # as typed -- the same answer `replace_lines` gives. Still a
+            # decision, and `_newline_note`'s mixed branch discloses it.
+            wrote = ("\r\n" if "\r\n" in new
+                     else "\r" if "\r" in new else "\n")
 
     idx = content.index(old)
     reapplied = _edit_already_applied(content, old, new, idx)
@@ -5963,10 +6295,9 @@ def op_edit(old: str, new: str, path: str) -> str:
         _REAPPLY_COUNT[0] += 1
 
     # Receipt — locate the change and show ±2 lines context
-    pre = content[:idx]
-    start_line = pre.count("\n") + 1
+    start_line = _line_number_at(content, idx)
     new_lines = new_content.splitlines()
-    new_block_line_count = new.count("\n") + 1
+    new_block_line_count = _line_number_at(new)
     end_line = start_line + new_block_line_count - 1
     ctx_start = max(1, start_line - 2)
     ctx_end = min(len(new_lines), end_line + 2)
@@ -5975,6 +6306,9 @@ def op_edit(old: str, new: str, path: str) -> str:
     if end_line != start_line:
         out.append(f"-{end_line}")
     out.append(")\n")
+    _nl_note = _newline_note(content, wrote, retermed=retermed)
+    if _nl_note:
+        out.append(_nl_note)
     # Attached to the claim it qualifies, not only to the footer: `edited a.py
     # (line 2-3)` is a true sentence that reads as a first application, and the
     # reader who is about to trust it is looking here. The footer carries the
@@ -6146,7 +6480,10 @@ def op_replace_lines(path: str, start: int, end: int, content: str) -> str:
         # surrogateescape (not 'replace'): round-trip lone non-UTF-8 bytes
         # via _atomic_write. 'replace' would silently mutate them to U+FFFD
         # in untouched regions — same bug fix as op_edit / op_replace.
-        with open(path, "r", encoding="utf-8", errors="surrogateescape") as f:
+        # newline="": the lines this op does not name must come back out byte
+        # for byte, CRLF included (#1049).
+        with open(path, "r", encoding="utf-8", errors="surrogateescape",
+                  newline="") as f:
             orig = f.read()
     except OSError as e:
         return f"ERROR: failed to read {path}: {e}\n"
@@ -6167,9 +6504,22 @@ def op_replace_lines(path: str, start: int, end: int, content: str) -> str:
     if not insert_only and end > total:
         return f"ERROR: end ({end}) > file length ({total})\n"
 
+    # The caller's content goes in verbatim, mixed endings and all: the
+    # endings inside the block they typed are their choice, and rewriting an
+    # explicit choice is the same silent normalisation #1049 is about pointed
+    # the other way. `test_mixed_line_endings_preserved` states this contract
+    # and predates the issue.
+    #
+    # The one ending this op has to *invent* is the trailing one, when the
+    # block does not end a line at all. That takes the ending of the line it
+    # lands on — not LF and not a file-wide majority, which on a mixed file
+    # would rewrite the caller's own line to the other convention.
+    block_nl = _local_newline(orig_lines, start - 1)
     new_block = content
-    if new_block and not new_block.endswith("\n"):
-        new_block += "\n"
+    invented_nl = ""
+    if new_block and not new_block.endswith(("\n", "\r")):
+        new_block += block_nl
+        invented_nl = block_nl
     new_block_lines = new_block.splitlines(keepends=True) if new_block else []
 
     if insert_only:
@@ -6198,12 +6548,18 @@ def op_replace_lines(path: str, start: int, end: int, content: str) -> str:
     else:
         verb = f"replaced lines {start}-{end} with lines {new_start}-{new_end}"
     out = [f"{verb} in {path} (Δ {added - removed:+d}){clamped_hint}\n"]
+    _nl_note = _newline_note(orig, invented_nl if added else "")
+    if _nl_note:
+        out.append(_nl_note)
 
     ctx_start = max(1, new_start - 2)
     ctx_end = min(len(new_lines), max(new_end, new_start) + 2)
     for ln in range(ctx_start, ctx_end + 1):
         marker = "→" if added > 0 and new_start <= ln <= new_end else " "
-        text = new_lines[ln - 1].rstrip("\n")
+        # rstrip("\r\n"), not rstrip("\n"): on a CRLF file the latter leaves
+        # the carriage return inside the receipt, shipping a stray CR into the
+        # caller's terminal and logs on every context line (PR #1057 review).
+        text = new_lines[ln - 1].rstrip("\r\n")
         out.append(f"  {ln:>5} {marker} {text}\n")
     return "".join(out)
 
