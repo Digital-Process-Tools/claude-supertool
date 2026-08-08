@@ -64,6 +64,9 @@ OPERATIONS
     read:PATH:OFFSET:LIMIT:grep=PATTERN
                                Read with inline filter — only show lines matching
                                 PATTERN (original line numbers preserved).
+                                read:PATH:::grep=P searches the WHOLE file; give
+                                an OFFSET/LIMIT and the zero names what it did
+                                not search.
     glob:PATTERN               Find files matching pattern (** supported).
                                 Auto-reads if PATTERN is a concrete file
                                 path with no wildcards.
@@ -2266,6 +2269,10 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
         _safe_path(path)
     except SecurityError as e:
         return f"ERROR: {e}\n"
+    # A caller who names no LIMIT alongside `grep=` is asking about the file,
+    # not about the file's first `read.max_lines` lines (#1052). Recorded here,
+    # before the default lands, because afterwards the two are indistinguishable.
+    filter_scan_all = bool(grep_filter) and limit <= 0
     if limit <= 0:
         limit = _get_op_int("read", "max_lines", MAX_READ_LINES)
     if not path or not os.path.isfile(path):
@@ -2289,6 +2296,14 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
         return f"ERROR: could not read {path}: {e}\n"
 
     line_count = len(raw_lines)
+    if filter_scan_all:
+        # A filter is not a window. `read.max_lines` bounds how much is
+        # *emitted*; applying it to how much is *searched* made the inline
+        # filter answer `(no lines matching X)` about a file whose only match
+        # sat at line 328 of 351 — a confident negative produced by the default
+        # LIMIT, not by the file (#1052). The byte cap below still bounds the
+        # output, and a filtered read emits only the lines that matched.
+        limit = max(0, line_count - offset)
     out = [f"({line_count} lines, {size} bytes){_path_meta_suffix(path, b''.join(raw_lines[:64]))}\n"]
     bytes_emitted = 0
     printed = 0
@@ -2302,11 +2317,17 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
         end = line_count  # ignore line cap too when human asks for full file
 
     filter_regex = None
+    filter_literal_why = ""
     if grep_filter:
         try:
             filter_regex = re.compile(grep_filter)
-        except re.error:
+        except re.error as e:
+            # The fallback is right — an unusable regex should not fail a read.
+            # The silence was not: the literal search's zero was rendered in the
+            # same words as a real absence, so a rejected pattern read as a
+            # missing string (#1052).
             filter_regex = re.compile(re.escape(grep_filter))
+            filter_literal_why = str(e)
 
     compact = not filter_regex and _is_compact()
     matched_any = False
@@ -2338,8 +2359,36 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
             capped = True
             break
 
+    unsearched = 0
+    if filter_regex:
+        unsearched = line_count - (last_scanned - offset)
+        if filter_literal_why:
+            out.append(
+                f"(the grep= pattern is not a usable regex — "
+                f"{filter_literal_why}; searched for it as a literal "
+                f"string instead)\n")
     if filter_regex and not matched_any:
-        out.append(f"(no lines matching {grep_filter!r})\n")
+        if unsearched > 0:
+            # Three states, not two: found, not found, and did-not-look. The
+            # old single line said the second when it meant the third (#1052).
+            plural = "s" if unsearched != 1 else ""
+            verb = "were" if unsearched != 1 else "was"
+            out.append(
+                f"(no lines matching {grep_filter!r} in lines "
+                f"{offset + 1}-{last_scanned} of {line_count} — the other "
+                f"{unsearched} line{plural} {verb} NOT searched, so this is "
+                f"not an answer about the whole file)\n")
+        else:
+            out.append(
+                f"(no lines matching {grep_filter!r} in any of "
+                f"{line_count} lines)\n")
+    elif filter_regex and not capped and unsearched > 0:
+        plural = "s" if unsearched != 1 else ""
+        verb = "were" if unsearched != 1 else "was"
+        out.append(
+            f"(the grep= filter searched lines {offset + 1}-{last_scanned} "
+            f"of {line_count} — {unsearched} line{plural} outside that range "
+            f"{verb} NOT searched)\n")
     elif capped:
         remaining = line_count - last_scanned
         out.append(
@@ -2582,7 +2631,12 @@ def op_read(path: str, offset: int = 0, limit: int = 0,
                           f"or read:{path}:::grep=PATTERN to filter]\n")
             skip_note = (f"[abstract read skipped — {reason}; "
                          f"showing raw source]\n")
-    if limit <= 0:
+    # `grep=` with no LIMIT is left at 0 so render_file can tell "the caller
+    # named no window" from "the caller asked for 300 lines". Applying the
+    # default here made the two identical, and the filter then searched only
+    # the first 300 lines while reporting its zero as a fact about the file
+    # (#1052).
+    if limit <= 0 and not grep_filter:
         limit = _get_op_int("read", "max_lines", MAX_READ_LINES)
     body = render_file(path, offset, limit, grep_filter, force_full,
                        range_form)
@@ -5183,7 +5237,11 @@ def op_replace(old: str, new: str, path: str = ".", dry: bool = False) -> str:
     files_modified: Dict[str, int] = {}
     for file_path, positions in file_matches:
         try:
-            with open(file_path, "r", encoding="utf-8", errors="surrogateescape") as f:
+            # newline="": see op_edit / op_append. Without it every line of a
+            # CRLF file was rewritten to LF by a replace that matched one
+            # string (#1049).
+            with open(file_path, "r", encoding="utf-8",
+                      errors="surrogateescape", newline="") as f:
                 content = f.read()
         except OSError:
             continue
@@ -5912,6 +5970,90 @@ def _edit_already_applied(content: str, old: str, new: str, idx: int) -> bool:
     return False
 
 
+def _newline_census(text: str) -> Tuple[int, int, int]:
+    """`(crlf, lf, cr)` — how many of each line ending the text actually has.
+
+    Bare counts, not a verdict. Callers that need one say in their own receipt
+    what they did with it; nothing here decides on their behalf (#1049).
+    """
+    crlf = text.count("\r\n")
+    lf = text.count("\n") - crlf
+    cr = text.count("\r") - crlf
+    return crlf, lf, cr
+
+
+def _newline_note(content: str, wrote: str = "") -> str:
+    """The receipt line for a file whose line endings are not plain LF.
+
+    `wrote` is the convention the op used for text it inserted, or "" when it
+    inserted none. A CRLF file edited from an LF payload, and a mixed file of
+    any kind, both force a choice the caller did not make — so the choice is
+    stated. Silently normalising is the failure this closes, and silently
+    picking a convention for *new* text is the same failure one step smaller.
+    """
+    names = {"\r\n": "CRLF", "\n": "LF", "\r": "CR"}
+    crlf, lf, cr = _newline_census(content)
+    if len([n for n in (crlf, lf, cr) if n]) > 1:
+        note = (f"line endings: file is mixed ({crlf} CRLF / {lf} LF / "
+                f"{cr} CR) — every line this op did not touch kept its own")
+        if wrote:
+            note += f", and text it wrote uses {names.get(wrote, '?')}"
+        return f"  {mark('↳')} {note}\n"
+    if not crlf and not cr:
+        return ""
+    name = "CRLF" if crlf else "CR"
+    note = f"line endings: file is {name} and stayed {name} throughout"
+    if wrote:
+        note += f"; text this op wrote uses {names.get(wrote, '?')}"
+    return f"  {mark('↳')} {note}\n"
+
+
+def _newline_variants(text: str) -> List[Tuple[str, str]]:
+    """`(newline, text)` candidates for a match, most faithful first.
+
+    A caller composing a payload types LF, so an `old` string describing lines
+    of a CRLF file arrives LF-terminated and matches nothing once the read
+    stops flattening the file. Refusing there would trade a silent whole-file
+    rewrite for a hard `old string not found` — a different bug, not a fix. The
+    literal text is therefore tried first and the re-terminated forms only
+    after it, so a file that matches exactly is never reinterpreted.
+    """
+    flat = text.replace("\r\n", "\n").replace("\r", "\n")
+    out: List[Tuple[str, str]] = [("", text)]
+    for nl in ("\r\n", "\r", "\n"):
+        cand = flat.replace("\n", nl)
+        if cand != text:
+            out.append((nl, cand))
+    return out
+
+
+def _retermed(text: str, nl: str) -> str:
+    """`text` with every line ending replaced by `nl`."""
+    return text.replace("\r\n", "\n").replace("\r", "\n").replace("\n", nl)
+
+
+def _local_newline(lines: List[str], idx: int) -> str:
+    """The line ending in force at `lines[idx]`, scanning backwards for one.
+
+    A mixed file has no single answer, so `replace_lines` does not vote on the
+    whole file: the block it writes takes the ending of the line it replaces
+    (or, for an insert, of the line above it). A file-wide majority would
+    rewrite the caller's own line to the other convention, which is the same
+    silent normalisation one line wide. Falls back to LF only when nothing in
+    the file before that point ends a line at all.
+    """
+    for i in range(min(idx, len(lines) - 1), -1, -1):
+        line = lines[i]
+        for nl in ("\r\n", "\r", "\n"):
+            if line.endswith(nl):
+                return nl
+    for line in lines:
+        for nl in ("\r\n", "\r", "\n"):
+            if line.endswith(nl):
+                return nl
+    return "\n"
+
+
 def op_edit(old: str, new: str, path: str) -> str:
     """Single-file, single-occurrence edit — mirrors native Edit semantics.
 
@@ -5932,12 +6074,24 @@ def op_edit(old: str, new: str, path: str) -> str:
         # _atomic_write back to their original byte values. Prevents silent
         # corruption of bytes outside the match window (CVE-class data loss
         # on files with mixed encodings or partial binary content).
-        with open(path, "r", encoding="utf-8", errors="surrogateescape") as f:
+        # newline="": no universal-newline translation, so a CRLF file is not
+        # silently rewritten to LF throughout — the contract op_append already
+        # states. Without it a one-line edit changed every line in the file,
+        # under a receipt that named one (#1049).
+        with open(path, "r", encoding="utf-8", errors="surrogateescape",
+                  newline="") as f:
             content = f.read()
     except OSError as e:
         return f"ERROR: failed to read {path}: {e}\n"
 
+    wrote = ""
     count = content.count(old)
+    if count == 0:
+        for nl, cand in _newline_variants(old)[1:]:
+            n = content.count(cand)
+            if n:
+                old, new, wrote, count = cand, _retermed(new, nl), nl, n
+                break
     if count == 0:
         _SKIP_COUNT[0] += 1
         return (f"ERROR: old string not found in {path}\n"
@@ -5975,6 +6129,9 @@ def op_edit(old: str, new: str, path: str) -> str:
     if end_line != start_line:
         out.append(f"-{end_line}")
     out.append(")\n")
+    _nl_note = _newline_note(content, wrote)
+    if _nl_note:
+        out.append(_nl_note)
     # Attached to the claim it qualifies, not only to the footer: `edited a.py
     # (line 2-3)` is a true sentence that reads as a first application, and the
     # reader who is about to trust it is looking here. The footer carries the
@@ -6146,7 +6303,10 @@ def op_replace_lines(path: str, start: int, end: int, content: str) -> str:
         # surrogateescape (not 'replace'): round-trip lone non-UTF-8 bytes
         # via _atomic_write. 'replace' would silently mutate them to U+FFFD
         # in untouched regions — same bug fix as op_edit / op_replace.
-        with open(path, "r", encoding="utf-8", errors="surrogateescape") as f:
+        # newline="": the lines this op does not name must come back out byte
+        # for byte, CRLF included (#1049).
+        with open(path, "r", encoding="utf-8", errors="surrogateescape",
+                  newline="") as f:
             orig = f.read()
     except OSError as e:
         return f"ERROR: failed to read {path}: {e}\n"
@@ -6167,9 +6327,13 @@ def op_replace_lines(path: str, start: int, end: int, content: str) -> str:
     if not insert_only and end > total:
         return f"ERROR: end ({end}) > file length ({total})\n"
 
-    new_block = content
-    if new_block and not new_block.endswith("\n"):
-        new_block += "\n"
+    # The block adopts the ending of the line it lands on, not LF and not a
+    # file-wide majority: on a mixed file the majority would rewrite the
+    # caller's own line to the other convention (#1049).
+    block_nl = _local_newline(orig_lines, start - 1)
+    new_block = _retermed(content, block_nl) if block_nl != "\n" else content
+    if new_block and not new_block.endswith(block_nl):
+        new_block += block_nl
     new_block_lines = new_block.splitlines(keepends=True) if new_block else []
 
     if insert_only:
@@ -6198,6 +6362,9 @@ def op_replace_lines(path: str, start: int, end: int, content: str) -> str:
     else:
         verb = f"replaced lines {start}-{end} with lines {new_start}-{new_end}"
     out = [f"{verb} in {path} (Δ {added - removed:+d}){clamped_hint}\n"]
+    _nl_note = _newline_note(orig, block_nl if added else "")
+    if _nl_note:
+        out.append(_nl_note)
 
     ctx_start = max(1, new_start - 2)
     ctx_end = min(len(new_lines), max(new_end, new_start) + 2)

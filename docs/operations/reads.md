@@ -8,7 +8,7 @@ File reading and directory listing ops. Reach for these when you know the path a
 |----|--------|--------------|
 | `read` | `read:PATH` or `read:PATH:OFFSET:LIMIT` | 300 lines / 20KB cap. With `read.abstract` on, a file over the threshold comes back as its symbol map instead — see [Abstract read](#abstract-read). **OFFSET is a skip count**, so `:19:1` renders line 20 — see [The window line](#the-window-line) |
 | `read` (range) | `read:PATH:START-END` | Explicit inclusive line range. Prefer over `:OFFSET:LIMIT` when you know the lines — the offset form reads like a range but is not. Composes with `:full` and `:grep=PATTERN`. This is also where `between:PATH:START:END` is redirected: `between` is SYMBOL:PATH and does not take ranges. |
-| `read` (filter) | `read:PATH:OFFSET:LIMIT:grep=PATTERN` | Only show lines matching PATTERN (original line numbers preserved). Use `read:PATH:::grep=PATTERN` for defaults. |
+| `read` (filter) | `read:PATH:OFFSET:LIMIT:grep=PATTERN` | Only show lines matching PATTERN (original line numbers preserved). Use `read:PATH:::grep=PATTERN` to search the **whole file** — the 300-line default bounds what a read emits, not what a filter searches. Give an OFFSET/LIMIT and the filter is bounded by it, and its zero says which lines it did not look at — see [When the filter finds nothing](#when-the-filter-finds-nothing). |
 | `head` | `head:PATH:N` | First N lines (default 20). Minified single-line files return a char-window peek instead of the whole giant line; window size via `builtin-ops.head.char_window` (default 1000, or env `SUPERTOOL_HEAD_CHAR_WINDOW`). |
 | `tail` | `tail:PATH:N` | Last N lines (default 20). Minified single-line files return a char-window peek; window size via `builtin-ops.tail.char_window` (default 1000, or env `SUPERTOOL_TAIL_CHAR_WINDOW`). |
 | `wc` | `wc:PATH` | Line/word/char count (like unix `wc`). Output: `LINES WORDS CHARS PATH`. Flags single-line/minified files where the line count is degenerate. |
@@ -187,6 +187,30 @@ Read only matching lines from a large file (line numbers preserved):
 ```bash
 ./supertool 'read:src/app/Config.py:::grep=DEBUG'
 ```
+
+## When the filter finds nothing
+
+`grep=` with no OFFSET and no LIMIT searches the whole file. Until #1052 it did
+not: `op_read` applied the 300-line default before the filter ran, so on a
+351-line file the filter looked at lines 1-300, missed a match at line 328, and
+answered `(no lines matching 'X')` — a confident negative about the file,
+produced by a default the caller never typed.
+
+A zero from this filter now always says what it searched:
+
+```
+(no lines matching 'thing' in any of 120 lines)
+(no lines matching 'thing' in lines 1-10 of 340 — the other 330 lines were NOT searched, so this is not an answer about the whole file)
+```
+
+The second form appears whenever the scan was bounded — by an explicit LIMIT, by
+an OFFSET, or by the 20 KB byte cap. A filter that *did* match but stopped short
+says so on its own line. Three states, not two: found, not found, did not look.
+
+A `grep=` value that is not a usable regex is still searched for as a literal
+string — an unusable pattern should not fail a read — and the receipt names the
+`re.error` and says the search was literal, so a rejected pattern's zero is not
+spelled like a real absence.
 
 Check size before deciding to read:
 

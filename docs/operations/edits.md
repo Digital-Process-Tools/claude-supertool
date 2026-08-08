@@ -195,6 +195,34 @@ Read, edit, and re-read in a single call:
 
 Each write sub-op's fields (`old`/`new`/`content`/…) are taken **literally** — the structured payload bypasses the `:::` tokenizer and the shell-escape decoder, so content that itself contains `:::` or backslashes survives byte-for-byte, exactly as a standalone `edit:@file` call behaves. You never re-escape payload content for batch.
 
+## Line endings
+
+`edit`, `replace`, `replace_lines` and `append` read the target without
+universal-newline translation, so a CRLF or CR file keeps its endings on every
+line the op did not name. Before #1049 the first three did not: a one-line edit
+to a Windows-authored file rewrote every line to LF, under a receipt naming one
+line.
+
+You still write payloads in LF. If an `old` string does not match a CRLF file
+byte for byte, the op retries it re-terminated to the file's convention and
+re-terminates the replacement to match — a file that matches exactly is never
+reinterpreted. `replace_lines` gives the block it writes the ending of the line
+it replaces (for an insert, the line above it) rather than a file-wide majority,
+because on a mixed file a majority rewrites the caller's own line to the other
+convention.
+
+Whenever the file is not plain LF, the receipt says which convention was used:
+
+```
+edited src/main.rs (line 12)
+  ↳ line endings: file is CRLF and stayed CRLF throughout; text this op wrote uses CRLF
+  ↳ line endings: file is mixed (2 CRLF / 2 LF / 0 CR) — every line this op did not touch kept its own
+```
+
+`vim` is the exception and does not yet preserve endings — its line model
+assumes `\n` throughout, and half-adopting this would produce scattered mixed
+endings rather than a clean whole-file one.
+
 ## See also
 
 - [docs/validators.md](../validators.md) — full validator reference: bundled list, rollback behavior, adding your own
