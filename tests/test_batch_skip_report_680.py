@@ -75,7 +75,15 @@ def test_batch_footer_names_the_skipped_entry(tmp_path: Path, monkeypatch) -> No
     ]))
     out = supertool.dispatch(f"batch:@{payload}")
     assert "[result] 3 ops run, 2 writes, 1 skipped" in _tail(out)
-    assert out.count("[result] ") == 1, "one footer per call, not one per sub-op"
+    # Two since #1027, not one: the batch leads with the same count, because the
+    # footer sits below a validators block long enough that `| tail` ends on
+    # `git-status : ok`. The invariant this line has always guarded is untouched
+    # -- one count per SUB-OP is what must never happen -- and it is asserted
+    # positionally as well, since a bare total of two would be satisfied by a
+    # two-op batch that repeated per sub-op.
+    assert out.count("[result] ") == 2, "one leading count and one footer"
+    between = out.split("--- edit:", 1)[-1].rsplit("[result] ", 1)[0]
+    assert "[result] " not in between, "no count inside the per-op results"
 
 
 def test_batch_where_every_entry_declines_counts_them_all(tmp_path: Path, monkeypatch) -> None:

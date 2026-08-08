@@ -186,7 +186,12 @@ def test_batch_footer_distinguishes_ops_run_from_writes(tmp_path: Path, monkeypa
     ]))
     out = supertool.dispatch(f"batch:@{payload}")
     assert "[result] 3 ops run, 2 writes" in _tail(out)
-    assert out.count("[result] ") == 1, "one footer per call, not one per sub-op"
+    # Two since #1027 -- the leading copy and the footer. What this guards is
+    # unchanged: never one count per SUB-OP, which a total alone would miss, so
+    # the region between the first op and the footer is checked directly.
+    assert out.count("[result] ") == 2, "one leading count and one footer"
+    between = out.split("--- replace:", 1)[-1].rsplit("[result] ", 1)[0]
+    assert "[result] " not in between, "no count inside the per-op results"
 
 
 def test_batch_where_every_op_misses_says_nothing_changed(tmp_path: Path, monkeypatch) -> None:
@@ -214,8 +219,14 @@ def test_nested_batch_reports_one_footer(tmp_path: Path, monkeypatch) -> None:
     outer = tmp_path / "outer.json"
     outer.write_text(json.dumps([{"op": "batch", "path": f"@{inner}"}]))
     out = supertool.dispatch(f"batch:@{outer}")
-    assert out.count("[result] ") == 1
+    # The nested batch is the point: the INNER one prints neither a leading
+    # count nor a footer, so the two here both belong to the outer call (#392,
+    # and #1027 for the leading one). Three would mean the inner batch had
+    # started reporting for itself again.
+    assert out.count("[result] ") == 2
     assert "[result] 1 op run, 1 write" in _tail(out)
+    assert out.startswith("--- batch:")
+    assert out.splitlines()[1].startswith("[result] "), out
 
 
 # ---------------------------------------------------------------------------

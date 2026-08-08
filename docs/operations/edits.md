@@ -150,6 +150,31 @@ EOF
 
 Because the line starts with `./supertool` (not `cat`/`echo`), this is the form to reach for under enforced or autonomous runs that block bare shell builtins. See [Which form?](../input-forms.md#which-form) for choosing between colon-CLI, `@-`, and `@file`.
 
+#### Backslashes in a literal block
+
+A TOML triple-single-quoted block processes **no** escapes. Whatever you type is what lands, so a doubled backslash typed out of escape reflex is two characters in the file:
+
+```toml
+new = '''PAT = re.compile("\\d+")'''
+```
+
+writes `\\d+`, not `\d+`. Same for a newline: `\n` inside a literal block is the two characters `\` and `n`, never a line break — the ops listing points at `chr(10)`, and a real newline in the block works too.
+
+The safe half is `old`: a doubled anchor cannot match, the op declines, and the skip is counted. The half that is not is `new` — the anchor matches, the bytes land, the receipt says `edited`, and the validators agree, because two backslashes are legal in nearly every language this repo edits. So a payload whose literal block carries a lone `\\` is named before any op runs:
+
+```text
+⚠ payload: a ''' literal block carries `\\`. A literal block processes NO escapes, so each pair reaches the file as TWO backslashes -- if you meant one, write one.
+  ↳ `new` (1 occurrence): PAT = re.compile("\\d+")
+  ↳ this is a note, NOT a correction -- nothing was rewritten, because a pair is sometimes exactly what was meant and guessing in the write path is worse than the bug.
+```
+
+It is a **note, not a correction**, and never a refusal. Some payloads genuinely want two characters, and collapsing them would guess at intent in the write path, where a wrong guess costs more than the bug it replaces. Two things are deliberately not flagged, because a warning that fires on the correct spelling is one authors stop reading:
+
+- a `"""basic"""` block, where `\\` *is* one backslash and is the right spelling;
+- a run of three or more, which was counted rather than produced by reflex.
+
+To write one backslash, write one. To write a pair deliberately, keep the literal block — the note is only a note — or say it in a basic block, where each backslash doubles.
+
 ### `batch:@file` — mixed ops in one round-trip
 
 Read, edit, and re-read in a single call:
@@ -165,6 +190,8 @@ Read, edit, and re-read in a single call:
   { "op": "read", "path": "src/app/Config.py" }
 ]
 ```
+
+`batch:` prints `[result] N ops run, M writes, K skipped` **twice** — once above the first op and once at the very bottom. The footer is the canonical one and `[branch: X]` still ends the output, but that footer sits below a validators block long enough that `| tail` lands on `git-status : ok` and reads as success. The leading copy is what makes a non-zero `K` visible without a filter. A single op keeps one count: its receipt is three lines with the footer already adjacent to them.
 
 Each write sub-op's fields (`old`/`new`/`content`/…) are taken **literally** — the structured payload bypasses the `:::` tokenizer and the shell-escape decoder, so content that itself contains `:::` or backslashes survives byte-for-byte, exactly as a standalone `edit:@file` call behaves. You never re-escape payload content for batch.
 
