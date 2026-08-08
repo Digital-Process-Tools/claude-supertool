@@ -215,6 +215,15 @@ Tag-balance checking was part of the issue's proposal, marked optional there, an
 
 `node` absent is reported `skipped`, never `ok` — the third state from "Declining instead of guessing" below applies here exactly as it does everywhere else in this file.
 
+**Switching it on.** Copy the `html-check` block out of `.supertool.example.json` into your project's `.supertool.json` under `validators`, the same as every other row in the table above. This repo registers it in its own `.supertool.json` too — a validator that ships here and does not run here is a checker nobody is checking, and it shipped that way once already: the adapter landed with no entry in any config, so `validate:` on a page with a stray brace ran only `git-status` and printed `0 with findings`, which is the silence #833 exists to close arriving inside the fix for it.
+
+Two settings in that block are decisions rather than defaults:
+
+- **`rollback_on_fail: true`**, matching `node-check` for `*.js` — the same tool answering the same question, so the same consequence. Rollback is regression-gated: it fires when an edit *raises* the finding count, so a page whose inline JS is already broken stays editable and only a newly introduced syntax error reverts. A `skipped` result (no `node`) never rolls back, whatever this says.
+- **`timeout: 60`**, deliberately above the adapter's own 30s per-block budget rather than equal to it. When the two match, the core's timeout always wins the race and the row reads `NOT CHECKED` with nothing naming which block hung; with headroom the adapter's own arm fires first and reports the `<script>` block's start line.
+
+`html-check` does not carry `"syntax": true`. That flag means "this is the repo's authoritative parse check for these paths" and its job is to stand down the built-in Python backstop; `node-check` does not set it either, and claiming it here would assert a relationship to a backstop that does not exist for HTML.
+
 ### The tool is not installed — `skipped` locally, loud in CI on request
 
 `shellcheck`, `eslint` and `gitleaks` are external binaries most machines do

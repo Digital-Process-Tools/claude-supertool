@@ -315,6 +315,19 @@
       "rollback_on_fail": true,
       "timeout": 10
     },
+    "html-check": {
+      "cmd": "{python} {supertool_dir}/validators/html-check/html-check.py {file}",
+      "match": "*.html",
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste", "append",
+        "vim"
+      ],
+      "rollback_on_fail": true,
+      "timeout": 60
+    },
     "git-status": {
       "cmd": "{python} {supertool_dir}/validators/git-status/git-status.py {file}",
       "match": "*",

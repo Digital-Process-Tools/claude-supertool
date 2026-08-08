@@ -418,6 +418,20 @@
       "rollback_on_fail": true,
       "timeout": 30
     },
+    "html-check": {
+      "cmd": "{python} {supertool_dir}/validators/html-check/html-check.py {file}",
+      "match": "*.html",
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste",
+        "append",
+        "vim"
+      ],
+      "rollback_on_fail": true,
+      "timeout": 60
+    },
     "node-check": {
       "cmd": "{python} {supertool_dir}/validators/node-check/node-check.py {file}",
       "match": "*.js",
