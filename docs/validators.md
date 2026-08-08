@@ -34,6 +34,8 @@ Undoing a create is a **delete**, so it is decided on provenance rather than on 
 
 The third row is the one that matters. Removing a file that existed before the call would turn a rollback into destruction of content this tool never wrote, so where provenance cannot be established the caller is told rather than guessed at.
 
+**"The path" means the path the write landed on, symlinks followed** ([#1136](https://github.com/Digital-Process-Tools/claude-supertool/issues/1136)). A write to `link.py` goes to `target.py` — the mutating ops resolve a symlink rather than clobbering it with a regular file — so the undo goes there too. Asking the question of the unresolved path answered it about an object the write never touched: for a link whose target did not exist yet, the rollback read row 2, deleted the *link*, left the target it had actually written, and reported that nothing changed. A link whose target already existed still takes row 1 and is restored, not removed.
+
 It also names what it did **not** check. A green `py-syntax` row reads `ok (parsed; not imported)` ([#1100](https://github.com/Digital-Process-Tools/claude-supertool/issues/1100)): `compile()` answers "does this parse", and everything that only fails at import — a regex compiled at module level, an undefined name at class-body scope, a circular import — sits outside it. The validator does not import the file, and that is deliberate rather than pending: importing executes module-level code, and running arbitrary just-edited bytes is a containment decision. The row states the limit instead, so the pass cannot be read as "this module works".
 
 Anything it cannot answer (unreadable file, unknown builtin) comes back as `skipped`, never as ok.
