@@ -1162,17 +1162,22 @@ Want to add a preset, op, or validator to the shipped supertool?
 - **README update if introducing new shape.** If your PR adds a new top-level config key or changes op schema, update the README config reference section.
 - **Commit messages:** `feat: add kubectl preset` / `fix: {path} placeholder on Windows` / `docs: add contributing guide`. Present tense, imperative mood, lowercase.
 
-This section is written for an external contributor submitting a single, self-contained
-change. It reads as a general rule, but "one feature per PR" is a coordination cost, not
-a correctness property, and its cost structure inverts for maintainer-side work.
+The "one feature per PR" bullet above is written for an external contributor
+submitting a single, self-contained change — the other bullets (tests, README update,
+commit messages) apply regardless of who is submitting or how many issues a PR closes.
+"One feature per PR" itself is a coordination cost, not a correctness property, and its
+cost structure inverts for maintainer-side work.
 
 **Maintainer-side convention: one lane per PR, not one issue per PR.** Issues here are
 frequently worked in lanes — a set of issues that share files or a subsystem, so loading
 that context once serves several fixes instead of paying to reload it per issue. Branches
 follow the issue numbers directly (`fix/1094`, or `fix/1067-1071` for a bundled lane),
 skipping the `feat/short-description` scheme above, which exists for a contributor who
-has one thing to submit. 15+ of the last 20 merged PRs closed more than one issue this
-way, and that is by design, not drift.
+has one thing to submit. Commit titles follow the same pattern rather than the
+`type: description` form above — a descriptive sentence with the issue number in
+parens, e.g. "grep says which pattern it ran, and delegation stops answering a BRE
+(#1098)" — because a lane title has to name more than one change. 15+ of the last 20
+merged PRs closed more than one issue this way, and that is by design, not drift.
 
 **The boundary that keeps this legitimate:** bundling is a lane call, not a batching
 convenience.
