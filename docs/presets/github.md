@@ -1030,6 +1030,10 @@ The excluded count costs one extra `gh pr list`, fired **only** when the board c
 
 `gh-prs` also grew the `capped at --limit N` disclosure `gh-issues` has had since birth, measured against the fetch rather than against what survived `failed`; and a `failed` board that came back empty says how many not-failing rows it dropped.
 
+**The cap is stated above the board as well as under it**, on both `gh-prs` and `gh-issues` — the header-and-footer shape [#633](https://github.com/Digital-Process-Tools/claude-supertool/issues/633) / [#635](https://github.com/Digital-Process-Tools/claude-supertool/issues/635) / [#657](https://github.com/Digital-Process-Tools/claude-supertool/issues/657) settled on, because a footer is lost by exactly the consumer that truncates. The cap note fires precisely when the board is at its longest, so the case it exists for is the case the footer does not survive. Only the absences the caller did not ask for get a header line: the scope label on a populated board, `failed`'s complement and the client-side flag counts stay footer-only, which is the same line `iids` draws. A board that was not cut prints nothing above the table, so the silence remains a positive claim that the board is whole.
+
+The `author=@me` exclusion note needs no header line and never gets one: the state that claims an absence is the *empty* board, where the footer is already two lines from the top and nothing can truncate between them.
+
 ### A bare number list says when it is a partial one
 
 `gh-issues:iids` and `gh-prs:iids` return before any footer is built, so they were the one shape told nothing about the page boundary — and they are the shape whose output becomes another tool's input ([#1067](https://github.com/Digital-Process-Tools/claude-supertool/issues/1067)). A truncated list and a complete one were the same bytes:
@@ -1047,6 +1051,14 @@ The note is on **stdout**, as a `#` comment, deliberately. stderr was the first 
 **On the issue as filed:** its comment reports `gh-issues:per=100,iids` returning 48 numbers against a population of 78. That does not reproduce — `per=100` returns all 78, from the worktree and from the live clone, and the `capped at --limit` footer has been in `_footer` since commit `e67947a`. The live half of #1067 is `iids` alone, plus the client-side flags below.
 
 **A client-side filter that empties the board names itself.** `gh-issues:external` over an all-internal queue printed `No issues match.` and `0 issue(s)` — true about the filter, and read as a statement about the queue. The footer now carries `external excluded 2 of 2 fetched`, and the same for `stale` and `nomilestone`.
+
+**Chained flags all count against the fetch.** `gh-issues:external,stale` applies two client-side filters in sequence, and each note's denominator is the number of rows the *fetch* returned — not the number that survived the previous filter. Ten fetched, `external` drops four, `stale` then drops four of the six left:
+
+```
+2 issue(s) | external excluded 4 of 10 fetched | stale excluded 4 of 10 fetched | ...
+```
+
+The numerator stays what that flag itself removed, so the notes add up to the rows lost instead of double-counting them. Same invariant the cap note holds: a count measured against what survived a filter is a number no fetch ever returned ([#864](https://github.com/Digital-Process-Tools/claude-supertool/issues/864)).
 
 ## Authoring notes
 

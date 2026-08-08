@@ -339,6 +339,160 @@ def test_gh_issues_client_side_filter_says_how_many_it_hid(
         f"got {out!r}"
     )
 
+def test_chained_client_side_filters_both_count_against_the_fetch(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """`external,stale` reported the second flag against the first's survivors.
+
+    `_narrow` read `rows` from the enclosing scope and every call site
+    reassigns it, so the denominator of the second note was a number no fetch
+    ever returned. `_cap_note`'s docstring states the invariant this breaks:
+    the count is measured against the fetch, not against what survived a
+    filter (#864). The word "fetched" has to mean fetched.
+
+    Ten fetched, `external` drops the four insiders, `stale` then drops four
+    of the six survivors. Both notes must read `of 10 fetched`.
+    """
+    rows = []
+    for number in range(1, 11):
+        stale = number in (5, 6)
+        rows.append(_issue(
+            number,
+            comments=[{"createdAt": "2026-02-01T00:00:00Z"}] if stale else [],
+        ))
+
+    def responder(cmd: list[str]) -> object:
+        if cmd[:3] == ["gh", "api", "graphql"]:
+            return json.dumps({"data": {"repository": {
+                f"i{r['number']}": {
+                    "number": r["number"],
+                    "lastEditedAt": None,
+                    "authorAssociation": (
+                        "OWNER" if r["number"] <= 4 else "NONE"
+                    ),
+                    "closedByPullRequestsReferences": {"nodes": []},
+                    "timelineItems": {"nodes": []},
+                } for r in rows}}})
+        return json.dumps(rows)
+
+    code, out, _err = _drive(issues, monkeypatch, "external,stale", responder)
+    assert code == 0, f"got rc={code} out={out!r}"
+    assert "external excluded 4 of 10 fetched" in out, (
+        f"the first flag's note is measured against the fetch; got {out!r}"
+    )
+    assert "stale excluded 4 of 10 fetched" in out, (
+        f"and so is the second — chaining must not move the denominator; "
+        f"got {out!r}"
+    )
+    assert "of 6 fetched" not in out, (
+        f"6 is the post-`external` survivor count; nothing fetched 6 rows; "
+        f"got {out!r}"
+    )
+
+
+def test_gh_issues_cap_note_is_repeated_above_the_board(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """A footer is lost by exactly the consumer that truncates (#633/#635/#657).
+
+    The cap note fires precisely when the board is at its longest, which is
+    when a truncating consumer is most likely to cut the footer off it. Header
+    *and* footer, the shape #657 settled on.
+    """
+    rows = [_issue(10), _issue(11)]
+
+    def responder(cmd: list[str]) -> object:
+        if cmd[:3] == ["gh", "api", "graphql"]:
+            return json.dumps({"data": {"repository": {
+                f"i{r['number']}": {
+                    "number": r["number"],
+                    "lastEditedAt": None,
+                    "authorAssociation": "OWNER",
+                    "closedByPullRequestsReferences": {"nodes": []},
+                    "timelineItems": {"nodes": []},
+                } for r in rows}}})
+        return json.dumps(rows)
+
+    code, out, _err = _drive(issues, monkeypatch, "per=2", responder)
+    assert code == 0
+    lines = out.splitlines()
+    hits = [i for i, ln in enumerate(lines) if "capped at --limit 2" in ln]
+    first_row = next(i for i, ln in enumerate(lines) if "#10" in ln)
+    footer = next(i for i, ln in enumerate(lines) if "issue(s)" in ln)
+    assert any(i < first_row for i in hits), (
+        f"the cap must be stated above the board, not only under it; "
+        f"got {out!r}"
+    )
+    assert any(i == footer for i in hits), (
+        f"and repeated beside the count it qualifies; got {out!r}"
+    )
+
+
+def test_gh_issues_prints_no_header_note_when_nothing_was_cut(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """Silence above the board is a positive claim that the board is whole."""
+    rows = [_issue(10), _issue(11)]
+
+    def responder(cmd: list[str]) -> object:
+        if cmd[:3] == ["gh", "api", "graphql"]:
+            return json.dumps({"data": {"repository": {
+                f"i{r['number']}": {
+                    "number": r["number"],
+                    "lastEditedAt": None,
+                    "authorAssociation": "OWNER",
+                    "closedByPullRequestsReferences": {"nodes": []},
+                    "timelineItems": {"nodes": []},
+                } for r in rows}}})
+        return json.dumps(rows)
+
+    code, out, _err = _drive(issues, monkeypatch, "per=50", responder)
+    assert code == 0
+    assert "capped at --limit" not in out, f"got {out!r}"
+
+
+def test_gh_prs_cap_note_is_repeated_above_the_board(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """Same shape in the sibling op — the file already does this for its
+    review-thread enrichment cap, so it carried both patterns at once."""
+    code, out, _err = _drive(prs, monkeypatch, "per=2,nopipe,anyauthor",
+                             _by_author([], [_pr(1), _pr(2)]))
+    assert code == 0
+    lines = out.splitlines()
+    hits = [i for i, ln in enumerate(lines) if "capped at --limit 2" in ln]
+    first_row = next(i for i, ln in enumerate(lines) if "#1" in ln)
+    footer = next(i for i, ln in enumerate(lines) if "PR(s)" in ln)
+    assert any(i < first_row for i in hits), (
+        f"the cap must be stated above the board; got {out!r}"
+    )
+    assert any(i == footer for i in hits), (
+        f"and repeated in the footer; got {out!r}"
+    )
+
+
+def test_gh_prs_prints_no_header_note_when_nothing_was_cut(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """Silence stays meaningful on the PR board too."""
+    code, out, _err = _drive(prs, monkeypatch, "nopipe,anyauthor",
+                             _by_author([], [_pr(1), _pr(2)]))
+    assert code == 0
+    assert "capped at --limit" not in out, f"got {out!r}"
+
+
+def test_the_iids_usage_lines_do_not_promise_a_bare_number_list() -> None:
+    """`iids` now prints `# <note>` lines ahead of the numbers.
+
+    A script that parses this output reads the docstring, not the diff.
+    `issues.py` was corrected when the notes were added; `prs.py` was not.
+    """
+    for name, mod in (("gh-issues", issues), ("gh-prs", prs)):
+        line = next(ln for ln in (mod.__doc__ or "").splitlines()
+                    if ":iids" in ln)
+        assert "bare number list" not in line, (
+            f"{name} still advertises a bare list; got {line!r}"
+        )
+        assert "#" in line, (
+            f"{name}'s usage line must mention the `#` notes; got {line!r}"
+        )
+
+
 def test_gh_prs_iids_does_not_annotate_a_complete_list(
         monkeypatch: pytest.MonkeyPatch) -> None:
     """`iids` carries only the notes that state an absence.

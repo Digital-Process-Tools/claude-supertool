@@ -19,7 +19,7 @@ Usage:
     gh-prs:author=@me,state=merged  filter composition
     gh-prs:label=bug                reusable beyond watching
     gh-prs:nopipe                   skip review-thread enrichment (faster)
-    gh-prs:iids                     bare number list (for piping into watch)
+    gh-prs:iids                     number list, `#`-comment notes first
     gh-prs:failed                   only PRs whose checks are failing
     gh-prs:anyauthor                every author's open PRs, not just mine
 
@@ -664,8 +664,18 @@ def main_with_args(arg_str: str) -> int:
             print(f"(review-thread enrichment capped at {cfg['enrich_cap']} PRs)")
 
     watched = _watched_numbers()
-    # One disclosure line above the board — see `gl-mrs.main` (#819).
     if prs:
+        # Header as well as footer, for the absences the caller did not ask
+        # for. A footer is lost by exactly the consumer that truncates (#633,
+        # #635, #657), and this file already prints its review-thread cap in
+        # header position — it was carrying both patterns at once.
+        #
+        # `absent` is the same subset `iids` carries, for the same reason: the
+        # scope label on a populated board and `failed`'s complement are not
+        # absence claims. Nothing prints when nothing was cut.
+        for note in absent:
+            print(f"({note})")
+        # One disclosure line above the board — see `gl-mrs.main` (#819).
         print(_untrusted.flat_note("PR titles"))
     print(_render_table(prs, watched))
     footer = _footer(prs, watched, notes)
