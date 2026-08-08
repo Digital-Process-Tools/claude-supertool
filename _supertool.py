@@ -3386,6 +3386,22 @@ def _around_one_file(regex: "re.Pattern[str]", path: str, n: int) -> str:
 
 
 def op_around(pattern: str, path: str, n: int = 10) -> str:
+    """around, guarded and disclosed exactly as op_grep is (#1120).
+
+    Split from the body for the same reason op_grep is: the refusal and the
+    rewrite disclosure belong to every caller of the op, and leaving `around`
+    with only the refusal reproduced the original asymmetry one level down —
+    a rewrite that merely changes the pattern was still invisible here.
+    """
+    effective, rewritten = _bre_alternation_rewrite(pattern)
+    refusal = _saturating_pattern_refusal(pattern, effective, rewritten)
+    if refusal:
+        return refusal
+    return (_bre_rewrite_note(pattern, effective, rewritten)
+            + _op_around(pattern, path, n))
+
+
+def _op_around(pattern: str, path: str, n: int = 10) -> str:
     """Show N lines before and after the first match of PATTERN in PATH.
 
     PATH can be a file (first match in that file) or a directory (first
@@ -3395,13 +3411,10 @@ def op_around(pattern: str, path: str, n: int = 10) -> str:
     """
     if not pattern:
         return "ERROR: empty pattern\n"
-    _written = pattern
-    pattern, _rewritten = _bre_alternation_rewrite(pattern)
-    # #1120 — `around` carries its own copy of the BRE rewrite, so it carried
-    # the same saturation. A pattern matching every line is refused here too.
-    _refusal = _saturating_pattern_refusal(_written, pattern, _rewritten)
-    if _refusal:
-        return _refusal
+    # The rewrite is applied here as well as in op_around so a direct call to
+    # the private body still runs the pattern the caller meant; the helper is
+    # idempotent, and the refusal/disclosure live in the public wrapper.
+    pattern, _ = _bre_alternation_rewrite(pattern)
     if not path:
         return "ERROR: empty path\n"
 

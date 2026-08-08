@@ -98,6 +98,18 @@ def test_empty_branch_in_a_character_class_is_not_saturating(tmp_path: Path) -> 
     assert not out.startswith("ERROR:"), out
 
 
+def test_around_discloses_the_rewrite_too(tmp_path: Path) -> None:
+    """`around` applies the same rewrite, so it owes the same disclosure. The
+    refusal alone covers only the saturating case; a rewrite that merely changes
+    the pattern is exactly as invisible in `around` as it was in `grep`."""
+    f = tmp_path / "code.py"
+    f.write_text("alpha\ngamma\n")
+    out = supertool.op_around(r"alpha\|gamma", str(f), 2)
+    assert not out.startswith("ERROR:"), out
+    assert "alpha|gamma" in out, (
+        "the rewritten pattern must be echoed by `around` as well: " + repr(out))
+
+
 def test_around_refuses_the_saturating_pattern_too(tmp_path: Path) -> None:
     """`around` carries its own copy of the BRE rewrite, so it carries the bug."""
     f = tmp_path / "code.py"
