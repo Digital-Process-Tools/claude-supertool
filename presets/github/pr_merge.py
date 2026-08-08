@@ -179,12 +179,27 @@ def _check_findings(pr: dict, declared: int | None,
         ]
 
     if not rollup:
+        head = str(pr.get("headRefName") or "")
+        # A convenience command, so it is declined rather than repaired
+        # (`presets/_refname.py`, and the same call this file already makes for
+        # the head-branch delete command below). Neither treatment makes an
+        # unordinary name both correct and safe here: unflattened it forges
+        # lines in a refusal, and flattened it names a branch that does not
+        # exist — a `gh-branch:` the reader runs, on the tool's authority,
+        # that answers about nothing. The name itself is still printed in
+        # full, so nothing is withheld; only the command is.
+        if _refname.ordinary(head):
+            pointer = f"`gh-branch:{head}` says whether a run is still expected."
+        else:
+            pointer = (
+                f"The head branch is {_untrusted.flat(head)} — no `gh-branch:` "
+                f"command is offered for it: the name is outside the ordinary "
+                f"refname set, so a command safe to paste would name a "
+                f"different branch. Read it from the PR page.")
         return [
             f"REFUSED: zero check runs on {sha} — {_checks.NO_CHECKS}. Nothing "
             f"has passed and nothing has failed; a commit no workflow ran on is "
-            f"not a green one. "
-            f"`gh-branch:{_untrusted.flat(str(pr.get('headRefName') or ''))}` "
-            f"says whether a run is still expected.",
+            f"not a green one. " + pointer,
         ]
 
     states = _checks.github_states(rollup)

@@ -1001,7 +1001,21 @@ def _stale_base_advisory(target: str, remote: str) -> None:
     fixed for once.
     """
     ref = f"{remote}/{target}"
-    cmd = f"git rev-list --count HEAD..{ref}"
+    # Flattened for the echo ONLY, never for the measurement (#1038). `target`
+    # is the request's target branch — the opener's text, like every other
+    # refname that arrives over an API — and it reaches four column-0 prints
+    # below. Flattening it on the way *in* would change which ref `rev-list`
+    # counts against, trading a loud forgery for a quiet wrong answer about how
+    # stale the base is: docs/validators.md, "Validators still run against the
+    # real, unflattened path — the flattening is on the echo only."
+    #
+    # #1038's own scan cannot see this site: the value leaves
+    # `_post_push_advisories` as a call argument rather than a print or a
+    # return, and the scanner has no interprocedural taint tracking. It went
+    # green over these four lines while the two next to it were being fixed.
+    shown_target = _untrusted.flat(str(target))
+    shown_ref = f"{remote}/{shown_target}"
+    cmd = f"git rev-list --count HEAD..{shown_ref}"
     # Not routed through _checked_git: here the two failures mean different
     # things to the caller and get different words. A non-zero exit is git
     # answering — that ref is not in this clone, which `git fetch` fixes and
@@ -1014,23 +1028,23 @@ def _stale_base_advisory(target: str, remote: str) -> None:
                    timeout=_CHECK_TIMEOUT)
     except OSError as exc:
         print(f"⚠ STALE-BASE CHECK DID NOT RUN — `{cmd}` did not complete ({exc})")
-        print(f"  How far behind {ref} you are is UNKNOWN — this receipt is "
-              f"not saying your base is fresh. Settle it: {cmd}")
+        print(f"  How far behind {shown_ref} you are is UNKNOWN — this "
+              f"receipt is not saying your base is fresh. Settle it: {cmd}")
         return
     if cnt.returncode == TIMEOUT_RC:
         print(f"⚠ STALE-BASE CHECK DID NOT RUN — `{cmd}` did not complete "
               f"({cnt.stderr.strip()})")
-        print(f"  How far behind {ref} you are is UNKNOWN — this receipt is "
-              f"not saying your base is fresh. Settle it: {cmd}")
+        print(f"  How far behind {shown_ref} you are is UNKNOWN — this "
+              f"receipt is not saying your base is fresh. Settle it: {cmd}")
         return
     if cnt.returncode != 0 or not cnt.stdout.strip().isdigit():
-        print(f"⚠ stale-base check skipped — {ref} does not resolve locally, "
-              f"so how far behind the target you are is UNKNOWN "
-              f"(enable it: git fetch {remote} {target})")
+        print(f"⚠ stale-base check skipped — {shown_ref} does not resolve "
+              f"locally, so how far behind the target you are is UNKNOWN "
+              f"(enable it: git fetch {remote} {shown_target})")
         return
     behind = int(cnt.stdout.strip())
     if behind:
-        print(f"⚠ {behind} commit(s) behind {ref} — "
+        print(f"⚠ {behind} commit(s) behind {shown_ref} — "
               "consider rebasing (stale base under review)")
 
 
