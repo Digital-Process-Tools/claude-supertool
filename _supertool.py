@@ -2705,22 +2705,38 @@ def _read_range_note(path: str, offset: int, limit: int, body: str) -> str:
 
     `:A:B` is OFFSET:LIMIT, but it reads like START:END to anyone who has used
     `sed -n 'A,Bp'`, and the overshoot is quiet — the output just looks long.
-    Fires only on the combination that is near-certain in the misread case and
-    rare otherwise: LIMIT > OFFSET (a real limit is seldom larger than the point
-    it starts from) *and* OFFSET+LIMIT running past EOF.
+    Requires LIMIT > OFFSET throughout — a real limit is seldom larger than the
+    point it starts from — plus one of two independent tells:
+
+    * OFFSET+LIMIT runs past EOF (#382's original gate), or
+    * LIMIT < 2*OFFSET (#1020). The filed call was `read:PATH:5370:5460` on a
+      19571-line file: it does NOT overrun, so #382's note stayed silent on the
+      exact shape it was written for. What gives it away instead is that 5460
+      sits just past 5370 — an END line lands NEAR its START, while an
+      independent LIMIT does not. The doubling threshold keeps #382's own
+      counter-example (`read:PATH:10:20`, a legitimate skip-then-read) quiet.
+
+    Disclosure rather than refusal, because both readings are legitimate here
+    and there is no gate that separates them without breaking working calls.
     """
     if offset <= 0 or limit <= 0 or limit <= offset:
         return ""
     if body.startswith("ERROR:"):
         return ""
     total = _count_lines(path)
-    if total <= 0 or offset + limit <= total:
+    if total <= 0:
         return ""
-    emitted = max(0, total - offset)
+    if offset + limit <= total and limit >= 2 * offset:
+        return ""
+    # What was ASKED FOR, not what came back: the byte cap can truncate the
+    # window, and #382's "read N lines" then states a number the call did not
+    # produce — the same reporting-a-number-as-a-fact defect one level down.
+    # The span is always true and carries the contrast better anyway.
+    span = limit - offset + 1
     return (
-        f"note: read {emitted} lines (offset {offset}, limit {limit}) — those "
-        f"args are OFFSET:LIMIT, not START:END. For lines {offset}-{limit}, "
-        f"use read:{path}:{offset}-{limit}\n"
+        f"note: this asked for {limit} lines from offset {offset} — those "
+        f"args are OFFSET:LIMIT, not START:END. For lines {offset}-{limit} "
+        f"({span} lines), use read:{path}:{offset}-{limit}\n"
     )
 
 
@@ -2872,6 +2888,113 @@ def _literal_note(pattern: str, count: int) -> str:
 _ERE_UNSAFE = re.compile(r"\\[^.^$*+?()\[\]{}|\\/-]|\\$|\(\?|[*+?}]\?|\[[:.=]")
 
 
+# #1120 — supertool rewrites bash-grep BRE alternation so `a\|b` behaves the way
+# a caller's fingers expect. The rewrite is unconditional, and it cannot tell that
+# `\| \{` was an ESCAPED LITERAL pipe: it produces `| \{`, whose left alternation
+# branch is empty. An empty branch matches the empty string, so the pattern matches
+# every line of every file — and `1000+ matches` renders identically to a search
+# that genuinely found a lot. The `:`-tokenizer, the filed suspect, is innocent.
+_BRE_ALT = "\\|"
+
+
+def _bre_alternation_rewrite(pattern: str) -> Tuple[str, bool]:
+    """Apply the BRE-alternation rewrite, reporting whether it changed anything."""
+    if _BRE_ALT not in pattern:
+        return pattern, False
+    return pattern.replace(_BRE_ALT, "|"), True
+
+
+def _top_level_branches(pattern: str) -> List[str]:
+    """Split on `|` at nesting depth 0, outside character classes, unescaped.
+
+    Depth matters: `colo(u|)r` has an empty branch and matches exactly two words,
+    while a bare `colou|r` with an empty branch would match everything. A `|`
+    inside `[...]` is an ordinary character and starts no alternation at all.
+    """
+    branches: List[str] = []
+    depth = 0
+    in_class = False
+    start = 0
+    i = 0
+    while i < len(pattern):
+        c = pattern[i]
+        if c == "\\":
+            i += 2
+            continue
+        if in_class:
+            if c == "]":
+                in_class = False
+        elif c == "[":
+            in_class = True
+        elif c == "(":
+            depth += 1
+        elif c == ")":
+            depth = max(0, depth - 1)
+        elif c == "|" and depth == 0:
+            branches.append(pattern[start:i])
+            start = i + 1
+        i += 1
+    branches.append(pattern[start:])
+    return branches
+
+
+def _saturates(pattern: str) -> bool:
+    """True when the pattern has an empty TOP-LEVEL alternation branch, i.e. it
+    matches every line. Not a search — a saturation."""
+    if "|" not in pattern:
+        return False
+    branches = _top_level_branches(pattern)
+    return len(branches) > 1 and any(b == "" for b in branches)
+
+
+def _saturating_pattern_refusal(written: str, effective: str,
+                                rewritten: bool) -> str:
+    """Refuse a pattern that matches every line, naming the spelling that works.
+
+    The three-state contract: `ok`, a finding, and — here — declining, because a
+    saturated match is not an answer to the question that was asked and its
+    report cannot be told apart from a real one. Nothing downstream can recover
+    the distinction, so it has to be refused at the call.
+    """
+    if not _saturates(effective):
+        return ""
+    # Backticks, not !r: repr() DOUBLES every backslash, and a backslash is the
+    # one character this message exists to show. `'\\| \\{'` for a pattern the
+    # caller typed as `\| \{` is the tool mangling its own diagnosis.
+    lines = [
+        f"ERROR: pattern `{effective}` has an empty alternation branch, so it "
+        f"matches every line of every file scanned. That is a saturated "
+        f"pattern, not a search, and its result count is indistinguishable "
+        f"from a search that genuinely found a lot.",
+    ]
+    if rewritten:
+        lines.append(
+            f"  written as `{written}` — supertool rewrites bash-grep BRE "
+            f"alternation, so `{_BRE_ALT}` became a bare `|` with nothing to "
+            f"its left.")
+        lines.append(
+            f"  for a literal `|`, use a character class: "
+            f"`{written.replace(_BRE_ALT, '[|]')}`")
+    else:
+        lines.append(
+            "  for a literal `|`, use a character class: `[|]`")
+    return chr(10).join(lines) + chr(10)
+
+
+def _bre_rewrite_note(written: str, effective: str, rewritten: bool) -> str:
+    """Disclose the rewrite whenever it fired (#1120).
+
+    An escape being eaten is invisible in a result set that looks plausible, and
+    the same move — say which pattern actually ran — is what #1065 added for the
+    ':' rejoin and what `scanned N files` added for the zero case.
+    """
+    if not rewritten:
+        return ""
+    return (f"(pattern rewritten to `{effective}` — `{_BRE_ALT}` is bash-grep "
+            f"BRE alternation and became a plain `|`. For a literal `|`, use "
+            f"`[|]`.)" + chr(10))
+
+
 def _grep_pattern_note(pattern: str) -> str:
     """Name the pattern grep actually ran, when a ':' made that a choice (#1065).
 
@@ -2945,8 +3068,14 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
             context: int = 0, count_only: bool = False,
             no_exclude: bool = False, no_auto_read: bool = False) -> str:
     """grep, prefixed by #1065's disclosure of the pattern that actually ran."""
-    return _grep_pattern_note(pattern) + _op_grep(
-        pattern, path, limit, context, count_only, no_exclude, no_auto_read)
+    effective, rewritten = _bre_alternation_rewrite(pattern)
+    refusal = _saturating_pattern_refusal(pattern, effective, rewritten)
+    if refusal:
+        return refusal
+    return (_grep_pattern_note(pattern)
+            + _bre_rewrite_note(pattern, effective, rewritten)
+            + _op_grep(pattern, path, limit, context, count_only,
+                       no_exclude, no_auto_read))
 
 
 def _op_grep(pattern: str, path: str = ".", limit: int = 0,
@@ -2985,9 +3114,11 @@ def _op_grep(pattern: str, path: str = ".", limit: int = 0,
             "Rewrite without `(...+)+`-style nesting.\n"
         )
 
-    # Auto-convert bash grep BRE alternation (\|) to Python regex (|)
-    if "\\|" in pattern:
-        pattern = pattern.replace("\\|", "|")
+    # Auto-convert bash grep BRE alternation (\|) to Python regex (|). Single-
+    # sourced with op_grep/op_around so the rewrite and the refusal that guards
+    # it (#1120) can never drift apart — two hand-written copies is how `around`
+    # came to carry the same saturation bug that was filed against `grep`.
+    pattern, _ = _bre_alternation_rewrite(pattern)
 
     # Early exit if path doesn't exist (don't silently return 0 results)
     if path != "." and not os.path.isfile(path) and not os.path.isdir(path):
@@ -3264,8 +3395,13 @@ def op_around(pattern: str, path: str, n: int = 10) -> str:
     """
     if not pattern:
         return "ERROR: empty pattern\n"
-    if "\\|" in pattern:
-        pattern = pattern.replace("\\|", "|")
+    _written = pattern
+    pattern, _rewritten = _bre_alternation_rewrite(pattern)
+    # #1120 — `around` carries its own copy of the BRE rewrite, so it carried
+    # the same saturation. A pattern matching every line is refused here too.
+    _refusal = _saturating_pattern_refusal(_written, pattern, _rewritten)
+    if _refusal:
+        return _refusal
     if not path:
         return "ERROR: empty path\n"
 
@@ -5326,6 +5462,42 @@ def _parse_around_args(parts: List[str]) -> tuple:
         path = ""
 
     return (pattern, path, n)
+
+
+def _around_line_delegation(pattern: str, path: str, n: int) -> str:
+    """Answer `around:PATH:LINE[:N]` as `around_line`, and say so (#1086).
+
+    `around` takes PATTERN:PATH[:N] and `around_line` takes PATH:LINE[:N] — the
+    same op family, the same output, opposite argument order, and nothing in
+    either name says which. Four agents in one session picked wrong; every one
+    recovered off the error message, which is why it stayed unfiled and also why
+    a better error was never going to be the fix.
+
+    Gated so it only ever converts a call that ALREADY FAILS into an answer: the
+    numeric argument must not name a real file (a file called `1160` is a path,
+    not a line) and the argument in front of it must resolve. No call that works
+    today changes meaning, and the `:`-tokenizer is not touched — this is
+    post-parse recovery inside the op.
+
+    `between:PATH:START:END` is deliberately NOT given the same treatment: its
+    redirect target is `read`, a different op, and #983 decided that `between`
+    should keep doing exactly one thing rather than grow a fourth spelling of a
+    range read. Its error already carries the fully-substituted `read` command.
+    """
+    if not path.isdigit() or os.path.exists(path):
+        return ""
+    if not pattern or not os.path.isfile(pattern):
+        return ""
+    line = int(path)
+    if line < 1:
+        return ""
+    return (
+        f"(read as around_line:{pattern}:{line}:{n} — `around` takes "
+        f"PATTERN:PATH[:N], so {path!r} was the path, which is not a file. "
+        f"Its sibling `around_line` takes PATH:LINE[:N], which is the only "
+        f"reading that answers.)" + chr(10)
+        + op_around_line(pattern, line, n)
+    )
 
 
 def _between_numeric_hint(parts: List[str]) -> str:
@@ -17939,6 +18111,9 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
             body = op_gc(mode, kind)
         elif op == "around":
             pattern, path, n = _parse_around_args(parts)
+            _delegated = _around_line_delegation(pattern, path, n)
+            if _delegated:
+                return header + _delegated
             _hint = _colon_split_hint("around", pattern, path)
             if _hint:
                 return header + _hint
