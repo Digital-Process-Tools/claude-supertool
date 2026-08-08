@@ -51,7 +51,7 @@ Usage:
     gh-issues:external              only issues filed from outside
     gh-issues:stale                 only issues whose body has been overtaken
     gh-issues:nopipe                skip enrichment (fast, everything `?`)
-    gh-issues:iids                  bare number list
+    gh-issues:iids                  number list, `#`-comment notes first
     repo:OWNER/NAME gh-issues       another repo's queue (#673)
 """
 from __future__ import annotations
@@ -560,8 +560,20 @@ def _render_table(rows: list[dict]) -> str:
     return "\n".join(_row(r) for r in _sorted(rows))
 
 
+def _cap_note(per_page: int | None, fetched: int | None) -> str | None:
+    """The page boundary, as one sentence, for every shape that can print it.
+
+    Extracted from `_footer` because the footer is not the only render: `iids`
+    returns before one is built, and it is the shape whose output becomes
+    another tool's input (#1067).
+    """
+    if per_page is None or fetched is None or fetched < per_page:
+        return None
+    return f"capped at --limit {per_page} — more may exist, raise with per=N"
+
+
 def _footer(rows: list[dict], reason: str | None, per_page: int | None = None,
-            fetched: int | None = None) -> str:
+            fetched: int | None = None, notes: list[str] | None = None) -> str:
     """Counts when they are earned; a named absence when they are not.
 
     Counting `_external is True` across rows that were never enriched yields
@@ -586,8 +598,14 @@ def _footer(rows: list[dict], reason: str | None, per_page: int | None = None,
     # the "more may exist" line disappears — from exactly the queries that are
     # asking for completeness (#864).
     against = len(rows) if fetched is None else fetched
-    if per_page is not None and against >= per_page:
-        parts.append(f"capped at --limit {per_page} — more may exist, raise with per=N")
+    cap = _cap_note(per_page, against)
+    if cap:
+        parts.append(cap)
+    # Client-side narrowing, named with its count. `gh-issues:external` over an
+    # all-internal board prints `No issues match.` and `0 issue(s)` — true
+    # about the filter and read as a statement about the queue (#1071's shape,
+    # in the sibling op).
+    parts.extend(notes or [])
     if unknown:
         parts.append(
             f"{len(unknown)} row(s) unknown — enrichment "
@@ -669,7 +687,18 @@ def main_with_args(arg_str: str) -> int:
     fetched = len(rows)
 
     # Bare number list — no enrichment needed, so none is paid for.
+    #
+    # The cap rides along as a `#` comment rather than being dropped: a
+    # truncated list stops being the same bytes as a complete one. This early
+    # return is why `iids` was the one shape that said nothing about the page
+    # boundary (#1067).
+    #
+    # Not stderr — `_run_custom_op` returns a successful op's stdout and drops
+    # its stderr, so a note there is a note nobody receives (#654).
     if "iids" in flags:
+        cap = _cap_note(per_page, fetched)
+        if cap:
+            print(f"# {cap}")
         for row in rows:
             number = row.get("number")
             if number is not None:
@@ -688,16 +717,35 @@ def main_with_args(arg_str: str) -> int:
             data, reason = _fetch_enrichment(pair[0], pair[1], numbers, cfg["chunk"])
             _apply_enrichment(rows, data)
 
+    notes: list[str] = []
+
+    def _narrow(flag: str, before: list[dict], keep: list[dict]) -> list[dict]:
+        """Apply a client-side filter and record what it removed.
+
+        `before` is passed rather than read from the enclosing scope, and the
+        denominator is `fetched` rather than either list. Every call site
+        rebinds `rows`, so the closure version reported the second flag of
+        `external,stale` against the first flag's survivor count — a number no
+        fetch ever returned. Same invariant `_cap_note` states for the page
+        boundary: measured against the fetch, not against what survived a
+        filter (#864). Each note's numerator stays what *that* flag removed,
+        so the notes sum to the rows lost rather than double-counting them.
+        """
+        dropped = len(before) - len(keep)
+        if dropped:
+            notes.append(f"{flag} excluded {dropped} of {fetched} fetched")
+        return keep
+
     if "external" in flags:
         if any(r.get("_external") is None for r in rows):
             print(_decline("external", "author association", reason), file=sys.stderr)
             return 1
-        rows = [r for r in rows if r.get("_external")]
+        rows = _narrow("external", rows, [r for r in rows if r.get("_external")])
     if "stale" in flags:
         if any(r.get("_stale") is None for r in rows):
             print(_decline("stale", "body-edit time", reason), file=sys.stderr)
             return 1
-        rows = [r for r in rows if r.get("_stale")]
+        rows = _narrow("stale", rows, [r for r in rows if r.get("_stale")])
     if "nomilestone" in flags:
         # `gh issue list` can name a milestone; it cannot ask for the absence
         # of one, so this filter is client-side. Which means a row whose
@@ -708,7 +756,8 @@ def main_with_args(arg_str: str) -> int:
         if any(_milestone_of(r) is None for r in rows):
             print(_decline("nomilestone", "milestone", reason), file=sys.stderr)
             return 1
-        rows = [r for r in rows if not _milestone_of(r)]
+        rows = _narrow("nomilestone", rows,
+                       [r for r in rows if not _milestone_of(r)])
 
     # `flat_note` rather than `banner()` (#819). This render fences nothing —
     # titles and labels are one-line fields and are flattened — so the banner
@@ -716,9 +765,20 @@ def main_with_args(arg_str: str) -> int:
     # disclosure naming a mechanism it does not use teaches the reader to skim
     # the next one.
     if rows:
+        # Header as well as footer. A footer is lost by exactly the consumer
+        # that truncates (#633, #635, #657), and the cap note fires precisely
+        # when the board is at its longest — the case it exists for is the
+        # case the footer does not survive. Nothing prints when nothing was
+        # cut, so the silence stays a positive claim that the board is whole.
+        #
+        # Only the cap: the client-side flag notes describe rows the caller
+        # asked to lose, which is the same line `iids` draws.
+        cap = _cap_note(per_page, fetched)
+        if cap:
+            print(f"({cap})")
         print(_untrusted.flat_note("issue titles and labels"))
     print(_render_table(rows))
-    footer = _footer(rows, reason, per_page, fetched)
+    footer = _footer(rows, reason, per_page, fetched, notes)
     if footer:
         print(f"\n{footer}")
     return 0

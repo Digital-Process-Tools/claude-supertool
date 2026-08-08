@@ -19,8 +19,20 @@ Usage:
     gh-prs:author=@me,state=merged  filter composition
     gh-prs:label=bug                reusable beyond watching
     gh-prs:nopipe                   skip review-thread enrichment (faster)
-    gh-prs:iids                     bare number list (for piping into watch)
+    gh-prs:iids                     number list, `#`-comment notes first
     gh-prs:failed                   only PRs whose checks are failing
+    gh-prs:anyauthor                every author's open PRs, not just mine
+
+**The default is `author=@me`, and the board says so.** `No PRs match.` under
+an unstated filter is the strongest available statement of absence and it was
+false about the world: on `claude-remember` it printed over two open PRs, both
+from outside contributors — the rows a maintainer board exists to surface
+(#1071). Three states now, never two: rows found (the footer names the filter),
+no rows *because the filter excluded some* (it says how many, and how to see
+them), and genuinely nothing open. The count for the middle state costs one
+extra `gh pr list`, fired only when the board came back empty under the
+*implicit* default; a probe that could not run reports UNKNOWN rather than
+`excluded none`.
 """
 from __future__ import annotations
 
@@ -49,8 +61,12 @@ DEFAULT_PER_PAGE = 50
 ENRICH_CAP = 40  # never fire more than this many per-PR thread fetches
 ENRICH_WORKERS = 8  # parallel thread fetches
 
-# Tokens that are flags, not key=value filters.
-_FLAGS = {"nopipe", "iids", "failed"}
+# Tokens that are flags, not key=value filters. `anyauthor` suppresses the
+# implicit `author=@me` — before it there was no way to ask this op for the
+# board of everyone's open PRs at all: `author=` is refused by the shared
+# tokenizer for carrying no value, and `label=`/`state=` are not role keys, so
+# the default survived every spelling of the question (#1071).
+_FLAGS = {"nopipe", "iids", "failed", "anyauthor"}
 
 # Filter keys this op forwards. Anything else is refused rather than dropped:
 # `_build_list_cmd` builds its argv from a ladder with no `else`, so
@@ -139,17 +155,26 @@ def _bad_values(filters: dict[str, str]) -> list[tuple[str, str, str]]:
     return _filter_tokens.bad_values(filters, _VALUE_DOMAINS)
 
 
-def _build_list_cmd(filters: dict[str, str], per_page: int) -> list[str]:
+def _build_list_cmd(filters: dict[str, str], per_page: int,
+                    any_author: bool = False) -> list[str]:
     """Build the `gh pr list ... --json` argv from parsed filters.
 
     Defaults to author=@me when no role filter is given so the bare `gh-prs`
     means 'mine'. state=open is gh's default (no flag emitted). reviewer has
     no list flag on gh, so it routes through --search review-requested:USER.
+
+    `any_author` is the opt-out (#1071). The default itself is kept — `gh-prs`
+    has meant "mine" since it was born, the radar tier keys its departure
+    snapshot on that scope, and widening it silently would change every
+    downstream consumer's population. What was wrong was that the default was
+    both undisclosed and unreachable; this argument fixes the second half and
+    `_author_note` the first. The parameter is keyword-defaulted because
+    `watch/tiers/gh_prs.py` calls this with two positional arguments.
     """
     has_role = any(k in filters for k in ("author", "assignee", "reviewer"))
     cmd = (["gh", "pr", "list", "--json", _LIST_FIELDS, "--limit", str(per_page)]
            + _repo_target.gh_args())
-    if not has_role:
+    if not has_role and not any_author:
         cmd += ["--author", "@me"]
     for key, val in filters.items():
         if not val:
@@ -409,7 +434,79 @@ def _render_table(prs: list[dict], watched: set[str] | None) -> str:
     return "\n".join(_row(p, watched) for p in sorted(prs, key=_sort_key))
 
 
-def _footer(prs: list[dict], watched: set[str] | None) -> str:
+def _cap_note(per_page: int | None, fetched: int | None) -> str | None:
+    """The page boundary, when the fetch came back exactly `--limit` long.
+
+    `gh-prs` had no such disclosure at all, so a board of the first 50 of an
+    unknown number rendered as `50 PR(s)` — the population cap of #1067, in the
+    op `gh-issues` already discloses from. Measured against the *fetch*, not
+    against what survived `failed`: three rows dropped client-side take the
+    count under the limit and the notice would vanish from exactly the queries
+    asking for completeness.
+    """
+    if per_page is None or fetched is None or fetched < per_page:
+        return None
+    return f"capped at --limit {per_page} — more may exist, raise with per=N"
+
+
+def _probe_population(filters: dict[str, str], per_page: int
+                      ) -> tuple[int | None, str | None]:
+    """How many rows the same query returns with no author filter.
+
+    Three states, and the `None` is the one that matters: the probe is a second
+    `gh pr list`, and a spawn failure is a platform difference rather than a
+    fact about the repo — Windows raises `FileNotFoundError [WinError 2]` where
+    POSIX may not fail at all (#997). Reporting `excluded none` off a call that
+    never ran would reproduce this fix's own defect class inside the fix.
+
+    Fired only when the board came back empty under the *implicit* default: an
+    explicit `author=` is the caller's own filter and needs no explanation, and
+    one extra list call per board is a real cost on a radar tick.
+    """
+    cmd = _build_list_cmd({k: v for k, v in filters.items() if k != "author"},
+                          per_page, any_author=True)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30,
+                                encoding="utf-8", errors="replace")
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+        return None, f"the check itself failed: {exc}"
+    if result.returncode != 0:
+        return None, f"the check itself failed: {(result.stderr or '').strip()[:100]}"
+    try:
+        rows = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None, "the check returned unreadable JSON"
+    if not isinstance(rows, list):
+        return None, "the check returned no list"
+    return len(rows), None
+
+
+def _author_note(filters: dict[str, str], per_page: int, fetched: int
+                 ) -> str | None:
+    """What the implicit `author=@me` did to this board, in three states.
+
+    `No PRs match.` / `0 PR(s)` is the strongest available statement of
+    absence, and under an unstated filter it is false about the world: on
+    `claude-remember` it was printed over two open PRs, both from outside
+    contributors — the rows a maintainer board exists to surface (#1071).
+    """
+    if any(k in filters for k in ("author", "assignee", "reviewer")):
+        return None
+    if fetched:
+        return ("author=@me (default) — your PRs, not the repo's; "
+                "gh-prs:anyauthor for everyone's")
+    count, reason = _probe_population(filters, per_page)
+    if count is None:
+        return (f"author=@me (default) applied; whether it excluded anything "
+                f"is UNKNOWN — {reason}")
+    if count:
+        return (f"author=@me (default) excluded {count} open PR(s) — "
+                f"gh-prs:anyauthor to see them")
+    return "author=@me (default) excluded none — nothing is open either way"
+
+
+def _footer(prs: list[dict], watched: set[str] | None,
+            notes: list[str] | None = None) -> str:
     """Actionable summary: failing, unapproved, and the watch command.
 
     `watched=None` (a repo target, see `_watched_numbers`) drops the watch
@@ -423,6 +520,8 @@ def _footer(prs: list[dict], watched: set[str] | None) -> str:
     failing = [str(p.get("number")) for p in prs if p.get("_checks") == "failed"]
     unapproved = [p for p in prs if p.get("_approved") is False]
     parts = [f"{len(prs)} PR(s)"]
+    # Before the counts, because they qualify what the counts are counting.
+    parts.extend(notes or [])
     if failing:
         parts.append(f"{len(failing)} failing")
     if unapproved:
@@ -439,12 +538,7 @@ def _footer(prs: list[dict], watched: set[str] | None) -> str:
     return " | ".join(parts)
 
 
-def main() -> int:
-    extra = _filter_tokens.extra_segments_error(sys.argv, "gh-prs")
-    if extra:
-        print(extra, file=sys.stderr)
-        return 1
-    arg_str = sys.argv[1] if len(sys.argv) > 1 else ""
+def main_with_args(arg_str: str) -> int:
     filters, flags, unknown_tokens = _parse_args(arg_str)
     if unknown_tokens:
         print(_unknown_error(unknown_tokens), file=sys.stderr)
@@ -455,7 +549,22 @@ def main() -> int:
         return 1
     iids_only = "iids" in flags
     failed_only = "failed" in flags
+    any_author = "anyauthor" in flags
     enrich = "nopipe" not in flags
+
+    # Two boards, not one wider than the other — `anyauthor` asks for
+    # everyone's and `author=X` asks for one person's. Applying either
+    # silently is the same defect as the undisclosed default (#1071).
+    role = sorted(k for k in ("author", "assignee", "reviewer") if k in filters)
+    if any_author and role:
+        print(
+            f"ERROR: `anyauthor` and the role filter(s) {', '.join(role)} ask "
+            f"for different boards — anyauthor means every author, "
+            f"{role[0]}=... means one. Refusing rather than picking one. Drop "
+            f"whichever you did not mean.",
+            file=sys.stderr,
+        )
+        return 1
 
     cfg = _get_config()
     per_page = cfg["per_page"]
@@ -464,7 +573,7 @@ def main() -> int:
 
     try:
         result = subprocess.run(
-            _build_list_cmd(filters, per_page),
+            _build_list_cmd(filters, per_page, any_author=any_author),
             capture_output=True, text=True, timeout=30, encoding="utf-8", errors="replace",
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
@@ -491,11 +600,58 @@ def main() -> int:
         prs = []
 
     _annotate(prs)
+    # What the fetch returned, before any client-side filter narrows it: the
+    # cap is a fact about the fetch, and so is the author question.
+    fetched = len(prs)
     if failed_only:
         prs = [p for p in prs if p.get("_checks") == "failed"]
 
+    # `notes` is everything the footer states. `absent` is the subset `iids`
+    # carries: the rows the caller did **not** choose to lose.
+    #
+    # A page boundary is nobody's request, and an empty board under the
+    # implicit `author=@me` is a claim about the world the caller never made
+    # — both belong in a stream a script parses. Two things deliberately do
+    # not. The scope note on a *populated* board ("your PRs, not the repo's")
+    # is a label, not an absence: the numbers above it are complete for the
+    # filter that was applied. And `failed`'s complement is the thing the
+    # caller explicitly asked to exclude — reporting it back would annotate
+    # every `failed,iids` call with the count of PRs that are fine.
+    notes: list[str] = []
+    absent: list[str] = []
+
+    def _note(text: str | None, states_an_absence: bool) -> None:
+        if not text:
+            return
+        notes.append(text)
+        if states_an_absence:
+            absent.append(text)
+
+    _note(_cap_note(per_page, fetched), True)
+    if not any_author:
+        # An empty board under the implicit default is an absence claim; a
+        # populated one is a scope label.
+        _note(_author_note(filters, per_page, fetched), not fetched)
+    if failed_only and fetched > len(prs):
+        _note(f"failed excluded {fetched - len(prs)} of {fetched} fetched", False)
+
     # Bare number list — for piping into the watch supervisor.
+    #
+    # The disclosures ride along as `#` comments rather than being dropped.
+    # `iids` returns before any footer is built, so it is the one shape told
+    # nothing — and it is the shape whose output becomes another tool's input,
+    # where a truncated list and a complete one are the same bytes.
+    #
+    # Deliberately NOT stderr, which was the first shape of this fix and was
+    # wrong: `_run_custom_op` returns a successful op's stdout and drops its
+    # stderr, so a note there is a note nobody receives (#654, and measured
+    # again on this branch — the line vanished through the wrapper while the
+    # preset printed it correctly when run directly). A `#` prefix is a
+    # comment marker every pipe already knows, and it cannot be mistaken for
+    # a number; the exit code stays 0.
     if iids_only:
+        for note in absent:
+            print(f"# {note}")
         for p in prs:
             number = p.get("number")
             if number is not None:
@@ -508,14 +664,32 @@ def main() -> int:
             print(f"(review-thread enrichment capped at {cfg['enrich_cap']} PRs)")
 
     watched = _watched_numbers()
-    # One disclosure line above the board — see `gl-mrs.main` (#819).
     if prs:
+        # Header as well as footer, for the absences the caller did not ask
+        # for. A footer is lost by exactly the consumer that truncates (#633,
+        # #635, #657), and this file already prints its review-thread cap in
+        # header position — it was carrying both patterns at once.
+        #
+        # `absent` is the same subset `iids` carries, for the same reason: the
+        # scope label on a populated board and `failed`'s complement are not
+        # absence claims. Nothing prints when nothing was cut.
+        for note in absent:
+            print(f"({note})")
+        # One disclosure line above the board — see `gl-mrs.main` (#819).
         print(_untrusted.flat_note("PR titles"))
     print(_render_table(prs, watched))
-    footer = _footer(prs, watched)
+    footer = _footer(prs, watched, notes)
     if footer:
         print(f"\n{footer}")
     return 0
+
+
+def main() -> int:
+    extra = _filter_tokens.extra_segments_error(sys.argv, "gh-prs")
+    if extra:
+        print(extra, file=sys.stderr)
+        return 1
+    return main_with_args(sys.argv[1] if len(sys.argv) > 1 else "")
 
 
 if __name__ == "__main__":
