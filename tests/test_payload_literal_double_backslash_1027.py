@@ -8,10 +8,27 @@ is in `new`, the anchor matches, the bytes land, `edited` prints, and the
 validators agree, because doubled backslashes are legal in nearly every language
 this repo edits. Nothing anywhere says the write was wrong.
 
-The guard warns and never rewrites. Collapsing `\\` to `\` would guess at intent
-and some payloads genuinely want two characters, so the tests below assert both
-halves: the warning fires, *and* the bytes on disk are exactly what the payload
-carried.
+The guard never rewrites. Collapsing `\\` to `\` would guess at intent and some
+payloads genuinely want two characters, so the tests below assert that nothing
+is silently corrected.
+
+**The severity moved in #1087 and this file moved with it.** The write-bound
+fields — `new` and `content` — are REFUSED now, not noted: the note fired after
+the bytes had landed, and every validator passed them, because two backslashes
+are legal in every language this repo edits.
+
+The objection recorded here originally — that refusing a pattern with no fixed
+position strands the author who genuinely means two characters — was correct,
+and it is answered rather than overruled. `literal_backslashes = true` (#1096)
+is the spelling that says so, which is what makes the refusal suppressible; a
+suppressible refusal records the decision in the payload, an unsuppressible
+warning makes it on the author's behalf. The refusal, the flag and the
+bytes-on-disk assertion live in test_payload_write_backslash_refusal_1087.py
+and test_payload_literal_backslashes_optin_1096.py.
+
+`old` keeps the note, and that is the half this file still pins: it is never
+written to a file, a doubled anchor cannot match, and the runner reports the
+skip.
 
 Boundaries, each pinned by a negative test — a warning that fires on the correct
 spelling is a warning authors learn to skip, which is the same as not having one:
@@ -20,12 +37,6 @@ spelling is a warning authors learn to skip, which is the same as not having one
   spelling of one backslash; flagging it would flag the fix.
 * Runs of three or more are never flagged. A longer run was counted, not doubled
   by reflex.
-* The severity is a warning, not the refusal #834/#835 use. Those fire at a
-  fixed position (immediately before the closer, at end of a shell line) where
-  every reading has a second spelling. This pattern has no position at all, so
-  refusing it would make a payload that legitimately writes two backslashes
-  unwritable at every offset — the intent-stranding `_sh_backslash_warning`
-  stays a warning for.
 
 Second, from the same report: `batch:` prints `[result] N ops run, M writes,
 K skipped` below a long validators block, so the load-bearing count is what a
@@ -79,35 +90,28 @@ LITERAL_SINGLE = "new = " + Q3 + 'PAT = "' + BS + 'd+"' + Q3
 LITERAL_QUAD = "new = " + Q3 + 'PAT = "' + BS * 4 + 'd+"' + Q3
 
 
-def test_a_doubled_backslash_in_a_literal_new_is_named_not_swallowed(
-    tmp_path: Path,
-) -> None:
-    """The whole issue. The edit applies and reports `edited`; before this the
-    receipt said nothing at all about the two characters it had just written."""
+def test_a_doubled_backslash_in_a_literal_new_is_named(tmp_path: Path) -> None:
+    """The whole issue: before #1027 the receipt said nothing at all about the
+    two characters it had just written. It now names the field and quotes the
+    sequence back — as a refusal since #1087, but the naming is what this test
+    is about and it is asserted without depending on the severity."""
     target = _target(tmp_path, 'PAT = "x"' + NL)
     out = supertool.dispatch("edit:" + _edit_payload(tmp_path, target, LITERAL_DOUBLE))
-    assert "edited" in out, out
     assert BS * 2 in out, "the offending sequence is quoted back: " + out
     assert "new" in out, "the field is named: " + out
     assert "literal" in out.lower(), out
 
 
-def test_the_warning_says_it_did_not_rewrite(tmp_path: Path) -> None:
+def test_the_tool_never_silently_rewrites_a_pair(tmp_path: Path) -> None:
     """A guard in the write path that silently corrected would be worse than the
-    bug. The message has to state that, or the reader cannot tell which bytes
-    are on disk without going to read them."""
-    target = _target(tmp_path, 'PAT = "x"' + NL)
-    out = supertool.dispatch("edit:" + _edit_payload(tmp_path, target, LITERAL_DOUBLE))
-    lowered = out.lower()
-    assert "not a correction" in lowered or "nothing was rewritten" in lowered, out
-
-
-def test_the_bytes_the_payload_carried_are_the_bytes_on_disk(tmp_path: Path) -> None:
-    """The other half of warn-not-rewrite, asserted against the file rather than
-    the message. Some payloads want two characters; this one gets them."""
-    target = _target(tmp_path, 'PAT = "x"' + NL)
+    bug. Whichever severity it uses, the one thing it must not do is put
+    different bytes on disk from the ones the payload carried — so the file is
+    asserted unchanged rather than corrected."""
+    before = 'PAT = "x"' + NL
+    target = _target(tmp_path, before)
     supertool.dispatch("edit:" + _edit_payload(tmp_path, target, LITERAL_DOUBLE))
-    assert target.read_text(encoding="utf-8") == 'PAT = "' + BS * 2 + 'd+"' + NL
+    on_disk = target.read_text(encoding="utf-8")
+    assert on_disk in (before, 'PAT = "' + BS * 2 + 'd+"' + NL), on_disk
 
 
 def test_a_basic_block_pair_is_not_flagged(tmp_path: Path) -> None:
@@ -135,15 +139,6 @@ def test_a_run_of_four_is_not_flagged(tmp_path: Path) -> None:
     assert "literal block" not in out.lower(), out
 
 
-def test_the_warning_does_not_refuse_the_write(tmp_path: Path) -> None:
-    """Severity check. #834 and #835 refuse; this one must not, or every payload
-    that legitimately writes a pair becomes unwritable at any offset."""
-    target = _target(tmp_path, 'PAT = "x"' + NL)
-    out = supertool.dispatch("edit:" + _edit_payload(tmp_path, target, LITERAL_DOUBLE))
-    assert "ERROR" not in out, out
-    assert "1 write" in out, out
-
-
 def test_a_doubled_backslash_in_old_is_still_named(tmp_path: Path) -> None:
     """`old` is the half that already fails loudly, but it fails only *after* the
     anchor misses. Naming it at parse time is the same fact, one call earlier."""
@@ -163,18 +158,19 @@ def test_a_doubled_backslash_in_old_is_still_named(tmp_path: Path) -> None:
 
 def test_a_batch_sub_op_field_is_covered(tmp_path: Path) -> None:
     """The reported run was a nine-op batch. A guard that only reads the single-op
-    route would have missed every one of them."""
+    route would have missed every one of them. The payload parses once, before
+    any sub-op runs, so the batch is covered by the same scan."""
     target = _target(tmp_path, 'PAT = "x"' + NL)
     body = (
         "[[ops]]" + NL
         + 'op = "edit"' + NL
         + "path = " + _toml_path(target) + NL
-        + "old = " + Q3 + 'PAT = "x"' + Q3 + NL
-        + "new = " + Q3 + 'PAT = "' + BS * 2 + 'd+"' + Q3 + NL
+        + "old = " + Q3 + 'PAT = "' + BS * 2 + 'd+"' + Q3 + NL
+        + "new = " + Q3 + 'PAT = "y"' + Q3 + NL
     )
     out = supertool.dispatch("batch:" + _write_payload(tmp_path, body))
-    assert "edited" in out, out
     assert "literal" in out.lower(), out
+    assert "ops[0].old" in out, "the note names which op it means: " + out
 
 
 # --- the batch result line, at the top as well as the bottom -----------------
