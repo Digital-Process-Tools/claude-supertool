@@ -331,9 +331,10 @@ def _one_file(files: list[dict], path: str, header: list[str],
         # without being told where the seams are cannot tell a superseded
         # line from a current one (#1068).
         out.append(f"Assembled from {entries} entries for this path in the "
-                   f"fetched diff — all of them are below, oldest first, so a "
-                   f"line changed twice appears twice and the LAST occurrence "
-                   f"is the current one. A net diff has one entry per path.")
+                   f"fetched diff — concatenated below in source order, oldest "
+                   f"first, so a line changed twice appears twice and the LAST "
+                   f"occurrence is the current one. A net diff has one entry "
+                   f"per path.")
     note = mechanical_note(match)
     if note:
         out.append(f"Note: every hunk in this file is the same edit "

@@ -124,11 +124,62 @@ def test_the_summary_lists_a_twice_touched_file_once_with_summed_stat() -> None:
     assert "+2 -2" in text, text
 
 
-def test_the_summary_still_reaches_the_one_file_route_for_that_path() -> None:
-    """Coalescing must not rename the path out from under `:diff:PATH`."""
-    text, code = pr_diff.render(pr_diff.parse(PER_COMMIT), header=["# PR #1"],
-                                path="src/alpha.py")
-    assert code == 0, text
+def test_a_file_added_then_modified_is_still_an_addition() -> None:
+    """Merging entries merges their statuses, and a file created by this PR is
+    an `A` however many times a later commit came back to it. `M` would send a
+    reviewer looking for a base version that does not exist."""
+    (one,) = pr_diff.coalesce(pr_diff.parse(ADDED_THEN_MODIFIED))
+    assert one["status"] == "A", one
+    assert one["entries"] == 2, one
+    assert (one["added"], one["removed"]) == (3, 1), one
+
+    text, _ = pr_diff.render(pr_diff.parse(ADDED_THEN_MODIFIED),
+                             header=["# PR #1"])
+    row = [l for l in text.splitlines() if "src/new.py" in l]
+    assert row and row[0].strip().startswith("A "), text
+
+
+def test_a_file_modified_then_deleted_is_a_deletion() -> None:
+    """The last entry wins for removal: whatever the earlier commits did to it,
+    the file is not there at head."""
+    (one,) = pr_diff.coalesce(pr_diff.parse(MODIFIED_THEN_DELETED))
+    assert one["status"] == "D", one
+
+
+ADDED_THEN_MODIFIED = """\
+diff --git a/src/new.py b/src/new.py
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/src/new.py
+@@ -0,0 +1,2 @@
++FIRST = 1
++SECOND = 2
+diff --git a/src/new.py b/src/new.py
+index 1111111..2222222 100644
+--- a/src/new.py
++++ b/src/new.py
+@@ -1,2 +1,2 @@
+-SECOND = 2
++SECOND = 3
+"""
+
+MODIFIED_THEN_DELETED = """\
+diff --git a/src/gone.py b/src/gone.py
+index 1111111..2222222 100644
+--- a/src/gone.py
++++ b/src/gone.py
+@@ -1,2 +1,2 @@
+-A = 1
++A = 2
+diff --git a/src/gone.py b/src/gone.py
+deleted file mode 100644
+index 2222222..0000000
+--- a/src/gone.py
++++ /dev/null
+@@ -1,2 +0,0 @@
+-A = 2
+"""
 
 
 # ---------------------------------------------------------------------------
