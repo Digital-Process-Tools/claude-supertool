@@ -26,6 +26,14 @@ Both fixes are anchoring, not joining: every target form compared is absolute
 #754 wanted for Windows' `abspath` / `resolve` divergence), and a suffix has to
 be at least two segments to identify anything.
 
+**The floor is gone; #1045 replaced it with an anchor.** Two segments is what a
+package at the workspace root prints - `src/lib.rs` - and every member's
+absolute path ends with those two, so the floor cross-attributed in its turn.
+Cargo's relative paths are relative to the workspace root, `cargo metadata`
+reports that root, and anchoring to it makes the comparison an equality. Every
+case in this file is still a case: what changed is that the workspace root each
+one implies is now stated instead of assumed.
+
 The Windows half is asserted on every platform with `ntpath.normcase` injected,
 for the reason #754's own header gives: the fold belongs to the platform, and
 three CI legs went red last time on exactly this comparison.
@@ -53,11 +61,16 @@ def _load():
 cargo_check = _load()
 
 
-def _same(src: str, target_raw: str, normcase=None) -> bool:
-    """The adapter's own call shape: `_parse_errors` passes the resolved target
-    and the raw argument it was handed."""
+def _same(src: str, target_raw: str, normcase=None, ws_root=None) -> bool:
+    """The adapter's own call shape: `_parse_errors` passes the resolved target,
+    the raw argument it was handed, and the workspace root cargo's relative
+    paths are relative to (#1045). Targets here are written relative to the
+    process cwd, so that cwd is their workspace root unless a case says
+    otherwise."""
     return cargo_check._same_file(src, Path(target_raw).resolve(), target_raw,
-                                  normcase=normcase)
+                                  normcase=normcase,
+                                  ws_root=os.getcwd() if ws_root is None
+                                  else ws_root)
 
 
 # ---------------------------------------------------------------------------
@@ -71,7 +84,8 @@ NOT_THIS_FILE = [
     ("crates/other/src/main.rs", "main.rs"),
     # an absolute diagnostic somewhere else entirely
     ("/abs/elsewhere/src/lib.rs", "src/lib.rs"),
-    # the floor itself: a bare basename identifies nothing
+    # a basename, which under the old floor identified nothing and now
+    # identifies one file: `<ws>/main.rs`, which is not `<ws>/src/main.rs`
     ("main.rs", "src/main.rs"),
     # a sibling crate in the same workspace
     ("crates/other/src/main.rs", "crates/foo/src/main.rs"),
@@ -89,7 +103,7 @@ def test_a_foreign_diagnostic_is_never_charged_to_this_file(
     """The damage, not the predicate. A rustc code here is a finding, and a
     finding is what `rollback_on_fail` reverts an edit over."""
     out = f"{src}:4:5: error[E0425]: cannot find function `nope` in this scope\n"
-    errors = cargo_check._parse_errors(out, target)
+    errors = cargo_check._parse_errors(out, target, ws_root=os.getcwd())
     assert len(errors) == 1, errors
     err = errors[0]
     assert err["code"] == "adapter", (
@@ -120,12 +134,13 @@ def test_the_files_own_diagnostic_is_still_this_file(src: str, target: str) -> N
 
 
 def test_a_crate_relative_path_still_matches_a_deeper_target() -> None:
-    """The adapter runs cargo with `cwd=crate_root`, so a crate that is not a
-    workspace member gets `src/main.rs` out of cargo while the caller named the
-    file `member/src/main.rs` from further up. Same file, and the anchoring
-    must not reach it: the target is anchored, cargo's path stays a free tail."""
-    assert _same("src/main.rs", os.path.join("member", "src", "main.rs")) is True
+    """A crate that is not a workspace member is its own workspace root, so
+    cargo prints `src/main.rs` while the caller named the file
+    `member/src/main.rs` from further up. Same file - and it is the workspace
+    root that says so, which is exactly what the suffix rule was guessing at."""
     deep = os.path.join("member", "src", "main.rs")
+    assert _same("src/main.rs", deep,
+                 ws_root=os.path.join(os.getcwd(), "member")) is True
     assert _same(deep, deep) is True
 
 
@@ -140,7 +155,8 @@ def test_a_real_finding_keeps_its_rustc_code_and_location(tmp_path: Path) -> Non
     target = src / "main.rs"
     target.write_text("fn main() {\n    nope();\n}\n", encoding="utf-8")
     errors = cargo_check._parse_errors(
-        "src/main.rs:2:5: error[E0425]: cannot find function `nope`\n", str(target))
+        "src/main.rs:2:5: error[E0425]: cannot find function `nope`\n", str(target),
+        ws_root=str(tmp_path))
     assert errors[0]["code"] == "E0425", f"a real finding was demoted: {errors[0]!r}"
     assert errors[0]["line"] == 2
 
@@ -150,29 +166,37 @@ def test_a_real_finding_keeps_its_rustc_code_and_location(tmp_path: Path) -> Non
 # ---------------------------------------------------------------------------
 
 WIN_TARGET = "D:\\a\\ws\\crates\\foo\\src\\main.rs"
+WIN_WS = "D:\\a\\ws"
+WIN_CRATE = "D:\\a\\ws\\crates\\foo"
 
 
-@pytest.mark.parametrize("src", [
-    "src\\main.rs",
-    "src/main.rs",
-    "crates\\foo\\src\\main.rs",
-    WIN_TARGET,
-    "Crates\\Foo\\Src\\Main.rs",
+@pytest.mark.parametrize("src,ws_root", [
+    # the crate is its own workspace root, so cargo prints the crate-relative form
+    ("src\\main.rs", WIN_CRATE),
+    ("src/main.rs", WIN_CRATE),
+    # a member of the workspace above it, so cargo prints the member prefix
+    ("crates\\foo\\src\\main.rs", WIN_WS),
+    ("Crates\\Foo\\Src\\Main.rs", WIN_WS),
+    # absolute needs no root at all
+    (WIN_TARGET, None),
 ])
-def test_windows_paths_that_are_this_file_still_match(src: str) -> None:
+def test_windows_paths_that_are_this_file_still_match(src: str, ws_root) -> None:
     assert cargo_check._same_file(src, Path(WIN_TARGET), WIN_TARGET,
-                                  normcase=ntpath.normcase) is True, src
+                                  normcase=ntpath.normcase,
+                                  ws_root=ws_root) is True, src
 
 
 @pytest.mark.parametrize("src", [
-    "main.rs",                                    # the floor, folded
+    "main.rs",                                    # a file at the workspace root
+    "src\\main.rs",                               # #1045: the root package's own
     "vendor\\crates\\foo\\src\\main.rs",          # a vendored copy
     "crates\\other\\src\\main.rs",                # a sibling crate
     "D:\\other\\ws\\crates\\foo\\src\\main.rs",   # another workspace
 ])
 def test_windows_paths_that_are_another_file_do_not_match(src: str) -> None:
     assert cargo_check._same_file(src, Path(WIN_TARGET), WIN_TARGET,
-                                  normcase=ntpath.normcase) is False, src
+                                  normcase=ntpath.normcase,
+                                  ws_root=WIN_WS) is False, src
 
 
 def test_a_windows_relative_target_is_anchored_not_suffix_matched() -> None:
@@ -182,7 +206,7 @@ def test_a_windows_relative_target_is_anchored_not_suffix_matched() -> None:
     target = ntpath.join("crates", "foo", "src", "main.rs")
     assert cargo_check._same_file(
         ntpath.join("vendor", target), Path(target).resolve(), target,
-        normcase=ntpath.normcase) is False
+        normcase=ntpath.normcase, ws_root=os.getcwd()) is False
 
 
 def test_no_case_is_decided_by_a_hardcoded_posix_separator() -> None:
