@@ -27,7 +27,7 @@
       "timeout": 60
     }
   },
-  "introduction": "./supertool 'op:args' 'op:args'... Batch 6-7 ops/call. Single quotes per op. Paths from root. Use ops not raw cmds (mysql_read, phpstan, batched reads). Read only before Edit.\n\n@file route (mutating ops: edit/replace/replace_lines/paste/vim): op:@payload or op:@- (stdin). Auto-detect: starts with { \u2192 JSON, else TOML. TOML '''triple-single-quote''' preserves backslashes/quotes/newlines \u2014 best for code blocks. Fields match syntax tokens lowercased (edit:::OLD:::NEW:::PATH \u2192 old, new, path).\n\nTo avoid escape problems, use chr(10)/chr(27) instead of \\n/\\x1b in payload content.",
+  "introduction": "./supertool 'op:args' 'op:args'... Batch 6-7 ops/call. Single quotes per op. Paths from root. Use ops not raw cmds (mysql_read, phpstan, batched reads). Read only before Edit.\n\n@file route (edit/replace/replace_lines/append/paste/vim; also read/grep/around/between/validate): op:@payload or op:@- (stdin). Only ONE '@-' per call (#341) — for several mutations in one call use batch:@- with an [[ops]] array. Auto-detect: starts with { \u2192 JSON, else TOML. TOML '''triple-single-quote''' preserves backslashes/quotes/newlines \u2014 best for code blocks. Fields match syntax tokens lowercased (edit:::OLD:::NEW:::PATH \u2192 old, new, path).\n\nTo avoid escape problems, use chr(10)/chr(27) instead of \\n/\\x1b in payload content.",
   "output-format": "Each op: header + body.\n```\n--- op:args ---\n(meta)\noutput\n```",
   "builtin-ops": {
     "read": {
@@ -184,6 +184,13 @@
       "syntax": "vim:::PATH:::SCRIPT",
       "description": "vim-flavored cursor-based multi-action edit. SCRIPT is parsed like a real vim macro: NORMAL mode reads verbs char-by-char; insert verbs (i/a/A/I/o/O), search (/?), and ex (:) enter GREEDY modes where chars are TEXT/PAT until \\e (ESC, U+001B) returns to NORMAL. No separator chars \u2014 ';', '{', '}', newlines etc. are literal. Each action: [count][verb][arg]. Cursor: gg/G (BOF/EOF), nG (goto line), 0/$ (BOL/EOL), /PAT or ?PAT (search), nh/nl/nj/nk (move), bare `:N`/`:$`/`:.` (line goto). Inserts (TEXT until \\e, \\n/\\t decoded): iTEXT (before), aTEXT (after), ITEXT (BOL), ATEXT (EOL), oTEXT/OTEXT (open below/above, AUTO-INDENT to current line). Deletes: x/nx (chars), dd/ndd (lines), D (to EOL). Replace: rc. Ex: :s/PAT/REPL/[gid] (literal-fallback on unescaped parens/over-escapes), :%s, :Nd/:N,Md/:.,/PAT/d, :g/PAT/d (also bare `g/PAT/d` and `%g/PAT/d` autoprefixed with `:`), :v/PAT/d, :r FILE, :Nr FILE (read after line N), :Na\\nBODY\\n. (ex append after line N), :w/:wq (no-op, supertool writes atomically). Autocorrects: `oi<ws>TEXT` strips redundant verb-bleed, `:%%d` \u2192 `:%d`, `V<N>Gd` \u2192 `:.,Nd`, `64,` abandoned range stripped. **DEFAULT EDIT OP** for any pattern-based edit (find+change, insert relative to pattern, multi-step chains). Only fall back to `paste` (full file) / `edit` (unique literal swap) / `replace_lines` (known line range) when vim doesn't fit.",
       "example": "vim:::skill.md:::/## Process\\eO## Task list\\eo1. Foo\\eo2. Bar",
+      "status": 1,
+      "hint": true
+    },
+    "batch": {
+      "syntax": "batch:@FILE | batch:@-",
+      "description": "N ops from ONE payload — TOML [[ops]] array or JSON array of {\"op\":...}, each entry taking that op's own @payload fields. The only way to put several mutations in one call, since a call carries just one '@-' (#341). Reads/greps mix in freely. Per-op validators, per-op rollback.",
+      "example": "batch:@- with [[ops]] entries for edit + edit + read",
       "status": 1,
       "hint": true
     },
