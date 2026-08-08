@@ -3920,6 +3920,21 @@ PATH_META_UNKNOWN = "git?"
 _PATH_META_BULK: Dict[str, Any] = {}
 
 
+def _path_meta_bulk_drop() -> None:
+    """Invalidate every snapshot, keeping the `declined` verdicts.
+
+    A snapshot describes a tree at an instant, so a write invalidates it. A
+    `declined` does not describe the tree at all — it records that this repo's
+    status query does not come back inside the budget, which is a property of
+    the repository (a very large ignored subtree, most likely) and is just as
+    true after the write as before it. Clearing it wholesale meant the second
+    path after every single edit re-paid the full 2s timeout to rediscover the
+    same fact, turning a one-off cost into a per-edit one.
+    """
+    for key in [k for k, v in _PATH_META_BULK.items() if v != "declined"]:
+        del _PATH_META_BULK[key]
+
+
 def _path_meta_bulk_fill(root: str) -> Optional[Dict[str, Any]]:
     """One repo-wide `git status`, parsed into {relpath: XY}. None = declined.
 
@@ -3957,6 +3972,41 @@ def _path_meta_bulk_fill(root: str) -> Optional[Dict[str, Any]]:
             i += 1
         codes[name.rstrip("/")] = xy
     return {"codes": codes, "taken_ns": taken_ns}
+
+
+_PATH_META_ROOT_CACHE: Dict[str, str] = {}
+
+
+def _path_meta_repo_root(path: str) -> str:
+    """Repo root for `path`, walking the path AS WRITTEN — links unresolved.
+
+    Deliberately not `_dirs_up_to_repo_root`, which calls `os.path.realpath`
+    first. That is correct for the formatter/validator machinery it was built
+    for, where the question is which config governs the real file. It is the
+    wrong question here, and measurably so: a symlink `link.txt` inside repo A
+    pointing at a file in repo B resolved to **B's root**, so the marker beside
+    a file in A was computed from a completely different repository's status.
+
+    The per-path query this coalesces runs with `cwd=os.path.dirname(
+    os.path.abspath(path))`, so climbing from that same directory is what keeps
+    the two routes answering about the same repository.
+    """
+    start = os.path.dirname(os.path.abspath(path)) or os.sep
+    cached = _PATH_META_ROOT_CACHE.get(start)
+    if cached is not None:
+        return cached
+    current = start
+    root = ""
+    while True:
+        if os.path.exists(os.path.join(current, ".git")):
+            root = current
+            break
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    _PATH_META_ROOT_CACHE[start] = root
+    return root
 
 
 def _path_meta_bulk_code(codes: Dict[str, str], rel: str) -> str:
@@ -4030,9 +4080,16 @@ def _path_meta_suffix(path: str, sample: bytes = b"") -> str:
     # something has actually looked, so the per-path spawn below is skipped only
     # on a real answer and never on a missing one.
     code = None
-    dirs = _dirs_up_to_repo_root(path)
-    root = dirs[-1] if dirs and os.path.exists(os.path.join(dirs[-1], ".git")) else ""
-    if root:
+    absolute = os.path.abspath(path)
+    root = _path_meta_repo_root(path)
+    # A repo-wide status keys every record by the path as it sits in the tree.
+    # If any component of this path is a link, the name we would look up is not
+    # the name git recorded, the lookup misses, and a miss is indistinguishable
+    # from clean — a modified or untracked file rendering as if it were neither.
+    # One `realpath` compare is cheaper than being wrong, and the per-path query
+    # below handles links correctly today.
+    through_a_link = os.path.realpath(path) != absolute
+    if root and not through_a_link:
         entry = _PATH_META_BULK.get(root)
         if entry is None:
             _PATH_META_BULK[root] = "primed"
@@ -4047,7 +4104,7 @@ def _path_meta_suffix(path: str, sample: bytes = b"") -> str:
         )
         if servable:
             try:
-                rel = os.path.relpath(os.path.realpath(path), root)
+                rel = os.path.relpath(absolute, root)
             except ValueError:
                 # Different drives on Windows. The walk said this path is under
                 # `root`, so this should not happen; if it does, re-ask git
@@ -5980,7 +6037,7 @@ def _atomic_write(path: str, content: str) -> None:
     # (#1126). Cleared before the write rather than after: an exception on the
     # way out would otherwise leave a snapshot describing a tree that has
     # already partly moved.
-    _PATH_META_BULK.clear()
+    _path_meta_bulk_drop()
     # Byte-pattern warnings a syntax validator structurally cannot catch, raised
     # at the one place every mutating op passes through (#380).
     _warn = _sh_backslash_warning(path, content)
@@ -18030,7 +18087,7 @@ def dispatch(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = None) ->
         # Keyed off the same predicate as parallel dispatch because it asks the
         # same question, and an unrecognised or custom op is unsafe by default.
         if not _is_parallel_safe(arg):
-            _PATH_META_BULK.clear()
+            _path_meta_bulk_drop()
         # _FORMATTER_SKIPS is module-level and drained on the normal return
         # path. An exception escaping _dispatch_impl skips that drain, and the
         # next top-level call would report skips belonging to a call that

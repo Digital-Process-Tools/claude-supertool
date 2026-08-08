@@ -554,6 +554,9 @@ RESET_GLOBALS = (
     # built it, and a stale answer for the next test, which would see another
     # test's tmp_path repo described as its own.
     "_PATH_META_BULK",
+    # Same call, same reason: a repo root resolved from a directory that a
+    # later test recreates at the same tmp_path with different contents.
+    "_PATH_META_ROOT_CACHE",
     "_MUTATION_ATTEMPTS",
     "_REPO_ROOT_WALK_CACHE",
     "_TS_GRAMMAR_FAILED",

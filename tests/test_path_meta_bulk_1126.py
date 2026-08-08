@@ -44,9 +44,15 @@ def _init_repo(root: Path) -> None:
 
 
 def _reset_bulk() -> None:
-    """Drop any coalesced snapshot. Tolerates the symbol not existing yet so the
-    spawn-count test below reds on the count, not on an AttributeError."""
+    """Drop any coalesced snapshot, declines included, and the repo-root walk.
+
+    `.clear()` and not `_path_meta_bulk_drop()`: production deliberately keeps
+    a `declined` verdict across an invalidation, and a test setting up a fresh
+    repo wants neither that nor a root memoised from a previous tmp_path.
+    Tolerates the symbols not existing yet so the spawn-count test below reds
+    on the count rather than on an AttributeError."""
     getattr(supertool, "_PATH_META_BULK", {}).clear()
+    getattr(supertool, "_PATH_META_ROOT_CACHE", {}).clear()
 
 
 @pytest.fixture
@@ -186,8 +192,115 @@ def test_two_repos_in_one_call_do_not_answer_for_each_other(tmp_path: Path) -> N
     assert " m" not in supertool._path_meta_suffix(str(a / "also_clean.txt"), b"x\n")
 
 
+def test_a_symlink_gets_the_same_marker_from_either_route(repo: Path) -> None:
+    """The bug this test exists for: git keys its records by the name in the
+    tree, and looking one up under the link's *target* name missed every time.
+    A miss is indistinguishable from clean, so an untracked symlink rendered as
+    a tracked, unmodified file — a wrong answer, not a slow one."""
+    (repo / "real").mkdir()
+    (repo / "real" / "target.txt").write_bytes(b"committed\n")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True,
+                   capture_output=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "add target"],
+                   check=True, capture_output=True)
+    link = repo / "link.txt"
+    link.symlink_to(Path("real") / "target.txt")
+
+    _reset_bulk()
+    alone = supertool._path_meta_suffix(str(link), b"x\n")
+    # Now with a snapshot already built for this repo by earlier paths.
+    _reset_bulk()
+    for name in _PATHS[:3]:
+        supertool._path_meta_suffix(str(repo / name), b"x\n")
+    with_snapshot = supertool._path_meta_suffix(str(link), b"x\n")
+
+    assert " ?" in alone, "an untracked symlink is untracked"
+    assert with_snapshot == alone
+
+
+def test_a_symlink_is_never_answered_from_another_repo(tmp_path: Path) -> None:
+    """Resolving the link first picked the repo the *target* lives in, so the
+    marker beside a file in one repo was computed from another one's status."""
+    here, elsewhere = tmp_path / "here", tmp_path / "elsewhere"
+    here.mkdir()
+    elsewhere.mkdir()
+    _init_repo(here)
+    _init_repo(elsewhere)
+    _reset_bulk()
+
+    link = here / "points_away.txt"
+    link.symlink_to(elsewhere / "clean.txt")
+    for name in _PATHS[:3]:
+        supertool._path_meta_suffix(str(here / name), b"x\n")
+
+    assert " ?" in supertool._path_meta_suffix(str(link), b"x\n")
+
+
+def test_a_file_deep_under_an_untracked_directory_keeps_its_marker(
+    repo: Path,
+) -> None:
+    """A repo-wide status collapses a whole untracked directory into one record,
+    so the marker for anything inside it comes from the ancestor walk, and that
+    walk has to climb more than one level."""
+    deep = repo / "newdir" / "sub" / "deeper"
+    deep.mkdir(parents=True)
+    target = deep / "file.txt"
+    target.write_bytes(b"new\n")
+
+    _reset_bulk()
+    alone = supertool._path_meta_suffix(str(target), b"x\n")
+    _reset_bulk()
+    for name in _PATHS[:3]:
+        supertool._path_meta_suffix(str(repo / name), b"x\n")
+    with_snapshot = supertool._path_meta_suffix(str(target), b"x\n")
+
+    assert " ?" in alone
+    assert with_snapshot == alone
+
+
+def test_a_repo_whose_query_declines_falls_back_and_stays_fallen_back(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, counter: _StatusCounter
+) -> None:
+    """A status query that cannot answer must not be read as a clean tree, and
+    the verdict must outlive an edit — otherwise every write re-pays the full
+    timeout to rediscover the same thing."""
+    monkeypatch.setattr(supertool, "_path_meta_bulk_fill", lambda root: None)
+
+    for name in _PATHS:
+        supertool._path_meta_suffix(str(repo / name), b"x\n")
+
+    root = supertool._path_meta_repo_root(str(repo / "clean.txt"))
+    assert supertool._PATH_META_BULK[root] == "declined"
+    # Every path fell back, so every path was really asked about.
+    assert counter.status == len(_PATHS)
+    assert " m" in supertool._path_meta_suffix(str(repo / "dirty.txt"), b"x\n")
+
+    supertool._path_meta_bulk_drop()
+    assert supertool._PATH_META_BULK.get(root) == "declined", (
+        "a declined verdict describes the repo, not the tree - a write must "
+        "not throw it away"
+    )
+
+
+def test_a_snapshot_does_not_outlive_a_write_but_a_decline_does(
+    repo: Path,
+) -> None:
+    """The two halves of `_path_meta_bulk_drop`, against each other."""
+    for name in _PATHS[:3]:
+        supertool._path_meta_suffix(str(repo / name), b"x\n")
+    root = supertool._path_meta_repo_root(str(repo / "clean.txt"))
+    assert isinstance(supertool._PATH_META_BULK[root], dict)
+
+    supertool._PATH_META_BULK["/somewhere/else"] = "declined"
+    supertool._path_meta_bulk_drop()
+
+    assert root not in supertool._PATH_META_BULK
+    assert supertool._PATH_META_BULK["/somewhere/else"] == "declined"
+
+
 def test_the_snapshot_globals_are_registered_for_reset() -> None:
     """#397's list is what stops per-call scratch surviving into the next test."""
     import conftest
 
     assert "_PATH_META_BULK" in conftest.RESET_GLOBALS
+    assert "_PATH_META_ROOT_CACHE" in conftest.RESET_GLOBALS
