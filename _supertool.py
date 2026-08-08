@@ -12621,6 +12621,17 @@ def _validator_strip_core_keys(data: Dict[str, Any]) -> Dict[str, Any]:
     as it was written and removes only the claims it had no standing to make,
     so a forged key costs the adapter nothing and buys it nothing.
 
+    **Two doors, and the count is the part that was wrong.** This was written
+    as "the only door" on the line after `json.loads`, and the validator cache
+    is the other one: a cache hit returns the same parsed payload, persisted,
+    from a `return` that is upstream of that line. An entry left by a build
+    from before this function existed carries a forged `timeout` through an
+    HMAC that verifies — the machine's own secret signed it — and a cache key
+    with no version component, so no upgrade retires it (#1044). Both doors are
+    in `_validator_run_one`; a third one strips too, and
+    `tests/test_cached_result_cannot_forge_core_keys_1044.py` is where the
+    cache door is pinned.
+
     It is a set rather than two `pop` calls because the defect is the class:
     `no_verdict` was already forbidden in prose by `validators/SCHEMA.md` and
     `timeout` was not, and nothing enforced either. Any key a core-only decision
@@ -12692,8 +12703,26 @@ def _validator_run_one(name: str, spec: Dict[str, Any], file: str,
     if _validator_cache_enabled() and spec_cache_enabled:
         cache_key = _validator_cache_key(target, name, cmd, spec)
         if cache_key:
+            import time as _time
+            _t_cache = _time.monotonic()
             cached = _validator_cache_read(cache_key)
             if cached is not None:
+                # The other door (#1044). A cache entry is an adapter payload
+                # that outlived the run which parsed it, and this return is
+                # upstream of the strip below — so an entry written by a build
+                # from before #1036 hands a decision the adapter's own
+                # `timeout` verbatim. It verifies: this machine's secret signed
+                # it, and the key has no version component, so upgrading to the
+                # build that fixed #1036 does not retire it.
+                _validator_strip_core_keys(cached)
+                # Re-stamped, not preserved: these two describe THIS run. The
+                # answer came out of a file, so the elapsed time is the lookup,
+                # and the resolved target is the one just resolved above — the
+                # cached copy of either is only as trustworthy as the adapter
+                # that may have written it.
+                cached["elapsed_s"] = _elapsed_since(_t_cache)
+                if target != file:
+                    cached["resolved_to"] = target
                 return cached
 
     # Use _merged_env (built above) so the prefix env-vars reach the child too.
@@ -12729,7 +12758,9 @@ def _validator_run_one(name: str, spec: Dict[str, Any], file: str,
                 name, target, "replied without a verdict "
                 "(no 'ok' and no 'skipped' key)", _elapsed)
         # Before anything reads it: the payload crosses from the adapter's
-        # authority into the core's here, and this is the only door (#1036).
+        # authority into the core's here. One of the two doors — the other is
+        # the cache read above, which returns the same payload persisted
+        # (#1036, #1044).
         _validator_strip_core_keys(data)
         data["elapsed_s"] = _elapsed
         if target != file:
