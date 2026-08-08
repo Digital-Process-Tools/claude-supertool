@@ -254,6 +254,30 @@ def _reconcile_checks(d: dict) -> tuple[str, list[str]]:
         marker = marker or _checks.INCOMPLETE_MARK
     return (marker, lines)
 
+def _leg_unit_line(check_states: Sequence[str]) -> str:
+    """Say that the failed count counts legs, when there is a failed count.
+
+    #1050. `checks: 20 total: 16 passed, 4 failed, 0 pending` was read as four
+    failing *tests*. There were six, uniform across four *legs*, and the wrong
+    reading is not a careless one — nothing in the line names its unit, and the
+    named disclosure under it lists check names that look exactly like test
+    parametrisations (`pytest (windows-latest, 3.9)`).
+
+    The two readings point at opposite investigations. Three visible names out
+    of "four failures" says some legs passed where their twins failed, which is
+    ordering or shared state; six-of-six on every leg says the fixture. The
+    render was consistent with both and settled neither.
+
+    Printed only when something is in the failed bucket. A unit note on a green
+    PR is a line nobody needs, and a line that appears on every render is one
+    nobody reads by the time it matters — this repo has paid for that twice.
+    """
+    if not any(_checks.bucket(s) == "failed" for s in check_states):
+        return ""
+    return ("  (those are LEGS — one check run each, not one test each. For the "
+            "test counts read a leg's own summary: ./supertool 'gh-job:ID')")
+
+
 def _local_branch_check(source: str) -> str:
     """Return a one-line local-branch-vs-PR-source check.
 
@@ -554,6 +578,9 @@ def main() -> int:
             _checks.github_named_states(d.get("statusCheckRollup"))
         ):
             print(line)
+        unit_line = _leg_unit_line(check_states)
+        if unit_line:
+            print(unit_line)
         print(f"review: {review_decision}")
         if merge_commit:
             print(f"merge_commit: {merge_commit[:12]}")
@@ -668,6 +695,9 @@ def main() -> int:
         _checks.github_named_states(d.get("statusCheckRollup"))
     ):
         print(line)
+    unit_line = _leg_unit_line(check_states)
+    if unit_line:
+        print(unit_line)
 
     # Changes
     print(f"Changes: {changed_files} files, +{additions} -{deletions}")

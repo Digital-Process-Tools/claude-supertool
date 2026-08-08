@@ -442,8 +442,97 @@ def _selection_mismatch(display_status: str, job_id: str) -> str:
     )
 
 
+# A pytest terminal summary line. Two spellings, both live:
+#
+#   ==== 6 failed, 7760 passed, 677 skipped in 221.51s ====   (a tty, or -v)
+#   6 failed, 7760 passed, 677 skipped, 2 warnings in 221.51s (0:03:41)
+#
+# The second is what job 93033577461 — #1050's own job — actually contains:
+# GitHub Actions is not a tty, so pytest writes no `=` rule. A first pass here
+# required the fences, matched the fixture written from the issue's quote, and
+# would have found nothing in any real CI log. The fences are therefore
+# optional and the anchor is the *shape*: count-noun pairs, then `in <duration>`,
+# and nothing else on the line. That rejects prose carrying the same words
+# ("the previous run had 6 failed tests") without depending on decoration that
+# only appears on a terminal.
+_SUITE_SUMMARY_RE = re.compile(
+    r"^=*\s*"
+    r"(?P<counts>\d+\s+[A-Za-z]+(?:\s*,\s*\d+\s+[A-Za-z]+)*)"
+    r"\s+in\s+[0-9.]+s"
+    r"(?:\s*\([^)]*\))?"
+    r"\s*=*$"
+)
+
+# At least one of these has to appear, so `= no tests ran in 0.12s =` and a
+# banner of `=` around something else are both declined rather than reported as
+# a count of nothing.
+_SUITE_OUTCOMES = (
+    "passed", "failed", "error", "errors", "skipped",
+    "xfailed", "xpassed", "deselected", "warning", "warnings",
+)
+
+
+def _suite_summary(lines: list[str]) -> str | None:
+    """The job's own `N failed, M passed` line, or `None` when it states none.
+
+    #1050. `gh-pr:N:status` said `20 total: 16 passed, 4 failed` and the four
+    were **legs**; carried forward as four *tests* it produced a specifically
+    misleading picture — three visible names past an elision looked like a
+    partial failure, which points at ordering or shared state, while the truth
+    was six-of-six uniform, which points at the fixture. The agent handed that
+    diagnosis had to correct the premise before it could start.
+
+    The line that settles it in one glance already exists in every one of those
+    logs and no op surfaced it. It is authoritative (pytest wrote it, about
+    itself), it is one line, and it is the only number in the whole render that
+    counts *tests*.
+
+    `None` rather than a zero when there is none: a log from a build step or a
+    linter states no test count, and "0 failed" would be a claim this function
+    is in no position to make.
+    """
+    for line in reversed(lines):
+        m = _SUITE_SUMMARY_RE.match(line.strip())
+        if not m:
+            continue
+        body = m.group("counts")
+        low = body.lower()
+        if any(word in low for word in _SUITE_OUTCOMES):
+            return body
+    return None
+
+
+def gap_marker(n_lines: int) -> str:
+    """The line that stands where the op cut, saying so and saying how much.
+
+    #1050. This used to be a bare ``...``, which is the *log's* own vocabulary:
+    a truncated `AssertionError: ...`, a pytest diff elision, a `gh` field cut
+    short. Reading PR #1047's Windows red, the `...` between two matched blocks
+    held a `[validators]` section whose single line was the entire
+    discriminator between three candidate causes — and it read as part of the
+    assertion above it, so it was never looked for. Recovering it cost a second
+    call with `:grep:`.
+
+    So the marker states two things a bare ellipsis cannot: that **this op**
+    removed the lines, and **how many**. Thirty-four lines and three are the
+    same three characters otherwise, and the difference is whether the reader
+    reaches for `:raw` next.
+
+    The log is never described as incomplete — it is not. What is incomplete is
+    this selection of it.
+    """
+    unit = "line" if n_lines == 1 else "lines"
+    return (f"... ({n_lines} {unit} elided by this op — no error pattern "
+            f"matched them; the log itself is intact)")
+
+
 def _find_error_sections(lines: list[str], patterns: list[str], context: int) -> list[tuple[int, str]]:
-    """Find lines matching error patterns and return them with context."""
+    """Find lines matching error patterns and return them with context.
+
+    Gaps between the context windows carry `gap_marker` rather than a bare
+    ``...`` (#1050), and every withheld line is counted by exactly one marker,
+    so the numbers in the render account for the whole log.
+    """
     matches: set[int] = set()
     for i, line in enumerate(lines):
         for pattern in patterns:
@@ -460,12 +549,26 @@ def _find_error_sections(lines: list[str], patterns: list[str], context: int) ->
 
     result: list[tuple[int, str]] = []
     sorted_matches = sorted(matches)
-    prev = -2
+    # `-1`, not `-2`. At `-2` the first index (0) satisfies `idx > prev + 1`
+    # and the render opened with an elision marker over nothing at all — an
+    # absence the op invented, on a log whose first line was shown directly
+    # beneath it. Found by #1050's own test; it is the same defect as the bare
+    # `...`, one line up, and it made every `:fail` render look like it had
+    # already cut something before it had.
+    prev = -1
     for idx in sorted_matches:
         if idx > prev + 1:
-            result.append((-1, "..."))
+            result.append((-1, gap_marker(idx - prev - 1)))
         result.append((idx + 1, lines[idx]))
         prev = idx
+
+    # Anything after the last shown line is withheld too, and the reader
+    # deciding whether to call `:raw` needs that number as much as the middle
+    # ones. `:fail` says "no tail truncation" about its *blocks*, which has
+    # been read as "no tail" about the log.
+    trailing = len(lines) - 1 - prev
+    if trailing > 0:
+        result.append((-1, gap_marker(trailing)))
 
     return result
 
@@ -516,10 +619,12 @@ def _emit_grep_hits(
     planned: list[str] = []
     emitted = 0
     shown_matches = 0
-    prev = -2
+    # `-1` for the same reason as `_find_error_sections` (#1050): at `-2` the
+    # first hit was preceded by an elision marker covering zero lines.
+    prev = -1
     cut = False
     for idx in hit_indexes:
-        chunk = "...\n" if idx > prev + 1 else ""
+        chunk = (gap_marker(idx - prev - 1) + "\n") if idx > prev + 1 else ""
         chunk += f"  {idx + 1:>5} | {lines[idx]}\n"
         size = len(chunk.encode("utf-8", "replace"))
         # The first hit always goes out whole, however fat: a bound that can
@@ -732,6 +837,15 @@ def main() -> int:
         print(f"Run: #{run_id}")
 
     print(f"Log: {total} lines total")
+
+    # #1050: printed here rather than beside the error blocks, because the
+    # question it answers ("four failed legs, or four failed tests?") is asked
+    # before the reader reaches them — and because it is a fact about the job,
+    # like `Status:` above it, not part of any selection below.
+    suite = _suite_summary(lines)
+    if suite:
+        print(f"Suite: {_untrusted.flat(suite)} — the job's own summary line. "
+              f"These count TESTS; a check tally counts LEGS.")
 
     if total == 0 and not raw_mode:
         # Empty and absent are two different lies this surface tells (#723):

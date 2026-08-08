@@ -54,6 +54,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import _checks  # noqa: E402
 import _declared_legs  # noqa: E402  (the second leg count, shared with gh-run / gh-pr)
+import _declared_workflows  # noqa: E402  (the second *workflow* count — #846)
 import _repo_target  # noqa: E402  (the repo this call is about, when not the cwd's)
 import _untrusted  # noqa: E402  (workflow and job names are remote text — #851)
 
@@ -232,9 +233,85 @@ def no_run_verdict(sha: str, age_secs: object, grace: int = _GRACE) -> tuple:
                     "Check the repo's Actions tab.")
 
 
+def scope_clause(undispatched: list, unestablished: str, n_wf: int) -> str:
+    """The sentence a GREEN needs so it stops over-claiming (#846).
+
+    `gh-branch`'s green has always meant *every workflow that produced a run on
+    this commit passed*. Nothing said so, and the missing half is not visible
+    from inside the arithmetic: a workflow with no run is absent from both sides
+    of it and cancels out exactly. On the v0.27.0 tag that green covered three
+    of four declared workflows and read as covering all of them.
+
+    The verdict itself is not downgraded — see the module docstring of
+    `_declared_workflows` for why a shortfall concluded from an absence is a
+    false alarm on a merge gate. What changes is that the clearance states its
+    own scope, on the line people actually read.
+
+    Empty when everything declared produced a run: a qualifier printed on every
+    render is one nobody reads on the render where it matters, and this repo has
+    paid for that twice.
+    """
+    if unestablished:
+        return (f" The set of workflows declared at this commit is "
+                f"UNESTABLISHED ({unestablished}), so whether these {n_wf} are "
+                f"all of them is UNKNOWN.")
+    if not undispatched:
+        return ""
+    n = len(undispatched)
+    return (f" This covers the {n_wf} "
+            f"{'workflow' if n_wf == 1 else 'workflows'} that produced a run; "
+            f"{n} declared in {_declared_workflows.WORKFLOW_DIR} at this commit "
+            f"produced none and {'is' if n == 1 else 'are'} NOT covered — named "
+            f"below.")
+
+
+def undispatched_lines(undispatched: list) -> list[str]:
+    """Name what the verdict does not cover, loudest case on its own line.
+
+    Split by trigger, because the two absences are different questions. A
+    `schedule`/`workflow_dispatch`/`pull_request` workflow producing no run on a
+    pushed commit is expected — naming those one per line, forever, on every
+    call, is how a disclosure gets tuned out — so they collapse into a single
+    summary. A workflow declaring a **push** trigger and producing no run is a
+    real open question, and gets its own line saying the question is open rather
+    than answering it.
+    """
+    if not undispatched:
+        return []
+    loud: list[dict] = []
+    quiet: list[dict] = []
+    for wf in undispatched:
+        (loud if _declared_workflows.is_push_triggered(wf.get("triggers"))
+         is not False else quiet).append(wf)
+
+    lines = [f"Declared in {_declared_workflows.WORKFLOW_DIR} at this commit "
+             f"with no run on it — NOT covered by the verdict above:"]
+    for wf in loud:
+        triggers = wf.get("triggers")
+        if triggers is None:
+            said = ("its `on:` block could not be read, so whether a push "
+                    "reaches it is UNKNOWN")
+        else:
+            said = (f"triggers: {', '.join(_untrusted.flat(str(t)) for t in triggers)} "
+                    f"— a push trigger IS declared and this commit has no run "
+                    f"from it. Whether a branch filter, a path filter, an `if:` "
+                    f"or a disabled workflow accounts for that is UNKNOWN from "
+                    f"here")
+        lines.append(f"  {_untrusted.flat(str(wf.get('name')))} "
+                     f"({_untrusted.flat(str(wf.get('path')))}) — {said}.")
+    if quiet:
+        named = ", ".join(
+            f"{_untrusted.flat(str(w.get('name')))} "
+            f"({', '.join(_untrusted.flat(str(t)) for t in (w.get('triggers') or []))})"
+            for w in quiet)
+        lines.append(f"  no push trigger, so no run on this commit is expected "
+                     f"and none of it is covered: {named}")
+    return lines
+
+
 def verdict(selected: dict, legs: dict, missing, sha: str,
             age_secs: object, grace: int = _GRACE,
-            unreconciled: str = "") -> tuple:
+            unreconciled: str = "", scope: str = "") -> tuple:
     """`(state, sentence)` for the whole commit. Conjunctive, and ordered.
 
     `legs` maps a workflow name to its leg states, or to ``None`` when the job
@@ -303,9 +380,12 @@ def verdict(selected: dict, legs: dict, missing, sha: str,
                          f"with what the runs declare ({unreconciled}), so "
                          "whether these are all of the legs is UNKNOWN. "
                          "Detailed below. Nothing here has failed.")
+    # `scope` rides on the green and only on the green (#846). Every branch
+    # above is a finding, and a reader looking at a finding is not clearing
+    # anything — the scope of a clearance is what was over-claimed.
     return (GREEN, f"{GREEN} — every workflow on {short} concluded and every "
                    f"leg passed ({n_legs} legs across {n_wf} "
-                   f"{'workflow' if n_wf == 1 else 'workflows'}).")
+                   f"{'workflow' if n_wf == 1 else 'workflows'}).{scope}")
 
 
 def _run_conclusion(run: object) -> str:
@@ -615,7 +695,23 @@ def main() -> int:
         fetched = {}
 
     marker, shortfall_lines = _reconcile(repo, selected, fetched)
-    state, sentence = verdict(selected, legs, missing, sha, age, _GRACE, marker)
+
+    # #846: the second source one scope out. Bought only when there is a run
+    # set to be short of — on a commit with no runs at all `no_run_verdict`
+    # already declines, and two more API calls would buy nothing.
+    undispatched: list = []
+    scope_unestablished = ""
+    if selected:
+        owner, name = _declared_legs.owner_repo(repo)
+        declared, why = _declared_workflows.declared_at(owner, name, sha)
+        if declared is None:
+            scope_unestablished = why
+        else:
+            undispatched = [w for w in declared if w.get("name") not in selected]
+
+    scope = scope_clause(undispatched, scope_unestablished, len(selected))
+    state, sentence = verdict(selected, legs, missing, sha, age, _GRACE,
+                              marker, scope)
 
     print(f"# Is `{ref}` green? — {repo}")
     print(f"Branch {ref}: {state}")
@@ -642,6 +738,17 @@ def main() -> int:
         print("-" * 96)
         for name in sorted(selected):
             print(_row(name, selected[name], fetched.get(name)))
+
+    if scope_unestablished:
+        print()
+        print(f"Declared workflow set at {sha[:7]}: UNESTABLISHED — "
+              f"{scope_unestablished}. The verdict above covers the "
+              f"{len(selected)} workflow(s) that produced a run and cannot say "
+              f"whether that is all of them.")
+    elif undispatched:
+        print()
+        for line in undispatched_lines(undispatched):
+            print(line)
 
     if missing:
         print()

@@ -91,6 +91,14 @@
       "example": "gh-check:92205186236",
       "repo_target": true
     },
+    "gh-labels": {
+      "cmd": "{python} {path}github/labels.py",
+      "timeout": 45,
+      "description": "What can I tag this with? The repo's label vocabulary — the first call of any triage or release-planning run, because every later decision depends on it and `gh issue edit --add-label` does not protect you from a name that does not exist. Names, descriptions, and how many OPEN issues carry each one, so a dead label is visible next to a live one. Grouped by name prefix (`priority-`, `lane-`, `priority:`) with the grouping declared as INFERRED — a prefix is a repo convention, not a GitHub field, and the spelling is not portable: claude-supertool uses `priority-high`, claude-remember uses `priority:high` and has no lanes. Counts have three states and never two: exact over every open issue read (so `0` means retire it), a FLOOR rendered `>=N` when the issue read hit GH_LABELS_ISSUE_CAP (default 400), or `?` when the issue list could not be read at all — never 0, because 'I did not look' and 'nobody uses it' are opposite facts. An unreadable label list is an ERROR and exit 1; a repo with genuinely no labels says that in its own words. Paginates, so a repo past 100 labels is not silently truncated. Targets another repo with a leading repo:OWNER/NAME op.",
+      "syntax": "gh-labels",
+      "example": "gh-labels",
+      "repo_target": true
+    },
     "gh-follow": {
       "cmd": "{python} {path}github/follow.py {arg}",
       "timeout": 10,
