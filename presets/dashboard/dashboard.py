@@ -699,7 +699,7 @@ def collect_default(repo: str, default_branch: str) -> Section:
     # board a human reads immediately before tagging a release, and it was
     # printing "every workflow on X concluded and every leg passed" over a
     # commit three of whose four declared workflows had produced no run.
-    scope, scope_lines = _gh_branch.scope_for(repo, sha, selected)
+    scope, scope_lines, _unresolved = _gh_branch.scope_for(repo, sha, selected)
     state, sentence = _gh_branch.verdict(selected, legs, missing, sha, age,
                                          unreconciled=marker, scope=scope)
 

@@ -533,9 +533,84 @@ def _suite_summary(lines: list[str]) -> str | None:
     if not found:
         return None
     for body in reversed(found):
-        if any(word in body.lower() for word in _SUITE_BAD):
+        if _suite_bad_count(body):
             return body
     return found[-1]
+
+
+def _suite_bad_count(summary: str) -> int:
+    """How many failures/errors the summary body actually states.
+
+    `"failed" in body` was the old test and it is wrong in the one direction
+    that matters here: `0 failed, 9999 passed` contains the word and reports no
+    failure at all. The counts are what the cross-check below compares against
+    the API's conclusion, so they have to be read as numbers.
+    """
+    total = 0
+    for count, word in re.findall(r"(\d+)\s+([A-Za-z]+)", summary):
+        if word.lower() in _SUITE_BAD:
+            total += int(count)
+    return total
+
+
+# The two conclusions that are an answer about the job. Everything else —
+# `cancelled`, `timed_out`, `skipped`, `in_progress`, an empty string — is the
+# API not having answered, and reading "not success" as "the suite failed"
+# would be the same over-claim this function exists to remove, pointed the
+# other way.
+_CONCLUSIONS_THAT_ANSWER = ("success", "failure")
+
+
+def suite_line(summary: str, n_summaries: int, job_conclusion: str) -> str:
+    """The `Suite:` render — the number, and where the number came from (#1076).
+
+    The count is read out of the job log with a regex anchored at column 0,
+    after timestamps and ANSI have been stripped. On a pull request the code
+    that writes that log is the pull request's code, so ordinary program output
+    satisfies the anchor and the number is the log author's. `flat()` keeps a
+    forged *line* out of the render and always did; what it cannot do is make
+    the number authoritative, and the wording here used to say "the job's own
+    summary line" and "These count TESTS", which claims exactly that.
+
+    Reading the count from `junit.xml` instead — the audit's suggestion, and
+    the right instinct — is not available to this op. `.github/scripts/
+    junit_summary.py` writes it to the runner's working directory and nothing
+    uploads it as an artifact; `gh-job` reads `gh run view --log` and only that,
+    and the script's *output* is log text like everything else. A workflow file
+    is also part of a pull request's diff, so even that output is not a source
+    the log author cannot reach. So the honest fix is provenance, not a
+    second parser.
+
+    Two changes, and the second is the one the issue turns on:
+
+      * the provenance clause is **unconditional**. The old multiplicity caveat
+        only fired at two summaries or more, so a job that ran no suite at all —
+        one stray matching line, `n_summaries == 1` — got the number with
+        nothing attached.
+      * the count is cross-checked against `job_conclusion`, which comes from
+        the Actions API and is the one fact in this render the log does not
+        write. `0 failed, 9999 passed` on a job the API calls `failure` is
+        precisely what a forged all-green summary looks like, and it is now
+        said out loud. Agreement is not narrated: a cross-check that speaks on
+        every render is one nobody reads.
+    """
+    bad = _suite_bad_count(summary)
+    conclusion = (job_conclusion or "").strip().lower()
+    several = (f" ({n_summaries} pytest summaries in this log — this is the "
+               f"last one reporting a failure; `:grep:` for the rest)"
+               if n_summaries > 1 else "")
+    conflict = ""
+    if conclusion in _CONCLUSIONS_THAT_ANSWER and bool(bad) != (
+            conclusion == "failure"):
+        conflict = (f" The Actions API reports this job concluded "
+                    f"`{conclusion}`, which this line does not agree with — the "
+                    f"conclusion is not written by the log, so these are two "
+                    f"sources and one of them is wrong.")
+    return (f"Suite: {_untrusted.flat(summary)} — read out of the job log. The "
+            f"log is written by the code the job ran, which on a pull request "
+            f"is the pull request's own code, so this is what that log claims "
+            f"and not a count supertool made. These count TESTS; a check tally "
+            f"counts LEGS.{several}{conflict}")
 
 
 def gap_marker(n_lines: int) -> str:
@@ -889,12 +964,7 @@ def main() -> int:
     # like `Status:` above it, not part of any selection below.
     suite = _suite_summary(lines)
     if suite:
-        n_summaries = len(_suite_summaries(lines))
-        several = (f" ({n_summaries} pytest summaries in this log — this is the "
-                   f"last one reporting a failure; `:grep:` for the rest)"
-                   if n_summaries > 1 else "")
-        print(f"Suite: {_untrusted.flat(suite)} — the job's own summary line. "
-              f"These count TESTS; a check tally counts LEGS.{several}")
+        print(suite_line(suite, len(_suite_summaries(lines)), job_conclusion))
 
     if total == 0 and not raw_mode:
         # Empty and absent are two different lies this surface tells (#723):

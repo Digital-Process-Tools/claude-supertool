@@ -276,8 +276,9 @@ def scope_clause(undispatched: list, unestablished: str, n_wf: int) -> str:
             f"{names}.")
 
 
-def scope_for(repo: str, sha: str, selected: dict) -> tuple[str, list[str]]:
-    """`(clause, lines)` — #846's scope check, as one call for every caller.
+def scope_for(repo: str, sha: str,
+              selected: dict) -> tuple[str, list[str], str]:
+    """`(clause, lines, unresolved)` — #846's scope check, for every caller.
 
     Exists as a seam rather than as four lines inlined in `main()` because
     `main()` is not the only surface that publishes this verdict.
@@ -286,20 +287,52 @@ def scope_for(repo: str, sha: str, selected: dict) -> tuple[str, list[str]]:
     concluded and every leg passed" with no scope at all — the dashboard being
     the board a human reads immediately before tagging, which is where the
     v0.27.0 mis-cut happened. A caller that has to remember to compute this
-    will not.
+    will not — and #1077 is that sentence coming true: the tier was left
+    unwired by the same PR that wrote it. So `verdict()` no longer has a
+    default for `scope`; a caller that forgets gets a `TypeError` on its first
+    run rather than a green that quietly over-claims.
+
+    `unresolved` is the third element because a caller deciding *whether to
+    speak* must not have to parse the clause to find out. It names why this
+    green cannot account for itself, and is empty when it can:
+
+      * the declared set could not be established, so the green covers a
+        universe of unknown size;
+      * a workflow declaring a **push** trigger produced no run on a pushed
+        commit — the open question #846 exists for.
+
+    A `schedule` / `workflow_dispatch` / `pull_request`-only workflow producing
+    no run on a push is *expected* and leaves `unresolved` empty. That is not a
+    softening: on this repo `slow tests` and `changelog` are permanently in
+    that state, so a surface that spoke whenever the clause was non-empty would
+    say the same thing on every tick forever, which is precisely the
+    habituation `scope_clause`'s own docstring says this repo has paid for
+    twice. The loud/quiet split is `_declared_workflows.is_push_triggered`,
+    the same predicate `undispatched_lines` renders on, so the two cannot
+    drift — and `None` (an `on:` block that could not be read) counts as loud
+    on both sides.
     """
     if not selected:
-        return "", []
+        return "", [], ""
     owner, name = _declared_legs.owner_repo(repo)
     declared, why = _declared_workflows.declared_at(owner, name, sha)
     if declared is None:
-        return scope_clause([], why, len(selected)), [
-            f"Declared workflow set at {sha[:7]}: UNESTABLISHED — {why}. The "
-            f"verdict above covers the {len(selected)} workflow(s) that "
-            f"produced a run and cannot say whether that is all of them."]
+        return (
+            scope_clause([], why, len(selected)),
+            [f"Declared workflow set at {sha[:7]}: UNESTABLISHED — {why}. The "
+             f"verdict above covers the {len(selected)} workflow(s) that "
+             f"produced a run and cannot say whether that is all of them."],
+            f"the declared workflow set at {sha[:7]} is UNESTABLISHED")
     undispatched = [w for w in declared if w.get("name") not in selected]
+    loud = [w for w in undispatched
+            if _declared_workflows.is_push_triggered(w.get("triggers"))
+            is not False]
+    unresolved = ""
+    if loud:
+        unresolved = (f"{len(loud)} declared workflow(s) a push should reach "
+                      f"produced no run on {sha[:7]}")
     return (scope_clause(undispatched, "", len(selected)),
-            undispatched_lines(undispatched))
+            undispatched_lines(undispatched), unresolved)
 
 
 def undispatched_lines(undispatched: list) -> list[str]:
@@ -348,8 +381,16 @@ def undispatched_lines(undispatched: list) -> list[str]:
 
 def verdict(selected: dict, legs: dict, missing, sha: str,
             age_secs: object, grace: int = _GRACE,
-            unreconciled: str = "", scope: str = "") -> tuple:
+            unreconciled: str = "", *, scope: str) -> tuple:
     """`(state, sentence)` for the whole commit. Conjunctive, and ordered.
+
+    `scope` is keyword-only and has **no default** (#1077). It had one, and the
+    seam that computes it (`scope_for`) says in its own docstring that "a
+    caller that has to remember to compute this will not" — then the same PR
+    wired one of the two callers it names and left `presets/watch/tiers/
+    gh_prs.py` publishing an unscoped green on every radar tick. A default is a
+    reminder; a required argument is a mechanism. Pass `scope_for(...)[0]`, or
+    `""` if you have decided the scope does not apply here — but decide it.
 
     `legs` maps a workflow name to its leg states, or to ``None`` when the job
     list did not come back. ``None`` is not zero: a workflow whose legs were
@@ -736,9 +777,9 @@ def main() -> int:
     # #846: the second source one scope out. Bought only when there is a run
     # set to be short of — on a commit with no runs at all `no_run_verdict`
     # already declines, and two more API calls would buy nothing.
-    scope, scope_lines = scope_for(repo, sha, selected)
+    scope, scope_lines, _unresolved = scope_for(repo, sha, selected)
     state, sentence = verdict(selected, legs, missing, sha, age, _GRACE,
-                              marker, scope)
+                              marker, scope=scope)
 
     print(f"# Is `{ref}` green? — {repo}")
     print(f"Branch {ref}: {state}")
