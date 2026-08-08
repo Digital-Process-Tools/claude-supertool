@@ -961,6 +961,117 @@ def _undecodable_at(text: str) -> int:
     return text.find(_REPLACEMENT_CHAR)
 
 
+def _display_safe(text: str) -> str:
+    """``text`` with lone surrogates rendered as U+FFFD — for output only.
+
+    The edit ops read with ``errors="surrogateescape"`` so that bytes which are
+    not valid UTF-8 round-trip through ``_atomic_write`` untouched (#1049,
+    #1059). That puts lone surrogates in the buffer, and those receipts echo
+    the buffer back — context lines, a diff hunk. A lone surrogate cannot be
+    encoded to a UTF-8 stream, so the op wrote the right bytes and then died
+    with ``UnicodeEncodeError`` on the way to saying so: a traceback, no
+    receipt, over a file that did change.
+
+    Display only. The bytes are already on disk and nothing here touches them,
+    and mojibake in something only being *shown* is the trade this file makes
+    everywhere else (see ``_REPLACEMENT_CHAR``). Ops that turn decoded text
+    back into bytes or into a path still refuse instead of guessing.
+    """
+    try:
+        text.encode("utf-8")
+        return text
+    except UnicodeEncodeError:
+        pass
+    try:
+        return text.encode("utf-8", "surrogateescape").decode("utf-8", "replace")
+    except UnicodeEncodeError:
+        # A surrogate outside DC80..DCFF never came from a surrogateescape read
+        # and has no original byte to go back to. Name it rather than drop it.
+        return text.encode("utf-8", "backslashreplace").decode("utf-8")
+
+
+# The one definition of a line boundary supertool uses, for every op that
+# numbers lines (#1060): LF, CR and CRLF — what a caller counting lines in an
+# editor, in `wc -l`, or in any line-oriented CLI will have counted.
+#
+# `str.splitlines()` additionally breaks on the eight characters listed below;
+# `bytes.splitlines()` does not. `read` used the bytes version and
+# `replace_lines` the str version, so a file holding any of them had two
+# numberings: the read showed the target at line N, the write landed on a
+# different line, and nothing reported a problem. Two independent splits is how
+# that happened, so there is one function and both call sites use it.
+_LINE_BREAK_PATTERN = r"\r\n|\r|\n"
+_LINE_BREAK_RE_STR = re.compile(_LINE_BREAK_PATTERN)
+_LINE_BREAK_RE_BYTES = re.compile(_LINE_BREAK_PATTERN.encode("ascii"))
+
+# The characters `str.splitlines()` treats as boundaries and this definition
+# does not. Present in a file, they mean some other tool numbers its lines
+# differently from supertool — which is disclosed, not resolved.
+# Spelled with `chr()` rather than as literals: four of the eight are invisible
+# and two of them (U+2028, U+2029) are line breaks to half the tools that would
+# ever display this file, which is the property being described.
+_AMBIGUOUS_LINE_BREAKS = tuple(chr(c) for c in (
+    0x0B, 0x0C, 0x1C, 0x1D, 0x1E, 0x85, 0x2028, 0x2029))
+
+
+def _split_lines_keepends(data: Any) -> Any:
+    """Split `data` (str or bytes) into lines, keeping the line endings.
+
+    Matches `bytes.splitlines(keepends=True)` for both types — the conservative
+    definition above. Returns a list of the same type it was given.
+
+    The bytes branch delegates to that builtin rather than re-implementing it:
+    `bytes.splitlines` *is* this definition, it is ~7x faster than the regex on
+    a megabyte, and `read` runs it on every call. The two branches are one
+    contract with two implementations, which is only safe because
+    `test_line_split_helper_is_the_conservative_definition` pins them against
+    the same expectation — including the eight characters they must both
+    refuse to split on.
+    """
+    if isinstance(data, bytes):
+        return data.splitlines(keepends=True)
+    rx = _LINE_BREAK_RE_STR
+    out = []
+    pos = 0
+    for m in rx.finditer(data):
+        out.append(data[pos:m.end()])
+        pos = m.end()
+    if pos < len(data):
+        out.append(data[pos:])
+    return out
+
+
+def _split_lines(data: Any) -> Any:
+    """`_split_lines_keepends` with the endings stripped."""
+    keep = _split_lines_keepends(data)
+    if isinstance(data, bytes):
+        return [ln.rstrip(b"\r\n") for ln in keep]
+    return [ln.rstrip("\r\n") for ln in keep]
+
+
+def _line_break_ambiguity_note(data: Any) -> str:
+    """A line naming the characters in `data` another tool would split on.
+
+    Empty for the overwhelming majority of files. When it is not, the caller
+    may be holding a line number counted under the other definition, and saying
+    so is the point: the alternative is picking one in silence and letting a
+    line-addressed edit land somewhere the reader never saw (#1060).
+    """
+    if isinstance(data, bytes):
+        present = [c for c in _AMBIGUOUS_LINE_BREAKS
+                   if c.encode("utf-8") in data]
+    else:
+        present = [c for c in _AMBIGUOUS_LINE_BREAKS if c in data]
+    if not present:
+        return ""
+    names = ", ".join(f"U+{ord(c):04X}" for c in present)
+    return (f"note: contains {names} — supertool numbers lines by LF / CRLF / "
+            f"CR only, so a tool that also breaks on these (Python's "
+            f"str.splitlines, some editors) numbers this file differently. "
+            f"supertool's reads and its line-addressed edits agree with each "
+            f"other.\n")
+
+
 def _notifier_log(msg: str) -> None:
     """Append a timestamped line to the notifier debug log when enabled. Silent otherwise."""
     if not _notifier_debug_enabled():
@@ -2286,14 +2397,27 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
         rtk_args.append(path)
         rtk_out = _rtk_run(rtk_args)
         if rtk_out is not None:
-            return rtk_out + "\n"
+            # rtk renders the body, but the line-numbering disclosure is
+            # supertool's own contract and rtk knows nothing about it. A
+            # delegated read that stays silent is the same silence #1060 is
+            # about, one layer down.
+            try:
+                with open(path, "rb") as _probe:
+                    _ambiguity = _line_break_ambiguity_note(_probe.read())
+            except OSError:
+                _ambiguity = ""
+            return _ambiguity + rtk_out + "\n"
 
     try:
         size = os.path.getsize(path)
         with open(path, "rb") as f:
-            raw_lines = f.read().splitlines(keepends=True)
+            data = f.read()
     except OSError as e:
         return f"ERROR: could not read {path}: {e}\n"
+    # One definition of a line, shared with the ops that edit *by* line number
+    # (#1060). `bytes.splitlines` already was this definition; going through the
+    # helper is what stops the two sides drifting apart a second time.
+    raw_lines = _split_lines_keepends(data)
 
     line_count = len(raw_lines)
     if filter_scan_all:
@@ -2305,6 +2429,9 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
         # output, and a filtered read emits only the lines that matched.
         limit = max(0, line_count - offset)
     out = [f"({line_count} lines, {size} bytes){_path_meta_suffix(path, b''.join(raw_lines[:64]))}\n"]
+    _ambiguity = _line_break_ambiguity_note(data)
+    if _ambiguity:
+        out.append(_ambiguity)
     bytes_emitted = 0
     printed = 0
     end = min(offset + limit, line_count)
@@ -6296,7 +6423,10 @@ def op_edit(old: str, new: str, path: str) -> str:
 
     # Receipt — locate the change and show ±2 lines context
     start_line = _line_number_at(content, idx)
-    new_lines = new_content.splitlines()
+    # `_line_number_at` counts LF/CR/CRLF; the receipt's own line list has to
+    # count the same ones or the context block is indexed against a numbering
+    # the `line N` above it was never built from (#1060).
+    new_lines = _split_lines(new_content)
     new_block_line_count = _line_number_at(new)
     end_line = start_line + new_block_line_count - 1
     ctx_start = max(1, start_line - 2)
@@ -6434,7 +6564,7 @@ def op_append(path: str, content: str) -> str:
     except OSError as e:
         return f"ERROR: failed to write {path}: {e}\n"
 
-    all_lines = new_content.splitlines()
+    all_lines = _split_lines(new_content)
     added = block.count("\n")
     start_line = len(all_lines) - added + 1
     new_size = len(new_content.encode("utf-8", errors="surrogateescape"))
@@ -6488,7 +6618,11 @@ def op_replace_lines(path: str, start: int, end: int, content: str) -> str:
     except OSError as e:
         return f"ERROR: failed to read {path}: {e}\n"
 
-    orig_lines = orig.splitlines(keepends=True)
+    # The shared definition (#1060): `str.splitlines` breaks on eight more
+    # characters than the byte-level split `read` renders with, so a file
+    # holding one of them was numbered one way for the reader and another way
+    # for this write. Both sides go through `_split_lines_keepends` now.
+    orig_lines = _split_lines_keepends(orig)
     total = len(orig_lines)
 
     if start > total + 1:
@@ -6520,7 +6654,7 @@ def op_replace_lines(path: str, start: int, end: int, content: str) -> str:
     if new_block and not new_block.endswith(("\n", "\r")):
         new_block += block_nl
         invented_nl = block_nl
-    new_block_lines = new_block.splitlines(keepends=True) if new_block else []
+    new_block_lines = _split_lines_keepends(new_block) if new_block else []
 
     if insert_only:
         before = orig_lines[: start - 1]
@@ -7563,7 +7697,18 @@ def _op_vim_impl(path: str, script: str) -> str:
         return "ERROR: empty script\n"
 
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
+        # surrogateescape (not 'replace'): round-trip lone non-UTF-8 bytes via
+        # _atomic_write. 'replace' rewrote every one of them to U+FFFD across
+        # the WHOLE buffer, and vim writes the whole buffer back — so bytes the
+        # script never addressed were destroyed, unrecoverably, under a receipt
+        # that named one line and reported nothing (#1059). Same contract
+        # op_edit / op_replace / op_replace_lines already carry.
+        #
+        # Deliberately still no newline="": every motion, o/O and dd below
+        # assumes "\n", so adding it here converts one whole-file normalisation
+        # into scattered mixed endings. That is a separate design job (#1049);
+        # the byte destruction is not blocked by it.
+        with open(path, "r", encoding="utf-8", errors="surrogateescape") as f:
             content = f.read()
     except OSError as e:
         return f"ERROR: failed to read {path}: {e}\n"
@@ -9800,7 +9945,11 @@ def _op_vim_impl(path: str, script: str) -> str:
                 except SecurityError as _se:
                     return f"ERROR: action {i} '{action}': :r {path_arg!r}: {_se}\n"
                 try:
-                    with open(path_arg, "r", encoding="utf-8", errors="replace") as _fh:
+                    # surrogateescape: `:r` splices this file's text into a
+                    # buffer that gets written back, so 'replace' would destroy
+                    # the source file's non-UTF-8 bytes on the way in (#1059).
+                    with open(path_arg, "r", encoding="utf-8",
+                              errors="surrogateescape") as _fh:
                         file_text = _fh.read()
                 except OSError as e:
                     return f"ERROR: action {i} '{action}': :r failed to read {path_arg!r}: {e}\n"
@@ -10287,13 +10436,17 @@ def _op_vim_impl(path: str, script: str) -> str:
                     total_run += 1
                     cur_line_iter += 1
                     # Refresh line count in case cmds added/removed lines.
-                    with open(path, "r", encoding="utf-8", errors="replace") as _fh:
+                    with open(path, "r", encoding="utf-8",
+                              errors="surrogateescape") as _fh:
                         new_content = _fh.read()
                     new_lines_full = new_content.split("\n")
                     new_total = len(new_lines_full) - (1 if new_lines_full and new_lines_full[-1] == "" else 0)
                     line_b_eff = line_b + (new_total - total_lines)
-                # Re-read final content for the main loop.
-                with open(path, "r", encoding="utf-8", errors="replace") as _fh:
+                # Re-read final content for the main loop. surrogateescape,
+                # like every other read in this op: a re-read that mangles is
+                # the same destruction one recursion later (#1059).
+                with open(path, "r", encoding="utf-8",
+                          errors="surrogateescape") as _fh:
                     content = _fh.read()
                 cursor = min(cursor, len(content))
                 log.append(f"  {i}. :{range_spec}norm {cmds!r} ({total_run} lines)")
@@ -16824,7 +16977,13 @@ def dispatch(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = None) ->
         )
     _DISPATCH_STATE.depth = depth + 1
     try:
-        return _dispatch_impl(arg, pre_parsed)
+        out = _dispatch_impl(arg, pre_parsed)
+        # The edit ops read with surrogateescape and echo the buffer in their
+        # receipts, so a receipt can hold lone surrogates that no UTF-8 stream
+        # can encode. Sanitised once, at the outermost frame, because every
+        # consumer (CLI stdout, the MCP server, a batch sub-op's caller) hits
+        # the same wall (#1059).
+        return _display_safe(out) if depth == 0 else out
     finally:
         _DISPATCH_STATE.depth = depth
         # _FORMATTER_SKIPS is module-level and drained on the normal return

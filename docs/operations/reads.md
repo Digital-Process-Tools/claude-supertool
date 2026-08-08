@@ -234,6 +234,26 @@ Check size before deciding to read:
 ./supertool 'stat:src/app/BigFile.py' 'head:src/app/BigFile.py:50'
 ```
 
+## Line numbering
+
+`read` numbers lines by LF, CR and CRLF, and so does every op that edits *by*
+line number. Before #1060 they did not agree: `replace_lines` split the decoded
+string, and `str.splitlines()` also breaks on U+000B, U+000C, U+001C, U+001D,
+U+001E, U+0085, U+2028 and U+2029 — so on a file holding one of those, the line
+you read at N was not the line `replace_lines:PATH:N:N:...` wrote to, and
+nothing said so.
+
+One function owns that definition now. Where it differs from the one another
+tool would use, the read says so under its header:
+
+```
+(412 lines, 18022 bytes)
+note: contains U+2028 — supertool numbers lines by LF / CRLF / CR only, so a tool that also breaks on these (Python's str.splitlines, some editors) numbers this file differently. supertool's reads and its line-addressed edits agree with each other.
+```
+
+An ordinary file says nothing — the note fires only when the disagreement is
+real. See [edits.md](edits.md#what-counts-as-a-line).
+
 ## See also
 
 - [search.md](search.md) — when you don't know the path yet (`grep`, `between`, `around`)
