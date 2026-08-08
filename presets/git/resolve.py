@@ -80,36 +80,37 @@ def _is_markdown_path(path: str) -> bool:
     return os.path.splitext(path)[1].lower() in _MD_EXTS
 
 
-def _render_hunks(text: str, keep: str, selected: Optional[set[int]] = None) -> str:
-    """TEXT with each conflict hunk rendered as KEEP — ``both`` or ``none``.
+def _union_lines(text: str, selected: Optional[set[int]] = None) -> list[tuple[str, bool]]:
+    """The union of TEXT, line by line, each tagged with "a hunk put this here".
 
-    ``both`` is the union `_union_file` writes, computed in memory so the guard can
-    read the document a resolve would produce rather than infer it from the shape of
-    the hunks. ``none`` drops both sides, leaving only the surrounding context — the
-    baseline that says which structure the hunks are responsible for and which was
-    already in the file. diff3 ``|||||||`` base content is dropped in either mode, as
-    in `_union_file`.
+    The union is the one `_union_file` writes — both sides concatenated, diff3
+    ``|||||||`` base dropped — computed in memory so the guard can read the document
+    a resolve would produce rather than infer it from the shape of the hunks.
 
-    Hunks outside ``selected`` render as ``ours`` in both modes, so they contribute
-    identically and cancel out of the comparison: they are not being resolved, and
-    what they carry is not this resolve's doing.
+    The tag is what replaces a second render of the file. Rendering the surrounding
+    context separately and diffing the two counts looked equivalent and is not: an
+    odd number of ``` fence delimiters inside a hunk closes a fence in one rendering
+    and leaves it open in the other, so the two parses disagree about which later
+    lines are headings at all, and a document that already repeated a heading was
+    refused for it. One parse, carrying the attribution, cannot drift from itself.
+
+    Hunks outside ``selected`` contribute their ``ours`` side untagged. They are not
+    being resolved, so what they carry is not this resolve's doing.
     """
-    out: list[str] = []
+    out: list[tuple[str, bool]] = []
     state = "normal"  # normal | ours | base | theirs
     block_idx = 0
-    take_ours = take_theirs = True
+    take_ours = take_theirs = tag = True
     for line in text.splitlines(keepends=True):
         s = line.rstrip("\r\n")
         if state == "normal":
             if s.startswith("<<<<<<<"):
                 block_idx += 1
-                if selected is not None and block_idx not in selected:
-                    take_ours, take_theirs = True, False
-                else:
-                    take_ours = take_theirs = keep == "both"
+                tag = selected is None or block_idx in selected
+                take_ours, take_theirs = True, tag
                 state = "ours"
                 continue
-            out.append(line)
+            out.append((line, False))
         elif state == "ours":
             if s.startswith("|||||||"):
                 state = "base"
@@ -118,7 +119,7 @@ def _render_hunks(text: str, keep: str, selected: Optional[set[int]] = None) -> 
             elif s.startswith(">>>>>>>"):  # malformed — recover, claim nothing
                 state = "normal"
             elif take_ours:
-                out.append(line)
+                out.append((line, tag))
         elif state == "base":
             if s.startswith("======="):
                 state = "theirs"
@@ -126,12 +127,12 @@ def _render_hunks(text: str, keep: str, selected: Optional[set[int]] = None) -> 
             if s.startswith(">>>>>>>"):
                 state = "normal"
             elif take_theirs:
-                out.append(line)
-    return "".join(out)
+                out.append((line, tag))
+    return out
 
 
-def _heading_paths(text: str) -> list[tuple[str, ...]]:
-    """Every ATX heading in TEXT as its ancestor path, in file order.
+def _heading_paths(lines: list[tuple[str, bool]]) -> list[tuple[tuple[str, ...], bool]]:
+    """Every ATX heading in LINES as its ancestor path, in file order, tag carried.
 
     The path — enclosing headings of lower level, then the heading itself — is what
     makes `### Fixed` under `## [Unreleased]` a different thing from `### Fixed`
@@ -142,10 +143,10 @@ def _heading_paths(text: str) -> list[tuple[str, ...]]:
     `# run it` comment inside a fence is not structure; reading it as one would
     refuse ordinary entries, and a guard that fires on those trains the override.
     """
-    paths: list[tuple[str, ...]] = []
+    paths: list[tuple[tuple[str, ...], bool]] = []
     stack: list[tuple[int, str]] = []
     fence = ""
-    for raw in text.splitlines():
+    for raw, tagged in lines:
         s = raw.strip()
         if fence:
             if s.startswith(fence):
@@ -159,7 +160,7 @@ def _heading_paths(text: str) -> list[tuple[str, ...]]:
         level = len(s) - len(s.lstrip("#"))
         while stack and stack[-1][0] >= level:
             stack.pop()
-        paths.append(tuple(t for _, t in stack) + (s,))
+        paths.append((tuple(t for _, t in stack) + (s,), tagged))
         stack.append((level, s))
     return paths
 
@@ -168,9 +169,9 @@ def _duplicated_headings(path: str, selected: Optional[set[int]] = None) -> list
     """Headings a union of PATH would emit twice — in file order, deduped.
 
     The question is about the **resulting document**: does unioning put the same
-    heading twice under the same parent? So the union is rendered and its heading
-    paths counted against the surrounding context alone, which is the part of the
-    document the hunks did not put there.
+    heading twice under the same parent, with at least one of the two copies coming
+    from a hunk? So the union is rendered once, every heading is read as its ancestor
+    path, and each carries whether a hunk put it there.
 
     #839 asked a narrower one — is the SAME heading line on BOTH sides of one hunk —
     and #911 is the arrangement that slips past it: `### Fixed` inside the hunk on one
@@ -180,11 +181,11 @@ def _duplicated_headings(path: str, selected: Optional[set[int]] = None) -> list
     boundaries someone thought of; reading the output cannot be fooled by where the
     boundary fell.
 
-    The context baseline is what keeps a document that ALREADY repeats a heading —
-    malformed, but not by this resolve — out of the refusal. Note it is deliberately
-    not "would picking a side duplicate it too": in #911's arrangement taking
-    `theirs` also lands two `### Fixed`, and excusing the union on that ground would
-    excuse the exact case the issue is about.
+    Requiring one copy to come from a hunk is what keeps a document that ALREADY
+    repeats a heading — malformed, but not by this resolve — out of the refusal. Note
+    it is deliberately not "would picking a side duplicate it too": in #911's
+    arrangement taking `theirs` also lands two `### Fixed`, and excusing the union on
+    that ground would excuse the exact case the issue is about.
 
     Non-Markdown paths return ``[]`` — the ``#`` heading grammar is Markdown's, and a
     guard should only have opinions about a format it can read. ``selected`` restricts
@@ -198,21 +199,19 @@ def _duplicated_headings(path: str, selected: Optional[set[int]] = None) -> list
     except (OSError, UnicodeDecodeError):
         return []
 
-    union = _heading_paths(_render_hunks(text, "both", selected))
-    if not union:
+    headings = _heading_paths(_union_lines(text, selected))
+    if not headings:
         return []
-    in_union = Counter(union)
-    in_context = Counter(_heading_paths(_render_hunks(text, "none", selected)))
+    emitted = Counter(p for p, _ in headings)
+    from_a_hunk = {p for p, tagged in headings if tagged}
 
     dups: list[str] = []
-    seen: set[str] = set()
-    for p in union:
-        if in_union[p] < 2 or in_union[p] <= in_context[p]:
+    seen: set[tuple[str, ...]] = set()
+    for p, _tagged in headings:
+        if emitted[p] < 2 or p not in from_a_hunk or p in seen:
             continue
-        if p[-1] in seen:
-            continue
-        seen.add(p[-1])
-        dups.append(p[-1])
+        seen.add(p)
+        dups.append(f"{p[-1]} (under {p[-2]})" if len(p) > 1 else p[-1])
     return dups
 
 

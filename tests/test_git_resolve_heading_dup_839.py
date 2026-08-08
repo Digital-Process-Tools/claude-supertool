@@ -299,7 +299,11 @@ def test_detector_reports_only_headings_present_on_both_sides(tmp_path) -> None:
         ">>>>>>> branch\n",
         encoding="utf-8")
 
-    assert resolve._duplicated_headings(str(f)) == ["### Added"]
+    # The finding names the section it is about since #911 — the same heading text
+    # can be duplicated under two different parents, and reporting the bare line
+    # collapsed two incidents into one.
+    assert resolve._duplicated_headings(str(f)) == [
+        "### Added (under ## [0.23.0] - 2026-08-05)"]
 
 
 def test_detector_ignores_headings_outside_the_hunk(tmp_path) -> None:

@@ -375,3 +375,92 @@ def test_a_non_markdown_path_is_never_scanned(tmp_path) -> None:
     f = tmp_path / "notes.txt"
     f.write_text(ASYMMETRIC_CONFLICT, encoding="utf-8")
     assert resolve._duplicated_headings(str(f)) == []
+
+def test_a_fence_closed_inside_a_hunk_does_not_manufacture_a_refusal(tmp_path) -> None:
+    """A second parse of the file would disagree with the first about the fence.
+
+    The first shape of this fix rendered the surrounding context separately and
+    compared heading counts. An odd number of ``` delimiters inside a hunk closes a
+    fence in the union and leaves it open in the context render, so the two parses
+    disagreed about which later lines were headings at all — and a document that
+    already repeated `### Fixed`, before this conflict existed, was refused for it.
+    """
+    f = _write(tmp_path, (
+        "# Changelog\n"
+        "\n"
+        "## [Unreleased]\n"
+        "\n"
+        "```sh\n"
+        "supertool 'git-status'\n"
+        "<<<<<<< HEAD\n"
+        "```\n"
+        "=======\n"
+        "- theirs\n"
+        ">>>>>>> branch\n"
+        "\n"
+        "### Fixed\n"
+        "\n"
+        "- a\n"
+        "\n"
+        "### Fixed\n"
+        "\n"
+        "- b\n"
+    ))
+    assert resolve._duplicated_headings(str(f)) == []
+
+
+def test_the_same_heading_duplicated_under_two_parents_is_two_findings(tmp_path) -> None:
+    """One incident per section. Deduping on the heading text alone reported one.
+
+    `### Fixed` doubled under `## [Unreleased]` and again under `## [0.22.0]` is two
+    separate things gone wrong, and a refusal that says "1 heading" while naming a
+    string that occurs in two places is a refusal you override having understood
+    half of it.
+    """
+    f = _write(tmp_path, (
+        "# Changelog\n"
+        "\n"
+        "## [Unreleased]\n"
+        "\n"
+        "<<<<<<< HEAD\n"
+        "### Fixed\n"
+        "\n"
+        "- ours\n"
+        "=======\n"
+        "### Changed\n"
+        "\n"
+        "- theirs\n"
+        ">>>>>>> branch\n"
+        "\n"
+        "### Fixed\n"
+        "\n"
+        "- context\n"
+        "\n"
+        "## [0.22.0] - 2026-08-01\n"
+        "\n"
+        "<<<<<<< HEAD\n"
+        "### Fixed\n"
+        "\n"
+        "- ours again\n"
+        "=======\n"
+        "### Added\n"
+        "\n"
+        "- theirs again\n"
+        ">>>>>>> branch\n"
+        "\n"
+        "### Fixed\n"
+        "\n"
+        "- context again\n"
+    ))
+    dups = resolve._duplicated_headings(str(f))
+    assert len(dups) == 2, dups
+    assert any("## [Unreleased]" in d for d in dups), dups
+    assert any("## [0.22.0] - 2026-08-01" in d for d in dups), dups
+
+
+def test_a_crlf_document_is_read_the_same_way(tmp_path) -> None:
+    """CI runs on Windows; a checkout there can carry CRLF. Same verdict, or the
+    guard is only a guard on the platform it was written on."""
+    f = _write(tmp_path, ASYMMETRIC_CONFLICT.replace(chr(10), chr(13) + chr(10)))
+    assert resolve._duplicated_headings(str(f)) == [
+        "### Fixed (under ## [Unreleased])"]
