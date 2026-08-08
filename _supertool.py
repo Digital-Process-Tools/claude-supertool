@@ -12150,10 +12150,10 @@ def op_help(op_name: str) -> str:
             out.append("")
             out.append(f"Example: {example}")
         return "\n".join(out) + "\n"
-    if op_name in _BUILTIN_OPS:
+    if op_name in _valid_op_names():
         return (f"ERROR: op '{op_name}' has no documented help in "
-                f".supertool.json. It's a valid built-in — run 'ops' for the "
-                f"list, or see docs/operations.\n")
+                f".supertool.json. It's a valid operation here — run 'ops' for "
+                f"the list, or see docs/operations.\n")
     return (f"ERROR: no help for op: {op_name}\n"
             f"Run 'ops' for the full list of operations.\n")
 
@@ -12164,6 +12164,26 @@ def op_help(op_name: str) -> str:
 # silently hiding the tail of the ops list. (Empirical: 6.6KB landed full,
 # 11KB+ got truncated — threshold sits in between.)
 _HOOK_OUTPUT_CAP_BYTES = 7168
+
+
+def _configured_op_names(config: Dict[str, Any]) -> set:
+    """Op names this config has an opinion about — including the ones it hides.
+
+    ``status: 0`` is a project deliberately suppressing an op from its listing,
+    and the disclosure that calls it back out would undo that choice. Same line
+    the preset disclosure already draws: the tool names what *it* hid, never
+    what the project chose to hide. Only an op with no entry at all is
+    undisclosed, which is the case #1124 is about.
+    """
+    names: set = set()
+    for section in ("builtin-ops", "ops", "aliases"):
+        entries = config.get(section, {})
+        if not isinstance(entries, dict):
+            continue
+        for name, info in entries.items():
+            if isinstance(info, dict):
+                names.add(name)
+    return names
 
 
 def op_ops(compact: bool = False) -> str:
@@ -12240,6 +12260,28 @@ def op_ops(compact: bool = False) -> str:
     if builtin_ops or custom_ops:
         lines.append("## Operations\n")
         has_ops = True
+        # Three states, not two (#1124). An op the dispatcher accepts but that
+        # no config section describes was omitted outright, so `ops` — the
+        # tool's own answer to "what can you do?" — read as a complete
+        # capability list while hiding `batch`: the one op that collapses N
+        # mutations into a single call, and the only escape from #341's
+        # one-payload-per-call cap. Measured over 232 agent transcripts, 70% of
+        # supertool calls carried a single op, and every agent that used
+        # `batch` had learned it from an out-of-band brief.
+        #
+        # Derived from the dispatcher's own sets rather than hand-maintained,
+        # for the same reason `_valid_op_names` exists (#614): the next op
+        # added without a .supertool.json entry discloses itself.
+        #
+        # Placement follows the rule the preset disclosure already sets — a
+        # listing that actively misleads puts its disclosure above the
+        # SessionStart truncation point, because compact output is already over
+        # the cap and a line at the bottom is a line nobody reads. One line,
+        # never a second listing: an op with a real entry never reaches here.
+        undocumented = sorted(set(_valid_op_names()) - _configured_op_names(config))
+        if undocumented:
+            lines.append("Also accepted, no reference in .supertool.json: "
+                         + ", ".join(undocumented) + "\n")
 
     if builtin_ops:
         for name, info in builtin_ops.items():
@@ -12263,6 +12305,18 @@ def op_ops(compact: bool = False) -> str:
             if _emit_example(info):
                 lines.append(f"  Example: `{info['example']}`")
 
+    # Three states, not two (#1124). An op the dispatcher accepts but that no
+    # config section describes was omitted outright, so `ops` — the tool's own
+    # answer to "what can you do?" — read as a complete capability list while
+    # hiding `batch`: the one op that collapses N mutations into a single call,
+    # and the only escape from #341's one-payload-per-call cap. Measured over
+    # 232 agent transcripts, 70% of supertool calls carried a single op, and
+    # every agent that used `batch` had learned it from an out-of-band brief.
+    #
+    # Derived from the dispatcher's own sets rather than hand-maintained, for
+    # the same reason `_valid_op_names` exists (#614): the next op added without
+    # a .supertool.json entry has to disclose itself. One line, not a second
+    # listing — an op with a real entry never reaches here.
     if has_ops:
         lines.append("")
 
