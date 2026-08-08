@@ -71,8 +71,38 @@ jobs:
             echo "changelog   : skipped     (no user-visible paths changed — nothing to announce)"
             exit 0
           fi
-          added=$(printf '%s\n' "$changed" | grep -E '^changelog\.d/[0-9]+\.[a-z]+.*\.md$' || true)
+          # `--name-only` alone lists a DELETION identically to an addition, so
+          # until #925 a PR that changed the core and *removed* somebody else's
+          # pending fragment satisfied this gate: it announced nothing, dropped
+          # an already-approved entry from the next release, and went green.
+          # The two states have to be read apart, and that is two diffs rather
+          # than one flag — restricting the single diff above to `AM` would
+          # also stop the `shipped` read seeing a DELETED preset, and a preset
+          # that goes away is as user-visible as one that arrives.
+          fragment_re='^changelog\.d/[0-9]+\.[a-z]+.*\.md$'
+          added=$(git diff --name-only --diff-filter=AM "origin/${BASE}...HEAD" | grep -E "$fragment_re" || true)
+          removed=$(git diff --name-only --diff-filter=D "origin/${BASE}...HEAD" | grep -E "$fragment_re" || true)
+          # Deleting fragments is exactly what a release cut does — it folds
+          # them into CHANGELOG.md and adds none — so that shape is a pass, and
+          # is named as one rather than being waved through the branch below.
+          # The test for it is "CHANGELOG.md was rewritten in the same PR",
+          # which is a claim about the diff and not a proof the entries
+          # survived; the assembler's own entry-balance refusal (#906) is what
+          # proves that, and it runs where the file is written.
+          assembled=$(printf '%s\n' "$changed" | grep -Fx 'CHANGELOG.md' || true)
+          if [ -n "$removed" ] && [ -z "$assembled" ]; then
+            echo "changelog   : finding     (fragment(s) deleted without being assembled into CHANGELOG.md)"
+            printf '%s\n' "$removed" | sed 's/^/  deleted   /'
+            echo "  fix       restore them — a pending entry is dropped from the next release, silently"
+            echo "  or        if this is a release cut, it must also write CHANGELOG.md"
+            exit 1
+          fi
           if [ -z "$added" ]; then
+            if [ -n "$removed" ]; then
+              echo "changelog   : ok          (release: $(printf '%s\n' "$removed" | wc -l | tr -d ' ') fragment(s) assembled into CHANGELOG.md)"
+              printf '%s\n' "$removed" | sed 's/^/  consumed  /'
+              exit 0
+            fi
             echo "changelog   : finding     (user-visible change with no changelog.d/ fragment)"
             echo "  changed   $(printf '%s\n' "$shipped" | head -5 | tr '\n' ' ')"
             echo "  fix       add changelog.d/<issue>.<section>.md — see docs/contributing.md"
