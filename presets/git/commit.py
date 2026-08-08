@@ -12,6 +12,13 @@ that's printed loudly. Replaces the add/commit/log-1 cycle.
 Special MSG values:
   --no-edit   Use prepared commit message (MERGE_MSG / CHERRY_PICK_HEAD).
               Only valid when a merge or cherry-pick is in progress.
+  amend       REFUSED (#962). There is no amend route here, and committing
+              this makes a commit whose subject is the word `amend`. Use
+              `git commit --amend` directly, or set
+              SUPERTOOL_ALLOW_LITERAL_AMEND=1 for the literal subject.
+
+PATHS are separated by ':::', not by commas and not by spaces. Both input
+routes stage: `git-commit:::MSG:::A:::B` and a payload with `paths = [...]`.
 
 A message containing ':' must arrive via `git-commit:::MSG` or the @payload
 route: the single-colon CLI tokenizes on ':', so `git-commit:fix: thing`
@@ -178,6 +185,84 @@ def _colon_split_refusal(msg, paths, spilled):
     return "\n".join(lines)
 
 
+# Whole-message values that are an instruction in git's vocabulary rather
+# than content. Exact match on the stripped, lowercased message — deliberately
+# not a "message looks like a subcommand" heuristic, which would drift into
+# refusing `revert the revert` and every other legitimate subject that starts
+# with a verb git also owns.
+_AMEND_WORDS = {"amend", "--amend"}
+_ALLOW_LITERAL_AMEND = "SUPERTOOL_ALLOW_LITERAL_AMEND"
+
+
+def _amend_refusal(msg):
+    """`amend` was taken as content when it is unambiguously intent (#962).
+
+    There is no amend route in this op, so the previous behaviour was to make
+    a commit whose subject is the word `amend` and print a success receipt for
+    it. Undoing that is `git reset --soft HEAD~1`, which is the one git
+    operation people get wrong under time pressure.
+
+    This refuses and names the gap. It deliberately does NOT add an amend
+    route: that is a feature, it needs its own refusal for an already-pushed
+    commit, and it is not something to grow out of the side of a bugfix.
+    """
+    lit = msg.strip()
+    return [
+        "ERROR: %r is a git instruction, not a commit message — nothing staged, "
+        "nothing committed." % (lit,),
+        "  git-commit has no amend route, so this would have made a commit whose",
+        "  subject is the word %r, which then has to be undone." % (lit,),
+        "  To amend the last commit, use git directly — it is not wrapped here:",
+        "      git commit --amend --no-edit           keep the existing message",
+        "      git commit --amend -m 'NEW SUBJECT'    replace it",
+        "  Do not amend a commit that is already pushed: that rewrites published",
+        "  history, and this op has no way to tell you whether it was.",
+        "  If you really did mean the literal subject %r:" % (lit,),
+        "      %s=1 ./supertool %sgit-commit:::%s%s"
+        % (_ALLOW_LITERAL_AMEND, chr(39), lit, chr(39)),
+    ]
+
+
+def _literal_amend_allowed():
+    """Is the #962 refusal switched off for this call?
+
+    Same env-over-nothing shape and the same off-vocabulary as the co-author
+    trailer, so there is one convention in this file rather than two.
+    """
+    raw = os.environ.get(_ALLOW_LITERAL_AMEND, "")
+    return raw.strip().lower() not in _DISABLE_VALUES
+
+
+def _add_failure_lines(add, to_add):
+    """git add refused a pathspec — say what a well-formed one looks like (#986).
+
+    The op advertises that it refuses a mangled pathspec, and it does. What it
+    never said is what the separator *is*, so a caller who guessed ',' learned
+    only that their guess was wrong — an error that names the fault and not
+    the remedy.
+
+    The comma split is offered as a question, not applied as a fact: `a,b.txt`
+    is a legal filename, so a token git already knows is never taken apart.
+    """
+    lines = [
+        "ERROR: git add failed: %s"
+        % (add.stderr.strip() or add.stdout.strip(),),
+        "  " + _SEPARATOR_NOTE,
+    ]
+    split, guessed = [], False
+    for p in to_add:
+        parts = [x for x in p.split(",") if x]
+        if len(parts) > 1 and not _known_to_git(p, set()):
+            guessed = True
+            split.extend(parts)
+        else:
+            split.append(p)
+    if guessed:
+        lines.append("  A ',' above is not a separator here. Did you mean:")
+        lines += _colon_remedy(split)
+    return lines
+
+
 def _worktree_changes(git_fn=None):
     """One `git status -z` read, split three ways (#1003, #1016).
 
@@ -222,12 +307,67 @@ def _worktree_changes(git_fn=None):
     return modified, untracked, ""
 
 
-def _sample(paths, cap=20):
+# How many paths a listing prints before it starts counting instead. Shared
+# with _colon_remedy, which needs to know whether the list above it was the
+# whole set: a remedy is honest only in reference to what was actually shown.
+_LIST_CAP = 20
+
+_SEPARATOR_NOTE = "Paths are separated by ':::' — not by commas, not by spaces."
+
+
+def _sample(paths, cap=_LIST_CAP):
     """First *cap* paths, indented, plus a count line when there are more."""
     lines = ["    " + p for p in paths[:cap]]
     if len(paths) > cap:
         lines.append(f"    … {len(paths) - cap} more")
     return lines
+
+
+def _colon_remedy(paths, message="MESSAGE"):
+    """The whole path list, or a visible placeholder — never a subset (#963).
+
+    A remedy naming the first three of fifteen paths the reader was *just
+    shown* is not an abbreviation. Pasted, it stages three, commits, and
+    prints a success receipt; nothing in the line itself says the other
+    twelve were dropped. That is a remedy which produces the wrong commit
+    while carrying the tool authority a refusal lends it — the same failure
+    as a checker reporting ok when it never ran, one layer along.
+
+    Past _LIST_CAP the list above is itself truncated, so naming "all of it"
+    is not available: dumping 200 pathspecs into a suggestion is its own
+    defect, and dumping the first 20 of 200 is the original one. The third
+    state is a placeholder that cannot be mistaken for an answer.
+    """
+    head = "    ./supertool " + chr(39) + "git-commit:::" + message + ":::"
+    if len(paths) <= _LIST_CAP:
+        return [head + ":::".join(paths) + chr(39), "  " + _SEPARATOR_NOTE]
+    return [
+        head + "PATH[:::PATH...]" + chr(39),
+        f"  {len(paths)} paths in all, {_LIST_CAP} shown and "
+        f"{len(paths) - _LIST_CAP} not shown — name the ones you mean.",
+        "  " + _SEPARATOR_NOTE,
+    ]
+
+
+def _payload_remedy(paths):
+    """The `@-` form, spelled with its `paths` key (#986).
+
+    Pointing only at the colon form answers a caller who may be on the
+    payload route precisely *because* their message will not survive
+    ':'-tokenization. Both routes stage; both are named here, so the reader
+    picks rather than being told they used the wrong one.
+    """
+    if paths and len(paths) <= _LIST_CAP:
+        arr = ", ".join(chr(34) + p + chr(34) for p in paths)
+    else:
+        arr = chr(34) + "path/to/file" + chr(34)
+    return [
+        "  or, for a multi-line message — this route stages too, via `paths`:",
+        "    ./supertool " + chr(39) + "git-commit:@-" + chr(39) + " <<" + chr(39) + "EOF" + chr(39),
+        "    message = " + _TRIPLE + "MESSAGE" + _TRIPLE,
+        "    paths = [" + arr + "]",
+        "    EOF",
+    ]
 
 
 def _left_behind_lines(git_fn=None):
@@ -254,9 +394,8 @@ def _left_behind_lines(git_fn=None):
     extra = f"  ({len(untracked)} untracked, not listed)" if untracked else ""
     lines = [f"⚠ {len(modified)} modified tracked file(s) were NOT included:{extra}"]
     lines += _sample(modified)
-    lines.append("  Intentional? If not: git-commit:::MESSAGE:::"
-                 + ":::".join(modified[:3])
-                 + ("…" if len(modified) > 3 else ""))
+    lines.append("  Intentional? If not:")
+    lines += _colon_remedy(modified)
     return lines
 
 
@@ -283,10 +422,10 @@ def _nothing_staged_lines():
     if untracked:
         lines.append(f"  Untracked ({len(untracked)}):")
         lines += _sample(untracked)
-    picks = (modified + untracked)[:3]
+    candidates = modified + untracked
     lines.append("  Commit the ones you mean, by name:")
-    lines.append("    ./supertool " + chr(39) + "git-commit:::MESSAGE:::"
-                 + ":::".join(picks) + chr(39))
+    lines += _colon_remedy(candidates)
+    lines += _payload_remedy(candidates)
     return lines
 
 
@@ -302,6 +441,14 @@ def main() -> int:
 
     if not no_edit and not msg.strip():
         print("ERROR: commit message is empty.")
+        return 1
+
+    # #962 — before anything is staged and before the header is printed, so a
+    # refused call leaves no trace and reads as the non-event it is.
+    if (not no_edit and msg.strip().lower() in _AMEND_WORDS
+            and not _literal_amend_allowed()):
+        for line in _amend_refusal(msg):
+            print(line)
         return 1
 
     if _git(["rev-parse", "--git-dir"]).returncode != 0:
@@ -349,7 +496,8 @@ def main() -> int:
         if to_add:
             add = _git(["add", "--"] + to_add)
             if add.returncode != 0:
-                print(f"ERROR: git add failed: {add.stderr.strip() or add.stdout.strip()}")
+                for line in _add_failure_lines(add, to_add):
+                    print(line)
                 return 1
         print(f"Staged: {len(paths)} path(s)")
 
