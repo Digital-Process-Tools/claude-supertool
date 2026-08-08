@@ -118,6 +118,32 @@ def test_a_filename_ci_will_not_parse_is_refused(tmp_path):
     assert result["errors"][0]["line"] is None
 
 
+def test_a_file_bad_in_two_ways_reports_what_ci_reports(tmp_path):
+    """Not just the same verdict — the same findings, on the same file.
+
+    `collect()` `continue`s past a fragment whose *name* will not parse, so it
+    never reads that body. An adapter that carried on and body-scanned anyway
+    returned two findings where `--check` returns one: a divergence nobody
+    would see until they compared the two outputs, on the one file where the
+    two are supposed to be the same sentence.
+    """
+    project = _project(tmp_path)
+    target = _write(project, "1109.fixt.md", BARE_PARAGRAPH)
+
+    result = _run(target)
+    assert result["ok"] is False
+    assert result["count"] == 1
+    assert "unknown section" in result["errors"][0]["msg"]
+
+    proc = subprocess.run(
+        [sys.executable, str(project / ".github" / "scripts" / "assemble_changelog.py"),
+         "--check", "--dir", str(project / "changelog.d")],
+        capture_output=True, text=True)
+    ci_output = proc.stdout + proc.stderr
+    assert "unknown section" in ci_output, ci_output
+    assert "not a single `- ` bullet list" not in ci_output, ci_output
+
+
 def test_the_directorys_own_readme_is_not_a_fragment(tmp_path):
     result = _run(_write(_project(tmp_path), "README.md", "# changelog.d\n"))
     assert "skipped" in result

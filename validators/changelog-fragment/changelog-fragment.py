@@ -164,10 +164,20 @@ def main() -> None:
 
     errors: list = []
 
+    # `collect()` stops at the first stage that refuses — a bad name `continue`s
+    # before the body is ever read. Reporting both stages here would be more
+    # helpful and would also be a second opinion, which is the one thing this
+    # adapter must not have: the counts would differ from `--check`'s on the
+    # same file, and the divergence would be invisible until someone compared
+    # them. It also lets a definite finding be lost — a bad name plus an absent
+    # markdown-it-py reached `CannotValidate` and published `skipped`, dropping
+    # a refusal that needed no parser at all.
     try:
         asm.parse_fragment_name(name)
     except asm.BadFragment as exc:
         errors.append(_error(target, name, str(exc), "name"))
+        emit(_verdict(target, errors, start))
+        return
 
     if not text.strip():
         errors.append(_error(
