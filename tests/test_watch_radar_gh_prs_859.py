@@ -411,8 +411,15 @@ def test_live_board_over_this_repo(state_dir):
     # `gh auth status` on every collection of the whole suite.
     if not _gh_ready():
         pytest.skip("gh not authenticated")
+    # `state=open`, not `author=` (#974). This test was spelled `author=` to
+    # mean "the whole board, unfiltered" — which worked only because an empty
+    # value walked through #939's refusal, satisfied `has_role`, and suppressed
+    # the `--author @me` default. That is the widening #974 refuses, so the
+    # spelling no longer exists; a real narrowing filter is what this test
+    # meant and it keeps the live GitHub shapes it exists to exercise.
     lines, _healthy = tier.radar_report(
-        {"_arg": "author=", "default_branch": "", "_watch": lambda *a, **k: "alive"})
+        {"_arg": "state=open", "default_branch": "",
+         "_watch": lambda *a, **k: "alive"})
     text = "\n".join(lines)
     assert "scope" in text
     assert "open" in text

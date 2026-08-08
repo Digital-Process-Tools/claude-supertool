@@ -67,10 +67,29 @@ def parse_multi(
             continue
         if "=" in tok:
             key, _, val = tok.partition("=")
-            if key.strip() in filter_keys:
-                filters.setdefault(key.strip(), []).append(val.strip())
-            else:
+            if key.strip() not in filter_keys:
                 unknown.append(tok)
+            elif not val.strip():
+                # A known key with no value (#974). It is NOT a filter: every
+                # `_build_list_cmd` opens with `if not val: continue`, so the
+                # flag is dropped and the *default* board answers a narrowing
+                # question. On `gh-prs` it is worse than a drop — `has_role`
+                # tests key membership, so `author=` both suppresses the
+                # `--author @me` default and emits no `--author`, widening the
+                # board from "mine" to everyone's while the scope line still
+                # claims a filter.
+                #
+                # It goes down the `unknown` channel rather than a fourth
+                # return value on purpose: every consumer of this tokenizer
+                # already guards on `unknown` — the boards refuse, the radar
+                # tiers raise, the mr-feed poller returns None — and a new
+                # channel would leave each of those blind again until it was
+                # taught about it, which is the shape of this bug. `unknown`
+                # keeps the token verbatim, so `unknown_error` can still tell
+                # the two kinds apart and word them differently.
+                unknown.append(tok)
+            else:
+                filters.setdefault(key.strip(), []).append(val.strip())
         elif tok in flag_names:
             flags.add(tok)
         else:
@@ -92,6 +111,14 @@ def parse(
     return {k: v[-1] for k, v in multi.items()}, flags, unknown
 
 
+def is_empty_value(tok: str, filter_keys: set[str] | frozenset[str]) -> bool:
+    """`author=` — a key this op knows, carrying no value at all (#974)."""
+    if "=" not in tok:
+        return False
+    key, _, val = tok.partition("=")
+    return key.strip() in filter_keys and not val.strip()
+
+
 def unknown_error(
     unknown: list[str],
     filter_keys: set[str] | frozenset[str],
@@ -101,12 +128,55 @@ def unknown_error(
 
     An error that says what is wrong but not what to do is its own filing, so
     the accepted filters and flags are listed rather than alluded to.
+
+    Two kinds share this channel and they need different sentences (#974).
+    Telling a caller who typed `author=` that the token is *unrecognised*
+    sends them hunting for a typo in a spelling that is correct, and never
+    names the consequence that made it worth refusing — the board got WIDER,
+    not narrower.
     """
+    empty = [t for t in unknown if is_empty_value(t, filter_keys)]
+    never = [t for t in unknown if not is_empty_value(t, filter_keys)]
+    parts: list[str] = []
+    if never:
+        parts.append(
+            "unrecognised token(s): " + ", ".join(repr(t) for t in never))
+    if empty:
+        parts.append(
+            "filter key(s) given with no value: "
+            + ", ".join(repr(t) for t in empty))
+    widening = ""
+    if empty:
+        # The role clause is emitted only for the role keys THIS op actually
+        # has and that were actually left empty. Naming `reviewer` at
+        # `gh-issues`, which has no such filter, would send the reader looking
+        # for a token that does not exist — a refusal that misdescribes the
+        # vocabulary is its own small version of this bug.
+        roles = sorted(
+            k for k in ("author", "assignee", "reviewer")
+            if k in filter_keys
+            and any(t.partition("=")[0].strip() == k for t in empty)
+        )
+        role_clause = ""
+        if roles:
+            role_clause = (
+                " " + ", ".join(f"`{r}`" for r in roles)
+                + (" is a role key" if len(roles) == 1 else " are role keys")
+                + ": leaving one empty also suppresses the `author=@me`"
+                  " default, so the board answers with everyone's rather than"
+                  " yours — wider, not narrower.")
+        widening = (
+            " The key is known and spelled right — the value is missing. An "
+            "empty value is dropped when the query is built, so the board "
+            "comes back WIDER than the one asked for rather than narrower."
+            + role_clause
+            + " Write `key=VALUE`, or drop the key entirely.")
     return (
-        "ERROR: unrecognised token(s): " + ", ".join(repr(t) for t in unknown)
+        "ERROR: " + "; ".join(parts)
         + ". Nothing was filtered by them, so the board is NOT the answer to "
-          "the question you asked — refusing rather than printing it. "
-          "Filters: " + ", ".join(sorted(filter_keys))
+          "the question you asked — refusing rather than printing it."
+        + widening
+        + " Filters: " + ", ".join(sorted(filter_keys))
         + ". Flags: " + ", ".join(sorted(flag_names)) + "."
     )
 
