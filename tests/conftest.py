@@ -556,6 +556,14 @@ RESET_GLOBALS = (
     "_VALIDATOR_DEFER_SEEN",
     "_VALIDATOR_FINGERPRINT_CACHE",
     "_NOT_CHECKED",
+    # `_NOT_CHECKED`'s twin, and classified from the same reasoning (#990). It
+    # accumulates one entry per file a `validate:` block rendered and is read as
+    # a per-call SLICE, so a leak across calls in one process would make one
+    # run's footer count another run's files — which is the defect class the
+    # footer was added to close. `main` truncates it back to its entry length,
+    # but a test that drives `op_validate` or `_validate_one_block` directly
+    # never reaches that, which is exactly what this tuple is for.
+    "_VALIDATED_FILES",
     "_REAPPLY_COUNT",
     "_ROLLBACK_COUNT",
     "_SKIP_COUNT",

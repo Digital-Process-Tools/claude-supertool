@@ -5808,8 +5808,11 @@ def _branch_line() -> str:
 def _result_line(ops: int, writes: int, skipped: int = 0,
                  reapplied: int = 0,
                  not_checked: Optional[Sequence[str]] = None,
-                 rolled_back: int = 0) -> str:
-    """`[result] N ops run, M writes[, K skipped][, K rolled back][, K re-applied]` (#621).
+                 rolled_back: int = 0,
+                 validated: Optional[Sequence[Tuple[str, bool, bool]]] = None) -> str:
+    """`[result] N ops run, M writes[, K skipped][, K rolled back][, K re-applied]` (#621),
+    or, for a read-only `validate:` run, `[result] N files, M with findings,
+    K not checked` (#990).
 
     The receipt a mutating op prints sits ABOVE the `[validators]` block, and a
     long validators block is exactly when a reader reaches for `| tail -4`. So
@@ -5872,9 +5875,33 @@ def _result_line(ops: int, writes: int, skipped: int = 0,
     is the one exception to the bail below (#969). `validate:` mutates nothing,
     so it had no footer at all: its non-verdict was visible in the row and in
     the exit code, and absent from the line the docs tell readers to trust. The
-    counts stay off that line — there was no op to count — and the word still
-    appears only when a checker declined, for the reason `skipped` does: a `0`
-    a reader learns to skip is how this failed the first time.
+    counts stay off that line — there was no op to count.
+
+    `validated` is what makes that footer unconditional for `validate:` (#990).
+    #979 emitted it only on a decline, so a clean run still ENDED on the last
+    file's own row — a per-file verdict standing where a whole-run one belongs,
+    on a multi-file run the same defect as #970's forged row. `0 ops run,
+    0 writes` remains the wrong summary of a read-only op (#621), so this branch
+    reports what a `validate:` run actually produced instead:
+
+    ```
+    [result] 3 files, 1 with findings, 0 not checked
+    ```
+
+    File counts, and they do not partition — one file can hold a finding AND a
+    checker that declined. `not checked` counts a file where at least one
+    validator returned no verdict, `skipped` included: #665 refused to
+    *escalate* an optional tool nobody installed, and disclosing it on a count
+    line escalates nothing. It is shown as a `0` rather than suppressed, which
+    is the opposite of the rule `skipped` follows above and deliberately so — on
+    a line whose entire content is counts, the not-checked slice is the one a
+    reader must be able to find without knowing whether it fired, and a run that
+    could not check something has to say so whether or not anything failed.
+
+    `NOT RUN` stays absent from a clean run. It is the token consumers grep for,
+    and rendering `0 validators NOT RUN` would put it in the output of every
+    green validate — #621's zero-nobody-reads with a live tripwire attached. The
+    #979 clause is appended after the counts when it fires, not instead of them.
 
     `rolled_back` names a sixth state (#952): the op matched, wrote, failed a
     validator and was reverted. `writes` already excluded it — `_retract_write`
@@ -5890,6 +5917,19 @@ def _result_line(ops: int, writes: int, skipped: int = 0,
     """
     if ops <= 0:
         names = list(dict.fromkeys(not_checked or ()))
+        files = list(validated or ())
+        if files:
+            n = len(files)
+            with_findings = sum(1 for _p, f, _nv in files if f)
+            unchecked = sum(1 for _p, _f, nv in files if nv)
+            line = (f"[result] {n} file{'' if n == 1 else 's'}, "
+                    f"{with_findings} with findings, {unchecked} not checked")
+            if names:
+                line += (f" — {len(names)} validator"
+                         f"{'' if len(names) == 1 else 's'} "
+                         f"NOT RUN ({', '.join(names)}) — those validators "
+                         f"returned no verdict, so the file was NOT checked")
+            return line + chr(10)
         if not names:
             return ""
         return (f"[result] {len(names)} validator{'' if len(names) == 1 else 's'} "
@@ -5903,6 +5943,16 @@ def _result_line(ops: int, writes: int, skipped: int = 0,
         line += f", {rolled_back} rolled back"
     if reapplied > 0:
         line += f", {reapplied} re-applied"
+    files = list(validated or ())
+    if files:
+        # A `validate:` op inside a batch that also mutated something. Its
+        # counts have nowhere else to go — an inner op is at dispatch depth > 1
+        # and never renders a footer of its own — so #990's guarantee would
+        # have a hole exactly where a reader is least likely to notice it.
+        line += (f", validated {len(files)} file"
+                 f"{'' if len(files) == 1 else 's'} "
+                 f"({sum(1 for _p, f, _nv in files if f)} with findings, "
+                 f"{sum(1 for _p, _f, nv in files if nv)} not checked)")
     names = list(dict.fromkeys(not_checked or ()))
     if names:
         line += (f", {len(names)} validator{'' if len(names) == 1 else 's'} "
@@ -6095,6 +6145,19 @@ _ROLLBACK_COUNT: List[int] = [0]
 # warm daemon reuses the process, so an absolute read would let one ungated
 # edit poison the exit code of every later call in the same worker (#680).
 _NOT_CHECKED: List[str] = []
+
+# One entry per file a `validate:` op rendered a block for, as
+# `(path, had_finding, had_non_verdict)` — the material for the whole-run
+# verdict `validate:` had no line for at all on the clean path (#990).
+#
+# Recorded here rather than re-derived from the rendered rows, for the reason
+# `_result_line`'s counts already are: a footer parsed back out of the prose it
+# is summarising can only ever agree with the prose, which is exactly the thing
+# under suspicion when a reader reaches for it.
+#
+# Read as a per-call slice, like `_NOT_CHECKED` above and for the same reason —
+# the warm daemon reuses the process.
+_VALIDATED_FILES: List[Tuple[str, bool, bool]] = []
 
 
 def _drop_write_warnings(path: str) -> None:
@@ -12954,6 +13017,71 @@ def _validator_fingerprint(spec: Dict[str, Any], cmd: str,
     return fingerprint
 
 
+_VALIDATOR_MEANING_VERSION: Optional[str] = None
+
+
+def _validator_meaning_version() -> str:
+    """Identify what the cached FIELDS MEAN, so a reinterpretation misses (#1048).
+
+    The rest of the key says what was analysed (`content`), by whom (`name`,
+    `cmd`) and by which build of the analyser (`_validator_fingerprint`). None
+    of it says what the stored fields mean to the core reading them back. So a
+    change to the core's own interpretation of a field it already owns — a
+    `count` that starts excluding a category, an `ok` that starts implying
+    something narrower, a key that becomes core-only — is read out of entries
+    written under the previous meaning, for up to `validator_cache_ttl_hours`.
+    Nothing is forged and no adapter misbehaves: the bytes were correct when
+    written and are wrong when read, which is why no test today notices.
+
+    **Derived, not declared, and that is the judgment call.** A hand-maintained
+    revision constant would be cheaper still and is the class of guard this repo
+    distrusts on sight — #1042 is a filed instance of exactly it, two copies of
+    one contract with nothing comparing them. Putting the release version here
+    instead is correct and blunt: it cold-invalidates every validator cache for
+    every user on every release, minutes per developer on the phpstan/phpunit
+    tiers, whether or not any meaning moved. That trade was refused in #1044 and
+    the refusal still holds.
+
+    So the component is hashed out of the two places the meaning actually lives:
+
+    - `validators/SCHEMA.md`, this repo's canonical statement of what each field
+      means. A meaning change that does not touch it is already a contract
+      violation, and `tests/test_adapter_cannot_forge_core_keys_1036.py` is the
+      machine that compares the doc's claims to the code's behaviour — this
+      leans on that comparison rather than adding a second copy beside it.
+    - the sorted `_VALIDATOR_CORE_ONLY_KEYS`, the meaning-bearing half of the
+      contract that lives in code. A key entering that set changes what an
+      entry carrying it means, and the doc can lag by a commit.
+
+    **Content, not `stat`.** `_validator_fingerprint` uses size+mtime because it
+    is asking "is this the same binary"; this is asking "is this the same
+    contract", and a fresh clone or a reinstall rewrites identical bytes at a new
+    mtime. Keying on mtime would pay #1044's rejected cost at every checkout.
+
+    **An unreadable SCHEMA.md is its own key space, not a default.** An install
+    that cannot read the doc cannot say which meaning its entries were written
+    under, and folding that into whatever the readable case hashes to would let
+    entries cross the boundary in the one direction this exists to prevent. The
+    three-state contract, applied to the key itself.
+
+    Memoised: the file is read once per process, not once per cache lookup.
+    """
+    global _VALIDATOR_MEANING_VERSION
+    if _VALIDATOR_MEANING_VERSION is not None:
+        return _VALIDATOR_MEANING_VERSION
+    import hashlib
+    h = hashlib.sha256()
+    try:
+        with open(os.path.join(_INSTALL_DIR, "validators", "SCHEMA.md"), "rb") as f:
+            h.update(f.read())
+    except OSError:
+        h.update(b"schema-unreadable")
+    h.update(b"\x00" + "\x00".join(
+        sorted(_VALIDATOR_CORE_ONLY_KEYS)).encode("utf-8"))
+    _VALIDATOR_MEANING_VERSION = h.hexdigest()[:16]
+    return _VALIDATOR_MEANING_VERSION
+
+
 def _validator_cache_key(file_path: str, name: str, cmd: str,
                          spec: Optional[Dict[str, Any]] = None) -> Optional[str]:
     import hashlib
@@ -12967,6 +13095,7 @@ def _validator_cache_key(file_path: str, name: str, cmd: str,
     h.update(b"\x00" + name.encode("utf-8"))
     h.update(b"\x00" + cmd.encode("utf-8"))
     h.update(b"\x00" + _validator_fingerprint(spec or {}, cmd, file_path).encode("utf-8"))
+    h.update(b"\x00" + _validator_meaning_version().encode("utf-8"))
     return h.hexdigest()
 
 
@@ -13285,8 +13414,9 @@ def _validator_strip_core_keys(data: Dict[str, Any]) -> Dict[str, Any]:
     is the other one: a cache hit returns the same parsed payload, persisted,
     from a `return` that is upstream of that line. An entry left by a build
     from before this function existed carries a forged `timeout` through an
-    HMAC that verifies — the machine's own secret signed it — and a cache key
-    with no version component, so no upgrade retires it (#1044). Both doors are
+    HMAC that verifies — the machine's own secret signed it — and, until #1048
+    added `_validator_meaning_version`, a cache key describing nothing about the
+    build that wrote it, so no upgrade retired it (#1044). Both doors are
     in `_validator_run_one`; a third one strips too, and
     `tests/test_cached_result_cannot_forge_core_keys_1044.py` is where the
     cache door is pinned.
@@ -13371,8 +13501,11 @@ def _validator_run_one(name: str, spec: Dict[str, Any], file: str,
                 # upstream of the strip below — so an entry written by a build
                 # from before #1036 hands a decision the adapter's own
                 # `timeout` verbatim. It verifies: this machine's secret signed
-                # it, and the key has no version component, so upgrading to the
-                # build that fixed #1036 does not retire it.
+                # it, and before #1048 the key described nothing about the build
+                # that wrote it, so upgrading to the build that fixed #1036 did
+                # not retire it. The meaning version retires it only when the
+                # contract moves, which is not the same guarantee — the strip
+                # below is still the one that makes any vintage safe to read.
                 _validator_strip_core_keys(cached)
                 # Re-stamped, not preserved: these two describe THIS run. The
                 # answer came out of a file, so the elapsed time is the lookup,
@@ -14752,6 +14885,9 @@ def _validate_one_block(path: str, validators: dict, verbose: bool = False) -> L
     here because a reader who believes the sentence above stops looking.
     """
     out = [f"validate: {_flat_field(path)}"]
+    had_finding = False
+    had_non_verdict = False
+    ran_any = False
     for name, spec in validators.items():
         glob = spec.get("match", "*")
         if path and glob and not _match_glob(path, glob):
@@ -14759,8 +14895,25 @@ def _validate_one_block(path: str, validators: dict, verbose: bool = False) -> L
         data = _validator_run_one(name, spec, path)
         if data is None:
             continue
+        # The three states, tallied for the run's own footer (#990). `skipped`
+        # counts towards "not checked" here even though #665 refused to
+        # ESCALATE it: an optional tool nobody installed still checked nothing,
+        # and saying so on a count line does not gate anything on it.
+        ran_any = True
+        if "skipped" in data or _validator_no_verdict(data) is not None:
+            had_non_verdict = True
+        elif data.get("ok") is False:
+            had_finding = True
         _note_not_checked({name: data})
         out.extend(_validator_render_row(data, verbose=verbose))
+    # A file no validator's `match` glob selected is NOT a clean file. It is the
+    # emptiest block this function can emit — no rows at all — and counting it
+    # towards `0 not checked` would make "we own no checker for this type" and
+    # "every checker passed" the same number, which is the absence-read-as-
+    # presence defect the footer exists to prevent. `presets/git/resolve.py`
+    # already distinguishes the two (an empty block digests to `None`, rendered
+    # as nothing); the count has to agree with it.
+    _VALIDATED_FILES.append((path, had_finding, had_non_verdict or not ran_any))
     return out
 
 
@@ -17288,6 +17441,7 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
     _reapplies_before = _REAPPLY_COUNT[0]
     _rollbacks_before = _ROLLBACK_COUNT[0]
     _not_checked_before = len(_NOT_CHECKED)
+    _validated_before = len(_VALIDATED_FILES)
 
     # #146: dispatch-level path containment. Each op has a known position(s)
     # of its path arg(s) in `parts`. _safe_path enforces cwd containment
@@ -17860,14 +18014,16 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
         # `validate` is not in `_OP_TARGETS` and mutates nothing, so it was
         # gated out of the summary line entirely.
         _not_checked_slice = _NOT_CHECKED[_not_checked_before:]
+        _validated_slice = _VALIDATED_FILES[_validated_before:]
         if (op in _OP_TARGETS or _MUTATION_ATTEMPTS[0] > _attempts_before
-                or _not_checked_slice):
+                or _not_checked_slice or _validated_slice):
             _result = _result_line(_MUTATION_ATTEMPTS[0] - _attempts_before,
                                    _WRITE_COUNT[0] - _writes_before,
                                    _SKIP_COUNT[0] - _skips_before,
                                    _REAPPLY_COUNT[0] - _reapplies_before,
                                    _not_checked_slice,
-                                   _ROLLBACK_COUNT[0] - _rollbacks_before)
+                                   _ROLLBACK_COUNT[0] - _rollbacks_before,
+                                   _validated_slice)
             # A batch says its count twice, and the leading copy is the load-
             # bearing one. The footer is separated from the per-op results by a
             # validators block long enough that `tail` lands on `git-status :
@@ -18913,6 +19069,7 @@ def _main(argv: List[str]) -> int:
     _skips_at_entry = _SKIP_COUNT[0]
     _rollbacks_at_entry = _ROLLBACK_COUNT[0]
     _not_checked_at_entry = len(_NOT_CHECKED)
+    _validated_at_entry = len(_VALIDATED_FILES)
 
     # Optional parallel execution — opt-in, only when every op is read-only.
     # Custom ops are excluded (could mutate via shell). Mixed batches stay
@@ -18998,6 +19155,9 @@ def _main(argv: List[str]) -> int:
     if len(_NOT_CHECKED) > _not_checked_at_entry:
         any_failure = True
     del _NOT_CHECKED[_not_checked_at_entry:]
+    # Informational only — the count line discloses a skip, it does not gate on
+    # one (#990). Truncated for the same warm-daemon reason as the list above.
+    del _VALIDATED_FILES[_validated_at_entry:]
 
     log_call(argv, total_out_bytes)
     return 1 if any_failure else 0
