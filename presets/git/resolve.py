@@ -487,11 +487,16 @@ def _skip_summary(skipped: list) -> str:
     """`tool (why)` for each declined validator, bounded to one short cell.
 
     The `why` is the adapter's own text — `phpstan` declining because it could
-    not authenticate names the URL it tried — so it goes through the same
-    redaction as a dead child's stderr (#925), and for the same reason. The
-    tool name is ours and is not at risk; only the reason is a child's.
+    not authenticate names the URL it tried — so it gets the same two passes a
+    dead child's stderr gets, and for the same two reasons: redaction (#925),
+    and the one-line rule (#883/#895) because this cell is interpolated into
+    `markers: clean | {digest}` at column 0 exactly like the other one. It had
+    the first and not the second; a carriage return in a decline reason
+    overwrites the line the receipt is made of, which is #851 through a second
+    door. The tool name is ours and is at risk from neither.
     """
-    parts = [f"{tool} ({_redacted(why)})" if why else tool for tool, why in skipped]
+    parts = [f"{tool} ({_untrusted.flat(_redacted(why))})" if why else tool
+             for tool, why in skipped]
     text = ", ".join(parts)
     if len(text) > _CHILD_DETAIL_MAX:
         text = text[:_CHILD_DETAIL_MAX - 1] + "…"

@@ -212,3 +212,44 @@ def test_the_no_changelog_label_still_wins(tmp_path) -> None:
 
     assert res.returncode == 0, res.stdout + res.stderr
     assert "skipped" in res.stdout, res.stdout
+
+def test_a_fragment_only_deletion_is_a_finding_with_no_code_change(tmp_path) -> None:
+    """Losing an entry needs no code change to go with it.
+
+    The first cut of this fix put the deletion check *below* the
+    user-visible-paths gate, so `git rm changelog.d/906.added.md` on its own
+    left `shipped` empty and the job reported `skipped (nothing to announce)`
+    and exited 0 -- the plainest instance of the bug it closes. Found by the
+    independent review of that commit, which is why this case exists and the
+    ones above it did not catch it: every one of them edits the core first.
+    """
+    repo = base_repo(tmp_path)
+    git(repo, "rm", "-q", "changelog.d/906.added.md")
+    git(repo, "commit", "-m", "drop a pending fragment and nothing else")
+
+    res = run_gate(repo)
+
+    assert res.returncode != 0, (
+        "a PR whose entire content is the removal of somebody else's entry "
+        "was waved through:\n" + res.stdout + res.stderr)
+    assert "906.added.md" in res.stdout, res.stdout
+
+
+def test_a_pr_that_adds_and_consumes_reports_both(tmp_path) -> None:
+    """Half a receipt is the shape this job exists to refuse."""
+    repo = base_repo(tmp_path)
+    touch_core(repo)
+    (repo / "CHANGELOG.md").write_text("# Changelog\n\n## [0.30.0]\n", encoding="utf-8")
+    (repo / "changelog.d" / "925.fixed.md").write_text(
+        "- **Mine** ([#925](x)). Body.\n", encoding="utf-8")
+    git(repo, "rm", "-q", "changelog.d/906.added.md")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "release plus an entry of its own")
+
+    res = run_gate(repo)
+
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "925.fixed.md" in res.stdout, res.stdout
+    assert "906.added.md" in res.stdout, (
+        "the receipt reported what it added and not what it consumed:\n"
+        + res.stdout)

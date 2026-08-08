@@ -95,3 +95,17 @@ def test_ordinary_stderr_is_untouched() -> None:
 
     assert "SyntaxError: invalid syntax (foo.py, line 12)" in cell, cell
     assert _secrets.MARKER_PREFIX not in cell, cell
+
+def test_a_declined_validators_reason_cannot_rewrite_the_line() -> None:
+    """The decline reason is a child's text on a line the tool owns.
+
+    `_child_failed` has gone through `_untrusted.flat` since #883; this sibling
+    cell, built from the adapter's own reason, did not -- so a carriage return
+    in it overwrote the receipt row it is embedded in. Same class, one function
+    away, and on the line this issue was already changing.
+    """
+    cell = resolve._skip_summary([("phpstan", "boom\rmarkers: clean")])
+
+    assert "\r" not in cell, repr(cell)
+    assert "\n" not in cell, repr(cell)
+    assert "phpstan" in cell, cell
