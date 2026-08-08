@@ -1161,3 +1161,35 @@ Want to add a preset, op, or validator to the shipped supertool?
 - **Tests in `tests/`.** New ops and validators need test coverage. Check existing tests for the pattern.
 - **README update if introducing new shape.** If your PR adds a new top-level config key or changes op schema, update the README config reference section.
 - **Commit messages:** `feat: add kubectl preset` / `fix: {path} placeholder on Windows` / `docs: add contributing guide`. Present tense, imperative mood, lowercase.
+
+The "one feature per PR" bullet above is written for an external contributor
+submitting a single, self-contained change — the other bullets (tests, README update,
+commit messages) apply regardless of who is submitting or how many issues a PR closes.
+"One feature per PR" itself is a coordination cost, not a correctness property, and its
+cost structure inverts for maintainer-side work.
+
+**Maintainer-side convention: one lane per PR, not one issue per PR.** Issues here are
+frequently worked in lanes — a set of issues that share files or a subsystem, so loading
+that context once serves several fixes instead of paying to reload it per issue. Branches
+follow the issue numbers directly (`fix/1094`, or `fix/1067-1071` for a bundled lane),
+skipping the `feat/short-description` scheme above, which exists for a contributor who
+has one thing to submit. Commit titles follow the same pattern rather than the
+`type: description` form above — a descriptive sentence with the issue number in
+parens, e.g. "grep says which pattern it ran, and delegation stops answering a BRE
+(#1098)" — because a lane title has to name more than one change. 15+ of the last 20
+merged PRs closed more than one issue this way, and that is by design, not drift.
+
+**The boundary that keeps this legitimate:** bundling is a lane call, not a batching
+convenience.
+
+- Legitimate: the issues genuinely touch the same files or subsystem, and the PR would
+  have opened the same files even for just one of them (e.g. two fixes to `presets/gh/`,
+  two docs issues about the same section).
+- Scope creep: a change riding along because "it's the same lane" when it touches files,
+  behavior, or docs the bundled issues did not require. If a reviewer can't point at the
+  shared file or subsystem an issue's fix needed, it does not belong in the PR — file it
+  separately, even if it is small.
+
+An external contributor should still open one PR per change; the maintainer-side lane
+convention is not license to bundle unrelated fixes just because they landed the same
+day.
