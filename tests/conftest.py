@@ -562,6 +562,18 @@ RESET_GLOBALS = (
     "_WRITE_COUNT",
     "_WRITE_WARNINGS",
     "_PAYLOAD_WARNINGS",
+    # Derived from `_CONFIG`, and therefore scratch for the same reason the
+    # fixture below hands every test `_CONFIG = {}` (#1030). `_load_config()`
+    # writes the `mcp` block into this dict *in place* and never clears it, so
+    # one test that forces a real config load — `test_at_file_route.py::
+    # TestPayloadRoutePin` chdirs to the repo root and rebuilds the registry,
+    # legitimately — left this repo's own `py-lsp` spec (`match: "*.py"`) here
+    # for the rest of that xdist worker. Every later `.py` op_workspace /
+    # resolve / refs call in that worker then routed to an LSP nobody
+    # configured, which is why ~10 of `test_op_workspace.py`'s 16 tests went
+    # red on one full-suite run, green on the next, and green in isolation
+    # either way: `--dist load` decides whether the two ever share a worker.
+    "_mcp_specs",
 )
 
 # Not scratch, for four different reasons.

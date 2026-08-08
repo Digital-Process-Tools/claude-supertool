@@ -163,6 +163,50 @@ def test_workspace_references_falls_back_on_mcp_miss(tmp_path: Path, monkeypatch
         supertool._mcp_specs.clear()
 
 
+def test_workspace_references_survives_a_ref_line_that_is_not_file_line_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An MCP `refs` server answers in its own shape, not necessarily ours.
+
+    `_extract_refs_from_mcp_result` hands back whatever text lines the server
+    produced, and the renderer then split them on two colons with `.index()`.
+    cclsp — the server this repo's own `.supertool.json` configures for `*.py`
+    — leads with a prose header and bullet lines, so the first line has one
+    colon and no second one: `ValueError`, escaping `op_workspace` entirely
+    and reaching the user as `ERROR: argument parsing: substring not found`,
+    which names neither the argument nor the problem.
+
+    Found while reproducing #1030: it is what turned that leak from a wrong
+    References section into ten hard errors.
+    """
+    monkeypatch.chdir(tmp_path)
+    f = tmp_path / "mymodule.py"
+    f.write_text("class MyModule:\n    pass\n")
+
+    _set_mcp_specs({
+        "py-lsp": {"cmd": "cclsp", "match": "*.py",
+                   "tools": {"refs": "find_references"}}
+    })
+    monkeypatch.setattr(supertool, "_mcp_ensure_server", lambda name: object())
+    monkeypatch.setattr(
+        supertool, "_mcp_call",
+        lambda *a, **k: {"content": [{"type": "text", "text": (
+            "Found 1 reference(s):\n"
+            "• MyModule (class) at " + str(f) + ":1:7"
+        )}]},
+    )
+    try:
+        out = op_workspace(str(f))
+    finally:
+        supertool._mcp_specs.clear()
+
+    assert "## References" in out
+    # Shown, not swallowed: dropping the server's own answer would trade a
+    # loud failure for a quiet one.
+    assert "Found 1 reference(s):" in out
+    assert "MyModule (class) at" in out
+
+
 def test_workspace_references_falls_back_when_no_mcp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """No MCP configured → heuristic grep runs normally."""
     monkeypatch.chdir(tmp_path)

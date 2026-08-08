@@ -14902,12 +14902,24 @@ def op_workspace(path: str) -> str:
         for hit in shown:
             # Drive-letter aware split — skip leading `X:` if a Windows path.
             _start = 2 if len(hit) > 2 and hit[1] == ":" and hit[0].isalpha() else 0
-            colon1 = hit.index(":", _start)
-            rest = hit[colon1 + 1:]
-            colon2 = rest.index(":")
+            colon1 = hit.find(":", _start)
+            colon2 = hit.find(":", colon1 + 1) if colon1 != -1 else -1
+            if colon1 == -1 or colon2 == -1:
+                # Only the heuristic grep path guarantees `file:line:content`.
+                # An MCP `refs` server answers in its own shape — cclsp, which
+                # this repo's own config routes `*.py` to, leads with a prose
+                # header and bullet lines — and `.index()` on those raised
+                # ValueError out of op_workspace, surfacing as "ERROR:
+                # argument parsing: substring not found". Show the line as the
+                # server wrote it: dropping it would trade the loud failure
+                # for a quiet one, and inventing a line number for it would be
+                # worse than either.
+                current_file = ""
+                out.append(f"{hit}\n")
+                continue
             hit_file = hit[:colon1]
-            lineno = rest[:colon2]
-            content = rest[colon2 + 1:]
+            lineno = hit[colon1 + 1:colon2]
+            content = hit[colon2 + 1:]
             if hit_file != current_file:
                 current_file = hit_file
                 out.append(f"{hit_file}\n")

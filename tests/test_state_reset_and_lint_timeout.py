@@ -180,10 +180,17 @@ def test_every_mutable_global_in_supertool_py_is_reset_or_deliberately_exempt() 
     """
     import conftest
 
+    # Case is not the contract — mutability is (#1030). This read
+    # `name == name.upper()`, so the one lowercase mutable global in the file,
+    # `_mcp_specs`, was never looked at: the guard reported everything
+    # accounted for while the table `_load_config()` writes its MCP routes
+    # into outlived every test in the worker. Dunders are excluded by name
+    # because `__builtins__` and `__annotations__` belong to the interpreter,
+    # not to supertool.
     live = {
         name for name, val in vars(supertool).items()
         if name.startswith("_")
-        and name == name.upper()
+        and not name.startswith("__")
         and any(c.isalpha() for c in name)
         and isinstance(val, (dict, list, set))
     }
