@@ -25,6 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from _git_common import _git, _list_conflicts, use_utf8_stdout  # noqa: E402
+import _secrets  # noqa: E402  (a dying adapter puts credentials on stderr — #925)
 import _untrusted  # noqa: E402  (a failed child's stderr is untrusted text — #883)
 
 
@@ -483,8 +484,19 @@ _CALL_FOOTER = re.compile(r"^\[(result|branch)\b")
 
 
 def _skip_summary(skipped: list) -> str:
-    """`tool (why)` for each declined validator, bounded to one short cell."""
-    parts = [f"{tool} ({why})" if why else tool for tool, why in skipped]
+    """`tool (why)` for each declined validator, bounded to one short cell.
+
+    The `why` is the adapter's own text — `phpstan` declining because it could
+    not authenticate names the URL it tried — so it gets the same two passes a
+    dead child's stderr gets, and for the same two reasons: redaction (#925),
+    and the one-line rule (#883/#895) because this cell is interpolated into
+    `markers: clean | {digest}` at column 0 exactly like the other one. It had
+    the first and not the second; a carriage return in a decline reason
+    overwrites the line the receipt is made of, which is #851 through a second
+    door. The tool name is ours and is at risk from neither.
+    """
+    parts = [f"{tool} ({_untrusted.flat(_redacted(why))})" if why else tool
+             for tool, why in skipped]
     text = ", ".join(parts)
     if len(text) > _CHILD_DETAIL_MAX:
         text = text[:_CHILD_DETAIL_MAX - 1] + "…"
@@ -559,6 +571,30 @@ def _not_checked(reason: str) -> str:
 _CHILD_DETAIL_MAX = 120
 
 
+def _redacted(text: str) -> str:
+    """Strip credential-shaped values out of text a child process wrote (#925).
+
+    Validator adapters shell out, and a child dying on an auth error puts the
+    credential it tried on stderr: a `user:token@host` clone URL, an
+    `Authorization: Bearer …`, a `GITLAB_TOKEN=…` echoed by a wrapper. That
+    line then lands verbatim in the resolve receipt, which is a document people
+    paste into issues and PR comments.
+
+    `presets/_secrets` existed for exactly this shape and was wired only into
+    `claude-log` / `devto` / `bluesky` — named call sites rather than output
+    boundaries — so validate/resolve bypassed it.
+
+    **Order matters and is pinned.** This runs before `_CHILD_DETAIL_MAX`
+    truncation. Redacting the already-cut cell would find a token too short for
+    its own rule to match and ship its head, which is a fix that reads as one
+    and is not. It makes no claim of completeness — see `_secrets`' own
+    docstring: detection is by shape, so a credential this module does not
+    recognise still passes through here.
+    """
+    redacted, _ = _secrets.redact(text)
+    return redacted
+
+
 def _child_failed(res: "subprocess.CompletedProcess[str]") -> str:
     """Why the validate child did not answer — one bounded, one-line cell.
 
@@ -578,7 +614,7 @@ def _child_failed(res: "subprocess.CompletedProcess[str]") -> str:
     first = next((ln for ln in (res.stderr or "").splitlines() if ln.strip()), "")
     if not first:
         return f"validator {how}"
-    detail = _untrusted.flat(first.strip())
+    detail = _untrusted.flat(_redacted(first.strip()))
     if len(detail) > _CHILD_DETAIL_MAX:
         detail = detail[:_CHILD_DETAIL_MAX - 1] + "…"
     return f"validator {how}: {detail}"

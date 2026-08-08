@@ -63,6 +63,43 @@ jobs:
               echo "changelog   : skipped     (label 'no-changelog' set on this PR)"
               exit 0 ;;
           esac
+          # `--name-only` alone lists a DELETION identically to an addition, so
+          # until #925 a PR that *removed* somebody else's pending fragment
+          # satisfied this gate: it announced nothing, dropped an
+          # already-approved entry from the next release, and went green. The
+          # two states have to be read apart, and that is two diffs rather than
+          # one flag — restricting the single diff above to `AM` would also
+          # stop the `shipped` read below seeing a DELETED preset, and a preset
+          # that goes away is as user-visible as one that arrives.
+          fragment_re='^changelog\.d/[0-9]+\.[a-z]+.*\.md$'
+          added=$(git diff --name-only --diff-filter=AM "origin/${BASE}...HEAD" | grep -E "$fragment_re" || true)
+          removed=$(git diff --name-only --diff-filter=D "origin/${BASE}...HEAD" | grep -E "$fragment_re" || true)
+          # Deleting fragments is exactly what a release cut does — it folds
+          # them into CHANGELOG.md and adds none — so that shape is a pass, and
+          # is named as one rather than being waved through the branch below.
+          # The test for it is "CHANGELOG.md was rewritten in the same PR",
+          # which is a claim about the diff and not a proof the entries
+          # survived; the assembler's own entry-balance refusal (#906) is what
+          # proves that, and it runs where the file is written.
+          assembled=$(printf '%s\n' "$changed" | grep -Fx 'CHANGELOG.md' || true)
+          # Deliberately ABOVE the user-visible-paths gate below, and the
+          # ordering is the finding rather than a detail. Losing a fragment
+          # needs no code change to go with it: `git rm changelog.d/906.added.md`
+          # on its own leaves `shipped` empty, and the first cut of this fix
+          # therefore reported `skipped (nothing to announce)` and exited 0 on
+          # the plainest instance of the very bug it closes. Found by the
+          # independent review of that commit. The `no-changelog` label still
+          # sits above this, because a label is a human saying "this announces
+          # nothing" — which is a claim about what the PR adds, not a licence
+          # to remove somebody else's entry, but it stays the single stated
+          # escape hatch rather than growing a second one here.
+          if [ -n "$removed" ] && [ -z "$assembled" ]; then
+            echo "changelog   : finding     (fragment(s) deleted without being assembled into CHANGELOG.md)"
+            printf '%s\n' "$removed" | sed 's/^/  deleted   /'
+            echo "  fix       restore them — a pending entry is dropped from the next release, silently"
+            echo "  or        if this is a release cut, it must also write CHANGELOG.md"
+            exit 1
+          fi
           # What a user could notice. Docs and tests are excluded on purpose:
           # requiring a fragment for a typo fix is how the discipline decays
           # into a reflex-added empty file.
@@ -71,8 +108,12 @@ jobs:
             echo "changelog   : skipped     (no user-visible paths changed — nothing to announce)"
             exit 0
           fi
-          added=$(printf '%s\n' "$changed" | grep -E '^changelog\.d/[0-9]+\.[a-z]+.*\.md$' || true)
           if [ -z "$added" ]; then
+            if [ -n "$removed" ]; then
+              echo "changelog   : ok          (release: $(printf '%s\n' "$removed" | wc -l | tr -d ' ') fragment(s) assembled into CHANGELOG.md)"
+              printf '%s\n' "$removed" | sed 's/^/  consumed  /'
+              exit 0
+            fi
             echo "changelog   : finding     (user-visible change with no changelog.d/ fragment)"
             echo "  changed   $(printf '%s\n' "$shipped" | head -5 | tr '\n' ' ')"
             echo "  fix       add changelog.d/<issue>.<section>.md — see docs/contributing.md"
@@ -81,3 +122,11 @@ jobs:
           fi
           echo "changelog   : ok          ($(printf '%s\n' "$added" | wc -l | tr -d ' ') fragment(s))"
           printf '%s\n' "$added" | sed 's/^/  /'
+          # A PR that adds its own fragment and consumes others is legitimate
+          # (a release that also carries an entry) and reached the line above
+          # reporting only what it added. The deletions are half of what it
+          # did, and a receipt that prints one half is the shape this whole
+          # job exists to refuse.
+          if [ -n "$removed" ]; then
+            printf '%s\n' "$removed" | sed 's/^/  consumed  /'
+          fi
