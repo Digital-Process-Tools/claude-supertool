@@ -203,9 +203,25 @@ A zero from this filter now always says what it searched:
 (no lines matching 'thing' in lines 1-10 of 340 — the other 330 lines were NOT searched, so this is not an answer about the whole file)
 ```
 
-The second form appears whenever the scan was bounded — by an explicit LIMIT, by
-an OFFSET, or by the 20 KB byte cap. A filter that *did* match but stopped short
-says so on its own line. Three states, not two: found, not found, did not look.
+The second form appears whenever the scan was bounded — by an explicit LIMIT or
+by an OFFSET. (A zero is never byte-capped: the cap only trips after a line has
+been emitted, so a scan that found nothing had nothing to truncate.)
+
+A filter that *did* match but stopped short says so on its own line, including
+when what stopped it was the byte cap — the cap breaks the scan, not just the
+output, so the lines past it were never searched rather than searched and
+rejected:
+
+```
+(the grep= filter searched lines 1-92 of 399 and stopped there — the output reached the 20000-byte cap, so the other 307 lines were NOT searched and this is not an answer about the whole file — continue with read:PATH:92:LIMIT:grep=PATTERN)
+```
+
+Three states, not two: found, not found, did not look.
+
+All of these notes render directly under the count header, above the first
+matched line — the same position the windowed-read disclosure has occupied
+since #955. A note that arrives after you have already read the wrong answer
+is barely a note.
 
 A `grep=` value that is not a usable regex is still searched for as a literal
 string — an unusable pattern should not fail a read — and the receipt names the

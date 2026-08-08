@@ -2360,10 +2360,14 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
             break
 
     unsearched = 0
+    # Collected rather than appended: every line in here is a note *about* the
+    # scan, and it is inserted above the content at the end of this function.
+    # See the insert below for why.
+    filter_notes: List[str] = []
     if filter_regex:
         unsearched = line_count - (last_scanned - offset)
         if filter_literal_why:
-            out.append(
+            filter_notes.append(
                 f"(the grep= pattern is not a usable regex — "
                 f"{filter_literal_why}; searched for it as a literal "
                 f"string instead)\n")
@@ -2374,7 +2378,7 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
             # its end. The count was right and the range naming it was not, and
             # a disclosure that reads as nonsense is not read (PR #1057
             # review).
-            out.append(
+            filter_notes.append(
                 f"(no lines matching {grep_filter!r} -- offset "
                 f"{offset + 1} is past the end of this {line_count}-line "
                 f"file, so no line was searched and this is not an answer "
@@ -2384,19 +2388,43 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
             # old single line said the second when it meant the third (#1052).
             plural = "s" if unsearched != 1 else ""
             verb = "were" if unsearched != 1 else "was"
-            out.append(
+            filter_notes.append(
                 f"(no lines matching {grep_filter!r} in lines "
                 f"{offset + 1}-{last_scanned} of {line_count} — the other "
                 f"{unsearched} line{plural} {verb} NOT searched, so this is "
                 f"not an answer about the whole file)\n")
         else:
-            out.append(
+            filter_notes.append(
                 f"(no lines matching {grep_filter!r} in any of "
                 f"{line_count} lines)\n")
-    elif filter_regex and not capped and unsearched > 0:
+    elif filter_regex and capped:
+        # The byte cap breaks the scan loop, not just the emission: a filtered
+        # read that matched and *then* hit the cap has stopped looking. This
+        # used to fall through to the generic `elif capped:` wording below,
+        # which offers `(R more lines)` — a phrase a reader can only take as
+        # "R lines that did not match". That is the same absence-read-as-
+        # presence #1052 was filed to remove, left standing in the one case
+        # where the file is large enough for it to cost something (PR #1057
+        # review).
         plural = "s" if unsearched != 1 else ""
         verb = "were" if unsearched != 1 else "was"
-        out.append(
+        if unsearched > 0:
+            filter_notes.append(
+                f"(the grep= filter searched lines {offset + 1}-"
+                f"{last_scanned} of {line_count} and stopped there — the "
+                f"output reached the {byte_cap}-byte cap, so the other "
+                f"{unsearched} line{plural} {verb} NOT searched and this is "
+                f"not an answer about the whole file — continue with "
+                f"read:PATH:{last_scanned}:LIMIT:grep=PATTERN)\n")
+        else:
+            filter_notes.append(
+                f"(the grep= filter searched all {line_count} lines; the "
+                f"output reached the {byte_cap}-byte cap on line "
+                f"{last_scanned}, the last line of the file)\n")
+    elif filter_regex and unsearched > 0:
+        plural = "s" if unsearched != 1 else ""
+        verb = "were" if unsearched != 1 else "was"
+        filter_notes.append(
             f"(the grep= filter searched lines {offset + 1}-{last_scanned} "
             f"of {line_count} — {unsearched} line{plural} outside that range "
             f"{verb} NOT searched)\n")
@@ -2420,6 +2448,18 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
             out.append(f"[end of file — lines 1-{offset} not shown]\n")
     elif not filter_regex:
         out.append("[complete file — no more lines]\n")
+    if filter_notes:
+        # Header position, above the content, for #955's reason rather than by
+        # analogy with it: "Construction order is not render order, and a note
+        # that arrives after the wrong window has already been paid for is
+        # barely a note." That is an argument about what the reader has spent
+        # by the time the correction reaches them, and it was made about this
+        # same `out` list in this same function. A filtered read that emits
+        # 20 KB of matches and only then admits 308 lines were never searched
+        # charges for the wrong answer first and corrects it afterwards
+        # (PR #1057 review).
+        for note in reversed(filter_notes):
+            out.insert(1, note)
     if offset > 0:
         # Inserted at index 1 — after the count header, before the first line
         # of content. Construction order is not render order, and a correction
@@ -6145,8 +6185,13 @@ def _local_newline(lines: List[str], idx: int) -> str:
     whole file: the block it writes takes the ending of the line it replaces
     (or, for an insert, of the line above it). A file-wide majority would
     rewrite the caller's own line to the other convention, which is the same
-    silent normalisation one line wide. Falls back to LF only when nothing in
-    the file before that point ends a line at all.
+    silent normalisation one line wide.
+
+    The backwards scan is the answer whenever it finds one. When it does not —
+    `idx` is at or past the only terminated line, or every line above it is
+    unterminated — the search continues *forwards* over the whole file, so a
+    file whose endings all sit below `idx` still gets its own convention.
+    Falls back to LF only when no line anywhere in the file is terminated.
     """
     for i in range(min(idx, len(lines) - 1), -1, -1):
         line = lines[i]

@@ -24,6 +24,7 @@ from a real absence.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import supertool
@@ -117,3 +118,83 @@ def test_a_zero_from_an_offset_past_eof_does_not_invent_a_backwards_range(
     # too, and a digit assertion would pass on the directory.
     assert "20-line file" in zero[0], zero[0]
     assert "no line was searched" in zero[0], zero[0]
+
+
+_CONTENT_RE = re.compile(r"^\s*\d+→")
+
+
+def _first_content_line_index(out: str) -> int:
+    """Index of the first numbered content line of a render."""
+    for i, ln in enumerate(out.splitlines()):
+        if _CONTENT_RE.match(ln):
+            return i
+    raise AssertionError(f"no content lines in render:\n{out}")
+
+
+def _wide_all_matching(tmp_path: Path) -> Path:
+    """A file whose every line matches and whose matches blow the byte cap.
+
+    400 lines x ~210 bytes = ~84 KB of matching output against a 20 KB cap, so
+    the scan loop breaks around line 92 with 300-odd lines never looked at.
+    """
+    body = b"".join(b"needle %03d %s\n" % (i, b"x" * 200) for i in range(1, 401))
+    f = tmp_path / "wide.txt"
+    f.write_bytes(body)
+    return f
+
+
+def test_a_filter_that_matched_then_hit_the_byte_cap_says_what_it_never_read(
+    tmp_path: Path,
+) -> None:
+    """PR #1057 review finding 1 — the gap in the defect #1052 was filed about.
+
+    The new disclosure was guarded by `not capped`, so a filtered read that
+    found matches and *then* hit the 20 KB cap fell through to the older
+    truncation wording: "showed lines 1-92 of 399 (307 more lines)". Those 307
+    lines were not "more lines" the caller could weigh against the matches
+    shown - they were never searched, and nothing in the render said so. The
+    reader cannot separate "307 lines that do not match" from "307 lines
+    nobody looked at", which is precisely the ambiguity #1052 exists to
+    remove, left standing in the one case where the file is big enough for it
+    to cost something.
+    """
+    f = _wide_all_matching(tmp_path)
+    out = supertool.dispatch(f"read:{f}:::grep=needle")
+    assert "NOT searched" in out, out
+    assert "not an answer about the whole file" in out, out
+    # Fixture guard second, deliberately: the pin has to be the assertion that
+    # fails first against the old render, or a wording change to the cap note
+    # would be the only thing this test was ever measuring.
+    cap = _supertool._get_op_int("read", "max_bytes", _supertool.MAX_READ_BYTES)
+    assert f"{cap}-byte cap" in out, ("fixture did not reach the byte cap", out)
+    # The count has to be the unsearched tail, not a restatement of the file
+    # length, and the phrase has to be present so a digit in tmp_path cannot
+    # satisfy the assertion on its own.
+    last_shown = int(_CONTENT_RE.match(
+        [ln for ln in out.splitlines() if _CONTENT_RE.match(ln)][-1]
+    ).group(0).strip()[:-1])
+    assert f"{400 - last_shown} lines" in out, (last_shown, out)
+    assert "not an answer about the whole file" in out, out
+
+
+def test_the_unsearched_disclosure_precedes_the_content_it_qualifies(
+    tmp_path: Path,
+) -> None:
+    """PR #1057 review finding 2, decided against #955's rule for this render.
+
+    #955 put the window disclosure at `out.insert(1, ...)` - after the count
+    header, before the first content line - and wrote down why: "Construction
+    order is not render order, and a note that arrives after the wrong window
+    has already been paid for is barely a note." That reasoning is about what
+    a reader has already spent by the time the correction arrives, and the
+    `grep=` disclosure lives in the same `out` list of the same `render_file`.
+    Appended after the scan loop, it rendered below every matched line.
+    """
+    f = _file_with_match_past_the_cap(tmp_path)
+    out = supertool.dispatch(f"read:{f}:0:40:grep=filler")
+    body = out.splitlines()
+    note = [i for i, ln in enumerate(body) if "NOT searched" in ln]
+    assert note, out
+    assert note[0] < _first_content_line_index(out), (
+        f"disclosure at line {note[0]}, first content line at "
+        f"{_first_content_line_index(out)}:\n{out}")
