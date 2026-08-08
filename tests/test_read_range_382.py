@@ -128,7 +128,11 @@ def test_note_fires_on_misread_range(tmp_path: Path) -> None:
     out = supertool.dispatch(f"read:{f}:52:72")
     assert "OFFSET:LIMIT, not START:END" in out
     assert f"read:{f}:52-72" in out
-    assert "note: read 48 lines (offset 52, limit 72)" in out
+    # Reworded under #1020: "read 48 lines" is only true when the byte cap did
+    # not truncate the window, and on the call #1020 filed it did. The note now
+    # reports the window that was ASKED FOR, which is true in both cases.
+    assert "note: this asked for 72 lines from offset 52" in out
+    assert "(21 lines)" in out
 
 
 def test_no_note_when_window_fits(tmp_path: Path) -> None:
