@@ -222,7 +222,9 @@ def _st_hint(arg: str) -> str:
     The `./supertool` wrapper is a gitignored symlink and therefore absent in
     a git worktree, which is where agents work. The fallback is the one
     `_watch_argv` already settled on for that exact environment (#642), not a
-    second guess at it.
+    second guess at it: `sys.executable`, not the literal `python3`, which is
+    not the launcher on Windows. That agreement was prose here and a hard-coded
+    string in the implementation until #1017, so it is now a test.
 
     The rule moved to `_git_common.st_hint` for #1012, which found the same
     defect in this file's own watch advisory and in `git-conflicts`. It is

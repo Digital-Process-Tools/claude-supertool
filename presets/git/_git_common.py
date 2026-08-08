@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -206,6 +207,24 @@ def install_dir() -> str:
     return os.path.dirname(os.path.dirname(_HERE))
 
 
+def _quoted_interpreter() -> str:
+    """`sys.executable`, quoted for the shell that will receive it if it must be.
+
+    An interpreter path with a space in it is the ordinary Windows install —
+    `C:\\Program Files\\Python312\\python.exe` — and a POSIX box gets one from any
+    user whose home has a space. Unquoted, the hint asks the shell to run a program
+    named `C:\\Program` and the remedy fails for the same reason #1017 filed:
+    a printed command that is wrong about where it will be pasted.
+
+    Double quotes on Windows because they are the only form both `cmd.exe` and
+    PowerShell honour; `shlex.quote` elsewhere because it is POSIX's own answer.
+    """
+    exe = sys.executable
+    if " " not in exe:
+        return exe
+    return '"' + exe + '"' if os.name == "nt" else shlex.quote(exe)
+
+
 def st_hint(arg: str) -> str:
     """A runnable supertool invocation for `arg`, for printed remedies.
 
@@ -223,6 +242,13 @@ def st_hint(arg: str) -> str:
     a command in an error is pasted, by a reader who is mid-conflict and least
     likely to second-guess it.
 
+    The interpreter is `sys.executable` — the one demonstrably running this
+    code — never the literal `python3` (#1017). `python3` is not the launcher on
+    Windows, where it is `py` or `python`, so the hard-coded spelling printed a
+    remedy that did not run on the platform this project cannot see. `_watch_argv`
+    had already resolved the spawn that way in #642; this is the same answer to
+    the same question, which is what its docstring claimed and the code did not.
+
     Three states. With neither route present the invocation is unknown, and an
     invented one would be a remedy that cannot be run — the defect one layer
     down. Grown out of `push.py::_st_hint` (#879), which had the first two.
@@ -232,7 +258,7 @@ def st_hint(arg: str) -> str:
     if os.path.isfile(wrapper) and os.access(wrapper, os.X_OK):
         return "./supertool " + chr(39) + arg + chr(39)
     if os.path.isfile(os.path.join(root, "supertool.py")):
-        return "python3 supertool.py " + chr(39) + arg + chr(39)
+        return _quoted_interpreter() + " supertool.py " + chr(39) + arg + chr(39)
     return ("(no runnable supertool found in " + root + " — the op is "
             + chr(39) + arg + chr(39) + ")")
 

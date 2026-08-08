@@ -425,7 +425,7 @@ The count is still printed — suppressing it would trade a confusing render for
 
 ```
 Branch: fix/1028 (ahead 5, behind 1)
-Diverged: REBASED — every one of those 1 remote commit(s) is patch-equivalent to a commit you already have, so nothing is lost and the remote is stale. Push: python3 supertool.py 'git-push:force-with-lease'
+Diverged: REBASED — every one of those 1 remote commit(s) is patch-equivalent to a commit you already have, so nothing is lost and the remote is stale. Push: ./supertool 'git-push:force-with-lease'
 Diverged: 1 of those 4 remote commit(s) are NOT in your history — a genuine divergence. Reconcile (rebase or merge) before pushing; a force push discards them.
 Diverged: UNKNOWN whether those 1 remote commit(s) are replays of your own — `git rev-list --count --right-only --cherry-pick HEAD...@{upstream}` did not answer (exit 124: timed out after 5s). This is not saying nothing was lost.
 ```
@@ -436,7 +436,9 @@ The discriminator is `git rev-list --count --right-only --cherry-pick HEAD...@{u
 
 `./supertool` is a gitignored symlink. In a linked worktree it does not exist, and in a `claude-supertool` worktree the global `supertool` on `PATH` resolves to a different checkout — so pasting it runs *that* tree's core against *this* tree's presets, the mixed tree [#678](https://github.com/Digital-Process-Tools/claude-supertool/issues/678) discloses after the fact. `git-conflicts` closed its output with `Resolve: ./supertool 'git-resolve:::ours:::PATH'` and `git-push`'s watch advisory said `Run it yourself: ./supertool 'watch:…'`, both at the moment the reader is least likely to second-guess a copy-pasteable command ([#1012](https://github.com/Digital-Process-Tools/claude-supertool/issues/1012)).
 
-Every printed follow-up in these ops now asks what is on disk beside the presets: `./supertool 'op'` where the wrapper exists and is executable, `python3 supertool.py 'op'` where only the entry point does, and a stated `(no runnable supertool found in <dir> …)` where neither does — an invented command is a remedy that cannot be run.
+Every printed follow-up in these ops now asks what is on disk beside the presets: `./supertool 'op'` where the wrapper exists and is executable, the running interpreter plus `supertool.py 'op'` where only the entry point does, and a stated `(no runnable supertool found in <dir> …)` where neither does — an invented command is a remedy that cannot be run.
+
+The interpreter is `sys.executable`, not the literal `python3` ([#1017](https://github.com/Digital-Process-Tools/claude-supertool/issues/1017)). `python3` is not the launcher on Windows — there it is `py` or `python` — so the hard-coded spelling printed a remedy that did not run on the one platform the authoring machine cannot see. `_watch_argv` had resolved the spawn that way since [#642](https://github.com/Digital-Process-Tools/claude-supertool/issues/642); the printed hint was never covered by that fix.
 
 ### When the core itself is conflicted
 
