@@ -14,6 +14,7 @@ import os
 import re
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path
 from typing import Optional
 
@@ -61,11 +62,11 @@ def _is_source_path(path: str) -> bool:
 
 # Markdown is the format where a union is otherwise right — a changelog conflict is
 # two entries, and unioning them is the whole point — but whose *meaning* comes from
-# repeating structural headings rather than from line order alone. When both sides of
-# one hunk carry the same heading, the union emits it twice and every line between
-# the two copies is reparented under the first (issue #839): unreleased work reads as
-# shipped. Nothing below merges, reorders or de-duplicates anything — it only detects
-# that the union came out structurally implausible and hands the decision back.
+# repeating structural headings rather than from line order alone. When the union
+# emits one heading twice, every line between the two copies is reparented under the
+# first (issue #839): unreleased work reads as shipped. Nothing below merges,
+# reorders or de-duplicates anything — it only detects that the union came out
+# structurally implausible and hands the decision back.
 _MD_EXTS = frozenset({".md", ".markdown", ".mdown", ".mkd"})
 
 # ATX headings only. Setext underlines (`---` under a title) are not matched: a bare
@@ -79,20 +80,116 @@ def _is_markdown_path(path: str) -> bool:
     return os.path.splitext(path)[1].lower() in _MD_EXTS
 
 
+def _union_lines(text: str, selected: Optional[set[int]] = None) -> list[tuple[str, bool]]:
+    """The union of TEXT, line by line, each tagged with "a hunk put this here".
+
+    The union is the one `_union_file` writes — both sides concatenated, diff3
+    ``|||||||`` base dropped — computed in memory so the guard can read the document
+    a resolve would produce rather than infer it from the shape of the hunks.
+
+    The tag is what replaces a second render of the file. Rendering the surrounding
+    context separately and diffing the two counts looked equivalent and is not: an
+    odd number of ``` fence delimiters inside a hunk closes a fence in one rendering
+    and leaves it open in the other, so the two parses disagree about which later
+    lines are headings at all, and a document that already repeated a heading was
+    refused for it. One parse, carrying the attribution, cannot drift from itself.
+
+    Hunks outside ``selected`` contribute their ``ours`` side untagged. They are not
+    being resolved, so what they carry is not this resolve's doing.
+    """
+    out: list[tuple[str, bool]] = []
+    state = "normal"  # normal | ours | base | theirs
+    block_idx = 0
+    take_ours = take_theirs = tag = True
+    for line in text.splitlines(keepends=True):
+        s = line.rstrip("\r\n")
+        if state == "normal":
+            if s.startswith("<<<<<<<"):
+                block_idx += 1
+                tag = selected is None or block_idx in selected
+                take_ours, take_theirs = True, tag
+                state = "ours"
+                continue
+            out.append((line, False))
+        elif state == "ours":
+            if s.startswith("|||||||"):
+                state = "base"
+            elif s.startswith("======="):
+                state = "theirs"
+            elif s.startswith(">>>>>>>"):  # malformed — recover, claim nothing
+                state = "normal"
+            elif take_ours:
+                out.append((line, tag))
+        elif state == "base":
+            if s.startswith("======="):
+                state = "theirs"
+        elif state == "theirs":
+            if s.startswith(">>>>>>>"):
+                state = "normal"
+            elif take_theirs:
+                out.append((line, tag))
+    return out
+
+
+def _heading_paths(lines: list[tuple[str, bool]]) -> list[tuple[tuple[str, ...], bool]]:
+    """Every ATX heading in LINES as its ancestor path, in file order, tag carried.
+
+    The path — enclosing headings of lower level, then the heading itself — is what
+    makes `### Fixed` under `## [Unreleased]` a different thing from `### Fixed`
+    under `## [0.22.0]`. Every changelog repeats section headings once per release,
+    so a file-wide count of heading lines answers a question nobody asked.
+
+    Fenced blocks are skipped. This repo's changelog quotes shell constantly and a
+    `# run it` comment inside a fence is not structure; reading it as one would
+    refuse ordinary entries, and a guard that fires on those trains the override.
+    """
+    paths: list[tuple[tuple[str, ...], bool]] = []
+    stack: list[tuple[int, str]] = []
+    fence = ""
+    for raw, tagged in lines:
+        s = raw.strip()
+        if fence:
+            if s.startswith(fence):
+                fence = ""
+            continue
+        if s.startswith("```") or s.startswith("~~~"):
+            fence = s[:3]
+            continue
+        if not _HEADING_RE.match(raw.rstrip("\r\n")):
+            continue
+        level = len(s) - len(s.lstrip("#"))
+        while stack and stack[-1][0] >= level:
+            stack.pop()
+        paths.append((tuple(t for _, t in stack) + (s,), tagged))
+        stack.append((level, s))
+    return paths
+
+
 def _duplicated_headings(path: str, selected: Optional[set[int]] = None) -> list[str]:
     """Headings a union of PATH would emit twice — in file order, deduped.
 
-    A heading counts only when the SAME heading line appears on BOTH sides of one
-    conflict hunk, because that is precisely the line the union concatenates into two
-    copies. Headings *outside* the hunk are shared context — the ordinary changelog
-    conflict, two bullets under one `### Fixed` — and are never reported, which is
-    what keeps this from firing on every conflict and training the override.
+    The question is about the **resulting document**: does unioning put the same
+    heading twice under the same parent, with at least one of the two copies coming
+    from a hunk? So the union is rendered once, every heading is read as its ancestor
+    path, and each carries whether a hunk put it there.
 
-    diff3 ``|||||||`` base content is skipped: `_union_file` drops it, so it cannot
-    contribute a copy. Non-Markdown paths return ``[]`` — the ``#`` heading grammar is
-    Markdown's, and a guard should only have opinions about a format it can read.
+    #839 asked a narrower one — is the SAME heading line on BOTH sides of one hunk —
+    and #911 is the arrangement that slips past it: `### Fixed` inside the hunk on one
+    side only, its twin in the surrounding context git had already merged. The union
+    still emits two, the hunk still looks internally clean, and the receipt still said
+    `markers: clean`. A guard that reads hunk shape can only ever be right about the
+    boundaries someone thought of; reading the output cannot be fooled by where the
+    boundary fell.
 
-    ``selected`` restricts the scan to those 1-indexed hunks, for a partial resolve.
+    Requiring one copy to come from a hunk is what keeps a document that ALREADY
+    repeats a heading — malformed, but not by this resolve — out of the refusal. Note
+    it is deliberately not "would picking a side duplicate it too": in #911's
+    arrangement taking `theirs` also lands two `### Fixed`, and excusing the union on
+    that ground would excuse the exact case the issue is about.
+
+    Non-Markdown paths return ``[]`` — the ``#`` heading grammar is Markdown's, and a
+    guard should only have opinions about a format it can read. ``selected`` restricts
+    the scan to those 1-indexed hunks, for a partial resolve.
     """
     if not _is_markdown_path(path):
         return []
@@ -102,49 +199,19 @@ def _duplicated_headings(path: str, selected: Optional[set[int]] = None) -> list
     except (OSError, UnicodeDecodeError):
         return []
 
+    headings = _heading_paths(_union_lines(text, selected))
+    if not headings:
+        return []
+    emitted = Counter(p for p, _ in headings)
+    from_a_hunk = {p for p, tagged in headings if tagged}
+
     dups: list[str] = []
-    seen: set[str] = set()
-    ours: list[str] = []
-    theirs: set[str] = set()
-
-    def _flush() -> None:
-        for h in ours:
-            if h in theirs and h not in seen:
-                seen.add(h)
-                dups.append(h)
-
-    state = "normal"  # normal | skip | ours | base | theirs
-    block_idx = 0
-    for line in text.splitlines():
-        s = line.rstrip("\r\n")
-        if state == "normal":
-            if s.startswith("<<<<<<<"):
-                block_idx += 1
-                ours, theirs = [], set()
-                state = "ours" if (selected is None or block_idx in selected) else "skip"
-        elif state == "skip":
-            if s.startswith(">>>>>>>"):
-                state = "normal"
-        elif state == "ours":
-            if s.startswith("|||||||"):
-                state = "base"
-            elif s.startswith("======="):
-                state = "theirs"
-            elif s.startswith(">>>>>>>"):  # malformed — recover, claim nothing
-                state = "normal"
-            elif _HEADING_RE.match(s) and s.strip() not in ours:
-                ours.append(s.strip())
-        elif state == "base":
-            if s.startswith("======="):
-                state = "theirs"
-        elif state == "theirs":
-            if s.startswith(">>>>>>>"):
-                _flush()
-                state = "normal"
-            elif _HEADING_RE.match(s):
-                theirs.add(s.strip())
-    if state == "theirs":  # unterminated hunk — _union_file refuses it anyway
-        _flush()
+    seen: set[tuple[str, ...]] = set()
+    for p, _tagged in headings:
+        if emitted[p] < 2 or p not in from_a_hunk or p in seen:
+            continue
+        seen.add(p)
+        dups.append(f"{p[-1]} (under {p[-2]})" if len(p) > 1 else p[-1])
     return dups
 
 
@@ -193,8 +260,8 @@ def _heading_refusal(dups: list[str]) -> str:
     """
     shown = "; ".join(repr(h) for h in dups[:3])
     more = f" (+{len(dups) - 3} more)" if len(dups) > 3 else ""
-    return (f"structured document — union would duplicate {len(dups)} heading(s) "
-            f"present on both sides: {shown}{more}, reparenting the lines between the "
+    return (f"structured document — union would emit {len(dups)} heading(s) twice "
+            f"under one section: {shown}{more}, reparenting the lines between the "
             f"two copies under the first; refused")
 
 

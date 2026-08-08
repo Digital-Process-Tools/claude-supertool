@@ -222,7 +222,9 @@ def _st_hint(arg: str) -> str:
     The `./supertool` wrapper is a gitignored symlink and therefore absent in
     a git worktree, which is where agents work. The fallback is the one
     `_watch_argv` already settled on for that exact environment (#642), not a
-    second guess at it.
+    second guess at it: `sys.executable`, not the literal `python3`, which is
+    not the launcher on Windows. That agreement was prose here and a hard-coded
+    string in the implementation until #1017, so it is now a test.
 
     The rule moved to `_git_common.st_hint` for #1012, which found the same
     defect in this file's own watch advisory and in `git-conflicts`. It is
@@ -800,8 +802,12 @@ def _watch_argv(source: str, iid: str) -> tuple[list[str], str]:
 
     The `./supertool` wrapper is a gitignored symlink, so in a git worktree —
     the exact environment agents work in — it is absent and the Popen used to
-    fail into a swallowed OSError (#642). `python3 supertool.py` is the
+    fail into a swallowed OSError (#642). `sys.executable supertool.py` is the
     working invocation there, so it is the fallback rather than a dead end.
+
+    `sys.executable`, not `python3`, and this docstring said `python3` until
+    #1017 — which is how `st_hint` came to print the literal while citing this
+    function as the thing it agreed with.
     """
     root = _repo_root()
     arg = f"watch:{source}:{iid}"
