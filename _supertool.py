@@ -5488,9 +5488,9 @@ def _around_line_delegation(pattern: str, path: str, n: int) -> str:
 
     Gated so it only ever converts a call that ALREADY FAILS into an answer: the
     numeric argument must not name a real file (a file called `1160` is a path,
-    not a line) and the argument in front of it must resolve. No call that works
-    today changes meaning, and the `:`-tokenizer is not touched — this is
-    post-parse recovery inside the op.
+    not a line), the argument in front of it must pass cwd containment, and it
+    must resolve. No call that works today changes meaning, and the
+    `:`-tokenizer is not touched — this is post-parse recovery inside the op.
 
     `between:PATH:START:END` is deliberately NOT given the same treatment: its
     redirect target is `read`, a different op, and #983 decided that `between`
@@ -5499,10 +5499,25 @@ def _around_line_delegation(pattern: str, path: str, n: int) -> str:
     """
     if not path.isdigit() or os.path.exists(path):
         return ""
-    if not pattern or not os.path.isfile(pattern):
-        return ""
     line = int(path)
     if line < 1:
+        return ""
+    # The promotion happens HERE and nowhere else: past this point `pattern` has
+    # stopped being a pattern and is a filename. Dispatch already ran
+    # containment, but from `_PATH_ARG_POSITIONS["around"] = (2,)` — parts[2],
+    # the slot this call did not use as a path — so parts[1] arrives unchecked
+    # and `around:/etc/hosts:3` read a file that `around:localhost:/etc/hosts:1`
+    # — the same file, named in the slot the table does cover — refuses (#1135).
+    #
+    # The check is here rather than in the table because parts[1] is a PATTERN in
+    # every other reading, and a pattern is not a path: containing slot 1 would
+    # refuse `around:/etc/passwd:code.py`, i.e. searching a repo for an absolute
+    # path string. The table answers "which slots are always paths"; this one
+    # only becomes a path conditionally, so the guard has to be conditional too.
+    _contained = _containment_error([pattern])
+    if _contained:
+        return _contained
+    if not pattern or not os.path.isfile(pattern):
         return ""
     return (
         f"(read as around_line:{pattern}:{line}:{n} — `around` takes "
@@ -5818,6 +5833,18 @@ def op_replace(old: str, new: str, path: str = ".", dry: bool = False) -> str:
     return "".join(out)
 
 
+def _write_target(path: str) -> str:
+    """The path a write to *path* actually lands on — a symlink followed (#1136).
+
+    `_atomic_write` resolves a symlink before `os.replace` so the real file is
+    written rather than clobbered by a regular file. Anything that has to reason
+    about what that write did to the filesystem — above all the rollback, which
+    deletes — has to ask the same question of the same path, or it decides
+    identity on an object the writer never touched. One expression, two callers.
+    """
+    return os.path.realpath(path) if os.path.islink(path) else path
+
+
 def _atomic_write(path: str, content: str) -> None:
     """Write content to path atomically — temp file + os.replace.
 
@@ -5846,7 +5873,7 @@ def _atomic_write(path: str, content: str) -> None:
     # at the one place every mutating op passes through (#380).
     _warn = _sh_backslash_warning(path, content)
     _key = os.path.abspath(path)
-    real_path = os.path.realpath(path) if os.path.islink(path) else path
+    real_path = _write_target(path)
     target_dir = os.path.dirname(os.path.abspath(real_path)) or "."
     # Preserve the original file's mode (#259). mkstemp creates the temp file
     # with 0600; os.replace would then clobber the target's mode, silently
@@ -6402,7 +6429,7 @@ def _rollback_action(pre_existed: bool, pre_content: Optional[bytes]) -> str:
 
 
 def _retraction_line(name: str, verb: str, path: str, body: object,
-                     created: bool = False) -> str:
+                     created: bool = False, target: str = "") -> str:
     """Retract a receipt's own success line where a FILTERED read will see it.
 
     `[rolled back] <tool> regressed; file restored` shares no token with the
@@ -6440,7 +6467,17 @@ def _retraction_line(name: str, verb: str, path: str, body: object,
     # went back to something.
     undo = "removed" if created else "restored"
     tail = "created" if created else "edited"
-    return (f"[rolled back] {name} {verb}; {_flat_cell(path)} {undo}{quoted}"
+    # A write through a symlink lands on the target, so the undo does too
+    # (#1136). Saying "link.py removed" was true only while the rollback was
+    # deleting the wrong object; now that it deletes the right one, the same
+    # sentence would tell a reader their symlink is gone when it is intact.
+    subject = _flat_cell(path)
+    via = ""
+    if target and os.path.abspath(target) != os.path.abspath(path):
+        subject = _flat_cell(target)
+        via = (f" ({_flat_cell(path)} is a symlink, so the write landed on its "
+               f"target and that is what was undone; the link is intact)")
+    return (f"[rolled back] {name} {verb}; {subject} {undo}{via}{quoted}"
             f"; the file was NOT {tail}")
 
 
@@ -14959,7 +14996,24 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
         return do_op()
     if not path:
         return do_op()
-    _pre_existed = os.path.isfile(path)
+    # Identity is decided on the path the WRITER lands on, not the one the
+    # caller typed. For `link.py -> target.py` where the target does not exist
+    # yet, `isfile(link.py)` follows the link, finds nothing and returns False —
+    # which the rollback read as "this call created link.py". It then unlinked a
+    # symlink the call never created, left the target it really did write, and
+    # printed `nothing changed on disk` over both (#1136).
+    #
+    # Sampled once here, before the op, and reused by every rollback arm below:
+    # resolving again at rollback time would answer a question about a
+    # filesystem the write has already changed.
+    _target = _write_target(path)
+    _pre_existed = os.path.isfile(_target)
+    # Every rollback arm reports on the object it acted on, refuse included: a
+    # refusal that names the link while the restore beside it names the target
+    # would describe two different files as one.
+    _target_cell = _flat_cell(_target)
+    if os.path.abspath(_target) != os.path.abspath(path):
+        _target_cell += f" (which the symlink {_flat_cell(path)} resolves to)"
     applicable_fmt = _applicable_formatters(op, path)
     applicable_all = _applicable_validators(op, path)
     applicable_notif = _applicable_notifiers(op, path)
@@ -15064,20 +15118,21 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
                             fmt_rows.append(row)
                         fmt_rows.append(
                             f"[ROLLBACK NOT POSSIBLE] {result_name} failed on "
-                            f"{_flat_cell(path)}, whose pre-edit bytes could "
+                            f"{_target_cell}, whose pre-edit bytes could "
                             f"not be read. The write STANDS (#1088).")
                     else:
                         try:
                             if fmt_action == "unlink":
-                                os.unlink(path)
+                                os.unlink(_target)
                             elif pre_content is not None:
-                                with open(path, "wb") as fw:
+                                with open(_target, "wb") as fw:
                                     fw.write(pre_content)
                             _retract_write(path)
                             already_undone = True
                             fmt_rows.append(_retraction_line(
                                 result_name, "failed", path, body,
-                                created=fmt_action == "unlink"))
+                                created=fmt_action == "unlink",
+                                target=_target))
                         except OSError as e:
                             fmt_rows.append(f"[ROLLBACK FAILED] {result_name}: {e}")
                 else:
@@ -15139,7 +15194,7 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
             if action == "refuse":
                 diff_out += (
                     f"\n[ROLLBACK NOT POSSIBLE] {name} regressed on "
-                    f"{_flat_cell(path)}, whose pre-edit bytes could not be "
+                    f"{_target_cell}, whose pre-edit bytes could not be "
                     f"read. The file existed before this op, so removing it "
                     f"would delete content this call never wrote. The write "
                     f"STANDS and the file is NOT what it was (#1088).\n"
@@ -15147,14 +15202,14 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
                 break
             try:
                 if action == "unlink":
-                    os.unlink(path)
+                    os.unlink(_target)
                 elif pre_content is not None:
-                    with open(path, "wb") as f:
+                    with open(_target, "wb") as f:
                         f.write(pre_content)
                 _retract_write(path)
                 diff_out += ("\n" + _retraction_line(
                     name, "regressed", path, body,
-                    created=action == "unlink") + "\n")
+                    created=action == "unlink", target=_target) + "\n")
             except OSError as e:
                 diff_out += f"\n[ROLLBACK FAILED] {name}: {e}\n"
             break
