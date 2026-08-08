@@ -16,9 +16,9 @@ The fix is the chokepoint's own claim made true: an adapter payload reaches a
 decision through exactly two doors, and both strip. What the core stamps on a
 result — `elapsed_s` and `resolved_to` — it stamps again on the way out of the
 cache, because those are observations of *this* run, not properties of the
-cached bytes. `test_a_cache_hit_still_carries_the_cores_own_...` pin that: a
-strip that only removed would blank the time column and lose the resolved
-target, which is the quiet regression traded for the loud one.
+cached bytes. The two `test_a_cache_hit_...` cases pin that: a strip that only
+removed would blank the time column and lose the resolved target, which is the
+quiet regression traded for the loud one.
 """
 from __future__ import annotations
 
@@ -178,7 +178,7 @@ def test_a_cache_hit_still_carries_an_elapsed_s(tmp_path: Path) -> None:
     second = supertool._validator_run_one("fake", spec, str(f))
     assert second is not None
 
-    assert calls.read_text() == "1", (
+    assert calls.read_text(encoding="utf-8") == "1", (
         "the second run spawned the adapter again — this test never "
         "exercised the cache-read path")
     assert second.get("ok") is True, second
