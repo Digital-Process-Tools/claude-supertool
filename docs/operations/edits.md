@@ -216,8 +216,14 @@ that takes the ending of the line it lands on rather than a file-wide majority,
 which on a mixed file would rewrite your own line to the other convention.
 
 The receipt speaks only where the ending used had more than one defensible
-answer — a mixed file, or your own text re-terminated to match. For `edit` and
-`replace_lines`, one file, one line:
+answer — a mixed file, or your own text re-terminated to match. **Mixed means
+mixed after the write**, and the census counts the file you are about to open:
+asking the pre-write bytes meant a write that *created* the mixedness — an LF
+block into an all-CRLF file — could never reach the branch that exists for it,
+and shipped under a receipt that said nothing. That holds whether or not the op
+had to invent a trailing ending: a block that already ends a line invents
+nothing and discloses just the same. For `edit` and `replace_lines`, one file,
+one line:
 
 ```
 edited src/main.rs (line 12-13)

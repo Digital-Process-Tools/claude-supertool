@@ -713,7 +713,9 @@ def test_grep_marks_a_result_that_stopped_at_the_limit(tmp_path: Path) -> None:
     d.mkdir()
     (d / "a.py").write_text("needle\nneedle\nneedle\n")
     out = supertool.op_grep("needle", str(d), limit=2, no_auto_read=True)
-    assert "limit 2 — TRUNCATED, more matches exist)" in out
+    # The marker carries the scope now (#1073): "more matches exist" could not
+    # tell 3 from 300, and the two warrant opposite next actions.
+    assert "limit 2 — TRUNCATED, 3 matches total)" in out
     assert out.startswith("(2 results in 1 files")
 
 
@@ -745,7 +747,7 @@ def test_grep_context_mode_marks_truncation(tmp_path: Path) -> None:
     d.mkdir()
     (d / "a.py").write_text("needle\nx\ny\nneedle\nz\nw\nneedle\n")
     out = supertool.op_grep("needle", str(d), limit=2, context=1)
-    assert "TRUNCATED, more matches exist)" in out
+    assert "TRUNCATED, 3 matches total)" in out
     assert out.count(":needle") == 2, "trimmed to the limit, not limit+1"
 
 
@@ -798,8 +800,11 @@ def test_grep_delegated_marks_truncation(tmp_path: Path, rtk: _RtkStub) -> None:
     out = supertool.op_grep("alpha", str(tmp_path), limit=3)
     assert rtk.calls, "delegated branch not taken — this test pins nothing"
     assert rtk.calls[0][:4] == ["grep", "-rn", "-m", "4"], "no over-fetch requested"
+    # rtk answers without a candidate list, so there is no total to state and
+    # the report says which of the three states it is in (#1073).
     assert ("(3 results in 1 files, scanned ? files — delegated to rtk, "
-            "limit 3 — TRUNCATED, more matches exist)\n") in out
+            "limit 3 — TRUNCATED, more matches exist (total not counted))\n"
+            ) in out
     assert out.count(":alpha") == 3, "body trimmed to the limit"
 
 

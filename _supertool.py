@@ -243,6 +243,13 @@ MAX_GREP_LINE_CHARS = 500  # per-line cap on grep output (#363) — one 25KB sin
 CHAR_WINDOW_CHARS = 1000  # head/tail peek window for minified single-line files
 MINIFIED_LINE_CHARS = 5000  # a single line this long means line-based view is useless
 MAX_GREP_RESULTS = 10
+MAX_GREP_COUNT_CEILING = 1000  # how far past LIMIT grep keeps counting so a
+# truncated answer can state its scope (#1073). Counting every match forfeits
+# the early exit: measured over a 67,855-file tree, a dense pattern's walk went
+# from 0.01s to 10.3s uncounted-to-counted, while stopping at 1000 cost 0.05s.
+# The bound is on matches, not files, so a sparse pattern still reads the tree
+# — which is what a non-truncated grep already does, so the op's worst case is
+# unchanged rather than raised.
 MAX_GLOB_RESULTS = 50
 LOG_FILE = os.path.join(tempfile.gettempdir(), "supertool-calls.log")
 GREP_FILE_INCLUDES = ("*.php", "*.xml", "*.py", "*.js", "*.ts", "*.md")
@@ -3001,13 +3008,16 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
         return "".join(out)
 
     if context > 0:
+        ceiling = _grep_count_ceiling(limit)
         groups = _grep_recursive_context(
-            pattern, path, limit + 1, context, excl, candidates=candidates)
+            pattern, path, ceiling + 1, context, excl, candidates=candidates)
         literal = False
         if not groups and _is_regexy(pattern):
             groups = _grep_recursive_context(
-                re.escape(pattern), path, limit + 1, context, excl, candidates=candidates)
+                re.escape(pattern), path, ceiling + 1, context, excl, candidates=candidates)
             literal = bool(groups)
+        total, capped = _grep_total(
+            sum(1 for g in groups for line in g if line[2] == "match"), ceiling)
         groups, truncated = _trim_context_groups(groups, limit)
         count = sum(
             1 for g in groups for line in g if line[2] == "match"
@@ -3015,7 +3025,8 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
         literal_note = _literal_note(pattern, count) if literal else ""
         file_count = len({g[0][0] for g in groups if g})
         out = [literal_note, f"({count} results in {file_count} files{_scanned_suffix(scanned)}{hidden}, "
-               f"limit {limit}, context {context}{_truncation_suffix(truncated)})\n"]
+               f"limit {limit}, context {context}"
+               f"{_truncation_suffix(truncated, total, capped)})\n"]
         current_file: str = ""
         first_group = True
         for group in groups:
@@ -3036,17 +3047,28 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
         out.append("\n")
         return _cap_context_window("".join(out), "grep_around")
 
-    # limit + 1 (#448): a count that equals the limit is ambiguous between
-    # "exactly N matches" and "stopped at N", and only looking one past the cap
-    # settles it. The walk itself is already paid for — `candidates` above
-    # traversed the whole tree to produce `scanned` — so the extra cost is
-    # reading file *contents* until one more match turns up, not another walk.
-    hits = _grep_recursive(pattern, path, limit + 1, excl, candidates=candidates)
+    # ceiling + 1 (#448, #1073): a count that equals the limit is ambiguous
+    # between "exactly N matches" and "stopped at N", and only looking past the
+    # cap settles it. #448 looked exactly one past, which settled the yes/no and
+    # left the scope unknown; the bound is the counting ceiling now, so the same
+    # walk answers "how many" as well as "were there more".
+    #
+    # The walk itself is still already paid for — `candidates` above traversed
+    # the whole tree to produce `scanned` — so this is never a second walk. What
+    # it costs is reading file *contents* further: to the (limit+1)th match
+    # before, to the (ceiling+1)th now. Measured on a 67,855-file tree, dense
+    # pattern, limit 20: 0.0103s then, 0.05s now, against 10.3s for counting
+    # everything and 4.3s for the traversal both of them sit on top of. On an
+    # exact result neither stops early at all, which is what proving exactness
+    # has always meant here.
+    ceiling = _grep_count_ceiling(limit)
+    hits = _grep_recursive(pattern, path, ceiling + 1, excl, candidates=candidates)
     literal = False
     if not hits and _is_regexy(pattern):
-        hits = _grep_recursive(re.escape(pattern), path, limit + 1, excl, candidates=candidates)
+        hits = _grep_recursive(re.escape(pattern), path, ceiling + 1, excl, candidates=candidates)
         literal = bool(hits)
     truncated = len(hits) > limit
+    total, capped = _grep_total(len(hits), ceiling)
     hits = hits[:limit]
     count = len(hits)
     literal_note = _literal_note(pattern, count) if literal else ""
@@ -3054,7 +3076,7 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
 
     out = [literal_note,
            f"({count} results in {file_count} files{_scanned_suffix(scanned)}{hidden}, "
-           f"limit {limit}{_truncation_suffix(truncated)})\n"]
+           f"limit {limit}{_truncation_suffix(truncated, total, capped)})\n"]
     current_file = ""
     for fp, lineno, content in hits:
         if fp != current_file:
@@ -4614,16 +4636,36 @@ def _rtk_grep_report(rtk_out: str, limit: int) -> str:
     return header + "".join(ln + "\n" for ln in lines) + "\n"
 
 
-def _truncation_suffix(truncated: bool) -> str:
-    """Report format's truncation disclosure (#448).
+def _truncation_suffix(truncated: bool, total: Optional[int] = None,
+                       capped: bool = False) -> str:
+    """Report format's truncation disclosure (#448, #1073).
 
     `(1 results in 1 files, scanned 118353 files, limit 1)` reads as an
     exhaustive answer and is not one, which is how a coverage audit concluded a
     class had no test when the test was sitting one match past the cap. The
     marker is only ever emitted when a match past the limit was actually seen,
     so its absence is a positive statement: this count is exact.
+
+    `more matches exist` said the answer was partial without saying how partial
+    (#1073). 21 matches and 500 matches produced identical bytes and warrant
+    opposite next actions, so the scope is now part of the marker — in three
+    states that must not collapse into each other:
+
+    * `N matches total`                  — counted, and this is all of them;
+    * `N+ matches total (count capped…)` — counting stopped at the ceiling, so
+      the number is a floor rather than a total;
+    * `more matches exist (total not counted)` — nothing counted. The delegated
+      rtk report has no candidate list to count over, and "we did not count"
+      must not render as "we counted and there are some".
     """
-    return " — TRUNCATED, more matches exist" if truncated else ""
+    if not truncated:
+        return ""
+    if total is None:
+        return " — TRUNCATED, more matches exist (total not counted)"
+    if capped:
+        return (f" — TRUNCATED, {total}+ matches total "
+                f"(count capped at {total})")
+    return f" — TRUNCATED, {total} matches total"
 
 
 def _trim_context_groups(
@@ -4676,6 +4718,27 @@ def _hidden_suffix(hidden: int) -> str:
     if hidden <= 0:
         return ""
     return f", {hidden} files hidden by exclude-paths"
+
+
+def _grep_count_ceiling(limit: int) -> int:
+    """How many matches grep will count before it stops counting (#1073).
+
+    Never below the caller's own LIMIT: a ceiling under the limit would cap the
+    total below the number of rows printed underneath it, which is a worse
+    render than the one this replaces.
+    """
+    return max(_get_op_int("grep", "count_ceiling", MAX_GREP_COUNT_CEILING),
+               limit)
+
+
+def _grep_total(seen: int, ceiling: int) -> Tuple[int, bool]:
+    """`(total, capped)` for a walk that stopped once it had `ceiling + 1`.
+
+    `seen` may overshoot by more than one in context mode, where matches are
+    collected a window at a time — so the reported floor is clamped rather than
+    passed through, and a number printed as exact is always one that is.
+    """
+    return min(seen, ceiling), seen > ceiling
 
 
 def _scanned_suffix(scanned: int) -> str:
@@ -6228,9 +6291,29 @@ def _newline_census(text: str) -> Tuple[int, int, int]:
     return crlf, lf, cr
 
 
+def _newline_used(text: str) -> str:
+    """The ending convention a block carries, CRLF-first, "" if it carries none.
+
+    CRLF-first because a block holding both is a caller's own mixture written
+    verbatim, and naming the two-byte ending is the one that cannot be read as
+    a bare LF.
+    """
+    for nl in ("\r\n", "\r", "\n"):
+        if nl in text:
+            return nl
+    return ""
+
+
 def _newline_note(content: str, wrote: str = "", retermed: bool = False) -> str:
     """One receipt line, emitted only where the ending used had more than one
     defensible answer.
+
+    `content` is the file **as it will be on disk** — not as it was found.
+    Asking the pre-write bytes meant the mixed branch below could only fire on
+    a file that was *already* mixed, so a write that CREATED the mixedness
+    reached nothing and shipped in silence (#1075). The census printed with it
+    describes the file that now exists, which is the one the reader is about to
+    open.
 
     `wrote` is the convention the op used for text it supplied, "" when it
     supplied none. `retermed` says that text was the *caller's own*, rewritten
@@ -6406,8 +6489,7 @@ def op_edit(old: str, new: str, path: str) -> str:
             # Mixed: no single convention to match, so the caller's bytes stand
             # as typed -- the same answer `replace_lines` gives. Still a
             # decision, and `_newline_note`'s mixed branch discloses it.
-            wrote = ("\r\n" if "\r\n" in new
-                     else "\r" if "\r" in new else "\n")
+            wrote = _newline_used(new)
 
     idx = content.index(old)
     reapplied = _edit_already_applied(content, old, new, idx)
@@ -6436,7 +6518,7 @@ def op_edit(old: str, new: str, path: str) -> str:
     if end_line != start_line:
         out.append(f"-{end_line}")
     out.append(")\n")
-    _nl_note = _newline_note(content, wrote, retermed=retermed)
+    _nl_note = _newline_note(new_content, wrote, retermed=retermed)
     if _nl_note:
         out.append(_nl_note)
     # Attached to the claim it qualifies, not only to the footer: `edited a.py
@@ -6650,10 +6732,8 @@ def op_replace_lines(path: str, start: int, end: int, content: str) -> str:
     # would rewrite the caller's own line to the other convention.
     block_nl = _local_newline(orig_lines, start - 1)
     new_block = content
-    invented_nl = ""
     if new_block and not new_block.endswith(("\n", "\r")):
         new_block += block_nl
-        invented_nl = block_nl
     new_block_lines = _split_lines_keepends(new_block) if new_block else []
 
     if insert_only:
@@ -6666,8 +6746,9 @@ def op_replace_lines(path: str, start: int, end: int, content: str) -> str:
         removed = end - start + 1
 
     new_lines = before + new_block_lines + after
+    new_content = "".join(new_lines)
     try:
-        _atomic_write(path, "".join(new_lines))
+        _atomic_write(path, new_content)
     except OSError as e:
         return f"ERROR: failed to write {path}: {e}\n"
 
@@ -6682,7 +6763,12 @@ def op_replace_lines(path: str, start: int, end: int, content: str) -> str:
     else:
         verb = f"replaced lines {start}-{end} with lines {new_start}-{new_end}"
     out = [f"{verb} in {path} (Δ {added - removed:+d}){clamped_hint}\n"]
-    _nl_note = _newline_note(orig, invented_nl if added else "")
+    # The block as written, not merely the ending this op had to invent: a
+    # block that already ended a line invented nothing, left `wrote` empty, and
+    # short-circuited the note before it ever reached the census — the same
+    # mixed file under the same silence (#1075).
+    _nl_note = _newline_note(new_content,
+                             _newline_used(new_block) if added else "")
     if _nl_note:
         out.append(_nl_note)
 

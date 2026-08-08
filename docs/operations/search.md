@@ -31,12 +31,23 @@ A single pathological line — a minified bundle, a 7KB one-line `@extends Foo<a
 `(1 results in 1 files, scanned 118353 files, limit 1)` reads as a complete answer. It was not one — the second match was sitting just past the cap, and nothing in that line said so. A result that stopped at its limit now says which:
 
 ```
-(1 results in 1 files, scanned 118353 files, limit 1 — TRUNCATED, more matches exist)
+(1 results in 1 files, scanned 118353 files, limit 1 — TRUNCATED, 137 matches total)
 ```
 
-**The marker's absence is a claim, not a silence.** `grep` fetches one match *past* the limit and discards it, so `limit N` with no marker means the walk looked for an N+1th match and did not find one — the count is exact. Stopping *at* N is not by itself evidence that an N+1th exists, and a marker that fired on `count == limit` would be a lie in the other direction: smaller, but still a lie, and still unusable, since every result would carry it.
+**The marker states the scope, not just the fact.** `more matches exist` could not tell 21 from 500, and those warrant opposite next actions: at 21 you raise the limit and read them, at 500 the pattern is wrong and should be narrowed before anything is read. Three states, and they do not collapse into each other:
 
-The extra match costs no extra traversal. The whole tree is already walked to produce the `scanned N` denominator, so the over-fetch only reads file *contents* until one more match turns up. On an exact result that means reading to the end of the candidate list — which is what proving exactness means.
+| Render                                                     | Means                                                    |
+| ---------------------------------------------------------- | -------------------------------------------------------- |
+| `— TRUNCATED, 137 matches total`                           | Counted, and that is all of them                         |
+| `— TRUNCATED, 1000+ matches total (count capped at 1000)`  | Counting stopped at the ceiling; the number is a floor   |
+| `— TRUNCATED, more matches exist (total not counted)`      | Nothing counted — the delegated rtk path, see below      |
+| no marker at all                                           | The answer is complete; the count above it is exact      |
+
+**The ceiling exists because counting is not free, and the number was measured rather than guessed.** Over a 67,855-file tree, a dense pattern's walk went from 0.01s (stop at `limit + 1`) to 10.3s (count everything); stopping at 1000 cost 0.05s. The bound is on *matches*, not files, so a sparse pattern still reads the whole candidate list — which is exactly what a **non**-truncated grep already does, so the op's worst case is unchanged rather than raised. Tune it with `grep.count_ceiling` / `SUPERTOOL_GREP_COUNT_CEILING`; it is never applied below your own `LIMIT`.
+
+**The marker's absence is a claim, not a silence.** `grep` fetches *past* the limit and discards the surplus, so `limit N` with no marker means the walk looked for an N+1th match and did not find one — the count is exact. Stopping *at* N is not by itself evidence that an N+1th exists, and a marker that fired on `count == limit` would be a lie in the other direction: smaller, but still a lie, and still unusable, since every result would carry it.
+
+**The over-fetch costs no extra traversal, and the ceiling did not change that.** The whole tree is already walked to produce the `scanned N` denominator, so the over-fetch only reads file *contents* further — to the `limit + 1`th match before the count existed, to the `ceiling + 1`th now. Measured on the same 67,855-file tree, dense pattern, `limit 20`: **0.0103s** stopping at `limit + 1` against **0.05s** stopping at the 1000 ceiling, both on top of a 4.3s traversal neither avoids. That is the honest before/after — the 10.3s figure above is the cost of the option that was *not* taken. On an exact result neither bound stops early at all, which is what proving exactness means.
 
 `glob` carries the same disclosure on its own cap (`glob.max_results`):
 
@@ -105,7 +116,7 @@ When [rtk](https://github.com/wilpel/rtk) is installed and `rtk` is not set to `
 
 rtk shells out to the system `grep` and reports no scanned-file count, and re-walking the tree to compute one is the traversal delegation exists to avoid — so the denominator is stated as unknown rather than quietly omitted. **A `?` never appears next to a zero result.** rtk exits non-zero when it matches nothing, and an empty result falls through to the native walker, so every zero-result grep — the case the denominator was added for — comes back with a real count and the `— nothing matched the path/glob` marker where it applies. A `?` therefore always sits beside at least one result, which is itself proof that files were searched.
 
-The report line carries the same `— TRUNCATED, more matches exist` disclosure as the native walker: rtk is asked for `limit + 1` matches and the extra one is trimmed before output.
+The report line carries the same truncation disclosure as the native walker — rtk is asked for `limit + 1` matches and the extra one is trimmed before output — but **not** the total: rtk reports no candidate list, so there is nothing to count over without the re-walk delegation exists to avoid. It says `— TRUNCATED, more matches exist (total not counted)`, which is the third state above and is deliberately not the same sentence as a count that came back small. "We did not count" must not read as "we counted and there are some", the same reason the `?` denominator is printed rather than omitted.
 
 **Delegation is skipped when git ignores a directory the exclude list would still walk.** rtk shells out to the system `grep`, whose `--exclude-dir` takes bare directory names and cannot express a nested path like `.claude/worktrees/` — a delegated grep would return exactly the copies the native walker prunes, and which backend ran must never change the answer. The test is *residual*: an ignore set already covered by `exclude-paths` (a lone `node_modules/`, say) costs you nothing.
 
