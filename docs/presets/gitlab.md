@@ -248,6 +248,17 @@ The section therefore distinguishes three outcomes, which used to render identic
 
 The resolve commands print in all three cases; they never needed the hunks.
 
+**A hunk preview shows the whole hunk, including lines the file's own content
+would otherwise have cut off** ([#1119](https://github.com/Digital-Process-Tools/claude-supertool/issues/1119)).
+`git merge-tree` emits the two branches' file content verbatim and this op reads it
+with `changed in both` as a column-0 record boundary, so a conflicted line carrying
+U+2028 used to end that file's preview early — under a heading naming the file, with
+the conflict itself missing. The hunk stream is now split on LF / CR / CRLF only, and
+the separators that split no longer honours are disclosed as pictures at the render
+rather than reaching the terminal alive. See
+[The trace is split on the trace's own line endings](#the-trace-is-split-on-the-traces-own-line-endings-not-pythons)
+for the same fix in `gl-job`, which is where it was filed.
+
 **Branch names and paths in the resolve block are shell-quoted when they are not ordinary** ([#694](https://github.com/Digital-Process-Tools/claude-supertool/issues/694)). The source branch of a merge request is named by whoever opened it, and git refnames permit `;`, backtick, `$`, `&`, quotes, parentheses and spaces. Supertool does not run this block — it prints it for you or an agent to paste — but "paste this" is close enough to "run this" that the printed line has to be safe.
 
 A name matching `^[A-Za-z0-9._/-]+$` prints bare, so the ordinary block is unchanged:
@@ -506,6 +517,44 @@ Past the budget whole failures are dropped in file order rather than gutted — 
 dropped failure falls back to its ordinary pattern window, so nothing disappears —
 and the view ends with `... (3 of 21 PHPUnit failures not shown in full — raise
 GL_JOB_PHPUNIT_TOTAL_MAX_LINES=N)`.
+
+### The trace is split on the trace's own line endings, not Python's
+
+[#1119](https://github.com/Digital-Process-Tools/claude-supertool/issues/1119), and
+[#1105](https://github.com/Digital-Process-Tools/claude-supertool/issues/1105) is the
+same defect in `gh-job` — filed twice because the two job presets are private twins
+and neither can import the other.
+
+`str.splitlines()` breaks on eight separators no CI trace defines — `\v`, `\f`,
+`\x1c`, `\x1d`, `\x1e`, `\x85`, U+2028, U+2029 — and three of the things this op
+does afterwards anchor at column 0: the `section_start:` marker behind
+`Last step entered:`, the `N) Class::method` header that opens a PHPUnit failure
+block, and `(last 40 lines of 1612)`, which is arithmetic over the split. A GitLab
+trace is written by the branch's own `.gitlab-ci.yml` and the branch's own code, so
+that handed all three to the trace's author: an `echo` carrying U+2028 opened a
+column-0 line mid-sentence and named the failing step.
+
+The split is now LF / CR / CRLF only, the same conservative definition
+[#1081](https://github.com/Digital-Process-Tools/claude-supertool/issues/1081) gave
+`_pr_diff`. Narrowing alone would have traded a forged parse boundary for a forged
+_render_ line — the separator surviving into `  1234 | …` and breaking the terminal
+row with no gutter below it — so the separators the split no longer honours are
+disclosed as pictures on the way through, and tabs are kept because a trace line is
+a block and its indentation is the author's content.
+
+`gl-mr` reads `git merge-tree`'s conflict hunks the same way, for the same reason:
+that stream is the two branches' file content verbatim, and `changed in both` is a
+column-0 anchor whose match ends a file's hunk — a forged one printed a conflict
+preview with the conflict missing, under a heading naming the file. The sibling
+call that lists the _conflicted paths_ is deliberately left on `str.splitlines()`:
+git octal-quotes every non-ASCII byte in a path it prints, so a filename cannot
+carry a separator into that split.
+
+The sixteen remaining `str.splitlines()` calls across the two twin presets are each
+registered with the reason they are safe, in
+`tests/test_preset_twin_splitlines_register_1119.py`. A new one in either twin is a
+red build until someone writes down which kind it is — which is as close as a test
+can get to making a defect found in one twin implicate the other.
 
 ### The gap marker is worded exactly as `gh-job`'s
 

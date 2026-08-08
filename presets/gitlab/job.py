@@ -378,6 +378,39 @@ def _expand_phpunit_blocks(
     return dropped, len(touched)
 
 
+def _log_lines(log: str) -> list[str]:
+    """The trace's own lines — LF / CR / CRLF — with nothing else honoured.
+
+    #1119, and #1105 one preset over: the same defect in the other private
+    twin, found by the #1105 agent and filed rather than swept, because a
+    title naming one preset must not carry a change to two.
+
+    `str.splitlines()` breaks on eight separators no CI trace defines, and
+    everything below this anchors at column 0. `_SECTION_START` feeds
+    `Last step entered:`, which is supertool's own claim about WHICH step
+    failed and the first thing a reader of a refusal acts on;
+    `_PHPUNIT_BLOCK_START` decides what counts as a failure block and so what
+    the render shows and what it elides; and the tail header's `of {total}` is
+    arithmetic over this list. A GitLab trace is written by the branch's own
+    `.gitlab-ci.yml` and the branch's own code, so `str.splitlines()` handed
+    all three to the trace's author: an `echo` carrying U+2028 opened a
+    column-0 line mid-sentence and named the failing step.
+
+    Narrowing the split alone would trade the forged parse boundary for a
+    forged *render* line — the separator would survive into `  1234 | ...` and
+    move the terminal to a fresh row with no gutter, which reads as a line
+    supertool wrote (#851, one surface over). So the separators this split no
+    longer honours are disclosed as pictures on the way through, and that
+    pairing is what makes the narrowing a fix rather than a quieter version of
+    the same bug.
+
+    Tabs are kept: a trace line is a block and its indentation is the author's
+    content, which is the same call `_untrusted.scrub` makes for a fence.
+    """
+    return [_untrusted.visible(line, keep=chr(9))
+            for line in _untrusted.split_lines(log)]
+
+
 def gap_marker(n_lines: int) -> str:
     """The line that stands where the op cut, saying so and saying how much.
 
@@ -678,7 +711,7 @@ def main() -> int:
     log = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', log)
     log = re.sub(r'\x1b\]8;[^;]*;[^\x1b]*\x1b\\', '', log)
 
-    lines = log.splitlines()
+    lines = _log_lines(log)
     total = len(lines)
 
     # Header
