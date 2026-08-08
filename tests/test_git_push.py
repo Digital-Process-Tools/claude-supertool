@@ -4,6 +4,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import subprocess
+import sys
 from pathlib import Path
 from unittest import mock
 
@@ -573,7 +574,19 @@ def _advisory_git(rev_list_count: str = "", porcelain: str = ""):
     return fake_git
 
 
-def test_advisories_mergeability_warn(capsys) -> None:
+def test_advisories_mergeability_warn(capsys, monkeypatch, tmp_path) -> None:
+    # The watch hint follows what is on disk beside the presets (#1012), so
+    # the install has to be pinned or this asserts a fact about the checkout
+    # the suite happens to be running in: `./supertool` is a gitignored
+    # symlink, present in a clone and absent in a worktree and in CI.
+    wrapper = tmp_path / "supertool"
+    wrapper.write_text("#!/bin/sh" + chr(10), encoding="utf-8")
+    wrapper.chmod(0o755)
+    # On `_git_common`, which is where `st_hint` reads it from. Setting it on
+    # `push` would bind a name no production call site consults, and the test
+    # would pass against unpatched code.
+    monkeypatch.setattr(sys.modules["_git_common"], "install_dir",
+                        lambda: str(tmp_path))
     mr = {"source": "gitlab", "iid": 42, "target": "master",
           "merge_status": "cannot_be_merged"}
     with mock.patch.object(push, "_git", side_effect=_advisory_git()):

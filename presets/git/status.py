@@ -28,7 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import _checks  # noqa: E402  (the one check tally, shared with gh-pr / gh-prs)
 import _untrusted  # noqa: E402  (an MR/PR title and target branch are the opener's text — #965)
 from _env import env_int  # noqa: E402  (the one numeric-knob reader)
-from _git_common import ANSWERED_NONE, TIMEOUT_RC, use_utf8_stdout  # noqa: E402
+from _git_common import ANSWERED_NONE, TIMEOUT_RC, st_hint, use_utf8_stdout  # noqa: E402
 from _git_common import _git as _spawn_git  # noqa: E402
 
 
@@ -135,6 +135,60 @@ def _note_failed(cmd: list[str], r: subprocess.CompletedProcess[str]) -> None:
     if r.returncode in (0, TIMEOUT_RC):
         return
     _UNANSWERED.append(("git " + " ".join(cmd), _reason(r.returncode, r.stderr)))
+
+
+#: Upstream commits with no patch-equivalent on this side. `--cherry-pick`
+#: drops every commit whose patch already exists on the other end of the
+#: symmetric difference, so what this counts is exactly "commits the remote
+#: has that this branch does not" — which is the question `ahead N, behind M`
+#: leaves the reader to guess at.
+_CHERRY_CMD = ["rev-list", "--count", "--right-only", "--cherry-pick",
+               "HEAD...@{upstream}"]
+
+
+def _divergence_line(behind: int) -> str:
+    """Which kind of divergence a two-sided count is (#1028).
+
+    After a rebase, `ahead 5, behind 1` is arithmetically true and
+    semantically the opposite of what happened: nothing was lost, and the
+    commits on the remote are the pre-rebase originals of commits this branch
+    already carries. But `ahead N, behind M` is the render for a genuine
+    two-way divergence, so an agent reading it mid-task has to stop and work
+    out which situation it is in — and one of them concluded "I have diverged
+    and may lose commits" where the truth was "I am ahead cleanly and the
+    remote is behind".
+
+    Git can separate them and no heuristic is needed. Measured on a real
+    repository (tests/test_git_status_rebase_divergence_1028.py): a pure
+    rebase gives 0 here at `ahead 4, behind 3`, and the same branch with one
+    genuine upstream commit gives 1.
+
+    **The count is never suppressed.** Removing the numbers would trade a
+    confusing render for a quiet one, which is the same defect facing the
+    other way — the reader would lose the fact that the remote differs at all.
+    This adds a sentence next to it and takes nothing away.
+
+    Three states, in the vocabulary this file already uses (#1002/#1034): a
+    check that did not run renders as neither verdict, because "nothing was
+    lost" is a claim and it must not be manufactured out of a failed call.
+    """
+    res = _git(_CHERRY_CMD)
+    _note_failed(_CHERRY_CMD, res)
+    out = res.stdout.strip()
+    if res.returncode != 0 or not out.isdigit():
+        return (f"Diverged: UNKNOWN whether those {behind} remote commit(s) "
+                f"are replays of your own — `git {' '.join(_CHERRY_CMD)}` did "
+                f"not answer ({_reason(res.returncode, res.stderr)}). This is "
+                f"not saying nothing was lost.")
+    only_theirs = int(out)
+    if only_theirs == 0:
+        return (f"Diverged: REBASED — every one of those {behind} remote "
+                f"commit(s) is patch-equivalent to a commit you already have, "
+                f"so nothing is lost and the remote is stale. Push: "
+                + st_hint("git-push:force-with-lease"))
+    return (f"Diverged: {only_theirs} of those {behind} remote commit(s) are "
+            f"NOT in your history — a genuine divergence. Reconcile (rebase "
+            f"or merge) before pushing; a force push discards them.")
 
 
 def _hosted_request(cmd: list[str]) -> dict | None:
@@ -257,6 +311,17 @@ def main() -> int:
     # (e.g. excluding a few pre-existing untracked items from a large commit).
     mode = (sys.argv[1] if len(sys.argv) > 1 else "").lower()
     full = mode in ("full", "porcelain")
+    # `brief` drops the two sections a caller almost never came for — the
+    # local-branch inventory and the commit log — so the working tree and the
+    # MR/PR block are near the top (#1028). It exists to remove the incentive
+    # to pipe this op through `tail`, which selects against the answer because
+    # these ops put the meaning first. The default is deliberately untouched:
+    # somebody depends on the branch list, and a flag settles it additively.
+    brief = mode == "brief"
+    # A mode this op cannot honour is reported, never discarded (#647):
+    # `git-status:breif` used to render the default in silence, so the caller
+    # believed they had the render they asked for.
+    unknown_mode = bool(mode) and not full and not brief
 
     # 1. Branch + tracking
     branch_result = _git(["branch", "-vv", "--no-color"])
@@ -281,6 +346,7 @@ def main() -> int:
 
     # Ahead/behind
     ahead_behind = ""
+    ahead = behind = 0
     ab_result = _git(["rev-list", "--left-right", "--count", f"HEAD...@{{upstream}}"])
     if ab_result.returncode == 0:
         parts = ab_result.stdout.strip().split()
@@ -294,6 +360,13 @@ def main() -> int:
                 ahead_behind = f"behind {behind}"
             else:
                 ahead_behind = "up to date"
+
+    # Rebased, or genuinely reconcilable? Only asked when both sides are
+    # non-zero: that is the only render that is ambiguous, and it keeps the
+    # extra spawn off every ordinary call (#1028).
+    divergence = ""
+    if ahead and behind:
+        divergence = _divergence_line(behind)
 
     # Divergence from base branch (master/main) — distinct from upstream tracking
     base_divergence = ""
@@ -321,7 +394,13 @@ def main() -> int:
                     base_divergence = f"vs {base_branch}: {parts_str}"
 
     print(f"# git-status")
+    if unknown_mode:
+        print(f"⚠ mode {mode!r} is not one of full|porcelain|brief — it was "
+              f"ignored, and what follows is the DEFAULT render, not the one "
+              f"you asked for.")
     print(f"Branch: {branch_name}" + (f" ({ahead_behind})" if ahead_behind else ""))
+    if divergence:
+        print(divergence)
     if base_divergence:
         print(base_divergence)
 
@@ -335,7 +414,7 @@ def main() -> int:
     # then checked out a feature branch — the work looks lost from `feature`).
     others = _git(["for-each-ref",
                    "--format=%(refname:short)\t%(upstream:track)", "refs/heads"])
-    if others.returncode == 0:
+    if others.returncode == 0 and not brief:
         rows = []
         for line in others.stdout.splitlines():
             name, _, track = line.partition("\t")
@@ -355,7 +434,7 @@ def main() -> int:
 
     # 2. Last 5 commits
     log_result = _git(["log", "-5", "--format=%h %ad %an | %s", "--date=short"])
-    if log_result.returncode == 0 and log_result.stdout.strip():
+    if log_result.returncode == 0 and log_result.stdout.strip() and not brief:
         print(f"\n## Last 5 commits")
         for line in log_result.stdout.strip().splitlines():
             print(f"  {line}")

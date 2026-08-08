@@ -69,9 +69,11 @@ from _git_common import (  # noqa: E402
     MrLookup,
     _first_error_line,
     _git,
+    install_dir,
     query_open_mr_result,
     reject_fetch_option,
     repo_label,
+    st_hint,
     use_utf8_stdout,
 )
 
@@ -219,12 +221,12 @@ def _st_hint(arg: str) -> str:
     a git worktree, which is where agents work. The fallback is the one
     `_watch_argv` already settled on for that exact environment (#642), not a
     second guess at it.
+
+    The rule moved to `_git_common.st_hint` for #1012, which found the same
+    defect in this file's own watch advisory and in `git-conflicts`. It is
+    kept as a name here because eleven call sites read better for it.
     """
-    root = _repo_root()
-    wrapper = os.path.join(root, "supertool")
-    if os.path.isfile(wrapper) and os.access(wrapper, os.X_OK):
-        return f"./supertool '{arg}'"
-    return f"python3 supertool.py '{arg}'"
+    return st_hint(arg)
 
 
 def _upstream_ref() -> tuple[str, str]:
@@ -758,7 +760,7 @@ def _mr_unknown_line(lookup: MrLookup) -> str:
             "  Whether this branch has an open MR/PR is UNKNOWN — this receipt "
             "is not saying there is none, and the mergeability and stale-base "
             "checks below are missing for the same reason. Settle it: "
-            "./supertool 'git-status'")
+            + _st_hint("git-status"))
 
 
 def _watch_target(mr: Optional[dict]) -> Optional[tuple[str, str]]:
@@ -771,7 +773,7 @@ def _watch_target(mr: Optional[dict]) -> Optional[tuple[str, str]]:
 
 def _repo_root() -> str:
     """Directory holding the `supertool` wrapper and `supertool.py`."""
-    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    return install_dir()
 
 
 def _watch_argv(source: str, iid: str) -> tuple[list[str], str]:
@@ -1037,34 +1039,38 @@ def _watch_advisory(lookup: MrLookup, flags: set[str]) -> None:
         print(f"⚠ :watch requested, but whether this branch has an open MR/PR "
               f"is UNKNOWN — {lookup.reason}. Nothing is being watched, and "
               "this is not saying there is nothing to watch.")
-        print("Once you know the number: ./supertool 'watch:gitlab-mr:<iid>' "
-              "(or watch:github-pr:<number>)")
+        print("Once you know the number: "
+              + _st_hint("watch:gitlab-mr:<iid>")
+              + " (or watch:github-pr:<number>)")
         return
     wt = _watch_target(lookup.mr)
     if "watch" not in flags:
         if wt:
-            print(f"Watch pipeline: ./supertool 'watch:{wt[0]}:{wt[1]}'")
+            print("Watch pipeline: " + _st_hint(f"watch:{wt[0]}:{wt[1]}"))
         return
     if not wt:
         print("⚠ :watch requested, but there is no open MR/PR for this branch "
               "yet — nothing to watch. Open one, then: "
-              "./supertool 'watch:gitlab-mr:<iid>'")
+              + _st_hint("watch:gitlab-mr:<iid>"))
         return
     source, iid = wt
     started, how = _spawn_watch(source, iid)
     if started is True:
-        print(f"Watching → notifies on pipeline finish/fail "
-              f"(unwatch: ./supertool 'unwatch:{source}:{iid}')")
+        print("Watching → notifies on pipeline finish/fail "
+              "(unwatch: " + _st_hint(f"unwatch:{source}:{iid}") + ")")
         return
     if started is None:
         print(f"⚠ :watch requested — whether a watcher is running is UNKNOWN "
               f"— {how}")
         print("  This receipt is not saying one exists, and not saying one "
-              "does not. Settle it: ./supertool 'watches'")
-        print(f"If none is listed: ./supertool 'watch:{source}:{iid}'")
+              "does not. Settle it: " + _st_hint("watches"))
+        print("If none is listed: " + _st_hint(f"watch:{source}:{iid}"))
         return
     print(f"⚠ :watch requested but the watcher could not be started — {how}")
-    print(f"Run it yourself: ./supertool 'watch:{source}:{iid}'")
+    # #1012: the remedy for a watcher that failed to start used to be
+    # `./supertool`, i.e. a command that fails in the one environment where
+    # this line is printed. #642 fixed the spawn and not the printed remedy.
+    print("Run it yourself: " + _st_hint(f"watch:{source}:{iid}"))
 
 
 def _post_push_advisories(lookup: MrLookup, flags: set[str],
@@ -1102,10 +1108,10 @@ def _post_push_advisories(lookup: MrLookup, flags: set[str],
         print(f"⚠ UNCOMMITTED-CHANGES CHECK DID NOT RUN — {why}")
         print("  Whether this push left work behind in the working tree is "
               "UNKNOWN — this receipt is not saying the tree is clean. "
-              "Settle it: ./supertool 'git-status:full'")
+              "Settle it: " + _st_hint("git-status:full"))
     elif leftovers:
         print(f"⚠ {len(leftovers)} change(s) NOT in this push (uncommitted) — "
-              "list them: ./supertool 'git-status:full'")
+              "list them: " + _st_hint("git-status:full"))
 
     _watch_advisory(lookup, flags)
 
@@ -1396,7 +1402,7 @@ def _report_recovery_timeout(stage: str, branch: str, target: str) -> int:
     if state == "in-progress":
         print("Your worktree has a REBASE IN PROGRESS — git paused it and the "
               "clock ran out before it finished. Nothing was pushed.")
-        print("Inspect: ./supertool 'git-conflicts'")
+        print("Inspect: " + _st_hint("git-conflicts"))
         print("Then decide:")
         print("  • finish it — resolve if needed, then `git rebase --continue`")
         print("  • undo it — `git rebase --abort` (back to before the push, "
@@ -1522,7 +1528,8 @@ def _recover_by_rebase(branch: str, remote_before: str, upstream: str,
         print("Status: REBASE PAUSED ✗ — conflict (remote and local both changed):")
         for f in files:
             print(f"  {f}")
-        print("Inspect: ./supertool 'git-conflicts'  — every conflict block + abort hint")
+        print("Inspect: " + _st_hint("git-conflicts")
+              + "  — every conflict block + abort hint")
         if behind:
             print("Before you force: that would discard the remote commit(s) listed "
                   "above — check the author first.")

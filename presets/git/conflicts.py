@@ -18,7 +18,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
 sys.path.insert(0, os.path.dirname(_HERE))  # for _env (#654)
 
-from _git_common import _git, _list_conflicts, use_utf8_stdout  # noqa: E402
+from _git_common import _git, _list_conflicts, st_hint, use_utf8_stdout  # noqa: E402
 from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 
 DEFAULT_PREVIEW_LINES = 12
@@ -194,8 +194,12 @@ def main() -> int:
             print(line)
         print(_all_conflict_blocks(path, preview))
 
-    print("\nResolve: ./supertool 'git-resolve:::ours:::PATH' | ./supertool 'git-resolve:::theirs:::PATH'")
-    print("Keep both sides (union): ./supertool 'git-resolve:::both:::PATH'")
+    # The invocation that works *here* (#1012). This line is read mid-conflict
+    # and pasted, and in a worktree `./supertool` either does not exist or
+    # resolves to another checkout's core.
+    print("\nResolve: " + st_hint("git-resolve:::ours:::PATH")
+          + " | " + st_hint("git-resolve:::theirs:::PATH"))
+    print("Keep both sides (union): " + st_hint("git-resolve:::both:::PATH"))
     print("Or edit manually, then: git add PATH && git commit")
 
     return 0

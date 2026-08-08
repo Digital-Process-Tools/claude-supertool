@@ -10,7 +10,7 @@ Git investigation and workflow ops. Replaces the 4-6 raw `git` calls you'd norma
 
 | Op | Syntax | What it returns |
 |----|--------|-----------------|
-| `git-status` | `git-status[:full]` | Branch, tracking, ahead/behind, last 5 commits, staged/unstaged/untracked files, stashes, open MR/PR link, suggested next step. The `Issue:` line reports only issues a GitHub closing keyword binds to (`Issue: #591`, `Issues: #571, #572`, or a stated `none declared`) — never the first `#N` in the body ([#591](https://github.com/Digital-Process-Tools/claude-supertool/issues/591), see [What `git-status`'s `Issue:` line claims](#what-git-statuss-issue-line-claims)). The default view caps each list (20 staged/unstaged, 10 untracked/branches, 5 stashes) with a `... (N more)` marker — cheap overview. `:full` (alias `:porcelain`) **uncaps every list** for the full untruncated view, e.g. when you need to drive precise staging (excluding a few pre-existing untracked items from a large commit) and can't from a truncated list |
+| `git-status` | `git-status[:full\\|:brief]` | Branch, tracking, ahead/behind, last 5 commits, staged/unstaged/untracked files, stashes, open MR/PR link, suggested next step. The `Issue:` line reports only issues a GitHub closing keyword binds to (`Issue: #591`, `Issues: #571, #572`, or a stated `none declared`) — never the first `#N` in the body ([#591](https://github.com/Digital-Process-Tools/claude-supertool/issues/591), see [What `git-status`'s `Issue:` line claims](#what-git-statuss-issue-line-claims)). The default view caps each list (20 staged/unstaged, 10 untracked/branches, 5 stashes) with a `... (N more)` marker — cheap overview. `:full` (alias `:porcelain`) **uncaps every list** for the full untruncated view, e.g. when you need to drive precise staging (excluding a few pre-existing untracked items from a large commit) and can't from a truncated list. `:brief` goes the other way — it drops the local-branch inventory and the last-5-commits log so the working tree and the MR/PR block are near the top ([#1028](https://github.com/Digital-Process-Tools/claude-supertool/issues/1028)); see [`ahead N, behind M` after a rebase](#ahead-n-behind-m-after-a-rebase-is-not-lost-work). A mode that is none of these is named and the default render is labelled as such, rather than silently substituted |
 | `git-investigate` | `git-investigate:PATH` | File history: recent commits touching the file, uncommitted changes, blame hotspots (most-recently-changed lines) |
 | `git-trail` | `git-trail:PATTERN:PATH` | Trace a symbol or string through history via pickaxe search — when it was added, modified, or removed, with contextual diff hunks. **Both of its caps state themselves** ([#635](https://github.com/Digital-Process-Tools/claude-supertool/issues/635)): the `## Timeline` list is bounded by `SUPERTOOL_MAX_COMMITS` (default 20) and the `## Details` section renders at most `SUPERTOOL_TRAIL_DETAIL_CAP` commits (default 10) because it costs one `git show` each. When either bites, the marker is in the **header as well as** the footer — `[CAPPED: 10 of 47 commits shown by count — raise …]` — and it names a *count* limit, which is what actually cut, rather than a size budget. A capped timeline makes the detail denominator read `10 of 20+`, never a total nobody measured. **When nothing is cut, nothing extra is printed**, so an unmarked result is a positive claim that the trail is whole |
 | `git-blame` | `git-blame:PATH:LINE[:N]` | Blame for N lines (default 5) around a specific line number |
@@ -404,6 +404,40 @@ An abandoned call is never rendered as a git that succeeded and printed nothing.
 ```
 
 The footer stays as well, deliberately. The marker is where the eye is; the footer is the line that survives a `| tail` and the one a script greps. Neither is printed on a run where every call answered, so the common case gains nothing to skim past.
+
+### `ahead N, behind M` after a rebase is not lost work
+
+Straight after a successful `git rebase origin/master`, `git-status` printed `ahead 5, behind 1` and nothing else ([#1028](https://github.com/Digital-Process-Tools/claude-supertool/issues/1028)). That count is arithmetically true and its ordinary meaning is the opposite of what happened: `ahead N, behind M` is the render for two histories that have genuinely diverged, while here nothing was lost and the remote merely holds the pre-rebase originals of commits the branch already carries. Two agents stopped mid-task on separate lanes the same night to work out which of the two they were in.
+
+The count is still printed — suppressing it would trade a confusing render for a quiet one — and it now carries a line that says which kind of divergence it is:
+
+```
+Branch: fix/1028 (ahead 5, behind 1)
+Diverged: REBASED — every one of those 1 remote commit(s) is patch-equivalent to a commit you already have, so nothing is lost and the remote is stale. Push: python3 supertool.py 'git-push:force-with-lease'
+Diverged: 1 of those 4 remote commit(s) are NOT in your history — a genuine divergence. Reconcile (rebase or merge) before pushing; a force push discards them.
+Diverged: UNKNOWN whether those 1 remote commit(s) are replays of your own — `git rev-list --count --right-only --cherry-pick HEAD...@{upstream}` did not answer (exit 124: timed out after 5s). This is not saying nothing was lost.
+```
+
+The discriminator is `git rev-list --count --right-only --cherry-pick HEAD...@{upstream}`: `--cherry-pick` drops every upstream commit whose patch already exists on this side, so what it counts is exactly the commits the remote has and this branch does not. Zero is a rebase (or any other replay); non-zero is a real reconcile, and the numbers above were measured on a live repository rather than read out of the manual. The extra call is made only when both sides are non-zero, which is the only ambiguous render.
+
+### A printed remedy names the invocation that works where it is printed
+
+`./supertool` is a gitignored symlink. In a linked worktree it does not exist, and in a `claude-supertool` worktree the global `supertool` on `PATH` resolves to a different checkout — so pasting it runs *that* tree's core against *this* tree's presets, the mixed tree [#678](https://github.com/Digital-Process-Tools/claude-supertool/issues/678) discloses after the fact. `git-conflicts` closed its output with `Resolve: ./supertool 'git-resolve:::ours:::PATH'` and `git-push`'s watch advisory said `Run it yourself: ./supertool 'watch:…'`, both at the moment the reader is least likely to second-guess a copy-pasteable command ([#1012](https://github.com/Digital-Process-Tools/claude-supertool/issues/1012)).
+
+Every printed follow-up in these ops now asks what is on disk beside the presets: `./supertool 'op'` where the wrapper exists and is executable, `python3 supertool.py 'op'` where only the entry point does, and a stated `(no runnable supertool found in <dir> …)` where neither does — an invented command is a remedy that cannot be run.
+
+### When the core itself is conflicted
+
+A rebase that touches this tool's own core leaves `_supertool.py` conflicted, and a file carrying live `<<<<<<<` markers is not valid Python. `supertool.py` is a thin entry point that imports it ([#931](https://github.com/Digital-Process-Tools/claude-supertool/issues/931)), so the failure used to be a `SyntaxError` traceback pointing at a conflict marker — and it took down **every** op, not just `git-conflicts`, for exactly as long as the conflict existed ([#1015](https://github.com/Digital-Process-Tools/claude-supertool/issues/1015)).
+
+The entry point now refuses by name instead: which file, which lines carry markers, that no op can run, that this is not a report of what is conflicted — and a recovery that does not go through the module under conflict. `presets/git/conflicts.py` and `presets/git/resolve.py` import only `_git_common` and `_env`, so they run standalone against the tree you are standing in:
+
+```
+python3 /path/to/checkout/presets/git/conflicts.py             # every conflicted file + every block
+python3 /path/to/checkout/presets/git/resolve.py ours PATH     # or theirs / both
+```
+
+Reaching for the global `supertool` here is the mixed-tree invocation above, and hand-reading the marker range with `git diff --name-only --diff-filter=U` plus `awk` is the hand-rolled resolver `git-conflicts` exists to replace. A syntax error with no markers in it keeps its own diagnosis and is not reported as a merge conflict.
 
 The missing sections are then named rather than left to look like nothing-to-report, each with the reason it could not answer:
 
