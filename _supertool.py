@@ -13867,7 +13867,14 @@ def _validator_render_diff(before: Optional[Dict[str, Any]], after: Dict[str, An
             metric_parts.append(f"{k} {bv}\u2192{av} ({'+' if d > 0 else ''}{d})")
         if metric_parts:
             marker = mark("\u2713") if a_ok else mark("\u2717")
-            return [f"{tool:12s}: {', '.join(metric_parts)} {marker}  {'':<11}  {time_col:>5}"]
+            # The third green branch, so it carries the scope too (#1100). A
+            # validator declaring one and also reporting metrics would otherwise
+            # have its limit dropped on this row alone, and a contract that
+            # holds on two rows out of three is the absence this repo keeps
+            # filing about.
+            scope = _validator_scope_col(after)
+            return [f"{tool:12s}: {', '.join(metric_parts)} {marker}"
+                    f"{' ' + scope if scope else ''}  {'':<11}  {time_col:>5}"]
         # Truly unchanged — fold the most relevant absolute metric into the row.
         if a_ok and a_metrics:
             primary = None
@@ -14602,6 +14609,14 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
 
     # Run formatters after the edit, before validators.
     fmt_rows: list = []
+    # Set when the formatter loop below has already undone the write. The
+    # validator loop then has nothing left to undo, and on the create path
+    # "nothing left" is not a no-op: a second `os.unlink` of a path the first
+    # one removed raises FileNotFoundError, which would print `[ROLLBACK
+    # FAILED]` under a rollback that had in fact succeeded (#1088). Restoring
+    # bytes twice was idempotent, so this only became reachable when unlink
+    # joined the set of undos.
+    already_undone = False
     if applicable_fmt:
         fmt_results = _formatters_run_batch(applicable_fmt, path)
         for result in fmt_results:
@@ -14628,6 +14643,7 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
                                 with open(path, "wb") as fw:
                                     fw.write(pre_content)
                             _retract_write(path)
+                            already_undone = True
                             fmt_rows.append(_retraction_line(
                                 result_name, "failed", path, body,
                                 created=fmt_action == "unlink"))
@@ -14682,6 +14698,12 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
             after_data = after_results.get(name)
             if after_data is None or not _validator_regressed(before.get(name), after_data):
                 continue
+            if already_undone:
+                # A formatter already retracted this write. Reporting the
+                # validator's finding is still right; undoing a second time is
+                # not, and on the create path it would fail loudly against a
+                # path that is already gone.
+                break
             action = _rollback_action(_pre_existed, pre_content)
             if action == "refuse":
                 diff_out += (
@@ -16397,20 +16419,18 @@ def _toml_literal_double_backslashes(raw: str) -> List[Tuple[str, str, str, int]
 def _payload_double_backslash_note(raw: str) -> str:
     r"""Name a `\\` inside a triple-single-quoted block -- warn, not rewrite (#1027).
 
-    The trap is that getting this wrong does not always fail to match. A
-    doubled `old` cannot match and the runner reports the skip, which is the
-    safe half. A doubled `new` matches, writes, prints `edited`, and passes
-    every validator, because two backslashes are legal in nearly every language
-    this repo edits. That is the house defect -- an absence produced by the
-    tool read as an absence in the world -- landing in the one place where it
-    changes a file instead of a report.
+    What is left here after #1087 is the half that never reaches disk. A
+    doubled `old` cannot match, so the runner reports the skip -- but only
+    AFTER the anchor has missed, and only in the language of a failed match.
+    This says the same thing one call earlier and in the words that name the
+    cause. The half that DID land bytes -- `new`, `content` -- is refused by
+    `_payload_double_backslash_refusal` and never reaches this function.
 
     **It warns, and it does not rewrite.** Collapsing `\\` to `\` would guess at
-    intent, and a wrong guess in the write path is strictly worse than the bug
-    it replaces: the caller loses even the ability to read the bytes back and
-    see what they asked for. The tool's job here is to say "you wrote `\\`
-    inside a block that will not process it" and leave the decision where it
-    belongs.
+    intent, and a wrong guess is strictly worse than the bug it replaces: the
+    caller loses even the ability to read back what they asked for. The tool's
+    job here is to say "you wrote `\\` inside a block that will not process it"
+    and leave the decision where it belongs.
 
     **It warns only for fields that are NOT written** (#1087). The write-bound
     ones -- `_PAYLOAD_DBS_WRITE_KEYS` -- go to

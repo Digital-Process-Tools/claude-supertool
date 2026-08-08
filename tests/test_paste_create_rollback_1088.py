@@ -85,6 +85,42 @@ def test_paste_over_an_existing_file_still_restores_rather_than_unlinks(
     assert target.read_text(encoding="utf-8") == "y = 2" + NL
 
 
+def test_a_failing_formatter_also_removes_a_created_file(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The formatter loop had the identical gap, and it runs FIRST.
+
+    Two things at once, because they are one code path. A formatter with
+    `rollback_on_fail` that fails on a file this op created must remove it, not
+    leave it behind on the "no prior bytes" reasoning. And having removed it,
+    the validator loop that follows must not try to undo the same write again:
+    restoring bytes twice was idempotent, but a second `os.unlink` of a path the
+    first one removed raises `FileNotFoundError`, lands in the `OSError` arm,
+    and prints `[ROLLBACK FAILED]` under a rollback that in fact succeeded.
+
+    So the assertion is exactly one retraction and no failure line -- the
+    invariant being "at most one undo per op", however the first one was
+    reached.
+    """
+    monkeypatch.setattr(
+        supertool, "_applicable_formatters",
+        lambda op, path: {"fake-fmt": {"rollback_on_fail": True}})
+    monkeypatch.setattr(
+        supertool, "_formatters_run_batch",
+        lambda applicable, path: [{"name": "fake-fmt", "ok": False}])
+    target = tmp_path / "fmt_created.py"
+    out = _paste(tmp_path, target, BROKEN)
+    assert not target.exists(), "the formatter rollback left the file:" + NL + out
+    # The bracketed marker, not the bare words: `[result]` also prints
+    # `1 rolled back`, and counting that would make this assertion about the
+    # footer rather than about how many undos were attempted.
+    assert out.count("[rolled back]") == 1, "more than one undo:" + NL + out
+    assert "ROLLBACK FAILED" not in out, out
+    # And the validator that follows says it could not look, rather than
+    # reporting a clean file or a second failure.
+    assert "skipped" in out, out
+
+
 def test_the_three_rollback_states_are_told_apart_by_provenance() -> None:
     """The decision this issue turns on, asserted where it is made.
 
