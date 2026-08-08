@@ -269,7 +269,8 @@ So the elision is kept and given an expiry. A row whose reported facts have not 
 | **Stored** | `_since` on each snapshot entry, and **excluded from the delta comparison** (`_snapshot.facts`). A timestamp inside the compared facts makes every row differ every tick, which is not a staleness signal, it is the delta collapsing into a full board forever |
 | **Default** | `stale_running_minutes: 240`. Four hours, because the false positive it has to clear is a genuinely queued matrix: eight PRs sat at `18 passed, 2 pending` for the better part of an hour while the macOS runners were starved, and every one landed. `0` turns it off |
 | **States** | `ok`, stale, and **unknown**. An entry with no `_since` — a snapshot written before this landed, or a corrupted one — is unknown, never zero, and unknown is not flagged. The next write stamps it, so a run wedged before the upgrade is first named one threshold after it, once, rather than never |
-| **GitLab** | `gl-mrs` covers `running` **and** `pending`. A runner that never picks the job up leaves the pipeline at `pending`, which is the exact symptom this was filed about |
+| **GitLab** | `gl-mrs` covers `running` **and** `pending`. A runner that never picks the job up leaves the pipeline at `pending`, which is the exact symptom this was filed about. GitHub needs no equivalent: `_rollup_state` already collapses `QUEUED`/`WAITING`/`PENDING`/`IN_PROGRESS` into the single word `running` |
+| **The word** | the mark carries the state **observed**, not a fixed literal — a wedged GitLab pipeline reads `[pending 5h unchanged]`, because a pipeline that never started is not running. Rendered once, in `_snapshot.unchanged_label`, since a second copy is how a fixed defect comes back |
 
 #### What left the board, and why the board will not say
 

@@ -200,3 +200,33 @@ def test_gl_a_pending_mr_counts_as_in_progress():
     lines = gl.render([mr], set(), [], {}, [], [], _gl_previous(mr, T0),
                       now=T_5H, stale_running_minutes=240)
     assert "unchanged" in "\n".join(lines)
+
+
+def test_gl_a_wedged_pending_mr_is_not_labelled_running():
+    """The mark names the state observed, never a fixed literal.
+
+    A pipeline stuck at `pending` never started. Printing it as `running` is the
+    board telling a maintainer something other than what it saw — on the one row
+    that exists because nothing else was going to mention it.
+    """
+    mr = _gl_mr(pipeline="pending")
+    text = "\n".join(gl.render([mr], set(), [], {}, [], [], _gl_previous(mr, T0),
+                               now=T_5H, stale_running_minutes=240))
+    assert "[pending 5h unchanged]" in text
+    assert "running" not in text
+
+
+def test_gh_a_wedged_running_pr_is_labelled_running():
+    mr = _gh_pr()
+    text = "\n".join(gh.render([mr], set(), [], [], _gh_previous(mr, T0), "L",
+                               now=T_5H, stale_running_minutes=240))
+    assert "[running 5h unchanged]" in text
+
+
+def test_the_label_is_shared_by_both_tiers():
+    """One copy, in `_snapshot`. A second copy is how a fixed defect comes back
+    — this label carried exactly such a defect while it was duplicated."""
+    assert not hasattr(gh, "stale_running_label")
+    assert not hasattr(gl, "stale_running_label")
+    assert snapshot.unchanged_label(300.0, "pending") == "pending 5h unchanged"
+    assert snapshot.unchanged_label(45.0, "running") == "running 45m unchanged"

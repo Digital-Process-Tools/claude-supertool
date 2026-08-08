@@ -247,6 +247,24 @@ def unchanged_minutes(entry: Any, now: str | None = None) -> float | None:
     return max(0.0, (current - then) / 60.0)
 
 
+def unchanged_label(minutes: float, state: str) -> str:
+    """`pending 5h unchanged` — the state observed, and how long it held.
+
+    The state word is the one the forge reported, never a fixed literal. A
+    GitLab pipeline stuck at `pending` never started; printing it as `running`
+    would have the board tell a maintainer something other than what it
+    observed, on the one row that exists precisely because nothing else was
+    going to mention it. That is the defect this file's whole vocabulary is
+    against, arriving inside the fix for it.
+
+    Lives here rather than in each tier for the reason the module docstring
+    gives: both tiers render this identically, and a second copy is how a fixed
+    defect comes back — `elided_note` and `departed_note` are the precedent.
+    """
+    unit = f"{int(minutes // 60)}h" if minutes >= 120 else f"{int(minutes)}m"
+    return f"{state or 'in progress'} {unit} unchanged"
+
+
 def write(prefix: str, digest: str, entries: dict[str, Any], member: str) -> None:
     """Replace the snapshot atomically, or leave the old one in place.
 

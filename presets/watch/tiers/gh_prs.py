@@ -517,7 +517,7 @@ def _marks(p: dict, healed: set[str], uncovered: set[str],
     if p.get("_unverified"):
         out.append(f"[legs UNVERIFIED: {p['_unverified']}]")
     if stale_minutes:
-        out.append(f"[{stale_running_label(stale_minutes)}]")
+        out.append(f"[{snapshot.unchanged_label(stale_minutes, str(p.get('_checks') or ''))}]")
     number = str(p.get("number", "?"))
     if not coverage_known:
         out.append("[watch?]")
@@ -562,13 +562,6 @@ def _stale_running(p: dict, previous_entry: Any, threshold: float,
     if mins is None or mins < threshold:
         return 0.0
     return mins
-
-
-def stale_running_label(minutes: float) -> str:
-    """`running 5h unchanged` — the reason a suppressed row came back."""
-    if minutes >= 120:
-        return f"running {int(minutes // 60)}h unchanged"
-    return f"running {int(minutes)}m unchanged"
 
 
 def _footer(open_prs: list[dict], covered: set[str] | None, healed: list[str],

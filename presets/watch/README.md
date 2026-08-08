@@ -218,12 +218,22 @@ They land in `<channel>` attributes and in the body Claude reads as prose, in a
 session whose MCP `instructions` tell it to investigate the event.
 
 **A source does not have to remember this.** `transport.emit_event` flattens
-every string it is handed, and every string inside a list, so no field can grow
-a line that reads as the notifier's own. It is done at that one call rather
-than in each `poller.py` on purpose: the sources are the part that keeps being
-added to, and a rule that has to be re-applied by each new one is a rule that
-gets missed. Do not pre-flatten in a poller and do not work around it — a value
-that was already one line comes out byte-identical.
+every string it is handed, and every string inside any container it is handed —
+lists, tuples and dicts, nested, to a bound of `FLATTEN_MAX_DEPTH` (6) levels —
+so no field can grow a line that reads as the notifier's own. It is done at that
+one call rather than in each `poller.py` on purpose: the sources are the part
+that keeps being added to, and a rule that has to be re-applied by each new one
+is a rule that gets missed. Do not pre-flatten in a poller and do not work
+around it — a value that was already one line comes out byte-identical.
+
+**Past the depth bound a value is refused, not passed through**
+([#825](https://github.com/Digital-Process-Tools/claude-supertool/issues/825)).
+It is replaced by `[supertool: value refused — nested deeper than 6 levels, so
+it could not be flattened]`. Naming types was how the next poller's field got
+missed once already: this walked `str` and `list` only, so a
+`payload={"jobs": [{"error": ...}]}` reached the socket unflattened and the
+consumer dropped the field rather than complaining. If your source needs a
+shape deeper than six, flatten the structure rather than the strings.
 
 ## Lifecycle
 

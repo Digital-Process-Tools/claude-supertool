@@ -658,14 +658,14 @@ def _departed(previous: dict[str, Any] | None,
 
 def _marks(iid: str, drifted: dict[str, tuple[str, str]],
            healed: set[str], uncovered: set[str],
-           stale_minutes: float = 0.0) -> str:
+           stale_minutes: float = 0.0, stale_state: str = "") -> str:
     """The two novel signals, appended to the shared gl-mrs row format."""
     out = []
     if iid in drifted:
         was, now = drifted[iid]
         out.append(f"[drift: {was}→{now}]")
     if stale_minutes:
-        out.append(f"[{stale_running_label(stale_minutes)}]")
+        out.append(f"[{snapshot.unchanged_label(stale_minutes, stale_state)}]")
     if iid in healed:
         out.append("[healed]")
     elif iid in uncovered:
@@ -698,13 +698,6 @@ def _stale_running(m: dict, previous_entry: Any, threshold: float,
     if mins is None or mins < threshold:
         return 0.0
     return mins
-
-
-def stale_running_label(minutes: float) -> str:
-    """`running 5h unchanged` — the reason a suppressed row came back."""
-    if minutes >= 120:
-        return f"running {int(minutes // 60)}h unchanged"
-    return f"running {int(minutes)}m unchanged"
 
 
 def _problem_label(m: dict) -> str:
@@ -995,7 +988,8 @@ def render(open_mrs: list[dict], covered: set[str], healed: list[str],
         notable = iid in drifted or iid in healed_set or iid in uncovered_set
         stale = _stale_running(m, prev_entry, stale_running_minutes, now)
         if cold or moved or notable or _is_standing_problem(m) or stale:
-            marks = _marks(iid, drifted, healed_set, uncovered_set, stale)
+            marks = _marks(iid, drifted, healed_set, uncovered_set, stale,
+                           str(m.get("_pipeline") or ""))
             shown.append(mrs._row(m, covered, True, marks))
         else:
             elided.append(iid)
