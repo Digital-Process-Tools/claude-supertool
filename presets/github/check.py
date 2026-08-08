@@ -257,6 +257,12 @@ def _annotation_line(a: dict) -> list[str]:
     if title:
         head += f"  {title}"
     lines = [head]
+    # `str.splitlines()` on purpose here, and #1105 checked it rather than
+    # swept it. This is a render, not a parse: nothing below anchors at column
+    # 0, every part is `flat()`ed and every emitted line carries the indent, so
+    # a separator inside the message can only make one more indented line — it
+    # cannot open a record or reach a section header. Narrowing it would leave
+    # the separator inside a field and buy nothing.
     message = _clip(str(a.get("message") or ""), MESSAGE_MAX)
     for part in message.splitlines():
         lines.append(f"      {_untrusted.flat(part)}")

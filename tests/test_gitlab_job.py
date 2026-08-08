@@ -245,7 +245,7 @@ def test_errors_mode_no_matches(monkeypatch, capsys) -> None:
     rc = _run_main(monkeypatch, ["job.py", "123", "errors"], lines)
     out = capsys.readouterr().out
     assert rc == 0
-    assert "## FAILED — no error pattern matched" in out
+    assert "## FAILED — supertool could not classify this job" in out
     assert "not that the log is clean" in out
 
 
@@ -719,7 +719,7 @@ def test_fail_on_unmatched_failed_job_cannot_be_read_as_success(monkeypatch, cap
     rc = _run_main(monkeypatch, ["job.py", "6929217", "fail"], lines)
     out = capsys.readouterr().out
     assert rc == 0
-    assert "## FAILED — no error pattern matched" in out
+    assert "## FAILED — supertool could not classify this job" in out
     assert "could not classify" in out
     assert "not that the log is clean" in out
     assert "make: *** [Makefile:12: assets] Error 2" in out
@@ -733,7 +733,7 @@ def test_default_mode_on_unmatched_failed_job_states_the_gap(monkeypatch, capsys
     rc = _run_main(monkeypatch, ["job.py", "6929217"], lines)
     out = capsys.readouterr().out
     assert rc == 0
-    assert "## FAILED — no error pattern matched" in out
+    assert "## FAILED — supertool could not classify this job" in out
     assert "make: *** [Makefile:12: assets] Error 2" in out
 
 

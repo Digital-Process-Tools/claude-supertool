@@ -180,7 +180,7 @@ def test_fail_mode_no_matches(monkeypatch, capsys) -> None:
     rc = _run_main(monkeypatch, ["job.py", "123", "fail"], lines)
     out = capsys.readouterr().out
     assert rc == 0
-    assert "## FAILED — no error pattern matched" in out
+    assert "## FAILED — supertool could not classify this job" in out
     assert "not that the log is clean" in out
     assert "No error patterns matched" not in out
 
@@ -211,7 +211,7 @@ def test_default_mode_unmatched_failure_shows_banner(monkeypatch, capsys) -> Non
     rc = _run_main(monkeypatch, ["job.py", "123"], REAL_FAILED_JOB_EXCERPT)
     out = capsys.readouterr().out
     assert rc == 0
-    assert "## FAILED — no error pattern matched" in out
+    assert "## FAILED — supertool could not classify this job" in out
     assert "Job status is `failure`" in out
     assert "not that the log is clean" in out
     assert "Patterns tried: ZZZ_NEVER_APPEARS_IN_THIS_LOG" in out
@@ -232,7 +232,7 @@ def test_default_mode_unmatched_non_failure_keeps_old_behavior(monkeypatch, caps
     rc = _run_main(monkeypatch, ["job.py", "123"], lines, conclusion="success")
     out = capsys.readouterr().out
     assert rc == 0
-    assert "FAILED — no error pattern matched" not in out
+    assert "## FAILED —" not in out
     assert "No error patterns matched" not in out
     assert "build started" in out
     assert "all good" in out
@@ -245,7 +245,7 @@ def test_errors_mode_unmatched_non_failure_keeps_old_wording(monkeypatch, capsys
     out = capsys.readouterr().out
     assert rc == 0
     assert "No error patterns matched" in out
-    assert "FAILED — no error pattern matched" not in out
+    assert "## FAILED —" not in out
 
 
 def test_grep_matches_with_context(monkeypatch, capsys) -> None:
