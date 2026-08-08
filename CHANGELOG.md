@@ -7,6 +7,165 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-08-08
+
+### Added
+
+- **`gh-branch` takes a commit, and stops answering `NO RUN` for one** ([#1083](https://github.com/Digital-Process-Tools/claude-supertool/issues/1083)). The release gate clears *the exact commit being tagged*, deliberately, because the branch head can move between the check and the tag — and no op took a SHA. `gh-branch` did *accept* one: `gh api commits/<ref>` resolves an object name as happily as a branch name, and then `gh run list --branch <sha>` matched no branch and returned `[]` with exit 0. `gh-branch:412375ae98…` printed `NO RUN — zero workflow runs on 412375a` for a commit carrying two runs and eighteen legs.
+
+  The mode is decided by the resolution and not by the spelling: a ref is a commit when the SHA it resolved to *starts with it*, so `deadbee` as a branch name stays a branch, at no extra API call. The resolved 40-hex name — never the caller's abbreviation — is what reaches `gh run list --commit`, because that call is the other silent empty in the family: `--commit 412375a` answers `[]` exit 0, `--commit 412375ae98…` answers with the runs.
+
+  Commit mode says what it cannot see. `--commit` returns one commit's runs, so the previous-head comparison has no second commit to make, and that is printed as UNKNOWN rather than left as a silence that reads like nothing was missing. The declared-but-never-dispatched block — the half no enumeration of runs can produce — was already keyed on the SHA and is identical in both modes.
+
+- **`gh-labels:tally=PREFIX` renders one label family's burn-down** ([#1084](https://github.com/Digital-Process-Tools/claude-supertool/issues/1084)). The rolling-cohort rule asks the same question every tick — is each cohort smaller than the last? — and it is a group-by over one label family, which no op did. It came out as thirty characters of `gh issue list --json labels -q 'group_by'`, rewritten from scratch each session and unwritable by a fresh agent. `gh-labels:tally=cohort-` now prints open, closed and `frozen` (their sum) per label, plus the row a per-label listing cannot produce: `no cohort- label`, the open issues that escaped the freeze.
+
+  `frozen` is a sum, so it renders `?` the moment either side does. The counts come from the search API, one query per cell, `is:issue` — enumerating closed issues would hit a cap and render a floor as a burn-down denominator, which makes a burn-down look better than it is. A search that did not answer is `?`, never `0`, and it poisons the sum on its row rather than being added as zero.
+
+  Two disclosures ride along. An issue carrying two labels of one family is named as a filing error rather than joined with a comma — and the negative is printed too, because silence about a check reads identically to a check that found nothing. An empty family reads as `no labels start with this prefix`, never as an all-NONE board: `claude-remember` spells priority `priority:high` and has no `lane-*` family at all.
+
+### Changed
+
+- **Both radar tiers now refuse `nopipe` instead of accepting it and applying it nowhere** ([#973](https://github.com/Digital-Process-Tools/claude-supertool/issues/973)). `radar:nopipe` exited 0 and returned an enriched board on both tiers — `gh_prs.radar_report` bound the flag set and discarded it, `gl_mrs.resolve_filter` never returned one. A caller who asked for a cheaper board was not told they had not got it, on top of a population that already defaults to `author=@me`: two narrowings the reader could see neither of.
+
+  Refused rather than honoured, and the two halves are different arguments. On the `gh-prs` tier honouring it is not expressible — the flag skips the review-thread pass and `live_open_prs` does not run that pass at all, so a tier that honoured it would be byte-identical to one that ignored it. On the `gl-mrs` tier it is expressible and what it would return is not a cheaper board but a board with no verdict in it: the pipeline status, the drift check and the heal decision all read off the enrichment it removes.
+
+  Both tiers, not one: #939 closed an asymmetry between them and #961 declined to re-open it. Neither tier accepts any flag now, and a refusal from a tier with no flags says so rather than printing an empty list.
+
+  `radar:nopipe` is the only invocation that changes — it now exits 1 with the token named, prints no board, and spawns nothing.
+
+- **`grep:…:count` renders `PATH: N matches`, not `PATH:N`** ([#988](https://github.com/Digital-Process-Tools/claude-supertool/issues/988)). `PATH:NUMBER` is what every grep-like tool prints for `PATH:LINE`, so `supertool.py:30` read as one match at line 30 — the opposite of what the op said, in the op you call before deciding whether to look at all. The unit makes the two unconfusable, and one match reads `1 match`.
+
+- **`validate:` now ends every run with a whole-run count, not with whichever file sorted last** ([#990](https://github.com/Digital-Process-Tools/claude-supertool/issues/990)). #979 gave the op a `[result]` footer only when a checker declined, so a clean multi-file run ended on one file's own row — a per-file verdict standing where a statement about the run belongs, which is the defect class this release has been fixing. The footer is unconditional now:
+
+  ```text
+  [result] 3 files, 1 with findings, 0 not checked
+  ```
+
+  File counts, and they do not partition: one file can hold both a finding and a checker that declined. `not checked` counts a file where at least one validator returned no verdict, `skipped` included — #665 refused to *escalate* an optional tool nobody installed, and disclosing it on a count line escalates nothing. The exit code is unchanged.
+
+  The `0` is printed rather than suppressed, against the rule `skipped` follows on the mutating footer and deliberately: on a line whose whole content is counts, the not-checked slice is the one a reader has to be able to find without knowing whether it fired. `NOT RUN` stays absent from a clean run — it is the token consumers grep for, and `0 validators NOT RUN` would put it in every green validate's output.
+
+  A file **no** validator's `match` glob selected counts towards `not checked`, not towards the clean total: "we own no checker for this type" and "every checker passed" must not be the same number on the one line whose job is telling them apart. And a `validate:` bundled into a batch that also mutated something appends `validated N files (M with findings, K not checked)` to the mutating footer — an inner op is at dispatch depth > 1 and renders no footer of its own, so its counts had nowhere to go.
+
+  `presets/git/resolve.py`, which folds `validate:` output into per-file blocks by splitting on the headers, now drops `[result]` and `[branch: …]` explicitly instead of relying on its row regexes failing to match a line that opens with `[`. That was already true of the #979 decline path; making the footer unconditional made an accident load-bearing.
+
+  It does not make `| tail -1` a verdict. #381 requires `[branch: …]` to be the last line whenever a footer prints, so inside a repo `tail -1` lands there, and that was already true of the decline path. The footer is owed on its own merits: a run whose final line is one file's row has no line describing the run at all, wherever the reader looks.
+
+- **`gh-run:N` states which branch a run came from instead of prescribing a checkout** ([#1056](https://github.com/Digital-Process-Tools/claude-supertool/issues/1056)). The line under `Branch:` used to read `⚠ MISMATCH — switch with: ./supertool 'git-checkout:<branch>'` for any run not from the cwd's branch. Reading a run is not a claim about wanting its branch: runs are read when something is red, and the run you most need to read is routinely one you are not on and must not switch to. It was printed to an agent standing in a branch worktree with uncommitted work in it. It now reads:
+
+  ```
+  You are on: fix/1014 — this run is from master; reading a run needs no checkout
+  ```
+
+  `⚠ MISMATCH` goes with it — being on a different branch from a run you are inspecting is the ordinary case, not an error to correct. No `git-checkout`, and no `./supertool`, which need not exist in the cwd (#905).
+
+  The line is not deleted. A field that simply vanished would read as "you are on the right branch" (#531), and the branch a run came from is useful context when the run is red. `gh-pr`, `gh-job`, `gl-mr` and `gl-job` keep the prescription: #850 governs all five together and is still open, and this is the one op whose premise was wrong.
+
+- **`grep`'s `TRUNCATED` marker now states how truncated** ([#1073](https://github.com/Digital-Process-Tools/claude-supertool/issues/1073)). `— TRUNCATED, more matches exist` disclosed that an answer was partial without disclosing its scope, so 21 matches and 500 matches produced identical bytes while warranting opposite next actions. A truncated result now reads `— TRUNCATED, 137 matches total`.
+
+  Three states, kept apart: a counted total, a total that hit the counting ceiling (`1000+ matches total (count capped at 1000)`), and the delegated rtk path, which has no candidate list to count over and says `more matches exist (total not counted)` rather than borrowing the shape of a real count. A complete answer still prints no marker and no total, so the marker's absence remains a positive statement that the count is exact.
+
+  The ceiling was measured, not guessed: over a 67,855-file tree a dense pattern's walk went from 0.01s to 10.3s when counting everything, and stopping at 1000 cost 0.05s. Tunable via `grep.count_ceiling` / `SUPERTOOL_GREP_COUNT_CEILING`, never applied below the caller's own `LIMIT`.
+
+### Fixed
+
+- **`gl-runners`' live count can no longer be reordered onto an unannotated fleet** ([#807](https://github.com/Digital-Process-Tools/claude-supertool/issues/807)). `radar_report` skips `annotate_recent_work` when nothing is queued, and `_is_responsive` — which reads that annotation and raises without it — is called in the live count further down. It was correct only because the skip and the count sat on mutually exclusive branches, with nothing stating the invariant and nothing testing it. One reordering, hoisting the count or merging the arms, crashes a live radar run.
+
+  No behaviour changed. What changed is that the arrangement is now enforced by a test rather than by luck: the existing suite drove `radar_report` with fixtures that already carried both annotation marks, so it stayed green under exactly the reordering the issue describes.
+
+- **`flatten_remote` walks every container, not just strings and lists** ([#825](https://github.com/Digital-Process-Tools/claude-supertool/issues/825)). The single door every watch event leaves through walked `str` and `list` and dropped everything else — a `dict` value, or a string inside a list of dicts — into an `else` arm that reached the socket unflattened. A source sending `payload={"jobs": [{"name": ..., "error": ...}]}`, a shape nothing forbids, got no flattening at all, and the failure was silent: no raise, no log, and the consumer dropped the field rather than complaining. The guarantee held by two accidents downstream rather than at the door claiming to provide it.
+
+  Naming types is how the next poller's field gets missed, exactly as naming keys is — which is what the function's own docstring already argued. It now recurses over `str` / `list` / `tuple` / `dict`, values only, to a stated bound of six levels. Past the bound the value is **refused** and replaced by the tool's own one-line words rather than passed through: a pass-through past the bound is the same hole one level deeper, and a cyclic payload has to terminate somewhere regardless.
+
+- **The `gh-prs` radar tier checks filter values, not just filter keys** ([#973](https://github.com/Digital-Process-Tools/claude-supertool/issues/973)). `radar:state=opne` passed the key check — `state` is a known filter — reached no command line, and rendered the default board as though it were the filtered one. The quieter half of #939's defect: the token *is* recognised, so every vocabulary check passes, and only the argv builder knows the request was dropped. #961 built this check for the `gl-mrs` tier and left the GitHub side uncovered.
+
+  The domain is the op's own `_STATES` rather than a second hand-written copy, since two lists of GitHub's PR states is how they disagree. Every accepted filter key is now pinned to the argv it produces, so a key accepted here and ignored by `_build_list_cmd` fails a test rather than a board.
+
+- **The delegated `grep` no longer answers a POSIX BRE reading of the pattern** ([#987](https://github.com/Digital-Process-Tools/claude-supertool/issues/987)). With rtk delegation on — the default everywhere except this repo's own `.supertool.json` — the pattern was handed to the system grep with no `-E`, so `|`, `+`, `?`, `(` and `{` were ordinary characters there and not in the native walker. `ab+c` matched the line containing a literal plus instead of `abbc`.
+
+  It only ever showed when the BRE reading happened to match something: a BRE that matches nothing exits non-zero and falls through to the native walker, where the answer is right. So the wrong answers were intermittent, data-dependent, smaller than the truth, and indistinguishable from correct ones.
+
+  `-E` is now passed, and delegation is whitelisted rather than blacklisted: only patterns whose ERE and Python readings coincide by construction go to rtk. Any backslash escape outside the punctuation both dialects share, lookaround and inline flags (`(?...)`), non-greedy quantifiers, and POSIX bracket classes all run on the native walker. The whitelist is why GNU's `\<`/`\>` word boundaries — which anchor in ERE and are the literal characters `<` and `>` in Python — are covered without having been enumerated.
+
+- **`docs/validators.md` no longer reads as if `$SUPERTOOL_REQUIRE_VALIDATORS` were the only switch on a non-verdict** ([#989](https://github.com/Digital-Process-Tools/claude-supertool/issues/989)). #979 corrected the one sentence that was flatly wrong; the section around it was still organised as though that variable decided every case, so a reader concluded they could suppress escalation by leaving it unset — and then read the non-zero exit as the tool ignoring their configuration.
+
+  The section now says what the variable *does* control (a checker the operator named that the core watched break down) and tabulates the two absences that escalate whatever it says: an adapter that ran and reported only `code: "adapter"` errors, and a core timeout. Both are recorded through `_validator_no_verdict`, which never consults the variable. Every row of that table is pinned by `tests/test_require_validators_core_975.py`.
+
+  This file is the canonical write-up of the three-state contract for this repo and is cited in briefs, so a stale claim in it propagates into behaviour, which is the more expensive half of the harm.
+
+- **A PR or MR wedged in `running` comes back onto the delta board** ([#1025](https://github.com/Digital-Process-Tools/claude-supertool/issues/1025)). After the first tick a board is a delta, and `running` is correctly not a standing problem — a pipeline in progress is the ordinary state of something that was just pushed. It is also the only state that can persist indefinitely *while being wrong*: a wedged leg, a runner that never picks the job up, a workflow waiting on an approval nobody will give. None of those ever changes, so the snapshot never mismatches and the row is suppressed on every tick after the first. #1022 made that visible in a `NOTE` line; it did not make it actionable.
+
+  The elision is kept and given an expiry. A row whose reported facts have not moved for `stale_running_minutes` (default 240, `0` off, per tier) prints again carrying the state it was observed in and how long it held — `[running 5h unchanged]`, or `[pending 5h unchanged]` for a GitLab pipeline a runner never picked up, since a pipeline that never started is not running. The signal is time since the entry's own facts last changed, stored as `_since` on the snapshot and **excluded from the delta comparison** — a timestamp inside the compared facts would make every row differ every tick, which is the delta collapsing rather than a staleness signal. It is deliberately not time since the last *leg* state change, which is truer and is the one fact a tier does not store; that limit is stated in the docs rather than papered over.
+
+  Three states, not two: an entry with no `_since` — a snapshot written before this landed, or a corrupted one — is **unknown**, never zero, and unknown is not flagged. The next write stamps it, so a run already wedged at upgrade time is first named one threshold later, once, rather than never. `gl-mrs` covers `pending` alongside `running`, since a runner that never picks the job up leaves the pipeline there.
+
+- **The validator cache key now carries a meaning version, so a change to what a cached field *means* misses instead of being replayed** ([#1048](https://github.com/Digital-Process-Tools/claude-supertool/issues/1048)). The key was `content ‖ name ‖ cmd ‖ tool-fingerprint` — what was analysed, and by which build of the analyser. Nothing in it described how the core interprets the result it reads back, so when the core changed its own reading of a field it owns (a `count` that starts excluding a category, an `ok` that starts implying something narrower, a key that becomes core-only), entries written under the previous meaning verified, sat inside the TTL, and were read under the new rules. Nothing was forged: the bytes were correct when written and wrong when read, which is why nothing in the suite noticed.
+
+  The component is derived rather than declared — a hash of `validators/SCHEMA.md`'s content plus the sorted core-only key set. A hand-bumped revision constant is the guard this repo distrusts on sight, and #1042 is a filed instance of exactly it. Putting the release version here instead is correct and blunt: it cold-invalidates every validator cache for every user on every release, whether or not any meaning moved, which is the trade #1044 refused.
+
+  Hashed by content and not by `stat`, so a fresh clone or a reinstall of the same bytes still hits the cache. An install where `validators/SCHEMA.md` cannot be read gets its own key space rather than defaulting into the readable one — it cannot say which meaning its entries were written under, which is the three-state contract applied to the key itself.
+
+  `tests/test_validator_cache_meaning_version_1048.py` pins the property the issue asked for: an entry written under one meaning is a miss under another.
+
+- **`grep` names the pattern it actually ran when the pattern contains a `:`** ([#1065](https://github.com/Digital-Process-Tools/claude-supertool/issues/1065)). `grep:re:Checks|failed:PATH` rejoins to the pattern `re:Checks|failed`, and `|` binds looser than concatenation — so the first alternation branch is the literal `re:Checks`, which matches nothing. The op returned three confident results for a question nobody asked, with `scanned 1 files` true and useless: it did look, at someone else's pattern.
+
+  The tokenization is not ambiguous, so nothing is refused; what was missing was the disclosure. A `:` in the pattern is exactly the condition under which the rejoin happened, so that is when the effective pattern is echoed above the report line. A leading `re:` additionally says that `grep` has no such prefix — `between:re:START:END:PATH` is the op that does, which is where the spelling came from.
+
+- **`gl-job` and `gh-job` now word an elision identically, and `gl-job` stopped inventing one** ([#1066](https://github.com/Digital-Process-Tools/claude-supertool/issues/1066)). `gl-job:N:grep:PATTERN` printed a bare `...` above the log's first line whenever the first hit sat at index 0 — a marker covering nothing at all. That is the same off-by-one the GitHub twin fixed in #1050; the two files are private twins for this renderer and nothing compared them, so the fix sat unmirrored for 640 issues.
+
+  The two ops also described the same concept with two strings. `gl-job` now uses the GitHub wording verbatim:
+
+  ```
+  ... (44 lines elided by this op — no error pattern matched them; the log itself is intact)
+  ```
+
+  The longer form won because its extra clause is the one being misread: a bare `...` does not distinguish *this op elided lines* from *the log itself was truncated*. The cost is a longer line when a render carries several markers.
+
+  `gl-job:N:fail` also accounts for the lines after its last shown block, so every withheld line is now covered by exactly one marker on both ops. That trailing marker is deliberately not printed in the default view, which follows the blocks with `## Tail (last N lines)` — most of the lines it would declare elided are printed three lines later.
+
+  `tests/test_gl_job_gap_marker_twins_1066.py` compares the twins directly, so the next divergence fails there rather than being found by a reviewer reading git log.
+
+- **`git-commit`'s left-behind receipt accounted for untracked files and then dropped them** ([#1070](https://github.com/Digital-Process-Tools/claude-supertool/issues/1070)). Two shapes, both reading as "nothing was left". The pasteable `Intentional? If not:` line named only the modified tracked paths, one line below a header that had just counted the untracked ones — pasted, it commits a strict subset and prints its own green tick over that. And when the *only* thing left behind was untracked, the whole block was absent: a brand-new test file, never committed, under `Files committed: N ✓` with no mention of it anywhere, invisible until CI runs a file that is not in the tree.
+
+  The remedy now states that untracked files are not in it, and the untracked-only case prints its own line. Still counted, never listed — the scratch-file-dump decision of #1016 stands, because the fix is disclosure, not a listing.
+
+- **`replace_lines` no longer turns a uniform file mixed in silence** ([#1075](https://github.com/Digital-Process-Tools/claude-supertool/issues/1075)). The line-endings receipt was asked about the file *before* the write, so the branch that exists for a mixed file could only fire on a file that was already mixed — an all-CRLF file plus an LF replacement block came back mixed with nothing said. Every byte the caller typed was on disk; the receipt was what was wrong.
+
+  The census now describes the bytes on disk, at both call sites, and `replace_lines` reports the endings of the block it actually wrote rather than only the trailing one it had to invent — a block that already ended a line invented nothing, short-circuited the note before the census, and hid the same defect behind the first.
+
+  A write that leaves the file uniform still says nothing, so the marker keeps meaning that something was decided.
+
+- **`gl-job:N:fail` claimed completeness on a job that never failed** ([#1095](https://github.com/Digital-Process-Tools/claude-supertool/issues/1095)). `All error blocks (N lines matched, no tail truncation)` makes two claims — the selector found everything, nothing was cut — and both are true of the selector and false of the log on a job stopped before it produced a failure. The op already knew: `Status: canceled` is printed from the same value nine lines above. On any status other than `failed` the header now degrades to `Error blocks (N lines matched) — but see below` and the render names `:raw:-80` and `:grep:PATTERN` as the reads that can answer. Keyed on the complement, so a status GitLab adds later lands on the disclosure rather than on the overclaim; the `failed` path is unchanged.
+
+  This is the GitLab half of [#916](https://github.com/Digital-Process-Tools/claude-supertool/issues/916), which fixed `gh-job` and said so — the twin drift went one release unpinned. A shared helper was considered and rejected: two of the four disclosure lines are forge-specific, and what drifted was a missing call, which sharing cannot prevent. One test now drives both presets through a non-fitting status instead.
+
+- **`gl-job:N:fail` headlined six lines of teardown as the error blocks** ([#1097](https://github.com/Digital-Process-Tools/claude-supertool/issues/1097)). The default patterns contain the bare substring `ERROR`, and GitLab ends every failed job with `ERROR: Job failed: exit code N` — one contentless line, enough on its own to produce a block, with the section markers and the cleanup line drawn in around it by `error_context`. On job 7021139 that produced `All error blocks (6 lines matched, no tail truncation)` while a Playwright assertion, the actual cause, never appeared. `:fail` and the default view now look at what the selector anchored on rather than at the window it drew: a selection whose every anchor is boilerplate is reported as the gap it is, with the discounted lines printed rather than hidden. `ERROR: Job failed (system failure)` and the timeout form are deliberately not treated as boilerplate — they do say why the job died.
+
+  Nothing was added to a pattern set to fix this. Adding GitLab's terminal line as a pattern would have flipped every honest refusal into a confident, useless block.
+
+- **Two holes in the cause-marker floor** ([#1097](https://github.com/Digital-Process-Tools/claude-supertool/issues/1097)). Cause markers run in addition to whatever patterns are in play, so that a per-job `job_patterns` table can narrow one tool's noise without being able to hide the reason a job died. The `…Error: ` marker required at least one word character in front of it — the FQCN shape, not node's or Playwright's, so a line opening `Error: JS errors detected:` fell straight through the floor. And the MySQL client's `ERROR 2026 (HY000):`, the cause on line 108 of job 7125000, matched nothing at all. Both are now markers.
+
+- **The README version badge said 0.14.1, fifteen releases after that was true.** It links to `.claude-plugin/plugin.json`, so the badge and the file it points at disagreed on the front page of the repository. It drifted because it was the one published version site with no test behind it — `plugin.json`, `VERSION` and `pyproject.toml` are each pinned, and none of them has ever drifted. The release sweep could not see it either: that sweep greps for the version being replaced, and a site frozen at a *different* wrong version matches nothing and reads exactly like a site that was already correct. `test_readme_version_badge_matches_code` now pins it to `supertool.VERSION`, and an unmatched badge pattern fails rather than passing, since a regex that found nothing has not checked the badge — it has failed to look at it.
+
+### Security
+
+- **`git-push` rendered the MR/PR target branch unflattened at three sites, and the guard for that certified all three** ([#1038](https://github.com/Digital-Process-Tools/claude-supertool/issues/1038)). The target of a request is a refname chosen by whoever opened it, and git accepts characters `str.splitlines()` breaks on, so the MR/PR receipt line, the mergeability warning and the stale-base advisory could each carry forged extra lines. `presets/git/push.py` imported `_untrusted` for the first time here. The stale-base advisory is flattened on the **echo only** — `git rev-list` still counts against the real ref, because flattening the value would change which ref is measured and trade a loud forgery for a quiet wrong answer about how stale the base is.
+
+  The scan that exists to catch exactly this passed on the file, and said so, for three independent reasons: `_git_common` normalises `target_branch` / `baseRefName` into a key named `target`, which the scanner's field-name set had never heard of; the read is a subscript where it matched `.get(...)`; and the line is *returned* where it matched `print(...)`. Any one alone was enough. All three are closed, and the taint tracking is per function scope now rather than per file, so widening the set to a common local name adds no false findings — a scanner with false findings is one that gets an allowlist, which is the failure this scan exists to avoid.
+
+  It still misses the stale-base site, and structurally: the value leaves as a call argument rather than a print or a return, and there is no interprocedural tracking. That one was found by review, not by the guard, and the honest limit of the scan is now written down in `docs/presets/git.md`.
+
+- **`gh-pr-merge`'s zero-checks refusal offered a `gh-branch:` command built from the head branch** ([#1038](https://github.com/Digital-Process-Tools/claude-supertool/issues/1038)). Same attacker-chosen field, and a convenience command rather than a deliverable, so flattening it would only have made it safe and wrong — a command the reader runs on the tool's authority that answers about a branch which does not exist. It is gated on `_refname.ordinary()` now, exactly as this op already gated the head-branch delete command: ordinary names get the op, unordinary ones get the name in full and a sentence saying no command is offered and why. The CONFLICTING refusal's base branch is prose, not a command, and is flattened.
+
+- **A U+2028 in a diff line forged a file boundary in `gh-pr:N:diff`, silently dropping every added line after it** ([#1081](https://github.com/Digital-Process-Tools/claude-supertool/issues/1081)). `_pr_diff.parse` split the fetched patch with `str.splitlines()`, which breaks on eight separators a unified diff does not recognise. A separator inside an added line produced a fragment at column 0, the `diff --git ` branch opened a new file record from it, and the rest of the file's additions vanished — a phantom second file listed as changed, and the real added lines gone, inside the merge gate's own reading tool. Reachable by any contributor who controls one added line; the likelier victim is a legitimate contributor whose file happens to contain one.
+
+  `presets/_untrusted` now owns both directions of the line question. `visible()` already covered every separator a *consumer* might split on, because anything in that set can forge a line in text we print. The new `split_lines()` is the opposite set — LF, CR and CRLF, the separators a line-oriented protocol actually defines — and it is what `parse()` and `_hunk_signature()` use. It restates `_supertool._LINE_BREAK_PATTERN` because a preset runs with `presets/` on `sys.path` and cannot import the core, and a test pins the two equal so they cannot drift.
+
+  **No disclosure was added to the parse, and that was the decision.** `_untrusted.fence()` already renders the separator as a Control Picture glyph or as `[U+2028]` in the hunk body, so once the line is one line the reader sees the forged header in full, on the line it was smuggled into, named. A second announcement at the parse layer would be noise about something already said. The flattener could not save this on its own — it protects the *display* of a field and the structural parse had already run — but it does finish the job once the parse is right.
+
+  **The `diff --git ` branch was deliberately left ungated.** The issue proposed also refusing a header found mid-hunk; that is wrong. Git emits the next file's header immediately after the previous file's last hunk line with no terminator, so firing mid-hunk is the ordinary multi-file case, and gating it on `hunk is None` would break every diff containing two files. The forgery was the fragment, not the branch, and a regression test pins the two-file case.
+
+  CRLF patches are unaffected: CRLF is a line ending in the conservative definition and is consumed like LF, so no `\r` survives into a hunk body to be disclosed on every rendered line — which a bare `split("\n")` would have caused.
 ## [0.28.0] - 2026-08-08
 
 ### Added
@@ -3697,7 +3856,8 @@ All three adapters share the same shape: auto-spawn UDS daemon via `presets/mcp/
 
 Initial public changelog. See git history for prior versions.
 
-[Unreleased]: https://github.com/Digital-Process-Tools/claude-supertool/compare/v0.28.0...HEAD
+[Unreleased]: https://github.com/Digital-Process-Tools/claude-supertool/compare/v0.29.0...HEAD
+[0.29.0]: https://github.com/Digital-Process-Tools/claude-supertool/releases/tag/v0.29.0
 [0.28.0]: https://github.com/Digital-Process-Tools/claude-supertool/releases/tag/v0.28.0
 [0.27.0]: https://github.com/Digital-Process-Tools/claude-supertool/releases/tag/v0.27.0
 [0.26.0]: https://github.com/Digital-Process-Tools/claude-supertool/releases/tag/v0.26.0
