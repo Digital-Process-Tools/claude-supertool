@@ -209,6 +209,8 @@ Nothing else in this table matched `*.html`, so a stray brace in an inline `<scr
 
 Instead it extracts every `<script>` block that is not external (`src=`) and not a non-JS payload (`type="application/json"`, `"application/ld+json"`, a template mimetype), and runs each one through `node --check` — the same mechanism `node-check` already uses for `*.js`. Each block's content is padded with as many leading blank lines as its own start line in the HTML source, so `node`'s reported line number already is the file's line number.
 
+Block boundaries follow the HTML tokenizer rather than an intuition about them: a block ends at the first `</script` followed by whitespace, a slash or `>`, so `</script bar>` closes it and `</scriptfoo>` does not — including when that text sits inside a JS string literal, where a browser also closes the script and the page really is broken. Matching only `</script>` meant a page using the attribute-carrying form had its inline JS silently skipped.
+
 Tag-balance checking was part of the issue's proposal, marked optional there, and is left out here: it is the well-formedness trap above in a smaller costume. Script extraction alone closes the reported gap (inline JS was never syntax-checked) without adding a second source of false positives. If tag-balance turns out to be wanted it is a separate, separately-decided check.
 
 `node` absent is reported `skipped`, never `ok` — the third state from "Declining instead of guessing" below applies here exactly as it does everywhere else in this file.
