@@ -455,21 +455,49 @@ def _selection_mismatch(display_status: str, job_id: str) -> str:
 # and nothing else on the line. That rejects prose carrying the same words
 # ("the previous run had 6 failed tests") without depending on decoration that
 # only appears on a terminal.
+#
+# Anchored at column 0. `.match(line.strip())` could not tell the job's own
+# summary from one echoed inside captured subprocess output, or from a `-s` run
+# that reprints a nested pytest indented — and with the selection below that
+# nested line could silently replace the outer one.
 _SUITE_SUMMARY_RE = re.compile(
-    r"^=*\s*"
+    r"^(?:=+[ \t]*)?"
     r"(?P<counts>\d+\s+[A-Za-z]+(?:\s*,\s*\d+\s+[A-Za-z]+)*)"
     r"\s+in\s+[0-9.]+s"
     r"(?:\s*\([^)]*\))?"
-    r"\s*=*$"
+    r"[ \t]*=*$"
 )
 
 # At least one of these has to appear, so `= no tests ran in 0.12s =` and a
 # banner of `=` around something else are both declined rather than reported as
 # a count of nothing.
+#
+# `warnings` is deliberately NOT here. `2 warnings in 0.30s` is a valid pytest
+# summary that counts **zero tests**, and rendering it under a header reading
+# "these count TESTS" gives a number more authority than it has — a small
+# instance of the same over-claim the whole op is about.
 _SUITE_OUTCOMES = (
     "passed", "failed", "error", "errors", "skipped",
-    "xfailed", "xpassed", "deselected", "warning", "warnings",
+    "xfailed", "xpassed", "deselected",
 )
+
+# The subset that means "this invocation reported a problem". Used to pick
+# between several summaries in one log — see `_suite_summary`.
+_SUITE_BAD = ("failed", "error", "errors")
+
+
+def _suite_summaries(lines: list[str]) -> list[str]:
+    """Every pytest terminal summary in the log, in the order they were run."""
+    found: list[str] = []
+    for line in lines:
+        m = _SUITE_SUMMARY_RE.match(line.rstrip())
+        if not m:
+            continue
+        body = m.group("counts")
+        low = body.lower()
+        if any(word in low for word in _SUITE_OUTCOMES):
+            found.append(body)
+    return found
 
 
 def _suite_summary(lines: list[str]) -> str | None:
@@ -490,16 +518,24 @@ def _suite_summary(lines: list[str]) -> str | None:
     `None` rather than a zero when there is none: a log from a build step or a
     linter states no test count, and "0 failed" would be a claim this function
     is in no position to make.
+
+    **The last summary in the log is the wrong one to report.** A job that runs
+    pytest twice — a second suite step, a `--lf` retry, tox — writes two, and
+    taking the trailing one turned `6 failed, 100 passed` followed later by
+    `7 passed` into `Suite: 7 passed` on a job with six real failures. That is
+    the premise-correction failure #1050 exists to remove, reintroduced by
+    #1050's own fix. So the **last one reporting a failure or an error** wins,
+    and only when no invocation reported either does the trailing one stand.
+    The render discloses the count when there is more than one, because
+    "which invocation" is then a question the reader has to be able to ask.
     """
-    for line in reversed(lines):
-        m = _SUITE_SUMMARY_RE.match(line.strip())
-        if not m:
-            continue
-        body = m.group("counts")
-        low = body.lower()
-        if any(word in low for word in _SUITE_OUTCOMES):
+    found = _suite_summaries(lines)
+    if not found:
+        return None
+    for body in reversed(found):
+        if any(word in body.lower() for word in _SUITE_BAD):
             return body
-    return None
+    return found[-1]
 
 
 def gap_marker(n_lines: int) -> str:
@@ -526,12 +562,21 @@ def gap_marker(n_lines: int) -> str:
             f"matched them; the log itself is intact)")
 
 
-def _find_error_sections(lines: list[str], patterns: list[str], context: int) -> list[tuple[int, str]]:
+def _find_error_sections(lines: list[str], patterns: list[str], context: int,
+                         trailing_gap: bool = False) -> list[tuple[int, str]]:
     """Find lines matching error patterns and return them with context.
 
     Gaps between the context windows carry `gap_marker` rather than a bare
     ``...`` (#1050), and every withheld line is counted by exactly one marker,
     so the numbers in the render account for the whole log.
+
+    `trailing_gap` is off by default and **must stay that way for the default
+    render**. That path prints these sections and then `## Tail (last 80
+    lines)` immediately below, which contains most of the very lines a trailing
+    marker would have declared elided — on a 500-line log whose last match is at
+    400, the marker claimed 99 lines were not shown and 80 of them were printed
+    three lines later. Only `:fail`, which prints blocks and nothing else, can
+    truthfully make that claim.
     """
     matches: set[int] = set()
     for i, line in enumerate(lines):
@@ -567,7 +612,7 @@ def _find_error_sections(lines: list[str], patterns: list[str], context: int) ->
     # ones. `:fail` says "no tail truncation" about its *blocks*, which has
     # been read as "no tail" about the log.
     trailing = len(lines) - 1 - prev
-    if trailing > 0:
+    if trailing_gap and trailing > 0:
         result.append((-1, gap_marker(trailing)))
 
     return result
@@ -844,8 +889,12 @@ def main() -> int:
     # like `Status:` above it, not part of any selection below.
     suite = _suite_summary(lines)
     if suite:
+        n_summaries = len(_suite_summaries(lines))
+        several = (f" ({n_summaries} pytest summaries in this log — this is the "
+                   f"last one reporting a failure; `:grep:` for the rest)"
+                   if n_summaries > 1 else "")
         print(f"Suite: {_untrusted.flat(suite)} — the job's own summary line. "
-              f"These count TESTS; a check tally counts LEGS.")
+              f"These count TESTS; a check tally counts LEGS.{several}")
 
     if total == 0 and not raw_mode:
         # Empty and absent are two different lies this surface tells (#723):
@@ -929,7 +978,9 @@ def main() -> int:
         f"Resolve:  ./supertool '{resolution.replace('{id}', job_id)}'"
         if resolution else ""
     )
-    error_sections = _find_error_sections(lines, patterns, config["error_context"])
+    error_sections = _find_error_sections(lines, patterns,
+                                          config["error_context"],
+                                          trailing_gap=errors_mode)
 
     # fail/errors mode — dump ALL matched blocks, no tail cap
     if errors_mode:

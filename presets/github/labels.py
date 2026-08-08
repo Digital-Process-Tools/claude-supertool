@@ -253,9 +253,11 @@ def main() -> int:
               f"read — the cap bit, so every count is a FLOOR (`>=N`) and a "
               f"`>=0` may still be in use. Raise GH_LABELS_ISSUE_CAP=N.")
     else:
-        print(f"Counts: open issues carrying the label, over all {n_issues} "
-              f"open issues — exact, so `0` means the label is on no open "
-              f"issue and is a candidate to retire.")
+        print(f"Counts: open ISSUES carrying the label, over all {n_issues} "
+              f"of them — exact for issues. Pull requests are NOT counted "
+              f"(`gh issue list` excludes them), so a `0` means 'on no open "
+              f"issue', which is not the same as unused: a label applied only "
+              f"to open PRs reads 0 here.")
     print("Groups below are inferred from the name prefix (a repo convention); "
           "GitHub has no prefix concept and the spelling differs per repo.")
     print()

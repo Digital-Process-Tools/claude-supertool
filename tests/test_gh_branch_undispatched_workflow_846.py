@@ -236,6 +236,69 @@ def test_a_crlf_workflow_file_parses_the_same() -> None:
         "schedule", "workflow_dispatch"]
 
 
+# ---------------------------------------------------------------------------
+# review of PR #1064 — two parses that manufactured the false alarm this
+# design exists to avoid, pointing in opposite directions
+# ---------------------------------------------------------------------------
+
+def test_a_trailing_comment_is_not_part_of_the_name() -> None:
+    """`name: tests # the matrix` must match GitHub's `workflowName` of `tests`.
+
+    `parse_triggers` stripped a trailing comment and `parse_name` did not, so a
+    commented workflow name never matched the run that produced it and the GREEN
+    sentence gained "1 declared ... produced none and is NOT covered" about a
+    workflow that had run and passed. That is exactly the false alarm on a merge
+    gate this module's docstring says must not happen.
+    """
+    assert declared_workflows.parse_name(
+        "name: tests # the matrix\non:\n  push:\n", "p") == "tests"
+
+
+def test_a_hash_inside_a_quoted_name_survives() -> None:
+    """YAML starts a comment at a `#` after whitespace, not at any `#`."""
+    assert declared_workflows.parse_name('name: "release # 1"\n', "p") == (
+        "release # 1")
+
+
+def test_a_hash_with_no_space_before_it_is_part_of_the_name() -> None:
+    assert declared_workflows.parse_name("name: build#3\n", "p") == "build#3"
+
+
+def test_a_trailing_comment_on_an_inline_trigger_list_is_stripped() -> None:
+    assert declared_workflows.parse_triggers(
+        "on: [push, pull_request]  # both\n") == ["push", "pull_request"]
+
+
+def test_a_multi_line_flow_sequence_is_read_whole() -> None:
+    """Truncating at the first line is the loud case silenced.
+
+    `on: [pull_request,` / `     push]` parsed to `['pull_request']`, so
+    `is_push_triggered` answered False and a genuinely undispatched
+    push-triggered workflow collapsed into "no push trigger, so no run on this
+    commit is expected" — the one line #846 exists to print.
+    """
+    assert declared_workflows.parse_triggers(
+        "name: x\non: [pull_request,\n     push]\n") == ["pull_request", "push"]
+
+
+def test_a_bracket_per_line_flow_sequence_is_read_whole() -> None:
+    assert declared_workflows.parse_triggers(
+        "name: x\non: [\n  push,\n  pull_request,\n]\n") == [
+            "push", "pull_request"]
+
+
+def test_an_unterminated_flow_sequence_declines_rather_than_truncating() -> None:
+    """A partial list is an answer. `None` is the absence of one."""
+    assert declared_workflows.parse_triggers(
+        "name: x\non: [pull_request,\n") is None
+
+
+def test_a_multi_line_push_trigger_still_reads_as_push() -> None:
+    triggers = declared_workflows.parse_triggers(
+        "name: x\non: [pull_request,\n     push]\n")
+    assert declared_workflows.is_push_triggered(triggers) is True
+
+
 def test_the_name_is_read_and_falls_back_to_the_path() -> None:
     assert declared_workflows.parse_name(TESTS_YML, "p/x.yml") == "tests"
     assert declared_workflows.parse_name("on: push\n", "p/x.yml") == "p/x.yml"
@@ -366,6 +429,99 @@ def test_a_large_workflow_directory_declines_rather_than_fanning_out(
     assert per_file == [], (
         f"paid for {len(per_file)} content calls on one render")
     assert "UNESTABLISHED" in out or "UNKNOWN" in out, out
+
+
+# ---------------------------------------------------------------------------
+# the sentence has to stand on its own — every surface that republishes it
+# quotes the Verdict line and not always the block under it
+# ---------------------------------------------------------------------------
+
+def test_the_green_sentence_names_the_workflows_it_does_not_cover(
+        monkeypatch, capsys) -> None:
+    """"named below" is a promise about a block the quoter may not carry.
+
+    `pr_merge._default_branch_report` republishes `gh-branch` by filtering for
+    four line prefixes; the merge gate therefore printed a scope clause ending
+    "named below" with nothing below it. A disclosure pointing at absent content
+    is worse than no disclosure, and fixing that one caller leaves the next one.
+    So the names ride on the sentence itself.
+    """
+    out = _render(monkeypatch, capsys, _Gh(ran=["tests"]))
+    verdict = _line(out, "Verdict:")
+    assert "slow tests" in verdict, (
+        f"the Verdict line does not name what it fails to cover:\\n{verdict}")
+    assert "changelog" in verdict, verdict
+    assert "named below" not in verdict, (
+        f"still points at a block a quoter need not carry:\\n{verdict}")
+
+
+def test_the_inline_name_list_is_capped(monkeypatch, capsys) -> None:
+    """One line, bounded — this repo's disclosure-cap vocabulary."""
+    files = {f".github/workflows/w{i}.yml":
+             f"name: w{i}\non:\n  schedule:\n    - cron: \\'0 6 * * *\\'\n"
+             for i in range(9)}
+    files[".github/workflows/tests.yml"] = TESTS_YML
+    out = _render(monkeypatch, capsys, _Gh(files=files, ran=["tests"]))
+    verdict = _line(out, "Verdict:")
+    assert "more" in verdict, f"nine names went out unbounded:\\n{verdict}"
+
+
+# ---------------------------------------------------------------------------
+# the other surfaces that republish this verdict
+# ---------------------------------------------------------------------------
+
+def test_the_merge_gate_carries_the_scope_block() -> None:
+    """`pr_merge` quoted four line prefixes and the block was not among them."""
+    pr_merge = _load("presets/github/pr_merge.py", "github_pr_merge_846")
+    stdout = "\n".join([
+        "# Is `master` green? — o/r",
+        "Branch master: GREEN",
+        "Head: dcb574e (dcb574e) — 1m old",
+        "Verdict: GREEN — ... NOT covered: `slow tests`.",
+        "Legs: 1 total: 1 passed, 0 failed, 0 pending",
+        "",
+        "Declared in .github/workflows at this commit with no run on it:",
+        "  slow tests (.github/workflows/slow-tests.yml) — triggers: schedule.",
+        "",
+        "trailing noise that must not be carried",
+    ])
+
+    class _R:
+        returncode = 0
+        stderr = ""
+
+    r = _R()
+    r.stdout = stdout
+    # Drive the real function with a stubbed subprocess rather than
+    # re-deriving its filter here — the filter IS what is under test.
+    import subprocess as _sp
+    real = _sp.run
+    try:
+        _sp.run = lambda *a, **k: r  # type: ignore[assignment]
+        state, lines = pr_merge._default_branch_report("master", "o/r", "")
+    finally:
+        _sp.run = real
+
+    body = "\n".join(lines)
+    assert state == "GREEN", body
+    assert "slow tests" in body, (
+        f"the merge gate dropped the scope block:\n{body}")
+    assert "triggers: schedule" in body, body
+    assert "trailing noise" not in body, (
+        f"the block capture ran past its blank-line terminator:\n{body}")
+
+
+def test_the_dashboard_default_section_carries_the_scope(
+        monkeypatch, capsys) -> None:
+    """The board a human reads immediately before tagging a release."""
+    dash = _load("presets/dashboard/dashboard.py", "dashboard_846")
+    gh = _Gh(ran=["tests"])
+    monkeypatch.setattr(dash.subprocess, "run", gh)
+    section = dash.collect_default("o/r", "master")
+    body = "\n".join(section.lines or [])
+    assert "NOT covered" in body, (
+        f"the dashboard still publishes an unscoped green:\n{body}")
+    assert "slow tests" in body, body
 
 
 def test_names_from_the_workflow_files_are_flattened(

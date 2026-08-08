@@ -258,11 +258,48 @@ def scope_clause(undispatched: list, unestablished: str, n_wf: int) -> str:
     if not undispatched:
         return ""
     n = len(undispatched)
+    # The names ride on the sentence, not on the block under it. Every surface
+    # that republishes this verdict quotes lines, and not always the same ones:
+    # `pr_merge._default_branch_report` filters for four prefixes, so a clause
+    # ending "named below" arrived on the merge gate with nothing below it.
+    # Fixing that one caller would have left the next one, and #846's own
+    # reproduction was a Verdict line read on its own.
+    shown = [_untrusted.flat(str(w.get("name")))
+             for w in undispatched[:_checks.NAMED_CAP]]
+    names = ", ".join(f"`{s}`" for s in shown)
+    if n > _checks.NAMED_CAP:
+        names += f", +{n - _checks.NAMED_CAP} more"
     return (f" This covers the {n_wf} "
             f"{'workflow' if n_wf == 1 else 'workflows'} that produced a run; "
             f"{n} declared in {_declared_workflows.WORKFLOW_DIR} at this commit "
-            f"produced none and {'is' if n == 1 else 'are'} NOT covered — named "
-            f"below.")
+            f"produced none and {'is' if n == 1 else 'are'} NOT covered: "
+            f"{names}.")
+
+
+def scope_for(repo: str, sha: str, selected: dict) -> tuple[str, list[str]]:
+    """`(clause, lines)` — #846's scope check, as one call for every caller.
+
+    Exists as a seam rather than as four lines inlined in `main()` because
+    `main()` is not the only surface that publishes this verdict.
+    `presets/dashboard/dashboard.py` and `presets/watch/tiers/gh_prs.py` both
+    call `verdict()` directly, and both printed "GREEN — every workflow on X
+    concluded and every leg passed" with no scope at all — the dashboard being
+    the board a human reads immediately before tagging, which is where the
+    v0.27.0 mis-cut happened. A caller that has to remember to compute this
+    will not.
+    """
+    if not selected:
+        return "", []
+    owner, name = _declared_legs.owner_repo(repo)
+    declared, why = _declared_workflows.declared_at(owner, name, sha)
+    if declared is None:
+        return scope_clause([], why, len(selected)), [
+            f"Declared workflow set at {sha[:7]}: UNESTABLISHED — {why}. The "
+            f"verdict above covers the {len(selected)} workflow(s) that "
+            f"produced a run and cannot say whether that is all of them."]
+    undispatched = [w for w in declared if w.get("name") not in selected]
+    return (scope_clause(undispatched, "", len(selected)),
+            undispatched_lines(undispatched))
 
 
 def undispatched_lines(undispatched: list) -> list[str]:
@@ -699,17 +736,7 @@ def main() -> int:
     # #846: the second source one scope out. Bought only when there is a run
     # set to be short of — on a commit with no runs at all `no_run_verdict`
     # already declines, and two more API calls would buy nothing.
-    undispatched: list = []
-    scope_unestablished = ""
-    if selected:
-        owner, name = _declared_legs.owner_repo(repo)
-        declared, why = _declared_workflows.declared_at(owner, name, sha)
-        if declared is None:
-            scope_unestablished = why
-        else:
-            undispatched = [w for w in declared if w.get("name") not in selected]
-
-    scope = scope_clause(undispatched, scope_unestablished, len(selected))
+    scope, scope_lines = scope_for(repo, sha, selected)
     state, sentence = verdict(selected, legs, missing, sha, age, _GRACE,
                               marker, scope)
 
@@ -739,15 +766,9 @@ def main() -> int:
         for name in sorted(selected):
             print(_row(name, selected[name], fetched.get(name)))
 
-    if scope_unestablished:
+    if scope_lines:
         print()
-        print(f"Declared workflow set at {sha[:7]}: UNESTABLISHED — "
-              f"{scope_unestablished}. The verdict above covers the "
-              f"{len(selected)} workflow(s) that produced a run and cannot say "
-              f"whether that is all of them.")
-    elif undispatched:
-        print()
-        for line in undispatched_lines(undispatched):
+        for line in scope_lines:
             print(line)
 
     if missing:

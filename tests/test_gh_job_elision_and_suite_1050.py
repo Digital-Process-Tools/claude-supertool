@@ -99,13 +99,39 @@ def test_contiguous_matches_produce_no_gap_marker() -> None:
         f"claimed an elision over an unbroken block: {sections}")
 
 
+def test_the_trailing_gap_is_off_by_default() -> None:
+    """The default render prints `## Tail` right under these sections.
+
+    A 500-line log whose last match is at 400 got `... (99 lines elided …)`
+    followed three lines later by lines 421-500 printed verbatim. The marker was
+    false about eighty of the ninety-nine, and it was false in the direction
+    that makes a reader stop looking.
+    """
+    lines = ["FAILED a"] + [f"x{i}" for i in range(60)]
+    sections = job._find_error_sections(lines, ["FAILED"], 1)
+    assert _gap_lines(sections) == [], (
+        f"claimed a trailing elision the tail block then contradicts: "
+        f"{_gap_lines(sections)}")
+
+
+def test_the_trailing_gap_is_on_for_the_blocks_only_render() -> None:
+    """`:fail` prints blocks and nothing else, so it can truthfully say it."""
+    lines = ["FAILED a"] + [f"x{i}" for i in range(60)]
+    sections = job._find_error_sections(lines, ["FAILED"], 1,
+                                        trailing_gap=True)
+    gaps = _gap_lines(sections)
+    shown = {num for num, _ in sections if num > 0}
+    assert gaps and str(len(lines) - len(shown)) in gaps[-1], gaps
+
+
 def test_every_unshown_line_is_accounted_for_by_some_marker() -> None:
     """The counts across all gaps must equal what was actually withheld."""
     lines = (
         ["FAILED a"] + [f"x{i}" for i in range(20)]
         + ["FAILED b"] + [f"y{i}" for i in range(30)] + ["FAILED c"]
     )
-    sections = job._find_error_sections(lines, ["FAILED"], 1)
+    sections = job._find_error_sections(lines, ["FAILED"], 1,
+                                        trailing_gap=True)
     shown = {num for num, _ in sections if num > 0}
     hidden = len(lines) - len(shown)
     counted = sum(int(n) for gap in _gap_lines(sections)
@@ -171,6 +197,52 @@ def test_an_all_green_summary_is_still_reported() -> None:
     lines = ["===== 7760 passed, 677 skipped in 200.00s ====="]
     found = job._suite_summary(lines)
     assert found is not None and "7760 passed" in found, found
+
+
+# ---------------------------------------------------------------------------
+# review of PR #1064 — the fix reintroduced the defect it was fixing
+# ---------------------------------------------------------------------------
+
+def test_a_second_passing_run_does_not_hide_the_failing_one() -> None:
+    """A `--lf` retry, a second suite step, tox — two summaries, one truth.
+
+    Taking the trailing summary turned six real failures into `Suite: 7 passed`
+    on the same job. That is the premise-correction failure #1050 exists to
+    remove, reintroduced by #1050's own fix.
+    """
+    lines = [
+        "6 failed, 100 passed in 200.00s",
+        "re-running the last failures",
+        "7 passed in 3.00s",
+    ]
+    found = job._suite_summary(lines)
+    assert found is not None and "6 failed" in found, (
+        f"a trailing green summary hid a failing one: {found!r}")
+
+
+def test_with_no_failures_anywhere_the_last_summary_stands() -> None:
+    lines = ["3 passed in 1.00s", "9 passed in 2.00s"]
+    assert job._suite_summary(lines) == "9 passed"
+
+
+def test_every_summary_is_enumerable() -> None:
+    lines = ["6 failed, 100 passed in 200.00s", "7 passed in 3.00s"]
+    assert len(job._suite_summaries(lines)) == 2
+
+
+def test_an_indented_summary_is_not_the_jobs_own() -> None:
+    """Captured subprocess output and `-s` reprint a nested run indented."""
+    assert job._suite_summary(["    6 failed, 2 passed in 1.00s"]) is None
+
+
+def test_a_warnings_only_summary_counts_no_tests_and_is_declined() -> None:
+    """`2 warnings in 0.30s` under a header reading 'these count TESTS'."""
+    assert job._suite_summary(["2 warnings in 0.30s"]) is None
+
+
+def test_warnings_alongside_a_real_count_are_still_reported() -> None:
+    found = job._suite_summary(["1 failed, 2 passed, 3 warnings in 1.00s"])
+    assert found is not None and "1 failed" in found, found
 
 
 def test_no_summary_is_never_invented() -> None:

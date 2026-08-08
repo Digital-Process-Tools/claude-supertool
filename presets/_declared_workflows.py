@@ -53,6 +53,7 @@ import concurrent.futures
 import json
 import re
 import subprocess
+import time
 
 WORKFLOW_DIR = ".github/workflows"
 
@@ -89,11 +90,41 @@ _SEQ_ITEM = re.compile(r"^(?P<indent>\s+)-\s*(?P<key>[A-Za-z_][A-Za-z0-9_-]*)\s*
 PUSH_TRIGGERS = frozenset({"push", "workflow_run", "workflow_call"})
 
 
+# A YAML comment starts at a `#` that follows whitespace (or opens the line),
+# not at any `#` at all: `name: build#3` is the literal name `build#3`. Getting
+# that wrong in either direction misnames a workflow, and a misnamed workflow
+# never matches the run that produced it.
+_COMMENT = re.compile(r"(?:^|\s)#")
+
+
+def _strip_comment(text: str) -> str:
+    m = _COMMENT.search(text)
+    return text[:m.start()] if m else text
+
+
 def _strip_quotes(text: str) -> str:
     t = text.strip()
     if len(t) >= 2 and t[0] == t[-1] and t[0] in "\"'":
         return t[1:-1]
     return t
+
+
+def _scalar(raw: str) -> str:
+    """One YAML scalar off the right-hand side of a key, comment removed.
+
+    Quoted first, because the quotes are what make a `#` ordinary text: a
+    workflow legitimately called `release # 1` must survive, and a plain
+    `tests # the matrix` must not. `parse_triggers` stripped comments and
+    `parse_name` did not, so a commented name never matched GitHub's
+    `workflowName` and the render gained a NOT-covered line about a workflow
+    that had run and passed — the false alarm this module exists to refuse.
+    """
+    t = raw.strip()
+    if t[:1] in ("'", '"'):
+        quote = t[0]
+        end = t.find(quote, 1)
+        return t[1:end] if end > 0 else t[1:]
+    return _strip_comment(t).strip()
 
 
 def _lines(text: str) -> list[str]:
@@ -115,7 +146,7 @@ def parse_name(text: str, path: str) -> str:
     for line in _lines(text):
         m = _NAME_KEY.match(line)
         if m:
-            value = _strip_quotes(m.group("rest"))
+            value = _scalar(m.group("rest"))
             if value:
                 return value
             break
@@ -145,19 +176,53 @@ def parse_triggers(text: str) -> list[str] | None:
         m = _ON_KEY.match(line)
         if not m:
             continue
-        rest = m.group("rest")
         # Strip a trailing comment before deciding the form — `on: push # ...`
         # is a scalar, not a scalar plus noise.
-        rest = rest.split("#", 1)[0].strip() if not rest.startswith("#") else ""
-        if rest.startswith("[") :
-            inner = rest[1:].split("]", 1)[0]
-            found = [_strip_quotes(p) for p in inner.split(",")]
-            found = [f for f in found if f]
-            return found or None
+        rest = _strip_comment(m.group("rest")).strip()
+        if rest.startswith("["):
+            return _flow_sequence(rest, lines[i + 1:])
         if rest:
             return [_strip_quotes(rest)]
         return _block_keys(lines[i + 1:])
     return None
+
+
+# How far a `[` is followed looking for its `]`. A flow sequence spanning more
+# lines than this is not a workflow trigger list, and an unbounded scan over a
+# file that never closes the bracket would read the whole file as one value.
+_FLOW_MAX_LINES = 20
+
+
+def _flow_sequence(first: str, rest: list[str]) -> list[str] | None:
+    """A `[a, b]` list, however many lines it is spread over.
+
+    Reading only the first line is not a smaller answer, it is a **wrong** one
+    pointing the dangerous way::
+
+        on: [pull_request,
+             push]
+
+    truncated to `['pull_request']`, so `is_push_triggered` answered `False` and
+    a genuinely undispatched push-triggered workflow collapsed into "no push
+    trigger, so no run on this commit is expected" — the loud line #846 exists
+    to print, silenced by the parser.
+
+    An unterminated bracket returns `None`, not the part that was read. A
+    partial list is an assertion about which triggers a workflow declares; the
+    honest output when the bracket never closes is that this parser could not
+    tell, which routes the workflow to the loud group rather than the quiet one.
+    """
+    buf = first
+    for line in rest[:_FLOW_MAX_LINES]:
+        if "]" in buf:
+            break
+        buf += " " + _strip_comment(line).strip()
+    if "]" not in buf:
+        return None
+    inner = buf[1:].split("]", 1)[0]
+    found = [_strip_quotes(p) for p in inner.split(",")]
+    found = [f for f in found if f]
+    return found or None
 
 
 def _block_keys(rest: list[str]) -> list[str] | None:
@@ -187,7 +252,31 @@ def _run(argv: list[str], timeout: int = 15):
     )
 
 
-def _api(path: str) -> tuple[object, str]:
+# The enrichment's cost ceiling, bounded **by construction** rather than by a
+# projection. Two reviewers arrived at this from opposite directions: at 15s per
+# call with 4 workers, 12 files is 1 + 3 waves = 60s, which is the whole of
+# `gh-branch`'s own 60s allowance and two thirds of the 90s
+# `pr_merge._default_branch_report` wrapped the script in.
+#
+#     1 directory read           10s
+#   + ceil(12 / 6) waves x 10s   20s
+#   = 30s absolute worst case
+#
+# against a `gh-branch` budget now raised to 90s and a `pr_merge` one raised to
+# 120s. This is an annotation on the verdict and it must never cost more than
+# the verdict does.
+#
+# A projected-cost refusal was tried first and rejected: it computed the *worst*
+# case per wave and declined a ten-file repository that would in practice have
+# answered in about three seconds, turning a working scope check into a
+# permanent UNESTABLISHED. The bound belongs in the fan-out width and the file
+# cap, which are known here, not in a guess about latency, which is not.
+API_TIMEOUT = 10
+BUDGET_SECS = 45
+FETCH_WORKERS = 6
+
+
+def _api(path: str, timeout: int = API_TIMEOUT) -> tuple[object, str]:
     """`(json, error)` for one `gh api` read. Every spawn failure is a reason.
 
     `FileNotFoundError` is caught explicitly: Windows raises it for a missing
@@ -195,7 +284,7 @@ def _api(path: str) -> tuple[object, str]:
     an enrichment — one that escapes takes the whole verdict down with it.
     """
     try:
-        r = _run(["gh", "api", path])
+        r = _run(["gh", "api", path], timeout=timeout)
     except FileNotFoundError:
         return None, "gh not found"
     except subprocess.TimeoutExpired:
@@ -226,7 +315,8 @@ def _decode(payload: object) -> str | None:
 
 
 def declared_at(owner: str, repo: str, sha: str,
-                workers: int = 4) -> tuple[list[dict] | None, str]:
+                workers: int = FETCH_WORKERS,
+                budget_secs: int = BUDGET_SECS) -> tuple[list[dict] | None, str]:
     """`(workflows, reason)` — what `.github/workflows` holds at `sha`.
 
     `workflows` is a list of ``{"name", "path", "triggers"}``; `triggers` is
@@ -242,6 +332,7 @@ def declared_at(owner: str, repo: str, sha: str,
     if not owner or not repo or not sha:
         return None, "the repository or commit could not be identified"
 
+    started = time.monotonic()
     listing, err = _api(
         f"repos/{owner}/{repo}/contents/{WORKFLOW_DIR}?ref={sha}")
     if err == "404":
@@ -265,6 +356,16 @@ def declared_at(owner: str, repo: str, sha: str,
         return None, (f"{len(paths)} workflow files at this commit, over the "
                       f"{MAX_DECLARED_WORKFLOWS} this op will fetch in one "
                       f"render")
+
+    # A directory read that itself ate the budget means the API is slow enough
+    # that the file reads will not fit either. Declining here costs the caller
+    # a stated non-answer; not declining risks the caller's own timeout killing
+    # the subprocess, which turns a stated non-answer into no answer at all.
+    elapsed = time.monotonic() - started
+    if elapsed > budget_secs:
+        return None, (f"reading {WORKFLOW_DIR} alone took {int(elapsed)}s of "
+                      f"this op's {budget_secs}s enrichment budget, so the "
+                      f"{len(paths)} workflow files were not fetched")
 
     def fetch(path: str) -> tuple[str, str | None]:
         payload, error = _api(f"repos/{owner}/{repo}/contents/{path}?ref={sha}")
