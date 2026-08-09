@@ -29,6 +29,7 @@ dist/
 supertool
 .claude/worktrees/
 .claude/jit-context/.discovery/
+.claude/remember/
 
 .max/
 .max-ci.log
