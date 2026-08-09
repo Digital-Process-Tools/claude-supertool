@@ -686,6 +686,13 @@ RESET_EXEMPT_GLOBALS = (
     # Constant op-name tables, same lifetime as _BUILTIN_OPS (#614).
     "_DISPATCH_ONLY_OPS",
     "_MAIN_LEVEL_OPS",
+    # The safety class of each built-in and its render marker (#1231). Same
+    # lifetime and same reasoning as _BUILTIN_OPS: a fact about this binary,
+    # written once at import and only ever read. Resetting them would imply
+    # a per-test lifetime they do not have — and a class that could change
+    # under a test is exactly what the roster must not have.
+    "_OP_SAFETY_BUILTIN",
+    "_SAFETY_MARKERS",
     # Index of the presets shipped beside supertool.py. A property of the
     # install, not of the run — clearing it per test would only re-read the
     # same ten files and imply a lifetime it does not have.
