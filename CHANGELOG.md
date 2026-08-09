@@ -74,7 +74,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A session with no channel reader is not a fault, and the render says so.** A session started without `--dangerously-load-development-channels server:claude-channel` binds no listener at all, so `NO LISTENER` is the expected state there rather than news; the footer names that case instead of letting the board cry wolf on every ordinary session.
 
-- `read` (and every meta line carrying the working-tree marker): the per-path
+- `read` and every meta line carrying the working-tree marker (#1186): the per-path
   `git status` ran with a cwd of the file's own directory while passing the path
   **as written**, so a relative path with a directory component in it — the form
   the CLI actually hands over — resolved a second time against that directory.
@@ -189,7 +189,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   opinion. Verified against every tracked `.toml` before landing — it passes
   clean rather than reddening the repo, and a test keeps it that way.
 
-- tests: two symlink tests in `test_path_meta_bulk_1126.py` created their link
+- tests (#1205): two symlink tests in `test_path_meta_bulk_1126.py` created their link
   without asking `_symlink.require_symlink()` first, so on a runner without the
   create-symlink privilege — Windows outside Developer Mode — `symlink_to` raised
   `OSError` and they **failed** where every other symlink test in the suite
@@ -200,7 +200,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which is the only way a machine that has the privilege can observe the
   difference at all.
 
-- tests: the fake `git` executables in `test_status_swallowed_705.py`,
+- tests (#1206): the fake `git` executables in `test_status_swallowed_705.py`,
   `test_git_timeout_disclosure_650.py` and `test_unanswerable_checks_693.py`
   decided whether they were standing in for the call under test by comparing
   `$1` to a subcommand name. git takes its global flags before the subcommand,
@@ -216,7 +216,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shim in the suite, with the two honest first-argument cases named and
   explained rather than silently exempt.
 
-- tests: three timeout assertions in `test_rollback_no_verdict_969.py` obtained
+- tests (#1218): three timeout assertions in `test_rollback_no_verdict_969.py` obtained
   their timeout by making a fake adapter sleep 3s against a 1s budget and
   trusting the runner to notice. `windows-latest, 3.12` did not — the adapter
   came back at `0.0s` having written nothing, which is the *adapter* non-verdict
@@ -238,7 +238,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pins that a timeout says `timed out` / `orchestrator` and a silent adapter
   does not, so a reader can still tell a slow machine from a broken checker.
 
-- `oss_train` rebased and force-pushed any repository the caller named. The
+- `oss_train` (#1246) rebased and force-pushed any repository the caller named. The
   `all` path filters its targets through `discover()`, which lists `wt_root()`
   and can only ever yield names it found there; the explicit-list path applied
   no contract at all, and `train()` joins its target straight onto the root. An
@@ -304,7 +304,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- `git-diff`: both of its readers parsed git's output with `str.splitlines()`,
+- `git-diff` (#1130): both of its readers parsed git's output with `str.splitlines()`,
   which breaks on eight separators no line-oriented format git speaks
   recognises. Neither was a misattribution — each SUPPRESSED a review gate.
   `_scan_red_flags` reads `+++ b/` at column 0 to know which file the added
@@ -341,7 +341,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `watch`: `channel:health` could not tell the process holding the socket from
   the process that wrote the health file, so the whole `FORWARDING` verdict was
   forgeable by any same-uid process — not only the pid line the report already
-  marked `self-reported`. It now asks the kernel who holds the socket
+  marked `self-reported` (#1192). It now asks the kernel who holds the socket
   (`SO_PEERCRED` on Linux, `LOCAL_PEERPID` on macOS) and compares that against
   the pid the health file names, in three states: they agree and the report says
   the holder was verified; they disagree, which is a new `channel: CONTRADICTED`
@@ -395,7 +395,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in silence; that gap is named in its docstring rather than left to be found.
 
 - `watch`: `transport.read_pid` returned `0` both for "there is no pid file"
-  and for "the pid file could not be read", the fifth call site of the pair
+  and for "the pid file could not be read", the fifth call site of the pair (#1200)
   fixed at `channel.read_health` (#1184/#1187), `channel.stranded_watchers`
   (#1191) and `transport.read_state` (#1197). `0` is not neutral there — it is
   the sentinel meaning *the slot is free* — so a symlink at the predictable
