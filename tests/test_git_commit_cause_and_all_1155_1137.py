@@ -62,12 +62,15 @@ def _head_subject(work: Path) -> str:
 
 
 def _committed_paths(work: Path) -> set:
+    # `-z`, or git runs the names through core.quotepath and this helper
+    # reports the octal-escaped form — the assertion would then be about the
+    # helper's own rendering rather than about what was committed.
     out = subprocess.run(
-        ["git", "show", "--name-only", "--format=", "HEAD"], cwd=work,
+        ["git", "show", "--name-only", "--format=", "-z", "HEAD"], cwd=work,
         capture_output=True, text=True, check=True, encoding="utf-8",
         errors="replace",
     ).stdout
-    return {l for l in out.splitlines() if l.strip()}
+    return {p for p in out.split(chr(0)) if p.strip()}
 
 
 def _first_error_line(out: str) -> str:
@@ -130,7 +133,12 @@ def test_multiline_message_with_paths_commits_on_the_colon_route(tmp_path: Path)
 
 
 def test_bare_form_still_refuses(tmp_path: Path) -> None:
-    """The refusal is the feature. `--all` is an opt-in, not a new default."""
+    """The refusal is the feature. `--all` is an opt-in, not a new default.
+
+    This one asserts nothing new — it passed before #1137 and is here as a
+    regression pin on the behaviour the opt-in must not erode, not as a pin
+    on the opt-in itself.
+    """
     work = _repo(tmp_path)
     (work / "a.txt").write_text("2\n", encoding="utf-8")
     out = _run(["git-commit:::a message"], cwd=work)
@@ -226,3 +234,55 @@ def test_nothing_staged_refusal_offers_the_all_opt_in(tmp_path: Path) -> None:
     (work / "a.txt").write_text("2\n", encoding="utf-8")
     out = _run(["git-commit:::a message"], cwd=work)
     assert ":::--all" in out, out
+
+# --- found by review of the commit above ----------------------------------
+
+
+def test_all_is_refused_when_the_file_of_that_name_is_a_staged_deletion(
+    tmp_path: Path,
+) -> None:
+    """A `git rm`'d `--all` is gone from disk AND from `ls-files`, so an empty
+    staged-deletion set answers 'git does not know it' for the one state where
+    the ambiguity is live and the deletion is about to be committed."""
+    work = _repo(tmp_path)
+    (work / "--all").write_text("x\n", encoding="utf-8")
+    subprocess.run(["git", "add", "--", "--all"], cwd=work, check=True)
+    subprocess.run(["git", "commit", "-qm", "add it"], cwd=work, check=True)
+    subprocess.run(["git", "rm", "-q", "--", "--all"], cwd=work, check=True)
+
+    out = _run(["git-commit:::a message:::--all"], cwd=work)
+
+    assert "ERROR" in out, out
+    assert _head_subject(work) == "add it"
+
+
+def test_all_given_twice_does_not_suggest_an_empty_pathspec(tmp_path: Path) -> None:
+    """`_colon_remedy` over an empty list renders `git-commit:::MESSAGE:::` —
+    a pasteable command that lands back on the refusal it was printed under."""
+    work = _repo(tmp_path)
+    (work / "a.txt").write_text("2\n", encoding="utf-8")
+
+    out = _run(["git-commit:::a message:::--all:::--all"], cwd=work)
+
+    assert "ERROR" in out, out
+    assert "git-commit:::MESSAGE:::'" not in out, out
+    assert _head_subject(work) == "seed"
+
+
+def test_receipt_names_a_non_ascii_path_as_itself(tmp_path: Path) -> None:
+    """`git diff --cached --name-only` without `-z` runs paths through
+    core.quotepath, so the receipt printed octal escapes inside literal
+    quotes. Under `--all` that listing is the only record of what was
+    committed, so a rendering that is not the path is not a record."""
+    work = _repo(tmp_path)
+    name = "café.txt"
+    (work / name).write_text("x\n", encoding="utf-8")
+
+    out = _run(["git-commit:::a message:::--all"], cwd=work)
+
+    assert "ERROR" not in out, out
+    assert name in out, out
+    # The octal-escape rendering specifically — a bare "303" also matches a
+    # short SHA in the receipt, which would make this pass for a false reason.
+    assert chr(92) + "303" not in out, out
+    assert _committed_paths(work) == {name}

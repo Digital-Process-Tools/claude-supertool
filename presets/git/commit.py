@@ -302,6 +302,17 @@ def _all_with_paths_refusal(paths):
     the #963 defect, so this declines and prints both spellings.
     """
     others = [p for p in paths if p != _ALL_TOKEN]
+    if not others:
+        # Every argument was the token — `:::--all:::--all`. There is no
+        # narrower list to offer, and _colon_remedy over an empty one renders
+        # `git-commit:::MESSAGE:::` with a trailing empty pathspec: a remedy
+        # that, pasted, lands back on the refusal it was printed under.
+        return [
+            "ERROR: %s was given %d times — nothing staged, nothing committed."
+            % (_ALL_TOKEN, len(paths)),
+            "  It is a single opt-in, not a repeatable flag. Once is enough:",
+            "    ./supertool " + _sh_quote("git-commit:::MESSAGE:::" + _ALL_TOKEN),
+        ]
     lines = [
         "ERROR: %s was given alongside %d named path(s) — nothing staged, "
         "nothing committed." % (_ALL_TOKEN, len(others)),
@@ -716,7 +727,14 @@ def main() -> int:
             for line in _all_with_paths_refusal(paths):
                 print(line)
             return 1
-        if _known_to_git(_ALL_TOKEN, set()):
+        # The real staged-deletion set, not an empty one: a file named `--all`
+        # that has been `git rm`'d is gone from disk *and* from `ls-files`, so
+        # an empty set here answers "git does not know it" for the one state
+        # where the ambiguity is live and the deletion is about to be
+        # committed under a sentinel reading of its own name (#324's shape).
+        gone = _git(["diff", "--cached", "--diff-filter=D", "--name-only", "-z"])
+        gone_set = {p for p in gone.stdout.split(chr(0)) if p.strip()}
+        if _known_to_git(_ALL_TOKEN, gone_set):
             mod, untr, unk = _worktree_changes()
             for line in _all_ambiguous_refusal(mod, untr, unk):
                 print(line)
@@ -758,12 +776,18 @@ def main() -> int:
         print(f"Staged: {len(paths)} path(s)")
 
     # Pre-commit staged check
-    staged = _git(["diff", "--cached", "--name-only"])
+    # `-z` for the same reason _worktree_changes uses it: the newline form
+    # runs paths through core.quotepath, so an accented filename reaches the
+    # receipt as octal escapes inside literal quotes, which is not the path
+    # and does not paste back as one. That was survivable while the caller
+    # had typed the list; under `--all` they typed nothing and this listing
+    # is the only record of what was committed (#1137).
+    staged = _git(["diff", "--cached", "--name-only", "-z"])
     if staged.returncode != 0 or not staged.stdout.strip():
         for line in _nothing_staged_lines(named):
             print(line)
         return 1
-    staged_files = [l for l in staged.stdout.splitlines() if l.strip()]
+    staged_files = [l for l in staged.stdout.split(chr(0)) if l.strip()]
 
     # Commit
     if no_edit:

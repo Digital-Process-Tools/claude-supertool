@@ -186,11 +186,14 @@ It has to be the *first* line and not merely present: supertool's `--- op ---` h
 
 Stages every modified-tracked and untracked path (ignored files excluded, as `git status` excludes them) and **lists all of them in the receipt** — uncapped, unlike the 20-path cap on an ordinary commit, because under `--all` the caller never typed the list and the receipt is the only record of what was chosen. `paths = ["--all"]` on the `@payload` route means the same thing.
 
-Three refusals guard it, all in the same direction — never resolve an ambiguity into a commit:
+One long-standing receipt bug had to go with it: `git diff --cached --name-only` runs paths through `core.quotepath`, so `café.txt` printed as `"caf\303\251.txt"` under `Files committed:`. Survivable while the caller had typed the list; not survivable when the listing is the only record. The read is `-z` now, as the refusal path has been since #1003.
+
+Four refusals guard it, all in the same direction — never resolve an ambiguity into a commit:
 
 - `--all` beside a named path is refused. Read wide, the named path was pointless; read narrow, the rest are dropped under a green tick.
 - a file literally named `--all` makes the token mean two things, so it is refused and points at `:::./--all` for the file. The payload route is no escape hatch — it reaches the same argument.
 - a `git status` that did not answer refuses too, rather than staging the two empty lists it returns.
+- `--all` given twice is refused rather than answered with a `git-commit:::MESSAGE:::` carrying an empty trailing pathspec — a remedy that, pasted, lands back on the refusal it was printed under.
 
 ### Which repository an op acted on
 
