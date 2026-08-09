@@ -1196,15 +1196,27 @@ ack to read, at either end. So the answer has three states:
 | `NOT DELIVERING` | 1 | A definite negative. No socket, or a socket that refuses: every event a poller emits right now is lost at the source. The report also names each watcher whose own `last_emit` already found nobody home, with the timestamp of that emit — and, on its own line, each state file it could not read |
 | `FORWARDING` | 0 | A consumer is bound and its published counters are fresh: N lines read, N forwarded, N dropped, last forwarded at T |
 | `CANNOT DETERMINE` | 3 | Bound, but publishing no counters, or counters written by a pid that is gone, or counters that stopped refreshing, or counters with no readable `forwarded` number, or a health file that is a symlink and was not followed. This is the state the old tooling reported as green |
+| `CONTRADICTED` | 4 | The process holding the socket is not the one the health file names ([#1192](https://github.com/Digital-Process-Tools/claude-supertool/issues/1192)). A finding, not a degraded read — a forged file, or a stale one left beside a legitimate consumer |
 
-**The pid in a `FORWARDING` report is self-reported, and the report says so.**
-Pids are reusable, and nothing outside the consumer can prove the process named
-in the health file is the one holding the socket — a crashed consumer whose pid
-was handed to a stranger looks identical from here. The liveness probe is
-therefore only ever an *objection*: a pid that no longer exists means the writer
-of those counters is gone, while a pid that does exist establishes nothing. What
-carries the positive verdict is the freshness of the stamp, because a file
-rewritten four seconds ago was written by something running four seconds ago.
+**`CONTRADICTED` is a fourth code and not a flavour of 3**, because "I could
+not tell" and "I can tell, and it is wrong" call for different actions. Folding
+an impersonation into the no-findings bucket is the defect this op exists to
+remove, rebuilt on its own headline.
+
+**The pid in a `FORWARDING` report is compared against the socket's peer, and
+the report says which of the three answers it got.**
+Pids are reusable, and the health file names its own writer — a crashed consumer
+whose pid was handed to a stranger looks identical from the file alone. So the
+kernel is asked who holds the socket (`SO_PEERCRED` on Linux, `LOCAL_PEERPID` on
+macOS), and the report distinguishes *verified* (holder and health file agree),
+*contradicted* (they do not) and *not checked* (no peer credentials on this
+platform — Windows, and FreeBSD, whose `LOCAL_PEERCRED` carries a uid and no
+pid). Not a uid check: the threat is a same-uid process, which passes one
+trivially. The liveness probe stays only an *objection*: a pid that no longer
+exists means the writer of those counters is gone, while a pid that does exist
+establishes nothing. What carries the positive verdict is the freshness of the
+stamp, because a file rewritten four seconds ago was written by something
+running four seconds ago.
 
 **A counter that is absent or not a number renders as `?`, never as `0`.** `0
 forwarded` is a real reading — a quiet morning — and printing it for a file the
@@ -1223,10 +1235,10 @@ costume of a measurement, which is the defect this op exists to remove rather
 than relocate.
 
 **Branch on the report's first line, not on the exit code.** The distinct codes
-0/1/3 survive only when `presets/watch/channel.py` is run directly; the
+0/1/3/4 survive only when `presets/watch/channel.py` is run directly; the
 supertool wrapper collapses every non-zero to 1. The first line is
-`channel: FORWARDING` / `NOT DELIVERING` / `CANNOT DETERMINE` and is what the
-tests key on.
+`channel: FORWARDING` / `NOT DELIVERING` / `CANNOT DETERMINE` / `CONTRADICTED`
+and is what the tests key on.
 
 **Why the heartbeat exists.** An idle consumer and a wedged one publish the same
 numbers — the counters only distinguish them if the *stamp* moves. `channel.ts`
@@ -1309,14 +1321,21 @@ the tool you reach for when the fleet looks down. Both arms catch `ValueError`,
 the base rather than the two leaves on purpose: a decode failure nobody has
 thought of yet must also decline.
 
-**What is still forgeable, and is disclosed rather than fixed.** Nothing checks
-the credentials of the process actually holding the socket, so a same-uid
-process can bind it, publish a health file naming its own live pid with a fresh
-stamp, and obtain a `FORWARDING` verdict. The report attributes the pid
-(`self-reported`) and states in its own text that nothing here proves the named
-process is the one holding the socket, which is why this is a documented
-ceiling rather than a defect — but the ceiling is the *whole* verdict, not only
-the pid line.
+**What is still forgeable, and is disclosed rather than fixed.** A same-uid
+process can bind the socket, publish a health file naming its own live pid with
+a fresh stamp, and obtain a `FORWARDING` verdict. [#1192](https://github.com/Digital-Process-Tools/claude-supertool/issues/1192)
+narrowed this and deliberately did not close it: the peer check compares the
+socket-holder against the health file, and an attacker holding both *is* its own
+peer, so the two agree. What the check catches is the **mismatch** — a forged or
+stale health file sitting beside a legitimate consumer — which previously drew
+no objection at all, and now reads `CONTRADICTED` rather than `FORWARDING`.
+
+The ceiling is therefore the *whole* verdict and not only the pid line, which is
+the correction #1192 made to the audit that closed #1187: `self-reported` was
+read as covering the pid, and the forgeable thing was the verdict. On a platform
+with no peer credentials nothing narrowed at all, and the report says so on its
+own line rather than leaving a reader to infer which of the two it is looking
+at.
 
 ## Event payload (locked contract)
 
@@ -1470,11 +1489,15 @@ It is never silent, and never rendered like a clean start. Exit status stays `0`
 
 There is a third outcome ([#693](https://github.com/Digital-Process-Tools/claude-supertool/issues/693)). If the pid file cannot be created at all — an unwritable or absent `SUPERTOOL_WATCH_STATE_DIR`, a path that is a directory — the slot was neither taken nor identified, and `claim_pidfile` used to answer `0` for that, which is the value meaning *you own it, go spawn*. It now answers `CLAIM_UNKNOWN`, `watch` prints `ERROR: could not claim the slot for …`, names the pid path and the env var, and exits `1` having started nothing. Radar's MR tier counts such a slot as still uncovered rather than losing it between "healed" and "failed".
 
+There is a fourth ([#1200](https://github.com/Digital-Process-Tools/claude-supertool/issues/1200)), and it is about *reading* the pid file rather than creating it. `read_pid` answered `0` both when there was no file and when the file could not be read, and `0` is the value meaning *the slot is free*. `/tmp` is world-writable and the name is fully predictable from the board, so a symlink planted at it made `claim_pidfile` delete a live poller's claim and start a second poller on the same filter — the duplicate flood that hid a real `pipeline_failed` for 23 minutes on 2026-08-01. The read is now `O_RDONLY|O_NOFOLLOW` with three answers: a PID, `0` for `ENOENT` alone, and a refusal carrying its reason. A claim on the refusal is `CLAIM_UNKNOWN`, not ownership.
+
+A pid file whose **content** is not a PID is deliberately *not* a refusal: it can be attributed to no process, so it stays reclaimable and prunable. That is the same trade as the first rule below — a file nobody can parse must not wedge a slot shut, because an unwatched population renders exactly like a quiet one.
+
 Three rules follow from "a missing watcher is worse than a duplicate one":
 
 - **A slot whose owner is dead is reclaimed**, after one retry. A crashed poller must not wedge its id shut forever; an unwatched population renders exactly like a quiet one.
 - **A failed spawn releases the slot.** A claim left by a poller that never started would refuse every future start for that id.
-- **A poller releases its PID file only if it still owns it.** One shutting down slowly, whose slot was meanwhile reclaimed, must not unlink its successor's claim on the way out.
+- **A poller releases its PID file only if it still owns it.** One shutting down slowly, whose slot was meanwhile reclaimed, must not unlink its successor's claim on the way out. A read that *failed* is not ownership either, so it takes the same arm (#1200): every unlink here is gated on a positive identification.
 
 For the feed tier the id is a *filter string*, so it is canonicalised (sorted keys, sorted deduped values) before it becomes a filename: `author=a,author=b` and `author=b,author=a` are one population and must be one poller. That merges only filters that are already the same set, so it can never refuse a filter that would have selected something different. Board labels still print the filter as you typed it.
 
@@ -1495,11 +1518,14 @@ So a slot is now read as a **set**, from two independent sources:
 
 It is a multi-kill, and that is a deliberate trade. The failure it replaces is a survivor nobody can reach whose only recovery was `pkill`; the failure it risks is stopping a process someone wanted. The breadth is bounded by evidence rather than by a pattern: every PID it acts on belongs to a process whose own argv names this exact source and id **as whole tokens**, so `33248` cannot match `332480` and an id appearing inside some other command's arguments cannot be mistaken for a poller. What it can still over-reach on is a poller started from a *different checkout* of supertool — which shares the same `/tmp` slot, and so genuinely is the same watcher.
 
-Three absences are now three different sentences, because they call for different actions:
+Four absences are four different sentences, because they call for different actions:
 
 - `No active watcher for … (no PID file, and no matching process)` — nothing is running, verified both ways.
 - `Tracked PID N … is not running` — the slot recorded a poller that died with nothing reporting it, so this id has been **unwatched** since. #511 caught two of those, and the board was silently blind on both MRs.
 - `… the process scan was unavailable` — `ps` could not be read, so an untracked poller could not be ruled out. Never rendered as "no watcher".
+- `No readable PID file for … — <reason>` — a pid file exists at the name and this process would not follow it (#1200). Somebody planted it; the file is left alone rather than pruned, and whether a poller holds the slot is not knowable from here. Inspect the path before re-arming.
+
+`watches` keeps the slot visible in that last case: the row is dropped from `list_active_pids`, because the only PID available came out of a file this slot never wrote, but the `ps` scan still finds a real poller and the union renders it as `no pidfile`.
 
 ### `radar` reaps duplicates before it respawns ([#749](https://github.com/Digital-Process-Tools/claude-supertool/issues/749))
 

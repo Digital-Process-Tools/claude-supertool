@@ -115,16 +115,86 @@ def pid_path(source: str, watcher_id: str) -> str:
     return f"{STATE_DIR}/supertool-watch-{source}__{watcher_id}.pid"
 
 
-def read_pid(source: str, watcher_id: str) -> int:
-    """PID recorded for this slot, or 0 when there is no readable file."""
+def read_pid_checked(source: str, watcher_id: str) -> tuple[int | None, str]:
+    """The PID recorded for this slot, or None and why not (#1200).
+
+    Fifth call site of the read the four before it already carry guards on —
+    `channel.read_health` (#1184/#1187), `channel.stranded_watchers` (#1191),
+    `read_state_checked` (#1197) — against the same threat, in the same
+    world-writable directory, on a name anyone can predict from the board.
+    Same shape as `read_state_checked` deliberately: a fourth convention for
+    one read is how the third call site got missed.
+
+    **Three states, and which two collapse is the whole judgment here.**
+
+    * `(pid, "")` — a file was read and named a process.
+    * `(0, "")` — `ENOENT`. The honest absence, and the common answer.
+    * `(None, reason)` — the read failed. `0` is not a neutral value at this
+      function's callers: it is the sentinel meaning *the slot is free*, and
+      `claim_pidfile` acts on it by unlinking the file and spawning a poller.
+      Returning it for a file nobody could read converts *a poller holds this
+      slot* into *nobody does*, which is the duplicate-watcher condition of
+      2026-08-01 — a real `pipeline_failed` unannounced for 23 minutes under
+      the flood — and destroys the real owner's claim on the way.
+    * `(0, reason)` — a file was read and its content is not a PID. Grouped
+      with the absence, not with the refusal, and this is the deliberate half:
+      such a file cannot be attributed to any process, so it must stay
+      reclaimable. `claim_pidfile`'s own docstring says why — a slot nobody
+      can claim leaves a population unwatched, which renders exactly like one
+      with nothing to report, and that is worse than a duplicate. The reason
+      still travels, so a caller that reports rather than decides can print it.
+
+    `O_NOFOLLOW` and no existence pre-check, for the reasons written out at
+    length in `read_state_checked`: a dangling symlink answers `ELOOP`, not
+    `ENOENT`, so a pre-check would report somebody's redirect as no file at
+    all. The descriptor is closed on the `fdopen` arm — `O_NOFOLLOW` refuses a
+    symlink and does not refuse a directory, and this is called once per row
+    by `list_active_pids`.
+    """
+    path = pid_path(source, watcher_id)
+    shown = _untrusted.flat(path)
     try:
-        raw = Path(pid_path(source, watcher_id)).read_text(encoding="utf-8")
-    except OSError:
-        return 0
+        fd = os.open(path, os.O_RDONLY | _NOFOLLOW)
+    except FileNotFoundError:
+        return 0, ""
+    except OSError as err:
+        # ELOOP on Linux and macOS, EMLINK on the BSDs — both mean the name was
+        # a symlink and O_NOFOLLOW refused it.
+        if err.errno in (errno.ELOOP, errno.EMLINK):
+            return None, (
+                f"{shown} is a symlink and was not followed — a pid file is written "
+                "in place by the process that claims the slot, so this is somebody "
+                "redirecting the read at another file"
+            )
+        return None, f"{shown} could not be read ({type(err).__name__})"
     try:
-        return int(raw.strip())
+        handle = os.fdopen(fd, "r", encoding="utf-8")
+    except OSError as err:
+        os.close(fd)
+        return None, f"{shown} could not be read ({type(err).__name__})"
+    try:
+        with handle as f:
+            raw = f.read()
+    except (OSError, ValueError) as err:
+        # `UnicodeDecodeError` is a `ValueError`, and two bytes of invalid
+        # UTF-8 are the cheapest way to make a read fail (#1197).
+        return None, f"{shown} could not be read ({type(err).__name__})"
+    try:
+        return int(raw.strip()), ""
     except ValueError:
-        return 0
+        return 0, f"{shown} exists but its content is not a PID"
+
+
+def read_pid(source: str, watcher_id: str) -> int:
+    """PID recorded for this slot, or 0. Collapses the refusal — see below.
+
+    Kept for the callers that only ever *display* the number, where 0 renders
+    as "none recorded" and no decision hangs on it. Every caller that decides
+    whether to spawn, unlink or signal uses `read_pid_checked` instead, because
+    for those the collapse is the bug (#1200) rather than a convenience.
+    """
+    pid, _ = read_pid_checked(source, watcher_id)
+    return pid or 0
 
 
 def claim_pidfile(source: str, watcher_id: str) -> int:
@@ -155,7 +225,15 @@ def claim_pidfile(source: str, watcher_id: str) -> int:
                          os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW,
                          0o600)
         except FileExistsError:
-            existing = read_pid(source, watcher_id)
+            existing, _refusal = read_pid_checked(source, watcher_id)
+            if existing is None:
+                # The name is taken by something this process could not read —
+                # a symlink, most cheaply. Unreadable is not free, and the
+                # unlink below would destroy a live poller's claim while the
+                # `0` return told the caller to start a second one (#1200).
+                # `CLAIM_UNKNOWN` is the state this function already has for
+                # "no file was created and no owner was identified".
+                return CLAIM_UNKNOWN
             if existing and _pid_alive(existing):
                 return existing
             if existing:
@@ -204,8 +282,13 @@ def release_pidfile(source: str, watcher_id: str, pid: int | None = None) -> Non
     unlink its successor's claim on the way out — that would hand the next
     caller an empty slot and put a second poller back on the same filter.
     """
-    if pid is not None and read_pid(source, watcher_id) != pid:
-        return
+    if pid is not None:
+        owner, _ = read_pid_checked(source, watcher_id)
+        # `None` — the read failed — takes the same arm as a PID that is not
+        # ours, and for the same reason: this function unlinks, and an
+        # unverified unlink hands the next caller an empty slot (#1200).
+        if owner != pid:
+            return
     try:
         os.unlink(pid_path(source, watcher_id))
     except OSError:
@@ -457,7 +540,12 @@ def reap_dead_pidfile(source: str, watcher_id: str) -> int:
     alive, and reporting those as losses would flood the board on the first run
     after this lands.
     """
-    pid = read_pid(source, watcher_id)
+    pid, _ = read_pid_checked(source, watcher_id)
+    # A file that could not be read (`None`) is not evidence of a death: it
+    # names no process, so there is nothing to record and nothing to release.
+    # It is not evidence of life either, which is why this stays silent rather
+    # than reporting a clean slot — the disclosure belongs on `watcher_pids`,
+    # which is what the operator-facing surfaces read (#1200).
     if not pid or _pid_alive(pid):
         return 0
     record_death(source, watcher_id, pid)
@@ -621,6 +709,22 @@ def list_active_pids() -> list[dict[str, Any]]:
 
     Returns rows with: source, id, pid, started (mtime ISO), state file existence
     flag, and last event from the state file when readable.
+
+    **What is pruned, and what is only skipped (#1200).** This used to unlink
+    on any failed read. An unreadable pid file is not evidence that the slot is
+    stale — a symlink planted at the name reads as a failure and deletes a live
+    poller's claim, unrecoverably, and the owner has no way to notice. So the
+    two failures are separated: a file whose content is not a PID names no
+    process and is still pruned, while one the read itself could not perform is
+    left exactly where it is and its row is omitted.
+
+    Omitted rather than reported, because a `pid` here is a claim that a poller
+    is alive on that slot and the only PID available is one read out of
+    somebody else's file. The slot does not go dark: `list_watchers` widens
+    this with the process scan, so a real poller behind a tampered pid file
+    still reaches the board as an `orphan` row. The cost of declining is a
+    pid file nobody prunes — one per hostile name, which is the same file the
+    attacker had to plant.
     """
     rows: list[dict[str, Any]] = []
     prefix = "supertool-watch-"
@@ -628,20 +732,25 @@ def list_active_pids() -> list[dict[str, Any]]:
     for name in sorted(os.listdir(STATE_DIR)):
         if not (name.startswith(prefix) and name.endswith(suffix)):
             continue
+        # supertool-watch-{source}__{id}.pid. Parsed before the read, because
+        # the guarded reader is addressed by slot rather than by path.
+        stem = name[len(prefix):-len(suffix)]
+        if "__" not in stem:
+            continue
+        source, watcher_id = stem.split("__", 1)
         path = os.path.join(STATE_DIR, name)
-        try:
-            pid = int(Path(path).read_text(encoding="utf-8").strip())
-        except (OSError, ValueError):
+        pid, _refusal = read_pid_checked(source, watcher_id)
+        if pid is None:
+            continue
+        if not pid:
+            # No file (it vanished between the listdir and the read), or a file
+            # whose content names no process. Both are prunable; the unlink is
+            # a no-op on the first.
             try:
                 os.unlink(path)
             except OSError:
                 pass
             continue
-        # supertool-watch-{source}__{id}.pid
-        stem = name[len(prefix):-len(suffix)]
-        if "__" not in stem:
-            continue
-        source, watcher_id = stem.split("__", 1)
         if not _pid_alive(pid):
             # The row is still dropped — radar derives coverage from this
             # function and a dead PID is not coverage — but the death is
@@ -874,12 +983,18 @@ def watcher_pids(
     nobody recorded.
     """
     found, scan_ok = scan_poller_pids() if scan is None else scan
-    tracked = read_pid(source, watcher_id)
+    tracked, tracked_refusal = read_pid_checked(source, watcher_id)
+    tracked = tracked or 0
     tracked_alive = bool(tracked and _pid_alive(tracked))
     live = [pid for pid in found.get((source, watcher_id), []) if _pid_alive(pid)]
     pids = sorted(set(live) | ({tracked} if tracked_alive else set()))
     return {
         "tracked": tracked,
+        # "" when the pid file was read or is honestly absent. `tracked: 0` is
+        # documented above as "a slot with nothing in it", so an unread pid
+        # file rendered as that is the absence-read-as-presence shape; the
+        # renders print this instead of "no PID file" (#1200).
+        "tracked_refusal": tracked_refusal,
         "tracked_alive": tracked_alive,
         "pids": pids,
         "untracked": [pid for pid in pids if pid != tracked],

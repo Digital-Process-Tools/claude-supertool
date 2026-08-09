@@ -1214,10 +1214,14 @@ def radar_state(options: dict | None = None) -> list[str]:
                + (f"{len((previous or {}).get('mrs') or {})} MR(s)"
                   if previous is not None else "absent (cold start next run)"))
 
-    pid = feed_pid(scope)
+    pid, pid_refusal = transport.read_pid_checked(FEED_SOURCE, scope)
     err = feed_error(scope)
+    # `pid_refusal`, not `feed_pid`, because "none recorded" and "there is a
+    # pid file here and it would not be followed" are different facts and this
+    # line is the only place the second one would be seen (#1200).
     out.append(f"  feed      : scope {scope!r}, pid "
-               f"{pid or 'none recorded'}{f' — last error: {err}' if err else ''}")
+               f"{pid or pid_refusal or 'none recorded'}"
+               f"{f' — last error: {err}' if err else ''}")
     for other in other_feed_scopes(scope):
         out.append(f"  feed ALSO : scope {other!r} is live and is NOT on this board")
 
