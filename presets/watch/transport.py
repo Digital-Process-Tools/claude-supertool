@@ -220,18 +220,30 @@ def emit_socket(payload: dict[str, Any]) -> Emit:
     """
     if not os.path.exists(SOCK_PATH):
         return Emit(EMIT_NO_LISTENER, f"no socket at {SOCK_PATH}")
+    if not hasattr(socket, "AF_UNIX"):
+        # Mirrors the guard `channel.probe_socket` already carries, which this
+        # twin never adopted. Without it the next line is a bare AttributeError
+        # — not an OSError, so not caught below — and it would kill the poll
+        # loop that this function's whole contract is about never killing.
+        return Emit(EMIT_UNKNOWN, "this platform has no AF_UNIX socket, so nothing could be written")
     s: socket.socket | None = None
     try:
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         s.settimeout(0.5)
         s.connect(SOCK_PATH)
         s.sendall((json.dumps(payload) + "\n").encode("utf-8"))
-    except (ConnectionRefusedError, FileNotFoundError) as err:
+    except ConnectionRefusedError:
         # The path exists and nothing is behind it: a consumer that crashed
         # without unlinking, or one whose socket was replaced. This is the state
         # that reads green from `pgrep` and from `lsof`, and it is the concrete
         # shape of #554's silent window.
-        return Emit(EMIT_NO_LISTENER, f"{SOCK_PATH} refused the connection ({type(err).__name__})")
+        return Emit(EMIT_NO_LISTENER, f"{SOCK_PATH} refused the connection (ConnectionRefusedError)")
+    except FileNotFoundError:
+        # Also a definite negative, and `detail` is the field that tells the two
+        # apart (see `Emit`): the path passed the existence check above and was
+        # unlinked before this connect. Reporting it as "refused" describes a
+        # consumer that answered, and there was none.
+        return Emit(EMIT_NO_LISTENER, f"{SOCK_PATH} vanished between the check and the connect")
     except OSError as err:
         # Timeout, EPIPE, EACCES, ENOTSOCK. Something went wrong mid-write and
         # nothing here can tell whether a partial line reached the consumer.

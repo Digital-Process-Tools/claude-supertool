@@ -34,11 +34,15 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 WATCH_DIR = str(REPO / "presets" / "watch")
+PRESETS_DIR = str(REPO / "presets")
 CHANNEL_OP = REPO / "presets" / "watch" / "channel.py"
 
-if WATCH_DIR not in sys.path:
-    sys.path.insert(0, WATCH_DIR)
+for _dir in (WATCH_DIR, PRESETS_DIR):
+    if _dir not in sys.path:
+        sys.path.insert(0, _dir)
 
+import _proc  # noqa: E402
+import channel  # noqa: E402
 import transport  # noqa: E402
 
 
@@ -116,6 +120,32 @@ def _run_health(sock: str, extra_env: dict[str, str] | None = None) -> subproces
     )
 
 
+#: Reaped children, kept alive as objects on purpose. On Windows a pid stays
+#: reserved only while some handle to it is open, and `Popen` holds one until it
+#: is garbage-collected — dropping the object would let the OS hand the pid to
+#: somebody else and turn a "definitely dead" fixture into a coin flip.
+_REAPED: list[subprocess.Popen] = []
+
+
+def _reaped_pid() -> int:
+    """A pid that has definitely exited, rather than one assumed to be free.
+
+    This fixture used to be a literal `pid=2`. That is nothing on macOS and
+    nothing on Windows, but on a Linux container it is `kthreadd` — so on the
+    four ubuntu legs the test handed the op a *live stranger's* pid and then
+    asserted the verdict for a dead one. The premise has to be constructed.
+
+    `_proc.pid_alive` is the same probe the op uses, and using it as the
+    precondition is deliberate: the subject under test is what `health()`
+    concludes about a pid the OS reports as gone, so "gone" has to mean exactly
+    what the op means by it.
+    """
+    proc = subprocess.Popen([sys.executable, "-c", ""])
+    proc.wait()
+    _REAPED.append(proc)
+    return proc.pid
+
+
 def _write_health(sock: str, **fields) -> None:
     record = {
         "pid": os.getpid(),
@@ -170,6 +200,37 @@ def test_emit_socket_says_accepted_and_never_delivered(monkeypatch, tmp_path):
     finally:
         srv.close()
         os.unlink(path)
+
+
+def test_emit_socket_declines_instead_of_raising_where_there_is_no_af_unix(monkeypatch, tmp_path):
+    """`probe_socket` has carried this guard since it was written; its producer
+    twin never adopted it, so on an interpreter without AF_UNIX the next line
+    was an AttributeError — not an OSError, so not caught — out of the one
+    function documented never to kill a watcher.
+
+    `delattr` rather than a branch on `os.name`: this then exercises the arm on
+    every leg of the matrix, instead of on the one leg least like this machine.
+    """
+    path = _sock_path(tmp_path)
+    monkeypatch.setattr(transport, "SOCK_PATH", path)
+    monkeypatch.setattr(transport.os.path, "exists", lambda p: p == path)
+    monkeypatch.delattr(transport.socket, "AF_UNIX", raising=False)
+    verdict = transport.emit_socket({"event": "probe"})
+    assert verdict.state == transport.EMIT_UNKNOWN
+    assert "AF_UNIX" in verdict.detail
+
+
+@needs_socket
+def test_emit_socket_does_not_call_a_vanished_socket_refused(monkeypatch, tmp_path):
+    """Same misreport one file away: the `except` covers FileNotFoundError too,
+    so a socket that was unlinked mid-write was reported as one that refused."""
+    path = _sock_path(tmp_path)  # short, for the macOS AF_UNIX path cap
+    monkeypatch.setattr(transport, "SOCK_PATH", path)
+    monkeypatch.setattr(transport.os.path, "exists", lambda p: p == path)
+    verdict = transport.emit_socket({"event": "probe"})
+    assert verdict.state == transport.EMIT_NO_LISTENER
+    assert "refused" not in verdict.detail
+    assert "vanished" in verdict.detail
 
 
 def test_emit_event_records_the_verdict_in_the_state_file(monkeypatch, tmp_path):
@@ -259,16 +320,88 @@ def test_health_declines_when_the_consumers_counters_have_gone_stale(tmp_path):
 
 @needs_socket
 def test_health_declines_when_the_health_file_belongs_to_a_dead_process(tmp_path):
+    """A file left behind by a consumer that died is a frozen count that reads as
+    health forever. The pid it names must be gone for that to be the case under
+    test, so the pid is a reaped child rather than a number picked off a list."""
+    pid = _reaped_pid()
+    if _proc.pid_alive(pid):
+        pytest.skip(f"the OS reused pid {pid} before the assertion could run")
     path = _sock_path(tmp_path)
     srv = _listener(path)
-    _write_health(path, pid=2, forwarded=39)  # pid 2 is not our consumer
+    _write_health(path, pid=pid, forwarded=39)
     try:
         result = _run_health(path)
         assert result.returncode == RC_UNKNOWN, result.stdout + result.stderr
+        assert "CANNOT DETERMINE" in result.stdout
+        assert str(pid) in result.stdout
     finally:
         srv.close()
         os.unlink(path)
         os.unlink(path + ".health.json")
+
+
+@needs_socket
+def test_health_never_presents_the_published_pid_as_a_verified_identity(tmp_path):
+    """The case the ubuntu legs actually exercised, kept rather than deleted.
+
+    Nothing checks that the pid in the health file is the process holding the
+    socket, and nothing can: pids are reusable, so a live pid is not evidence
+    that the consumer that wrote the file is the consumer that is bound. The op
+    still reports FORWARDING — the counters are fresh, and something is
+    refreshing them — but the report must attribute the pid to the file rather
+    than assert it as a fact it established.
+    """
+    stranger = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    path = _sock_path(tmp_path)
+    srv = _listener(path)
+    _write_health(path, pid=stranger.pid, forwarded=39)
+    try:
+        result = _run_health(path)
+        assert result.returncode == RC_FORWARDING, result.stdout + result.stderr
+        assert "self-reported" in result.stdout
+        assert "pids are reusable" in result.stdout
+    finally:
+        stranger.kill()
+        stranger.wait()
+        srv.close()
+        os.unlink(path)
+        os.unlink(path + ".health.json")
+
+
+@needs_socket
+def test_health_declines_when_the_published_forwarded_count_is_unreadable(tmp_path):
+    """`forwarded` is the number FORWARDING is named for. Absent, it used to
+    render as `0 forwarded` — a quiet morning and an unreadable file printed as
+    the same sentence, which is this op's own defect on its own headline."""
+    path = _sock_path(tmp_path)
+    srv = _listener(path)
+    _write_health(path, forwarded=None)
+    try:
+        result = _run_health(path)
+        assert result.returncode == RC_UNKNOWN, result.stdout + result.stderr
+        assert "CANNOT DETERMINE" in result.stdout
+        assert "0 forwarded" not in result.stdout
+    finally:
+        srv.close()
+        os.unlink(path)
+        os.unlink(path + ".health.json")
+
+
+@needs_socket
+def test_probe_socket_does_not_call_a_vanished_socket_refused(monkeypatch, tmp_path):
+    """`connect()` raises FileNotFoundError when the path went away between the
+    existence check and the call. Still nobody listening, but "refused" names a
+    consumer that answered and said no, which is a different thing to go and
+    look for."""
+    # `_sock_path`, not `tmp_path`, even though nothing is ever bound here: the
+    # macOS AF_UNIX path cap is ~104 bytes and pytest's tmp_path blows it, so a
+    # long path fails ENAMETOOLONG and never reaches the arm under test.
+    path = _sock_path(tmp_path)
+    monkeypatch.setattr(channel.os.path, "exists", lambda p: p == path)
+    state, detail = channel.probe_socket(path)
+    assert state == "no-listener"
+    assert "refused" not in detail
+    assert "vanished" in detail
 
 
 @needs_socket

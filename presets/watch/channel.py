@@ -13,11 +13,18 @@ it is why the answer here has three states rather than two:
 
     NOT DELIVERING   a definite negative. Nothing is listening on the socket, so
                      every event a poller emits right now is lost at the source.
-    FORWARDING       a consumer is bound, alive, and its own counters say it has
-                     handed N events to the MCP transport. The strongest positive
-                     fact available anywhere outside the session.
+    FORWARDING       a consumer is bound and the counters it publishes beside the
+                     socket are fresh and say it has handed N events to the MCP
+                     transport. The strongest positive fact available anywhere
+                     outside the session. The pid in that file is its writer's
+                     own claim and not a verified identity — pids are reusable,
+                     and nothing outside the consumer can prove the named process
+                     is the one holding the socket — so the report attributes the
+                     pid rather than asserting it.
     CANNOT DETERMINE something took the bytes and nothing here can see what it
-                     did with them.
+                     did with them: no counters, counters from a pid that is
+                     gone, counters that stopped refreshing, or no readable
+                     `forwarded` number for the verdict to be about.
 
 `CANNOT DETERMINE` is the point of the op rather than its failure mode. It is
 the state today's tooling reports as green, and reporting it as green produced a
@@ -140,8 +147,15 @@ def probe_socket(path: str) -> tuple[str, str]:
         s.settimeout(CONNECT_TIMEOUT)
         s.connect(path)
         return "accepted", f"{path} accepted a connection"
-    except (ConnectionRefusedError, FileNotFoundError) as err:
-        return "no-listener", f"{path} exists but refused the connection ({type(err).__name__})"
+    except ConnectionRefusedError:
+        return "no-listener", f"{path} exists but refused the connection (ConnectionRefusedError)"
+    except FileNotFoundError:
+        # The path was there for the check above and gone by this line: a
+        # consumer unlinked its socket in between. Same state — nothing is
+        # listening — but a socket that vanished and a socket that answered and
+        # said no send an operator to two different places, and naming the
+        # wrong one is the misreport this op exists to stop making.
+        return "no-listener", f"{path} vanished between the check and the connect"
     except OSError as err:
         return "unknown", f"{type(err).__name__} connecting to {path}"
     finally:
@@ -193,12 +207,33 @@ def _health_objection(record: dict) -> str:
             f"pid {pid} is alive but has not refreshed its counters in {int(age)}s "
             f"(heartbeat is every 10s, stale after {STALE_AFTER_SECS}s) — it may be wedged"
         )
+    if _counter(record, "forwarded") is None:
+        return (
+            "its health file publishes no readable `forwarded` count, which is the "
+            "number a FORWARDING verdict would be reporting"
+        )
     return ""
 
 
-def _int(record: dict, key: str) -> int:
+def _counter(record: dict, key: str) -> int | None:
+    """A published counter, or None when it is absent or not a number.
+
+    Rendering a missing counter as `0` prints a number this op never read as one
+    it did — and "0 forwarded" then means both a quiet morning and an unreadable
+    file. That is the absence-read-as-presence defect this op exists to remove,
+    rebuilt on its own headline.
+
+    `bool` is excluded deliberately: `true` is an `int` in Python and would
+    otherwise render as `1 forwarded`.
+    """
     value = record.get(key)
-    return value if isinstance(value, int) else 0
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _num(value: int | None) -> str:
+    return "?" if value is None else str(value)
 
 
 def stranded_watchers(path: str) -> list[tuple[str, str, dict]]:
@@ -282,16 +317,20 @@ def health(path: str) -> tuple[int, str]:
         return RC_UNKNOWN, "\n".join([
             "channel: CANNOT DETERMINE", *head,
             f"  consumer : bound, but {objection}",
-            f"             last published counters: {_int(record, 'forwarded')} forwarded, "
-            f"{_int(record, 'dropped')} dropped, updated {record.get('updated', '?')}",
+            f"             last published counters: {_num(_counter(record, 'forwarded'))} forwarded, "
+            f"{_num(_counter(record, 'dropped'))} dropped, updated {record.get('updated', '?')}",
             "", CEILING,
         ])
 
     return RC_FORWARDING, "\n".join([
         "channel: FORWARDING", *head,
-        f"  consumer : pid {record.get('pid')}, up since {record.get('started', '?')}",
-        f"  counters : {_int(record, 'lines_read')} lines read, "
-        f"{_int(record, 'forwarded')} forwarded, {_int(record, 'dropped')} dropped",
+        f"  consumer : pid {record.get('pid')} (self-reported), up since "
+        f"{record.get('started', '?')}",
+        "             the health file names its own writer; pids are reusable, so",
+        "             nothing here proves that process is the one holding the socket",
+        f"  counters : {_num(_counter(record, 'lines_read'))} lines read, "
+        f"{_num(_counter(record, 'forwarded'))} forwarded, "
+        f"{_num(_counter(record, 'dropped'))} dropped",
         f"             last forwarded {record.get('last_forwarded') or 'never'}"
         f" (counters refreshed {record.get('updated', '?')})",
         "", CEILING,

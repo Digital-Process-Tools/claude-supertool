@@ -25,7 +25,6 @@ installed; the twelve-leg pytest matrix skips it with the reason printed.
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import socket as _socket
 import time

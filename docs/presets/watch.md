@@ -1122,8 +1122,23 @@ ack to read, at either end. So the answer has three states:
 | State | Exit | What is actually known |
 |---|---|---|
 | `NOT DELIVERING` | 1 | A definite negative. No socket, or a socket that refuses: every event a poller emits right now is lost at the source. The report also names each watcher whose own `last_emit` already found nobody home, with the timestamp of that emit |
-| `FORWARDING` | 0 | A consumer is bound, its pid is alive, and its published counters are fresh: N lines read, N forwarded, N dropped, last forwarded at T |
-| `CANNOT DETERMINE` | 3 | Bound, but publishing no counters, or counters written by a pid that is gone, or counters that stopped refreshing. This is the state the old tooling reported as green |
+| `FORWARDING` | 0 | A consumer is bound and its published counters are fresh: N lines read, N forwarded, N dropped, last forwarded at T |
+| `CANNOT DETERMINE` | 3 | Bound, but publishing no counters, or counters written by a pid that is gone, or counters that stopped refreshing, or counters with no readable `forwarded` number. This is the state the old tooling reported as green |
+
+**The pid in a `FORWARDING` report is self-reported, and the report says so.**
+Pids are reusable, and nothing outside the consumer can prove the process named
+in the health file is the one holding the socket — a crashed consumer whose pid
+was handed to a stranger looks identical from here. The liveness probe is
+therefore only ever an *objection*: a pid that no longer exists means the writer
+of those counters is gone, while a pid that does exist establishes nothing. What
+carries the positive verdict is the freshness of the stamp, because a file
+rewritten four seconds ago was written by something running four seconds ago.
+
+**A counter that is absent or not a number renders as `?`, never as `0`.** `0
+forwarded` is a real reading — a quiet morning — and printing it for a file the
+op could not read would be this issue's defect on this op's own headline. When
+the missing counter is `forwarded` itself, the verdict is `CANNOT DETERMINE`:
+`FORWARDING` is named for a number, and without the number there is no verdict.
 
 ```bash
 ./supertool 'channel:health'
