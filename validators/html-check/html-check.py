@@ -48,18 +48,42 @@ from refusal import absent, tool_fault, skipped
 TIMEOUT_S = 30
 
 # A block is <script ATTRS>BODY</script ANYTHING>, case-insensitive, BODY may
-# span lines. The two ends are delimited differently and both comments below
-# say why: the end tag by SCRIPT_CLOSE, the start tag by `_parse_start_tag`.
+# span lines. Both ends are found the same way and for the same reason: a
+# pattern locates the tag *name*, and `_parse_tag` then walks the rest of it.
 #
-# The end tag allows `[^>]*` before its `>` and not `\s*`: an HTML end tag may carry
-# whitespace and junk attributes before its `>` (`</script bar>`), and every
-# parser ignores the junk and closes the element. Matching only whitespace
-# meant the closing tag was not found at all -- so the non-greedy body either
-# paired with the *next* block's close and handed node a slab of markup, or
-# found no close and dropped the block entirely, leaving the file `ok` with
-# broken JS still in it. That is the silent gap #833 exists to close, arriving
-# through the one pattern that decides what gets looked at. The lookahead keeps
-# `</scriptfoo>` out: it is a different tag, not this one with junk on it.
+# An HTML end tag may carry whitespace and junk attributes before its `>`
+# (`</script bar>`), and every parser ignores the junk and closes the element.
+# Matching only whitespace meant the closing tag was not found at all -- so the
+# non-greedy body either paired with the *next* block's close and handed node a
+# slab of markup, or found no close and dropped the block entirely, leaving the
+# file `ok` with broken JS still in it. That is the silent gap #833 exists to
+# close, arriving through the one pattern that decides what gets looked at. The
+# lookahead keeps `</scriptfoo>` out: it is a different tag, not this one with
+# junk on it.
+#
+# Tolerating that junk with `[^>]*>` was #1182. `[^>]*` stops at the first `>`
+# in the source, and after `</script` plus whitespace the tokenizer is in
+# before-attribute-name state -- the same state a start tag reaches -- so a
+# quoted value hides a `>` from the end tag exactly as it does from the start
+# tag. It failed in both directions, measured against html.parser:
+#
+#   </script data-t="x > <script>const q = ;</script">  -> the close was cut at
+#       the `>` inside the value, the value's remaining text was then read as
+#       markup, and the `<script>` standing in that string became a block whose
+#       own `</script"` is not a close. Result: `skipped`, "NO inline <script>
+#       block in this file was checked", on a page html.parser reads as one
+#       clean script followed by text. A refusal invented by the reader.
+#   </script data-t="oops>  -> EOF-in-tag, where html.parser emits no end tag at
+#       all and #1185's rule applies. `[^>]*>` invented a close at the `>`
+#       inside the unterminated value and reported `ok: true` about a file the
+#       tokenizer cannot finish reading. The false `ok` -- the one direction
+#       this adapter may not be wrong in.
+#
+# So the end tag gets the same walker, and the same refusal where it cannot be
+# delimited. `</script foo=">">` and `</script data-t="a > b">` are the two
+# forms #1182 was filed about and both were already verdict-neutral: the body
+# is cut at the same place either way, only the trailing junk differs. They
+# stay verdict-neutral. The two cases above are the ones that cost something.
 #
 # Finding no close at all is no longer a drop either way: it is a refusal, per
 # #1185 -- see `UnclosedBlock`. Whether the closing tag is missing because the
@@ -97,7 +121,7 @@ TIMEOUT_S = 30
 #       the same absence-read-as-presence the end-tag fix above exists to
 #       close, arriving through the other half of the same pattern.
 #
-# `_parse_start_tag` walks the tag instead. This is not "a better regex until
+# `_parse_tag` walks the tag instead. This is not "a better regex until
 # the reported case passes": the start-tag grammar really is a small state
 # machine, `>` can only hide inside a quoted value, and a quote only opens
 # such a value directly after `=`. Anywhere else a quote is an ordinary
@@ -116,24 +140,30 @@ TIMEOUT_S = 30
 # `<script-foo>` was extracted as a script block and its children handed to
 # node: a syntax error reported against markup on a page whose JS is fine.
 SCRIPT_OPEN = re.compile(r"<script(?=[\s/>])", re.IGNORECASE)
-SCRIPT_CLOSE = re.compile(r"</script(?=[\s/>])[^>]*>", re.IGNORECASE)
+SCRIPT_CLOSE = re.compile(r"</script(?=[\s/>])", re.IGNORECASE)
 QUOTES = ('"', "'")
 
 
 class UndelimitedTag(Exception):
-    """A `<script` start tag with no end.
+    """A `<script` or `</script` tag with no end.
 
     Carries the 1-indexed line it opens on and *which* of the two ways it
     failed to close, because they send the reader to different places: a
     value with no closing quote is a typo on that line, a file that stops
     mid-tag is a truncated file. A refusal naming the wrong one is the
     defect this adapter's third state exists to remove, one layer out.
+
+    `kind` is the third thing the reader needs, on the same footing as the
+    other two (#1182). A file holds a well-formed `<script>` on line 2 and an
+    undelimitable `</script ...` on line 40; a message saying "start tag"
+    sends the reader to line 2, where nothing is wrong.
     """
 
-    def __init__(self, line: int, cause: str) -> None:
-        super().__init__(f"unterminated <script> start tag at line {line}: {cause}")
+    def __init__(self, line: int, cause: str, kind: str = "start") -> None:
+        super().__init__(f"unterminated <script> {kind} tag at line {line}: {cause}")
         self.line = line
         self.cause = cause
+        self.kind = kind
 
 
 class UnclosedBlock(Exception):
@@ -162,8 +192,14 @@ UNCLOSED_QUOTE = "an attribute value opens with a quote that is never closed"
 NO_GT = "the file ends before any `>` closes it"
 
 
-def _parse_start_tag(html: str, i: int) -> tuple[int, dict[str, str]] | str:
-    """Walk the start tag whose name ends at `html[i]`. `(end, attributes)`.
+def _parse_tag(html: str, i: int) -> tuple[int, dict[str, str]] | str:
+    """Walk the tag whose name ends at `html[i]`. `(end, attributes)`.
+
+    Start tags and end tags share this walker because they share the grammar
+    it implements: after the tag name both are in before-attribute-name state,
+    so a quoted value swallows a `>` in an end tag exactly as it does in a
+    start tag (#1182). Only the caller differs -- an end tag's attributes are
+    a parse error the tokenizer discards, so the extractor drops them.
 
     `end` is the index just past the tag's `>`; `attributes` maps lowercased
     name to value, first occurrence winning, as the spec has it.
@@ -278,9 +314,9 @@ def extract_js_blocks(html: str) -> list[tuple[int, str]]:
         m = SCRIPT_OPEN.search(html, pos)
         if m is None:
             return blocks
-        parsed = _parse_start_tag(html, m.end())
+        parsed = _parse_tag(html, m.end())
         if isinstance(parsed, str):
-            raise UndelimitedTag(html.count("\n", 0, m.start()) + 1, parsed)
+            raise UndelimitedTag(html.count("\n", 0, m.start()) + 1, parsed, "start")
         body_start, attrs = parsed
         close = SCRIPT_CLOSE.search(html, body_start)
         if close is None:
@@ -297,8 +333,17 @@ def extract_js_blocks(html: str) -> list[tuple[int, str]]:
             # block to find, and the tokenizer agrees: after an unclosed
             # `<script>` every remaining byte is script data.
             raise UnclosedBlock(html.count("\n", 0, m.start()) + 1)
+        # The close's own tag is walked, not run to the next `>` (#1182). A
+        # refusal here is about the *end* tag: a closing tag exists and cannot
+        # be delimited, which is neither "no closing tag anywhere"
+        # (UnclosedBlock -- wrong next action) nor a fault on the start tag.
+        closed = _parse_tag(html, close.end())
+        if isinstance(closed, str):
+            raise UndelimitedTag(
+                html.count("\n", 0, close.start()) + 1, closed, "end")
+        close_end, _junk_attrs = closed
         body = html[body_start:close.start()]
-        pos = close.end()
+        pos = close_end
         if "src" in attrs:
             continue
         if _script_type(attrs) not in JS_TYPES:
@@ -401,8 +446,8 @@ def main() -> None:
         # every core consumer branches on `skipped` first, so they would go
         # into a field nothing reads.
         emit(skipped("html-check", file,
-                     f"the <script> start tag at line {exc.line} is never closed "
-                     f"({exc.cause}), so where it ends cannot be told -- "
+                     f"the <script> {exc.kind} tag at line {exc.line} is never "
+                     f"closed ({exc.cause}), so where it ends cannot be told -- "
                      f"NO inline <script> block in this file was checked",
                      int((time.time() - start) * 1000)))
         return

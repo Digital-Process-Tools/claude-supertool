@@ -420,7 +420,7 @@
     },
     "html-check": {
       "cmd": "{python} {supertool_dir}/validators/html-check/html-check.py {file}",
-      "match": "*.html",
+      "match": "*.{html,htm}",
       "hooks_into": [
         "edit",
         "replace",
@@ -776,6 +776,116 @@
       ],
       "rollback_on_fail": false,
       "timeout": 15
+    },
+    "phpstan": {
+      "cmd": "{python} {supertool_dir}/validators/phpstan/phpstan.py {file}",
+      "match": "*.php",
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste", "append",
+        "vim"
+      ],
+      "tier": "slow",
+      "rollback_on_fail": false,
+      "timeout": 60
+    },
+    "phpmd": {
+      "cmd": "{python} {supertool_dir}/validators/phpmd/phpmd.py {file}",
+      "match": "*.php",
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste", "append",
+        "vim"
+      ],
+      "tier": "slow",
+      "rollback_on_fail": false,
+      "timeout": 60
+    },
+    "lsp-diag": {
+      "cmd": "{python} {supertool_dir}/validators/lsp-diag/lsp-diag.py {file}",
+      "match": "*.{py,php,js,ts,jsx,tsx}",
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste", "append",
+        "vim"
+      ],
+      "rollback_on_fail": false,
+      "timeout": 15
+    },
+    "changelog-fragment": {
+      "cmd": "{python} {supertool_dir}/validators/changelog-fragment/changelog-fragment.py {file}",
+      "match": "*changelog.d/*.md",
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste", "append",
+        "vim"
+      ],
+      "rollback_on_fail": false,
+      "timeout": 15
+    },
+    "phpstan-mcp": {
+      "cmd": "{python} {supertool_dir}/validators/phpstan-mcp/phpstan-mcp.py {file}",
+      "match": "*.php",
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste", "append",
+        "vim"
+      ],
+      "tier": "slow",
+      "rollback_on_fail": false,
+      "timeout": 120
+    },
+    "phpmd-mcp": {
+      "cmd": "{python} {supertool_dir}/validators/phpmd-mcp/phpmd-mcp.py {file}",
+      "match": "*.php",
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste", "append",
+        "vim"
+      ],
+      "tier": "slow",
+      "rollback_on_fail": false,
+      "timeout": 120
+    },
+    "phpunit-mcp": {
+      "cmd": "{python} {supertool_dir}/validators/phpunit-mcp/phpunit-mcp.py {file}",
+      "match": "*.php",
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste", "append",
+        "vim"
+      ],
+      "tier": "slow",
+      "rollback_on_fail": false,
+      "timeout": 300
+    },
+    "rector-mcp": {
+      "cmd": "{python} {supertool_dir}/validators/rector-mcp/rector-mcp.py {file}",
+      "match": "*.php",
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste", "append",
+        "vim"
+      ],
+      "tier": "slow",
+      "rollback_on_fail": false,
+      "timeout": 120
     }
   },
   "formatters": {

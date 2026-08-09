@@ -6,6 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from _adapter_verdict import assert_ok, assert_declined
 from _winenv import empty_path_env
 
@@ -655,3 +657,175 @@ def test_output_contains_required_fields(tmp_path: Path) -> None:
     out = _run(str(f))
     for key in ("tool", "file", "ok", "count", "errors", "duration_ms"):
         assert key in out
+
+# ---------------------------------------------------------------------------
+# #1182 -- the end tag is walked too, because `>` hides in a quoted value at
+# both ends of the block. `[^>]*` stopped at the first `>` in the source.
+# ---------------------------------------------------------------------------
+
+def _load_adapter():
+    """Import html-check.py as a module. The hyphen rules out a plain import."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("_html_check_adapter", ADAPTER)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _script_data_per_block(markup: str) -> list:
+    """What `html.parser` says the script data of each block is.
+
+    The adapter's own docstring names `html.parser` as the conformance
+    reference for the *start* tag. It is the same reference at the other end:
+    after `</script` plus whitespace the tokenizer is in before-attribute-name
+    state -- the same state a start tag reaches -- so a quoted attribute value
+    hides a `>` from the end tag exactly as it does from the start tag. Written
+    as an oracle rather than as hand-computed expectations so the claim is
+    measured on the machine running the test.
+    """
+    from html.parser import HTMLParser
+
+    class _Reader(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=False)
+            self.bodies = []
+            self._open = False
+
+        def handle_starttag(self, tag, attrs):
+            if tag == "script":
+                self._open = True
+
+        def handle_endtag(self, tag):
+            if tag == "script":
+                self._open = False
+
+        def handle_data(self, data):
+            if self._open:
+                self.bodies.append(data)
+
+    reader = _Reader()
+    reader.feed(markup)
+    reader.close()
+    return reader.bodies
+
+
+# Ids are given rather than derived: pytest builds one from the markup itself,
+# which puts `<`, `>` and `"` into every junit.xml test name CI reads back.
+END_TAG_FORMS = [
+    ("bare", "<script>const z = 1;</script>TAIL"),
+    ("trailing-space", "<script>const z = 1;</script >TAIL"),
+    ("solidus", "<script>const z = 1;</script/>TAIL"),
+    ("junk-attribute", "<script>const z = 1;</script bar>TAIL"),
+    ("gt-is-the-whole-value", '<script>const z = 1;</script foo=">">TAIL'),
+    ("gt-inside-a-value", '<script>const z = 1;</script data-t="a > b">TAIL'),
+    ("script-tag-inside-a-value",
+     '<script>const z = 1;</script data-t="x > <script>const q = 2;</script">TAIL'),
+]
+
+
+@pytest.mark.parametrize(
+    "markup", [m for _id, m in END_TAG_FORMS], ids=[i for i, _m in END_TAG_FORMS])
+def test_end_tag_boundary_agrees_with_html_parser(markup: str) -> None:
+    """Where the tokenizer closes the block is where this adapter closes it.
+
+    Not "a better regex until the reported case passes": #1153 replaced the
+    start tag with a walker because the tag grammar is a small state machine
+    and a pattern ending at the first `>` is wrong in both directions. The end
+    tag reaches the same state, so it gets the same walker and is held to the
+    same oracle.
+    """
+    adapter = _load_adapter()
+    extracted = [body for _line, body in adapter.extract_js_blocks(markup)]
+    assert extracted == _script_data_per_block(markup), markup
+
+
+def test_gt_inside_a_quoted_end_tag_value_does_not_invent_a_second_block(
+    tmp_path: Path,
+) -> None:
+    """The false-positive direction, and it is not verdict-neutral.
+
+    `[^>]*` ends the close at the `>` inside `data-t`'s value, so the rest of
+    that quoted value is then read as markup. When the value contains the text
+    `<script>`, a block that exists only inside a string is extracted; the
+    trailing `</script"` is not a close (no whitespace, slash or `>` follows
+    `</script`), so nothing closes it and the adapter refuses the whole file --
+    `skipped`, "NO inline <script> block in this file was checked" -- about a
+    page html.parser reads as one clean script followed by text.
+    """
+    f = tmp_path / "endgt.html"
+    f.write_text(
+        "<html><body>\n"
+        "<script>\n"
+        "const a = 1;\n"
+        '</script data-t="x > <script>const q = ;</script">\n'
+        "</body></html>\n"
+    )
+    out = _run(str(f))
+    assert "skipped" not in out, (
+        "the adapter refused a file whose one script block is valid, because "
+        "the `>` inside the end tag's quoted value cut the close short and "
+        "the value's own text was then read as markup: %s" % out)
+    assert_ok(out)
+    assert out["count"] == 0
+
+
+def test_unterminated_end_tag_value_is_skipped_not_ok(tmp_path: Path) -> None:
+    """The false-`ok` direction -- the one the contract calls unacceptable.
+
+    `</script data-t="oops>` is EOF-in-tag: html.parser emits no end tag at
+    all, so this element never closes and #1185's rule applies. `[^>]*>`
+    instead ran through to the `>` *inside* the unterminated value, invented a
+    close there, and reported `ok: true` about a file the tokenizer cannot
+    finish reading.
+
+    A quoted value with no closing quote is already `skipped` on the *start*
+    tag (`test_unterminated_attribute_value_is_skipped_not_ok`). One rule
+    applied to half the cases is exactly what #1182 is.
+    """
+    f = tmp_path / "endunterminated.html"
+    f.write_text(
+        "<html><body>\n"
+        "<script>\n"
+        "const a = 1;\n"
+        '</script data-t="oops>\n'
+        "</body></html>\n"
+    )
+    out = _run(str(f))
+    assert "skipped" in out, f"expected the third state, got {out}"
+    assert "ok" not in out
+    assert "count" not in out
+    assert "errors" not in out
+    reason = out["skipped"]
+    assert "4" in reason, f"the reason must name the end tag's line: {reason}"
+    assert "end tag" in reason, (
+        "the reason must say it is the END tag that could not be delimited -- "
+        "a reader sent to the start tag on line 2 finds nothing wrong there: "
+        "%s" % reason)
+
+
+def test_truncated_end_tag_is_not_reported_as_a_missing_end_tag(tmp_path: Path) -> None:
+    """A truncated close and an absent close send the reader to different places.
+
+    With `[^>]*>` a file that stops inside its end tag matched nothing at all,
+    fell through to `UnclosedBlock`, and the refusal said the element "has no
+    closing tag anywhere after it", naming the line of the *opening* tag.
+    There is a closing tag; it is on line 4 and it is truncated. The next
+    action is "finish this tag", not "add one" -- the same distinction that
+    made `UndelimitedTag` and `UnclosedBlock` two types rather than one.
+    """
+    f = tmp_path / "endtruncated.html"
+    f.write_text(
+        "<html><body>\n"
+        "<script>\n"
+        "const a = 1;\n"
+        "</script data-t"
+    )
+    out = _run(str(f))
+    assert "skipped" in out, f"expected the third state, got {out}"
+    reason = out["skipped"]
+    assert "4" in reason, f"the reason must name the truncated end tag: {reason}"
+    assert "no closing tag anywhere" not in reason, (
+        "there IS a closing tag on line 4 and it is truncated; sending the "
+        "reader to add one is the wrong next action: %s" % reason)
+    assert "quote" not in reason.lower(), (
+        "no quote is involved in this file: %s" % reason)

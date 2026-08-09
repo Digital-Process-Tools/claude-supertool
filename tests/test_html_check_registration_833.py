@@ -72,7 +72,10 @@ def test_example_catalogue_offers_html_check():
         "docs/validators.md lists html-check and tells the reader to copy the "
         "entry from .supertool.example.json, which does not contain one")
     spec = EXAMPLE["validators"]["html-check"]
-    assert spec["match"] == "*.html"
+    # The glob's exact text is pinned by `test_htm_is_offered_by_the_example
+    # _catalogue_too` (#1159). What #833 needs from it is narrower and does not
+    # move when a suffix is added: `.html` reaches the adapter.
+    assert "html" in spec["match"], spec["match"]
     assert "validators/html-check/html-check.py" in spec["cmd"]
 
 
@@ -106,3 +109,111 @@ def test_validate_op_reports_broken_inline_js_end_to_end(tmp_path):
     # inside an extracted block back onto the HTML file's own numbering, and a
     # row that fired on the wrong line is a different bug wearing a pass.
     assert "L4 syntax" in out, out
+
+# ---------------------------------------------------------------------------
+# #1159 -- `.htm` is the same file, and the catalogue has to hold every adapter
+# ---------------------------------------------------------------------------
+
+VALIDATORS_DIR = REPO_ROOT / "validators"
+
+# `common/` is a library imported by the adapters (`refusal.py`,
+# `source_context.py`), not an adapter. It is excluded here by name, and by
+# name only: a future directory that is also not an adapter has to be added to
+# this list deliberately, where the decision is visible, rather than slipping
+# past a pattern that happens not to match it.
+NOT_AN_ADAPTER = {"common"}
+
+
+def _adapter_dirs() -> set:
+    return {p.name for p in VALIDATORS_DIR.iterdir()
+            if p.is_dir() and not p.name.startswith("__")} - NOT_AN_ADAPTER
+
+
+def _dirs_referenced_by(config: dict) -> set:
+    referenced = set()
+    for spec in config.get("validators", {}).values():
+        cmd = spec.get("cmd", "") if isinstance(spec, dict) else ""
+        for name in _adapter_dirs():
+            if "validators/%s/" % name in cmd:
+                referenced.add(name)
+    return referenced
+
+
+def test_every_bundled_adapter_has_an_entry_in_the_example_catalogue() -> None:
+    """The guard #1159 exists to make buildable.
+
+    `docs/validators.md` says "Enable any of these by copying the relevant
+    entry from `.supertool.example.json`". An adapter that ships in this repo
+    with no entry there sends the reader to an empty shelf -- shipped and
+    unreachable, the #833 shape, one layer out.
+
+    It could not be landed alongside #833 because pre-existing violations mean
+    a guard is satisfied by bulk-editing the thing it checks inside a PR about
+    something else. Fixing them first is what makes the guard a guard.
+
+    This asserts nothing about `.supertool.json`, deliberately: this is a
+    Python repo and it is correct for it not to run `phplint` on itself.
+    """
+    missing = sorted(_adapter_dirs() - _dirs_referenced_by(EXAMPLE))
+    assert not missing, (
+        "these adapters ship in validators/ and have no entry in "
+        ".supertool.example.json, which docs/validators.md tells the reader to "
+        "copy from: %s" % missing)
+
+
+def test_the_catalogue_has_no_entry_for_an_adapter_that_is_not_there() -> None:
+    """The guard's other direction -- a catalogue entry pointing at nothing.
+
+    A `cmd` naming `validators/<x>/<x>.py` for a directory that was renamed or
+    removed fails at spawn time in the user's project, not here. The two halves
+    together are what makes the catalogue a claim about this repo.
+    """
+    orphans = []
+    for name, spec in EXAMPLE["validators"].items():
+        cmd = spec.get("cmd", "") if isinstance(spec, dict) else ""
+        marker = "validators/"
+        if marker not in cmd:
+            continue  # the two `_example-*` entries illustrate keys, not adapters
+        directory = cmd.split(marker, 1)[1].split("/", 1)[0]
+        if not (VALIDATORS_DIR / directory).is_dir():
+            orphans.append((name, directory))
+    assert not orphans, (
+        "catalogue entries point at validators/ directories that do not "
+        "exist: %s" % orphans)
+
+
+def test_htm_is_dispatched_to_html_check_by_the_shipped_config(monkeypatch) -> None:
+    """`.htm` is the same document with a shorter suffix (#1159).
+
+    Identical content, identical checker, and a page saved as `dashboard.htm`
+    got no inline-JS check at all -- the #833 gap surviving in the one glob
+    that decides which files reach the adapter.
+    """
+    monkeypatch.setattr(supertool, "_CONFIG", SHIPPED)
+    monkeypatch.setattr(supertool, "_CONFIG_CHECKED", True)
+    names = set(supertool._applicable_validators("edit", "dashboard.htm"))
+    assert "html-check" in names, (
+        "no validator in .supertool.json matches *.htm. Selected: %s"
+        % sorted(names))
+
+
+def test_htm_is_offered_by_the_example_catalogue_too() -> None:
+    """A user copying the entry gets `.htm` covered without editing the glob."""
+    match = EXAMPLE["validators"]["html-check"]["match"]
+    assert match == "*.{html,htm}", (
+        "the two suffixes belong in one entry rather than a second "
+        "`html-check-htm` row: unlike yaml/tsc there is no second tool and no "
+        "second decision to record, and a copied config covering only one of "
+        "them is the gap #1159 reports. Got: %s" % match)
+
+
+def test_html_check_glob_is_the_same_in_both_configs() -> None:
+    """The repo runs the entry it publishes.
+
+    #1203 is the same drift the other way -- `tomllint` offered in the example
+    and registered nowhere here. A glob that is wider in the catalogue than in
+    this repo's own config means the widening was never exercised by the only
+    project that runs the adapter on every edit.
+    """
+    assert (SHIPPED["validators"]["html-check"]["match"]
+            == EXAMPLE["validators"]["html-check"]["match"])
