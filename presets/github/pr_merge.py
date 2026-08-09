@@ -101,7 +101,8 @@ _PR_FIELDS = (
 # ---------------------------------------------------------------------------
 
 def gate(pr: dict, declared: int | None = None,
-         missing: Sequence[str] = ()) -> tuple[bool, List[str]]:
+         missing: Sequence[str] = (),
+         reason: str = "") -> tuple[bool, List[str]]:
     """`(allowed, lines)` — may this PR be merged, and on what evidence.
 
     Every branch that returns False names what it saw, in the state GitHub
@@ -158,14 +159,22 @@ def gate(pr: dict, declared: int | None = None,
             f"The review has to be resolved, not merged past."
         )
 
-    lines.extend(_check_findings(pr, declared, missing))
+    lines.extend(_check_findings(pr, declared, missing, reason))
 
     return (not lines, lines)
 
 
 def _check_findings(pr: dict, declared: int | None,
-                    missing: Sequence[str]) -> List[str]:
-    """The check half of the gate — #454's arithmetic, applied to a merge."""
+                    missing: Sequence[str],
+                    reason: str = "") -> List[str]:
+    """The check half of the gate — #454's arithmetic, applied to a merge.
+
+    `reason` is why the declared count could not be established (#1181), and
+    this is the render where it is worth most: the refusal below is the last
+    line read before a merge, and "could not be squared" without a cause is
+    the same sentence whether the API was down or the op's own reconciliation
+    budget was one workflow too small.
+    """
     num = pr.get("number", "?")
     sha = str(pr.get("headRefOid") or "")[:7] or "?"
     rollup = pr.get("statusCheckRollup")
@@ -245,7 +254,8 @@ def _check_findings(pr: dict, declared: int | None,
             )
         return out
 
-    marker, shortfall_lines = _checks.shortfall(len(states), declared, missing)
+    marker, shortfall_lines = _checks.shortfall(len(states), declared, missing,
+                                                reason=reason)
     if marker:
         out.append(
             f"REFUSED: every one of the {len(states)} legs read on {sha} "
@@ -664,7 +674,12 @@ def main() -> int:
         return 1
 
     _pr_mod = _load_pr_module()
-    declared, declared_names, _unc = _pr_mod._declared_for_commit(pr)
+    # Four values since #1181, and this unpack is a seam across two files
+    # loaded independently: every gate test replaces `_load_pr_module` with a
+    # double, so the double and this line agreed with each other while the real
+    # tuple grew, and nothing failed. `test_gh_pr_merge_tally_seam_1181.py`
+    # is the check that brings the two into contact.
+    declared, declared_names, _unc, reason = _pr_mod._declared_for_commit(pr)
     found = _pr_mod._actions_leg_names(pr.get("statusCheckRollup"))
     missing = _declared_legs.missing_names(declared_names, found)
 
@@ -679,7 +694,7 @@ def main() -> int:
     print(f"URL:    {pr.get('url', '?')}")
     print()
 
-    allowed, gate_lines = gate(pr, declared, missing)
+    allowed, gate_lines = gate(pr, declared, missing, reason)
     if not allowed:
         print("## Gate")
         for line in gate_lines:

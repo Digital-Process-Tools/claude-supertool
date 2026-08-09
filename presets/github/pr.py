@@ -130,7 +130,15 @@ def _missing_names(declared: Sequence[str], found: Sequence[str]) -> list[str]:
 
 
 def _runs_on_commit(owner: str, repo: str, sha: str) -> list | None:
-    """`[(run_id, workflow_name)]` for the head commit — `None` if unreadable.
+    """`[(run_id, workflow_name, workflow_id)]` for the head commit, or `None`.
+
+    The third element is the identity the collapse in `_one_run_per_workflow`
+    keys on. A workflow's `name:` is not unique — two workflow files may spell
+    it identically — and collapsing on the name would drop one of them from the
+    declared count, which then reconciles silently on `declared <= found`. That
+    is the shortfall this whole mechanism exists to catch, hidden by the fix
+    for the noise it was making. `workflow_id` rides on the same response and
+    costs nothing.
 
     **This is the fix for #804's comment, and it is one line of reasoning.**
     The declared count used to be summed over the run ids parsed out of the
@@ -169,11 +177,12 @@ def _runs_on_commit(owner: str, repo: str, sha: str) -> list | None:
             continue
         rid = str(run.get("id") or "").strip()
         if rid:
-            out.append((rid, str(run.get("name") or f"run #{rid}")))
+            out.append((rid, str(run.get("name") or f"run #{rid}"),
+                        str(run.get("workflow_id") or "").strip()))
     return out
 
 
-def _one_run_per_workflow(ordered: list, names_by_id: dict) -> list:
+def _one_run_per_workflow(ordered: list, keys_by_id: dict) -> list:
     """Collapse repeat run records of one workflow on one commit (#1181).
 
     `actions/runs?head_sha=` returns a record per run, and a re-run or a second
@@ -186,14 +195,18 @@ def _one_run_per_workflow(ordered: list, names_by_id: dict) -> list:
     First seen wins. The rollup's own ids lead `ordered`, and GitHub lists runs
     newest-first, so the record kept is the one the rollup is showing.
 
-    A run whose name is unresolvable keys on its id rather than on the empty
-    string: collapsing two unknowns into one would be this fix inventing the
-    silence it exists to remove.
+    Keyed on `workflow_id`, never on the workflow's display name: `name:` is
+    not unique across workflow files, and merging two real workflows would
+    shrink `declared` into a silent reconcile.
+
+    A run whose workflow id is unresolvable keys on its own run id rather than
+    on the empty string: collapsing two unknowns into one would be this fix
+    inventing the silence it exists to remove.
     """
     out: list = []
     seen: set[str] = set()
     for rid, name in ordered:
-        key = names_by_id.get(rid) or name or f"#{rid}"
+        key = keys_by_id.get(rid) or f"#{rid}"
         if key in seen:
             continue
         seen.add(key)
@@ -235,13 +248,13 @@ def _declared_for_commit(d: dict) -> tuple:
 
     ordered: list = [(rid, "") for rid in rollup_ids]
     known = set(rollup_ids)
-    names_by_id = {}
-    for rid, name in runs:
-        names_by_id[rid] = name
+    keys_by_id = {}
+    for rid, name, workflow_id in runs:
+        keys_by_id[rid] = workflow_id
         if rid not in known:
             ordered.append((rid, name))
             known.add(rid)
-    ordered = _one_run_per_workflow(ordered, names_by_id)
+    ordered = _one_run_per_workflow(ordered, keys_by_id)
     if not ordered:
         return (0, [], [], "")
     if len(ordered) > MAX_RECONCILED_RUNS:

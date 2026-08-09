@@ -31,6 +31,7 @@ Two defects follow, and this file pins both:
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -72,8 +73,9 @@ def _pr_json(rollup: list[dict]) -> dict:
 
 def test_repeated_runs_of_one_workflow_do_not_blind_the_tally(
         monkeypatch: pytest.MonkeyPatch) -> None:
-    runs = [("1", "changelog"), ("2", "changelog"), ("3", "changelog"),
-            ("4", "changelog"), ("5", "changelog"), ("6", "tests")]
+    runs = [("1", "changelog", "900"), ("2", "changelog", "900"),
+            ("3", "changelog", "900"), ("4", "changelog", "900"),
+            ("5", "changelog", "900"), ("6", "tests", "901")]
     monkeypatch.setattr(pr, "_runs_on_commit", lambda *_a: list(runs))
     monkeypatch.setattr(pr._declared_legs, "legs_for_run",
                         lambda _o, _r, rid: ["changelog"] if rid != "6"
@@ -95,8 +97,9 @@ def test_repeated_runs_of_one_workflow_do_not_blind_the_tally(
 def test_five_distinct_workflows_still_reconcile(
         monkeypatch: pytest.MonkeyPatch) -> None:
     """This repo has four workflows; Copilot's review run is the fifth."""
-    runs = [("1", "changelog"), ("2", "tests"), ("3", "PR #1175"),
-            ("4", "Code Quality: PR #1175"), ("5", "Running Copilot Code Review")]
+    runs = [("1", "changelog", "901"), ("2", "tests", "902"),
+            ("3", "PR #1175", "903"), ("4", "Code Quality: PR #1175", "904"),
+            ("5", "Running Copilot Code Review", "905")]
     monkeypatch.setattr(pr, "_runs_on_commit", lambda *_a: list(runs))
     monkeypatch.setattr(pr._declared_legs, "legs_for_run",
                         lambda _o, _r, rid: [f"leg{rid}"])
@@ -110,7 +113,8 @@ def test_five_distinct_workflows_still_reconcile(
 def test_a_genuinely_unreadable_run_still_declines(
         monkeypatch: pytest.MonkeyPatch) -> None:
     """The #454 disclosure is not being silenced — only made informative."""
-    monkeypatch.setattr(pr, "_runs_on_commit", lambda *_a: [("1", "tests")])
+    monkeypatch.setattr(pr, "_runs_on_commit",
+                        lambda *_a: [("1", "tests", "901")])
     monkeypatch.setattr(pr._declared_legs, "legs_for_run",
                         lambda _o, _r, _rid: None)
     declared = pr._declared_for_commit(_pr_json([_detail("1", "t1")]))[0]
@@ -150,3 +154,45 @@ def test_the_unverified_line_without_a_reason_is_unchanged() -> None:
 def test_reconciled_and_short_paths_are_untouched() -> None:
     assert checks.shortfall(21, 21) == ("", [])
     assert checks.shortfall(21, 22)[0].startswith(checks.INCOMPLETE_MARK)
+
+# ---------------------------------------------------------------------------
+# the collapse keys on the workflow, not on what it calls itself
+# ---------------------------------------------------------------------------
+
+def test_two_workflows_sharing_a_display_name_do_not_collapse(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """`name:` is not unique — two workflow files may spell it identically.
+
+    Collapsing them would drop one workflow's legs from `declared`, and a
+    `declared` that is too small reconciles silently on `declared <= found`:
+    the shortfall this whole mechanism exists to catch, hidden by the fix for
+    the noise it made. `workflow_id` is in the same response and is exact.
+    """
+    runs = [("1", "ci", "100"), ("2", "ci", "200")]
+    monkeypatch.setattr(pr, "_runs_on_commit", lambda *_a: list(runs))
+    monkeypatch.setattr(pr._declared_legs, "legs_for_run",
+                        lambda _o, _r, rid: [f"leg{rid}a", f"leg{rid}b"])
+    declared = pr._declared_for_commit(_pr_json([_detail("1", "leg1a")]))[0]
+    assert declared == 4, (
+        f"two distinct workflows declare four legs between them; got {declared!r}"
+    )
+
+
+def test_runs_on_commit_reports_the_workflow_id(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """The key has to come off the API, not be inferred from the name."""
+    payload = {"workflow_runs": [
+        {"id": 1, "name": "changelog", "workflow_id": 329153576},
+        {"id": 2, "name": "changelog", "workflow_id": 329153576},
+    ]}
+
+    class _R:
+        returncode = 0
+        stdout = json.dumps(payload)
+
+    monkeypatch.setattr(pr, "_gh", lambda *_a, **_k: _R())
+    runs = pr._runs_on_commit("o", "n", "a" * 40)
+    assert runs is not None
+    assert [r[2] for r in runs] == ["329153576", "329153576"], (
+        f"each run must carry its workflow id; got {runs!r}"
+    )
