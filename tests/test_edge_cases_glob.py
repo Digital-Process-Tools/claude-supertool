@@ -18,6 +18,8 @@ import platform
 import sys
 from pathlib import Path
 
+from _symlink import requires_symlink
+
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -64,10 +66,7 @@ def test_traversal_absolute_pattern_works(tmp_path: Path) -> None:
 # 2. Symlink loop — A → B → A
 # ---------------------------------------------------------------------------
 
-@pytest.mark.skipif(
-    platform.system() == "Windows",
-    reason="symlinks require elevated privileges on Windows",
-)
+@requires_symlink
 def test_symlink_loop_does_not_infinite_loop(tmp_path: Path, monkeypatch) -> None:
     """Dir A contains a symlink to dir B; dir B contains a symlink back to A.
 
@@ -279,10 +278,7 @@ def test_unclosed_bracket_pattern(tmp_path: Path, monkeypatch) -> None:
 # 9. Symlink pointing outside cwd that matches the pattern
 # ---------------------------------------------------------------------------
 
-@pytest.mark.skipif(
-    platform.system() == "Windows",
-    reason="symlinks require elevated privileges on Windows",
-)
+@requires_symlink
 def test_symlink_to_file_outside_cwd_included(tmp_path: Path, monkeypatch) -> None:
     """A symlink inside cwd that points to a file outside cwd.
 
@@ -310,10 +306,7 @@ def test_symlink_to_file_outside_cwd_included(tmp_path: Path, monkeypatch) -> No
     )
 
 
-@pytest.mark.skipif(
-    platform.system() == "Windows",
-    reason="symlinks require elevated privileges on Windows",
-)
+@requires_symlink
 def test_symlink_to_dir_outside_cwd_traversed_with_followlinks_false(
     tmp_path: Path, monkeypatch
 ) -> None:

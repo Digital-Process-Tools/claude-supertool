@@ -25,6 +25,8 @@ from pathlib import Path
 
 import pytest
 
+from _symlink import require_symlink
+
 import supertool
 
 NL = chr(10)
@@ -33,11 +35,19 @@ BROKEN = "def f(:" + NL + "    pass" + NL
 
 
 def _symlink(link: Path, target_name: str) -> None:
-    """Create link -> target_name, or skip: Windows needs a privilege for this."""
-    try:
-        os.symlink(target_name, str(link))
-    except (OSError, NotImplementedError, AttributeError) as e:
-        pytest.skip("symlinks unavailable on this platform: " + str(e))
+    """Create link -> target_name, or skip under the one shared reason (#1143).
+
+    The skip decision is `tests/_symlink.py`'s, taken once per process by
+    probing, so this file no longer has a private opinion about which platforms
+    can do this -- and the skip it produces is counted and named in the terminal
+    summary rather than disappearing into ~680 others.
+
+    No local try/except behind the probe: if the probe said the privilege is
+    there and this call still fails, that is a real finding and must be a red,
+    not a skip.
+    """
+    require_symlink()
+    os.symlink(target_name, str(link))
 
 
 def _toml_path(target: Path) -> str:

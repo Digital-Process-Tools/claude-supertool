@@ -13,6 +13,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import supertool  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).parent))
+
+import _symlink  # noqa: E402
+
 # `presets/mcp/_paths.py` probes its platform capabilities at *import*
 # (`_LISTDIR_TAKES_FD`, `_RELATIVE_OPS`, `_ANCESTRY_DIR_FD`) precisely so that a
 # test double installed over `os.listdir`/`os.chmod`/`os.open` is never read as
@@ -164,14 +168,48 @@ def pytest_configure(config):
 
 
 def pytest_report_header(config):
-    """Surface a leaked git environment instead of silently swallowing it."""
+    """State what this run can and cannot do, before it does any of it.
+
+    Two things, both of which have to be visible on a *green* leg: a leaked git
+    environment (#416), and whether this platform/user can create a symlink
+    (#1143). The second is here rather than in the summary on purpose -- a
+    blind spot announced only when something fails is announced exactly when
+    nobody needs telling.
+    """
+    lines = [_symlink.verdict_line()]
     leaked = getattr(config, "_supertool_leaked_git_env", [])
-    if not leaked:
-        return []
-    return (
-        "scrubbed inherited git env (would have run tests against this repo, "
-        f"see #416): {', '.join(leaked)}"
-    )
+    if leaked:
+        lines.append(
+            "scrubbed inherited git env (would have run tests against this repo, "
+            f"see #416): {', '.join(leaked)}"
+        )
+    return lines
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config):
+    """Count the symlink skips apart from the other ~680 (#1143).
+
+    `688 skipped` is a number. `N skipped, because this runner has no
+    create-symlink privilege` is a fact somebody can act on -- it is the
+    difference between an absence in the world and an absence the tooling
+    produced. Printed whether the count is zero or not: silence would be
+    indistinguishable from not having looked.
+    """
+    skipped = terminalreporter.stats.get("skipped", []) or []
+    n = 0
+    for report in skipped:
+        longrepr = getattr(report, "longrepr", None)
+        text = longrepr[2] if isinstance(longrepr, tuple) and len(longrepr) > 2 else str(longrepr)
+        if _symlink.TOKEN in str(text):
+            n += 1
+    available, why = _symlink.symlink_support()
+    if available:
+        terminalreporter.write_line(
+            f"{_symlink.TOKEN}: available -- {n} symlink-dependent tests skipped for it")
+        return
+    terminalreporter.write_line(
+        f"{_symlink.TOKEN}: unavailable -- {n} symlink-dependent tests did NOT run "
+        f"on this platform. Reason: {why}")
 
 
 # Git exports these to every hook it runs. A hook that invokes pytest (our
