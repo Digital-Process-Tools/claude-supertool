@@ -461,8 +461,9 @@ socket at `{SUPERTOOL_WATCH_SOCK}.health.json`:
 ```
 
 Read it with `./supertool 'channel:health'`, which turns it into a three-state
-verdict and refuses to believe a file whose pid is gone or whose stamp has gone
-cold.
+verdict and refuses to believe a file whose pid is gone, whose stamp has gone
+cold, or whose `forwarded` is missing or not a number. It also declines to
+present `pid` as more than this file's own claim about its writer — see below.
 
 **`forwarded`, never `delivered`.** It counts events handed to
 `mcp.notification()` — a JSON-RPC notification, so no id, no response and
@@ -482,6 +483,15 @@ counters.
 number that never decreases and reads as health forever — this issue's defect
 rebuilt out of its own fix. A `SIGKILL` never reaches that path, which is why
 the reader checks the pid too.
+
+**`pid` is a label, not proof, and the reader treats it as one.** Pids are
+reusable: after a `SIGKILL` the number in this file can be handed to an
+unrelated process, and from outside there is no way to tell that apart from a
+consumer still running. So the pid check only ever *objects* — a pid that no
+longer exists means this file's writer is gone — and it never clears. What
+carries a positive verdict is `updated`, because a file rewritten four seconds
+ago was written by something running four seconds ago. `channel:health` prints
+the pid marked `(self-reported)` for that reason.
 
 ## Security (Phase 2 v1)
 
