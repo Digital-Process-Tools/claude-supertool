@@ -33,6 +33,8 @@ from pathlib import Path
 
 import pytest
 
+from _gitshim import dispatch_on_subcommand
+
 ROOT = Path(__file__).parent.parent
 PRESETS = ROOT / "presets"
 DIFF = PRESETS / "git" / "diff.py"
@@ -279,8 +281,9 @@ def test_a_failed_stash_query_does_not_render_as_no_stashes(
     passthrough = _bin("okbin", f'exec {real_git} "$@"\n')
     refusing = _bin(
         "badbin",
-        'if [ "$1" = "stash" ]; then echo "fatal: unable to read index" >&2; exit 128; fi\n'
-        f'exec {real_git} "$@"\n',
+        dispatch_on_subcommand(
+            "stash", 'echo "fatal: unable to read index" >&2; exit 128',
+            real_git),
     )
 
     def _status(bindir: Path) -> str:

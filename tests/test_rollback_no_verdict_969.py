@@ -60,8 +60,7 @@ BEFORE = '{"a": 1}\n'
 AFTER = '{"b": 1}\n'
 
 
-def _two_pass_adapter(tmp_path: Path, first: str, second: str,
-                      sleep_second: float = 0.0) -> str:
+def _two_pass_adapter(tmp_path: Path, first: str, second: str) -> str:
     """An adapter that answers `first` on call 1 and `second` on every call after.
 
     The baseline pass and the post-edit pass are two separate spawns of the
@@ -75,12 +74,10 @@ def _two_pass_adapter(tmp_path: Path, first: str, second: str,
     state = tmp_path / "_calls.txt"
     script = tmp_path / "_adapter.py"
     script.write_text(
-        "import pathlib, sys, time" + chr(10)
+        "import pathlib, sys" + chr(10)
         + f"state = pathlib.Path({str(state)!r})" + chr(10)
         + "n = int(state.read_text()) if state.exists() else 0" + chr(10)
         + "state.write_text(str(n + 1))" + chr(10)
-        + f"if n and {sleep_second!r}:" + chr(10)
-        + f"    time.sleep({sleep_second!r})" + chr(10)
         + f"sys.stdout.write({first!r} if n == 0 else {second!r})" + chr(10),
         encoding="utf-8",
     )
@@ -147,16 +144,28 @@ def test_the_surviving_edit_is_disclosed_and_exits_nonzero(
 
 
 def test_a_core_timeout_after_the_edit_does_not_revert_it(
-        tmp_path: Path, capsys) -> None:
+        tmp_path: Path, capsys, monkeypatch) -> None:
     """`code: "orchestrator"` is the core's own absence, and it reverted edits too.
 
     Not a variant worth splitting off: it reaches the same two-line comparison
     with the same fabricated `count: 1`, and unlike a vanished binary it needs
     nothing but a slow machine.
+
+    It used to *be* a slow machine — a 3s adapter against a 1s budget — and on
+    a runner that declined to be slow the adapter returned empty instead, which
+    is the `adapter` non-verdict rather than the `orchestrator` one. Every
+    assertion below holds for both, so this test kept passing while silently
+    exercising the other branch (#1218). The timeout is injected at the
+    subprocess boundary now, and the row is asserted, so the branch it names is
+    the branch it runs.
     """
-    _configure(_two_pass_adapter(tmp_path, CLEAN, CLEAN, sleep_second=3.0),
-               timeout=1)
+    budgets = _timeout_the_second_adapter_spawn(monkeypatch, 1)
+    _configure(_two_pass_adapter(tmp_path, CLEAN, CLEAN), timeout=1)
     rc, out, text = _edit(tmp_path, capsys)
+    assert budgets == [1, 1], budgets
+    assert "timed out" in out and "orchestrator" in out, (
+        "this test is named for the core's own timeout and did not reach that "
+        f"branch:{chr(10)}{out}")
     assert text == AFTER, (
         f"a timed-out checker reverted an edit it never looked at:{chr(10)}{out}")
     assert "1 write" in _result_line(out), out
@@ -239,6 +248,58 @@ def test_an_adapter_error_mixed_with_real_findings_still_regresses() -> None:
     clean = {"tool": "fake", "ok": True, "count": 0}
     assert supertool._validator_regressed(clean, mixed) is True
 
+def _silent_adapter(tmp_path: Path) -> str:
+    """An adapter that exits without writing anything to stdout.
+
+    The other non-verdict. `_validator_unusable_reply` renders it, and the row
+    is the one `windows-latest, 3.12` printed where a timeout was expected.
+    """
+    script = tmp_path / "_silent.py"
+    script.write_text("import sys" + chr(10) + "sys.exit(0)" + chr(10),
+                      encoding="utf-8")
+    return f"{{python}} {script.as_posix()}"
+
+
+def _timeout_the_second_adapter_spawn(monkeypatch, budget: int) -> "list":
+    """Raise `TimeoutExpired` where the OS would, instead of waiting for one.
+
+    #1218. The test below is about how two *renders* of one timeout compare,
+    and it used to obtain its timeout by making the fake adapter sleep past a
+    1s budget and trusting the runner to notice. `windows-latest, 3.12` did
+    not: the adapter came back at `0.0s` having written nothing, which is a
+    different — and equally correct — refusal, so the test went red on a
+    scheduling accident with a message pointing at validator code that was
+    fine. A property of two renderers should not be a claim about the
+    scheduler.
+
+    Only the *second* spawn is intercepted, so the baseline pass is still a
+    real subprocess returning a real clean result and the scenario is the one
+    #969 is about: a validator that answered before the edit and could not
+    after it. Everything downstream of `_validator_run_one`'s `TimeoutExpired`
+    arm — both renderers, the gate, the exit code — is the real code.
+
+    Returns the list of `timeout=` values the core handed to `subprocess.run`
+    for this adapter. The caller asserts on it: a fabricated timeout would
+    otherwise pass just as happily against a core that had stopped passing a
+    budget to the OS at all, which is the one regression this seam could hide.
+    """
+    import subprocess
+
+    real_run = subprocess.run
+    budgets: list = []
+
+    def _run(cmd, *a, **kw):
+        parts = cmd if isinstance(cmd, (list, tuple)) else [cmd]
+        if any("_adapter.py" in str(p) for p in parts):
+            budgets.append(kw.get("timeout"))
+            if len(budgets) > 1:
+                raise subprocess.TimeoutExpired(cmd, budget)
+        return real_run(cmd, *a, **kw)
+
+    monkeypatch.setattr(subprocess, "run", _run)
+    return budgets
+
+
 def test_a_timeout_reads_the_same_whether_or_not_it_was_required(
         tmp_path: Path, capsys, monkeypatch) -> None:
     """One failure, one spelling.
@@ -252,6 +313,7 @@ def test_a_timeout_reads_the_same_whether_or_not_it_was_required(
     Compared on the status and reason columns, not the whole row: the elapsed
     time legitimately differs between two runs.
     """
+    budgets = _timeout_the_second_adapter_spawn(monkeypatch, 1)
     whys = []
     for required in (False, True):
         if required:
@@ -260,15 +322,58 @@ def test_a_timeout_reads_the_same_whether_or_not_it_was_required(
             monkeypatch.delenv("SUPERTOOL_REQUIRE_VALIDATORS", raising=False)
         d = tmp_path / ("req" if required else "unreq")
         d.mkdir()
-        _configure(_two_pass_adapter(d, CLEAN, CLEAN, sleep_second=3.0),
-                   timeout=1)
+        del budgets[:]
+        _configure(_two_pass_adapter(d, CLEAN, CLEAN), timeout=1)
         _rc, out, _text = _edit(d, capsys)
+        assert budgets == [1, 1], (
+            "the core did not hand its configured 1s budget to both adapter "
+            f"spawns, so the timeout this test injects is not the one the "
+            f"real path would ever raise: {budgets!r}")
         row = [ln for ln in out.splitlines() if ln.startswith("fake ")]
         assert row, out
         assert "NOT CHECKED" in row[0], row[0]
         whys.append(row[0].split("NOT CHECKED", 1)[1].rsplit("  ", 1)[0].strip())
     assert whys[0] == "(timed out — no verdict about this file)", whys
     assert whys[0] == whys[1], whys
+
+
+def test_a_timeout_and_a_silent_adapter_are_not_the_same_refusal(
+        tmp_path: Path, capsys, monkeypatch) -> None:
+    """Both are non-verdicts; only one of them is a statement about the clock.
+
+    #1218 arrived as a leg printing the silent-adapter row where the test
+    above demanded the timeout row — and *both* renders were correct. That is
+    only a defensible thing to say if the two are distinguishable on the page,
+    and nothing asserted that they are. Neither may drift into the other's
+    wording: `orchestrator` is the core saying it stopped waiting, `adapter` is
+    the tool saying nothing, and a reader who cannot tell them apart cannot
+    tell a slow machine from a broken checker.
+    """
+    budgets = _timeout_the_second_adapter_spawn(monkeypatch, 1)
+    monkeypatch.delenv("SUPERTOOL_REQUIRE_VALIDATORS", raising=False)
+
+    timed = tmp_path / "timed"
+    timed.mkdir()
+    _configure(_two_pass_adapter(timed, CLEAN, CLEAN), timeout=1)
+    _rc, timed_out, _text = _edit(timed, capsys)
+
+    silent = tmp_path / "silent"
+    silent.mkdir()
+    _configure(_silent_adapter(silent), timeout=1)
+    _rc, silent_out, _text = _edit(silent, capsys)
+    assert budgets == [1, 1], budgets
+
+    rows = []
+    for out in (timed_out, silent_out):
+        row = [ln for ln in out.splitlines() if ln.startswith("fake ")]
+        assert row, out
+        rows.append(row[0])
+
+    assert "timed out" in rows[0] and "orchestrator" in timed_out, rows[0]
+    assert "produced no output" in rows[1], rows[1]
+    assert "timed out" not in rows[1], (
+        "an adapter that said nothing is being reported as a timeout, so the "
+        f"reader cannot tell a slow machine from a broken checker: {rows[1]}")
 
 
 # ---------------------------------------------------------------------------
