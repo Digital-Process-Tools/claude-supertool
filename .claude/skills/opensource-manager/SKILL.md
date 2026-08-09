@@ -709,10 +709,25 @@ The gap is structural: **all three original classes are about _your files_.** So
 
 **And a FIFTH, added 2026-08-08 by the v0.30.0 round-1 audit: `containment`.** The finding was **#1135** — `around`'s colon route promotes `parts[1]` to a filename inside a delegation that runs _downstream_ of the containment check, so any readable file on disk is one call away. Reproduced by hand: `around:/etc/hosts:3` prints the file, `around:localhost:/etc/hosts:1` refuses it. It fits none of the four — nothing leaves the machine, nothing is lost, and **the receipt is completely honest**, naming the substitution it made, so `misreports` is wrong too. What broke is which bytes are _eligible to enter an answer at all_: `_safe_path` / #146 is that boundary and `_PATH_ARG_POSITIONS` its per-op enforcement table, and the change created a new path slot without adding it.
 
-| Class           | Undo                                | Found by                                                   |
-| --------------- | ----------------------------------- | ---------------------------------------------------------- |
-| **Containment** | none — the read already happened    | asking which arguments a change newly interprets as a path |
-| **Discloses**   | none — revocation is damage control | following data outward to a sink                           |
+**And a SIXTH, added 2026-08-09 by the v0.32.0 round-1 audit: `write-side containment`.** The finding was **#1246** — `oss_train` rebased and force-pushed **any repository the caller named**. The explicit target list was unvalidated, `os.path.join(wt_root(), num)` discards `wt_root` on an absolute `num`, and `../` walked out; the `isdigit()` contract existed only on the `all` path. The auditor filed it `destroys`, then said the class was wrong:
+
+> Classifying this as `destroys` invites a fix aimed at the force-push — add a confirmation, drop `--force`. The defect is not the force-push; that is the op's stated purpose and it is correctly leased and correctly reported. The defect is that `num` is a path and nothing says where paths may point.
+
+The precedent proves the asymmetry. **#1135 got `containment` only because its sink happened to be a read.** Had the identical parser bug fed `edit` instead of `read`, the table would have forced it into `destroys` and sent the reviewer hunting lost data instead of a missing guard.
+
+| Class                      | Undo                                | Found by                                                                          |
+| -------------------------- | ----------------------------------- | ---------------------------------------------------------------------------------- |
+| **Containment** (read)     | none — the read already happened    | asking which arguments a change newly interprets as a path                        |
+| **Containment** (write)    | none — the write already happened   | the same question, on a **mutating** route — and see the boundary trap below      |
+| **Discloses**              | none — revocation is damage control | following data outward to a sink                                                  |
+
+**The trap, and it is why a checklist would have scored #1246 as covered.** `_containment_error` would have **passed** that audit's own reproduction — the repo it force-pushed sat inside `$PWD`. **The core's boundary is the CWD.** `oss_train`'s boundary is `wt_root()`, which the core cannot know. So:
+
+> **"Is it below `_safe_path`?" is the wrong question. "Which argument names a directory, and _who knows what that directory is allowed to be_?" is the right one.**
+
+Read-side containment has one universal boundary and one chokepoint. Write-side does not, so a domain-specific boundary has to be enforced by the op that owns it — a core check is defence in depth underneath, never a replacement.
+
+**A classification scheme is itself a claim, and this is the third audit running to refuse it and be right** (`discloses`, then `containment`, now its write-side twin). Keep the "say so if a finding fits none of these" clause in every audit brief; the class that does not exist yet is where the worst finding lands.
 
 - **Keeping them apart is operationally load-bearing** — those are **two different searches**, and an audit briefed only on `discloses` runs the sink-following one and misses this. `containment` blocks a release exactly like `destroys` and `discloses`.
 - **The standing rule for briefs:** any PR that makes an op treat a **new argument slot as a filename** — or makes an op **delete** rather than rewrite — must state which existing guard it is now downstream of. Both blockers that night shared that shape: a new capability added at a layer _below_ where its guard lives.
