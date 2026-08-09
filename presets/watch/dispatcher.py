@@ -373,6 +373,15 @@ def cmd_list() -> int:
         r["_last_event"] = _untrusted.flat(r["last_event"] or "-")
         r["_note"] = _untrusted.flat(_row_note(r))
         r["_started"] = _untrusted.flat(r["started"] or "-")
+        # #1183: the column that stops a stranded fleet rendering as a quiet
+        # one. Four fixed labels out of `transport.delivery_of`, which reads
+        # `last_emit` and nothing else — so this board, `radar` and
+        # `channel:health` cannot disagree about the same field. The value is
+        # this repo's own vocabulary rather than anybody else's text, which is
+        # why it is not in the `_untrusted` note above.
+        r["_delivery_state"] = transport.delivery_of(
+            r.get("last_emit"), r.get("state_refusal") or "")
+        r["_delivery"] = transport.DELIVERY_LABELS[r["_delivery_state"]]
     noted = any(r["_note"] for r in rows)
     widths = {
         "source": max(6, max(len(r["_source"]) for r in rows)),
@@ -380,13 +389,15 @@ def cmd_list() -> int:
         "pid": max(5, max(len(r["_pid"]) for r in rows)),
         "started": 20,
         "last_event": max(10, max(len(r["_last_event"]) for r in rows)),
+        "delivery": max(8, max(len(r["_delivery"]) for r in rows)),
     }
     header = (
         f"{'SOURCE':<{widths['source']}}  "
         f"{'ID':<{widths['id']}}  "
         f"{'PID':<{widths['pid']}}  "
         f"{'STARTED':<{widths['started']}}  "
-        f"{'LAST_EVENT':<{widths['last_event']}}"
+        f"{'LAST_EVENT':<{widths['last_event']}}  "
+        f"{'DELIVERY':<{widths['delivery']}}"
     )
     if noted:
         header += "  NOTE"
@@ -406,7 +417,8 @@ def cmd_list() -> int:
             f"{r['_id']:<{widths['id']}}  "
             f"{r['_pid']:<{widths['pid']}}  "
             f"{r['_started']:<{widths['started']}}  "
-            f"{r['_last_event']:<{widths['last_event']}}"
+            f"{r['_last_event']:<{widths['last_event']}}  "
+            f"{r['_delivery']:<{widths['delivery']}}"
         )
         if noted:
             line += f"  {r['_note']}"
@@ -421,6 +433,31 @@ def cmd_list() -> int:
               f"fact from a quiet watcher. A state file is written in place by "
               f"its own poller and lives in a directory anyone on this machine "
               f"can write to; inspect it before re-arming.")
+    # #1183. Two separate paragraphs because they are two separate facts, and
+    # collapsing them would be the trade this fix exists to refuse: NO LISTENER
+    # is a definite negative about delivery, `unknown` is the admission that
+    # nothing was established. Neither is a verdict about the *poller* — this
+    # board never proposes stopping, restarting or reaping one on the strength
+    # of the DELIVERY column, and says so, because a render that invited that
+    # reading is what cost two live watchers in #511.
+    stranded = [r for r in rows if r["_delivery_state"] == transport.EMIT_NO_LISTENER]
+    if stranded:
+        print()
+        print(f"{len(stranded)} row(s) above are marked NO LISTENER: that watcher's "
+              f"own last emit found nothing bound to the socket, so the events it "
+              f"reported went nowhere. The poller is fine; this is about the other "
+              f"end. A session started without `--dangerously-load-development-"
+              f"channels server:claude-channel` binds no reader at all, and then "
+              f"this is the expected state rather than a fault. `channel:health` "
+              f"is the judgement about the socket itself. Do not stop or re-arm a "
+              f"watcher on the strength of this column.")
+    undecided = [r for r in rows if r["_delivery_state"] == transport.EMIT_UNKNOWN]
+    if undecided:
+        print()
+        print(f"{len(undecided)} row(s) above are marked `unknown` in DELIVERY: the "
+              f"last emit settled nothing either way — this platform has no AF_UNIX "
+              f"socket, or the write failed for a reason that decides nothing, or "
+              f"the state file itself could not be read. It is not a pass.")
     lost = [r for r in rows if r.get("dead")]
     if lost:
         print()

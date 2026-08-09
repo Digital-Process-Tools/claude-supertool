@@ -371,6 +371,60 @@ def tier_states(arg: str = "") -> tuple[list[str], list[str]]:
     return lines, failures
 
 
+#: Why the header's count is the count it is. Kept off the verdict line so the
+#: verdict stays one line, and worded to name the *other* two surfaces rather
+#: than to repeat their answers.
+_DELIVERY_FOOTNOTE = (
+    "counted over the watcher state files, which includes slots whose poller "
+    "has since gone; `watches` renders it per watcher and `channel:health` is "
+    "the judgement about the socket. Radar neither stops, re-arms nor reaps "
+    "anything on the strength of this line."
+)
+
+
+def delivery_banner() -> list[str]:
+    """The fleet's worst delivery state, above the board. Report-only (#1183).
+
+    Radar's one dangerous power is that it heals: it forks pollers and, on the
+    run that spawns, reaps duplicates. **Nothing here feeds either.** This
+    function reads state files, counts them and returns text; no poller is
+    stopped, restarted or recorded dead because of a delivery verdict, and the
+    footnote says so out loud to the operator as well. A board that got a
+    healthy poller reaped would be a worse defect than the one #1183 filed —
+    #511 is the precedent, where a render that invited a reasonable "these are
+    duplicates" reading cost two live watchers on two different MRs.
+
+    Worst-first, with both counts on the line, so a partly stranded fleet is
+    rounded neither up to healthy nor down to broken. The delivered case is
+    lower-case and the stranded one is not, because only one of them is news.
+
+    An empty fleet returns no lines at all: with no watcher state files there
+    is no fleet to misreport, and a header asserting that would be a claim
+    about a population of zero.
+    """
+    rows = transport.delivery_survey()
+    if not rows:
+        return []
+    total = len(rows)
+    lost = [row for row in rows if row[2] == transport.EMIT_NO_LISTENER]
+    unsure = [row for row in rows if row[2] == transport.EMIT_UNKNOWN]
+    took = [row for row in rows if row[2] == transport.EMIT_ACCEPTED]
+    if lost:
+        head = (f"radar: DELIVERY — {len(lost)} of {total} watcher state file(s) "
+                f"record a last emit that found nobody listening on the socket.")
+    elif unsure:
+        head = (f"radar: DELIVERY — {len(unsure)} of {total} watcher state file(s) "
+                f"cannot say whether their last emit reached anyone.")
+    elif took:
+        head = (f"radar: delivery — all {total} watcher state file(s) had their "
+                f"last emit accepted by a listener.")
+    else:
+        head = (f"radar: delivery — no watcher has recorded an emit yet across "
+                f"{total} state file(s), so nothing here says whether the socket "
+                f"delivers.")
+    return [head, "       " + _DELIVERY_FOOTNOTE]
+
+
 def state_main(arg: str = "") -> int:
     tiers, complaints = read_tiers()
     if not tiers:
@@ -379,6 +433,11 @@ def state_main(arg: str = "") -> int:
         print(NO_TIERS, file=sys.stderr)
         return 1
     lines, failures = tier_states(arg)
+    # Above the tier blocks: the reader this protects is the one who acts on the
+    # first thing they read. Read-only, like everything else on this route.
+    banner = delivery_banner()
+    if banner:
+        print("\n".join(banner))
     if lines:
         print("\n".join(lines))
     for line in failures:
@@ -407,6 +466,9 @@ def main(argv: list[str] | None = None) -> int:
     lines, _all_ok, failures = tier_reports(arg)
     for line in failures:
         print(line, file=sys.stderr)
+    banner = delivery_banner()
+    if banner:
+        print("\n".join(banner))
     if lines:
         print("\n".join(lines))
     return 1 if failures else 0

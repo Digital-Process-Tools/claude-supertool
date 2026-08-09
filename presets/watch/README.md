@@ -30,12 +30,20 @@ Example:
 ./supertool 'radar:--state'                         # look without healing
 ```
 
-`watches` and `radar` both answer questions about the *producing* half. Neither
-says whether anything is on the other end of the socket: a fleet emitting into a
-dead consumer renders exactly like a healthy one. `channel:health` is that
-question, answered in three states — `FORWARDING`, `NOT DELIVERING`,
-`CANNOT DETERMINE` — because delivery into a Claude session is not observable
-from outside it and a two-state answer would have to guess. See
+`watches` and `radar` mainly answer questions about the *producing* half, but
+neither renders a fleet emitting into a dead consumer as a healthy one any more
+(#1183): `watches` carries a `DELIVERY` column and `radar` a one-line header,
+both read from each watcher's own `last_emit` and from nothing else. Four values
+— `accepted`, `NO LISTENER`, `unknown`, `no emit` — with no threshold and no
+clock involved, and neither surface ever stops, re-arms or reaps a poller on the
+strength of them. Note that `NO LISTENER` is the *expected* state in a session
+started without `--dangerously-load-development-channels server:claude-channel`,
+which binds no reader at all.
+
+`channel:health` is the question about the socket itself, answered in three
+states — `FORWARDING`, `NOT DELIVERING`, `CANNOT DETERMINE` — because delivery
+into a Claude session is not observable from outside it and a two-state answer
+would have to guess. See
 [docs/presets/watch.md](../../docs/presets/watch.md#is-it-delivering--channelhealth-554).
 
 `watches` says which pollers are alive; `radar` says what is *true*. Pollers
