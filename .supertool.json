@@ -328,6 +328,19 @@
       "rollback_on_fail": true,
       "timeout": 60
     },
+    "tomllint": {
+      "cmd": "{python} {supertool_dir}/validators/tomllint/tomllint.py {file}",
+      "match": "*.toml",
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste", "append",
+        "vim"
+      ],
+      "rollback_on_fail": true,
+      "timeout": 10
+    },
     "changelog-fragment": {
       "cmd": "{python} {supertool_dir}/validators/changelog-fragment/changelog-fragment.py {file}",
       "match": "*changelog.d/*.md",

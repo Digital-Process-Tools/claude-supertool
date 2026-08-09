@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
 """git-status validator adapter. Emits SCHEMA.md JSON.
 
-Always ok=true — reports working-tree delta as metrics, never triggers rollback.
+Reports the working-tree delta as metrics and never triggers rollback, so a
+verdict from this adapter is `ok: true` or nothing at all.
+
+"Or nothing at all" is the part that was missing until #1202: with git absent it
+answered `ok: true` with a zeroed `metrics` block whose `state` was `clean` — a
+positive claim about a file it had not looked at, and the one shape a reader
+cannot tell from a real answer. That is now `skipped`, escalating to a loud
+error when this validator is named in `$SUPERTOOL_REQUIRE_VALIDATORS`.
 
 Usage: git-status.py <file>
 
@@ -17,6 +24,13 @@ import subprocess
 import sys
 import pathlib
 import time
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
+from refusal import absent
+
+TOOL = "git-status"
+INSTALL_HINT = ("git not found on PATH — the working-tree delta for this file "
+                "was NOT measured (set $GIT_BIN if git lives elsewhere)")
 
 
 def emit(obj: dict) -> None:
@@ -75,13 +89,9 @@ def main() -> None:
     git_bin = os.environ.get("GIT_BIN", "git")
 
     if not shutil.which(git_bin):
-        emit({
-            "tool": "git-status", "file": file, "ok": True, "count": 0,
-            "errors": [], "duration_ms": 0,
-            "metrics": {"lines_added": 0, "lines_removed": 0,
-                        "lines_staged_added": 0, "lines_staged_removed": 0,
-                        "state": "clean"},
-        })
+        # Not `state: "clean"`. A zeroed metrics block is a measurement, and no
+        # measurement was taken.
+        emit(absent(TOOL, file, INSTALL_HINT, 0))
         return
 
     start = time.time()

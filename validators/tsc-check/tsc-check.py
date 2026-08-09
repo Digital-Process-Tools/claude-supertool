@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """tsc-check validator adapter — TypeScript syntax check via tsc --noEmit.
 
-Requires tsc on PATH. If missing, exits 0 with a stderr warning (graceful degrade).
+Requires tsc on PATH. Absent, this reports the third state — `skipped` with the
+reason — rather than the `ok: true` it emitted until #1202, which was a clean
+verdict about a file nothing type-checked. Name this validator in
+`$SUPERTOOL_REQUIRE_VALIDATORS` to turn that absence into a loud error instead.
+
 Usage:  tsc-check.py <file>
 """
 
@@ -17,6 +21,11 @@ import pathlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from source_context import source_context
+from refusal import absent
+
+TOOL = "tsc-check"
+INSTALL_HINT = ("tsc not found on PATH — this file was NOT type-checked "
+                "(`npm install -g typescript`)")
 
 
 # Budget for the one tool spawn below. A module constant rather than a literal
@@ -42,9 +51,8 @@ def main() -> None:
     start = time.time()
 
     if not shutil.which("tsc"):
-        print("tsc-check: tsc not found on PATH, skipping", file=sys.stderr)
-        emit({"tool": "tsc-check", "file": file, "ok": True, "count": 0,
-              "errors": [], "duration_ms": int((time.time() - start) * 1000)})
+        emit(absent(TOOL, file, INSTALL_HINT,
+                    int((time.time() - start) * 1000)))
         return
 
     try:

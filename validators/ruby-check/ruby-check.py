@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """ruby-check validator adapter — Ruby syntax check via `ruby -c`.
 
-Requires ruby on PATH. Ships on most Mac/Linux by default.
-If missing, exits 0 with a stderr warning (graceful degrade).
+Requires ruby on PATH. Ships on most Mac/Linux by default. Absent, this reports
+the third state — `skipped` with the reason — rather than the `ok: true` it
+emitted until #1202, which was a clean verdict about a file nothing parsed. Name
+this validator in `$SUPERTOOL_REQUIRE_VALIDATORS` to turn that absence into a
+loud error instead.
+
 Usage:  ruby-check.py <file>
 """
 
@@ -18,7 +22,10 @@ import pathlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from source_context import source_context
-from refusal import tool_fault
+from refusal import absent, tool_fault
+
+TOOL = "ruby-check"
+INSTALL_HINT = "ruby not found on PATH — this file was NOT syntax-checked"
 
 
 # `file:line: message`. Extracted so the rule can be driven in process on every
@@ -64,9 +71,8 @@ def main() -> None:
     start = time.time()
 
     if not shutil.which("ruby"):
-        print("ruby-check: ruby not found on PATH, skipping", file=sys.stderr)
-        emit({"tool": "ruby-check", "file": file, "ok": True, "count": 0,
-              "errors": [], "duration_ms": int((time.time() - start) * 1000)})
+        emit(absent(TOOL, file, INSTALL_HINT,
+                    int((time.time() - start) * 1000)))
         return
 
     try:

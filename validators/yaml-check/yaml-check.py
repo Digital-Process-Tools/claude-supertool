@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
 """yaml-check validator adapter — YAML syntax check via PyYAML yaml.safe_load().
 
-Requires PyYAML (pip install pyyaml). If missing, exits 0 with a stderr warning.
+Requires PyYAML (pip install pyyaml). Absent, this reports the third state —
+`skipped` with the reason — rather than the `ok: true` it emitted until #1202,
+which was a clean verdict about a file nothing parsed. Name this validator in
+`$SUPERTOOL_REQUIRE_VALIDATORS` to turn that absence into a loud error instead.
+
+The absence here is an import rather than a `shutil.which`, which is why it went
+unnoticed for so long. It is the same absence.
+
 Usage:  yaml-check.py <file>
 """
 
@@ -14,6 +21,11 @@ import pathlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from source_context import source_context
+from refusal import absent
+
+TOOL = "yaml-check"
+INSTALL_HINT = ("PyYAML not installed — this file was NOT parsed "
+                "(`pip install pyyaml`)")
 
 
 def emit(d: dict) -> None:
@@ -34,9 +46,8 @@ def main() -> None:
     try:
         import yaml
     except ImportError:
-        print("yaml-check: PyYAML not installed, skipping", file=sys.stderr)
-        emit({"tool": "yaml-check", "file": file, "ok": True, "count": 0,
-              "errors": [], "duration_ms": int((time.time() - start) * 1000)})
+        emit(absent(TOOL, file, INSTALL_HINT,
+                    int((time.time() - start) * 1000)))
         return
 
     try:

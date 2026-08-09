@@ -28,8 +28,12 @@ def _run(file_path: str) -> dict:
 # Tool missing — graceful degrade
 # ---------------------------------------------------------------------------
 
-def test_missing_tool_graceful(tmp_path: Path) -> None:
-    """When markdownlint is not on PATH, exit 0 with ok=True and a stderr warning."""
+def test_missing_tool_is_the_third_state(tmp_path: Path) -> None:
+    """Absent markdownlint is `skipped`, not `ok: true` (#1202).
+
+    Escalation under `$SUPERTOOL_REQUIRE_VALIDATORS` is asserted in
+    `tests/test_validators_absent_tool_third_state_1202.py`.
+    """
     f = tmp_path / "readme.md"
     f.write_text("# Hello\n\nSome text.\n")
     result = subprocess.run(
@@ -39,9 +43,9 @@ def test_missing_tool_graceful(tmp_path: Path) -> None:
         env=empty_path_env(), encoding="utf-8", errors="replace",
     )
     out = json.loads(result.stdout)
-    assert_ok(out)
-    assert out["count"] == 0
-    assert "markdownlint" in result.stderr.lower()
+    assert "skipped" in out, out
+    assert "markdownlint" in out["skipped"]
+    assert "ok" not in out, out
 
 
 # ---------------------------------------------------------------------------
@@ -77,6 +81,7 @@ def test_no_arg_returns_error() -> None:
 # Output schema
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skipif(not shutil.which("markdownlint"), reason="markdownlint not on PATH")
 def test_output_contains_required_fields(tmp_path: Path) -> None:
     f = tmp_path / "x.md"
     f.write_text("# Hello\n")
@@ -85,6 +90,7 @@ def test_output_contains_required_fields(tmp_path: Path) -> None:
         assert key in out
 
 
+@pytest.mark.skipif(not shutil.which("markdownlint"), reason="markdownlint not on PATH")
 def test_duration_ms_is_int(tmp_path: Path) -> None:
     f = tmp_path / "x.md"
     f.write_text("# Hello\n")
@@ -96,8 +102,9 @@ def test_duration_ms_is_int(tmp_path: Path) -> None:
 # Missing file
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skipif(not shutil.which("markdownlint"), reason="markdownlint not on PATH")
 def test_missing_file_behavior(tmp_path: Path) -> None:
-    """Missing file: markdownlint errors (if present) or graceful skip (if absent)."""
+    """Gated, because ungated it asserted the fabricated pass and nothing else."""
     out = _run(str(tmp_path / "nonexistent.md"))
     assert "ok" in out
 

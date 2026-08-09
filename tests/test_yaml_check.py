@@ -135,8 +135,13 @@ def test_no_arg_returns_error() -> None:
 # PyYAML missing — graceful degrade
 # ---------------------------------------------------------------------------
 
-def test_pyyaml_missing_exits_ok_with_warning(tmp_path: Path) -> None:
-    """When PyYAML is not installed, validator should exit 0 and warn on stderr."""
+def test_pyyaml_missing_is_the_third_state(tmp_path: Path) -> None:
+    """Absent PyYAML is `skipped`, not `ok: true` (#1202).
+
+    The reason moved from stderr into the payload, where a consumer can see it:
+    a stderr warning next to `ok: true` is not something the delta, the
+    validator row or CI reads.
+    """
     f = tmp_path / "any.yml"
     f.write_text("key: value\n")
     # Patch builtins.__import__ to raise ImportError for 'yaml'
@@ -157,8 +162,9 @@ def test_pyyaml_missing_exits_ok_with_warning(tmp_path: Path) -> None:
         text=True, encoding="utf-8", errors="replace",
     )
     out = json.loads(result.stdout)
-    assert out["ok"] is True
-    assert "PyYAML" in result.stderr or "pyyaml" in result.stderr.lower()
+    assert "skipped" in out, out
+    assert "PyYAML" in out["skipped"], out
+    assert "ok" not in out, out
 
 
 # ---------------------------------------------------------------------------

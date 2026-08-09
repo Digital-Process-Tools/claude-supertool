@@ -190,7 +190,8 @@ def test_gofmt_check_unformatted_file_is_hard_error(tmp_path: Path) -> None:
     assert "gofmt" in data["errors"][0]["msg"]
 
 
-def test_gofmt_check_graceful_skip_when_tool_missing(tmp_path: Path) -> None:
+def test_gofmt_check_missing_tool_is_the_third_state(tmp_path: Path) -> None:
+    """Absent gofmt is `skipped`, not `ok: true` (#1202)."""
     f = tmp_path / "x.go"
     f.write_text("package main\n")
     # Use a PATH that has Python but no gofmt (point to an empty dir)
@@ -199,9 +200,9 @@ def test_gofmt_check_graceful_skip_when_tool_missing(tmp_path: Path) -> None:
     r = subprocess.run([sys.executable, str(GOFMT_CHECK), str(f)],
                        capture_output=True, text=True, timeout=adapter_budget(GOFMT_CHECK), env=env, encoding="utf-8", errors="replace")
     data = json.loads(r.stdout.strip())
-    assert_ok(data)
-    assert data["count"] == 0
-    assert "gofmt" in r.stderr
+    assert "skipped" in data, data
+    assert "gofmt" in data["skipped"]
+    assert "ok" not in data, data
 
 
 # ---------------------------------------------------------------------------
@@ -240,7 +241,8 @@ def test_terraform_check_unformatted_file_is_hard_error(tmp_path: Path) -> None:
     assert isinstance(data["errors"], list)
 
 
-def test_terraform_check_graceful_skip_when_tool_missing(tmp_path: Path) -> None:
+def test_terraform_check_missing_tool_is_the_third_state(tmp_path: Path) -> None:
+    """Absent terraform is `skipped`, not `ok: true` (#1202)."""
     f = tmp_path / "x.tf"
     f.write_text('resource "null_resource" "x" {}\n')
     python_dir = str(Path(sys.executable).parent)
@@ -248,9 +250,9 @@ def test_terraform_check_graceful_skip_when_tool_missing(tmp_path: Path) -> None
     r = subprocess.run([sys.executable, str(TERRAFORM_CHECK), str(f)],
                        capture_output=True, text=True, timeout=adapter_budget(TERRAFORM_CHECK), env=env, encoding="utf-8", errors="replace")
     data = json.loads(r.stdout.strip())
-    assert_ok(data)
-    assert data["count"] == 0
-    assert "terraform" in r.stderr
+    assert "skipped" in data, data
+    assert "terraform" in data["skipped"]
+    assert "ok" not in data, data
 
 
 # ---------------------------------------------------------------------------
@@ -266,7 +268,8 @@ def test_cargo_check_no_arg_returns_schema_error() -> None:
     assert "no file arg" in data["errors"][0]["msg"]
 
 
-def test_cargo_check_graceful_skip_when_tool_missing(tmp_path: Path) -> None:
+def test_cargo_check_missing_tool_is_the_third_state(tmp_path: Path) -> None:
+    """Absent cargo is `skipped`, not `ok: true` (#1202)."""
     f = tmp_path / "src" / "main.rs"
     f.parent.mkdir()
     f.write_text("fn main() {}\n")
@@ -277,21 +280,26 @@ def test_cargo_check_graceful_skip_when_tool_missing(tmp_path: Path) -> None:
     r = subprocess.run([sys.executable, str(CARGO_CHECK), str(f)],
                        capture_output=True, text=True, timeout=adapter_budget(CARGO_CHECK), env=env, encoding="utf-8", errors="replace")
     data = json.loads(r.stdout.strip())
-    assert_ok(data)
-    assert data["count"] == 0
-    assert "cargo" in r.stderr
+    assert "skipped" in data, data
+    assert "cargo" in data["skipped"]
+    assert "ok" not in data, data
 
 
-def test_cargo_check_graceful_skip_when_no_cargo_toml(tmp_path: Path) -> None:
+def test_cargo_check_no_crate_is_the_third_state(tmp_path: Path) -> None:
+    """A file in no crate was not compiled, whether or not cargo is installed.
+
+    Both arms are a skip now, so this no longer depends on which of the two
+    fired — which is what made the old `assert_ok` version pass everywhere
+    while asserting nothing about either.
+    """
     f = tmp_path / "orphan.rs"
     f.write_text("fn main() {}\n")
     # No Cargo.toml anywhere in tmp_path parents (tmp_path is ephemeral)
     r = subprocess.run([sys.executable, str(CARGO_CHECK), str(f)],
                        capture_output=True, text=True, timeout=adapter_budget(CARGO_CHECK), encoding="utf-8", errors="replace")
     data = json.loads(r.stdout.strip())
-    # If cargo is on PATH: skip because no Cargo.toml. If cargo missing: also skip.
-    assert_ok(data)
-    assert data["count"] == 0
+    assert "skipped" in data, data
+    assert "NOT compiled" in data["skipped"], data
 
 
 @pytest.mark.skipif(not shutil.which("cargo"), reason="cargo not installed")

@@ -28,8 +28,12 @@ def _run(file_path: str) -> dict:
 # Tool missing — graceful degrade
 # ---------------------------------------------------------------------------
 
-def test_missing_tool_graceful(tmp_path: Path) -> None:
-    """When pyright is not on PATH, exit 0 with ok=True and a stderr warning."""
+def test_missing_tool_is_the_third_state(tmp_path: Path) -> None:
+    """Absent pyright is `skipped`, not `ok: true` (#1202).
+
+    Escalation under `$SUPERTOOL_REQUIRE_VALIDATORS` is asserted in
+    `tests/test_validators_absent_tool_third_state_1202.py`.
+    """
     f = tmp_path / "hello.py"
     f.write_text("x: int = 1\n")
     result = subprocess.run(
@@ -39,9 +43,9 @@ def test_missing_tool_graceful(tmp_path: Path) -> None:
         env=empty_path_env(), encoding="utf-8", errors="replace",
     )
     out = json.loads(result.stdout)
-    assert_ok(out)
-    assert out["count"] == 0
-    assert "pyright" in result.stderr.lower()
+    assert "skipped" in out, out
+    assert "pyright" in out["skipped"]
+    assert "ok" not in out, out
 
 
 # ---------------------------------------------------------------------------
@@ -63,6 +67,7 @@ def test_no_arg_returns_error() -> None:
 # Output schema
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skipif(not shutil.which("pyright"), reason="pyright not on PATH")
 def test_output_schema_present(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("x: int = 1\n")
@@ -72,6 +77,7 @@ def test_output_schema_present(tmp_path: Path) -> None:
     assert out["tool"] == "pyright"
 
 
+@pytest.mark.skipif(not shutil.which("pyright"), reason="pyright not on PATH")
 def test_duration_ms_is_int(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("x: int = 1\n")

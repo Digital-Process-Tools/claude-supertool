@@ -224,6 +224,42 @@ def required_but_absent(tool: str, reason: str) -> str:
             f"file was NOT checked: {reason}")
 
 
+def absent(tool: str, file_path: str, reason: str, dur_ms: int) -> dict:
+    """The absent-tool arm of every adapter, as one call (#1202).
+
+    `required()` shipped as a helper each adapter had to remember to call, and
+    six of them did. The rest spelled the same moment three other ways: a
+    `skipped` that could never be escalated (`ruff`, `html-check`, the four MCP
+    adapters), or — worse and on the adjacent line — a fabricated
+    `{"ok": true, "count": 0, "errors": []}` about a file nothing opened
+    (`tsc-check`, `markdownlint`, `ruby-check`, `cargo-check`, `hadolint`,
+    `gofmt-check`, `terraform-check`, `pyright`, `git-status`, `yaml-check`).
+
+    An opt-in switch that a caller sets and cannot tell they set is worse than
+    no switch, and a clean verdict from a checker that never ran is the failure
+    this whole module exists to end. Both were spelled adapter by adapter, so
+    both were only ever as good as the last author's memory. They are one call
+    now: an adapter states the absence and its reason, and where that lands is
+    decided here.
+
+    `tool` is the **validator name** — the key a repo writes in
+    `.supertool.json` — never the binary. `tsc-check` runs `tsc` and
+    `html-check` runs `node`; escalating on the binary name would ignore the
+    only spelling anyone can configure.
+
+    Reserve this for an *absent* tool. A tool that ran and fell over is
+    `tool_fault()`, a scope refusal is `skipped()` directly, and neither
+    becomes louder because someone asked for the gate to be installed.
+    """
+    if required(tool):
+        return {"tool": tool, "file": file_path, "ok": False, "count": 1,
+                "errors": [{"line": None, "col": None, "severity": "error",
+                            "code": "adapter",
+                            "msg": required_but_absent(tool, reason)}],
+                "duration_ms": dur_ms}
+    return skipped(tool, file_path, reason, dur_ms)
+
+
 def skipped(tool: str, file_path: str, reason: str, dur_ms: int) -> dict:
     """A SCHEMA.md result in the third state: not clean, not broken, not looked at.
 

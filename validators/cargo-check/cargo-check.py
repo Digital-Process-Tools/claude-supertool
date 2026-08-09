@@ -5,8 +5,15 @@ NOTE: This validator compiles the entire crate — it can be slow (5-30s on firs
 run). Consider disabling it for hot-loop editing via `opt_in: true` in your
 .supertool.json validator config.
 
-Requires cargo (ships with Rust). If missing, exits 0 with a stderr warning.
-Finds Cargo.toml by walking up from the .rs file. Skips if none found.
+Requires cargo (ships with Rust). Absent, this reports the third state —
+`skipped` with the reason — rather than the `ok: true` it emitted until #1202,
+which was a clean verdict about a file nothing compiled. Name this validator in
+`$SUPERTOOL_REQUIRE_VALIDATORS` to turn that absence into a loud error instead.
+
+Finds Cargo.toml by walking up from the .rs file. A file in no crate is also a
+`skipped`, but never escalates: cargo is installed and working, and the reason
+the gate did not run is the file, not the CI image.
+
 Usage:  cargo-check.py <file>
 """
 
@@ -27,7 +34,11 @@ import pathlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from source_context import source_context
-from refusal import tool_fault
+from refusal import absent, skipped, tool_fault
+
+TOOL = "cargo-check"
+INSTALL_HINT = ("cargo not found on PATH — this file was NOT compiled "
+                "(install the Rust toolchain via rustup)")
 
 
 def emit(d: dict) -> None:
@@ -353,16 +364,19 @@ def main() -> None:
     start = time.time()
 
     if not shutil.which("cargo"):
-        print("cargo-check: cargo not found on PATH, skipping", file=sys.stderr)
-        emit({"tool": "cargo-check", "file": file, "ok": True, "count": 0,
-              "errors": [], "duration_ms": int((time.time() - start) * 1000)})
+        emit(absent(TOOL, file, INSTALL_HINT,
+                    int((time.time() - start) * 1000)))
         return
 
     crate_root = _find_crate_root(file)
     if crate_root is None:
-        print("cargo-check: no Cargo.toml found, skipping", file=sys.stderr)
-        emit({"tool": "cargo-check", "file": file, "ok": True, "count": 0,
-              "errors": [], "duration_ms": int((time.time() - start) * 1000)})
+        # A scope refusal, not an absent tool: `skipped()` directly rather than
+        # `absent()`, because no CI image change makes a file in no crate
+        # compilable and escalating it would fire on every loose `.rs`.
+        emit(skipped(TOOL, file,
+                     "no Cargo.toml above this file — it belongs to no crate, "
+                     "so it was NOT compiled",
+                     int((time.time() - start) * 1000)))
         return
 
     try:

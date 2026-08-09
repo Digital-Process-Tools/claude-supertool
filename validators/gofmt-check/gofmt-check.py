@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """gofmt-check validator adapter — Go formatting check via `gofmt -l`.
 
-Requires gofmt (ships with Go). If missing, exits 0 with a stderr warning.
+Requires gofmt (ships with Go). Absent, this reports the third state — `skipped`
+with the reason — rather than the `ok: true` it emitted until #1202, which was a
+clean verdict about a file nothing formatted-checked. Name this validator in
+`$SUPERTOOL_REQUIRE_VALIDATORS` to turn that absence into a loud error instead.
+
 Usage:  gofmt-check.py <file>
 """
 
@@ -17,7 +21,11 @@ import pathlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from source_context import source_context
-from refusal import tool_fault
+from refusal import absent, tool_fault
+
+TOOL = "gofmt-check"
+INSTALL_HINT = ("gofmt not found on PATH — this file was NOT format-checked "
+                "(install Go)")
 
 # gofmt splits its two answers across the two streams and two exit codes, and
 # the adapter read neither until #753:
@@ -73,9 +81,8 @@ def main() -> None:
     start = time.time()
 
     if not shutil.which("gofmt"):
-        print("gofmt-check: gofmt not found on PATH, skipping", file=sys.stderr)
-        emit({"tool": "gofmt-check", "file": file, "ok": True, "count": 0,
-              "errors": [], "duration_ms": int((time.time() - start) * 1000)})
+        emit(absent(TOOL, file, INSTALL_HINT,
+                    int((time.time() - start) * 1000)))
         return
 
     try:
