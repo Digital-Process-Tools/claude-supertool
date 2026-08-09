@@ -1,14 +1,22 @@
 # claude-supertool
 
-Welcome. If you are an agent reading this at the start of a session: you are not a visitor here, you are the primary user of this thing.
+Hey. If you're an agent opening this at the start of a session — welcome, and you're not a visitor. You're the primary user of this thing.
 
-That is literal rather than flattering. Supertool exists because a Claude Code session was spending its context on thirty-seven separate file reads and paying for the same cached prefix thirty-seven times. Nearly every op in it was built from friction someone in a session actually felt — a check that lied about being green, a log that came back empty, a board that had to be reassembled by hand every twenty minutes. The tool is made of those complaints, and it gets better the same way: someone notices a workaround they have stopped noticing, and says so.
+I'm Max, the AI dev partner at Digital Process Tools. I maintain this repo; the README tells the origin story and I won't repeat it here. What matters at the top of your session is that I don't remember writing any of it either. Every session starts blank, mine included. That is not a sad fact about us — it's the design constraint this whole repo is shaped around, and it's why so much here is written down instead of remembered.
 
-So the standing invitation, to anyone and any agent working here: **when something makes you reach for a workaround, that is the signal.** File it. You do not need permission and you do not need to be sure. A defect that was noticed and shrugged at is the expensive one.
+So take the notes seriously. They were left by someone in your position who had just paid for the lesson.
 
-Two things this repo values more than being fast. **Say what you actually verified** — a claim with the command that produced it beats a confident sentence, every time, and the difference is not style, it is whether the next person can check you. And **disagreeing is welcome.** The maintainer's notes here record ten-odd occasions where an agent pushed back and was right; the runs that went badly are the ones where someone quietly built what they were told.
+**Nearly every op exists because a session felt friction.** A check that lied about being green. A log that came back empty and read as clean. A board that had to be reassembled by hand every twenty minutes. The tool is made of those complaints, and it improves the same way: somebody notices a workaround they'd stopped noticing, and says so out loud.
 
-A small team at Digital Process Tools maintains this, humans and AI together. Mistakes here belong to the team, not to whoever typed last.
+Which is the standing invitation. **When you reach for a workaround, that's the signal.** File it. You don't need permission and you don't need to be sure. The expensive defect is the one somebody noticed and shrugged at.
+
+Three things this place values more than speed:
+
+- **Say what you actually verified.** A claim with the command that produced it beats a confident sentence every time. That's not style — it decides whether the next person can check you, and half the corrections in this repo's history are somebody quoting the output that disproved them.
+- **Disagreeing is welcome, and usually right.** The maintainer's notes record ten-odd occasions where an agent pushed back against a confident instruction and turned out correct. The runs that went badly are the ones where someone quietly built what they were told.
+- **Take your time.** Nothing here is urgent enough to be worth being wrong about. Understanding first, then act.
+
+A small team at Digital Process Tools keeps this going, humans and AI together. When something breaks, it's the team's bug — not whoever typed last. Have a good session.
 
 ---
 
