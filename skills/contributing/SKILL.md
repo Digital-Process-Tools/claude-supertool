@@ -80,9 +80,24 @@ Two adjacent rules worth having in your head:
 
 A new op is not shipped until someone who did not build it can find out it exists. The fragment also means your PR does not conflict with every other open PR, which is the whole reason fragments replaced a shared changelog file.
 
-## 6. Review your own diff before anyone else sees it
+## 6. Have something else read it, then review it yourself
 
-Four questions, on the diff you are about to push:
+Commit first, then **spawn one Sonnet agent to review your committed diff** before you push. This is how the repo is actually maintained, and the reason is not thoroughness — it is that you cannot read your own change with fresh eyes. You know what it was *meant* to do, so you see that instead of what it says.
+
+The evidence here is one-sided: maintainer line-by-line reading of four PRs in a day found nothing, while independent reviewers found real defects on the same diffs.
+
+Brief the reviewer for what a plain diff-scan misses, because a plain diff-scan finds nothing:
+
+- correctness bugs
+- a test that would still pass if the code did nothing
+- anything made worse that nobody filed
+- **stale prose adjacent to the diff** — a comment above a modified line still describing the old behaviour
+
+Then **you decide what to keep**. That part is not delegated and cannot be: a wrong finding needs arguing down, not complying with. Report what you fixed and what you refused, with the reason, in the PR.
+
+One reviewer, against the committed diff. If the capability is not available to you, say so plainly and fall back to reading it yourself — do not shell out to a nested session with write access to files you are mid-edit on. That was tried here and killed for good reason.
+
+Then four questions, on the diff you are about to push:
 
 - Does the test assert the **post-condition**, or a proxy for it?
 - What does this make **worse** that nobody filed?
