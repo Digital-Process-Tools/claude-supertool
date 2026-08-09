@@ -24,6 +24,7 @@ from pathlib import Path
 
 import pytest
 import supertool
+from _symlink import require_symlink
 
 
 def _init_repo(root: Path) -> None:
@@ -36,11 +37,19 @@ def _init_repo(root: Path) -> None:
     (root / ".gitignore").write_bytes(b"ignored.txt\n")
     for name in ("clean.txt", "dirty.txt", "also_clean.txt", "third.txt"):
         (root / name).write_bytes(b"orig\n")
+    # A subdirectory, so a path can be written with a directory component in it
+    # the way the CLI hands one over (#1186).
+    (root / "sub").mkdir()
+    for name in ("clean.txt", "dirty.txt"):
+        (root / "sub" / name).write_bytes(b"orig\n")
     run("add", "-A")
     run("commit", "-qm", "seed")
     (root / "dirty.txt").write_bytes(b"changed\n")
     (root / "untracked.txt").write_bytes(b"new\n")
     (root / "ignored.txt").write_bytes(b"hush\n")
+    (root / "sub" / "dirty.txt").write_bytes(b"changed\n")
+    (root / "sub" / "untracked.txt").write_bytes(b"new\n")
+    (root / "sub" / "ignored.txt").write_bytes(b"hush\n")
 
 
 def _reset_bulk() -> None:
@@ -121,6 +130,76 @@ def test_coalesced_markers_match_the_per_path_answer(repo: Path) -> None:
     assert " !" in per_path["ignored.txt"]
     assert " m" not in per_path["clean.txt"]
     assert " ?" not in per_path["clean.txt"]
+
+
+# The form the CLI actually hands the op: relative, with a directory component.
+_SUB_PATHS = ("sub/clean.txt", "sub/dirty.txt", "sub/untracked.txt",
+              "sub/ignored.txt")
+
+
+def test_a_relative_path_with_a_directory_answers_like_an_absolute_one(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1186 - the parity test above passes absolute paths and top-level names,
+    and both of those resolve fine. The per-path query runs with
+    cwd=dirname(abspath(path)) while passing the path *as written*, so
+    `sub/s.txt` resolved a second time against `<repo>/sub`: git warned on
+    stderr, exited 0 with empty stdout, and the marker silently vanished. The
+    bulk arm keys off `relpath(absolute, root)` and was always right, so the
+    same file got two different answers depending on its position in a batch."""
+    monkeypatch.chdir(repo)
+
+    for name in _SUB_PATHS:
+        _reset_bulk()                              # force the single-path route
+        relative = supertool._path_meta_suffix(name, b"x\n")
+        _reset_bulk()
+        absolute = supertool._path_meta_suffix(str(repo / name), b"x\n")
+        assert relative == absolute, (
+            f"{name}: written relative -> {relative!r}, written absolute -> "
+            f"{absolute!r}; the pathspec is being resolved against the wrong "
+            f"directory"
+        )
+
+    per_path = {}
+    for name in _SUB_PATHS:
+        _reset_bulk()
+        per_path[name] = supertool._path_meta_suffix(name, b"x\n")
+
+    _reset_bulk()
+    coalesced = {n: supertool._path_meta_suffix(n, b"x\n") for n in _SUB_PATHS}
+
+    assert coalesced == per_path
+    # and the answers are the real ones, not uniformly empty
+    assert " m" in per_path["sub/dirty.txt"]
+    assert " ?" in per_path["sub/untracked.txt"]
+    assert " !" in per_path["sub/ignored.txt"]
+    assert " m" not in per_path["sub/clean.txt"]
+    assert " ?" not in per_path["sub/clean.txt"]
+
+
+def test_a_relative_symlink_is_still_answered_about_its_own_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The cwd the per-path query runs in is load-bearing, not incidental: it is
+    what keeps this route and the bulk route talking about the same repository
+    when a link points across a repo boundary (`_path_meta_repo_root`'s
+    docstring). A symlink skips the bulk arm entirely, so this pins the per-path
+    arm's repo choice for the relative-with-a-directory form too."""
+    require_symlink()
+    here, elsewhere = tmp_path / "here", tmp_path / "elsewhere"
+    here.mkdir()
+    elsewhere.mkdir()
+    _init_repo(here)
+    _init_repo(elsewhere)
+    _reset_bulk()
+    monkeypatch.chdir(here)
+
+    link = here / "sub" / "points_away.txt"
+    link.symlink_to(elsewhere / "clean.txt")
+
+    assert " ?" in supertool._path_meta_suffix(
+        os.path.join("sub", "points_away.txt"), b"x\n"
+    ), "an untracked link is untracked in the repo it sits in, not its target's"
 
 
 def test_a_single_path_costs_exactly_one_spawn(
