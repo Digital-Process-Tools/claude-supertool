@@ -21,7 +21,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 sys.path.insert(0, str(Path(__file__).parent.parent))  # for _proc
 
@@ -72,6 +72,38 @@ _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 # poller against a slot it did not own, on a machine where the state directory
 # is unwritable or gone — exactly when two pollers are least wanted.
 CLAIM_UNKNOWN = -1
+
+
+# What a producer can honestly say about one event it wrote (#554, request 3).
+#
+# There is no fourth state called "delivered", and its absence is the finding
+# this vocabulary records. The receiver is a Claude session; the bridge reaches
+# it through `mcp.notification()`, which is a JSON-RPC *notification* — no id,
+# no response, nothing to await — and `channel.ts` never writes back to the
+# producer connection either. So no process other than that session can observe
+# that an event arrived in it. A producer reporting `delivered` would be
+# reporting an inference, which is the defect rather than the fix.
+#
+# `EMIT_NO_LISTENER` is the one definite answer available here, and it is a
+# negative: nobody could have received this. `EMIT_ACCEPTED` is the ceiling of
+# the positive — a listener took the bytes, and what it did with them is
+# somebody else's fact to publish (see `channel.py`).
+EMIT_NO_LISTENER = "no-listener"
+EMIT_ACCEPTED = "accepted"
+EMIT_UNKNOWN = "unknown"
+
+
+class Emit(NamedTuple):
+    """One `emit_socket` outcome: the state, and why it was reached.
+
+    `detail` is not decoration. "the socket file is gone" and "the socket
+    refused the connection" are the same state reached two ways, and an operator
+    deciding whether a consumer crashed or was never started needs the second
+    field to tell them apart.
+    """
+
+    state: str
+    detail: str
 
 
 def state_path(source: str, watcher_id: str) -> str:
@@ -179,24 +211,38 @@ def release_pidfile(source: str, watcher_id: str, pid: int | None = None) -> Non
         pass
 
 
-def emit_socket(payload: dict[str, Any]) -> None:
-    """Best-effort write of one NDJSON line to the UDS socket. Silent if no listener."""
+def emit_socket(payload: dict[str, Any]) -> Emit:
+    """Write one NDJSON line to the UDS socket, and say what that write means.
+
+    Still best-effort — a watcher must never die because nothing was listening —
+    but no longer silent about which of the three outcomes it got. The write
+    itself is unchanged; what changed is that the answer leaves the function.
+    """
     if not os.path.exists(SOCK_PATH):
-        return
+        return Emit(EMIT_NO_LISTENER, f"no socket at {SOCK_PATH}")
     s: socket.socket | None = None
     try:
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         s.settimeout(0.5)
         s.connect(SOCK_PATH)
         s.sendall((json.dumps(payload) + "\n").encode("utf-8"))
-    except OSError:
-        return
+    except (ConnectionRefusedError, FileNotFoundError) as err:
+        # The path exists and nothing is behind it: a consumer that crashed
+        # without unlinking, or one whose socket was replaced. This is the state
+        # that reads green from `pgrep` and from `lsof`, and it is the concrete
+        # shape of #554's silent window.
+        return Emit(EMIT_NO_LISTENER, f"{SOCK_PATH} refused the connection ({type(err).__name__})")
+    except OSError as err:
+        # Timeout, EPIPE, EACCES, ENOTSOCK. Something went wrong mid-write and
+        # nothing here can tell whether a partial line reached the consumer.
+        return Emit(EMIT_UNKNOWN, f"{type(err).__name__} writing to {SOCK_PATH}")
     finally:
         if s is not None:
             try:
                 s.close()
             except OSError:
                 pass
+    return Emit(EMIT_ACCEPTED, f"{SOCK_PATH} accepted the bytes")
 
 
 def write_state(source: str, watcher_id: str, state: dict[str, Any]) -> None:
@@ -431,10 +477,22 @@ def emit_event(
         "payload": flatten_remote(payload),
         "first_tick": bool(first_tick),
     }
-    emit_socket(record)
+    verdict = emit_socket(record)
     current = read_state(source, watcher_id)
     current["last_event"] = record
     current.setdefault("first_seen", record["ts"])
+    # #554: what the socket write actually meant, kept per watcher. `last_event`
+    # alone says only that this poller *emitted* — it is written whether or not
+    # anything was listening, so a fleet writing into a dead socket renders
+    # exactly like a healthy one. This is the same footing as `sock_path` below:
+    # process-local state, not part of the locked wire payload, and here so that
+    # a delivery gap is inspectable rather than inferred from "some events
+    # arrived and some didn't".
+    current["last_emit"] = {
+        "ts": record["ts"],
+        "state": verdict.state,
+        "detail": verdict.detail,
+    }
     # Not part of the wire payload above (that contract is locked, see
     # docs/presets/watch.md) — this is process-local state, same footing as
     # the `only` filter a poller already publishes into its own state file.

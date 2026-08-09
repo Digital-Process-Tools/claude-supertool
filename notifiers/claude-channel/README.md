@@ -439,6 +439,50 @@ Exit codes: `3` means another server owns the watch socket (or its state could
 not be established) and this one declined to take it. `4` means a
 `SUPERTOOL_CHANNEL_*_MAX` override could not be read as a positive integer.
 
+## Is it delivering? — the health file ([#554](https://github.com/Digital-Process-Tools/claude-supertool/issues/554))
+
+This server is alive, holds the socket, and accepts every write whether or not a
+single event reaches the session. All three of the checks a session reaches for
+— `pgrep -fl channel.ts`, `lsof` on the socket, writing to the socket — are
+green in both worlds. So it publishes its own counters instead, beside the
+socket at `{SUPERTOOL_WATCH_SOCK}.health.json`:
+
+```json
+{
+  "pid": 4211,
+  "started": "2026-08-09T09:14:02Z",
+  "updated": "2026-08-09T10:22:31Z",
+  "sock_path": "/tmp/supertool-watch.sock",
+  "lines_read": 41,
+  "forwarded": 39,
+  "dropped": 2,
+  "last_forwarded": "2026-08-09T10:21:58Z"
+}
+```
+
+Read it with `./supertool 'channel:health'`, which turns it into a three-state
+verdict and refuses to believe a file whose pid is gone or whose stamp has gone
+cold.
+
+**`forwarded`, never `delivered`.** It counts events handed to
+`mcp.notification()` — a JSON-RPC notification, so no id, no response and
+nothing to await. Whether one appeared in a Claude session is observable only
+from inside that session; see "Out of scope" below, where a per-event ack is
+listed as the feature that does not exist. A counter named `delivered` would be
+an inference wearing the costume of a measurement.
+
+**The stamp moves on a 10s heartbeat with no traffic at all.** An idle radar and
+a wedged one publish identical numbers, so the counters are only evidence when
+something proves they are current. The file is written atomically (temp +
+rename), so a reader never sees a truncated one and concludes there are no
+counters.
+
+**It is removed on a clean shutdown**, along with the socket and under the same
+`bound` guard. A file left behind saying `forwarded: 39` under a dead pid is a
+number that never decreases and reads as health forever — this issue's defect
+rebuilt out of its own fix. A `SIGKILL` never reaches that path, which is why
+the reader checks the pid too.
+
 ## Security (Phase 2 v1)
 
 - UDS socket bound to a local filesystem path with mode `0600` (owner-only)
@@ -464,6 +508,8 @@ not be established) and this one declined to take it. `4` means a
 ## Out of scope (future)
 
 - Two-way reply tool (Claude posts back via the channel) — would require
-  a per-event ack contract
+  a per-event ack contract. Its absence is why `channel:health` reports
+  `forwarded` rather than `delivered`: with no ack at either end, delivery into
+  a session cannot be observed from outside it ([#554](https://github.com/Digital-Process-Tools/claude-supertool/issues/554))
 - Permission relay (approve tool calls remotely) — different feature
 - Allowlist of approved senders beyond filesystem ACL

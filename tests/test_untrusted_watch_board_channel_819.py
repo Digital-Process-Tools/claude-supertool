@@ -233,7 +233,11 @@ def test_the_radar_board_prints_the_note_too() -> None:
 def _emitted(monkeypatch: Any, tmp_path: Any, **kw: Any) -> dict:
     captured: list[dict] = []
     monkeypatch.setattr(transport, "STATE_DIR", str(tmp_path))
-    monkeypatch.setattr(transport, "emit_socket", captured.append)
+    def _capture(record: dict) -> Any:
+        captured.append(record)
+        return transport.Emit(transport.EMIT_ACCEPTED, "captured")
+
+    monkeypatch.setattr(transport, "emit_socket", _capture)
     monkeypatch.setattr(transport, "desktop_notify", lambda *a, **k: None)
     transport.emit_event("gitlab-mr", "19509", "pipeline_failed", **kw)
     assert captured, "emit_event must put the event on the socket"
@@ -270,7 +274,10 @@ def test_emit_event_flattens_the_desktop_notification(monkeypatch, tmp_path) -> 
     """The notification is a second reader of the same remote text."""
     seen: list[tuple[str, str]] = []
     monkeypatch.setattr(transport, "STATE_DIR", str(tmp_path))
-    monkeypatch.setattr(transport, "emit_socket", lambda rec: None)
+    monkeypatch.setattr(
+        transport, "emit_socket",
+        lambda rec: transport.Emit(transport.EMIT_ACCEPTED, "stubbed"),
+    )
     monkeypatch.setattr(transport, "desktop_notify",
                         lambda title, message: seen.append((title, message)))
     transport.emit_event("gitlab-mr", "19509", "pipeline_failed", {"url": ""},

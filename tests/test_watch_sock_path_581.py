@@ -121,7 +121,10 @@ def test_a_watcher_records_which_socket_path_it_is_actually_using(monkeypatch, t
     reader checking for a stray watcher looks."""
     monkeypatch.setattr(transport, "STATE_DIR", str(tmp_path))
     monkeypatch.setattr(transport, "SOCK_PATH", "/tmp/supertool-watch-581-mine.sock")
-    monkeypatch.setattr(transport, "emit_socket", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        transport, "emit_socket",
+        lambda *_a, **_kw: transport.Emit(transport.EMIT_ACCEPTED, "stubbed"),
+    )
     monkeypatch.setattr(transport, "desktop_notify", lambda *_a, **_kw: None)
 
     transport.emit_event("gitlab-mr", "581", "merged", {})

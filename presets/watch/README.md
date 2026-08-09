@@ -11,6 +11,7 @@ Claude Code.
 watch:SOURCE:ID[:only=event1,event2]    spawn poller (fire-and-forget)
 unwatch:SOURCE:ID                       kill poller, remove PID file
 watches                                 list active pollers (table)
+channel:health                          is the bridge to the session actually delivering?
 radar                                   reconcile registered tiers against live truth, report
 radar:--state                           the same tiers, read-only — spawns nothing
 ```
@@ -24,9 +25,18 @@ Example:
 ./supertool 'watch:gh-run:18234567890'              # poll a GitHub Actions run to completion
 ./supertool 'watches'
 ./supertool 'unwatch:gitlab-mr:21803'
+./supertool 'channel:health'                        # is anything receiving these?
 ./supertool 'radar'                                 # prune, heal, report
 ./supertool 'radar:--state'                         # look without healing
 ```
+
+`watches` and `radar` both answer questions about the *producing* half. Neither
+says whether anything is on the other end of the socket: a fleet emitting into a
+dead consumer renders exactly like a healthy one. `channel:health` is that
+question, answered in three states — `FORWARDING`, `NOT DELIVERING`,
+`CANNOT DETERMINE` — because delivery into a Claude session is not observable
+from outside it and a two-state answer would have to guess. See
+[docs/presets/watch.md](../../docs/presets/watch.md#is-it-delivering--channelhealth-554).
 
 `watches` says which pollers are alive; `radar` says what is *true*. Pollers
 die with the machine and events are fire-and-forget, so at session start an
