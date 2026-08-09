@@ -1103,6 +1103,78 @@ straggler on the old path after an operator changes the variable is
 something a reader can find rather than something inferred from partial
 delivery.
 
+### The status file is somebody else's text too, and `watches` renders it
+
+([#1197](https://github.com/Digital-Process-Tools/claude-supertool/issues/1197),
+third call site of the pair closed at
+[#1184](https://github.com/Digital-Process-Tools/claude-supertool/issues/1184)/[#1187](https://github.com/Digital-Process-Tools/claude-supertool/issues/1187)
+and [#1191](https://github.com/Digital-Process-Tools/claude-supertool/issues/1191).)
+
+`transport.read_state` opens `/tmp/supertool-watch-{source}__{id}.state.json`,
+a fully predictable name in a world-writable directory, written by a separate
+process nothing here can authenticate. It is now opened `O_RDONLY|O_NOFOLLOW`,
+with the descriptor closed explicitly on the `os.fdopen` failure path — that
+flag refuses a symlink and does *not* refuse a directory, so a co-tenant who
+`mkdir`s the name would otherwise cost one file descriptor per board render.
+
+**There is no existence pre-check and there must not be one.** `O_NOFOLLOW`
+answers a dangling symlink with `ELOOP`, not `ENOENT`, so the `os.path.exists`
+that used to guard this read followed the link and reported somebody's redirect
+as *no state file at all*. `ENOENT` out of the open is the only honest absence.
+
+**Invalid UTF-8 declines instead of raising.** `json.load` decodes before it
+parses, so two bytes raise `UnicodeDecodeError` — a `ValueError`, and in neither
+arm of the `(OSError, json.JSONDecodeError)` this replaced. Measured, that
+traceback escaped `read_state`, `deaths`, `list_active_pids`, `list_watchers`
+and `dispatcher.cmd_list`, so the `watches` op exited on a stack trace out of
+`json/__init__.py`; it also reaches the poll loop, which reads state *outside*
+the never-crash `try`, so one file a co-tenant wrote killed the watcher too. A
+top-level array or string is refused for the same reason: every caller here
+calls `.get()` on the result.
+
+**`read_state` keeps two states; `read_state_checked` has three.** A refusal is
+its own answer — a refused symlink and an unparseable file send an operator to
+different places — and the `watches` board prints it as `state unread` on the
+row rather than leaving an empty `LAST_EVENT`, because "I could not read this
+watcher's state" and "this watcher has had no events" are opposite facts. On a
+slot with no live poller the consequence is larger: the death ledger lives
+*inside* the state file, so an unreadable one cannot be asked whether the
+watcher was lost, and dropping the row would let one `ln -s` erase a `LOST`
+row — [#513](https://github.com/Digital-Process-Tools/claude-supertool/issues/513)
+restored by the guard meant to close #1184.
+
+**The flattening is at the renders, not at the read, and that is deliberate.**
+`read_state` is the read half of six read-modify-write cycles (`emit_event`,
+`record_death`, `clear_deaths`, and the poll loop's three), so a flatten there
+would be written straight back to disk on the next tick — including
+`source_state`, which is a poller's private resume cursor rather than report
+text. That trades a render bug for permanent state corruption. Instead the
+three surfaces that print these strings flatten their own output: `watches`
+(`SOURCE`, `ID` and `LAST_EVENT`, before the column widths are computed, with
+the usual one-line provenance note above the table), and `gl-mrs` twice — the
+feed poller's `last_error.message`, and the `[drift: was→now]` mark, whose two
+pipeline ids come straight out of a state file and are never validated as
+numbers.
+
+That third one is worth naming because the first pass of this issue said "two".
+`tiers.gl_mrs.read_state_files` was a **fourth** call site of the same defect
+pair — its own `open()`, its own `except (OSError, json.JSONDecodeError)` — and
+it took the whole `gl-mrs` board down on two bytes rather than the one row they
+belonged to. It now calls `transport.read_state_checked`, because a fifth
+spelling of this guard is exactly how the fourth one was missed. It still skips
+an unreadable file in silence, which is a real remaining gap and is stated in
+its docstring: the cost is a `drift` mark nobody sees, and closing it means
+changing that function's return shape and the board's vocabulary.
+
+`SOURCE` and `ID` are in that list because they are parsed out of a *filename*,
+and a POSIX filename carries any byte but `/` and NUL. Unflattened, a
+`last_event` holding two newlines printed a complete, plausible extra row —
+an MR named, watched and green — into a fixed-width table where nothing else
+contradicted it.
+
+On Windows there is no `O_NOFOLLOW` and the open carries no guard; the tests
+skip on the measured capability rather than passing vacuously there.
+
 ## Is it delivering? — `channel:health` ([#554](https://github.com/Digital-Process-Tools/claude-supertool/issues/554))
 
 The three checks a session reaches for — `pgrep -fl channel.ts`, `lsof` on the
