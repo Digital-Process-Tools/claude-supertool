@@ -104,9 +104,49 @@ def test_an_added_line_cannot_relabel_the_file_the_red_flag_scan_is_reading(
     assert "app.py" in out
 
 
+def test_the_expected_test_path_is_fenced_like_the_path_it_was_derived_from(
+        tmp_path: Path) -> None:
+    """The pairing warning names two paths, and BOTH are the filename's author's.
+
+    `expected` is `tmpl.format(**m.groupdict())` over a capture taken from the
+    changed path, so a separator in the filename lands in the expected-test
+    name too. Flattening `path` on that line and not `expected` reintroduces
+    the forged render line on the very line the audit edited - and only once
+    the split is narrowed, which is why it could not have been noticed before.
+
+    Flattened on the ECHO only: `expected` still answers `os.path.exists` and
+    the `changed_set` membership test unflattened, because flattening on the
+    way in would change which file is looked for
+    (docs/validators.md, "the flattening is on the echo only").
+    """
+    _init_repo(tmp_path)
+    try:
+        _write(tmp_path, f"src/a{SEP}b.py", "x = 1" + chr(10))
+    except (OSError, UnicodeError) as exc:
+        pytest.skip(f"this filesystem will not hold U+2028 in a path ({exc})")
+    subprocess.run(["git", "add", "-A"], check=True, cwd=tmp_path)
+
+    out = _run(tmp_path, "staged",
+               env_extra={"SUPERTOOL_TEST_PAIRING": PAIRING_RULE})
+
+    assert "no test" in out
+    assert SEP not in out, (
+        "the expected-test name reached the receipt raw - it is derived from "
+        "the changed path, so it carries whatever the filename carried"
+    )
+
+
 def test_the_forged_separator_is_named_in_the_render_not_carried_into_it(
         tmp_path: Path) -> None:
-    """Narrowing the split must not leave the separator loose in the receipt."""
+    """Guard, not a pin - GREEN before the fix, and that is #1105's whole point.
+
+    Against the old `str.splitlines()` this passes trivially: the split
+    CONSUMES the separator, so it could never reach the render in the first
+    place. It is here because narrowing the split is what makes the render
+    reachable, so it pins the fence that the narrowing makes necessary - a
+    partial revert that keeps `split_lines` and drops `_untrusted.flat` fails
+    here and nowhere else.
+    """
     _init_repo(tmp_path)
     _write(tmp_path, "app.py", f'secret_token = "a{SEP}b"\n')
     subprocess.run(["git", "add", "-A"], check=True, cwd=tmp_path)

@@ -313,9 +313,16 @@ def _check_test_pairing(changed: list[tuple[str, str]], rules: list[dict]) -> li
                 expected = tmpl.format(**m.groupdict())
             except (KeyError, IndexError):
                 continue
+            # Both comparisons take `expected` RAW and only the echo is
+            # flattened (#1130): it is derived from the changed path, so a
+            # separator in the filename lands in it too — but flattening on
+            # the way in would change which file is looked for, trading a loud
+            # forgery for a quiet wrong answer (docs/validators.md, "the
+            # flattening is on the echo only").
             on_disk = os.path.exists(expected)
             if expected not in changed_set and not on_disk:
-                out.append(f"{_untrusted.flat(path)}  {_mark('—')}  no test ({expected})")
+                out.append(f"{_untrusted.flat(path)}  {_mark('—')}  "
+                           f"no test ({_untrusted.flat(expected)})")
             break
     return out
 
