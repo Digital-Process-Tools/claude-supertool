@@ -394,7 +394,12 @@ def test_an_unreadable_worktree_status_stops_the_train(
         return real_run(args, cwd, timeout)
 
     monkeypatch.setattr(oss_train, "run", fake_run)
-    state, detail = oss_train.train("999", dry=False)
+    # `wt` is required (#1246): the path is resolved and contained ONCE, by
+    # `check_target()`, and every later reader takes it as an argument. A
+    # default here would be a second filesystem read behind a parameter nobody
+    # passes, which is the shape of the round-2 finding.
+    state, detail = oss_train.train("999", dry=False,
+                                    wt=str(train_world["wt"]))
 
     assert state == "FAILED", (state, detail)
     assert "not a git repository" in detail

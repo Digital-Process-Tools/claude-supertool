@@ -102,6 +102,59 @@ def outside_world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     return {"origin": origin, "seed": seed, "wt_root": wt_root}
 
 
+@pytest.fixture()
+def toctou_world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Two real worktrees under the root, one of them reached by a symlink.
+
+    `1` is an ordinary worktree whose train performs a real fetch — that fetch
+    is the window. `2` is a symlink to `benign`, which is INSIDE the root, so
+    it passes the containment check at validation time and there is a later
+    moment at which the answer can be made wrong.
+    """
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    origin = outside / "origin.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "master", str(origin)],
+                   check=True, capture_output=True)
+    seed = outside / "seed"
+    subprocess.run(["git", "clone", "-q", origin.as_posix(), str(seed)],
+                   check=True, capture_output=True)
+    _commit(seed, "base.txt", "base")
+    _git("push", "-q", "origin", "master", cwd=seed)
+    _git("checkout", "-q", "-b", "topic", cwd=seed)
+    _commit(seed, "topic.txt", "topic")
+    _git("push", "-q", "origin", "topic", cwd=seed)
+    _git("checkout", "-q", "master", cwd=seed)
+    _commit(seed, "later.txt", "later")
+    _git("push", "-q", "origin", "master", cwd=seed)
+    _git("checkout", "-q", "topic", cwd=seed)
+
+    home = tmp_path / "home.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "master", str(home)],
+                   check=True, capture_output=True)
+    clone = tmp_path / "clone"
+    subprocess.run(["git", "clone", "-q", home.as_posix(), str(clone)],
+                   check=True, capture_output=True)
+    _commit(clone, "base.txt", "base")
+    _git("push", "-q", "origin", "master", cwd=clone)
+    for branch in ("feature/one", "feature/benign"):
+        _git("checkout", "-q", "-b", branch, "master", cwd=clone)
+        _commit(clone, branch.replace("/", "-") + ".txt", branch)
+    _git("checkout", "-q", "master", cwd=clone)
+    _commit(clone, "later.txt", "later")
+    _git("push", "-q", "origin", "master", cwd=clone)
+
+    wt_root = tmp_path / "st-wt"
+    wt_root.mkdir()
+    _git("worktree", "add", "-q", str(wt_root / "1"), "feature/one", cwd=clone)
+    _git("worktree", "add", "-q", str(wt_root / "benign"), "feature/benign",
+         cwd=clone)
+    (wt_root / "2").symlink_to(wt_root / "benign", target_is_directory=True)
+
+    monkeypatch.setenv("SUPERTOOL_WT_ROOT", str(wt_root))
+    return {"origin": origin, "seed": seed, "wt_root": wt_root, "clone": clone}
+
+
 def _run(monkeypatch: pytest.MonkeyPatch, arg: str) -> int:
     monkeypatch.setattr(sys, "argv", ["oss_train.py", arg])
     return oss_train.main()
@@ -319,3 +372,159 @@ def test_the_call_site_refuses_the_whole_list_not_just_the_bad_target(
     _assert_untouched(seed, origin, head, remote)
     assert rc == 2, out
     assert "# oss_train" not in out, out
+
+
+# ---------------------------------------------------------------------------
+# the path that was CHECKED is the path that is USED (#1246, round-2 audit)
+# ---------------------------------------------------------------------------
+#
+# The first fix for this issue resolved each target twice: once inside
+# `target_error()` to decide, and again in `main()`'s train loop to act.
+# Unifying the two spellings into one `resolve_target()` function unified the
+# IMPLEMENTATION and not the RESOLUTION, and the changelog fragment,
+# `resolve_target`'s own docstring and the commit subject then all asserted a
+# property the code did not have. The round-2 audit reproduced the window with
+# no monkeypatching: `st-wt/2 -> st-wt/benign` at launch, relinked to an
+# outside repo while target `1`'s fetch was in flight, and the outside repo
+# was rebased.
+#
+# The window for target k is the whole of trains 1..k-1 — a network fetch, a
+# rebase and a push each. So the invariant below is not a style preference; it
+# is the fix, and nothing asserted it, which is why the suite was green.
+
+
+def test_one_resolve_per_target_and_train_gets_the_path_that_was_checked(
+        outside_world, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str]) -> None:
+    """Exactly one `realpath` per target, and `train()` receives that result.
+
+    Two resolutions cannot be made safe by making them agree at the moment they
+    are written: the second one re-reads the filesystem, and re-reading is the
+    whole of the defect. Counting them is therefore the assertion rather than
+    an approximation of it.
+    """
+    for name in ("999", "888"):
+        (outside_world["wt_root"] / name).mkdir()
+
+    real_resolve = oss_train.resolve_target
+    resolved = []
+
+    def counting_resolve(num):
+        out = real_resolve(num)
+        resolved.append((num, out[1]))
+        return out
+
+    handed = []
+
+    def recording_train(num, dry, wt=None):
+        handed.append((num, wt))
+        return "DRY", "stub"
+
+    monkeypatch.setattr(oss_train, "resolve_target", counting_resolve)
+    monkeypatch.setattr(oss_train, "train", recording_train)
+
+    assert _run(monkeypatch, "999,888") == 0
+    capsys.readouterr()
+
+    assert len(resolved) == 2, (
+        "one realpath per target — " + repr(resolved) + ". More than one means "
+        "the check and the use each read the filesystem, and a symlink swapped "
+        "between them is followed by the second read")
+    assert handed == resolved, (
+        "train() was handed a path that is not the one target_error() approved")
+
+
+@requires_symlink
+def test_a_symlink_relinked_mid_run_does_not_redirect_a_later_target(
+        toctou_world, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str]) -> None:
+    """The round-2 reproduction, in-process.
+
+    `run()` is wrapped rather than replaced: every git command still executes
+    for real and the guard is not stubbed. The only thing simulated is that
+    time passes during target `1`'s fetch and something moves the symlink —
+    which is the premise of the finding, not its mechanism.
+    """
+    seed, origin = toctou_world["seed"], toctou_world["origin"]
+    link = toctou_world["wt_root"] / "2"
+    head = _git("rev-parse", "HEAD", cwd=seed).strip()
+    remote = _git("ls-remote", origin.as_posix(), "refs/heads/topic", cwd=seed)
+
+    real_run = oss_train.run
+    swapped = []
+
+    def relinking_run(args, cwd, timeout=900):
+        if not swapped and "fetch" in args:
+            swapped.append(True)
+            link.unlink()
+            link.symlink_to(seed, target_is_directory=True)
+        return real_run(args, cwd, timeout)
+
+    monkeypatch.setattr(oss_train, "run", relinking_run)
+
+    _run(monkeypatch, "1,2")
+
+    out = capsys.readouterr().out
+    assert swapped, "the fixture never relinked — the test proves nothing: " + out
+    assert _git("rev-parse", "HEAD", cwd=seed).strip() == head, (
+        "a symlink relinked after its containment check redirected the train "
+        "into a repository outside wt_root")
+    assert _git("ls-remote", origin.as_posix(), "refs/heads/topic",
+                cwd=seed) == remote
+
+
+# ---------------------------------------------------------------------------
+# a Windows drive letter is not a token separator (#1247, four Windows legs)
+# ---------------------------------------------------------------------------
+#
+# `parse_tokens` rewrites every ':' to ',' — deliberately, because supertool
+# passes only the first ':'-token into {file} and a surviving `all:dry` must
+# not be read as an unknown target. On Windows that rewrite cuts an absolute
+# path in half at its drive letter: `C:\Users\x\seed` arrives as the two
+# targets `C` and `\Users\x\seed`.
+#
+# The VERDICT survived that — `\Users\x\seed` is still rooted, so the run was
+# still refused and nothing was fetched. What did not survive is the ECHO. The
+# refusal named `'\Users\x\seed'` while the wt_root half of the same sentence
+# carried its drive, so the one line whose entire job is saying WHICH target
+# was rejected named a string the caller never typed.
+
+WINDOWS_ABS = "C:\\Users\\x\\seed"
+
+
+class TestDriveLetters:
+
+    def test_a_drive_letter_is_not_a_separator(self) -> None:
+        assert oss_train.parse_tokens([WINDOWS_ABS]) == (WINDOWS_ABS, False)
+
+    def test_the_colon_form_of_the_flag_still_works(self) -> None:
+        """The rewrite exists for this, and must survive the narrowing."""
+        assert oss_train.parse_tokens(["all:dry"]) == ("all", True)
+        assert oss_train.parse_tokens(["999:dry"]) == ("999", True)
+
+    def test_the_refusal_echoes_the_target_the_caller_typed(
+            self, outside_world, monkeypatch: pytest.MonkeyPatch,
+            capsys: pytest.CaptureFixture[str]) -> None:
+        assert _run(monkeypatch, WINDOWS_ABS) == 2
+
+        out = capsys.readouterr().out
+        assert WINDOWS_ABS in out, (
+            "the refusal must name the target as typed, drive and all — a "
+            "refusal that misnames what it refused invites the reader to "
+            "conclude a different argument was rejected: " + out)
+        assert "refusing 'C'" not in out, out
+
+    def test_a_drive_relative_target_is_refused_on_every_platform(
+            self, outside_world) -> None:
+        """`C:foo` is drive-relative: no separator, not absolute, and
+        `os.path.join(root, "C:foo")` discards the root on Windows.
+
+        Refused on POSIX too, for the same reason both separators are: a check
+        that only fires on the platform it was not written on is a check nobody
+        has run. `ntpath` answers Windows semantics from here — that is how
+        this was established without a Windows box.
+        """
+        import ntpath
+        for target in ("C:foo", "c:bar", "C:"):
+            assert ntpath.splitdrive(target)[0], target
+            assert oss_train.target_error(target) is not None, target

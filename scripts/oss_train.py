@@ -54,7 +54,9 @@ code reflects it.
 Never pushes without reading the result. `git-push` verifies the remote sha
 itself; this op relays that verdict rather than assuming its own success.
 """
+import ntpath
 import os
+import re
 import subprocess
 import sys
 
@@ -118,20 +120,66 @@ _SEPARATORS = ("/", "\\")
 def resolve_target(num):
     """``(root, path)`` for a target, both fully resolved.
 
-    ONE implementation, used by `target_error()` to DECIDE and by `main()` to
-    ACT, so the path that was checked is the path that is used. Deriving it a
-    second time at the point of use would make the containment check a
-    check-then-use: between the two derivations a symlink under the root can be
-    swapped, and the second derivation would never know the first had looked.
-    #882 in this repo is the same shape one level up — a containment rule
-    written twice, where the copy covered a case the original missed.
+    THE ONLY PLACE THIS IS CALLED FROM IS `check_target()`. Everything else
+    takes the resolved path as an argument. That is not tidiness: this function
+    reads the filesystem, and a second read after the containment answer has
+    been given is the whole of the round-2 finding on #1246.
+
+    This docstring previously said the resolution was threaded from the check
+    to the use, and `main()` was calling it again two hundred lines below. The
+    sentence is worth leaving in its corrected form because the false version
+    is what stopped a reviewer looking: an artifact asserting a property reads,
+    to the next person, exactly like the property.
     """
     root = os.path.realpath(wt_root())
     return root, os.path.realpath(os.path.join(root, num))
 
 
 def target_error(num):
+    """The message-only view of `check_target()`, for callers that only ask.
+
+    `main()` must NOT use this: it discards the resolved path, and a caller
+    that then derives the path again has re-opened the window this whole
+    check exists to close. See `check_target`.
+    """
+    return check_target(num)[0]
+
+
+def check_target(num):
+    """``(error, path)`` — the verdict, and the path the verdict is ABOUT.
+
+    ONE `realpath` per target, returned to the caller so that the directory
+    acted on is the directory that was approved. The first fix for #1246
+    unified the two *spellings* of the resolution into `resolve_target()` and
+    left the two *resolutions* in place — `target_error()` resolved to decide
+    and `main()` resolved again to act — and three artifacts then asserted a
+    property the code did not have.
+
+    The round-2 audit reproduced it without monkeypatching: `st-wt/2 ->
+    st-wt/benign` at launch, relinked to an outside repository while target
+    `1`'s fetch was in flight, and the outside repository was rebased. For
+    target k the window is the whole of trains 1..k-1 — a fetch, a rebase and
+    a push each — so this is not a theoretical race with a microsecond gap.
+
+    What this does NOT close: the resolved path could itself be replaced at the
+    inode level between here and git running. Closing that needs file
+    descriptors git does not accept, so it is out of reach rather than
+    overlooked. What is closed is the reproduced attack — a name under the root
+    re-pointed after it was checked no longer redirects anything, because the
+    name is not consulted a second time.
+
+    The verdict itself is `_target_error()`, which takes the resolved path
+    rather than fetching its own — that split is what makes "one realpath per
+    target" a property of the code rather than a claim about it.
+    """
+    root, resolved = resolve_target(num)
+    return _target_error(num, root, resolved), resolved
+
+
+def _target_error(num, root, resolved):
     """Why `num` is not a usable worktree name, or None when it is one.
+
+    `resolved` is passed in, never re-derived here: see `check_target`.
 
     `discover()` — the `all` path — yields directory names it read out of
     `wt_root()`, so `all` could never name anything else. The explicit-list
@@ -174,13 +222,12 @@ def target_error(num):
     # naming the join that silently drops the root. `splitdrive` is the Windows
     # half: `C:foo` is drive-relative, holds no separator, and `os.path.join`
     # discards the root for it too.
-    if os.path.isabs(num) or os.path.splitdrive(num)[0]:
+    if os.path.isabs(num) or os.path.splitdrive(num)[0] or ntpath.splitdrive(num)[0]:
         return ("is a path, not a worktree name — os.path.join would discard "
                 + wt_root() + " entirely")
     if any(sep in num for sep in _SEPARATORS):
         return ("contains a path separator — targets are worktree NAMES under "
                 + wt_root() + ", not paths")
-    root, resolved = resolve_target(num)
     if resolved == root:
         return "resolves to the worktree root itself, not to a worktree in it"
     if not resolved.startswith(root + os.sep):
@@ -204,6 +251,22 @@ def branch_of(wt):
     return out.strip()
 
 
+#: A Windows drive prefix: exactly one ASCII letter, then the colon, at the
+#: start of a token. Anchored and single-letter on purpose — `all:dry` and
+#: `999:dry` must keep splitting.
+_DRIVE_PREFIX = re.compile(r"^[A-Za-z]:")
+
+
+def _colon_split(token):
+    """Split one comma element on ':', leaving a Windows drive's colon alone."""
+    prefix = ""
+    if _DRIVE_PREFIX.match(token):
+        prefix, token = token[:2], token[2:]
+    parts = token.split(":")
+    parts[0] = prefix + parts[0]
+    return parts
+
+
 def parse_tokens(argv):
     """(target, dry) from the raw argument list.
 
@@ -219,9 +282,26 @@ def parse_tokens(argv):
     A colon is still read as a separator, for the case where one does survive:
     treating `all:dry` as an unknown target and running the un-dry path is the
     worse of the two failures by a wide margin.
+
+    ONE colon is not a separator: a Windows drive prefix (#1247). The blanket
+    rewrite cut `C:\\Users\\x\\seed` in half at its drive letter and produced the
+    two targets `C` and `\\Users\\x\\seed`. The VERDICT survived that — the
+    second half is still rooted, so the run was refused and nothing was
+    fetched — but the ECHO did not: the refusal named a string the caller never
+    typed, while the wt_root half of the same sentence still carried its drive.
+    A refusal that misnames what it refused is a misreport in the one line
+    whose entire job is naming the rejected target, and it invites the reader
+    to conclude a different argument was rejected. It also made
+    `target_error`'s drive-relative arm unreachable from the CLI, so the fix
+    turns an advertised-but-dead message back into a live one.
+
+    The narrowing costs one shape: a single-letter target followed by the colon
+    flag, `oss_train:a:dry`, now reads as the drive-ish token `a:dry` rather
+    than as target `a`. A one-character worktree name is not a thing here and a
+    drive letter is; the comma form `a,dry` is unaffected either way.
     """
-    tokens = [t.strip() for a in argv for t in a.replace(":", ",").split(",")
-              if t.strip()]
+    tokens = [t.strip() for a in argv for c in a.split(",")
+              for t in _colon_split(c) if t.strip()]
     dry = "dry" in tokens
     return ",".join(t for t in tokens if t != "dry"), dry
 
@@ -250,16 +330,16 @@ def classify_push(push_output):
     return "PUSHED", verdict
 
 
-def train(num, dry, wt=None):
-    """`wt` is the path `main()` already resolved and contained (#1246).
+def train(num, dry, wt):
+    """`wt` is the path `check_target()` resolved and contained (#1246).
 
-    It is threaded in rather than re-derived so that the directory git operates
-    on is byte-for-byte the one `target_error()` approved. The `None` default
-    exists for direct callers in the tests, which reach the same
-    `resolve_target()` and are not the route a caller's argument travels.
+    REQUIRED, with no default. It had one — `wt=None`, falling back to a fresh
+    `resolve_target(num)` for the convenience of a direct caller in the tests —
+    and that default is a second filesystem read sitting behind an argument
+    nobody has to pass. The round-2 finding was exactly a second read, so a
+    convenience default that reintroduces one is not a convenience. `num`
+    remains only for the label and the messages.
     """
-    if wt is None:
-        wt = resolve_target(num)[1]
     if not os.path.isdir(wt):
         return "FAILED", f"no worktree at {wt}"
 
@@ -390,11 +470,17 @@ def main():
     # A bad target refuses the WHOLE run, above the header, before any fetch.
     # A train that rebased the first three targets and then declined the fourth
     # would be a warning it proceeded past, not a refusal.
-    rejected = [(n, target_error(n)) for n in nums]
-    rejected = [(n, why) for n, why in rejected if why]
+    checked = [(n,) + check_target(n) for n in nums]
+    rejected = [(n, why) for n, why, _wt in checked if why]
     if rejected:
         for n, why in rejected:
-            print("ERROR: refusing " + repr(n) + ": " + why)
+            # Quoted, NOT repr()'d. repr escapes, and on Windows every path
+            # separator is a backslash, so `C:\Users\x\seed` renders with each
+            # one doubled — a string the caller never typed, in the one line
+            # whose whole job is naming which target was rejected. The quotes
+            # are what make an empty or space-padded target visible; the
+            # escaping is what corrupts the common case (#1247).
+            print("ERROR: refusing '" + n + "': " + why)
         print("Targets are worktree directory NAMES under " + wt_root()
               + " — nothing was fetched, rebased or pushed:")
         print("  oss_train:862,860      only these")
@@ -408,12 +494,16 @@ def main():
         print("no worktrees to run — nothing under " + wt_root())
         return 0
     tally = {}
-    for num in nums:
+    for num, _why, wt in checked:
+        # `wt` comes from the check above and is NOT re-derived here. That
+        # second derivation was the round-2 finding: it re-read the filesystem
+        # after the containment answer had been given, so a symlink re-pointed
+        # during an earlier target's fetch redirected this one (#1246).
+        #
         # Label by the branch git reports, never by the directory (#910).
         # `fix/{num}` was invisible whenever the convention held and
         # actionable-but-wrong when it did not: st-wt/749 renders as fix/749,
         # and no such branch exists anywhere.
-        wt = resolve_target(num)[1]
         label = branch_of(wt) or f"st-wt/{num} (no branch)"
         state, detail = train(num, dry, wt)
         tally[state] = tally.get(state, 0) + 1
