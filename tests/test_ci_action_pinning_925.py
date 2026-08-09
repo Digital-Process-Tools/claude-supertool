@@ -38,9 +38,20 @@ _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _VERSION_COMMENT_RE = re.compile(r"#\s*v\d+\.\d+\.\d+(?:\s|$)")
 
 
+def _workflow_files() -> list[Path]:
+    """Both extensions. GitHub honours `.yaml` as readily as `.yml`, and this
+    repo happens to use only `.yml` -- so a `*.yml` glob would check every
+    workflow today and silently check none of a `.yaml` one added tomorrow.
+    An unpinned action escaping a guard that reports `ok` is the failure this
+    file exists to prevent, so the guard must not have that shape itself."""
+    return sorted(
+        p for p in WORKFLOWS.iterdir()
+        if p.is_file() and p.suffix in (".yml", ".yaml"))
+
+
 def _uses_lines() -> list[tuple[str, int, str, str]]:
     found = []
-    for path in sorted(WORKFLOWS.glob("*.yml")):
+    for path in _workflow_files():
         for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
             match = _USES_RE.match(line)
             if match:
