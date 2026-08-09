@@ -28,6 +28,7 @@ dist/
 .DS_Store
 supertool
 .claude/worktrees/
+.claude/jit-context/.discovery/
 
 .max/
 .max-ci.log
