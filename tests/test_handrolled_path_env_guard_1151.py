@@ -242,6 +242,76 @@ def test_a_finding_names_a_line_somebody_can_open() -> None:
     assert "sample.py:3" in finding.describe()
 
 
+def test_a_binding_inside_a_nested_function_does_not_leak_to_the_outer_scope() -> None:
+    """The scope rule has to actually prune, not merely intend to.
+
+    `ast.walk` flattens the whole subtree before the consumer sees a node, so a
+    `continue` on a nested `FunctionDef` inside a walk loop prunes nothing --
+    the nested body's assignments are yielded anyway. That silently restores
+    the cross-scope resolution this scanner was written to remove, in the
+    direction that produces a confident verdict from another function's
+    binding. Found by review of this file's first version, where it was live.
+    """
+    source = (
+        "import subprocess, sys" + NL
+        + "def test_x():" + NL
+        + "    def _inner():" + NL
+        + "        env = {'PATH': ''}" + NL
+        + "    subprocess.run([sys.executable, '-c', 'pass'], env=env)" + NL
+    )
+    assert _kinds(source) == ["unresolved"]
+
+
+def test_a_return_inside_a_nested_function_is_not_the_helpers_return() -> None:
+    """Same flattening bug, one function along, and it points the other way.
+
+    A helper that genuinely returns a safe env is called a violation because it
+    happens to contain an unrelated nested function that returns a PATH-only
+    dict -- a false positive of exactly the kind that got the first scanner cut.
+    """
+    source = (
+        "import os, subprocess, sys" + NL
+        + "def _clean_env():" + NL
+        + "    def _inner():" + NL
+        + "        return {'PATH': ''}" + NL
+        + "    return {'PATH': '', 'SYSTEMROOT': os.environ.get('SYSTEMROOT', '')}" + NL
+        + "def test_x():" + NL
+        + "    subprocess.run([sys.executable, '-c', 'pass'], env=_clean_env())" + NL
+    )
+    assert _kinds(source) == []
+
+
+def test_an_argv_built_in_a_local_is_still_a_python_spawn() -> None:
+    """`subprocess.run(argv, ...)` is the same spawn as the inline list.
+
+    Reading only a literal first argument makes the whole call invisible -- not
+    even unresolved, which would at least be counted. The defect would sit
+    there reported as nothing at all.
+    """
+    source = (
+        "import subprocess, sys" + NL
+        + "def test_x():" + NL
+        + "    argv = [sys.executable, '-c', 'pass']" + NL
+        + "    subprocess.run(argv, env={'PATH': ''})" + NL
+    )
+    assert _kinds(source) == ["violation"]
+
+
+def test_keeping_temp_but_not_systemroot_is_still_a_child_that_cannot_start() -> None:
+    """`_winenv`'s docstring is explicit: SYSTEMROOT and WINDIR are what the
+    interpreter needs to resolve its system DLLs. PATHEXT, TEMP, TMP and
+    COMSPEC are kept for behavioural parity, and none of them will start a
+    process. A dict carrying one of those and not the other two is the defect
+    with a decoy in it."""
+    source = (
+        "import subprocess, sys" + NL
+        + "def test_x():" + NL
+        + "    subprocess.run([sys.executable, '-c', 'pass']," + NL
+        + "                   env={'PATH': '', 'TEMP': 'x'})" + NL
+    )
+    assert _kinds(source) == ["violation"]
+
+
 def test_a_file_it_cannot_parse_is_reported_and_never_skipped_silently() -> None:
     """A syntax error is `I could not look at this file`, which is not `clean`."""
     findings = scan.scan_source("def f(:" + NL, "broken.py")

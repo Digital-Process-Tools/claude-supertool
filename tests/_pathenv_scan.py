@@ -22,14 +22,18 @@ import ast
 from pathlib import Path
 from typing import List, Optional
 
-#: Names that make an env dict survivable for a Python child on Windows. Kept
-#: in step with `_winenv._KEEP` by `tests/test_handrolled_path_env_guard_1151.py`
-#: only in spirit -- the guard's question is "does this dict keep anything at
-#: all besides PATH", not "does it match the helper exactly", because a site
-#: keeping SYSTEMROOT by hand is not the defect.
-_WINDOWS_ESSENTIALS = frozenset({
-    "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "PATHEXT", "COMSPEC",
-})
+#: Names that make an env dict survivable for a Python child on Windows. The
+#: guard's question is "could this child start", not "does this match the helper
+#: exactly" -- a site keeping SYSTEMROOT by hand is not the defect.
+#:
+#: SYSTEMROOT and WINDIR *only*, and this is deliberately NARROWER than
+#: `_winenv._KEEP`. `_winenv.py`'s docstring is explicit that these
+#: two are what the interpreter needs to resolve its system DLLs and start at
+#: all; TEMP/TMP/PATHEXT/COMSPEC are in that helper's `_KEEP` for behavioural
+#: parity with the tool being tested, and none of them will start a process.
+#: Accepting any of the four as evidence that a dict is survivable would call
+#: `{"PATH": "", "TEMP": "x"}` clean -- the defect with a decoy in it.
+_WINDOWS_ESSENTIALS = frozenset({"SYSTEMROOT", "WINDIR"})
 
 _SPAWNS = frozenset({"run", "Popen", "call", "check_call", "check_output"})
 
@@ -63,12 +67,18 @@ def _is_sys_executable(node: ast.AST) -> bool:
     )
 
 
-def _spawns_the_running_interpreter(call: ast.Call) -> bool:
+def _spawns_the_running_interpreter(call: ast.Call, bindings=None) -> bool:
     """First positional arg is an argv list whose argv[0] is ``sys.executable``.
 
     Deliberately not "mentions sys.executable anywhere": a git spawn that
-    happens to pass the interpreter path as a *argument* is still a git child,
+    happens to pass the interpreter path as an *argument* is still a git child,
     and it is argv[0] that decides what has to be able to start.
+
+    ``bindings`` lets ``subprocess.run(argv, env=...)`` be recognised when
+    ``argv`` is a local built one line up. Reading only a literal first argument
+    made that whole call invisible -- not a violation, not even unresolved, just
+    absent from the output, which is the failure mode this file exists to
+    prevent rather than commit.
     """
     func = call.func
     name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
@@ -77,6 +87,8 @@ def _spawns_the_running_interpreter(call: ast.Call) -> bool:
     if not call.args:
         return False
     argv = call.args[0]
+    if isinstance(argv, ast.Name) and bindings:
+        argv = bindings.get(argv.id, argv)
     if not isinstance(argv, (ast.List, ast.Tuple)) or not argv.elts:
         return False
     return _is_sys_executable(argv.elts[0])
@@ -146,23 +158,19 @@ def _local_bindings(scope: ast.AST) -> dict:
     This is the whole of the scope-awareness, and the whole reason the previous
     scanner was cut: an ``env`` bound in a sibling function is not this
     function's ``env``, and reading it as such produced a confident false
-    positive on a file nobody had touched.
+    positive on a file nobody had touched. ``_nodes_directly_in`` rather than
+    ``ast.walk`` is what makes that true rather than merely intended -- see its
+    docstring.
     """
     bindings = {}
-    body = getattr(scope, "body", [])
-    for stmt in body:
-        for node in ast.walk(stmt):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-                # Do not descend: those bodies are a different scope, and the
-                # calls inside them are visited under their own scope anyway.
-                continue
-            if isinstance(node, ast.Assign):
-                for target in node.targets:
-                    if isinstance(target, ast.Name):
-                        bindings[target.id] = node.value
-            elif isinstance(node, ast.AnnAssign):
-                if isinstance(node.target, ast.Name) and node.value is not None:
-                    bindings[node.target.id] = node.value
+    for node in _nodes_directly_in(scope):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    bindings[target.id] = node.value
+        elif isinstance(node, ast.AnnAssign):
+            if isinstance(node.target, ast.Name) and node.value is not None:
+                bindings[node.target.id] = node.value
     return bindings
 
 
@@ -221,17 +229,34 @@ def _scopes(tree: ast.AST):
             yield node
 
 
-def _calls_directly_in(scope: ast.AST):
-    """Calls in ``scope``, excluding those inside a nested function scope."""
+def _nodes_directly_in(scope: ast.AST):
+    """Every node in ``scope``'s body, stopping at each nested function scope.
+
+    Explicitly NOT ``ast.walk``. ``ast.walk`` flattens the whole subtree into a
+    queue before the consumer sees anything, so a ``continue`` on a nested
+    ``FunctionDef`` inside a walk loop prunes nothing at all -- the nested
+    body's nodes are yielded regardless, and both of this module's scope rules
+    quietly stopped being scope rules. That is the exact cross-scope resolution
+    #1151 says got the first scanner cut, reintroduced by a loop that looked
+    like it was preventing it. Found in review of the first version of this
+    file, where it was live in both directions: an inner binding resolved as an
+    outer one, and an inner ``return`` attributed to the enclosing helper.
+    """
     for stmt in getattr(scope, "body", []):
         stack = [stmt]
         while stack:
             node = stack.pop()
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
                 continue
-            if isinstance(node, ast.Call):
-                yield node
+            yield node
             stack.extend(ast.iter_child_nodes(node))
+
+
+def _calls_directly_in(scope: ast.AST):
+    """Calls in ``scope``, excluding those inside a nested function scope."""
+    for node in _nodes_directly_in(scope):
+        if isinstance(node, ast.Call):
+            yield node
 
 
 def _module_level_returns(tree: ast.AST) -> dict:
@@ -248,7 +273,7 @@ def _module_level_returns(tree: ast.AST) -> dict:
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         exprs = [
-            sub.value for sub in ast.walk(node)
+            sub.value for sub in _nodes_directly_in(node)
             if isinstance(sub, ast.Return) and sub.value is not None
         ]
         if exprs:
@@ -324,7 +349,7 @@ def scan_source(source: str, path: str) -> List[Finding]:
         forwarded = forwarders.get(getattr(scope, "name", None))
         for call in _calls_directly_in(scope):
             callee = call.func.id if isinstance(call.func, ast.Name) else None
-            spawns = _spawns_the_running_interpreter(call)
+            spawns = _spawns_the_running_interpreter(call, bindings)
             if not spawns and callee not in forwarders:
                 continue
             env = _env_keyword(call)

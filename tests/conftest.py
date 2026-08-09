@@ -15,7 +15,20 @@ import supertool  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-import _symlink  # noqa: E402
+# Tolerated rather than assumed, for the same reason `_paths` and `_env` are
+# below: `test_git_state_guard.py` and `test_git_env_leak_416.py` copy THIS FILE
+# alone into a synthetic repo and run pytest there, and `_symlink.py` is not
+# copied with it. A hard import turned five of those tests red -- the guard
+# suites could not start at all. Caught by the full local suite; a targeted run
+# of the files this change touched would never have executed them.
+#
+# The absence is not swallowed. Both hooks below report `not available` in words
+# when this is None, because a header that silently omits its verdict is
+# indistinguishable from a run where symlinks work.
+try:
+    import _symlink  # noqa: E402
+except ImportError:  # pragma: no cover - only in the synthetic-repo suites
+    _symlink = None
 
 # `presets/mcp/_paths.py` probes its platform capabilities at *import*
 # (`_LISTDIR_TAKES_FD`, `_RELATIVE_OPS`, `_ANCESTRY_DIR_FD`) precisely so that a
@@ -176,7 +189,11 @@ def pytest_report_header(config):
     blind spot announced only when something fails is announced exactly when
     nobody needs telling.
     """
-    lines = [_symlink.verdict_line()]
+    lines = [
+        _symlink.verdict_line() if _symlink is not None
+        else "symlink capability: NOT CHECKED -- tests/_symlink.py is not in this "
+             "tree (a synthetic-repo run); this is not a claim that symlinks work"
+    ]
     leaked = getattr(config, "_supertool_leaked_git_env", [])
     if leaked:
         lines.append(
@@ -195,6 +212,10 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
     produced. Printed whether the count is zero or not: silence would be
     indistinguishable from not having looked.
     """
+    if _symlink is None:
+        terminalreporter.write_line(
+            "symlink capability: NOT CHECKED -- tests/_symlink.py is not in this tree")
+        return
     skipped = terminalreporter.stats.get("skipped", []) or []
     n = 0
     for report in skipped:
