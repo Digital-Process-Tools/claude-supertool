@@ -1123,7 +1123,7 @@ ack to read, at either end. So the answer has three states:
 |---|---|---|
 | `NOT DELIVERING` | 1 | A definite negative. No socket, or a socket that refuses: every event a poller emits right now is lost at the source. The report also names each watcher whose own `last_emit` already found nobody home, with the timestamp of that emit |
 | `FORWARDING` | 0 | A consumer is bound and its published counters are fresh: N lines read, N forwarded, N dropped, last forwarded at T |
-| `CANNOT DETERMINE` | 3 | Bound, but publishing no counters, or counters written by a pid that is gone, or counters that stopped refreshing, or counters with no readable `forwarded` number. This is the state the old tooling reported as green |
+| `CANNOT DETERMINE` | 3 | Bound, but publishing no counters, or counters written by a pid that is gone, or counters that stopped refreshing, or counters with no readable `forwarded` number, or a health file that is a symlink and was not followed. This is the state the old tooling reported as green |
 
 **The pid in a `FORWARDING` report is self-reported, and the report says so.**
 Pids are reusable, and nothing outside the consumer can prove the process named
@@ -1168,6 +1168,38 @@ quiet morning" and "reading nothing since Tuesday".
 sessions on two `SUPERTOOL_WATCH_SOCK` values are a documented arrangement; one
 health file for both would have each overwriting the other's counters, which is
 this issue's defect rebuilt inside its own fix.
+
+**The health file is somebody else's text, and the report says so**
+([#1187](https://github.com/Digital-Process-Tools/claude-supertool/issues/1187)).
+It is written by a separate process, in a world-writable directory, at a name
+derived from the socket path — so its `started`, `last_forwarded` and `updated`
+stamps are attacker-controlled on any machine with a second user or a second
+agent. They are flattened through `presets/_untrusted.py` before they render,
+and every report carrying one prints the one-line provenance note above the
+fields. Unflattened, a `started` value containing a newline wrote a closing
+`</channel>` tag, a `SYSTEM: ignore all prior instructions` line at column 0
+and a reopening tag into the op's own answer. Control characters are disclosed
+as their Control Pictures glyph rather than removed: a hostile file that reads
+as merely an unusual one has taught the reader nothing.
+
+**The path is opened with `O_NOFOLLOW`**
+([#1184](https://github.com/Digital-Process-Tools/claude-supertool/issues/1184),
+same threat as [#148](https://github.com/Digital-Process-Tools/claude-supertool/issues/148)).
+A symlink planted at `{sock_path}.health.json` otherwise gets whatever it
+points at opened and parsed. The refusal is its own state, distinct from
+"publishes no counters" — that one means the consumer predates the field or is
+not claude-channel, and sending an operator there for a symlink is the wrong
+next step. On Windows there is no `O_NOFOLLOW` and the open carries no guard;
+the tests skip there rather than passing vacuously.
+
+**What is still forgeable, and is disclosed rather than fixed.** Nothing checks
+the credentials of the process actually holding the socket, so a same-uid
+process can bind it, publish a health file naming its own live pid with a fresh
+stamp, and obtain a `FORWARDING` verdict. The report attributes the pid
+(`self-reported`) and states in its own text that nothing here proves the named
+process is the one holding the socket, which is why this is a documented
+ceiling rather than a defect — but the ceiling is the *whole* verdict, not only
+the pid line.
 
 ## Event payload (locked contract)
 
