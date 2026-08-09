@@ -49,7 +49,7 @@ TIMEOUT_S = 30
 
 # A block is <script ATTRS>BODY</script ANYTHING>, case-insensitive, BODY may
 # span lines. The two ends are delimited differently and both comments below
-# say why: the end tag by SCRIPT_CLOSE, the start tag by `_start_tag_end`.
+# say why: the end tag by SCRIPT_CLOSE, the start tag by `_parse_start_tag`.
 #
 # The end tag allows `[^>]*` before its `>` and not `\s*`: an HTML end tag may carry
 # whitespace and junk attributes before its `>` (`</script bar>`), and every
@@ -86,12 +86,13 @@ TIMEOUT_S = 30
 #       because the `type` naming it as data sits past the cut. node is handed
 #       a JSON payload and reports a syntax error about it. False positive.
 #   <script data-tpl="foo src=1 > b">BROKEN JS</script> -> read as external,
-#       because ` src=` *inside the value* is all SRC_ATTR can see. The block
-#       is dropped and the file reports `ok` with the broken JS still in it --
+#       because ` src=` *inside the value* is all the raw-text `src=` pattern
+#       can see. The block is dropped and the file reports `ok` with the
+#       broken JS still in it --
 #       the same absence-read-as-presence the end-tag fix above exists to
 #       close, arriving through the other half of the same pattern.
 #
-# `_start_tag_end` walks the tag instead. This is not "a better regex until
+# `_parse_start_tag` walks the tag instead. This is not "a better regex until
 # the reported case passes": the start-tag grammar really is a small state
 # machine, `>` can only hide inside a quoted value, and a quote only opens
 # such a value directly after `=`. Anywhere else a quote is an ordinary

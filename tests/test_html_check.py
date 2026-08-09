@@ -161,7 +161,8 @@ def test_end_tag_carrying_attributes_still_closes_the_block(tmp_path: Path) -> N
     JS still in it -- the silent gap #833 exists to close, reappearing through
     the one regex that decides what gets looked at.
 
-    Reported by CodeQL (py/bad-tag-filter, high) against SCRIPT_TAG, and it is
+    Reported by CodeQL (py/bad-tag-filter, high) against the end-tag half of
+    the old single SCRIPT_TAG pattern -- SCRIPT_CLOSE here -- and it is
     the same defect the adapter's `skipped` state was written for: an absence
     produced by the tool, read as an absence in the world.
     """
@@ -215,7 +216,7 @@ def test_close_inside_a_js_string_is_a_close_because_the_tokenizer_says_so(tmp_p
     `const s = "` and then an end tag -- so the script a browser actually runs
     is a truncated, unterminated string, and reporting a syntax error is the
     correct answer rather than an over-match. Pinned because it is the first
-    objection a reader will raise against the `[^>]*` in SCRIPT_TAG.
+    objection a reader will raise against the `[^>]*` in SCRIPT_CLOSE.
     """
     f = tmp_path / "strclose.html"
     f.write_text(
@@ -354,9 +355,9 @@ def test_src_text_inside_an_attribute_value_does_not_skip_the_block(tmp_path: Pa
 
     Truncated attributes are not merely short -- they end *inside* a quoted
     value, so the value's own text is read as attribute syntax. A value
-    containing ` src=` makes SRC_ATTR fire, the block is dropped as external,
-    and a file with broken inline JS is reported `ok`. An absence produced by
-    the tool, read as an absence in the world.
+    containing ` src=` makes the raw-text `src=` pattern fire, the block is
+    dropped as external, and a file with broken inline JS is reported `ok`. An
+    absence produced by the tool, read as an absence in the world.
     """
     f = tmp_path / "fakesrc.html"
     f.write_text(
@@ -372,9 +373,9 @@ def test_src_text_inside_an_attribute_value_does_not_skip_the_block(tmp_path: Pa
 
 
 def test_type_text_inside_an_attribute_value_does_not_skip_the_block(tmp_path: Path) -> None:
-    """Same silent skip through TYPE_ATTR rather than SRC_ATTR.
+    """Same silent skip through the raw-text `type=` pattern, not `src=`.
 
-    TYPE_ATTR anchors on whitespace, so the value's text has to carry a space
+    That pattern anchors on whitespace, so the value's text has to carry a space
     before `type=` to be mistaken for the attribute -- which is why this reads
     `x type=json` and not `type=json`.
     """
@@ -395,8 +396,8 @@ def test_type_text_inside_an_attribute_value_does_not_skip_the_block(tmp_path: P
 def test_src_text_inside_a_value_skips_the_block_with_no_gt_involved(tmp_path: Path) -> None:
     """The same silent skip, reachable without any `>` -- so it is its own bug.
 
-    SRC_ATTR and TYPE_ATTR scan the raw attribute *text*, not parsed
-    attributes, so a quoted value whose contents happen to read like ` src=`
+    The raw-text `src=` and `type=` patterns scan the attribute *text*, not
+    parsed attributes, so a quoted value whose contents read like ` src=`
     or ` type=` is indistinguishable from the real attribute. Delimiting the
     tag correctly does not help: this file's tag ends exactly where it should
     and the block is still dropped, `ok`, with broken JS in it.
