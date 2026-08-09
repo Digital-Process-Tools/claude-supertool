@@ -102,6 +102,7 @@ Shorthand string ops (`"lint": "ruff check {file}"`) work with a 60s default tim
 | `{arg}` | First argument, shell-quoted, no path validation | `glab issue view {arg}` |
 | `{args}` | All arguments, each shell-quoted | `python3 tool.py {args}` |
 | `{path}` | Preset directory with trailing `/` (presets only) | `python3 {path}gitlab/issue.py {arg}` |
+| `{python}` | The interpreter supertool is running under | `{python} scripts/oss_train.py {file}` |
 
 Use `{file}`/`{dir}` for file operations, `{arg}`/`{args}` for non-file arguments (issue numbers, job IDs, etc.).
 
@@ -111,7 +112,7 @@ Built-in ops → custom ops (including preset ops) → aliases. Built-ins always
 
 ### Extra config keys as environment variables
 
-Any key in an op config that isn't a reserved key (`cmd`, `timeout`, `description`, `syntax`, `example`, `status`) is passed to the subprocess as a `SUPERTOOL_`-prefixed environment variable:
+Any key in an op config that isn't a reserved key (`cmd`, `timeout`, `description`, `syntax`, `example`, `status`, `restartMcp`) is passed to the subprocess as a `SUPERTOOL_`-prefixed environment variable:
 
 ```json
 {
@@ -126,6 +127,20 @@ Any key in an op config that isn't a reserved key (`cmd`, `timeout`, `descriptio
 ```
 
 The script receives `SUPERTOOL_LINES=80` and `SUPERTOOL_ERROR_PATTERNS=ERROR,FAIL,Fatal`. Use this to tune op behavior from JSON without modifying scripts.
+
+### `scripts/` — this repo's own maintainer ops
+
+`scripts/` holds project ops that drive *this* repository and are registered in this repository's `.supertool.json`. They are not part of the wheel (`py-modules` is `supertool` and `_supertool`), they are not in `.supertool.example.json`, and they are not in the README: an op that reads `~/Documents/st-wt` answers for one machine's layout, and advertising it to users of the released tool would be documenting something they cannot run.
+
+`oss_train` is the one that exists. It rebases every open branch onto `master`, resolves the conflicts, and force-pushes — 55 of the last 60 merged PRs touched `CHANGELOG.md`, so with N open PRs each merge re-conflicts the other N-1 ([#906](https://github.com/Digital-Process-Tools/claude-supertool/issues/906)). Three things about it are load-bearing:
+
+- **The flag is comma-separated.** `oss_train:all,dry`, never `all:dry` — only the first `:`-token reaches a project op's `{file}` and the rest is discarded silently, so a colon form runs the train it looked like it was previewing.
+- **A bare `oss_train` is refused**, and the refusal names how many branches it would have touched. It used to mean `all`, and typing it to find out whether the op was registered force-pushed fourteen worktrees ([#993](https://github.com/Digital-Process-Tools/claude-supertool/issues/993)).
+- **`dry` stops above the rebase, not below it** ([#910](https://github.com/Digital-Process-Tools/claude-supertool/issues/910)). It used to perform the rebase and skip only the push while the header said `DRY RUN`; those worktrees hold live agents, so the safe-sounding flag moved `HEAD` underneath somebody's work. The `BUSY` guard sees *uncommitted* changes only, so an agent between two commits reads as idle — which is why the preview is not allowed to buy "would it conflict?" with someone else's `HEAD`.
+
+Each branch is labelled by the branch `git symbolic-ref` reports, never by the worktree directory: `st-wt/749` holds `lane-watch`, and every follow-up command a reader would run takes a branch name.
+
+`tests/test_oss_train_1216.py` covers the argument parsing, the refusals, the `BUSY` guard and the read-only `dry` path, and names what it does not cover — the `PUSHED` and `REFUSED` paths cannot be exercised without force-pushing real refs, so no fixture pretends to.
 
 ---
 
