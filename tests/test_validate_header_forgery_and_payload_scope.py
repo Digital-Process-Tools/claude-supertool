@@ -46,6 +46,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from _symlink import requires_symlink
+
 import pytest
 
 import supertool
@@ -574,7 +576,7 @@ def sentinel_tree(cfg, monkeypatch, tmp_path):
     return work
 
 
-@pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on NTFS")
+@requires_symlink
 @pytest.mark.parametrize("name", SENTINEL_NAMES)
 def test_a_file_named_like_a_sentinel_is_still_contained(sentinel_tree, name) -> None:
     """Every route that reaches `validate`, on a path it must refuse.
@@ -593,7 +595,7 @@ def test_a_file_named_like_a_sentinel_is_still_contained(sentinel_tree, name) ->
         assert _refused(out), f"{route} allowed {name!r}: {out[:300]}"
 
 
-@pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on NTFS")
+@requires_symlink
 @pytest.mark.parametrize("name", SENTINEL_NAMES)
 def test_the_other_read_ops_refuse_a_sentinel_name_too(sentinel_tree, name) -> None:
     """`read` was caught by its own chokepoint; the rest have none."""

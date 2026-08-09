@@ -12,6 +12,8 @@ import threading
 import time
 from pathlib import Path
 
+from _symlink import requires_symlink
+
 import pytest
 
 PRESET_DIR = Path(__file__).parent.parent / "presets" / "xml"
@@ -341,10 +343,7 @@ def test_nul_byte_in_path_xml_count(tmp_path: Path, capsys) -> None:
 #    If the target is valid XML, the op reads through the symlink.
 # ---------------------------------------------------------------------------
 
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="Windows symlink creation requires admin privileges or Developer Mode",
-)
+@requires_symlink
 def test_symlink_to_valid_xml_reads_through(tmp_path: Path, capsys) -> None:
     """SEVERITY: LOW — symlink to valid XML: current behavior is read-through (pin it)."""
     real = tmp_path / "real.xml"

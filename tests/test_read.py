@@ -4,6 +4,8 @@ import sys
 from pathlib import Path
 
 import pytest
+
+import _symlink
 import supertool
 
 
@@ -210,10 +212,20 @@ def test_dispatch_read_full_keyword(tmp_path: Path, monkeypatch) -> None:
 # Meta suffix (symlink / git / encoding / mtime / exec / crlf / conflict)
 # ---------------------------------------------------------------------------
 
+# NOT `_symlink.requires_symlink` (#1143), and the distinction is the point:
+# every other symlink skip in this suite was a *capability* claim and is now
+# probed, so it runs wherever the privilege exists -- including Windows. This one
+# is not about a privilege at all. `op_read` renders the link target, and Windows
+# spells a resolved target through a UNC prefix, so the assertion below is what
+# is platform-specific, not the fixture. Converting it would make the test run on
+# Windows and fail on its own assertion. `PLATFORM_SEMANTICS` declares that out
+# loud so the guard test can tell the two apart instead of exempting it silently;
+# making this assert something true on Windows is its own piece of work.
 @pytest.mark.skipif(
     sys.platform == "win32",
-    reason="Windows symlinks resolve through the \\\\?\\ UNC prefix; the test "
-    "assertion expects a POSIX-style relative or absolute target.",
+    reason=_symlink.PLATFORM_SEMANTICS + "op_read renders the link target and "
+    "Windows resolves it through a UNC prefix; this assertion expects a "
+    "POSIX-style relative or absolute target.",
 )
 def test_read_meta_symlink(tmp_path: Path) -> None:
     target = tmp_path / "real.txt"

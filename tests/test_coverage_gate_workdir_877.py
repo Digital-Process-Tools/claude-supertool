@@ -43,6 +43,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from _symlink import require_symlink
+
 import pytest
 
 REPO = Path(__file__).resolve().parents[1]
@@ -159,8 +161,11 @@ def test_refuses_when_the_work_dir_path_is_a_symlink(tmp_path, capsys) -> None:
     which is precisely how somebody else's rcfile ends up being the one the gate
     executes. Refuse, exit 2, print why — never continue against it.
     """
-    if not POSIX_MODES:
-        pytest.skip("symlink creation needs privileges on Windows")
+    # Was gated on POSIX_MODES, which is `sys.platform != "win32"` and is this
+    # file's *mode-bits* flag -- two different capabilities behind one name, so
+    # this test skipped on Windows even where the create-symlink privilege was
+    # present. Ask for the one it actually needs (#1143).
+    require_symlink()
     repo = tmp_path / "repo"
     repo.mkdir()
     elsewhere = tmp_path / "attacker"

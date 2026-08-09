@@ -8,10 +8,11 @@ caught.
 from __future__ import annotations
 
 import os
-import sys
 from pathlib import Path
 
 import pytest
+
+from _symlink import requires_symlink
 
 import supertool
 
@@ -163,10 +164,7 @@ def test_insert_empty_content_noop(tmp_path: Path) -> None:
 # 7. Replace lines on a symlink — symlink survives (_atomic_write PR #137 fix)
 # ---------------------------------------------------------------------------
 
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="Symlink creation on Windows requires Developer Mode / admin privileges.",
-)
+@requires_symlink
 def test_replace_lines_on_symlink(tmp_path: Path) -> None:
     """_atomic_write follows realpath so the symlink is NOT replaced by a
     regular file.  The symlink path must still exist as a symlink after the op.

@@ -29,6 +29,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from _symlink import require_symlink
+
 import pytest
 
 import supertool
@@ -114,10 +116,8 @@ def test_entry_point_survives_a_symlink_from_an_unrelated_cwd(tmp_path: Path) ->
     bindir = tmp_path / "bin"
     bindir.mkdir()
     link = bindir / "supertool"
-    try:
-        link.symlink_to(install / "supertool.py")
-    except (OSError, NotImplementedError):  # pragma: no cover - Windows w/o privilege
-        pytest.skip("symlinks unavailable on this platform/user")
+    require_symlink()
+    link.symlink_to(install / "supertool.py")
 
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()

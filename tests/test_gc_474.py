@@ -19,6 +19,8 @@ from pathlib import Path
 
 import pytest
 
+from _symlink import requires_symlink
+
 import supertool
 
 DAY = 86400.0
@@ -152,7 +154,7 @@ def test_entry_with_a_future_mtime_is_kept_and_reported(cache: Path) -> None:
     assert res["removed"] == 1
 
 
-@pytest.mark.skipif(os.name == "nt", reason="symlink creation needs privileges on Windows")
+@requires_symlink
 def test_entry_whose_stat_fails_is_kept_and_reported(cache: Path) -> None:
     now = time.time()
     (cache / "vim-undo").mkdir(parents=True, exist_ok=True)
