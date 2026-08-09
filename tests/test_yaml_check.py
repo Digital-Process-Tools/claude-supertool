@@ -203,6 +203,11 @@ def test_output_is_exactly_one_of_the_two_shapes(tmp_path: Path) -> None:
     for key in ("tool", "file", "duration_ms"):
         assert key in out, out
     verdict = [k for k in ("ok", "count", "errors") if k in out]
+    # Which shape came back is not free either. Consistency alone would still
+    # hold if the adapter regressed to skipping unconditionally, so the branch
+    # is checked against the one piece of ground truth this file has.
+    assert ("skipped" in out) is not _HAS_PYYAML, (
+        f"PyYAML importable={_HAS_PYYAML} but the adapter answered: {out}")
     if "skipped" in out:
         assert out["skipped"], out
         assert verdict == [], f"a skip must carry no verdict key: {out}"

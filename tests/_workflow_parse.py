@@ -13,12 +13,20 @@ declare, and what each step's `uses:`, `env:` and `run:` actually contain.
 A comment can then say anything at all and change no assertion, because
 comments are not steps and are not run blocks.
 
-**PyYAML is deliberately not used.** CI installs pytest, pytest-cov,
-pytest-xdist and pytest-timeout and nothing else, so importing `yaml` here
-would make every guard built on it skip on all fourteen legs — silence in the
-files whose subject is silence. `tests/test_yaml_check.py` already has to gate
-itself on PyYAML's presence for that reason. So this parses by indentation,
-which is enough for one workflow whose shape is pinned by the tests below it.
+**PyYAML is deliberately not used**, and since #1213 the reason is no longer
+that it is unavailable. It said CI installed "pytest, pytest-cov, pytest-xdist
+and pytest-timeout and nothing else", so an import here would make every guard
+built on it skip on all fourteen legs — silence in the files whose subject is
+silence. `ruff` and `markdown-it-py` were already in the `dev` extra when that
+was written, and `pyyaml` joined them in #1213, so both workflows install it and
+the premise is now simply false.
+
+The decision stands on its own footing instead. A guard over CI policy that
+imports a third-party parser can be skipped by that parser going missing, and
+this file's whole subject is a check that reports nothing and reads as a pass;
+an indentation parser that ships with the repo cannot be uninstalled out from
+under it. It is enough for one workflow whose shape is pinned by the tests
+below it.
 
 It is a parser, so it can be wrong in the one direction that matters: finding
 nothing and reporting a clean sheet. Every function here is fixture-tested in
