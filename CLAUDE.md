@@ -22,6 +22,8 @@ A small team at Digital Process Tools keeps this going, humans and AI together. 
 
 A single-file Python CLI that batches file, git and tracker operations into one round-trip, shipped as a Claude Code plugin. Standard library only.
 
+**One call takes many ops — `supertool 'op1' 'op2' 'op3'`.** That is the whole premise, and it applies to your own reads before it applies to anything else. Any op that does not depend on the one before it belongs in the same call: six independent reads is six round-trips, each re-paying the cached prefix, for one call's worth of answer.
+
 This file loads on every session here, so it holds only what is true regardless of what you came to do. Everything else has a home:
 
 | You want                        | Go to                                     |
