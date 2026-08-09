@@ -188,7 +188,7 @@ Extract a full function body by name:
 
 ```bash
 ./supertool 'between:handle_request:src/app/Module.py'
-./supertool 'between:MyClass::handle:src/app/Module.php'
+./supertool 'between:handle:src/app/Module.php'
 ```
 
 Extract a block by regex anchors (language-agnostic):
