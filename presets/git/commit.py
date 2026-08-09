@@ -282,6 +282,93 @@ def _add_failure_lines(add, to_add):
     return lines
 
 
+# #1137 — the opt-in spelling for "commit exactly the paths you were just
+# counted at me". A sentinel in the PATHS slot rather than a new op or a
+# trailing flag: it reaches argv through both input routes unchanged, so the
+# colon form and the `paths = [...]` payload spell it identically.
+#
+# It is deliberately NOT `.` (cwd-relative in git, so it means something
+# different from a subdirectory) and deliberately not a default. The refusal
+# on the bare form is the feature; this only gives the deliberate case a name.
+_ALL_TOKEN = "--all"
+
+
+def _all_with_paths_refusal(paths):
+    """`--all` next to a named path — refused rather than resolved either way.
+
+    Both readings are defensible and both are wrong to guess: taken as the
+    wider one, the named path was pointless; taken as the narrower one, the
+    other dirty files are dropped under a green tick. That second shape is
+    the #963 defect, so this declines and prints both spellings.
+    """
+    others = [p for p in paths if p != _ALL_TOKEN]
+    lines = [
+        "ERROR: %s was given alongside %d named path(s) — nothing staged, "
+        "nothing committed." % (_ALL_TOKEN, len(others)),
+        "  %s already means every dirty path, so a path beside it either "
+        "adds nothing or narrows it," % (_ALL_TOKEN,),
+        "  and this op will not pick which of those you meant.",
+        "  Everything dirty:",
+        "    ./supertool " + _sh_quote("git-commit:::MESSAGE:::" + _ALL_TOKEN),
+        "  Or only what you name:",
+    ]
+    lines += _colon_remedy(others[:_LIST_CAP], len(others))
+    return lines
+
+
+def _all_ambiguous_refusal(modified, untracked, unknown):
+    """git knows a path literally called `--all`, so the token means two
+    things (#1137).
+
+    The payload route is no escape hatch here — `paths = ["--all"]` reaches
+    the same argv — so the remedy is a spelling git resolves as a path and
+    this op does not read as a sentinel.
+    """
+    lines = [
+        "ERROR: %r is both this op's commit-everything opt-in and a path git "
+        "knows — nothing staged, nothing committed." % (_ALL_TOKEN,),
+        "  Nothing in the argument says which was meant, and both routes "
+        "spell it the same way.",
+        "  To commit the FILE, write it so git reads it as a path:",
+        "    ./supertool " + _sh_quote("git-commit:::MESSAGE:::./" + _ALL_TOKEN),
+    ]
+    if unknown:
+        lines += [
+            "  To commit everything: the dirty list is UNKNOWN here — "
+            "`git status` did not answer (%s)." % (unknown,),
+            "  Name the paths yourself: git-commit:::MESSAGE:::PATHS",
+        ]
+        return lines
+    shown = modified[:_LIST_CAP] + untracked[:_LIST_CAP]
+    total = len(modified) + len(untracked)
+    if not total:
+        lines.append("  There is nothing else dirty to commit.")
+        return lines
+    lines.append("  To commit everything, name the paths instead:")
+    lines += _colon_remedy(shown, total)
+    return lines
+
+
+def _expand_all():
+    """Resolve `--all` to the concrete dirty set, or say why it could not.
+
+    Returns `(paths, refusal_lines)`. `refusal_lines` non-empty means nothing
+    was resolved and the caller must print them and stop — a `git status` that
+    did not answer produces two empty lists here, and staging those would be
+    an empty commit dressed as a deliberate one (docs/validators.md,
+    "Declining instead of guessing").
+    """
+    modified, untracked, unknown = _worktree_changes()
+    if unknown:
+        return [], [
+            "ERROR: %s could not be resolved — `git status` did not answer "
+            "(%s). Nothing staged, nothing committed." % (_ALL_TOKEN, unknown),
+            "  What is dirty is UNKNOWN, so there is no list to accept.",
+            "  Name the paths explicitly: git-commit:::MESSAGE:::PATHS",
+        ]
+    return modified + untracked, []
+
+
 def _worktree_changes(git_fn=None):
     """One `git status -z` read, split three ways (#1003, #1016).
 
@@ -490,23 +577,52 @@ def _left_behind_lines(git_fn=None):
     return lines
 
 
-def _nothing_staged_lines():
+def _nothing_staged_lines(named=0):
     """The refusal, with the list the op was already holding (#1003).
 
     The refusal itself stays: committing files the caller did not name is not
     a default anyone wants. What changes is that the remedy stops being a raw
     `git add -A` guessed from an empty error.
+
+    #1155 — the opening line now names the CAUSE rather than the symptom.
+    `nothing staged` is true and useless: it describes the index, when what
+    the caller did was omit the argument that fills it. Three callers in one
+    day read it, concluded the payload route's `paths` key was the missing
+    ingredient, and were wrong — the colon route stages identically, including
+    for a multi-line message.
+
+    It has to be the FIRST line specifically. The core `--- op ---` header
+    replays the whole message above this block, so a long commit message puts
+    everything after line one below the fold, which is where the diagnosis was.
+
+    *named* is how many PATHS the call actually carried, so the two arms stay
+    distinguishable: "you named none" and "the ones you named held nothing"
+    are different mistakes and only one of them is about the argument list.
     """
     modified, untracked, unknown = _worktree_changes()
-    lines = ["ERROR: nothing staged."]
     if unknown:
-        lines.append(f"  What is unstaged is UNKNOWN — `git status` did not "
-                     f"answer ({unknown}).")
-        lines.append("  Stage explicitly: git-commit:::MESSAGE:::PATHS")
-        return lines
+        return [
+            "ERROR: nothing staged, and what is unstaged is UNKNOWN — "
+            f"`git status` did not answer ({unknown}).",
+            "  Stage explicitly: git-commit:::MESSAGE:::PATHS",
+        ]
     if not modified and not untracked:
-        lines.append("  Working tree is clean — there is nothing to stage.")
-        return lines
+        return [
+            "ERROR: nothing staged — the working tree is clean, so there is "
+            "nothing to commit.",
+        ]
+    if named:
+        lines = [
+            f"ERROR: nothing staged — the {named} path(s) you named held no "
+            f"changes to stage.",
+            "  These are the ones that do:",
+        ]
+    else:
+        lines = [
+            "ERROR: no PATHS were given — git-commit never stages for you, "
+            "so nothing staged.",
+            "  Name what to commit. These are dirty right now:",
+        ]
     if modified:
         lines.append(f"  Modified tracked ({len(modified)}):")
         lines += _sample(modified)
@@ -521,6 +637,15 @@ def _nothing_staged_lines():
     lines.append("  Commit the ones you mean, by name:")
     lines += _colon_remedy(shown, total)
     lines += _payload_remedy(shown, total)
+    # #1137 — the count above is the op's own answer to "which paths?", and
+    # without this line accepting it meant rebuilding the list by hand from a
+    # raw `git status --porcelain`. Named last, under the by-name remedies,
+    # because the deliberate whole-tree commit is the rarer of the two.
+    lines += [
+        f"  Or take all {total} of them deliberately — the receipt names "
+        f"every one:",
+        "    ./supertool " + _sh_quote("git-commit:::MESSAGE:::" + _ALL_TOKEN),
+    ]
     return lines
 
 
@@ -580,6 +705,32 @@ def main() -> int:
             print(line)
         return 1
 
+    # #1137 — resolve the opt-in before anything else reads PATHS, so the
+    # sentinel never reaches `git add` as a pathspec (which is how it failed
+    # before: `fatal: pathspec '--all' did not match any files`). From here
+    # down, `paths` is a list of real paths whichever route produced it.
+    named = len(paths)
+    all_used = False
+    if _ALL_TOKEN in paths:
+        if len(paths) > 1:
+            for line in _all_with_paths_refusal(paths):
+                print(line)
+            return 1
+        if _known_to_git(_ALL_TOKEN, set()):
+            mod, untr, unk = _worktree_changes()
+            for line in _all_ambiguous_refusal(mod, untr, unk):
+                print(line)
+            return 1
+        paths, refusal = _expand_all()
+        if refusal:
+            for line in refusal:
+                print(line)
+            return 1
+        # An empty expansion is a clean tree, not a failure: fall through to
+        # the staged check so it lands on the one refusal that says so.
+        all_used = bool(paths)
+        named = len(paths)
+
     # Stage PATHS if given. A path that's already a staged deletion (gone from
     # disk after `git rm`) would make `git add` abort with "pathspec did not
     # match any files" — so drop those from the add list; their deletion is
@@ -609,7 +760,7 @@ def main() -> int:
     # Pre-commit staged check
     staged = _git(["diff", "--cached", "--name-only"])
     if staged.returncode != 0 or not staged.stdout.strip():
-        for line in _nothing_staged_lines():
+        for line in _nothing_staged_lines(named):
             print(line)
         return 1
     staged_files = [l for l in staged.stdout.splitlines() if l.strip()]
@@ -630,10 +781,16 @@ def main() -> int:
         if stat.returncode == 0 and stat.stdout.strip():
             print(stat.stdout.strip().splitlines()[-1].strip())
         print(f"Files committed: {len(staged_files)}")
-        for f in staged_files[:20]:
+        # #1137 asked for a receipt that records which 24 paths went in. The
+        # 20-cap is right when the caller typed the list and already has it;
+        # under `--all` the caller typed nothing, so the receipt is the only
+        # record of what was chosen and a capped one is a subset presented as
+        # the whole.
+        listed = staged_files if all_used else staged_files[:20]
+        for f in listed:
             print(f"  {f}")
-        if len(staged_files) > 20:
-            print(f"  … {len(staged_files) - 20} more")
+        if len(staged_files) > len(listed):
+            print(f"  … {len(staged_files) - len(listed)} more")
         # #1016 — the tick above argues nothing was left out. Say so only when
         # that is established, and say the opposite when it is not.
         for line in _left_behind_lines():
