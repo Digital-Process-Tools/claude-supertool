@@ -185,6 +185,28 @@ def decoded_host_naming_reason(candidate: str) -> str:
     single ``/``. ``%5Cevil.host/x`` becomes ``/evil.host/x``, which is a path
     with a leading slash — the op already accepts those, and one slash has
     never opened an authority. It takes two.
+
+    **Exactly one decode is performed, on purpose, and this pass is where that
+    decision lives (#1194).** `path_refusal` hands it
+    ``urllib.parse.unquote(path)`` and never a fixed point, so
+    ``%252F%252Fevil.host`` is accepted. That is not an oversight — it was
+    refiled as a defect twice — but the depth the value's readers actually
+    occupy. There are two of them: glab's own endpoint parse, which sees the
+    literal string at depth 0 and is `host_naming_reason`'s job, and a consumer
+    that percent-decodes once and then parses, which is this one. Depth 2 needs
+    a consumer that decodes twice and only *then* reads the result with
+    authority semantics; Go's ``url.Parse`` keeps ``RawPath`` and
+    ``RequestURI()`` puts the original ``%252F%252F...`` back on the wire, so
+    GitLab receives what supertool sent and its router decodes once — into a
+    literal path segment of the files API, not an authority.
+
+    Decoding until the value stops changing would refuse ``%252F%252Fx`` and
+    ``%255C...``, the correct and only encodings for files literally named
+    ``%2F%2Fx`` and ``%5C...``. That is #1043 one level deeper: a legitimately
+    encoded filename made unreachable to close a route no consumer walks, and
+    with no natural stopping point or stated threat of its own. The depth is
+    pinned by `tests/test_gl_api_decode_depth_1194.py`, because every corpus in
+    #1035 and #1043 stays green under a fixed-point rewrite.
     """
     folded = candidate.replace("\\", "/")
     return _authority_reason(folded.split("?", 1)[0])
@@ -225,6 +247,9 @@ def path_refusal(path: str) -> str:
     # are the same two shapes wearing an encoder. The two passes are not the
     # same rule: what is literal in the first is decoded in the second, so the
     # backslash is a flat refusal raw and a fold-then-check decoded (#1043).
+    # One decode, not a fixed point, and deliberately so: the two passes are
+    # the two depths this value is ever read at. `decoded_host_naming_reason`
+    # carries the argument, and #1194 is where it was settled.
     reason = (host_naming_reason(path)
               or decoded_host_naming_reason(urllib.parse.unquote(path)))
     if reason:
