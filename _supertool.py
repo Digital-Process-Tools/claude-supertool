@@ -4137,15 +4137,18 @@ def _path_meta_suffix(path: str, sample: bytes = b"") -> str:
             # this route and `_path_meta_repo_root` talking about the same
             # repository when a path crosses a repo boundary.
             #
-            # `--literal-pathspecs` because a filename is not a pattern: a clean
+            # `:(literal)` because a filename is not a pattern: a clean
             # `t[a].txt` globbed onto its modified sibling `ta.txt` and reported
             # that file's ` m` as its own. The bulk arm looks the name up in a
             # dict, so it was already literal — this is the same two-answers
             # divergence, in the direction that invents a marker rather than
-            # losing one.
+            # losing one. The magic prefix and not the `--literal-pathspecs`
+            # flag: that one has to precede the subcommand, and the shims the
+            # decline tests install match on `$1` being `status` (#705). A flag
+            # that silently un-shims a fixture is a test that stops testing.
             r = subprocess.run(
-                ["git", "--literal-pathspecs", "status", "--porcelain",
-                 "--ignored=matching", "--", os.path.basename(absolute)],
+                ["git", "status", "--porcelain", "--ignored=matching", "--",
+                 ":(literal)" + os.path.basename(absolute)],
                 capture_output=True, text=True, timeout=2,
                 cwd=os.path.dirname(absolute) or ".", encoding="utf-8", errors="replace",
             )
