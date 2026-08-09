@@ -141,9 +141,12 @@ class UnclosedBlock(Exception):
 
     Distinct from `UndelimitedTag`, which is about the *start* tag. Here the
     tag delimits perfectly and the element does not: no `</script` follows it
-    anywhere, so the body runs to EOF. That is a fourth state the adapter used
-    to fold into "not a block" -- the body was dropped and the file reported
-    `ok`, so identical broken JS was a finding when closed and clean when not.
+    anywhere, so the body runs to EOF. The adapter used to fold that into
+    "not a block" -- the body was dropped and the file reported `ok`, so
+    identical broken JS was a finding when closed and clean when not.
+
+    It reaches the same third state `UndelimitedTag` does -- `skipped`, the
+    only one this schema has. What is new is the cause, not the verdict.
 
     Its own type because the reader's next action differs: add the missing
     `</script>`, or find out why the file is truncated -- not "fix the quote

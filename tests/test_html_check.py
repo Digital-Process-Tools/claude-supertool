@@ -536,7 +536,8 @@ def test_one_undelimited_tag_refuses_the_whole_file(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# #1185 -- the fourth state: a block whose *body* runs to EOF with no close
+# #1185 -- the third state reached by a new cause: a block whose *body*
+# runs to EOF with no close (the verdict is `skipped`, as everywhere else)
 # ---------------------------------------------------------------------------
 
 def test_block_that_never_closes_is_skipped_not_ok(tmp_path: Path) -> None:
