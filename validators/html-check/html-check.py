@@ -101,8 +101,9 @@ TIMEOUT_S = 30
 # quiet one. Verified against html.parser, which is spec-conformant here.
 #
 # Where the tag genuinely cannot be delimited -- a quoted value with no
-# closing quote, i.e. EOF-in-tag, where the tokenizer drops the tag outright
-# -- there is nothing to be smarter about, and the answer is the third state.
+# closing quote, or a file that stops mid-tag, both EOF-in-tag, where the
+# tokenizer drops the tag outright -- there is nothing to be smarter about,
+# and the answer is the third state, naming which of the two it met.
 # See docs/validators.md, "Declining instead of guessing".
 #
 # Tag names end at whitespace, `/` or `>`. `\b` also ended one at a hyphen, so
@@ -114,22 +115,45 @@ QUOTES = ('"', "'")
 
 
 class UndelimitedTag(Exception):
-    """A `<script` start tag with no end. Carries the 1-indexed line it opens on."""
+    """A `<script` start tag with no end.
 
-    def __init__(self, line: int) -> None:
-        super().__init__(f"unterminated <script> start tag at line {line}")
+    Carries the 1-indexed line it opens on and *which* of the two ways it
+    failed to close, because they send the reader to different places: a
+    value with no closing quote is a typo on that line, a file that stops
+    mid-tag is a truncated file. A refusal naming the wrong one is the
+    defect this adapter's third state exists to remove, one layer out.
+    """
+
+    def __init__(self, line: int, cause: str) -> None:
+        super().__init__(f"unterminated <script> start tag at line {line}: {cause}")
         self.line = line
+        self.cause = cause
 
 
-def _parse_start_tag(html: str, i: int) -> tuple[int, dict[str, str]] | None:
+UNCLOSED_QUOTE = "an attribute value opens with a quote that is never closed"
+NO_GT = "the file ends before any `>` closes it"
+
+
+def _parse_start_tag(html: str, i: int) -> tuple[int, dict[str, str]] | str:
     """Walk the start tag whose name ends at `html[i]`. `(end, attributes)`.
 
     `end` is the index just past the tag's `>`; `attributes` maps lowercased
     name to value, first occurrence winning, as the spec has it.
 
-    `None` means the tag has no end: a quoted value ran to the end of the
-    file, so where the tag stops -- and therefore where its body starts, or
-    whether it has one -- is not knowable from this input.
+    A `str` return is a refusal carrying its own cause: the tag has no end,
+    so where it stops -- and therefore where its body starts, or whether it
+    has one -- is not knowable from this input.
+
+    Agreement with `html.parser` is measured, not assumed, and the bound is
+    worth stating exactly. On well-formed start tags the parsed attributes
+    match it outright. On tags malformed in before-attribute-name position
+    (`<script ="v">`, a bare quote where a name belongs) the two disagree
+    about what the *name* is -- and so, incidentally, do html.parser and the
+    WHATWG spec. What is measured over ~60k such tags is the property this
+    adapter actually rests on: where html.parser parses the tag at all, we
+    never answer differently about whether `src` is present or what `type`
+    holds. We only decline. That is the one direction a validator may be
+    wrong in.
     """
     n = len(html)
     attrs: dict[str, str] = {}
@@ -160,7 +184,7 @@ def _parse_start_tag(html: str, i: int) -> tuple[int, dict[str, str]] | None:
         if k < n and html[k] in QUOTES:
             close = html.find(html[k], k + 1)
             if close == -1:
-                return None
+                return UNCLOSED_QUOTE
             attrs.setdefault(name, html[k + 1:close])
             j = close + 1
         else:
@@ -169,7 +193,7 @@ def _parse_start_tag(html: str, i: int) -> tuple[int, dict[str, str]] | None:
                 k += 1
             attrs.setdefault(name, html[start:k])
             j = k
-    return None
+    return NO_GT
 
 
 # `src` and `type` are read off the parsed attributes above rather than
@@ -227,8 +251,8 @@ def extract_js_blocks(html: str) -> list[tuple[int, str]]:
         if m is None:
             return blocks
         parsed = _parse_start_tag(html, m.end())
-        if parsed is None:
-            raise UndelimitedTag(html.count("\n", 0, m.start()) + 1)
+        if isinstance(parsed, str):
+            raise UndelimitedTag(html.count("\n", 0, m.start()) + 1, parsed)
         body_start, attrs = parsed
         close = SCRIPT_CLOSE.search(html, body_start)
         if close is None:
@@ -329,9 +353,14 @@ def main() -> None:
     try:
         found = extract_js_blocks(html)
     except UndelimitedTag as exc:
+        # The whole file, not just this tag. A verdict naming one finding
+        # would be a claim about a file that was not read past line
+        # `exc.line`, and `ok`/`count` are exactly that claim. Nothing is
+        # lost by declining: the reason names the line to fix first, and
+        # anything else wrong with the file is still there on the next run.
         emit(skipped("html-check", file,
-                     f"a <script> start tag at line {exc.line} has an attribute value "
-                     f"with no closing quote, so where the tag ends cannot be told -- "
+                     f"the <script> start tag at line {exc.line} is never closed "
+                     f"({exc.cause}), so where it ends cannot be told -- "
                      f"NO inline <script> block in this file was checked",
                      int((time.time() - start) * 1000)))
         return

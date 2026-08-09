@@ -489,6 +489,51 @@ def test_unterminated_attribute_value_is_skipped_not_ok(tmp_path: Path) -> None:
     assert "2" in out["skipped"], f"the reason must name the tag's line: {out['skipped']}"
 
 
+def test_truncated_tag_with_no_quote_says_so_and_does_not_invent_a_quote(tmp_path: Path) -> None:
+    """The refusal names the cause it actually found.
+
+    A start tag can fail to close two ways -- a quoted value with no closing
+    quote, and a file that simply stops mid-tag. Both reach the same refusal,
+    and a message that reports the first when it met the second sends the
+    reader looking for a quote that is not there. An error naming the wrong
+    thing is the shape of defect this file exists to remove, one layer out.
+    """
+    f = tmp_path / "truncated.html"
+    f.write_text('<html><body>\n<script foo')
+    out = _run(str(f))
+    assert "skipped" in out, f"expected the third state, got {out}"
+    reason = out["skipped"]
+    assert "quote" not in reason.lower(), f"there is no quote in this file: {reason}"
+    assert "2" in reason, reason
+
+
+def test_one_undelimited_tag_refuses_the_whole_file(tmp_path: Path) -> None:
+    """The refusal is per file, and it outranks a finding it already has.
+
+    This file holds a real syntax error in a block whose tag is perfectly
+    well-formed, and *then* a tag that cannot be delimited. Reporting the
+    finding alone would be a verdict about a file two thirds of which was
+    never read -- `ok: false, count: 1` says "here is what is wrong with this
+    file", and the honest answer is "I could not read this file".
+
+    Nothing is lost by refusing: the reason names the line to fix first, and
+    the finding is still there on the next run. Nothing is claimed either.
+    """
+    f = tmp_path / "mixed.html"
+    f.write_text(
+        '<html><body>\n'
+        '<script>\n'
+        'const a = {;\n'
+        '</script>\n'
+        '<script data-x="oops>\n'
+        '</body></html>\n'
+    )
+    out = _run(str(f))
+    assert "skipped" in out, f"expected the third state, got {out}"
+    assert "count" not in out
+    assert "5" in out["skipped"], f"the reason must name the undelimited tag: {out['skipped']}"
+
+
 def test_script_hyphen_custom_element_is_not_a_script_block(tmp_path: Path) -> None:
     """`<script-foo>` is a different tag, and the word boundary matched it.
 
