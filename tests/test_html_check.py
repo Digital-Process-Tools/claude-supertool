@@ -312,6 +312,203 @@ def test_missing_node_is_skipped_not_ok(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# #1153 -- the same class on the *opening* tag: `>` inside an attribute value
+# ---------------------------------------------------------------------------
+
+def test_gt_in_a_quoted_attribute_does_not_hide_the_real_type(tmp_path: Path) -> None:
+    """`<script data-tpl="a > b" type="application/json">` is JSON, not JS.
+
+    The opening pattern stops at the first `>` in the source, which for a
+    quoted attribute value is not the end of the tag. Every attribute after
+    that point becomes invisible: the `type` naming this block as data is
+    never seen, the block is treated as JavaScript, and node reports a syntax
+    error in a JSON payload this validator has no business reading.
+    """
+    f = tmp_path / "json.html"
+    f.write_text(
+        '<html><body>\n'
+        '<script data-tpl="a > b" type="application/json">{"k": 1}</script>\n'
+        '</body></html>\n'
+    )
+    assert_ok(_run(str(f)))
+
+
+def test_gt_in_a_quoted_attribute_does_not_hide_src(tmp_path: Path) -> None:
+    """Same truncation, other attribute: an external script has no inline JS.
+
+    The block carries no body a browser would run, and the adapter hands node
+    the tail of the start tag -- `b" src="x.js">` -- which is a syntax error
+    about markup, pinned to a line holding markup.
+    """
+    f = tmp_path / "ext.html"
+    f.write_text(
+        '<html><body>\n'
+        '<script data-tpl="a > b" src="x.js"></script>\n'
+        '</body></html>\n'
+    )
+    assert_ok(_run(str(f)))
+
+
+def test_src_text_inside_an_attribute_value_does_not_skip_the_block(tmp_path: Path) -> None:
+    """The silent half, and the reason this is not a cosmetic bug.
+
+    Truncated attributes are not merely short -- they end *inside* a quoted
+    value, so the value's own text is read as attribute syntax. A value
+    containing ` src=` makes SRC_ATTR fire, the block is dropped as external,
+    and a file with broken inline JS is reported `ok`. An absence produced by
+    the tool, read as an absence in the world.
+    """
+    f = tmp_path / "fakesrc.html"
+    f.write_text(
+        '<html><body>\n'
+        '<script data-tpl="foo src=1 > b">\n'
+        'const x = {;\n'
+        '</script>\n'
+        '</body></html>\n'
+    )
+    out = _run(str(f))
+    assert_declined(out)
+    assert out["count"] == 1
+
+
+def test_type_text_inside_an_attribute_value_does_not_skip_the_block(tmp_path: Path) -> None:
+    """Same silent skip through TYPE_ATTR rather than SRC_ATTR.
+
+    TYPE_ATTR anchors on whitespace, so the value's text has to carry a space
+    before `type=` to be mistaken for the attribute -- which is why this reads
+    `x type=json` and not `type=json`.
+    """
+    f = tmp_path / "faketype.html"
+    f.write_text(
+        '<html><body>\n'
+        "<script data-tpl='x type=json > b'>\n"
+        'const x = {;\n'
+        '</script>\n'
+        '</body></html>\n'
+    )
+    out = _run(str(f))
+    assert_declined(out)
+    assert out["count"] == 1
+    assert out["errors"][0]["line"] == 3
+
+
+def test_src_text_inside_a_value_skips_the_block_with_no_gt_involved(tmp_path: Path) -> None:
+    """The same silent skip, reachable without any `>` -- so it is its own bug.
+
+    SRC_ATTR and TYPE_ATTR scan the raw attribute *text*, not parsed
+    attributes, so a quoted value whose contents happen to read like ` src=`
+    or ` type=` is indistinguishable from the real attribute. Delimiting the
+    tag correctly does not help: this file's tag ends exactly where it should
+    and the block is still dropped, `ok`, with broken JS in it.
+
+    It is why the `>` case is silent rather than merely mis-parsed, and it is
+    what the whitespace anchoring in those two patterns cannot reach -- an
+    anchor tells `data-src=` from `src=`, not an attribute from a string.
+    """
+    f = tmp_path / "novaluegt.html"
+    f.write_text(
+        '<html><body>\n'
+        '<script data-tpl="foo src=1 bar">\n'
+        'const x = {;\n'
+        '</script>\n'
+        '</body></html>\n'
+    )
+    out = _run(str(f))
+    assert_declined(out)
+    assert out["count"] == 1
+    assert out["errors"][0]["line"] == 3
+
+
+def test_gt_in_a_quoted_attribute_does_not_shift_the_body(tmp_path: Path) -> None:
+    """The body starts after the tag, so the finding lands on the JS line.
+
+    With the tag cut short the body begins mid-attribute, node's first
+    complaint is about `b">` on the tag's own line, and the reported line
+    points at markup instead of at the broken statement.
+    """
+    f = tmp_path / "shift.html"
+    f.write_text(
+        '<html><body>\n'
+        '<script data-tpl="a > b">\n'
+        'const x = {;\n'
+        '</script>\n'
+        '</body></html>\n'
+    )
+    out = _run(str(f))
+    assert_declined(out)
+    assert out["count"] == 1
+    assert out["errors"][0]["line"] == 3, f"expected line 3, got {out['errors'][0]}"
+
+
+def test_quote_inside_an_unquoted_value_still_ends_the_tag(tmp_path: Path) -> None:
+    """A quote only opens a value directly after `=`; elsewhere it is a char.
+
+    `<script data-x=a"b>` is a parse error a browser accepts: the value is
+    `a"b` and the tag ends at the `>`. Reading that quote as the start of a
+    quoted value would run to the next quote in the file and lose the block --
+    trading the reported bug for a quieter one.
+    """
+    f = tmp_path / "unquoted.html"
+    f.write_text(
+        '<html><body>\n'
+        '<script data-x=a"b>\n'
+        'const x = {;\n'
+        '</script>\n'
+        '</body></html>\n'
+    )
+    out = _run(str(f))
+    assert_declined(out)
+    assert out["count"] == 1
+    assert out["errors"][0]["line"] == 3
+
+
+def test_unterminated_attribute_value_is_skipped_not_ok(tmp_path: Path) -> None:
+    """Where the tag genuinely cannot be delimited, say so -- do not guess.
+
+    A quoted value with no closing quote is EOF-in-tag: the tokenizer drops
+    the tag entirely, so nothing here tells us where the script body starts,
+    or whether there is one. The regex answered anyway, cutting the tag at a
+    `>` that is inside the value.
+
+    This is the third state, not a finding: no claim is being made about the
+    file's JavaScript, and `ok` would be a claim.
+    """
+    f = tmp_path / "unterminated.html"
+    f.write_text(
+        '<html><body>\n'
+        '<script data-x="oops>\n'
+        'const x = {;\n'
+        '</script>\n'
+        '</body></html>\n'
+    )
+    out = _run(str(f))
+    assert "skipped" in out, f"expected the third state, got {out}"
+    assert "ok" not in out
+    assert "count" not in out
+    assert "errors" not in out
+    assert "2" in out["skipped"], f"the reason must name the tag's line: {out['skipped']}"
+
+
+def test_script_hyphen_custom_element_is_not_a_script_block(tmp_path: Path) -> None:
+    """`<script-foo>` is a different tag, and the word boundary matched it.
+
+    A word boundary after the tag name fires on the hyphen, so the custom
+    element's children were extracted and handed to node -- a syntax error
+    reported against markup in a page whose JavaScript is fine. A tag name
+    ends at whitespace, a slash or `>`, and nowhere else.
+    """
+    f = tmp_path / "custom.html"
+    f.write_text(
+        '<html><body>\n'
+        '<script-foo bar>\n'
+        '<p>not javascript</p>\n'
+        '</script-foo>\n'
+        '</body></html>\n'
+    )
+    assert_ok(_run(str(f)))
+
+
+# ---------------------------------------------------------------------------
 # No argument / schema shape
 # ---------------------------------------------------------------------------
 

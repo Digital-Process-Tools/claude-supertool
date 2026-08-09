@@ -47,16 +47,18 @@ from refusal import tool_fault, skipped
 
 TIMEOUT_S = 30
 
-# <script ATTRS>BODY</script ANYTHING>, case-insensitive, BODY may span lines.
+# A block is <script ATTRS>BODY</script ANYTHING>, case-insensitive, BODY may
+# span lines. The two ends are delimited differently and both comments below
+# say why: the end tag by SCRIPT_CLOSE, the start tag by `_start_tag_end`.
 #
-# The end tag is `\b[^>]*>` and not `\s*>`: an HTML end tag may carry
+# The end tag allows `[^>]*` before its `>` and not `\s*`: an HTML end tag may carry
 # whitespace and junk attributes before its `>` (`</script bar>`), and every
 # parser ignores the junk and closes the element. Matching only whitespace
 # meant the closing tag was not found at all -- so the non-greedy body either
 # paired with the *next* block's close and handed node a slab of markup, or
 # found no close and dropped the block entirely, leaving the file `ok` with
 # broken JS still in it. That is the silent gap #833 exists to close, arriving
-# through the one pattern that decides what gets looked at. `\b` keeps
+# through the one pattern that decides what gets looked at. The lookahead keeps
 # `</scriptfoo>` out: it is a different tag, not this one with junk on it.
 #
 # This deliberately closes on a `</script ...>` that sits inside a JS string
@@ -73,15 +75,122 @@ TIMEOUT_S = 30
 # point in a browser, really is broken, and saying so is the job. The old
 # `</script\s*>` agreed with the tokenizer on the bare form and disagreed on
 # the form carrying attributes -- one rule, applied to half the cases.
-SCRIPT_TAG = re.compile(r"<script\b([^>]*)>(.*?)</script\b[^>]*>", re.IGNORECASE | re.DOTALL)
-# Anchored on whitespace/start-of-attrs, not `\b`: a bare word boundary also
-# fires on the hyphen in `data-src=` / `data-type=` (the exact attribute
-# names consent-management scripts like OneTrust/Cookiebot use to stash the
-# real src/type while `src`/`type` point elsewhere), which would misread a
-# still-inline, still-real script as external or non-JS and silently skip
-# the one gap #833 exists to close.
-SRC_ATTR = re.compile(r"(?:^|\s)src\s*=", re.IGNORECASE)
-TYPE_ATTR = re.compile(r"""(?:^|\s)type\s*=\s*(?:"([^"]*)"|'([^']*)'|(\S+))""", re.IGNORECASE)
+# The *start* tag is not a regex, and that is #1153. `<script\b([^>]*)>` stops
+# at the first `>` in the source, but a `>` inside a quoted attribute value is
+# not the end of a tag -- `<script data-tpl="a > b">` ends at the second one.
+# Truncating there is not merely short: it stops *inside* a quoted value, so
+# the value's own text is then read as attribute syntax, and it fails in both
+# directions at once.
+#
+#   <script data-tpl="a > b" type="application/json">   -> read as JavaScript,
+#       because the `type` naming it as data sits past the cut. node is handed
+#       a JSON payload and reports a syntax error about it. False positive.
+#   <script data-tpl="foo src=1 > b">BROKEN JS</script> -> read as external,
+#       because ` src=` *inside the value* is all SRC_ATTR can see. The block
+#       is dropped and the file reports `ok` with the broken JS still in it --
+#       the same absence-read-as-presence the end-tag fix above exists to
+#       close, arriving through the other half of the same pattern.
+#
+# `_start_tag_end` walks the tag instead. This is not "a better regex until
+# the reported case passes": the start-tag grammar really is a small state
+# machine, `>` can only hide inside a quoted value, and a quote only opens
+# such a value directly after `=`. Anywhere else a quote is an ordinary
+# character (`<script data-x=a"b>` is a parse error whose value is `a"b` and
+# whose tag ends at the `>`), and treating it as an opener would run to the
+# next quote in the file and lose the block -- the loud bug traded for a
+# quiet one. Verified against html.parser, which is spec-conformant here.
+#
+# Where the tag genuinely cannot be delimited -- a quoted value with no
+# closing quote, i.e. EOF-in-tag, where the tokenizer drops the tag outright
+# -- there is nothing to be smarter about, and the answer is the third state.
+# See docs/validators.md, "Declining instead of guessing".
+#
+# Tag names end at whitespace, `/` or `>`. `\b` also ended one at a hyphen, so
+# `<script-foo>` was extracted as a script block and its children handed to
+# node: a syntax error reported against markup on a page whose JS is fine.
+SCRIPT_OPEN = re.compile(r"<script(?=[\s/>])", re.IGNORECASE)
+SCRIPT_CLOSE = re.compile(r"</script(?=[\s/>])[^>]*>", re.IGNORECASE)
+QUOTES = ('"', "'")
+
+
+class UndelimitedTag(Exception):
+    """A `<script` start tag with no end. Carries the 1-indexed line it opens on."""
+
+    def __init__(self, line: int) -> None:
+        super().__init__(f"unterminated <script> start tag at line {line}")
+        self.line = line
+
+
+def _parse_start_tag(html: str, i: int) -> tuple[int, dict[str, str]] | None:
+    """Walk the start tag whose name ends at `html[i]`. `(end, attributes)`.
+
+    `end` is the index just past the tag's `>`; `attributes` maps lowercased
+    name to value, first occurrence winning, as the spec has it.
+
+    `None` means the tag has no end: a quoted value ran to the end of the
+    file, so where the tag stops -- and therefore where its body starts, or
+    whether it has one -- is not knowable from this input.
+    """
+    n = len(html)
+    attrs: dict[str, str] = {}
+    j = i
+    while j < n:
+        c = html[j]
+        if c == ">":
+            return j + 1, attrs
+        if c.isspace() or c == "/":
+            j += 1
+            continue
+
+        start = j
+        while j < n and not (html[j].isspace() or html[j] in "=>/"):
+            j += 1
+        name = html[start:j].lower()
+
+        k = j
+        while k < n and html[k].isspace():
+            k += 1
+        if k >= n or html[k] != "=":
+            attrs.setdefault(name, "")
+            continue
+
+        k += 1
+        while k < n and html[k].isspace():
+            k += 1
+        if k < n and html[k] in QUOTES:
+            close = html.find(html[k], k + 1)
+            if close == -1:
+                return None
+            attrs.setdefault(name, html[k + 1:close])
+            j = close + 1
+        else:
+            start = k
+            while k < n and not (html[k].isspace() or html[k] == ">"):
+                k += 1
+            attrs.setdefault(name, html[start:k])
+            j = k
+    return None
+
+
+# `src` and `type` are read off the parsed attributes above rather than
+# matched against the tag's raw text, and that is not a tidy-up.
+#
+# The raw-text patterns were `(?:^|\s)src\s*=` and its `type` twin, anchored
+# on whitespace because a bare `\b` also fires on the hyphen in `data-src=` /
+# `data-type=` -- the exact names consent-management scripts (OneTrust,
+# Cookiebot) use to stash the real src/type while `src`/`type` point
+# elsewhere. But an anchor only tells `data-src=` from `src=`. It cannot tell
+# an attribute from a *string*, and a quoted value is ordinary text:
+#
+#   <script data-tpl="foo src=1 bar">BROKEN JS</script>
+#
+# has no `src` attribute, no `>` anywhere it should not be, and a tag that
+# delimits perfectly -- and was still dropped as external, reporting `ok`
+# with the broken JS in it. Nothing about #1153's `>` is needed to reach it;
+# `>` only made it easier to hit, by cutting the tag mid-value so the value's
+# text became the whole attribute string. Parsing removes the class rather
+# than the instance: `data-src` is a different name, and the contents of a
+# value are never names at all.
 
 # Absence of a type attribute means JS. An explicit type must name JS (or a
 # module) to be checked — anything else (json, ld+json, a template dialect
@@ -100,11 +209,8 @@ LOCATION = re.compile(r"^(?!\s)(?!node:)(.+?):(\d+)$", re.MULTILINE)
 BANNER = re.compile(r"\bSyntaxError\b")
 
 
-def _script_type(attrs: str) -> str:
-    m = TYPE_ATTR.search(attrs)
-    if not m:
-        return ""
-    return (m.group(1) or m.group(2) or m.group(3) or "").strip().lower()
+def _script_type(attrs: dict[str, str]) -> str:
+    return attrs.get("type", "").strip().lower()
 
 
 def extract_js_blocks(html: str) -> list[tuple[int, str]]:
@@ -115,17 +221,31 @@ def extract_js_blocks(html: str) -> list[tuple[int, str]]:
     node's line numbers land on the original file's line numbers directly.
     """
     blocks: list[tuple[int, str]] = []
-    for m in SCRIPT_TAG.finditer(html):
-        attrs, body = m.group(1), m.group(2)
-        if SRC_ATTR.search(attrs):
+    pos = 0
+    while True:
+        m = SCRIPT_OPEN.search(html, pos)
+        if m is None:
+            return blocks
+        parsed = _parse_start_tag(html, m.end())
+        if parsed is None:
+            raise UndelimitedTag(html.count("\n", 0, m.start()) + 1)
+        body_start, attrs = parsed
+        close = SCRIPT_CLOSE.search(html, body_start)
+        if close is None:
+            # No close anywhere after this open: not a block. Resume past the
+            # start tag rather than past the file, so a later, well-formed
+            # block is still found -- what the non-greedy pattern did too.
+            pos = body_start
+            continue
+        body = html[body_start:close.start()]
+        pos = close.end()
+        if "src" in attrs:
             continue
         if _script_type(attrs) not in JS_TYPES:
             continue
         if not body.strip():
             continue
-        start_line = html.count("\n", 0, m.start(2)) + 1
-        blocks.append((start_line, body))
-    return blocks
+        blocks.append((html.count("\n", 0, body_start) + 1, body))
 
 
 def diagnostic_line(out: str, temp_path: str) -> int | None:
@@ -206,8 +326,18 @@ def main() -> None:
               "duration_ms": int((time.time() - start) * 1000)})
         return
 
+    try:
+        found = extract_js_blocks(html)
+    except UndelimitedTag as exc:
+        emit(skipped("html-check", file,
+                     f"a <script> start tag at line {exc.line} has an attribute value "
+                     f"with no closing quote, so where the tag ends cannot be told -- "
+                     f"NO inline <script> block in this file was checked",
+                     int((time.time() - start) * 1000)))
+        return
+
     errors = []
-    for start_line, content in extract_js_blocks(html):
+    for start_line, content in found:
         err = check_block(start_line, content, file)
         if err is not None:
             errors.append(err)
