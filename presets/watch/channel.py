@@ -27,6 +27,13 @@ it is why the answer here has three states rather than two:
                      `forwarded` number for the verdict to be about, or a
                      health file that is a symlink and was not followed
                      (#1184).
+    CONTRADICTED     the process holding the socket is not the one the health
+                     file names (#1192). A fourth state on purpose: this is a
+                     finding, and `CANNOT DETERMINE` means no finding — putting
+                     an impersonation in that bucket would be this op's own
+                     defect. Peer credentials do not close the forgery, because
+                     a same-uid process that binds the socket *and* writes the
+                     file is its own peer; what they catch is the disagreement.
 
 `CANNOT DETERMINE` is the point of the op rather than its failure mode. It is
 the state today's tooling reports as green, and reporting it as green produced a
@@ -34,9 +41,10 @@ confidently wrong diagnosis in both directions on 2026-07-29 (#554's own
 account) — first "transport is fine" off `sent ok`, then "the radar is dead" off
 a drop line, while it had already recovered.
 
-Exit codes are the three states, on purpose: 0 forwarding, 1 not delivering, 3
-cannot determine. A single non-zero for the last two would put the two answers
-this op exists to separate back into one bucket.
+Exit codes are the states, on purpose: 0 forwarding, 1 not delivering, 3 cannot
+determine, 4 contradicted. A single non-zero would put answers this op exists to
+separate back into one bucket, and 4 is separate from 3 for the same reason —
+"I could not tell" and "I can tell, and it is wrong" call for different actions.
 
 **Measured caveat, so nobody builds on a code that is not there.** The supertool
 wrapper reports any non-zero op as `FAIL` and exits 1, so 3 survives only when
@@ -52,6 +60,7 @@ import errno
 import json
 import os
 import socket
+import struct
 import sys
 import time
 from pathlib import Path
@@ -96,6 +105,28 @@ CONNECT_TIMEOUT = 0.5
 RC_FORWARDING = 0
 RC_NOT_DELIVERING = 1
 RC_UNKNOWN = 3
+#: A fourth, because a contradiction is not an absence of findings (#1192).
+#: `CANNOT DETERMINE` says nothing was established; this says something was —
+#: the health file was written by a process that is not holding the socket.
+#: Folding it into 3 would be the defect this whole op exists to remove.
+RC_CONTRADICTED = 4
+
+#: Linux. `SO_PEERCRED` on a connected AF_UNIX socket yields `struct ucred` —
+#: three native ints, pid first — for the process on the other end. Read from
+#: the *client* side it is the process that called `listen`, which is exactly
+#: the socket-holder this op wants to name.
+_UCRED = "3i"
+
+#: macOS. Python exposes neither constant, so both are the raw values from
+#: `<sys/un.h>`: `SOL_LOCAL` is 0 and `LOCAL_PEERPID` is 2.
+#:
+#: **Not `LOCAL_PEERCRED`**, which #1192 named. That option returns a
+#: `struct xucred` carrying a uid and *no pid*, and a uid check answers nothing
+#: here: the threat is a same-uid process, which passes it trivially. The pid
+#: is the only field that can disagree with the health file, so the pid is the
+#: field this asks for.
+_SOL_LOCAL = 0
+_LOCAL_PEERPID = 2
 
 #: Printed in every report, including the healthy one. The ceiling belongs on
 #: the surface that would otherwise be read as proof: a reader who only ever
@@ -173,6 +204,73 @@ def probe_socket(path: str) -> tuple[str, str]:
             s.close()
         except OSError:
             pass
+
+
+def peer_credentials_supported() -> bool:
+    """Whether this platform can name the process holding an AF_UNIX socket.
+
+    Measured from `sys.platform` rather than assumed, and false on more than
+    Windows: FreeBSD has `LOCAL_PEERCRED` and no `LOCAL_PEERPID`, so it can
+    report the holder's uid and never its pid. A uid is not an answer to the
+    question this op asks — the threat is a same-uid process — so a platform
+    that can only supply one is reported as unable, not as partially able.
+    """
+    if not hasattr(socket, "AF_UNIX"):
+        return False
+    if sys.platform.startswith("linux"):
+        return hasattr(socket, "SO_PEERCRED")
+    return sys.platform == "darwin"
+
+
+def peer_pid(path: str) -> tuple[int | None, str]:
+    """The PID of the process holding this socket, or None and why not (#1192).
+
+    **What this buys, and what it does not.** It does not close the forgery:
+    a same-uid process that binds the socket *and* writes the health file is
+    its own peer, so the two agree and `FORWARDING` stands. What it catches is
+    a **mismatch** — a health file naming a process that is not the one holding
+    the socket, which previously drew no objection at all. The ceiling in
+    `docs/presets/watch.md` therefore stays exactly where it was.
+
+    Three states, like everything else on this op: a pid, a refusal because the
+    connect failed, and a refusal because this platform has no way to ask. The
+    last one is named rather than folded into the first, because a report that
+    cannot tell "nobody answered" from "I cannot ask here" is the shape this
+    file was written to remove.
+    """
+    if not peer_credentials_supported():
+        return None, (
+            f"peer credentials for an AF_UNIX socket are not available on "
+            f"{sys.platform}, so the process holding it cannot be named from here"
+        )
+    shown = _untrusted.flat(path)
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        s.settimeout(CONNECT_TIMEOUT)
+        s.connect(path)
+        if sys.platform == "darwin":
+            raw = s.getsockopt(_SOL_LOCAL, _LOCAL_PEERPID, struct.calcsize("i"))
+            (pid,) = struct.unpack("i", raw)
+        else:
+            raw = s.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED,
+                               struct.calcsize(_UCRED))
+            pid, _uid, _gid = struct.unpack(_UCRED, raw)
+    except OSError as err:
+        return None, f"{type(err).__name__} asking who holds {shown}"
+    except struct.error as err:
+        # A kernel that answered with a shorter option than the struct this
+        # unpacks. Not a pid, and not something to guess at.
+        return None, f"the peer credentials for {shown} were unreadable ({err})"
+    finally:
+        try:
+            s.close()
+        except OSError:
+            pass
+    if pid <= 0:
+        # Linux answers `0` for a socket whose peer is gone, and for one bound
+        # in a namespace this process cannot see into. Neither is a process.
+        return None, f"the kernel reported no pid for the process holding {shown}"
+    return pid, ""
 
 
 def read_health(path: str) -> tuple[dict | None, str]:
@@ -543,13 +641,52 @@ def health(path: str) -> tuple[int, str]:
             "", CEILING,
         ])
 
+    claimed = record.get("pid")
+    holder, holder_why = peer_pid(path)
+    if holder is not None and holder != claimed:
+        # Not `CANNOT DETERMINE`: something *was* determined, and it is the one
+        # thing the old report could never say (#1192). The counters are still
+        # printed — they are what the impersonator published, and an operator
+        # comparing them against the real consumer's needs to see them — but the
+        # verdict they sit under is no longer a positive one.
+        return RC_CONTRADICTED, "\n".join([
+            "channel: CONTRADICTED", *head,
+            _health_note(),
+            f"  consumer : the health file names pid {claimed}, but pid {holder} is "
+            f"the process holding this socket",
+            "             these are the same process on a healthy channel. They are",
+            "             not here, so the counters below were published by something",
+            "             that is not the consumer — a live impersonation, or a health",
+            "             file left behind beside a legitimate socket. Neither is a",
+            "             degraded read: check both pids before trusting any of it.",
+            f"  counters : {_num(_counter(record, 'lines_read'))} lines read, "
+            f"{_num(_counter(record, 'forwarded'))} forwarded, "
+            f"{_num(_counter(record, 'dropped'))} dropped",
+            "", CEILING,
+        ])
+
+    if holder is not None:
+        identity = [
+            f"  consumer : pid {claimed}, up since {_stamp(record, 'started')}",
+            "             socket-holder verified: the process holding this socket is",
+            "             the one the health file names. That rules out a stale or",
+            "             forged file beside a live consumer; it does not rule out a",
+            "             same-uid process that bound the socket and wrote the file,",
+            "             which is its own peer and agrees with itself.",
+        ]
+    else:
+        identity = [
+            f"  consumer : pid {claimed} (self-reported), up since "
+            f"{_stamp(record, 'started')}",
+            f"             socket-holder NOT checked — {holder_why}",
+            "             the health file names its own writer; pids are reusable, so",
+            "             nothing here proves that process is the one holding the socket",
+        ]
+
     return RC_FORWARDING, "\n".join([
         "channel: FORWARDING", *head,
         _health_note(),
-        f"  consumer : pid {record.get('pid')} (self-reported), up since "
-        f"{_stamp(record, 'started')}",
-        "             the health file names its own writer; pids are reusable, so",
-        "             nothing here proves that process is the one holding the socket",
+        *identity,
         f"  counters : {_num(_counter(record, 'lines_read'))} lines read, "
         f"{_num(_counter(record, 'forwarded'))} forwarded, "
         f"{_num(_counter(record, 'dropped'))} dropped",

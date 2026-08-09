@@ -77,9 +77,10 @@ needs_socket = pytest.mark.skipif(
     not CAN_BIND, reason="this platform cannot bind an AF_UNIX socket"
 )
 
-# Exit codes are the three states. A single non-zero for both "nothing is
-# listening" and "cannot tell" would put the two answers the issue is about
-# back into one bucket.
+# The three exit codes this module's tests are about. A single non-zero for both
+# "nothing is listening" and "cannot tell" would put the two answers the issue is
+# about back into one bucket. `channel` carries a fourth since #1192,
+# `RC_CONTRADICTED = 4`, which is exercised in its own file.
 RC_FORWARDING = 0
 RC_NOT_DELIVERING = 1
 RC_UNKNOWN = 3
@@ -344,12 +345,18 @@ def test_health_declines_when_the_health_file_belongs_to_a_dead_process(tmp_path
 def test_health_never_presents_the_published_pid_as_a_verified_identity(tmp_path):
     """The case the ubuntu legs actually exercised, kept rather than deleted.
 
-    Nothing checks that the pid in the health file is the process holding the
-    socket, and nothing can: pids are reusable, so a live pid is not evidence
-    that the consumer that wrote the file is the consumer that is bound. The op
-    still reports FORWARDING — the counters are fresh, and something is
-    refreshing them — but the report must attribute the pid to the file rather
-    than assert it as a fact it established.
+    Its docstring used to say "nothing checks that the pid in the health file is
+    the process holding the socket, and nothing can". The second half was wrong,
+    and #1192 is that correction: the kernel will name the socket's peer where
+    the platform exposes it, so this fixture — a health file naming a *stranger*
+    process while this test holds the socket — is now a contradiction rather
+    than an unverifiable claim, and the op says so.
+
+    Both arms are asserted rather than one, because the platform decides which
+    is reachable and a test that skipped on the other would report coverage it
+    does not have. Where the peer cannot be named, the old answer is still the
+    right one and the report still attributes the pid to the file instead of
+    asserting it.
     """
     stranger = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
     path = _sock_path(tmp_path)
@@ -357,9 +364,15 @@ def test_health_never_presents_the_published_pid_as_a_verified_identity(tmp_path
     _write_health(path, pid=stranger.pid, forwarded=39)
     try:
         result = _run_health(path)
-        assert result.returncode == RC_FORWARDING, result.stdout + result.stderr
-        assert "self-reported" in result.stdout
-        assert "pids are reusable" in result.stdout
+        if channel.peer_credentials_supported():
+            assert result.returncode == channel.RC_CONTRADICTED, (
+                result.stdout + result.stderr)
+            assert "CONTRADICTED" in result.stdout
+            assert str(stranger.pid) in result.stdout
+        else:
+            assert result.returncode == RC_FORWARDING, result.stdout + result.stderr
+            assert "self-reported" in result.stdout
+            assert "pids are reusable" in result.stdout
     finally:
         stranger.kill()
         stranger.wait()

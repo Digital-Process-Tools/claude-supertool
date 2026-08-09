@@ -1196,15 +1196,27 @@ ack to read, at either end. So the answer has three states:
 | `NOT DELIVERING` | 1 | A definite negative. No socket, or a socket that refuses: every event a poller emits right now is lost at the source. The report also names each watcher whose own `last_emit` already found nobody home, with the timestamp of that emit — and, on its own line, each state file it could not read |
 | `FORWARDING` | 0 | A consumer is bound and its published counters are fresh: N lines read, N forwarded, N dropped, last forwarded at T |
 | `CANNOT DETERMINE` | 3 | Bound, but publishing no counters, or counters written by a pid that is gone, or counters that stopped refreshing, or counters with no readable `forwarded` number, or a health file that is a symlink and was not followed. This is the state the old tooling reported as green |
+| `CONTRADICTED` | 4 | The process holding the socket is not the one the health file names ([#1192](https://github.com/Digital-Process-Tools/claude-supertool/issues/1192)). A finding, not a degraded read — a forged file, or a stale one left beside a legitimate consumer |
 
-**The pid in a `FORWARDING` report is self-reported, and the report says so.**
-Pids are reusable, and nothing outside the consumer can prove the process named
-in the health file is the one holding the socket — a crashed consumer whose pid
-was handed to a stranger looks identical from here. The liveness probe is
-therefore only ever an *objection*: a pid that no longer exists means the writer
-of those counters is gone, while a pid that does exist establishes nothing. What
-carries the positive verdict is the freshness of the stamp, because a file
-rewritten four seconds ago was written by something running four seconds ago.
+**`CONTRADICTED` is a fourth code and not a flavour of 3**, because "I could
+not tell" and "I can tell, and it is wrong" call for different actions. Folding
+an impersonation into the no-findings bucket is the defect this op exists to
+remove, rebuilt on its own headline.
+
+**The pid in a `FORWARDING` report is compared against the socket's peer, and
+the report says which of the three answers it got.**
+Pids are reusable, and the health file names its own writer — a crashed consumer
+whose pid was handed to a stranger looks identical from the file alone. So the
+kernel is asked who holds the socket (`SO_PEERCRED` on Linux, `LOCAL_PEERPID` on
+macOS), and the report distinguishes *verified* (holder and health file agree),
+*contradicted* (they do not) and *not checked* (no peer credentials on this
+platform — Windows, and FreeBSD, whose `LOCAL_PEERCRED` carries a uid and no
+pid). Not a uid check: the threat is a same-uid process, which passes one
+trivially. The liveness probe stays only an *objection*: a pid that no longer
+exists means the writer of those counters is gone, while a pid that does exist
+establishes nothing. What carries the positive verdict is the freshness of the
+stamp, because a file rewritten four seconds ago was written by something
+running four seconds ago.
 
 **A counter that is absent or not a number renders as `?`, never as `0`.** `0
 forwarded` is a real reading — a quiet morning — and printing it for a file the
@@ -1309,14 +1321,21 @@ the tool you reach for when the fleet looks down. Both arms catch `ValueError`,
 the base rather than the two leaves on purpose: a decode failure nobody has
 thought of yet must also decline.
 
-**What is still forgeable, and is disclosed rather than fixed.** Nothing checks
-the credentials of the process actually holding the socket, so a same-uid
-process can bind it, publish a health file naming its own live pid with a fresh
-stamp, and obtain a `FORWARDING` verdict. The report attributes the pid
-(`self-reported`) and states in its own text that nothing here proves the named
-process is the one holding the socket, which is why this is a documented
-ceiling rather than a defect — but the ceiling is the *whole* verdict, not only
-the pid line.
+**What is still forgeable, and is disclosed rather than fixed.** A same-uid
+process can bind the socket, publish a health file naming its own live pid with
+a fresh stamp, and obtain a `FORWARDING` verdict. [#1192](https://github.com/Digital-Process-Tools/claude-supertool/issues/1192)
+narrowed this and deliberately did not close it: the peer check compares the
+socket-holder against the health file, and an attacker holding both *is* its own
+peer, so the two agree. What the check catches is the **mismatch** — a forged or
+stale health file sitting beside a legitimate consumer — which previously drew
+no objection at all, and now reads `CONTRADICTED` rather than `FORWARDING`.
+
+The ceiling is therefore the *whole* verdict and not only the pid line, which is
+the correction #1192 made to the audit that closed #1187: `self-reported` was
+read as covering the pid, and the forgeable thing was the verdict. On a platform
+with no peer credentials nothing narrowed at all, and the report says so on its
+own line rather than leaving a reader to infer which of the two it is looking
+at.
 
 ## Event payload (locked contract)
 
