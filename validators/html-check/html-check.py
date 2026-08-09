@@ -61,6 +61,11 @@ TIMEOUT_S = 30
 # through the one pattern that decides what gets looked at. The lookahead keeps
 # `</scriptfoo>` out: it is a different tag, not this one with junk on it.
 #
+# Finding no close at all is no longer a drop either way: it is a refusal, per
+# #1185 -- see `UnclosedBlock`. Whether the closing tag is missing because the
+# pattern cannot see it or because the file has none, the adapter has not read
+# the block, and `ok` is a claim it cannot support.
+#
 # This deliberately closes on a `</script ...>` that sits inside a JS string
 # or template literal, and that is not a false positive -- it is the HTML
 # tokenizer's own rule. Script data ends at `</script` followed by whitespace,
@@ -129,6 +134,25 @@ class UndelimitedTag(Exception):
         super().__init__(f"unterminated <script> start tag at line {line}: {cause}")
         self.line = line
         self.cause = cause
+
+
+class UnclosedBlock(Exception):
+    """A well-formed `<script ...>` start tag with no end tag after it (#1185).
+
+    Distinct from `UndelimitedTag`, which is about the *start* tag. Here the
+    tag delimits perfectly and the element does not: no `</script` follows it
+    anywhere, so the body runs to EOF. That is a fourth state the adapter used
+    to fold into "not a block" -- the body was dropped and the file reported
+    `ok`, so identical broken JS was a finding when closed and clean when not.
+
+    Its own type because the reader's next action differs: add the missing
+    `</script>`, or find out why the file is truncated -- not "fix the quote
+    on this line".
+    """
+
+    def __init__(self, line: int) -> None:
+        super().__init__(f"unclosed <script> element opened at line {line}")
+        self.line = line
 
 
 UNCLOSED_QUOTE = "an attribute value opens with a quote that is never closed"
@@ -257,11 +281,19 @@ def extract_js_blocks(html: str) -> list[tuple[int, str]]:
         body_start, attrs = parsed
         close = SCRIPT_CLOSE.search(html, body_start)
         if close is None:
-            # No close anywhere after this open: not a block. Resume past the
-            # start tag rather than past the file, so a later, well-formed
-            # block is still found -- what the non-greedy pattern did too.
-            pos = body_start
-            continue
+            # No close anywhere after this open, so the body runs to EOF and
+            # this file cannot be answered for (#1185). Not "not a block":
+            # the tag is well-formed, and dropping it reported `ok` on broken
+            # JS purely because a closing tag was absent.
+            #
+            # Nor is resuming an option. `SCRIPT_CLOSE.search` found nothing
+            # at or after `body_start`, so it finds nothing after any later
+            # open either -- every subsequent block would take this same
+            # branch. The old comment here claimed the resume kept a later
+            # well-formed block findable; by construction there is no such
+            # block to find, and the tokenizer agrees: after an unclosed
+            # `<script>` every remaining byte is script data.
+            raise UnclosedBlock(html.count("\n", 0, m.start()) + 1)
         body = html[body_start:close.start()]
         pos = close.end()
         if "src" in attrs:
@@ -363,6 +395,21 @@ def main() -> None:
                      f"the <script> start tag at line {exc.line} is never closed "
                      f"({exc.cause}), so where it ends cannot be told -- "
                      f"NO inline <script> block in this file was checked",
+                     int((time.time() - start) * 1000)))
+        return
+    except UnclosedBlock as exc:
+        # Same per-file rule, other end of the element. Checking the body to
+        # EOF as if it were closed was the alternative and is a guess in the
+        # loud direction: a fragment or a template partial legitimately stops
+        # inside a block, and the trailing markup after a truncated page's
+        # last statement would be handed to node as JavaScript. Declining
+        # says the one thing that is true either way.
+        emit(skipped("html-check", file,
+                     f"the <script> element opened at line {exc.line} has no "
+                     f"closing tag anywhere after it, so its body runs to the "
+                     f"end of the file and whether the file is complete cannot "
+                     f"be told -- NO inline <script> block in this file was "
+                     f"checked",
                      int((time.time() - start) * 1000)))
         return
 
