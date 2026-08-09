@@ -32,6 +32,7 @@ from pathlib import Path
 import pytest
 
 import supertool
+from _gitshim import dispatch_on_subcommand
 
 _ROOT = Path(__file__).parent.parent
 _STATUS_PATH = _ROOT / "presets" / "git" / "status.py"
@@ -71,19 +72,13 @@ def _real_git_shim(d: Path) -> None:
 
 def _failing_git_shim(d: Path, subcommand: str, code: int, message: str) -> None:
     """A git that refuses one subcommand the way a locked index refuses it."""
-    _write_shim(
-        d, "git",
-        f'if [ "$1" = "{subcommand}" ]; then echo "{message}" >&2; exit {code}; fi\n'
-        f'exec {_real("git")} "$@"\n',
-    )
+    _write_shim(d, "git", dispatch_on_subcommand(
+        subcommand, f'echo "{message}" >&2; exit {code}', _real("git")))
 
 
 def _stalling_git_shim(d: Path, subcommand: str) -> None:
-    _write_shim(
-        d, "git",
-        f'if [ "$1" = "{subcommand}" ]; then {_real("sleep")} 300; fi\n'
-        f'exec {_real("git")} "$@"\n',
-    )
+    _write_shim(d, "git", dispatch_on_subcommand(
+        subcommand, f'{_real("sleep")} 300', _real("git")))
 
 
 def _git(repo: Path, *args: str) -> str:

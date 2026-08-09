@@ -41,6 +41,7 @@ from pathlib import Path
 import pytest
 
 import supertool
+from _gitshim import dispatch_on_subcommand
 
 _ROOT = Path(__file__).parent.parent
 _STATUS_PATH = _ROOT / "presets" / "git" / "status.py"
@@ -94,8 +95,7 @@ def _slow_git_path(tmp_path: Path, subcommand: str) -> str:
     shim = bindir / "git"
     shim.write_text(
         "#!/bin/sh\n"
-        f'if [ "$1" = "{subcommand}" ]; then {sleep} 300; fi\n'
-        f'exec {real} "$@"\n'
+        + dispatch_on_subcommand(subcommand, f"{sleep} 300", real)
     )
     shim.chmod(0o755)
     return str(bindir)
@@ -435,8 +435,8 @@ def _failing_git_path(tmp_path: Path, subcommand: str) -> str:
     shim = bindir / "git"
     shim.write_text(
         "#!/bin/sh\n"
-        f'if [ "$1" = "{subcommand}" ]; then echo "fatal: shim" >&2; exit 1; fi\n'
-        f'exec {real} "$@"\n'
+        + dispatch_on_subcommand(
+            subcommand, 'echo "fatal: shim" >&2; exit 1', real)
     )
     shim.chmod(0o755)
     return str(bindir)

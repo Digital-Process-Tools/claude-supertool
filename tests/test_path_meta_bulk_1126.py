@@ -314,6 +314,7 @@ def test_a_symlink_gets_the_same_marker_from_either_route(repo: Path) -> None:
     tree, and looking one up under the link's *target* name missed every time.
     A miss is indistinguishable from clean, so an untracked symlink rendered as
     a tracked, unmodified file — a wrong answer, not a slow one."""
+    require_symlink()
     (repo / "real").mkdir()
     (repo / "real" / "target.txt").write_bytes(b"committed\n")
     subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True,
@@ -338,6 +339,7 @@ def test_a_symlink_gets_the_same_marker_from_either_route(repo: Path) -> None:
 def test_a_symlink_is_never_answered_from_another_repo(tmp_path: Path) -> None:
     """Resolving the link first picked the repo the *target* lives in, so the
     marker beside a file in one repo was computed from another one's status."""
+    require_symlink()
     here, elsewhere = tmp_path / "here", tmp_path / "elsewhere"
     here.mkdir()
     elsewhere.mkdir()
