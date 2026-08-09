@@ -93,6 +93,31 @@ EMIT_NO_LISTENER = "no-listener"
 EMIT_ACCEPTED = "accepted"
 EMIT_UNKNOWN = "unknown"
 
+# Reading `last_emit` back out (#1183).
+#
+# #1173 wrote the record and `channel:health` read it; the two surfaces an
+# operator actually looks at — `watches` and `radar` — read nothing, so a fleet
+# whose every event landed in a socket nobody reads rendered exactly like a
+# healthy one. `delivery_of` below is the whole of the reading side and every
+# surface goes through it, because a second inference path is how two boards
+# end up disagreeing about the same field.
+#
+# There is no threshold and no clock in any of it, deliberately. A quiet fleet
+# and a stranded one are not told apart by the age of a record: a watcher with
+# nothing to report never called `emit_event` and so has no `last_emit` at all.
+# That is `DELIVERY_NO_EMIT` — a fourth answer that already exists in the data,
+# rather than one guessed out of a timestamp.
+DELIVERY_NO_EMIT = "no-emit"
+
+#: What each state is called in a column. `EMIT_NO_LISTENER` is the only one
+#: shouted, because it is the only definite negative: those events are gone.
+DELIVERY_LABELS = {
+    EMIT_ACCEPTED: "accepted",
+    EMIT_NO_LISTENER: "NO LISTENER",
+    EMIT_UNKNOWN: "unknown",
+    DELIVERY_NO_EMIT: "no emit",
+}
+
 
 class Emit(NamedTuple):
     """One `emit_socket` outcome: the state, and why it was reached.
@@ -774,6 +799,10 @@ def list_active_pids() -> list[dict[str, Any]]:
             "started": started,
             "last_event": (state.get("last_event") or {}).get("event", ""),
             "last_event_ts": (state.get("last_event") or {}).get("ts", ""),
+            # #1183. Carried raw and classified at the render, so the board and
+            # `channel:health` answer from the same field rather than from two
+            # readings of it. `{}` here would be a claim; the key may be absent.
+            "last_emit": state.get("last_emit"),
             # "" when the file was read or is honestly absent. Carried rather
             # than dropped (#1197): the pid file proves a poller is alive, so
             # an unreadable state file leaves a row whose empty `last_event`
@@ -1052,6 +1081,7 @@ def list_watchers() -> tuple[list[dict[str, Any]], bool]:
             "started": "",
             "last_event": (state.get("last_event") or {}).get("event", ""),
             "last_event_ts": (state.get("last_event") or {}).get("ts", ""),
+            "last_emit": state.get("last_emit"),
             "state_refusal": refusal,
         })
     rows.extend(_lost_rows(seen | set(found)))
@@ -1097,7 +1127,8 @@ def _lost_rows(covered: set[tuple[str, str]]) -> list[dict[str, Any]]:
             out.append({
                 "source": source, "id": watcher_id, "pid": 0, "pids": [], "extra": [],
                 "orphan": False, "dead": False, "deaths": [], "started": "",
-                "last_event": "", "last_event_ts": "", "state_refusal": refusal,
+                "last_event": "", "last_event_ts": "", "last_emit": None,
+                "state_refusal": refusal,
             })
             continue
         state = state or {}
@@ -1116,8 +1147,75 @@ def _lost_rows(covered: set[tuple[str, str]]) -> list[dict[str, Any]]:
             "started": "",
             "last_event": (state.get("last_event") or {}).get("event", ""),
             "last_event_ts": (state.get("last_event") or {}).get("ts", ""),
+            "last_emit": state.get("last_emit"),
             "state_refusal": "",
         })
+    return out
+
+
+def delivery_of(last_emit: Any, refusal: str = "") -> str:
+    """One watcher's delivery state, from its own `last_emit` and nothing else.
+
+    Four answers, and the fourth is what keeps the other three honest:
+
+      `EMIT_ACCEPTED`      a listener took the bytes on the last emit
+      `EMIT_NO_LISTENER`   nobody was there — those events are lost
+      `EMIT_UNKNOWN`       the record does not settle it, or was not readable
+      `DELIVERY_NO_EMIT`   nothing has been emitted, so there is no verdict yet
+
+    `refusal` outranks whatever the record appeared to say: a state file that
+    could not be read cannot be quoted, and reporting the last thing it seemed
+    to contain is the absence-read-as-presence defect this preset keeps filing.
+
+    An unrecognised `state` — a forged file, or one written by a later build —
+    lands in `EMIT_UNKNOWN`. A `str` fall-through to anything that reads as fine
+    would make the render weakest exactly where the file is least trustworthy.
+    """
+    if refusal:
+        return EMIT_UNKNOWN
+    if last_emit is None:
+        # The honest absence: no `last_emit` key at all. This watcher has never
+        # emitted, which is not a delivery failure and must not render as one.
+        return DELIVERY_NO_EMIT
+    if not isinstance(last_emit, dict):
+        return EMIT_UNKNOWN
+    state = last_emit.get("state")
+    if state in (EMIT_ACCEPTED, EMIT_NO_LISTENER, EMIT_UNKNOWN):
+        return str(state)
+    return EMIT_UNKNOWN
+
+
+def delivery_survey() -> list[tuple[str, str, str]]:
+    """`(source, id, delivery state)` per watcher state file. Reads only (#1183).
+
+    Deliberately *not* built on `list_active_pids`. That one unlinks stale pid
+    files and writes a death into the ledger as it goes — both correct there,
+    and both actions. `radar:--state` exists so that looking at this subsystem
+    costs nothing (#859), and routing a header through a mutating scan would
+    have undone that guarantee with the fix for #1183.
+
+    The consequence is that the population here is state files rather than live
+    processes, so it includes slots whose poller has since gone. That is a
+    wider set than `watches` renders and the header says so, because two counts
+    of different things presented as one is how a board starts lying quietly.
+    """
+    prefix = "supertool-watch-"
+    suffix = ".state.json"
+    out: list[tuple[str, str, str]] = []
+    try:
+        names = sorted(os.listdir(STATE_DIR))
+    except OSError:
+        return out
+    for name in names:
+        if not (name.startswith(prefix) and name.endswith(suffix)):
+            continue
+        stem = name[len(prefix):-len(suffix)]
+        if "__" not in stem:
+            continue
+        source, watcher_id = stem.split("__", 1)
+        state, refusal = read_state_checked(source, watcher_id)
+        out.append((source, watcher_id,
+                    delivery_of((state or {}).get("last_emit"), refusal)))
     return out
 
 

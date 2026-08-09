@@ -1175,6 +1175,65 @@ contradicted it.
 On Windows there is no `O_NOFOLLOW` and the open carries no guard; the tests
 skip on the measured capability rather than passing vacuously there.
 
+### The boards read `last_emit` too ([#1183](https://github.com/Digital-Process-Tools/claude-supertool/issues/1183))
+
+`last_emit` is written by every `emit_event` and was read by exactly one surface,
+`channel:health`. The two an operator actually looks at read nothing: `watches`
+rendered a poller as present because its process was alive and its record fresh,
+and `radar` printed a board. Both conditions hold for a watcher whose every event
+has been landing in a socket nobody reads, so the render invited the reader to
+conclude the opposite of the truth.
+
+`watches` now carries a `DELIVERY` column, and `radar` — both the board and
+`radar:--state` — a one-line header above it:
+
+```
+SOURCE     ID     PID    STARTED               LAST_EVENT  DELIVERY
+gitlab-mr  33311  1839   2026-08-09T19:28:05Z  mr_updated  NO LISTENER
+gitlab-mr  33312  1839   2026-08-09T19:28:05Z  mr_updated  accepted
+gitlab-mr  33313  1839   2026-08-09T19:28:05Z  mr_updated  no emit
+
+radar: DELIVERY — 1 of 3 watcher state file(s) record a last emit that found
+       nobody listening on the socket.
+```
+
+Four values, and the fourth is what keeps the other three honest:
+
+| Value | What is known |
+|---|---|
+| `accepted` | a listener took the bytes of the last emit. Not `delivered` — see the section below for why no producer can claim that |
+| `NO LISTENER` | a definite negative: nothing was bound, so those events are gone |
+| `unknown` | the emit settled nothing (no `AF_UNIX` on this platform, or a write that failed uninformatively), or the state file itself could not be read, or its `state` is a value this build does not recognise |
+| `no emit` | this watcher has never emitted, so there is no verdict to give |
+
+**There is no threshold and no clock.** A quiet fleet and a stranded one both
+have an old record, and the age of that record is consulted nowhere: a watcher
+with nothing to report never called `emit_event` and therefore has no `last_emit`
+key at all, which is `no emit`. Inventing a staleness cutoff would have
+manufactured a fifth answer out of the absence of the first four.
+
+**Report-only, and that is a requirement rather than an oversight.** Radar's one
+dangerous power is that it heals — it forks pollers and reaps duplicates on the
+run that spawns. Nothing here feeds either. The survey behind the header reads
+state files and nothing else, which is why it is not built on `list_active_pids`:
+that function unlinks stale pid files and writes deaths into the ledger as it
+goes, both correct there and both actions, and routing a header through it would
+have made *looking* mutate the fleet — the [#859](https://github.com/Digital-Process-Tools/claude-supertool/issues/859)
+guarantee, undone by the fix for this. Both surfaces also say in prose that no
+watcher should be stopped or re-armed on the strength of the column, because a
+render that invited that reading is what cost two live watchers in
+[#511](https://github.com/Digital-Process-Tools/claude-supertool/issues/511).
+
+The header counts **state files**, so it includes slots whose poller has since
+gone; `watches` counts rows on the board. Two counts of different things, said
+to be different things.
+
+**`NO LISTENER` is often the correct, healthy state.** A session started without
+`--dangerously-load-development-channels server:claude-channel` binds no reader
+to the socket at all, which is the normal state of most sessions. The footers
+name that case rather than letting the board report an ordinary session as
+broken.
+
 ## Is it delivering? — `channel:health` ([#554](https://github.com/Digital-Process-Tools/claude-supertool/issues/554))
 
 The three checks a session reaches for — `pgrep -fl channel.ts`, `lsof` on the
