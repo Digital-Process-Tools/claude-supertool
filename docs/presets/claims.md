@@ -103,8 +103,7 @@ whitespace after the colon (`status: in_progress`) is not an op reference.
   repository root; zero or several matches are **couldn't check**.
 * A path whose components read as placeholders — `changelog.d/NNN.section.md` —
   is a naming convention being described, not a file being cited.
-* A path introduced as a counter-example (`presets/mytools/status.py`, **not**
-  `scripts/status.py`) is skipped.
+* A path introduced as a counter-example — as in `presets/mytools/status.py`, **not** `scripts/status.py` — is skipped. The negation has to sit on the same line as the path it disowns; a line break between them puts the path back in scope, which is how this very bullet reported itself.
 * **A quotation beside a line number is checked against that line.** A line
   number alone only proves the file is long enough: `docs/validators.md:650` in
   a JIT file was inside a 1031-line file and read as holding while the sentence
@@ -115,6 +114,11 @@ whitespace after the colon (`status: in_progress`) is not an op reference.
 
 `# Open defects`, `# Open defect #1202 — ...`. Every `#NNNN` in that block, down
 to the next heading of the same or higher level, must be OPEN.
+
+The match is **anchored to the start of the heading text**, because a heading
+that *mentions* open defects is not a heading that declares a list of them. An
+unanchored match turned the section you are reading into a defect list and
+reported the example number above as a live stale citation.
 
 This is the narrow third rule, and it carries a verdict where prose cannot for
 one reason: **it reads the document's own structural annotation instead of

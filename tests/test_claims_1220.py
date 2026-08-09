@@ -547,6 +547,167 @@ def test_render_is_ordered_by_line(tmp_path):
     assert text.index("issues.py:251") < text.index("_pr_board.py")
 
 
+# --------------------------------------------------------------------------
+# Raised by the review pass over the committed diff.
+# --------------------------------------------------------------------------
+
+def test_line_numbers_survive_a_unicode_line_separator(tmp_path):
+    """`str.splitlines()` breaks on U+2028, U+2029, U+000B, U+000C and U+0085;
+    `grep -n` and `wc -l` do not. Reporting line numbers is most of what this
+    op does, so an over-split shifts every finding after it by one. Same
+    defect as #1210 in git-diff's two readers."""
+    doc = "intro\u2028still line one\nSee `presets/_pr_board.py`.\n"
+    out = _scan(doc, _tree(tmp_path))
+    assert [f.line for f in _by_state(out, check.CONTRADICTED)] == [2]
+
+
+def test_crlf_does_not_shift_line_numbers_or_break_matching(tmp_path):
+    doc = "one\r\ntwo\r\nSee `presets/_pr_board.py`.\r\n"
+    out = _scan(doc, _tree(tmp_path))
+    bad = _by_state(out, check.CONTRADICTED)
+    assert [f.line for f in bad] == [3]
+    assert bad[0].token == "presets/_pr_board.py"
+
+
+def test_the_text_and_byte_line_counts_agree_on_a_crlf_file(tmp_path):
+    """`_count_lines` counts U+000A bytes; the quote lens indexes a split
+    string. Two notions of "line N" in one op is how a finding ends up
+    pointing one line off the thing it is about."""
+    root = _tree(tmp_path)
+    target = root / "docs" / "crlf.md"
+    target.write_bytes(b"one\r\ntwo\r\nthree\r\n")
+    assert check._count_lines(target) == 3
+    assert len(check._split_lines(check._read_text(target))) == 3
+    out = _scan("See `docs/crlf.md:3`.\n", root)
+    assert [f.state for f in out] == [check.HOLDS]
+
+
+def test_a_lone_carriage_return_is_not_silently_promoted_to_a_line_break(tmp_path):
+    root = _tree(tmp_path)
+    target = root / "docs" / "cr.md"
+    target.write_bytes(b"one\rtwo\rthree\n")
+    assert check._count_lines(target) == 1
+    assert len(check._split_lines(check._read_text(target))) == 1
+
+
+def test_a_heading_that_mentions_open_defects_does_not_declare_a_list(tmp_path):
+    """Found by running the op on its own documentation. `### issue — only
+    under a heading that declares an open defect` turned the whole section
+    into a defect list, and an issue number quoted as an example was reported
+    as a live stale citation."""
+    doc = (
+        "# Only under a heading that declares an open defect\n\n"
+        "For instance `# Open defect #1202`.\n"
+    )
+    out = _scan(doc, _tree(tmp_path), issue_state=_closed)
+    assert [f for f in out if f.lens == "issue"] == []
+
+
+def test_a_bolded_counter_example_is_still_a_counter_example(tmp_path):
+    """contributing.md writes it plain, docs/presets/claims.md bolds it. The
+    op reported its own documentation's counter-example as a broken path."""
+    root = _tree(tmp_path)
+    (root / "scripts").mkdir()
+    doc = "Co-locate: `presets/github/pr.py`, **not** `scripts/status.py`.\n"
+    out = _scan(doc, root)
+    assert _by_state(out, check.CONTRADICTED) == []
+
+
+def test_a_windows_drive_letter_is_an_absolute_path_too(tmp_path):
+    """The guard in `_path_findings` is defence in depth: a drive-lettered
+    token never reaches it, because the colon is not in the path token's
+    character class. Both halves are pinned, because "unreachable" is a claim
+    that stops being true when a regex is widened."""
+    root = _tree(tmp_path)
+    assert _scan("See `C:/Users/x/notes.md`.\n", root) == []
+    found, target = check._path_findings(
+        0, "C:/Users/x/notes.md", "C:/Users/x/notes.md", None, root,
+        check._Tree(root))
+    assert target is None
+    assert [f.state for f in found] == [check.UNCHECKED]
+    assert "leaves the repository root" in found[0].note
+
+
+def test_the_repo_slug_is_never_resolved_for_a_doc_with_no_open_defects(tmp_path):
+    """A `gh repo view` on every invocation contradicts what the preset row
+    and docs/presets/claims.md both promise, and puts a network call in front
+    of a check that is otherwise entirely local."""
+    calls = []
+
+    def never() -> str:
+        calls.append(1)
+        return "Digital-Process-Tools/claude-supertool"
+
+    out = _scan("See `presets/github/pr.py:219` and `gh-labels:tally=cohort`.\n",
+                _tree(tmp_path), this_repo=never)
+    assert calls == []
+    assert out
+
+
+def test_the_repo_slug_is_resolved_once_when_an_open_defect_is_cited(tmp_path):
+    calls = []
+
+    def once() -> str:
+        calls.append(1)
+        return "Digital-Process-Tools/claude-supertool"
+
+    doc = "# Open defects\n\n- #10: a\n- #11: b\n"
+    out = _scan(doc, _tree(tmp_path), issue_state=_closed, this_repo=check._memo(once))
+    assert calls == [1]
+    assert len(_by_state(out, check.CONTRADICTED)) == 2
+
+
+# --------------------------------------------------------------------------
+# The CLI entry point.
+# --------------------------------------------------------------------------
+
+def _main(monkeypatch, root, argv):
+    monkeypatch.setattr(check, "_root", lambda: root)
+    monkeypatch.setattr(check, "_repo_slug", lambda _r: None)
+    return check.main(argv)
+
+
+def test_main_refuses_an_empty_argument(tmp_path, monkeypatch, capsys):
+    assert _main(monkeypatch, _tree(tmp_path), [""]) == 2
+    assert "usage claims:PATH" in capsys.readouterr().err
+
+
+def test_main_refuses_a_path_that_does_not_exist(tmp_path, monkeypatch, capsys):
+    assert _main(monkeypatch, _tree(tmp_path), ["docs/nope.md"]) == 2
+    assert "no such file" in capsys.readouterr().err
+
+
+def test_main_refuses_a_directory_rather_than_crashing(tmp_path, monkeypatch, capsys):
+    assert _main(monkeypatch, _tree(tmp_path), ["docs"]) == 2
+    assert "no such file" in capsys.readouterr().err
+
+
+def test_main_renders_and_normalises_the_path_it_was_given(tmp_path, monkeypatch, capsys):
+    root = _tree(tmp_path)
+    (root / "docs" / "note.md").write_text(
+        "See `presets/_pr_board.py`.\n", encoding="utf-8")
+    assert _main(monkeypatch, root, ["docs/note.md"]) == 0
+    out = capsys.readouterr().out
+    # couldn't check 1 is the registry line: the fixture tree has no
+    # .supertool.json, so the op lens did not run and main() says so.
+    assert out.startswith("docs/note.md: holds 0 | contradicted 1 | couldn't check 1")
+    assert BACKSLASH not in out
+
+
+def test_main_says_the_op_lens_did_not_run_when_there_is_no_registry(tmp_path,
+                                                                     monkeypatch,
+                                                                     capsys):
+    """An empty registry must not read as "every op reference resolved" — that
+    is this repository's house defect aimed at its newest op."""
+    root = _tree(tmp_path)
+    (root / "docs" / "note.md").write_text("Use `gh-labels:tally=x`.\n",
+                                           encoding="utf-8")
+    assert _main(monkeypatch, root, ["docs/note.md"]) == 0
+    out = capsys.readouterr().out
+    assert "no .supertool.json here" in out
+    assert "NOT A CLEAN DOC" in out
+
+
 def test_scan_never_answers_for_a_path_outside_the_repo_root(tmp_path):
     """A doc can cite an absolute path or climb out with `..`. Neither is a
     reference this repo can answer for."""

@@ -40,8 +40,8 @@ Three lenses, all of them mechanical:
              because it reads the document's own structural annotation rather
              than guessing at its grammar. Measured on ``.claude/jit-context/``
              — injected automatically at tool-call time, so it lands with more
-             authority than a doc someone chose to open — 4 cited open
-             defects, 4 closed.
+             authority than a doc someone chose to open — 5 cited open
+             defects, 5 closed.
 
 Three states throughout: ``holds``, ``contradicted``, ``couldn't check``. The
 third never collapses into either neighbour, and a doc carrying unchecked
@@ -74,7 +74,12 @@ _FOOTER = (
 
 _CODE_SPAN = re.compile(r"`([^`\n]+)`")
 _HEADING = re.compile(r"^(#{1,6})\s+(.*?)\s*$")
-_OPEN_DEFECTS = re.compile(r"\bopen\s+defects?\b", re.IGNORECASE)
+# Anchored, because a heading that *mentions* open defects is not a heading
+# that declares a list of them. This op's own docs/presets/claims.md carries
+# "### `issue` — only under a heading that declares an open defect", and an
+# unanchored match turned that whole section into a defect list and reported a
+# quoted example issue number as a live stale citation.
+_OPEN_DEFECTS = re.compile(r"^open\s+defects?\b", re.IGNORECASE)
 _FENCE = re.compile(r"^\s{0,3}(?:```|~~~)")
 
 _EXTS = ("py|md|json|toml|yml|yaml|sh|bash|cfg|ini|txt|tsv|xml|html|js|ts|"
@@ -111,9 +116,11 @@ _JSON_SCALAR = re.compile(r'^(?:true|false|null|-?\d|["“\[{])', re.IGNORECASE)
 # `presets/mytools/status.py`, not `scripts/status.py`. The second path is the
 # shape being warned against and was never meant to exist; reporting it as a
 # broken reference is the tool manufacturing a defect out of a good sentence.
+# The trailing character class absorbs markdown emphasis. contributing.md
+# writes it plain; docs/presets/claims.md writes it bolded, and without this
+# the op reported its own documentation's counter-example as a broken path.
 _COUNTEREXAMPLE = re.compile(
-    r"(?:\bnot|\bnever|\brather than|\binstead of|\bnot one monolithic)\s+$",
-    re.IGNORECASE)
+    r"(?:\bnot|\bnever|\brather than|\binstead of)[*_`\s]*$", re.IGNORECASE)
 
 
 def _is_template(rel: str) -> Optional[str]:
@@ -133,6 +140,35 @@ class Finding(NamedTuple):
     state: str
     token: str
     note: str
+
+
+def _split_lines(text: str) -> List[str]:
+    """Split on U+000A only, exactly as `grep -n` and `wc -l` do.
+
+    `str.splitlines()` also breaks on U+2028, U+2029, U+000B, U+000C and
+    U+0085. A document carrying any of them would have every line number after
+    it reported one too high — and reporting line numbers is most of what this
+    op does. #1210 is the same defect in git-diff's two readers.
+
+    A trailing U+000D is dropped per line, so a CRLF file reads the same and
+    this stays in step with `_count_lines`, which counts U+000A bytes.
+    """
+    lines = [line[:-1] if line.endswith("\r") else line
+             for line in text.split("\n")]
+    if lines and lines[-1] == "":
+        lines.pop()
+    return lines
+
+
+def _read_text(path: Path) -> str:
+    """Read without universal-newline translation.
+
+    `Path.read_text` rewrites a lone U+000D as U+000A, which would put the
+    text side of a line count out of step with `_count_lines`, which counts
+    bytes on disk.
+    """
+    with path.open("r", encoding="utf-8", errors="replace", newline="") as fh:
+        return fh.read()
 
 
 # --------------------------------------------------------------------------
@@ -198,11 +234,22 @@ def _family_prefix(this_repo: Optional[str]) -> Optional[str]:
     return name.split("-", 1)[0].lower() + "-" if "-" in name else None
 
 
-def _foreign_repo_mentioned(line: str, this_repo: Optional[str]) -> Optional[str]:
-    prefix = _family_prefix(this_repo)
+def _resolve_repo(this_repo) -> Optional[str]:
+    """`this_repo` may be a string or a thunk that costs a `gh` call.
+
+    It is resolved here, inside the issue lens, and nowhere else — so a
+    document with no open-defects heading makes no network call at all, which
+    is what docs/presets/claims.md and the index row both promise. Resolving
+    it eagerly in main() broke that promise on every invocation.
+    """
+    return this_repo() if callable(this_repo) else this_repo
+
+
+def _foreign_repo_mentioned(line: str, this_repo) -> Optional[str]:
+    prefix = _family_prefix(_resolve_repo(this_repo))
     if not prefix:
         return None
-    own = (this_repo or "").split("/")[-1].lower()
+    own = (_resolve_repo(this_repo) or "").split("/")[-1].lower()
     pattern = r"\b" + re.escape(prefix) + r"[a-z0-9][a-z0-9-]*\b"
     for m in re.finditer(pattern, line, re.IGNORECASE):
         if m.group(0).lower() != own:
@@ -210,7 +257,7 @@ def _foreign_repo_mentioned(line: str, this_repo: Optional[str]) -> Optional[str
     return None
 
 
-def _issue_findings(idx: int, line: str, this_repo: Optional[str],
+def _issue_findings(idx: int, line: str, this_repo,
                     issue_state: Callable[[int], Tuple[Optional[str], str]],
                     ) -> List[Finding]:
     out: List[Finding] = []
@@ -289,7 +336,11 @@ def _line_verdict(idx: int, token: str, target: Path,
 
 def _path_findings(idx: int, token: str, rel: str, lineno: Optional[str],
                    root: Path, tree: _Tree) -> Tuple[List[Finding], Optional[Path]]:
-    if rel.startswith("/") or ".." in rel.split("/"):
+    # A Windows drive-letter prefix is absolute too. A backslash path never
+    # reaches here — _PATH_TOK's character class excludes it — so the drive
+    # letter is the only POSIX-blind case the guard was missing.
+    if (rel.startswith("/") or ".." in rel.split("/")
+            or re.match(r"^[A-Za-z]:", rel)):
         return ([Finding(idx + 1, "path", UNCHECKED, token,
                          "path leaves the repository root")], None)
     if "/" in rel:
@@ -343,7 +394,7 @@ def _quote_finding(idx: int, target: Path, lineno: int, wanted: str) -> Finding:
     and if it moved, the new line number is the finding.
     """
     try:
-        body = target.read_text(encoding="utf-8", errors="replace").splitlines()
+        body = _split_lines(_read_text(target))
     except OSError:
         return Finding(idx + 1, "quote", UNCHECKED, wanted,
                        "target file is not readable")
@@ -363,12 +414,12 @@ def _quote_finding(idx: int, target: Path, lineno: int, wanted: str) -> Finding:
 
 def _heading_finding(idx: int, target: Path, wanted: str) -> Finding:
     try:
-        body = target.read_text(encoding="utf-8", errors="replace")
+        body = _split_lines(_read_text(target))
     except OSError:
         return Finding(idx + 1, "heading", UNCHECKED, wanted,
                        "target file is not readable")
     want = _normalise_heading(wanted)
-    for line in body.splitlines():
+    for line in body:
         m = _HEADING.match(line)
         if m and _normalise_heading(m.group(2)) == want:
             return Finding(idx + 1, "heading", HOLDS, wanted, "heading exists")
@@ -422,10 +473,10 @@ def _op_findings(idx: int, token: str, registry: Dict[str, str]) -> List[Finding
 
 def scan(text: str, *, root, registry: Dict[str, str],
          issue_state: Callable[[int], Tuple[Optional[str], str]],
-         this_repo: Optional[str] = None) -> List[Finding]:
+         this_repo=None) -> List[Finding]:
     root = Path(root)
     tree = _Tree(root)
-    lines = text.splitlines()
+    lines = _split_lines(text)
     live = _live_lines(lines)
     defects = _open_defect_lines(lines, live)
     out: List[Finding] = []
@@ -526,15 +577,16 @@ def _run(argv: List[str], timeout: int = 20):
                           encoding="utf-8", errors="replace")
 
 
-def _issue_state_reader(repo: Optional[str]):
+def _issue_state_reader(repo):
     cache: Dict[int, Tuple[Optional[str], str]] = {}
 
     def read(number: int) -> Tuple[Optional[str], str]:
         if number in cache:
             return cache[number]
+        slug = _resolve_repo(repo)
         argv = ["gh", "issue", "view", str(number), "--json", "state"]
-        if repo:
-            argv += ["--repo", repo]
+        if slug:
+            argv += ["--repo", slug]
         result: Tuple[Optional[str], str]
         try:
             proc = _run(argv)
@@ -562,6 +614,18 @@ def _issue_state_reader(repo: Optional[str]):
         return result
 
     return read
+
+
+def _memo(thunk: Callable[[], Optional[str]]) -> Callable[[], Optional[str]]:
+    """One `gh repo view` at most, and only if an issue citation asks for it."""
+    box: List[Optional[str]] = []
+
+    def get() -> Optional[str]:
+        if not box:
+            box.append(thunk())
+        return box[0]
+
+    return get
 
 
 def _repo_slug(root: Path) -> Optional[str]:
@@ -592,8 +656,8 @@ def _root() -> Path:
 
 def main(argv: Sequence[str]) -> int:
     if not argv or not argv[0].strip():
-        sys.stderr.write("ERROR: usage claims:PATH — PATH is a markdown file "
-                         "in this repository.\n")
+        sys.stderr.write("ERROR: usage claims:PATH — PATH is a text file in "
+                         "this repository, read as markdown.\n")
         return 2
     root = _root()
     rel = argv[0].strip()
@@ -602,13 +666,13 @@ def main(argv: Sequence[str]) -> int:
         sys.stderr.write("ERROR: no such file: %s\n" % rel)
         return 2
     try:
-        text = target.read_text(encoding="utf-8", errors="replace")
+        text = _read_text(target)
     except OSError as exc:
         sys.stderr.write("ERROR: cannot read %s (%s)\n"
                          % (rel, exc.__class__.__name__))
         return 2
     registry = _load_registry(root)
-    repo = _repo_slug(root)
+    repo = _memo(lambda: _repo_slug(root))
     findings = scan(text, root=root, registry=registry,
                     issue_state=_issue_state_reader(repo), this_repo=repo)
     if not registry:
