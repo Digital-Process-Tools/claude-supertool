@@ -7,6 +7,423 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.32.0] - 2026-08-10
+
+### Added
+
+- `gh-since-tag[:TAG][:per=N]` — the two numbers the auto-release gate is defined in terms of, from one call: merged PRs since the last tag (number, title, merge instant, in merge order) and unreleased `changelog.d/` fragments by section. Both were hand-rolled from two unrelated commands every release tick, and one night the hand-rolled version printed a confident `merged since tag: 0` beside `7` fragments — `gh` returns `2026-08-09T16:07:45Z`, `git show -s --format=%cI` returns `2026-08-09T17:13:43+02:00`, and the two were compared as **strings**, so every PR merged after the tag was filtered out as merged before it. Every timestamp is now parsed to an instant before it is compared, and the two numbers print together because their contradiction is what caught the bug: a measured zero beside a non-zero fragment count renders as `CONTRADICTION` rather than as two numbers to notice. "The last tag" is a stated decision rather than a silent pick — the newest version-shaped tag reachable from the default branch, at its **commit** instant rather than an annotated tag object's date. A newer version-shaped tag that is off the branch, two tags at one instant on different commits, or reachability that could not be measured all make the boundary `AMBIGUOUS`, which still prints a count and says in words that it is not a trigger input; no tag, or a named tag that does not exist, is `UNRESOLVED` and the count is `?`, never `0`. The count carries its own states — `>=N` when the page filled, `UNVERIFIED` when a `mergedAt` would not parse or when GitHub's search index and local git history disagree, both directions of that gap named. Read-only, and it never fetches: local refs are used as they stand and disclosed as the source ([#1209](https://github.com/Digital-Process-Tools/claude-supertool/issues/1209)).
+
+### Changed
+
+- CI: the `windows-latest` / CPython 3.9 leg no longer re-downloads its interpreter on every run. CPython 3.9 has left the runner image, so `Set up Python` cost a median 48s there against ~4s on the 3.10/3.11/3.12 legs; the hosted tool cache is now restored before `setup-python`, and a step beside it reports `ok` / `miss` / `finding` / `skipped` so a cache that has quietly stopped being read cannot pass for one that is working ([#1127](https://github.com/Digital-Process-Tools/claude-supertool/issues/1127)).
+- CI: the Windows pytest matrix keeps all four Python versions, and the reason is now written at the matrix line rather than only on the issue. Dropping 3.10 and 3.11 was replayed against five green master runs: it removes 0s of critical path in four of them, because the path is the slowest leg and the retained Windows legs run the same length, and 142s in the fifth only because windows/3.11 happened to be that run's variance outlier. The saving is in billed minutes, not wall clock ([#917](https://github.com/Digital-Process-Tools/claude-supertool/issues/917)).
+
+- `gl-api`: the host check decodes the path exactly once, and now says so
+  (#1194). Behaviour is unchanged. The two passes are the two depths anything
+  ever reads the value at: glab's endpoint parse sees the literal string, a
+  consumer that percent-decodes once then parses sees the decoded one, and
+  GitLab's own router decodes once more into a path segment of the files API.
+  Decoding to a fixed point would refuse the only correct encoding for a file
+  whose name is itself percent-encoded, which is #1043 one level deeper. The
+  silence had the depth refiled as a defect twice, so
+  `decoded_host_naming_reason` and `docs/presets/gitlab.md` now carry the
+  argument and `tests/test_gl_api_decode_depth_1194.py` pins it — every corpus
+  from #1035 and #1043 stays green under a fixed-point rewrite, so nothing else
+  would have caught one.
+
+- **`gh-prs` defaults to the repo, not to you** ([#1207](https://github.com/Digital-Process-Tools/claude-supertool/issues/1207)). Bare `gh-prs` now lists every open PR; `gh-prs:author=@me` is the personal queue. [#1072](https://github.com/Digital-Process-Tools/claude-supertool/issues/1072) made the implicit `author=@me` honest and left the default itself open — and disclosure turned out not to be enough. On 2026-08-09 two dependabot bumps at 5h and an outside contributor's PR at 1 day were absent from every board read that day; a human found them by opening GitHub in a browser. A footer that must be noticed on *every* invocation, forever, to avoid a false sense of an empty board is a tax paid every tick with a silent failure mode, and the rows the filter removed are exactly the ones needing a decision from someone other than their author. `gh-issues` had already made the other choice, and the two ops disagreeing was its own defect ([#628](https://github.com/Digital-Process-Tools/claude-supertool/issues/628)).
+
+  The three states of [#1071](https://github.com/Digital-Process-Tools/claude-supertool/issues/1071) survive the flip, moved onto the role filter the caller now writes: an empty `gh-prs:author=@me` still says how many open PRs it excluded, still reports `UNKNOWN` when the probe could not run, and still distinguishes that from `excluded none`. The probe now drops **every** role key rather than only `author` — leaving `--search review-requested:...` on it answered the "how many without the filter" question from the still-filtered population and reported `excluded none` off a query that never widened.
+
+  `anyauthor` is what the bare op does now. It stays accepted rather than being removed: a documented flag that starts refusing is a break for every script that adopted it.
+
+  **`radar`'s GitHub tier is deliberately not included.** It calls `_build_list_cmd` with two positional arguments, and that parameter default is unchanged, because radar keys its departure snapshot on the filter *string* — which an unfiltered board spells identically to a narrowed one. Widening it there would replay every previously-hidden PR as a fresh arrival, once, on every watcher, and leave the tier's own `scope author=@me (default)` label false. That half needs its own change in `presets/watch/`, with the snapshot key moving with it.
+
+### Fixed
+
+- `tomllint`: reported `ok: true, count: 0` when neither `tomllib` (Python
+  3.11+) nor `tomli` could be imported — a TOML file nothing parsed, published
+  as a file that parsed clean, in an adapter that predates
+  `validators/SCHEMA.md` §"Skipped: the third state" (#1157). It is now
+  `skipped` with the reason and the install command, and a loud `adapter` error
+  when `tomllint` is named in `$SUPERTOOL_REQUIRE_VALIDATORS` — the same shape
+  `shellcheck`, `eslint` and `gitleaks` already use. Rollback behaviour is
+  unchanged: `_validator_regressed` returns `False` for `ok: true` and for
+  `skipped` alike, so no `rollback_on_fail` decision moves.
+- `tomllint`: the stdlib import was guarded by `sys.version_info >= (3, 11)`
+  and nothing else, which answers "does this Python ship `tomllib`" rather than
+  "does `import tomllib` succeed". A `tomllib` that exists and raises on import
+  took a traceback out of the adapter with no JSON on stdout at all — an
+  adapter that exits non-zero having said nothing, where the contract is to
+  always answer. Both candidate imports are guarded now, and the version check
+  is gone.
+
+- **`gh-pr:N:status` said `TALLY UNVERIFIED` on every PR, and never said why** ([#1181](https://github.com/Digital-Process-Tools/claude-supertool/issues/1181)). Two causes, both the op's own budget rather than anything unknown about the PR. `MAX_RECONCILED_RUNS` was 4, measured against the four workflows this repo had when the reconciliation was written; Copilot code review added a fifth, and the cap counted run *records* rather than workflows, so five re-runs of `changelog` on one head sha spent the whole budget on one workflow. Measured across ten PRs on 2026-08-09: #1172 and #1175 tipped over on Copilot's run, #1177 and #1178 on repeat `changelog` records.
+
+  Repeat records of one workflow now collapse to the newest — the one the rollup is showing — so the call count tracks workflows rather than triggers, and the cap is 8. The collapse keys on `workflow_id`, which rides on the same response, never on the workflow's display `name:`: two workflow files may spell that identically, and merging them would shrink the declared count into a silent reconcile on `declared <= found` — the shortfall the whole mechanism exists to catch, hidden by the fix for the noise it was making.
+
+  **`gh-pr-merge` crashed on the wider tuple, and 9,434 green tests said nothing.** `pr_merge.py` unpacks `_declared_for_commit` positionally across a module boundary, and every gate test replaces that module with a double — so the double and the caller agreed with each other while the real return shape moved. The result was a `ValueError` raised before the gate printed a line, in the one op that merges. `tests/test_gh_pr_merge_tally_seam_1181.py` is the check that was missing: it runs the real function against the real call site with no stub between them. The decline's reason is threaded through `gate()` into the refusal, which is the render where it is worth most. The disclosure is not silenced: it now carries its cause in brackets, `(9 distinct workflows on this commit exceed the reconciliation cap of 8)`, `(the run list for this commit could not be read)`, `(the job list for run tests could not be read)`. A warning that fires on every render is one nobody can tell apart from the one that matters.
+
+  The issue attributed this to Copilot's check-run "having no workflow to count against". It does have one. The rollup entry belonging to no Actions run is `CodeQL`, and it is harmless by design — `shortfall` reconciles on `declared <= found` precisely so external checks are extra rather than missing.
+
+- **`watches` and `radar` read `last_emit`, so a fleet emitting into a dead socket no longer renders as a healthy one** ([#1183](https://github.com/Digital-Process-Tools/claude-supertool/issues/1183)). [#1173](https://github.com/Digital-Process-Tools/claude-supertool/issues/1173) recorded, per watcher, what the socket write actually meant, and exactly one surface consumed it — `channel:health`. The two an operator actually looks at did not, so a poller whose every event had been landing in a socket nobody reads satisfied both of the conditions those boards check: the process is alive and the record is fresh. `watches` gains a `DELIVERY` column and `radar` a one-line header above the board carrying the fleet's worst state with both counts.
+
+- **A quiet fleet and a stranded one are told apart by the record, not by a clock.** No threshold was added anywhere. A watcher with nothing to report never called `emit_event` and so has no `last_emit` at all — rendered `no emit`, which is not a delivery failure — while one shouting into a dead socket has a record saying `no-listener`. Unreadable state file and an emit state this build does not recognise are both `unknown`, ranked above whatever the file appeared to say.
+
+- **Report-only, deliberately.** Nothing in either render feeds radar's healing or its reap: the survey behind the header reads state files and neither prunes a pid file nor records a death, which is why it is not built on `list_active_pids`. Both surfaces say in prose that no watcher should be stopped or re-armed on the strength of the new column — a render that invited that reading is what cost two live watchers in [#511](https://github.com/Digital-Process-Tools/claude-supertool/issues/511).
+
+- **A session with no channel reader is not a fault, and the render says so.** A session started without `--dangerously-load-development-channels server:claude-channel` binds no listener at all, so `NO LISTENER` is the expected state there rather than news; the footer names that case instead of letting the board cry wolf on every ordinary session.
+
+- `read` and every meta line carrying the working-tree marker (#1186): the per-path
+  `git status` ran with a cwd of the file's own directory while passing the path
+  **as written**, so a relative path with a directory component in it — the form
+  the CLI actually hands over — resolved a second time against that directory.
+  git warned on stderr, exited 0 with empty stdout, and no ` m`/` ?`/` !` marker
+  printed. The repo-wide arm added in 0.31.0 was correct, so the same file in
+  the same second got two different answers depending on where it sat in the
+  batch: first path in a call, no marker; anywhere after it, the right one. The
+  pathspec is the bare filename now. The cwd is unchanged — it is what keeps
+  this route and the repo-root walk answering about the same repository when a
+  path crosses a repo boundary — and the parity test that missed this passed
+  only absolute paths and top-level filenames, neither of which is resolved
+  twice.
+- `read`: the same per-path query passed that filename as a git *pathspec*,
+  and a pathspec globs. A clean `t[a].txt` matched its modified sibling
+  `ta.txt` and printed that file's ` m` as its own. The repo-wide arm looks the
+  name up in a dict and was already literal, so this was the same
+  two-answers-for-one-file divergence — in the direction that invents a marker
+  rather than losing one, which is the worse one: the answer describes a
+  file nobody asked about. The pathspec carries `:(literal)` now.
+
+- `docs/validators.md`: the `html-check` refusal section said "Nothing is lost:
+  the reason names the line to fix first, and the finding is still there on the
+  next run" two paragraphs after conceding that a fragment or a template
+  partial legitimately stops inside a block (#1195). For those files the
+  refusal is permanent, there is no line to fix, every finding in every
+  properly-closed block *above* the unclosed one is discarded, and
+  `rollback_on_fail` is inert on that file for as long as it stays a fragment.
+  The section now names that cost instead of denying it, and records why the
+  issue's preferred fix — publishing the already-extracted findings beside the
+  refusal — is not available: a `skipped` result omits `errors` by contract and
+  every core consumer branches on `skipped` before reading a verdict key, so
+  those findings would be emitted into a field nothing reads. Behaviour is
+  unchanged; the equivalent claim in `html-check.py`'s own comment is corrected
+  too.
+
+- **`$SUPERTOOL_REQUIRE_VALIDATORS` was inert for most validators, and ten
+  adapters called an absent tool a clean pass**
+  ([#1202](https://github.com/Digital-Process-Tools/claude-supertool/issues/1202)).
+  Filed against `ruff`, whose absent-tool arm emitted `skipped` without ever
+  consulting `refusal.required()` — so naming it in the variable did nothing,
+  and setting the variable was indistinguishable from not setting it. The audit
+  the issue asked for found the same gap in `html-check` and in all four MCP
+  adapters (`phpstan-mcp`, `rector-mcp`, `phpunit-mcp`, `phpmd-mcp`), whose
+  `DaemonUnavailable` arm is the same absence wearing a different exception.
+- **The worse half was on the adjacent line and had not been filed.**
+  `tsc-check`, `markdownlint`, `ruby-check`, `cargo-check`, `hadolint`,
+  `gofmt-check`, `terraform-check`, `pyright`, `git-status` and `yaml-check`
+  answered an absent tool with `ok: true, count: 0, errors: []` — a clean
+  verdict about a file nothing opened, rendered as a green row and subtracted
+  from the before/after delta like a real one. `git-status` published a zeroed
+  `metrics` block reading `state: "clean"`, a measurement of a working tree it
+  had not measured. All ten now report the third state, with the reason and the
+  install hint on the row.
+- **The decision is made in one place now, not spelled out per adapter.**
+  `refusal.absent(tool, file, reason, dur_ms)` returns a `skipped` result, or a
+  loud `adapter` error naming the variable when that validator is required. It
+  takes the **validator name** — the key a repo writes in `.supertool.json` —
+  never the binary, because `tsc-check` runs `tsc` and `html-check` runs `node`,
+  and escalating on the binary name would ignore the only spelling anyone can
+  configure. `docs/validators.md` claimed `refusal.required()` was "shared by
+  every adapter that can find itself with nothing to say" throughout; that
+  sentence is corrected and the correction is recorded next to it.
+- **A local skip is unchanged, and so is rollback.** Unset, an absent tool is
+  still quiet and still exits 0 — reddening every unrelated edit on a laptop
+  that never installed `gofmt` is the noise problem from the other end.
+  `_validator_regressed` returns `False` for `ok: true` and for `skipped`
+  alike, so no `rollback_on_fail` decision moves.
+- **Each of those ten adapters had a second absent-tool arm, and it was still
+  fabricating a pass after the first pass over them.** `shutil.which` is not
+  the only place a tool goes missing: seven adapters also caught the
+  `FileNotFoundError` raised when a PATH entry vanishes between the lookup and
+  the spawn, or resolves to something that will not exec — `tsc-check`,
+  `markdownlint`, `ruby-check`, `cargo-check`, `hadolint`, `gofmt-check`,
+  `terraform-check` — and every one answered it with `ok: true`. Emptying
+  `PATH` never reaches that arm, so the first round of tests could not see it.
+  Both arms route through `absent()` now, and the tests reach the second one by
+  shadowing `shutil.which` and `subprocess.run` under `runpy`.
+- **Schema tests in five adapter suites were passing on the fabricated
+  verdict.** `test_output_schema_present` / `test_output_contains_required_fields`,
+  `test_duration_ms_is_int`, and the missing-file tests in
+  `tests/test_markdownlint.py`, `tests/test_hadolint.py`,
+  `tests/test_tsc_check.py`, `tests/test_pyright.py` and
+  `tests/test_ruby_check.py` ran the adapter on a machine without its tool, hit
+  the absent-tool arm, and asserted `"ok" in out` — which held because of the
+  defect, not in spite of it. They are gated on the tool being installed now,
+  so they either measure a real verdict or report that they were skipped.
+- **`tests/test_yaml_check.py` was the sixth, and it hid one round longer
+  because it picked its own interpreter.** It ran the adapter under whatever
+  `shutil.which("python3.13")` returned, which on the author's machine was the
+  one Python with PyYAML installed and on CI was nothing at all — so the four
+  parsing assertions ran locally against a real parse and on twelve legs
+  against the fabricated `ok: true`, and reddened only once that was removed.
+  The interpreter is `sys.executable` now, the parsing half is gated on PyYAML
+  being importable by it, and PyYAML joins `ruff` in the `dev` extra so the
+  gate is a local convenience rather than the CI outcome — a test that skips
+  everywhere is a test that was deleted with extra steps.
+  `test_output_contains_required_fields` asserted `ok` unconditionally, which is
+  a claim about the machine and not about the adapter; it is
+  `test_output_is_exactly_one_of_the_two_shapes` now, asserting the payload is a
+  complete verdict or a skip carrying no verdict key — and that whichever one
+  came back is the one this interpreter's PyYAML says it should be — so an
+  unparsed file can be read as neither a pass nor a failure.
+
+- **`tomllint` shipped here and did not run here**
+  ([#1203](https://github.com/Digital-Process-Tools/claude-supertool/issues/1203)).
+  It has been offered in `.supertool.example.json` since the adapter landed and
+  was registered in this repo's own `.supertool.json` nowhere, so `pyproject.toml`
+  — one of the five version sites a release has to bump, guarded by
+  `tests/test_pyproject_version_522.py` because getting it wrong ships a release
+  that reaches nobody — was edited with no validator matching it. Registered now,
+  with `rollback_on_fail: true`: a `.toml` that no longer parses is not a lint
+  opinion. Verified against every tracked `.toml` before landing — it passes
+  clean rather than reddening the repo, and a test keeps it that way.
+
+- tests (#1205): two symlink tests in `test_path_meta_bulk_1126.py` created their link
+  without asking `_symlink.require_symlink()` first, so on a runner without the
+  create-symlink privilege — Windows outside Developer Mode — `symlink_to` raised
+  `OSError` and they **failed** where every other symlink test in the suite
+  **skips**. A skip says the platform could not run the check; a failure says the
+  platform ran it and the code is broken, and the code it pointed at was fine.
+  Both route through the shared probe now. A new guard runs that file with the
+  privilege forced absent and requires all three of its symlink tests to skip,
+  which is the only way a machine that has the privilege can observe the
+  difference at all.
+
+- tests (#1206): the fake `git` executables in `test_status_swallowed_705.py`,
+  `test_git_timeout_disclosure_650.py` and `test_unanswerable_checks_693.py`
+  decided whether they were standing in for the call under test by comparing
+  `$1` to a subcommand name. git takes its global flags before the subcommand,
+  so `git -C <path> status` puts `status` in `$2`: the comparison failed, the
+  `exec` fallthrough ran the real binary, and the shim was silently not in
+  effect. It broke loudly once only because the tests it disabled assert a
+  refusal; a shim standing in for a passing expectation would have let real git
+  return the same answer and the test would have gone on passing while asserting
+  nothing. All five shims are built by `tests/_gitshim.dispatch_on_subcommand`
+  now, which skips the global flags and reads the first argument that is not
+  one — not "the subcommand anywhere in argv", which would have made
+  `git status -- stash` fire a stash shim. A gate refuses any new `"$1"`-keyed
+  shim in the suite, with the two honest first-argument cases named and
+  explained rather than silently exempt.
+
+- tests (#1218): three timeout assertions in `test_rollback_no_verdict_969.py` obtained
+  their timeout by making a fake adapter sleep 3s against a 1s budget and
+  trusting the runner to notice. `windows-latest, 3.12` did not — the adapter
+  came back at `0.0s` having written nothing, which is the *adapter* non-verdict
+  rather than the *orchestrator* one — and `master` went red on a scheduling
+  accident with a message pointing at validator code that was fine. A property
+  of two renderers is not a claim about the scheduler. `TimeoutExpired` is now
+  raised where the operating system would raise it, on the second adapter spawn
+  only, so the baseline pass is still a real subprocess and everything
+  downstream of `_validator_run_one`'s timeout arm is the real code. The budget
+  the core hands to `subprocess.run` is captured and asserted rather than
+  discarded, because a fabricated timeout would otherwise pass just as happily
+  against a core that had stopped passing one.
+- tests: `test_a_core_timeout_after_the_edit_does_not_revert_it` had the same
+  dependency and the opposite symptom — every one of its assertions holds for
+  the silent-adapter refusal too, so on that same runner it kept passing while
+  exercising the branch it is not named for. It asserts the row now.
+- tests: nothing asserted that the two refusals stay *distinguishable*, which is
+  the only reason it was defensible to call both renders correct. A new test
+  pins that a timeout says `timed out` / `orchestrator` and a silent adapter
+  does not, so a reader can still tell a slow machine from a broken checker.
+
+- `oss_train` (#1246) rebased and force-pushed any repository the caller named. The
+  `all` path filters its targets through `discover()`, which lists `wt_root()`
+  and can only ever yield names it found there; the explicit-list path applied
+  no contract at all, and `train()` joins its target straight onto the root. An
+  absolute target made `os.path.join` discard the root entirely, a `../` walked
+  out of it, and `git fetch`, `git rebase origin/master` and `git-push
+  --force-with-lease` then ran in whatever repository that landed on —
+  including this clone, which is symlinked onto the maintainer's PATH. The
+  asymmetry between the two paths was the whole defect: one enforced a contract
+  the other did not.
+- Both lists now pass through one `target_error()`. A target must be a single
+  directory entry — no path separator, and both `/` and the Windows `\` are
+  refused on every platform, because a POSIX-only reading would accept
+  `..\outside\seed` on the one platform where it traverses — and the joined
+  path is then resolved and required to sit under the resolved root. The second
+  check is the load-bearing one: `st-wt/evil -> ~/Documents/claude-supertool`
+  is a plain name holding no separator, and no string inspection sees through
+  a symlink. A rejected target refuses the whole run above the header, names
+  itself and why, exits 2, and fetches nothing.
+- The force-push, the `--force-with-lease`, the `BUSY` guard and the
+  bare-invocation refusal are unchanged. The force-push is the op's purpose;
+  what was missing was any statement of where its target may point.
+- `isdigit()` — `discover()`'s own filter — is deliberately not the contract
+  for explicit targets. It describes what `all` sweeps, not what a caller may
+  name: `st-wt/scope`, `st-wt/jit` and `st-wt/contrib-skill` are real worktrees
+  holding real branches that `all` already skips, so an explicit name is the
+  only way to train one. Containment closes the hole without removing them.
+- The approved path is threaded from the check to the use. `check_target()`
+  returns `(verdict, path)` from a single `realpath`, and `main()` acts on the
+  path it was handed rather than deriving one — so a name under the root that
+  is re-pointed after it was checked no longer redirects anything, because the
+  name is not consulted a second time. What this does not close is a
+  replacement of the resolved path at the inode level, which would need file
+  descriptors git does not accept.
+- **An earlier attempt at that bullet was false, and the false version is why
+  it survived a review.** It unified the two *spellings* of the resolution into
+  one `resolve_target()` function and left the two *resolutions* in place —
+  `target_error()` resolved to decide, `main()` resolved again to act — while
+  the fragment, the function's docstring and the commit subject all asserted
+  the property was held. The round-2 audit reproduced the window with no
+  monkeypatching: `st-wt/2 -> st-wt/benign` at launch, relinked to an outside
+  repository while target `1`'s fetch was in flight, and the outside
+  repository was rebased. For target k the window is the whole of trains
+  1..k-1 — a fetch, a rebase and a push each. A test counts the resolutions
+  now and asserts `train()` is handed the path that was approved, so the claim
+  and the code fail together.
+- `parse_tokens` rewrote every `:` to `,`, which on Windows cut an absolute
+  path in half at its drive letter: `C:\Users\x\seed` arrived as the two
+  targets `C` and `\Users\x\seed`. The verdict survived — the second half is
+  still rooted, so the run was refused and nothing was fetched — but the echo
+  did not, and the refusal named a string the caller never typed while the
+  `wt_root` half of the same sentence still carried its drive. Four Windows
+  legs of #1247 caught it. A drive prefix is no longer a separator, the
+  rejected target is quoted rather than `repr()`'d (which doubled every
+  backslash — the same misreport one layer down), and `all:dry` / `999:dry`
+  still split. The cost is `oss_train:a:dry`, a single-letter target with the
+  colon flag, which now reads as one token; `a,dry` is unaffected.
+- The drive-relative arm of the check was unreachable from the CLI for the
+  same reason, so it was advertising a message it could never print. It is
+  reachable now, and `ntpath.splitdrive` makes it fire on POSIX too — the same
+  rule as both separators being refused on both platforms, because a check
+  that only fires on the platform it was not written on is a check nobody has
+  run.
+
+### Security
+
+- `git-diff` (#1130): both of its readers parsed git's output with `str.splitlines()`,
+  which breaks on eight separators no line-oriented format git speaks
+  recognises. Neither was a misattribution — each SUPPRESSED a review gate.
+  `_scan_red_flags` reads `+++ b/` at column 0 to know which file the added
+  lines belong to, and red-flag patterns are extension-scoped, so an added line
+  carrying `U+2028` followed by `+++ b/notes.txt` retargeted the path and a
+  `.py`-scoped secret pattern stopped matching every added line after it: the
+  scan was switched off by the content it was scanning. `_changed_files` splits
+  `--name-status` the same way, so a file NAMED with a `U+2028` before
+  `tests/test_a.py` produced a second, fabricated changed-file record, and the
+  "new source file has no test" warning went quiet. Both readers run
+  `git -c core.quotepath=false` — deliberately, so an accented filename reaches
+  the receipt as itself — and that is exactly what let the separator arrive
+  unquoted. Both now split on LF/CR/CRLF via `_untrusted.split_lines`, and the
+  three values that land in a line supertool owns at column 0 — the changed
+  path, the matched content, and the expected-test name derived from that path
+  — are flattened, so the fix does not trade a forged parse boundary for a
+  forged render line. Flattened on the echo only: the expected-test name still
+  answers `os.path.exists` and the changed-set membership test raw, because
+  flattening on the way in would change which file is looked for.
+- `presets/git`: the remaining 42 `str.splitlines()` call sites were audited
+  and left alone, each with its reason written down in
+  `tests/test_preset_git_splitlines_register_1130.py` — a build gate rather
+  than a paragraph, so a new one is red until somebody judges it. Two of 44 is
+  a lower rate than the two prior sweeps found, for a stateable reason: this
+  tree is mostly stderr extractions, where taking one line of the split is
+  itself the disclosure and narrowing would be worse, plus readers that leave
+  `core.quotePath` at its default, where git octal-quotes the separator before
+  the split can see it. `git-diff` was the one op that turned that protection
+  off, so it was the one op that had to protect itself. The issue estimated
+  ~60 sites; the measured count is 44 across 12 files.
+
+- **`gh-issues` read a lookalike host as GitHub** ([#1180](https://github.com/Digital-Process-Tools/claude-supertool/issues/1180)). The helper that decides which repo a board is about tested `parts[2].endswith("github.com")`, which `evilgithub.com` and `notgithub.com` both pass; the owner and name it returns are the root of every subsequent GraphQL call. Now an exact host match or a `.`-boundary subdomain, the same shape `gh-issue` already used, and a row that fails the test is skipped rather than ending the search — one unusable row must not decide the whole board has no repo. Not attacker-reachable through the normal path, because the rows come from `gh`; it matters because the target is derived from row content rather than from configuration, and it was a standing CodeQL High on `master`.
+
+- `watch`: `channel:health` could not tell the process holding the socket from
+  the process that wrote the health file, so the whole `FORWARDING` verdict was
+  forgeable by any same-uid process — not only the pid line the report already
+  marked `self-reported` (#1192). It now asks the kernel who holds the socket
+  (`SO_PEERCRED` on Linux, `LOCAL_PEERPID` on macOS) and compares that against
+  the pid the health file names, in three states: they agree and the report says
+  the holder was verified; they disagree, which is a new `channel: CONTRADICTED`
+  verdict with its own exit code; or peer credentials are unavailable on this
+  platform, which is named on the report rather than folded into either.
+- `watch`: `CONTRADICTED` is exit code 4, deliberately not 3. `CANNOT DETERMINE`
+  means nothing was established, and a live impersonation is the opposite of
+  that — putting a finding in the no-findings bucket is the defect this op was
+  written to remove.
+- `watch`: not `LOCAL_PEERCRED` on macOS, which the issue named. That option
+  returns a `struct xucred` carrying a uid and no pid, and a uid check answers
+  nothing here — the threat is a same-uid process, which passes it trivially.
+  `LOCAL_PEERPID` is the option that yields the pid, and the pid is the only
+  field that can disagree with the health file. FreeBSD has the first and not
+  the second, so it is reported as unable rather than partially able.
+- `watch`: the check narrows the hole and does not close it, and the disclosure
+  in `docs/presets/watch.md` stays. A same-uid process that binds the socket
+  *and* writes the health file is its own peer, so the two agree. What is caught
+  is the mismatch — a forged or stale health file beside a legitimate consumer —
+  which previously drew no objection at all.
+
+- `watch`: `transport.read_state` opened a predictable name in a world-writable
+  directory with a plain `open()` and caught only `(OSError, JSONDecodeError)`,
+  the third call site of the pair fixed at `channel.read_health` (#1184/#1187)
+  and `channel.stranded_watchers` (#1191). Two bytes of invalid UTF-8 —
+  `UnicodeDecodeError` is a `ValueError`, in neither arm — took a traceback out
+  of `read_state`, `deaths`, `list_active_pids`, `list_watchers` and the
+  `watches` op, and out of the poll loop, where it is not inside the
+  never-crash `try`. A symlink at the name got any same-uid JSON file parsed.
+  Now `O_RDONLY|O_NOFOLLOW` with the descriptor closed on the `fdopen` failure
+  path, no existence pre-check (`O_NOFOLLOW` answers a dangling symlink with
+  `ELOOP`, not `ENOENT`), `except (OSError, ValueError)`, and a non-dict
+  refused. `read_state_checked` carries the refusal as its own state; the
+  `watches` board prints it rather than rendering an unread state file as a
+  watcher with nothing to report.
+- `watch`: the `watches` board interpolated `last_event`, `source` and the
+  watcher id into a fixed-width table raw. All three come from a state file or
+  its filename in `/tmp`; a `last_event` carrying two newlines printed a
+  complete, plausible extra row — an MR named, watched and green — onto the
+  board. They go through `_untrusted.flat` at the render, with the provenance
+  note the other watch surfaces carry. The other two renders of a `read_state`
+  string are flattened too: `tiers.gl_mrs.feed_error`, and the `gl-mrs`
+  `[drift: was→now]` mark, whose pipeline ids come straight out of a state file.
+  `read_state` itself is deliberately **not** flattened: its result is written
+  back to disk by six read-modify-write callers, `source_state` included.
+- `watch`: `tiers.gl_mrs.read_state_files` was a fourth call site of the same
+  pair — its own `open()` with no `O_NOFOLLOW`, its own
+  `except (OSError, json.JSONDecodeError)` — so invalid UTF-8 in one state file
+  raised out of the whole `gl-mrs` board rather than out of the row it belonged
+  to. It calls the shared guarded reader now. It still skips an unreadable file
+  in silence; that gap is named in its docstring rather than left to be found.
+
+- `watch`: `transport.read_pid` returned `0` both for "there is no pid file"
+  and for "the pid file could not be read", the fifth call site of the pair (#1200)
+  fixed at `channel.read_health` (#1184/#1187), `channel.stranded_watchers`
+  (#1191) and `transport.read_state` (#1197). `0` is not neutral there — it is
+  the sentinel meaning *the slot is free* — so a symlink at the predictable
+  `/tmp` name made `claim_pidfile` unlink a live poller's claim and start a
+  second poller on the same filter, which is the duplicate-watcher flood that
+  hid a real `pipeline_failed` for 23 minutes on 2026-08-01. The guarded
+  `read_pid_checked` now answers in three states: a PID, `0` for `ENOENT`, and
+  `None` with a reason when the read itself failed. `claim_pidfile` returns
+  `CLAIM_UNKNOWN` on that third state rather than claiming the slot,
+  `release_pidfile` declines to unlink what it could not verify it owns, and
+  `reap_dead` records no death from a file that names no process. A pid file
+  whose *content* is not a PID stays reclaimable on purpose: it can be
+  attributed to no process, and a slot nobody can claim leaves a population
+  unwatched, which renders exactly like one with nothing to report.
+- `watch`: `transport.list_active_pids` unlinked the pid file on any failed
+  read, so an unreadable one destroyed another process's claim unrecoverably
+  — the sixth call site, and the one whose failure path deletes. It now prunes
+  only a file whose content names no process and leaves an unreadable one
+  alone. Its row is omitted rather than published with a PID read out of
+  somebody else's file; the slot still reaches the board, because
+  `list_watchers` widens the scan and a real poller behind a tampered pid file
+  shows up as an `orphan` row.
+- `watch`: three surfaces stopped reporting an unread pid file as an absent
+  one. `watcher_pids` carries a `tracked_refusal` beside `tracked: 0`,
+  `unwatch` prints what it would not follow instead of "No active watcher",
+  and the `gl-mrs` feed diagnostics line prints the refusal instead of
+  "none recorded".
+
 ## [0.31.0] - 2026-08-09
 
 ### Added
@@ -4120,7 +4537,8 @@ All three adapters share the same shape: auto-spawn UDS daemon via `presets/mcp/
 
 Initial public changelog. See git history for prior versions.
 
-[Unreleased]: https://github.com/Digital-Process-Tools/claude-supertool/compare/v0.31.0...HEAD
+[Unreleased]: https://github.com/Digital-Process-Tools/claude-supertool/compare/v0.32.0...HEAD
+[0.32.0]: https://github.com/Digital-Process-Tools/claude-supertool/releases/tag/v0.32.0
 [0.31.0]: https://github.com/Digital-Process-Tools/claude-supertool/releases/tag/v0.31.0
 [0.30.0]: https://github.com/Digital-Process-Tools/claude-supertool/releases/tag/v0.30.0
 [0.29.0]: https://github.com/Digital-Process-Tools/claude-supertool/releases/tag/v0.29.0
