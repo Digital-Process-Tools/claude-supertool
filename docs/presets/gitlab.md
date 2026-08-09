@@ -648,6 +648,23 @@ Gets the full issue context and checks whether an MR already exists for the bran
 ```
 The last form feeds the [`watch`](watch.md) supervisor: pipe failing-MR ids straight into background pollers.
 
+### The argv `gl-job` receives is checked before anything is fetched
+
+Identical to `gh-job`'s and shared with it through `presets/_job_argv.py` — see
+[github.md](github.md#the-argv-both-job-ops-receive-is-checked-before-anything-is-fetched)
+for the three shapes and the reasoning
+([#1145](https://github.com/Digital-Process-Tools/claude-supertool/issues/1145)).
+A non-numeric job id and a mode `gl-job` does not have are both refused with
+nothing read, and a `:` inside `:grep:PATTERN` is rejoined rather than truncated,
+with a note saying how the pattern was read. `|` was never affected.
+
+The id check is shared rather than GitHub-specific on purpose. The coercion that
+made a mangled id survive was measured on GitHub; whether GitLab coerces one too
+was **not** measured, and the check does not depend on the answer. A 404 would
+blame the id's *existence* when the real fault is that the op string arrived
+mangled, so the refusal names the right thing either way — and one answer across
+both forges beats two that happen to agree.
+
 ### A token `gl-mrs` cannot apply is refused, not dropped
 
 Same defect and same fix as `gh-prs` — see [A token `gh-prs` cannot apply is refused](github.md#a-token-gh-prs-cannot-apply-is-refused-not-dropped) for the reasoning ([#939](https://github.com/Digital-Process-Tools/claude-supertool/issues/939)). `gl-mrs:milestne=v18.9` returned the whole board as that milestone's contents; it now refuses and names what would have been accepted.

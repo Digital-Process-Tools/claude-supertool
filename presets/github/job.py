@@ -22,6 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import _repo_target  # noqa: E402  (the repo this call is about, when not the cwd's)
 import _branch_locale  # noqa: E402  (where the branch is checked out — shared by all five #850)
 import _untrusted  # noqa: E402  (a PR's branch, title and author are the opener's text — #965)
+import _job_argv  # noqa: E402  (the argv shape both job presets share — #1145)
 from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 
 
@@ -835,14 +836,33 @@ def main() -> int:
         print("ERROR: usage: job.py JOB_ID [raw [START [END]]]")
         return 1
 
+    # #1145 — argv is what core made of the op string, and three shapes of it
+    # used to reach a render. Refuse before anything is fetched: an id or a mode
+    # the op cannot serve must never appear in output that looks like a read.
     job_id = sys.argv[1]
-    raw_mode = len(sys.argv) > 2 and sys.argv[2] == "raw"
-    grep_mode = len(sys.argv) > 2 and sys.argv[2] == "grep"
-    errors_mode = len(sys.argv) > 2 and sys.argv[2] in ("errors", "fail")
-    grep_pattern = sys.argv[3] if grep_mode and len(sys.argv) > 3 else None
+    refusal = _job_argv.refuse_job_id("gh-job", "GitHub", job_id)
+    if refusal:
+        print(refusal)
+        return 1
+    mode = sys.argv[2] if len(sys.argv) > 2 else ""
+    refusal = _job_argv.refuse_mode("gh-job", mode)
+    if refusal:
+        print(refusal)
+        return 1
+    raw_mode = mode == "raw"
+    grep_mode = mode == "grep"
+    errors_mode = mode in ("errors", "fail")
+    # Everything right of `grep` is the pattern — this op takes no argument
+    # after it — so the pieces core split on ':' rejoin rather than the tail
+    # being dropped.
+    grep_pattern, grep_note = (
+        _job_argv.grep_pattern("gh-job", sys.argv[3:]) if grep_mode else (None, "")
+    )
     if grep_mode and not grep_pattern:
         print("ERROR: usage: gh-job:JOB_ID:grep:PATTERN")
         return 1
+    if grep_note:
+        print(grep_note)
     raw_start: int | None = None
     raw_end: int | None = None
     raw_tail: int | None = None
@@ -876,7 +896,7 @@ def main() -> int:
     # used to say it does not apply when the id turns out to be a check run.
     log_mode = ""
     if raw_mode or grep_mode or errors_mode:
-        log_mode = sys.argv[2]
+        log_mode = mode
 
     config = _get_config()
     tail_lines = config["lines"]

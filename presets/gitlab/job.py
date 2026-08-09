@@ -26,6 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 import _branch_locale  # noqa: E402  (where the branch is checked out — shared by all five #850)
 import _untrusted  # noqa: E402  (an MR's branch, title and author are the opener's text — #965)
+import _job_argv  # noqa: E402  (the argv shape both job presets share — #1145)
 
 
 def _local_branch_check(source: str, actionable: bool = True) -> str:
@@ -612,17 +613,36 @@ def main() -> int:
         print("ERROR: usage: job.py JOB_ID [raw [START [END]]]")
         return 1
 
+    # #1145 — argv is what core made of the op string, and three shapes of it
+    # used to reach a render. Refuse before anything is fetched: an id or a mode
+    # the op cannot serve must never appear in output that looks like a read.
     job_id = sys.argv[1]
-    raw_mode = len(sys.argv) > 2 and sys.argv[2] == "raw"
-    errors_mode = len(sys.argv) > 2 and sys.argv[2] in ("errors", "fail")
-    grep_mode = len(sys.argv) > 2 and sys.argv[2] == "grep"
-    grep_pattern = sys.argv[3] if grep_mode and len(sys.argv) > 3 else None
+    refusal = _job_argv.refuse_job_id("gl-job", "GitLab", job_id)
+    if refusal:
+        print(refusal)
+        return 1
+    mode = sys.argv[2] if len(sys.argv) > 2 else ""
+    refusal = _job_argv.refuse_mode("gl-job", mode)
+    if refusal:
+        print(refusal)
+        return 1
+    raw_mode = mode == "raw"
+    errors_mode = mode in ("errors", "fail")
+    grep_mode = mode == "grep"
+    # Everything right of `grep` is the pattern — this op takes no argument
+    # after it — so the pieces core split on ':' rejoin rather than the tail
+    # being dropped.
+    grep_pattern, grep_note = (
+        _job_argv.grep_pattern("gl-job", sys.argv[3:]) if grep_mode else (None, "")
+    )
     # Read-only sub-ops: you are inspecting a job, not preparing to work on its
     # branch. The branch check still prints; only the checkout advice does not.
     branch_actionable = not (raw_mode or errors_mode or grep_mode)
     if grep_mode and not grep_pattern:
         print("ERROR: usage: gl-job:JOB_ID:grep:PATTERN")
         return 1
+    if grep_note:
+        print(grep_note)
     raw_start: int | None = None
     raw_end: int | None = None
     raw_tail: int | None = None
