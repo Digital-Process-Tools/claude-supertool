@@ -1,6 +1,6 @@
 """#1231 — a names+safety roster that fits the SessionStart cap.
 
-`ops` is 47,260 bytes and `ops-compact` is 9,073 against a ~7,168-byte cap, so
+`ops` is 47,254 bytes and `ops-compact` is 9,067 against a ~7,168-byte cap, so
 the startup listing is truncated *today* and everything alphabetically after
 `grep` is hidden — the whole `gh-*` and `git-*` families, `radar`, `watch`.
 What was lost was **existence**, and a reader cannot miss what they do not know
@@ -204,3 +204,61 @@ def test_whole_hook_payload_fits_the_cap(shipped_config) -> None:
                + supertool.op_ops_roster())
     size = len(payload.encode("utf-8"))
     assert size < supertool._HOOK_OUTPUT_CAP_BYTES, f"{size} bytes"
+
+# --- review follow-ups (Sonnet pass over 012e53c) --------------------------
+
+def test_ops_compact_also_refuses_an_argument(shipped_config) -> None:
+    """`ops-compact:gh-labels` swallowed its argument exactly as `ops` did.
+
+    The first pass fixed the branch above it and left this one, which is the
+    same defect one `elif` over — and it is the form the hook used to call.
+    """
+    out = supertool.dispatch("ops-compact:gh-labels")
+    assert "ERROR" in out
+    assert "help:gh-labels" in out
+    assert "## Operations" not in out
+
+
+def test_bare_ops_compact_still_renders_the_compact_listing(shipped_config) -> None:
+    assert "## Operations" in supertool.dispatch("ops-compact")
+
+
+@pytest.mark.parametrize("manifest,name", [
+    ("bluesky.json", "bluesky_status_since"),
+    ("devto.json", "devto_status_since"),
+    ("hashnode.json", "hashnode_status_since"),
+])
+def test_watermark_briefings_are_acts_not_read_only(manifest: str, name: str) -> None:
+    """`*_status_since` writes `~/.config/<service>/last_check` on success.
+
+    Probing one to learn its signature silently advances the watermark, so the
+    next real briefing reports nothing for the window that was consumed — an
+    absence the probe produced, read as an absence in the world. Outside the
+    tree, and the reason the class exists.
+    """
+    data = json.loads((REPO_ROOT / "presets" / manifest).read_text(encoding="utf-8"))
+    assert data["ops"][name]["safety"] == "acts"
+
+
+_FIGURE_BEARING = (
+    "_supertool.py", "README.md", "hooks/session-start.sh",
+    "docs/operations/meta.md", "changelog.d/1231.added.md",
+    "tests/test_ops_roster_1231.py",
+)
+
+
+def test_quoted_byte_figures_are_this_checkouts(shipped_config) -> None:
+    """A rule with its evidence stripped is folklore, and a *wrong* number is
+    worse than none. The first pass copied the issue body's figures for `ops`
+    and `ops-compact` rather than measuring this checkout, and every doc
+    inherited them. This file is itself in the swept set."""
+    roster = f"{len(supertool.op_ops_roster().encode('utf-8')):,}"
+    for rel in _FIGURE_BEARING:
+        text = (REPO_ROOT / rel).read_text(encoding="utf-8")
+        # Assembled, not written literally — this file is in the swept set,
+        # and a sweep that trips over its own pattern is not a sweep.
+        for stale in ("47," + "260", "9," + "073"):
+            assert stale not in text, f"{rel} still quotes {stale}"
+    for rel in ("README.md", "hooks/session-start.sh", "docs/operations/meta.md"):
+        text = (REPO_ROOT / rel).read_text(encoding="utf-8")
+        assert roster in text, f"{rel} does not quote the measured roster size"

@@ -98,7 +98,9 @@ Shorthand string ops (`"lint": "ruff check {file}"`) work with a 60s default tim
 |-------|-------|--------|
 | `read-only` | Safe to invoke blind. Reads files, or makes a read-only network call. | *(none)* |
 | `writes` | Changes files in this tree. | `*` |
-| `acts` | Reaches outside this tree, publishes, or spawns a process. | `!` |
+| `acts` | Changes something outside this tree, or starts something that outlives the call. | `!` |
+
+**Classify by consequence, not by mechanism.** Nearly every preset op runs a subprocess, so "spawns" is not the test. `bluesky_status_since` reads a feed — which sounds read-only — and writes `~/.config/bluesky/last_check` on success, so one probe to learn its signature advances the watermark and the *next* real briefing reports an empty window it silently consumed. That is `acts`. A session-token or username cache written on the way past is not: nothing downstream reads it as a fact about the world.
 
 An op with no `safety` key, or an unrecognised value, renders `!`. The fallback is the loudest class on purpose: an `acts` op mis-rendered as probe-safe invites somebody to probe it, and the reverse costs one `help:OP` call. Every op in a shipped `presets/*.json` must declare one — `tests/test_ops_roster_1231.py` fails otherwise, so a new op cannot ship classed by accident. Built-in ops take their class from `_OP_SAFETY_BUILTIN` in `_supertool.py` instead: it is a fact about the binary, and a project's `.supertool.json` may be absent, stale, or somebody else's.
 

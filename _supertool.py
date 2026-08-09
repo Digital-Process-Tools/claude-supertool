@@ -1769,7 +1769,7 @@ def _unknown_op_message(op: str) -> str:
 
 # The three safety classes a roster row can carry (#1231).
 #
-# `ops` is 47,260 bytes and `ops-compact` 9,073 against a ~7,168-byte
+# `ops` is 47,254 bytes and `ops-compact` 9,067 against a ~7,168-byte
 # SessionStart cap, so the startup listing is truncated *today* and every op
 # alphabetically after `grep` is hidden — the whole gh-*/git-* families, radar,
 # watch. What is lost is **existence**, which a reader cannot miss because they
@@ -1786,6 +1786,13 @@ def _unknown_op_message(op: str) -> str:
 # formatters over every staged file and writes them. Deriving "read-only" from
 # it would render a mutating op probe-safe — an error in the one direction that
 # costs something.
+#
+# "acts" is about consequence, not about spawning: nearly every preset op runs
+# a python subprocess. `*_status_since` is the case that proves it — it reads a
+# feed, which sounds read-only, and writes `~/.config/<service>/last_check` on
+# success. One probe to learn the signature advances the watermark, and the
+# next real briefing reports an empty window it silently consumed. That is this
+# repo's own defect wearing a safety class, so those three are "acts".
 _SAFETY_CLASSES = ("read-only", "writes", "acts")
 
 # Marker rendered beside a name. Read-only is unmarked, and that is a positive
@@ -12916,15 +12923,17 @@ def _roster_classes() -> Dict[str, str]:
 
 
 _ROSTER_LEGEND = (
-    "Every op this build accepts here — the complete list, which `ops` "
-    "(47KB) and\n`ops-compact` (9KB) cannot be at the ~7KB SessionStart cap. "
-    "Class is declared,\nnever guessed. Unmarked is a positive **read-only** "
-    "claim: call it blind and its\nown error teaches the signature. "
-    "`*` writes files in this tree. `!` reaches outside\nthis tree or spawns "
-    "a process — look those up first, never probe them. An op\nwhose class is "
-    "not declared is shown `!`, so a gap is never the quiet one.\n\n"
-    "Full entry for one op: `help:OP` — it carries more than the listing row "
-    "does.\nEvery entry: `ops`."
+    "Every op this build accepts here — the complete list, which `ops` (47KB) "
+    "and\n`ops-compact` (9KB) cannot be under the ~7KB SessionStart cap. "
+    "Class is declared,\nnever guessed.\n\n"
+    "- unmarked — read-only. Call it blind; its own error teaches the "
+    "signature.\n"
+    "- `*` — writes files in this tree.\n"
+    "- `!` — changes something outside this tree, or starts something that "
+    "outlives\nthe call. Look these up; never probe one.\n\n"
+    "An op whose class is not declared is shown `!`, so a gap is never the "
+    "quiet\nanswer. Full entry for one op: `help:OP` — more than the listing "
+    "row carries.\nEvery entry: `ops`."
 )
 
 
@@ -12955,7 +12964,7 @@ def op_ops_roster(width: int = 78) -> str:
             + "\n".join(body) + "\n")
 
 
-def _ops_argument_refusal(arg: str) -> str:
+def _ops_argument_refusal(arg: str, op_name: str = "ops") -> str:
     """`ops:gh-labels` printed the whole 47KB listing and said nothing (#1231).
 
     An argument dropped without a word, in the op whose job is to say which
@@ -12970,14 +12979,15 @@ def _ops_argument_refusal(arg: str) -> str:
     absence-as-answer defect the roster exists to remove.
     """
     if arg in _roster_classes():
-        return (f"ERROR: `ops` takes no filter, and '{arg}' is an op name.\n"
+        return (f"ERROR: `{op_name}` takes no filter, and '{arg}' is an op "
+                f"name.\n"
                 f"  Its full entry: `help:{arg}` — more than the listing row "
                 f"carries.\n"
                 f"  Every name plus its safety class: `ops:roster`. "
                 f"Every entry: `ops`.\n")
-    return (f"ERROR: unknown argument to `ops`: '{arg}'.\n"
+    return (f"ERROR: unknown argument to `{op_name}`: '{arg}'.\n"
             f"  Accepted: `ops` (every entry), `ops:roster` (every name plus "
-            f"its safety class).\n"
+            f"its safety class), `ops-compact` (the capped listing).\n"
             f"  '{arg}' is also not an op name loaded here — `ops:roster` "
             f"lists the ones that are.\n")
 
@@ -19055,20 +19065,22 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                 body = op_output_format()
             elif op == "version":
                 body = op_version()
-            elif op == "ops-compact":
-                body = op_ops(compact=True)
             else:
                 # `ops:gh-labels` used to discard its argument in silence and
                 # print all 47KB — an unrecognised token dropped rather than
                 # refused, in the op whose subject is which tokens exist
-                # (#1231).
+                # (#1231). `ops` and `ops-compact` share one arm rather than
+                # one each: the first pass fixed `ops` and left `ops-compact`
+                # swallowing the same token one `elif` over, which is how a
+                # refusal that exists in one of two twinned branches reads as
+                # a refusal that exists.
                 ops_arg = parts[1] if len(parts) > 1 else ""
                 if not ops_arg:
-                    body = op_ops()
-                elif ops_arg == "roster":
+                    body = op_ops(compact=(op == "ops-compact"))
+                elif ops_arg == "roster" and op == "ops":
                     body = op_ops_roster()
                 else:
-                    body = _ops_argument_refusal(ops_arg)
+                    body = _ops_argument_refusal(ops_arg, op)
         else:
             # Fallthrough: try custom ops, then aliases
             custom = _resolve_custom_op(op, parts)

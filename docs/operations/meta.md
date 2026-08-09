@@ -134,9 +134,9 @@ What the session-start hook actually runs, and it fits the ~7KB hook-output cap:
 ./supertool 'introduction' 'output-format' 'ops:roster'
 ```
 
-Measured in this checkout: `ops` is 47,260 bytes and `ops-compact` 9,067, against a cap of ~7,168 — so **no listing form fitted, and the startup listing was truncated on every session**, hiding everything alphabetically after `grep`: the whole `gh-*` and `git-*` families, `radar`, `watch`, `read`, `paste`, `tree`. It disclosed the truncation honestly and that did not help, because what was hidden was *existence*, and a reader cannot miss what they never learned about. Three agents in one session reported `write:` is not an op without being told `paste:` is.
+Measured in this checkout (`python3 supertool.py 'ops' | wc -c`): `ops` is 47,254 bytes and `ops-compact` 9,067, against a cap of ~7,168 — so **no listing form fitted, and the startup listing was truncated on every session**, hiding everything alphabetically after `grep`: the whole `gh-*` and `git-*` families, `radar`, `watch`, `read`, `paste`, `tree`. It disclosed the truncation honestly and that did not help, because what was hidden was *existence*, and a reader cannot miss what they never learned about. Three agents in one session reported `write:` is not an op without being told `paste:` is.
 
-`ops:roster` is 1,441 bytes — every op name, each carrying a safety class, and nothing else. The whole hook payload is 2,378 bytes.
+`ops:roster` is 1,455 bytes — every op name, each carrying a safety class, and nothing else. The whole hook payload is 2,392 bytes.
 
 ```
   append* around around_line batch* between channel check cwd dashboard diag
@@ -147,7 +147,7 @@ Measured in this checkout: `ops` is 47,260 bytes and `ops-compact` 9,067, agains
 |--------|-------|------------------|
 | *(none)* | `read-only` | Call it blind — its own error teaches the signature |
 | `*` | `writes` | Changes files in this tree |
-| `!` | `acts` | Reaches outside this tree or spawns — look it up, never probe |
+| `!` | `acts` | Changes something outside this tree, or starts something that outlives the call — look it up, never probe |
 
 Flat and alphabetical rather than grouped by family, because every miss that motivated it was a neighbour miss: `gh-pr-create` sits beside `gh-pr`, `git-worktrees` beside `git-status`. An op whose class is not declared renders `!`, so a gap in the data is never the quiet answer.
 

@@ -61,7 +61,7 @@
       "example": "bluesky_repost:https://bsky.app/profile/simonw.bsky.social/post/3kabc"
     },
     "bluesky_status_since": {
-      "safety": "read-only",
+      "safety": "acts",
       "cmd": "{python} {path}bluesky/status_since.py {args}",
       "timeout": 30,
       "description": "Briefing: new mentions, replies, likes, follows since timestamp via the native notifications endpoint. No arg = uses last_check state file.",

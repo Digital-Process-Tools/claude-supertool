@@ -34,7 +34,7 @@
 | `introduction` | `introduction` | Output the project introduction text from `.supertool.json`. No `---` dispatch header — clean markdown. |
 | `output-format` | `output-format` | Output format examples from `.supertool.json`. Shows what responses look like. |
 | `ops` | `ops` | Full operations reference from `.supertool.json` — built-in ops, custom ops, and aliases with descriptions and examples. An unrecognised argument is refused, not dropped. |
-| `ops:roster` | `ops:roster` | Every op name plus a safety class, nothing else (~1.4KB) — the only listing form that fits the ~7KB SessionStart cap, so it is what the hook prints. Unmarked = read-only, `*` = writes in this tree, `!` = acts outside it. |
+| `ops:roster` | `ops:roster` | Every op name plus a safety class, nothing else (~1.4KB) — the only listing form that fits the ~7KB SessionStart cap, so it is what the hook prints. Unmarked = read-only, `*` = writes in this tree, `!` = acts outside it or outlives the call. |
 | `diff` | `diff:PATH1:PATH2` | Unified diff between two files. |
 | `stat` | `stat:PATH` | File/directory metadata: size (bytes), last modified (ISO datetime), type (file/dir). |
 | `around_line` | `around_line:PATH:LINE` or `around_line:PATH:LINE:N` | Show N lines (default 10) of context around a specific line number. Target line marked with `→`. |

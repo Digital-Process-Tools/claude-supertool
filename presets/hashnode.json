@@ -81,7 +81,7 @@
       "default_limit": 10
     },
     "hashnode_status_since": {
-      "safety": "read-only",
+      "safety": "acts",
       "cmd": "{python} {path}hashnode/status_since.py {args}",
       "timeout": 30,
       "description": "Briefing: new comments + follower count + top posts since timestamp. No arg = uses ~/.config/hashnode/last_check (auto-tracked).",

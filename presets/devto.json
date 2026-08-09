@@ -64,7 +64,7 @@
       "example": "devto_comment:1234567|Thanks for sharing!"
     },
     "devto_status_since": {
-      "safety": "read-only",
+      "safety": "acts",
       "cmd": "{python} {path}devto/status_since.py {args}",
       "timeout": 60,
       "description": "Briefing: new comments + top articles since timestamp. No arg = uses ~/.config/devto/last_check (auto-tracked). Fan-out: 1 call + 1 per recent article.",

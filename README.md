@@ -184,9 +184,9 @@ Just install. The session-start hook runs `./supertool 'introduction' 'output-fo
 
 > **Heads-up — hook output cap.** Claude Code truncates hook stdout around 7KB; over that, only a ~2KB preview reaches the model and the rest is silently saved to disk.
 >
-> No descriptive listing fits: `ops` is 47,260 bytes here and `ops-compact` 9,067, so the startup listing used to be truncated on *every* session, hiding every op alphabetically after `grep` — the whole `gh-*` and `git-*` families, `radar`, `watch`, `paste`, `tree`. What was hidden was existence, and a reader cannot miss what they never learned about.
+> No descriptive listing fits: `ops` is 47,254 bytes here and `ops-compact` 9,067, so the startup listing used to be truncated on *every* session, hiding every op alphabetically after `grep` — the whole `gh-*` and `git-*` families, `radar`, `watch`, `paste`, `tree`. What was hidden was existence, and a reader cannot miss what they never learned about.
 >
-> `ops:roster` is 1,441 bytes: every op name and nothing else, each carrying a safety class — unmarked is read-only and safe to call blind, `*` writes files in this tree, `!` reaches outside it or spawns a process. Descriptions are one call away and richer there: `help:OP` gives the full contract, the semantics and an example. Plain `'ops'` always returns everything.
+> `ops:roster` is 1,455 bytes: every op name and nothing else, each carrying a safety class — unmarked is read-only and safe to call blind, `*` writes files in this tree, `!` changes something outside it or starts something that outlives the call. Descriptions are one call away and richer there: `help:OP` gives the full contract, the semantics and an example. Plain `'ops'` always returns everything.
 
 ### Plain / ASCII output mode (hooks & CI)
 
