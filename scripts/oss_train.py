@@ -144,6 +144,30 @@ def parse_tokens(argv):
     return ",".join(t for t in tokens if t != "dry"), dry
 
 
+def classify_push(push_output):
+    """(state, detail) from git-push's own `[result]` verdict.
+
+    Read as a PREFIX of the verdict text, never as `"PUSHED" in verdict`:
+    `PUSHED` is a substring of `NOT PUSHED`, so that membership test was true
+    for every failure git-push emits — `NOT PUSHED - REJECTED`, `- UNVERIFIED`,
+    `- REBASE PAUSED`, `- TIMED OUT`, `- already up to date`, `- no push
+    attempted`. All six fell through and were tallied as PUSHED, under a detail
+    line that read "NOT PUSHED - ..." out loud. An op whose stated purpose is to
+    relay git-push's verified verdict rather than assume its own success
+    finished by assuming its own success.
+    """
+    verdict = ""
+    for line in push_output.splitlines():
+        if line.startswith("[result]"):
+            verdict = line[len("[result]"):].strip()
+            break
+    if not verdict:
+        return "FAILED", "git-push printed no [result] verdict — " + push_output.strip()[-250:]
+    if not verdict.startswith("PUSHED"):
+        return "FAILED", verdict
+    return "PUSHED", verdict
+
+
 def train(num, dry):
     wt = os.path.join(wt_root(), num)
     if not os.path.isdir(wt):
@@ -159,7 +183,13 @@ def train(num, dry):
     # itself refused the rebase (which is the only reason nothing was lost), so
     # this guard turns luck into a decision.
     rc, dirty = run(["git", "status", "--porcelain"], wt)
-    if rc == 0 and dirty.strip():
+    if rc != 0:
+        # A status this op could not read is not a clean tree. `rc == 0 and
+        # dirty.strip()` read it as one, so the single guard between this op and
+        # a live agent's worktree opened exactly when the command it depends on
+        # stopped answering, and the run went on to fetch, rebase and force-push.
+        return "FAILED", f"could not read the worktree status: {dirty.strip()[:200]}"
+    if dirty.strip():
         n = len(dirty.strip().splitlines())
         return "BUSY", f"{n} uncommitted change(s) — someone is working here, not touching it"
 
@@ -225,16 +255,7 @@ def train(num, dry):
             return "FAILED", "conflicts remain after resolve+continue"
 
     _, push = st(wt, "git-push:force-with-lease:no-verify")
-    verdict = ""
-    for line in push.splitlines():
-        if line.startswith("[result]"):
-            verdict = line.strip()
-            break
-    if not verdict:
-        return "FAILED", "git-push printed no [result] verdict — " + push.strip()[-250:]
-    if "PUSHED" not in verdict:
-        return "FAILED", verdict
-    return "PUSHED", verdict[len("[result]"):].strip()
+    return classify_push(push)
 
 
 def main():

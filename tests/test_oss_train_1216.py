@@ -314,3 +314,88 @@ def test_the_module_imports_without_touching_the_machine(
     it elsewhere by env var AFTER import."""
     monkeypatch.setenv("SUPERTOOL_WT_ROOT", os.path.join("nowhere", "at", "all"))
     assert oss_train.wt_root().endswith(os.path.join("nowhere", "at", "all"))
+
+# ---------------------------------------------------------------------------
+# the push verdict is READ, not pattern-matched loosely
+# ---------------------------------------------------------------------------
+
+#: Every failure verdict `git-push` actually emits, as literal prefixes.
+#: `presets/git/push.py` writes them; `test_the_failure_verdicts_still_read_this_way`
+#: below is what stops this list rotting into a set of strings nobody produces.
+NOT_PUSHED_VERDICTS = (
+    "NOT PUSHED - REJECTED  fix/1 -> origin/master - remote rejected",
+    "NOT PUSHED - REJECTED (non-fast-forward)  fix/1 -> origin/master",
+    "NOT PUSHED - UNVERIFIED  fix/1 -> origin/master - push timed out",
+    "NOT PUSHED - REBASE PAUSED (conflict in 2 file(s))  fix/1 -> origin/master",
+    "NOT PUSHED - already up to date  fix/1 -> origin/master",
+    "NOT PUSHED - no push attempted (detached HEAD - checkout a branch)",
+    "NOT PUSHED - push TIMED OUT (120s)  fix/1 -> origin/master",
+)
+
+
+@pytest.mark.parametrize("verdict", NOT_PUSHED_VERDICTS)
+def test_a_not_pushed_verdict_is_not_a_push(verdict: str) -> None:
+    """`"PUSHED" not in verdict` is FALSE for every one of these, because
+    `PUSHED` is a substring of `NOT PUSHED`. The whole receipt-reading
+    apparatus — git-push verifying the remote sha, this op relaying that
+    verdict instead of assuming its own success — ended at a membership test
+    that said "landed" for a rejected push, an unverified one, and a rebase
+    left PAUSED mid-conflict. Carried in from the DVSI copy, which still has it.
+    """
+    state, detail = oss_train.classify_push("[result] " + verdict + "\n")
+    assert state == "FAILED", (state, detail)
+    assert verdict in detail
+
+
+def test_a_real_push_is_reported_as_one() -> None:
+    state, detail = oss_train.classify_push(
+        "some output\n[result] PUSHED  fix/1 -> origin/master @ abc1234  (forced)\n")
+    assert state == "PUSHED"
+    assert detail.startswith("PUSHED")
+
+
+def test_no_verdict_line_at_all_is_a_failure_not_a_push() -> None:
+    state, detail = oss_train.classify_push("git-push exploded\n")
+    assert state == "FAILED"
+    assert "no [result] verdict" in detail
+
+
+def test_the_failure_verdicts_still_read_this_way() -> None:
+    """The list above is a claim about another file. Pin it, or the day
+    git-push renames a verdict this suite goes on passing about nothing."""
+    push = (REPO / "presets" / "git" / "push.py").read_text(encoding="utf-8")
+    for prefix in ("NOT PUSHED - REJECTED", "NOT PUSHED - UNVERIFIED",
+                   "NOT PUSHED - REBASE PAUSED", "NOT PUSHED - already up to date",
+                   "NOT PUSHED - no push attempted", "TIMED OUT"):
+        assert prefix in push, prefix
+    assert '_result(f"PUSHED ' in push
+
+
+# ---------------------------------------------------------------------------
+# the BUSY guard fails closed
+# ---------------------------------------------------------------------------
+
+def test_an_unreadable_worktree_status_stops_the_train(
+        train_world, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`git status --porcelain` failing is not "the tree is clean".
+
+    It was read as clean, so the one guard standing between this op and a live
+    agent's worktree was bypassed exactly when the command it depends on
+    stopped answering — and the run went on to fetch, rebase and force-push.
+    """
+    real_run = oss_train.run
+    reached = []
+
+    def fake_run(args, cwd, timeout=900):
+        if args[:2] == ["git", "status"]:
+            return 128, "fatal: not a git repository"
+        if args[:2] == ["git", "fetch"]:
+            reached.append(args)
+        return real_run(args, cwd, timeout)
+
+    monkeypatch.setattr(oss_train, "run", fake_run)
+    state, detail = oss_train.train("999", dry=False)
+
+    assert state == "FAILED", (state, detail)
+    assert "not a git repository" in detail
+    assert reached == [], "it fetched anyway after failing to read the status"

@@ -140,7 +140,9 @@ The script receives `SUPERTOOL_LINES=80` and `SUPERTOOL_ERROR_PATTERNS=ERROR,FAI
 
 Each branch is labelled by the branch `git symbolic-ref` reports, never by the worktree directory: `st-wt/749` holds `lane-watch`, and every follow-up command a reader would run takes a branch name.
 
-`tests/test_oss_train_1216.py` covers the argument parsing, the refusals, the `BUSY` guard and the read-only `dry` path, and names what it does not cover — the `PUSHED` and `REFUSED` paths cannot be exercised without force-pushing real refs, so no fixture pretends to.
+`tests/test_oss_train_1216.py` covers the argument parsing, the refusals, the `BUSY` guard, the read-only `dry` path and the reading of `git-push`'s verdict, and names what it does not cover — the rebase, the `git-resolve` refusal and the push itself cannot be exercised without force-pushing real refs, so no fixture pretends to.
+
+**The verdict is read as a prefix, and that is not a style choice.** `"PUSHED" in verdict` is true of `NOT PUSHED - REJECTED`, `- UNVERIFIED`, `- REBASE PAUSED`, `- TIMED OUT`, `- already up to date` and `- no push attempted` — every failure `git-push` emits. The op that exists to relay a verified verdict instead of assuming its own success ended on a membership test that tallied all six as `PUSHED`, with a detail line reading "NOT PUSHED - ..." next to the tick. `classify_push` is a separate function for the same reason: it is the one part of the push path that can be tested without a remote.
 
 ---
 
