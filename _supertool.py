@@ -2995,7 +2995,7 @@ def _bre_rewrite_note(written: str, effective: str, rewritten: bool) -> str:
             f"`[|]`.)" + chr(10))
 
 
-def _grep_pattern_note(pattern: str) -> str:
+def _grep_pattern_note(pattern: str, path: str) -> str:
     """Name the pattern grep actually ran, when a ':' made that a choice (#1065).
 
     `grep:re:Checks|failed:PATH` tokenizes to the pattern `re:Checks|failed`,
@@ -3009,12 +3009,17 @@ def _grep_pattern_note(pattern: str) -> str:
     colon CLI cannot express. What was missing is the disclosure. A ':' in the
     pattern is exactly the condition under which the rejoin happened, so that
     is when the effective pattern is echoed back.
+
+    The path is named too (#1166). The split has two outputs and the note
+    disclosed one: a receipt that is precise about the pattern and silent about
+    which of the remaining tokens became the FILE reads as complete, which is
+    exactly what stops a reader checking the half that moved.
     """
     if ":" not in pattern:
         return ""
-    note = (f"(pattern read as {pattern!r} — the ':' is part of the regex, not "
-            "a separator. Use grep:@- with a `pattern` key if the split was "
-            "meant to fall elsewhere.)" + chr(10))
+    note = (f"(pattern read as {pattern!r}, path as {path!r} — the ':' is part "
+            "of the regex, not a separator. Use grep:@- with a `pattern` key "
+            "if the split was meant to fall elsewhere.)" + chr(10))
     if pattern.startswith("re:"):
         note += ("(grep has no `re:` prefix — every grep pattern is already a "
                  "regex, so `re:` is literal text and forms part of the first "
@@ -3072,7 +3077,7 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
     refusal = _saturating_pattern_refusal(pattern, effective, rewritten)
     if refusal:
         return refusal
-    return (_grep_pattern_note(pattern)
+    return (_grep_pattern_note(pattern, path)
             + _bre_rewrite_note(pattern, effective, rewritten)
             + _op_grep(pattern, path, limit, context, count_only,
                        no_exclude, no_auto_read))
@@ -18305,8 +18310,19 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
         "stat": (1,), "around_line": (1,), "ls": (1,), "tree": (1,),
         "map": (1,), "blame": (1,), "validate": (1,), "format": (1,),
         "workspace": (1,), "diag": (1,),
-        # around:PATTERN:PATH, grep_around:PATTERN:PATH, grep:PATTERN:PATH
-        "around": (2,), "grep_around": (2,), "grep": (2,),
+        # grep_around:PATTERN:PATH — parts[2] and nothing else, because its
+        # trailing slots must parse as ints, so a ':' in the pattern fails the
+        # call rather than moving the path.
+        "grep_around": (2,),
+        # `grep` and `around` are deliberately absent: neither keeps its path
+        # in a fixed slot. `_parse_grep_args`/`_parse_around_args` peel the
+        # trailing ints and take `path = args[-1]`, so a ':' anywhere in the
+        # PATTERN pushes the path past slot 2 and the gate saw a pattern
+        # fragment instead — arbitrary read, contents and all (#1166). Read
+        # from the other side it also over-contained: with a ':' in the
+        # pattern, slot 2 IS a pattern fragment, so searching a local file for
+        # an absolute-path string was refused while naming a file the caller
+        # never asked to open. Both branches gate the path they computed.
         # hover:SYMBOL:FILE, rename:OLD:NEW:FILE, resolve:SYMBOL[:FROM_FILE]
         "hover": (2,), "rename": (3,), "resolve": (2,),
         # diff:PATH1:PATH2
@@ -18378,6 +18394,12 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
         elif op == "grep":
             pattern, path, limit, context, count_only, no_auto_read = \
                 _parse_grep_args(parts)
+            # Ahead of the hint, not after it: `_colon_split_hint` stats the
+            # path to decide whether to fire, and a stat of an outside file is
+            # itself the existence oracle this gate exists to close.
+            _contained = _containment_error([path])
+            if _contained:
+                return header + _contained
             if limit == 0:
                 return header + _GREP_ZERO_LIMIT
             _hint = _colon_split_hint("grep", pattern, path)
@@ -18424,6 +18446,13 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
             body = op_gc(mode, kind)
         elif op == "around":
             pattern, path, n = _parse_around_args(parts)
+            # Ahead of the delegation and the hint: both stat the path to
+            # decide whether to fire, and that stat is the oracle. The #1135
+            # guard inside the delegation covers the OTHER slot — parts[1],
+            # once promotion has turned it into a filename — and still runs.
+            _contained = _containment_error([path])
+            if _contained:
+                return header + _contained
             _delegated = _around_line_delegation(pattern, path, n)
             if _delegated:
                 return header + _delegated
