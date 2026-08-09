@@ -16,14 +16,23 @@ capping at 20, because the whole point is a record of what was committed.
 """
 from __future__ import annotations
 
+import importlib.util
 import os
 import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO = Path(__file__).parent.parent
 SUPERTOOL = REPO / "supertool.py"
 COAUTHOR = "Test Bot <bot@example.invalid>"
+
+_COMMIT_PATH = REPO / "presets" / "git" / "commit.py"
+_spec = importlib.util.spec_from_file_location("git_commit_1137", _COMMIT_PATH)
+assert _spec is not None and _spec.loader is not None
+commit_mod = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(commit_mod)
 
 
 def _repo(tmp_path: Path) -> Path:
@@ -70,7 +79,11 @@ def _committed_paths(work: Path) -> set:
         capture_output=True, text=True, check=True, encoding="utf-8",
         errors="replace",
     ).stdout
-    return {p for p in out.split(chr(0)) if p.strip()}
+    # `!= ""`, not `.strip()`: the trailing NUL is the only empty segment, and
+    # a `.strip()` filter here would drop a whitespace-only path from the
+    # oracle as well as from the code under test — making the assertion pass
+    # for the same reason the bug exists.
+    return {p for p in out.split(chr(0)) if p != ""}
 
 
 def _first_error_line(out: str) -> str:
@@ -286,3 +299,71 @@ def test_receipt_names_a_non_ascii_path_as_itself(tmp_path: Path) -> None:
     # short SHA in the receipt, which would make this pass for a false reason.
     assert chr(92) + "303" not in out, out
     assert _committed_paths(work) == {name}
+
+
+def test_z_paths_keeps_a_whitespace_only_path(tmp_path: Path) -> None:
+    """A NUL-delimited stream's only empty segment is the empty string.
+
+    Filtering it with `p.strip()` also discards every path git permits that
+    is made entirely of whitespace, and this parser feeds the `Files
+    committed:` listing — the one record of what `--all` chose. Dropping a
+    path there is an absence produced by the tool and read as an absence in
+    the commit.
+
+    Parse-level so it is a real assertion on Windows too, where the
+    filesystem refuses to hold the filename the end-to-end case needs.
+    """
+    stream = "a.txt" + chr(0) + " " + chr(0) + "b.txt" + chr(0)
+
+    assert commit_mod._z_paths(stream) == ["a.txt", " ", "b.txt"]
+    assert commit_mod._z_paths("") == []
+    assert commit_mod._z_paths(chr(0)) == []
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="Win32 strips trailing spaces from a filename, so a path made "
+           "only of whitespace cannot be created; the parse-level pin above "
+           "covers this platform rather than passing vacuously here.",
+)
+def test_receipt_lists_a_whitespace_only_path(tmp_path: Path) -> None:
+    """`--all` staged three paths and the receipt named two of them.
+
+    `Staged: 3 path(s)` above `Files committed: 2` with no mention of the
+    third — under the one flag whose contract is that the receipt is the
+    complete record, uncapped, because the caller never typed the list.
+    """
+    work = _repo(tmp_path)
+    (work / " ").write_text("x" + chr(10), encoding="utf-8")
+    (work / "c.txt").write_text("x" + chr(10), encoding="utf-8")
+
+    out = _run(["git-commit:::a message:::--all"], cwd=work)
+
+    assert "ERROR" not in out, out
+    assert _committed_paths(work) == {" ", "c.txt"}
+    assert "Files committed: 2" in out, out
+
+
+def test_staged_deletion_of_a_non_ascii_path_commits_by_name(
+        tmp_path: Path) -> None:
+    """The receipt's read is `-z`; the staging read one hop above it is not.
+
+    `git rm café.txt` then naming that path is #324's shape: the path is
+    gone from disk, so it must be dropped from the `git add` list or git
+    aborts on it. The drop-list is built from a read without `-z`, so
+    core.quotepath renders the path as an octal-escaped, quoted string that
+    never matches what the caller typed — the file stays in the add list and
+    the commit dies. Identical with an ASCII name, which passes.
+    """
+    work = _repo(tmp_path)
+    name = "café.txt"
+    (work / name).write_text("x" + chr(10), encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=work, check=True)
+    subprocess.run(["git", "commit", "-qm", "add it"], cwd=work, check=True)
+    subprocess.run(["git", "rm", "-q", name], cwd=work, check=True)
+
+    out = _run(["git-commit:::remove it:::" + name], cwd=work)
+
+    assert "ERROR" not in out, out
+    assert "did not match any files" not in out, out
+    assert _head_subject(work) == "remove it"

@@ -338,8 +338,8 @@ def _all_ambiguous_refusal(modified, untracked, unknown):
     lines = [
         "ERROR: %r is both this op's commit-everything opt-in and a path git "
         "knows — nothing staged, nothing committed." % (_ALL_TOKEN,),
-        "  Nothing in the argument says which was meant, and both routes "
-        "spell it the same way.",
+        ("  Nothing in the argument says which was meant, and both routes "
+         + "spell it the same way."),
         "  To commit the FILE, write it so git reads it as a path:",
         "    ./supertool " + _sh_quote("git-commit:::MESSAGE:::./" + _ALL_TOKEN),
     ]
@@ -422,6 +422,20 @@ def _worktree_changes(git_fn=None):
         elif y in ("M", "D", "T"):
             modified.append(path)
     return modified, untracked, ""
+
+
+def _z_paths(stdout):
+    """Split a `-z` path stream, dropping only the segments that are empty.
+
+    The trailing NUL gives one empty final segment and that is the whole of
+    what needs discarding. Filtering on `p.strip()` instead also discards a
+    path made entirely of whitespace, which git permits and POSIX
+    filesystems hold — and every caller here feeds either the record of what
+    was committed or the list of what must be dropped before `git add`.
+    Losing a path in the first is an absence the tool invented; losing it in
+    the second re-opens #324 for that path.
+    """
+    return [p for p in stdout.split(chr(0)) if p != ""]
 
 
 # How many paths a *single* listing prints before it starts counting instead.
@@ -619,8 +633,8 @@ def _nothing_staged_lines(named=0):
         ]
     if not modified and not untracked:
         return [
-            "ERROR: nothing staged — the working tree is clean, so there is "
-            "nothing to commit.",
+            ("ERROR: nothing staged — the working tree is clean, so there is "
+             + "nothing to commit."),
         ]
     if named:
         lines = [
@@ -630,8 +644,8 @@ def _nothing_staged_lines(named=0):
         ]
     else:
         lines = [
-            "ERROR: no PATHS were given — git-commit never stages for you, "
-            "so nothing staged.",
+            ("ERROR: no PATHS were given — git-commit never stages for you, "
+             + "so nothing staged."),
             "  Name what to commit. These are dirty right now:",
         ]
     if modified:
@@ -733,7 +747,7 @@ def main() -> int:
         # where the ambiguity is live and the deletion is about to be
         # committed under a sentinel reading of its own name (#324's shape).
         gone = _git(["diff", "--cached", "--diff-filter=D", "--name-only", "-z"])
-        gone_set = {p for p in gone.stdout.split(chr(0)) if p.strip()}
+        gone_set = set(_z_paths(gone.stdout))
         if _known_to_git(_ALL_TOKEN, gone_set):
             mod, untr, unk = _worktree_changes()
             for line in _all_ambiguous_refusal(mod, untr, unk):
@@ -755,8 +769,15 @@ def main() -> int:
     # already staged and will be committed (issue #324). Genuinely-unknown
     # paths stay in the list, so they still error as before.
     if paths:
-        deleted = _git(["diff", "--cached", "--diff-filter=D", "--name-only"])
-        staged_deletions = {l for l in deleted.stdout.splitlines() if l.strip()}
+        # `-z` for the same reason the receipt read below uses it, and this
+        # one is load-bearing rather than cosmetic: without it core.quotepath
+        # renders `café.txt` as a quoted, octal-escaped string that never
+        # equals the path the caller typed, so the staged deletion is not
+        # dropped from the add list and `git add` aborts on a file that is
+        # gone from disk — #324, alive for every non-ASCII path.
+        deleted = _git(["diff", "--cached", "--diff-filter=D", "--name-only",
+                        "-z"])
+        staged_deletions = set(_z_paths(deleted.stdout))
         # #751 — a PATH that is neither path-shaped nor known to git is far more
         # likely the tail of a ':'-split message than a file. Refuse before
         # anything is staged; do NOT fold it back into the message, because a
@@ -787,7 +808,7 @@ def main() -> int:
         for line in _nothing_staged_lines(named):
             print(line)
         return 1
-    staged_files = [l for l in staged.stdout.split(chr(0)) if l.strip()]
+    staged_files = _z_paths(staged.stdout)
 
     # Commit
     if no_edit:
