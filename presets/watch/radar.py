@@ -415,9 +415,17 @@ def delivery_banner() -> list[str]:
     elif unsure:
         head = (f"radar: DELIVERY — {len(unsure)} of {total} watcher state file(s) "
                 f"cannot say whether their last emit reached anyone.")
-    elif took:
+    elif len(took) == total:
         head = (f"radar: delivery — all {total} watcher state file(s) had their "
                 f"last emit accepted by a listener.")
+    elif took:
+        # Nothing lost and nothing unsettled, but not everything spoke either.
+        # `all N accepted` over a fleet where N-1 had never emitted is the
+        # absence read as a clean result — the defect #1183 was filed about,
+        # one level up, delivered by the fix for it. Both numbers, always.
+        head = (f"radar: delivery — {len(took)} of {total} watcher state file(s) "
+                f"had their last emit accepted by a listener; the other "
+                f"{total - len(took)} have not emitted yet.")
     else:
         head = (f"radar: delivery — no watcher has recorded an emit yet across "
                 f"{total} state file(s), so nothing here says whether the socket "

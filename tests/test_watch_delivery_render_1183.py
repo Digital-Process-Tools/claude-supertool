@@ -248,3 +248,33 @@ def test_radar_state_still_stops_no_process(fleet, monkeypatch, capsys) -> None:
     monkeypatch.setattr(dispatcher, "_stop_pid", _explode)
     assert radar.state_main("") == 0
     assert "nobody listening" in capsys.readouterr().out
+
+
+def test_radar_does_not_round_a_partly_silent_fleet_up_to_all_accepted(
+        fleet, monkeypatch, capsys) -> None:
+    """The aggregate has the same failure mode as the row it summarises.
+
+    With nothing lost and nothing unsettled, a single accepted emit used to
+    carry the whole fleet: `all 3 watcher state file(s) had their last emit
+    accepted`, said over two watchers that had never emitted at all. That is
+    the absence read as a clean result — the defect #1183 was filed about,
+    reintroduced one level up, in the fix for it.
+    """
+    _tiers(monkeypatch)
+    _watcher(fleet, "gitlab-mr", "spoke", ACCEPTED)
+    _watcher(fleet, "gitlab-mr", "silent-a", None)
+    _watcher(fleet, "gitlab-mr", "silent-b", None)
+    assert radar.main(["radar"]) == 0
+    out = capsys.readouterr().out
+    assert "all 3" not in out
+    assert "1 of 3" in out
+    assert "2" in out and "not emitted" in out
+
+
+def test_radar_says_all_accepted_only_when_every_file_says_so(
+        fleet, monkeypatch, capsys) -> None:
+    _tiers(monkeypatch)
+    _watcher(fleet, "gitlab-mr", "a", ACCEPTED)
+    _watcher(fleet, "gitlab-mr", "b", ACCEPTED)
+    assert radar.main(["radar"]) == 0
+    assert "all 2" in capsys.readouterr().out
