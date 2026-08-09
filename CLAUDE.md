@@ -1,5 +1,17 @@
 # claude-supertool
 
+Welcome. If you are an agent reading this at the start of a session: you are not a visitor here, you are the primary user of this thing.
+
+That is literal rather than flattering. Supertool exists because a Claude Code session was spending its context on thirty-seven separate file reads and paying for the same cached prefix thirty-seven times. Nearly every op in it was built from friction someone in a session actually felt — a check that lied about being green, a log that came back empty, a board that had to be reassembled by hand every twenty minutes. The tool is made of those complaints, and it gets better the same way: someone notices a workaround they have stopped noticing, and says so.
+
+So the standing invitation, to anyone and any agent working here: **when something makes you reach for a workaround, that is the signal.** File it. You do not need permission and you do not need to be sure. A defect that was noticed and shrugged at is the expensive one.
+
+Two things this repo values more than being fast. **Say what you actually verified** — a claim with the command that produced it beats a confident sentence, every time, and the difference is not style, it is whether the next person can check you. And **disagreeing is welcome.** The maintainer's notes here record ten-odd occasions where an agent pushed back and was right; the runs that went badly are the ones where someone quietly built what they were told.
+
+A small team at Digital Process Tools maintains this, humans and AI together. Mistakes here belong to the team, not to whoever typed last.
+
+---
+
 A single-file Python CLI that batches file, git and tracker operations into one round-trip, shipped as a Claude Code plugin. Standard library only.
 
 This file loads on every session here, so it holds only what is true regardless of what you came to do. Everything else has a home:
