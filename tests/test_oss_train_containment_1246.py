@@ -229,7 +229,8 @@ def test_every_non_name_shape_is_refused(
 # ---------------------------------------------------------------------------
 
 def test_a_plain_name_in_the_root_is_still_accepted(
-        outside_world, monkeypatch: pytest.MonkeyPatch) -> None:
+        outside_world, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str]) -> None:
     """Both a number and a lane name. `discover()` lists only numeric
     directories, but that is a rule about what `all` SWEEPS, not about what a
     caller may name: `st-wt/scope` and `st-wt/jit` are real worktrees holding
@@ -240,6 +241,18 @@ def test_a_plain_name_in_the_root_is_still_accepted(
 
     assert oss_train.target_error("999") is None
     assert oss_train.target_error("scope") is None
+    # And the guard is not vacuously permissive: the same call refuses the
+    # thing this whole file exists for. Without this line the test passes
+    # against `target_error = lambda num: None`, which is the shape of an
+    # accept-only test that reports coverage it does not have.
+    assert oss_train.target_error(str(outside_world["seed"])) is not None
+    # Through main(), so the CALL SITE is exercised too. Both are empty git
+    # directories, so both reach FAILED — the point is exit 1, not exit 2:
+    # a name that is merely wrong must not render as a containment refusal.
+    assert _run(monkeypatch, "999,scope") == 1
+    out = capsys.readouterr().out
+    assert "# oss_train (2 branch(es))" in out, out
+    assert "refusing" not in out, out
 
 
 def test_a_name_that_does_not_exist_is_still_FAILED_not_a_refusal(
@@ -264,3 +277,45 @@ def test_the_all_path_goes_through_the_same_check(
     for name in ("101", "202"):
         (outside_world["wt_root"] / name).mkdir()
     assert [oss_train.target_error(n) for n in oss_train.discover()] == [None, None]
+
+
+@requires_symlink
+def test_all_is_not_trusted_either_when_a_discovered_name_is_a_symlink(
+        outside_world, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str]) -> None:
+    """`discover()` filters on `isdigit()`, and a symlink named `101` is a
+    digit. Its contract is about the NAME, and nothing about it constrains
+    where the entry points — so `all` reaches outside the root too, and the
+    check has to be on the resolved path rather than on the list's provenance.
+    """
+    seed, origin = outside_world["seed"], outside_world["origin"]
+    (outside_world["wt_root"] / "101").symlink_to(seed, target_is_directory=True)
+    head = _git("rev-parse", "HEAD", cwd=seed).strip()
+    remote = _git("ls-remote", origin.as_posix(), "refs/heads/topic", cwd=seed)
+
+    rc = _run(monkeypatch, "all")
+
+    out = capsys.readouterr().out
+    _assert_untouched(seed, origin, head, remote)
+    assert rc == 2, out
+    assert "101" in out, out
+    assert "# oss_train" not in out, out
+
+
+def test_the_call_site_refuses_the_whole_list_not_just_the_bad_target(
+        outside_world, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str]) -> None:
+    """A good name beside a bad one. The good one must not be trained: a train
+    that rebased three targets and then declined the fourth is a warning it
+    proceeded past, not a refusal."""
+    (outside_world["wt_root"] / "999").mkdir()
+    seed, origin = outside_world["seed"], outside_world["origin"]
+    head = _git("rev-parse", "HEAD", cwd=seed).strip()
+    remote = _git("ls-remote", origin.as_posix(), "refs/heads/topic", cwd=seed)
+
+    rc = _run(monkeypatch, "999," + str(seed))
+
+    out = capsys.readouterr().out
+    _assert_untouched(seed, origin, head, remote)
+    assert rc == 2, out
+    assert "# oss_train" not in out, out

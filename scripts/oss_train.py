@@ -115,6 +115,21 @@ def discover():
 _SEPARATORS = ("/", "\\")
 
 
+def resolve_target(num):
+    """``(root, path)`` for a target, both fully resolved.
+
+    ONE implementation, used by `target_error()` to DECIDE and by `main()` to
+    ACT, so the path that was checked is the path that is used. Deriving it a
+    second time at the point of use would make the containment check a
+    check-then-use: between the two derivations a symlink under the root can be
+    swapped, and the second derivation would never know the first had looked.
+    #882 in this repo is the same shape one level up — a containment rule
+    written twice, where the copy covered a case the original missed.
+    """
+    root = os.path.realpath(wt_root())
+    return root, os.path.realpath(os.path.join(root, num))
+
+
 def target_error(num):
     """Why `num` is not a usable worktree name, or None when it is one.
 
@@ -165,8 +180,7 @@ def target_error(num):
     if any(sep in num for sep in _SEPARATORS):
         return ("contains a path separator — targets are worktree NAMES under "
                 + wt_root() + ", not paths")
-    root = os.path.realpath(wt_root())
-    resolved = os.path.realpath(os.path.join(root, num))
+    root, resolved = resolve_target(num)
     if resolved == root:
         return "resolves to the worktree root itself, not to a worktree in it"
     if not resolved.startswith(root + os.sep):
@@ -236,8 +250,16 @@ def classify_push(push_output):
     return "PUSHED", verdict
 
 
-def train(num, dry):
-    wt = os.path.join(wt_root(), num)
+def train(num, dry, wt=None):
+    """`wt` is the path `main()` already resolved and contained (#1246).
+
+    It is threaded in rather than re-derived so that the directory git operates
+    on is byte-for-byte the one `target_error()` approved. The `None` default
+    exists for direct callers in the tests, which reach the same
+    `resolve_target()` and are not the route a caller's argument travels.
+    """
+    if wt is None:
+        wt = resolve_target(num)[1]
     if not os.path.isdir(wt):
         return "FAILED", f"no worktree at {wt}"
 
@@ -391,8 +413,9 @@ def main():
         # `fix/{num}` was invisible whenever the convention held and
         # actionable-but-wrong when it did not: st-wt/749 renders as fix/749,
         # and no such branch exists anywhere.
-        label = branch_of(os.path.join(wt_root(), num)) or f"st-wt/{num} (no branch)"
-        state, detail = train(num, dry)
+        wt = resolve_target(num)[1]
+        label = branch_of(wt) or f"st-wt/{num} (no branch)"
+        state, detail = train(num, dry, wt)
         tally[state] = tally.get(state, 0) + 1
         mark = {"PUSHED": "✓", "CURRENT": "·", "DRY": "~",
                 "REFUSED": "⊘", "BUSY": "⏸"}.get(state, "✗")
