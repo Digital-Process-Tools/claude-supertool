@@ -2,3 +2,4 @@ Bash	~gh (issue|pr) list	gh-list-limit.md	remind	--limit
 Edit|Write|Read|Grep|Glob|MultiEdit|NotebookEdit	~.	harness-tools-blocked.md	block		
 Bash	~supertool[^|]*'(gh-prs|gl-mrs|gh-issues|gl-issues|radar|watches)	op-defaults-that-narrow.md	remind		
 Bash	~supertool[^|]*\|[^|]*(head|tail|sed|cut|awk)	supertool-no-cut.md	block		
+Bash	~git\s+(branch|for-each-ref)[^|]*--merged	merged-is-not-ancestry.md	block	--merged	
