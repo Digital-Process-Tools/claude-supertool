@@ -1986,7 +1986,11 @@ def _extract_env_prefix(cmd: str) -> Tuple[Dict[str, str], str]:
     env: Dict[str, str] = {}
     tokens = shlex.split(cmd, posix=True)
     idx = 0
-    _kv = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
+    # `\Z` with DOTALL, not `$`: `$` matches before a final newline, so
+    # `FOO='bar\n' cmd` set FOO to "bar" and dropped the newline the caller
+    # quoted on purpose — the assignment still matched, so nothing said so
+    # (#1188).
+    _kv = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)\Z", re.DOTALL)
     while idx < len(tokens):
         m = _kv.match(tokens[idx])
         if not m:
@@ -5485,11 +5489,11 @@ def _glob_ignore_root(pattern: str) -> str:
 # Dispatch
 # ---------------------------------------------------------------------------
 
-_DRIVE_LETTER = re.compile(r"^@?[A-Za-z]$")
+_DRIVE_LETTER = re.compile(r"^@?[A-Za-z]\Z")  # \Z, not $ — #1188
 _URL_SCHEMES = ("http", "https", "ftp", "ftps", "ssh", "git", "file", "ws", "wss")
 # Numeric port, optionally followed by '/path' or '?query' or end — used to
 # absorb 'https://host' + ':8080/path' fragments that arose from `:`-splitting.
-_URL_PORT = re.compile(r"^\d+(?:[/?#].*)?$")
+_URL_PORT = re.compile(r"^\d+(?:[/?#].*)?\Z")  # \Z, not $ — #1188
 
 
 # NUL-bracketed marker for the two-pass `\\` protection in _decode_escapes.
@@ -9194,10 +9198,10 @@ def _op_vim_impl(path: str, script: str) -> str:
         "Vggd": ":1,.d",
         "Vggy": ":1,.y",
     }
-    _V_MOTION_LINE = re.compile(r"^V(\d*)([jk])(cc|dd|yy|[dyc])(.*)$", re.DOTALL)
+    _V_MOTION_LINE = re.compile(r"^V(\d*)([jk])(cc|dd|yy|[dyc])(.*)$", re.DOTALL)  # anchored-ok: DOTALL, so the greedy tail already swallows a trailing newline
     # V<N>G<op> — visual-line + goto line N + op = `:.,<N><op>`.
     # E.g. `V145Gd` (line cursor through 145, delete) → `:.,145d`.
-    _V_GOTO_LINE_OP = re.compile(r"^V(\d+)G([dyc])(.*)$", re.DOTALL)
+    _V_GOTO_LINE_OP = re.compile(r"^V(\d+)G([dyc])(.*)$", re.DOTALL)  # anchored-ok: DOTALL, so the greedy tail already swallows a trailing newline
     # V<motion>:<ex> — visual-line + ex command applied to the line range.
     # VG:<ex>   → :%<ex>    (current to EOF; with prior `gg` this is whole file)
     # Vgg:<ex>  → :1,.<ex>  (start to current)
@@ -9247,7 +9251,7 @@ def _op_vim_impl(path: str, script: str) -> str:
     # Char-find motions: f/F/t/T + one char.
     # Simple motions: single char from the set below.
     _V_CHAR_SIMPLE = set("wbeWBEjkhl$0^G{}()%;,")
-    _V_CHAR_RE = re.compile(
+    _V_CHAR_RE = re.compile(  # anchored-ok: DOTALL, so the greedy tail already swallows a trailing newline
         r"^v(\d*)"
         r"(gg|[ia][wWsp\"'`()\[\]{}<>bBt]|[fFtT].|[wbeWBEjkhl$0^G{}();,%])"
         r"([dyc])"
@@ -9268,7 +9272,7 @@ def _op_vim_impl(path: str, script: str) -> str:
     # cc-typo: Kevin types `cciw<TEXT>` thinking it means `ciw<TEXT>` (change
     # inner word). Real vim parses as cc + greedy text "iwTEXT" (line replace
     # with literal "iwTEXT"). Detect `cc<ia><kind>` prefix and drop one c.
-    _CC_TYPO = re.compile(r"^cc([ia])([wWsp\"'`()\[\]{}<>bBt])(.*)$", re.DOTALL)
+    _CC_TYPO = re.compile(r"^cc([ia])([wWsp\"'`()\[\]{}<>bBt])(.*)$", re.DOTALL)  # anchored-ok: DOTALL, so the greedy tail already swallows a trailing newline
 
     def _rewrite_cc_typo(act: str) -> str:
         m = _CC_TYPO.match(act)
@@ -15911,7 +15915,7 @@ def _op_resolve_inner(symbol: str, from_file: Optional[str] = None) -> str:
     # ── Python relative import (starts with one or more dots, no /) ──────────
     # Matches: ".", ".utils", "..models", ".sub.module" etc.
     # Does NOT match "./" or "../" (those are handled below as relative paths).
-    if re.match(r"^\.+\w*(?:\.\w+)*$", symbol) or symbol in (".", ".."):
+    if re.match(r"^\.+\w*(?:\.\w+)*\Z", symbol) or symbol in (".", ".."):  # \Z — #1188
         if not from_file:
             return f"{symbol} → external\n"
         base_dir = os.path.dirname(os.path.abspath(from_file))
@@ -15981,7 +15985,7 @@ def _op_resolve_inner(symbol: str, from_file: Optional[str] = None) -> str:
         return f"{symbol} → not found\n"
 
     # ── Bare word (no separators at all) ─────────────────────────────────────
-    if re.match(r"^[A-Za-z0-9_-]+$", symbol):
+    if re.match(r"^[A-Za-z0-9_-]+\Z", symbol):  # \Z, not $ — #1188
         for pat in (
             f"**/{symbol}.ts", f"**/{symbol}.tsx",
             f"**/{symbol}.js", f"**/{symbol}.jsx",

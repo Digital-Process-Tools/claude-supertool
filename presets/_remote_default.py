@@ -77,12 +77,12 @@ def parse_remote(url: str) -> tuple[str, str] | None:
     if not url:
         return None
     # scp-like: user@host:path (no scheme, single colon before the path)
-    scp = re.match(r"^[\w.+-]+@([^:/]+):(.+)$", url)
+    scp = re.match(r"^[\w.+-]+@([^:/]+):(.+)$", url)  # anchored-ok: url is .strip()ed above
     if scp:
         host, path = scp.group(1), scp.group(2)
     else:
         # scheme://[user@]host[:port]/path
-        uri = re.match(r"^[a-zA-Z][\w+.-]*://(?:[^@/]+@)?([^/:]+)(?::\d+)?/(.+)$", url)
+        uri = re.match(r"^[a-zA-Z][\w+.-]*://(?:[^@/]+@)?([^/:]+)(?::\d+)?/(.+)$", url)  # anchored-ok: url is .strip()ed above
         if not uri:
             return None
         host, path = uri.group(1), uri.group(2)

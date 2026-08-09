@@ -56,7 +56,7 @@ ACCEPT_POLL_SEC = 1.0
 
 # SERVER_NAME validation — strict alphanumeric + - _ to keep filesystem paths
 # predictable and prevent `..` / slash tricks in the socket-path hash input.
-_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}\Z")  # \Z, not $ — #1188
 
 
 def _validate_name(name: str) -> None:

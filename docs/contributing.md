@@ -472,6 +472,24 @@ The always-run failure summary (`.github/scripts/junit_summary.py`) reconfigures
 
 ---
 
+## Anchored regexes
+
+**A pattern that asks "is this whole value acceptable?" ends with `\Z`, never `$`** ([#1188](https://github.com/Digital-Process-Tools/claude-supertool/issues/1188)). Python's `$` matches at the end of the string *and* immediately before a final newline, so `re.compile(r"^[0-9]+$").match("5\n")` is a match. Every guard written that way says yes to a value nobody meant to allow, and says it silently — a trailing newline is invisible in every render of the value that follows. It reached a printed shell command once: `_refname.ordinary()` called a ref ending in a newline ordinary, and `shell_ref()` therefore returned it unquoted.
+
+`tests/test_anchored_guards_1188.py` walks `_supertool.py`, `presets/` and `.github/scripts/` with `ast` and fails the suite on a new one, naming the file, the line and the pattern. Those are the trees that read a value from a caller, a forge or a filename; `validators/` and `tests/` are out, because those parse the stdout of an external tool line by line and `$` meaning "end of this line" is the intent there rather than the bug.
+
+Two things it skips by construction: a pattern compiled with `re.MULTILINE`, where `$` means the end of a line and `\Z` would be wrong, and a pattern that ends in `$` without starting at `^`, which is a suffix test (`\.pem$`) where matching before a trailing newline changes nothing a caller can act on.
+
+**A line-parser inside those trees says so on its own call** rather than in a table someone has to go and find:
+
+```python
+_SEQ_ITEM = re.compile(r"^(\s+)-\s*(\w+)\s*$")  # anchored-ok: matched per line of a workflow file
+```
+
+The reason after the colon is required — a second test fails a bare `# anchored-ok`, because a waiver with no reason reads as a decision and is not one. Put it on the line the `re.` call *starts* on; that is the span the scan reads, so a multi-line `re.compile(` takes it on the opening line.
+
+The scan reads the literal first argument of a `re.*` call. A pattern assembled from a variable, or held in a dict and compiled elsewhere, is not seen — it narrows the class, it does not close it.
+
 ## What CI runs, and what it does not
 
 The pytest matrix is {ubuntu, macos, windows} × py3.9–3.12. For a long time that was the whole workflow, which meant `notifiers/claude-channel/channel.ts` — TypeScript, started in every radar session — shipped on a 12/12 green that had never executed a line of it ([#557](https://github.com/Digital-Process-Tools/claude-supertool/issues/557)). Its tests existed and were real, but they `skipif` on `shutil.which("bun")`, so they were collected, skipped, and counted as neither a pass nor a failure.

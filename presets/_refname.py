@@ -37,7 +37,11 @@ import shlex
 #: What a refname looks like when nobody is trying. Git permits a great deal
 #: more — `;`, backtick, `$`, `&`, quotes, parentheses, spaces — and the source
 #: branch of a merge request is named by whoever opened it (#694).
-ORDINARY_REF = re.compile(r"^[A-Za-z0-9._/-]+$")
+#: Anchored with `\Z` rather than `$`, which also matches before a final
+#: newline: `ordinary("main\n")` was True, so `shell_ref()` returned the name
+#: **unquoted** and the printed command carried a live line break into the
+#: shell of whoever pasted it (#1188).
+ORDINARY_REF = re.compile(r"^[A-Za-z0-9._/-]+\Z")
 
 
 def ordinary(ref: str) -> bool:

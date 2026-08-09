@@ -720,7 +720,10 @@ def absence(pr_state: object, age_secs: int | None,
     )
 
 
-_FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
+#: `\Z` rather than `$`. The `.strip()` below already removed a trailing
+#: newline, so this site was never wrong — it was incidentally saved, which is
+#: not the same thing and is not what the next reader will copy (#1188).
+_FULL_SHA = re.compile(r"^[0-9a-f]{40}\Z")
 
 
 def is_full_sha(value: object) -> bool:

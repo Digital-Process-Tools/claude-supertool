@@ -73,15 +73,15 @@ _WORKFLOW_SUFFIXES = (".yml", ".yaml")
 # The top-level `on:` key, at column 0 and nowhere else. Quoted spellings are
 # real: YAML 1.1 reads a bare `on` as the boolean true, so repos that lint
 # their workflows against a 1.1 parser write `"on":`.
-_ON_KEY = re.compile(r"""^(?:on|"on"|'on')\s*:\s*(?P<rest>.*?)\s*$""")
+_ON_KEY = re.compile(r"""^(?:on|"on"|'on')\s*:\s*(?P<rest>.*?)\s*$""")  # anchored-ok: matched per line of a workflow file
 
 # `name:` at column 0. Absent, GitHub displays the file path as the workflow
 # name, and the run list carries that path in `workflowName` — so the fallback
 # is not a placeholder, it is what the other side of the comparison will say.
-_NAME_KEY = re.compile(r"""^name\s*:\s*(?P<rest>.*?)\s*$""")
+_NAME_KEY = re.compile(r"""^name\s*:\s*(?P<rest>.*?)\s*$""")  # anchored-ok: matched per line of a workflow file
 
 _MAP_KEY = re.compile(r"^(?P<indent>\s+)(?P<key>[A-Za-z_][A-Za-z0-9_-]*)\s*:")
-_SEQ_ITEM = re.compile(r"^(?P<indent>\s+)-\s*(?P<key>[A-Za-z_][A-Za-z0-9_-]*)\s*$")
+_SEQ_ITEM = re.compile(r"^(?P<indent>\s+)-\s*(?P<key>[A-Za-z_][A-Za-z0-9_-]*)\s*$")  # anchored-ok: matched per line of a workflow file
 
 # Triggers that fire on a push to a branch. Used only to say which absences are
 # expected and which are not — never to conclude one. `workflow_run` and

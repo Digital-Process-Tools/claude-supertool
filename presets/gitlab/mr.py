@@ -396,7 +396,7 @@ def _get_conflicting_files(source: str, target: str) -> list[str]:
 _MERGE_TREE_HEADER_RE = re.compile(
     r"^(changed in both|added in (?:local|remote)|removed in (?:local|remote))\b"
 )
-_MERGE_TREE_PATH_RE = re.compile(
+_MERGE_TREE_PATH_RE = re.compile(  # anchored-ok: matched per line of merge-tree output
     r"^  (?:base|our|their)\s+\d+\s+[0-9a-f]+\s+(.+)$"
 )
 HUNK_LINES_PER_FILE = 40

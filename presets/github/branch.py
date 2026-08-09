@@ -138,7 +138,7 @@ def _run_id(run: object) -> int:
 # A ref that could abbreviate an object name. Seven is git's own floor for an
 # abbreviation and the length every tool prints; below it `gh api commits/<x>`
 # refuses anyway. Upper bound is a full name.
-_HEX_REF = re.compile(r"^[0-9a-fA-F]{7,40}$")
+_HEX_REF = re.compile(r"^[0-9a-fA-F]{7,40}\Z")  # \Z, not $ — #1188
 
 MODE_BRANCH = "branch"
 MODE_COMMIT = "commit"

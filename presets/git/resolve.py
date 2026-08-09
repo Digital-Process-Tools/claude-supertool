@@ -475,7 +475,7 @@ _SYNTAX_FILTER = "@syntax"
 #: A validator that matched the file and then declined to run — the row
 #: `_validator_render_row` emits for `{"skipped": reason}`. Its own vocabulary
 #: for the third state, arriving inside a batch that otherwise succeeded.
-_SKIPPED_ROW = re.compile(r"^([\w-]+)\s*:\s*skipped\b\s*[—-]*\s*(.*)$")
+_SKIPPED_ROW = re.compile(r"^([\w-]+)\s*:\s*skipped\b\s*[—-]*\s*(.*)$")  # anchored-ok: matched per line of a validator block
 _RESULT_ROW = re.compile(r"^([\w-]+)\s*:\s*(ok|(\d+) err)\b")
 
 #: supertool's own per-call footers, which follow the last file's block and
