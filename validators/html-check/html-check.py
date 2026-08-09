@@ -43,7 +43,7 @@ import pathlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from source_context import source_context
-from refusal import tool_fault, skipped
+from refusal import absent, tool_fault, skipped
 
 TIMEOUT_S = 30
 
@@ -372,9 +372,9 @@ def main() -> None:
     start = time.time()
 
     if not shutil.which("node"):
-        emit(skipped("html-check", file,
-                      "node not on PATH — inline <script> blocks were NOT checked",
-                      int((time.time() - start) * 1000)))
+        emit(absent("html-check", file,
+                    "node not on PATH — inline <script> blocks were NOT checked",
+                    int((time.time() - start) * 1000)))
         return
 
     try:

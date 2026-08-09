@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """terraform-check validator adapter — Terraform formatting check via `terraform fmt -check`.
 
-Requires terraform CLI. If missing, exits 0 with a stderr warning.
+Requires the terraform CLI. Absent, this reports the third state — `skipped`
+with the reason — rather than the `ok: true` it emitted until #1202, which was a
+clean verdict about a file nothing format-checked. Name this validator in
+`$SUPERTOOL_REQUIRE_VALIDATORS` to turn that absence into a loud error instead.
+
 Usage:  terraform-check.py <file>
 """
 
@@ -18,7 +22,11 @@ import pathlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from source_context import source_context
-from refusal import tool_fault
+from refusal import absent, tool_fault
+
+TOOL = "terraform-check"
+INSTALL_HINT = ("terraform not found on PATH — this file was NOT "
+                "format-checked")
 
 # `terraform fmt -check -diff` uses *distinct exit codes*, which the adapter
 # never looked at — every non-zero exit became `code: "formatting"` with the
@@ -97,18 +105,20 @@ def main() -> None:
     start = time.time()
 
     if not shutil.which("terraform"):
-        print("terraform-check: terraform not found on PATH, skipping", file=sys.stderr)
-        emit({"tool": "terraform-check", "file": file, "ok": True, "count": 0,
-              "errors": [], "duration_ms": int((time.time() - start) * 1000)})
+        emit(absent(TOOL, file, INSTALL_HINT,
+                    int((time.time() - start) * 1000)))
         return
 
     try:
         r = subprocess.run(["terraform", "fmt", "-check", "-diff", file],
                            capture_output=True, text=True, timeout=30, encoding="utf-8", errors="replace")
     except FileNotFoundError:
-        print("terraform-check: terraform not found on PATH, skipping", file=sys.stderr)
-        emit({"tool": "terraform-check", "file": file, "ok": True, "count": 0,
-              "errors": [], "duration_ms": int((time.time() - start) * 1000)})
+        # `which` said yes and exec said no — a PATH entry that vanished
+        # between the two, or a name that resolves to something unrunnable.
+        # Still an absent tool, so still the third state.
+        emit(absent(TOOL, file, "terraform on PATH but could not be executed — "
+                                "this file was NOT format-checked",
+                    int((time.time() - start) * 1000)))
         return
     except subprocess.TimeoutExpired:
         emit({"tool": "terraform-check", "file": file, "ok": False, "count": 1,

@@ -36,7 +36,7 @@ Universal JSON. Every adapter emits this shape. Validator core never parses tool
 
 An adapter reports it by emitting `"skipped": "<reason>"` and **omitting `ok`, `count` and `errors` entirely** (#515). A receipt carrying `ok: true` reads as a pass to anything keying off `ok`, which is the mistake the third state exists to end; leaving the verdict keys out makes a skip structurally impossible to misread as one. `tool`, `file` and `duration_ms` stay — they describe the attempt, not a verdict.
 
-Consumers must branch on the presence of `skipped` before reading any verdict key. Every core consumer already does, and has to: the reason string exists only on a skip. Use `validators/common/refusal.py:skipped()` rather than building the dict by hand. The core then guarantees:
+Consumers must branch on the presence of `skipped` before reading any verdict key. Every core consumer already does, and has to: the reason string exists only on a skip. Use `validators/common/refusal.py:skipped()` rather than building the dict by hand — and for the specific case of the adapter's **tool being absent**, use `absent(tool, file, reason, dur_ms)` instead, which is `skipped()` plus the `$SUPERTOOL_REQUIRE_VALIDATORS` escalation. Spelling that decision out per adapter is how five of thirty-four ended up with an escalation that worked and ten ended up answering an absent tool with `ok: true` (#1202). `tool` there is the validator name a repo writes in `.supertool.json`, not the binary. The core then guarantees:
 
 - the row renders as `skipped (<reason>)`, never `0 → 1 (+1) ✗`;
 - the result is excluded from the before/after delta;

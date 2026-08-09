@@ -115,11 +115,17 @@ def test_not_in_git_repo(tmp_path: Path) -> None:
 
 
 def test_git_absent(tmp_path: Path) -> None:
-    """When git binary is missing → ok=true, graceful skip."""
+    """When the git binary is missing → the third state, not a zeroed metric.
+
+    This asserted `ok is True` alongside a `metrics` block reading
+    `state: "clean"` — a measurement of a working tree nothing had looked at,
+    and indistinguishable from a file that genuinely had no changes (#1202).
+    """
     f = tmp_path / "x.txt"
     f.write_text("x\n")
     env = {**os.environ, "GIT_BIN": "/nonexistent/git"}
     data = _run(str(f), env=env)
-    assert data["ok"] is True
-    assert data["count"] == 0
-    assert data["errors"] == []
+    assert "skipped" in data, data
+    assert "git not found" in data["skipped"], data
+    for key in ("ok", "count", "errors", "metrics"):
+        assert key not in data, f"a skip must not carry {key!r}: {data}"

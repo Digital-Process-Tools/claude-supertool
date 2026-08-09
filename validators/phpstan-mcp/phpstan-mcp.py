@@ -225,9 +225,13 @@ def main(argv: list[str]) -> int:
         resp = ndjson_call(sock, os.path.abspath(file_path))
     except _refusal.DaemonUnavailable as e:
         # Not installed for this working directory — every `cwd:` into a git
-        # worktree lands here. Nothing was analysed, so nothing is reported.
-        print(json.dumps(skipped(file_path, str(e),
-                                 int((time.monotonic() - t0) * 1000))))
+        # worktree lands here. Nothing was analysed, so nothing is reported —
+        # unless this validator is named in `$SUPERTOOL_REQUIRE_VALIDATORS`, in
+        # which case an absent analyser is the gate not running and says so
+        # loudly (#1202). `absent`, not `skipped`, is what makes that reachable.
+        print(json.dumps(_refusal.absent(
+            "phpstan-mcp", file_path, str(e),
+            int((time.monotonic() - t0) * 1000))))
         return 0
     except Exception as e:
         import traceback

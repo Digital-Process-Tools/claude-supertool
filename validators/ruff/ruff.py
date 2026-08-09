@@ -7,6 +7,12 @@ state — `skipped` with the reason — and never `ok` (validators/SCHEMA.md,
 the file, and saying "clean" on its behalf is the one failure mode this
 directory has filed eleven times.
 
+Where that quiet is not acceptable — CI, where "not installed" means the gate
+is not running — name this validator in `$SUPERTOOL_REQUIRE_VALIDATORS` and the
+same absence becomes a loud `adapter` error instead. That routing is
+`refusal.absent()`, and it did not reach this adapter until #1202: the switch
+was inert here, and setting it was indistinguishable from not setting it.
+
 Usage:  ruff.py <file>
 
 **The ruleset is not this adapter's business.** `ruff check` resolves its
@@ -36,9 +42,14 @@ import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from source_context import source_context
-from refusal import skipped, tool_fault
+from refusal import absent, tool_fault
 
 TOOL = "ruff"
+
+# Named once so the skip reason and the `$SUPERTOOL_REQUIRE_VALIDATORS`
+# escalation quote the same sentence — a reader who set the variable and a
+# reader who did not are looking at the same missing tool.
+INSTALL_HINT = "ruff not found on PATH — pip install ruff"
 
 # Budget for the one spawn below. Named so the decline can quote it: a reader
 # who sees "timeout" cannot tell a hung linter from a busy machine, and the
@@ -118,8 +129,8 @@ def main() -> None:
     start = time.time()
 
     if not shutil.which(TOOL):
-        emit(skipped(TOOL, file, "ruff not found on PATH — pip install ruff",
-                     int((time.time() - start) * 1000)))
+        emit(absent(TOOL, file, INSTALL_HINT,
+                    int((time.time() - start) * 1000)))
         return
 
     cmd = [TOOL, "check", "--output-format", "json", "--no-cache",
@@ -131,8 +142,8 @@ def main() -> None:
         # `which` said yes and exec said no — a PATH entry that vanished
         # between the two, or a name that resolves to something unrunnable.
         # Still an absent tool, so still the third state.
-        emit(skipped(TOOL, file, "ruff on PATH but could not be executed",
-                     int((time.time() - start) * 1000)))
+        emit(absent(TOOL, file, "ruff on PATH but could not be executed",
+                    int((time.time() - start) * 1000)))
         return
     except subprocess.TimeoutExpired:
         # The binary was found and started, so this is not a decline: it is a

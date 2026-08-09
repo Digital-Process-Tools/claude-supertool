@@ -234,6 +234,8 @@ Publishing those findings *alongside* the refusal is not the escape it looks lik
 
 **Switching it on.** Copy the `html-check` block out of `.supertool.example.json` into your project's `.supertool.json` under `validators`, the same as every other row in the table above. This repo registers it in its own `.supertool.json` too — a validator that ships here and does not run here is a checker nobody is checking, and it shipped that way once already: the adapter landed with no entry in any config, so `validate:` on a page with a stray brace ran only `git-status` and printed `0 with findings`, which is the silence #833 exists to close arriving inside the fix for it.
 
+The same gap was open on `tomllint` until [#1203](https://github.com/Digital-Process-Tools/claude-supertool/issues/1203): offered in `.supertool.example.json`, registered nowhere here, while `pyproject.toml` — one of the five version sites a release has to bump — was edited with no validator matching it. Registering a gate on your own repo is not a courtesy to the reader; it is the only feedback loop the adapter has, and #1157 (an adapter reporting `ok: true` for a file it never parsed) was found in somebody else's project precisely because this one was not running it.
+
 Two settings in that block are decisions rather than defaults:
 
 - **`rollback_on_fail: true`**, matching `node-check` for `*.js` — the same tool answering the same question, so the same consequence. Rollback is regression-gated: it fires when an edit *raises* the finding count, so a page whose inline JS is already broken stays editable and only a newly introduced syntax error reverts. A `skipped` result (no `node`) never rolls back, whatever this says.
@@ -245,9 +247,11 @@ Two settings in that block are decisions rather than defaults:
 
 `shellcheck`, `eslint` and `gitleaks` are external binaries most machines do
 not have, which makes the same question three times: what does a validator
-report when its tool is absent?
+report when its tool is absent? It turned out to be the question for nearly
+every adapter in the directory, answered three different ways until #1202 — the
+paragraphs under the `SUPERTOOL_REQUIRE_VALIDATORS` block below have the count.
 
-`tomllint` is the fourth, and it is the one that shows the question is not
+`tomllint` is a fourth case, and it is the one that shows the question is not
 about binaries (#1157). Its "tool" is an import — stdlib `tomllib` on 3.11+,
 the third-party `tomli` below that — and on a 3.10 machine with no `tomli` it
 answered `ok: true, count: 0`: not a parser that failed, a parser that was
@@ -274,9 +278,36 @@ Comma- or `os.pathsep`-separated, case-insensitive, `*` for all. Named there, a
 tool that could not run becomes an `adapter` error whose message names the
 variable — so the reader is sent to the CI image rather than to the file. There
 is deliberately **no** value that turns a finding into a skip: that would be a
-mute button, and this repository declines those. `refusal.required()` is the
-one implementation, shared by every adapter that can find itself with nothing
-to say.
+mute button, and this repository declines those. `refusal.absent()` is the one
+implementation, and it is now genuinely shared by every adapter that can find
+itself with nothing to say.
+
+**That sentence was false for a year and said the opposite of the truth**
+([#1202](https://github.com/Digital-Process-Tools/claude-supertool/issues/1202)).
+`refusal.required()` was a helper each adapter had to remember to call, and five
+of the thirty-four adapters in `validators/` did. For the other adapters, naming one in this variable did nothing
+at all — the absence stayed quiet, and setting the variable was indistinguishable
+from not setting it, which is worse than having no switch. A reader deciding
+whether to rely on the escalation read the sentence above and concluded it
+covered their validator.
+
+The audit that found it turned up a second, worse spelling on the adjacent line.
+Ten adapters — `tsc-check`, `markdownlint`, `ruby-check`, `cargo-check`,
+`hadolint`, `gofmt-check`, `terraform-check`, `pyright`, `git-status`,
+`yaml-check` — answered an absent tool with `ok: true, count: 0, errors: []`,
+a clean verdict about a file nothing had opened, printed as a green row and
+subtracted from the before/after delta like a real one. `git-status` went
+furthest and published a zeroed `metrics` block reading `state: "clean"` — a
+measurement of a working tree it had not measured.
+
+Both spellings are gone, and the reason the class could exist twice is that the
+decision was written out adapter by adapter rather than made once.
+`absent(tool, file, reason, dur_ms)` is that one place: an adapter states the
+absence and its reason, and where it lands — third state or loud error — is
+decided in `validators/common/refusal.py`. `tool` there is the **validator
+name**, the key a repo writes in `.supertool.json`, never the binary:
+`tsc-check` runs `tsc` and `html-check` runs `node`, so escalating on the binary
+name would ignore the only spelling anyone can configure.
 
 The recommendation is to leave it unset locally and set it in CI for whichever
 of them that pipeline actually provides. Setting it for a tool the image does not

@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """hadolint validator adapter — Dockerfile lint via hadolint CLI.
 
-Requires hadolint on PATH. If missing, exits 0 with a stderr warning (graceful degrade).
+Requires hadolint on PATH. Absent, this reports the third state — `skipped` with
+the reason — rather than the `ok: true` it emitted until #1202, which was a clean
+verdict about a Dockerfile nothing linted. Name this validator in
+`$SUPERTOOL_REQUIRE_VALIDATORS` to turn that absence into a loud error instead.
+
 Usage:  hadolint.py <file>
 """
 
@@ -17,6 +21,11 @@ import pathlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from source_context import source_context
+from refusal import absent
+
+TOOL = "hadolint"
+INSTALL_HINT = ("hadolint not found on PATH — this Dockerfile was NOT linted "
+                "(`brew install hadolint`)")
 
 
 # Budget for the one tool spawn below. A module constant rather than a literal
@@ -42,9 +51,8 @@ def main() -> None:
     start = time.time()
 
     if not shutil.which("hadolint"):
-        print("hadolint: hadolint not found on PATH, skipping", file=sys.stderr)
-        emit({"tool": "hadolint", "file": file, "ok": True, "count": 0,
-              "errors": [], "duration_ms": int((time.time() - start) * 1000)})
+        emit(absent(TOOL, file, INSTALL_HINT,
+                    int((time.time() - start) * 1000)))
         return
 
     try:
@@ -55,9 +63,12 @@ def main() -> None:
             timeout=TIMEOUT_S, encoding="utf-8", errors="replace",
         )
     except FileNotFoundError:
-        print("hadolint: hadolint not found on PATH, skipping", file=sys.stderr)
-        emit({"tool": "hadolint", "file": file, "ok": True, "count": 0,
-              "errors": [], "duration_ms": int((time.time() - start) * 1000)})
+        # `which` said yes and exec said no — a PATH entry that vanished
+        # between the two, or a name that resolves to something unrunnable.
+        # Still an absent tool, so still the third state.
+        emit(absent(TOOL, file, "hadolint on PATH but could not be executed — "
+                                "this Dockerfile was NOT linted",
+                    int((time.time() - start) * 1000)))
         return
     except subprocess.TimeoutExpired:
         # Not a finding about the file, and not silence either. Without this
