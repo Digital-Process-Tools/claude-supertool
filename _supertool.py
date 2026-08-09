@@ -4127,10 +4127,30 @@ def _path_meta_suffix(path: str, sample: bytes = b"") -> str:
 
     if code is None:
         try:
+            # The pathspec is the bare filename, not `path`: this runs with a
+            # cwd of the file's own directory, so a path written relative with a
+            # directory component in it (`sub/s.txt`, the form the CLI hands
+            # over) was resolved a second time against that directory. git
+            # warned on stderr, exited 0 with empty stdout, and the marker
+            # silently vanished while the bulk arm answered correctly for the
+            # same file — #1186. The cwd itself stays, because it is what keeps
+            # this route and `_path_meta_repo_root` talking about the same
+            # repository when a path crosses a repo boundary.
+            #
+            # `:(literal)` because a filename is not a pattern: a clean
+            # `t[a].txt` globbed onto its modified sibling `ta.txt` and reported
+            # that file's ` m` as its own. The bulk arm looks the name up in a
+            # dict, so it was already literal — this is the same two-answers
+            # divergence, in the direction that invents a marker rather than
+            # losing one. The magic prefix and not the `--literal-pathspecs`
+            # flag: that one has to precede the subcommand, and the shims the
+            # decline tests install match on `$1` being `status` (#705). A flag
+            # that silently un-shims a fixture is a test that stops testing.
             r = subprocess.run(
-                ["git", "status", "--porcelain", "--ignored=matching", "--", path],
+                ["git", "status", "--porcelain", "--ignored=matching", "--",
+                 ":(literal)" + os.path.basename(absolute)],
                 capture_output=True, text=True, timeout=2,
-                cwd=os.path.dirname(os.path.abspath(path)) or ".", encoding="utf-8", errors="replace",
+                cwd=os.path.dirname(absolute) or ".", encoding="utf-8", errors="replace",
             )
             if r.returncode == 0:
                 code = r.stdout[:2]
