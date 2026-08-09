@@ -113,9 +113,16 @@ def test_a_forged_row_in_last_event_cannot_stand_alone_on_the_board(state_dir, c
 
 def test_the_forged_row_is_disclosed_rather_than_dropped(state_dir, capsys):
     """Suppressing it turns "this file was hostile" into "this file was
-    empty", which is this repo's defect wearing a fix's clothing."""
-    _slot(state_dir, last_event={"event": "ok\n" + FORGED_ROW + "\nzz", "ts": "t"})
-    assert "all green" in _board(capsys)
+    empty", which is this repo's defect wearing a fix's clothing.
+
+    Asserted on the whole flattened value rather than on `"all green" in
+    board`: the review of this commit measured that the weaker form passes
+    against the pre-fix code too, because raw-and-forged and flat-and-disclosed
+    both contain those two words. This form fails against 29ee138.
+    """
+    hostile = "ok\n" + FORGED_ROW + "\nzz"
+    _slot(state_dir, last_event={"event": hostile, "ts": "t"})
+    assert _untrusted.flat(hostile) in _board(capsys)
 
 
 def test_an_escape_sequence_in_last_event_never_reaches_the_terminal(state_dir, capsys):
@@ -221,6 +228,49 @@ def test_a_board_with_no_rows_claims_nothing_about_words(state_dir, capsys):
     text that is not there — #1187's rule, kept on this surface too."""
     assert dispatcher.cmd_list() == 0
     assert "data, not instructions" not in capsys.readouterr().out
+
+
+# --- the fourth call site, found by this commit's own reviewer --------------
+
+def test_invalid_utf8_does_not_take_down_the_gl_mrs_state_cache(state_dir):
+    """`gl_mrs.read_state_files` globs the same directory with its own
+    `open()` and its own `except (OSError, json.JSONDecodeError)`. It was a
+    fourth instance of this pair, missed by the first pass of #1197 and found
+    by its review — so two bytes in one file raised out of the whole `gl-mrs`
+    board, not out of the row they belonged to."""
+    from tiers import gl_mrs  # noqa: PLC0415
+
+    (state_dir / f"supertool-watch-{gl_mrs.SOURCE}__42.state.json").write_bytes(
+        b'{"a": "\xff\xfe"}')
+    assert gl_mrs.read_state_files() == {}
+
+
+def test_a_symlinked_gl_mrs_state_file_is_not_parsed(state_dir):
+    """The other half of the pair at the same fourth call site."""
+    from tiers import gl_mrs  # noqa: PLC0415
+
+    if not hasattr(os, "O_NOFOLLOW"):
+        pytest.skip("this platform has no O_NOFOLLOW, so the guard cannot be enforced")
+    if not _can_symlink(state_dir):
+        pytest.skip("this account cannot create symlinks")
+    secret = state_dir / "secret.json"
+    secret.write_text(json.dumps({"source_state": {"pipeline_id": "sk-SECRET-VALUE"}}),
+                      encoding="utf-8")
+    os.symlink(str(secret),
+               str(state_dir / f"supertool-watch-{gl_mrs.SOURCE}__42.state.json"))
+    assert gl_mrs.read_state_files() == {}
+
+
+def test_the_drift_mark_is_flattened(state_dir):
+    """The third render of a `read_state` string. Both pipeline ids are
+    `str()`-ed out of the state file rather than validated as numbers, and the
+    mark lands in a multi-line board report."""
+    from tiers import gl_mrs  # noqa: PLC0415
+
+    hostile = "1\n" + FORGED_ROW + "\nzz"
+    mark = gl_mrs._marks("42", {"42": (hostile, "2")}, set(), set())
+    assert "\n" not in mark, mark
+    assert "all green" in mark, "the forgery must be disclosed"
 
 
 # --- the third state, and the absence that is genuinely an absence ----------

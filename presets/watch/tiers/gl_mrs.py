@@ -409,7 +409,27 @@ def live_open_mrs(multi: dict[str, list[str]] | None = None) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def read_state_files() -> dict[str, dict]:
-    """{iid: full state file} for this source, from the state-file cache."""
+    """{iid: full state file} for this source, from the state-file cache.
+
+    The read goes through `transport.read_state_checked` rather than a local
+    `open()` (#1197). This was the *fourth* call site of one defect pair, after
+    `channel.read_health` (#1184/#1187), `channel._read_state_file` (#1191) and
+    `transport.read_state` itself: same world-writable directory, same
+    predictable name, no `O_NOFOLLOW`, and an `except` naming
+    `json.JSONDecodeError` but not `ValueError` — so two bytes of invalid UTF-8
+    in any one file raised `UnicodeDecodeError` out of the whole `gl-mrs`
+    board, not merely out of the row it belonged to. Calling the shared reader
+    is the point: a fifth spelling of this guard is how the fourth one got
+    missed.
+
+    **Known gap, stated rather than hidden.** An unreadable file is still
+    skipped in silence here, which is the shape #1191 fixed on the `channel`
+    listing and #1197 fixed on the `watches` board. The cost is bounded and
+    worth naming: `states` feeds `prune_terminal`, which only ever *skips* a
+    missing entry, and `drift`, so the loss is a drift mark nobody sees.
+    Surfacing it means changing this function's return shape and adding a
+    vocabulary to the board, which is a separate change on a separate surface.
+    """
     prefix = f"supertool-watch-{SOURCE}__"
     suffix = ".state.json"
     out: dict[str, dict] = {}
@@ -418,12 +438,8 @@ def read_state_files() -> dict[str, dict]:
         iid = os.path.basename(path)[len(prefix):-len(suffix)]
         if not iid:
             continue
-        try:
-            with open(path, encoding="utf-8") as f:
-                loaded = json.load(f)
-        except (OSError, json.JSONDecodeError):
-            continue
-        if isinstance(loaded, dict):
+        loaded, _refusal = transport.read_state_checked(SOURCE, iid)
+        if loaded:
             out[iid] = loaded
     return out
 
@@ -679,7 +695,12 @@ def _marks(iid: str, drifted: dict[str, tuple[str, str]],
     out = []
     if iid in drifted:
         was, now = drifted[iid]
-        out.append(f"[drift: {was}→{now}]")
+        # Flat: both ids come out of a state file in a world-writable
+        # directory and are `str()`-ed rather than validated as numbers, so
+        # this mark is the third render of `read_state` text (#1197) — the one
+        # the first pass of that issue missed, and the reason its own prose
+        # said "two".
+        out.append(f"[drift: {mrs._untrusted.flat(was)}→{mrs._untrusted.flat(now)}]")
     if stale_minutes:
         out.append(f"[{snapshot.unchanged_label(stale_minutes, stale_state)}]")
     if iid in healed:

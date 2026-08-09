@@ -1148,11 +1148,23 @@ restored by the guard meant to close #1184.
 `record_death`, `clear_deaths`, and the poll loop's three), so a flatten there
 would be written straight back to disk on the next tick — including
 `source_state`, which is a poller's private resume cursor rather than report
-text. That trades a render bug for permanent state corruption. Instead the two
-surfaces that print these strings flatten their own output: `watches`
+text. That trades a render bug for permanent state corruption. Instead the
+three surfaces that print these strings flatten their own output: `watches`
 (`SOURCE`, `ID` and `LAST_EVENT`, before the column widths are computed, with
-the usual one-line provenance note under the table) and `gl-mrs` (the feed
-poller's `last_error.message`).
+the usual one-line provenance note above the table), and `gl-mrs` twice — the
+feed poller's `last_error.message`, and the `[drift: was→now]` mark, whose two
+pipeline ids come straight out of a state file and are never validated as
+numbers.
+
+That third one is worth naming because the first pass of this issue said "two".
+`tiers.gl_mrs.read_state_files` was a **fourth** call site of the same defect
+pair — its own `open()`, its own `except (OSError, json.JSONDecodeError)` — and
+it took the whole `gl-mrs` board down on two bytes rather than the one row they
+belonged to. It now calls `transport.read_state_checked`, because a fifth
+spelling of this guard is exactly how the fourth one was missed. It still skips
+an unreadable file in silence, which is a real remaining gap and is stated in
+its docstring: the cost is a `drift` mark nobody sees, and closing it means
+changing that function's return shape and the board's vocabulary.
 
 `SOURCE` and `ID` are in that list because they are parsed out of a *filename*,
 and a POSIX filename carries any byte but `/` and NUL. Unflattened, a
