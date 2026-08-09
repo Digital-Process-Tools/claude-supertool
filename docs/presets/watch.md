@@ -1121,7 +1121,7 @@ ack to read, at either end. So the answer has three states:
 
 | State | Exit | What is actually known |
 |---|---|---|
-| `NOT DELIVERING` | 1 | A definite negative. No socket, or a socket that refuses: every event a poller emits right now is lost at the source. The report also names each watcher whose own `last_emit` already found nobody home, with the timestamp of that emit |
+| `NOT DELIVERING` | 1 | A definite negative. No socket, or a socket that refuses: every event a poller emits right now is lost at the source. The report also names each watcher whose own `last_emit` already found nobody home, with the timestamp of that emit — and, on its own line, each state file it could not read |
 | `FORWARDING` | 0 | A consumer is bound and its published counters are fresh: N lines read, N forwarded, N dropped, last forwarded at T |
 | `CANNOT DETERMINE` | 3 | Bound, but publishing no counters, or counters written by a pid that is gone, or counters that stopped refreshing, or counters with no readable `forwarded` number, or a health file that is a symlink and was not followed. This is the state the old tooling reported as green |
 
@@ -1191,6 +1191,51 @@ points at opened and parsed. The refusal is its own state, distinct from
 not claude-channel, and sending an operator there for a symlink is the wrong
 next step. On Windows there is no `O_NOFOLLOW` and the open carries no guard;
 the tests skip there rather than passing vacuously.
+
+**The watcher list on `NOT DELIVERING` gets the same two guards, and a third state**
+([#1191](https://github.com/Digital-Process-Tools/claude-supertool/issues/1191)).
+That list is built by globbing `/tmp/supertool-watch-*.state.json`, thirty
+lines from the health read and until this issue with neither guard on it. The
+name is worse than the health file's — it is not derived from a socket path, so
+the glob accepts any file a co-tenant creates, and the `source` and watcher id
+are parsed out of the *filename*, which on POSIX carries any byte but `/` and
+NUL. The open is now `O_NOFOLLOW`, and the `ts`, the source and the id are
+flattened with the same one-line provenance note above them.
+
+The third state is the listing's own. Every unreadable state file used to be
+skipped in silence, so a listing whose whole point is completeness dropped
+exactly the entries somebody had tampered with. Each now renders a line saying
+why — a refused symlink and an unparseable file are named apart, because they
+send an operator to different places — and `none recorded an emit into this
+socket` is never printed when files were present and unread. Declining the
+whole listing on one bad file was the alternative and is the worse trade: a
+single `ln -s` in `/tmp` would then erase every other watcher from the report.
+
+**An unread row is not claimed for this socket.** The readable rows are
+filtered by the `sock_path` each watcher publishes, but that field is *inside*
+the file, so a file that could not be read cannot be attributed to this socket
+or to another one — and `STATE_DIR` is shared across sessions even when the
+socket paths are not. Dropping the row would guess it was somebody else's;
+listing it silently would guess it was ours. The line says both are unknown,
+which is the same three-state rule the verdict above it follows.
+
+There is no existence pre-check here and deliberately so: the name came from
+`os.listdir`, and `O_NOFOLLOW` answers a dangling symlink with `ELOOP`, so an
+`exists` call would only reintroduce #1184's follow-the-link bug.
+
+The forgery worth naming is not an arbitrary line. A state file named with a
+newline and the text `  consumer : bound, forwarding normally` put that verdict
+into the report of the op whose entire premise is that it never claims
+delivery — a claim with no counterpart anywhere in its own code.
+
+**Invalid UTF-8 in either file is declined, not raised.** `json.load` decodes
+before it parses, so two bytes raise `UnicodeDecodeError` — a `ValueError`, and
+neither the `OSError` nor the `JSONDecodeError` both readers named. It left the
+op as a traceback where the answer is `CANNOT DETERMINE` for the health file
+and an unread row for a state file, which is a same-uid denial of service on
+the tool you reach for when the fleet looks down. Both arms catch `ValueError`,
+the base rather than the two leaves on purpose: a decode failure nobody has
+thought of yet must also decline.
 
 **What is still forgeable, and is disclosed rather than fixed.** Nothing checks
 the credentials of the process actually holding the socket, so a same-uid
