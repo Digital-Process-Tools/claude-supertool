@@ -34,6 +34,13 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         python-version: ["3.9", "3.10", "3.11", "3.12"]
+    env:
+      # The exact CPython patch `setup-python` resolves `3.9` to on the hosted
+      # runners today, and the single place it is written: the tool-cache path
+      # and the cache key below are both derived from it, and the disclosure
+      # step checks the interpreter that actually ran against it. Two literals
+      # that must agree is a bug waiting for the day one of them is edited.
+      WIN_PY39_PATCH: "3.9.13"
     steps:
       # Every third-party action here is pinned to a commit sha rather than to
       # `@v7` (#925). A major tag is repointed by its publisher on every patch
@@ -44,12 +51,93 @@ jobs:
       # Dependabot rewrites when it bumps one. Pinned by
       # `tests/test_ci_action_pinning_925.py`.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Restore the CPython ${{ env.WIN_PY39_PATCH }} tool cache (#1127)
+        # CPython 3.9 has left the `windows-latest` image, so `setup-python`
+        # reports `Version 3.9 was not found in the local cache` and downloads
+        # and installs it. Measured across the five most recent green master
+        # runs (2026-08-09), `Set up Python` on that leg: 48/46/48/52/47s,
+        # median 48s, against ~4s on its 3.10/3.11/3.12 siblings, whose
+        # interpreters are baked into the image.
+        #
+        # Restoring the hosted tool cache is the whole fix: `setup-python`
+        # finds the tree and skips the download entirely.
+        #
+        # The cached path is the VERSION directory, not `.../x64` beneath it.
+        # `@actions/tool-cache` records an installed tool by writing a sibling
+        # marker `x64.complete` next to `x64/`, and its `find()` returns a miss
+        # when that marker is absent — so caching only `x64/` restores a tree
+        # `setup-python` then ignores, and every run is a cache HIT that saves
+        # nothing. #1127's ready-to-run note proposed exactly that path.
+        #
+        # Windows-only and 3.9-only on purpose. The other three Windows legs
+        # pay ~4s, and macOS pays 20-32s for 3.9 but is never the critical path
+        # (223-258s against Windows' 327-481s across those same five runs), so
+        # caching there buys billed minutes and no wall clock.
+        #
+        # A cache written on a PR branch is visible only to that branch: the
+        # `push: [master]` run is what populates the key every other branch
+        # restores from, so the first PR after this lands may still miss. The
+        # disclosure step below says which happened rather than leaving it to
+        # be inferred from a step duration.
+        id: toolcache-39
+        if: runner.os == 'Windows' && matrix.python-version == '3.9'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ runner.tool_cache }}/Python/${{ env.WIN_PY39_PATCH }}
+          key: ${{ runner.os }}-${{ runner.arch }}-toolcache-python-${{ env.WIN_PY39_PATCH }}
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
           cache-dependency-path: pyproject.toml
+      - name: Tool cache state (#1127)
+        # Three states, never a silent one. `cache-hit: true` on its own is not
+        # evidence the cache did anything: `WIN_PY39_PATCH` is a literal, and if
+        # `setup-python` ever resolves `3.9` to a different patch, the step above
+        # would restore — and then re-save — a directory nothing reads. A
+        # permanent HIT sitting next to a permanent 48s download is this repo's
+        # most-filed defect exactly (an absence produced by the tool, read as an
+        # absence in the world), so the check is against the interpreter that
+        # actually ran and not against the cache action's own opinion of itself.
+        #
+        # `::error::` annotates the run summary without failing the step. A
+        # runner-image change is not the fault of whoever pushes next, and a red
+        # row here would mean "someone else's PR is broken" — the trade the
+        # `ruff` comment below already refuses. Loud, not blocking.
+        #
+        # NOT `always()`, and not for tidiness: GitHub runs `bash` with
+        # `set -eo pipefail`, so if the step above failed there is no `python`
+        # on PATH, the command substitution below exits non-zero, and the leg
+        # reddens a second time under a heading about a cache. A step that
+        # cannot run is not a finding — and an interpreter this cannot read is
+        # reported as `skipped`, not as a stale pin, for the same reason.
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          PY_VERSION: ${{ matrix.python-version }}
+          CACHE_HIT: ${{ steps.toolcache-39.outputs.cache-hit }}
+        run: |
+          if [ "$PY_VERSION" != "3.9" ]; then
+            echo "toolcache   : skipped     (CPython $PY_VERSION is baked into the windows-latest image; only 3.9 is missing from it)"
+            exit 0
+          fi
+          resolved=$(python -c "import sys; print('.'.join(map(str, sys.version_info[:3])))" || true)
+          if [ -z "$resolved" ]; then
+            echo "toolcache   : skipped     (could not read the interpreter version — this says nothing about the cache either way)"
+            exit 0
+          fi
+          if [ "$resolved" != "$WIN_PY39_PATCH" ]; then
+            echo "::error::toolcache stale pin - this workflow caches CPython $WIN_PY39_PATCH but setup-python resolved $resolved, so the restore can never be read. Set WIN_PY39_PATCH to $resolved in .github/workflows/tests.yml."
+            echo "toolcache   : finding     (stale pin: cached $WIN_PY39_PATCH, running $resolved — the restore is dead weight)"
+            echo "  fix       set WIN_PY39_PATCH to $resolved in .github/workflows/tests.yml"
+            exit 0
+          fi
+          if [ "$CACHE_HIT" = "true" ]; then
+            echo "toolcache   : ok          (hit — CPython $resolved restored, no download)"
+          else
+            echo "toolcache   : miss        (CPython $resolved downloaded; the tool cache is saved at job end, for the next run)"
+          fi
       - name: Install supertool + test deps (pip entry point — cross-platform, no symlink)
         # `ruff` (via the `dev` extra) is here so `tests/test_validators_ruff.py`
         # runs its ruff-present half instead of skipping into a green that
@@ -198,8 +286,13 @@ jobs:
     # #554 harness pins /tmp instead of tmp_path.
     #
     # Runs in parallel with the twelve pytest legs and finishes well inside
-    # them (the critical path is windows-latest/3.9 at ~193s), so the board's
-    # wall-clock does not move.
+    # them — 43-52s against a 327-481s critical path across the five most
+    # recent green master runs (2026-08-09) — so the board's wall-clock does
+    # not move. The figure that stood here, `windows-latest/3.9 at ~193s`, was
+    # stale by a factor of two and named a leg that leads the board in only
+    # four runs of those five; windows/3.11 led the fifth at 481s. The claim
+    # this comment makes survives either number, which is why it is written as
+    # a range rather than as the one leg that happened to be slowest.
     name: notifiers (bun + TypeScript)
     runs-on: ${{ matrix.os }}
     # #722: this is the job that hung — 26 minutes and still running on PR #715,
