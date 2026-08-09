@@ -42,6 +42,25 @@ This file loads on every session here, so it holds only what is true regardless 
 
 **CI runs pytest with `--tb=no`, so no traceback ever reaches the logs.** That is deliberate, not truncation. The `junit_summary` step prints the failing assertion and its context — read that. Before blaming a reader for what is absent, check whether the writer ever wrote it.
 
+## The notes are yours to fix, not just to follow
+
+`CLAUDE.md`, the maintainer skill and the `.claude/jit-context/` files exist to help you. They are also written by people with no memory, about a repo that moves faster than they do, so **some of what they tell you is false right now.**
+
+**When you find a wrong line in any of them, correcting it is part of the task you are already doing.** Not a follow-up, not an issue to file instead, not somebody else's. You are the person who has the evidence in front of them, and that is the only moment the fix is cheap.
+
+This is not hypothetical. On 2026-08-09, in one session:
+
+- The maintainer skill said no op rendered a commit's run list and nothing tallied label distribution. Both had shipped — `gh-branch:COMMIT_SHA` and `gh-labels:tally=PREFIX` — and the second was the cohort burn-down the same file orders the maintainer to report **every tick**.
+- A JIT file listed four open defects. All four were closed.
+- Another JIT file said `gh-prs` defaults to `author=@me` and told the reader to pass `anyauthor` to widen it. The default had been changed to the whole repo; the advice was **inverted**, and it fired on every matching call.
+
+**A wrong claim in your own notes does not merely risk being wrong — it produces the behaviour it describes.** The worst instance on record: this repo's notes stated in bold that no op could reach a sibling repo, days after that was fixed, and a whole queue got read through raw `gh` in obedience to it. A stale line about a *missing* capability is the most dangerous shape, because it suppresses the call that would disprove it.
+
+Two habits that catch it:
+
+- **Check the thing, not the citation.** A closed issue number proves little — measured over 193 citations in the maintainer skill, "the issue closed and the sentence claims an absence" was right 13% of the time. What settles it is the op's own signature in `supertool 'ops'`, or the file on disk.
+- **Re-derive a load-bearing claim at the moment it is about to enter a brief**, because that is where a stale line acquires an agent and a CI run.
+
 ## The defect this codebase keeps having
 
 **An absence produced by the tool, read as an absence in the world.** A grep that truncated silently. A check tally where a cancelled leg counted as neither pass nor pending. Empty stdout from a refusal read as "zero errors". It has been filed more than a dozen times under different surfaces.

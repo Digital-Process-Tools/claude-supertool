@@ -22,11 +22,26 @@ Directory is `presets/github/`. **`presets/gh/` does not exist** — `gh-` is on
 
 `TIMED_OUT`/`ACTION_REQUIRED` are FAILED, not benign — don't lump them with SKIPPED.
 
-# Open defects — check before trusting output
+# Open defects — ask the tracker, do not read a list here
 
-- **#1181**: `gh-pr:N:status` prints `TALLY UNVERIFIED` on every PR because the Copilot review check-run has no workflow to count against. Code tries to stay silent when nothing is missing (`_reconcile_checks` in `pr.py:219`) — this is the case that slips through.
-- **#1207**: `gh-prs` defaults to `author=@me` (deliberate, disclosed in footer) but a maintainer wants every author. Use `gh-prs:anyauthor` or dependabot/outside-contributor PRs are invisible.
-- **#1180**: `presets/github/issues.py:251` — `parts[2].endswith("github.com")` matches `evilgithub.com`.
+This section used to enumerate open defects. On 2026-08-09 **all four of them were closed** and the list was still being injected into every call that touched this directory — including one telling the reader to pass `gh-prs:anyauthor` to widen a board whose default had already been widened, which is worse than stale, it is inverted.
+
+A hand-maintained list of open defects inside an auto-injected file cannot stay true, because nothing closes the loop when the defect is fixed. So it is a query now:
+
+```
+supertool 'gh-issues:label=lane-tracker-ops,per=100'
+```
+
+For the record, since the entries were load-bearing while they lasted — closed and verified against master on 2026-08-09:
+
+| Was | Closed by | Now |
+| --- | --- | --- |
+| #1180 — `parts[2].endswith("github.com")` matches `evilgithub.com` | #1212 | `_is_github_host()` (`issues.py:242`) — exact host or `.`-boundary subdomain, userinfo and port stripped |
+| #1207 — `gh-prs` defaults to `author=@me` | #1212 | **the bare op is the whole repo**; `author=@me` is a filter you write |
+| #1181 — `TALLY UNVERIFIED` on every PR | #1212 | the tally cap was the cause |
+| #1202 — `required()` inert on 13 adapters | #1213 | all 13 route through `refusal.absent()` |
+
+**`gh-prs` is repo-wide by default. Do not add `anyauthor` expecting it to widen anything** — it is accepted and names what the bare op already does. `gl-mrs` is the one that still defaults to `author=@me` (`presets/gitlab/mrs.py:153`).
 
 # `gh-issues` flags
 
