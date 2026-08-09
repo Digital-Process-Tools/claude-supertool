@@ -658,6 +658,70 @@ def test_the_repo_slug_is_resolved_once_when_an_open_defect_is_cited(tmp_path):
 
 
 # --------------------------------------------------------------------------
+# #1188 — a fully anchored pattern used as a whole-value test.
+# --------------------------------------------------------------------------
+
+def test_the_heading_pattern_rejects_a_trailing_newline(tmp_path):
+    r"""`$` matches before a final newline, so `^...\s*$` accepted `# x` with a
+    newline glued on. Swapping `$` for `\Z` does **not** fix this one — `\s*`
+    swallows the newline either way and the pattern still matches. Measured:
+    `^(#{1,6})\s+(.*?)\s*\Z` against "# Open defects" plus a newline still
+    returns a match with title "Open defects". The trailing run has to be
+    narrowed to spaces and tabs, which is all a markdown heading can carry —
+    the newline is this op's own record delimiter, never part of a heading."""
+    assert check._HEADING.match("### A rollback is its own state")
+    assert check._HEADING.match("#  padded   ").group(2) == "padded"
+    assert check._HEADING.match("# Open defects\n") is None
+    assert check._HEADING.match("# Open defects\r\n") is None
+
+
+def test_the_op_token_pattern_rejects_a_trailing_newline(tmp_path):
+    """This pattern decides whether a backticked token is read as an op
+    reference, and its input is bytes a document author wrote. Nothing here
+    gets anchored-ok: the value is not a line this op sliced out of a larger
+    text, it is the contents of a code span."""
+    assert check._OP_TOK.match("gh-issues:label=bug")
+    assert check._OP_TOK.match("read:x\n") is None
+    assert check._OP_TOK.match("gh-labels:tally=cohort\n") is None
+
+
+def test_the_path_token_pattern_rejects_a_trailing_newline(tmp_path):
+    """#1188's guard reads string literals and this pattern is assembled by
+    concatenation, so it was never flagged — but it is the same whole-value
+    test on the same author-controlled bytes as the op token."""
+    assert check._PATH_TOK.match("presets/github/pr.py:219")
+    assert check._PATH_TOK.match("README.md\n") is None
+    assert check._PATH_TOK.match("presets/github/pr.py:219\n") is None
+
+
+def test_the_counter_example_pattern_rejects_a_trailing_newline(tmp_path):
+    """This one suppresses a finding, so a lax trailing run is a way to make a
+    path go unreported — the worse direction of the two."""
+    assert check._COUNTEREXAMPLE.search("co-locate it, **not** ")
+    assert check._COUNTEREXAMPLE.search("co-locate it, not\n") is None
+
+
+def test_split_lines_never_hands_a_newline_to_either_pattern(tmp_path):
+    """The invariant the heading pattern's narrowed run depends on. Stated as
+    a test because it is a property of the reader, and the reader is something
+    this op changed recently."""
+    lines = check._split_lines("# One\r\ntwo still two\nthree\n")
+    assert lines == ["# One", "two still two", "three"]
+    assert not any("\n" in line or "\r" in line for line in lines)
+
+
+def test_a_heading_carrying_a_newline_cannot_open_a_defect_block(tmp_path):
+    """The behaviour the anchor protects, end to end. Unreachable through
+    `scan` today because `_split_lines` is the only feeder — which is the
+    argument for narrowing the pattern rather than trusting the feeder, since
+    a feeder is one refactor away from changing."""
+    assert check._open_defect_lines(["# Open defects\n", "- #10: x"],
+                                    [True, True]) == [False, False]
+    assert check._open_defect_lines(["# Open defects", "- #10: x"],
+                                    [True, True]) == [True, True]
+
+
+# --------------------------------------------------------------------------
 # The CLI entry point.
 # --------------------------------------------------------------------------
 

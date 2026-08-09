@@ -73,7 +73,13 @@ _FOOTER = (
 )
 
 _CODE_SPAN = re.compile(r"`([^`\n]+)`")
-_HEADING = re.compile(r"^(#{1,6})\s+(.*?)\s*$")
+# `[ \t]*\Z`, not `\s*$` and not `\s*\Z`. `$` matches before a final newline,
+# so the old pattern accepted a heading with one glued on (#1188) — but `\Z`
+# alone does not fix it, because `\s*` swallows the newline either way and the
+# match still succeeds with the same title. Measured. The trailing run is
+# narrowed instead, to the only whitespace a markdown heading can actually
+# carry: the newline is this op's own record delimiter, never heading text.
+_HEADING = re.compile(r"^(#{1,6})\s+(.*?)[ \t]*\Z")
 # Anchored, because a heading that *mentions* open defects is not a heading
 # that declares a list of them. This op's own docs/presets/claims.md carries
 # "### `issue` — only under a heading that declares an open defect", and an
@@ -84,10 +90,20 @@ _FENCE = re.compile(r"^\s{0,3}(?:```|~~~)")
 
 _EXTS = ("py|md|json|toml|yml|yaml|sh|bash|cfg|ini|txt|tsv|xml|html|js|ts|"
          "jsx|tsx|rs|php|rb|go|sql|css|lock|env|service")
+# Same reasoning as `_OP_TOK`, and the same anchor. #1188's guard does not see
+# this one — it reads string literals, and this pattern is assembled by
+# concatenation — but a whole-value test on author-controlled bytes does not
+# stop being one because the check cannot read it.
 _PATH_TOK = re.compile(
-    r"^([A-Za-z0-9_.][A-Za-z0-9_./+-]*\.(?:" + _EXTS + r"))(?::(\d+))?$")
+    r"^([A-Za-z0-9_.][A-Za-z0-9_./+-]*\.(?:" + _EXTS + r"))(?::(\d+))?\Z")
 
-_OP_TOK = re.compile(r"^([a-z][a-z0-9_-]*):(\S.*)$")
+# `\Z`, and deliberately not a #1188 waiver. This decides whether a backticked
+# token is read as an op reference, and its input is a code span's contents —
+# bytes the document's author wrote, not a line this op sliced out of a larger
+# text. `_CODE_SPAN` already excludes U+000A and `_op_findings` rejects any
+# token holding whitespace, so nothing exploits the old `$` today; the anchor
+# is what makes that true of the pattern rather than of its two callers.
+_OP_TOK = re.compile(r"^([a-z][a-z0-9_-]*):(\S.*)\Z")
 
 _CITATION = re.compile(
     r"(?:(?P<slug>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+))?#(?P<num>\d{1,6})\b")
@@ -119,8 +135,12 @@ _JSON_SCALAR = re.compile(r'^(?:true|false|null|-?\d|["“\[{])', re.IGNORECASE)
 # The trailing character class absorbs markdown emphasis. contributing.md
 # writes it plain; docs/presets/claims.md writes it bolded, and without this
 # the op reported its own documentation's counter-example as a broken path.
+# The trailing run is spaces and tabs, not `\s`, for the reason `_HEADING`
+# gives — and it matters more here, because this pattern *suppresses* a
+# finding. A run that swallows a newline is a way to make a path go unreported,
+# which is the worse direction to be lax in.
 _COUNTEREXAMPLE = re.compile(
-    r"(?:\bnot|\bnever|\brather than|\binstead of)[*_`\s]*$", re.IGNORECASE)
+    r"(?:\bnot|\bnever|\brather than|\binstead of)[*_` \t]*\Z", re.IGNORECASE)
 
 
 def _is_template(rel: str) -> Optional[str]:
