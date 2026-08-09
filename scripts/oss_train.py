@@ -2,7 +2,9 @@
 """oss_train — rebase / resolve / push a merge train of this repo's branches.
 
 Usage: oss_train.py <ARG>
-    862,860,861   explicit issue numbers -> worktree ~/Documents/st-wt/NNN
+    862,860,861   explicit worktree NAMES -> ~/Documents/st-wt/NNN. Names, never
+                  paths: see target_error(), and #1246 for what the absence of
+                  that check let a caller rebase and force-push
     all           every ~/Documents/st-wt/NNN worktree that exists
     dry           as a COMMA element (all,dry) -> report only; reads, rebases
                   nothing, pushes nothing. Stops ABOVE the rebase, not below it.
@@ -104,6 +106,72 @@ def discover():
         return []
     return sorted(n for n in os.listdir(root)
                   if n.isdigit() and os.path.isdir(os.path.join(root, n)))
+
+
+#: Both separators, on every platform. A backslash is a path separator on
+#: Windows and an ordinary filename character on POSIX, so a check reading only
+#: `os.sep` would accept `..\outside\seed` on the one platform where it
+#: traverses — and this op is developed on macOS.
+_SEPARATORS = ("/", "\\")
+
+
+def target_error(num):
+    """Why `num` is not a usable worktree name, or None when it is one.
+
+    `discover()` — the `all` path — yields directory names it read out of
+    `wt_root()`, so `all` could never name anything else. The explicit-list
+    path applied no contract at all, and `train()` joins its target straight
+    onto the root: an absolute `num` makes `os.path.join` discard the root
+    entirely, a `../` walks out of it, and `git fetch` / `git rebase` /
+    `git-push --force-with-lease` then run in whatever repository that landed
+    on. The asymmetry between the two paths was the whole of #1246.
+
+    Two checks, and they answer different questions:
+
+    * the NAME check refuses anything that is not a single directory entry.
+      `nested/999` stays inside the root and is still refused: a target the
+      `all` path could never produce is a target this op has no reading for,
+      and naming the mistake beats naming the symptom.
+    * the CONTAINMENT check resolves the join and requires the result to sit
+      under the resolved root. This is the load-bearing one — a symlink
+      `st-wt/evil -> ~/Documents/claude-supertool` is a plain name holding no
+      separator, and no amount of string inspection can see through it.
+
+    Note which boundary this is. The core's `_containment_error` measures
+    against the CWD, so `$PWD/seed` passes it while pointing outside
+    `wt_root()`. The boundary that matters here is the root, and this op is the
+    only thing that knows what its root is.
+
+    `isdigit()` — `discover()`'s own filter — is deliberately NOT the contract.
+    It is a rule about what `all` SWEEPS, not about what a caller may name:
+    `st-wt/scope`, `st-wt/jit` and `st-wt/contrib-skill` are real worktrees
+    holding real branches, and since `all` already skips them, an explicit name
+    is the only way to train one. Refusing non-digits would remove a working
+    capability to close a hole that containment closes anyway.
+    """
+    if not num:
+        return "empty target"
+    if num in (".", ".."):
+        return "a directory reference, not a worktree name"
+    # Absolute FIRST, so the message names what actually happens. Both orders
+    # refuse, but on POSIX every absolute path also holds a separator, and
+    # "contains a path separator" is a weaker thing to say about `/etc` than
+    # naming the join that silently drops the root. `splitdrive` is the Windows
+    # half: `C:foo` is drive-relative, holds no separator, and `os.path.join`
+    # discards the root for it too.
+    if os.path.isabs(num) or os.path.splitdrive(num)[0]:
+        return ("is a path, not a worktree name — os.path.join would discard "
+                + wt_root() + " entirely")
+    if any(sep in num for sep in _SEPARATORS):
+        return ("contains a path separator — targets are worktree NAMES under "
+                + wt_root() + ", not paths")
+    root = os.path.realpath(wt_root())
+    resolved = os.path.realpath(os.path.join(root, num))
+    if resolved == root:
+        return "resolves to the worktree root itself, not to a worktree in it"
+    if not resolved.startswith(root + os.sep):
+        return "resolves to " + resolved + ", outside " + root
+    return None
 
 
 def branch_of(wt):
@@ -290,6 +358,27 @@ def main():
         return 2
 
     nums = discover() if arg == "all" else [n.strip() for n in arg.split(",") if n.strip()]
+
+    # ONE contract, applied to BOTH lists (#1246). `discover()` already returns
+    # only names, so running its output through the same check asserts a
+    # single-implementation property rather than adding a second behaviour —
+    # #882 was a copy of a containment rule written beside the real one, and
+    # the copy covered a case the original missed.
+    #
+    # A bad target refuses the WHOLE run, above the header, before any fetch.
+    # A train that rebased the first three targets and then declined the fourth
+    # would be a warning it proceeded past, not a refusal.
+    rejected = [(n, target_error(n)) for n in nums]
+    rejected = [(n, why) for n, why in rejected if why]
+    if rejected:
+        for n, why in rejected:
+            print("ERROR: refusing " + repr(n) + ": " + why)
+        print("Targets are worktree directory NAMES under " + wt_root()
+              + " — nothing was fetched, rebased or pushed:")
+        print("  oss_train:862,860      only these")
+        print("  oss_train:all          every numbered worktree there")
+        return 2
+
     # Header first, so the mode is stated even when there is nothing to do — a
     # run that says nothing about whether it would have pushed is unreadable.
     print(f"# oss_train ({len(nums)} branch(es)){' — DRY RUN' if dry else ''}")
