@@ -203,6 +203,7 @@ Enable any of these by copying the relevant entry from `.supertool.example.json`
 | Shell — semantics | `shellcheck`    | `shellcheck` on PATH               | `shellcheck -f json`. Ruleset from the project's `.shellcheckrc`. Complements `bash-check`, which answers a different question. See below |
 | JavaScript — lint | `eslint`        | `eslint` on PATH or resolvable via `npx --no-install` | `eslint -f json`. **Declines when no `eslint.config.js` resolves** — no fallback ruleset is invented. See below |
 | Secrets           | `gitleaks`      | `gitleaks` on PATH                 | `gitleaks detect --no-git --redact`. Matches every path, not one language. Never prints the matched value. See [README](../validators/gitleaks/README.md) |
+| Changelog fragment | `changelog-fragment` | the **project's own** `assemble_changelog.py` (plus its `markdown-it-py`) | Keyed on a path glob, not a language. States no rules of its own — it calls the release script's `parse_fragment_name` / `scan_fragment_body` and republishes their messages verbatim, so the write-time verdict and the CI verdict cannot drift. `skipped` when no such script sits above the file, so it is inert in projects with no `changelog.d/` convention. `$SUPERTOOL_CHANGELOG_ASSEMBLER` overrides where it looks (default `.github/scripts/assemble_changelog.py`) |
 
 
 ### `html-check` — script extraction, not HTML well-formedness (#833)

@@ -328,6 +328,19 @@
       "rollback_on_fail": true,
       "timeout": 60
     },
+    "changelog-fragment": {
+      "cmd": "{python} {supertool_dir}/validators/changelog-fragment/changelog-fragment.py {file}",
+      "match": "*changelog.d/*.md",
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste", "append",
+        "vim"
+      ],
+      "rollback_on_fail": false,
+      "timeout": 15
+    },
     "git-status": {
       "cmd": "{python} {supertool_dir}/validators/git-status/git-status.py {file}",
       "match": "*",
