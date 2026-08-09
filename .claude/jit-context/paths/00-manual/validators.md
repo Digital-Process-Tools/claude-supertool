@@ -11,33 +11,30 @@ could not run must say so — never report clean. Canonical write-up:
 `docs/validators.md` §"Declining instead of guessing". Cite that exact path — it's repo-specific,
 mis-cited across a repo boundary before.
 
-**Absent tool → copy `validators/shellcheck/shellcheck.py:131-137` verbatim:**
+**Absent tool → one call, `refusal.absent()`** (`validators/common/refusal.py:227`):
 ```python
 if not shutil.which(TOOL):
-    if required(TOOL):
-        _adapter_error(file, required_but_absent(TOOL, INSTALL_HINT), dur)
-    else:
-        emit(skipped(TOOL, file, INSTALL_HINT, dur))
+    emit(absent(TOOL, file, INSTALL_HINT, int((time.time() - start) * 1000)))
     return
 ```
-Do not invent a variant.
+`tool` is the **validator name** — the key a repo writes in `.supertool.json` — never the binary. `tsc-check` runs `tsc` and `html-check` runs `node`; escalating on the binary name would ignore the only spelling anyone can configure. Reserve it for an *absent* tool; a tool that ran and fell over is a different arm.
 
-# Open defect #1202 — `required()` gate is inert on most adapters
+Where the absence lands — `skipped`, or a loud failure under `$SUPERTOOL_REQUIRE_VALIDATORS` — is decided inside `absent()`, not by the adapter. That is the point of #1202: `required()` was a helper each adapter had to remember to call, **six of them did**, and the other ten spelled the moment as a fabricated `{"ok": true, "count": 0, "errors": []}` about a file nothing opened.
 
-`validators/ruff/ruff.py:120-121` emits `skipped` on absent tool unconditionally — never calls
-`refusal.required()`. `SUPERTOOL_REQUIRE_VALIDATORS=ruff` is silently inert: it can never force a
-loud failure for ruff.
+**This block used to say "copy `shellcheck.py:131-137` verbatim, do not invent a variant".** That code is still there and still correct — shellcheck is one of the six that always gated — but copying it now reproduces the pre-#1202 shape, one adapter's memory at a time, which is the thing that broke. Grepping an adapter for `required(` will come back empty and mean nothing: the call is indirect through `absent()`. One agent read that emptiness as "html-check is still inert" on 2026-08-09 and was wrong.
 
-Grepped every adapter for `required(`: only **shellcheck, eslint, gitleaks, tomllint,
-changelog-fragment** gate on it. 16 adapters check tool presence at all; the other **13 have the
-same gap as ruff**: `tsc-check, phpstan, markdownlint, ruby-check, prettier-check, git-status,
-cargo-check, hadolint, gofmt-check, terraform-check, pyright, psr, html-check`. Verified by name —
-they check `shutil.which`/binary-exists and go straight to `emit(skipped(...))`, no `required()`
-call anywhere in the file.
+# #1202 is CLOSED — do not go looking for this gap
+
+**#1202 shipped in #1213** ("An absent tool is never a clean pass — 16 adapters, and ten were
+fabricating `ok:true`"). Every adapter now routes its absent-tool arm through `refusal.absent()`,
+which consults `required()` internally. Verified 2026-08-09 against master.
+
+This section used to enumerate 13 adapters with the gap, and was still being injected at every
+call touching `validators/` after all 13 were fixed.
 
 # `skipped` and rollback
 
-A `skipped` never rolls back (`docs/validators.md:650`, "No verdict never rolls back an edit") —
+A `skipped` never rolls back (`docs/validators.md:681`, "No verdict never rolls back an edit") —
 so turning `ok:true` into `skipped` changes rollback reachability. Don't do it casually.
 
 # Schema fields — `validators/SCHEMA.md`
@@ -50,10 +47,18 @@ so turning `ok:true` into `skipped` changes rollback reachability. Don't do it c
   `source_context` absent. Don't fold a whole-crate error into `skipped` — that drops `errors`
   entirely, which is worse.
 
-# Open defect #1203
+# #1203 is CLOSED
 
-`tomllint` is declared in `.supertool.example.json:666-667` and **absent** from this repo's own
-`.supertool.json` — a validator that ships and isn't registered here checks nothing here.
+`tomllint` was declared in `.supertool.example.json` and absent from this repo's own
+`.supertool.json`. Fixed and verified CLOSED 2026-08-09.
+
+**Both stale entries above shared a heading that begins `Open defect`**, which is what made them
+mechanically findable: `claims:PATH` checks that every issue cited under such a heading is actually
+OPEN. It needs no semantics, because the heading is the author saying "this is a live gap". That
+lens is 5-for-5 across `.claude/jit-context/`, where a lexical rule over the same corpus scored 13%.
+So: if you write a heading like that, the tracker is the thing that keeps you honest — and if you
+are tempted to hand-maintain a defect list in an auto-injected file, read the two corpses above
+first.
 
 # changelog-fragment
 
