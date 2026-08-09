@@ -535,6 +535,84 @@ def test_one_undelimited_tag_refuses_the_whole_file(tmp_path: Path) -> None:
     assert "5" in out["skipped"], f"the reason must name the undelimited tag: {out['skipped']}"
 
 
+# ---------------------------------------------------------------------------
+# #1185 -- the third state reached by a new cause: a block whose *body*
+# runs to EOF with no close (the verdict is `skipped`, as everywhere else)
+# ---------------------------------------------------------------------------
+
+def test_block_that_never_closes_is_skipped_not_ok(tmp_path: Path) -> None:
+    """A `<script>` with no `</script>` anywhere after it must not report `ok`.
+
+    `UndelimitedTag` covers a malformed *start* tag only. A well-formed start
+    tag whose body runs to EOF took the other branch, where a missing close
+    meant "not a block": the body was dropped and the file reported clean.
+    The same broken JS inside a closed block is a finding, so the verdict
+    turned on whether a closing tag exists rather than on the JavaScript --
+    an absence produced by the adapter, read as an absence in the world.
+    """
+    f = tmp_path / "eof.html"
+    f.write_text("<html><script>\nalert(1\n")
+    out = _run(str(f))
+    assert "skipped" in out, f"expected the third state, got {out}"
+    assert "ok" not in out
+    assert "count" not in out
+    assert "errors" not in out
+    assert "line 1" in out["skipped"], f"the reason must name the block's line: {out['skipped']}"
+
+
+def test_closed_form_of_the_same_file_is_still_a_finding(tmp_path: Path) -> None:
+    """The control from #1185: identical JS, closed, stays a finding.
+
+    Pinned next to the refusal because the fix must not buy the third state
+    by making the second one quieter.
+    """
+    f = tmp_path / "closed.html"
+    f.write_text("<html><script>\nalert(1\n</script></html>\n")
+    out = _run(str(f))
+    assert_declined(out)
+    assert out["count"] == 1
+    assert out["errors"][0]["line"] == 2
+
+
+def test_one_unclosed_block_refuses_the_whole_file(tmp_path: Path) -> None:
+    """Per file, and it outranks a finding already in hand.
+
+    Same rule the undelimited *start* tag follows. After an unclosed
+    `<script>` every byte to EOF is script data for the tokenizer, so a
+    later well-formed-looking block is not a block at all -- reporting the
+    earlier finding alone would be a verdict about a file that stops being
+    readable at line 5.
+    """
+    f = tmp_path / "mixed_eof.html"
+    f.write_text(
+        "<html><body>\n"
+        "<script>\n"
+        "const a = {;\n"
+        "</script>\n"
+        "<script>\n"
+        "const b = 1;\n"
+    )
+    out = _run(str(f))
+    assert "skipped" in out, f"expected the third state, got {out}"
+    assert "count" not in out
+    assert "line 5" in out["skipped"], f"the reason must name the unclosed block: {out['skipped']}"
+
+
+def test_unclosed_external_script_refuses_too(tmp_path: Path) -> None:
+    """`src=` does not rescue it: attributes say nothing about where it ends.
+
+    The attribute filters run on a block whose extent is known. Here it is
+    not -- everything after the tag is script data to EOF -- so there is no
+    block to classify as external, and deciding by attribute would be
+    guessing at the very point the adapter cannot read.
+    """
+    f = tmp_path / "extonly.html"
+    f.write_text('<html><body>\n<script src="x.js">\n')
+    out = _run(str(f))
+    assert "skipped" in out, f"expected the third state, got {out}"
+    assert "line 2" in out["skipped"], out["skipped"]
+
+
 def test_script_hyphen_custom_element_is_not_a_script_block(tmp_path: Path) -> None:
     """`<script-foo>` is a different tag, and the word boundary matched it.
 
