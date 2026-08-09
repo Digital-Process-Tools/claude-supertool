@@ -16,7 +16,7 @@ Pattern-based ops for finding content across files or zooming into a known locat
 | `around` (line form) | `around:PATH:LINE` or `around:PATH:LINE:N` | Answered by `around_line`, with a receipt naming the call that ran. `around` is PATTERN:PATH and `around_line` is PATH:LINE — opposite argument order, same output — so this shape used to fail with `file not found: 1160`. Only applies where the literal reading is already an error: LINE must not name a real file and PATH must resolve. A genuinely numeric pattern with a real path still greps. |
 | `grep` / `around` (saturating pattern) | `grep:\| \{:PATH` | **Refused.** A top-level empty alternation branch matches every line, and `1000+ matches` reads exactly like a search that found a lot. Supertool rewrites bash-grep BRE alternation, so an escaped literal `\|` becomes a bare `|` with nothing to its left. Use a character class for a literal pipe: `[|] \{`. An empty branch inside a group (`colo(u|)r`) or a `|` inside `[...]` is untouched. |
 | `around_line` | `around_line:PATH:LINE` or `around_line:PATH:LINE:N` | Show N lines (default 10) of context around a specific line number. Target line marked with `→`. |
-| `between` | `between:SYMBOL:PATH` or `between:re:START:END:PATH` | Return a chunk of a file. **Symbol mode (default):** full body of a named function/method/class via tree-sitter (PHP, Python, JS, TS, Go, Rust, Java, Ruby — symbols with `::` like PHP `Foo::bar` work). SYMBOL may be written the way it reads in source — leading modifiers (`async`, `function`, `def`, `class`, `public static function`, …) and a trailing `(params)` are stripped and retried after the exact match fails, so `between:async function fillAndSubmit:helpers.js` resolves. **Pattern mode (`re:` prefix):** inclusive line slice from first line matching START regex to first line after matching END regex (language-agnostic). |
+| `between` | `between:SYMBOL:PATH` or `between:re:START:END:PATH` | Return a chunk of a file. **Symbol mode (default):** full body of a named function/method/class via tree-sitter (PHP, Python, JS, TS, Go, Rust, Java, Ruby — a `::`-qualified query stays one symbol rather than re-reading the call as `re:` mode, but it is matched literally against the definition's own name node — PHP `Foo::bar` does not resolve, pass the bare `bar`). SYMBOL may be written the way it reads in source — leading modifiers (`async`, `function`, `def`, `class`, `public static function`, …) and a trailing `(params)` are stripped and retried after the exact match fails, so `between:async function fillAndSubmit:helpers.js` resolves. **Pattern mode (`re:` prefix):** inclusive line slice from first line matching START regex to first line after matching END regex (language-agnostic). |
 
 ## Output cap
 
@@ -188,7 +188,7 @@ Extract a full function body by name:
 
 ```bash
 ./supertool 'between:handle_request:src/app/Module.py'
-./supertool 'between:MyClass::handle:src/app/Module.php'
+./supertool 'between:handle:src/app/Module.php'
 ```
 
 Extract a block by regex anchors (language-agnostic):

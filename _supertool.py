@@ -18335,9 +18335,14 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
         "hover": (2,), "rename": (3,), "resolve": (2,),
         # diff:PATH1:PATH2
         "diff": (1, 2),
-        # between:SYMBOL:PATH (path at 2) | between:re:START:END:PATH (path at 4)
-        # — checking both positions covers both forms.
-        "between": (2, 4),
+        # `between` is deliberately absent: neither of its readings keeps its
+        # path in a fixed slot. Symbol mode takes parts[-1] (a ':' in the
+        # symbol pushes the path past slot 2, and nothing gated parts[3] —
+        # #1163), `re:` mode joins parts[4:] (a ':' in the path leaves only
+        # the first fragment gated). And slot 2 is the START *regex* in the
+        # `re:` reading, so gating it refused a legitimate local slice while
+        # naming a file the caller never asked for (#1164). Both branches
+        # gate the path they computed, at the point they computed it.
         # check:PRESET:PATH — runs a custom op, path forwarded as {file}.
         "check": (2,),
         # mutating ops (also covered by _atomic_write chokepoint):
@@ -18483,6 +18488,9 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                     start_pat = parts[2]
                     end_pat = parts[3]
                     path = ":".join(parts[4:])
+                    _contained = _containment_error([path])
+                    if _contained:
+                        return header + _contained
                     # between:re rejoins RIGHTWARD, so a ':' in START or END
                     # steals from the path rather than from the pattern — the
                     # opposite of grep/around, and the reason it needs its own
@@ -18499,9 +18507,19 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                             f"(got {len(parts) - 2} args after 're')\n")
             elif len(parts) >= 3:
                 # Symbol mode: between:SYMBOL:PATH
-                # Join middle parts on ':' so PHP Foo::bar style names work.
+                # Join middle parts on ':' so a qualified name stays ONE
+                # symbol instead of re-reading the call as re: mode. It does
+                # not make `Foo::bar` resolve: the query is compared literally
+                # against a definition's own name node, which is `bar` in PHP,
+                # C++ and Ruby alike (measured, #1163).
                 symbol = ":".join(parts[1:-1])
                 path = parts[-1]
+                # Ahead of the hints, not after them: both stat the path to
+                # decide whether to fire, and a stat of an outside file is
+                # itself the existence oracle this gate exists to close.
+                _contained = _containment_error([path])
+                if _contained:
+                    return header + _contained
                 _range_hint = _between_numeric_hint(parts)
                 if _range_hint:
                     return header + _range_hint
