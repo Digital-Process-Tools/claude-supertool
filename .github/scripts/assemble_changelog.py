@@ -70,7 +70,7 @@ _VERSION_RE = re.compile(r"^\d+\.\d+\.\d+\Z")  # \Z, not $ — #1188
 #: directory unable to document itself.
 _IGNORED = {"README.md", ".gitkeep", ".gitignore"}
 
-_UNRELEASED_LINK_RE = re.compile(  # anchored-ok: matched per line (line 664); the newline is the delimiter
+_UNRELEASED_LINK_RE = re.compile(  # anchored-ok: matched per line of CHANGELOG.md; the newline is the delimiter
     r"^\[Unreleased\]:\s*(?P<base>\S+?)/compare/v(?P<prev>[0-9][^.\s]*(?:\.[^.\s]+)*)\.\.\.HEAD\s*$"
 )
 

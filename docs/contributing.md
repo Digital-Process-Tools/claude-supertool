@@ -488,7 +488,7 @@ _SEQ_ITEM = re.compile(r"^(\s+)-\s*(\w+)\s*$")  # anchored-ok: matched per line 
 
 The reason after the colon is required — a second test fails a bare `# anchored-ok`, because a waiver with no reason reads as a decision and is not one. Put it on the line the `re.` call *starts* on; that is the span the scan reads, so a multi-line `re.compile(` takes it on the opening line.
 
-The scan reads the literal first argument of a `re.*` call. A pattern assembled from a variable, or held in a dict and compiled elsewhere, is not seen — it narrows the class, it does not close it.
+The scan reads the literal first argument of a call spelled `re.<something>`. Four shapes are invisible to it — a pattern built by an f-string or `+`, one assembled from a variable, one held in a dict and compiled elsewhere, and one reached through an aliased import — and none of the four exists in the tree today. It narrows the class; it does not close it. `re.fullmatch` is deliberately outside the scan, because it requires the whole string and so never had the bug.
 
 ## What CI runs, and what it does not
 

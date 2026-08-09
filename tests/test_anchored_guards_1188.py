@@ -24,9 +24,17 @@ is a line scanner and `\Z` would be wrong in it. A pattern that ends with `$`
 but does not start with `^` is a suffix test (`\.pem$`), where matching before
 a trailing newline changes nothing a caller can act on.
 
-**The limit, stated.** This reads the literal first argument of a `re.*` call.
-A pattern assembled from a variable, or held in a dict and compiled elsewhere,
-is not seen — so this narrows the class, it does not close it.
+**The limit, stated.** This reads the literal first argument of a call spelled
+`re.<something>`. Four shapes are therefore invisible to it: a pattern built by
+an f-string or `+`, one assembled from a variable, one held in a dict and
+compiled elsewhere, and one reached through an aliased import
+(`from re import compile as _c`). None exists in the tree today. This narrows
+the class; it does not close it.
+
+`fullmatch` is deliberately **not** in the call list. `re.fullmatch(r"^x$", s)`
+requires the whole string, so it has never had this bug, and flagging one would
+attach a true-sounding reason to a pattern that does not carry the defect —
+which is the shape of mistake this file exists to catch.
 """
 from __future__ import annotations
 
@@ -51,8 +59,10 @@ SCANNED = ("_supertool.py", "presets", ".github/scripts")
 #: living in a table in this file that nobody opens.
 WAIVER = re.compile(r"#\s*anchored-ok:\s*(\S.*)")
 
+#: No `fullmatch` — see the docstring; it requires the whole string and so
+#: never accepts a trailing newline the pattern did not ask for.
 _RE_CALLS = frozenset((
-    "compile", "match", "fullmatch", "search", "sub", "subn",
+    "compile", "match", "search", "sub", "subn",
     "split", "findall", "finditer",
 ))
 

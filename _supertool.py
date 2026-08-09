@@ -1986,10 +1986,13 @@ def _extract_env_prefix(cmd: str) -> Tuple[Dict[str, str], str]:
     env: Dict[str, str] = {}
     tokens = shlex.split(cmd, posix=True)
     idx = 0
-    # `\Z` with DOTALL, not `$`: `$` matches before a final newline, so
-    # `FOO='bar\n' cmd` set FOO to "bar" and dropped the newline the caller
-    # quoted on purpose — the assignment still matched, so nothing said so
-    # (#1188).
+    # `\Z` with DOTALL, not `$`. Two effects, and the second is the wider one.
+    # `$` matches before a final newline, so `FOO='bar<LF>' cmd` set FOO to
+    # "bar" and dropped the newline the caller quoted on purpose — the
+    # assignment still matched, so nothing said so. And without DOTALL a value
+    # with a newline *inside* it matched nothing at all, so the whole token
+    # fell through as argv[0] and the env was never set; POSIX sets it. Both
+    # are the same character deciding where a value ends (#1188).
     _kv = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)\Z", re.DOTALL)
     while idx < len(tokens):
         m = _kv.match(tokens[idx])
