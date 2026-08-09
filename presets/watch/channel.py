@@ -442,6 +442,11 @@ def stranded_watchers(path: str) -> list[Stranded]:
         # is somebody else's business, and reporting it here would be the
         # partial-migration confusion #581 records, inverted. Skipped silently
         # and correctly: this is a fact the op established, not one it missed.
+        #
+        # This filter runs only on files that were read. `sock_path` lives
+        # inside the file, so an unread one cannot be attributed either way and
+        # its row stays — with the render saying that is unknown too, rather
+        # than implying the file is this socket's.
         if state.get("sock_path") not in (None, path):
             continue
         last = state.get("last_emit")
@@ -481,11 +486,18 @@ def _render_stranded(path: str) -> list[str]:
     if len(found) > _ROW_CAP:
         lines.append(f"             ... and {len(found) - _ROW_CAP} more")
     if refused:
-        subject = "its watcher is" if len(refused) == 1 else "their watchers are"
-        noun = "state file was" if len(refused) == 1 else "state files were"
+        # The unread rows are deliberately NOT filtered by `sock_path`, and the
+        # sentence says so: that field is inside the file, so a file that could
+        # not be read cannot be attributed to this socket or to another one.
+        # Dropping it would be guessing it was somebody else's; claiming it
+        # would be guessing it was ours. Naming the doubt is the third state.
+        one = len(refused) == 1
+        noun = "state file was" if one else "state files were"
+        whose = "it belongs" if one else "they belong"
+        subject = "its watcher is" if one else "their watchers are"
         lines.append(
-            f"             {len(refused)} {noun} not read, so whether {subject} "
-            "stranded is not known either way")
+            f"             {len(refused)} {noun} not read, so neither which socket "
+            f"{whose} to nor whether {subject} stranded is known")
         for row in refused[:_ROW_CAP]:
             lines.append(f"             {row.refusal}")
         if len(refused) > _ROW_CAP:

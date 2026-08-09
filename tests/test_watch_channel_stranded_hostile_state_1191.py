@@ -280,6 +280,19 @@ def test_a_watcher_bound_to_another_socket_is_still_not_our_business(stranded, t
     assert "could not be read" not in report, report
 
 
+def test_an_unread_file_is_not_attributed_to_this_socket_either_way(stranded, tmp_path):
+    """`sock_path` is inside the file, so an unreadable one cannot be filtered
+    by it. `STATE_DIR` is shared across sessions even when the sockets are not,
+    so the row is kept and the render declines the attribution out loud —
+    dropping it would guess it was somebody else's, keeping it silently would
+    guess it was ours."""
+    (tmp_path / "supertool-watch-gh__9.state.json").write_text(
+        "{not json", encoding="utf-8")
+    _, report = channel.health(stranded)
+    assert "could not be read" in report, report
+    assert "neither which socket it belongs to" in report, report
+
+
 def test_a_directory_at_a_state_path_leaks_no_descriptor(stranded, tmp_path):
     """`O_NOFOLLOW` refuses a symlink, not a directory: `os.open` succeeds and
     the wrap fails without taking the descriptor. Caught by #1190's reviewer on
@@ -315,9 +328,18 @@ FORGED_CONSUMER = "  consumer : bound, forwarding normally"
 def test_a_filename_cannot_forge_the_consumer_line(stranded, tmp_path):
     """The strongest form of the #1187 defect at this call site, because the
     forged line is not arbitrary text — it is a verdict this op refuses to make
-    anywhere in its own code."""
+    anywhere in its own code.
+
+    The SECOND newline is load-bearing and this test was vacuous without it.
+    The row renders as `{source} {id} — last emit {ts}`, so a `source` that
+    ends at the forged text leaves it glued to ` 42 — last emit T` on one
+    physical line, and the assertion below could then never fail. Measured
+    against 923f7bc: with one newline the forged line stands alone `False`,
+    with the trailing one `True`. It takes a newline on both sides of the text
+    to make a filename into a whole line of the report.
+    """
     try:
-        _state(tmp_path, stranded, source="gh\n" + FORGED_CONSUMER)
+        _state(tmp_path, stranded, source="gh\n" + FORGED_CONSUMER + "\nzz")
     except (OSError, ValueError):
         pytest.skip("this filesystem does not accept a newline in a filename")
     _, report = channel.health(stranded)

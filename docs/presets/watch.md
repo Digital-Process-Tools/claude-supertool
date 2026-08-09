@@ -1210,6 +1210,15 @@ send an operator to different places — and `none recorded an emit into this
 socket` is never printed when files were present and unread. Declining the
 whole listing on one bad file was the alternative and is the worse trade: a
 single `ln -s` in `/tmp` would then erase every other watcher from the report.
+
+**An unread row is not claimed for this socket.** The readable rows are
+filtered by the `sock_path` each watcher publishes, but that field is *inside*
+the file, so a file that could not be read cannot be attributed to this socket
+or to another one — and `STATE_DIR` is shared across sessions even when the
+socket paths are not. Dropping the row would guess it was somebody else's;
+listing it silently would guess it was ours. The line says both are unknown,
+which is the same three-state rule the verdict above it follows.
+
 There is no existence pre-check here and deliberately so: the name came from
 `os.listdir`, and `O_NOFOLLOW` answers a dangling symlink with `ELOOP`, so an
 `exists` call would only reintroduce #1184's follow-the-link bug.
