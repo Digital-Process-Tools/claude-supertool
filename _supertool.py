@@ -5736,6 +5736,25 @@ def _between_numeric_hint(parts: List[str]) -> str:
     numeric token must not name a real path (a file called `12` is a range
     nobody asked for), and the path in front of it must resolve, or this
     would be guessing at a plain typo.
+
+    That resolve is a filesystem probe on parts[1], and parts[1] is a SYMBOL in
+    every other reading of `between` — so `_PATH_ARG_POSITIONS["between"] =
+    (2, 4)` does not cover it and dispatch's gate has already passed on a slot
+    this call did not use as a path. Unguarded, the two answers below differ by
+    whether the file is there, which is an existence oracle for anything the
+    process can stat (#1142):
+
+        between:/etc/hosts:3:5   -> the range redirect
+        between:/etc/nope:3:5    -> path not found: '5'
+
+    Contained here rather than in the table, the shape #1135 established: the
+    slot only becomes a path conditionally, so the guard has to be conditional
+    too — widening the table would refuse `between:/etc/passwd:code.py`, a
+    perfectly ordinary symbol lookup. And it refuses rather than falling
+    silent, because the redirect this hint would print is `read:PATH:START-END`
+    on a path `read` itself refuses: advice whose remedy is refused is worse
+    than the refusal. `_containment_error` never stats, so the refusal reads
+    the same whether or not the file exists.
     """
     if len(parts) not in (3, 4):
         return ""
@@ -5743,7 +5762,12 @@ def _between_numeric_hint(parts: List[str]) -> str:
     if not all(t.isdigit() and not os.path.exists(t) for t in nums):
         return ""
     path = parts[1]
-    if not path or not os.path.isfile(path):
+    if not path:
+        return ""
+    _contained = _containment_error([path])
+    if _contained:
+        return _contained
+    if not os.path.isfile(path):
         return ""
     lines = [
         f"ERROR: between does not take line ranges — it is between:SYMBOL:PATH"
