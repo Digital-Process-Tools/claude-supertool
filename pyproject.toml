@@ -118,6 +118,14 @@ dev = [
     # nothing. Nothing a *user* installs imports it — the script is a
     # repo-internal release tool, and `supertool.py` is still stdlib-only.
     "markdown-it-py",
+    # Same reason as ruff, for the validator whose tool is a library rather than
+    # a binary: `tests/test_yaml_check.py` skips every assertion about parsing
+    # YAML when PyYAML is absent, so without this line that half of the file
+    # runs nowhere. It ran nowhere for a year already and nobody could see it —
+    # the adapter answered an absent PyYAML with `ok: true`, so the tests passed
+    # on a fabricated verdict instead of skipping (#1202/#1213). Pinned by
+    # `test_pyyaml_is_a_dev_dependency_so_ci_runs_the_parsing_half`.
+    "pyyaml",
 ]
 
 [tool.ruff]
