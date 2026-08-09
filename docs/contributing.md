@@ -1049,6 +1049,31 @@ it yet: a guard that fails on work nobody has done is a guard that gets deleted.
 What it does prevent is #725's actual complaint — a new bare assertion landing
 in a file that already knows better.
 
+### Pin third-party actions to a sha, never to a major tag
+
+Every `uses:` in `.github/workflows/` names a 40-character commit sha with a
+trailing `# vX.Y.Z` comment. `tests/test_ci_action_pinning_925.py` fails the
+suite on a tag pin, on a sha with no version comment, and on its own discovery
+finding fewer than three workflow files.
+
+**Why it is a rule and not a nicety** ([#925](https://github.com/Digital-Process-Tools/claude-supertool/issues/925)). `@v7` is
+branch-like: the publisher moves it on every patch release. A compromised or
+merely careless upstream therefore executes with this workflow's `GITHUB_TOKEN`
+on the very next run of a commit that has not changed — which is exactly how
+the tj-actions/changed-files compromise reached its downstreams.
+
+**Dependabot is not the mitigation, and reads like one.** It will never bump
+`v7` to `v7`, so under a tag pin a retag is live before any PR exists. Under a
+sha pin it *is* the mitigation: it bumps the sha, rewrites the version comment,
+and the upgrade becomes something a human approves. So the pin costs a weekly
+review, not a standing manual chore — that trade is the reason this is a rule
+rather than a preference.
+
+**The version comment is load-bearing.** A bare 40-hex ref is unreadable, and
+without the comment nobody can tell a current pin from a three-majors-stale one
+by looking. `changelog.yml` sits on `checkout` v4 while the other two workflows
+sit on v7; that is now visible in the file rather than only in the tag.
+
 ### Never leave a CI job without a wall-clock budget
 
 Every job in `.github/workflows/tests.yml` declares `timeout-minutes`.

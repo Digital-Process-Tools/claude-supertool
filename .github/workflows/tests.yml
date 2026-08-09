@@ -35,9 +35,17 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
         python-version: ["3.9", "3.10", "3.11", "3.12"]
     steps:
-      - uses: actions/checkout@v7
+      # Every third-party action here is pinned to a commit sha rather than to
+      # `@v7` (#925). A major tag is repointed by its publisher on every patch
+      # release, so the code running with this workflow's token could change
+      # between two runs of the same commit -- which is how the
+      # tj-actions/changed-files compromise reached its downstreams. The
+      # trailing `# vX.Y.Z` is what makes the pin readable, and is what
+      # Dependabot rewrites when it bumps one. Pinned by
+      # `tests/test_ci_action_pinning_925.py`.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -155,8 +163,8 @@ jobs:
     # `tests/test_ci_job_timeouts_722.py`.
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.12"
           cache: pip
@@ -208,8 +216,8 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.12"
           cache: pip
@@ -243,7 +251,7 @@ jobs:
       # same way the pip cache above is — the key changes exactly when the
       # locked dependency set does.
       - name: Cache bun install
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-${{ hashFiles('notifiers/claude-channel/bun.lock') }}
