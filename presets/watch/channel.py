@@ -55,7 +55,7 @@ import socket
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 sys.path.insert(0, str(Path(__file__).parent.parent))  # for _proc
 
@@ -193,6 +193,13 @@ def read_health(path: str) -> tuple[dict | None, str]:
     On Windows `_NOFOLLOW` is `0` and no guard is applied; nothing here claims
     otherwise, and `tests/test_watch_channel_health_hostile_file_1184_1187.py`
     skips rather than passing vacuously there.
+
+    The parse arm catches `ValueError` rather than `json.JSONDecodeError`
+    (#1191): the stream is decoded before it is parsed, so invalid UTF-8 raises
+    `UnicodeDecodeError`, which is neither an `OSError` nor a
+    `JSONDecodeError`. It escaped this function as a traceback — an op whose
+    subject is declining beats guessing, answering with a stack trace, for two
+    bytes any same-uid writer can put in `/tmp`.
     """
     health_path = path + HEALTH_SUFFIX
     if not os.path.lexists(health_path):
@@ -227,7 +234,14 @@ def read_health(path: str) -> tuple[dict | None, str]:
     try:
         with handle as f:
             record = json.load(f)
-    except (OSError, json.JSONDecodeError) as err:
+    except (OSError, ValueError) as err:
+        # `ValueError`, not `json.JSONDecodeError`: the stream is decoded before
+        # it is parsed, so two bytes of invalid UTF-8 raise `UnicodeDecodeError`
+        # — a `ValueError`, and neither of the two this arm used to name. It
+        # escaped as a traceback where the answer is `CANNOT DETERMINE`, which
+        # is a same-uid denial of service on the op that reports the outage.
+        # Both are `ValueError` subclasses and the base is caught deliberately:
+        # a third decode failure must decline too, not crash the report.
         return None, f"{health_path} could not be read ({type(err).__name__})"
     if not isinstance(record, dict):
         return None, f"{health_path} is not a JSON object"
@@ -288,10 +302,11 @@ def _num(value: int | None) -> str:
 
 
 def _stamp(record: dict, key: str, default: str = "?") -> str:
-    """A health-file string, kept to the one line this report gave it (#1187).
+    """A string out of somebody else's JSON, kept to the one line this report
+    gave it (#1187, and the state files too since #1191).
 
-    The file is written by a separate process this op cannot authenticate, in a
-    directory anyone on the machine can write to, and its stamps were
+    Those files are written by separate processes this op cannot authenticate,
+    in a directory anyone on the machine can write to, and their stamps were
     interpolated straight into the render: a `started` value carrying a
     newline, a `</channel>` and a directive at column 0 put all three in the
     op's own answer. `_untrusted.flat` is the boundary #819 established and the
@@ -317,14 +332,97 @@ def _health_note() -> str:
         "the stamps", "the consumer's health file")
 
 
-def stranded_watchers(path: str) -> list[tuple[str, str, dict]]:
+#: How many rows of each kind the listing prints before it says how many more
+#: there were. A cap that silently truncates would be the defect this whole
+#: function is about, so the remainder is always counted out loud.
+_ROW_CAP = 10
+
+
+class Stranded(NamedTuple):
+    """One row of the stranded listing — a watcher, or a file that would not
+    become one.
+
+    `refusal` is `""` for a row read out of a state file and otherwise says why
+    that file was not read. It is a field rather than an omission because the
+    alternative — `continue` — is the shape #1191 was filed about: a listing
+    whose whole job is to be complete, silently dropping exactly the rows
+    somebody tampered with.
+    """
+
+    source: str
+    watcher_id: str
+    last: dict
+    refusal: str
+
+
+def _read_state_file(name: str) -> tuple[dict | None, str]:
+    """One state file's JSON, or None and why not (#1191).
+
+    The same read `read_health` performs thirty lines up, for the same reason
+    and against the same threat — `STATE_DIR` is `/tmp`, and this name is worse
+    than the health file's: it is not derived from anything, so the glob above
+    accepts whatever a co-tenant chooses to create.
+
+    **No existence pre-check, deliberately.** `read_health` needs `lexists`
+    because it asks whether a health file is published at all; here the name
+    came out of `os.listdir`, so it existed, and `O_NOFOLLOW` answers a dangling
+    symlink with `ELOOP` rather than `ENOENT`. Adding an `exists` call would
+    reintroduce the very bug #1184 removed — the link followed, the absence of
+    its target reported as the absence of the file.
+
+    `O_NOFOLLOW` refuses a symlink and does *not* refuse a directory: `os.open`
+    succeeds on one and `os.fdopen` then raises without taking the descriptor.
+    That leak was introduced by #1184's own fix and caught by its reviewer, and
+    it is worse here, inside a loop over every name in the directory.
+    """
+    path = os.path.join(STATE_DIR, name)
+    shown = _untrusted.flat(name)
+    try:
+        fd = os.open(path, os.O_RDONLY | _NOFOLLOW)
+    except OSError as err:
+        # ELOOP on Linux and macOS, EMLINK on the BSDs — both mean the name was
+        # a symlink and O_NOFOLLOW refused it.
+        if err.errno in (errno.ELOOP, errno.EMLINK):
+            return None, (
+                f"{shown} is a symlink and was not followed — a state file is written "
+                "in place by its own poller, so this is somebody redirecting the read "
+                "at another file"
+            )
+        return None, f"{shown} could not be read ({type(err).__name__})"
+    try:
+        handle = os.fdopen(fd, "r", encoding="utf-8")
+    except OSError as err:
+        os.close(fd)
+        return None, f"{shown} could not be read ({type(err).__name__})"
+    try:
+        with handle as f:
+            state = json.load(f)
+    except (OSError, ValueError) as err:
+        # See `read_health`: `UnicodeDecodeError` is a `ValueError` and was
+        # caught by neither arm this replaced, so invalid UTF-8 in any one file
+        # in the directory took down the whole listing with a traceback.
+        return None, f"{shown} could not be read ({type(err).__name__})"
+    if not isinstance(state, dict):
+        return None, f"{shown} is not a JSON object"
+    return state, ""
+
+
+def stranded_watchers(path: str) -> list[Stranded]:
     """Watchers whose last emit to `path` found nobody listening.
 
     The blast radius of a definite negative. "Nothing is listening" is a fact
     about the socket; "and these six pollers have been writing into it since
     09:14" is the one an operator can act on.
+
+    A file that could not be read comes back as a row carrying a `refusal`
+    rather than not coming back at all (#1191). The two candidates were "one
+    bad file skips its own row" and "one bad file declines the whole listing",
+    and the second is the worse trade: it would let anyone who can write to
+    `/tmp` erase every other watcher from the report with a single `ln -s`.
+    Skipping in place, and saying so on its own line, keeps the other rows and
+    still never renders "I could not look" as "there was nothing to see".
     """
-    rows: list[tuple[str, str, dict]] = []
+    rows: list[Stranded] = []
     try:
         names = sorted(os.listdir(STATE_DIR))
     except OSError:
@@ -336,33 +434,62 @@ def stranded_watchers(path: str) -> list[tuple[str, str, dict]]:
         source, _, watcher_id = stem.partition("__")
         if not watcher_id:
             continue
-        try:
-            with open(os.path.join(STATE_DIR, name), "r", encoding="utf-8") as f:
-                state = json.load(f)
-        except (OSError, json.JSONDecodeError):
-            continue
-        if not isinstance(state, dict):
+        state, refusal = _read_state_file(name)
+        if state is None:
+            rows.append(Stranded(source, watcher_id, {}, refusal))
             continue
         # A watcher bound to a different socket is not stranded on this one; it
         # is somebody else's business, and reporting it here would be the
-        # partial-migration confusion #581 records, inverted.
+        # partial-migration confusion #581 records, inverted. Skipped silently
+        # and correctly: this is a fact the op established, not one it missed.
         if state.get("sock_path") not in (None, path):
             continue
         last = state.get("last_emit")
         if isinstance(last, dict) and last.get("state") == "no-listener":
-            rows.append((source, watcher_id, last))
+            rows.append(Stranded(source, watcher_id, last, ""))
     return rows
 
 
 def _render_stranded(path: str) -> list[str]:
+    """The watcher listing, with its own provenance note when it renders text.
+
+    `source` and the watcher id are parsed out of a *filename* and are as much
+    somebody else's words as the `ts` inside the file — a POSIX name carries
+    any byte but `/` and NUL, newline included — so all three go through
+    `_untrusted` (#1191, same boundary as #1187).
+    """
     rows = stranded_watchers(path)
-    if not rows:
+    found = [row for row in rows if not row.refusal]
+    refused = [row for row in rows if row.refusal]
+    if not found and not refused:
         return ["  watchers : none recorded an emit into this socket"]
-    lines = [f"  watchers : {len(rows)} found nobody listening on their last emit"]
-    for source, watcher_id, last in rows[:10]:
-        lines.append(f"             {source} {watcher_id} — last emit {last.get('ts', '?')}")
-    if len(rows) > 10:
-        lines.append(f"             ... and {len(rows) - 10} more")
+
+    if found:
+        head = f"{len(found)} found nobody listening on their last emit"
+    else:
+        # Not "none recorded an emit": every file that would have said so was
+        # unreadable, and reporting that as an empty list is the absence-read-
+        # as-presence defect on the listing this op added for #554.
+        head = "none of the readable state files recorded an emit into this socket"
+    lines = [f"  watchers : {head}",
+             "             " + _untrusted.flat_note(
+                 "the watcher rows", "the pollers' own state files")]
+    for row in found[:_ROW_CAP]:
+        lines.append(
+            f"             {_untrusted.flat(row.source)} "
+            f"{_untrusted.flat(row.watcher_id)} — last emit {_stamp(row.last, 'ts')}")
+    if len(found) > _ROW_CAP:
+        lines.append(f"             ... and {len(found) - _ROW_CAP} more")
+    if refused:
+        subject = "its watcher is" if len(refused) == 1 else "their watchers are"
+        noun = "state file was" if len(refused) == 1 else "state files were"
+        lines.append(
+            f"             {len(refused)} {noun} not read, so whether {subject} "
+            "stranded is not known either way")
+        for row in refused[:_ROW_CAP]:
+            lines.append(f"             {row.refusal}")
+        if len(refused) > _ROW_CAP:
+            lines.append(f"             ... and {len(refused) - _ROW_CAP} more unread")
     return lines
 
 
