@@ -484,7 +484,7 @@ def _selection_mismatch(display_status: str, job_id: str) -> str:
 # summary from one echoed inside captured subprocess output, or from a `-s` run
 # that reprints a nested pytest indented — and with the selection below that
 # nested line could silently replace the outer one.
-_SUITE_SUMMARY_RE = re.compile(
+_SUITE_SUMMARY_RE = re.compile(  # anchored-ok: matched against one rstrip()ed log line
     r"^(?:=+[ \t]*)?"
     r"(?P<counts>\d+\s+[A-Za-z]+(?:\s*,\s*\d+\s+[A-Za-z]+)*)"
     r"\s+in\s+[0-9.]+s"

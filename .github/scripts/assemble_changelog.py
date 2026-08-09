@@ -59,15 +59,18 @@ SECTIONS = ("added", "changed", "deprecated", "removed", "fixed", "security")
 
 #: `<issue>.<section>[.<slug>].md`. The slug exists so one issue can file two
 #: entries in one section without the two PRs colliding on a path again.
-_NAME_RE = re.compile(r"^(\d+)\.([a-z]+)(?:\.([A-Za-z0-9][A-Za-z0-9._-]*))?\.md$")
+#: `\Z` and not `$`. A POSIX filename may end in a newline, and `$` matched
+#: before one — so `1188.fixed.md\n` parsed as a fragment for issue 1188, got
+#: folded into the release and then deleted as consumed (#1188).
+_NAME_RE = re.compile(r"^(\d+)\.([a-z]+)(?:\.([A-Za-z0-9][A-Za-z0-9._-]*))?\.md\Z")
 
-_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
+_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+\Z")  # \Z, not $ — #1188
 
 #: Not fragments, and not mistakes either — refusing these would make the
 #: directory unable to document itself.
 _IGNORED = {"README.md", ".gitkeep", ".gitignore"}
 
-_UNRELEASED_LINK_RE = re.compile(
+_UNRELEASED_LINK_RE = re.compile(  # anchored-ok: matched per line of CHANGELOG.md; the newline is the delimiter
     r"^\[Unreleased\]:\s*(?P<base>\S+?)/compare/v(?P<prev>[0-9][^.\s]*(?:\.[^.\s]+)*)\.\.\.HEAD\s*$"
 )
 

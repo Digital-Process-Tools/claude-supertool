@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _auth import get_api_key
 from _rest import request
 
-_BARE_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*-[a-z0-9]{4,6}$")
+_BARE_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*-[a-z0-9]{4,6}\Z")  # \Z — #1188
 
 
 def resolve_article_id(raw: str) -> int:

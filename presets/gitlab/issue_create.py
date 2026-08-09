@@ -156,7 +156,7 @@ def main() -> int:
         body = description
 
     if estimate:
-        if not re.match(r"^\d+(\.\d+)?[mhdw]$", estimate):
+        if not re.match(r"^\d+(\.\d+)?[mhdw]\Z", estimate):  # \Z, not $ — #1188
             print(f"ERROR: invalid estimate format: {estimate!r} (expected e.g. '4h', '30m', '2d')")
             return 1
         body = body.rstrip() + f"\n\n/estimate {estimate}"
