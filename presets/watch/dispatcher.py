@@ -231,9 +231,16 @@ def cmd_unwatch(parts: list[str]) -> int:
     if skipped:
         print("Not signalling " + ", ".join(str(p) for p in skipped)
               + " — a watcher is never PID 1 nor this process.")
+    # An unreadable pid file is not released. `release_pidfile` with no `pid`
+    # unlinks unconditionally — that is correct for a poller giving up its own
+    # slot, and wrong here: this arm has just told the operator to inspect the
+    # path, and removing it is removing the thing to inspect. It also puts the
+    # unlink back on the one path #1200 took it off everywhere else.
+    releasable = not info.get("tracked_refusal")
     if not pids:
         _report_nothing_stopped(source, watcher_id, info)
-        transport.release_pidfile(source, watcher_id)
+        if releasable:
+            transport.release_pidfile(source, watcher_id)
         _acknowledge_deaths(source, watcher_id)
         return 0
     print(f"Stopping {len(pids)} poller(s) for {source}:{watcher_id}: "
@@ -251,7 +258,12 @@ def cmd_unwatch(parts: list[str]) -> int:
     if not info["scan_ok"]:
         print("Process scan unavailable — only the tracked PID was considered, "
               "so an untracked poller for this id would not have been found.")
-    transport.release_pidfile(source, watcher_id)
+    if releasable:
+        transport.release_pidfile(source, watcher_id)
+    else:
+        print(f"The PID file for {source}:{watcher_id} was left in place — "
+              f"{info['tracked_refusal']}. The pollers above were stopped; the "
+              f"slot stays unclaimable until somebody removes that path by hand.")
     _acknowledge_deaths(source, watcher_id)
     return 1 if failures else 0
 

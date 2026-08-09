@@ -237,11 +237,33 @@ def test_watcher_pids_carries_no_refusal_when_the_slot_is_honestly_empty(state_d
 def test_unwatch_says_the_pid_file_was_unreadable_instead_of_no_pid_file(state_dir, capsys):
     """A missing pid file and a pid file that would not be followed send an
     operator to two different places."""
-    _hostile_symlink(state_dir)
+    path = _hostile_symlink(state_dir)
     dispatcher.cmd_unwatch([SOURCE, WATCHER])
     out = capsys.readouterr().out
     assert "No PID file" not in out, out
     assert "could not be read" in out or "symlink" in out, out
+    # The message tells the operator to inspect the path. `release_pidfile` with
+    # no `pid` unlinks unconditionally, so without this assertion the message and
+    # the behaviour disagreed and every test here still passed.
+    assert os.path.islink(path), "unwatch deleted the path it told us to inspect"
+
+
+@needs_symlink
+def test_unwatch_leaves_an_unreadable_pid_file_alone_after_stopping_pollers(
+        state_dir, monkeypatch, capsys):
+    """The other `release_pidfile` call in `cmd_unwatch`, on the arm that did
+    stop something. Stopping a poller says nothing about who wrote this name."""
+    path = _hostile_symlink(state_dir)
+    stopped: list[int] = []
+    monkeypatch.setattr(
+        transport, "scan_poller_pids",
+        lambda: ({(SOURCE, WATCHER): [4242]}, True))
+    monkeypatch.setattr(transport, "_pid_alive", lambda pid: pid == 4242)
+    monkeypatch.setattr(dispatcher, "_stop_pid", lambda pid: stopped.append(pid) or "")
+    dispatcher.cmd_unwatch([SOURCE, WATCHER])
+    assert stopped == [4242]
+    assert os.path.islink(path), "unwatch deleted a pid file it could not read"
+    assert "left in place" in capsys.readouterr().out
 
 
 @needs_symlink

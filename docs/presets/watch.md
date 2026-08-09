@@ -1235,10 +1235,10 @@ costume of a measurement, which is the defect this op exists to remove rather
 than relocate.
 
 **Branch on the report's first line, not on the exit code.** The distinct codes
-0/1/3 survive only when `presets/watch/channel.py` is run directly; the
+0/1/3/4 survive only when `presets/watch/channel.py` is run directly; the
 supertool wrapper collapses every non-zero to 1. The first line is
-`channel: FORWARDING` / `NOT DELIVERING` / `CANNOT DETERMINE` and is what the
-tests key on.
+`channel: FORWARDING` / `NOT DELIVERING` / `CANNOT DETERMINE` / `CONTRADICTED`
+and is what the tests key on.
 
 **Why the heartbeat exists.** An idle consumer and a wedged one publish the same
 numbers — the counters only distinguish them if the *stamp* moves. `channel.ts`
