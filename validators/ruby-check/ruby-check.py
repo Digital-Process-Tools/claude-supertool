@@ -83,9 +83,12 @@ def main() -> None:
             timeout=30, encoding="utf-8", errors="replace",
         )
     except FileNotFoundError:
-        print("ruby-check: ruby not found on PATH, skipping", file=sys.stderr)
-        emit({"tool": "ruby-check", "file": file, "ok": True, "count": 0,
-              "errors": [], "duration_ms": int((time.time() - start) * 1000)})
+        # `which` said yes and exec said no — a PATH entry that vanished
+        # between the two, or a name that resolves to something unrunnable.
+        # Still an absent tool, so still the third state.
+        emit(absent(TOOL, file, "ruby on PATH but could not be executed — "
+                                "this file was NOT syntax-checked",
+                    int((time.time() - start) * 1000)))
         return
 
     duration = int((time.time() - start) * 1000)

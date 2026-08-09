@@ -63,9 +63,12 @@ def main() -> None:
             timeout=TIMEOUT_S, encoding="utf-8", errors="replace",
         )
     except FileNotFoundError:
-        print("hadolint: hadolint not found on PATH, skipping", file=sys.stderr)
-        emit({"tool": "hadolint", "file": file, "ok": True, "count": 0,
-              "errors": [], "duration_ms": int((time.time() - start) * 1000)})
+        # `which` said yes and exec said no — a PATH entry that vanished
+        # between the two, or a name that resolves to something unrunnable.
+        # Still an absent tool, so still the third state.
+        emit(absent(TOOL, file, "hadolint on PATH but could not be executed — "
+                                "this Dockerfile was NOT linted",
+                    int((time.time() - start) * 1000)))
         return
     except subprocess.TimeoutExpired:
         # Not a finding about the file, and not silence either. Without this

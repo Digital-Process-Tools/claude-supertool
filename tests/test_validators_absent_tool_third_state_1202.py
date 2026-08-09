@@ -225,3 +225,87 @@ def test_an_absent_mcp_daemon_escalates_when_required(
     assert "skipped" not in out, describe(out)
     assert_declined(out, context=f"{name} required, daemon absent")
     assert "SUPERTOOL_REQUIRE_VALIDATORS" in out["errors"][0]["msg"]
+
+# ---------------------------------------------------------------------------
+# `which` said yes and exec said no — the second absent-tool arm
+# ---------------------------------------------------------------------------
+#
+# Found by the review of the first commit, and it is why the fix is larger than
+# the audit. Emptying `PATH` reaches only the `shutil.which` guard; seven
+# adapters carried a *second* absent-tool arm underneath it, catching the
+# `FileNotFoundError` that a PATH entry vanishing between the lookup and the
+# spawn produces — and every one of them still answered it with `ok: true`. The
+# docstrings rewritten in the same commit claimed otherwise, so for one commit
+# the prose was more wrong than the code it described.
+#
+# Reached by shadowing `shutil.which` and `subprocess.run` and running the
+# adapter through `runpy`, the technique `tests/test_yaml_check.py` already
+# uses: portable, and it exercises the real module rather than a stub of it. A
+# shebang pointing at a missing interpreter would be the more honest
+# reproduction and is POSIX-only, which would leave this arm unasserted on the
+# platform that breaks most often.
+
+EXEC_FAILS_ADAPTERS = [
+    ("ruff", "s.py", "x = 1\n"),
+    ("pyright", "s.py", "x = 1\n"),
+    ("tsc-check", "s.ts", "const x: number = 1;\n"),
+    ("markdownlint", "s.md", "# t\n"),
+    ("ruby-check", "s.rb", "puts 1\n"),
+    ("hadolint", "Dockerfile", "FROM scratch\n"),
+    ("gofmt-check", "s.go", "package main\n"),
+    ("terraform-check", "s.tf", "variable \"x\" {}\n"),
+    ("cargo-check", "src/main.rs", "fn main() {}\n"),
+]
+
+
+def _run_with_exec_failing(name: str, tmp_path: Path, filename: str,
+                           body: str, env: dict) -> dict:
+    target = tmp_path / filename
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(body, encoding="utf-8")
+    if name == "cargo-check":
+        # Reached only past the crate-root walk, which is a scope refusal and
+        # deliberately not an escalation.
+        (tmp_path / "Cargo.toml").write_text(
+            '[package]\nname = "x"\nversion = "0.1.0"\n', encoding="utf-8")
+
+    shim = tmp_path / "_exec_fails_shim.py"
+    shim.write_text(
+        "import runpy, shutil, subprocess, sys\n"
+        "shutil.which = lambda *a, **k: 'a-path-that-resolved'\n"
+        "def _gone(*a, **k):\n"
+        "    raise FileNotFoundError(2, 'No such file or directory')\n"
+        "subprocess.run = _gone\n"
+        f"runpy.run_path({str(_adapter(name))!r}, run_name='__main__')\n",
+        encoding="utf-8")
+
+    r = subprocess.run([sys.executable, str(shim), str(target)],
+                       capture_output=True, text=True, env=env,
+                       encoding="utf-8", errors="replace")
+    assert r.stdout.strip(), (
+        f"{name}: adapter printed no verdict at all; stderr={r.stderr!r}")
+    return json.loads(r.stdout.strip().splitlines()[-1])
+
+
+@pytest.mark.parametrize("name,filename,body", EXEC_FAILS_ADAPTERS,
+                         ids=[a[0] for a in EXEC_FAILS_ADAPTERS])
+def test_a_tool_that_resolved_and_would_not_run_is_the_third_state(
+        tmp_path: Path, name: str, filename: str, body: str) -> None:
+    env = dict(os.environ)
+    env.pop("SUPERTOOL_REQUIRE_VALIDATORS", None)
+    out = _run_with_exec_failing(name, tmp_path, filename, body, env)
+    assert "skipped" in out, describe(out)
+    for key in ("ok", "count", "errors"):
+        assert key not in out, f"{name}: a skip must not carry {key!r}: {out}"
+
+
+@pytest.mark.parametrize("name,filename,body", EXEC_FAILS_ADAPTERS,
+                         ids=[a[0] for a in EXEC_FAILS_ADAPTERS])
+def test_a_tool_that_would_not_run_escalates_when_required(
+        tmp_path: Path, name: str, filename: str, body: str) -> None:
+    env = dict(os.environ)
+    env["SUPERTOOL_REQUIRE_VALIDATORS"] = name
+    out = _run_with_exec_failing(name, tmp_path, filename, body, env)
+    assert "skipped" not in out, describe(out)
+    assert_declined(out, context=f"{name} required, resolved but unrunnable")
+    assert "SUPERTOOL_REQUIRE_VALIDATORS" in out["errors"][0]["msg"]

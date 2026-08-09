@@ -246,10 +246,12 @@ Two settings in that block are decisions rather than defaults:
 ### The tool is not installed — `skipped` locally, loud in CI on request
 
 `shellcheck`, `eslint` and `gitleaks` are external binaries most machines do
-not have, which makes the same question three times — and, it turned out,
-thirty. What does a validator report when its tool is absent?
+not have, which makes the same question three times: what does a validator
+report when its tool is absent? It turned out to be the question for nearly
+every adapter in the directory, answered three different ways until #1202 — the
+paragraphs under the `SUPERTOOL_REQUIRE_VALIDATORS` block below have the count.
 
-`tomllint` is the fourth, and it is the one that shows the question is not
+`tomllint` is a fourth case, and it is the one that shows the question is not
 about binaries (#1157). Its "tool" is an import — stdlib `tomllib` on 3.11+,
 the third-party `tomli` below that — and on a 3.10 machine with no `tomli` it
 answered `ok: true, count: 0`: not a parser that failed, a parser that was

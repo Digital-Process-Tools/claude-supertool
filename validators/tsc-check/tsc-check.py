@@ -63,9 +63,12 @@ def main() -> None:
             timeout=TIMEOUT_S, encoding="utf-8", errors="replace",
         )
     except FileNotFoundError:
-        print("tsc-check: tsc not found on PATH, skipping", file=sys.stderr)
-        emit({"tool": "tsc-check", "file": file, "ok": True, "count": 0,
-              "errors": [], "duration_ms": int((time.time() - start) * 1000)})
+        # `which` said yes and exec said no — a PATH entry that vanished
+        # between the two, or a name that resolves to something unrunnable.
+        # Still an absent tool, so still the third state.
+        emit(absent(TOOL, file, "tsc on PATH but could not be executed — "
+                                "this file was NOT type-checked",
+                    int((time.time() - start) * 1000)))
         return
     except subprocess.TimeoutExpired:
         # See hadolint.py for why this is a finding rather than a skip, and

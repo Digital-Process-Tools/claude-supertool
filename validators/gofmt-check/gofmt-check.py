@@ -89,9 +89,12 @@ def main() -> None:
         r = subprocess.run(["gofmt", "-l", file],
                            capture_output=True, text=True, timeout=30, encoding="utf-8", errors="replace")
     except FileNotFoundError:
-        print("gofmt-check: gofmt not found on PATH, skipping", file=sys.stderr)
-        emit({"tool": "gofmt-check", "file": file, "ok": True, "count": 0,
-              "errors": [], "duration_ms": int((time.time() - start) * 1000)})
+        # `which` said yes and exec said no — a PATH entry that vanished
+        # between the two, or a name that resolves to something unrunnable.
+        # Still an absent tool, so still the third state.
+        emit(absent(TOOL, file, "gofmt on PATH but could not be executed — "
+                                "this file was NOT format-checked",
+                    int((time.time() - start) * 1000)))
         return
     except subprocess.TimeoutExpired:
         emit({"tool": "gofmt-check", "file": file, "ok": False, "count": 1,

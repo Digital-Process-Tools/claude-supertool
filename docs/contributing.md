@@ -281,7 +281,7 @@ The assembler writes one definition per cut, which keeps the *next* release hone
 ## Helper script conventions
 
 - **Python stdlib preferred.** No third-party dependencies. If an op needs `requests`, reconsider the design.
-- **Exit 0 on graceful skip.** If the required CLI tool is missing, print a friendly message and exit 0. Don't fail the whole supertool call because `kubectl` isn't installed.
+- **Exit 0 on graceful skip — for preset scripts, and only those.** If the required CLI tool is missing, print a friendly message and exit 0. Don't fail the whole supertool call because `kubectl` isn't installed. **A validator does the opposite of the friendly message**: it emits `refusal.absent(TOOL, file, reason, dur_ms)` and says nothing on stderr, because a stderr note beside an `ok: true` payload is invisible to the row, the before/after delta, `rollback_on_fail` and CI. This bullet read as license for the other thing in ten adapters at once ([#1202](https://github.com/Digital-Process-Tools/claude-supertool/issues/1202)); see [validators.md](validators.md), "The tool is not installed".
 - **Validators output JSON.** See [validators.md](validators.md) for the exact schema. Other scripts can output anything — supertool passes it through as-is.
 - **One file per op.** `gitlab/issue.py`, `gitlab/mr.py`, `gitlab/pipeline.py` — not one monolithic `gitlab.py` with a dispatch table.
 - **Scripts are co-located with their preset.** `presets/mytools/status.py`, not `scripts/status.py`. The `{path}` placeholder makes this work without hardcoded paths.

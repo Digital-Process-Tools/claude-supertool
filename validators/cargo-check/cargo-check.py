@@ -386,9 +386,12 @@ def main() -> None:
             cwd=str(crate_root), encoding="utf-8", errors="replace",
         )
     except FileNotFoundError:
-        print("cargo-check: cargo not found on PATH, skipping", file=sys.stderr)
-        emit({"tool": "cargo-check", "file": file, "ok": True, "count": 0,
-              "errors": [], "duration_ms": int((time.time() - start) * 1000)})
+        # `which` said yes and exec said no — a PATH entry that vanished
+        # between the two, or a name that resolves to something unrunnable.
+        # Still an absent tool, so still the third state.
+        emit(absent(TOOL, file, "cargo on PATH but could not be executed — "
+                                "this file was NOT compiled",
+                    int((time.time() - start) * 1000)))
         return
     except subprocess.TimeoutExpired:
         emit({"tool": "cargo-check", "file": file, "ok": False, "count": 1,
