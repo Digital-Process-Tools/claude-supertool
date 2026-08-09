@@ -15,7 +15,16 @@ You open a pull request and you stop. This holds **even if you personally have t
 
 If you are also the maintainer, take the hat off and pick it up again deliberately — a separate pass, against the check arithmetic and the review outcome, not a continuation of the run that wrote the code.
 
-So the finish line is: branch pushed, PR open, report written. Nothing after that belongs to this role.
+**Where exactly you stop depends on whether someone else is publishing for you, and you must know which case you are in before you start.**
+
+| Situation | Finish line |
+| --- | --- |
+| Nobody else will publish — an outside contributor on a fork | commit, push your branch, open the PR, report |
+| **Someone is orchestrating you** — a maintainer, or an agent runner | **commit, and stop.** Do not push. Do not open a PR. Do not comment on the issue. Report, and let them publish |
+
+The second row is the default when this skill is invoked by another agent, and it is not negotiable phrasing. Publishing is the irreversible half of the work: a commit in a worktree costs nothing to throw away, a pushed branch and an open PR are public and enter someone else's board.
+
+Write that limit to yourself as unconditional. "Do not push **if something blocks you**" is a contingency, and in the absence of a blocker it reads as permission — that exact sentence once produced two agents obeying it in opposite directions, one stopping and one opening a PR, both correctly.
 
 **Never, unattended:** merge anything · push to `master` · cut a tag or a release · delete a branch or a ref · close an issue · comment on someone else's issue as though authoritative · edit `.github/workflows/` or add a dependency without saying so in the PR body, in those words.
 
