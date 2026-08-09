@@ -261,6 +261,14 @@
         { "pattern": "\\bimport i?pdb\\b", "ext": ".py", "label": "import pdb" },
         { "pattern": "\\bfrom i?pdb\\b", "ext": ".py", "label": "from pdb import" }
       ]
+    },
+    "oss_train": {
+      "cmd": "{python} scripts/oss_train.py {file}",
+      "timeout": 1200,
+      "wt_root": "~/Documents/st-wt",
+      "description": "Rebase+resolve+push a merge train of this repo's branches, one worktree per issue under wt_root. Arg: '862,860' or 'all'; add ',dry' (comma, never colon) for a read-only report that rebases nothing. Five states per branch — PUSHED / CURRENT / BUSY / REFUSED / FAILED — a git-resolve refusal leaves the branch conflicted rather than skipping it. Exit 1 if anything needs a human; a bare invocation is refused",
+      "example": "oss_train:862,860,861",
+      "hint": true
     }
   },
   "aliases": {},
