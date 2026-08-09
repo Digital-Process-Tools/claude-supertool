@@ -177,6 +177,44 @@ def test_a_relative_path_with_a_directory_answers_like_an_absolute_one(
     assert " ?" not in per_path["sub/clean.txt"]
 
 
+def test_a_filename_that_looks_like_a_glob_is_not_matched_against_a_sibling(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1186, second arm. The per-path route hands a filename to git as a
+    *pathspec*, and a pathspec globs: a clean `t[a].txt` matched its modified
+    sibling `ta.txt` and reported the sibling's ` m` as its own. The bulk arm
+    looks the name up in a dict, which is literal, so the two routes disagreed
+    again — this time by inventing a marker rather than by losing one, which is
+    the worse direction: the answer names a file that is not the one asked
+    about. `[`/`]` and not `*`/`?` in the fixture because Windows will not let a
+    filename contain those, and a test that cannot run on one platform proves
+    nothing there."""
+    monkeypatch.chdir(repo)
+    (repo / "sub" / "ta.txt").write_bytes(b"orig\n")
+    (repo / "sub" / "t[a].txt").write_bytes(b"orig\n")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True,
+                   capture_output=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "glob fixture"],
+                   check=True, capture_output=True)
+    (repo / "sub" / "ta.txt").write_bytes(b"changed\n")
+
+    literal = os.path.join("sub", "t[a].txt")
+    _reset_bulk()
+    alone = supertool._path_meta_suffix(literal, b"x\n")
+    _reset_bulk()
+    for name in _SUB_PATHS[:2]:
+        supertool._path_meta_suffix(name, b"x\n")   # build the snapshot
+    with_snapshot = supertool._path_meta_suffix(literal, b"x\n")
+
+    assert " m" not in alone, (
+        "t[a].txt is committed and unmodified; the ' m' belongs to ta.txt"
+    )
+    assert alone == with_snapshot
+    # the fixture is doing what it claims - the sibling really is modified
+    assert " m" in supertool._path_meta_suffix(os.path.join("sub", "ta.txt"),
+                                               b"x\n")
+
+
 def test_a_relative_symlink_is_still_answered_about_its_own_repo(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

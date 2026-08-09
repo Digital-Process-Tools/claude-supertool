@@ -4136,9 +4136,16 @@ def _path_meta_suffix(path: str, sample: bytes = b"") -> str:
             # same file — #1186. The cwd itself stays, because it is what keeps
             # this route and `_path_meta_repo_root` talking about the same
             # repository when a path crosses a repo boundary.
+            #
+            # `--literal-pathspecs` because a filename is not a pattern: a clean
+            # `t[a].txt` globbed onto its modified sibling `ta.txt` and reported
+            # that file's ` m` as its own. The bulk arm looks the name up in a
+            # dict, so it was already literal — this is the same two-answers
+            # divergence, in the direction that invents a marker rather than
+            # losing one.
             r = subprocess.run(
-                ["git", "status", "--porcelain", "--ignored=matching", "--",
-                 os.path.basename(absolute)],
+                ["git", "--literal-pathspecs", "status", "--porcelain",
+                 "--ignored=matching", "--", os.path.basename(absolute)],
                 capture_output=True, text=True, timeout=2,
                 cwd=os.path.dirname(absolute) or ".", encoding="utf-8", errors="replace",
             )
