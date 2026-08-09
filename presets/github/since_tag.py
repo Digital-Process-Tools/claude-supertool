@@ -332,29 +332,42 @@ def select_tag(tags, requested: str = ""):
 # The count's state
 # ---------------------------------------------------------------------------
 
-def count_state(*, kept: int, limit: int, undated: int, unreconciled: int):
+def count_state(*, kept: int, limit: int, undated: int, unreconciled: int,
+                page: Optional[int] = None):
     """`(state, text)` for the number the release trigger reads.
+
+    `page` is how many rows `gh` actually returned; `kept` is how many survived
+    the boundary filter. **The cap is a property of the page, not of what
+    survived it.** Measuring it on `kept` means a full page thinned by even one
+    row renders `EXACT`, which is a confident wrong number on a truncated read —
+    this op's own bug, one layer down. It defaults to `kept` only so a caller
+    with a single number cannot silently get the looser check.
 
     Ordered worst-first. A capped page beaten by a reconciliation gap still
     reports the gap, because `>=N` reads as "at least this many" and a
     disagreement means the tool does not know that either.
     """
+    rows = kept if page is None else page
     if undated or unreconciled:
         return COUNT_UNVERIFIED, f"{kept} (UNVERIFIED)"
-    if kept >= limit:
+    if rows >= limit:
         return COUNT_LOWER_BOUND, f">={kept}"
     return COUNT_EXACT, str(kept)
 
 
-def page_note(*, kept: int, limit: int) -> str:
+def page_note(*, page: int, limit: int) -> str:
     """One line about the page itself, independent of the count's state.
+
+    `page` is the row count `gh` returned, before the boundary filter — see
+    `count_state`. A page is full or it is not; how many of its rows survived
+    a later filter says nothing about whether a second page exists.
 
     `count_state` ranks a reconciliation gap above a cap, which is right — a
     disagreement is worse than a known-short list. But ranking one above the
     other must not delete it: a full page is a fact about the read, and the
     caller who sees ``UNVERIFIED`` still needs to know the list is truncated.
     """
-    if kept >= limit:
+    if page >= limit:
         return (f"merged PRs: gh search index, page limit {limit} — PAGE FULL, "
                 f"so this is a lower bound and more may exist. Raise it with "
                 f"per=N.")
@@ -429,6 +442,48 @@ def reconcile(api_numbers, git_numbers):
     """
     return (sorted(set(api_numbers) - set(git_numbers)),
             sorted(set(git_numbers) - set(api_numbers)))
+
+
+# ---------------------------------------------------------------------------
+# repo: targeting — refused, because only half of it could ever be honoured
+# ---------------------------------------------------------------------------
+
+def repo_target_refusal(target) -> str:
+    """The refusal message for a `repo:OWNER/NAME` target, or ``""``.
+
+    Every other `gh-*` op can follow a repo target because everything it reads
+    comes from the API. This one does not: the boundary tag, the default-branch
+    ref, the commit-subject cross-check and `changelog.d/` are all **local**
+    reads of the cwd's clone, and only the merged-PR list takes `--repo`.
+
+    Half a target is worse than none, and it is this op's own defect wearing a
+    different hat. Measured before this refusal existed, with
+    `repo:Digital-Process-Tools/claude-remember` from a claude-supertool
+    worktree:
+
+        boundary: RESOLVED — tag v0.31.0 at 39372ab   <- claude-supertool
+        merged since tag: 0                            <- claude-remember
+        unreleased fragments: 14                       <- claude-supertool
+
+    Three numbers about two repositories under one header, and the headline was
+    a confident zero. Refusing names the reason and the way to get the answer;
+    rendering it would not.
+    """
+    value = str(target or "").strip()
+    if not value:
+        return ""
+    flat = _untrusted.flat(value)
+    return "\n".join([
+        f"ERROR: gh-since-tag cannot be pointed at '{flat}' with a repo: "
+        f"target, and it will not answer half of the question instead.",
+        f"  Only the merged-PR list can follow the target. The boundary tag, "
+        f"the default branch, the git-history cross-check and changelog.d are "
+        f"local reads of this clone, so the count would be measured for "
+        f"'{flat}' against a tag belonging to this repository — which renders "
+        f"as an ordinary number and is not one.",
+        "  To ask about another repository, run this op from inside that "
+        "repository's clone.",
+    ])
 
 
 # ---------------------------------------------------------------------------
@@ -705,6 +760,11 @@ def main() -> int:
         print("Syntax: gh-since-tag[:TAG][:per=N]")
         return 1
 
+    refusal = repo_target_refusal(_repo_target.target())
+    if refusal:
+        print(refusal)
+        return 1
+
     sources = []
     branch_ref, branch_note = default_branch_ref()
     sources.append(branch_note)
@@ -744,7 +804,7 @@ def main() -> int:
         return _bail(boundary_state, chosen, notes)
 
     kept, undated = filter_merged(api_rows, boundary)
-    sources.append(page_note(kept=len(kept), limit=limit))
+    sources.append(page_note(page=len(api_rows), limit=limit))
 
     subjects, subj_reason = read_subjects(str(chosen.get("name")), branch_ref)
     if subjects is None:
@@ -766,7 +826,8 @@ def main() -> int:
         unreconciled = len(only_api) + len(only_git)
 
     state, text = count_state(kept=len(kept), limit=limit,
-                              undated=len(undated), unreconciled=unreconciled)
+                              undated=len(undated), unreconciled=unreconciled,
+                              page=len(api_rows))
     print("\n".join(render(
         boundary_state=boundary_state, chosen=chosen, notes=notes, rows=kept,
         undated=undated, count_text=text, count_state=state,

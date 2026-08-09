@@ -388,11 +388,52 @@ def test_unknown_reachability_is_ambiguous_not_an_assumed_yes() -> None:
 
 def test_a_full_page_says_so_even_when_the_count_state_is_unverified() -> None:
     """A reconciliation gap outranks the cap in count_state; it must not erase it."""
-    assert "PAGE FULL" in st.page_note(kept=3, limit=3)
+    assert "PAGE FULL" in st.page_note(page=3, limit=3)
 
 
 def test_a_short_page_carries_no_cap_warning() -> None:
-    assert "PAGE FULL" not in st.page_note(kept=14, limit=100)
+    assert "PAGE FULL" not in st.page_note(page=14, limit=100)
+
+
+def test_the_cap_is_measured_on_the_page_not_on_what_survived_the_filter() -> None:
+    """The page is what gh returned; `kept` is what the boundary filter left.
+
+    A full page thinned to three rows is still a full page, and calling that
+    number EXACT is the confident-wrong-number bug one layer down — the very
+    thing this op exists to stop.
+    """
+    assert "PAGE FULL" in st.page_note(page=5, limit=5)
+    state, text = st.count_state(kept=2, limit=5, undated=0, unreconciled=0,
+                                 page=5)
+    assert state == st.COUNT_LOWER_BOUND
+    assert text == ">=2"
+
+
+def test_page_defaults_to_the_kept_count_when_it_is_not_supplied() -> None:
+    state, _text = st.count_state(kept=5, limit=5, undated=0, unreconciled=0)
+    assert state == st.COUNT_LOWER_BOUND
+
+
+# ---------------------------------------------------------------------------
+# repo: targeting — half a target is worse than none
+# ---------------------------------------------------------------------------
+
+def test_a_repo_target_is_refused_rather_than_half_applied() -> None:
+    """Only the PR list can follow `repo:`; the boundary and cross-check cannot.
+
+    Measured before this refusal existed: `repo:.../claude-remember` +
+    `gh-since-tag` printed claude-supertool's v0.31.0 as the boundary,
+    claude-remember's merge count against it, and claude-supertool's fragment
+    count — three numbers about two repositories under one header.
+    """
+    message = st.repo_target_refusal("Digital-Process-Tools/claude-remember")
+    assert message
+    assert "Digital-Process-Tools/claude-remember" in message
+
+
+def test_no_repo_target_is_not_a_refusal() -> None:
+    assert st.repo_target_refusal(None) == ""
+    assert st.repo_target_refusal("") == ""
 
 
 def test_the_unknown_tag_hint_names_the_NEWEST_tags_not_the_alphabetical_first() -> None:

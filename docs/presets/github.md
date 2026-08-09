@@ -1305,6 +1305,20 @@ The count:
 
 A full page is disclosed **on its own line** even when `UNVERIFIED` outranks it in the state field. Ranking one signal above another must not delete it.
 
+**The cap is measured on the page `gh` returned, not on what survived the boundary filter.** Those differ whenever a row is dropped locally — an unparsable `mergedAt`, or a row the search index returned that the parsed comparison places at or before the instant — and measuring on the survivors means a full page thinned by one row renders `EXACT`. That is a confident wrong number on a truncated read, which is this op's own bug one layer down; it was in the first version of this file and a review pass caught it.
+
+### `repo:OWNER/NAME` is refused here, not honoured
+
+Every other `gh-*` op takes a repo target because everything it reads comes from the API. `gh-since-tag` does not: only the merged-PR list can carry `--repo`, while the boundary tag, the default-branch ref, the commit-subject cross-check and `changelog.d/` are all **local** reads of the cwd's clone. Measured from a `claude-supertool` worktree with `repo:Digital-Process-Tools/claude-remember`:
+
+```
+boundary: RESOLVED — tag v0.31.0 at 39372ab   <- claude-supertool
+merged since tag: 0                            <- claude-remember
+unreleased fragments: 14                       <- claude-supertool
+```
+
+Three numbers about two repositories under one header, with a confident zero as the headline. Half a target is worse than none, so the op refuses, names which reads could not follow, and says to run it from inside the clone being asked about.
+
 ### Two sources, because a search index can lag
 
 Rows come from `gh pr list --search "merged:>INSTANT"` — GitHub's search index. The same window is read a second time from **local git history**, taking the `(#N)` off each squash subject on the default branch, and the two sets are reconciled in both directions:
