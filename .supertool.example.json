@@ -30,7 +30,8 @@
     "bluesky",
     "xml",
     "mcp",
-    "watch"
+    "watch",
+    "claims"
   ],
   "mcp": {
     "_example-php-lsp": {
