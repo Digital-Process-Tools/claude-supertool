@@ -436,12 +436,39 @@ def test_help_unknown_op_errors(tmp_path: Path, monkeypatch) -> None:
 
 
 def test_help_known_builtin_without_docs(tmp_path: Path, monkeypatch) -> None:
-    """A real builtin with no config entry says so rather than 'unknown op'."""
+    """Every op this binary accepts says so rather than 'unknown op'.
+
+    Not ``next(iter(_BUILTIN_OPS))``, which is what this test used to do and
+    which drew a red leg roughly two CI runs in five.
+
+    ``_BUILTIN_OPS`` is a shadowing blocklist -- "a custom op with this name is
+    ignored" -- and not a capability list. It still carries ``vi`` from before
+    the op was renamed ``vim``; ``_valid_op_names()`` drops that name on purpose
+    because no branch dispatches it, and ``op_help`` gates its "valid operation
+    here" arm on ``_valid_op_names()`` (#1124). So ``vi`` is the one member of
+    the set for which "no help for op" is the *correct* answer, and picking the
+    set's first element under PYTHONHASHSEED randomisation drew it in 8 of 200
+    measured seeds. Twelve legs per run, one draw each: about a 39% chance per
+    CI run that some leg went red for a reason unrelated to the branch on it.
+
+    Nothing about this is platform-specific -- it landed on windows twice by
+    coincidence and reproduces on macOS at PYTHONHASHSEED=11.
+
+    Sweeping the dispatcher's own list is deterministic and strictly stronger:
+    it fails if the "valid operation here" arm stops covering any single op,
+    which a one-element sample could only catch by lottery.
+    """
     _set_config(monkeypatch, tmp_path, {"builtin-ops": {}})
-    op = next(iter(supertool._BUILTIN_OPS))
-    out = supertool.op_help(op)
-    assert "has no documented help" in out
-    assert op in out
+    names = supertool._valid_op_names()
+    assert names, "the binary must advertise at least one op"
+    assert "vi" not in names, (
+        "vi is a _BUILTIN_OPS relic with no dispatch branch; if it becomes real, "
+        "this test's premise changes and op_help's answer for it changes with it"
+    )
+    for op in names:
+        out = supertool.op_help(op)
+        assert "has no documented help" in out, f"{op} -> {out!r}"
+        assert op in out, f"{op} -> {out!r}"
 
 
 def test_help_routes_via_dispatch(tmp_path: Path, monkeypatch) -> None:
