@@ -789,7 +789,7 @@
       ],
       "tier": "slow",
       "rollback_on_fail": false,
-      "timeout": 60
+      "timeout": 180
     },
     "phpmd": {
       "cmd": "{python} {supertool_dir}/validators/phpmd/phpmd.py {file}",
@@ -803,7 +803,7 @@
       ],
       "tier": "slow",
       "rollback_on_fail": false,
-      "timeout": 60
+      "timeout": 180
     },
     "lsp-diag": {
       "cmd": "{python} {supertool_dir}/validators/lsp-diag/lsp-diag.py {file}",
@@ -816,7 +816,7 @@
         "vim"
       ],
       "rollback_on_fail": false,
-      "timeout": 15
+      "timeout": 45
     },
     "changelog-fragment": {
       "cmd": "{python} {supertool_dir}/validators/changelog-fragment/changelog-fragment.py {file}",
@@ -843,7 +843,7 @@
       ],
       "tier": "slow",
       "rollback_on_fail": false,
-      "timeout": 120
+      "timeout": 300
     },
     "phpmd-mcp": {
       "cmd": "{python} {supertool_dir}/validators/phpmd-mcp/phpmd-mcp.py {file}",
@@ -857,7 +857,7 @@
       ],
       "tier": "slow",
       "rollback_on_fail": false,
-      "timeout": 120
+      "timeout": 180
     },
     "phpunit-mcp": {
       "cmd": "{python} {supertool_dir}/validators/phpunit-mcp/phpunit-mcp.py {file}",
@@ -871,7 +871,7 @@
       ],
       "tier": "slow",
       "rollback_on_fail": false,
-      "timeout": 300
+      "timeout": 360
     },
     "rector-mcp": {
       "cmd": "{python} {supertool_dir}/validators/rector-mcp/rector-mcp.py {file}",
@@ -885,7 +885,7 @@
       ],
       "tier": "slow",
       "rollback_on_fail": false,
-      "timeout": 120
+      "timeout": 180
     }
   },
   "formatters": {

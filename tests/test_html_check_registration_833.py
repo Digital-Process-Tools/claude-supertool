@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -217,3 +218,84 @@ def test_html_check_glob_is_the_same_in_both_configs() -> None:
     """
     assert (SHIPPED["validators"]["html-check"]["match"]
             == EXAMPLE["validators"]["html-check"]["match"])
+
+# `timeout=N` in a `subprocess.run(...)` call, and the named budgets the
+# warm-daemon adapters use instead. Both shapes are read because both exist.
+_INLINE_BUDGET = re.compile(r"\btimeout\s*=\s*(\d+)")
+_NAMED_BUDGET = re.compile(r"^(?:SPAWN|CALL)_TIMEOUT_SEC\s*=\s*(\d+)", re.MULTILINE)
+
+
+def _own_budget_seconds(directory: str):
+    """The worst case the adapter allows itself, or None if it declares none.
+
+    None is a third state on purpose. An adapter with no budget to read is not
+    an adapter that passes this check -- it is one this check could not answer
+    for, and `test_the_budget_reader_still_reads_something` below is what stops
+    a reader that has quietly stopped reading from looking like a clean sweep.
+    """
+    source = (VALIDATORS_DIR / directory / ("%s.py" % directory)).read_text(
+        encoding="utf-8")
+    named = [int(n) for n in _NAMED_BUDGET.findall(source)]
+    if named:
+        return sum(named)
+    inline = [int(n) for n in _INLINE_BUDGET.findall(source)]
+    return max(inline) if inline else None
+
+
+def _catalogue_budgets():
+    """(name, directory, outer timeout, own budget) for every readable entry."""
+    rows = []
+    for name, spec in EXAMPLE["validators"].items():
+        cmd = spec.get("cmd", "") if isinstance(spec, dict) else ""
+        if "validators/" not in cmd or "timeout" not in spec:
+            continue
+        directory = cmd.split("validators/", 1)[1].split("/", 1)[0]
+        if not (VALIDATORS_DIR / directory).is_dir():
+            continue
+        own = _own_budget_seconds(directory)
+        if own is not None:
+            rows.append((name, directory, spec["timeout"], own))
+    return rows
+
+
+def test_a_catalogue_timeout_leaves_the_adapter_room_to_answer() -> None:
+    """The outer budget must exceed the adapter's own, never equal it.
+
+    `docs/validators.md` states the rule on the `html-check` entry: a timeout
+    equal to the adapter's own means the core's timer always wins the race, so
+    the row reads `NOT CHECKED` with nothing naming what hung. With headroom
+    the adapter's own arm fires first and reports a cause. That is the same
+    three-state contract one layer out -- an absence produced by the tool has
+    to say which absence it is.
+
+    Only the entries added for #1159 are checked, because they are the ones
+    this test was written with. Several adapter READMEs publish a figure that
+    violates this rule for the pre-existing rows; that is a real defect and it
+    is filed rather than fixed inside a PR about two other issues.
+    """
+    checked = {"phpstan", "phpmd", "lsp-diag",
+               "phpstan-mcp", "phpmd-mcp", "phpunit-mcp", "rector-mcp"}
+    too_tight = [
+        (name, outer, own)
+        for name, _dir, outer, own in _catalogue_budgets()
+        if name in checked and outer <= own
+    ]
+    assert not too_tight, (
+        "these catalogue entries give the adapter no room to report its own "
+        "timeout, so the core kills it first and the reader gets NOT CHECKED "
+        "with no cause -- (entry, outer timeout, adapter's own budget): %s"
+        % too_tight)
+
+
+def test_the_budget_reader_still_reads_something() -> None:
+    """A sweep that stopped finding anything must not read as a clean sweep.
+
+    If an adapter is rewritten so neither budget shape matches, the test above
+    silently checks fewer entries and keeps passing. This is the floor that
+    turns that into a red.
+    """
+    read = {name for name, _dir, _outer, _own in _catalogue_budgets()}
+    assert len(read) >= 7, (
+        "the budget reader found only %d catalogue entries with a readable "
+        "budget; it is meant to read at least the seven added by #1159. "
+        "Found: %s" % (len(read), sorted(read)))

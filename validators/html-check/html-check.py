@@ -218,6 +218,16 @@ def _parse_tag(html: str, i: int) -> tuple[int, dict[str, str]] | str:
     never answer differently about whether `src` is present or what `type`
     holds. We only decline. That is the one direction a validator may be
     wrong in.
+
+    **That ~60k measurement is over start tags** -- it predates #1182 and was
+    not re-run when this walker took the end tag on. It is still the right
+    claim for the property it is about, because an end tag's attributes are
+    discarded and no `src`/`type` answer depends on them; what the end tag
+    rests on instead is *where the tag ends*, and that is measured separately
+    and much more narrowly, by the parametrized oracle in
+    `tests/test_html_check.py::test_end_tag_boundary_agrees_with_html_parser`.
+    Two claims, two bodies of evidence -- do not read the big number as
+    covering the newer half.
     """
     n = len(html)
     attrs: dict[str, str] = {}
