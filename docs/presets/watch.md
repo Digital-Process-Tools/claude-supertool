@@ -8,6 +8,7 @@ Background pollers for external sources that emit events on state-change. The fr
 watch:SOURCE:ID[:only=event1,event2]   spawn poller (fire-and-forget)
 unwatch:SOURCE:ID                      kill the poller, remove PID file
 watches                                list active pollers, and any slot that lost one
+channel:health                         is the bridge to the session actually delivering?
 radar                                  reconcile registered tiers against live truth, then report
 radar:--state                          the same tiers, read-only — spawns nothing
 ```
@@ -1078,7 +1079,8 @@ Pollers emit through three channels (all best-effort, none can crash the poller)
 | Transport | Path | Purpose |
 |---|---|---|
 | UDS socket (NDJSON) | `/tmp/supertool-watch.sock` | Live event stream — consumers read this |
-| Status file (JSON) | `/tmp/supertool-watch-{source}__{id}.state.json` | Last-known state for `watches` op + offline inspection, plus the poller's own `only` filter so another tier can tell what it will ever emit |
+| Status file (JSON) | `/tmp/supertool-watch-{source}__{id}.state.json` | Last-known state for `watches` op + offline inspection, plus the poller's own `only` filter so another tier can tell what it will ever emit, and `last_emit` — what the socket write actually meant |
+| Consumer health (JSON) | `{sock_path}.health.json` | Written by the consumer, not by a poller: its own count of lines read, forwarded and dropped, re-stamped on a 10s heartbeat. What `channel:health` reads |
 | macOS osascript | system notification center | Desktop ping on terminal status / error |
 
 Override the socket path with the `SUPERTOOL_WATCH_SOCK` env var — set it to
@@ -1100,6 +1102,72 @@ actually bound to as `sock_path` in its own state file, next to `only`, so a
 straggler on the old path after an operator changes the variable is
 something a reader can find rather than something inferred from partial
 delivery.
+
+## Is it delivering? — `channel:health` ([#554](https://github.com/Digital-Process-Tools/claude-supertool/issues/554))
+
+The three checks a session reaches for — `pgrep -fl channel.ts`, `lsof` on the
+socket, writing to the socket — are green whether events arrive or not. Two are
+facts about a process and the third is a fact about a kernel buffer; none is a
+fact about delivery. On 2026-07-29 that ambiguity produced a confidently wrong
+diagnosis in both directions inside twenty minutes: first "transport is fine"
+off a successful write, then "the radar is dead" off a drop line, while the link
+had already healed.
+
+**Delivery into a Claude session is not observable from outside that session,
+and the tool now says so instead of implying otherwise.** The bridge sends a
+JSON-RPC *notification* — no id, no response, nothing to await — and
+`channel.ts` never writes back to the producer connection either. There is no
+ack to read, at either end. So the answer has three states:
+
+| State | Exit | What is actually known |
+|---|---|---|
+| `NOT DELIVERING` | 1 | A definite negative. No socket, or a socket that refuses: every event a poller emits right now is lost at the source. The report also names each watcher whose own `last_emit` already found nobody home, with the timestamp of that emit |
+| `FORWARDING` | 0 | A consumer is bound and its published counters are fresh: N lines read, N forwarded, N dropped, last forwarded at T |
+| `CANNOT DETERMINE` | 3 | Bound, but publishing no counters, or counters written by a pid that is gone, or counters that stopped refreshing, or counters with no readable `forwarded` number. This is the state the old tooling reported as green |
+
+**The pid in a `FORWARDING` report is self-reported, and the report says so.**
+Pids are reusable, and nothing outside the consumer can prove the process named
+in the health file is the one holding the socket — a crashed consumer whose pid
+was handed to a stranger looks identical from here. The liveness probe is
+therefore only ever an *objection*: a pid that no longer exists means the writer
+of those counters is gone, while a pid that does exist establishes nothing. What
+carries the positive verdict is the freshness of the stamp, because a file
+rewritten four seconds ago was written by something running four seconds ago.
+
+**A counter that is absent or not a number renders as `?`, never as `0`.** `0
+forwarded` is a real reading — a quiet morning — and printing it for a file the
+op could not read would be this issue's defect on this op's own headline. When
+the missing counter is `forwarded` itself, the verdict is `CANNOT DETERMINE`:
+`FORWARDING` is named for a number, and without the number there is no verdict.
+
+```bash
+./supertool 'channel:health'
+```
+
+**`forwarded` never means `delivered`.** It counts events handed to the MCP
+transport, which is the last thing that process observes about them. The word is
+load-bearing: a counter named `delivered` would be an inference wearing the
+costume of a measurement, which is the defect this op exists to remove rather
+than relocate.
+
+**Branch on the report's first line, not on the exit code.** The distinct codes
+0/1/3 survive only when `presets/watch/channel.py` is run directly; the
+supertool wrapper collapses every non-zero to 1. The first line is
+`channel: FORWARDING` / `NOT DELIVERING` / `CANNOT DETERMINE` and is what the
+tests key on.
+
+**Why the heartbeat exists.** An idle consumer and a wedged one publish the same
+numbers — the counters only distinguish them if the *stamp* moves. `channel.ts`
+rewrites the file every 10s with no traffic at all, and `channel:health` stops
+treating counters as evidence at 45s — four missed beats plus half of a fifth,
+the half being margin for a beat that lands late on a loaded machine rather
+than a round number. Without the heartbeat, "0 forwarded" would mean both "a
+quiet morning" and "reading nothing since Tuesday".
+
+**Why the health file sits beside the socket rather than at a fixed path.** Two
+sessions on two `SUPERTOOL_WATCH_SOCK` values are a documented arrangement; one
+health file for both would have each overwriting the other's counters, which is
+this issue's defect rebuilt inside its own fix.
 
 ## Event payload (locked contract)
 

@@ -324,6 +324,110 @@ function drop(line: string, reason: string): void {
   // and a delivered one looked identical from every angle available.
   const shown = line.length > 300 ? `${line.slice(0, 300)}…` : line;
   process.stderr.write(`claude-channel: dropped event (${reason}): ${shown}\n`);
+  // Counted as well as logged (#554 request 3). stderr reaches an operator
+  // running `claude --debug`; it does not reach a process asking "is injection
+  // working?" from the outside, which is the question that had no answer.
+  dropped++;
+  publishHealth();
+}
+
+/**
+ * The counters this server publishes about itself, and the file it publishes
+ * them to (#554, request 3).
+ *
+ * The gap the issue names is that process-alive, socket-held and write-succeeds
+ * all read identical whether events arrive or not. Two of those are facts about
+ * a process and the third is a fact about a kernel buffer; none is a fact about
+ * this server's work. These are.
+ *
+ * **`forwarded`, never `delivered`, and the distinction is the honest part.**
+ * What is counted is events handed to `mcp.notification()` — a JSON-RPC
+ * notification, so there is no id, no response, and nothing to wait on. Whether
+ * one appeared in a Claude session is observable only from inside that session.
+ * A counter called `delivered` would be an inference wearing the costume of a
+ * measurement, which is the defect class this file keeps refusing.
+ *
+ * Written to a path derived from the socket rather than a fixed one, so the
+ * documented two-session arrangement (a second `SUPERTOOL_WATCH_SOCK`) gets two
+ * health files instead of one being overwritten by the other — which would
+ * rebuild this issue's defect inside its own fix.
+ */
+const HEALTH_PATH = `${SOCK_PATH}.health.json`;
+
+/**
+ * How often the counters are re-stamped with no traffic at all.
+ *
+ * An idle radar and a wedged one publish the same numbers; only a moving
+ * `updated` separates them. `presets/watch/channel.py` stops treating counters
+ * as evidence at 45s — four missed beats plus half of a fifth, the half being
+ * margin for a beat that lands late on a loaded machine.
+ */
+const HEARTBEAT_MS = 10_000;
+
+/** Floor on how often the file is rewritten, so a burst is not a write storm. */
+const HEALTH_MIN_INTERVAL_MS = 250;
+
+const startedAt = isoNow();
+let linesRead = 0;
+let forwarded = 0;
+let dropped = 0;
+let lastForwarded: string | null = null;
+let lastHealthWrite = 0;
+let healthTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** `2026-08-09T10:00:00Z` — the stamp format every other watch surface uses. */
+function isoNow(): string {
+  return `${new Date().toISOString().slice(0, 19)}Z`;
+}
+
+/**
+ * Replace the health file atomically.
+ *
+ * `writeFileSync` straight onto the path would let a reader see a truncated
+ * file and conclude "publishes no counters" — the CANNOT DETERMINE state — for
+ * a server that is working perfectly. Same reason `transport.write_state`
+ * writes through a temp file.
+ *
+ * Failures are swallowed on purpose: an unwritable health file must not cost a
+ * radar. A reader seeing a stale `updated` gets CANNOT DETERMINE, which is the
+ * true answer in that case.
+ */
+function writeHealthNow(): void {
+  lastHealthWrite = Date.now();
+  const tmp = `${HEALTH_PATH}.${process.pid}.tmp`;
+  const record = {
+    pid: process.pid,
+    started: startedAt,
+    updated: isoNow(),
+    sock_path: SOCK_PATH,
+    lines_read: linesRead,
+    forwarded,
+    dropped,
+    last_forwarded: lastForwarded,
+  };
+  try {
+    fs.writeFileSync(tmp, `${JSON.stringify(record, null, 2)}\n`);
+    fs.renameSync(tmp, HEALTH_PATH);
+  } catch {
+    try {
+      fs.unlinkSync(tmp);
+    } catch {}
+  }
+}
+
+/** Publish, at most every `HEALTH_MIN_INTERVAL_MS`, never dropping the last update. */
+function publishHealth(): void {
+  if (healthTimer !== null) return;
+  const due = lastHealthWrite + HEALTH_MIN_INTERVAL_MS - Date.now();
+  if (due <= 0) {
+    writeHealthNow();
+    return;
+  }
+  healthTimer = setTimeout(() => {
+    healthTimer = null;
+    writeHealthNow();
+  }, due);
+  healthTimer.unref?.();
 }
 
 /**
@@ -912,6 +1016,7 @@ const server = net.createServer((conn) => {
       buf = buf.slice(nl + 1);
       nl = buf.indexOf("\n");
       if (!line) continue;
+      linesRead++;
       let ev: unknown;
       try {
         ev = JSON.parse(line);
@@ -1001,6 +1106,15 @@ const server = net.createServer((conn) => {
         }
 
         spends.push({ at: now, chars: cost });
+        // Counted here rather than in the `.then()` of the send below, and the
+        // difference is what the word means: this is the point at which the
+        // event is handed to the transport, which is the last thing this
+        // process observes about it. Resolution of that promise would still not
+        // be delivery into a session, so counting there would buy a later
+        // number and no more truth.
+        forwarded++;
+        lastForwarded = isoNow();
+        publishHealth();
         mcp
           .notification({
             method: "notifications/claude/channel",
@@ -1046,6 +1160,14 @@ try {
   // Permission tightening is advisory; UDS is already localhost-only.
 }
 
+// Published from the moment the socket is bound, before a single event, so that
+// "no health file" means "whatever is bound here is not claude-channel" rather
+// than "it started too recently to have counters". An absence that has two
+// readings is the ambiguity this whole feature exists to remove.
+writeHealthNow();
+const heartbeat = setInterval(writeHealthNow, HEARTBEAT_MS);
+heartbeat.unref?.();
+
 // The socket is settled before the MCP handshake, so a server that refuses
 // never registers as a healthy channel: Claude Code sees it die during
 // start-up and `claude mcp list` reports a failure, instead of a green entry
@@ -1063,11 +1185,22 @@ const cleanup = (): void => {
   try {
     server.close();
   } catch {}
+  try {
+    clearInterval(heartbeat);
+  } catch {}
   // Only ever remove a path this process bound. A refusing server exits before
   // `bound` is set and leaves the incumbent's socket exactly where it found it.
   if (bound) {
     try {
       fs.unlinkSync(SOCK_PATH);
+    } catch {}
+    // The counters go with the socket they describe. Left behind, `forwarded:
+    // 41` under a pid that no longer exists is a number that never decreases
+    // and reads as health forever — this issue's defect, rebuilt out of its own
+    // fix. `channel.py` also refuses a health file whose pid is gone, because a
+    // server killed with SIGKILL never reaches this line.
+    try {
+      fs.unlinkSync(HEALTH_PATH);
     } catch {}
   }
   process.exit(0);

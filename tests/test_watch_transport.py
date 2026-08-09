@@ -47,10 +47,12 @@ def test_read_state_corrupt_returns_empty(monkeypatch, tmp_path) -> None:
     assert transport.read_state("gitlab-mr", "21803") == {}
 
 
-def test_emit_socket_no_listener_silent(monkeypatch, tmp_path) -> None:
-    """When the socket file doesn't exist, emit_socket is a no-op (no exception)."""
+def test_emit_socket_no_listener_does_not_raise(monkeypatch, tmp_path) -> None:
+    """No socket file: emit_socket still never raises. Since #554 it is no longer
+    *silent* either — it returns the definite negative, pinned in
+    tests/test_watch_channel_health_554.py."""
     monkeypatch.setattr(transport, "SOCK_PATH", str(tmp_path / "nonexistent.sock"))
-    transport.emit_socket({"event": "test"})
+    assert transport.emit_socket({"event": "test"}).state == transport.EMIT_NO_LISTENER
 
 
 def test_emit_event_writes_state_with_last_event(monkeypatch, tmp_path) -> None:
@@ -85,11 +87,26 @@ def test_emit_event_preserves_existing_state_keys(monkeypatch, tmp_path) -> None
 # of a change it *observed*. Both are worth emitting; they must not look alike.
 # ---------------------------------------------------------------------------
 
+def _capture_into(seen: list) -> object:
+    """Stand in for `emit_socket` and return the verdict `emit_event` reads.
+
+    Since #554 `emit_socket` reports which of three things its write meant, and
+    `emit_event` records that in the state file. A stub returning None makes
+    `emit_event` raise, which is the right shape: the verdict is part of the
+    contract now, not an optional extra.
+    """
+    def _capture(record: dict) -> transport.Emit:
+        seen.append(record)
+        return transport.Emit(transport.EMIT_ACCEPTED, "captured")
+
+    return _capture
+
+
 def test_the_emitted_record_carries_first_tick(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(transport, "STATE_DIR", str(tmp_path))
     monkeypatch.setattr(transport, "SOCK_PATH", str(tmp_path / "nonexistent.sock"))
     seen: list[dict] = []
-    monkeypatch.setattr(transport, "emit_socket", seen.append)
+    monkeypatch.setattr(transport, "emit_socket", _capture_into(seen))
     transport.emit_event("gitlab-mr", "32912", "pipeline_succeeded", {}, first_tick=True)
     assert seen[0]["first_tick"] is True
 
@@ -99,7 +116,7 @@ def test_a_live_transition_is_not_marked_first_tick(monkeypatch, tmp_path) -> No
     monkeypatch.setattr(transport, "STATE_DIR", str(tmp_path))
     monkeypatch.setattr(transport, "SOCK_PATH", str(tmp_path / "nonexistent.sock"))
     seen: list[dict] = []
-    monkeypatch.setattr(transport, "emit_socket", seen.append)
+    monkeypatch.setattr(transport, "emit_socket", _capture_into(seen))
     transport.emit_event("gitlab-mr", "32912", "pipeline_succeeded", {})
     assert seen[0]["first_tick"] is False
 
@@ -120,7 +137,7 @@ def test_the_locked_payload_did_not_move(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(transport, "STATE_DIR", str(tmp_path))
     monkeypatch.setattr(transport, "SOCK_PATH", str(tmp_path / "nonexistent.sock"))
     seen: list[dict] = []
-    monkeypatch.setattr(transport, "emit_socket", seen.append)
+    monkeypatch.setattr(transport, "emit_socket", _capture_into(seen))
     transport.emit_event("gitlab-mr", "32912", "merged", {"url": "u", "title": "t"},
                          first_tick=True)
     assert seen[0]["payload"] == {"url": "u", "title": "t"}

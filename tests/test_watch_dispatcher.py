@@ -369,6 +369,8 @@ def _capture_emissions(monkeypatch, tmp_path):
     def _capture(record):
         with open(log, "a", encoding="utf-8") as f:
             f.write(json.dumps(record) + "\n")
+        # emit_socket returns a verdict since #554; emit_event reads it.
+        return dispatcher.transport.Emit(dispatcher.transport.EMIT_ACCEPTED, "captured")
 
     monkeypatch.setattr(dispatcher.transport, "emit_socket", _capture)
     return log
