@@ -11,7 +11,7 @@
 | **Symbol map** | `map` | [map.md](map.md) |
 | **Edits** | `edit`, `replace`, `replace_dry`, `replace_lines`, `paste`, `append`, `vim`, `batch` | [edits.md](edits.md) |
 | **Validate / Format** | `validate`, `format`, `validate_staged`, `format_staged` | — |
-| **Meta** | `cwd`, `introduction`, `output-format`, `ops`, `help`, `version`, `gc` | [meta.md](meta.md) |
+| **Meta** | `cwd`, `introduction`, `output-format`, `ops`, `ops:roster`, `help`, `version`, `gc` | [meta.md](meta.md) |
 
 ## Full op table
 
@@ -33,7 +33,8 @@
 | `map` | `map:PATH` | Symbol map of a file or directory. Shows classes, functions, methods, constants as an indented tree with line numbers. Three-tier: tree-sitter → ctags → regex. Supports PHP, Python, JS, TS, Go, Rust, Java, Ruby. |
 | `introduction` | `introduction` | Output the project introduction text from `.supertool.json`. No `---` dispatch header — clean markdown. |
 | `output-format` | `output-format` | Output format examples from `.supertool.json`. Shows what responses look like. |
-| `ops` | `ops` | Full operations reference from `.supertool.json` — built-in ops, custom ops, and aliases with descriptions and examples. |
+| `ops` | `ops` | Full operations reference from `.supertool.json` — built-in ops, custom ops, and aliases with descriptions and examples. An unrecognised argument is refused, not dropped. |
+| `ops:roster` | `ops:roster` | Every op name plus a safety class, nothing else (~1.4KB) — the only listing form that fits the ~7KB SessionStart cap, so it is what the hook prints. Unmarked = read-only, `*` = writes in this tree, `!` = acts outside it. |
 | `diff` | `diff:PATH1:PATH2` | Unified diff between two files. |
 | `stat` | `stat:PATH` | File/directory metadata: size (bytes), last modified (ISO datetime), type (file/dir). |
 | `around_line` | `around_line:PATH:LINE` or `around_line:PATH:LINE:N` | Show N lines (default 10) of context around a specific line number. Target line marked with `→`. |

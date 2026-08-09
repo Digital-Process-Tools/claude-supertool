@@ -3,6 +3,7 @@
   "requires": "python",
   "ops": {
     "xml": {
+      "safety": "read-only",
       "cmd": "{python} {path}xml/query.py {argjoin}",
       "timeout": 30,
       "description": "XPath query over an XML file. Default: one match per line as 'LINE:TAG @attr=val …'. Add :full to dump matched subtrees as XML. Memory scales with file size.",
@@ -10,6 +11,7 @@
       "example": "xml:clover.xml://file[contains(@name,'CommandX')]/line[@count='0']:full"
     },
     "xml_attr": {
+      "safety": "read-only",
       "cmd": "{python} {path}xml/attr.py {argjoin}",
       "timeout": 30,
       "description": "Extract a single attribute value for each XPath match. One value per line. Skips elements missing the attribute. Use triple-colon (:::) as separator to escape colons inside XPath expressions.",
@@ -17,6 +19,7 @@
       "example": "xml_attr:clover.xml:.//file[contains(@name,'CommandX')]:::line[@count='0']:num"
     },
     "xml_count": {
+      "safety": "read-only",
       "cmd": "{python} {path}xml/count.py {argjoin}",
       "timeout": 30,
       "description": "Count XPath matches. Returns one integer. Returns 0 (not error) when nothing matches. Faster than xml: for big files — avoids materializing result text.",

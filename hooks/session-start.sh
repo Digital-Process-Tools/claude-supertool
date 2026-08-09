@@ -56,8 +56,16 @@ else
 fi
 
 # Output self-documentation from .supertool.json (fallback if no config).
-# Use 'ops-compact' to drop redundant examples and stay closer to the harness's
-# hook-stdout cap (~2KB). The compact view prepends a warning if the output
-# still exceeds the cap, so the model can detect truncation and fetch the full
-# listing on demand via `./supertool 'ops'`.
-python3 "$BIN" 'introduction' 'output-format' 'ops-compact'
+#
+# 'ops:roster' rather than 'ops-compact' (#1231). Measured in this checkout:
+# ops 47,260 bytes, ops-compact 9,067, cap ~7,168 — so the compact listing was
+# truncated on *every* session and everything alphabetically after `grep` was
+# hidden: the whole gh-*/git-* families, radar, watch, read, paste, tree. It
+# disclosed the truncation honestly and that did not help, because what was
+# hidden was existence and a reader cannot miss what they never learned about.
+#
+# The roster is 1,441 bytes — every op name plus a safety class, no
+# descriptions. Whole hook: 2,378 bytes, a third of the cap. Descriptions are
+# one call away and richer there: `help:OP` carries the full contract, the
+# semantics and a worked example, where the listing row carried one line.
+python3 "$BIN" 'introduction' 'output-format' 'ops:roster'

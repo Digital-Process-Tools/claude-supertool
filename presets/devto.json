@@ -3,6 +3,7 @@
   "requires": "python",
   "ops": {
     "devto_publish": {
+      "safety": "acts",
       "cmd": "{python} {path}devto/publish.py {arg}",
       "timeout": 30,
       "description": "Publish a markdown file as an article on Dev.to.",
@@ -12,6 +13,7 @@
       "default_cover": ""
     },
     "devto_list": {
+      "safety": "read-only",
       "cmd": "{python} {path}devto/list.py {arg}",
       "timeout": 15,
       "description": "List own published articles, or another user's articles.",
@@ -20,6 +22,7 @@
       "default_limit": 10
     },
     "devto_read": {
+      "safety": "read-only",
       "cmd": "{python} {path}devto/read.py {arg}",
       "timeout": 15,
       "description": "Read article body + metadata by ID, slug, or full URL.",
@@ -27,6 +30,7 @@
       "example": "devto_read:1234567"
     },
     "devto_browse": {
+      "safety": "read-only",
       "cmd": "{python} {path}devto/browse.py {arg}",
       "timeout": 15,
       "description": "Browse recent articles on a tag.",
@@ -35,6 +39,7 @@
       "default_limit": 10
     },
     "devto_comments": {
+      "safety": "read-only",
       "cmd": "{python} {path}devto/comments.py {args}",
       "timeout": 15,
       "description": "List comments on an article (flat tree, max N).",
@@ -43,6 +48,7 @@
       "default_limit": 20
     },
     "devto_react": {
+      "safety": "acts",
       "cmd": "{python} {path}devto/react.py {args}",
       "timeout": 15,
       "description": "React (like/unicorn/readinglist) to an article. Accepts numeric ID, slug (author/slug), or full URL. Toggles on/off. Requires DEVTO_SESSION_COOKIE for Dev.to write actions (API key alone returns 401).",
@@ -50,6 +56,7 @@
       "example": "devto_react:1234567|like"
     },
     "devto_comment": {
+      "safety": "acts",
       "cmd": "{python} {path}devto/comment.py {args}",
       "timeout": 30,
       "description": "Post a comment (or reply with PARENT_COMMENT_ID). Accepts numeric ID, slug (author/slug), or full URL. MESSAGE may be inline text or a path to a file containing the body (file detection is automatic, like bluesky_publish). EXPERIMENTAL — requires DEVTO_SESSION_COOKIE; the public API has no comment-write endpoint.",
@@ -57,6 +64,7 @@
       "example": "devto_comment:1234567|Thanks for sharing!"
     },
     "devto_status_since": {
+      "safety": "read-only",
       "cmd": "{python} {path}devto/status_since.py {args}",
       "timeout": 60,
       "description": "Briefing: new comments + top articles since timestamp. No arg = uses ~/.config/devto/last_check (auto-tracked). Fan-out: 1 call + 1 per recent article.",

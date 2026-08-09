@@ -90,6 +90,17 @@ Shorthand string ops (`"lint": "ruff check {file}"`) work with a 60s default tim
 | `syntax` | no | Usage pattern shown in help, e.g. `mypy:FILE`. **Parsed, not just displayed** — see the note below. |
 | `example` | no | Concrete example, e.g. `mypy:src/app/module.py`. |
 | `status` | no | `"experimental"` or `"stable"`. Informational only. |
+| `safety` | yes, in shipped presets | `"read-only"`, `"writes"` or `"acts"`. Rendered as the class marker in `ops:roster`. |
+
+**`safety` decides whether someone may learn your op by calling it.** The `ops:roster` listing is names plus one marker, because that is what fits the ~7KB SessionStart cap — and a bare name is only actionable for an op you can probe. Most ops teach their own signature on contact: `between:FILE:747:820` answers *"'820' was read as the path"* and names the op that does take a range. An op that reaches outside the tree cannot be learned that way — `oss_train` force-pushes a merge train, `gh-pr-merge` merges, `watch` spawns a poller.
+
+| Value | Means | Marker |
+|-------|-------|--------|
+| `read-only` | Safe to invoke blind. Reads files, or makes a read-only network call. | *(none)* |
+| `writes` | Changes files in this tree. | `*` |
+| `acts` | Reaches outside this tree, publishes, or spawns a process. | `!` |
+
+An op with no `safety` key, or an unrecognised value, renders `!`. The fallback is the loudest class on purpose: an `acts` op mis-rendered as probe-safe invites somebody to probe it, and the reverse costs one `help:OP` call. Every op in a shipped `presets/*.json` must declare one — `tests/test_ops_roster_1231.py` fails otherwise, so a new op cannot ship classed by accident. Built-in ops take their class from `_OP_SAFETY_BUILTIN` in `_supertool.py` instead: it is a fact about the binary, and a project's `.supertool.json` may be absent, stale, or somebody else's.
 
 `syntax` reads like documentation because it's rendered in `ops` output — but for any op whose syntax uses `:::` (e.g. `git-commit:::MESSAGE[:::PATHS...]`), it is also parsed to derive that op's `@file`/`@payload` field registry: `MESSAGE[:::PATHS...]` becomes the fields `message`, `paths`. Edit it for readability — add a clarifying parenthetical, reword a field name into prose — and the parser can silently stop deriving clean field names, which silently deletes the op's whole payload route. No error, no warning: the op just stops accepting `op:@-`/`op:@payload`, while its docs (and the `ops` listing) still describe the route as if it existed. `tests/test_at_file_route.py::TestPayloadRoutePin` pins which real ops currently have a payload route specifically to catch this at test time — if you're touching a `:::`-bearing `syntax` string, expect that test to have an opinion. See [#770](https://github.com/Digital-Process-Tools/claude-supertool/issues/770).
 
@@ -182,6 +193,7 @@ Same op schema as custom ops, wrapped in a manifest:
     "deploy-status": {
       "cmd": "python3 {path}mytools/status.py {arg}",
       "timeout": 15,
+      "safety": "read-only",
       "description": "Check deployment status for a service.",
       "syntax": "deploy-status:SERVICE",
       "example": "deploy-status:api-gateway"

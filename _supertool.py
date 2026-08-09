@@ -1767,6 +1767,56 @@ def _unknown_op_message(op: str) -> str:
     return msg
 
 
+# The three safety classes a roster row can carry (#1231).
+#
+# `ops` is 47,260 bytes and `ops-compact` 9,073 against a ~7,168-byte
+# SessionStart cap, so the startup listing is truncated *today* and every op
+# alphabetically after `grep` is hidden — the whole gh-*/git-* families, radar,
+# watch. What is lost is **existence**, which a reader cannot miss because they
+# never learn there was something to look for. A roster of every name fits in
+# about a fifth of the cap.
+#
+# A bare name is only actionable for an op you may probe: `between:F:747:820`
+# answers "'820' was read as the path" and names the op that does take a range,
+# so roster → call → the error teaches the form. You cannot probe `oss_train`,
+# which force-pushes a merge train. Hence the class.
+#
+# Declared, never inferred. `_PARALLEL_SAFE_OPS` looks like a ready-made
+# read-only set and is not one: it carries `format_staged`, which runs
+# formatters over every staged file and writes them. Deriving "read-only" from
+# it would render a mutating op probe-safe — an error in the one direction that
+# costs something.
+_SAFETY_CLASSES = ("read-only", "writes", "acts")
+
+# Marker rendered beside a name. Read-only is unmarked, and that is a positive
+# claim rather than an absence: the fallback for an op whose class is not
+# declared is "acts", so a missing class renders `!` and is never the quiet one.
+_SAFETY_MARKERS = {"read-only": "", "writes": "*", "acts": "!"}
+
+# Safety class of every built-in. A fact about this binary, so it lives beside
+# the sets that declare the built-ins exist rather than in a project's
+# `.supertool.json` — which may be absent, stale, or another project's.
+_OP_SAFETY_BUILTIN: Dict[str, str] = {
+    # read-only — call blind; the error message teaches the signature
+    "around": "read-only", "around_line": "read-only", "between": "read-only",
+    "check": "read-only", "cwd": "read-only", "diag": "read-only",
+    "diff": "read-only", "glob": "read-only", "grep": "read-only",
+    "grep_around": "read-only", "head": "read-only", "help": "read-only",
+    "hover": "read-only", "introduction": "read-only", "ls": "read-only",
+    "map": "read-only", "ops": "read-only", "ops-compact": "read-only",
+    "output-format": "read-only", "read": "read-only",
+    "replace_dry": "read-only", "resolve": "read-only", "stat": "read-only",
+    "tail": "read-only", "tree": "read-only", "validate": "read-only",
+    "validate_staged": "read-only", "version": "read-only",
+    "wc": "read-only", "workspace": "read-only",
+    # writes — changes files in this tree
+    "append": "writes", "batch": "writes", "edit": "writes",
+    "format": "writes", "format_staged": "writes", "gc": "writes",
+    "paste": "writes", "rename": "writes", "replace": "writes",
+    "replace_lines": "writes", "vim": "writes",
+}
+
+
 # Read-only built-in ops — safe to run in parallel across a batch.
 # Excludes mutating ops (replace, edit, replace_lines) and custom ops
 # (could shell out to anything). `between` is included — pure file read.
@@ -12821,6 +12871,117 @@ def op_ops(compact: bool = False) -> str:
     return body
 
 
+def _roster_classes() -> Dict[str, str]:
+    """Every dispatchable op name here, mapped to its safety class (#1231).
+
+    Two sources, each the place the fact is already declared:
+
+    * **Built-ins** come from ``_OP_SAFETY_BUILTIN``, next to the sets that say
+      they exist. A project config cannot downgrade one — the class is a
+      property of this binary, and ``.supertool.json`` may be absent or belong
+      to somebody else's tree.
+    * **Preset and project ops** come from a ``"safety"`` key on the op entry,
+      beside its ``cmd`` and ``description``. Absent or unrecognised falls back
+      to ``acts``, the loudest class, so an undeclared op is over-marked rather
+      than quietly under-marked.
+
+    ``status: 0`` suppression is honoured, same as the listing: a project
+    hiding an op from ``ops`` meant it, and the roster is not a way around it.
+    Built-in *documentation* keys are not a name source — ``.supertool.json``
+    carries ``grep-count`` and ``read-grep``, which document forms of ``grep``
+    and ``read`` and dispatch as neither.
+    """
+    config = _load_config()
+    builtin_entries = config.get("builtin-ops")
+    if not isinstance(builtin_entries, dict):
+        builtin_entries = {}
+    classes: Dict[str, str] = {}
+    for name in _valid_op_names():
+        entry = builtin_entries.get(name)
+        if isinstance(entry, dict) and not entry.get("status", 1):
+            continue
+        classes[name] = _OP_SAFETY_BUILTIN.get(name, "acts")
+    for section in ("ops", "aliases"):
+        entries = config.get(section)
+        if not isinstance(entries, dict):
+            continue
+        for name, info in entries.items():
+            if not isinstance(info, dict) or not info.get("status", 1):
+                continue
+            if name in _OP_SAFETY_BUILTIN:
+                continue
+            declared = info.get("safety")
+            classes[name] = declared if declared in _SAFETY_CLASSES else "acts"
+    return classes
+
+
+_ROSTER_LEGEND = (
+    "Every op this build accepts here — the complete list, which `ops` "
+    "(47KB) and\n`ops-compact` (9KB) cannot be at the ~7KB SessionStart cap. "
+    "Class is declared,\nnever guessed. Unmarked is a positive **read-only** "
+    "claim: call it blind and its\nown error teaches the signature. "
+    "`*` writes files in this tree. `!` reaches outside\nthis tree or spawns "
+    "a process — look those up first, never probe them. An op\nwhose class is "
+    "not declared is shown `!`, so a gap is never the quiet one.\n\n"
+    "Full entry for one op: `help:OP` — it carries more than the listing row "
+    "does.\nEvery entry: `ops`."
+)
+
+
+def op_ops_roster(width: int = 78) -> str:
+    """Names + safety class for every op, and nothing else (#1231).
+
+    Flat and alphabetical rather than grouped by family: the three misses that
+    motivated the issue were all neighbour misses — ``gh-pr-create`` beside
+    ``gh-pr``, ``git-worktrees`` beside ``git-status``, ``paste`` beside
+    ``write`` — and one alphabetical sweep finds a neighbour where a family
+    grouping asks the reader to already know which family it is in.
+    """
+    classes = _roster_classes()
+    tokens = [f"{name}{_SAFETY_MARKERS.get(cls, '!')}"
+              for name, cls in sorted(classes.items())]
+    body: List[str] = []
+    line = ""
+    for token in tokens:
+        candidate = f"{line} {token}" if line else token
+        if line and len(candidate) + 2 > width:
+            body.append(f"  {line}")
+            line = token
+        else:
+            line = candidate
+    if line:
+        body.append(f"  {line}")
+    return ("## Ops\n\n" + _ROSTER_LEGEND + "\n\n"
+            + "\n".join(body) + "\n")
+
+
+def _ops_argument_refusal(arg: str) -> str:
+    """`ops:gh-labels` printed the whole 47KB listing and said nothing (#1231).
+
+    An argument dropped without a word, in the op whose job is to say which
+    arguments exist, in a tool whose rule is that an unrecognised token is
+    refused rather than ignored.
+
+    Refused rather than made a filter. ``help:OP`` already answers the question
+    a filter would, and answers it with strictly more — full contract, semantics
+    and a worked example, against the listing's one line. A second lookup path
+    would also re-create this issue in miniature: ``ops:gh-labl`` matching
+    nothing renders identically to an op that does not exist, which is the
+    absence-as-answer defect the roster exists to remove.
+    """
+    if arg in _roster_classes():
+        return (f"ERROR: `ops` takes no filter, and '{arg}' is an op name.\n"
+                f"  Its full entry: `help:{arg}` — more than the listing row "
+                f"carries.\n"
+                f"  Every name plus its safety class: `ops:roster`. "
+                f"Every entry: `ops`.\n")
+    return (f"ERROR: unknown argument to `ops`: '{arg}'.\n"
+            f"  Accepted: `ops` (every entry), `ops:roster` (every name plus "
+            f"its safety class).\n"
+            f"  '{arg}' is also not an op name loaded here — `ops:roster` "
+            f"lists the ones that are.\n")
+
+
 _NO_EXCLUDE_SUFFIX = ":::no-exclude"
 
 
@@ -18897,7 +19058,17 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
             elif op == "ops-compact":
                 body = op_ops(compact=True)
             else:
-                body = op_ops()
+                # `ops:gh-labels` used to discard its argument in silence and
+                # print all 47KB — an unrecognised token dropped rather than
+                # refused, in the op whose subject is which tokens exist
+                # (#1231).
+                ops_arg = parts[1] if len(parts) > 1 else ""
+                if not ops_arg:
+                    body = op_ops()
+                elif ops_arg == "roster":
+                    body = op_ops_roster()
+                else:
+                    body = _ops_argument_refusal(ops_arg)
         else:
             # Fallthrough: try custom ops, then aliases
             custom = _resolve_custom_op(op, parts)

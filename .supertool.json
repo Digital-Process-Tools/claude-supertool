@@ -263,6 +263,7 @@
       ]
     },
     "oss_train": {
+      "safety": "acts",
       "cmd": "{python} scripts/oss_train.py {file}",
       "timeout": 1200,
       "wt_root": "~/Documents/st-wt",

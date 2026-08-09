@@ -3,6 +3,7 @@
   "requires": "python",
   "ops": {
     "mcp_daemon": {
+      "safety": "acts",
       "cmd": "{python} {path}mcp/daemon.py {args}",
       "timeout": 86400,
       "description": "Start MCP daemon for SERVER_NAME. Blocking; --detach to background.",
@@ -10,6 +11,7 @@
       "example": "mcp_daemon:php-lsp --detach"
     },
     "mcp_status": {
+      "safety": "read-only",
       "cmd": "{python} {path}mcp/status.py",
       "timeout": 10,
       "description": "List running MCP daemons: name, pid, uptime, idle, socket.",
@@ -17,6 +19,7 @@
       "example": "mcp_status"
     },
     "mcp_stop": {
+      "safety": "acts",
       "cmd": "{python} {path}mcp/stop.py {args}",
       "timeout": 30,
       "description": "Stop MCP daemon SERVER_NAME. SIGTERM, SIGKILL after 3s.",
@@ -24,6 +27,7 @@
       "example": "mcp_stop:php-lsp"
     },
     "mcp_stop_all": {
+      "safety": "acts",
       "cmd": "{python} {path}mcp/stop.py --all",
       "timeout": 60,
       "description": "Stop every supertool MCP daemon.",
