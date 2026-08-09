@@ -12923,9 +12923,9 @@ def _roster_classes() -> Dict[str, str]:
 
 
 _ROSTER_LEGEND = (
-    "Every op this build accepts here — the complete list, which `ops` (47KB) "
-    "and\n`ops-compact` (9KB) cannot be under the ~7KB SessionStart cap. "
-    "Class is declared,\nnever guessed.\n\n"
+    "Every op loaded here, and nothing else — the complete list, which the "
+    "descriptive\n`ops` listing stops being once a project has enough ops to "
+    "pass the ~7KB\nSessionStart cap. Class is declared, never guessed.\n\n"
     "- unmarked — read-only. Call it blind; its own error teaches the "
     "signature.\n"
     "- `*` — writes files in this tree.\n"
@@ -12949,6 +12949,13 @@ def op_ops_roster(width: int = 78) -> str:
     classes = _roster_classes()
     tokens = [f"{name}{_SAFETY_MARKERS.get(cls, '!')}"
               for name, cls in sorted(classes.items())]
+    # The same disclosure `ops` carries, and for a stronger reason: a roster
+    # whose whole subject is completeness must say which shipped presets this
+    # directory does not load. Without it the short list from a non-project
+    # directory reads as the tool's whole capability — #614's filer read the
+    # listing exactly that way. Above the names, because that is where a reader
+    # who is about to conclude "no such op" is still looking.
+    disclosure = _preset_disclosure()
     body: List[str] = []
     line = ""
     for token in tokens:
@@ -12960,8 +12967,10 @@ def op_ops_roster(width: int = 78) -> str:
             line = candidate
     if line:
         body.append(f"  {line}")
-    return ("## Ops\n\n" + _ROSTER_LEGEND + "\n\n"
-            + "\n".join(body) + "\n")
+    head = "## Ops\n\n" + _ROSTER_LEGEND + "\n"
+    if disclosure:
+        head += "\n" + disclosure + "\n"
+    return head + "\n" + "\n".join(body) + "\n"
 
 
 def _ops_argument_refusal(arg: str, op_name: str = "ops") -> str:

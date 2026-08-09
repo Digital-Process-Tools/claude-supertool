@@ -252,13 +252,41 @@ def test_quoted_byte_figures_are_this_checkouts(shipped_config) -> None:
     worse than none. The first pass copied the issue body's figures for `ops`
     and `ops-compact` rather than measuring this checkout, and every doc
     inherited them. This file is itself in the swept set."""
-    roster = f"{len(supertool.op_ops_roster().encode('utf-8')):,}"
     for rel in _FIGURE_BEARING:
         text = (REPO_ROOT / rel).read_text(encoding="utf-8")
         # Assembled, not written literally — this file is in the swept set,
         # and a sweep that trips over its own pattern is not a sweep.
         for stale in ("47," + "260", "9," + "073"):
             assert stale not in text, f"{rel} still quotes {stale}"
-    for rel in ("README.md", "hooks/session-start.sh", "docs/operations/meta.md"):
-        text = (REPO_ROOT / rel).read_text(encoding="utf-8")
-        assert roster in text, f"{rel} does not quote the measured roster size"
+    # The roster's own size is deliberately *not* pinned to a literal in prose:
+    # it carries `_preset_disclosure()`, which names an absolute config path, so
+    # the byte count moves with the checkout directory. The bound that matters
+    # is pinned by test_roster_fits_well_inside_the_session_start_cap instead.
+    assert (len(supertool.op_ops_roster().encode("utf-8"))
+            < supertool._HOOK_OUTPUT_CAP_BYTES // 2)
+
+def test_roster_discloses_presets_that_are_not_loaded(tmp_path: Path, monkeypatch) -> None:
+    """"Every op this build accepts" is only complete about *here*.
+
+    `ops` already carries `_preset_disclosure()` for this: run from a directory
+    with no `.supertool.json`, the listing shows ~40 file ops and a reader takes
+    that as the tool's whole capability (#614's filer did). A roster whose whole
+    subject is completeness must not drop that line — a shorter list with no
+    note is the same absence-read-as-absence one layer over.
+    """
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(supertool, "_CONFIG", None)
+    monkeypatch.setattr(supertool, "_CONFIG_CHECKED", False)
+    monkeypatch.setattr(supertool, "_CONFIG_PATH", None)
+    out = supertool.op_ops_roster()
+    assert "shipped presets" in out
+    assert "cwd:" in out
+    assert "gh-pr-merge" not in out
+
+
+def test_roster_legend_makes_no_claim_about_this_repos_byte_counts(shipped_config) -> None:
+    """The legend ships to every project. `ops` is 47KB *here*; in a small
+    project it fits the cap easily, and a listing that states otherwise is
+    telling that reader something false about their own tool."""
+    legend = supertool._ROSTER_LEGEND
+    assert "47" not in legend and "9KB" not in legend

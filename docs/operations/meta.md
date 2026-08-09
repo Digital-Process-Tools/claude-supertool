@@ -136,7 +136,7 @@ What the session-start hook actually runs, and it fits the ~7KB hook-output cap:
 
 Measured in this checkout (`python3 supertool.py 'ops' | wc -c`): `ops` is 47,254 bytes and `ops-compact` 9,067, against a cap of ~7,168 — so **no listing form fitted, and the startup listing was truncated on every session**, hiding everything alphabetically after `grep`: the whole `gh-*` and `git-*` families, `radar`, `watch`, `read`, `paste`, `tree`. It disclosed the truncation honestly and that did not help, because what was hidden was *existence*, and a reader cannot miss what they never learned about. Three agents in one session reported `write:` is not an op without being told `paste:` is.
 
-`ops:roster` is 1,455 bytes — every op name, each carrying a safety class, and nothing else. The whole hook payload is 2,392 bytes.
+`ops:roster` is ~1.7KB — every op name, each carrying a safety class, and nothing else, plus the same "N shipped presets are not loaded here" line `ops` carries. The whole hook payload is ~2.7KB against the ~7.2KB cap. Not quoted to the byte: the disclosure names the absolute path of the config it read, so the size moves with the checkout.
 
 ```
   append* around around_line batch* between channel check cwd dashboard diag

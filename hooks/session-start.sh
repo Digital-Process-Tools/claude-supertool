@@ -64,8 +64,10 @@ fi
 # disclosed the truncation honestly and that did not help, because what was
 # hidden was existence and a reader cannot miss what they never learned about.
 #
-# The roster is 1,455 bytes — every op name plus a safety class, no
-# descriptions. Whole hook: 2,392 bytes, a third of the cap. Descriptions are
+# The roster is ~1.7KB — every op name plus a safety class, no descriptions,
+# plus the same "presets not loaded here" line `ops` carries. Whole hook: ~2.7KB
+# against a ~7.2KB cap. (Not an exact figure: the disclosure names the absolute
+# config path, so it moves with the checkout.) Descriptions are
 # one call away and richer there: `help:OP` carries the full contract, the
 # semantics and a worked example, where the listing row carried one line.
 python3 "$BIN" 'introduction' 'output-format' 'ops:roster'
