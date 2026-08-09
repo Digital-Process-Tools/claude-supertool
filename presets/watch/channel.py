@@ -62,10 +62,15 @@ STATE_DIR = os.environ.get("SUPERTOOL_WATCH_STATE_DIR") or "/tmp"
 HEALTH_SUFFIX = ".health.json"
 
 #: How long a consumer's counters may go unrefreshed before they stop counting
-#: as evidence. `channel.ts` rewrites the file on a heartbeat every
-#: `HEARTBEAT_SECS` (10s) whether or not events are flowing, precisely so that
-#: "idle" and "wedged" are distinguishable. Four missed heartbeats is the
-#: threshold; below that a loaded machine would report spurious wedges.
+#: as evidence. `channel.ts` rewrites the file on a heartbeat every 10s whether
+#: or not events are flowing, precisely so that "idle" and "wedged" are
+#: distinguishable.
+#:
+#: 45s is four missed beats plus half of a fifth. The half is deliberate: at a
+#: flat multiple, a beat that lands a few hundred milliseconds late on a loaded
+#: machine puts a perfectly healthy consumer over the line, and a spurious
+#: CANNOT DETERMINE trains a reader to ignore the one state this op exists to
+#: make legible.
 STALE_AFTER_SECS = 45
 
 #: The connect probe's budget. A healthy `net.createServer` accepts immediately.
@@ -186,7 +191,7 @@ def _health_objection(record: dict) -> str:
     if age > STALE_AFTER_SECS:
         return (
             f"pid {pid} is alive but has not refreshed its counters in {int(age)}s "
-            f"(heartbeat is every 10s) — it may be wedged"
+            f"(heartbeat is every 10s, stale after {STALE_AFTER_SECS}s) — it may be wedged"
         )
     return ""
 

@@ -1121,7 +1121,7 @@ ack to read, at either end. So the answer has three states:
 
 | State | Exit | What is actually known |
 |---|---|---|
-| `NOT DELIVERING` | 1 | A definite negative. No socket, or a socket that refuses: every event a poller emits right now is lost at the source. The report names the watchers whose own `last_emit` already found nobody home, and when |
+| `NOT DELIVERING` | 1 | A definite negative. No socket, or a socket that refuses: every event a poller emits right now is lost at the source. The report also names each watcher whose own `last_emit` already found nobody home, with the timestamp of that emit |
 | `FORWARDING` | 0 | A consumer is bound, its pid is alive, and its published counters are fresh: N lines read, N forwarded, N dropped, last forwarded at T |
 | `CANNOT DETERMINE` | 3 | Bound, but publishing no counters, or counters written by a pid that is gone, or counters that stopped refreshing. This is the state the old tooling reported as green |
 
@@ -1144,9 +1144,10 @@ tests key on.
 **Why the heartbeat exists.** An idle consumer and a wedged one publish the same
 numbers — the counters only distinguish them if the *stamp* moves. `channel.ts`
 rewrites the file every 10s with no traffic at all, and `channel:health` stops
-treating counters as evidence after four missed beats. Without that, "0
-forwarded" would mean both "a quiet morning" and "reading nothing since
-Tuesday".
+treating counters as evidence at 45s — four missed beats plus half of a fifth,
+the half being margin for a beat that lands late on a loaded machine rather
+than a round number. Without the heartbeat, "0 forwarded" would mean both "a
+quiet morning" and "reading nothing since Tuesday".
 
 **Why the health file sits beside the socket rather than at a fixed path.** Two
 sessions on two `SUPERTOOL_WATCH_SOCK` values are a documented arrangement; one

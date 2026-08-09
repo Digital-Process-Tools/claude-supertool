@@ -289,6 +289,7 @@ jobs:
           python -X utf8 -m pytest -n0 --no-cov -q --timeout=30
           tests/test_notifiers_claude_channel_550.py
           tests/test_notifiers_claude_channel_554.py
+          tests/test_notifiers_claude_channel_health_554.py
           tests/test_notifiers_claude_channel_605.py
           tests/test_notifiers_claude_channel_605_burst.py
           tests/test_notifiers_claude_channel_609.py

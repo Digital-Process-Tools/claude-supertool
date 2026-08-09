@@ -358,8 +358,9 @@ const HEALTH_PATH = `${SOCK_PATH}.health.json`;
  * How often the counters are re-stamped with no traffic at all.
  *
  * An idle radar and a wedged one publish the same numbers; only a moving
- * `updated` separates them. `presets/watch/channel.py` treats counters older
- * than four missed heartbeats as no longer evidence.
+ * `updated` separates them. `presets/watch/channel.py` stops treating counters
+ * as evidence at 45s — four missed beats plus half of a fifth, the half being
+ * margin for a beat that lands late on a loaded machine.
  */
 const HEARTBEAT_MS = 10_000;
 

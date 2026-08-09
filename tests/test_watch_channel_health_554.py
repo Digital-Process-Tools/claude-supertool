@@ -230,7 +230,10 @@ def test_health_reports_the_consumers_own_forwarded_count(tmp_path):
         result = _run_health(path)
         assert result.returncode == RC_FORWARDING, result.stdout + result.stderr
         assert "FORWARDING" in result.stdout
-        assert "39" in result.stdout and "2" in result.stdout
+        # The whole rendered line, not three substrings. `"2" in stdout` is true
+        # of a timestamp, of `2048`, and of a report that never printed a
+        # dropped count at all — an assertion that a broken renderer passes.
+        assert "41 lines read, 39 forwarded, 2 dropped" in result.stdout
     finally:
         srv.close()
         os.unlink(path)
