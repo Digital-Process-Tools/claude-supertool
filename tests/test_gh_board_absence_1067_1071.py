@@ -6,11 +6,16 @@ Both ops render two states where there are three:
 * rows exist but something excluded them — a filter, a page boundary
 * genuinely nothing
 
-`gh-prs` applies `--author @me` when no role filter is given (`_build_list_cmd`),
-so on `Digital-Process-Tools/claude-remember` — two open PRs, both from outside
-contributors — it prints `No PRs match.` / `0 PR(s)`. There is no flag that
-suppresses the default either: `author=` is refused by `_filter_tokens` for
-having no value, so the board of everyone's open PRs is currently unreachable.
+`gh-prs` applied `--author @me` when no role filter was given
+(`_build_list_cmd`), so on `Digital-Process-Tools/claude-remember` — two open
+PRs, both from outside contributors — it printed `No PRs match.` / `0 PR(s)`.
+There was no flag that suppressed the default either: `author=` is refused by
+`_filter_tokens` for having no value, so the board of everyone's open PRs was
+unreachable. #1071 added `anyauthor` and the disclosure; #1207 then dropped the
+default outright, so the cases below are driven with an explicit `author=@me`
+where they used to rely on the implicit one. The op-level default is gone; the
+`_build_list_cmd` parameter default is not, because `radar`'s tier calls it
+positionally and keys its snapshot on the scope.
 
 `gh-issues` grew the `--limit` disclosure in its footer at birth, and the
 `iids` shape returns before the footer is built (`main_with_args`, the
@@ -166,18 +171,20 @@ def test_empty_board_names_the_filter_that_emptied_it(
     """`No PRs match. / 0 PR(s)` on a repo with two open PRs is false.
 
     This is #1071 exactly: `claude-remember`, PR #325 and #323, both external.
+    The filter is written out since #1207 rather than implicit, and the
+    arithmetic moved onto it — a caller who asked for their own PRs and got
+    none still wants the number they did not ask for.
     """
-    code, out, _err = _drive(prs, monkeypatch, "",
+    code, out, _err = _drive(prs, monkeypatch, "author=@me",
                              _by_author([], [_pr(325), _pr(323)]))
     assert code == 0
     assert "author=@me" in out, (
-        "an empty board under an implicit filter must name the filter; "
-        f"got {out!r}"
+        f"an empty board must name the filter that emptied it; got {out!r}"
     )
     assert "2" in out.split("0 PR(s)")[-1], (
         f"it must say how many rows the filter excluded; got {out!r}"
     )
-    assert "anyauthor" in out, (
+    assert "gh-prs" in out, (
         f"and the way to see them; got {out!r}"
     )
 
@@ -185,7 +192,7 @@ def test_empty_board_names_the_filter_that_emptied_it(
 def test_empty_board_with_nothing_open_says_the_filter_excluded_none(
         monkeypatch: pytest.MonkeyPatch) -> None:
     """The third state. An empty repo must not read like a filtered one."""
-    code, out, _err = _drive(prs, monkeypatch, "", _by_author([], []))
+    code, out, _err = _drive(prs, monkeypatch, "author=@me", _by_author([], []))
     assert code == 0
     assert "none" in out.lower(), f"got {out!r}"
 
@@ -205,7 +212,7 @@ def test_empty_board_whose_probe_failed_reports_unknown_not_zero(
             return json.dumps([])
         return FileNotFoundError(2, "No such file or directory: 'gh'")
 
-    code, out, _err = _drive(prs, monkeypatch, "", responder)
+    code, out, _err = _drive(prs, monkeypatch, "author=@me", responder)
     assert code == 0
     assert "UNKNOWN" in out, (
         f"a probe that did not run must not be rendered as an answer; got {out!r}"
@@ -215,29 +222,32 @@ def test_empty_board_whose_probe_failed_reports_unknown_not_zero(
     )
 
 
-def test_a_populated_board_still_names_the_default_author_filter(
+def test_a_populated_board_still_names_its_scope(
         monkeypatch: pytest.MonkeyPatch) -> None:
-    """`3 PR(s)` under an implicit filter reads as the repo's population."""
+    """`3 PR(s)` with no label reads as whatever the reader assumed it was."""
     code, out, _err = _drive(prs, monkeypatch, "",
                              _by_author([_pr(1), _pr(2)], [_pr(1), _pr(2), _pr(9)]))
     assert code == 0
-    assert "author=@me" in out, f"got {out!r}"
+    assert "author" in out.lower(), f"got {out!r}"
+    assert "9" in out, (
+        f"and the default board is the repo's, not one author's; got {out!r}"
+    )
 
 
-def test_an_explicit_author_filter_needs_no_probe(
+def test_a_populated_role_filtered_board_needs_no_probe(
         monkeypatch: pytest.MonkeyPatch) -> None:
-    """The caller wrote the filter; only the *implicit* one misleads.
+    """The probe costs an extra `gh pr list`, so it fires only over an absence.
 
-    And the probe must not fire — one extra `gh pr list` per board is a real
-    cost on a radar tick.
+    A board with rows on it has nothing to explain: the numbers above the
+    footer are complete for the filter the caller wrote.
     """
     calls: list[list[str]] = []
 
     def responder(cmd: list[str]) -> object:
         calls.append(cmd)
-        return json.dumps([])
+        return json.dumps([_pr(4)])
 
-    code, out, _err = _drive(prs, monkeypatch, "author=someone", responder)
+    code, out, _err = _drive(prs, monkeypatch, "author=someone,nopipe", responder)
     assert code == 0
     assert len(calls) == 1, f"expected exactly the board call; got {calls!r}"
     assert "excluded" not in out.lower(), f"got {out!r}"

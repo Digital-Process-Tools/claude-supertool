@@ -5,8 +5,8 @@ The gl-mrs twin. `gh pr list` shows a flat table; this op adds the things it
 omits but you need next: check rollup (a failure shows the failing check's
 *name* — the failure class in one word), approval state, age, diff size,
 watch-state cross-reference (which PRs already have a live `watch` poller),
-and an actionable footer. "Mine" is just the default filter (author=@me),
-not a special mode — compose any filter.
+and an actionable footer. The board is the repo's; "mine" is a filter you
+write (`author=@me`), not the shape it arrives in.
 
 Unlike GitLab (where pipeline status needed a per-MR fetch), GitHub returns
 `statusCheckRollup` + `reviewDecision` straight from `gh pr list --json`, so
@@ -14,25 +14,36 @@ the core board costs a single call. The only optional second wave is
 unresolved review-thread counts (GraphQL, per PR) — skip it with `nopipe`.
 
 Usage:
-    gh-prs                          my open PRs, check-enriched
+    gh-prs                          every open PR on this repo, check-enriched
+    gh-prs:author=@me               only mine
     gh-prs:reviewer=@me             where review is requested from me
     gh-prs:author=@me,state=merged  filter composition
     gh-prs:label=bug                reusable beyond watching
     gh-prs:nopipe                   skip review-thread enrichment (faster)
     gh-prs:iids                     number list, `#`-comment notes first
     gh-prs:failed                   only PRs whose checks are failing
-    gh-prs:anyauthor                every author's open PRs, not just mine
+    gh-prs:anyauthor                accepted, and now what the bare op does
 
-**The default is `author=@me`, and the board says so.** `No PRs match.` under
-an unstated filter is the strongest available statement of absence and it was
-false about the world: on `claude-remember` it printed over two open PRs, both
-from outside contributors — the rows a maintainer board exists to surface
-(#1071). Three states now, never two: rows found (the footer names the filter),
-no rows *because the filter excluded some* (it says how many, and how to see
-them), and genuinely nothing open. The count for the middle state costs one
-extra `gh pr list`, fired only when the board came back empty under the
-*implicit* default; a probe that could not run reports UNKNOWN rather than
-`excluded none`.
+**The default is the whole repo, and the board says which population it is.**
+It used to be `author=@me`. `No PRs match.` under that unstated filter is the
+strongest available statement of absence and it was false about the world: on
+`claude-remember` it printed over two open PRs, both from outside contributors
+(#1071). #1072 made the filter honest; #1207 removed it, because the rows it
+dropped — a dependency bump, an outside contributor's PR — are the ones needing
+a decision from someone other than their author, and three of them sat unseen
+for between five hours and a day behind a disclosure that was read past every
+time.
+
+Three states survive the flip, moved onto the filter the caller now writes:
+rows found (the footer names the scope), no rows *because the role filter
+excluded some* (it says how many, and that bare `gh-prs` shows them), and
+genuinely nothing open. The count for the middle state costs one extra
+`gh pr list`, fired only over an empty board; a probe that could not run
+reports UNKNOWN rather than `excluded none`.
+
+`radar`'s GitHub tier is **not** covered by this: it calls `_build_list_cmd`
+with two positional arguments and keeps the old default deliberately — see that
+function.
 """
 from __future__ import annotations
 
@@ -61,8 +72,10 @@ DEFAULT_PER_PAGE = 50
 ENRICH_CAP = 40  # never fire more than this many per-PR thread fetches
 ENRICH_WORKERS = 8  # parallel thread fetches
 
-# Tokens that are flags, not key=value filters. `anyauthor` suppresses the
-# implicit `author=@me` — before it there was no way to ask this op for the
+# Tokens that are flags, not key=value filters. `anyauthor` suppressed the
+# implicit `author=@me` when there was one; since #1207 it names what the bare
+# op already does, and is kept because it shipped — before it there was no way
+# to ask this op for the
 # board of everyone's open PRs at all: `author=` is refused by the shared
 # tokenizer for carrying no value, and `label=`/`state=` are not role keys, so
 # the default survived every spelling of the question (#1071).
@@ -163,13 +176,19 @@ def _build_list_cmd(filters: dict[str, str], per_page: int,
     means 'mine'. state=open is gh's default (no flag emitted). reviewer has
     no list flag on gh, so it routes through --search review-requested:USER.
 
-    `any_author` is the opt-out (#1071). The default itself is kept — `gh-prs`
-    has meant "mine" since it was born, the radar tier keys its departure
-    snapshot on that scope, and widening it silently would change every
-    downstream consumer's population. What was wrong was that the default was
-    both undisclosed and unreachable; this argument fixes the second half and
-    `_author_note` the first. The parameter is keyword-defaulted because
-    `watch/tiers/gh_prs.py` calls this with two positional arguments.
+    `any_author` is the opt-out (#1071), and since #1207 the **op passes it by
+    default**: `gh-prs` is the board, and the rows `author=@me` removes — a
+    dependency bump, an outside contributor's PR — are exactly the ones needing
+    a decision from someone other than their author.
+
+    The parameter's own default stays `False`, and that is not an oversight.
+    `watch/tiers/gh_prs.py` calls this with two positional arguments, and radar
+    keys its departure snapshot on the filter *string* (`snapshot_key`), which
+    an unfiltered board spells identically to today's. Flipping here would
+    reuse a snapshot taken under the narrow scope and render every
+    previously-hidden PR as newly arrived, once, on every watcher — and the
+    tier's own `scope author=@me (default)` label would become false. Radar's
+    half of #1207 is a change in `presets/watch/`, with its own snapshot key.
     """
     has_role = any(k in filters for k in ("author", "assignee", "reviewer"))
     cmd = (["gh", "pr", "list", "--json", _LIST_FIELDS, "--limit", str(per_page)]
@@ -459,12 +478,16 @@ def _probe_population(filters: dict[str, str], per_page: int
     POSIX may not fail at all (#997). Reporting `excluded none` off a call that
     never ran would reproduce this fix's own defect class inside the fix.
 
-    Fired only when the board came back empty under the *implicit* default: an
-    explicit `author=` is the caller's own filter and needs no explanation, and
-    one extra list call per board is a real cost on a radar tick.
+    Fired only when the board came back empty under a role filter. Every role
+    key is dropped, not just `author` (#1207): leaving `--search
+    review-requested:...` on the probe argv answers the "how many without the
+    filter" question from the still-filtered population, and the board then
+    reports `excluded none` off a query that never widened — the tool's own
+    absence, read as an absence in the world.
     """
-    cmd = _build_list_cmd({k: v for k, v in filters.items() if k != "author"},
-                          per_page, any_author=True)
+    widened = {k: v for k, v in filters.items()
+               if k not in ("author", "assignee", "reviewer")}
+    cmd = _build_list_cmd(widened, per_page, any_author=True)
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30,
                                 encoding="utf-8", errors="replace")
@@ -481,28 +504,36 @@ def _probe_population(filters: dict[str, str], per_page: int
     return len(rows), None
 
 
-def _author_note(filters: dict[str, str], per_page: int, fetched: int
-                 ) -> str | None:
-    """What the implicit `author=@me` did to this board, in three states.
+def _scope_note(filters: dict[str, str], per_page: int, fetched: int
+                ) -> str | None:
+    """Which population this board is, and what the filter cost — three states.
 
     `No PRs match.` / `0 PR(s)` is the strongest available statement of
     absence, and under an unstated filter it is false about the world: on
     `claude-remember` it was printed over two open PRs, both from outside
     contributors — the rows a maintainer board exists to surface (#1071).
+
+    #1072 made the implicit `author=@me` honest. #1207 removed it: the default
+    board is the repo, and it says so, because an unlabelled board spells both
+    "this is everything" and "nobody said which population this is". The
+    exclusion arithmetic did not go away with the default — it moved onto the
+    role filter, which is now something the caller typed, and where an empty
+    answer still hides a number they will want.
     """
-    if any(k in filters for k in ("author", "assignee", "reviewer")):
-        return None
+    role = sorted(k for k in ("author", "assignee", "reviewer") if k in filters)
+    if not role:
+        return ("no author filter (default) — every author's open PRs on this "
+                "repo; gh-prs:author=@me for yours")
+    spelled = ", ".join(f"{k}={filters[k]}" for k in role)
     if fetched:
-        return ("author=@me (default) — your PRs, not the repo's; "
-                "gh-prs:anyauthor for everyone's")
+        return f"{spelled} — one slice of the repo; gh-prs for all of it"
     count, reason = _probe_population(filters, per_page)
     if count is None:
-        return (f"author=@me (default) applied; whether it excluded anything "
-                f"is UNKNOWN — {reason}")
+        return (f"{spelled} applied; whether it excluded anything is "
+                f"UNKNOWN — {reason}")
     if count:
-        return (f"author=@me (default) excluded {count} open PR(s) — "
-                f"gh-prs:anyauthor to see them")
-    return "author=@me (default) excluded none — nothing is open either way"
+        return (f"{spelled} excluded {count} open PR(s) — gh-prs to see them")
+    return f"{spelled} excluded none — nothing is open either way"
 
 
 def _footer(prs: list[dict], watched: set[str] | None,
@@ -549,14 +580,13 @@ def main_with_args(arg_str: str) -> int:
         return 1
     iids_only = "iids" in flags
     failed_only = "failed" in flags
-    any_author = "anyauthor" in flags
     enrich = "nopipe" not in flags
 
     # Two boards, not one wider than the other — `anyauthor` asks for
     # everyone's and `author=X` asks for one person's. Applying either
     # silently is the same defect as the undisclosed default (#1071).
     role = sorted(k for k in ("author", "assignee", "reviewer") if k in filters)
-    if any_author and role:
+    if "anyauthor" in flags and role:
         print(
             f"ERROR: `anyauthor` and the role filter(s) {', '.join(role)} ask "
             f"for different boards — anyauthor means every author, "
@@ -565,6 +595,12 @@ def main_with_args(arg_str: str) -> int:
             file=sys.stderr,
         )
         return 1
+
+    # #1207: the board is the repo unless the caller narrowed it. `anyauthor`
+    # is now what the bare op already does; it stays accepted because it was
+    # documented and shipped, and a flag that starts refusing is a break for
+    # every script that adopted it.
+    any_author = not role
 
     cfg = _get_config()
     per_page = cfg["per_page"]
@@ -586,7 +622,7 @@ def main_with_args(arg_str: str) -> int:
             print("ERROR: gh not authenticated. Run: gh auth login", file=sys.stderr)
         elif ("github host" in low or "not a git repository" in low
                 or "git remotes" in low):
-            print(_repo_target.no_repo_error("gh-prs:author=@me"), file=sys.stderr)
+            print(_repo_target.no_repo_error("gh-prs"), file=sys.stderr)
         else:
             print(f"ERROR: gh pr list: {err}", file=sys.stderr)
         return 1
@@ -628,10 +664,9 @@ def main_with_args(arg_str: str) -> int:
             absent.append(text)
 
     _note(_cap_note(per_page, fetched), True)
-    if not any_author:
-        # An empty board under the implicit default is an absence claim; a
-        # populated one is a scope label.
-        _note(_author_note(filters, per_page, fetched), not fetched)
+    # An empty board under a role filter is an absence claim; a populated one,
+    # or the unfiltered default, is a scope label.
+    _note(_scope_note(filters, per_page, fetched), bool(role) and not fetched)
     if failed_only and fetched > len(prs):
         _note(f"failed excluded {fetched - len(prs)} of {fetched} fetched", False)
 

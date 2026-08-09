@@ -103,9 +103,14 @@ def _run_pr(monkeypatch, capsys, rollup: list[dict],
     # further out. Everything these pins assert — how `_reconcile_checks` and
     # the two render paths treat a declared count — is still exercised for
     # real; only where the number comes from has changed.
+    # The 4th element is #1181's `reason`: why the count could not be
+    # established, empty whenever it could. Stubbed as a fixed sentence so
+    # these pins keep asserting the *shape* of the decline rather than any
+    # particular cause of it.
     monkeypatch.setattr(
         pr, "_declared_for_commit",
-        lambda *a, **kw: (declared, list(declared_names), [])
+        lambda *a, **kw: (declared, list(declared_names), [],
+                          "" if declared is not None else "stubbed decline")
     )
     argv = ["pr.py", "715"] + (["status"] if slim else [])
     monkeypatch.setattr(sys, "argv", argv)

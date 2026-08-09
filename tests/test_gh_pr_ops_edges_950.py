@@ -277,7 +277,8 @@ def test_gh_pr_merge_never_running_is_unverified_not_merged(monkeypatch,
     class _M:
         @staticmethod
         def _declared_for_commit(d):
-            return (1, ["t"], [])
+            # 4 values since #1181 — see test_gh_pr_merge_tally_seam_1181.py.
+            return (1, ["t"], [], "")
 
         @staticmethod
         def _actions_leg_names(rollup):

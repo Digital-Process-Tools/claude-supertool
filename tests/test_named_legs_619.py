@@ -232,7 +232,7 @@ def test_slim_status_all_green_adds_no_extra_lines(monkeypatch, capsys) -> None:
     payload = _pr_payload(statusCheckRollup=rollup)
     monkeypatch.setattr(pr.subprocess, "run", lambda *a, **kw: _fake_gh_run(payload))
     monkeypatch.setattr(pr, "_declared_for_commit",
-                        lambda *a, **kw: (1, ["pytest (ubuntu, 3.9)"], []))
+                        lambda *a, **kw: (1, ["pytest (ubuntu, 3.9)"], [], ""))
     monkeypatch.setattr(sys, "argv", ["pr.py", "617", "status"])
     pr.main()
     out = capsys.readouterr().out

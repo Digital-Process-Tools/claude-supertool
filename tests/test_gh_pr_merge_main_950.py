@@ -156,7 +156,13 @@ class _Harness:
         class _M:
             @staticmethod
             def _declared_for_commit(d):
-                return (harness.declared, harness.declared_names, [])
+                # 4th element is #1181's `reason`. This double is the seam
+                # `test_gh_pr_merge_tally_seam_1181.py` exists to pin: it and
+                # the caller can agree with each other while the real function
+                # moves, so keep it in step with `pr.py`.
+                return (harness.declared, harness.declared_names, [],
+                        "" if harness.declared is not None
+                        else "stubbed decline")
 
             @staticmethod
             def _actions_leg_names(rollup):

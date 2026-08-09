@@ -68,12 +68,19 @@ def _gh(args: list[str], timeout: int = 10) -> subprocess.CompletedProcess[str]:
 
 _RUN_ID_IN_URL = re.compile(r"/actions/runs/([0-9]+)(?:[/?#]|$)")
 
-# How many distinct Actions runs one PR may be reconciled against before the
-# op stops paying for it. The cost is one `gh api` call per run and `:status`
-# is a hot path; a PR fanning out past this is outside what a single
-# merge-gate call should spend, so the tally declines (UNVERIFIED) rather than
-# either skipping the check or quietly blocking on N calls.
-MAX_RECONCILED_RUNS = 4
+# How many distinct *workflows* one PR may be reconciled against before the op
+# stops paying for it. The cost is one `gh api` call per workflow and `:status`
+# is a hot path; a PR fanning out past this is outside what a single merge-gate
+# call should spend, so the tally declines (UNVERIFIED) rather than either
+# skipping the check or quietly blocking on N calls.
+#
+# Was 4, measured against the four workflows this repo had when #724 was
+# written. Copilot code review added a fifth, and every PR carrying it rendered
+# `TALLY UNVERIFIED` — a decline caused entirely by the op's own budget, worded
+# as though something about the PR were unknown (#1181). 8 leaves room for a
+# repo to grow a workflow without silently blinding its own merge gate; the
+# per-workflow collapse below is what keeps the call count near the old one.
+MAX_RECONCILED_RUNS = 8
 
 
 def _rollup_run_ids(rollup: object) -> list[str]:
@@ -123,7 +130,15 @@ def _missing_names(declared: Sequence[str], found: Sequence[str]) -> list[str]:
 
 
 def _runs_on_commit(owner: str, repo: str, sha: str) -> list | None:
-    """`[(run_id, workflow_name)]` for the head commit — `None` if unreadable.
+    """`[(run_id, workflow_name, workflow_id)]` for the head commit, or `None`.
+
+    The third element is the identity the collapse in `_one_run_per_workflow`
+    keys on. A workflow's `name:` is not unique — two workflow files may spell
+    it identically — and collapsing on the name would drop one of them from the
+    declared count, which then reconciles silently on `declared <= found`. That
+    is the shortfall this whole mechanism exists to catch, hidden by the fix
+    for the noise it was making. `workflow_id` rides on the same response and
+    costs nothing.
 
     **This is the fix for #804's comment, and it is one line of reasoning.**
     The declared count used to be summed over the run ids parsed out of the
@@ -162,12 +177,50 @@ def _runs_on_commit(owner: str, repo: str, sha: str) -> list | None:
             continue
         rid = str(run.get("id") or "").strip()
         if rid:
-            out.append((rid, str(run.get("name") or f"run #{rid}")))
+            out.append((rid, str(run.get("name") or f"run #{rid}"),
+                        str(run.get("workflow_id") or "").strip()))
+    return out
+
+
+def _one_run_per_workflow(ordered: list, keys_by_id: dict) -> list:
+    """Collapse repeat run records of one workflow on one commit (#1181).
+
+    `actions/runs?head_sha=` returns a record per run, and a re-run or a second
+    trigger of the same workflow file adds another against the same sha: PRs
+    #1177 and #1178 each carry **five** `changelog` records. They declare the
+    same legs, so reconciling all five buys nothing and costs the whole
+    budget — measured, both PRs tipped past the cap and rendered
+    `TALLY UNVERIFIED` with nothing about them actually unknown.
+
+    First seen wins. The rollup's own ids lead `ordered`, and GitHub lists runs
+    newest-first, so the record kept is the one the rollup is showing.
+
+    Keyed on `workflow_id`, never on the workflow's display name: `name:` is
+    not unique across workflow files, and merging two real workflows would
+    shrink `declared` into a silent reconcile.
+
+    A run whose workflow id is unresolvable keys on its own run id rather than
+    on the empty string: collapsing two unknowns into one would be this fix
+    inventing the silence it exists to remove.
+    """
+    out: list = []
+    seen: set[str] = set()
+    for rid, name in ordered:
+        key = keys_by_id.get(rid) or f"#{rid}"
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append((rid, name))
     return out
 
 
 def _declared_for_commit(d: dict) -> tuple:
-    """`(declared, names, uncovered)` — the second source, read off the commit.
+    """`(declared, names, uncovered, reason)` — the second source, off the commit.
+
+    `reason` is why `declared` is `None`, in words, and it is the point of
+    #1181: "could not be established" is true of every cause and actionable for
+    none, so a decline that fires for a whole afternoon reads exactly like the
+    one that matters. Empty whenever `declared` is a number.
 
     **This is #804's comment, and the whole of it.** The declared count used to
     be summed over the run ids parsed out of the rollup — the very list it was
@@ -191,29 +244,35 @@ def _declared_for_commit(d: dict) -> tuple:
     owner, repo = _declared_legs.owner_repo(d.get("url") or "")
     runs = _runs_on_commit(owner, repo, str(d.get("headRefOid") or ""))
     if runs is None:
-        return (None, [], [])
+        return (None, [], [], "the run list for this commit could not be read")
 
     ordered: list = [(rid, "") for rid in rollup_ids]
     known = set(rollup_ids)
-    for rid, name in runs:
+    keys_by_id = {}
+    for rid, name, workflow_id in runs:
+        keys_by_id[rid] = workflow_id
         if rid not in known:
             ordered.append((rid, name))
             known.add(rid)
+    ordered = _one_run_per_workflow(ordered, keys_by_id)
     if not ordered:
-        return (0, [], [])
+        return (0, [], [], "")
     if len(ordered) > MAX_RECONCILED_RUNS:
-        return (None, [], [])
+        return (None, [], [],
+                f"{len(ordered)} distinct workflows on this commit exceed the "
+                f"reconciliation cap of {MAX_RECONCILED_RUNS}")
 
     declared_names: list[str] = []
     uncovered: list[str] = []
     for rid, name in ordered:
         names = _declared_legs.legs_for_run(owner, repo, rid)
         if names is None:
-            return (None, [], [])
+            return (None, [], [],
+                    f"the job list for run {name or rid} could not be read")
         declared_names.extend(names)
         if not names and rid not in rollup_ids:
             uncovered.append(name or f"run #{rid}")
-    return (len(declared_names), declared_names, uncovered)
+    return (len(declared_names), declared_names, uncovered, "")
 
 
 def _reconcile_checks(d: dict) -> tuple[str, list[str]]:
@@ -234,12 +293,13 @@ def _reconcile_checks(d: dict) -> tuple[str, list[str]]:
     fires on every PR is one nobody reads.
     """
     found_names = _actions_leg_names(d.get("statusCheckRollup"))
-    declared, declared_names, uncovered = _declared_for_commit(d)
+    declared, declared_names, uncovered, reason = _declared_for_commit(d)
     if declared is None and not found_names and not uncovered:
         return ("", [])
 
     missing = _missing_names(declared_names, found_names)
-    marker, lines = _checks.shortfall(len(found_names), declared, missing)
+    marker, lines = _checks.shortfall(len(found_names), declared, missing,
+                                      reason=reason)
     if uncovered:
         shown = ", ".join(uncovered[:_checks.NAMED_CAP])
         if len(uncovered) > _checks.NAMED_CAP:

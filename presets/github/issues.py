@@ -235,12 +235,35 @@ def _is_unknown(row: dict) -> bool:
 # enrichment — one GraphQL call per chunk, for what `gh issue list` omits
 # ---------------------------------------------------------------------------
 
+# The host a row's `url` must be on before its path is read as owner/name.
+_GITHUB_HOST = "github.com"
+
+
+def _is_github_host(authority: str) -> bool:
+    """Exact host, or a `.`-boundary subdomain of it — never a suffix (#1180).
+
+    `endswith("github.com")` also matches `evilgithub.com` and `notgithub.com`.
+    The rows come from `gh` today, so nothing hostile reaches here through the
+    normal path; what this decides is which repo every subsequent GraphQL call
+    is made against, and it decides it from row content rather than from
+    configuration. The moment rows arrive from a fixture, a cached board or a
+    merged tier, a lookalike host picks the target. Same shape as the `gl-api`
+    host check.
+    """
+    host = authority.lower().partition("@")[2] or authority.lower()
+    host = host.partition(":")[0]
+    return host == _GITHUB_HOST or host.endswith("." + _GITHUB_HOST)
+
+
 def _owner_repo(rows: list[dict]) -> tuple[str, str] | None:
     """The repo this board is about, for the GraphQL root.
 
     A repo target wins outright. Otherwise the answer is already in the rows:
     every issue carries its own `url`, so the owner/name costs no extra call
     and cannot disagree with the list the board is rendering.
+
+    A row whose url is not on GitHub is skipped rather than ending the search:
+    one unusable row must not decide that the whole board has no repo.
     """
     target = _repo_target.owner_repo()
     if target is not None:
@@ -248,7 +271,7 @@ def _owner_repo(rows: list[dict]) -> tuple[str, str] | None:
     for row in rows:
         url = str(row.get("url") or "")
         parts = url.split("/")
-        if len(parts) >= 5 and parts[2].endswith("github.com"):
+        if len(parts) >= 5 and _is_github_host(parts[2]):
             return parts[3], parts[4]
     return None
 

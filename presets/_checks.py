@@ -350,7 +350,8 @@ def _legs(n: int) -> str:
 
 def shortfall(found: int, declared: int | None,
               missing: Sequence[str] = (),
-              cap: int = NAMED_CAP) -> tuple[str, List[str]]:
+              cap: int = NAMED_CAP,
+              reason: str = "") -> tuple[str, List[str]]:
     """Reconcile legs *read* against legs the run *declares* (#724).
 
     Returns `(marker, lines)` — `("", [])` when the two agree, so the common
@@ -368,7 +369,12 @@ def shortfall(found: int, declared: int | None,
     * `declared is None` — the count could not be established. Declined, not
       guessed. Assuming `declared == found` restores exactly the silence this
       exists to break; assuming the larger number invents legs and trades a
-      loud failure for a quiet one.
+      loud failure for a quiet one. `reason` names *why*, when the caller knows
+      (#1181): the decline fired on every PR for an afternoon because the
+      caller's own reconciliation budget was one workflow too small, and the
+      line said only "could not be established" — true of that, of an
+      unreachable API and of a genuinely short tally alike. A warning that
+      cannot be told apart from the one that matters is one nobody reads.
     * `declared > found` — a proven shortfall. Both numbers are stated, in
       that order, and the legs that never arrived are named when known.
     * `declared <= found` — reconciled. `<` and not just `==` because a rollup
@@ -376,11 +382,13 @@ def shortfall(found: int, declared: int | None,
       CI, legacy commit statuses); those are extra, never missing.
     """
     if declared is None:
+        because = f" ({reason})" if reason else ""
         return (UNVERIFIED_MARK, [
             f"  unverified: {found} {_legs(found)} read, but how many the run declares "
-            "could not be established, so whether these are all of them is "
-            "UNKNOWN. Count by hand with `gh run view <run-id> --json jobs` "
-            "before treating this as a merge signal."
+            f"could not be established{because}, so whether these are all of "
+            "them is UNKNOWN. Count by hand with "
+            "`gh run view <run-id> --json jobs` before treating this as a "
+            "merge signal."
         ])
 
     if declared <= found:
