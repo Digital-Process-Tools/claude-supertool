@@ -184,6 +184,7 @@ Enable any of these by copying the relevant entry from `.supertool.example.json`
 | Python (lint)       | `ruff`           | `ruff` (`pip install ruff`)        | `ruff check --output-format json`. Ruleset comes from the **project's** config, not the adapter — see below |
 | Bash                | `bash-check`     | `bash` on PATH                     | Uses `bash -n`                             |
 | JavaScript          | `node-check`     | `node` on PATH                     | Uses `node --check`                        |
+| HTML (inline `<script>`) | `html-check` | `node` on PATH                  | Extracts non-external, JS-typed `<script>` blocks and runs each through `node --check`; does NOT validate HTML well-formedness (#833) — see below |
 | CSS / SCSS          | `stylelint`      | `stylelint` npm package            | Config from project `.stylelintrc`         |
 | TOML                | `tomllint`       | stdlib (3.11+) or `tomli`          | Falls back to `tomli` on 3.10              |
 | Markdown            | `markdownlint`   | `markdownlint` CLI                 | `npm install -g markdownlint-cli`          |
@@ -203,6 +204,27 @@ Enable any of these by copying the relevant entry from `.supertool.example.json`
 | JavaScript — lint | `eslint`        | `eslint` on PATH or resolvable via `npx --no-install` | `eslint -f json`. **Declines when no `eslint.config.js` resolves** — no fallback ruleset is invented. See below |
 | Secrets           | `gitleaks`      | `gitleaks` on PATH                 | `gitleaks detect --no-git --redact`. Matches every path, not one language. Never prints the matched value. See [README](../validators/gitleaks/README.md) |
 
+
+### `html-check` — script extraction, not HTML well-formedness (#833)
+
+Nothing else in this table matched `*.html`, so a stray brace in an inline `<script>` on a published page shipped unchecked. The fix is deliberately narrow: `html-check` does not parse the HTML document itself. A strict parser rejects pages a browser renders fine — void elements left unclosed (`<br>`, `<img>`), optional closing tags, all valid HTML5 — and rejecting a valid page is a worse failure than the silent gap this closes, because it is a false positive with no clear next action for the reader.
+
+Instead it extracts every `<script>` block that is not external (`src=`) and not a non-JS payload (`type="application/json"`, `"application/ld+json"`, a template mimetype), and runs each one through `node --check` — the same mechanism `node-check` already uses for `*.js`. Each block's content is padded with as many leading blank lines as its own start line in the HTML source, so `node`'s reported line number already is the file's line number.
+
+Block boundaries follow the HTML tokenizer rather than an intuition about them: a block ends at the first `</script` followed by whitespace, a slash or `>`, so `</script bar>` closes it and `</scriptfoo>` does not — including when that text sits inside a JS string literal, where a browser also closes the script and the page really is broken. Matching only `</script>` meant a page using the attribute-carrying form had its inline JS silently skipped.
+
+Tag-balance checking was part of the issue's proposal, marked optional there, and is left out here: it is the well-formedness trap above in a smaller costume. Script extraction alone closes the reported gap (inline JS was never syntax-checked) without adding a second source of false positives. If tag-balance turns out to be wanted it is a separate, separately-decided check.
+
+`node` absent is reported `skipped`, never `ok` — the third state from "Declining instead of guessing" below applies here exactly as it does everywhere else in this file.
+
+**Switching it on.** Copy the `html-check` block out of `.supertool.example.json` into your project's `.supertool.json` under `validators`, the same as every other row in the table above. This repo registers it in its own `.supertool.json` too — a validator that ships here and does not run here is a checker nobody is checking, and it shipped that way once already: the adapter landed with no entry in any config, so `validate:` on a page with a stray brace ran only `git-status` and printed `0 with findings`, which is the silence #833 exists to close arriving inside the fix for it.
+
+Two settings in that block are decisions rather than defaults:
+
+- **`rollback_on_fail: true`**, matching `node-check` for `*.js` — the same tool answering the same question, so the same consequence. Rollback is regression-gated: it fires when an edit *raises* the finding count, so a page whose inline JS is already broken stays editable and only a newly introduced syntax error reverts. A `skipped` result (no `node`) never rolls back, whatever this says.
+- **`timeout: 60`**, deliberately above the adapter's own 30s per-block budget rather than equal to it. When the two match, the core's timeout always wins the race and the row reads `NOT CHECKED` with nothing naming which block hung; with headroom the adapter's own arm fires first and reports the `<script>` block's start line.
+
+`html-check` does not carry `"syntax": true`. That flag means "this is the repo's authoritative parse check for these paths" and its job is to stand down the built-in Python backstop; `node-check` does not set it either, and claiming it here would assert a relationship to a backstop that does not exist for HTML.
 
 ### The tool is not installed — `skipped` locally, loud in CI on request
 
