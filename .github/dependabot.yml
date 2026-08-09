@@ -1,4 +1,12 @@
 version: 2
+
+# This file reads as coverage for the moving-tag problem and, on its own, is
+# not (#925): it will never bump `v7` to `v7`, so a publisher repointing a
+# major tag is live in CI before any pull request exists here. Every action is
+# sha-pinned now, which inverts that -- Dependabot *does* bump a sha-pinned
+# action, rewriting both the sha and its trailing `# vX.Y.Z` comment, so the
+# upgrade arrives as a reviewable PR instead of arriving silently. The pins are
+# enforced by `tests/test_ci_action_pinning_925.py`.
 updates:
   - package-ecosystem: "github-actions"
     directory: "/"
