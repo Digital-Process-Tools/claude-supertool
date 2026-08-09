@@ -186,7 +186,7 @@ Enable any of these by copying the relevant entry from `.supertool.example.json`
 | JavaScript          | `node-check`     | `node` on PATH                     | Uses `node --check`                        |
 | HTML (inline `<script>`) | `html-check` | `node` on PATH                  | Extracts non-external, JS-typed `<script>` blocks and runs each through `node --check`; does NOT validate HTML well-formedness (#833) — see below |
 | CSS / SCSS          | `stylelint`      | `stylelint` npm package            | Config from project `.stylelintrc`         |
-| TOML                | `tomllint`       | stdlib (3.11+) or `tomli`          | Falls back to `tomli` on 3.10              |
+| TOML                | `tomllint`       | stdlib (3.11+) or `tomli`          | Falls back to `tomli` on 3.10. Neither importable is `skipped`, never `ok` (#1157) — see below |
 | Markdown            | `markdownlint`   | `markdownlint` CLI                 | `npm install -g markdownlint-cli`          |
 | Ruby                | `ruby-check`     | `ruby` on PATH                     | Uses `ruby -c`                             |
 | Dockerfile          | `hadolint`       | `hadolint` on PATH                 | Catches both syntax and best-practice lint |
@@ -226,7 +226,11 @@ And so is the same failure one level out: a start tag that delimits perfectly op
 
 Resuming the scan past such a tag was never an option either, whatever the code used to claim: `</script` was not found at or after that point, so it is not found after any later `<script` either, and the tokenizer agrees — after an unclosed `<script>` every remaining byte of the file is script data, so a later well-formed-looking block is not a block at all.
 
-Both refusals are **per file, and they outrank findings already in hand**. A page with a broken block at line 3 and an undelimitable tag at line 40 reports `skipped`, not `ok: false, count: 1` — the latter is a verdict about a file that was never read past line 40, and this adapter does not make claims it cannot support. Nothing is lost: the reason names the line to fix first, and the finding is still there on the next run.
+Both refusals are **per file, and they outrank findings already in hand**. A page with a broken block at line 3 and an undelimitable tag at line 40 reports `skipped`, not `ok: false, count: 1` — the latter is a verdict about a file that was never read past line 40, and this adapter does not make claims it cannot support.
+
+**Something is lost by that, and the cost is worth naming (#1195).** The blocks above the refusal point were read completely, and any findings in them are discarded with the rest — so the page above reports nothing about line 3, while the identical page without the trailing tag reports it. Nor is "it is still there on the next run" reliable: for the fragment and the template partial conceded two paragraphs up the refusal is *permanent*, every run refuses, and `rollback_on_fail` is inert on that file for as long as it stays a fragment. The trade is defensible — a partial count published as a count is the misreport this whole file exists to stop — but it is a trade, not a free move, and a reader deciding whether to trust the row is entitled to see the invoice.
+
+Publishing those findings *alongside* the refusal is not the escape it looks like. A `skipped` result omits `ok`, `count` and `errors` by contract (`validators/SCHEMA.md`, "Skipped: the third state"), and every core consumer branches on `skipped` before it reads a verdict key — `_validator_render_row`, `_validator_render_diff`, `_validator_regressed`, `_validator_not_checked`. An `errors` array on a skip would be emitted into a field nothing reads, which makes the claim more false rather than less. The one shape that would carry them is `ok: false` with the unread region as an `adapter` error, and that is not "keeping both": it is this per-file refusal reversed, re-arming `rollback_on_fail` across the whole class of file. That is a behaviour decision to argue on its own terms, not a rider on a sentence of prose.
 
 **Switching it on.** Copy the `html-check` block out of `.supertool.example.json` into your project's `.supertool.json` under `validators`, the same as every other row in the table above. This repo registers it in its own `.supertool.json` too — a validator that ships here and does not run here is a checker nobody is checking, and it shipped that way once already: the adapter landed with no entry in any config, so `validate:` on a page with a stray brace ran only `git-status` and printed `0 with findings`, which is the silence #833 exists to close arriving inside the fix for it.
 
@@ -242,6 +246,14 @@ Two settings in that block are decisions rather than defaults:
 `shellcheck`, `eslint` and `gitleaks` are external binaries most machines do
 not have, which makes the same question three times: what does a validator
 report when its tool is absent?
+
+`tomllint` is the fourth, and it is the one that shows the question is not
+about binaries (#1157). Its "tool" is an import — stdlib `tomllib` on 3.11+,
+the third-party `tomli` below that — and on a 3.10 machine with no `tomli` it
+answered `ok: true, count: 0`: not a parser that failed, a parser that was
+never there, published as a clean parse of a file nothing opened. Whether the
+missing thing is on `PATH` or on `sys.path` changes nothing about what the
+adapter knows, so it gets the same three states and the same escalation.
 
 Reporting `ok` is the defect this repository has filed more than any other, so
 it is `skipped`, with the reason and the install command on the row. That is
@@ -263,10 +275,11 @@ tool that could not run becomes an `adapter` error whose message names the
 variable — so the reader is sent to the CI image rather than to the file. There
 is deliberately **no** value that turns a finding into a skip: that would be a
 mute button, and this repository declines those. `refusal.required()` is the
-one implementation, shared by all three adapters.
+one implementation, shared by every adapter that can find itself with nothing
+to say.
 
 The recommendation is to leave it unset locally and set it in CI for whichever
-of the three that pipeline installs. Setting it for a tool the image does not
+of them that pipeline actually provides. Setting it for a tool the image does not
 install produces a red on every edit, which is the same noise problem from the
 other end.
 

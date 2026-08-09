@@ -391,9 +391,15 @@ def main() -> None:
     except UndelimitedTag as exc:
         # The whole file, not just this tag. A verdict naming one finding
         # would be a claim about a file that was not read past line
-        # `exc.line`, and `ok`/`count` are exactly that claim. Nothing is
-        # lost by declining: the reason names the line to fix first, and
-        # anything else wrong with the file is still there on the next run.
+        # `exc.line`, and `ok`/`count` are exactly that claim.
+        #
+        # This does discard findings from the blocks above `exc.line`, which
+        # were read completely (#1195). That is the price of the per-file
+        # rule and not a free move -- see docs/validators.md, which now says
+        # so instead of claiming nothing is lost. Publishing them next to the
+        # refusal is not available: SCHEMA.md omits `errors` from a skip and
+        # every core consumer branches on `skipped` first, so they would go
+        # into a field nothing reads.
         emit(skipped("html-check", file,
                      f"the <script> start tag at line {exc.line} is never closed "
                      f"({exc.cause}), so where it ends cannot be told -- "

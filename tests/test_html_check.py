@@ -517,8 +517,10 @@ def test_one_undelimited_tag_refuses_the_whole_file(tmp_path: Path) -> None:
     never read -- `ok: false, count: 1` says "here is what is wrong with this
     file", and the honest answer is "I could not read this file".
 
-    Nothing is lost by refusing: the reason names the line to fix first, and
-    the finding is still there on the next run. Nothing is claimed either.
+    The line-3 finding IS lost by refusing, and that is the price of the rule
+    rather than a free move (#1195) -- for a file whose refusal is permanent it
+    is lost on every run, not deferred to the next one. Nothing is claimed
+    either, which is what makes the trade the right way round.
     """
     f = tmp_path / "mixed.html"
     f.write_text(
