@@ -1,13 +1,17 @@
 """`around`'s colon route promotes parts[1] to a filename after the gate (#1135).
 
-`_PATH_ARG_POSITIONS["around"]` is `(2,)` because in the normal reading parts[1]
-is a PATTERN and parts[2] is the path. `_around_line_delegation` (#1086) re-reads
+In the normal reading parts[1] is a PATTERN and the path is the last token, so
+that is the value dispatch gates. `_around_line_delegation` (#1086) re-reads
 parts[1] as a filesystem path and hands it to `op_around_line`, and it runs from
-`_dispatch_impl` *after* the containment gate has already passed on parts[2].
+`_dispatch_impl` *after* the containment gate has already passed on the other
+slot. (When #1135 was filed the gate came from `_PATH_ARG_POSITIONS["around"] =
+(2,)`; #1166 replaced that fixed slot with the path the parser computed. Neither
+covers the promoted slot, which is why the guard lives in the delegation.)
 
 So the same file, named in two different slots of the same op, gets two different
-answers: refused at parts[2], read at parts[1]. The receipt is honest about the
-substitution it made -- what silently grew is the set of files the tool will open.
+answers: refused as the path, read through the promoted pattern. The receipt is
+honest about the substitution it made -- what silently grew is the set of files
+the tool will open.
 
 These tests drive a path through the PROMOTED slot. The v0.29.0 answer to the
 same call was `ERROR: file not found: 3` -- an error, but for the wrong reason

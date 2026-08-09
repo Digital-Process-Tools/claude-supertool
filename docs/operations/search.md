@@ -84,11 +84,15 @@ There is no `re:` prefix on `grep`. Every pattern is already a regex, so a leadi
 Because the colon CLI cannot tell where a pattern containing `:` ends, the tokens left of the path are rejoined with `:`. That is deterministic and documented, but it used to be invisible; a pattern containing a `:` now has the effective pattern echoed above the report line:
 
 ```
-(pattern read as 're:Checks|failed' — the ':' is part of the regex, not a separator. …)
+(pattern read as 're:Checks|failed', path as 'ci.log' — the ':' is part of the regex, not a separator. …)
 (3 results in 1 files, scanned 1 files, limit 40)
 ```
 
+The line names **both** halves of the split. Naming only the pattern was precise and incomplete: the split has two outputs, and a receipt silent about which token became the *file* reads as complete, which is what stops a reader checking the half that moved ([#1166](https://github.com/Digital-Process-Tools/claude-supertool/issues/1166)).
+
 Use `grep:@-` with a `pattern` key when the split should fall somewhere else.
+
+**The path that is checked against the cwd boundary is the one the split produced**, not a fixed argument slot. `grep:PATTERN:PATH` and `around:PATTERN:PATH[:N]` both take the path from the *last* token after the trailing numbers are peeled, so a `:` in the pattern moves it; containment runs on that value. A pattern containing an absolute path is therefore searched for, not opened ([#1166](https://github.com/Digital-Process-Tools/claude-supertool/issues/1166)).
 
 **Delegation does not change the dialect.** When rtk is installed and enabled, a plain `grep` (no context, no count) is delegated to it. The system grep behind rtk reads a POSIX **BRE** unless told otherwise, where `|`, `+`, `?`, `(` and `{` are ordinary characters — so `ab+c` matched a literal plus rather than `abbc`, and only when that reading happened to match at all ([#987](https://github.com/Digital-Process-Tools/claude-supertool/issues/987)). Supertool passes `-E`, and delegates only patterns whose two readings are the same by construction: any backslash escape outside the punctuation both dialects agree on (`\. \$ \* \+ \? \( \) \[ \] \{ \} \| \\ \/ \-`) sends the search to the native walker, as do lookaround and inline flags (`(?...`), non-greedy quantifiers, and POSIX bracket classes (`[[:alpha:]]`, `[[=a=]]`, `[[.a.]]`). That is a whitelist rather than a list of known offenders, because the version that enumerated `\d`/`\w`/`\b` let GNU's `\<` and `\>` word boundaries through — they anchor in ERE and are the plain characters `<` and `>` in Python.
 
