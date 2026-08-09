@@ -514,6 +514,31 @@ class TestDriveLetters:
             "conclude a different argument was rejected: " + out)
         assert "refusing 'C'" not in out, out
 
+    @pytest.mark.parametrize("raw, tokens", [
+        ("a:dry", ["a:dry"]),
+        ("x:y:z", ["x:y", "z"]),
+        ("C:", ["C:"]),
+    ])
+    def test_what_the_narrowing_costs_is_a_refusal_not_a_different_target(
+            self, outside_world, monkeypatch: pytest.MonkeyPatch, raw: str,
+            tokens: list, capsys: pytest.CaptureFixture[str]) -> None:
+        """Sparing the drive colon spares it in more shapes than `C:\\...`.
+
+        The rule is "the first colon of a token beginning with one ASCII
+        letter", so `x:y:z` yields `x:y` and `z` rather than three tokens. That
+        is a real widening of the old behaviour and it is pinned here rather
+        than described, because the docstring understated it once already.
+
+        What makes it safe is where those tokens land: every one carries a
+        colon into the check, `ntpath.splitdrive` reads it as drive-relative,
+        and the run is refused. The cost is a refusal, never a
+        differently-chosen target — the only property that matters for an op
+        that force-pushes.
+        """
+        assert oss_train._colon_split(raw) == tokens
+        assert _run(monkeypatch, raw) == 2
+        assert "# oss_train" not in capsys.readouterr().out
+
     def test_a_drive_relative_target_is_refused_on_every_platform(
             self, outside_world) -> None:
         """`C:foo` is drive-relative: no separator, not absolute, and

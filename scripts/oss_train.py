@@ -258,7 +258,12 @@ _DRIVE_PREFIX = re.compile(r"^[A-Za-z]:")
 
 
 def _colon_split(token):
-    """Split one comma element on ':', leaving a Windows drive's colon alone."""
+    """Split one comma element on ':', leaving a Windows drive's colon alone.
+
+    Only the FIRST colon is spared, and only when exactly one ASCII letter
+    precedes it. A drive-prefixed absolute path survives whole; `all:dry` and
+    `999:dry` still split. See `parse_tokens` for what the narrowing costs.
+    """
     prefix = ""
     if _DRIVE_PREFIX.match(token):
         prefix, token = token[:2], token[2:]
@@ -295,10 +300,18 @@ def parse_tokens(argv):
     `target_error`'s drive-relative arm unreachable from the CLI, so the fix
     turns an advertised-but-dead message back into a live one.
 
-    The narrowing costs one shape: a single-letter target followed by the colon
-    flag, `oss_train:a:dry`, now reads as the drive-ish token `a:dry` rather
-    than as target `a`. A one-character worktree name is not a thing here and a
-    drive letter is; the comma form `a,dry` is unaffected either way.
+    State the narrowing precisely, because the obvious wording understates it:
+    the rule is not "`a:dry` specifically", it is **the first colon of any token
+    that begins with exactly one ASCII letter is not a separator**. So `x:y:z`
+    splits to `x:y` and `z`, not to three tokens. Measured, not reasoned.
+
+    What makes that acceptable is where the surviving token lands: `a:dry` and
+    `x:y` both carry a colon into `check_target()`, `ntpath.splitdrive()` reads
+    them as drive-relative, and the run is REFUSED naming the token. The cost
+    of the narrowing is therefore a refusal, never a differently-chosen target
+    — which is the only property that matters for an op that force-pushes. The
+    comma form `a,dry` is unaffected either way, and no worktree here has a
+    one-character name.
     """
     tokens = [t.strip() for a in argv for c in a.split(",")
               for t in _colon_split(c) if t.strip()]
