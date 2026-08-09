@@ -37,6 +37,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from _git_common import _git, use_utf8_stdout  # noqa: E402
+import _untrusted  # noqa: E402  (a diff's paths and added lines are not our text — #1130)
 
 MAX_FILES = 60
 MAX_FLAGS = 40
@@ -187,12 +188,23 @@ def _classify(path: str) -> str:
 
 
 def _changed_files(diff_args: list[str]) -> list[tuple[str, str]]:
-    """[(status, path)] from name-status. R/C entries report the new path."""
+    """[(status, path)] from name-status. R/C entries report the new path.
+
+    `_untrusted.split_lines`, never `str.splitlines()` (#1130). This reader asks
+    git for `core.quotepath=false` — deliberately, so an accented path reaches
+    the receipt as itself rather than as octal escapes — and that same choice
+    lets a path carrying U+2028 through unquoted (git only quotes bytes below
+    0x20 once quotepath is off). `str.splitlines()` then breaks on it, and the
+    tail becomes a SECOND, fabricated (status, path) record. The one that bites
+    is `_check_test_pairing`: its `changed_set` is what answers "does this new
+    source file have a test", so a file NAMED `z<U+2028>tests/test_a.py` puts
+    `tests/test_a.py` in that set and the missing-test warning goes quiet.
+    """
     res = _git(["-c", "core.quotepath=false", "diff", "--name-status"] + diff_args)
     out: list[tuple[str, str]] = []
     if res.returncode != 0:
         return out
-    for line in res.stdout.splitlines():
+    for line in _untrusted.split_lines(res.stdout):
         if not line.strip():
             continue
         parts = line.split("\t")
@@ -203,7 +215,21 @@ def _changed_files(diff_args: list[str]) -> list[tuple[str, str]]:
 
 
 def _scan_red_flags(diff_args: list[str], patterns: list[dict]) -> list[str]:
-    """Scan ADDED lines (unified=0) for red-flag patterns. Returns 'path:line label'."""
+    """Scan ADDED lines (unified=0) for red-flag patterns. Returns 'path:line label'.
+
+    `_untrusted.split_lines`, never `str.splitlines()` (#1130) — `_pr_diff.parse`
+    (#1081) one op over. `cur_path` is set from a `+++ b/` at column 0 and every
+    pattern may be scoped to an extension, so an added line containing
+    `U+2028+++ b/notes.txt` retargets `cur_path` and a `.py`-scoped pattern
+    stops matching for every added line after it. The scan is switched off by
+    the content it is scanning, and this reader too runs with
+    `core.quotepath=false`, which is what lets the separator arrive raw.
+
+    Narrowing the split alone would trade the forged parse boundary for a forged
+    render line (#1105), so the two values this function interpolates into a
+    line supertool owns at column 0 go through `_untrusted.flat` — the same
+    split-then-fence pairing `presets/gitlab/job.py::_log_lines` uses.
+    """
     res = _git(["-c", "core.quotepath=false", "diff", "--unified=0", "--no-color"] + diff_args)
     if res.returncode != 0:
         return []
@@ -219,7 +245,7 @@ def _scan_red_flags(diff_args: list[str], patterns: list[dict]) -> list[str]:
     hits: list[str] = []
     cur_path = ""
     new_line = 0
-    for line in res.stdout.splitlines():
+    for line in _untrusted.split_lines(res.stdout):
         if line.startswith('+++ "b/'):
             cur_path = line[7:].rstrip('"')
             continue
@@ -239,7 +265,8 @@ def _scan_red_flags(diff_args: list[str], patterns: list[dict]) -> list[str]:
                 if ext and not cur_path.endswith(ext):
                     continue
                 if rx.search(content):
-                    hits.append(f"{cur_path}:{new_line}  {label}  {_mark('→')}  {content.strip()[:80]}")
+                    hits.append(f"{_untrusted.flat(cur_path)}:{new_line}  {label}  "
+                                f"{_mark('→')}  {_untrusted.flat(content.strip())[:80]}")
             new_line += 1
     return hits
 
@@ -256,7 +283,8 @@ def _check_forbidden(paths: list[str], rules: list[dict]) -> list[str]:
             except re.error:
                 hit = pat in p
             if hit:
-                out.append(f"{p}  {_mark('—')}  {rule.get('reason', 'forbidden path')}")
+                out.append(f"{_untrusted.flat(p)}  {_mark('—')}  "
+                           f"{rule.get('reason', 'forbidden path')}")
                 break
     return out
 
@@ -287,7 +315,7 @@ def _check_test_pairing(changed: list[tuple[str, str]], rules: list[dict]) -> li
                 continue
             on_disk = os.path.exists(expected)
             if expected not in changed_set and not on_disk:
-                out.append(f"{path}  {_mark('—')}  no test ({expected})")
+                out.append(f"{_untrusted.flat(path)}  {_mark('—')}  no test ({expected})")
             break
     return out
 
@@ -373,7 +401,8 @@ def main() -> int:
     # Files grouped by classification
     groups: dict[str, list[str]] = {}
     for status, path in changed:
-        groups.setdefault(_classify(path), []).append(f"{status}  {path}")
+        groups.setdefault(_classify(path), []).append(
+            f"{status}  {_untrusted.flat(path)}")
     print(f"\n## Files changed ({len(changed)})")
     shown = 0
     for label in ("src", "test", "i18n", "config", "js", "styles", "migration",

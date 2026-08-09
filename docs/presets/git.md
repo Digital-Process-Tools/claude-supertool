@@ -544,6 +544,21 @@ All three are closed, and the taint tracking is now per function scope rather th
 
 So the scan's coverage claim is still not a general one. It sees `print(f"…")` and `return f"…"` of a literal-keyed dict read within one function, in three preset trees. It does not see `%`, `.format()`, string concatenation, `sys.stdout.write`, a value passed to a helper that prints it, or a non-literal key. Keying on the *sink* rather than the source — every f-string interpolating a dict lookup not known-safe — is the version that would have caught this one, and it is not built.
 
+### `git-diff` is the one op here that asks git not to quote, so it is the one that had to fence itself
+
+[#1130](https://github.com/Digital-Process-Tools/claude-supertool/issues/1130) audited every `str.splitlines()` in `presets/git/` — 44 call sites across 12 files — after the same sweep had run over `presets/github` ([#1105](https://github.com/Digital-Process-Tools/claude-supertool/issues/1105)) and `presets/gitlab` ([#1119](https://github.com/Digital-Process-Tools/claude-supertool/issues/1119)). Two were narrowed, both in `git-diff`, and neither was a misattribution: each **suppressed a review gate**.
+
+- `_scan_red_flags` reads `+++ b/` at column 0 to know which file the added lines belong to, and red-flag patterns are extension-scoped. An added line carrying U+2028 followed by `+++ b/notes.txt` retargeted the path, so a `.py`-scoped secret pattern stopped matching every added line after it — the scan switched off by the content it was scanning. This is [#1081](https://github.com/Digital-Process-Tools/claude-supertool/issues/1081)'s `_pr_diff.parse` defect, one op over.
+- `_changed_files` splits `--name-status` the same way. A file *named* with a U+2028 before `tests/test_a.py` produced a second, fabricated changed-file record, and `_check_test_pairing` — which asks whether the expected test is in the changed set — stopped warning about a new source file with no test.
+
+**Why these two and not the other 42.** Both readers run `git -c core.quotepath=false`, deliberately, so an accented filename reaches the receipt as itself rather than as octal escapes. That is the right call for a receipt and it is exactly what lets a separator arrive unquoted. Every other porcelain reader in this tree leaves `core.quotePath` at its default, where git octal-quotes every byte above 0x7F in a path it prints — so the separator cannot reach the split at all. The rest are stderr extractions, where taking one line of the split *consumes* the separator and narrowing would be worse (#1105's central finding).
+
+Both are `_untrusted.split_lines` now — LF, CR, CRLF — with the path and the matched content flattened where they land in a line supertool owns at column 0, so the fix does not trade a forged parse boundary for a forged render line.
+
+`presets/git/resolve.py`'s conflict-marker state machines are the interesting refusal. They split file content and key on `<<<<<<<` at column 0, which looks like the same defect and is not: a forged separator grants nothing a plain newline does not, because a contributor can already put a marker-shaped line at column 0 in their own file. Narrowing there would be motion, not defence.
+
+The 42 remaining sites are each registered with the reason they were left, in `tests/test_preset_git_splitlines_register_1130.py`. A new `str.splitlines()` anywhere under `presets/git/` is a red build until someone writes down which kind it is.
+
 ### What `git-status`'s `Checks:` line is about
 
 The four states of zero check runs are defined once, in [github.md → Zero check runs is four states, not one](github.md#zero-check-runs-is-four-states-not-one) — `none yet` inside the creation window, `none, and none will be created` once the head commit is past it on a merged/closed PR, `none … until the conflict is resolved — Rebase` when `mergeable` is `CONFLICTING`, a stated `UNKNOWN` otherwise. `git-status` renders the same four from the same `_checks.absence()`, so the wording never drifts between the two ops ([#587](https://github.com/Digital-Process-Tools/claude-supertool/issues/587), [#594](https://github.com/Digital-Process-Tools/claude-supertool/issues/594)).
