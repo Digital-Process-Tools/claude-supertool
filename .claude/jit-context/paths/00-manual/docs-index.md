@@ -46,5 +46,11 @@ mode: once, remind
 | `docs/formatters.md` / `docs/notifiers.md` | formatter / notifier adapter contracts |
 | `docs/input-forms.md` | `@file`/`@payload`/`@-` input-form mechanics |
 | `docs/mcp-integration.md`, `docs/mcp-warm-process-servers.md` | MCP server usage/config, warm-process pattern |
-| `docs/presets/{index,edits,map,meta,reads,search}.md` | shipped preset catalog + per-op-family reference |
-| `docs/operations/{git,github,gitlab,watch}.md` (largest: `watch.md` 165KB) | per-integration op reference; plus `bluesky.md`, `claude-log.md`, `dashboard.md`, `devto.md`, `hashnode.md`, `xml.md` |
+| `docs/operations/{index,edits,map,meta,reads,search}.md` | per-op-family reference for the builtin file ops |
+| `docs/presets/{git,github,gitlab,watch}.md` (largest: `watch.md` 165KB) | per-integration op reference; plus `bluesky.md`, `claude-log.md`, `dashboard.md`, `devto.md`, `hashnode.md`, `index.md`, `xml.md` |
+
+**These two rows were swapped until 2026-08-09**, and the swap was load-bearing: two agents in one evening went looking for `docs/operations/watch.md`, found `docs/operations/` holding a different six files, and concluded *"the index points at a directory layout that is gone"* — so one of them documented `radar` by guessing at a file and the other reported the whole index as rotten. Neither read the 165KB doc that actually existed one directory over.
+
+Note what made it convincing: **`watch.md` really is 165KB.** The size was right and the path was wrong, so the entry corroborated itself. Verify a path by listing the directory, not by recognising a detail in the row.
+
+There is no `docs/presets/radar.md`. `radar` is documented inside `docs/presets/watch.md`.
