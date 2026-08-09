@@ -1470,11 +1470,15 @@ It is never silent, and never rendered like a clean start. Exit status stays `0`
 
 There is a third outcome ([#693](https://github.com/Digital-Process-Tools/claude-supertool/issues/693)). If the pid file cannot be created at all — an unwritable or absent `SUPERTOOL_WATCH_STATE_DIR`, a path that is a directory — the slot was neither taken nor identified, and `claim_pidfile` used to answer `0` for that, which is the value meaning *you own it, go spawn*. It now answers `CLAIM_UNKNOWN`, `watch` prints `ERROR: could not claim the slot for …`, names the pid path and the env var, and exits `1` having started nothing. Radar's MR tier counts such a slot as still uncovered rather than losing it between "healed" and "failed".
 
+There is a fourth ([#1200](https://github.com/Digital-Process-Tools/claude-supertool/issues/1200)), and it is about *reading* the pid file rather than creating it. `read_pid` answered `0` both when there was no file and when the file could not be read, and `0` is the value meaning *the slot is free*. `/tmp` is world-writable and the name is fully predictable from the board, so a symlink planted at it made `claim_pidfile` delete a live poller's claim and start a second poller on the same filter — the duplicate flood that hid a real `pipeline_failed` for 23 minutes on 2026-08-01. The read is now `O_RDONLY|O_NOFOLLOW` with three answers: a PID, `0` for `ENOENT` alone, and a refusal carrying its reason. A claim on the refusal is `CLAIM_UNKNOWN`, not ownership.
+
+A pid file whose **content** is not a PID is deliberately *not* a refusal: it can be attributed to no process, so it stays reclaimable and prunable. That is the same trade as the first rule below — a file nobody can parse must not wedge a slot shut, because an unwatched population renders exactly like a quiet one.
+
 Three rules follow from "a missing watcher is worse than a duplicate one":
 
 - **A slot whose owner is dead is reclaimed**, after one retry. A crashed poller must not wedge its id shut forever; an unwatched population renders exactly like a quiet one.
 - **A failed spawn releases the slot.** A claim left by a poller that never started would refuse every future start for that id.
-- **A poller releases its PID file only if it still owns it.** One shutting down slowly, whose slot was meanwhile reclaimed, must not unlink its successor's claim on the way out.
+- **A poller releases its PID file only if it still owns it.** One shutting down slowly, whose slot was meanwhile reclaimed, must not unlink its successor's claim on the way out. A read that *failed* is not ownership either, so it takes the same arm (#1200): every unlink here is gated on a positive identification.
 
 For the feed tier the id is a *filter string*, so it is canonicalised (sorted keys, sorted deduped values) before it becomes a filename: `author=a,author=b` and `author=b,author=a` are one population and must be one poller. That merges only filters that are already the same set, so it can never refuse a filter that would have selected something different. Board labels still print the filter as you typed it.
 
@@ -1495,11 +1499,14 @@ So a slot is now read as a **set**, from two independent sources:
 
 It is a multi-kill, and that is a deliberate trade. The failure it replaces is a survivor nobody can reach whose only recovery was `pkill`; the failure it risks is stopping a process someone wanted. The breadth is bounded by evidence rather than by a pattern: every PID it acts on belongs to a process whose own argv names this exact source and id **as whole tokens**, so `33248` cannot match `332480` and an id appearing inside some other command's arguments cannot be mistaken for a poller. What it can still over-reach on is a poller started from a *different checkout* of supertool — which shares the same `/tmp` slot, and so genuinely is the same watcher.
 
-Three absences are now three different sentences, because they call for different actions:
+Four absences are four different sentences, because they call for different actions:
 
 - `No active watcher for … (no PID file, and no matching process)` — nothing is running, verified both ways.
 - `Tracked PID N … is not running` — the slot recorded a poller that died with nothing reporting it, so this id has been **unwatched** since. #511 caught two of those, and the board was silently blind on both MRs.
 - `… the process scan was unavailable` — `ps` could not be read, so an untracked poller could not be ruled out. Never rendered as "no watcher".
+- `No readable PID file for … — <reason>` — a pid file exists at the name and this process would not follow it (#1200). Somebody planted it; the file is left alone rather than pruned, and whether a poller holds the slot is not knowable from here. Inspect the path before re-arming.
+
+`watches` keeps the slot visible in that last case: the row is dropped from `list_active_pids`, because the only PID available came out of a file this slot never wrote, but the `ps` scan still finds a real poller and the union renders it as `no pidfile`.
 
 ### `radar` reaps duplicates before it respawns ([#749](https://github.com/Digital-Process-Tools/claude-supertool/issues/749))
 

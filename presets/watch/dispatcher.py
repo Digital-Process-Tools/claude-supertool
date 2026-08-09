@@ -174,6 +174,15 @@ def _stop_pid(pid: int) -> str:
 
 def _report_nothing_stopped(source: str, watcher_id: str, info: dict[str, Any]) -> None:
     """Say which kind of nothing this is. There are three, and they differ."""
+    if info.get("tracked_refusal"):
+        # Not "no PID file": there is a name here and this process would not
+        # follow it. The two send an operator to different places, and the
+        # second one means somebody planted it (#1200).
+        print(f"No readable PID file for {source}:{watcher_id} — "
+              f"{info['tracked_refusal']}. Nothing was stopped, and whether a "
+              f"poller holds this slot is not known from here. Inspect the "
+              f"path before re-arming.")
+        return
     if info["tracked"] and not info["tracked_alive"]:
         print(f"Tracked PID {info['tracked']} for {source}:{watcher_id} is not "
               f"running — the watcher died without anything reporting it, and "
@@ -499,7 +508,8 @@ def reap_duplicate_pollers() -> list[str]:
                       if pid > 1 and pid != os.getpid() and transport._pid_alive(pid))
         if len(live) < 2:
             continue
-        tracked = transport.read_pid(source, watcher_id)
+        tracked, tracked_refusal = transport.read_pid_checked(source, watcher_id)
+        tracked = tracked or 0
         keep = tracked if tracked in live else live[0]
         stopped: list[int] = []
         failures: list[str] = []
@@ -518,7 +528,8 @@ def reap_duplicate_pollers() -> list[str]:
                 f"{source}:{watcher_id} — stopped "
                 + ", ".join(str(p) for p in stopped)
                 + f"; PID {keep} still polls it"
-                + ("" if keep == tracked else " (no pid file named one)") + ".")
+                + ("" if keep == tracked
+                   else f" ({tracked_refusal or 'no pid file named one'})") + ".")
         lines.extend(failures)
     return lines
 
