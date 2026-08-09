@@ -19,9 +19,15 @@ jobs:
     # #722: a job with no budget runs to GitHub's six-hour default, and the
     # whole time the board reads `pending` — which is exactly what a leg about
     # to finish looks like. 30 minutes is sized from 70 job observations across
-    # five master runs: windows 483-574s, macos 128-197s, ubuntu 93-125s. It is
-    # 3.1x the worst windows leg ever measured here, so it can only fire for a
-    # hang, not for a slow runner — the #702 trade, in CI config. Deliberately
+    # five master runs *as of #722*: windows 483-574s, macos 128-197s, ubuntu
+    # 93-125s. Those are a record of a measurement, not a claim about today —
+    # five green master runs on 2026-08-09 put windows at 269-481s — and the
+    # date is here because the notifiers comment further down carries the
+    # current figures and two undated ranges for the same quantity read as a
+    # contradiction. The live claim is the multiple, and it survives both: 30
+    # minutes is 3.1x the worst windows leg ever measured here, so it can only
+    # fire for a hang, not for a slow runner — the #702 trade, in CI config.
+    # Deliberately
     # not the same number as `notifiers` below (24-37s): one figure across two
     # job classes an order of magnitude apart is no guard on the smaller one.
     # Per-OS budgets inside this matrix were considered and declined — bounding
@@ -33,6 +39,23 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
+        # Four versions on all three OSes, including Windows, and that is a
+        # measured decision rather than the default (#917). Dropping Windows
+        # to 3.9 + 3.12 looks like it removes two 300s legs; it removes ~0s
+        # of *critical path*, because the path is the slowest leg and the
+        # retained Windows legs run the same length. Replayed over the five
+        # green master runs of 2026-08-09 it saves 0s in four of them, and
+        # 142s in the fifth only because windows/3.11 happened to be that
+        # run's variance outlier — a coin flip among four legs, not a
+        # property of the matrix. #917's own filed data says the same: legs
+        # of 691/678/675/636s, drop the middle two, `max` is still 691.
+        # The saving is real but it is in *billed* minutes at Windows' 2x,
+        # which is a different currency from the wall clock the issue's
+        # title claims. Against that: Windows-only reds caught here run 10
+        # genuine to 2 flakes, and #1004/#1005/#997 were three real
+        # Windows-only defects in one evening, each from an agent whose
+        # macOS suite was green. Coverage is the expensive thing to give
+        # back and this trade buys nothing to give it back for.
         python-version: ["3.9", "3.10", "3.11", "3.12"]
     env:
       # The exact CPython patch `setup-python` resolves `3.9` to on the hosted
@@ -175,12 +198,22 @@ jobs:
         # most-filed defect class, and a test that runs nowhere is deleted
         # with extra steps.
         #
-        # `--durations=25` (#891 scope item 3): every measurement behind
-        # #891/#917 was taken on macOS, and nobody had identified which
-        # tests are actually slow on Windows — ~7 of a Windows leg's ~10.5
-        # minutes are spent between 98% and 99% of the progress bar with
-        # nothing in the log to say which test is running there. This makes
-        # the tail name itself instead of being guessed at.
+        # `--durations=25` (#891 scope item 3) was added to find the Windows
+        # tail: ~7 of a Windows leg's then-~10.5 minutes were spent between
+        # 98% and 99% of the progress bar with nothing in the log to say
+        # which test was running there. **It has answered, and the answer is
+        # that there is no tail** — on `pytest (windows-latest, 3.9)` of run
+        # 31329647265 the whole suite is `8912 passed, 746 skipped in
+        # 275.87s`, the slowest single test is 8.9s, and the entire top-25
+        # sums to 116s of per-test time under `-n auto`. The Windows premium
+        # is broad per-spawn overhead across ~8900 tests, not a hot spot, so
+        # nothing here can be fixed by finding "the slow tests" (#917's
+        # spawn census, and why #1125 rather than a test rewrite).
+        #
+        # The flag stays anyway, and not out of inertia: it is the standing
+        # evidence for that negative. Removing it would leave the next agent
+        # with no way to tell "no test is slow" from "nobody looked", which
+        # is the reading it was added to close.
         #
         # bash shell forced so `|| true` works on Windows (PowerShell default
         # exits on pytest's non-zero status, skipping the junit-xml parser).
