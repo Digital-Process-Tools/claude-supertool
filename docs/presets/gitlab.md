@@ -35,10 +35,23 @@ The rule is an **allowlist of what a GitLab API path may contain**, not a denyli
 |---|---|---|
 | a scheme at the front | `http://evil.host/x`, `HtTpS://x`, `file:///etc/passwd`, `http:evil.host/x` | a scheme names a host; the `//` is optional and the casing is not lowercase |
 | `//` in the path portion | `//evil.host/x`, `//gitlab.com@evil.host/x` | an authority, not a path segment — and it is where a userinfo `@` relocates the host |
-| a backslash | `\\evil.host\x` | not a path separator here, and the parsers that disagree fold it into `/` |
+| a literal backslash | `\\evil.host\x` | not a path separator here, and the parsers that disagree fold it into `/` — the percent-encoded `%5C` is a different question, below |
 | anything outside `pchar` + `/` | a NUL, an escape sequence, `#`, `<` | a path has a character set; a byte outside it is a typo or a reach past the API path |
 
-All three structural checks run **again on the percent-decoded value**, so `http%3A%2F%2Fevil.host` and `%2F%2Fevil.host` do not get past the first pass wearing an encoder. Because nothing may name a host, every request resolves against the instance glab is configured for without supertool having to read glab's config to find out which one that is.
+The scheme and `//` checks run **again on the percent-decoded value**, so `http%3A%2F%2Fevil.host` and `%2F%2Fevil.host` do not get past the first pass wearing an encoder. Because nothing may name a host, every request resolves against the instance glab is configured for without supertool having to read glab's config to find out which one that is.
+
+The backslash is the one rule that does not repeat in that form ([#1043](https://github.com/Digital-Process-Tools/claude-supertool/issues/1043)). `%5C` reaches GitLab as a byte inside a path segment and cannot open an authority, because folding is something that happens to a literal backslash — and since GitLab's files API takes the path percent-encoded, `%5C` is the *only* spelling available for a file committed from Windows as `src\main.rs`. Refusing it made that file unreachable through the op.
+
+So on the decoded pass backslashes are **folded into slashes** and the two authority checks run on the result, rather than the character being refused on sight:
+
+| Decoded pass | Folds to | Verdict |
+|---|---|---|
+| `files/src%5Cmain.rs/raw?ref=main` → `files/src\main.rs/raw` | `files/src/main.rs/raw` | accepted — a filename, no authority |
+| `%5C%5Cevil.host/x` → `\\evil.host/x` | `//evil.host/x` | refused — protocol-relative, and the `//` rule alone never sees it |
+| `/%5Cevil.host/x` → `/\evil.host/x` | `//evil.host/x` | refused |
+| `%5Cevil.host/x` → `\evil.host/x` | `/evil.host/x` | accepted — one slash is a leading slash, not an authority; it takes two |
+
+Dropping the rule from the decoded pass outright would have re-opened that middle row, which is the shape the decoded pass exists for.
 
 **Refused, not sanitised**, for the same reason `-X POST` is refused: stripping the scheme would send *a* request, and the answer would read as the one you asked for. The refusal quotes the value and names which of the four facts it tripped.
 

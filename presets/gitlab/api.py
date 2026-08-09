@@ -119,33 +119,75 @@ def parse_args(raw: str) -> tuple[str, bool]:
     return ":".join(tokens), False
 
 
-def host_naming_reason(candidate: str) -> str:
-    """Why this string names a host of its own, or ``""`` (#1035).
+def _authority_reason(head: str) -> str:
+    """The two shapes that open an authority of their own, or ``""``.
 
-    Three structural facts, in the order that gives the clearest sentence. Each
-    one is a thing only an authority needs, and none of them appears in a
-    GitLab API path:
-
-    * a backslash — not a path separator here, and folded into ``/`` by the
-      WHATWG URL parsing that a good deal of software does;
     * a scheme at the front, with or without the ``//`` after it (``http:host``
       is opaque-but-absolute and glab takes it);
     * a ``//`` anywhere in the path portion, which is what a protocol-relative
       ``//evil.host/x`` and a userinfo ``//gitlab.com@evil.host/x`` both need.
 
-    The query is exempt from the ``//`` rule and only from that one: by the
-    time a ``?`` has been seen the host is already decided, and
-    ``?url=http://x`` is an ordinary search value.
+    `head` is the value with any query already removed: by the time a ``?`` has
+    been seen the host is decided, and ``?url=http://x`` is an ordinary search
+    value.
     """
-    head = candidate.split("?", 1)[0]
-    if "\\" in candidate:
-        return ("a backslash is not a path separator, and the parsers that "
-                "disagree read it as one")
     if _SCHEME.match(head):
         return "it opens with a URL scheme, so it names its own host"
     if "//" in head:
         return "a // in the path opens an authority, not a path segment"
     return ""
+
+
+def host_naming_reason(candidate: str) -> str:
+    """Why this raw string names a host of its own, or ``""`` (#1035).
+
+    Three structural facts, none of which appears in a GitLab API path: a
+    backslash — not a path separator here, and folded into ``/`` by the WHATWG
+    URL parsing that a good deal of software does — plus the two authority
+    shapes `_authority_reason` names.
+
+    The backslash rule is flat *here*, and here only, because here the
+    backslash is literal. `decoded_host_naming_reason` is the percent-decoded
+    counterpart and does not carry it in this form (#1043).
+    """
+    if "\\" in candidate:
+        return ("a backslash is not a path separator, and the parsers that "
+                "disagree read it as one")
+    return _authority_reason(candidate.split("?", 1)[0])
+
+
+def decoded_host_naming_reason(candidate: str) -> str:
+    """The same question asked of the percent-decoded form (#1035, #1043).
+
+    This pass exists because `http%3A%2F%2Fevil.host` and `%2F%2Fevil.host`
+    are the raw shapes wearing an encoder, and a consumer that decodes before
+    it parses sees an authority the raw check did not.
+
+    The backslash does not travel with them as a flat refusal. A
+    percent-encoded backslash cannot open an authority on its own: it reaches
+    GitLab as one byte inside a path segment, and folding is something that
+    happens to a *literal* ``\\``, not to ``%5C``. Since GitLab's files API
+    takes the path percent-encoded, ``%5C`` is the only spelling available for
+    a file committed from Windows as ``src\\main.rs`` — so refusing it made
+    that file unreachable through the op, which is the report (#1043).
+
+    What a decoded backslash can still do is become a slash in the hands of
+    the very consumer this pass is aimed at: ``%5C%5Cevil.host/x`` decodes to
+    ``\\\\evil.host/x``, which folds to ``//evil.host/x`` — the
+    protocol-relative shape, and one the ``//`` rule cannot see because the
+    decoded form holds no ``/`` at all. So the fold is performed here rather
+    than the character refused: backslashes become slashes and the authority
+    rules run on the result. A filename keeps its segment; an authority does
+    not get to hide behind an encoder.
+
+    The boundary that follows from the fold, stated rather than implied: a
+    lone ``%5C`` with no adjoining slash is accepted, because it folds to a
+    single ``/``. ``%5Cevil.host/x`` becomes ``/evil.host/x``, which is a path
+    with a leading slash — the op already accepts those, and one slash has
+    never opened an authority. It takes two.
+    """
+    folded = candidate.replace("\\", "/")
+    return _authority_reason(folded.split("?", 1)[0])
 
 
 def path_refusal(path: str) -> str:
@@ -180,9 +222,11 @@ def path_refusal(path: str) -> str:
     # carrying a scheme or an authority does not read the API — it hands a live
     # credential to whoever the value names. The check runs on the value and
     # again on its percent-decoded form, because `http%3A%2F%2F` and `%2F%2F`
-    # are the same two shapes wearing an encoder.
+    # are the same two shapes wearing an encoder. The two passes are not the
+    # same rule: what is literal in the first is decoded in the second, so the
+    # backslash is a flat refusal raw and a fold-then-check decoded (#1043).
     reason = (host_naming_reason(path)
-              or host_naming_reason(urllib.parse.unquote(path)))
+              or decoded_host_naming_reason(urllib.parse.unquote(path)))
     if reason:
         return (
             f"ERROR: gl-api takes a GitLab API path, not a URL — {path!r} is "

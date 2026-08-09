@@ -194,6 +194,8 @@ One file's hunks: gh-pr:935:diff:PATH
 
 **`[same edit xN]` is a note and never a filter.** A file whose every hunk is byte-identical after stripping whitespace is flagged so attention goes elsewhere. It is never removed from the list and never shortened, and the test is exact equality rather than similarity: under-flagging is the deliberate direction, because a wrong "mechanical" verdict is an invitation to skim the file that needed reading.
 
+The note describes every hunk that was *parsed*, and `GH_PR_DIFF_MAX_BYTES` decides how many of them the render *holds*, so the two are worded together ([#1078](https://github.com/Digital-Process-Tools/claude-supertool/issues/1078)). `all hunks follow` is written only when nothing was withheld; a capped render says instead that the note covers every hunk parsed but the cap withheld part of the body, so not all of them follow. The multi-entry sentence is the same shape — oldest-first assembly puts the current version of a twice-changed line at the bottom, which is exactly what a cap removes — so it too stops pointing at a body it cannot promise.
+
 **Three states, because this renders inside the merge gate.** A diff nobody could fetch prints a named refusal and exits 1 — never an empty file list, which reads as "this PR changes nothing" at the exact moment someone is deciding whether to merge it:
 
 ```
@@ -213,9 +215,19 @@ Records are coalesced per path before either render, so a first-of-N cannot be s
 
 ```
 ## _supertool.py  (M, +484 -72)
-Assembled from 2 entries for this path in the fetched diff — all of them are
-below, oldest first, so a line changed twice appears twice and the LAST
-occurrence is the current one. A net diff has one entry per path.
+Assembled from 2 entries for this path in the fetched diff — concatenated
+below in source order, oldest first, so a line changed twice appears twice and
+the LAST occurrence is the current one. A net diff has one entry per path.
+```
+
+That render assumes the byte cap did not fire. When it does, the sentence stops pointing at a body it cannot promise, because the current version of a twice-changed line is at the bottom and the bottom is what was cut ([#1078](https://github.com/Digital-Process-Tools/claude-supertool/issues/1078)):
+
+```
+## _supertool.py  (M, +484 -72)
+Assembled from 2 entries for this path in the fetched diff — concatenated in
+source order, oldest first, so a line changed twice appears twice, and the
+current version of it is the last occurrence in the assembly — which the byte
+cap below may not have reached. A net diff has one entry per path.
 ```
 
 The file list sums those entries into a single row, because one file rendered as two rows totalling `2 files` is the same misreport one level up.
