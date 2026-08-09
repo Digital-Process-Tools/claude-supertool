@@ -60,7 +60,10 @@ def test_one_decode_deep_is_deliberate_so_a_doubly_encoded_name_is_accepted(
 
 
 #: The same shapes one decode shallower, which is the depth a real consumer
-#: occupies. Accepting these would be the actual defect.
+#: occupies. Accepting these would be the actual defect. This corpus does not
+#: discriminate a fixed-point rewrite — such a rewrite still refuses every one
+#: of them; `DOUBLY_ENCODED_IS_A_FILENAME` above is the half that does. It is
+#: here so that the pin cannot be satisfied by loosening depth 1 instead.
 ONE_DECODE_DEEP_NAMES_A_HOST = [
     "%2F%2Fevil.example/x",
     "%5C%5Cevil.example/x",
@@ -88,11 +91,15 @@ def test_the_second_decode_is_the_one_not_performed() -> None:
     assert api.path_refusal(raw) == ""
 
 
-def test_neither_pass_folds_an_encoded_backslash_before_decoding() -> None:
-    """`%5C` is folded on the decoded pass only, and after the one decode.
+def test_the_fold_acts_on_a_literal_backslash_and_never_on_a_spelling() -> None:
+    """`%5C` is inert to both passes as a *string*; only a decode produces one.
 
-    Pinned here because a fixed-point rewrite tends to arrive as "fold, then
-    decode again", which reads as harmless and refuses `src%255Cmain.rs`.
+    This is the fold's own contract, not the depth: it says the two functions
+    fold what they are given rather than decoding on their own account, which
+    is what makes the single decode in `path_refusal` the whole of the depth.
+    It does not discriminate a fixed-point rewrite — the test above is what
+    does — and the third assertion is an acceptance pin for the #1043 filename
+    one level deeper, not evidence about the depth.
     """
     assert api.host_naming_reason("src%5Cmain.rs") == ""
     assert api.decoded_host_naming_reason("src%5Cmain.rs") == ""
