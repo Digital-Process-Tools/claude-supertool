@@ -539,7 +539,14 @@ def main() -> int:
         return 1
 
 
-    if _git(["rev-parse", "--git-dir"]).returncode != 0:
+    # One `rev-parse --git-dir`, not two (#1126). The repository check below and
+    # the MERGE_HEAD probe further down were asking git the identical question
+    # microseconds apart and throwing away one of the two answers. Unlike
+    # `merge.py`'s head_before/head_after — which look identical and are
+    # deliberately not — nothing between these two points can move the git dir,
+    # so there is one question here and it is now asked once.
+    git_dir_res = _git(["rev-parse", "--git-dir"])
+    if git_dir_res.returncode != 0:
         print("ERROR: not inside a git repository.")
         return 1
 
@@ -547,7 +554,7 @@ def main() -> int:
     branch = _git(["rev-parse", "--abbrev-ref", "HEAD"]).stdout.strip()
 
     if no_edit:
-        gd = _git(["rev-parse", "--git-dir"]).stdout.strip()
+        gd = git_dir_res.stdout.strip()
         in_merge = bool(gd) and (
             os.path.exists(os.path.join(gd, "MERGE_HEAD"))
             or os.path.exists(os.path.join(gd, "CHERRY_PICK_HEAD"))
