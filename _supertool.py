@@ -5698,17 +5698,21 @@ def _around_line_delegation(pattern: str, path: str, n: int) -> str:
     if line < 1:
         return ""
     # The promotion happens HERE and nowhere else: past this point `pattern` has
-    # stopped being a pattern and is a filename. Dispatch already ran
-    # containment, but from `_PATH_ARG_POSITIONS["around"] = (2,)` — parts[2],
-    # the slot this call did not use as a path — so parts[1] arrives unchecked
-    # and `around:/etc/hosts:3` read a file that `around:localhost:/etc/hosts:1`
-    # — the same file, named in the slot the table does cover — refuses (#1135).
+    # stopped being a pattern and is a filename. Dispatch already ran containment
+    # on the path the parser computed, which in THIS reading is the numeric
+    # token — so parts[1] arrives unchecked, and `around:/etc/hosts:3` read a
+    # file that `around:localhost:/etc/hosts:1` — the same file, named in the
+    # slot the parser does treat as a path — refuses (#1135).
     #
-    # The check is here rather than in the table because parts[1] is a PATTERN in
-    # every other reading, and a pattern is not a path: containing slot 1 would
-    # refuse `around:/etc/passwd:code.py`, i.e. searching a repo for an absolute
-    # path string. The table answers "which slots are always paths"; this one
-    # only becomes a path conditionally, so the guard has to be conditional too.
+    # The check is here rather than at the dispatch guard because parts[1] is a
+    # PATTERN in every other reading, and a pattern is not a path: gating it
+    # unconditionally would refuse `around:/etc/passwd:code.py`, i.e. searching
+    # a repo for an absolute path string. The dispatch guard answers "the path
+    # this call resolved"; this slot only becomes a path conditionally, so the
+    # guard has to be conditional too. (#1166 dropped `around` from
+    # `_PATH_ARG_POSITIONS` entirely — the table gated a fixed slot the parser
+    # did not necessarily use — but that changed nothing here: the promoted slot
+    # was never in it.)
     _contained = _containment_error([pattern])
     if _contained:
         return _contained
