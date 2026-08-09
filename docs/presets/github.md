@@ -23,6 +23,7 @@ A GitHub-cloned cwd, **or** a `repo:OWNER/NAME` target — see [Targeting anothe
 | `gh-check` | `gh-check:CHECK_RUN_ID` \| `gh-check:pr:NUMBER` | The **other** id namespace. A check run's status, output title/summary and its annotations — `path:line`, title, message, which for a scanning check (CodeQL, Dependabot, an external app) is the whole finding. Annotations are capped at `GH_CHECK_ANNOTATION_CAP` (default 5) with `+N more` in header **and** footer; a full `per_page=100` page is disclosed as a floor, not a total. Zero annotations on a non-passing check is never rendered as an all-clear, and a failed annotations fetch is never rendered as zero. `gh-check:pr:N` lists the check runs on PR N's head commit **with their ids**, passing ones included. Since [#827](https://github.com/Digital-Process-Tools/claude-supertool/issues/827) this op is the *explicit* form rather than the only route — `gh-job:ID` answers for a check run too, and `gh-pr` names a non-Actions leg as `CodeQL (check #ID)` — so nobody has to learn it. Does not read the code-scanning API ([#793](https://github.com/Digital-Process-Tools/claude-supertool/issues/793), see [Two id namespaces](#two-id-namespaces-actions-jobs-and-check-runs)) |
 | `gh-pr-create` | `gh-pr-create:@FILE` | Open a PR from a JSON/TOML payload. **`base` is required and never defaulted** — `master` and a release branch are equally plausible from one cwd, and a wrong base silently retargets the merge; `head` defaults to the current branch and `repo` to the origin remote, each printed with the source it came from. The receipt names the number and URL, base/head as resolved, **whether any check actually started** (zero renders as "nothing has been created", never as pending), and the issues the body links, parsed with the same closing-reference reader `gh-pr` uses so a malformed `Closes` line is caught at creation rather than after the merge. See [The base is never guessed](#the-base-is-never-guessed) |
 | `gh-pr-merge` | `gh-pr-merge:NUMBER[:squash\\|:merge\\|:rebase][\\|force]` | **Merge a PR and prove it landed.** The only op here that writes. Refuses everything it cannot verify, reads the merge back off the remote rather than trusting an exit code, checks every linked issue individually, and reports the default branch after the squash. Without `\\|force` it prints the gate and merges nothing. See [gh-pr-merge refuses more than it merges](#gh-pr-merge-refuses-more-than-it-merges) |
+| `gh-since-tag` | `gh-since-tag[:TAG][:per=N]` | **Should a release fire?** The two numbers the auto-release gate is defined in terms of, from one call: merged PRs since the last tag — number, title, merge instant, in merge order — and unreleased `changelog.d/` fragments by section. Both were hand-rolled every tick until [#1209](https://github.com/Digital-Process-Tools/claude-supertool/issues/1209), when the hand-rolled version printed a confident `0` beside 7 fragments; `gh` returns `2026-08-09T16:07:45Z` and `git show -s --format=%cI` returns `2026-08-09T17:13:43+02:00`, the two were compared as **strings**, and `"16" > "17"` is False at the second character. Every timestamp here is parsed to an instant first, and the two numbers print together because their contradiction is what caught it — a measured zero beside a non-zero fragment count renders as `CONTRADICTION`, not as two numbers to notice. The boundary has three states and the count has four; see [What "the last tag" is](#what-the-last-tag-is-and-when-it-has-no-clean-answer) |
 | `repo:` prefix | `repo:OWNER/NAME` (leading op) | Points `gh-pr`, `gh-prs`, `gh-issue`, `gh-issues`, `gh-run`, `gh-job`, `gh-check` at a repo other than the cwd's — see [Targeting another repo](#targeting-another-repo) |
 | `gh-follow` | `gh-follow:USERNAME` | Follow a GitHub user via the authenticated session |
 | `gh-following` | `gh-following[:N]` | List users you follow (default 30) |
@@ -1268,6 +1269,84 @@ The note is on **stdout**, as a `#` comment, deliberately. stderr was the first 
 ```
 
 The numerator stays what that flag itself removed, so the notes add up to the rows lost instead of double-counting them. Same invariant the cap note holds: a count measured against what survived a filter is a number no fetch ever returned ([#864](https://github.com/Digital-Process-Tools/claude-supertool/issues/864)).
+
+## What "the last tag" is, and when it has no clean answer
+
+`gh-since-tag` answers the release gate's first question — how many PRs have merged since the last tag — and the reason it is an op rather than a one-liner is that **"the last tag" is not one question**. Not every tag is a release, tags and the default branch can disagree, a tag can point at a commit that is not on `master`, and a release can be cut from a branch. Each of those is a place where a script picks silently, and picking silently is how [#1209](https://github.com/Digital-Process-Tools/claude-supertool/issues/1209)'s confident zero happened.
+
+So each is a stated decision:
+
+| Question | The op's answer |
+|---|---|
+| Which clock is the boundary? | The tagged **commit's** committer date. An annotated tag object created an hour after the commit does not move what is inside the release, so the tag object's own date is printed as a disclosure and is never the boundary. |
+| Is every tag a release? | No. Only version-shaped names — `v0.31.0` and `0.3.2`, because this repository's history carries both spellings — are candidates for the **default** boundary. A `wip-241` newer than the chosen tag is named in the output and skipped deliberately; it cannot rival a release boundary, so it does not make the answer ambiguous. `gh-since-tag:TAG` accepts any name. |
+| What if the tag is not on the default branch? | The default boundary must be reachable from it. A version-shaped tag that is **newer and unreachable** — a release cut elsewhere — makes the boundary `AMBIGUOUS` and is named, because both readings are defensible and they give different counts. An **older** unreachable tag changes nothing and says nothing. An explicitly named unreachable tag is accepted, with a line saying the count answers "merged after that moment" rather than "merged into the branch after that commit". |
+| What if reachability cannot be measured? | `AMBIGUOUS`. If `git tag --merged` did not run, the newer-tag-off-a-branch test is exactly the check that did not happen, and its silence is not a clean result. |
+| What if the named tag does not exist? | `UNRESOLVED`, and the newest tag is **not** substituted — that would answer a question nobody asked. The eight **newest** tags are offered as a hint, not the eight alphabetically first, which on this repo would be `0.3.0, 0.3.1, 0.3.2`. |
+
+### Three states on the boundary, four on the count
+
+The boundary:
+
+| State | Meaning |
+|---|---|
+| `RESOLVED` | One defensible tag. The count is a release-trigger input. |
+| `AMBIGUOUS` | More than one defensible boundary. A count **is** printed, against the named tag, with an explicit line saying it is not a trigger input. Printing nothing would be less useful and printing it bare would be the original bug. |
+| `UNRESOLVED` | No boundary at all. The count is `?`. **Never `0`** — that is the whole issue. |
+
+The count:
+
+| State | Meaning |
+|---|---|
+| `EXACT` | The page was not full, every row carried a parsable merge instant, and both sources agree. |
+| `LOWER BOUND` | The page filled. Rendered `>=N`, never `N`: a capped page reads as fewer merges than there are, which is the same failure one layer along. |
+| `UNVERIFIED` | A `mergedAt` would not parse, or the two sources disagree. A doubt is not a number. |
+| `UNKNOWN` | The read did not happen. |
+
+A full page is disclosed **on its own line** even when `UNVERIFIED` outranks it in the state field. Ranking one signal above another must not delete it.
+
+**The cap is measured on the page `gh` returned, not on what survived the boundary filter.** Those differ whenever a row is dropped locally — an unparsable `mergedAt`, or a row the search index returned that the parsed comparison places at or before the instant — and measuring on the survivors means a full page thinned by one row renders `EXACT`. That is a confident wrong number on a truncated read, which is this op's own bug one layer down; it was in the first version of this file and a review pass caught it.
+
+### `repo:OWNER/NAME` is refused here, not honoured
+
+Every other `gh-*` op takes a repo target because everything it reads comes from the API. `gh-since-tag` does not: only the merged-PR list can carry `--repo`, while the boundary tag, the default-branch ref, the commit-subject cross-check and `changelog.d/` are all **local** reads of the cwd's clone. Measured from a `claude-supertool` worktree with `repo:Digital-Process-Tools/claude-remember`:
+
+```
+boundary: RESOLVED — tag v0.31.0 at 39372ab   <- claude-supertool
+merged since tag: 0                            <- claude-remember
+unreleased fragments: 14                       <- claude-supertool
+```
+
+Three numbers about two repositories under one header, with a confident zero as the headline. Half a target is worse than none, so the op refuses, names which reads could not follow, and says to run it from inside the clone being asked about.
+
+### Two sources, because a search index can lag
+
+Rows come from `gh pr list --search "merged:>INSTANT"` — GitHub's search index. The same window is read a second time from **local git history**, taking the `(#N)` off each squash subject on the default branch, and the two sets are reconciled in both directions:
+
+```
+RECONCILE: the search index and local git history disagree.
+  in local history, absent from the API: #1177, #1178, #1199
+```
+
+The two gaps mean opposite things. Only-in-API is a PR the local refs have not seen — a stale clone, or a merge into another branch. Only-in-git is a merge the search index did not return, which is the confident zero wearing a different hat. Either makes the count `UNVERIFIED`.
+
+A commit with no trailing `(#N)` — a direct push, a merge commit, a `Revert (#99) because it broke` naming a PR mid-sentence — is **not** counted as a PR and is reported as unattributed, so a legitimately shorter git-side set does not read as a disagreement.
+
+The local read uses **refs as they stand on disk**. This op never fetches: it is read-only, and a stale `origin/master` is named as the source rather than quietly corrected.
+
+### The contradiction is stated, not left to be noticed
+
+```
+merged since tag: 0  [EXACT]
+unreleased fragments: 7  (fixed:7)
+
+CONTRADICTION: zero merges since the tag, but 7 unreleased fragment(s) exist.
+Fragments arrive by merging PRs, so these two cannot both be right.
+```
+
+That pair is what filed the issue, and it was caught by luck — nobody looks twice at two numbers that agree. The fragment count itself has the same three states: an absent or unreadable `changelog.d/` is `?` with the reason, never `0`, and a genuinely empty directory says so in its own words. `README.md` is the directory's documentation and is not a fragment; a `.md` whose name does not parse into a Keep-a-Changelog section is counted under `?` rather than dropped, because the release will pick it up whatever it is called.
+
+Exit code is `0` only when the boundary is `RESOLVED` **and** the count is `EXACT`.
 
 ## Authoring notes
 
