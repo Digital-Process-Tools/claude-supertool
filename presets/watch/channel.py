@@ -46,6 +46,7 @@ which is what the tests key on and what a caller should key on too.
 from __future__ import annotations
 
 import calendar
+import errno
 import json
 import os
 import socket
@@ -57,6 +58,13 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).parent.parent))  # for _proc
 
 import _proc  # noqa: E402  (the one liveness probe, shared with gl-mrs / gh-prs)
+import _untrusted  # noqa: E402  (the health file is somebody else's text, #1187)
+
+#: Absent on Windows, where it is `0` and the open below carries no guard. Same
+#: spelling as `transport.py`, deliberately: this is the same directory and the
+#: same threat, and a second convention for it would be one more thing to keep
+#: in step.
+_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 
 SOCK_PATH = os.environ.get("SUPERTOOL_WATCH_SOCK") or "/tmp/supertool-watch.sock"
 STATE_DIR = os.environ.get("SUPERTOOL_WATCH_STATE_DIR") or "/tmp"
@@ -166,15 +174,44 @@ def probe_socket(path: str) -> tuple[str, str]:
 
 
 def read_health(path: str) -> tuple[dict | None, str]:
-    """The consumer's published counters, or None and why not."""
+    """The consumer's published counters, or None and why not.
+
+    `O_NOFOLLOW`, for the same reason `transport.claim_pidfile` uses it and
+    citing the same issue (#148): this name sits in a world-writable directory
+    and is derived from a socket path a co-tenant can predict, so a symlink
+    planted at it is opened, parsed, and — before #1187 — rendered. Any
+    same-uid JSON file was readable that way (#1184).
+
+    `lexists`, not `exists`: `exists` follows the link, so a symlink pointing
+    at nothing was reported as *no health file at all* — the absence-read-as-
+    presence shape, with a hostile act rendered as a consumer that predates
+    the field.
+
+    A refused symlink is its own answer and not folded into either neighbour.
+    On Windows `_NOFOLLOW` is `0` and no guard is applied; nothing here claims
+    otherwise, and `tests/test_watch_channel_health_hostile_file_1184_1187.py`
+    skips rather than passing vacuously there.
+    """
     health_path = path + HEALTH_SUFFIX
-    if not os.path.exists(health_path):
+    if not os.path.lexists(health_path):
         return None, (
             "the bound consumer publishes no counters — it predates this field, or it is "
             "not claude-channel"
         )
     try:
-        with open(health_path, "r", encoding="utf-8") as f:
+        fd = os.open(health_path, os.O_RDONLY | _NOFOLLOW)
+    except OSError as err:
+        # ELOOP on Linux and macOS, EMLINK on the BSDs — both mean the name was
+        # a symlink and O_NOFOLLOW refused it.
+        if err.errno in (errno.ELOOP, errno.EMLINK):
+            return None, (
+                f"{health_path} is a symlink and was not followed — a health file is "
+                "written in place by the consumer, so this is somebody redirecting the "
+                "read at another file"
+            )
+        return None, f"{health_path} could not be read ({type(err).__name__})"
+    try:
+        with os.fdopen(fd, "r", encoding="utf-8") as f:
             record = json.load(f)
     except (OSError, json.JSONDecodeError) as err:
         return None, f"{health_path} could not be read ({type(err).__name__})"
@@ -234,6 +271,36 @@ def _counter(record: dict, key: str) -> int | None:
 
 def _num(value: int | None) -> str:
     return "?" if value is None else str(value)
+
+
+def _stamp(record: dict, key: str, default: str = "?") -> str:
+    """A health-file string, kept to the one line this report gave it (#1187).
+
+    The file is written by a separate process this op cannot authenticate, in a
+    directory anyone on the machine can write to, and its stamps were
+    interpolated straight into the render: a `started` value carrying a
+    newline, a `</channel>` and a directive at column 0 put all three in the
+    op's own answer. `_untrusted.flat` is the boundary #819 established and the
+    widening #851/#886 gave it — a second scheme here would have to be widened
+    again next time.
+
+    Not `fence()`: these are one-line stamps, and two marker lines around a
+    timestamp is the noise that gets a convention ignored. The provenance is
+    stated once per report by `_health_note`, which is the shape `_board` uses
+    for the same reason.
+    """
+    value = record.get(key)
+    if value is None or value == "":
+        return default
+    return _untrusted.flat(value if isinstance(value, str) else str(value))
+
+
+def _health_note() -> str:
+    """Said once, above the stamps, because a reader acts on what they read
+    first. Built per call rather than at import: the wording depends on what
+    `sys.stdout` says it can carry (#863)."""
+    return "  " + _untrusted.flat_note(
+        "the stamps", "the consumer's health file")
 
 
 def stranded_watchers(path: str) -> list[tuple[str, str, dict]]:
@@ -316,23 +383,25 @@ def health(path: str) -> tuple[int, str]:
     if objection:
         return RC_UNKNOWN, "\n".join([
             "channel: CANNOT DETERMINE", *head,
+            _health_note(),
             f"  consumer : bound, but {objection}",
             f"             last published counters: {_num(_counter(record, 'forwarded'))} forwarded, "
-            f"{_num(_counter(record, 'dropped'))} dropped, updated {record.get('updated', '?')}",
+            f"{_num(_counter(record, 'dropped'))} dropped, updated {_stamp(record, 'updated')}",
             "", CEILING,
         ])
 
     return RC_FORWARDING, "\n".join([
         "channel: FORWARDING", *head,
+        _health_note(),
         f"  consumer : pid {record.get('pid')} (self-reported), up since "
-        f"{record.get('started', '?')}",
+        f"{_stamp(record, 'started')}",
         "             the health file names its own writer; pids are reusable, so",
         "             nothing here proves that process is the one holding the socket",
         f"  counters : {_num(_counter(record, 'lines_read'))} lines read, "
         f"{_num(_counter(record, 'forwarded'))} forwarded, "
         f"{_num(_counter(record, 'dropped'))} dropped",
-        f"             last forwarded {record.get('last_forwarded') or 'never'}"
-        f" (counters refreshed {record.get('updated', '?')})",
+        f"             last forwarded {_stamp(record, 'last_forwarded', 'never')}"
+        f" (counters refreshed {_stamp(record, 'updated')})",
         "", CEILING,
     ])
 
