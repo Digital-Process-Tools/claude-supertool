@@ -860,6 +860,51 @@ incident and the reasoning. The knob here is `GH_JOB_GREP_MAX_BYTES` (default
 limit, which this op does not have
 ([#622](https://github.com/Digital-Process-Tools/claude-supertool/issues/622)).
 
+### The argv both job ops receive is checked before anything is fetched
+
+Core splits an op string on every `:` and hands `gh-job` the pieces as argv. Three
+readings of that argv used to end in output that looked like a successful read of
+the job ([#1145](https://github.com/Digital-Process-Tools/claude-supertool/issues/1145)):
+
+| Op as typed | Argv the preset saw | What it did |
+|---|---|---|
+| `gh-job:93211401185:grepp:passed` | `… grepp passed` | no mode matched — default render, `PASS`, log tail, exit 0 |
+| `gh-job:93211401185ep:passed\|failed` | `93211401185ep …` | `# Job #93211401185ep` over job 93211401185's real data |
+| `gh-job:123:grep:Error: not found` | `… grep Error " not found"` | greps `/Error/` — a different question, answered confidently |
+
+All three now refuse or carry, and none of them was about `|`. **Alternation was
+never broken**: core `shlex.quote`s each part before substituting `{args}`, so a
+pipe is not a shell operator here and `:grep:passed|failed` has always reached the
+preset intact. The issue leaned toward refusing the character; the reproduction
+that filed it had lost `:gr` from the op string upstream of supertool, and what
+made that invisible was the *mode* falling through and the *id* rendering.
+
+**A non-numeric id has to be caught here, because the API will not catch it.**
+`gh api repos/{o}/{r}/actions/jobs/93211401185ep` returns **200** — GitHub coerces
+the trailing text away and answers for job 93211401185. So the header rendered a
+corrupted identifier as the job that was read, which is the tell that argv was
+mangled, published as though it were a fact about the job. `gh-run` and `gh-check`
+were swept and are honest: `gh run view` 404s on the same shape and `gh-check`
+validates. `gh-job` was the only one handing a raw id straight into a REST path.
+
+**A mode is refused rather than dropped.** Falling through to metadata-plus-tail
+under exit 0 answers the op's default question while the caller reads it as the
+answer to theirs — the absence-read-as-presence class, arriving in the op the merge
+path uses to read a red leg.
+
+**A colon in the pattern is carried, not cut, and the rejoin is disclosed.** This is
+the resolution core `grep` already reached (`_colon_split_hint`): everything right of
+`grep:` rejoins with the `:` that separated it, and a note above the render echoes
+how the pattern was read. It is *not* the [board-op refusal](#the-milestone-and-the-filter-that-was-silently-dropped),
+and the difference is structural rather than a second opinion: on `gh-issues:label=lane:tracker-ops`
+the colon-bearing token sits among other tokens, so there is genuinely no reading to
+pick. Nothing follows `PATTERN` here, so the rejoin is the only reading, and the note
+fires only when there was a colon — saying it on every grep would make it worth
+nothing on the call that needs it.
+
+`gl-job` has the identical parsing and got the identical fix, from one shared
+`presets/_job_argv.py`, so the two cannot drift into two answers.
+
 ### A missing job log is explained by the job's state, never by the ID
 
 GitHub writes a job's log **on completion**. So `404` from `repos/.../actions/jobs/<id>/logs` has four causes that call for four different next actions, and `gh-job` used to render all four as one sentence — `Check the ID. Use gh-run to list jobs first` — which is the one thing that was already right in the incident that filed [#723](https://github.com/Digital-Process-Tools/claude-supertool/issues/723): the ID had just been read out of `gh run view --json jobs`, and the *job* endpoint returned the full object for it.
