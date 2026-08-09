@@ -229,9 +229,38 @@ def test_an_ordinary_health_file_is_still_read(tmp_path):
     assert record == {"pid": os.getpid(), "forwarded": 7}
 
 
-def test_flat_is_what_the_op_uses_rather_than_a_second_scheme():
+@pytest.mark.parametrize("hostile", [HOSTILE_STAMP, HOSTILE_ERASE, "a\tb"])
+def test_the_stamp_render_is_flat_itself_and_not_a_second_scheme(hostile):
     """#1187's own note: the abstraction exists. A local reimplementation would
-    have to be widened again the next time `_untrusted` is (#851, #886)."""
-    src = (REPO / "presets" / "watch" / "channel.py").read_text(encoding="utf-8")
-    assert "_untrusted" in src
-    assert _untrusted.flat("a\nb") == "a b"
+    have to be widened again the next time `_untrusted` is (#851, #886) — so
+    the assertion is equality with `flat`, not a grep for its name. The tab
+    case is the one a hand-rolled `splitlines`-and-join would get wrong.
+    """
+    assert channel._stamp({"k": hostile}, "k") == _untrusted.flat(hostile)
+
+
+def test_a_directory_at_the_health_path_leaks_no_descriptor(tmp_path):
+    """`O_NOFOLLOW` refuses a symlink, not a directory: `os.open` succeeds and
+    the wrap fails, which — unlike the plain `open()` this replaced — drops the
+    descriptor on the floor. A co-tenant who `mkdir`s the predictable name
+    would bleed one fd per poll out of whoever is reading.
+
+    POSIX only: the assertion is that the lowest free descriptor has not moved,
+    which is a POSIX allocation guarantee rather than a promise CPython makes
+    on Windows. Skipped rather than weakened, so it cannot pass vacuously.
+    """
+    if os.name != "posix":
+        pytest.skip("lowest-free-fd allocation is a POSIX guarantee")
+    sock = str(tmp_path / "h.sock")
+    os.mkdir(sock + channel.HEALTH_SUFFIX)
+
+    def _lowest_free() -> int:
+        fd = os.open(os.devnull, os.O_RDONLY)
+        os.close(fd)
+        return fd
+
+    before = _lowest_free()
+    for _ in range(3):
+        record, why = channel.read_health(sock)
+        assert record is None and "could not be read" in why, why
+    assert _lowest_free() == before, "read_health leaked a descriptor"

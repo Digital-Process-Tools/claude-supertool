@@ -23,8 +23,10 @@ it is why the answer here has three states rather than two:
                      pid rather than asserting it.
     CANNOT DETERMINE something took the bytes and nothing here can see what it
                      did with them: no counters, counters from a pid that is
-                     gone, counters that stopped refreshing, or no readable
-                     `forwarded` number for the verdict to be about.
+                     gone, counters that stopped refreshing, no readable
+                     `forwarded` number for the verdict to be about, or a
+                     health file that is a symlink and was not followed
+                     (#1184).
 
 `CANNOT DETERMINE` is the point of the op rather than its failure mode. It is
 the state today's tooling reports as green, and reporting it as green produced a
@@ -210,8 +212,20 @@ def read_health(path: str) -> tuple[dict | None, str]:
                 "read at another file"
             )
         return None, f"{health_path} could not be read ({type(err).__name__})"
+    # `O_NOFOLLOW` refuses a symlink; it does not refuse a *directory*, and
+    # `os.open` on one succeeds. The wrap is then what fails
+    # (`IsADirectoryError` on POSIX, `PermissionError` on Windows — #618/#627),
+    # and it fails without taking ownership of the descriptor, so the fd leaks.
+    # Plain `open()` never could: splitting the open from the wrap is what
+    # introduced this, and a co-tenant who `mkdir`s the predictable name would
+    # otherwise bleed one descriptor per poll out of the process reading it.
     try:
-        with os.fdopen(fd, "r", encoding="utf-8") as f:
+        handle = os.fdopen(fd, "r", encoding="utf-8")
+    except OSError as err:
+        os.close(fd)
+        return None, f"{health_path} could not be read ({type(err).__name__})"
+    try:
+        with handle as f:
             record = json.load(f)
     except (OSError, json.JSONDecodeError) as err:
         return None, f"{health_path} could not be read ({type(err).__name__})"
