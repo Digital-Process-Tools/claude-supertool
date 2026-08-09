@@ -21,9 +21,10 @@ def _run(file_path: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Graceful degrade when tomllib unavailable (Python < 3.11, no tomli)
-# Covered implicitly — on 3.11+ stdlib is used; on older without tomli, ok=True
-# We test the output contract rather than mocking the import.
+# No TOML parser reachable (Python < 3.11, no tomli) is NOT covered here: it is
+# the third state, and it has its own file. `test_tomllint_no_parser_1157.py`
+# shims the imports so the branch is exercised on every interpreter, rather than
+# being asserted about on the one interpreter that cannot reach it.
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
@@ -34,8 +35,8 @@ def test_valid_toml_simple(tmp_path: Path) -> None:
     f = tmp_path / "good.toml"
     f.write_text('[package]\nname = "myapp"\nversion = "1.0.0"\n')
     out = _run(str(f))
-    # On Python < 3.11 without tomli, ok=True (graceful skip) — still acceptable
-    assert out["ok"] is True or (out["ok"] is True and out["count"] == 0)
+    assert out["ok"] is True
+    assert out["count"] == 0
     assert out["tool"] == "tomllint"
 
 
