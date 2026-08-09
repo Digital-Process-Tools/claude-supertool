@@ -95,7 +95,10 @@ TIMEOUT_S = 30
 # tokenizer's own rule. Script data ends at `</script` followed by whitespace,
 # `/` or `>`, with no idea that JS strings exist, which is why the way to put
 # that text in a script is `<\/script>`. Measured against the stdlib
-# tokenizer, which is spec-conformant here:
+# tokenizer -- on a CPython new enough to be spec-conformant here, which is
+# not all of them (#1236: the `parse_endtag` rewrite landed in 3.14 and was
+# backported into later patch releases, so 3.11.11 and 3.13.2 do not close
+# `</script bar>` at all and drop the script body instead):
 #
 #   <script>const s = "</script data-x>"; const z = 1;</script>
 #   html.parser -> data 'const s = "' then endtag script
@@ -128,7 +131,8 @@ TIMEOUT_S = 30
 # character (`<script data-x=a"b>` is a parse error whose value is `a"b` and
 # whose tag ends at the `>`), and treating it as an opener would run to the
 # next quote in the file and lose the block -- the loud bug traded for a
-# quiet one. Verified against html.parser, which is spec-conformant here.
+# quiet one. Verified against html.parser where it is spec-conformant -- the
+# stdlib is a witness here and not the authority, per #1236.
 #
 # Where the tag genuinely cannot be delimited -- a quoted value with no
 # closing quote, or a file that stops mid-tag, both EOF-in-tag, where the
@@ -224,8 +228,8 @@ def _parse_tag(html: str, i: int) -> tuple[int, dict[str, str]] | str:
     claim for the property it is about, because an end tag's attributes are
     discarded and no `src`/`type` answer depends on them; what the end tag
     rests on instead is *where the tag ends*, and that is measured separately
-    and much more narrowly, by the parametrized oracle in
-    `tests/test_html_check.py::test_end_tag_boundary_agrees_with_html_parser`.
+    and much more narrowly, by the frozen corpus in
+    `tests/test_html_check.py::test_end_tag_boundary_matches_the_spec`.
     Two claims, two bodies of evidence -- do not read the big number as
     covering the newer half.
     """
