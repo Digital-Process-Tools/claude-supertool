@@ -13,6 +13,7 @@ hiccupped.
 """
 from __future__ import annotations
 
+import errno
 import json
 import os
 import shutil
@@ -272,15 +273,98 @@ def write_state(source: str, watcher_id: str, state: dict[str, Any]) -> None:
             pass
 
 
-def read_state(source: str, watcher_id: str) -> dict[str, Any]:
+def read_state_checked(source: str, watcher_id: str) -> tuple[dict[str, Any] | None, str]:
+    """The status file's JSON, or None and why not (#1197).
+
+    Third call site of the read `channel.read_health` (#1184/#1187) and
+    `channel._read_state_file` (#1191) already carry the guards on, against the
+    same threat and in the same directory. `STATE_DIR` is `/tmp`, the name is
+    `supertool-watch-{source}__{id}.state.json` — fully predictable from a
+    board anyone can read — and the file is written by a separate process this
+    function cannot authenticate.
+
+    `O_NOFOLLOW`, the spelling `claim_pidfile` has used since #148: a symlink
+    planted at the name got any same-uid JSON file opened, parsed, and rendered
+    onto the `watches` board.
+
+    **No existence pre-check, deliberately.** `O_NOFOLLOW` answers a dangling
+    symlink with `ELOOP`, not `ENOENT`, so the `os.path.exists` this replaced
+    followed the link and reported somebody's redirect as *no state file at
+    all* — the absence-read-as-presence shape, and the exact bug #1184 removed.
+    `ENOENT` out of the open itself is the honest absence, and it is the only
+    thing that answers `({}, "")`.
+
+    `O_NOFOLLOW` refuses a symlink and does *not* refuse a directory: `os.open`
+    succeeds on one and `os.fdopen` then raises without taking the descriptor.
+    That leak was introduced by #1184's own fix and caught by its reviewer;
+    here it would bleed one fd per row per board render.
+
+    `except (OSError, ValueError)`, not `json.JSONDecodeError`: the stream is
+    decoded before it is parsed, so two bytes of invalid UTF-8 raise
+    `UnicodeDecodeError` — a `ValueError`, and in neither arm this replaced.
+    Measured on `923f7bc`, that traceback escaped `read_state`, `deaths`,
+    `list_active_pids`, `list_watchers` and `dispatcher.cmd_list`, so the
+    `watches` op died on it; it also reaches the poll loop at
+    `dispatcher.py:617`, which is *outside* the never-crash `try`, so one file
+    a co-tenant wrote killed the watcher as well as the board.
+
+    A top-level array or string is refused too. `json.load` accepts them, every
+    caller here calls `.get()` on the result, and the report a non-dict
+    produced was an `AttributeError` rather than a row.
+    """
     path = state_path(source, watcher_id)
-    if not os.path.exists(path):
-        return {}
+    shown = _untrusted.flat(path)
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return {}
+        fd = os.open(path, os.O_RDONLY | _NOFOLLOW)
+    except FileNotFoundError:
+        # The overwhelmingly common answer, and the one three states must not
+        # complicate: this slot has published nothing yet.
+        return {}, ""
+    except OSError as err:
+        # ELOOP on Linux and macOS, EMLINK on the BSDs — both mean the name was
+        # a symlink and O_NOFOLLOW refused it.
+        if err.errno in (errno.ELOOP, errno.EMLINK):
+            return None, (
+                f"{shown} is a symlink and was not followed — a state file is written "
+                "in place by its own poller, so this is somebody redirecting the read "
+                "at another file"
+            )
+        return None, f"{shown} could not be read ({type(err).__name__})"
+    try:
+        handle = os.fdopen(fd, "r", encoding="utf-8")
+    except OSError as err:
+        os.close(fd)
+        return None, f"{shown} could not be read ({type(err).__name__})"
+    try:
+        with handle as f:
+            state = json.load(f)
+    except (OSError, ValueError) as err:
+        return None, f"{shown} could not be read ({type(err).__name__})"
+    if not isinstance(state, dict):
+        return None, f"{shown} is not a JSON object"
+    return state, ""
+
+
+def read_state(source: str, watcher_id: str) -> dict[str, Any]:
+    """The status file's JSON, or `{}`. Guarded, and deliberately **not flat**.
+
+    Collapses `read_state_checked`'s third state, because this is the read half
+    of six read-modify-write cycles — `emit_event`, `record_death`,
+    `clear_deaths` and `dispatcher.py:617/645/664` all read this dict, mutate
+    it and write it back — and a mutator has nothing to do with a refusal but
+    fall through to a fresh dict, which is what it did before. A caller that is
+    building a *report* wants `read_state_checked`, so that "I could not read
+    this watcher's state" does not render as "this watcher has had no events".
+
+    And nothing is flattened here, which is the judgment #1197 turns on. The
+    strings in this dict travel straight back to disk through `write_state` on
+    the next tick, `source_state` among them — a poller's private resume cursor,
+    not report text. Flattening at the read would trade a render bug for
+    permanent state corruption. The two renders that print these strings
+    (`dispatcher.cmd_list`, `tiers.gl_mrs.feed_error`) flatten at the render.
+    """
+    state, _ = read_state_checked(source, watcher_id)
+    return state if state is not None else {}
 
 
 def clear_state(source: str, watcher_id: str) -> bool:
@@ -306,7 +390,17 @@ def deaths(source: str, watcher_id: str) -> list[dict[str, Any]]:
     to misread as a loss. The invariant holds by construction rather than by a
     check that could drift out of step with the poll loop.
     """
-    recorded = read_state(source, watcher_id).get("deaths")
+    return _deaths_in(read_state(source, watcher_id))
+
+
+def _deaths_in(state: dict[str, Any]) -> list[dict[str, Any]]:
+    """The death ledger inside an already-read state dict.
+
+    Split out so `_lost_rows` can read the file once instead of twice — it
+    needs the refusal and the ledger, and calling `deaths()` for the second
+    would re-open a path that may have changed underneath it.
+    """
+    recorded = state.get("deaths")
     return [d for d in recorded if isinstance(d, dict)] if isinstance(recorded, list) else []
 
 
@@ -562,7 +656,8 @@ def list_active_pids() -> list[dict[str, Any]]:
         started = time.strftime(
             "%Y-%m-%dT%H:%M:%SZ", time.gmtime(os.path.getmtime(path))
         )
-        state = read_state(source, watcher_id)
+        state, refusal = read_state_checked(source, watcher_id)
+        state = state or {}
         rows.append({
             "source": source,
             "id": watcher_id,
@@ -570,6 +665,12 @@ def list_active_pids() -> list[dict[str, Any]]:
             "started": started,
             "last_event": (state.get("last_event") or {}).get("event", ""),
             "last_event_ts": (state.get("last_event") or {}).get("ts", ""),
+            # "" when the file was read or is honestly absent. Carried rather
+            # than dropped (#1197): the pid file proves a poller is alive, so
+            # an unreadable state file leaves a row whose empty `last_event`
+            # would otherwise read as a quiet watcher instead of as a state
+            # file somebody tampered with.
+            "state_refusal": refusal,
         })
     return rows
 
@@ -822,7 +923,8 @@ def list_watchers() -> tuple[list[dict[str, Any]], bool]:
         live = sorted(pid for pid in pids if _pid_alive(pid))
         if not live:
             continue
-        state = read_state(source, watcher_id)
+        state, refusal = read_state_checked(source, watcher_id)
+        state = state or {}
         rows.append({
             "source": source,
             "id": watcher_id,
@@ -831,10 +933,11 @@ def list_watchers() -> tuple[list[dict[str, Any]], bool]:
             "extra": live[1:],
             "orphan": True,
             "dead": False,
-            "deaths": deaths(source, watcher_id),
+            "deaths": _deaths_in(state),
             "started": "",
             "last_event": (state.get("last_event") or {}).get("event", ""),
             "last_event_ts": (state.get("last_event") or {}).get("ts", ""),
+            "state_refusal": refusal,
         })
     rows.extend(_lost_rows(seen | set(found)))
     return rows, scan_ok
@@ -867,10 +970,25 @@ def _lost_rows(covered: set[tuple[str, str]]) -> list[dict[str, Any]]:
         source, watcher_id = stem.split("__", 1)
         if (source, watcher_id) in covered:
             continue
-        recorded = deaths(source, watcher_id)
+        state, refusal = read_state_checked(source, watcher_id)
+        if refusal:
+            # The death ledger lives *inside* this file, so a file that could
+            # not be read cannot be asked whether this slot lost its watcher.
+            # Dropping the row would be answering "no" on the evidence of "I
+            # could not look", and one `ln -s` at a predictable name would then
+            # silently erase a LOST row — the whole of #513, restored by the
+            # guard that was meant to close #1184. `dead` is False because
+            # nothing here established a death, and the refusal says so.
+            out.append({
+                "source": source, "id": watcher_id, "pid": 0, "pids": [], "extra": [],
+                "orphan": False, "dead": False, "deaths": [], "started": "",
+                "last_event": "", "last_event_ts": "", "state_refusal": refusal,
+            })
+            continue
+        state = state or {}
+        recorded = _deaths_in(state)
         if not recorded:
             continue
-        state = read_state(source, watcher_id)
         out.append({
             "source": source,
             "id": watcher_id,
@@ -883,6 +1001,7 @@ def _lost_rows(covered: set[tuple[str, str]]) -> list[dict[str, Any]]:
             "started": "",
             "last_event": (state.get("last_event") or {}).get("event", ""),
             "last_event_ts": (state.get("last_event") or {}).get("ts", ""),
+            "state_refusal": "",
         })
     return out
 

@@ -34,6 +34,8 @@ from typing import Any
 
 # Allow importing transport as a sibling module when launched via `python3 dispatcher.py`.
 sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))  # for _untrusted
+import _untrusted  # noqa: E402  (the state files are somebody else's text, #1197)
 import transport  # noqa: E402
 
 SOURCES_DIR = Path(__file__).parent / "sources"
@@ -259,6 +261,13 @@ def _acknowledge_deaths(source: str, watcher_id: str) -> None:
 
 def _row_note(row: dict[str, Any]) -> str:
     notes = []
+    if row.get("state_refusal"):
+        # First, because every other note on this row is a statement about a
+        # file that was read, and this row's was not (#1197). An empty
+        # LAST_EVENT here means "I could not look", and a board that renders
+        # that identically to "nothing has happened" is the defect this repo
+        # keeps filing.
+        notes.append(f"state unread — {row['state_refusal']}")
     if row.get("dead"):
         recorded = row.get("deaths") or []
         last = recorded[-1].get("pid") if recorded else "?"
@@ -320,15 +329,36 @@ def cmd_list() -> int:
     for r in rows:
         r["_pid"] = ("-" if r.get("dead") else
                      str(r["pid"]) + (f" (+{len(r['extra'])})" if r["extra"] else ""))
-        r["_note"] = _row_note(r)
-        r["_started"] = r["started"] or "-"
+        # Flattened here rather than in the rows, and rather than in
+        # `transport.read_state` (#1197). `source` and `id` are the rows'
+        # identity — `list_watchers` matches them against the process scan's
+        # keys — so mutating them upstream would change which slots the board
+        # believes are covered. `last_event` comes out of a state file that is
+        # read, mutated and written back six times over, so flattening at the
+        # read would put the mangled form on disk. This is the render, it is
+        # the only place these three become text, and it is where they stop
+        # being anybody else's words.
+        #
+        # Every one of them is somebody else's: `source` and `id` are parsed
+        # out of a *filename* in a world-writable directory, and a POSIX
+        # filename carries any byte but `/` and NUL. Before this, a state file
+        # whose `last_event` held two newlines printed a whole extra row —
+        # a plausible MR, watched, green — onto a fixed-width table.
+        #
+        # Before the widths, not after: `len()` of an unflattened value sizes
+        # the column against a string that will never be printed.
+        r["_source"] = _untrusted.flat(r["source"])
+        r["_id"] = _untrusted.flat(r["id"])
+        r["_last_event"] = _untrusted.flat(r["last_event"] or "-")
+        r["_note"] = _untrusted.flat(_row_note(r))
+        r["_started"] = _untrusted.flat(r["started"] or "-")
     noted = any(r["_note"] for r in rows)
     widths = {
-        "source": max(6, max(len(r["source"]) for r in rows)),
-        "id": max(2, max(len(r["id"]) for r in rows)),
+        "source": max(6, max(len(r["_source"]) for r in rows)),
+        "id": max(2, max(len(r["_id"]) for r in rows)),
         "pid": max(5, max(len(r["_pid"]) for r in rows)),
         "started": 20,
-        "last_event": max(10, max(len(r["last_event"] or "-") for r in rows)),
+        "last_event": max(10, max(len(r["_last_event"]) for r in rows)),
     }
     header = (
         f"{'SOURCE':<{widths['source']}}  "
@@ -339,19 +369,37 @@ def cmd_list() -> int:
     )
     if noted:
         header += "  NOTE"
+    # Above the table, not below it: the reader this protects is the one who
+    # acts on the first thing they read, which is the same reason
+    # `channel._health_note` sits above the stamps it is about. Unconditional
+    # once there are rows, because those three columns are always somebody
+    # else's words — a note printed only when a value turns out to be hostile
+    # would be a claim about the render rather than about the source.
+    print(_untrusted.flat_note("the SOURCE, ID and LAST_EVENT columns",
+                               "the pollers' own state files and filenames"))
     print(header)
     print("-" * len(header))
     for r in rows:
         line = (
-            f"{r['source']:<{widths['source']}}  "
-            f"{r['id']:<{widths['id']}}  "
+            f"{r['_source']:<{widths['source']}}  "
+            f"{r['_id']:<{widths['id']}}  "
             f"{r['_pid']:<{widths['pid']}}  "
             f"{r['_started']:<{widths['started']}}  "
-            f"{(r['last_event'] or '-'):<{widths['last_event']}}"
+            f"{r['_last_event']:<{widths['last_event']}}"
         )
         if noted:
             line += f"  {r['_note']}"
         print(line.rstrip())
+    unread = [r for r in rows if r.get("state_refusal")]
+    if unread:
+        print()
+        print(f"{len(unread)} row(s) above are marked `state unread`: the state "
+              f"file is there and could not be read, so this board knows nothing "
+              f"about their last event, and — for a row with no live poller — "
+              f"nothing about whether the watcher was lost. That is a different "
+              f"fact from a quiet watcher. A state file is written in place by "
+              f"its own poller and lives in a directory anyone on this machine "
+              f"can write to; inspect it before re-arming.")
     lost = [r for r in rows if r.get("dead")]
     if lost:
         print()

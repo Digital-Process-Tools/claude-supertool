@@ -615,7 +615,14 @@ def feed_error(scope: str = FEED_SCOPE) -> str:
     message here is current rather than a scar.
     """
     state = transport.read_state(FEED_SOURCE, scope)
-    return str((state.get("last_error") or {}).get("message") or "")
+    # Flat, because this is a render (#1197). The dispatcher writes this from
+    # `str(e)` of a poller exception into a state file in a world-writable
+    # directory at a predictable name, and this board prints it into a
+    # multi-line report — so a message carrying newlines writes lines of that
+    # report. `read_state` deliberately does not flatten (its result is written
+    # back to disk), which makes each render responsible, and this is the
+    # second of the two.
+    return mrs._untrusted.flat(str((state.get("last_error") or {}).get("message") or ""))
 
 
 # ---------------------------------------------------------------------------
