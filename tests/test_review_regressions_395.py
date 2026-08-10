@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+from _symlink import require_symlink
+
 import supertool
 
 
@@ -81,6 +83,7 @@ def test_gate_follows_symlinks_to_the_real_repo(tmp_path: Path) -> None:
     sub = root / "sub"
     sub.mkdir()
     (sub / "x.md").write_text("x\n")
+    require_symlink()
     link = tmp_path / "link"
     os.symlink(sub, link)
     assert supertool._repo_opts_into_formatter("prettier", SPEC, str(link / "x.md"))

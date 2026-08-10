@@ -37,7 +37,7 @@ from pathlib import Path
 
 import pytest
 
-from _symlink import requires_symlink
+from _symlink import require_symlink, requires_symlink
 
 REPO = Path(__file__).resolve().parent.parent
 SCRIPT = REPO / "scripts" / "oss_train.py"
@@ -111,6 +111,7 @@ def toctou_world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     it passes the containment check at validation time and there is a later
     moment at which the answer can be made wrong.
     """
+    require_symlink()
     outside = tmp_path / "outside"
     outside.mkdir()
     origin = outside / "origin.git"

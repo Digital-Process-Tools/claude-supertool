@@ -46,7 +46,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from _symlink import requires_symlink
+from _symlink import require_symlink, requires_symlink
 
 import pytest
 
@@ -563,6 +563,7 @@ def sentinel_tree(cfg, monkeypatch, tmp_path):
     cwd and is allowed either way, which is how the first audit of this delta
     called the area clean.
     """
+    require_symlink()
     outside = tmp_path / "outside"
     outside.mkdir()
     secret = outside / "secret.py"
@@ -604,10 +605,29 @@ def test_the_other_read_ops_refuse_a_sentinel_name_too(sentinel_tree, name) -> N
         assert _refused(out), f"{op} allowed {name!r}: {out[:300]}"
 
 
-def test_an_in_tree_file_named_like_a_sentinel_still_works(sentinel_tree) -> None:
+@pytest.fixture
+def plain_tree(cfg, monkeypatch, tmp_path):
+    """`sentinel_tree` with no symlinks in it (#1232).
+
+    The two escape tests above need a link pointing out of the tree. This one
+    does not -- it asserts the opposite, that a sentinel-shaped name INSIDE the
+    tree is still allowed. Sharing `sentinel_tree` would have made the whole
+    case skip on a runner with no create-symlink privilege, which is how a
+    blanket gate quietly buys the failure it was meant to remove: the guard's
+    false-positive arm would go untested on exactly the platform where nobody
+    is watching it.
+    """
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / "good.py").write_text("y = 2" + chr(10), encoding="utf-8")
+    monkeypatch.chdir(work)
+    return work
+
+
+def test_an_in_tree_file_named_like_a_sentinel_still_works(plain_tree) -> None:
     """The guard must refuse the escape, not the name."""
-    (sentinel_tree / "inner").mkdir()
-    plain = sentinel_tree / "inner" / "raw"
+    (plain_tree / "inner").mkdir()
+    plain = plain_tree / "inner" / "raw"
     plain.write_text("z = 3" + chr(10), encoding="utf-8")
 
     out = supertool._read_op_from_payload("validate", {"path": "inner/raw"})

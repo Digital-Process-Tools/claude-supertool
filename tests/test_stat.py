@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from _symlink import require_symlink
+
 import supertool
 
 
@@ -46,6 +48,7 @@ def test_stat_dispatch(tmp_path: Path) -> None:
 
 
 def test_stat_symlink(tmp_path: Path) -> None:
+    require_symlink()
     target = tmp_path / "target.txt"
     target.write_text("data")
     link = tmp_path / "link.txt"
@@ -58,6 +61,7 @@ def test_stat_symlink(tmp_path: Path) -> None:
 
 
 def test_stat_broken_symlink(tmp_path: Path) -> None:
+    require_symlink()
     link = tmp_path / "dangling.txt"
     link.symlink_to(tmp_path / "missing.txt")
     out = supertool.op_stat(str(link))

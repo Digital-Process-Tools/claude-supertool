@@ -11,6 +11,8 @@ from __future__ import annotations
 from pathlib import Path
 
 
+from _symlink import require_symlink
+
 import supertool
 
 
@@ -95,6 +97,7 @@ def test_append_matches_crlf_when_supplying_the_missing_newline(tmp_path: Path) 
 
 def test_append_through_symlink_writes_to_the_target(tmp_path: Path) -> None:
     """_atomic_write must write through to the real file, not replace the link."""
+    require_symlink()
     real = tmp_path / "real.txt"
     real.write_bytes(b"original\n")
     link = tmp_path / "link.txt"

@@ -16,6 +16,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from _symlink import require_symlink
+
 import supertool
 from conftest import _has_any_tree_sitter
 
@@ -384,6 +386,7 @@ def test_tree_symlink_loop_with_depth_cap(tmp_path: Path) -> None:
     op_tree follows symlinks (os.path.isdir returns True for symlink-to-dir).
     With a finite depth, the recursion terminates. Verify it doesn't hang.
     """
+    require_symlink()
     loop_dir = tmp_path / "a"
     loop_dir.mkdir()
     link = loop_dir / "loop"
@@ -399,6 +402,7 @@ def test_tree_symlink_loop_with_depth_cap(tmp_path: Path) -> None:
 
 def test_tree_symlink_loop_deep_still_bounded(tmp_path: Path) -> None:
     """Symlink loop with depth=50 also terminates (checks the depth guard holds)."""
+    require_symlink()
     loop_dir = tmp_path / "x"
     loop_dir.mkdir()
     (loop_dir / "cycle").symlink_to(tmp_path)
@@ -464,6 +468,7 @@ def test_map_directory_with_symlink_loop_terminates(tmp_path: Path) -> None:
     f.write_text("class Foo:\n    pass\n")
 
     # Create a symlink loop: src/loop → src (or parent)
+    require_symlink()
     link = src_dir / "loop"
     link.symlink_to(src_dir)
 
@@ -491,6 +496,7 @@ def test_map_walk_does_not_follow_symlinks(tmp_path: Path) -> None:
     project_dir = tmp_path / "project"
     project_dir.mkdir()
     # Symlink project/linked → real (followlinks=False means this is skipped)
+    require_symlink()
     (project_dir / "linked").symlink_to(real_dir)
     (project_dir / "visible.py").write_text("class VisibleClass:\n    pass\n")
 
