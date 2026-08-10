@@ -677,6 +677,96 @@ def _root() -> Path:
     return Path.cwd()
 
 
+#: The boundary this op enforces, named once so the code and the refusal agree.
+#:
+#: `claims` resolves a relative argument against the git toplevel, and its path
+#: lens has always answered `path leaves the repository root` for a document
+#: that cites `/etc/hosts` or climbs out with `..`. The repository root is
+#: therefore the boundary this op already owned — it simply never applied it to
+#: the path it reads *from*, only to the paths it reads *about* (#1283).
+#:
+#: It is deliberately NOT the core's boundary, which is the cwd. The two differ
+#: whenever `claims` is called from a subdirectory, where a root-relative
+#: argument is the documented way to name a document and resolves above cwd.
+#: Picking cwd here would break the op's own resolution rule; picking root and
+#: not saying so would leave the next reader assuming the core's. The core's
+#: cwd rule stays underneath as defence in depth for the day preset ops reach
+#: `_PATH_ARG_POSITIONS` — this check is the op enforcing the boundary it owns,
+#: not a substitute for the chokepoint.
+_BOUNDARY = "repository root"
+
+_CONFIG = ".supertool.json"
+
+
+def _allow_outside_root(root: Path) -> bool:
+    """The core's two opt-outs, honoured here so the refusal does not lie.
+
+    `_safe_path` accepts `SUPERTOOL_ALLOW_OUTSIDE_CWD=1` or an
+    `allow_outside_cwd` key in `.supertool.json`, and the message below names
+    both. An op that printed that sentence and then ignored the knob would be
+    the stale-claim defect this op exists to catch, written by this op. Read
+    from the root's config rather than by walking up from cwd — that is the
+    config this run already reads its registry from.
+
+    Wrapped, and failing CLOSED: a config that cannot be parsed is not an
+    opt-out. `_safe_path` wraps the same read to stop a broken file raising
+    out of a path check; the other half of that is that the exception must
+    not be read as permission.
+    """
+    if os.environ.get("SUPERTOOL_ALLOW_OUTSIDE_CWD") == "1":
+        return True
+    try:
+        with (root / _CONFIG).open("r", encoding="utf-8") as fh:
+            return bool(json.load(fh).get("allow_outside_cwd"))
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def _containment_refusal(rel: str, target: Path, root: Path) -> Optional[str]:
+    """`None` when `target` is inside `root`, else the ERROR line to print.
+
+    Resolved, not lexical. The doc-facing lens in `_path_findings` can be
+    lexical because it never opens the file it judges; this one decides
+    whether a read happens, so a symlink inside the repo pointing at
+    `/etc/hosts` has to be refused on where its bytes are rather than on how
+    its name is spelled.
+
+    Runs BEFORE the `is_file` test on purpose. `no such file` for one outside
+    path and a rendered document for another answers exactly the question the
+    boundary refuses — the render leaks reference-shaped substrings of the
+    file, but the existence answer alone is already a read.
+    """
+    if "\x00" in rel:
+        return "ERROR: path contains a NUL byte\n"
+    if _allow_outside_root(root):
+        return None
+    try:
+        resolved = os.path.realpath(str(target))
+        base = os.path.realpath(str(root))
+    except (OSError, ValueError) as exc:
+        return ("ERROR: cannot resolve %s (%s)\n"
+                % (rel, exc.__class__.__name__))
+    resolved_cmp = os.path.normcase(resolved)
+    base_cmp = os.path.normcase(base)
+    if resolved_cmp == base_cmp or resolved_cmp.startswith(base_cmp + os.sep):
+        return None
+    return (
+        # %r for the two user-derived paths, matching `_safe_path`'s rule of
+        # not echoing arbitrary input back raw. %s for the root: it is the
+        # tool's own resolved path, and on Windows a %r doubles every
+        # separator, so a caller comparing the printed root against a real one
+        # would never match (#1283).
+        "ERROR: path escapes the %s: %r (resolved to %r, root %s).\n"
+        "       claims reads documents in this repository, so its boundary is "
+        "the %s —\n"
+        "       wider than the core's cwd boundary when you call it from a "
+        "subdirectory.\n"
+        '       To allow: set SUPERTOOL_ALLOW_OUTSIDE_CWD=1 (env), or add '
+        '`"allow_outside_cwd": true` to .supertool.json.\n'
+        % (_BOUNDARY, rel, resolved, base, _BOUNDARY)
+    )
+
+
 def main(argv: Sequence[str]) -> int:
     if not argv or not argv[0].strip():
         sys.stderr.write("ERROR: usage claims:PATH — PATH is a text file in "
@@ -685,6 +775,12 @@ def main(argv: Sequence[str]) -> int:
     root = _root()
     rel = argv[0].strip()
     target = Path(rel) if os.path.isabs(rel) else root.joinpath(*rel.split("/"))
+    # Containment first — see `_containment_refusal`. An out-of-boundary path
+    # must get one answer whether or not it exists (#1283).
+    refusal = _containment_refusal(rel, target, root)
+    if refusal:
+        sys.stderr.write(refusal)
+        return 2
     if not target.is_file():
         sys.stderr.write("ERROR: no such file: %s\n" % rel)
         return 2
