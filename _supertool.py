@@ -1978,7 +1978,9 @@ def _containment_error(candidates: Iterable[str]) -> Optional[str]:
 
 
 def _path_not_found(path: str, *, label: str = "path",
-                     suggest: Optional[str] = None) -> str:
+                     suggest: Optional[str] = None,
+                     op: Optional[str] = None,
+                     call_prefix: Optional[str] = None) -> str:
     """The "not found" error, naming the path it actually tried (#624).
 
     `ERROR: file not found: src/foo.py` is true and useless: it cannot tell a
@@ -1999,9 +2001,23 @@ def _path_not_found(path: str, *, label: str = "path",
     its PATH argument as an all-digit token that looks like the LINE its
     sibling `around_line` wants — should say that instead of pointing at the
     one thing that provably did not cause this failure.
+
+    `op` asks this helper to derive that suggestion itself, from the two
+    shapes known to produce a joined-up filename: a comma list (#921) and a
+    whitespace-separated path list (#1261). Derived here rather than at each
+    call site because six ops reach this function and only `grep` had ever
+    been wired to the first of the two — `read`, `map`, `around_line` and
+    `replace` answered both with `wrong CWD?`, the one cause that provably
+    did not apply. `call_prefix` is the op call up to but excluding the path,
+    used to print the batched repair; omit it where the path is not the last
+    argument, since the printed call would then be one nobody can run.
     """
     if not path:
         return f"ERROR: {label} not found: {path}\n"
+    if not suggest and op:
+        suggest = (_comma_path_list_suggest(op, path)
+                   or _multi_path_suggest(op, path, call_prefix)
+                   or None)
     tried = os.path.abspath(os.path.expanduser(path))
     lines = [
         f"ERROR: {label} not found: {path}",
@@ -2461,7 +2477,8 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
     if limit <= 0:
         limit = _get_op_int("read", "max_lines", MAX_READ_LINES)
     if not path or not os.path.isfile(path):
-        return _path_not_found(path, label="file")
+        return _path_not_found(path, label="file", op="read",
+                               call_prefix="read")
 
     # RTK delegation — simple reads without offset/filter/limit changes
     if not grep_filter and offset == 0 and limit == _get_op_int("read", "max_lines", MAX_READ_LINES) and _rtk_enabled() and _has_rtk():
@@ -3197,8 +3214,7 @@ def _op_grep(pattern: str, path: str = ".", limit: int = 0,
         # Could be a glob pattern — check if it expands to anything
         from glob import glob as _glob
         if not _glob(path, recursive=True):
-            return _path_not_found(
-                path, suggest=_comma_path_list_suggest("grep", path) or None)
+            return _path_not_found(path, op="grep")
 
     excl = _get_exclude_paths("grep", no_exclude)
 
@@ -3294,6 +3310,8 @@ def _op_grep(pattern: str, path: str = ".", limit: int = 0,
         out = [literal_note, f"({count} results in {file_count} files{_scanned_suffix(scanned)}{hidden}, "
                f"limit {limit}, context {context}"
                f"{_truncation_suffix(truncated, total, capped)})\n"]
+        if count == 0:
+            out.append(_shim_facade_note(path))
         current_file: str = ""
         first_group = True
         for group in groups:
@@ -3344,6 +3362,8 @@ def _op_grep(pattern: str, path: str = ".", limit: int = 0,
     out = [literal_note,
            f"({count} results in {file_count} files{_scanned_suffix(scanned)}{hidden}, "
            f"limit {limit}{_truncation_suffix(truncated, total, capped)})\n"]
+    if count == 0:
+        out.append(_shim_facade_note(path))
     current_file = ""
     for fp, lineno, content in hits:
         if fp != current_file:
@@ -3509,7 +3529,8 @@ def _op_around(pattern: str, path: str, n: int = 10) -> str:
                 f"'{path}' was read as the path. Did you mean: "
                 f"around_line:{pattern}:{path}[:N]"
             )
-        return _path_not_found(path, label="file", suggest=suggest)
+        return _path_not_found(path, label="file", suggest=suggest,
+                               op="around")
 
     def _render(rx: "re.Pattern[str]") -> Tuple[str, bool]:
         """Render the around-window for `rx`. Returns (output, matched) so the
@@ -3547,7 +3568,8 @@ def _op_around(pattern: str, path: str, n: int = 10) -> str:
 
         rendered = _around_one_file(rx, path, n)
         if not rendered:
-            return f"(no match for {pattern!r} in {path})\n\n", False
+            return (f"(no match for {pattern!r} in {path})\n"
+                    + _shim_facade_note(path) + "\n"), False
         return _cap_context_window(rendered, "around"), True
 
     out_text, matched = _render(regex)
@@ -3600,7 +3622,8 @@ def op_between_symbol(symbol: str, path: str) -> str:
             symbol = normalized
     if found is None:
         extra = "" if normalized == symbol else f" (also tried {normalized!r})"
-        return f"ERROR: symbol {symbol!r} not found in {path}{extra}\n"
+        return (f"ERROR: symbol {symbol!r} not found in {path}{extra}\n"
+                + _shim_facade_note(path))
     node, kind, total = found
 
     start_line = node.start_point[0]
@@ -4262,7 +4285,7 @@ def op_stat(path: str) -> str:
 def op_around_line(path: str, line: int, n: int = 10) -> str:
     """Show N lines of context around a specific line number."""
     if not path or not os.path.isfile(path):
-        return _path_not_found(path, label="file")
+        return _path_not_found(path, label="file", op="around_line")
     if line < 1:
         return f"ERROR: line number must be >= 1, got {line}\n"
 
@@ -4999,7 +5022,7 @@ def op_map(path: str, no_exclude: bool = False) -> str:
     if not path:
         return "ERROR: empty path\n"
     if not os.path.exists(path):
-        return _path_not_found(path)
+        return _path_not_found(path, op="map", call_prefix="map")
 
     hidden_files: List[str] = []
     files = _collect_files(
@@ -5904,6 +5927,13 @@ def _comma_path_list_suggest(op: str, path: str) -> str:
     entries = [e for e in path.split(",") if e]
     if len(entries) < 2:
         return ""
+    # Containment before the stat, not after: the loop below is an existence
+    # probe on every entry, and dispatch only ever gated the comma-JOINED
+    # string — `a.py,/etc/shadow` resolves under the cwd because its first
+    # character does, so the tally leaked whether the second entry existed
+    # (#1142, the same oracle #1135 closed for `around`).
+    if _containment_error(entries):
+        return ""
     found = [e for e in entries if os.path.exists(e)]
     if not found:
         return ""
@@ -5914,6 +5944,103 @@ def _comma_path_list_suggest(op: str, path: str) -> str:
             f"({tally} of its entries exist, so the cwd is not the problem). "
             f"Pass one path, a directory, or one {op} op per file — several "
             f"ops batch into a single call.")
+
+
+#: Entry-point shims and the sibling that holds the code they stand for. A
+#: named pair, not a general "facade" test. A general one — a small module
+#: that re-exports a bigger sibling — would fire on every `__init__.py` in a
+#: package and still not be the thing anyone greps by mistake; this pair is
+#: the one the rename created (#931) and it fires every time.
+_SHIM_CORE = {"supertool.py": "_supertool.py"}
+
+
+def _shim_facade_note(path: str) -> str:
+    """Disclose that an empty result came from an entry-point shim (#1259).
+
+    `grep:SYMBOL:supertool.py` scans a file that by construction holds almost
+    nothing and reports `0 results in 0 files, scanned 1 files`. Every clause
+    is true and the three-state contract is working — `scanned 1 files` proves
+    the op looked. What it cannot say is that the file it looked at is a
+    facade, so the zero is byte-identical to a zero from the core, and every
+    instinct to grep `supertool.py` has landed here since the split.
+
+    Disclosure, never redirect. Scanning `_supertool.py` for a caller who
+    named `supertool.py` would answer a question nobody asked and report it
+    as the answer to the one they did — a quieter wrong answer than the one
+    it replaced.
+
+    Gated on the pair actually being on disk together: a lone file named
+    `supertool.py` in someone else's tree is an ordinary file, and a note
+    there would be a guess. Only ever called where the result is already
+    empty, so a hit — which IS evidence about the shim — is left alone.
+    """
+    if not path:
+        return ""
+    core = _SHIM_CORE.get(os.path.basename(path))
+    if not core or not os.path.isfile(path):
+        return ""
+    if not os.path.isfile(os.path.join(os.path.dirname(os.path.abspath(path)),
+                                       core)):
+        return ""
+    return (f"(note: {os.path.basename(path)} is only the entry point — "
+            f"supertool's implementation lives in {core} beside it (#931). "
+            f"An empty result here is evidence about the shim, not about "
+            f"supertool. Re-run against {core}.)" + chr(10))
+
+
+def _multi_path_suggest(op: str, path: str,
+                        call_prefix: Optional[str] = None) -> str:
+    """Hint for `PATH PATH ...` handed to an op that takes one path (#1261).
+
+    `grep PATTERN a.py b.py` is the shell spelling every caller already has.
+    Written into the colon CLI the whole argument list lands in the single
+    PATH slot and the call fails as one missing filename. What answered
+    before was the `:`-split hint, and its prescribed repair is a payload —
+    where `path` is a scalar too, so following it reproduces the failure one
+    form further along. The op can positively tell the two apart: the value
+    it could not resolve contains whitespace and its parts each exist.
+
+    Returns "" unless EVERY part exists. A partial match is a genuinely
+    missing path, and stacking a second diagnosis on the first would trade
+    one misreport for another — the three-state rule, `docs/validators.md`.
+
+    Returns "" as well when any part fails containment, and that check runs
+    BEFORE the existence loop rather than after it: the loop is a stat on
+    each part, and dispatch upstream only ever gated the whitespace-JOINED
+    string, which resolves under the cwd whenever its first part does. Left
+    unguarded the disclosure is an existence oracle for anything the process
+    can reach (#1142).
+
+    No new syntax on purpose. Accepting a whitespace list would make a
+    filename containing a space unrepresentable in the one slot that must be
+    able to name any file — and the tree already has a delimiter for the ops
+    that do take lists (`validate:a.py,b.py`, `git-resolve`), so a second one
+    would mean two spellings for one idea. Batching is the tool's premise and
+    it already buys the round-trip the caller was reaching for.
+    """
+    parts = path.split()
+    if len(parts) < 2:
+        return ""
+    if _containment_error(parts):
+        return ""
+    if not all(os.path.exists(p) for p in parts):
+        return ""
+    n = len(parts)
+    word = {2: "TWO", 3: "THREE", 4: "FOUR"}.get(n, str(n))
+    lines = [
+        f"this looks like {word} paths — {op} takes ONE path (a file, or a "
+        f"directory it walks), and the whole string was read as a single "
+        f"filename (all {n} parts exist, so the cwd is not the problem)."
+    ]
+    if call_prefix:
+        calls = " ".join("'" + f"{call_prefix}:{p}" + "'" for p in parts)
+        lines.append("    Batch instead — several ops run in ONE call, which "
+                     "is the round-trip you were reaching for:")
+        lines.append(f"      ./supertool {calls}")
+    else:
+        lines.append("    Pass one path, or the directory they share — and "
+                     "batch several ops into one call.")
+    return chr(10).join(lines)
 
 
 def _looks_like_path(tok: str) -> bool:
@@ -5929,7 +6056,8 @@ def _looks_like_path(tok: str) -> bool:
 
 
 def _colon_split_hint(op: str, leading: str, path: str,
-                      keys: Tuple[str, ...] = ("pattern",)) -> str:
+                      keys: Tuple[str, ...] = ("pattern",),
+                      call_prefix: Optional[str] = None) -> str:
     """Error text for a read op whose PATH does not exist and probably should.
 
     A read op that mis-tokenizes must never read as an absence in the world.
@@ -5945,6 +6073,15 @@ def _colon_split_hint(op: str, leading: str, path: str,
         return ""
     if ":" not in leading and _looks_like_path(path):
         return ""
+    # Ahead of the `:` diagnosis, not after it. A value that whitespace-splits
+    # into parts which all exist is positively a different mistake, and the
+    # colon advice points at a payload whose `path` is a scalar as well — a
+    # repair that fails identically one form further along (#1261).
+    if call_prefix is None:
+        call_prefix = f"{op}:{leading}"
+    _multi = _multi_path_suggest(op, path, call_prefix)
+    if _multi:
+        return _path_not_found(path, suggest=_multi)
     original = f"{leading}:{path}"
     q = chr(39) * 3
     fields = "\n".join(f"    {k} = {q}<{k}, colons and all>{q}" for k in keys)
@@ -5982,7 +6119,7 @@ def op_replace(old: str, new: str, path: str = ".", dry: bool = False) -> str:
 
     # Validate path exists
     if path != "." and not os.path.isfile(path) and not os.path.isdir(path):
-        return _path_not_found(path)
+        return _path_not_found(path, op="replace")
 
     candidates = _grep_candidates(path, _get_exclude_paths("replace"))
     if not candidates:
@@ -18741,6 +18878,10 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                     _hint = _colon_split_hint(
                         "between", f"{start_pat}:{end_pat}", path,
                         keys=("start", "end"),
+                        # The default prefix would be `between:START:END`,
+                        # dropping the `re:` marker that selects this mode —
+                        # a printed repair nobody can run.
+                        call_prefix=f"between:re:{start_pat}:{end_pat}",
                     )
                     if _hint:
                         return header + _hint
