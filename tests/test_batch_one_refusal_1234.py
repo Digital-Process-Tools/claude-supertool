@@ -78,6 +78,33 @@ def test_an_all_refused_batch_claims_no_surviving_answer(
     assert "complete" not in out, out
 
 
+def test_both_kinds_of_failure_at_once_withholds_the_completeness_claim(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """A refusal and a skipped write in the same call.
+
+    `refused` counts first-line ERROR/FAIL markers, so it does not see
+    `replace`'s `(0 occurrences ...)` or an edit a validator reverted -- those
+    reach `any_failure` through `_SKIP_COUNT` / `_ROLLBACK_COUNT` instead. An
+    op can therefore sit outside `refused` and still not have landed, and the
+    two-branch tally called it "ok" and asserted "the other 1 answers above are
+    complete" over a write whose own receipt one line up says nothing changed
+    on disk. Found in review of this change; it is the same shape as the
+    defect the change exists to fix, one layer in.
+    """
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "x.txt").write_text("LIMIT" + chr(10), encoding="utf-8")
+
+    rc = supertool.main(["grep:LIMIT:x.txt:0", "replace:::nomatch:::y:::x.txt"])
+    out = capsys.readouterr().out
+
+    assert rc == 1
+    assert "[batch] 2 ops ran — 1 refused" in out, out
+    assert "complete" not in out, out
+    assert "1 ok" not in out, out
+    assert "read the per-op receipts" in out, out
+
+
 def test_a_clean_batch_says_nothing(tmp_path, monkeypatch, capsys) -> None:
     """The line discloses a mismatch. With nothing to reconcile it is noise."""
     monkeypatch.chdir(tmp_path)

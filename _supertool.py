@@ -1782,10 +1782,15 @@ def _unknown_op_message(op: str) -> str:
 # which force-pushes a merge train. Hence the class.
 #
 # Declared, never inferred. `_PARALLEL_SAFE_OPS` looks like a ready-made
-# read-only set and is not one: it carries `format_staged`, which runs
-# formatters over every staged file and writes them. Deriving "read-only" from
-# it would render a mutating op probe-safe — an error in the one direction that
-# costs something.
+# read-only set and is not one — it is a dispatch-safety set, and until #1244
+# it carried `format_staged`, which runs formatters over every staged file and
+# writes them. Deriving "read-only" from it here would have rendered a mutating
+# op probe-safe: an error in the one direction that costs something.
+#
+# The two agree as of #1244 and a test now holds them together, so this is no
+# longer a live contradiction. The rule survives the repair anyway: a class
+# read off another set's membership is only ever as right as that set's last
+# edit, and this table is the declaration site.
 #
 # "acts" is about consequence, not about spawning: nearly every preset op runs
 # a python subprocess. `*_status_since` is the case that proves it — it reads a
@@ -20451,6 +20456,10 @@ def _main(argv: List[str]) -> int:
             _DEFER_FORMATTERS = False
 
     refused = 0
+    # `any_failure` has more than one source, and the tally below must not
+    # attribute all of it to the ops it counted. See the three counter checks
+    # further down.
+    counter_failure = False
     for body in bodies:
         sys.stdout.write(body)
         total_out_bytes += len(body.encode("utf-8"))
@@ -20476,6 +20485,7 @@ def _main(argv: List[str]) -> int:
     # counter is the authority here precisely because it does not read prose.
     if _SKIP_COUNT[0] > _skips_at_entry:
         any_failure = True
+        counter_failure = True
 
     # A reverted write is the same hazard one step later (#952): the op wrote,
     # a validator rejected it, the file was restored — and `batch:@ops &&
@@ -20485,6 +20495,7 @@ def _main(argv: List[str]) -> int:
     # of every later call in the same worker.
     if _ROLLBACK_COUNT[0] > _rollbacks_at_entry:
         any_failure = True
+        counter_failure = True
 
     # A validator the operator required, that could not run, is a failure of
     # the same kind (#665): the op wrote and the gate did not run. Setting
@@ -20498,6 +20509,7 @@ def _main(argv: List[str]) -> int:
     # louder one rather than fixing it.
     if len(_NOT_CHECKED) > _not_checked_at_entry:
         any_failure = True
+        counter_failure = True
     del _NOT_CHECKED[_not_checked_at_entry:]
     # Informational only — the count line discloses a skip, it does not gate on
     # one (#990). Truncated for the same warm-daemon reason as the list above.
@@ -20515,8 +20527,24 @@ def _main(argv: List[str]) -> int:
     # Only on a multi-op call, and only when the exit code is about to be 1 —
     # with one op there is no sibling to have lost, and on a clean batch the
     # line is noise on every call forever.
+    _other = ("a skipped write, a rolled-back edit or a validator that could "
+              "not run")
     if len(bodies) > 1 and any_failure:
-        if refused == len(bodies):
+        if counter_failure and refused:
+            # Both kinds of failure at once, and this is the branch that has to
+            # say the least. `refused` counts first-line ERROR/FAIL markers;
+            # the counters catch the failures that render as ordinary prose —
+            # `replace`'s `(0 occurrences ...)`, an edit a validator reverted.
+            # An op can therefore be outside `refused` and still not have
+            # landed, so "the other N answers are complete" would be a positive
+            # claim about output this line has not checked. It is withheld.
+            tally = (
+                f"[batch] {len(bodies)} ops ran — {refused} refused, and "
+                f"{_other} also failed this call (above). More than one thing "
+                f"went wrong: read the per-op receipts, not these counts."
+                + chr(10)
+            )
+        elif refused == len(bodies):
             # No sibling survived, so there is no "the rest is fine" to make.
             # Still worth the count: it says every op was reached and answered,
             # which is the thing the exit code alone does not settle.
@@ -20531,14 +20559,11 @@ def _main(argv: List[str]) -> int:
                 f"{len(bodies) - refused} answers above are complete." + chr(10)
             )
         else:
-            # `any_failure` also fires on a skipped write, a rolled-back edit
-            # or a required validator that could not run — none of which is an
-            # op refusing. Saying "0 refused" beside exit 1 would send the
-            # reader hunting for an op that did not fail.
+            # None of which is an op refusing. Saying "0 refused" beside exit 1
+            # would send the reader hunting for an op that did not fail.
             tally = (
                 f"[batch] {len(bodies)} ops ran — all {len(bodies)} rendered an "
-                f"answer. Exit 1 is a skipped write, a rolled-back edit or a "
-                f"validator that could not run (above), not an op." + chr(10)
+                f"answer. Exit 1 is {_other} (above), not an op." + chr(10)
             )
         sys.stdout.write(tally)
         total_out_bytes += len(tally.encode("utf-8"))

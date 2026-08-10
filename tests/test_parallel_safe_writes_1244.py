@@ -127,6 +127,7 @@ def test_a_parallel_batch_never_reads_a_file_a_sibling_op_is_rewriting(
         [sys.executable, str(Path(supertool.__file__).parent / "supertool.py"),
          "format_staged", "read:f.txt"],
         cwd=str(repo), capture_output=True, text=True, env=env, timeout=120,
+        encoding="utf-8", errors="replace",
     )
     on_disk = (repo / "f.txt").read_text(encoding="utf-8").strip()
     assert on_disk == "FORMATTED", "the formatter did not run: " + r.stdout + r.stderr
