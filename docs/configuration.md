@@ -296,9 +296,13 @@ Override via env: `SUPERTOOL_PARALLEL=4 ./supertool 'read:a' 'grep:x:b/' 'glob:c
 
 A value that is neither a number nor `true`/`false` — or a negative one — leaves parallelism off *and says so*, rather than looking identical to never having set it. See [Numeric environment knobs](#numeric-environment-knobs-and-what-happens-when-one-is-wrong).
 
-**Safe ops** (parallelized): `read`, `grep`, `glob`, `ls`, `head`, `tail`, `wc`, `stat`, `map`, `tree`, `around`, `around_line`, `between`, `diff`, `blame`, `version`.
+**Safe ops** (parallelized): `read`, `grep`, `glob`, `ls`, `head`, `tail`, `wc`, `stat`, `map`, `tree`, `around`, `around_line`, `between`, `diff`, `blame`, `version`, `validate`, `validate_staged`, `workspace`, `resolve`, `diag`, `hover`, `help`. The list in `_supertool.py` is `_PARALLEL_SAFE_OPS`; this paragraph had been missing seven of them since they were added.
 
-**Unsafe** — batch falls back to sequential whenever any op is mutating (`edit`, `replace`, `replace_dry`, `replace_lines`) or custom (anything in `ops:` — could shell out to anything). All-or-nothing per call: no partial parallelism.
+**Unsafe** — batch falls back to sequential whenever any op is mutating (`edit`, `replace`, `replace_dry`, `replace_lines`, `format`, `format_staged`) or custom (anything in `ops:` — could shell out to anything). All-or-nothing per call: no partial parallelism.
+
+**Read-only is the membership rule, and it is not a formality.** `format_staged` sat in the safe set until [#1244](https://github.com/Digital-Process-Tools/claude-supertool/issues/1244); it shells formatters over every staged file and rewrites them, so `supertool 'format_staged' 'read:f.txt'` with `parallel` on rendered the *pre*-format bytes — under `[complete file — no more lines]` — while the post-format bytes were already on disk. The same call at `parallel: 0` was right, which is the part that makes it hard to see: a performance switch changed an answer.
+
+There is no weaker "safe to run concurrently" reading available. Parallel safety is a property of the whole set of ops in one call, and a writer is unsafe beside any reader of the same path.
 
 Speedup: I/O-bound ops on different files. ~3-5× faster on cold filesystem; modest gain on warm cache.
 
