@@ -41,9 +41,10 @@ genuinely nothing open. The count for the middle state costs one extra
 `gh pr list`, fired only over an empty board; a probe that could not run
 reports UNKNOWN rather than `excluded none`.
 
-`radar`'s GitHub tier is **not** covered by this: it calls `_build_list_cmd`
-with two positional arguments and keeps the old default deliberately — see that
-function.
+`radar`'s GitHub tier was **not** covered by this for a release, and that was
+the bug (#1230): it calls `_build_list_cmd` positionally, and #1207 flipped the
+op at its own call sites rather than in the helper. The helper now adds no role
+filter at all, so both boards answer over one population.
 """
 from __future__ import annotations
 
