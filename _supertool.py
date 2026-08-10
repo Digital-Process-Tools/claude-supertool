@@ -2227,6 +2227,11 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
     ops = config.get("ops")
     if not ops or op not in ops:
         return None
+    # Cleared before anything can return, so a frame whose op declined without
+    # running never inherits the previous frame's verdict. `None` is the third
+    # state and it is load-bearing: "did not run" must not read as "failed",
+    # and it must certainly not read as "succeeded".
+    _CUSTOM_OP_OK[0] = None
 
     # #678 — this op is defined by whatever tree the cwd resolved to, which is
     # not necessarily the tree this core came from. Decide before running it:
@@ -2280,6 +2285,12 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
     # `_main` instead, so this copy is already clean and a preset stays covered
     # by being launched rather than by opting in.
     env = dict(os.environ)
+    # Which separator produced the argv this op is about to receive (#946).
+    # A preset that reconstructs the caller's input — git-commit's spilled
+    # message refusal is the one that does — cannot otherwise tell ':::' from
+    # ':' from a payload whose fields were never split, and rejoining on the
+    # wrong one hands back a suggestion that silently rewrites the message.
+    env["SUPERTOOL_ARG_SEP"] = _ARG_SEP[0]
     if isinstance(entry, dict):
         for k, v in entry.items():
             if k not in _RESERVED_KEYS:
@@ -2309,6 +2320,7 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
         )
         elapsed = _elapsed_since(t0)
         output = result.stdout
+        _CUSTOM_OP_OK[0] = result.returncode == 0
         if result.returncode != 0:
             if result.stderr:
                 output += result.stderr
@@ -6763,6 +6775,23 @@ _WRITE_WARNINGS: List[Tuple[str, str]] = []
 # decremented.
 _MUTATION_ATTEMPTS: List[int] = [0]
 
+# How the running dispatch frame separated its fields — ':::', ':', or '' when
+# the fields arrived structured through a payload and nothing was tokenized.
+# Read by `_resolve_custom_op`, which is several frames down and sees only the
+# already-split `parts`, and exported to the preset subprocess as
+# SUPERTOOL_ARG_SEP. A preset that reconstructs the caller's input for a
+# refusal has to know which separator to rejoin on: git-commit rejoined on ':'
+# whatever the route, so a ':::' inside a message came back as a ':' and the
+# suggested repair, pasted, committed bytes the caller never wrote (#946).
+_ARG_SEP: List[str] = [":"]
+
+# Exit status of the last custom/preset op run in the current frame, or None
+# when none ran. A preset writes no file through `_atomic_write`, so the write
+# counter below cannot answer "did it succeed"; this is recorded at the
+# subprocess rather than parsed back out of its receipt, for the same reason
+# `_result_line`'s counts are.
+_CUSTOM_OP_OK: List[Optional[bool]] = [None]
+
 # Bumped by _atomic_write. Lets dispatch ask 'did this op actually write?'
 # instead of sniffing the receipt for an ERROR prefix — receipts are prose
 # and not every no-op failure says ERROR (op_replace's zero-match returns
@@ -6951,13 +6980,57 @@ def _elide(s: str, limit: int) -> str:
     return f"{s[:limit]}… (+{len(s) - limit} chars)"
 
 
-def _compact_header_arg(op: str, parts: List[str]) -> str:
+def _commit_header_arg(parts: List[str]) -> str:
+    """`git-commit`'s header, for a commit that LANDED (#946, #1235).
+
+    Here the argument is also the artifact: after a successful commit
+    `git log -1` hands the message back, so replaying it above a receipt
+    whose whole job is to prove the commit landed is a second copy of
+    something already retrievable. Commit messages in this repo are long by
+    convention, so that echo routinely outweighs the receipt it introduces.
+
+    Success only, and that is the point rather than a detail. On a refusal
+    nothing was committed and this header is the ONLY surviving copy of a
+    message the caller composed — eliding it there would cause precisely the
+    loss #1235 was filed about. The swap in `_dispatch_impl` is gated on the
+    op having succeeded for that reason.
+
+    Subject plus a body line COUNT, never a body sample. A sample reads as
+    the message and is not; the count is what tells the reader the tool
+    received the lines they sent, which is the whole job of an echo.
+    """
+    msg = parts[1] if len(parts) > 1 else ""
+    paths = [p for p in parts[2:] if p]
+    # CRLF normalised first: `split` on the newline alone leaves a trailing
+    # CR on every line, and `_elide` only collapses the pair — so a message
+    # composed on Windows would put a stray CR inside the quoted subject.
+    lines = msg.replace(chr(13) + chr(10), chr(10)).split(chr(10))
+    out = 'git-commit: "' + _elide(lines[0], _HEADER_ANCHOR_MAX) + '"'
+    if len(lines) > 1:
+        out += f" +{len(lines) - 1} more message lines"
+    if paths:
+        out += (f" → {len(paths)} path(s): "
+                + _elide(", ".join(paths), _HEADER_ANCHOR_MAX))
+    else:
+        out += " → no paths (commits the index)"
+    return out
+
+
+def _compact_header_arg(op: str, parts: List[str], sep: str = ":") -> str:
     """Identifying header for a content-heavy mutating op, or "" to keep the
     verbatim one. Each op keeps whatever identifies the *target* — path, line
-    range, anchor — and drops the content the diff is about to show anyway."""
+    range, anchor — and drops the content the diff is about to show anyway.
+
+    *sep* is how this call's fields were split. It gates `git-commit` only:
+    under single-colon tokenization `parts[1]` is a fragment of the message
+    rather than the message, so a summary built from it would state a subject
+    the caller never wrote.
+    """
     def _p(i: int) -> str:
         return parts[i] if len(parts) > i else ""
 
+    if op == "git-commit":
+        return _commit_header_arg(parts) if sep == ":::" else ""
     if op in ("edit", "replace", "replace_dry"):
         return f'{op}: "{_elide(_p(1), _HEADER_ANCHOR_MAX)}" → {_p(3)}'
     if op == "replace_lines":
@@ -18551,6 +18624,12 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
     # and `read:PATH:::grep=` (mid-arg) keep working under single-colon parsing.
     _at_file_replace_all: bool = False
     _at_file_used: bool = False
+    # How this call's fields were separated, for the ops that have to know:
+    # ':::', ':', or '' when nothing was tokenized at all because the fields
+    # arrived structured. Three states rather than two — a payload's fields
+    # were never split, and a refusal that says they were is a claim about a
+    # parse that did not run (#946).
+    _arg_sep: str = ""
     if pre_parsed is not None:
         # Batch sub-op: parts already structured from a JSON payload (via
         # _at_file_to_parts). Skip ALL string tokenization and reuse the
@@ -18568,8 +18647,10 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
         triple_match = _re.match(r"^([a-zA-Z_][a-zA-Z0-9_-]*):::", arg)
         if triple_match:
             parts = arg.split(":::")
+            _arg_sep = ":::"
         else:
             parts = _split_arg(arg)
+            _arg_sep = ":"
         op = parts[0] if parts else ""
 
     # Read-op @payload route — 'grep:@file' / 'around:@-' etc. (#625).
@@ -18635,6 +18716,9 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
             payload = _load_at_file(parts[1])
             parts, _at_file_replace_all = _at_file_to_parts(op, payload)
             _at_file_used = True
+            # The colon prefix got us here; the FIELDS came from the payload
+            # and no separator touched them.
+            _arg_sep = ""
         except ValueError as _e:
             # A payload that would not load, or one that loaded without the
             # fields the op needs. Both leave the caller knowing their call was
@@ -18650,6 +18734,11 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
     # bytes — backslashes and newlines must NOT be reinterpreted as shell-
     # style escapes. Only colon-CLI input needs `_decode_escapes`.
     _dec = (lambda s: s) if _at_file_used else _decode_escapes
+
+    # Published for the preset subprocess launcher, which is several frames
+    # down and receives only `parts`. Set on every frame rather than once per
+    # call: a batch sub-op arrives through its own frame with its own route.
+    _ARG_SEP[0] = _arg_sep
 
     # A content-heavy mutating op echoes its old and new strings in the header
     # and then again in the diff underneath. Rebuild the header from the parsed
@@ -18673,7 +18762,11 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
     # happened. #644.
     _compact_header = ""
     if pre_parsed is None and len(arg) > _HEADER_ARG_MAX:
-        _compact_header = _compact_header_arg(op, parts)
+        _compact_header = _compact_header_arg(op, parts, _arg_sep)
+    # None until a custom op runs in this frame; then its exit status. Read
+    # rather than sniffed off the receipt, for the reason stated at the swap
+    # below — a preset writes no file, so `_WRITE_COUNT` cannot speak for it.
+    _custom_op_ok: Optional[bool] = None
     _writes_before = _WRITE_COUNT[0]
     _attempts_before = _MUTATION_ATTEMPTS[0]
     _skips_before = _SKIP_COUNT[0]
@@ -19244,6 +19337,7 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
             custom = _resolve_custom_op(op, parts)
             if custom is not None:
                 body = custom
+                _custom_op_ok = _CUSTOM_OP_OK[0]
             else:
                 alias = _resolve_alias(op, parts)
                 if alias is not None:
@@ -19282,7 +19376,12 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
     # the receipt: `op_replace`'s zero-match returns "(0 occurrences of 'x'
     # found)", which is a failure that says nothing about being one, and that
     # is precisely the case where the caller needs the verbatim `old` back.
-    if _compact_header and _WRITE_COUNT[0] > _writes_before:
+    # A preset op writes no file through `_atomic_write`, so the write counter
+    # is silent for it and its own exit status is the only success signal
+    # available. Same rule as above rather than a looser one: taken from a
+    # status code, never from the prose of the receipt being summarised.
+    if _compact_header and (_WRITE_COUNT[0] > _writes_before
+                            or _custom_op_ok is True):
         header = (f"--- {_compact_header}"
                   f"{_NO_EXCLUDE_SUFFIX if no_exclude else ''} ---\n")
     # Right file, wrong branch is silent until commit time, and supertool is
@@ -20472,7 +20571,22 @@ def _main(argv: List[str]) -> int:
 # user content that happens to contain those words. Anchored to the line
 # immediately after the '--- op:args ---' header so a grep result returning
 # a line starting with 'ERROR:' won't trigger a false-positive exit code.
-_FAIL_MARKER = re.compile(r"^---[^\n]*\n(FAIL\b|ERROR:\s)", re.MULTILINE)
+#
+# `[\s\S]*?` rather than `[^\n]*`, because THE HEADER IS NOT ONE LINE. It is
+# `--- {arg} ---`, and `arg` is whatever the caller typed: a multi-line commit
+# message puts newlines inside it. `[^\n]*` cannot cross one, so the marker
+# never matched and every failing op whose argument held a newline exited 0
+# (#1235). Measured 2026-08-10: `git-commit:::subject` refused and exited 1;
+# the same refusal with one body line added exited 0. That is a refusal a hook
+# or a `&&` chain reads as a success, on exactly the multi-line messages this
+# repo's commit conventions ask for.
+#
+# Still anchored, and still to the line after the header: the close is ` ---`
+# ending a line, followed by FAIL/ERROR. Non-greedy, so the first candidate
+# close wins; a body line of the caller's own ending in ` ---` and followed by
+# `ERROR: ` would match early, which errs toward reporting a failure that is
+# not one rather than the reverse.
+_FAIL_MARKER = re.compile(r"^--- [\s\S]*? ---\n(FAIL\b|ERROR:\s)", re.MULTILINE)
 
 
 def _body_indicates_failure(body: str) -> bool:
