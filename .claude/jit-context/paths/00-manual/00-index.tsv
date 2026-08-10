@@ -7,3 +7,6 @@ presets/gitlab/	presets-gitlab.md
 presets/watch/	presets-watch.md
 tests/	tests-suite.md
 validators/	validators.md
+.claude/jit-context/	jit-context.md
+.claude-plugin/	version-sites.md
+pyproject.toml	version-sites.md
