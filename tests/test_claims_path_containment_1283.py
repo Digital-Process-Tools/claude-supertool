@@ -139,6 +139,21 @@ def test_a_symlink_inside_the_root_pointing_out_is_refused(
     _refused(rc, cap.out, cap.err)
 
 
+def test_a_sibling_whose_name_starts_with_the_root_is_outside_it(
+        tmp_path, monkeypatch, capsys):
+    """The `+ os.sep` in the prefix test, pinned. `/repo-evil` starts with
+    `/repo` and is not inside it — a bare `startswith` would admit the whole
+    directory, and every other test here uses a sibling that shares no prefix,
+    so none of them would notice."""
+    root = _tree(tmp_path)
+    evil = tmp_path / (root.name + "-evil")
+    evil.mkdir()
+    (evil / "doc.md").write_text("token " + MARKER + NL, encoding="utf-8")
+    rc = _main(monkeypatch, root, [str(evil / "doc.md")])
+    cap = capsys.readouterr()
+    _refused(rc, cap.out, cap.err)
+
+
 def test_a_document_inside_the_root_is_still_checked(
         tmp_path, monkeypatch, capsys):
     """The gate is a boundary, not a blanket refusal."""
