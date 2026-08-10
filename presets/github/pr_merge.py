@@ -551,7 +551,11 @@ def _worktrees_for_branch(branch: str) -> List[str]:
         return []
     paths: List[str] = []
     current = ""
-    for line in (r.stdout or "").splitlines():
+    # `--porcelain` does not quote a path, so a branch or directory name can
+    # carry a separator U+2028/U+2029 that str.splitlines() splits on and git
+    # does not (#1119). Narrowed rather than registered: this reader decides
+    # which directory gets deleted.
+    for line in _untrusted.split_lines(r.stdout or ""):
         if line.startswith("worktree "):
             current = line[len("worktree "):].strip()
         elif line.startswith("branch "):
