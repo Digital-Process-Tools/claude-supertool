@@ -76,7 +76,7 @@ Three rules for what goes in one:
 - **Carry the number that made you write it.** A rule with its evidence stripped is folklore, and folklore is what this tool exists to replace.
 - **Keep it short.** The file is injected in full on every match, so its length is a cost paid every time, forever. A table of replacement ops, the measurement that justified the rule, and stop.
 
-**A rule that never matches and a rule that never runs look identical everywhere**, including the hook's own log. So after indexing one, run the command it forbids and check it is refused — two of six tool rules turned out to be dead on 2026-08-10, both `block`, both from a `match` written in PCRE for a matcher that is awk. The `match`-column traps are in `.claude/jit-context/paths/00-manual/jit-context.md`, which fires when you edit one.
+**A rule that never matches and a rule that never runs look identical everywhere**, including the hook's own log. So after indexing one, run the command it forbids and check it is refused — two `block` rules turned out to be dead on 2026-08-10 — one had never fired since the day it was written — both from a `match` written in PCRE for a matcher that is awk. Since #1254 the `jit-index` validator refuses that at write time, so a dead escape now arrives as a rolled-back edit. The `match`-column traps are in `.claude/jit-context/paths/00-manual/jit-context.md`, which fires when you edit one.
 
 ## The defect this codebase keeps having
 

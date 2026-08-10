@@ -3,9 +3,9 @@ r"""A jit-context index row whose regex the matcher cannot honour (#1254).
 `.claude/jit-context/**/00-index.tsv` rows are compiled by awk, not PCRE
 (`claude-jit-context/scripts/pre-tool-hook.sh:80`, `pre-path-hook.sh:105`).
 macOS ships the one-true-awk, which drops an undefined string escape before
-compiling: `gh\s+pr` becomes `ghs+pr` and matches nothing at all. Two of the
-six tool rules were dead this way on 2026-08-10, both the `block` ones, and
-one had never fired since it was written. Nothing anywhere said so — a rule
+compiling: `gh\s+pr` becomes `ghs+pr` and matches nothing at all. Two `block`
+rules were dead this way on 2026-08-10, one of which had never fired since the
+day it was written. Nothing anywhere said so — a rule
 that never matches and a rule that never runs render identically in the index,
 in a directory listing, and in the hook log.
 
@@ -198,6 +198,43 @@ class TestThirdState:
         result = _run(idx, env_path=str(tmp_path))
         assert result["ok"] is False
         assert "[[:space:]]" in _msgs(result)
+
+    def test_a_broken_row_is_a_finding_even_when_it_is_the_only_row(self, tmp_path):
+        """The skip arm must not swallow the answer it already has.
+
+        `\\tp.md` has a paths row's two fields and an empty pattern column — an
+        empty pattern is handed to `match()` and matches every path. It leaves
+        `parsed` at zero exactly as unparseable prose does, and collapsing the
+        two cases turned a finding into "this is not an index".
+        """
+        idx = _paths_index(tmp_path, TAB + "p.md")
+        result = _run(idx)
+        assert "skipped" not in result
+        assert result["ok"] is False
+        assert result["errors"][0]["code"] == "shape"
+        assert result["errors"][0]["line"] == 1
+
+    @pytest.mark.skipif(os.name != "posix",
+                        reason="needs an executable shim on PATH to make awk fail to exec")
+    def test_awk_that_cannot_run_is_a_skip_not_a_pass(self, tmp_path):
+        """awk found by `which` and unable to start is a no-verdict, not a clean one.
+
+        Distinct from awk being *absent*, and distinct from awk exiting
+        non-zero — that is a finding, and it is loud.
+        """
+        binder = tmp_path / "bin"
+        binder.mkdir()
+        shim = binder / "awk"
+        shim.write_text("#!/nonexistent/interpreter\n", encoding="utf-8")
+        shim.chmod(0o755)
+
+        idx = _tools_index(tmp_path, _tool_row("~gh[[:space:]]+pr"))
+        result = _run(idx, env_path=str(binder))
+        assert "skipped" in result
+        assert "ok" not in result
+        assert "count" not in result
+        assert "errors" not in result
+        assert "never compiled" in result["skipped"]
 
     def test_a_file_that_is_not_an_index_is_a_skip(self, tmp_path):
         d = tmp_path / "00-manual"

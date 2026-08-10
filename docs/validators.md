@@ -217,9 +217,9 @@ Enable any of these by copying the relevant entry from `.supertool.example.json`
 A `.claude/jit-context/**/00-index.tsv` row is written by an ordinary `paste` or `edit`, and its
 `match` column is compiled by **awk**, not PCRE — `pre-tool-hook.sh:80` for the tools family,
 `pre-path-hook.sh:105` for paths. macOS ships the one-true-awk, whose regex lexer drops an escape it
-does not define, so `gh\s+pr` compiles to `ghs+pr` and matches nothing. On 2026-08-10 two of the
-seven tool rules were dead exactly this way, both the `block` ones, and one had never fired since the
-day it was written. A rule that never matches and a rule that never runs render identically — in the
+does not define, so `gh\s+pr` compiles to `ghs+pr` and matches nothing. On 2026-08-10 two `block`
+rules were dead exactly this way, one of which had never fired since the day it was written. A rule
+that never matches and a rule that never runs render identically — in the
 index, in a directory listing, and in the hook's own log, which shows `(none) [shown:0]` for both.
 
 **awk does not fail to compile `\s`.** It compiles it, silently, into the wrong thing and exits 0. So

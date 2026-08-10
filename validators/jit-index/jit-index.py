@@ -10,8 +10,9 @@ column is compiled by **awk**, not PCRE:
 
 macOS ships the one-true-awk, whose regex lexer drops an escape it does not
 define. `gh\s+pr` compiles to `ghs+pr` and matches nothing. On 2026-08-10 two
-of the seven tool rules were dead exactly this way, both the `block` ones, and
-one of them had never fired since the day it was written. A rule that never
+`block` rules were dead exactly this way, one of which had never fired since the
+day it was written. (Counting the denominator is a moving target and not the
+point: the file held five rules that morning and holds seven now.) A rule that never
 matches and a rule that never runs render identically — in the index, in a
 directory listing, and in the hook's own log, which shows `(none) [shown:0]`
 for both.
@@ -125,16 +126,23 @@ def _rows(text):
     A paths row is `pattern<TAB>file`, and its first column is *always* handed
     to `match()` — calling it a "prefix" is what made that easy to miss.
 
-    Returns (patterns, shape_errors, parsed_row_count); each pattern is
-    (line, text, family).
+    Returns (patterns, shape_errors, parsed_row_count, tabbed_row_count); each
+    pattern is (line, text, family).
+
+    `tabbed_row_count` is what separates "this file is not an index" from "this
+    index has a broken row". Both leave `parsed` at zero, and collapsing them
+    would drop a real finding into a skip.
     """
     patterns = []
     shape_errors = []
     parsed = 0
+    tabbed = 0
     for line, raw in enumerate(text.splitlines(), 1):
         if not raw.strip():
             continue
         fields = raw.split(TAB)
+        if len(fields) > 1:
+            tabbed += 1
         if len(fields) >= 4:
             parsed += 1
             match = fields[1]
@@ -143,6 +151,13 @@ def _rows(text):
         elif len(fields) == 2 and fields[0].strip() and fields[1].strip():
             parsed += 1
             patterns.append((line, fields[0], "paths"))
+        elif len(fields) == 2:
+            shape_errors.append(_err(
+                line,
+                "row has 2 tab-separated fields but one of them is empty: a "
+                "paths row is `pattern<TAB>file` and the hook needs both — an "
+                "empty pattern is handed to match() and matches everything",
+                "shape"))
         else:
             shape_errors.append(_err(
                 line,
@@ -150,7 +165,7 @@ def _rows(text):
                 "paths row has 2, so the hook will read this row's columns as "
                 "something other than what is written here".format(len(fields)),
                 "shape"))
-    return patterns, shape_errors, parsed
+    return patterns, shape_errors, parsed, tabbed
 
 
 def _escapes(pattern):
@@ -338,8 +353,12 @@ def main():
               "duration_ms": _ms(start)})
         return
 
-    patterns, errors, parsed = _rows(text)
-    if parsed == 0:
+    patterns, errors, parsed, tabbed = _rows(text)
+    if parsed == 0 and tabbed == 0:
+        # Nothing here is even tabular, so this is prose sitting at an index's
+        # path rather than a broken index. Declining is the honest answer; a
+        # *broken* row falls through to the finding below instead, because a
+        # skip there would drop an answer already in hand.
         emit(skipped(TOOL, target,
                      "no row here has the shape of a jit-context index row "
                      "(6 tab-separated fields for tools, 2 for paths)",
@@ -372,12 +391,22 @@ def main():
         return
 
     if patterns and unrun:
-        # awk is installed and fell over. Not an absence to escalate, and not a
-        # finding either — the structural half passed and the compile half has
-        # no verdict, so the honest result is no verdict.
-        emit(skipped(TOOL, target,
-                     "the structural check passed but {0}, so these patterns "
-                     "were never compiled".format(unrun), _ms(start)))
+        # awk is installed and never completed — a hang or a failed exec, not a
+        # non-zero exit (that is a *finding* above, and it is loud).
+        #
+        # Not `tool_fault()`, which is for a tool that exited non-zero with no
+        # verdict and stays `ok: false`. Here the structural half — the half
+        # that catches the construct this validator exists for — did run and did
+        # pass, and this adapter carries `rollback_on_fail`, so a hung awk would
+        # revert a correct edit because a machine stalled.
+        #
+        # It still goes through `absent()` rather than a bare `skipped()`, so
+        # `$SUPERTOOL_REQUIRE_VALIDATORS` escalates it exactly as it escalates a
+        # missing awk. Both are "this file was NOT fully checked", and #1202's
+        # lesson is that the decision belongs in one place, not in each adapter.
+        emit(absent(TOOL, target,
+                    "the structural check passed but {0}, so these patterns "
+                    "were never compiled".format(unrun), _ms(start)))
         return
 
     emit({"tool": TOOL, "file": target, "ok": True, "count": 0, "errors": [],

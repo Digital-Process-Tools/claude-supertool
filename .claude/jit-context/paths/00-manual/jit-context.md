@@ -11,6 +11,6 @@ mode: remind
 
 Three `match` traps, measured 2026-08-10. The `jit-index` validator now refuses the first two at write time (#1254), so you should meet them as a rolled-back edit rather than as a rule that never fires:
 
-- **awk, not PCRE.** macOS ships one-true-awk (`match(tolower(full_command), ...)`, `pre-tool-hook.sh:80`), which drops `\s`/`\d`/`\w` as undefined escapes — `gh\s+pr` compiles to `ghs+pr` and matches nothing. Two of seven tool rules were dead this way, both `block`. Use `[[:space:]]`. `\n` survives; `\b` is a backspace, not a word boundary.
+- **awk, not PCRE.** macOS ships one-true-awk (`match(tolower(full_command), ...)`, `pre-tool-hook.sh:80`), which drops `\s`/`\d`/`\w` as undefined escapes — `gh\s+pr` compiles to `ghs+pr` and matches nothing. Two `block` rules were dead this way, one never fired at all. Use `[[:space:]]`. `\n` survives; `\b` is a backspace, not a word boundary.
 - **The tools subject is lowercased before matching**, so an uppercase literal in a `~` pattern can never match.
 - **`^` anchors the whole command, not each line**, and the match runs against the entire string — so anchor `(^|[;&|\n] *)`, or a rule misses line 3 of a heredoc and fires on a mere mention of the command inside a payload. Not checkable at write time: verify by running the command the rule forbids.
