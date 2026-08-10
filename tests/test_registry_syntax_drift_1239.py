@@ -16,6 +16,7 @@ to abolish.
 """
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import re
@@ -31,9 +32,38 @@ PRESETS = ROOT / "presets"
 _SCRIPT = re.compile(r"\{path\}([A-Za-z0-9_./-]+\.py)")
 
 
+#: The two module-level names an op uses to declare what it accepts.
+_VOCABULARY_NAMES = ("_FILTER_KEYS", "_FLAGS")
+
+
+def _declares_a_vocabulary(path: Path) -> bool:
+    """Does this script bind `_FILTER_KEYS` or `_FLAGS` at module level?
+
+    Parsed rather than grepped. A substring test for `"_FLAGS = "` misses
+    `_FLAGS: set[str] = {...}` over one added annotation, and the op would then
+    drop out of the sweep silently — a checker that stops looking, reported as a
+    registry with no drift, which is the exact defect class #1239 is filed under.
+    """
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+    except SyntaxError:  # pragma: no cover - the syntax-floor test owns this
+        return False
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            names = [t.id for t in node.targets if isinstance(t, ast.Name)]
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names = [node.target.id]
+        else:
+            continue
+        if any(n in _VOCABULARY_NAMES for n in names):
+            return True
+    return False
+
+
 def _op_modules() -> list:
     """`(op_name, manifest, syntax, module)` for every op whose script declares
-    a filter vocabulary. Imported, not AST-read: `_FILTER_KEYS` is built from
+    a filter vocabulary. Discovery is a parse; the *values* are read by import
+    rather than from the AST, because `_FILTER_KEYS` is built from
     another dict in `gitlab/mrs.py` (`set(_FILTER_FLAG) | {...}`), so a literal
     reader would silently see an incomplete set — the absence-read-as-absence
     shape this repo keeps filing.
@@ -50,8 +80,7 @@ def _op_modules() -> list:
             path = PRESETS / hit.group(1)
             if not path.is_file():
                 continue
-            source = path.read_text(encoding="utf-8", errors="replace")
-            if "_FILTER_KEYS" not in source and "_FLAGS = " not in source:
+            if not _declares_a_vocabulary(path):
                 continue
             spec = importlib.util.spec_from_file_location(
                 f"_syntax_drift_{name.replace('-', '_')}", path)
@@ -74,6 +103,26 @@ def test_the_sweep_actually_found_ops() -> None:
     assert len(names) >= 3, names
     for expected in ("gh-issues", "gh-prs", "gl-mrs"):
         assert expected in names, names
+
+
+def test_an_annotated_declaration_is_still_discovered(tmp_path) -> None:
+    """`_FLAGS: set[str] = {...}` must not fall out of the sweep.
+
+    The discovery was a substring test until the review of this change; one
+    added type annotation would have dropped an op from the sweep with no
+    failure anywhere, and the count guard above cannot see it because the other
+    ops keep the total up.
+    """
+    plain = tmp_path / "plain.py"
+    plain.write_text("_FLAGS = {'a'}", encoding="utf-8")
+    annotated = tmp_path / "annotated.py"
+    annotated.write_text("_FLAGS: set = {'a'}", encoding="utf-8")
+    nested = tmp_path / "nested.py"
+    nested.write_text("def f():" + chr(10) + "    _FLAGS = {'a'}", encoding="utf-8")
+
+    assert _declares_a_vocabulary(plain)
+    assert _declares_a_vocabulary(annotated)
+    assert not _declares_a_vocabulary(nested)
 
 
 def test_a_changelog_fragment_exists() -> None:

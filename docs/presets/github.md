@@ -1137,10 +1137,13 @@ commit with a different run, and that gap has left `master` red for hours with
 the board reading clean. It is delegated rather than re-derived, so every future
 fix to `gh-branch` lands here too.
 
-**Cleanup is named and never run.** Chaining a branch delete onto a merge once
-deleted the branch and auto-closed the PR when the merge had actually failed on
-a conflict, so the delete command is printed and, when the merge is not
-confirmed, it is not even printed.
+**Cleanup is named, and not run unless you ask.** Chaining a branch delete onto
+a merge once deleted the branch and auto-closed the PR when the merge had
+actually failed on a conflict, so by default the delete command is printed and,
+when the merge is not confirmed, it is not even printed. Since
+[#1256](https://github.com/Digital-Process-Tools/claude-supertool/issues/1256)
+the opt-in `cleanup` token runs it instead — see
+[`cleanup` runs the three commands the receipt used to hand back](#cleanup-runs-the-three-commands-the-receipt-used-to-hand-back).
 
 **A head branch that is not an ordinary refname gets no delete command at
 all** — a third state, not a quieter version of the second. The head branch of

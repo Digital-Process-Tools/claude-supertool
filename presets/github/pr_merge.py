@@ -27,9 +27,13 @@ the design rather than a detail of it:
   `gh-branch`'s own `verdict()` already makes with `unreconciled`: every leg
   read passed, but whether those are all of the legs is UNKNOWN, and on a merge
   gate the difference is the whole point of the op.
-* **Nothing is deleted.** Chaining a branch delete onto a merge once deleted the
-  branch and auto-closed the PR when the merge had actually failed on a
-  conflict. The cleanup command is printed; it is never run.
+* **Nothing is deleted unless you ask for it.** Chaining a branch delete onto a
+  merge once deleted the branch and auto-closed the PR when the merge had
+  actually failed on a conflict. By default the cleanup command is printed and
+  never run. The opt-in `cleanup` token (#1256) runs it — but only downstream of
+  the read-back above, which is the gate that incident lacked, and with three
+  states per item so a cleanup that could not run never renders as one that had
+  nothing to do.
 * There is **no `--force` past the gate.** A green-bypass would make the op's
   one guarantee conditional on the caller, which is the thing that fails at 2am.
   A refusal names the raw command to run by hand instead, so the escape hatch
