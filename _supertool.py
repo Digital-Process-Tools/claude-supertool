@@ -2006,11 +2006,12 @@ def _path_not_found(path: str, *, label: str = "path",
     shapes known to produce a joined-up filename: a comma list (#921) and a
     whitespace-separated path list (#1261). Derived here rather than at each
     call site because six ops reach this function and only `grep` had ever
-    been wired to the first of the two — `read`, `map`, `around_line` and
-    `replace` answered both with `wrong CWD?`, the one cause that provably
-    did not apply. `call_prefix` is the op call up to but excluding the path,
-    used to print the batched repair; omit it where the path is not the last
-    argument, since the printed call would then be one nobody can run.
+    been wired to the first of the two — `read`, `around`, `around_line`,
+    `map` and `replace`, the other five, answered both with `wrong CWD?`,
+    the one cause that provably did not apply. `call_prefix` is the op call
+    up to but excluding the path, used to print the batched repair; omit it
+    where the path is not the op's last argument, since the printed call
+    would then be one nobody can run.
     """
     if not path:
         return f"ERROR: {label} not found: {path}\n"
@@ -3214,7 +3215,8 @@ def _op_grep(pattern: str, path: str = ".", limit: int = 0,
         # Could be a glob pattern — check if it expands to anything
         from glob import glob as _glob
         if not _glob(path, recursive=True):
-            return _path_not_found(path, op="grep")
+            return _path_not_found(path, op="grep",
+                                   call_prefix=f"grep:{pattern}")
 
     excl = _get_exclude_paths("grep", no_exclude)
 
@@ -3281,6 +3283,8 @@ def _op_grep(pattern: str, path: str = ".", limit: int = 0,
         file_count = len(counts)
         out = [literal_note,
                f"({total} total matches across {file_count} files{_scanned_suffix(scanned)}{hidden})\n"]
+        if total == 0:
+            out.append(_shim_facade_note(path))
         # `PATH:N` is the shape every grep-like tool uses for PATH:LINE, so a
         # count of 30 read as "one match, at line 30" — the opposite of what
         # the op said, in the op you call *before* deciding whether to look
@@ -3696,7 +3700,8 @@ def op_between_pattern(start: str, end: str, path: str) -> str:
             start_idx = i
             break
     if start_idx is None:
-        return f"ERROR: start pattern {start!r} not matched in {path}\n"
+        return (f"ERROR: start pattern {start!r} not matched in {path}\n"
+                + _shim_facade_note(path))
 
     end_idx: int | None = None
     for i in range(start_idx + 1, len(lines)):

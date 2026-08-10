@@ -123,6 +123,27 @@ def test_the_note_predicate_needs_the_pair_on_disk(tmp_path: Path) -> None:
     assert supertool._shim_facade_note(str(tmp_path / "gone.py")) == ""
 
 
+def test_grep_count_mode_zero_on_the_shim_names_the_core(
+        tmp_path: Path) -> None:
+    """`grep:...:count` is the call you make BEFORE deciding whether to look,
+    so a zero there decides more than the others do. It renders through its
+    own branch and inherited nothing from the plain one."""
+    shim = _shim_pair(tmp_path)
+    out = supertool.dispatch(f"grep:def op_needle:{shim}:10:0:count")
+    assert "0 total matches" in out, out
+    assert "entry point" in out, out
+
+
+def test_between_re_start_unmatched_on_the_shim_names_the_core(
+        tmp_path: Path) -> None:
+    """Pattern mode needs no tree-sitter, so unlike symbol mode this runs on
+    every leg — and it was the arm of `between` the first pass missed."""
+    shim = _shim_pair(tmp_path)
+    out = supertool.dispatch(f"between:re:def op_needle:return:{shim}")
+    assert "not matched" in out, out
+    assert "entry point" in out, out
+
+
 def test_a_zero_over_an_ordinary_file_is_untouched(tmp_path: Path) -> None:
     f = tmp_path / "thing.py"
     f.write_text("pass\n")
