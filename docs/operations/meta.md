@@ -128,13 +128,41 @@ Discover one op's full payload shape — the front door for ops with non-obvious
 
 `help:OP` prints that op's uncompacted description from `.supertool.json`. Use it when an op's signature isn't enough; use `ops` when you don't yet know which op you want.
 
-Compact variant used by the session-start hook to stay under Claude Code's ~7KB hook output cap:
+What the session-start hook actually runs, and it fits the ~7KB hook-output cap:
 
 ```bash
-./supertool 'introduction' 'output-format' 'ops-compact'
+./supertool 'introduction' 'output-format' 'ops:roster'
 ```
 
-`ops-compact` drops examples on self-explanatory ops and prepends a warning if output still exceeds the cap, telling the model to fetch the full listing via `./supertool 'ops'`.
+Measured in this checkout (`python3 supertool.py 'ops' | wc -c`): `ops` is 47,254 bytes and `ops-compact` 9,067, against a cap of ~7,168 — so **no listing form fitted, and the startup listing was truncated on every session**, hiding everything alphabetically after `grep`: the whole `gh-*` and `git-*` families, `radar`, `watch`, `read`, `paste`, `tree`. It disclosed the truncation honestly and that did not help, because what was hidden was *existence*, and a reader cannot miss what they never learned about. Three agents in one session reported `write:` is not an op without being told `paste:` is.
+
+`ops:roster` is ~1.7KB — every op name, each carrying a safety class, and nothing else, plus the same "N shipped presets are not loaded here" line `ops` carries. The whole hook payload is ~2.7KB against the ~7.2KB cap. Not quoted to the byte: the disclosure names the absolute path of the config it read, so the size moves with the checkout.
+
+```
+  append* around around_line batch* between channel check cwd dashboard diag
+  ... gh-pr gh-pr-create! gh-pr-merge! gh-prs gh-run ... git-push! ...
+```
+
+| Marker | Class | What it licenses |
+|--------|-------|------------------|
+| *(none)* | `read-only` | Call it blind — its own error teaches the signature |
+| `*` | `writes` | Changes files in this tree |
+| `!` | `acts` | Changes something outside this tree, or starts something that outlives the call — look it up, never probe |
+
+Flat and alphabetical rather than grouped by family, because every miss that motivated it was a neighbour miss: `gh-pr-create` sits beside `gh-pr`, `git-worktrees` beside `git-status`. An op whose class is not declared renders `!`, so a gap in the data is never the quiet answer.
+
+Descriptions are one call away and richer there — `help:OP` carries the full contract, the semantics and a worked example, where a listing row carried one line. `ops-compact` still exists and still warns when it exceeds the cap; it is no longer what the hook prints.
+
+**`ops` refuses an argument rather than dropping it.** `ops:gh-labels` used to print all 47KB and say nothing about the token it discarded — in the op whose subject is which tokens exist. It now names the alternative:
+
+```
+$ ./supertool 'ops:gh-labels'
+ERROR: `ops` takes no filter, and 'gh-labels' is an op name.
+  Its full entry: `help:gh-labels` — more than the listing row carries.
+  Every name plus its safety class: `ops:roster`. Every entry: `ops`.
+```
+
+There is deliberately no `ops:PATTERN` filter. `help:OP` already answers what a filter would and answers it with more, and a filter would re-create this issue in miniature: `ops:gh-labl` matching nothing renders identically to an op that does not exist.
 
 ## See also
 

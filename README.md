@@ -181,11 +181,13 @@ ln -s supertool.py supertool                         # worktree of claude-supert
 
 ## How to use
 
-Just install. The session-start hook runs `./supertool 'introduction' 'output-format' 'ops-compact'` to output the project-specific operations reference from `.supertool.json`. The model learns what's available and how to batch. Falls back to native `Grep`/`Read` when those are better.
+Just install. The session-start hook runs `./supertool 'introduction' 'output-format' 'ops:roster'` to output the project-specific operations reference from `.supertool.json`. The model learns what's available and how to batch. Falls back to native `Grep`/`Read` when those are better.
 
-> **Heads-up — hook output cap.** Claude Code truncates hook stdout around 7KB; over that, only a ~2KB preview reaches the model and the rest is silently saved to disk. With many ops, the tail of the listing gets hidden until rediscovered mid-task.
+> **Heads-up — hook output cap.** Claude Code truncates hook stdout around 7KB; over that, only a ~2KB preview reaches the model and the rest is silently saved to disk.
 >
-> The session-start hook uses `ops-compact` to stay under the cap: examples are dropped on self-explanatory ops, and only kept on ops marked `"hint": true` in `.supertool.json`. If the body still exceeds the cap, `ops-compact` prepends a warning telling the model to fetch the full listing via `./supertool 'ops'`. Plain `'ops'` always returns everything.
+> No descriptive listing fits: `ops` is 47,254 bytes here and `ops-compact` 9,067, so the startup listing used to be truncated on *every* session, hiding every op alphabetically after `grep` — the whole `gh-*` and `git-*` families, `radar`, `watch`, `paste`, `tree`. What was hidden was existence, and a reader cannot miss what they never learned about.
+>
+> `ops:roster` is ~1.7KB: every op name and nothing else, each carrying a safety class — unmarked is read-only and safe to call blind, `*` writes files in this tree, `!` changes something outside it or starts something that outlives the call. Descriptions are one call away and richer there: `help:OP` gives the full contract, the semantics and an example. Plain `'ops'` always returns everything.
 
 ### Plain / ASCII output mode (hooks & CI)
 

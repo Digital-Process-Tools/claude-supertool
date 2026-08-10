@@ -3,6 +3,7 @@
   "requires": "gh",
   "ops": {
     "gh-issue": {
+      "safety": "read-only",
       "cmd": "{python} {path}github/issue.py {args}",
       "timeout": 30,
       "description": "GitHub issue: desc, comments, images, linked PRs. :full = no truncation, all comments. Targets another repo with a leading repo:OWNER/NAME op.",
@@ -10,6 +11,7 @@
       "repo_target": true
     },
     "gh-issues": {
+      "safety": "read-only",
       "cmd": "{python} {path}github/issues.py {args}",
       "timeout": 90,
       "description": "Issue triage board: list issues (no default author filter — the queue, not mine), ranked unrankable → external author → stale body → no linked PR → oldest. Per issue: linked-PR state from the timeline, external-filer marker from GitHub's authorAssociation, age, comment count, labels, stale-body flag (newest comment newer than lastEditedAt, or createdAt when the body was never edited), and the milestone as '[m:TITLE]' — no column, so a row without one costs nothing and '[m:?]' means gh did not answer rather than 'none'. Enrichment is one GraphQL call per 20 issues; when it fails the derived fields render '?' and the footer names why — never 0, never 'internal', never 'no PR'. An unrecognised token or filter key is REFUSED, never dropped: an unnarrowed board printed for a filter nobody applied reads as the answer to the question you asked. Filters (comma-sep): author/assignee/label/milestone/state/per. Flags: nopipe (skip enrichment), iids, external, stale, nomilestone (client-side, so it declines outright if any row's milestone is unknown; the --limit disclosure is measured against the fetch, not against what survived the filter). A client-side flag that empties the board names itself and the count it dropped, so `No issues match.` is never read as a statement about the queue. iids carries the --limit disclosure as a leading `#` comment — it returns before any footer is built, and it is the shape whose output becomes another tool's input.",
@@ -18,6 +20,7 @@
       "per_page": 50
     },
     "gh-issue-create": {
+      "safety": "acts",
       "cmd": "{python} {path}github/issue_create.py {arg}",
       "timeout": 30,
       "description": "Create a GitHub issue from a JSON/TOML payload file. Supports labels, assignees, and milestone (by title).",
@@ -26,6 +29,7 @@
       "repo_target": "payload"
     },
     "gh-pr-create": {
+      "safety": "acts",
       "cmd": "{python} {path}github/pr_create.py {arg}",
       "timeout": 120,
       "description": "Open a pull request from a JSON/TOML payload file, and hand back the receipt the four hand-rolled calls used to assemble. Payload route because a PR body is long markdown with colons and fences that cannot survive :-tokenization. base is REQUIRED and is never defaulted — master and a release branch are equally plausible from one cwd, and a wrong base silently retargets the merge; head defaults to the current branch and repo to the origin remote, both stated with their source so a wrong one is visible immediately. The receipt names: number and URL; base/head as resolved; whether any check actually STARTED (zero checks is rendered as 'nothing has been created', never as pending, with the ~15min creation window and a stated UNKNOWN past it); the issues the body links, parsed with the same closing-reference reader gh-pr uses, so a malformed Closes line is caught at creation rather than after the merge; and the next command. Ends on a one-line [result] verdict.",
@@ -34,6 +38,7 @@
       "repo_target": "payload"
     },
     "gh-pr-merge": {
+      "safety": "acts",
       "cmd": "{python} {path}github/pr_merge.py {args}",
       "timeout": 300,
       "description": "Merge a PR and PROVE it landed — the only op in this family that writes. Refuses first: not OPEN, draft, CONFLICTING, mergeable=UNKNOWN, mergeStateStatus not CLEAN, CHANGES_REQUESTED, zero check runs, an unreadable rollup, any leg that is not a pass (#454's arithmetic — cancelled/skipped/timed_out/neutral/action_required are each named and none is permission), and a leg tally that could not be reconciled against what the runs declare (a doubt is not permission on a gate, the same call gh-branch's verdict makes). There is no green-bypass; a refusal names the manual command instead. Without |force it previews the gate and merges nothing (_publish_safety.require_confirm, same gate as the publish ops). After merging it reads state/mergedAt/mergeCommit back off the remote — a zero exit is not a merge — then checks EVERY linked issue individually, reconciling the body's own closing refs against GitHub's closingIssuesReferences so a ref GitHub never bound is named (PR #908's shape: body said Closes #899, GitHub bound nothing, no error anywhere), each unclosed one carrying the exact command to close it by hand. Then reports the DEFAULT BRANCH's state after the squash via gh-branch, because a green PR is a statement about its merge-base. Names the head branch and worktree cleanup command but never runs it. Exits 0 only when the merge is verified AND every linked issue is verified closed; a merged-but-issue-open partial is never rendered as a success and never implies a rollback.",
@@ -42,6 +47,7 @@
       "repo_target": true
     },
     "gh-pr": {
+      "safety": "read-only",
       "cmd": "{python} {path}github/pr.py {args}",
       "timeout": 90,
       "description": "Review a pull request: branch, checks, reviews/approval, linked issue, diff stat, comments — the full dashboard. A truncated description says so twice — in the header and at the cut — with the exact char count withheld; :full uncaps it. :status = slim merge-state only (~250B, fits hook cache). :diff is the merge gate's own read, in the shape a reviewer walks rather than the whole patch: the file list with per-file +/-, heaviest first, with '[same edit xN]' noting a file whose every hunk is the identical change — a note, never a filter. :diff:PATH is that one file's hunks, fenced. A diff that could not be fetched says so and exits 1 instead of rendering an empty file list; a PATH not in the diff declines and names the paths that are; both caps (GH_PR_DIFF_MAX_FILES, default 60; GH_PR_DIFF_MAX_BYTES, default 65536) disclose exactly what they withheld. Honours repo:OWNER/NAME, which raw `gh pr diff` from the wrong directory does not.",
@@ -49,6 +55,7 @@
       "repo_target": true
     },
     "gh-prs": {
+      "safety": "read-only",
       "cmd": "{python} {path}github/prs.py {args}",
       "timeout": 60,
       "description": "PR triage board: list PRs (the repo's, no default author filter), sorted failing-first. Per PR: check rollup (failed\u2192check name), approval (reviewDecision), age, diff size, watch-state, draft/conflict/threads flags + actionable footer. Filters (comma-sep): author/reviewer/assignee/label/state/per. Flags: nopipe (skip review-thread enrichment), iids, failed, anyauthor. A token outside those two lists, or a state outside open/closed/merged/all, is REFUSED (exit 1, no board) rather than dropped. The core board is one gh call; review threads enrich in parallel. There is NO author default: bare gh-prs is every open PR on the repo and gh-prs:author=@me is one person's. It defaulted to author=@me until #1207 — disclosing that filter (#1072) was not enough, and three PRs nobody on the team wrote sat unseen for 5h to 1 day behind a footer read past every time. The population on screen is always named, in states that never render alike: no role filter (says so), rows under a role filter (says which slice), no rows because the filter excluded some (says how many, and that bare gh-prs shows them), and genuinely nothing open. A count the probe could not establish is UNKNOWN, never `excluded none`; the probe drops every role key, not just author. anyauthor is what the bare op now does, still accepted, and still REFUSED alongside an explicit author/assignee/reviewer, because those ask for different boards. radar's gh-prs tier keeps the old default — it keys its departure snapshot on the scope. A fetch that came back exactly --limit long says so, measured against the fetch rather than against what survived `failed`, and iids carries the disclosures about rows the caller did NOT choose to lose — the page cap and the role-filter exclusion — as leading `#` comments, so a piped list is never mistaken for a complete one. Not the scope label on a populated board, and not `failed`'s own complement: both are noise in a stream a script parses.",
@@ -59,6 +66,7 @@
       "per_page": 50
     },
     "gh-run": {
+      "safety": "read-only",
       "cmd": "{python} {path}github/run.py {arg}",
       "timeout": 15,
       "description": "What passed, what failed? Workflow run jobs with statuses and failed step names. Targets another repo with a leading repo:OWNER/NAME op.",
@@ -66,6 +74,7 @@
       "repo_target": true
     },
     "gh-branch": {
+      "safety": "read-only",
       "cmd": "{python} {path}github/branch.py {args}",
       "timeout": 90,
       "description": "Is this branch green? Answers for a *branch* — the shape gh-pr cannot take, because after a squash merge the ref that matters is the default branch and it has no PR. Selects runs by workflow identity, never by recency: `gh run list --limit 1` returns whichever workflow started last (routinely CodeQL) and reports its conclusion for the commit, which is how a green gets read off a run that is not the run you meant. The summary is conjunctive — green only when EVERY workflow on the head SHA concluded and every leg passed — and it states four things apart that collapse into each other by default: GREEN, NOT GREEN (failed, or not finished — worded differently), NO RUN (nothing exists for this SHA, with the reason and the ~15min creation window), and UNKNOWN (a job list did not come back — never counted as zero passing legs). Leg counts come from the same _checks.summarize tally as gh-pr/gh-run, so `2 cancelled` is named rather than dropped and the terms sum to the leg count. Names the head SHA, because green is a claim about a commit. Every row says `concluded` or `running` in words, so no bare column can be misread as a leg state. With no argument, answers for the repo default branch — the shape used right after a merge. TAKES A COMMIT TOO (#1083), full or abbreviated, which is the release gate's own question — it clears `the exact commit being tagged`, and the branch head can move between the check and the tag. The mode is decided by the resolution and not by the spelling: a ref is a commit when what it resolves to STARTS WITH it, so `deadbee` as a branch name stays a branch. It used to accept a SHA and answer NO RUN for it, because `gh run list --branch <sha>` matches no branch and returns [] with exit 0 — the house defect inside the op written to prevent it. Commit mode passes the resolved 40-hex name to `gh run list --commit`, never the abbreviation, because that call answers [] exit 0 for a prefix; and it states that the previous-head comparison is not available there rather than letting its silence read as nothing-missing. The declared-but-never-dispatched block, which is the half no enumeration of runs can produce, is keyed on the SHA already and is unchanged. Exit 0 only when GREEN. Targets another repo with a leading repo:OWNER/NAME op.",
@@ -74,6 +83,7 @@
       "repo_target": true
     },
     "gh-job": {
+      "safety": "read-only",
       "cmd": "{python} {path}github/job.py {args}",
       "timeout": 30,
       "description": "Why did this job fail? PR context + error pattern search + log tail. Takes EITHER id namespace: a check-run id (CodeQL, Dependabot, external CI) renders the check run — status, output, annotations — under '# Check run #N' with a 'Routed:' line naming the switch, so you never have to know which of GitHub's two lists a red leg landed in; the checks API is only consulted after the Actions endpoint 404s, so working calls cost nothing extra, and a checks call that does not answer declines rather than rendering an empty check. :fail (alias :errors) = matched failure blocks only, no tail — the tight triage view, per-job patterns; :raw dumps full trace; :raw:START[:END] slices lines (1-indexed, inclusive); :raw:-N is the last N lines; a START past the end returns the tail of the width requested and says so rather than declining; :grep:PATTERN ad-hoc regex over the log (literal fallback, context, tail on no-match; emission budgeted by GH_JOB_GREP_MAX_BYTES, default 65536 — a capped view says so in its header AND footer with an exact 'N of M matching lines shown' and names bytes, not a match limit, as what cut). The argv this op receives is what core made of the op string, so it is checked before anything is fetched (#1145): a job id that is not all digits is REFUSED — GitHub answers 200 for 'jobs/123ep' by coercing it back to 123, so a mangled id used to render in the header as the job that was read — and a MODE token outside fail/errors/raw/grep is REFUSED rather than dropped to the default view under exit 0. A ':' inside PATTERN is REJOINED, not truncated, with a note above the render echoing how the pattern was read; nothing follows PATTERN here, so that is the only reading. '|' needs no escape and never did.",
@@ -84,6 +94,7 @@
       "error_context": 5
     },
     "gh-check": {
+      "safety": "read-only",
       "cmd": "{python} {path}github/check.py {args}",
       "timeout": 30,
       "description": "What did this check run say? The *other* id namespace: CodeQL, Dependabot, code-scanning uploads and external CI report through the checks API, not through Actions, so gh-job 404s on their ids. gh-check:ID prints the check run's status, output title/summary and its annotations — path:line, title, message, which for a scanning check is the whole finding — capped at GH_CHECK_ANNOTATION_CAP (default 5) with a '+N more' disclosure in header AND footer. Zero annotations on a non-passing check is never rendered as an all-clear, and a failed annotations fetch is never rendered as zero. gh-check:pr:N lists the check runs on PR N's head commit with their ids, because gh-pr:N:status names a non-Actions leg without one. A 404 probes the Actions namespace and, when the id is a job, says so and names gh-job. Since #827 this is the explicit form rather than the only route — gh-job:ID answers for a check run too, and gh-pr names a non-Actions leg as 'CodeQL (check #ID)'. Does not read the code-scanning API.",
@@ -92,6 +103,7 @@
       "repo_target": true
     },
     "gh-labels": {
+      "safety": "read-only",
       "cmd": "{python} {path}github/labels.py {args}",
       "timeout": 45,
       "description": "What can I tag this with? The repo's label vocabulary — the first call of any triage or release-planning run, because every later decision depends on it and `gh issue edit --add-label` does not protect you from a name that does not exist. Names, descriptions, and how many OPEN issues carry each one, so a dead label is visible next to a live one. Grouped by name prefix (`priority-`, `lane-`, `priority:`) with the grouping declared as INFERRED — a prefix is a repo convention, not a GitHub field, and the spelling is not portable: claude-supertool uses `priority-high`, claude-remember uses `priority:high` and has no lanes. Counts have three states and never two: exact over every open ISSUE read — pull requests are excluded, so `0` means 'on no open issue' rather than 'unused' — a FLOOR rendered `>=N` when the issue read hit GH_LABELS_ISSUE_CAP (default 400), or `?` when the issue list could not be read at all — never 0, because 'I did not look' and 'nobody uses it' are opposite facts. An unreadable label list is an ERROR and exit 1; a repo with genuinely no labels says that in its own words. Paginates, so a repo past 100 labels is not silently truncated. `tally=PREFIX` answers a different question with the same vocabulary (#1084): ONE label family's burn-down — open, closed and frozen (their sum) per label, plus the row a per-label listing cannot produce, `no PREFIX label`, the open issues that escaped the freeze. Those numbers come from the search API, one query per cell, `is:issue`, because enumerating closed issues would hit a cap and render a FLOOR as a burn-down denominator; a cell that did not answer is `?` and poisons `frozen` rather than counting as zero. It also names issues carrying TWO labels of the family — a filing error, never a comma-joined row — and says so in the negative too, so silence is not read as a clean board. An empty family reads as `no labels start with this prefix`, never as an all-NONE board: the spelling is not portable. The prefix is a parameter; an unrecognised token is REFUSED rather than dropped, and a label name carrying a quote is refused rather than silently omitted from every row. Targets another repo with a leading repo:OWNER/NAME op.",
@@ -100,6 +112,7 @@
       "repo_target": true
     },
     "gh-since-tag": {
+      "safety": "read-only",
       "cmd": "{python} {path}github/since_tag.py {args}",
       "timeout": 90,
       "description": "Should a release fire? The two numbers the auto-release gate reads, from one call: merged PRs since the last tag (numbers, titles, merge instants, in merge order) and unreleased changelog.d fragments by section. Hand-rolled every tick until #1209, when the hand-rolled version printed a confident `0` beside 7 fragments — `gh` returns `...Z` and `git show -s --format=%cI` returns `...+02:00`, and the two were compared as STRINGS. Every timestamp here is parsed to an instant first, and the two numbers are printed together because their contradiction is what caught it — a zero beside a non-zero fragment count renders as CONTRADICTION, not as two numbers. Three states on the boundary: RESOLVED (one defensible tag), AMBIGUOUS (a newer version tag off the default branch, two tags at one instant on different commits, or reachability that could not be measured — a count is printed and explicitly is NOT a trigger input), UNRESOLVED (no tag, or a named tag that does not exist — the count is `?`, never `0`, and the newest tag is never substituted). Four on the count: EXACT, `>=N` when the page filled (measured on the page gh returned, not on what survived the boundary filter), UNVERIFIED when a mergedAt would not parse or when GitHub's search index and local git history disagree — both directions of that gap are named — and UNKNOWN when the read did not happen. The default boundary is the newest version-shaped tag (`v0.31.0` or `0.3.2`) reachable from the default branch, at its COMMIT instant rather than the annotated tag object's date; a non-version tag like `wip-241` is disclosed and skipped rather than selected. Read-only and never fetches: local refs are used as they stand and named as the source. A leading repo:OWNER/NAME op is REFUSED rather than half-honoured: only the PR list can follow a target, while the boundary tag, the default branch, the cross-check and changelog.d are local reads of this clone — measured, that combination printed one repo's tag beside another repo's merge count and a third number from the first again. Run it from inside the clone you are asking about.",
@@ -107,6 +120,7 @@
       "example": "gh-since-tag:v0.31.0"
     },
     "gh-follow": {
+      "safety": "acts",
       "cmd": "{python} {path}github/follow.py {arg}",
       "timeout": 10,
       "description": "Follow a GitHub user via the authenticated gh CLI session.",
@@ -114,6 +128,7 @@
       "example": "gh-follow:simonw"
     },
     "gh-following": {
+      "safety": "read-only",
       "cmd": "{python} {path}github/following.py {arg}",
       "timeout": 15,
       "description": "List users you follow on GitHub.",
@@ -122,6 +137,7 @@
       "default_limit": 30
     },
     "gh-batch-follow": {
+      "safety": "acts",
       "cmd": "{python} {path}github/batch_follow.py {arg}",
       "timeout": 600,
       "description": "Follow each username from a file (one per line, '#' comments). Sleeps 1s between calls.",
@@ -130,6 +146,7 @@
       "follow_delay": "1.0"
     },
     "gh-star": {
+      "safety": "acts",
       "cmd": "{python} {path}github/star.py {arg}",
       "timeout": 10,
       "description": "Star a GitHub repository via gh CLI.",
@@ -137,6 +154,7 @@
       "example": "gh-star:simonw/llm"
     },
     "gh-starred": {
+      "safety": "read-only",
       "cmd": "{python} {path}github/starred.py {arg}",
       "timeout": 15,
       "description": "List repos you have starred.",
@@ -145,6 +163,7 @@
       "default_limit": 30
     },
     "gh-batch-star": {
+      "safety": "acts",
       "cmd": "{python} {path}github/batch_star.py {arg}",
       "timeout": 600,
       "description": "Star each OWNER/REPO from a file (one per line, '#' comments). Sleeps 1s between calls.",
@@ -153,6 +172,7 @@
       "star_delay": "1.0"
     },
     "gh-find-followable": {
+      "safety": "read-only",
       "cmd": "{python} {path}github/find_followable.py {arg}",
       "timeout": 90,
       "description": "Discover candidate users to follow: pulls stargazers + contributors of a repo, dedupes, filters out orgs. Pipe to a file then review before gh-batch-follow.",
@@ -161,6 +181,7 @@
       "default_limit": 100
     },
     "gh-find-starable": {
+      "safety": "read-only",
       "cmd": "{python} {path}github/find_starable.py {arg}",
       "timeout": 30,
       "description": "Discover repos worth starring by topic. Pulls top N repos for the topic, sorted by stars. Pipe to a file then review before gh-batch-star.",

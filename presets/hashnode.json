@@ -3,6 +3,7 @@
   "requires": "python",
   "ops": {
     "hashnode_publish": {
+      "safety": "acts",
       "cmd": "{python} {path}hashnode/publish.py {arg}",
       "timeout": 30,
       "description": "Publish a markdown file as a post on the configured Hashnode publication.",
@@ -12,6 +13,7 @@
       "default_cover": ""
     },
     "hashnode_list": {
+      "safety": "read-only",
       "cmd": "{python} {path}hashnode/list.py {arg}",
       "timeout": 15,
       "description": "List recent posts on configured publication, or another user's posts.",
@@ -20,6 +22,7 @@
       "default_limit": 10
     },
     "hashnode_read": {
+      "safety": "read-only",
       "cmd": "{python} {path}hashnode/read.py {args}",
       "timeout": 15,
       "description": "Read post body + metadata by slug, post ID, or full URL.",
@@ -27,6 +30,7 @@
       "example": "hashnode_read:my-post-slug"
     },
     "hashnode_browse": {
+      "safety": "read-only",
       "cmd": "{python} {path}hashnode/browse.py {arg}",
       "timeout": 15,
       "description": "Browse recent posts on a tag (cross-publication feed).",
@@ -35,6 +39,7 @@
       "default_limit": 10
     },
     "hashnode_comments": {
+      "safety": "read-only",
       "cmd": "{python} {path}hashnode/comments.py {args}",
       "timeout": 15,
       "description": "List comments on a post (configured publication).",
@@ -43,6 +48,7 @@
       "default_limit": 20
     },
     "hashnode_comment": {
+      "safety": "acts",
       "cmd": "{python} {path}hashnode/comment.py {args}",
       "timeout": 30,
       "description": "Post a comment on a Hashnode post. Accepts post ID or URL on any publication (cross-publication via publication(host:) GraphQL). MESSAGE may be inline text or a path to a file containing the body (file detection is automatic, like bluesky_publish).",
@@ -50,6 +56,7 @@
       "example": "hashnode_comment:abc123|Thanks for sharing!"
     },
     "hashnode_react": {
+      "safety": "acts",
       "cmd": "{python} {path}hashnode/react.py {args}",
       "timeout": 15,
       "description": "Like a Hashnode post. Accepts post ID or URL on any publication (cross-publication via publication(host:) GraphQL). Hashnode's GraphQL exposes no per-user reaction state, so this aborts every call without |force. To opt into auto-force globally, add `\"hashnode_react\": {\"auto_force\": true}` to the ops section of .supertool.json.",
@@ -57,6 +64,7 @@
       "example": "hashnode_react:abc123|force"
     },
     "hashnode_reply": {
+      "safety": "acts",
       "cmd": "{python} {path}hashnode/reply.py {args}",
       "timeout": 30,
       "description": "Reply to a Hashnode comment. MESSAGE may be inline text or a path to a file containing the body (file detection is automatic, like bluesky_publish).",
@@ -64,6 +72,7 @@
       "example": "hashnode_reply:comm-7|Good point — agree."
     },
     "hashnode_search": {
+      "safety": "read-only",
       "cmd": "{python} {path}hashnode/search.py {arg}",
       "timeout": 15,
       "description": "Text search on configured publication.",
@@ -72,6 +81,7 @@
       "default_limit": 10
     },
     "hashnode_status_since": {
+      "safety": "acts",
       "cmd": "{python} {path}hashnode/status_since.py {args}",
       "timeout": 30,
       "description": "Briefing: new comments + follower count + top posts since timestamp. No arg = uses ~/.config/hashnode/last_check (auto-tracked).",
