@@ -127,15 +127,23 @@ def test_the_default_board_names_its_own_scope(
 # what the flip must not break
 # ---------------------------------------------------------------------------
 
-def test_the_radar_tiers_two_positional_call_is_unchanged() -> None:
+def test_the_radar_tiers_two_positional_call_widened_too() -> None:
     """`watch/tiers/gh_prs.py` calls `_build_list_cmd(filters, per_page)`.
 
-    Radar keys its departure snapshot on the filter string, so widening this
-    without widening the key replays the whole repo as new arrivals.
+    This test asserted the opposite until #1230. #1207 flipped the op by
+    passing `any_author=True` at its own two call sites and leaving the
+    parameter default narrow, deferring radar's half on the grounds that the
+    departure snapshot is keyed on the filter string. That deferral shipped a
+    board a maintainer tick opens with that excluded every dependabot and
+    outside-contributor PR while rendering as healthy, and the snapshot
+    argument does not survive: widening only adds members, so the reused
+    snapshot cannot manufacture a departure — see `gh_prs.snapshot_key`.
+
+    The parameter is gone rather than flipped, so no third caller can inherit
+    a default no caller in the tree wants.
     """
-    assert "--author" in prs._build_list_cmd({}, 50), (
-        "the radar tier's positional call must keep the author=@me default "
-        "until radar's own scope label and snapshot key move with it"
+    assert "--author" not in prs._build_list_cmd({}, 50), (
+        "radar's positional call must get the same population as gh-prs"
     )
 
 
